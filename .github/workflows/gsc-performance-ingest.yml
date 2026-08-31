@@ -1,0 +1,100 @@
+name: GSC performance ingest (daily SEO time series)
+
+# Records what the site EARNS, not just what it publishes.
+#
+# Until 2026-08-31 the SEO measurement layer held zero rows all-time —
+# gsc_crawl_errors, gsc_index_requests, seo_backlinks, seo_stats and
+# seo_content_opportunities were all empty — so "is Google SEO working" had no
+# instrument, and the brain had no input to form a finding from. This is the
+# writer for that series.
+#
+# Re-fetches a TRAILING WINDOW, not just yesterday: GSC finalises a day's data
+# over ~72 h, so a day read too early is an undercount that never corrects
+# itself. The upsert is keyed (date, dimension, dim_value), so re-running is
+# idempotent — a double-fire and a manual re-run converge on the same rows.
+#
+# To seed history (GSC retains 16 months) run this workflow manually once with
+# days=480. Until that runs, missing old rows mean "not fetched", not "no
+# traffic" — the read route says so in its `coverage` block.
+
+on:
+  schedule:
+    # 06:20 UTC daily. Deliberately NOT on :00/:30 and not sharing a minute with
+    # another workflow — the heal board currently reports six cron collisions
+    # where two workflows fire on the exact same minute.
+    - cron: '20 6 * * *'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Trailing window to ingest. Use 480 once to seed 16 months of history.'
+        default: '5'
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+concurrency:
+  # A seed run takes minutes; a schedule tick landing on top of it would race
+  # the same upsert window for no benefit.
+  group: gsc-performance-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Ingest GSC performance
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
+          fi
+          DAYS="${DAYS:-5}"
+          URL="$RAILWAY_BASE/api/v1/admin/gsc/performance/ingest?days=$DAYS"
+          echo "POST $URL"
+
+          # Capture the body AND the status separately. A workflow that pipes
+          # curl through jq reads jq's exit code, not curl's — the pattern that
+          # let weekly-shadow-audit report success for two weeks while its push
+          # was rejected and swallowed.
+          body=$(curl -sS --max-time 600 -X POST \
+                   -H "X-Admin-Key: $ADMIN_KEY" \
+                   -w '\n%{http_code}' "$URL") || {
+            echo "::error::curl failed"; exit 1; }
+          code=$(printf '%s' "$body" | tail -n1)
+          json=$(printf '%s' "$body" | sed '$d')
+          echo "$json"
+
+          if [ "$code" != "200" ]; then
+            echo "::error::ingest returned HTTP $code"; exit 1
+          fi
+
+          # success:false is a real failure even behind a 200 — the route
+          # returns partial-grain errors in the body.
+          if printf '%s' "$json" | grep -q '"success": *false'; then
+            echo "::error::ingest reported success:false"; exit 1
+          fi
+
+          # An ingest that wrote nothing at the SITE grain is not a success:
+          # that grain is one row per day and can only be empty if the call
+          # silently returned nothing.
+          if printf '%s' "$json" | grep -q '"site": *0'; then
+            echo "::warning::site grain wrote 0 rows — GSC returned no data for the window"
+          fi
+
+      - name: Verify the series is readable from outside
+        run: |
+          set -euo pipefail
+          # Prove the write landed by READING it back through the public route,
+          # not by trusting the writer's own report.
+          out=$(curl -sS --max-time 60 \
+                 "$RAILWAY_BASE/api/v1/seo/performance?dimension=site&days=14")
+          echo "$out"
+          printf '%s' "$out" | grep -q '"success": *true' \
+            || { echo "::error::read-back failed"; exit 1; }

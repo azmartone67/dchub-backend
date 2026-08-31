@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 from util.capacity_pipeline import CP_OK
+from routes._slow_tool_cache import cache_tool_response
 
 logger = logging.getLogger('site_planner')
 
@@ -1683,6 +1684,19 @@ def register_site_planner_routes(app):
     # ── POST /api/v1/site-planner/composite-score ──
     @app.route('/api/v1/site-planner/composite-score', methods=['GET', 'POST'])
     @require_pro
+    # r-slow-tool-cache (2026-08-31): p50 was 11,553 ms over 41 calls in the 14
+    # days to 2026-08-31 — a MEDIAN past the point most MCP clients give up, so
+    # roughly half of all agent callers were at risk of timing out on the
+    # flagship "should I build here" answer. The handler fans out to ~10
+    # sequential gathers (substations, transmission, ISO, congestion,
+    # environmental, gas, nearby DCs, fiber, connectivity, water, DCPI); none of
+    # them is caller-specific, so the whole response memoises on its inputs.
+    # 6 h TTL: every layer behind it is static-to-daily. redis_cache's own
+    # cached_endpoint cannot be used here — it returns early for any request
+    # with an Authorization/X-API-Key header, and @require_pro means that is
+    # every real caller. See routes/_slow_tool_cache.py.
+    @cache_tool_response(ttl=6 * 3600, prefix='composite_score',
+                         arg_names=('lat', 'lng', 'lon', 'state', 'address'))
     def site_planner_composite_score():
         """Composite site suitability score (0-100) with an EXPLICIT per-factor
         coverage map. Synthesizes power/grid, fiber, natural-hazard risk, water,

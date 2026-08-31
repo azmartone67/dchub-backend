@@ -1,0 +1,365 @@
+"""Daily Google Search Console performance ingestion.
+
+WHY
+---
+As of 2026-08-31 the SEO measurement layer held no time series at all. Verified
+row counts, all-time:
+
+    gsc_crawl_errors            0
+    gsc_index_requests          0
+    seo_backlinks               0
+    seo_stats                   0
+    seo_content_opportunities   0
+    seo_indexing_log (42 d)     0
+    seo_proven_pages       21,672   <- the only GSC-derived table with rows
+
+So the site knew what it PUBLISHED (21,672 pages, sitemap rebuilt daily) and
+nothing about what any of it EARNED. No impressions, no clicks, no positions, no
+trend. Every SEO judgement — including the 2026-07-30 decision to add
+`Disallow: /api/` for Bingbot, whose own robots.txt comment concedes it "closes
+Copilot's only surface" — was made blind and has stayed unmeasured since.
+
+`seo_proven_pages` is not a substitute. It is a rolling 90-day SNAPSHOT keyed by
+slug, upserted in place: it answers "does this page have impressions" and can
+never answer "is this page rising or falling", because yesterday's value is
+overwritten. A snapshot cannot become a trend retroactively — the series has to
+start being recorded before it can be read. That is this module.
+
+WHAT IT RECORDS
+---------------
+One table, three grains, distinguished by `dimension`:
+
+    site   one row per day  — the trend line
+    query  top N per day    — what we actually rank for
+    page   top N per day    — which pages earn
+
+Storing all three in one table keeps the read side to a single query shape and
+lets a caller compare grains on the same axis. `dim_value` is '' for the site
+grain (not NULL — it is part of the primary key, and NULL would let duplicate
+site rows accumulate silently).
+
+TWO PROPERTIES THAT MATTER
+--------------------------
+1. **Re-ingest is safe and required.** GSC finalises a day's data over roughly
+   72 hours, so a day fetched too early is an undercount that never corrects
+   itself. Every run re-fetches a trailing window (default 5 days) and upserts,
+   so late-arriving data lands. The primary key (date, dimension, dim_value)
+   makes that idempotent — running twice an hour and running once a day produce
+   the same table.
+
+2. **A short window is not a backfill.** GSC retains 16 months; this ingests
+   whatever `days` asks for. Pass `days=480` once to seed history, then let the
+   daily cron carry the trailing window. Until that seed runs, absence of old
+   rows means "not yet fetched", NOT "no traffic" — the read route says so in
+   `coverage` rather than letting a caller infer a zero.
+
+Auth, token caching and the site constant are reused from
+`google_search_console.py` — this module adds a series, not a second integration.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime, timedelta
+
+import requests
+from flask import Blueprint, jsonify, request
+
+from db_utils import get_db
+from google_search_console import GSC_SITE_URL, get_access_token
+from internal_auth import require_internal_or_admin
+
+logger = logging.getLogger(__name__)
+
+gsc_perf_bp = Blueprint("gsc_performance", __name__)
+
+# GSC finalises a day over ~72 h. Re-fetch a trailing window every run so an
+# early read self-corrects instead of freezing an undercount.
+DEFAULT_WINDOW_DAYS = int(os.environ.get("GSC_PERF_WINDOW_DAYS", "5"))
+
+# Per-day cap for the query and page grains. The site grain is always 1 row/day.
+# 500 keeps a year of daily ingest well inside a few hundred thousand rows while
+# still covering the long tail that matters for content decisions.
+DEFAULT_ROW_LIMIT = int(os.environ.get("GSC_PERF_ROW_LIMIT", "500"))
+
+_API = "https://www.googleapis.com/webmasters/v3/sites/{site}/searchAnalytics/query"
+
+_DDL = """
+CREATE TABLE IF NOT EXISTS gsc_daily_performance (
+    date        DATE        NOT NULL,
+    dimension   TEXT        NOT NULL,
+    dim_value   TEXT        NOT NULL DEFAULT '',
+    clicks      INTEGER     NOT NULL DEFAULT 0,
+    impressions INTEGER     NOT NULL DEFAULT 0,
+    ctr         REAL        NOT NULL DEFAULT 0,
+    position    REAL,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (date, dimension, dim_value)
+)
+"""
+
+# date DESC is the access pattern for every read here (latest first, windowed).
+_DDL_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_gsc_perf_dim_date
+    ON gsc_daily_performance (dimension, date DESC)
+"""
+
+_UPSERT = """
+INSERT INTO gsc_daily_performance
+    (date, dimension, dim_value, clicks, impressions, ctr, position)
+VALUES {values}
+ON CONFLICT (date, dimension, dim_value) DO UPDATE SET
+    clicks      = EXCLUDED.clicks,
+    impressions = EXCLUDED.impressions,
+    ctr         = EXCLUDED.ctr,
+    position    = EXCLUDED.position,
+    ingested_at = NOW()
+"""
+
+
+def _ensure_table() -> None:
+    """Direct DDL. safe_db SKIPs DDL — the trap already documented in
+    auto_trial._ensure_bind_receipt_log, free_tier_limiter, linkedin_posts_schema
+    and intelligence_engine. A CREATE issued through the wrapper is silently
+    surrendered and the first INSERT then fails on a table that was never made."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        raw = getattr(c, "_cur", c)
+        raw.execute(_DDL)
+        raw.execute(_DDL_INDEX)
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _query_gsc(token: str, start: str, end: str, dimensions: list[str],
+               row_limit: int) -> tuple[list[dict] | None, str | None]:
+    """One searchAnalytics call. Returns (rows, error)."""
+    site = GSC_SITE_URL.replace(":", "%3A").replace("/", "%2F")
+    body = {
+        "startDate": start,
+        "endDate": end,
+        "dimensions": dimensions,
+        "rowLimit": row_limit,
+    }
+    try:
+        resp = requests.post(
+            _API.format(site=site),
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"},
+            json=body, timeout=90,
+        )
+    except Exception as e:  # noqa: BLE001
+        return None, f"{type(e).__name__}: {str(e)[:200]}"
+    if resp.status_code != 200:
+        return None, f"HTTP {resp.status_code}: {resp.text[:300]}"
+    return (resp.json().get("rows", []) or []), None
+
+
+def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
+                             row_limit: int = DEFAULT_ROW_LIMIT) -> dict:
+    """Fetch and upsert `days` of daily performance at all three grains.
+
+    Idempotent: re-running over the same window updates in place, so a cron that
+    double-fires and a manual re-run both converge on the same rows."""
+    if not token:
+        return {"success": False, "error": "no GSC access token "
+                                           "(GOOGLE_SERVICE_ACCOUNT_JSON unset "
+                                           "or service account not verified)"}
+
+    # GSC has no data for the last ~2 days; asking anyway is harmless (it
+    # returns nothing) but the window must extend far enough back to be useful.
+    end = datetime.utcnow().date()
+    start = end - timedelta(days=max(1, int(days)))
+    s, e = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+    _ensure_table()
+
+    grains = (
+        # (dimension label, GSC dimensions, row limit)
+        # 'date' is always first so keys[0] is the day at every grain.
+        ("site",  ["date"],          1000),
+        ("query", ["date", "query"], row_limit * max(1, int(days))),
+        ("page",  ["date", "page"],  row_limit * max(1, int(days))),
+    )
+
+    written, errors, scanned = {}, {}, {}
+    for label, dims, limit in grains:
+        rows, err = _query_gsc(token, s, e, dims, limit)
+        if err:
+            errors[label] = err
+            continue
+        scanned[label] = len(rows)
+
+        payload = []
+        for r in rows:
+            keys = r.get("keys") or []
+            if not keys:
+                continue
+            day = keys[0]
+            value = keys[1] if len(keys) > 1 else ""
+            payload.append((
+                day, label, (value or "")[:1024],
+                int(r.get("clicks", 0) or 0),
+                int(r.get("impressions", 0) or 0),
+                float(r.get("ctr", 0) or 0),
+                round(float(r.get("position", 0) or 0), 2) or None,
+            ))
+        if not payload:
+            written[label] = 0
+            continue
+
+        conn = get_db()
+        try:
+            c = conn.cursor()
+            # RAW cursor: the wrapper probes SELECT lastval() after any INSERT
+            # without RETURNING. This table has a composite TEXT/DATE key and no
+            # sequence, so lastval() is undefined, PG errors, and the open
+            # transaction aborts — taking the next chunk with it. Same trap
+            # refresh_proven_pages documents.
+            raw = getattr(c, "_cur", c)
+            n = 0
+            for i in range(0, len(payload), 500):
+                chunk = payload[i:i + 500]
+                args = ",".join(["(%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
+                flat = [f for row in chunk for f in row]
+                raw.execute(_UPSERT.format(values=args), flat)
+                n += len(chunk)
+            conn.commit()
+            written[label] = n
+        except Exception as ex:  # noqa: BLE001
+            errors[label] = f"{type(ex).__name__}: {str(ex)[:200]}"
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return {
+        # A partial failure is a failure. Reporting success:true with one grain
+        # missing is exactly the "green board, dead lane" pattern the audit found.
+        "success": not errors,
+        "window": {"start": s, "end": e, "days": int(days)},
+        "rows_written": written,
+        "gsc_rows_scanned": scanned,
+        "errors": errors or None,
+    }
+
+
+@gsc_perf_bp.route("/api/v1/admin/gsc/performance/ingest", methods=["POST"])
+@require_internal_or_admin
+def admin_ingest():
+    """Run an ingest. `?days=480` once to seed 16 months of history; the daily
+    cron then carries the trailing window."""
+    try:
+        days = int(request.args.get("days") or DEFAULT_WINDOW_DAYS)
+    except (TypeError, ValueError):
+        days = DEFAULT_WINDOW_DAYS
+    days = max(1, min(days, 480))
+    result = ingest_daily_performance(get_access_token(), days=days)
+    return jsonify(result), (200 if result.get("success") else 502)
+
+
+@gsc_perf_bp.route("/api/v1/seo/performance", methods=["GET"])
+def read_performance():
+    """The series, for dashboards, the brain, and anyone asking whether SEO is
+    working.
+
+    `?dimension=site|query|page` (default site), `?days=28`, `?limit=50`.
+
+    ★ Always returns a `coverage` block. An empty result here means "not
+    ingested", which is NOT the same as "no traffic" — until the 480-day seed
+    runs, history is genuinely absent rather than zero. Read `coverage.oldest`
+    before drawing a trend from this."""
+    dim = (request.args.get("dimension") or "site").strip().lower()
+    if dim not in ("site", "query", "page"):
+        return jsonify({"success": False,
+                        "error": "dimension must be site, query or page"}), 400
+    try:
+        days = max(1, min(int(request.args.get("days") or 28), 480))
+    except (TypeError, ValueError):
+        days = 28
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 50), 1000))
+    except (TypeError, ValueError):
+        limit = 50
+
+    conn = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        raw = getattr(c, "_cur", c)
+
+        raw.execute(
+            "SELECT MIN(date), MAX(date), COUNT(*) "
+            "FROM gsc_daily_performance WHERE dimension = %s", (dim,))
+        oldest, newest, total = raw.fetchone() or (None, None, 0)
+
+        if dim == "site":
+            raw.execute(
+                "SELECT date, clicks, impressions, ctr, position "
+                "FROM gsc_daily_performance "
+                " WHERE dimension = 'site' AND date >= CURRENT_DATE - %s "
+                " ORDER BY date DESC", (days,))
+            rows = [{"date": str(r[0]), "clicks": r[1], "impressions": r[2],
+                     "ctr": round(float(r[3] or 0), 4),
+                     "position": (round(float(r[4]), 2) if r[4] is not None else None)}
+                    for r in raw.fetchall()]
+        else:
+            # Aggregate the window so a caller gets "top queries this month",
+            # not one row per query per day they then have to sum themselves.
+            # Position is impression-weighted — a flat AVG over days would let a
+            # single 1-impression day at rank 3 outvote 10,000 impressions at 40.
+            raw.execute(
+                "SELECT dim_value, SUM(clicks), SUM(impressions), "
+                "       CASE WHEN SUM(impressions) > 0 "
+                "            THEN SUM(position * impressions) / SUM(impressions) "
+                "            ELSE NULL END "
+                "  FROM gsc_daily_performance "
+                " WHERE dimension = %s AND date >= CURRENT_DATE - %s "
+                " GROUP BY dim_value "
+                " ORDER BY SUM(impressions) DESC "
+                " LIMIT %s", (dim, days, limit))
+            rows = [{"value": r[0], "clicks": int(r[1] or 0),
+                     "impressions": int(r[2] or 0),
+                     "position": (round(float(r[3]), 2) if r[3] is not None else None)}
+                    for r in raw.fetchall()]
+
+        return jsonify({
+            "success": True,
+            "dimension": dim,
+            "window_days": days,
+            "rows": rows,
+            "coverage": {
+                "oldest": str(oldest) if oldest else None,
+                "newest": str(newest) if newest else None,
+                "rows_stored": int(total or 0),
+                "note": ("empty means NOT INGESTED, not zero traffic — "
+                         "POST /api/v1/admin/gsc/performance/ingest?days=480 "
+                         "seeds history"),
+            },
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning("gsc performance read failed: %s", e)
+        return jsonify({"success": False,
+                        "error": f"{type(e).__name__}: {str(e)[:200]}"}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def register_gsc_performance_routes(app):
+    app.register_blueprint(gsc_perf_bp)
+    return gsc_perf_bp

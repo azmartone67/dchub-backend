@@ -13043,6 +13043,24 @@ except ImportError:
 except Exception as e:
     logger.error(f"⚠️ Google Search Console failed: {e}")
 
+# r-seo-series (2026-08-31): GSC PERFORMANCE TIME SERIES. Separate blueprint
+# from the one above on purpose — google_search_console.py does submission and
+# a rolling 90-day proven-pages SNAPSHOT (upserted in place, so yesterday is
+# overwritten and no trend can ever be read from it). Until this landed, the
+# whole SEO measurement layer held zero rows: gsc_crawl_errors, gsc_index_
+# requests, seo_backlinks, seo_stats and seo_content_opportunities were all
+# empty all-time, so "is SEO working" had no instrument at all and the brain
+# had no input to form a finding from. See routes/gsc_performance.py.
+try:
+    from routes.gsc_performance import register_gsc_performance_routes
+    register_gsc_performance_routes(app)
+    logger.info("✅ GSC performance series registered")
+    print("📈 GSC performance series: ✅ /api/v1/seo/performance")
+except ImportError:
+    logger.warning("⚠️ GSC performance series: Not installed")
+except Exception as e:
+    logger.error(f"⚠️ GSC performance series failed: {e}")
+
 try:
     from enhanced_promotion import create_promotion_blueprint, start_promotion_scheduler
     promotion_bp, promotion_engine = create_promotion_blueprint()
