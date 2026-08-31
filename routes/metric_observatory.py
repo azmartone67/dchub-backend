@@ -124,7 +124,7 @@ def snapshot_all() -> dict:
                     continue
                 with c.cursor() as cur:
                     cur.execute("""INSERT INTO brain_metric_observations
-                        (metric_key, value, source) VALUES (%s, %s, %s)""",
+                        (metric_key, value, source) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING""",
                         (key, float(val), path))
                 out['snapshotted'].append({'metric': key, 'value': float(val)})
             except Exception as e:
