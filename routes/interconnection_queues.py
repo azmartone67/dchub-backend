@@ -17,6 +17,7 @@ Endpoints:
 import os, json, math
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, Response, request
+from routes._slow_tool_cache import cache_tool_response
 import psycopg
 # ★ Fail-soft, matching this module's own `try: import requests` convention.
 # tests/test_cross_layer_public_reason_hygiene.py execs the route with ALL
@@ -1077,6 +1078,18 @@ def api_rank_sites():
 
 
 @interconnection_queues_bp.route("/api/v1/interconnection-queue/refined")
+# r-slow-tool-cache (2026-08-31): p50 10,991 ms / p95 12,854 ms over 65 calls in
+# the 14 days to 2026-08-31 — a MEDIAN past most MCP client timeouts. The
+# response is a pure function of the filter args below (a queue slice, not a
+# per-caller view), and the underlying ISO queue tables refresh daily at most,
+# so a 1 h memo costs nothing in freshness. EVERY arg the handler reads is named
+# in arg_names — an unnamed arg would be excluded from the key and served a
+# stale answer. See routes/_slow_tool_cache.py for why cached_endpoint does not
+# fit (it skips authenticated requests).
+@cache_tool_response(
+    ttl=3600, prefix='refined_queue',
+    arg_names=('min_mw', 'max_ttp_months', 'iso', 'baseload_only', 'fuel_type',
+               'status', 'max_fiber_km', 'geocoded_only', 'limit'))
 def api_refined_queue():
     import re as _re
     a = request.args
