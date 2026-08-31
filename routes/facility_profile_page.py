@@ -835,6 +835,127 @@ def _market_context_html(mslug: str, mname: str) -> str:
         return ""
 
 
+# Bounding-box half-width for the nearby-generation lookup. One constant so
+# the fetch and the rendered prose can never disagree about the distance.
+_RADIUS_KM = 50.0
+
+
+def _nearby_generation_rows(lat, lng):
+    """Fetch the generation mix near a point. Returns [] on anything unusual.
+
+    ★ SEPARATED FROM THE RENDERER ON PURPOSE (2026-08-31). This lived inside
+    _render_profile and turned ten unrelated tests red in the full suite with
+    `ValueError: not enough values to unpack (expected 5, got 3)`. The tests
+    call _render_profile DIRECTLY with a hand-built dict, and several drive it
+    through hand-rolled fake cursors that are stateful across renders — so a
+    NEW query in the render path handed one test's rows to another's
+    5-column unpack in _comparables_html. It reproduced only in the full
+    suite: green in isolation, green with the two failing files paired, red
+    with everything.
+
+    The tests were not wrong to be surprised. A page renderer should not open
+    a connection. Fetching here — from the route, once, before render — means
+    _render_profile is pure with respect to the DB again, the fakes see no new
+    SQL, and production does one lookup per page instead of one per render
+    path. Keep it that way: if this ever needs another datum, fetch it here
+    and pass it in."""
+    try:
+        _lat = float(lat)
+        _lng = float(lng)
+    except (TypeError, ValueError):
+        return []
+    if not (-90.0 <= _lat <= 90.0) or not (-180.0 <= _lng <= 180.0):
+        return []
+    # 0,0 is the null-island sentinel a bad geocode leaves behind, not a site.
+    if abs(_lat) < 0.01 and abs(_lng) < 0.01:
+        return []
+
+    import math as _math
+    _dlat = _RADIUS_KM / 111.0
+    # cos() collapses at the poles; floor it so the box cannot span the globe.
+    _dlng = _RADIUS_KM / max(1.0, 111.0 * _math.cos(_math.radians(_lat)))
+
+    conn = None
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+        if conn is None:
+            return []
+        with conn.cursor() as c:
+            c.execute(
+                """
+                SELECT fuel_type, COUNT(*), SUM(capacity_mw)
+                  FROM gem_power
+                 WHERE lat BETWEEN %s AND %s
+                   AND lng BETWEEN %s AND %s
+                   AND COALESCE(status, '') ILIKE 'oper%%'
+                 GROUP BY fuel_type
+                 ORDER BY 3 DESC NULLS LAST
+                 LIMIT 8
+                """,
+                (_lat - _dlat, _lat + _dlat, _lng - _dlng, _lng + _dlng),
+            )
+            rows = c.fetchall() or []
+    except Exception:
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    # Only well-shaped 3-tuples survive — a fake or a schema change that hands
+    # back a different width must render nothing, not raise mid-page.
+    return [r for r in rows if r and len(r) == 3 and r[0]]
+
+
+def _nearby_generation_html(rows, city: str, country: str) -> str:
+    """Render the generation mix. PURE — no DB, no I/O.
+
+    `rows` is [(fuel_type, unit_count, capacity_mw)] from
+    _nearby_generation_rows, or anything falsy when there is nothing to say.
+    Returns '' rather than an empty section: an empty header is worse than no
+    header, and util/thin_content.is_contentless still governs whether the page
+    is worth indexing at all."""
+    rows = [r for r in (rows or []) if r and len(r) == 3 and r[0]]
+    if not rows:
+        return ""
+    total_units = sum(int(r[1] or 0) for r in rows)
+    total_mw = sum(float(r[2] or 0.0) for r in rows)
+    if total_units < 1 or total_mw <= 0:
+        return ""
+
+    where = ", ".join([p for p in (city, country) if p]) or "this location"
+    lead = (f"DC Hub tracks {total_units:,} operating generating unit"
+            f"{'' if total_units == 1 else 's'} totalling "
+            f"{total_mw:,.0f} MW within about {int(_RADIUS_KM)} km of "
+            f"{_esc(where)}.")
+
+    items = []
+    for fuel, n, mw in rows:
+        mw = float(mw or 0.0)
+        if mw <= 0:
+            continue
+        share = (100.0 * mw / total_mw) if total_mw else 0.0
+        items.append(
+            f'<div class="kv"><span class="k">{_esc(str(fuel).title())}</span>'
+            f'<span class="v">{mw:,.0f} MW &middot; {int(n or 0)} unit'
+            f'{"" if int(n or 0) == 1 else "s"} &middot; {share:.0f}%</span></div>'
+        )
+    if not items:
+        return ""
+
+    return (
+        '<div class="section"><div class="section-head">'
+        '<h2>Power generation nearby</h2></div>'
+        f'<p class="section-sub">{lead} Generation mix shapes both carbon '
+        f'profile and interconnection options for a site at this location.</p>'
+        + "".join(items)
+        + '<p class="section-sub">Source: Global Energy Monitor unit inventory, '
+          'operating units only. Counts are units, not plants.</p></div>'
+    )
+
+
 def _brand_already_in_name(provider: str, name: str) -> bool:
     """True when prepending `provider` to `name` would double the brand in the
     SERP title — measured 2026-08-01 as a corpus-wide CTR drag: "DataBank
@@ -1207,6 +1328,24 @@ def _render_profile(fac: dict, slug: str) -> str:
     except Exception as _ctx_err:
         logger.warning(f"facility_profile context block failed: {_ctx_err}")
         context_html = ""
+    # r-nearby-gen (2026-08-31): global generation context. Every source above
+    # this line is US-shaped — DCPI markets, substation_band (59% US vs 0.5%
+    # international), the ISO narrative — so the 13,303 international facilities
+    # that are 66% of the corpus fall through all of them and render ~240 words.
+    # gem_power reaches 226 countries, so this is the one section that can carry
+    # a page in Santiago or Bangalore. Fail-soft '' when there is nothing near.
+    # Rows are fetched by the ROUTE (see _nearby_generation_rows) and passed in
+    # on `fac`. A caller that renders without them — every direct-call test —
+    # simply gets no section, which is the correct answer for a page with no
+    # data behind it.
+    try:
+        nearby_gen_html = _nearby_generation_html(
+            fac.get("_nearby_gen"),
+            fac.get("city") or "", fac.get("country") or "")
+    except Exception as _gen_err:
+        logger.warning(f"facility_profile nearby-generation failed: {_gen_err}")
+        nearby_gen_html = ""
+
     # r-soft404-rag: RAG market-narrative snippet — turns a thin facility page into
     # substantive, indexable content when its market has a deep-dive (fail-soft '').
     _mkt_context_html = _market_context_html(
@@ -1392,6 +1531,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     {map_block}
 
     {context_html}
+    {nearby_gen_html}
     {comps_html}
     {sponsor_html}
 
@@ -1511,6 +1651,13 @@ text-align:center;padding:80px 20px">
             status=404, mimetype="text/html"
         )
 
+    # One lookup per PAGE, before render — never inside the renderer. See
+    # _nearby_generation_rows for why that separation is load-bearing.
+    try:
+        fac["_nearby_gen"] = _nearby_generation_rows(
+            fac.get("latitude"), fac.get("longitude"))
+    except Exception:
+        fac["_nearby_gen"] = []
     html = _render_profile(fac, slug)
     # r-page-onramp (2026-07-04): citation header with as-of stamp. ASCII only
     # (headers are latin-1; the industry-pulse em-dash 502 is the trap).
