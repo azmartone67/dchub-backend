@@ -68,11 +68,47 @@ FAIL=0
 served_by() { printf '%s' "$1" | awk -F': *' 'tolower($1)=="x-dc-hub-served-by"{print tolower($2)}' | tr -d '\r\n'; }
 http_status() { printf '%s' "$1" | head -1 | awk '{print $2}'; }
 
+# ── retry: a DR canary must not cry wolf on one unlucky request ──────
+# Measured 2026-08-31: this drill ran green at 01:00, 06:44 and 12:33 and failed
+# at 18:26 — during ordinary deploy churn, with a baseline 5xx rate of 0.245%
+# over the preceding 8 hours (170 of 69,307 requests) that is never zero. Each
+# hard check was a SINGLE un-retried request, so a routine replica swap could
+# red the DR board and file an issue.
+#
+# That is worse than it sounds. This is the alarm for whether failover works at
+# all; one that fires on ordinary deploys is one people learn to ignore, and a
+# DR board nobody trusts is the same as no DR board.
+#
+# Retries are bounded and only ever forgive a TRANSIENT fault: a sustained
+# outage fails every attempt and still reds the run, which is the signal this
+# exists to carry. Override with FAILOVER_CANARY_ATTEMPTS.
+ATTEMPTS="${FAILOVER_CANARY_ATTEMPTS:-3}"
+RETRY_SLEEP="${FAILOVER_CANARY_RETRY_SLEEP:-5}"
+
+# hdrs_with_retry <want_status> <curl args...>  -> echoes headers of the first
+# attempt that returned want_status, else the LAST attempt's headers.
+hdrs_with_retry() {
+  local want="$1"; shift
+  local out="" st="" i=1
+  while (( i <= ATTEMPTS )); do
+    out=$(curl -sS -o /dev/null -D - "$@" || true)
+    st=$(http_status "$out")
+    [[ "$st" == "$want" ]] && { printf '%s' "$out"; return 0; }
+    (( i < ATTEMPTS )) && {
+      echo "  (attempt $i/$ATTEMPTS got status=${st:-none}; retrying in ${RETRY_SLEEP}s)" >&2
+      sleep "$RETRY_SLEEP"
+    }
+    (( i++ ))
+  done
+  printf '%s' "$out"      # all attempts failed — caller reports the real fault
+  return 0
+}
+
 MODE="${1:-canary}"
 [[ "$MODE" == "drill" ]] && echo "=== dchub failover canary (current contract) ==="
 
 # 1) MCP edge accepts an initialize (200)
-mcp_hdrs=$(curl -sS -o /dev/null -D - -X POST "$MCP_URL" -A "$UA" \
+mcp_hdrs=$(hdrs_with_retry 200 -X POST "$MCP_URL" -A "$UA" \
   -H 'content-type: application/json' \
   -H 'accept: application/json, text/event-stream' \
   --max-time 20 --data "$INIT")
@@ -84,7 +120,7 @@ else
 fi
 
 # 2) API serves 200 through the failover-aware worker, from the primary origin
-api_hdrs=$(curl -sS -o /dev/null -D - "$API_URL" -A "$UA" --max-time 20)
+api_hdrs=$(hdrs_with_retry 200 "$API_URL" -A "$UA" --max-time 20)
 api_status=$(http_status "$api_hdrs")
 api_served=$(served_by "$api_hdrs")
 if [[ "$api_status" != "200" ]]; then
