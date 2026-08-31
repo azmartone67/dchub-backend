@@ -835,6 +835,124 @@ def _market_context_html(mslug: str, mname: str) -> str:
         return ""
 
 
+def _nearby_generation_html(lat, lng, city: str, country: str) -> str:
+    """Operating generation capacity near this facility, from gem_power.
+
+    WHY THIS SECTION EXISTS — measured, 2026-08-31. The GSC seed showed DC Hub
+    ranking on page one for ~1,000 non-branded queries, 39,071 impressions, and
+    29 clicks. 982 of 995 earned ZERO. The queries are machine-shaped
+    single-fact asks — "coresite sv2 milpitas backup power mw", "digital realty
+    ewr20 pue", "intergate.west tukwila number of buildings" — and the pages
+    they land on contain none of those facts. A facility page with no data
+    renders 240 words and 136 unique; one WITH data renders 463/239. We rank on
+    entity match and give the searcher nothing to click for.
+
+    The gap is not the template — it is the joins coming back empty:
+
+        power_mw > 0          33% of live facilities (7,002 rows carry a
+                              PLACEHOLDER 0, which is not a measurement)
+        substation_band       59% US, 0.5% international
+        DCPI / grid narrative US markets only
+
+    So 13,303 international facilities — 66% of the corpus — get a status line
+    and coordinates. gem_power is the one grid-adjacent source with real global
+    reach: 182,428 generating units across 226 countries, all geocoded, behind
+    the existing ix_gempow_bbox index (0.27 ms for a 50 km box, measured).
+
+    Deliberately a BOUNDING BOX, not a radius. A great-circle distance per row
+    cannot use the index; the box can, and at this zoom the difference is
+    presentational. The degree spans are latitude-corrected so the box stays
+    roughly square in km rather than stretching toward the poles.
+
+    Returns '' when there is nothing to say — an empty section is worse than no
+    section, and util/thin_content.is_contentless still governs whether the page
+    is worth indexing at all."""
+    try:
+        _lat = float(lat)
+        _lng = float(lng)
+    except (TypeError, ValueError):
+        return ""
+    if not (-90.0 <= _lat <= 90.0) or not (-180.0 <= _lng <= 180.0):
+        return ""
+    # 0,0 is the null-island sentinel a bad geocode leaves behind, not a site.
+    if abs(_lat) < 0.01 and abs(_lng) < 0.01:
+        return ""
+
+    import math as _math
+    _RADIUS_KM = 50.0
+    _dlat = _RADIUS_KM / 111.0
+    # cos() collapses at the poles; floor it so the box cannot span the globe.
+    _dlng = _RADIUS_KM / max(1.0, 111.0 * _math.cos(_math.radians(_lat)))
+
+    conn = None
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+        if conn is None:
+            return ""
+        with conn.cursor() as c:
+            c.execute(
+                """
+                SELECT fuel_type, COUNT(*), SUM(capacity_mw)
+                  FROM gem_power
+                 WHERE lat BETWEEN %s AND %s
+                   AND lng BETWEEN %s AND %s
+                   AND COALESCE(status, '') ILIKE 'oper%%'
+                 GROUP BY fuel_type
+                 ORDER BY 3 DESC NULLS LAST
+                 LIMIT 8
+                """,
+                (_lat - _dlat, _lat + _dlat, _lng - _dlng, _lng + _dlng),
+            )
+            rows = c.fetchall() or []
+    except Exception:
+        return ""
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    rows = [r for r in rows if r and r[0]]
+    if not rows:
+        return ""
+    total_units = sum(int(r[1] or 0) for r in rows)
+    total_mw = sum(float(r[2] or 0.0) for r in rows)
+    if total_units < 1 or total_mw <= 0:
+        return ""
+
+    where = ", ".join([p for p in (city, country) if p]) or "this location"
+    lead = (f"DC Hub tracks {total_units:,} operating generating unit"
+            f"{'' if total_units == 1 else 's'} totalling "
+            f"{total_mw:,.0f} MW within about {int(_RADIUS_KM)} km of "
+            f"{_esc(where)}.")
+
+    items = []
+    for fuel, n, mw in rows:
+        mw = float(mw or 0.0)
+        if mw <= 0:
+            continue
+        share = (100.0 * mw / total_mw) if total_mw else 0.0
+        items.append(
+            f'<div class="kv"><span class="k">{_esc(str(fuel).title())}</span>'
+            f'<span class="v">{mw:,.0f} MW &middot; {int(n or 0)} unit'
+            f'{"" if int(n or 0) == 1 else "s"} &middot; {share:.0f}%</span></div>'
+        )
+    if not items:
+        return ""
+
+    return (
+        '<div class="section"><div class="section-head">'
+        '<h2>Power generation nearby</h2></div>'
+        f'<p class="section-sub">{lead} Generation mix shapes both carbon '
+        f'profile and interconnection options for a site at this location.</p>'
+        + "".join(items)
+        + '<p class="section-sub">Source: Global Energy Monitor unit inventory, '
+          'operating units only. Counts are units, not plants.</p></div>'
+    )
+
+
 def _brand_already_in_name(provider: str, name: str) -> bool:
     """True when prepending `provider` to `name` would double the brand in the
     SERP title — measured 2026-08-01 as a corpus-wide CTR drag: "DataBank
@@ -1207,6 +1325,20 @@ def _render_profile(fac: dict, slug: str) -> str:
     except Exception as _ctx_err:
         logger.warning(f"facility_profile context block failed: {_ctx_err}")
         context_html = ""
+    # r-nearby-gen (2026-08-31): global generation context. Every source above
+    # this line is US-shaped — DCPI markets, substation_band (59% US vs 0.5%
+    # international), the ISO narrative — so the 13,303 international facilities
+    # that are 66% of the corpus fall through all of them and render ~240 words.
+    # gem_power reaches 226 countries, so this is the one section that can carry
+    # a page in Santiago or Bangalore. Fail-soft '' when there is nothing near.
+    try:
+        nearby_gen_html = _nearby_generation_html(
+            fac.get("latitude"), fac.get("longitude"),
+            fac.get("city") or "", fac.get("country") or "")
+    except Exception as _gen_err:
+        logger.warning(f"facility_profile nearby-generation failed: {_gen_err}")
+        nearby_gen_html = ""
+
     # r-soft404-rag: RAG market-narrative snippet — turns a thin facility page into
     # substantive, indexable content when its market has a deep-dive (fail-soft '').
     _mkt_context_html = _market_context_html(
@@ -1392,6 +1524,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     {map_block}
 
     {context_html}
+    {nearby_gen_html}
     {comps_html}
     {sponsor_html}
 
