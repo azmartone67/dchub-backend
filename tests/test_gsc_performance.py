@@ -276,3 +276,46 @@ def test_blueprint_is_registered_in_main():
     would 404 while every test here still passed."""
     main = (pathlib.Path(__file__).resolve().parents[1] / "main.py").read_text()
     assert "register_gsc_performance_routes" in main
+
+
+# ── rowLimit: Google's ceiling is 25,000, and it 400s rather than truncating ──
+
+def test_row_limit_is_capped_at_googles_ceiling():
+    """The 2026-08-31 480-day seed lost BOTH the query and page grains to
+
+        "'240000' is not a valid row limit value"
+
+    because the per-day limit was multiplied by the window length and sent as a
+    single rowLimit. Google rejects an oversized rowLimit outright — it does not
+    truncate — so the whole grain is lost, not shortened."""
+    src = ast.get_source_segment(TEXT, _func("_query_gsc"))
+    assert "_GSC_MAX_ROW_LIMIT" in src
+    assert "min(want, _GSC_MAX_ROW_LIMIT)" in src, \
+        "the per-call rowLimit must be clamped to Google's ceiling"
+    node = _const("_GSC_MAX_ROW_LIMIT")
+    assert node is not None and ast.literal_eval(node.value) == 25000
+
+
+def test_more_than_one_page_is_fetched_by_pagination():
+    """Clamping alone would silently drop everything past 25,000. The rows have
+    to be paged with startRow, as refresh_proven_pages already does."""
+    src = ast.get_source_segment(TEXT, _func("_query_gsc"))
+    assert '"startRow": start_row' in src
+    assert "start_row += len(batch)" in src
+    assert "if len(batch) < per_call:" in src, \
+        "a short page is the end-of-data signal; without it this loops forever"
+
+
+def test_the_grain_limit_is_bounded_not_unbounded():
+    """A 16-month seed must not page indefinitely."""
+    src = ast.get_source_segment(TEXT, _func("ingest_daily_performance"))
+    assert "min(_wanted, _SEED_ROW_CEILING)" in src
+
+
+def test_a_truncation_is_reported_not_silent():
+    """A cap nobody is told about reads as complete coverage — the exact
+    failure this module's `coverage` block exists to refuse."""
+    src = ast.get_source_segment(TEXT, _func("ingest_daily_performance"))
+    assert '"rows_capped"' in src
+    assert "_wanted > _SEED_ROW_CEILING" in src, \
+        "rows_capped must be None when the ceiling did NOT bite"
