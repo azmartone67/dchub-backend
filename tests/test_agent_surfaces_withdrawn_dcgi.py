@@ -68,9 +68,23 @@ class TestCookbook:
 
 class TestAgentsMd:
     def test_gas_skill_line_describes_inputs_not_a_score(self):
-        src = (ROOT / "routes" / "agents_md_fallback.py").read_text()
-        line = next(l for l in src.splitlines() if "**gas_intelligence**" in l)
-        assert "withdrawn" in line
+        # ★ 2026-08-30: this read the SOURCE and asserted the literal word
+        #   "withdrawn". The copy became dynamic — the DCGI's state is now
+        #   resolved at serve time from util.gas_index, so the template holds a
+        #   token and the sentence only exists in the RENDERED output. Reading
+        #   the template tested a string no agent ever receives. It now renders
+        #   AGENTS.md and asserts the served line carries whatever the switch
+        #   currently says, which is correct in BOTH positions and cannot go
+        #   stale the way the hardcoded assertion did.
+        import routes.agents_md_fallback as amd
+        from util.gas_index import gas_index_copy
+        md = amd._render_agents_md()
+        line = next(l for l in md.splitlines() if "**gas_intelligence**" in l)
+        assert gas_index_copy() in line, (
+            "the gas skill line does not carry the authoritative DCGI state "
+            "sentence; it must come from util.gas_index, not a hardcoded copy")
+        assert "@@GAS_INDEX_STATE@@" not in line, "unresolved token served"
+        # The skill line describes INPUTS. It may never assert a score itself.
         assert "0–100" not in line and "GAS-ADVANTAGED" not in line
         assert "get_gas_intelligence" in line
 
