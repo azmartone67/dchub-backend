@@ -43,6 +43,7 @@ import os
 import json
 import logging
 from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
+from util.ddl_once import ensure_once_call as _ddl_once  # no-op ALTERs still take ACCESS EXCLUSIVE
 import threading
 import time as _time
 from datetime import datetime, timedelta, timezone
@@ -1119,15 +1120,19 @@ def fetch_linkedin_engagement(days=21):
     if not token:
         out["reason"] = "no_token"
         return out
+    # r-ddl-once (2026-08-31): this was a no-op ALTER on EVERY engagement
+    # fetch. A no-op ALTER still requests ACCESS EXCLUSIVE, and a pending
+    # exclusive request blocks every lock request behind it — which is how the
+    # nightly dump took 17 of 20 backends down on 2026-08-31.
     try:
-        _execute("""ALTER TABLE linkedin_posts
+        _ddl_once("linkedin_posts.engagement_cols", lambda: _execute("""ALTER TABLE linkedin_posts
                       ADD COLUMN IF NOT EXISTS likes INT,
                       ADD COLUMN IF NOT EXISTS comments INT,
                       ADD COLUMN IF NOT EXISTS engagement_fetched_at TIMESTAMPTZ,
                       ADD COLUMN IF NOT EXISTS impressions BIGINT,
                       ADD COLUMN IF NOT EXISTS clicks BIGINT,
                       ADD COLUMN IF NOT EXISTS shares BIGINT,
-                      ADD COLUMN IF NOT EXISTS unique_impressions BIGINT""")
+                      ADD COLUMN IF NOT EXISTS unique_impressions BIGINT"""))
     except Exception:
         pass
     rows = _execute("""SELECT post_urn FROM linkedin_posts
@@ -1200,16 +1205,19 @@ def fetch_linkedin_impressions(days=21):
         out["reason"] = "no_token"
         return out
     # Defensive ALTERs — engagement function adds these too, but running this
-    # function alone (e.g. ad-hoc cron) must still work.
+    # function alone (e.g. ad-hoc cron) must still work. r-ddl-once
+    # (2026-08-31): "defensive" still means an ACCESS EXCLUSIVE request per
+    # call. Once per process keeps the standalone-cron guarantee and drops the
+    # per-call lock.
     try:
-        _execute("""ALTER TABLE linkedin_posts
+        _ddl_once("linkedin_posts.impression_cols", lambda: _execute("""ALTER TABLE linkedin_posts
                       ADD COLUMN IF NOT EXISTS impressions BIGINT,
                       ADD COLUMN IF NOT EXISTS clicks BIGINT,
                       ADD COLUMN IF NOT EXISTS shares BIGINT,
                       ADD COLUMN IF NOT EXISTS unique_impressions BIGINT,
                       ADD COLUMN IF NOT EXISTS likes BIGINT,
                       ADD COLUMN IF NOT EXISTS comments BIGINT,
-                      ADD COLUMN IF NOT EXISTS engagement_fetched_at TIMESTAMPTZ""")
+                      ADD COLUMN IF NOT EXISTS engagement_fetched_at TIMESTAMPTZ"""))
     except Exception:
         pass
     rows = _execute("""SELECT post_urn FROM linkedin_posts
