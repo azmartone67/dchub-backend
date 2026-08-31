@@ -74,26 +74,37 @@ class _Conn:
         self.closed = True
 
 
+def _fn(name):
+    for n in TREE.body:
+        if isinstance(n, ast.FunctionDef) and n.name == name:
+            return n
+    raise AssertionError(f"{name} not found")
+
+
 def _load(rows, boom=False, conn_none=False):
+    """Return (fetch, render, conn).
+
+    ★ The fetch and the render are SEPARATE functions on purpose — the query
+    used to live inside the renderer and turned ten unrelated tests red in the
+    full suite (see the module docstring). These tests drive both halves, and
+    `render` must never touch a connection."""
     conn = None if conn_none else _Conn(rows, boom)
     fake = types.ModuleType("main")
     fake.get_read_db = lambda: conn
     sys.modules["main"] = fake
-    ns = {"_esc": lambda x: str(x),
+    ns = {"_esc": lambda x: str(x), "_RADIUS_KM": 50.0,
           "logger": types.SimpleNamespace(warning=lambda *a, **k: None)}
-    for n in TREE.body:
-        if isinstance(n, ast.FunctionDef) and n.name == "_nearby_generation_html":
-            exec(compile(ast.Module(body=[n], type_ignores=[]),  # noqa: S102
-                         str(SRC), "exec"), ns)
-            return ns["_nearby_generation_html"], conn
-    raise AssertionError("_nearby_generation_html not found")
+    for name in ("_nearby_generation_rows", "_nearby_generation_html"):
+        exec(compile(ast.Module(body=[_fn(name)], type_ignores=[]),  # noqa: S102
+                     str(SRC), "exec"), ns)
+    return ns["_nearby_generation_rows"], ns["_nearby_generation_html"], conn
 
 
 # ── it renders real, specific content ────────────────────────────────
 
 def test_renders_the_facts_the_zero_click_queries_ask_for():
-    f, _ = _load(SANTIAGO)
-    out = f(-33.4489, -70.6693, "Santiago", "CL")
+    fetch, render, _ = _load(SANTIAGO)
+    out = render(fetch(-33.4489, -70.6693), "Santiago", "CL")
     assert "Power generation nearby" in out
     assert "87 operating generating units" in out      # 80+3+3+1
     assert "2,452 MW" in out                            # 1561+481+396+14
@@ -103,23 +114,23 @@ def test_renders_the_facts_the_zero_click_queries_ask_for():
 
 
 def test_shares_are_computed_not_asserted():
-    f, _ = _load(SANTIAGO)
-    out = f(-33.4489, -70.6693, "Santiago", "CL")
+    fetch, render, _ = _load(SANTIAGO)
+    out = render(fetch(-33.4489, -70.6693), "Santiago", "CL")
     assert "64%" in out, "solar is 1561/2452 = 64%"
 
 
 def test_it_adds_substantive_word_count():
     """The whole point is turning a 240-word page into one worth clicking."""
     import re
-    f, _ = _load(SANTIAGO)
-    out = f(-33.4489, -70.6693, "Santiago", "CL")
+    fetch, render, _ = _load(SANTIAGO)
+    out = render(fetch(-33.4489, -70.6693), "Santiago", "CL")
     words = re.sub(r"<[^>]+>", " ", out).split()
     assert len(words) >= 50, f"only {len(words)} words added"
 
 
 def test_singular_plural_is_handled():
-    f, _ = _load([("nuclear", 1, 900.0)])
-    out = f(40.0, -74.0, "X", "US")
+    fetch, render, _ = _load([("nuclear", 1, 900.0)])
+    out = render(fetch(40.0, -74.0), "X", "US")
     assert "1 operating generating unit " in out or "1 operating generating unit&" in out
     assert "units" not in out.split("totalling")[0]
 
@@ -129,9 +140,7 @@ def test_singular_plural_is_handled():
 def test_uses_an_indexable_bounding_box_not_a_distance_formula():
     """A great-circle distance per row cannot use ix_gempow_bbox. The measured
     0.27 ms depends on staying a BETWEEN on lat/lng."""
-    src = ast.get_source_segment(TEXT, next(
-        n for n in TREE.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_nearby_generation_html"))
+    src = ast.get_source_segment(TEXT, _fn("_nearby_generation_rows"))
     assert "lat BETWEEN" in src and "lng BETWEEN" in src
     for banned in ("earth_distance", "ll_to_earth", "ST_", "acos(", "haversine"):
         assert banned not in src, f"{banned} would defeat the bbox index"
@@ -139,8 +148,8 @@ def test_uses_an_indexable_bounding_box_not_a_distance_formula():
 
 def test_longitude_span_is_latitude_corrected():
     """A fixed degree span becomes a globe-spanning box near the poles."""
-    f, conn = _load(SANTIAGO)
-    f(-33.4489, -70.6693, "Santiago", "CL")
+    fetch, render, conn = _load(SANTIAGO)
+    render(fetch(-33.4489, -70.6693), "Santiago", "CL")
     lo_lat, hi_lat, lo_lng, hi_lng = conn.c.params
     lat_span, lng_span = hi_lat - lo_lat, hi_lng - lo_lng
     assert lng_span > lat_span, "longitude must widen away from the equator"
@@ -148,8 +157,8 @@ def test_longitude_span_is_latitude_corrected():
 
 
 def test_polar_latitude_does_not_produce_an_infinite_box():
-    f, conn = _load(SANTIAGO)
-    f(89.999, 0.0, "North", "XX")
+    fetch, render, conn = _load(SANTIAGO)
+    render(fetch(89.999, 0.0), "North", "XX")
     lo_lat, hi_lat, lo_lng, hi_lng = conn.c.params
     assert (hi_lng - lo_lng) < 180, "cos() collapse must be floored"
 
@@ -157,8 +166,8 @@ def test_polar_latitude_does_not_produce_an_infinite_box():
 def test_only_operating_units_are_counted():
     """Planned and cancelled units are in this table too — counting them would
     overstate available generation, which is the opposite of useful."""
-    f, conn = _load(SANTIAGO)
-    f(-33.4489, -70.6693, "Santiago", "CL")
+    fetch, render, conn = _load(SANTIAGO)
+    render(fetch(-33.4489, -70.6693), "Santiago", "CL")
     assert "ILIKE 'oper%%'" in conn.c.sql or "ILIKE 'oper%'" in conn.c.sql
 
 
@@ -172,34 +181,34 @@ def test_only_operating_units_are_counted():
     (-33.4, 999, "one coordinate out of range"),
 ])
 def test_bad_coordinates_render_nothing(lat, lng, why):
-    f, _ = _load(SANTIAGO)
-    assert f(lat, lng, "X", "Y") == "", why
+    fetch, render, _ = _load(SANTIAGO)
+    assert render(fetch(lat, lng), "X", "Y") == "", why
 
 
 def test_no_nearby_units_renders_nothing():
     """An empty section is worse than no section."""
-    f, _ = _load([])
-    assert f(-33.4, -70.6, "X", "Y") == ""
+    fetch, render, _ = _load([])
+    assert render(fetch(-33.4, -70.6), "X", "Y") == ""
 
 
 def test_zero_capacity_renders_nothing():
-    f, _ = _load([("solar", 0, 0.0)])
-    assert f(-33.4, -70.6, "X", "Y") == ""
+    fetch, render, _ = _load([("solar", 0, 0.0)])
+    assert render(fetch(-33.4, -70.6), "X", "Y") == ""
 
 
 def test_db_failure_renders_nothing_and_never_raises():
-    f, _ = _load(SANTIAGO, boom=True)
-    assert f(-33.4, -70.6, "X", "Y") == ""
+    fetch, render, _ = _load(SANTIAGO, boom=True)
+    assert render(fetch(-33.4, -70.6), "X", "Y") == ""
 
 
 def test_missing_connection_renders_nothing():
-    f, _ = _load(SANTIAGO, conn_none=True)
-    assert f(-33.4, -70.6, "X", "Y") == ""
+    fetch, render, _ = _load(SANTIAGO, conn_none=True)
+    assert render(fetch(-33.4, -70.6), "X", "Y") == ""
 
 
 def test_connection_is_closed_even_on_the_happy_path():
-    f, conn = _load(SANTIAGO)
-    f(-33.4489, -70.6693, "Santiago", "CL")
+    fetch, render, conn = _load(SANTIAGO)
+    render(fetch(-33.4489, -70.6693), "Santiago", "CL")
     assert conn.closed, "a leaked read connection saturates the pool"
 
 
@@ -217,3 +226,59 @@ def test_the_call_is_fail_soft_at_the_call_site_too():
     i = TEXT.find("nearby_gen_html = _nearby_generation_html(")
     window = TEXT[max(0, i - 300):i + 400]
     assert "try:" in window and "except Exception" in window
+
+
+# ── the renderer must never touch a connection ───────────────────────
+# This is the regression that turned ten unrelated tests red in the full suite.
+
+def test_render_path_issues_no_sql():
+    """_render_profile is called DIRECTLY by many tests with hand-built dicts
+    and hand-rolled fake cursors. A query inside the render path handed one
+    test's rows to another's 5-column unpack in _comparables_html —
+    `ValueError: not enough values to unpack (expected 5, got 3)`, reproducible
+    only with the whole suite loaded. Keep the renderer pure."""
+    src = ast.get_source_segment(TEXT, _fn("_nearby_generation_html"))
+    # Substring matching on short tokens is a trap: "conn" is inside
+    # "interconnection options", which is prose this section is supposed to
+    # say. Match on real call/keyword shapes instead.
+    for banned in ("get_read_db", ".cursor(", ".execute(", "SELECT ",
+                   "conn.", "psycopg2"):
+        assert banned not in src, (
+            f"the renderer touches {banned!r} — fetch in the route and pass "
+            f"the rows in")
+
+
+def test_render_profile_does_not_fetch_generation():
+    render_profile = ast.get_source_segment(TEXT, _fn("_render_profile"))
+    assert "_nearby_generation_rows(" not in render_profile, \
+        "the fetch belongs in the route, not the renderer"
+    assert '_nearby_generation_html(' in render_profile
+    assert 'fac.get("_nearby_gen")' in render_profile
+
+
+def test_the_route_fetches_before_rendering():
+    """A renderer that is pure is useless if nobody fills the data."""
+    i = TEXT.find('fac["_nearby_gen"] = _nearby_generation_rows(')
+    j = TEXT.find("html = _render_profile(fac, slug)")
+    assert i > 0, "the route never fetches the rows"
+    assert i < j, "the fetch must happen before the render"
+
+
+def test_renderer_survives_a_wrong_shaped_row():
+    """A fake or a schema change handing back a different width must render
+    nothing, not raise mid-page."""
+    _, render, _ = _load(SANTIAGO)
+    assert render([("solar", 1)], "X", "Y") == ""
+    assert render([("solar", 1, 2.0, "extra")], "X", "Y") == ""
+    assert render("not-a-list", "X", "Y") == ""
+    assert render(None, "X", "Y") == ""
+
+
+def test_both_halves_share_one_radius_constant():
+    """The prose says 'within about 50 km'. If the fetch box and that sentence
+    ever disagree, the page states a distance it did not measure."""
+    assert "_RADIUS_KM = 50.0" in TEXT
+    fetch_src = ast.get_source_segment(TEXT, _fn("_nearby_generation_rows"))
+    render_src = ast.get_source_segment(TEXT, _fn("_nearby_generation_html"))
+    assert "_RADIUS_KM" in fetch_src and "_RADIUS_KM" in render_src
+    assert "50.0" not in render_src, "the renderer must not hardcode the radius"
