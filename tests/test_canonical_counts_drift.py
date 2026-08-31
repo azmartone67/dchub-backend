@@ -1162,12 +1162,17 @@ _FACILITY_FIGURE_RE = re.compile(r"(?<![\d,])(\d{1,3}(?:,\d{3})+)\+")
 #    test_pending_facility_surfaces_still_need_fixing below asserts each entry
 #    STILL violates, so this list cannot quietly rot into a permanent hole: fix
 #    the file and that test fails until you delete its line here. ─────────────
-_FACILITY_FLOOR_PENDING = {
-    "llms.txt",
-    "llms-full.txt",
-    "README.md",
-    os.path.join(".well-known", "mcp.json"),
-}
+# ★ 2026-08-31: EMPTIED. All four surfaces below now carry the canonical
+# facility floor, so the fence guards them for real instead of waiving them.
+# They had drifted three canon generations — llms.txt, llms-full.txt,
+# .well-known/mcp.json and README.md all said 15,000+ against a canon of
+# 18,500+ — because no generator maintains them and the daily heal that keeps
+# the SERVED copies current never touches them ("never a heal target").
+#
+# Keep this empty. An entry here is a WAIVER: it tells the fence not to check a
+# surface an agent actually reads. Re-adding one hides the same class of drift
+# that put loop-control's surface_canon lane red for weeks.
+_FACILITY_FLOOR_PENDING: set[str] = set()
 
 
 def _facility_floor_violations(paths):

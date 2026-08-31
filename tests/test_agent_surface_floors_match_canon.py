@@ -43,6 +43,12 @@ SURFACES = (
     "static/llms.txt",
     "static/llms-full.txt",
     "llms.txt",
+    # ★ The repo-ROOT llms-full.txt and README.md were missed on the first pass
+    # of this fix and caught by test_pending_facility_surfaces_still_need_fixing
+    # — the ratchet that refuses to keep waiving a surface once it is clean.
+    # Both are separate files from their static/ near-twins.
+    "llms-full.txt",
+    "README.md",
     "dchub-frontend/llms.txt",
     ".well-known/mcp.json",
 )
@@ -78,7 +84,7 @@ def test_the_surface_list_is_not_empty():
     """A file rename would otherwise make every test below vacuously pass —
     the exact shape the scan-floor meta-guard exists to prevent."""
     found = _existing()
-    assert len(found) >= 4, f"only {len(found)} of {len(SURFACES)} surfaces found: {found}"
+    assert len(found) >= 6, f"only {len(found)} of {len(SURFACES)} surfaces found: {found}"
 
 
 @pytest.mark.parametrize("rel", SURFACES)
