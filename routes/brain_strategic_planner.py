@@ -48,6 +48,11 @@ SAFETY
   · BRAIN_STRATEGIC_WEEKLY_PR_CAP=5            per-week PR cap (NOT per
                                                 day — strategic recs are
                                                 lower-rate by design)
+  · BRAIN_STRATEGIC_EVIDENCE_DEDUP=0           disable evidence-subject
+                                                dedup (ON by default; see
+                                                the block above
+                                                _EVIDENCE_GENERIC)
+  · BRAIN_STRATEGIC_EVIDENCE_DEDUP_WEEKS=16    evidence ledger window
   · Single Claude call per run (cost-capped: see _estimate_cost)
   · Idempotent: same week_of_iso skips the Claude call (re-renders
                 from existing rows). Force re-compute with ?force=1.
@@ -81,6 +86,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Optional
 
@@ -112,7 +118,10 @@ _CTX_BUDGET = {
     # competitor_lacks were getting interpolated from tool names.
     "competitors":  5000,
     "self_model":   2500,
-    "recent_recs":  1500,
+    # 2026-08-31: 1500 -> 2500. Each recent_recs row now also carries
+    # evidence_subjects (see rule 4); at the old budget the extra field
+    # truncated rows away, weakening the title half of the same rule.
+    "recent_recs":  2500,
     # Seven-levers #32 (2026-07-25): recidivist finding clusters — the
     # fixes that didn't hold, so the planner stops re-proposing them.
     "recidivism":   1200,
@@ -152,6 +161,29 @@ def _kill_switch_on() -> bool:
 
 def _draft_pr_enabled() -> bool:
     return _truthy(os.environ.get("DCHUB_BRAIN_STRATEGIC_DRAFT_PR"))
+
+
+def _evidence_dedup_enabled() -> bool:
+    """Evidence-subject dedup is ON unless explicitly switched off. Unlike
+    the other flags here it defaults to ENABLED: it only ever *withholds* a
+    scaffold PR, so a wrong default costs one deferred draft, never a bad
+    merge. Set BRAIN_STRATEGIC_EVIDENCE_DEDUP=0 to disable."""
+    raw = os.environ.get("BRAIN_STRATEGIC_EVIDENCE_DEDUP")
+    if raw is None or not str(raw).strip():
+        return True
+    return _truthy(raw)
+
+
+def _evidence_dedup_weeks() -> int:
+    """How far back the evidence ledger is consulted. Default 16 weeks —
+    the three /mcp#workos-oauth-challenge scaffolds spanned six (2026-07-13
+    → 2026-08-24), so the old 4-week title window could not have seen the
+    first one from the third one even if titles had matched."""
+    try:
+        return max(1, int(os.environ.get(
+            "BRAIN_STRATEGIC_EVIDENCE_DEDUP_WEEKS", "16")))
+    except Exception:
+        return 16
 
 
 def _weekly_pr_cap() -> int:
@@ -711,17 +743,30 @@ def _read_recent_recs(weeks_back: int = 4) -> list:
     try:
         with c.cursor() as cur:
             cur.execute(
-                """SELECT week_of, kind, title, status, pr_url
+                """SELECT week_of, kind, title, status, pr_url,
+                          evidence_keys
                      FROM brain_strategic_recommendations
                     WHERE week_of >= %s
                     ORDER BY week_of DESC, id DESC
                     LIMIT 30""", (cutoff,))
             rows = cur.fetchall() or []
-        return [
-            {"week_of": str(r[0]), "kind": r[1], "title": r[2],
-             "status": r[3], "pr_url": r[4]}
-            for r in rows
-        ]
+        out = []
+        for r in rows:
+            # 2026-08-31: carry the SUBJECTS, not the raw keys — the model
+            # needs to see what past recs were ABOUT to obey rule 4, and the
+            # normalised subjects are both shorter and directly comparable.
+            try:
+                keys = (r[5] if isinstance(r[5], list)
+                        else json.loads(r[5] or "[]"))
+            except Exception:
+                keys = []
+            out.append(
+                {"week_of": str(r[0]), "kind": r[1], "title": r[2],
+                 "status": r[3], "pr_url": r[4],
+                 # capped: one key-heavy rec must not crowd the others
+                 # out of the recent_recs budget below.
+                 "evidence_subjects": sorted(evidence_subjects(keys))[:6]})
+        return out
     except Exception:
         return []
     finally:
@@ -797,7 +842,14 @@ RULES
 3. dollar_lift_est_usd is a real number when you can defend it from the
    funnel data, null otherwise. Don't fabricate revenue.
 4. Do NOT repeat any title that appears in ctx.recent_recs from the
-   past 4 weeks (the brain should not whiplash week-to-week).
+   past 4 weeks (the brain should not whiplash week-to-week), and do NOT
+   propose a rec whose evidence_keys are about a subject already listed
+   under evidence_subjects there. Re-titling the same finding is the
+   failure this rule exists to stop: three separate scaffolds once shipped
+   for one page because each run paraphrased the title while citing the
+   same evidence. If a past rec already covers the subject and you believe
+   it is still unaddressed, say so in self_critique instead of re-filing
+   it — a duplicate scaffold is withheld at PR time regardless.
 5. confidence='high' is reserved for chains you can cite ≥2 evidence
    keys for and where the fix is unambiguous.
 6. file_scaffold paths must be SAFE: no main.py, no auth files, no
@@ -1593,6 +1645,136 @@ def _scaffold_pr_body(kind, week_of, conf, dollar_block, spec,
     )
 
 
+# ─── Evidence-subject dedup ─────────────────────────────────────────
+#
+# THIRD iteration of one bug. Both existing dedup passes compare TITLES and
+# both query `?state=open`:
+#
+#   2026-06-28  open_pr_exists          exact title, OPEN PRs only
+#   2026-07-02  open_similar_pr_exists  fuzzy title, OPEN PRs only
+#
+# Neither can see a scaffold PR a human already MERGED, and neither asks
+# what the rec is ABOUT. So one sentinel verdict on the page
+# /mcp#workos-oauth-challenge produced three separate MERGED scaffolds over
+# six weeks — 2026-07-13, 2026-08-17, 2026-08-24 — under three titles that
+# never collided on tokens, each citing that same page, each contradicting
+# the other two about DCHUB_OAUTH_CHALLENGE_DISABLE. be#3448 then showed the
+# verdict itself never held (the server drops the challenge on `initialize`
+# BY DESIGN, so anon initialize=200 is correct), and be#3458/be#3459 had to
+# delete all three by hand.
+#
+# The title is the paraphrased part; the cited evidence is not. This gate
+# dedups on the evidence SUBJECT, against the full recommendation ledger —
+# any status, merged included — instead of the open-PR list.
+#
+# It bounds amplification, which is the part the generator owns. It cannot
+# tell that an upstream finding is false: a bad input is still a bad input,
+# and #3448 was the fix for that. What it guarantees is that one bad input
+# yields at most one scaffold instead of an unbounded stream.
+
+# Segments that name HOW a value is addressed rather than WHAT it is about.
+# The source roots come from _CTX_BUDGET so this list cannot drift out of
+# sync with the context the planner is actually given.
+_EVIDENCE_GENERIC = frozenset(_CTX_BUDGET) | frozenset((
+    # source roots spelled differently in evidence keys than in _CTX_BUDGET
+    "competitor_signal", "competitor_features", "page_integrity",
+    "competitor", "funnel_now",
+    # structural containers and leaf accessors
+    "pages", "page", "now", "current", "latest", "prev", "previous",
+    "value", "values", "verdict", "status", "state", "reason",
+    "last_reason", "count", "total", "summary", "detail", "details",
+    "meta", "presence", "universe", "items", "list", "top", "entries",
+))
+
+# `foo[bar]` -> `foo.bar`, so bracket and dot spellings of one path collide.
+_EVID_BRACKET_RE = re.compile(r"\[([^\]]*)\]")
+# Trailing assertion: `...verdict=broken` and `...rate_pct=33.3` are the
+# same subject as the bare path. Drop from the first comparator onward.
+_EVID_ASSERT_RE = re.compile(r"[=<>!~].*$")
+
+
+def evidence_subjects(keys) -> frozenset:
+    """The set of SUBJECTS an evidence-key list is about.
+
+    Normalises the two spellings the planner actually emits for one path
+    and strips the accessor tail, so all three of these resolve to the
+    single subject `/mcp#workos-oauth-challenge`:
+
+        page_health.pages[/mcp#workos-oauth-challenge]
+        page_health.pages./mcp#workos-oauth-challenge.verdict=broken
+        page_health.pages[/mcp#workos-oauth-challenge].last_reason
+
+    Pure and side-effect free — no DB, no network — so the dedup rule is
+    testable without either. Unparseable or non-string entries are skipped
+    rather than guessed at; a rec whose keys all drop out yields an empty
+    set and is therefore never suppressed by this gate.
+    """
+    out = set()
+    for raw in (keys or []):
+        if not isinstance(raw, str):
+            continue
+        k = _EVID_BRACKET_RE.sub(r".\1", raw.strip().lower())
+        k = _EVID_ASSERT_RE.sub("", k)
+        for seg in k.split("."):
+            seg = seg.strip().strip("'\"`,;:()")
+            if not seg or seg in _EVIDENCE_GENERIC:
+                continue
+            # Keep short path-ish segments (`/mcp`), drop short words.
+            if len(seg) < 3 and not seg.startswith("/"):
+                continue
+            out.add(seg)
+    return frozenset(out)
+
+
+def _scaffolded_evidence_subjects(weeks_back: Optional[int] = None):
+    """{subject: (title, week_of)} for every rec that ALREADY produced a
+    scaffold PR inside the window, newest first so the reported prior is the
+    most recent one.
+
+    Returns None when the DB cannot answer — the caller treats that as
+    "unknown" and withholds, never as "no duplicates".
+
+    `pr_url IS NOT NULL` is the point: a rec that was merely written to the
+    ledger left nothing behind to duplicate. Only recs that actually put a
+    scaffold in the tree can suppress a later one.
+    """
+    c = _get_db()
+    if c is None:
+        return None
+    weeks = _evidence_dedup_weeks() if weeks_back is None else weeks_back
+    cutoff = _dt.date.today() - _dt.timedelta(weeks=weeks)
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT title, week_of, evidence_keys
+                     FROM brain_strategic_recommendations
+                    WHERE week_of >= %s
+                      AND pr_url IS NOT NULL
+                    ORDER BY week_of DESC, id DESC
+                    LIMIT 300""", (cutoff,))
+            rows = cur.fetchall() or []
+    except Exception as e:
+        logger.error("L6 strategic: evidence-dedup ledger read failed: %s", e)
+        return None
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+    seen: dict = {}
+    for title, week_of, evid in rows:
+        # evidence_keys is written with json.dumps; depending on the column
+        # type the driver hands back either the list or the raw string.
+        try:
+            keys = evid if isinstance(evid, list) else json.loads(evid or "[]")
+        except Exception:
+            continue
+        for subj in evidence_subjects(keys):
+            seen.setdefault(subj, (title, str(week_of)))
+    return seen
+
+
 def _open_scaffold_pr(rec: dict) -> dict:
     """Draft a PR with the spec MD + an empty Blueprint stub. Mirrors
     brain_backlog_admin._open_draft_pr_for_proposal but for a NEW file
@@ -1626,6 +1808,35 @@ def _open_scaffold_pr(rec: dict) -> dict:
     if open_similar_pr_exists(f"[brain-l6 strategic-draft] {title}",
                               prefix="[brain-l6 strategic-draft]"):
         return {"ok": True, "skipped": "similar_open_pr", "title": title}
+
+    # 2026-08-31: EVIDENCE-SUBJECT dedup. See the block above
+    # _EVIDENCE_GENERIC for the three merged /mcp#workos-oauth-challenge
+    # scaffolds this exists to stop. Both checks above are blind to merged
+    # PRs and compare only titles, which paraphrase; this compares what the
+    # rec cites, against the whole ledger.
+    if _evidence_dedup_enabled():
+        subjects = evidence_subjects(rec.get("evidence_keys") or [])
+        if subjects:
+            # Read fresh per rec, deliberately: the runner loop stamps
+            # pr_url via _mark_pr_on_rec (which commits) after each open, so
+            # a re-read here also stops TWO recs in the SAME run from both
+            # scaffolding one subject. Hoisting this out of the loop to save
+            # a query would silently drop that intra-run half of the gate.
+            prior = _scaffolded_evidence_subjects()
+            if prior is None:
+                # FAIL CLOSED, same reasoning _read_recs_for adopted on
+                # 2026-07-02: unknown is not empty. Opening a duplicate
+                # scaffold puts a file in the tree that a human must later
+                # delete by hand (be#3458, be#3459); withholding costs one
+                # deferred draft that next week's run re-proposes.
+                return {"ok": True, "skipped": "evidence_ledger_unreadable",
+                        "title": title}
+            for subj in sorted(subjects):
+                hit = prior.get(subj)
+                if hit:
+                    return {"ok": True, "skipped": "duplicate_evidence",
+                            "title": title, "evidence_subject": subj,
+                            "prior_title": hit[0], "prior_week": hit[1]}
 
     slug = _slugify(title)
     week_of = rec.get("week_of") or str(_week_of_iso())
