@@ -14,6 +14,21 @@ on:
       - "Visual Sentinel"
       - "Deploy Integrity"
       - "Founder Briefing"
+      # ★2026-08-30 — THE GATING WORKFLOWS WERE NOT ON THIS LIST. This file's
+      # own header says it exists so failures arrive pre-diagnosed "instead of
+      # the founder finding a red run cold", and the one workflow whose failure
+      # actually stops the repo — pre-merge-gauntlet, which carries unit-tests,
+      # substance-gate and db-parity — was not watched at all. Main went red
+      # TWICE on 2026-08-30 (a fence pair hard-coding opposite tables, then a
+      # unit test reading glama.ai's live page) and 11 of 12 pre-merge runs on
+      # main failed. Both were found cold, by hand, while watching unrelated
+      # PRs. Nothing was broken here; the list was simply missing the entries
+      # that matter.
+      - "pre-merge-gauntlet"
+      - "app-contract-gate"
+      - "Syntax Check"
+      - "API Response Contract"
+      - "route-tables coherence"
     types: [completed]
 
 permissions:
