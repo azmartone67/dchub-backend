@@ -49,6 +49,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install the deps the generator imports through
+        # ★2026-08-31 — THE FIRST LIVE RUN OF THIS JOB OPENED A BAD PR (#3483).
+        # generate_vault_map.py imports routes/graph_master_shell.py to read
+        # LOOP_EDGES / LOOP_SOURCE_PRODUCERS. Without flask that import failed,
+        # the old generator degraded to an EMPTY loop graph, and this job
+        # proposed deleting 4 declared edges and the whole producer/consumer
+        # table — a smaller map that reads as valid.
+        #
+        # The generator now REFUSES rather than degrading (exit 2), so this job
+        # would fail loudly instead of proposing damage. Installing the deps is
+        # what actually lets it do its job. Mirrors pre-merge.yml's unit-tests
+        # install so the map is generated in the same environment that verifies
+        # it — a healer running in a different environment than the gate is how
+        # this went wrong in the first place.
+        run: python3 -m pip install --quiet flask pyyaml requests psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0" "feedparser==6.0.12"
+
       - name: Regenerate the map (no vault on a runner — in-repo copy is the point)
         env:
           GATE: ${{ vars.ARCH_MAP_AUTOHEAL_DISABLE }}
