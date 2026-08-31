@@ -318,7 +318,7 @@ def test_taxonomy_payload_carries_coverage():
     p = pt.taxonomy_payload()
     # Pinned deliberately: a version bump is a contract change and should
     # require an intentional edit here, not ride along silently.
-    assert p["version"] == 5
+    assert p["version"] == 6
     assert p["coverage"] == pt.coverage_payload()
     assert p["coverage_statuses"] == list(pt.COVERAGE_STATUSES)
     assert "tool count" in p["coverage_note"].lower()
@@ -647,7 +647,7 @@ def test_coverage_endpoint_serves_the_contract_blocks():
     app.register_blueprint(pt.problem_taxonomy_bp)
     body = app.test_client().get("/api/v1/canon/coverage").get_json()
 
-    assert body["version"] == 5
+    assert body["version"] == 6
     assert body["empty_result_meaning"] == pt.EMPTY_RESULT_MEANING
     assert body["answer_complete_when"] == pt.ANSWER_COMPLETE_WHEN
     assert body["error_contract"] == pt.error_contract()
@@ -751,7 +751,7 @@ def test_coverage_endpoint_serves_constraint_application():
     app = flask.Flask(__name__)
     app.register_blueprint(pt.problem_taxonomy_bp)
     body = app.test_client().get("/api/v1/canon/coverage").get_json()
-    assert body["version"] == 5
+    assert body["version"] == 6
     assert body["constraint_application"]["rule"] == pt.CONSTRAINT_APPLICATION["rule"]
     assert body["empty_result_see_also"] == pt.EMPTY_RESULT_SEE_ALSO
     assert "argument_accepted_but_inert" not in body["empty_result_meaning"]
