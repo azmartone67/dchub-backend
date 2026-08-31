@@ -16,6 +16,20 @@
 #   that already gets read. ci-triage (extended in the same PR) explains WHY a
 #   run failed; this says THAT main is currently broken. Different questions.
 #
+# ★2026-08-31 — IT NOW JUDGES HEAD, NOT "THE NEWEST COMPLETED RUN". Those are
+#   different questions and the difference beat a false RED to the board:
+#   f5b191c8b failed at 22:20:56, #3473 (the FIX) started 22:23:28, this job ran
+#   at 22:33:01 and answered with the SUPERSEDED commit — "Every open PR is
+#   blocked" — while HEAD went on to pass at 22:46:02. A red nobody can clear is
+#   how a board stops being read, and this is the same feed a real red main uses.
+#   The verdict logic moved to tools/deadman/main_branch_verdict.py so it can be
+#   TESTED (tests/test_main_branch_verdict.py replays that exact reading).
+#
+# ★ A `pending` verdict does NOT beat. The main-ci feed has a 2h cadence, which
+#   covers a ~25 min run comfortably, so a normal in-flight window passes quietly
+#   while CI that is genuinely STUCK stops beating and goes overdue on its own.
+#   Silence that expires is honest; a verdict copied off the wrong commit is not.
+#
 # Kill switch: repo variable MAIN_BRANCH_HEALTH_DISABLE=1.
 
 name: main-branch-health
@@ -34,66 +48,52 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
-      - name: Is main green?
+      - uses: actions/checkout@v4
+
+      - name: Is main's HEAD green?
+        id: verdict
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           GATE: ${{ vars.MAIN_BRANCH_HEALTH_DISABLE }}
         run: |
           set -euo pipefail
           if [ "${GATE:-0}" = "1" ]; then
-            echo "disabled via MAIN_BRANCH_HEALTH_DISABLE"; exit 0
+            echo "disabled via MAIN_BRANCH_HEALTH_DISABLE"
+            echo "status=disabled" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          python3 tools/deadman/main_branch_verdict.py
 
-          # The workflows that carry main's six REQUIRED status checks.
-          GATING="pre-merge.yml regression-lint.yml app-contract-gate.yml"
-          RED=""; CHECKED=0
-          for wf in $GATING; do
-            # ★ --branch main is the whole point. The newest COMPLETED run
-            # decides; an in-flight run is not a failure.
-            C=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow="$wf" \
-                  --branch main --limit 15 \
-                  --json conclusion --jq '[.[]|select(.conclusion!=null and .conclusion!="")][0].conclusion' \
-                  2>/dev/null || echo "")
-            if [ -z "$C" ]; then
-              echo "::warning::$wf has no completed run on main yet"
-              continue
-            fi
-            CHECKED=$((CHECKED+1))
-            echo "  $wf -> $C"
-            [ "$C" != "success" ] && RED="$RED $wf($C)"
-          done
-
-          if [ "$CHECKED" = "0" ]; then
-            echo "::error::could not read a single gating workflow on main. That is not a green main, it is an unmeasured one."
-            STATUS="unmeasured"; NOTE="no gating workflow could be read"
-          elif [ -n "$RED" ]; then
-            STATUS="main_red"; NOTE="red:$RED"
-          else
-            STATUS="success"; NOTE="all $CHECKED gating workflow(s) green on main"
+      - name: Beat the board
+        # ★ Only when we actually know. `pending` deliberately writes nothing —
+        # see the header. Never beat a verdict we could not measure as measured.
+        if: steps.verdict.outputs.status != 'pending' && steps.verdict.outputs.status != 'disabled'
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          STATUS: ${{ steps.verdict.outputs.status }}
+          NOTE: ${{ steps.verdict.outputs.note }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY is not set — cannot beat the board. Failing rather than reporting a silent green."
+            exit 1
           fi
-          echo "verdict: $STATUS — $NOTE"
-
-          # Beat the board. `main_red` and `unmeasured` are both OUTSIDE the
-          # ledger's _OK_STATUS set, so either one makes the feed overdue and
-          # visible rather than merely stale-looking.
-          if [ -n "${ADMIN_KEY:-}" ]; then
-            curl --fail-with-body -sS --max-time 30 -X POST \
+          # `main_red` and `unmeasured` are both OUTSIDE the ledger's _OK_STATUS
+          # set, so either one makes the feed overdue and visible.
+          jq -nc --arg s "$STATUS" --arg n "$NOTE" \
+            '{feed:"main-ci",status:$s,cadence_hours:2,note:$n}' \
+          | curl --fail-with-body -sS --max-time 30 -X POST \
               "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
               -H "X-Admin-Key: $ADMIN_KEY" \
               -H "Content-Type: application/json" \
               -H "User-Agent: dchub-main-health/1.0" \
-              -d "{\"feed\":\"main-ci\",\"status\":\"$STATUS\",\"cadence_hours\":2,\"note\":\"$NOTE\"}"
-            echo
-          else
-            echo "::error::DCHUB_ADMIN_KEY is not set — cannot beat the board. Failing rather than reporting a silent green."
-            exit 1
-          fi
+              --data-binary @-
+          echo
 
-          # ★ Fail the job too. The beat is for the board; a red job is for the
-          # person scrolling Actions. Both, because main being red is the state
-          # that stops everyone.
-          if [ "$STATUS" != "success" ]; then
-            echo "::error::main is not green ($NOTE). Every open PR is blocked until this is fixed."
-            exit 1
-          fi
+      - name: Fail loudly if main is broken
+        # The beat is for the board; a red job is for the person scrolling
+        # Actions. Both, because main being red is the state that stops everyone.
+        if: steps.verdict.outputs.status == 'main_red' || steps.verdict.outputs.status == 'unmeasured'
+        run: |
+          echo "::error::main is not green (${{ steps.verdict.outputs.status }}: ${{ steps.verdict.outputs.note }}). Every open PR is blocked until this is fixed."
+          exit 1
