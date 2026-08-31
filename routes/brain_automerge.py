@@ -661,6 +661,60 @@ def _record_token_dead(detail: str) -> None:
 _HEARTBEAT_SQL = "INSERT INTO brain_automerge_log (kind, status, detail) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING"  # noqa: E501
 
 
+def _open_proposal_count() -> int:
+    """How many proposals are waiting UPSTREAM of this stage. -1 if unknown.
+
+    Cheap COUNT, best-effort — this runs on a heartbeat path that must never
+    cost a merge, so any failure returns -1 (unknown) rather than raising or
+    guessing 0. Unknown and zero must stay distinguishable: reporting 0 for a
+    failed count would manufacture exactly the false "nothing to do" this is
+    here to remove."""
+    try:
+        from routes.brain_mechanical_classifier import _fetch_open_proposals
+        rows, err = _fetch_open_proposals(include_resolved=False, limit=200)
+        if err:
+            return -1
+        return len(rows or [])
+    except Exception:
+        return -1
+
+
+def _status_for(eligible: int, merged) -> str:
+    """`idle` must mean "nothing was waiting", never "everything was rejected".
+
+    Measured 2026-08-31: brain_automerge_log held 666 consecutive `idle` runs
+    over 30 days, every one reading `eligible=0 merged=0 skipped=0`, with the
+    last `clean` status on 2026-06-25. On the board that is indistinguishable
+    from a healthy pipeline with an empty queue. It was not empty — 22 proposals
+    were evaluated upstream in a single day and 21 were rejected `not_mechanical`
+    against a 6-class SQL/datetime allowlist that has essentially no overlap with
+    the actual backlog (consistency_radar 55, mcp_per_tool_conversion 27,
+    ai_surface_sentinel 17 open findings — none of them SQL-idiom fixes).
+
+    `eligible` counts open `brain/autofix-*` PRs, so 0 is TRUE for this stage:
+    its inbox really is empty. The lie is upstream and invisible from here. So
+    when the inbox is empty AND work is queued behind it, say `starved` — a
+    pipeline that cannot pass anything through is a different state from one
+    with nothing to do, and only one of them needs a human."""
+    if eligible:
+        return "merged" if merged else "blocked"
+    return "starved" if _open_proposal_count() > 0 else "idle"
+
+
+def _starvation_note(eligible: int) -> str:
+    """Name the backlog in the detail line so the count is on the board itself,
+    not one query away."""
+    if eligible:
+        return ""
+    n = _open_proposal_count()
+    if n > 0:
+        return (f" · STARVED: {n} open proposal(s) upstream, 0 reached this "
+                f"stage — they matched no allowlist transform class")
+    if n < 0:
+        return " · upstream proposal count unavailable"
+    return ""
+
+
 def _log_run_heartbeat(eligible: int, merged: int, skipped: int,
                        note: str = "") -> None:
     """Write ONE `kind='run'` row per auto-merge pass.
@@ -715,8 +769,9 @@ def _log_run_heartbeat(eligible: int, merged: int, skipped: int,
                 # the rule. (The linter's own header warns about this shape.)
                 _HEARTBEAT_SQL,
                 ("run",
-                 "idle" if eligible == 0 else ("merged" if merged else "blocked"),
+                 _status_for(eligible, merged),
                  (f"eligible={eligible} merged={merged} skipped={skipped}"
+                  + _starvation_note(eligible)
                   + (f" · {note}" if note else ""))[:500]),
             )
             conn.commit()
