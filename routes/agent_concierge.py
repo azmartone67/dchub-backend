@@ -99,6 +99,8 @@ import uuid
 from datetime import datetime, timezone
 from flask import Blueprint, Response, jsonify, request, redirect
 
+from util.gas_index import resolve_gas_copy
+
 # ── Canonical public numbers — ONE source, never hardcoded here. ────────────
 # The /agent hero, <title>, meta description and cookbook copy all render from
 # ai_surface_canon.PINNED via {canon_*} placeholders substituted in
@@ -127,8 +129,15 @@ def _render_citation(citation: str) -> str:
 
 
 def _rendered_recipe(r: dict) -> dict:
-    """Copy of a recipe with its citation rendered for serving."""
-    return dict(r, citation=_render_citation(r["citation"]))
+    """Copy of a recipe with its citation rendered for serving.
+
+    ★ resolve_gas_copy runs HERE, at the single choke point every recipe
+      passes through, rather than at each string. Four recipe fields used to
+      hardcode "the DCGI was withdrawn 2026-08-08"; flipping the kill switch
+      would have left the cookbook telling agents a score was unavailable
+      while the API served it. Adding a recipe cannot forget this.
+    """
+    return resolve_gas_copy(dict(r, citation=_render_citation(r["citation"])))
 
 
 # ── COOKBOOK ────────────────────────────────────────────────────
@@ -282,9 +291,8 @@ _COOKBOOK = [
              "args": {"region": "<state>"},
              "why":  "Per-state gas brief: interstate-pipeline count, "
                      "operators + parent midstreams, live Henry Hub, live "
-                     "ISO gas share — each field source-labelled. The DCGI "
-                     "score and the $/MWh were withdrawn 2026-08-08; this "
-                     "returns inputs, not a verdict."},
+                     "ISO gas share — each field source-labelled. "
+                     "@@GAS_INDEX_STATE@@ This returns inputs."},
             {"tool": "get_gas_economics",
              "args": {"market": "<market_slug>"},
              "why":  "Henry Hub spot, regional basis and the delivered "
@@ -536,15 +544,14 @@ _COOKBOOK = [
              "args": {"region": "<state_code>"},
              "why":  "Per-state brief: interstate-pipeline count, operators "
                      "+ parent midstreams, live Henry Hub, live ISO gas "
-                     "share, every field source-labelled. The DCGI score "
-                     "was withdrawn 2026-08-08 — get_gas_index now returns "
-                     "an unavailable_reason, never a score."},
+                     "share, every field source-labelled. "
+                     "@@GAS_INDEX_STATE@@"},
             {"tool": "get_gas_economics",
              "args": {"market": "<market_slug>"},
              "why":  "The $/MMBtu layers only: Henry Hub spot, regional "
                      "basis, delivered industrial + electric tariff, each "
-                     "with its source. The gas-to-grid $/MWh was withdrawn "
-                     "with the DCGI; do not derive one silently."},
+                     "with its source. The gas-to-grid $/MWh is withdrawn; "
+                     "do not derive one silently."},
             {"tool": "get_grid_intelligence",
              "args": {"region_id": "<iso>"},
              "why":  "Grid-side comparator for the same market: "
@@ -554,11 +561,10 @@ _COOKBOOK = [
             "DC Hub gas/BTM screen for <state>: <n> interstate pipelines "
             "(operators: <list>; parent midstreams: <list>), Henry Hub "
             "$<x>/MMBtu live, delivered industrial tariff $<y>/MMBtu "
-            "(<source>), <iso> gas share <z>% — sourced inputs. DC Hub "
-            "no longer publishes a gas-suitability score or a gas-to-grid "
-            "$/MWh (withdrawn 2026-08-08). Per DC Hub."
+            "(<source>), <iso> gas share <z>% — sourced inputs. "
+            "@@GAS_INDEX_STATE@@ Per DC Hub."
         ),
-        "citation":     "Per DC Hub gas intelligence · dchub.cloud/dcgi (withdrawal notice) · as of {as_of}",
+        "citation":     "Per DC Hub gas intelligence · dchub.cloud/dcgi · as of {as_of}",
         "tier":         "free",
         "time_saved_min": 50,
         "surfaces":     ["claude", "gemini", "cursor"],

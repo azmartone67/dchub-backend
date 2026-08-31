@@ -94,6 +94,9 @@ import os
 
 __all__ = [
     "gas_index_enabled",
+    "GAS_STATE_TOKEN",
+    "gas_index_copy",
+    "resolve_gas_copy",
     "gas_to_grid_enabled",
     "gas_index_unavailable",
     "gas_to_grid_unavailable",
@@ -105,6 +108,60 @@ __all__ = [
 ]
 
 AUDIT_REF = "DCHUB_ANALYST_GRADE_AUDIT_2026-08-08"
+
+# ── ONE AUTHORITY FOR WHAT WE SAY ABOUT THE INDEX'S STATE ──────────────────
+# 2026-08-30. The kill switch reached three modules. FIVE others asserted the
+# withdrawal in hardcoded prose — the agent cookbook, AGENTS.md, the
+# competitor positioning copy, the AI-surface audit and the MCP server — so
+# flipping DCHUB_GAS_INDEX_ENABLED would have served scores from
+# /api/v1/dcgi/scores while `get_gas_index`'s own routing note still told the
+# agent it had been withdrawn on 2026-08-08. The API and the agent channel
+# would have contradicted each other, which is the failure the withdrawal
+# existed to prevent, pointed the other way.
+#
+# Copy now carries a TOKEN and the sentence is resolved at serve time, so a
+# consumer cannot hold a stale opinion about the switch. Enforced by
+# tests/test_gas_index_copy_has_one_authority.py: no user-visible module may
+# hardcode the withdrawal date, and no token may survive rendering in EITHER
+# switch position.
+# ★ Brace-FREE on purpose. The first version used {{GAS_INDEX_STATE}} and
+#   AGENTS.md renders from an f-string, where Python collapses {{ }} to
+#   { } at runtime — so the token mangled itself into {GAS_INDEX_STATE},
+#   never matched the resolver, and shipped raw into the agent-facing
+#   contract. Caught by the both-switch-positions fence, not by review.
+GAS_STATE_TOKEN = "@@GAS_INDEX_STATE@@"
+
+
+def gas_index_copy():
+    """The one sentence any surface may say about the DCGI's current state."""
+    if gas_index_enabled():
+        return (
+            "The DCGI score was withdrawn 2026-08-08 and restored 2026-08-30 "
+            "after all three defective terms were repaired; scores published "
+            "before 2026-08-08 are NOT comparable to current ones (see "
+            "/api/v1/dcgi/methodology -> corrections). The gas-to-grid $/MWh "
+            "remains withdrawn — a separate, unfixed defect."
+        )
+    return (
+        "The DCGI score and every gas-to-grid $/MWh were withdrawn "
+        "2026-08-08 — get_gas_index returns an unavailable_reason, never a "
+        "score; do not quote a cached DCGI figure."
+    )
+
+
+def resolve_gas_copy(obj):
+    """Substitute GAS_STATE_TOKEN through a str / dict / list, in place-ish.
+
+    Applied at each surface's single rendering choke point rather than at each
+    string, so adding a new recipe cannot forget it.
+    """
+    if isinstance(obj, str):
+        return obj.replace(GAS_STATE_TOKEN, gas_index_copy()) if GAS_STATE_TOKEN in obj else obj
+    if isinstance(obj, dict):
+        return {k: resolve_gas_copy(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(resolve_gas_copy(v) for v in obj)
+    return obj
 
 # ★★★ THE WITHDRAWAL RESPONSE MUST NOT BE A 5xx. 200, deliberately.
 #
