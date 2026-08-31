@@ -23,6 +23,22 @@ from tools.qa_superuser import probe_registries as pr
 #   The autouse stub makes the promise true for every test here. A test that
 #   wants a different rendered count overrides it; a test that wants the
 #   unreadable-page path returns None.
+RENDERED_TOOLS = 82   # matches the canon the tests below monkeypatch
+
+
+def schema_page(n):
+    """A stand-in glama schema page linking exactly `n` distinct tools.
+
+    The count is an INPUT to the test rather than an observation of whatever
+    glama is serving this minute — which is what made the original suite go red
+    when their page moved from 82 links to 83.
+    """
+    links = "".join(
+        f'<a href="/mcp/servers/azmartone67/dchub-mcp-server/tools/t{i}">t{i}</a>'
+        for i in range(n))
+    return (200, {}, f"<html><body>{links}</body></html>")
+
+
 @pytest.fixture(autouse=True)
 def _no_registry_network(monkeypatch):
     """No test in this file may reach a third-party registry."""
@@ -36,11 +52,27 @@ def _no_registry_network(monkeypatch):
     # but got "renders 82" from this stub. Seal the DOOR (fetch), never the
     # observable being asserted.
 
-    def _no_fetch(*a, **kw):                      # belt and braces
+    # ★2026-08-30, third pass on this fixture in one evening. #3415 correctly
+    # removed the tools_rendered stub — but it referenced a `schema_page`
+    # helper that #3414 had already deleted, so main was left with NEITHER a
+    # stub NOR a page: every test calling probe() hit the raiser below and four
+    # went red. Restored here, at the layer all three changes were reaching for.
+    #
+    # ★ SEAL THE DOOR, SERVE THE PAGE. fetch() is the I/O boundary, so it is
+    # what gets stubbed; tools_rendered is the logic under test, so it runs for
+    # real against a synthetic page. A URL nobody expected still RAISES, which
+    # is #3409's "offline by contract" guard kept intact rather than traded away.
+    def _fetch(url, *a, **kw):
+        # LISTINGS is a tuple of specs; match any declared schema_page rather
+        # than hard-coding the URL, so a new registry does not silently raise.
+        if url in {spec["schema_page"] for spec in pr.LISTINGS
+                   if "schema_page" in spec}:
+            return schema_page(RENDERED_TOOLS)
         raise AssertionError(
-            "a test in this file called pr.fetch() — this suite is offline by "
-            "contract; stub the helper you need instead of reaching the network")
-    monkeypatch.setattr(pr, "fetch", _no_fetch)
+            "a test in this file called pr.fetch(%r) — this suite is offline by "
+            "contract; stub the helper you need instead of reaching the network"
+            % (url,))
+    monkeypatch.setattr(pr, "fetch", _fetch)
 
 # The real Glama description, verbatim as the API returns it (escaped M\&A).
 GLAMA = ("Description: Data-center, power & gas intelligence MCP server. 33 "
@@ -186,11 +218,9 @@ def test_the_schema_page_count_is_an_input_not_the_live_internet(monkeypatch):
     the same code silently asserted whatever glama was serving.
     """
     monkeypatch.setattr(pr, "read_canon", lambda: {"tools": 82})
-    # ★ tools_rendered, NOT fetch. #3409's autouse fixture stubs tools_rendered
-    # directly, so the count never passes through fetch at all — mocking fetch
-    # here changed nothing and this test asserted against the stub's 82 while
-    # claiming to test 83.
-    monkeypatch.setattr(pr, "tools_rendered", lambda spec: 83)
+    # ★ The count is driven through the PAGE, so tools_rendered actually parses
+    # it. That is the whole point: 83 links against a canon of 82 must go RED.
+    monkeypatch.setattr(pr, "fetch", lambda url, **kw: schema_page(83))
     monkeypatch.setattr(pr, "get_json", lambda url, **kw: (200, {
         "description": "82 tools", "tools": []}))
     listed = [f for f in pr.probe() if "renders" in f.title]
