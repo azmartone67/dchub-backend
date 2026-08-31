@@ -254,7 +254,7 @@ def test_adoption_still_passes_through_the_platform_gate():
 # 5. news_articles: one field name, one table
 # --------------------------------------------------------------------------
 
-_DEAD_NEWS = re.compile(r'FROM\s+news\b(?!_)', re.IGNORECASE)
+_OTHER_NEWS = re.compile(r'FROM\s+news\b(?!_)', re.IGNORECASE)
 _NEWS_TABLE = re.compile(r'COUNT\(\*\)\s+FROM\s+(news\w*)"', re.IGNORECASE)
 
 
@@ -296,20 +296,34 @@ def test_news_articles_counts_the_table_that_owns_the_field_name():
         "citable endpoint published 3,503.")
 
 
-def test_neither_surface_counts_the_abandoned_news_table():
-    """`news` is legacy and unwritten; `news_articles` is what the loader fills.
+def test_neither_surface_counts_the_other_news_table():
+    """Neither citable surface may publish `news_articles` from `news`.
 
     Binding the two surfaces together is necessary but not sufficient — they
-    can agree perfectly on a dead table, which is exactly what happened: the
+    can agree perfectly on the WRONG table, which is exactly what happened: the
     front door served news_articles=3,503 from `news` while /api/v1/freshness
     reported the live table `within_sla` at 2.57h old. An UNDER-claim of ~3.4x
     that every honest-numbers fence missed, because they ban over-claims only.
-    """
+
+    ★ RENAMED 2026-08-30 (was ..._the_abandoned_news_table). `news` is NOT
+    abandoned and this guard must not say it is. Measured 2026-08-30 21:49Z:
+
+        news           3,503 rows   max(created_at) 2026-08-30 06:02   185 in 7d
+        news_articles 13,086 rows   max(fetched_at) 2026-08-30 18:34 1,903 in 14d
+        news sources (7d): The Register - Data Centre 121, Fierce Telecom 30,
+                           Capacity Media 18, Data Center Knowledge 13
+
+    news_aggregator.py IS invoked: crawler_scheduler._run_news_crawler() calls
+    run_aggregator() as its PRIMARY path, with auto_sync (which writes
+    news_articles) only as the fallback. TWO LIVE FEEDS at different cadences —
+    which is why the wrong table looked plausible and this field drifted across
+    three of them in one day. The rule is unchanged and does not need the table
+    to be dead: a citable field counts the table it NAMES."""
     handler = _handler_code()
-    assert not _DEAD_NEWS.search(handler), (
-        "the ai-agents manifest counts the abandoned `news` table. Nothing "
-        "writes it — count `news_articles`, the table the field is named for.")
+    assert not _OTHER_NEWS.search(handler), (
+        "the ai-agents manifest counts `news` — a different live feed, 3.7x "
+        "smaller. Count `news_articles`, the table the field is named for.")
     assert _citable_news_table() != "news", (
         "routes/facilities_by_dims.stats_canonical publishes `news_articles` "
-        "from the abandoned `news` table. Agreement between two surfaces on a "
-        "dead table is not correctness.")
+        "from `news`. Agreement between two surfaces on the wrong table is not "
+        "correctness.")

@@ -90,14 +90,15 @@ def stats_canonical():
             cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
                         "WHERE country IS NOT NULL AND country <> ''")
             stats["countries_covered"] = int(cur.fetchone()[0] or 0)
-            # ★2026-08-30: this counted `news` — the LEGACY table whose only
-            # writer, news_aggregator.py, no workflow invokes. The field is
-            # named `news_articles` and the LIVE table of that name is what
-            # /api/jobs/news-refresh writes every few hours (freshness read
-            # the same day: news real_data_age_hours 2.57, within_sla). So
-            # this published a dead table under a live table's name and
-            # UNDERSTATED it ~3.4x — 3,503 served to agents on the front
-            # door against ~12k real rows. Count the table the field names.
+            # ★2026-08-30: this counted `news` — a DIFFERENT table from the one
+            # the field is named after; it understated by ~3.4x (3,503 against
+            # ~13k). Count the table the field names.
+            # ★ CORRECTION (same day, later): the note here first called `news`
+            # legacy and unwritten. IT IS NOT — crawler_scheduler
+            # ._run_news_crawler() calls news_aggregator.run_aggregator() as its
+            # PRIMARY path (auto_sync is only the fallback), and `news` took 185
+            # rows in the 7 days to 2026-08-30. Two LIVE feeds at different
+            # cadences. Do NOT drop it on the strength of the retracted claim.
             try:
                 cur.execute("SELECT COUNT(*) FROM news_articles")
                 stats["news_articles"] = int(cur.fetchone()[0] or 0)
