@@ -29,7 +29,8 @@ Data foundations (already live in Neon):
 
 Scoring (0..100, higher = better for siting gas-fired DC load):
   Gas Access = 0.45*density + 0.35*operator_diversity + 0.20*interstate_share
-  Gas Cost   = inverse of latest industrial/electric gas price ($/Mcf)
+  Gas Cost   = log-inverse of the latest electric-power (PEU) delivered gas
+               price ($/MMBtu), pinned floor $1.00 / ceiling $20.00
   DCGI       = 0.60*access + 0.40*cost
   Verdict    = GAS-ADVANTAGED | ADEQUATE | GAS-CONSTRAINED
 
@@ -239,10 +240,70 @@ def _lat_lng_to_state(lat, lng):
     return best or ''
 
 
-# Gas-price scale for the cost score, $/Mcf. Industrial/electric delivered
-# gas typically ranges ~$2.50 (Gulf) to ~$12 (New England constrained).
-_PRICE_FLOOR = 2.5
-_PRICE_CEIL = 12.0
+# ── Gas-price scale for the cost score, $/MMBtu ────────────────────────────
+# ★ UNIT CORRECTION 2026-08-30: this was documented as $/Mcf here and in the
+#   PUBLISHED methodology. It is not. eia_gas_prices_loader.py divides the EIA
+#   $/Mcf series by MMBTU_PER_MCF (1.037) before storing, and every one of the
+#   24,310 rows carries units='usd_per_mmbtu'. The bounds and the published
+#   description now say what the number actually is.
+#
+# ★ RECALIBRATED 2026-08-30 for the electric-power (PEU) series.
+#   The old 2.5/12.0 linear scale was fitted to the INDUSTRIAL series, which
+#   carries the LDC distribution margin and therefore sits much higher. After
+#   dchub-backend#3397 made PEU the basis and #3407 backfilled the nine missing
+#   states, 15 of 50 states pegged an endpoint — 12 at 100, 3 at 0 — so 40% of
+#   the composite had stopped discriminating across exactly the range that
+#   decides a siting question. Arizona ($1.05) and Ohio ($2.47) both scored
+#   100.0 despite a 2.3x price difference.
+#
+#   Measured PEU-preferred distribution, 50 states, 2026-08-30:
+#       min 1.05  P25 2.51  median 3.03  P75 4.03  P90 8.08  max 51.84
+#   Half the states live inside a 1.6x band and the tail runs to 49x. That is
+#   log-normal, so the scale is now LOG-linear. Gas cost is multiplicative:
+#   $2 -> $4 doubles the fuel bill, $18 -> $20 barely registers, and a linear
+#   scale scored those two steps the same.
+#
+#   Saturation measured across the six candidates (share of states pegged at
+#   0 or 100 — lower is more informative):
+#       linear 2.5/12.0 (old)   30%      log 1.0/20.0 (chosen)    2%
+#       linear 1.5/6.0          16%      log 1.5/15.0             8%
+#       linear 1.0/9.0           8%      log 1.0/30.0             2%
+#   log 1.0/30.0 ties on saturation but compresses the spread (stdev 18.1 vs
+#   19.7) for no gain, so 20.0 wins.
+#
+# ★ These are PINNED CONSTANTS, deliberately not percentiles recomputed per
+#   query. A percentile scale would move a state's score when OTHER states
+#   moved, and an index whose history is not comparable to itself is not an
+#   index. Re-derive them on purpose, in a PR, with the numbers above updated.
+#
+#   FLOOR 1.0  — a round number just under the observed US minimum (AZ 1.05),
+#                so no real state is ever awarded a perfect 100.
+#   CEIL 20.0  — just above the highest genuine electric-power price
+#                (WA 17.83). Above it gas is not a siting option; Hawaii's
+#                51.84 (an SNG-from-naphtha market, and its only row is PIN)
+#                clamps to 0, which is the correct reading, not a lost datum.
+_PRICE_FLOOR = 1.0
+_PRICE_CEIL = 20.0
+# Precomputed span. Guarded by tests/test_dcgi_cost_scale.py rather than a
+# module-level assert: a bad edit should fail CI, not crash the app on import.
+_PRICE_LOG_SPAN = math.log(_PRICE_CEIL) - math.log(_PRICE_FLOOR)
+
+# A state we cannot price. Not a score — the ABSENCE of one, named.
+_UNSCORED = "UNSCORED"
+_VERDICTS = ("GAS-ADVANTAGED", "ADEQUATE", "GAS-CONSTRAINED", _UNSCORED)
+
+
+def _dcgi_sort_key(s):
+    """Rank descending by DCGI, unscored states last, ties broken by state.
+
+    ★ `sorted(..., key=lambda s: s["dcgi"], reverse=True)` raises TypeError the
+      moment one state is unscored, and it did so on three separate call sites.
+      The order is encoded in the key (note: NO reverse=True at the call sites)
+      so an unscored state can never be silently ranked as if it were a zero.
+    """
+    d = s.get("dcgi")
+    st = s.get("state") or ""
+    return (1, 0.0, st) if d is None else (0, -float(d), st)
 
 
 def _gas_state_rollup():
@@ -462,10 +523,38 @@ def _gas_state_rollup():
         access = 0.45 * s_density + 0.35 * s_ops + 0.20 * s_inter
 
         price = s.get("gas_price")
-        if price is not None and price > 0:
-            cost = _clamp((_PRICE_CEIL - price) / (_PRICE_CEIL - _PRICE_FLOOR) * 100.0)
-        else:
-            cost = 50.0  # neutral when no price coverage
+        if price is None or price <= 0:
+            # ★ 2026-08-30 — DEFECT 3 OF THE AUDIT, CLOSED.
+            #   This branch used to read `cost = 50.0  # neutral when no price
+            #   coverage`, and it fired for nine states including Texas, which
+            #   was published at DCGI 68.0 / rank #3 / GAS-ADVANTAGED on that
+            #   constant. The root cause was never a missing price: EIA
+            #   publishes all nine, and eia_gas_prices_loader.py was dropping
+            #   them on a case-sensitive area-name lookup (dchub-backend#3407).
+            #
+            #   The constant is gone rather than re-tuned, because the defect
+            #   was never the VALUE of the fallback. A neutral score is
+            #   indistinguishable, in the payload, from a measured one — the
+            #   reader cannot tell 50.0-because-we-know from
+            #   50.0-because-we-don't. A state we cannot price is UNSCORED and
+            #   says so. It keeps its measured access score, is excluded from
+            #   the ranking and from every leaderboard, and carries the reason.
+            s["gas_access_score"] = round(access, 1)
+            s["gas_cost_score"] = None
+            s["dcgi"] = None
+            s["verdict"] = _UNSCORED
+            s["unscored_reason"] = (
+                "no delivered natural-gas price for this state in eia_gas_prices "
+                "(EIA PEU electric-power or PIN industrial). gas_access_score is "
+                "measured and published; the composite is withheld rather than "
+                "completed with a placeholder."
+            )
+            continue
+
+        # LOG-linear, not linear — see the _PRICE_FLOOR/_PRICE_CEIL block.
+        cost = _clamp(
+            (math.log(_PRICE_CEIL) - math.log(price)) / _PRICE_LOG_SPAN * 100.0
+        )
 
         dcgi = 0.60 * access + 0.40 * cost
         if dcgi >= 62 and access >= 50:
@@ -528,7 +617,7 @@ _METHODOLOGY = {
                 "power load, for the behind-the-meter / gas-to-power era."),
     "scores": {
         "gas_access": "0.45*pipeline_density + 0.35*operator_diversity + 0.20*interstate_share",
-        "gas_cost": "inverse of latest industrial/electric-power gas price ($/Mcf), floor $2.50 ceil $12",
+        "gas_cost": "log-inverse of the latest delivered gas price ($/MMBtu), pinned floor $1.00 / ceiling $20.00. The electric-power (PEU) series is preferred over industrial (PIN) — PIN carries the LDC distribution margin and PEU does not — and gas_price_series names which one answered each state. Log-scaled because the distribution is log-normal: half of US states sit inside a 1.6x band and the tail runs to 49x.",
         "dcgi": "0.60*gas_access + 0.40*gas_cost",
     },
     "verdicts": {
@@ -582,7 +671,7 @@ def dcgi_scores():
     states, err = _gas_state_rollup()
     if err:
         return jsonify({"ok": False, "error": err}), 503
-    ranked = sorted(states.values(), key=lambda s: s["dcgi"], reverse=True)
+    ranked = sorted(states.values(), key=_dcgi_sort_key)
     limit = request.args.get("limit", type=int)
     if limit:
         ranked = ranked[:limit]
@@ -615,7 +704,7 @@ def dcgi_scores():
         "ok": True,
         "index": "Data Center Gas Index (DCGI)",
         "count": len(ranked),
-        "verdict_legend": ["GAS-ADVANTAGED", "ADEQUATE", "GAS-CONSTRAINED"],
+        "verdict_legend": list(_VERDICTS),
         "states": ranked,
         "methodology": "/api/v1/dcgi/methodology",
         "license": "CC BY 4.0",
@@ -665,6 +754,49 @@ def dcgi_methodology():
     # the definition alongside the number would leave anyone who already
     # quoted a DCGI score with no way to work out what it had claimed.
     _m = dict(_METHODOLOGY)
+    # ★ The correction record is published WHILE THE INDEX IS LIVE, not only
+    #   while it is down. Anyone who cited a DCGI score between its launch and
+    #   2026-08-08 cited a number built on two broken terms and a constant;
+    #   restoring the index without saying so would quietly orphan that
+    #   citation. It stays in the payload permanently.
+    _m["corrections"] = [
+        {"date": "2026-08-08", "action": "withdrawn",
+         "what": "An internal audit found two of the three terms measurably "
+                 "wrong. The whole ranking came down rather than part of it."},
+        {"date": "2026-08-30", "action": "restored",
+         "what": "All three defects repaired and verified against production. "
+                 "Scores published before 2026-08-08 are NOT comparable to "
+                 "scores published from this date: the interstate term, the "
+                 "price basis and the cost scale all changed.",
+         "fixes": [
+             "gas_access: the 0.20 interstate_share term compared a lowercase "
+             "literal against capitalised EIA TYPEPIPE values and scored ~0 "
+             "for all published states. Case-folded at both comparison sites; "
+             "interstate segments counted went 122 -> 17,571.",
+             "gas_cost: the price was picked by a non-deterministic tie-break "
+             "across the EIA industrial (PIN) and electric-power (PEU) series, "
+             "which carry different margins. PEU is now preferred, the "
+             "ordering is total, and gas_price_series names the basis per row.",
+             "gas_cost: nine states including Texas were scored on a hardcoded "
+             "50.0. EIA publishes all nine; the loader was dropping them on a "
+             "case-sensitive area-name lookup. Backfilled 2026-08-30 "
+             "(eia_gas_prices 41 -> 50 states). The constant is deleted: a "
+             "state that cannot be priced is now UNSCORED, not neutral-scored.",
+             "gas_cost: the 2.5/12.0 linear scale was fitted to the industrial "
+             "series and saturated 15 of 50 states once PEU became the basis. "
+             "Now log-linear, pinned 1.0/20.0 $/MMBtu, 0 states saturated.",
+             "unit: the price was published as dollars per thousand cubic "
+             "feet in seven places. It is $/MMBtu — the loader divides the "
+             "EIA series by 1.037 before storing.",
+         ]},
+    ]
+    _m["still_withdrawn"] = {
+        "gas_to_grid_usd_per_mwh": "Gas-fired $/MWh figures remain withdrawn "
+        "(DCHUB_GAS_TO_GRID_ENABLED). Defect 4 of the same audit — five "
+        "surfaces published a $/MWh for the same market on the same day, "
+        "disagreeing by up to 5.5x, with no sanity gate. That is not fixed by "
+        "the DCGI repair and is not re-enabled with it."
+    }
     if not gas_index_enabled():
         _m["status"] = "disabled"
         _m["unavailable_reason"] = gas_index_unavailable()["unavailable_reason"]
@@ -687,7 +819,7 @@ def _report_payload():
     states, err = _gas_state_rollup()
     ops, total_distinct = _operator_rollup()
     states = states or {}
-    ranked = sorted(states.values(), key=lambda s: s["dcgi"], reverse=True)
+    ranked = sorted(states.values(), key=_dcgi_sort_key)
     advantaged = [s for s in ranked if s["verdict"] == "GAS-ADVANTAGED"]
     total_pipelines = sum(s["pipelines"] for s in states.values())
     tracked_ops = [o for o in ops if o["tracked"]]
@@ -718,7 +850,13 @@ def _report_payload():
         "subtitle": "Where natural gas can power AI data centers when the grid can't",
         "generated_for": "behind-the-meter / gas-to-power siting",
         "national": _national,
-        "top_gas_advantaged": (ranked[:12] if _index_on else []),
+        # ★ SCORED states only. `ranked[:12]` alone put UNSCORED states on the
+        #   leaderboard — they sort last, but "last" still lands inside a
+        #   top-12 whenever few states are scored. A state with no composite
+        #   has no rank; it must not appear in a ranking at all. (Caught by
+        #   tests/test_dcgi_terms_stay_fixed.py, not by review.)
+        "top_gas_advantaged": ([s for s in ranked if s.get("dcgi") is not None][:12]
+                               if _index_on else []),
         "index_status": (None if _index_on else gas_index_unavailable("pipeline-report")),
         "midstream_operators": ops,
         "methodology": _METHODOLOGY,
@@ -779,6 +917,7 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 tr:last-child td{border-bottom:none}
 .v{font-weight:700;font-size:12px;padding:3px 9px;border-radius:999px;white-space:nowrap}
 .v.adv{background:rgba(65,209,167,.16);color:var(--acc)}
+.v.uns{background:rgba(148,163,184,.16);color:#94a3b8}
 .v.adq{background:rgba(240,180,41,.16);color:var(--warn)}
 .v.con{background:rgba(239,100,97,.16);color:var(--bad)}
 .note{color:var(--mut);font-size:13px;margin-top:8px}
@@ -790,7 +929,17 @@ a{color:var(--acc)}
 
 
 def _vclass(v):
-    return {"GAS-ADVANTAGED": "adv", "ADEQUATE": "adq"}.get(v, "con")
+    return {"GAS-ADVANTAGED": "adv", "ADEQUATE": "adq",
+            _UNSCORED: "uns"}.get(v, "con")
+
+
+def _num(v):
+    """Render a score cell. An unscored state shows an em dash, never a 0.
+
+    ★ `"{}".format(None)` prints the string "None" into a numeric column, and
+      a 0 would be worse still — it reads as a measured floor. Absence gets a
+      glyph that cannot be mistaken for a measurement."""
+    return "&mdash;" if v is None else v
 
 
 # Rendered in place of every DCGI leaderboard while the index is withdrawn.
@@ -908,7 +1057,7 @@ def pipeline_report_html():
             "<h2>Top gas-advantaged states</h2>"
             "<table><thead><tr><th>State</th><th class=n>DCGI</th><th class=n>Gas access</th>"
             "<th class=n>Cost</th><th class=n>Pipelines</th><th class=n>Operators</th>"
-            "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
+            "<th class=n>$/MMBtu</th><th>Verdict</th></tr></thead><tbody>"
             + state_rows +
             "</tbody></table>"
             "<p class=note>DCGI = 0.60 &times; gas access + 0.40 &times; gas cost. "
@@ -1022,6 +1171,13 @@ h2{font-size:1.6rem;font-weight:700;margin:0 0 1rem;letter-spacing:-0.015em}
 .verdict.adv{background:rgba(16,185,129,0.18);color:var(--green)}
 .verdict.adq{background:rgba(245,158,11,0.18);color:var(--orange)}
 .verdict.con{background:rgba(239,68,68,0.18);color:var(--red)}
+/* UNSCORED is deliberately grey, not red: it is the absence of a score,
+   not a bad one. A red badge would read as a verdict we did not make. */
+.verdict.uns{background:rgba(148,163,184,0.18);color:#94a3b8}
+.correction{background:rgba(148,163,184,.08);border:1px solid rgba(148,163,184,.28);border-left:3px solid var(--orange);border-radius:10px;padding:1rem 1.15rem;margin:1.5rem 0 0}
+.correction .ck{font-family:'JetBrains Mono',monospace;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--orange);margin-bottom:.5rem}
+.correction p{margin:0;font-size:.9rem;line-height:1.6;color:#cbd5e1}
+.correction .cs{margin-top:.6rem;font-size:.83rem;color:#94a3b8}
 .subline{font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--tx2);margin-top:0.55rem}
 table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--bd);border-radius:12px;overflow:hidden;margin-top:0.5rem}
 th,td{padding:11px 14px;text-align:left;border-bottom:1px solid var(--bd);font-size:14px}
@@ -1267,7 +1423,7 @@ def dcgi_html():
     # even with JS disabled / before hydration (progressive enhancement).
     states, _err = _gas_state_rollup()
     states = states or {}
-    ranked = sorted(states.values(), key=lambda s: s["dcgi"], reverse=True)
+    ranked = sorted(states.values(), key=_dcgi_sort_key)
 
     # ★ The noscript table was the second ungated numeric DCGI surface (the
     #   other being /api/v1/dcgi/scores/<STATE>). The soft-paywall covered the
@@ -1287,15 +1443,16 @@ def dcgi_html():
             "<td class=n>{ops}</td>"
             "<td class=n>{price}</td>"
             "<td><span class=\"verdict {vc}\">{v}</span></td></tr>".format(
-                st=s["state"], dcgi=s["dcgi"], acc=s["gas_access_score"],
-                cost=s["gas_cost_score"], pipes=s["pipelines"],
+                st=s["state"], dcgi=_num(s["dcgi"]),
+                acc=_num(s["gas_access_score"]),
+                cost=_num(s["gas_cost_score"]), pipes=s["pipelines"],
                 ops=s["operators"], price=price_txt,
                 vc=_vclass(s["verdict"]), v=s["verdict"]))
     noscript_table = (_INDEX_OFF_HTML if _index_off else
                       ("<table><thead><tr><th>State</th><th class=n>DCGI</th>"
                        "<th class=n>Gas access</th><th class=n>Cost</th>"
                        "<th class=n>Pipelines</th><th class=n>Operators</th>"
-                       "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
+                       "<th class=n>$/MMBtu</th><th>Verdict</th></tr></thead><tbody>"
                        + ("".join(noscript_rows)
                           or "<tr><td colspan=8 class=note>Scoring warming up…</td></tr>")
                        + "</tbody></table>"))
@@ -1412,7 +1569,26 @@ def dcgi_html():
            "suitability for siting AI data-center power load. Grid interconnect queues run "
            "5&ndash;7 years &mdash; so <strong>behind-the-meter gas</strong> is increasingly "
            "how AI capacity actually gets energized this decade. No one else scores the gas "
-           "behind the grid.</p>") +
+           "behind the grid.</p>"
+           # ★ The restoration notice is PERMANENT, not a temporary banner.
+           #   A reader who cited DCGI before 2026-08-08 cited a different
+           #   index; restoring quietly would orphan that citation. Same
+           #   reasoning that put the withdrawal notice up in the first place.
+           "<div class=\"correction\">"
+           "<div class=\"ck\">Corrected &middot; withdrawn 2026-08-08, restored 2026-08-30</div>"
+           "<p>This index was withdrawn for 22 days after an internal audit found "
+           "two of its three terms measurably wrong. All three defects are repaired: "
+           "the interstate-share term was case-blind and scored ~0 for every state "
+           "(122 &rarr; 17,571 segments counted); the price was picked by a "
+           "non-deterministic tie-break across two non-comparable EIA series; and nine "
+           "states including Texas were scored on a hardcoded constant because the "
+           "loader was dropping them on a case-sensitive name lookup. The cost scale "
+           "was then recalibrated to the electric-power series it now reads. "
+           "<strong>Scores published before 2026-08-08 are not comparable to these.</strong> "
+           "Full record: <a href=\"/api/v1/dcgi/methodology\">methodology &rarr; corrections</a>.</p>"
+           "<p class=\"cs\">Still withdrawn: gas-fired $/MWh figures, a separate defect "
+           "in the same audit that this repair does not address.</p>"
+           "</div>") +
         "</section>"
         # ── power-flywheel cross-link (⚡ → /dcpi) ──
         "<a class=\"power-cross\" href=\"/dcpi\">"
@@ -1460,8 +1636,8 @@ def dcgi_html():
         "0.40 &times; Gas Cost. <strong>Gas Access</strong> blends pipeline density, "
         "midstream-operator diversity and interstate share (the EIA geofeed publishes no "
         "per-segment throughput, so this is a relative infrastructure-presence index). "
-        "<strong>Gas Cost</strong> inverts the latest industrial / electric-power delivered "
-        "gas price ($/Mcf). Verdicts: <strong style=\"color:var(--green)\">GAS-ADVANTAGED</strong> "
+        "<strong>Gas Cost</strong> log-inverts the latest electric-power delivered "
+        "gas price ($/MMBtu). Verdicts: <strong style=\"color:var(--green)\">GAS-ADVANTAGED</strong> "
         "(dcgi&nbsp;&ge;&nbsp;62 &amp; access&nbsp;&ge;&nbsp;50), "
         "<strong style=\"color:var(--orange)\">ADEQUATE</strong> (dcgi&nbsp;&ge;&nbsp;42), "
         "<strong style=\"color:var(--red)\">GAS-CONSTRAINED</strong> (below). "
@@ -1727,6 +1903,7 @@ h1 .st{{color:var(--tx2);font-weight:600}}
 .lede{{color:var(--tx2);margin:0 0 1.5rem;font-size:1.05rem}}
 .verdict{{display:inline-block;padding:0.4rem 0.85rem;border-radius:999px;font-size:0.85rem;font-weight:700;letter-spacing:0.05em}}
 .verdict.adv{{background:rgba(16,185,129,0.15);color:#34d399;border:1px solid rgba(52,211,153,0.4)}}
+.verdict.uns{{background:rgba(148,163,184,0.15);color:#94a3b8;border:1px solid rgba(148,163,184,0.4)}}
 .verdict.adq{{background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(251,191,36,0.4)}}
 .verdict.con{{background:rgba(239,68,68,0.15);color:#fb7185;border:1px solid rgba(251,113,133,0.4)}}
 .metrics{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.6rem;margin:1.5rem 0 2rem}}
@@ -1758,7 +1935,7 @@ footer a{{color:var(--tx2);text-decoration:none}}
     <div class="m"><div class="l">Gas Cost</div><div class="v">{cost_val}</div></div>
     <div class="m"><div class="l">Pipelines</div><div class="v">{pipes_val}</div></div>
     <div class="m"><div class="l">Midstream Ops</div><div class="v">{ops_val}</div></div>
-    <div class="m"><div class="l">$/Mcf (delivered)</div><div class="v">{price_val}</div></div>
+    <div class="m"><div class="l">$/MMBtu (delivered)</div><div class="v">{price_val}</div></div>
   </div>
 
   <div class="section-h">📊 {score_label}</div>

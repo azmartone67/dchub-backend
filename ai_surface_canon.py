@@ -372,10 +372,22 @@ PINNED = {
     # on a non-problem. Same failure `_official_registry_latest_only` was
     # written for — an always-red registry buries the real drift it exists to
     # surface.
+    #
+    # ★★★2026-08-30 — THIS DETECTOR INVERTS WHEN THE CAPABILITY COMES BACK.
+    # Both entries below fire on any listing that MENTIONS the DCGI. That was
+    # right while it was withdrawn and becomes exactly wrong the moment it is
+    # restored: every listing correctly advertising a live index would be
+    # flagged as drifted, burning the auto_path on a non-problem and leaving
+    # smithery permanently red — the same always-red failure this comment
+    # already warns about twice, arrived at from the opposite direction.
+    # `only_while_withdrawn` is honoured by white_glove_propagation.
+    # resolve_canon(), which drops these entries while
+    # DCHUB_GAS_INDEX_ENABLED is set. A withdrawn-capability marker must know
+    # that capabilities can also come BACK.
     "stale_markers_regex": [
-        {"re": r"\bDCGI\b",
+        {"re": r"\bDCGI\b", "only_while_withdrawn": "gas_index",
          "label": "DCGI advertised as a live score (withdrawn 2026-08-08)"},
-        {"re": r"gas[- ]suitability score",
+        {"re": r"gas[- ]suitability score", "only_while_withdrawn": "gas_index",
          "label": "gas-suitability score advertised as live (DCGI, withdrawn 2026-08-08)"},
     ],
 }
