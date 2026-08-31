@@ -51,6 +51,16 @@ SURFACES = (
     "README.md",
     "dchub-frontend/llms.txt",
     ".well-known/mcp.json",
+    # ★ Repo-root mcp.json was missed by BOTH the original fix and the first
+    # version of this guard, and sat at 15,000+ while every sibling said
+    # 18,500+ — which is what kept loop-control's `surfaces_agree` red. The
+    # authoritative list is the one loop_control_master_shell scans; this set
+    # is kept equal to it by test_this_list_matches_the_shells_own_list below.
+    "mcp.json",
+    # Listed by the shell but absent from this repo layout — the per-file tests
+    # below skip a file that does not exist, and keeping it here keeps the two
+    # lists provably equal. If it ever appears, it is covered from day one.
+    "static/mcp.json",
 )
 
 # Floors that were live-wrong on 2026-08-31 and must never return.
@@ -84,7 +94,7 @@ def test_the_surface_list_is_not_empty():
     """A file rename would otherwise make every test below vacuously pass —
     the exact shape the scan-floor meta-guard exists to prevent."""
     found = _existing()
-    assert len(found) >= 6, f"only {len(found)} of {len(SURFACES)} surfaces found: {found}"
+    assert len(found) >= 7, f"only {len(found)} of {len(SURFACES)} surfaces found: {found}"
 
 
 @pytest.mark.parametrize("rel", SURFACES)
@@ -151,3 +161,24 @@ def test_retired_lists_do_not_contain_the_current_canon():
     also matches the value canon accepts. Never let these lists collide."""
     assert CANON_FACILITIES not in RETIRED_FACILITY_FLOORS
     assert CANON_DEALS not in RETIRED_DEAL_FLOORS
+
+
+def test_this_list_matches_the_shells_own_list():
+    """★ The gap that let mcp.json through. This guard carried its own hand-typed
+    SURFACES list, so a file the runtime shell checks but the test does not is
+    invisible until the shell goes red — which is exactly what happened.
+
+    loop_control_master_shell._lane_surface_canon holds the authoritative set.
+    Every file it scans must be covered here, or the guard is narrower than the
+    thing it guards."""
+    shell = (ROOT / "routes" / "loop_control_master_shell.py").read_text()
+    i = shell.find("candidates = [")
+    assert i > 0, "the shell's candidate list moved — re-point this test"
+    block = shell[i:shell.index("]", i)]
+    theirs = set()
+    for m in re.finditer(r'os\.path\.join\(root,\s*([^)]+)\)', block):
+        parts = [p.strip().strip('"\'') for p in m.group(1).split(",")]
+        theirs.add("/".join(p for p in parts if p))
+    missing = {t for t in theirs if t not in set(SURFACES)}
+    assert not missing, (
+        f"the shell checks these and this guard does not: {sorted(missing)}")

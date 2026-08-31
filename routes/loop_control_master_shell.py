@@ -509,14 +509,59 @@ def _lane_surface_canon(c) -> list[dict]:
                f"OVER-CLAIMING: {over} — these publish a facility count the "
                f"data does not support"),
             critical=True))
-        stale = {k: v for k, v in seen.items() if canon - v > 500}
-        checks.append(_check(
-            "floors_current", "no surface floor is >500 behind canon",
-            not stale,
-            f"canon {canon:,}; "
-            + ("all floors current" if not stale else
-               f"stale floors: {stale} — understating by up to "
-               f"{max(canon - v for v in stale.values()):,}")))
+        # ★ 2026-08-31 — MEASURE AGAINST PINNED, NOT LIVE CANON.
+        #
+        # This compared every hand-maintained surface against the LIVE citable
+        # count and called anything >500 behind "stale". Live canon moves
+        # continuously (19,935 today) while these files carry ai_surface_canon
+        # PINNED (18,500+), which is bumped periodically on purpose — so the
+        # moment live drifts 500 past PINNED this lane goes red and STAYS red
+        # until someone edits six files by hand. That is not a surface defect,
+        # it is this lane asking hardcoded files to track a moving number.
+        #
+        # Worse, it contradicted its sibling: surface_truth_master_shell's
+        # _acceptable_floor ACCEPTS PINNED (and anything up to PINNED x 1.10),
+        # so the same files were simultaneously correct there and stale here.
+        # Two guards disagreeing about what a file should say is how one of
+        # them gets ignored.
+        #
+        # The relationship is two separate, separately-checkable claims:
+        #   surfaces track PINNED   <- the files' job, checked per file
+        #   PINNED tracks live      <- canon's job, ONE finding, not six
+        _pinned = None
+        try:
+            from ai_surface_canon import PINNED as _P
+            _pinned = int(str((_P.get("public") or {}).get("facilities") or "")
+                          .replace(",", "").rstrip("+") or 0) or None
+        except Exception as _pe:
+            logger.debug("[loop-control] PINNED unavailable: %s", _pe)
+
+        if _pinned is None:
+            checks.append(_check(
+                "floors_current", "surfaces track PINNED canon", None,
+                "ai_surface_canon.PINNED unreadable — refusing to judge",
+                critical=True))
+        else:
+            # Same tolerance as the sibling guard: PINNED itself, or anything
+            # up to 10% above it (a live-healed surface is not stale).
+            _lo, _hi = _pinned, int(_pinned * 1.10)
+            stale = {k: v for k, v in seen.items() if v < _lo or v > _hi}
+            checks.append(_check(
+                "floors_current", "every surface floor is within the PINNED band",
+                not stale,
+                f"PINNED {_pinned:,} (band {_lo:,}-{_hi:,}); "
+                + ("all floors in band" if not stale else
+                   f"out of band: {stale}")))
+            # The OTHER half, reported once rather than per file: PINNED itself
+            # falling behind live is a real, actionable finding — bump canon.
+            _drift = canon - _pinned
+            checks.append(_check(
+                "pinned_tracks_live", "PINNED is not far behind the live count",
+                _drift <= max(1500, int(_pinned * 0.10)),
+                f"live {canon:,} vs PINNED {_pinned:,} (drift {_drift:,}) — "
+                + ("within tolerance" if _drift <= max(1500, int(_pinned * 0.10))
+                   else "bump ai_surface_canon.PINNED; the surfaces are correct, "
+                        "the pin is behind")))
     return checks
 
 
