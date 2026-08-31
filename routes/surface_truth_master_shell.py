@@ -101,12 +101,20 @@ _UA = "dchub-surface-truth/1.0 (+https://dchub.cloud; internal-audit)"
 # had to retire (19k-23k against a canon in the teens of thousands) and stops
 # well short of the 126k substations / 182k power units / 330k assets that
 # legitimately appear on the same pages.
-_OVERCLAIM_MAX_MULT = 3.0
+# ★ 2026-08-31: these now MIRROR util/canon_floor, which three other shells
+# also use. They stay module-level because this file's tests import them,
+# and a drift between the two would recreate the exact "two guards, one
+# file, opposite verdicts" bug this consolidation removes — so a test
+# asserts they are equal.
+from util.canon_floor import (
+    ACCEPT_MAX_MULT as _ACCEPT_MAX_MULT,
+    OVERCLAIM_MAX_MULT as _OVERCLAIM_MAX_MULT,
+    RETIRED_LITERALS as _RETIRED_LITERALS,
+    acceptable_floor as _shared_acceptable,
+    retired_floors as _shared_retired,
+)
 
-_RETIRED_LITERALS = ("12,650+",)  # retired 2026-07-30; never served again
-# ^ the token above is a BAN, not a claim. It must stay a literal: it was
-#   canon itself from 07-24 to 07-28, so it is now permanently wrong and a
-#   literal that is permanently wrong can never rot the way a range does.
+
 
 # Live agent-facing surfaces, by lane.
 # ★2026-07-30: /agent added — the Agent Concierge landing is served INLINE from
@@ -208,93 +216,19 @@ def _read_repo(rel: str):
 
 
 def _floors_in(text: str, canon: str | None = None) -> list[str] | None:
-    """Floor tokens in `text` that are RETIRED, given canon.
+    """Retired floors in `text`. Thin wrapper over the SHARED rule.
 
-    Returns None when canon is unknown — indeterminate, never "clean". A fence
-    that cannot resolve canon must not certify a page as free of stale floors;
-    that is the fail-open direction this shell exists to prevent.
-
-    Retired means: an explicit historical literal, or an over-claim strictly
-    above the same ceiling _acceptable_floor uses. Values inside the acceptance
-    band are canon-family by definition and are never retired here."""
-    body = text or ""
-    retired = {lit for lit in _RETIRED_LITERALS if lit in body}
-
-    if canon is None:
-        return None
-    try:
-        base = int(canon.replace(",", "").rstrip("+"))
-    except Exception:  # noqa: BLE001
-        return None
-    hi = int(base * 1.10)          # SAME ceiling as _acceptable_floor
-    # ★★ 2026-08-31 — UPPER BOUND, added after this rule shipped without one
-    # and immediately mis-fired. "Anything above the acceptance ceiling" is not
-    # a facility over-claim: the OTHER canon quantities live up there, and they
-    # are all legitimate. Measured on live within an hour of shipping:
-    #
-    #   182,000+   global power generating UNITS   -> flagged, wrongly
-    #   330,000+   mapped infrastructure assets    -> flagged, wrongly
-    #   143,000+   (ai_discovery_routes emitter)   -> flagged, wrongly
-    #
-    # That took served_manifests and repo_vs_served red on false grounds and
-    # pushed emitter_sources from PASS to FAIL. The old range regex never hit
-    # them only because 19,000-23,999 happened to sit below where they live —
-    # the right property by accident, which is why widening the net broke it.
-    #
-    # _acceptable_floor's own note predicted exactly this: "no OTHER canon
-    # quantity states a comma-'N+' floor inside this band ... if one ever does,
-    # tighten this to a facilities-context match." That warning was about the
-    # ACCEPTANCE band, which is narrow and still collision-free. The RETIREMENT
-    # rule is open-ended upward, so it needs its own ceiling.
-    #
-    # A real facility over-claim is facility-scale: the retired ones this fence
-    # exists for were 19k-23k against a canon in the teens of thousands. Nobody
-    # has ever claimed six figures of facilities, and if they did, the
-    # honest-numbers fence would catch it first. So bound the window.
-    over_hi = int(base * _OVERCLAIM_MAX_MULT)
-    for m in _FLOOR_TOKEN.finditer(body):
-        v = int(m.group(1).replace(",", ""))
-        if hi < v <= over_hi:
-            retired.add(m.group(0))
-    return sorted(retired)
-
-
-# Any comma-formatted "N+" floor token, for the acceptance band below.
-_FLOOR_TOKEN = re.compile(r"\b(\d{1,3}(?:,\d{3})+)\+")
-
+    ★ The logic used to live here, and copies of an older version of it lived in
+    seven_levers and intelligence_expansion. Four guards, four answers, three
+    false REDs on healthy files in one day. util/canon_floor is now the single
+    rule; this stays as a name because this module's lanes and tests use it."""
+    return _shared_retired(text, canon)
 
 def _acceptable_floor(body, canon):
-    """The facility floor the body carries, if it is canon-family — else None.
-
-    Heal-bound pages (the llms.txt front-door block, /ai) carry
-    resolve_canon()'s LIVE floor — 15,300+/15,500+ while PINNED holds 15,000+
-    — and the live floor moves at 100-granularity as the fleet grows, with the
-    daily heal lagging the origin by up to ~24h. Exact-phrase matching against
-    either single value therefore reds a healthy page (the reason /ai was
-    deferred from _TEXT_SURFACES on 07-30). Accept the PINNED phrase itself, or
-    ANY comma-formatted "N+" floor within [PINNED, PINNED x 1.10]: the band
-    tracks realistic PINNED-to-live drift (3-4% today), rejects the 17k/18k
-    legacy/raw-basis over-claims, and self-heals across floor bumps with no
-    beat edits.
-    ★Collision note: no OTHER canon quantity states a comma-"N+" floor inside
-    this band (13,000+ US plants sits below; 126k+ substations far above) — if
-    one ever does, tighten this to a facilities-context match.
-    """
-    if not body or not canon:
-        return None
-    if canon in body:
-        return canon
-    try:
-        base = int(canon.replace(",", "").rstrip("+"))
-    except Exception:  # noqa: BLE001
-        return None
-    hi = int(base * 1.10)
-    for m in _FLOOR_TOKEN.finditer(body):
-        v = int(m.group(1).replace(",", ""))
-        if base <= v <= hi:
-            return m.group(0)
-    return None
-
+    """The canon-family floor `body` carries, or None. Shared rule — see
+    util/canon_floor for why the accept band and the retirement window must be
+    computed from the same base."""
+    return _shared_acceptable(body, canon)
 
 def _audit_body(cid: str, label: str, body, err, canon: str) -> list[dict]:
     """Two checks per surface: canon present, and no retired floor."""

@@ -50,7 +50,13 @@ seven_levers_master_shell_bp = Blueprint("seven_levers_master_shell", __name__)
 
 ORIGIN = (os.environ.get("SURFACE_TRUTH_ORIGIN") or "https://dchub.cloud").rstrip("/")
 _UA = "dchub-seven-levers/1.0 (+https://dchub.cloud; internal-audit)"
-_STALE_FLOOR = re.compile(r"\b(?:19|20|21|22|23),\d{3}\+")
+# ★ 2026-08-31: the rotted range regex that lived here is gone. It banned
+# 19,000-23,999, so a card carrying the live-healed 19,900+ was reported
+# "retired" while the same bytes were accepted by surface_truth — and the
+# exact-match canon check below then ALSO called canon "absent". One healthy
+# surface, two contradictory failures. util/canon_floor.py is now the single
+# rule; see its docstring for the four guards that disagreed.
+from util.canon_floor import floor_verdict as _floor_verdict
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Lever 4: every brain call site that must feed brain_llm_usage.
@@ -167,14 +173,23 @@ def _lane_zone_sync() -> list[dict]:
             out.append(_check(cid, path + " serves canon", None,
                               "unreachable: %s" % err, critical=True))
             continue
-        stale = sorted(set(_STALE_FLOOR.findall(body)))
+        v = _floor_verdict(body, canon_floor)
+        stale = v["retired"] or []
         m = re.search(r"(\d+)\s+tools", body)
         got_tools = int(m.group(1)) if m else None
         problems = []
-        if stale:
+        if v["retired"] is None:
+            problems.append("canon floor unresolvable — cannot judge")
+        elif stale:
             problems.append("retired floor(s): %s" % ", ".join(stale))
-        if need_floor and canon_floor and canon_floor not in body:
-            problems.append("canon floor %s absent" % canon_floor)
+        # A floor is a FLOOR: PINNED itself or any live-healed value inside the
+        # band counts as present. The old exact `canon_floor not in body`
+        # reported "absent" for a card that carried 19,900+ against a pin of
+        # 18,500+ — correct content, failed on string equality.
+        if need_floor and canon_floor and v["retired"] is not None \
+                and not v["found"]:
+            problems.append("no canon-family floor (accepts %s or a live-healed "
+                            "value within 10%% above it)" % canon_floor)
         if want_tools and got_tools is not None and got_tools != want_tools:
             problems.append("advertises %d tools (canon %d)"
                             % (got_tools, want_tools))
