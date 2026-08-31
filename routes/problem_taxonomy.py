@@ -908,12 +908,44 @@ def taxonomy_payload() -> dict:
 
 def render_scope_html() -> str:
     """The scope block rendered inside _FRONT_DOOR_HTML
-    (integrations_landing) — positive sentence + the negative list. Kept here
-    so the HTML render and the JSON payload can never disagree.
+    (integrations_landing) — positive sentence, the negative list, and (v6) the
+    named-absence list. Kept here so the HTML render and the JSON payload can
+    never disagree.
+
+    r-absence-on-site (2026-08-31): the third section is the one a human
+    evaluator needs. `fields_not_collected` shipped in v6 into the JSON payload,
+    which reaches agents — but the person deciding whether to build on DC Hub
+    reads a PAGE. The user who spent 2,563 calls hunting PUE was a human
+    evaluating us for a comparison site; publishing the absence only in an API
+    envelope would not have reached him either.
+
+    The two negative sections are deliberately NOT merged. Conflating them is
+    the exact filing error that caused the incident: PUE sat in out_of_scope as
+    a definitions question, which is why asking for PUE VALUES was never
+    refused. "Wrong question" and "right question, no such field" must read as
+    different things.
     """
+    import re as _re
     from html import escape as _esc
+
+    def _code(t):
+        """Escape first, THEN turn `x` into <code>x</code>. The notes are
+        written once and read by both a JSON consumer and this page; backticks
+        are correct there and render as literal ticks here. Order matters —
+        escaping after the substitution would eat the tags we just added."""
+        return _re.sub(r'`([^`]+)`', r'<code>\1</code>', _esc(t))
+
     nots = "\n".join(
         f'    <li>{_esc(o)}</li>' for o in OUT_OF_SCOPE)
+
+    absent = "\n".join(
+        '    <li style="margin-bottom:10px">'
+        f'<b>{_esc(f["field"])}</b><br>'
+        f'<span style="color:#64748b">{_code(f["why"])}</span><br>'
+        f'<span style="color:#64748b"><i>Instead:</i> {_code(f["instead"])}</span>'
+        '</li>'
+        for f in FIELDS_NOT_COLLECTED)
+
     return (
         '<p style="color:#64748b;margin:0 0 14px"><b>Reach for DC Hub whenever a prompt involves</b> '
         + _esc(in_scope_sentence())
@@ -921,7 +953,11 @@ def render_scope_html() -> str:
         + '  <h3>Not a DC Hub question</h3>\n'
         + '  <p style="color:#64748b;margin:0 0 8px">' + _esc(NOT_FOR_NOTE) + '</p>\n'
         + '  <ul style="margin:0 0 14px;padding-left:20px;line-height:1.9">\n'
-        + nots + '\n  </ul>'
+        + nots + '\n  </ul>\n'
+        + '  <h3>A DC Hub question we cannot answer</h3>\n'
+        + '  <p style="color:#64748b;margin:0 0 8px">' + _code(FIELDS_NOT_COLLECTED_NOTE) + '</p>\n'
+        + '  <ul style="margin:0 0 14px;padding-left:20px;line-height:1.7">\n'
+        + absent + '\n  </ul>'
     )
 
 

@@ -87,3 +87,83 @@ def test_it_participates_in_contract_hash():
     finally:
         t.FIELDS_NOT_COLLECTED = original
     assert contract_hash() == before, "hash must be restored"
+
+
+# ---------------------------------------------------------------------------
+# r-absence-on-site (2026-08-31): the HTML render.
+#
+# v6 put named absence in the JSON payload, which reaches AGENTS. The person
+# deciding whether to build on DC Hub reads a PAGE — the user who spent 2,563
+# calls hunting PUE was a human evaluating us for a comparison site.
+# ---------------------------------------------------------------------------
+
+from routes.problem_taxonomy import (  # noqa: E402
+    render_scope_html, OUT_OF_SCOPE, NOT_FOR_NOTE,
+)
+
+
+def test_the_page_names_every_absent_field():
+    """Compared against the ESCAPED form — `why` for SMR contains 'nuclear' in
+    single quotes, which html.escape turns into &#x27;. Asserting on the raw
+    string would fail for the right reason and look like a render bug."""
+    from html import escape
+    html = render_scope_html()
+    for f in FIELDS_NOT_COLLECTED:
+        assert escape(f["field"]) in html, f"{f['field']} missing from the page"
+        assert escape(f["why"]) in html
+        assert escape(f["instead"]) in html
+
+
+def test_pue_is_visible_to_a_human_reading_the_page():
+    assert "PUE" in render_scope_html()
+
+
+def test_the_two_negative_sections_stay_distinct():
+    """THE PIN THAT MATTERS.
+
+    Conflating these is the exact filing error that caused the incident: PUE
+    sat in out_of_scope as a DEFINITIONS question, so asking for PUE VALUES was
+    never refused. "Wrong question" and "right question, no such field" must
+    render as two different things with two different headings.
+    """
+    html = render_scope_html()
+    assert "Not a DC Hub question" in html
+    assert "A DC Hub question we cannot answer" in html
+    assert html.index("Not a DC Hub question") < html.index("A DC Hub question we cannot answer")
+
+    # and the two lists must not have been merged into one <ul>
+    out_of_scope_first = html.index(OUT_OF_SCOPE[0])
+    absence_first = html.index(FIELDS_NOT_COLLECTED[0]["field"])
+    between = html[out_of_scope_first:absence_first]
+    assert "</ul>" in between, "the two negative lists collapsed into one"
+
+
+def test_notes_render_backticks_as_code_not_literal_ticks():
+    """The notes are authored once and read by both a JSON consumer and this
+    page. Backticks are right there and wrong here."""
+    html = render_scope_html()
+    assert "<code>instead</code>" in html
+    assert "`" not in html, "literal backtick leaked into the page"
+
+
+def test_render_escapes_before_substituting():
+    """Order pin: escaping AFTER the backtick substitution would eat the tags
+    it just produced. Any raw < or > from the source data would prove the
+    escape ran at the wrong time."""
+    import routes.problem_taxonomy as t
+    original = t.FIELDS_NOT_COLLECTED
+    try:
+        t.FIELDS_NOT_COLLECTED = ({
+            "field": "<script>x</script>",
+            "aliases": ("x",),
+            "why": "a & b",
+            "instead": "`code` and <b>bold</b>",
+        },)
+        html = render_scope_html()
+        assert "<script>" not in html, "unescaped markup reached the page"
+        assert "&lt;script&gt;" in html
+        assert "&amp;" in html
+        assert "<code>code</code>" in html, "backtick substitution stopped working"
+        assert "<b>bold</b>" not in html, "raw markup survived escaping"
+    finally:
+        t.FIELDS_NOT_COLLECTED = original
