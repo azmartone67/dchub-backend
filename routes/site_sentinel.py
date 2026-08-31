@@ -291,7 +291,7 @@ _MANIFEST: list[dict] = [
     # _probe_entry (an anonymous POST pair). It's listed HERE so latest_results() and
     # unhealthy_findings() (both filtered to _MANIFEST paths) include it — otherwise a
     # regression would be written but never read, and never alert.
-    {"path": "/mcp#workos-oauth-challenge",         "category": "high",   "label": "WorkOS OAuth Challenge (anon 401)", "probe": "workos"},
+    {"path": "/mcp#workos-oauth-challenge",         "category": "high",   "label": "WorkOS OAuth Challenge (anon 401 on tools/call)", "probe": "workos"},
 ]
 
 
@@ -325,6 +325,13 @@ _EDGE_PROBE_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
 # sentinel already self-probes); override the target with SENTINEL_MCP_PROBE_URL.
 _WORKOS_PROBE_ENABLED = os.environ.get("SENTINEL_WORKOS_PROBE", "1").strip().lower() not in ("0", "false", "no")
 _WORKOS_PROBE_URL = (os.environ.get("SENTINEL_MCP_PROBE_URL") or (_SITE_BASE + "/mcp"))
+# How many anonymous tools/call the probe will spend looking for the challenge.
+# Bounded on purpose: each one consumes a real free-tier answer, and the point is
+# to observe the challenge, not to exhaust the allowance. The server's documented
+# range for DCHUB_CHALLENGE_AFTER_N is 0-3 with a default of 1 ("first answer
+# free"), so 3 calls covers every configuration anyone has actually run. Past
+# this bound the probe reports INDETERMINATE rather than inventing a verdict.
+_WORKOS_PROBE_MAX_CALLS = max(1, int(os.environ.get("SENTINEL_WORKOS_PROBE_CALLS", "3") or 3))
 
 
 def _conn():
@@ -839,16 +846,43 @@ def _probe_entry(entry: dict) -> tuple[dict, dict]:
 
 
 def _probe_workos_challenge() -> tuple[dict, dict]:
-    """One ANONYMOUS pair of MCP POSTs (NO internal/admin key — the whole point is to
-    look like an unauthenticated Claude connector):
-      • initialize -> MUST be 401  (WorkOS OAuth challenge firing → durable identity)
-      • tools/list -> SHOULD be 200 (catalog stays public so connectors can render)
-    A 200 on initialize means the challenge was disabled (check env
-    DCHUB_OAUTH_CHALLENGE_DISABLE=0 on the dchub-mcp-server service). Returns an
-    (entry, scan) pair shaped exactly like _probe_entry so scan_all() persists it and
-    unhealthy_findings()/the brain radar pick up a regression automatically."""
+    """Is the WorkOS OAuth challenge alive on dchub-mcp-server?
+
+    ★2026-08-31 — THIS PROBE WAS ASSERTING A CONTRACT THE SERVER DELIBERATELY
+    DROPPED, AND ITS FALSE RED BUILT THINGS. It required `initialize` to answer
+    401. dchub-mcp-server stopped challenging on initialize in r-challenge-method
+    (2026-07-03) — `_claudeChallengeEligible()` opens with
+
+        if (method !== 'tools/call') return false;   // never on initialize — ask after value
+
+    so anonymous initialize=200 is CORRECT and this probe reported it as
+    "durable identity DISABLED" on every scan. Its remedy line told an operator
+    to set DCHUB_OAUTH_CHALLENGE_DISABLE=0, which is a no-op: that env is a KILL
+    SWITCH read as /^(1|true|yes|on)$/, so unset already means enabled and 0
+    changes nothing. The finding fed the brain radar, which opened PR #3417 plus
+    two `routes/_proposed_*` scaffolds chasing the same phantom — two of which
+    contradict each other on the flag's direction. A gate that is wrong does not
+    just fail to catch things; it manufactures work.
+
+    THE CONTRACT, read off server.mjs rather than assumed:
+      initialize  -> 200. Never challenged, by design.
+      tools/list  -> 200. Public catalog, caller-independent.
+      tools/call  -> 200 for the first CHALLENGE_AFTER_N anonymous answers
+                     (default 1 — "first answer free"), then 401 +
+                     WWW-Authenticate, bounded above by CHALLENGE_MAX.
+
+    ★ DEFENSIVE, because the authoritative signal is not visible from here. The
+    server exposes no endpoint carrying its challenge config (/health does not),
+    so "no challenge yet" and "challenge disabled" are INDISTINGUISHABLE to a
+    black-box prober: a high DCHUB_CHALLENGE_AFTER_N looks exactly like a kill
+    switch. This probe therefore reds only on what it can actually attribute —
+    an unreachable endpoint, or a 401 on initialize, which would mean the
+    removed lockout path came back — and reports the ambiguous case as
+    INDETERMINATE with the counts it saw. Guessing there is how the last version
+    got here.
+    """
     entry = {"path": "/mcp#workos-oauth-challenge", "category": "high",
-             "label": "WorkOS OAuth Challenge (anon 401)"}
+             "label": "WorkOS OAuth Challenge (anon 401 on tools/call)"}
     scan = {"status_code": 0, "bytes": 1, "elapsed_ms": 0, "healthy": False, "reason": ""}
     if not _WORKOS_PROBE_ENABLED:
         scan.update(healthy=True, reason="probe disabled (SENTINEL_WORKOS_PROBE=0)")
@@ -858,41 +892,80 @@ def _probe_workos_challenge() -> tuple[dict, dict]:
             "MCP-Protocol-Version": "2025-06-18",
             "User-Agent": "claude-ai/1.0 (DCHub-Sentinel WorkOS probe)",
             "X-DC-Probe": "workos-challenge"}
-    def _post(method, retries=2):
-        body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": (
-                    {"protocolVersion": "2025-06-18", "capabilities": {},
-                     "clientInfo": {"name": "claude-ai", "version": "1"}}
-                    if method == "initialize" else {})}
+
+    def _post(method, params=None, session_id=None, retries=2):
+        """-> (status_code, response_headers). -1 on transport failure."""
+        body = {"jsonrpc": "2.0", "id": 1, "method": method,
+                "params": (params if params is not None else {})}
+        h = dict(hdrs)
+        # ★ The session id is load-bearing. The allowance counts PRIOR ANONYMOUS
+        # CALLS on a session; without Mcp-Session-Id every call looks like a
+        # first call, so the challenge could never fire and the tools/call leg
+        # below would be theatre.
+        if session_id:
+            h["Mcp-Session-Id"] = session_id
         for _a in range(retries + 1):
             try:
-                r = requests.post(_WORKOS_PROBE_URL, timeout=15, headers=hdrs,
+                r = requests.post(_WORKOS_PROBE_URL, timeout=15, headers=h,
                                   data=_json.dumps(body))
-                return r.status_code
+                return r.status_code, r.headers
             except Exception:
                 if _a < retries:
                     time.sleep(0.5 * (_a + 1)); continue
-        return -1
+        return -1, {}
+
     t0 = time.time()
-    init_code = _post("initialize")
-    list_code = _post("tools/list")
-    scan["elapsed_ms"] = int((time.time() - t0) * 1000)
+    init_code, init_hdrs = _post("initialize", params={
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "claude-ai", "version": "1"}})
+    sid = (init_hdrs or {}).get("Mcp-Session-Id") or (init_hdrs or {}).get("mcp-session-id")
+    list_code, _ = _post("tools/list", session_id=sid)
     scan["status_code"] = init_code
+
+    def _done(healthy, reason):
+        scan["elapsed_ms"] = int((time.time() - t0) * 1000)
+        scan.update(healthy=healthy, reason=reason)
+        return entry, scan
+
+    if init_code == -1:
+        return _done(False, "mcp endpoint unreachable from sentinel (initialize probe failed)")
     if init_code == 401:
-        # Challenge is up. Note catalog status but do NOT red-flag on tools/list
-        # semantics alone (avoid false alarms from session-state differences).
-        if list_code in (200, 202):
-            scan.update(healthy=True, reason="challenge firing (initialize=401, tools/list=200)")
-        else:
-            scan.update(healthy=True,
-                        reason=f"challenge firing (initialize=401); catalog tools/list={list_code} (watch)")
-    elif init_code == -1:
-        scan.update(healthy=False,
-                    reason="mcp endpoint unreachable from sentinel (initialize probe failed)")
-    else:
-        scan.update(healthy=False,
-                    reason=(f"WorkOS CHALLENGE OFF: anon initialize={init_code} (expected 401) — durable "
-                            f"identity DISABLED; set DCHUB_OAUTH_CHALLENGE_DISABLE=0 on dchub-mcp-server"))
-    return entry, scan
+        # The removed contract is back. This is the lockout shape r-challenge-method
+        # deleted on purpose (it also 401'd the catalog for connectors), so it is a
+        # real regression, not a pass.
+        return _done(False, "initialize=401 — the challenge is firing on initialize again; "
+                            "r-challenge-method moved it to tools/call ('ask after value'). "
+                            "A connector that cannot complete the handshake is locked out of discovery.")
+    if init_code not in (200, 202):
+        return _done(False, f"anon initialize={init_code} — expected 200 (initialize is never challenged)")
+
+    # initialize is correct. Now the leg that actually carries the challenge.
+    seen = []
+    challenged_on = None
+    for i in range(1, _WORKOS_PROBE_MAX_CALLS + 1):
+        code, _h = _post("tools/call", params={"name": "why_dchub", "arguments": {}}, session_id=sid)
+        seen.append(code)
+        if code == -1:
+            return _done(False, f"mcp endpoint unreachable on tools/call #{i} (initialize={init_code})")
+        if code == 401:
+            challenged_on = i
+            break
+
+    catalog = "" if list_code in (200, 202) else f"; catalog tools/list={list_code} (watch)"
+    if challenged_on:
+        return _done(True, f"challenge firing (initialize={init_code} as designed, "
+                           f"401 on anonymous tools/call #{challenged_on}){catalog}")
+
+    # ★ NOT a red. We cannot tell a deliberately generous allowance from a
+    # disabled challenge without reading the service env, and inventing a
+    # verdict here is exactly what produced the phantom this rewrite removes.
+    return _done(True, f"INDETERMINATE: initialize={init_code} correct, but no challenge within "
+                       f"{_WORKOS_PROBE_MAX_CALLS} anonymous tools/call(s) (saw {seen}). "
+                       f"That is either DCHUB_CHALLENGE_AFTER_N > {_WORKOS_PROBE_MAX_CALLS - 1} "
+                       f"or the challenge is off — indistinguishable from outside. "
+                       f"Authoritative check: DCHUB_OAUTH_CHALLENGE_DISABLE on the "
+                       f"dchub-mcp-server service (=1 disables; unset/0 both mean enabled)"
+                       f"{catalog}")
 
 
 def scan_all() -> list[dict]:
