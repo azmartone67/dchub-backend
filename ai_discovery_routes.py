@@ -1288,17 +1288,39 @@ Allow: /sites/$
 Disallow: /cdn-cgi/
 Allow: /
 
-# Bingbot — same hygiene as the group above, PLUS /api/ closed (2026-07-28).
-# Measured that day: 36.4% of Bingbot's crawl went to /api/* (raw JSON that can
-# never rank; 1 in 3 of the sampled paths 404'd) while only 24.3% reached
-# /facilities/*. Bing had been reporting "limited crawl capacity" since June, so
-# the budget was the binding constraint and /api/* was the biggest sink.
-# ★ KNOWN COST, accepted deliberately: Copilot crawls as Bingbot, so this closes
-#   Copilot's only surface. Gemini is unaffected — Googlebot/GoogleOther keep
-#   /api/* in the group above. If Copilot citations matter more than Bing
-#   organic later, reopen by deleting the one Disallow line below.
+# Bingbot — same hygiene as the group above. /api/ is OPEN again as of
+# 2026-08-31 (owner decision).
+#
+# HISTORY. /api/ was closed to Bingbot on 2026-07-28. Measured that day: 36.4%
+# of Bingbot's crawl went to /api/* (raw JSON that can never rank; 1 in 3 of the
+# sampled paths 404'd) while only 24.3% reached /facilities/*. Bing had been
+# reporting "limited crawl capacity" since June, so the budget was the binding
+# constraint and /api/* was the biggest sink. The note left here said: "KNOWN
+# COST, accepted deliberately: Copilot crawls as Bingbot, so this closes
+# Copilot's only surface ... If Copilot citations matter more than Bing organic
+# later, reopen by deleting the one Disallow line below."
+#
+# WHY REOPEN. Copilot is the point. It crawls as Bingbot and has no other
+# surface, so the close cost us the whole channel — and in the five weeks it was
+# in force, nothing measured whether Bing organic actually improved in exchange.
+# The trade was made on a reasonable prediction and then left unchecked, which
+# is the part worth not repeating.
+#
+# WHAT STILL PROTECTS THE BUDGET. The reason /api/ was a sink was junk paths,
+# and `Disallow: /*?` below closes those independently — every parameterized
+# URL, which is where the 404s lived. Reopening restores the clean, canonical
+# JSON surfaces (the agent-facing ones an assistant would actually cite) without
+# handing back the query-string long tail.
+#
+# ★ HOW TO TELL IF THIS WAS WRONG, and the reason it is now checkable at all:
+# ai_requests only records crawler hits on /api/, /ai/ and /mcp paths, so
+# closing /api/ to Bingbot also made Bingbot invisible to our own instrument —
+# its apparent collapse from 3,152/week to 0 was that blindness, not a
+# regression. Reopening restores the signal. If Bingbot volume returns and
+# /facilities/* coverage in Bing Webmaster drops back toward the 24.3% that
+# triggered the 2026-07-28 close, close it again — and this time record the
+# organic number on both sides of the change.
 User-agent: Bingbot
-Disallow: /api/
 # ★ 2026-08-08 — repeat the /*? and /admin hygiene (void here otherwise, per the
 #   note on the group above).
 Disallow: /*?

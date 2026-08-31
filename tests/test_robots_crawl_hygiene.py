@@ -214,27 +214,50 @@ def test_parameterized_hygiene_does_not_block_the_clean_canonical(robots, named_
 
 # ── 4 · /api/* is deliberately still open to the assistant crawlers ─────────
 
-def test_api_closed_to_bingbot_but_open_to_the_other_assistant_crawlers(robots):
-    """Pins the 2026-07-28 decision so it changes on purpose, not by accident.
+def test_api_open_to_bingbot_and_the_other_assistant_crawlers(robots):
+    """Pins the 2026-08-31 REOPEN so it changes on purpose, not by accident.
 
-    /api/* was 36.4% of Bingbot's crawl budget (raw JSON, 1 in 3 sampled paths
-    404) against 24.3% reaching /facilities/*, so it is closed to Bingbot. The
-    accepted cost is Copilot, which crawls as Bingbot and has no other surface.
+    This test previously pinned the opposite. /api/* was closed to Bingbot on
+    2026-07-28 because it took 36.4% of the crawl budget (raw JSON, 1 in 3
+    sampled paths 404) against 24.3% reaching /facilities/*, during a Bing
+    "limited crawl capacity" period. The accepted cost was Copilot, which
+    crawls as Bingbot and has no other surface.
 
-    Gemini is deliberately NOT affected: Googlebot/GoogleOther keep /api/*. That
-    asymmetry is the whole point of splitting Bingbot into its own group — if a
-    future edit folds it back into the merged group, this test fails.
+    Reopened by owner decision. Copilot is the point, and in five weeks nothing
+    measured whether Bing organic improved in exchange — the trade was made on a
+    prediction and left unchecked.
+
+    The budget protection that actually mattered stays: `Disallow: /*?` closes
+    every parameterized URL, which is where the 404s lived. See
+    test_bingbot_still_refuses_the_query_string_long_tail below.
+
+    Still asymmetric in the other direction: an unknown crawler gets nothing.
     """
-    assert can_fetch(robots, "bingbot", "/api/v1/facilities/foo") is False
+    assert can_fetch(robots, "bingbot", "/api/v1/facilities/foo") is True
     assert can_fetch(robots, "Googlebot", "/api/v1/facilities/foo") is True
     assert can_fetch(robots, "GoogleOther", "/api/v1/facilities/foo") is True
     assert can_fetch(robots, "GPTBot", "/api/v1/facilities/foo") is True
     assert can_fetch(robots, "SomeUnknownCrawler", "/api/v1/facilities/foo") is False
 
 
+def test_bingbot_still_refuses_the_query_string_long_tail(robots):
+    """Reopening /api/ must NOT hand back the junk that made it a sink.
+
+    The 2026-07-28 measurement found 1 in 3 sampled /api/ paths 404ing. Those
+    live behind query strings, and `Disallow: /*?` closes them for this group
+    independently of the /api/ rule. If that line is ever dropped, the crawl
+    budget problem returns with the reopen and this fails."""
+    for path in ("/api/v1/facilities?page=99",
+                 "/api/v1/search?q=junk&offset=5000",
+                 "/facilities?sort=power&dir=desc"):
+        assert can_fetch(robots, "bingbot", path) is False, (
+            f"bingbot regained {path} — the query-string guard that made "
+            f"reopening /api/ safe has been removed")
+
+
 def test_bingbot_keeps_every_content_surface(robots):
-    """Closing /api/ must not cost Bing a single rankable page — that would
-    defeat the purpose of freeing the crawl budget in the first place."""
+    """Whatever the /api/ rule is, Bing must never lose a rankable page. Written
+    when /api/ was closed; still the right assertion now that it is open."""
     for path in MUST_ALLOW + ["/facilities/edgecore-mesa-ph01-54e3fad5", "/grid/ercot"]:
         assert can_fetch(robots, "bingbot", path) is True, (
             f"bingbot lost {path} — the /api/ split over-reached"
