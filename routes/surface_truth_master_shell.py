@@ -96,7 +96,10 @@ _UA = "dchub-surface-truth/1.0 (+https://dchub.cloud; internal-audit)"
 # or when it sits ABOVE the acceptance ceiling _acceptable_floor already
 # computes. Anything that function ACCEPTS can never be reported retired — the
 # two checks now read one band instead of disagreeing about the same bytes.
-_RETIRED_LITERALS = ("12,650+",)
+_RETIRED_LITERALS = ("12,650+",)  # retired 2026-07-30; never served again
+# ^ the token above is a BAN, not a claim. It must stay a literal: it was
+#   canon itself from 07-24 to 07-28, so it is now permanently wrong and a
+#   literal that is permanently wrong can never rot the way a range does.
 
 # Live agent-facing surfaces, by lane.
 # ★2026-07-30: /agent added — the Agent Concierge landing is served INLINE from
