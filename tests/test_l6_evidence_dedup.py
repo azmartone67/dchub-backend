@@ -236,12 +236,26 @@ def test_kill_switch_bypasses_the_gate(opener, monkeypatch):
     assert "get_default_branch_sha" in opener.calls
 
 
-def test_dedup_is_on_by_default():
+def test_dedup_is_on_by_default(monkeypatch):
     """Unlike the other flags in this module it defaults ENABLED, because a
-    wrong default only ever withholds a draft."""
-    import os
-    os.environ.pop("BRAIN_STRATEGIC_EVIDENCE_DEDUP", None)
+    wrong default only ever withholds a draft.
+
+    monkeypatch.delenv, not os.environ.pop: a raw pop never restores, which
+    leaks the unset into every test that runs after this one in the same
+    process. Test files must not mutate global state that outlives them.
+    """
+    monkeypatch.delenv("BRAIN_STRATEGIC_EVIDENCE_DEDUP", raising=False)
     assert bsp._evidence_dedup_enabled() is True
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("0", False), ("false", False), ("no", False), ("off", False),
+    ("1", True), ("true", True), ("yes", True), ("on", True),
+    ("", True), ("   ", True),          # blank falls back to the default
+])
+def test_dedup_flag_parsing(monkeypatch, raw, want):
+    monkeypatch.setenv("BRAIN_STRATEGIC_EVIDENCE_DEDUP", raw)
+    assert bsp._evidence_dedup_enabled() is want
 
 
 def test_window_outlives_the_six_week_span():
