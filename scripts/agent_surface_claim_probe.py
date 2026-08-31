@@ -47,7 +47,6 @@ import argparse
 import json
 import re
 import sys
-import requests
 
 BASE = "https://dchub.cloud"
 # ★ A real UA is not optional: Cloudflare answers urllib's default with 1010.
@@ -94,6 +93,15 @@ def _fetch(path):
     # ★ requests, not urllib: regression-lint bans urllib on this repo (#1940),
     # and the UA is not optional either way — Cloudflare answers urllib's
     # default User-Agent with error 1010 before the request reaches an origin.
+    #
+    # ★ IMPORTED HERE, NOT AT MODULE TOP. The self-test is pure — it exercises
+    # compare() and touches no network — so it must not need an HTTP library to
+    # run. A top-level import meant a missing dependency killed the SELF-TEST,
+    # i.e. the one step whose job is to prove the comparator works before
+    # anything trusts its verdict. Measured: the first CI run died on
+    # `ModuleNotFoundError: No module named 'requests'` at import, before a
+    # single control had been checked.
+    import requests
     resp = requests.get(BASE + path, timeout=30, headers={"User-Agent": UA})
     resp.raise_for_status()
     return resp.json()

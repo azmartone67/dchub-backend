@@ -181,6 +181,146 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
     try:
         _ensure_schema(c)
         with c.cursor() as cur:
+            # ── 2026-08-31 (funnel audit, leak #1b: ROTATING-IP RE-MINT) ────
+            # The two probes below both key on request_ip_hash, and the legacy
+            # one also on request_ua. The 2026-06-19 note on that probe already
+            # names the case they cannot cover: "Web hosts on ROTATING egress
+            # IPs still won't match — email-bind is their durable path." That
+            # cohort is not hypothetical, it is the majority of the funnel.
+            #
+            # Measured 2026-08-31 over mcp_high_intent_sessions: 5,205 mint rows
+            # resolve to only 289 DISTINCT keys across 14 DISTINCT user agents,
+            # and ONE user agent — the literal string "node" — accounts for 263
+            # of those keys and 4,412 of the rows, with 0 email binds, ever.
+            # A generic UA on rotating egress presents a brand-new (ip_hash, ua)
+            # on every call, so both probes miss, a fresh key is minted, the
+            # unbound counter resets, and the bind gate can never be reached.
+            # That is the whole 289-keys / 14-emails funnel in one mechanism.
+            #
+            # The agent is not anonymous, though: it is holding a key it was
+            # issued moments ago. That key is the ONE identifier that survives
+            # IP rotation, and nothing here was reading it. Probe it FIRST.
+            #
+            # Deliberately narrow, so this cannot cost a real signup:
+            #   * fires ONLY when the caller presents a key that is already ours
+            #     and still live. A genuinely new agent presents none and falls
+            #     through to the existing behaviour, untouched.
+            #   * returns the SAME key rather than an error — an agent mid-task
+            #     keeps working. This closes a re-mint, it does not close access.
+            #   * binds operator_email on the spot if the agent finally supplied
+            #     one, exactly as the ip_hash probe below does.
+            #   * FAIL-OPEN: any exception falls through to the probes below.
+            # Kill switch: AUTO_TRIAL_KEY_PROBE=0.
+            _presented = ""
+            try:
+                if str(os.environ.get("AUTO_TRIAL_KEY_PROBE", "")).strip().lower() \
+                        not in ("0", "false", "no", "off"):
+                    _presented = (req.headers.get("X-API-Key")
+                                  or req.headers.get("X-Api-Key") or "")
+                    if not _presented:
+                        _auth = req.headers.get("Authorization") or ""
+                        if _auth.lower().startswith("bearer "):
+                            _presented = _auth[7:]
+                    _presented = (_presented or "").strip()[:128]
+                    # Only OUR key shapes. Never look up an arbitrary string.
+                    if not (_presented.startswith("dch_trial_")
+                            or _presented.startswith("dch_live_")):
+                        _presented = ""
+            except Exception:
+                _presented = ""
+
+            if _presented:
+                try:
+                    cur.execute("""
+                        SELECT api_key, expires_at, call_count,
+                               (signed_up_email IS NOT NULL
+                                OR operator_email IS NOT NULL) AS is_bound
+                          FROM auto_trial_keys
+                         WHERE api_key = %s AND expires_at > NOW()
+                         LIMIT 1
+                    """, (_presented,))
+                    k = cur.fetchone()
+                    if k:
+                        _k_bound = bool(k[3])
+                        if operator_email and not _k_bound:
+                            try:
+                                cur.execute(
+                                    "UPDATE auto_trial_keys SET "
+                                    "operator_email = COALESCE(operator_email, %s), "
+                                    "operator_name  = COALESCE(operator_name, %s), "
+                                    "client_name    = COALESCE(client_name, %s) "
+                                    "WHERE api_key = %s",
+                                    (operator_email.strip().lower(),
+                                     (operator_name or None),
+                                     (client_name[:80] or None) if client_name else None,
+                                     k[0]))
+                                _k_bound = True
+                            except Exception:
+                                note_swallowed_write(
+                                    "auto_trial_keys",
+                                    where="auto_trial.mint_trial_for_request.key_probe")
+
+                        import datetime as _dt2
+                        _days_left = None
+                        if k[1]:
+                            _d = k[1] - _dt2.datetime.now(_dt2.timezone.utc)
+                            _days_left = max(0, int(_d.total_seconds() / 86400))
+                        _used = int(k[2] or 0)
+                        _gated = (not _k_bound) and _used >= TRIAL_FREE_CALLS_UNBOUND
+
+                        out = {
+                            "ok": True,
+                            "api_key": k[0],
+                            "expires_at": k[1].isoformat() if k[1] else None,
+                            "tier": "IDENTIFIED",
+                            "daily_calls": (TRIAL_DAILY_CALLS if _k_bound
+                                            else TRIAL_DAILY_UNBOUND),
+                            "daily_calls_when_email_bound": TRIAL_DAILY_CALLS,
+                            "trial_days": TRIAL_DAYS,
+                            "days_remaining": _days_left,
+                            "reused": True,
+                            "reuse_basis": "presented_key",
+                        }
+                        if _gated:
+                            out.update({
+                                "bind_required": True,
+                                "gate": "bind_email_required",
+                                "free_calls_unbound": TRIAL_FREE_CALLS_UNBOUND,
+                                "bind_endpoint":
+                                    "POST /api/v1/keys/auto-trial/bind {api_key, email}",
+                                "upgrade_cta": (
+                                    f"🔒 You are already holding this key and it has "
+                                    f"used its {TRIAL_FREE_CALLS_UNBOUND} free unbound "
+                                    f"calls. Re-minting returns the SAME key, not a "
+                                    f"fresh allowance. Bind your operator's email "
+                                    f"(free) to restore {TRIAL_DAILY_CALLS}/day: POST "
+                                    f"/api/v1/keys/auto-trial/bind {{api_key, email}}."),
+                                "operator_action": (
+                                    f"ACTION FOR YOUR HUMAN OPERATOR: this key used its "
+                                    f"{TRIAL_FREE_CALLS_UNBOUND} free unbound calls. "
+                                    f"Ask your human for their work email — never "
+                                    f"invent one — then bind it via POST "
+                                    f"/api/v1/keys/auto-trial/bind {{api_key, email}} "
+                                    f"to unlock {TRIAL_DAILY_CALLS}/day free."),
+                                "instructions": (
+                                    "Use api_key in X-API-Key header. Unbound free "
+                                    "calls are exhausted for THIS key — binding an "
+                                    "email is the free way to continue."),
+                            })
+                        elif _k_bound:
+                            out["upgrade_cta"] = (
+                                f"✅ Operator email bound — {TRIAL_DAILY_CALLS}/day "
+                                f"on this key.")
+                        else:
+                            out["instructions"] = (
+                                f"Use api_key in X-API-Key header. "
+                                f"{TRIAL_DAILY_UNBOUND} unbound calls/day; bind an "
+                                f"operator email for {TRIAL_DAILY_CALLS}/day.")
+                        return out
+                except Exception:
+                    # FAIL-OPEN — fall through to the ip_hash probes below.
+                    pass
+
             # ── 2026-07-10 (funnel audit, leak #1: RE-MINT ESCAPE) ──────────
             # The (ip_hash, ua) reuse below misses a UA change, so an identity
             # gated at TRIAL_FREE_CALLS_UNBOUND cumulative calls could re-mint

@@ -1425,6 +1425,57 @@ def _keyword_fallback(query: str, k: int = 8, corpus=None) -> list:
              "cosine": 0.0, "_fallback": "keyword"} for r in rows]
 
 
+# ★2026-08-31 — THE SAME DOCUMENT, INDEXED TWICE, SPENDING TWO OF THE AGENT'S
+# RESULT SLOTS. brain_corpus_embeddings is UNIQUE (source_table, source_id), so
+# a document carried by two corpora is two legitimate rows and nothing upstream
+# is wrong. `announcements` and `news_articles` share an id scheme and overlap:
+# a live probe of 10 real queries returned the SAME source_id twice in 5 of
+# them — 17% of every result slot spent restating a document already shown.
+# _duplicate_text_rows() next door only ever compared rows WITHIN one corpus,
+# so this was invisible to it.
+#
+# ★ THE KEY IS (source_id, title) AND BOTH MUST MATCH. Several corpora key on a
+# bare integer (`t.id::text`), so press_releases#5 and permitting_intel#5 are
+# routinely the same source_id and are NOT the same document. Requiring the
+# embedded title to match as well makes a false merge require a genuine
+# title collision under an identical id.
+#
+# ★ FAIL-OPEN. A row this cannot key is never dropped: dedup may only ever cost
+# a repeat, never a unique document.
+_DEDUP_OVERFETCH = 2   # headroom so dedup refills slots instead of shrinking k
+
+
+def _document_key(row):
+    """(source_id, normalised title) for a retrieved row, or None if unkeyable.
+    Every corpus text expr starts with the title followed by ' — '."""
+    sid = row.get("source_id")
+    txt = row.get("text") or ""
+    if not sid or not txt:
+        return None
+    title = txt.split(" — ", 1)[0]
+    title = re.sub(r"&[a-zA-Z]+;|&#\d+;", " ", title)
+    title = re.sub(r"\s+", " ", title).strip().lower()
+    if not title:
+        return None
+    return (sid, title)
+
+
+def _dedup_same_document(rows):
+    """Drop rows repeating a document already present. Returns (rows, dropped)."""
+    seen, out, dropped = set(), [], 0
+    for r in rows:
+        key = _document_key(r)
+        if key is None:
+            out.append(r)          # unkeyable -> never dropped
+            continue
+        if key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        out.append(r)
+    return out, dropped
+
+
 def _retrieve_core(query, k, corpus, rec):
     """The retrieval pipeline. Returns (rows, degraded_reason) and mutates
     `rec` with the leg/GUC disposition it observed. degraded_reason is None
@@ -1445,8 +1496,11 @@ def _retrieve_core(query, k, corpus, rec):
     # cross-encoder OR the provider-neutral lexical leg); otherwise exactly k.
     rerank = _rerank_on()
     neutral = (not rerank) and _neutral_rerank_on()
+    # Both legs already over-fetch; the plain-cosine leg did not, and dedup
+    # there would hand back fewer than k. Give it its own headroom.
     fetch_k = (min(int(k) * _RERANK_OVERFETCH, _RERANK_MAX_FETCH)
-               if (rerank or neutral) else int(k))
+               if (rerank or neutral)
+               else min(int(k) * _DEDUP_OVERFETCH, _RERANK_MAX_FETCH))
     c = _db()
     if c is None:
         return [], "db_unavailable"
@@ -1498,6 +1552,11 @@ def _retrieve_core(query, k, corpus, rec):
     finally:
         try: c.close()
         except Exception: pass
+
+    # Dedup BEFORE stage 2: doing it after the truncation to k would leave the
+    # freed slots empty instead of refilling them from the candidate pool.
+    base, _dropped = _dedup_same_document(base)
+    rec["dedup_dropped"] = _dropped
 
     # Stage 2 — rerank. Only worth it when we over-fetched more than k.
     if rerank and len(base) > int(k):

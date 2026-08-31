@@ -44,6 +44,9 @@ jobs:
       # The probe ships must-fail controls. Run them BEFORE trusting a live
       # green: a comparison that cannot detect an under-claim would report
       # every surface clean, which is the exact failure this job exists for.
+      - name: Install what the probe imports
+        run: python3 -m pip install --quiet requests
+
       - name: Self-test the comparison before trusting it
         run: python3 scripts/agent_surface_claim_probe.py --self-test
 

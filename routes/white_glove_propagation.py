@@ -176,7 +176,22 @@ def load_canon() -> dict:
         out["facilities_floor"] = _parse_floor(pub.get("facilities"))
         out["markets_floor"] = _parse_floor(pub.get("markets"))
         out["stale_markers"] = list(PINNED.get("stale_markers") or [])
-        out["stale_markers_regex"] = list(PINNED.get("stale_markers_regex") or [])
+        # ★2026-08-30: drop withdrawn-capability markers whose capability has
+        #   been RESTORED. Without this the DCGI markers fire on every listing
+        #   that correctly advertises the live index — an always-red registry
+        #   that buries the real drift the detector exists to surface.
+        _srx = []
+        for _e in (PINNED.get("stale_markers_regex") or []):
+            _cap = _e.get("only_while_withdrawn")
+            if _cap == "gas_index":
+                try:
+                    from util.gas_index import gas_index_enabled
+                    if gas_index_enabled():
+                        continue
+                except Exception:
+                    pass          # fail CLOSED: keep the marker if unsure
+            _srx.append(_e)
+        out["stale_markers_regex"] = _srx
         out["canon_source"] = "pinned"
     except Exception as e:
         logger.warning("[white-glove] PINNED import failed: %s", e)

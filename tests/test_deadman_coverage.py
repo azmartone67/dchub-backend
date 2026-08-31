@@ -129,3 +129,109 @@ def test_every_watched_feed_clears_the_watchers_own_margin():
         f"than {floor}h and will false-RED on ordinary cron drift:\n"
         + "".join(f"  {wf}: cadence {cad}h -> overdue {2 * cad}h\n"
                   for wf, cad in sorted(too_tight.items())))
+
+
+# ★ 2026-08-31 — WHY THIS FENCE EXISTS. Every test above asks whether a producer
+# is WATCHED. None asked whether the cadence it is watched AT is the right one,
+# and the cadences are hand-written next to a hand-written comment naming the
+# interval. Two of the 82 had a comment that did not match the workflow's own
+# cron, and the number had been written from the comment:
+#
+#   failover-canary.yml   declared 190h "# weekly Mon"  — actual cron '7 */6 * * *'
+#   monthly-trend-cron.yml declared  36h "# every 24h"  — actual cron '5 0 1 * *'
+#
+# They fail in OPPOSITE directions, which is why this asserts both. A feed goes
+# overdue at 2x its cadence (routes/ingest_runs.py), so:
+#   too tight -> the feed ages past the threshold before it is next due to fire,
+#     and the board publishes a RED for a job that is succeeding on schedule.
+#     monthly-trend-cron did this for ~90% of every month.
+#   too loose -> the alarm cannot arrive in any useful time. failover-canary,
+#     the canary for the Railway->Render->KV path, had a 380h (16-day) window.
+#
+# ★ It reads the cron out of the workflow YAML, never the trailing comment —
+# the comment is what was wrong both times.
+_LOOSE_CYCLES = 8.0   # the board may take up to 8 missed fires to alarm, no more
+
+
+def _cron_period_h(expr):
+    """Longest legitimate gap, in hours, between two fires of one cron expression.
+    Returns None if this parser does not understand the expression — callers must
+    FAIL on None rather than skip it, or the fence quietly stops covering it."""
+    f = expr.split()
+    if len(f) != 5:
+        return None
+    minute, hour, dom, _month, dow = f
+    if dom != "*" and not dom.startswith("*"):
+        return 744.0                                   # a specific day of the month
+    if dow != "*" and not dow.startswith("*"):
+        days = [d for d in dow.split(",") if d]
+        return 168.0 if len(days) == 1 else round(168.0 / len(days), 2)
+    if hour == "*":
+        return int(minute[2:]) / 60.0 if minute.startswith("*/") else 1.0
+    if hour.startswith("*/"):
+        return float(int(hour[2:]))
+    hrs = sorted({int(h) for h in hour.split(",") if h.strip().isdigit()})
+    if not hrs:
+        return None
+    if len(hrs) == 1:
+        return 24.0
+    gaps = [hrs[i + 1] - hrs[i] for i in range(len(hrs) - 1)] + [24 - hrs[-1] + hrs[0]]
+    return float(max(gaps))
+
+
+def _crons(raw):
+    doc = yaml.safe_load(raw)
+    triggers = doc.get(True) or doc.get("on") or {}
+    sched = triggers.get("schedule") or []
+    return [e["cron"] for e in sched if isinstance(e, dict) and e.get("cron")]
+
+
+def test_every_watched_cadence_brackets_its_own_cron():
+    watched, _, _ = _watch_consts()
+    with open(WATCH_PY, encoding="utf-8") as fh:
+        src = fh.read()
+    interval = float(re.search(r"^WATCH_INTERVAL_H\s*=\s*([\d.]+)", src, re.M).group(1))
+    margin = float(re.search(r"^WATCH_MARGIN\s*=\s*([\d.]+)", src, re.M).group(1))
+    # A fast job cannot be watched tighter than the watcher itself can see; that
+    # floor is _assert_watch_margin's, and it legitimately forces a loose ratio.
+    ceiling_floor = 2.0 * interval * margin
+
+    scheduled = _scheduled_workflows()
+    unreadable, too_tight, too_loose = [], [], []
+    for wf, cad in sorted(watched.items()):
+        raw = scheduled.get(wf)
+        if raw is None:
+            unreadable.append(f"{wf}: watched, but no scheduled workflow file")
+            continue
+        exprs = _crons(raw)
+        if not exprs:
+            unreadable.append(f"{wf}: watched, but its YAML declares no cron")
+            continue
+        periods = [_cron_period_h(e) for e in exprs]
+        if any(p is None for p in periods):
+            unreadable.append(f"{wf}: cron not understood by this fence: {exprs}")
+            continue
+        period = min(periods)          # several crons -> it fires more often
+        overdue_at = 2.0 * cad
+        if overdue_at < period:
+            too_tight.append(
+                f"{wf}: cadence {cad}h -> overdue at {overdue_at}h, but it only "
+                f"fires every {period}h — a false RED on a healthy job")
+        elif overdue_at > max(ceiling_floor, period * _LOOSE_CYCLES):
+            too_loose.append(
+                f"{wf}: cadence {cad}h -> overdue at {overdue_at}h against a "
+                f"{period}h cron — {overdue_at / period:.0f} missed fires before "
+                f"the board says anything")
+
+    assert not unreadable, (
+        "this fence could not read a watched workflow's schedule, so it is not "
+        "covering it — teach _cron_period_h the expression or drop the entry:\n"
+        + "".join(f"  {m}\n" for m in unreadable))
+    assert not too_tight, (
+        "declared cadence is tighter than the workflow's own cron; the board "
+        "will publish a RED for a job running exactly as scheduled:\n"
+        + "".join(f"  {m}\n" for m in too_tight))
+    assert not too_loose, (
+        f"declared cadence is more than {_LOOSE_CYCLES:.0f}x the workflow's own "
+        "cron; a death here cannot be reported in any useful time:\n"
+        + "".join(f"  {m}\n" for m in too_loose))
