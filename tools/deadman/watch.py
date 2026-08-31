@@ -83,7 +83,13 @@ WORKFLOWS = {
     "billing-reconcile-daily.yml": 30, # daily 08:23 — invoices_paid_count vs Stripe
     "seo-sitemap-and-warm.yml": 30,    # daily 07:40 — sitemap re-crawl + narrative warm
     "restore-test.yml": 190,           # weekly Mon — prove the Neon backup restores
-    "failover-canary.yml": 190,        # weekly Mon — Railway->Render->KV failover path
+    # ★2026-08-31 — WAS 190 WITH THE COMMENT "weekly Mon", COPIED FROM THE
+    # restore-test LINE ABOVE. This one is not weekly: its cron is
+    # '7 */6 * * *' — every 6h. 190 -> overdue at 380h, so the canary that
+    # proves the Railway->Render->KV failover path still works could stop
+    # succeeding for SIXTEEN DAYS before the board said a word. 9 is what
+    # every other 6h job here uses (6 x 1.5).
+    "failover-canary.yml": 9,          # every 6h — Railway->Render->KV failover path
     # ★2026-08-09 anti-drift blind-spot closure: watch the DETECTORS themselves.
     # qa-superuser is the platform's best detector (outside-in, real-envelope);
     # it was unwatched, so its silent death would blind the whole see→fix loop.
@@ -164,7 +170,12 @@ WORKFLOWS = {
     "mcp-outreach.yml": 36,                         # every 24h
     "media-citations-testimonials.yml": 126,        # every 84h
     "media-comment-dm-chain.yml": 18,               # every 12h
-    "monthly-trend-cron.yml": 36,                   # every 24h
+    # ★2026-08-31 — WAS 36 WITH THE COMMENT "every 24h". Its cron is
+    # '5 0 1 * *' — the 1st of each MONTH. 36 -> overdue at 72h against a
+    # 744h period, so this feed published a false RED for ~90% of every
+    # month while succeeding exactly as scheduled. 780 is what the two
+    # other monthly jobs here use (gem-refresh, planned-generators-ingest).
+    "monthly-trend-cron.yml": 780,                  # every 744h (1st of the month)
     "newsroom-auto.yml": 4.5,                       # every 3h
     "outreach-daily.yml": 36,                       # every 24h
     "paid-account-health-daily.yml": 36,            # every 24h
