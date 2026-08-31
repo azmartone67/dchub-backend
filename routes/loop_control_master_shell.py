@@ -129,15 +129,27 @@ def _conn():
         return None
 
 
-def _row(c, sql: str):
-    """Fail-soft single row. None on error. LITERAL SQL only — no params tuple
-    and NO PERCENT CHARACTERS anywhere in the statement (psycopg2 substitution
-    trap: a literal % in a paramless execute() 500s)."""
+def _row(c, sql: str, params=None):
+    """Fail-soft single row. None on error.
+
+    LITERAL SQL by default — and when `params` is omitted the old contract
+    stands in full: NO PERCENT CHARACTERS anywhere in the statement, because a
+    literal % in a paramless execute() is read as a substitution marker and
+    500s.
+
+    Pass `params` ONLY together with real placeholders. Once params is present
+    psycopg2 does the substitution, so %s is a placeholder rather than a trap —
+    but a literal % in that same statement must then be doubled to %%. Keep the
+    two modes apart; do not add a placeholder to an existing literal query
+    without re-reading it for stray percent signs."""
     if c is None:
         return None
     try:
         with c.cursor() as cur:
-            cur.execute(sql)
+            if params is None:
+                cur.execute(sql)
+            else:
+                cur.execute(sql, params)
             return cur.fetchone()
     except Exception as e:
         logger.debug("[loop-control] row failed: %s -- %s", sql[:80], e)
@@ -202,20 +214,53 @@ def _read(path: str) -> str | None:
 
 # ── lane 1: cron liveness ─────────────────────────────────────────────
 
+def _retired_crons() -> set[str]:
+    """Jobs deliberately retired, from the ONE list that already records them.
+
+    ★ 2026-08-31: this lane's docstring has always claimed "same source and
+    same threshold as brain_consistency_radar._check_cron_silently_dead", and
+    on threshold it is right — but the radar also skips
+    `_INTENTIONAL_STALE_CRONS` and this lane never did. So five jobs that were
+    correctly retired, with reasons, kept this lane red for weeks:
+
+        content-publish, global-intelligence, ai-outreach, ai-ecosystem
+            retired 2026-08-07 — their only driver was heroic-reprieve's frozen
+            dchub-scheduler-v4 zombie, whose every call 401'd after the 07-31
+            key rotation
+        energy-discovery
+            retired 2026-08-21 — its five HIFLD ArcGIS sources are dead
+
+    The decision was recorded and executed; only this reader disagreed. Import
+    the set rather than re-declaring it — a second copy is how the two would
+    drift apart again, and a duplicated allowlist is worse than none because
+    both look authoritative.
+
+    Fail-CLOSED on import error: an empty set means nothing is excluded, so the
+    lane over-reports rather than silently certifying a genuinely dead cron."""
+    try:
+        from routes.brain_consistency_radar import _INTENTIONAL_STALE_CRONS
+        return set(_INTENTIONAL_STALE_CRONS)
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def _lane_cron_liveness(c) -> list[dict]:
-    """The real outage the 'seen x477455' misread hid. Same source and same
-    threshold as brain_consistency_radar._check_cron_silently_dead."""
+    """The real outage the 'seen x477455' misread hid. Same source, same
+    threshold AND the same retirement allowlist as
+    brain_consistency_radar._check_cron_silently_dead."""
     checks = []
     if c is None or not _has_table(c, "cron_last_run"):
         return [_check("cron_src", "cron_last_run readable", None,
                        "cron_last_run absent or DB unreachable", critical=True)]
 
+    _retired = _retired_crons()
     r = _row(c, f"""
         SELECT count(*) FROM cron_last_run
          WHERE last_started_at IS NOT NULL
+           AND NOT (job_name = ANY(%(retired)s))
            AND EXTRACT(EPOCH FROM (NOW() - last_started_at))
                > COALESCE(NULLIF(expected_interval_s, 0) * 2, {_DEFAULT_STALE_S})
-    """)
+    """, {"retired": sorted(_retired)})
     dead = int(r[0]) if r and r[0] is not None else None
     checks.append(_check(
         "no_dead_crons", "no cron past its stale threshold",
@@ -228,9 +273,10 @@ def _lane_cron_liveness(c) -> list[dict]:
                EXTRACT(EPOCH FROM (NOW() - last_started_at))::INTEGER
           FROM cron_last_run
          WHERE last_started_at IS NOT NULL
+           AND NOT (job_name = ANY(%(retired)s))
          ORDER BY 2 DESC
          LIMIT 1
-    """)
+    """, {"retired": sorted(_retired)})
     if r:
         job, secs = r[0], int(r[1] or 0)
         checks.append(_check(
