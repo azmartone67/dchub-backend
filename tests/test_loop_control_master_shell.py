@@ -173,11 +173,82 @@ def test_lane8_does_not_score_probe_rows_as_humans():
 
 
 def test_shell_sql_carries_no_percent_literal():
-    """psycopg2 substitution trap: a literal % in a paramless execute() 500s.
-    Every statement in this shell is literal SQL with no params tuple."""
+    """psycopg2 substitution trap: a literal % in a PARAMLESS execute() is read
+    as a substitution marker and 500s.
+
+    ★ 2026-08-31: _row gained an optional `params` argument, so the shell now
+    has two modes and this check has to tell them apart instead of banning % on
+    sight:
+
+      * paramless  _row(c, sql)          -> NO percent character at all. This is
+                                            the original contract and it still
+                                            governs almost every call here.
+      * with params _row(c, sql, params) -> %s / %(name)s placeholders are the
+                                            point; any OTHER percent must be
+                                            doubled to %%.
+
+    Walked with ast rather than a regex over source text: the old regex matched
+    a triple-quoted literal after `_row(c,` and could not see whether a third
+    argument followed, so it had no way to distinguish the modes — and a looser
+    regex would have quietly stopped guarding the paramless calls, which are
+    the dangerous ones.
+    """
+    import ast as _ast
     src = _src("routes", "loop_control_master_shell.py")
-    for m in re.finditer(r'_row\(c,\s*(?:f)?"""(.*?)"""', src, re.S):
-        assert "%" not in m.group(1), f"percent literal in SQL: {m.group(1)[:80]}"
+    tree = _ast.parse(src)
+
+    placeholder = re.compile(r"%(?:s|\(\w+\)s|%)")
+    checked = 0
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Call):
+            continue
+        fn = node.func
+        if getattr(fn, "id", None) != "_row":
+            continue
+        if len(node.args) < 2:
+            continue
+        sql_node = node.args[1]
+        # Only literal / f-string SQL is inspectable; a variable is out of scope.
+        if isinstance(sql_node, _ast.Constant) and isinstance(sql_node.value, str):
+            sql = sql_node.value
+        elif isinstance(sql_node, _ast.JoinedStr):
+            sql = "".join(v.value for v in sql_node.values
+                          if isinstance(v, _ast.Constant) and isinstance(v.value, str))
+        else:
+            continue
+        checked += 1
+        has_params = len(node.args) >= 3 or any(k.arg == "params" for k in node.keywords)
+        if not has_params:
+            assert "%" not in sql, (
+                f"percent literal in PARAMLESS _row SQL (500s at runtime): "
+                f"{sql.strip()[:90]}")
+        else:
+            leftovers = placeholder.sub("", sql)
+            assert "%" not in leftovers, (
+                f"un-doubled percent alongside placeholders — double it to %%: "
+                f"{sql.strip()[:90]}")
+
+    assert checked >= 10, (
+        f"only {checked} _row SQL literals inspected — the walker stopped "
+        f"seeing them, which would render this guard vacuous")
+
+
+def test_row_paramless_mode_is_still_the_default():
+    """The params path must be opt-in. If `params` ever stops defaulting to
+    None, every existing paramless caller changes behaviour at once."""
+    import ast as _ast
+    src = _src("routes", "loop_control_master_shell.py")
+    for node in _ast.parse(src).body:
+        if isinstance(node, _ast.FunctionDef) and node.name == "_row":
+            names = [a.arg for a in node.args.args]
+            assert names[:3] == ["c", "sql", "params"], names
+            assert node.args.defaults, "params must have a default"
+            last = node.args.defaults[-1]
+            assert isinstance(last, _ast.Constant) and last.value is None, \
+                "params must default to None (paramless is the default mode)"
+            break
+    else:
+        raise AssertionError("_row not found")
 
 
 def test_shell_is_read_only():
