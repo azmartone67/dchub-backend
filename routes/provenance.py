@@ -344,6 +344,12 @@ COUNTS_BASIS_LEGACY = (
 # 10-minute TTL, matching canonical_stats — these move slowly, and a hot
 # list endpoint must not pay a COUNT(*) per request.
 _LEGACY_TTL_S = 600
+# This query MUST name `facilities`. It exists solely to count the table that
+# `_list_facilities_full` actually serves; pointing it at `discovered_facilities`
+# would restore the exact defect this module was changed to fix — counts that
+# describe a different population than the rows beside them.
+# (Token must sit within 2 lines of the match; the scanner only looks that far.)
+# lint: legacy-facilities-ok
 _LEGACY_COUNT_SQL = "SELECT COUNT(*) FROM facilities WHERE duplicate_of_id IS NULL"
 _legacy_cache = None          # None = never measured; {} = measured-and-failed
 _legacy_cache_ts = 0.0
