@@ -115,6 +115,12 @@ jobs:
           print(f"latest backup: {latest['Key']}  {latest['Size']/1048576:.1f} MB  {latest['LastModified']}")
           s3.download_file(os.environ["R2_BUCKET_NAME"], latest["Key"], "backup.sql.gz")
           open("BACKUP_KEY.txt", "w").write(latest["Key"])
+          # ★ The dump's own timestamp. restore_verify compares a LIVE source
+          # against this OLDER dump, so without it a table created after the
+          # backup was taken reads as data loss — which failed this gate on
+          # 2026-08-31 for gsc_daily_performance, created hours after the dump.
+          open("BACKUP_TAKEN_AT.txt", "w").write(
+              latest["LastModified"].isoformat())
 
           # The sidecar records which tables existed WHEN THE DUMP RAN. Without it
           # the verifier compares against a prod that has moved on since, and any
@@ -187,7 +193,13 @@ jobs:
       - name: Verify restore
         env:
           SOURCE_DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python restore_verify.py
+        run: |
+          # Hand the verifier the dump's age so it can tell "created after the
+          # backup" from "lost by the backup". Absent -> it fails closed and
+          # keeps treating every absence as loss.
+          export BACKUP_TAKEN_AT="$(cat BACKUP_TAKEN_AT.txt 2>/dev/null || true)"
+          echo "dump taken at: ${BACKUP_TAKEN_AT:-unknown}"
+          python restore_verify.py
 
       # Converts "it failed again" into an attributable cause. If the next red is
       # disk or OOM we learn it on the first look instead of the fourth day.

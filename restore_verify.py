@@ -110,6 +110,68 @@ def _connect_when_ready(dsn, budget_seconds=600, interval=10):
             time.sleep(interval)
 
 
+def _dump_taken_at():
+    """When the restored dump was TAKEN, from the workflow. None if unknown."""
+    raw = (os.environ.get("BACKUP_TAKEN_AT") or "").strip()
+    if not raw:
+        return None
+    try:
+        import datetime as _dt
+        return _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def table_is_newer_than_dump(conn, table, dump_ts):
+    """True only when EVERY row in the source table postdates the dump.
+
+    ★ WHY. `missing = [t for t in src if t not in restored]` compares a LIVE
+    source against an OLDER dump, so a table created after the backup was taken
+    reads as data loss. On 2026-08-31 that failed the DR gate on
+    gsc_daily_performance (~55,071 rows) — a table created that morning, hours
+    after the dump it was being compared against. The backup was fine.
+
+    Left alone this fires for EVERY new significant table, permanently, until
+    the next dump. The existing escape hatch is the NEON_EXT_DEPENDENT
+    allowlist, which is the wrong tool: that set means "extension-dependent",
+    and adding an ordinary app table to it would be a lie that permanently
+    suppresses a real signal for that table.
+
+    ★ FAILS CLOSED. Unknown dump time, no timestamp column, an unreadable
+    table, or any row at or before the dump -> False, and the caller keeps
+    treating the absence as data loss. This can only ever downgrade a case it
+    can PROVE is newer; it can never hide a genuine loss."""
+    if dump_ts is None:
+        return False
+    try:
+        with conn.cursor() as c:
+            c.execute("""
+                SELECT column_name FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = %s
+                   AND data_type IN ('timestamp with time zone',
+                                     'timestamp without time zone', 'date')
+                 ORDER BY ordinal_position
+            """, (table,))
+            cols = [r[0] for r in (c.fetchall() or [])]
+            if not cols:
+                return False          # nothing to date it by -> fail closed
+            # The EARLIEST value across every date-ish column. If even the
+            # oldest datum postdates the dump, the table cannot have been in it.
+            parts = ", ".join(f'MIN("{col}")::timestamptz' for col in cols)
+            c.execute(f'SELECT LEAST({parts}) FROM "{table}"'
+                      if len(cols) > 1 else f'SELECT {parts} FROM "{table}"')
+            row = c.fetchone()
+            oldest = row[0] if row else None
+            if oldest is None:
+                return False
+            if oldest.tzinfo is None:
+                import datetime as _dt
+                oldest = oldest.replace(tzinfo=_dt.timezone.utc)
+            return oldest > dump_ts
+    except Exception:
+        return False                  # cannot tell -> fail closed
+
+
 def table_estimates(conn):
     """{public table -> reltuples estimate}. Instant, no table scan."""
     cur = conn.cursor()
@@ -203,6 +265,9 @@ def main():
 
     # ---- optional compare against the live source ----
     src = {}
+    src_conn = None      # bound only on a successful source connect; the
+                         # newer-than-dump probe treats None as "cannot tell"
+                         # and fails closed, which is the correct default.
     source_ok = False
     ext_owned = set()  # tables CREATED by an extension (e.g. postgis.spatial_ref_sys)
     ext_typed = set()  # tables that merely USE an extension-provided column type
@@ -210,6 +275,7 @@ def main():
         try:
             sconn = psycopg2.connect(SOURCE, connect_timeout=20)
             sconn.autocommit = True
+            src_conn = sconn
             sc = sconn.cursor()
             sc.execute("SET statement_timeout = '15s'")  # never load the 1-replica prod
             src = table_estimates(sconn)
@@ -287,7 +353,17 @@ def main():
         for t in minor_missing:
             warns.append(f"~ {t} not restored (source est. {int(src.get(t, 0))} rows) — "
                          f"tiny or depends on a Neon-only extension; restores fine on Neon")
+        # A table created AFTER the dump was taken cannot be in it, and its
+        # absence says nothing about whether the backup restores. Proven-newer
+        # tables become a WARN; everything else stays a hard failure.
+        _dump_ts = _dump_taken_at()
         for t in sig_missing:
+            if table_is_newer_than_dump(src_conn, t, _dump_ts):
+                warns.append(
+                    f"~ {t} absent from the restore, but every row postdates the "
+                    f"dump ({_dump_ts:%Y-%m-%d %H:%M} UTC) — created after the "
+                    f"backup was taken, not lost by it")
+                continue
             problems.append(f"SIGNIFICANT source table absent from restore: {t} (~{int(src[t])} rows)")
         for t, est in src.items():
             if est >= SIGNIFICANT_ROWS and t in counts and counts[t] < ROW_FLOOR_RATIO * est:
