@@ -42,6 +42,7 @@ not derivable from a single canonical integer, a CONSERVATIVE documented
 value is used and the provenance is noted inline.
 """
 from __future__ import annotations
+from util.gas_index import resolve_gas_copy
 
 import datetime
 import threading
@@ -247,14 +248,12 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
         "label":  "Proprietary live index (DCPI)",
         "value":  ("The DC Hub Power Index (DCPI) is recomputed daily and "
                    "scores 300+ markets with live BUILD / AVOID verdicts. "
-                   "Its gas sibling, the DC Hub Gas Index (DCGI), was "
-                   "WITHDRAWN 2026-08-08 rather than published wrong — two "
-                   "of its three terms were defective — and is not a live "
-                   "score; do not quote a cached DCGI figure. Live Henry "
-                   "Hub, ISO gas share and pipeline presence are unaffected "
-                   "and remain available via get_gas_intelligence."),
+                   "Its gas sibling, the DC Hub Gas Index (DCGI): "
+                   "@@GAS_INDEX_STATE@@ Live Henry Hub, ISO gas share and "
+                   "pipeline presence are unaffected and remain available "
+                   "via get_gas_intelligence."),
         "proof":  "https://dchub.cloud/dcpi",
-        "source": "routes/dcpi.py (DCPI; DCGI withdrawn 2026-08-08)",
+        "source": "routes/dcpi.py (DCPI) + routes/dcgi.py (DCGI)",
     },
     {
         "key":    "facilities",
@@ -296,6 +295,11 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
 def _resolved_differentiators() -> list[dict]:
     """_DCHUB_DIFFERENTIATORS with canon placeholders filled AT REQUEST TIME.
 
+    ★ 2026-08-30: also resolves GAS_STATE_TOKEN here, for exactly the reason
+      the docstring below already gives about counts — a sentence about the
+      DCGI's state, frozen at import or hardcoded at the definition site,
+      drifts away from the kill switch the same response is gated by.
+
     Every consumer of the differentiator list must go through here. Reading
     _DCHUB_DIFFERENTIATORS directly re-creates the bug documented on the
     `facilities` edge: a number frozen at import, drifting away from the
@@ -314,10 +318,10 @@ def _resolved_differentiators() -> list[dict]:
     facilities_detail = canon_text(
         "{canon_facilities} physical data center facilities tracked with "
         "operator, location and power detail.")
-    return [
+    return resolve_gas_copy([
         {**d, "value": facilities_detail} if d.get("key") == "facilities" else d
         for d in _DCHUB_DIFFERENTIATORS
-    ]
+    ])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -925,8 +929,7 @@ def why_dchub():
         "AI agent can query it directly over a live MCP server (" + str(_TOOLS_FLOOR) + "+ tools), "
         "get real-time grid and energy data across live grids on 5 continents (US "
         "ISOs + UK + EU + Taiwan + Japan + South Korea + Brazil + Australia) + 43 US balancing authorities, read the "
-        "proprietary daily DC Hub Power Index (its gas sibling, the DCGI, was "
-        "withdrawn 2026-08-08 rather than published wrong), and "
+        "proprietary daily DC Hub Power Index and its gas sibling the DCGI, and "
         "cite any answer via CC-BY-4.0 datasets with stable URLs and "
         "JSON-LD. It covers {canon_facilities} facilities and offers a free "
         "self-serve tier — so an agent can start in seconds, with no "
