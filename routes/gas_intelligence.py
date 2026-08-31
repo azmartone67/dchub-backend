@@ -354,11 +354,35 @@ def _build_gas_intel(state_code: str) -> dict:
         out.pop("headline", None)
         out["gas_to_grid_status"] = gas_to_grid_unavailable()
 
-    if not (gas_index_enabled() and gas_to_grid_enabled()):
-        out["omitted_no_fabrication"] = list(out["omitted_no_fabrication"]) + [
-            "DCGI composite / gas-to-grid $/MWh (withdrawn 2026-08-08 pending "
-            "correction — see dcgi_status / gas_to_grid_status)",
-        ]
+    # ★2026-08-31 — ONE ENTRY PER CAPABILITY THAT IS ACTUALLY ABSENT.
+    #
+    # This read `if not (gas_index_enabled() and gas_to_grid_enabled())` and then
+    # appended ONE string naming BOTH products. Two independent kill switches,
+    # one combined claim: the moment they disagreed, the response contradicted
+    # itself. Measured on the live API 2026-08-31T09:11Z, get_gas_intelligence
+    # (TX) returned `dcgi_score: 81.9` and `dcgi_verdict: GAS-ADVANTAGED` while
+    # its own `omitted_no_fabrication` array said the DCGI composite had been
+    # omitted as withdrawn. Both facts in one payload.
+    #
+    # That is worse here than in ordinary copy. `omitted_no_fabrication` is the
+    # field the tool descriptions tell agents to read to learn what an answer
+    # does NOT cover — it is the honesty layer itself. An agent that trusts it
+    # would discard a score sitting in the same object.
+    #
+    # The two switches are separate ON PURPOSE (util/gas_index.py: "deliberately
+    # two separate switches so the cheaper fix can ship first"), and on
+    # 2026-08-30 they diverged exactly as designed — the DCGI was restored and
+    # the gas-to-grid $/MWh was not. So the array is now built per switch: it
+    # names what is missing, never what its neighbour's state implies.
+    _omitted = []
+    if not gas_index_enabled():
+        _omitted.append(
+            "DCGI composite (withdrawn 2026-08-08 pending correction — see dcgi_status)")
+    if not gas_to_grid_enabled():
+        _omitted.append(
+            "gas-to-grid $/MWh (withdrawn 2026-08-08 pending correction — see gas_to_grid_status)")
+    if _omitted:
+        out["omitted_no_fabrication"] = list(out["omitted_no_fabrication"]) + _omitted
     return out
 
 
