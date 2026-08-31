@@ -256,10 +256,23 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
 
 
 @gsc_perf_bp.route("/api/v1/admin/gsc/performance/ingest", methods=["POST"])
-@require_internal_or_admin
 def admin_ingest():
     """Run an ingest. `?days=480` once to seed 16 months of history; the daily
-    cron then carries the trailing window."""
+    cron then carries the trailing window.
+
+    ★ require_internal_or_admin is a PREDICATE — `require_internal_or_admin(req)
+    -> bool` — not a decorator. Used as `@require_internal_or_admin` it was
+    applied to this function, returned False (a function has no .headers), and
+    the route then tried to register the bool `False` as a view. Flask needs
+    `__name__` on a view, so registration raised
+
+        'bool' object has no attribute '__name__'
+
+    which main.py's try/except logged and swallowed. The whole blueprint failed
+    to register, so BOTH routes 404'd — including the public read route that
+    needs no auth at all. Call it as a guard, never as a decorator."""
+    if not require_internal_or_admin(request):
+        return jsonify({"success": False, "error": "unauthorized"}), 401
     try:
         days = int(request.args.get("days") or DEFAULT_WINDOW_DAYS)
     except (TypeError, ValueError):

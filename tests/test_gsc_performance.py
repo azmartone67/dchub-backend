@@ -161,20 +161,67 @@ def test_read_route_validates_dimension():
     assert "400" in src
 
 
-def test_admin_ingest_is_auth_gated():
-    fn = _func("admin_ingest")
-    assert fn is not None
-    names = []
-    for d in fn.decorator_list:
-        if isinstance(d, ast.Name):
-            names.append(d.id)
-        elif isinstance(d, ast.Attribute):
-            names.append(d.attr)
-        elif isinstance(d, ast.Call):
-            f = d.func
-            names.append(getattr(f, "id", getattr(f, "attr", "")))
-    assert "require_internal_or_admin" in names, \
-        "the ingest route must not be public"
+def test_the_blueprint_actually_registers():
+    """★ THE TEST THAT WAS MISSING, and it cost a silent production 404.
+
+    The first version of this file asserted only that the string
+    "require_internal_or_admin" appeared in admin_ingest's decorator list. It
+    did — as `@require_internal_or_admin`. But that name is a PREDICATE,
+    `require_internal_or_admin(req) -> bool`, not a decorator. Applied with @,
+    it received the function, returned False, and the route tried to register
+    the bool `False` as a view. Flask needs `__name__` on a view, so
+    registration raised
+
+        'bool' object has no attribute '__name__'
+
+    main.py's try/except logged and swallowed it. The whole blueprint failed to
+    register — BOTH routes 404'd in production, including the public read route
+    — while every structural test in this file stayed green.
+
+    A grep over decorator names cannot see that. Registering the blueprint
+    against a real Flask app can, so do that."""
+    flask = pytest.importorskip("flask")
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    from routes.gsc_performance import register_gsc_performance_routes
+
+    app = flask.Flask(__name__)
+    register_gsc_performance_routes(app)          # must not raise
+    rules = {str(r) for r in app.url_map.iter_rules()}
+    assert "/api/v1/seo/performance" in rules
+    assert "/api/v1/admin/gsc/performance/ingest" in rules
+
+
+def test_admin_ingest_rejects_an_unauthenticated_caller():
+    """Behavioural, not structural: hit the route with no credential and
+    require a 401. The previous name-based check passed while the route did not
+    exist at all."""
+    flask = pytest.importorskip("flask")
+    import sys
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    from routes.gsc_performance import register_gsc_performance_routes
+
+    app = flask.Flask(__name__)
+    register_gsc_performance_routes(app)
+    with app.test_client() as cl:
+        r = cl.post("/api/v1/admin/gsc/performance/ingest?days=5")
+    assert r.status_code == 401, \
+        f"unauthenticated ingest returned {r.status_code}, expected 401"
+
+
+def test_the_predicate_is_never_used_as_a_decorator():
+    """Pin the specific misuse so it cannot come back anywhere in this module."""
+    for fn_name in ("admin_ingest", "read_performance"):
+        fn = _func(fn_name)
+        for d in fn.decorator_list:
+            nm = (getattr(d, "id", None)
+                  or getattr(d, "attr", None)
+                  or getattr(getattr(d, "func", None), "id", None))
+            assert nm != "require_internal_or_admin", (
+                f"{fn_name} uses require_internal_or_admin as a decorator; it "
+                f"is a predicate — call it inside the view instead")
+    assert "if not require_internal_or_admin(request)" in TEXT, \
+        "the ingest route must still check the credential"
 
 
 def test_admin_ingest_clamps_days():
