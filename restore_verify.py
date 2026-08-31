@@ -21,6 +21,7 @@ Env:
 
 Exit 0 = PASS, 1 = FAIL. Never writes to either database.
 """
+import json
 import os
 import sys
 import psycopg2
@@ -48,6 +49,7 @@ NEON_EXT_DEPENDENT = {
 }
 
 TARGET = os.environ.get("RESTORE_TARGET_URL", "")
+MANIFEST_PATH = os.environ.get("BACKUP_MANIFEST", "backup_manifest.json")
 SOURCE = os.environ.get("SOURCE_DATABASE_URL", "")
 
 
@@ -121,6 +123,57 @@ def table_estimates(conn):
     return {r[0]: r[1] for r in cur.fetchall()}
 
 
+def load_manifest(path=None):
+    """The dump's own table inventory, or None.
+
+    ★2026-08-31 — THE BUG THIS CLOSES. This gate compared the restored dump
+    against LIVE prod. Those are two different points in time, and the gap is
+    hours: the 08-31 run restored a dump begun 09:41:50 and compared it against
+    prod as read at 11:27. `gsc_daily_performance` was created and backfilled in
+    between (all 55,071 rows stamped 10:15:53-10:18:38), so it was legitimately
+    absent from a correct dump — and the gate called it "SIGNIFICANT source table
+    absent from restore" and failed.
+
+    Nothing was lost. The backup was fine. The comparison was wrong, and a DR
+    gate that cries wolf is one nobody reads — which is exactly how a real
+    unrestorable backup would slip past.
+
+    The dump now ships an inventory of what existed when it ran. Compare against
+    that and the race cannot happen: a table that did not exist cannot be missing.
+    """
+    path = path or MANIFEST_PATH
+    try:
+        with open(path, encoding="utf-8") as fh:
+            m = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"(manifest at {path} unreadable: {str(e)[:120]})")
+        return None
+    tables = m.get("tables")
+    if not isinstance(tables, dict) or not tables:
+        # An empty inventory would claim prod had no tables and excuse EVERY
+        # missing table. Refuse it and fall back to the live compare.
+        print(f"(manifest at {path} has no usable table inventory — ignoring)")
+        return None
+    return {"taken_at": m.get("taken_at") or "unknown", "tables": tables}
+
+
+def classify_missing(src, restored, skip, significant_rows=SIGNIFICANT_ROWS):
+    """Split source tables absent from the restore into three buckets.
+
+    Pure: no DB, no env. `skip(name)` marks a table whose absence from a vanilla
+    test container is expected (extension-owned / extension-typed / Neon-only).
+    Returns (expected_absent, minor_missing, sig_missing), each name-sorted.
+    """
+    missing = [t for t in src if t not in restored]
+    expected_absent = sorted(t for t in missing if skip(t))
+    real_missing = [t for t in missing if not skip(t)]
+    sig_missing = sorted(t for t in real_missing if src.get(t, 0) >= significant_rows)
+    minor_missing = sorted(t for t in real_missing if t not in set(sig_missing))
+    return expected_absent, minor_missing, sig_missing
+
+
 def main():
     if not TARGET:
         fail("RESTORE_TARGET_URL not set")
@@ -150,6 +203,7 @@ def main():
 
     # ---- optional compare against the live source ----
     src = {}
+    source_ok = False
     ext_owned = set()  # tables CREATED by an extension (e.g. postgis.spatial_ref_sys)
     ext_typed = set()  # tables that merely USE an extension-provided column type
     if SOURCE:
@@ -189,25 +243,42 @@ def main():
                 """
             )
             ext_typed = {r[0] for r in sc.fetchall()}
+            source_ok = True
             print(f"\nSource public tables: {len(src)}  "
                   f"(extension-owned: {len(ext_owned)}, extension-typed: {len(ext_typed)})")
         except Exception as e:
             print(f"(source compare skipped — could not read source: {str(e)[:140]})")
 
+    # Prefer the dump's OWN inventory over live prod. Only when the live read
+    # succeeded, because the extension-owned/typed sets come from there and
+    # without them every geo/vector table reads as catastrophic loss.
+    manifest = load_manifest()
+    if manifest and source_ok:
+        live_only = sorted(set(src) - set(manifest["tables"]))
+        src = manifest["tables"]
+        print(f"Comparing against the DUMP MANIFEST (taken_at={manifest['taken_at']}, "
+              f"{len(src)} tables) rather than live prod — a table created after the\n"
+              f"dump is not data loss.")
+        if live_only:
+            print("  tables that appeared in prod AFTER this dump (correctly not in it): "
+                  + ", ".join(live_only[:12]) + (" ..." if len(live_only) > 12 else ""))
+    elif manifest and not source_ok:
+        print("(manifest present but the live source was unreadable — skipping the "
+              "absent-table compare entirely rather than failing every extension-typed table)")
+    elif src:
+        print("::warning::no manifest for this dump — comparing against LIVE prod, which "
+              "has moved on since the dump. A table created in between will read as loss.")
+
     problems = []   # -> FAIL
     warns = []      # -> print only
 
     if src:
-        missing = [t for t in src if t not in restored]
         # Extension-owned tables (postgis spatial_ref_sys, etc.) AND extension-typed
         # tables (geometry/vector columns) are recreated by CREATE EXTENSION on a
         # real Neon target — their absence in a vanilla container is expected, never
         # data loss, regardless of row count.
         skip = lambda t: t in ext_owned or t in ext_typed or t in NEON_EXT_DEPENDENT
-        expected_absent = sorted(t for t in missing if skip(t))
-        real_missing = [t for t in missing if not skip(t)]
-        sig_missing = sorted(t for t in real_missing if src.get(t, 0) >= SIGNIFICANT_ROWS)
-        minor_missing = sorted(t for t in real_missing if t not in sig_missing)
+        expected_absent, minor_missing, sig_missing = classify_missing(src, restored, skip)
         if expected_absent:
             print("INFO — extension-owned/typed tables absent from the vanilla test "
                   "container (restored by CREATE EXTENSION on a real Neon target):")
