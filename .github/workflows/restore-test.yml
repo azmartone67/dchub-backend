@@ -64,7 +64,14 @@ jobs:
 
       - name: Start throwaway Postgres (durability off = faster restore, less WAL)
         run: |
-          docker run -d --name pgrt \
+          # ★2026-08-31 --shm-size: Docker defaults /dev/shm to 64MB. Postgres puts
+          # parallel-worker DSM segments there, so building the pgvector HNSW index
+          # on brain_corpus_embeddings asked for 64,000,128 bytes and died with
+          #   could not resize shared memory segment ... No space left on device
+          # The runner had 72GB of DISK free — this was never a disk problem, and
+          # reading it as one would have sent the next person to the wrong place.
+          # A restore missing an index is not a faithful restore.
+          docker run -d --name pgrt --shm-size=1g \
             -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=restore_test \
             -p 5432:5432 pg-restoretest:18 \
             -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_wal_size=6GB
@@ -98,12 +105,27 @@ jobs:
                             region_name="auto")
           objs = s3.list_objects_v2(Bucket=os.environ["R2_BUCKET_NAME"],
                                     Prefix="neon_backup_").get("Contents", [])
-          if not objs:
-              raise SystemExit("no neon_backup_* objects in R2 — nothing to restore")
-          latest = max(objs, key=lambda o: o["LastModified"])
+          # ★ .sql.gz ONLY. The dump now ships a `.manifest.json` sidecar under the
+          # same prefix, uploaded AFTER the dump — so a plain max(LastModified)
+          # would pick the manifest and hand a JSON file to gunzip.
+          dumps = [o for o in objs if o["Key"].endswith(".sql.gz")]
+          if not dumps:
+              raise SystemExit("no neon_backup_*.sql.gz objects in R2 — nothing to restore")
+          latest = max(dumps, key=lambda o: o["LastModified"])
           print(f"latest backup: {latest['Key']}  {latest['Size']/1048576:.1f} MB  {latest['LastModified']}")
           s3.download_file(os.environ["R2_BUCKET_NAME"], latest["Key"], "backup.sql.gz")
           open("BACKUP_KEY.txt", "w").write(latest["Key"])
+
+          # The sidecar records which tables existed WHEN THE DUMP RAN. Without it
+          # the verifier compares against a prod that has moved on since, and any
+          # table created in between reads as data loss. Absent on dumps taken
+          # before 2026-08-31 — the verifier says so rather than assuming.
+          mkey = latest["Key"][:-len(".sql.gz")] + ".manifest.json"
+          try:
+              s3.download_file(os.environ["R2_BUCKET_NAME"], mkey, "backup_manifest.json")
+              print(f"manifest: {mkey}")
+          except Exception as e:
+              print(f"no manifest for this dump ({mkey}): {str(e)[:120]}")
           PY
 
       - name: Restore into throwaway Postgres
