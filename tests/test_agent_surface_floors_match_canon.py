@@ -1,0 +1,153 @@
+"""The hand-maintained agent-facing surfaces must agree with PINNED canon.
+
+WHY CI NEEDS THIS WHEN A RUNTIME SHELL ALREADY CHECKS IT
+--------------------------------------------------------
+loop-control's `surface_canon` lane does check these files — and it had been
+reporting them red. It is a runtime shell: it observes drift after it ships and
+files a finding nobody converts. The audit shell's own note is the whole story:
+
+    "llms-full.txt is three canon generations stale
+     (15,000+ facilities / 1,500+ deals) — never a heal target"
+
+Never a heal target. These files are hand-maintained, no generator writes them,
+and the daily heal that keeps the SERVED copies current does not touch them. So
+they drifted for three canon generations while every automated surface stayed
+right, and the only thing watching could report but not fix.
+
+Measured 2026-08-31, before this guard:
+
+    facilities   15,000+  (static/llms.txt, static/llms-full.txt, llms.txt,
+                           .well-known/mcp.json)   canon 18,500+   UNDER by 3,500
+    facilities   12,650+  (dchub-frontend/llms.txt)                UNDER by 5,850
+    M&A deals     4,000+  (static/llms.txt)        canon  1,900+   OVER by 2,100
+    M&A deals     1,600+  (llms.txt, mcp.json)                     UNDER
+    M&A deals     1,400+  (llms.txt)                               UNDER
+
+The same quantity stated three different ways across four files, one of them an
+over-claim. An agent reading llms.txt to decide whether to use DC Hub was being
+told we track 4,000+ deals in one file and 1,400+ in another.
+
+This guard is CI-side so the drift cannot land, not merely be noticed later.
+"""
+
+import ast
+import pathlib
+import re
+
+import pytest
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+# Surfaces an agent or crawler reads directly, that NO generator maintains.
+SURFACES = (
+    "static/llms.txt",
+    "static/llms-full.txt",
+    "llms.txt",
+    # ★ The repo-ROOT llms-full.txt and README.md were missed on the first pass
+    # of this fix and caught by test_pending_facility_surfaces_still_need_fixing
+    # — the ratchet that refuses to keep waiving a surface once it is clean.
+    # Both are separate files from their static/ near-twins.
+    "llms-full.txt",
+    "README.md",
+    "dchub-frontend/llms.txt",
+    ".well-known/mcp.json",
+)
+
+# Floors that were live-wrong on 2026-08-31 and must never return.
+RETIRED_FACILITY_FLOORS = ("15,000+", "12,650+")
+RETIRED_DEAL_FLOORS = ("4,000+", "1,600+", "1,400+")
+
+FACILITY_WORDS = ("facilit", "data center", "physical")
+DEAL_WORDS = ("m&a", "transaction", "deal", "acquisition")
+
+
+def _pinned():
+    """PINNED without importing the module (it pulls in flask-adjacent deps)."""
+    src = (ROOT / "ai_surface_canon.py").read_text(encoding="utf-8")
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == "PINNED" for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("PINNED not found in ai_surface_canon.py")
+
+
+PUBLIC = _pinned()["public"]
+CANON_FACILITIES = PUBLIC["facilities"]
+CANON_DEALS = PUBLIC["deals"]
+
+
+def _existing():
+    return [rel for rel in SURFACES if (ROOT / rel).exists()]
+
+
+def test_the_surface_list_is_not_empty():
+    """A file rename would otherwise make every test below vacuously pass —
+    the exact shape the scan-floor meta-guard exists to prevent."""
+    found = _existing()
+    assert len(found) >= 6, f"only {len(found)} of {len(SURFACES)} surfaces found: {found}"
+
+
+@pytest.mark.parametrize("rel", SURFACES)
+def test_no_retired_facility_floor_is_served(rel):
+    p = ROOT / rel
+    if not p.exists():
+        pytest.skip(f"{rel} absent")
+    text = p.read_text(encoding="utf-8")
+    hits = [f for f in RETIRED_FACILITY_FLOORS if f in text]
+    assert not hits, (
+        f"{rel} carries retired facility floor(s) {hits}; canon is "
+        f"{CANON_FACILITIES}. These files are hand-maintained — no heal job "
+        f"will fix this for you.")
+
+
+@pytest.mark.parametrize("rel", SURFACES)
+def test_no_retired_deal_floor_is_served(rel):
+    p = ROOT / rel
+    if not p.exists():
+        pytest.skip(f"{rel} absent")
+    text = p.read_text(encoding="utf-8")
+    hits = [f for f in RETIRED_DEAL_FLOORS if f in text]
+    assert not hits, (
+        f"{rel} carries retired deal floor(s) {hits}; canon is {CANON_DEALS}. "
+        f"4,000+ in particular was an OVER-claim — the direction that costs "
+        f"credibility rather than traffic.")
+
+
+def test_every_surface_states_the_facility_floor_the_same_way():
+    """Three files saying three different numbers for one quantity is the
+    defect, independent of which number is right."""
+    seen = {}
+    for rel in _existing():
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        for line in text.split("\n"):
+            low = line.lower()
+            if not any(w in low for w in FACILITY_WORDS):
+                continue
+            for m in re.finditer(r"\b\d{1,3}(?:,\d{3})+\+", line):
+                # only facility-scale numbers, not markets/countries/assets
+                v = int(m.group(0).replace(",", "").rstrip("+"))
+                if 5_000 <= v <= 100_000:
+                    seen.setdefault(m.group(0), set()).add(rel)
+    assert len(seen) <= 1, (
+        f"facility floor stated {len(seen)} different ways across surfaces: "
+        + "; ".join(f"{k} in {sorted(v)}" for k, v in sorted(seen.items())))
+    if seen:
+        assert CANON_FACILITIES in seen, (
+            f"surfaces agree on {list(seen)[0]} but canon is {CANON_FACILITIES}")
+
+
+def test_canon_values_are_what_this_guard_thinks_they_are():
+    """If PINNED moves, this file must be re-read rather than silently pinning
+    a stale expectation — the failure mode it was written to catch."""
+    assert CANON_FACILITIES == "18,500+", (
+        f"PINNED facilities moved to {CANON_FACILITIES}. Update the surfaces "
+        f"in SURFACES and the RETIRED_* lists, then this assertion.")
+    assert CANON_DEALS == "1,900+", (
+        f"PINNED deals moved to {CANON_DEALS}. Same drill.")
+
+
+def test_retired_lists_do_not_contain_the_current_canon():
+    """The bug that put surface-truth's three lanes permanently red: a ban that
+    also matches the value canon accepts. Never let these lists collide."""
+    assert CANON_FACILITIES not in RETIRED_FACILITY_FLOORS
+    assert CANON_DEALS not in RETIRED_DEAL_FLOORS
