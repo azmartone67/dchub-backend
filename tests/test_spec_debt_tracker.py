@@ -80,14 +80,62 @@ def test_workflow_is_valid_yaml_and_shell():
         os.unlink(path)
 
 
-def test_fires_only_on_merged_brain_spec_prs():
+_TITLE_GATE_RE = re.compile(
+    r"startsWith\(\s*github\.event\.pull_request\.title\s*,\s*'(\[brain-[^']*)'\s*\)")
+
+
+def _title_gate_prefix() -> str:
+    """The namespace prefix the job gate keys on, or fail loudly."""
+    cond = " ".join(str(_wf()["jobs"]["file-spec-debt"]["if"]).split())
+    m = _TITLE_GATE_RE.search(cond)
+    assert m, f"must match on the PR title prefix; got: {cond}"
+    return m.group(1)
+
+
+def test_fires_only_on_merged_brain_prs():
     cond = " ".join(str(_wf()["jobs"]["file-spec-debt"]["if"]).split())
     assert "merged == true" in cond, "must not fire on a closed-unmerged PR"
     # Assert the TITLE is what is matched. A weaker check ("[brain-spec]" is
     # somewhere in the condition) passed when the field was swapped to .body,
-    # which would fire on any PR merely mentioning a spec.
-    assert re.search(r"startsWith\(\s*github\.event\.pull_request\.title\s*,\s*'\[brain-spec\]'\s*\)",
-                     cond), f"must match on the PR title prefix; got: {cond}"
+    # which would fire on any PR merely mentioning a spec. That protection is
+    # unchanged — _TITLE_GATE_RE still pins the FIELD.
+    #
+    # ★ 2026-08-31 — the PREFIX widened from '[brain-spec]' to '[brain-'. It
+    # watched one of the three paths that open brain scaffold PRs, so 9 merged
+    # [brain-l6 strategic-draft] PRs went untracked, 0 of 9. The gate is now the
+    # namespace ROOT so the next producer is covered by default. This test
+    # therefore pins the SHAPE (title field + a [brain- prefix), not one literal
+    # namespace — pinning the literal is what made the miss invisible.
+    assert _title_gate_prefix().startswith("[brain-")
+
+
+def test_the_gate_does_not_sweep_in_ordinary_prs():
+    """The widened prefix must still exclude human PRs, which often carry
+    checklists of their own — otherwise every one of them files spec debt."""
+    prefix = _title_gate_prefix()
+    for title in ("fix(seo): the GSC blueprint never registered",
+                  "chore: weekly shadow route inventory refresh",
+                  "Add DC Hub — data-center intelligence MCP server",
+                  "[spec-debt] inv #100399: story links"):
+        assert not title.startswith(prefix), (
+            f"{title!r} would be swept in by the gate prefix {prefix!r}")
+
+
+def test_the_gate_covers_every_brain_pr_opener():
+    """Each PR-opening path's title prefix, asserted against the live gate.
+
+    The 2026-08-31 miss was invisible because nothing enumerated the producers
+    in one place. This is that place: add a producer, add it here.
+    """
+    prefix = _title_gate_prefix()
+    for opener, title_prefix in (
+            ("routes/brain_pr_opener.py",         "[brain-spec]"),
+            ("routes/brain_strategic_planner.py", "[brain-l6 strategic-draft]"),
+            ("routes/brain_backlog_admin.py",     "[brain-l5 draft]")):
+        assert title_prefix.startswith(prefix), (
+            f"{opener} opens PRs titled {title_prefix!r}, which the spec-debt "
+            f"gate prefix {prefix!r} does not match — its merged obligations "
+            f"would vanish untracked")
 
 
 def test_an_unchecked_checklist_is_detected():
