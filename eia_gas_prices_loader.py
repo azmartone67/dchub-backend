@@ -311,10 +311,14 @@ def fetch_and_upsert(conn):
         # ORDER BY period DESC, so an older real value wins over no value.
         #
         # ★ This comment used to name "TX/OH/WA industrial" as the motivating
-        #   example. That was wrong and it hid the real bug for two months:
-        #   those three were not withheld at any period, they were never mapped
-        #   at all (bare-uppercase `area-name` vs a Title-Case STATE_MAP), so
-        #   pagination could not have rescued them. Withheld and unmapped look
+        #   example. That was wrong: those three were not withheld at any
+        #   period, they were never mapped at all (bare-uppercase `area-name`
+        #   vs a Title-Case STATE_MAP), so pagination could not have rescued
+        #   them.
+        #   ★ 2026-08-31: the "two months" this note originally claimed is
+        #   also wrong — the file has THREE commits (added 2026-07-30, the
+        #   casing fix 2026-08-30, this correction), so the misleading comment
+        #   stood 31 days, not two. `git log -- eia_gas_prices_loader.py`. Withheld and unmapped look
         #   identical downstream — zero rows — which is why the drop below is
         #   now counted and reported instead of silently `continue`d.
         records = []
