@@ -17,8 +17,8 @@ Entry point for the DC Hub backend. Generated from the tree, so it cannot quietl
 | master shells | 78 |
 | numbered brain-layer modules | 20 |
 | probed loops | 7 |
-| declared loop edges | 4 |
-| typed source nodes | 3 |
+| declared loop edges | 0 |
+| typed source nodes | 0 |
 
 _Layer modules outnumber layer numbers — L14, L15 and L22 each ship more than one module._
 

@@ -17,22 +17,13 @@ Shell #49's graph. Every row of `/api/v1/system/loops` carries `input_status`, s
 
 ## Declared edges (producer → consumer)
 
-| producer | consumer | kind | evidence |
-|---|---|---|---|
-| `mcp_traffic` | `brain_learn` | probe | code |
-| `iso_extract` | `dcpi_recompute` | data | declared |
-| `dcpi_recompute` | `auto_press_daily` | data | declared |
-| `mcp_traffic` | `engagement_track` | data | declared |
+_none readable_
 
 ## Source nodes (producer is OUTSIDE the board)
 
 > [!note] A root is not a gap
 > These have no upstream loop and never will. They must never be given an edge — an invented edge would be trusted exactly as much as a proven one.
 
-| loop | external producer |
-|---|---|
-| `mcp_traffic` | external MCP clients (Claude, Cursor, agent directories) |
-| `testimonial_ingest` | public HN / Reddit / MCP-directory citations |
-| `iso_extract` | ISO grid telemetry pull (GitHub Actions, cron '5,25,45 * * * *') |
+_none declared_
 
 Related: [[Architecture Map]], [[Master Shells]]
