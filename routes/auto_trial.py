@@ -114,7 +114,43 @@ CREATE INDEX IF NOT EXISTS ix_auto_trial_signedup ON auto_trial_keys(signed_up_e
 """
 
 
+# ── r-ddl-once (2026-08-31) ──────────────────────────────────────────
+# WHY THIS FLAG EXISTS — a measured production stall, not a theory.
+#
+# _ensure_schema was called on EVERY request through four paths, and it issues
+# one CREATE TABLE IF NOT EXISTS plus five ALTER TABLE ... ADD COLUMN IF NOT
+# EXISTS. All of those are no-ops after the first run, but a no-op ALTER still
+# REQUESTS ACCESS EXCLUSIVE. Observed live at 2026-08-31 09:5x UTC:
+#
+#   pid 29441  COPY public.fiber_kmz_routes_old_0822 ...      549s   (the dump)
+#   pid 30160  ALTER TABLE auto_trial_keys ADD COLUMN ...     268s   waiting
+#   pid 30760  CREATE TABLE IF NOT EXISTS auto_trial_keys       7s   waiting on 30160
+#   -> 17 of 20 active backends blocked
+#
+# The chain: a pg_dump holds ACCESS SHARE on every table for the whole dump.
+# A no-op ALTER then queues for ACCESS EXCLUSIVE behind it — and in PostgreSQL
+# a PENDING exclusive request blocks every request that arrives after it. So
+# ordinary reads of auto_trial_keys, which would have coexisted with the dump
+# perfectly happily, stacked up behind our own pointless DDL. The backup made
+# the trial-minting path unavailable, and the DDL is the only reason it could.
+#
+# Running it once per process keeps the schema guarantee (a fresh worker still
+# ensures the table exists) and removes the per-request lock request entirely.
+# On failure the flag is NOT set, so a genuinely missing schema is retried
+# rather than silently skipped forever.
+#
+# Same class as #3366 ("a no-op ALTER still takes ACCESS EXCLUSIVE — stop
+# running it per request"), which fixed one site; this is another.
+# DCHUB_AUTO_TRIAL_DDL_ALWAYS=1 restores the old per-call behaviour.
+_SCHEMA_READY = False
+
+
 def _ensure_schema(c):
+    global _SCHEMA_READY
+    if _SCHEMA_READY and not str(
+            os.environ.get("DCHUB_AUTO_TRIAL_DDL_ALWAYS", "")).strip().lower() \
+            in ("1", "true", "yes", "on"):
+        return
     try:
         with c.cursor() as cur:
             cur.execute(_SCHEMA)
@@ -130,6 +166,9 @@ def _ensure_schema(c):
             # the full daily allowance — the bridge that makes agents capture a lead).
             cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS daily_count INT NOT NULL DEFAULT 0")
             cur.execute("ALTER TABLE auto_trial_keys ADD COLUMN IF NOT EXISTS daily_date DATE")
+        # Only on a CLEAN pass. A failure leaves the flag false so the next
+        # request retries — a half-applied schema must not be latched as done.
+        _SCHEMA_READY = True
     except Exception:
         try: c.rollback()
         except Exception: pass
