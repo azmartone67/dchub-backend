@@ -33,6 +33,7 @@ import routes.brain_strategic_planner as planner
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _GATE = _ROOT / ".github/workflows/brain-pr-substance-gate.yml"
+_TRACKER = _ROOT / ".github/workflows/brain-spec-debt-tracker.yml"
 
 # The real spec text of be#3418, which blocked. "fix" appears twice, both times
 # as the brain describing a thing to build — never as a claim about this PR.
@@ -138,3 +139,86 @@ def test_the_marker_does_not_exempt_a_pr_that_touches_running_code():
     """The marker must not become a blanket bypass."""
     assert _gate_verdict("[brain-l6 strategic-draft] x", _body(),
                          _INERT_FILES + ["main.py"]) == "pass"
+
+
+# ───────────────────────────────────────────── the OTHER gate reading this body
+#
+# ★ 2026-08-31. brain-spec-debt-tracker re-files a merged scaffold's unchecked
+# checklist as a tracked issue, because merging closes the PR and a closed PR is
+# not a backlog. It watched startsWith(title, '[brain-spec]') — ONE of the three
+# paths that open brain scaffold PRs — so 9 merged [brain-l6 strategic-draft]
+# PRs were never tracked, 0 of 9.
+#
+# There were TWO independent misses, and either alone re-breaks it:
+#   1. the title namespace (job skipped outright), and
+#   2. the body used a NUMBERED list, so the tracker's `^- [ ]` grep found
+#      nothing and it exited 0 logging "spec was completed before merge" — a
+#      false negative that reports as SUCCESS.
+#
+# Both are pinned below, and both read the tracker's own YAML rather than a copy.
+
+
+def _tracker_source() -> str:
+    assert _TRACKER.exists(), f"spec-debt tracker missing at {_TRACKER}"
+    return _TRACKER.read_text()
+
+
+def _tracker_title_prefix() -> str:
+    """The namespace the tracker keys on, lifted from its job gate."""
+    m = re.search(
+        r"startsWith\(github\.event\.pull_request\.title, '([^']+)'\)",
+        _tracker_source())
+    assert m, "could not locate the tracker's title gate"
+    return m.group(1)
+
+
+def _tracker_checklist_pattern() -> str:
+    """The tracker's OWN checklist grep, lifted from the workflow."""
+    m = re.search(r"grep -q '(\^- \\\[ \\\])'", _tracker_source())
+    assert m, "could not locate the tracker's checklist grep"
+    # Returned VERBATIM. `^- \[ \]` is already a valid Python regex meaning a
+    # literal "[ ]"; stripping the backslashes would turn it into the character
+    # class [ ], which matches one space — so it would silently stop matching
+    # the very lines it exists to find, and every test here would go red for
+    # the wrong reason.
+    return m.group(1)
+
+
+def test_the_debt_tracker_watches_our_title_namespace():
+    assert planner.SCAFFOLD_TITLE_PREFIX.startswith(_tracker_title_prefix()), (
+        f"tracker keys on {_tracker_title_prefix()!r} but this generator emits "
+        f"{planner.SCAFFOLD_TITLE_PREFIX!r} — merged scaffolds would go untracked")
+
+
+def test_every_generated_body_carries_a_checklist_the_tracker_can_see():
+    """A numbered list here reads to the tracker as 'spec was completed'."""
+    pat = _tracker_checklist_pattern()
+    hits = [ln for ln in _body().split("\n") if re.match(pat, ln)]
+    assert hits, (
+        f"no line matches the tracker's {pat!r} — on merge it would exit 0 "
+        f"claiming the spec was completed, and the obligation would vanish")
+
+
+@pytest.mark.parametrize("spec", ["", None, _SPEC_3418])
+def test_the_checklist_survives_every_spec_shape(spec):
+    pat = _tracker_checklist_pattern()
+    assert [ln for ln in _body(spec).split("\n") if re.match(pat, ln)]
+
+
+def test_the_checklist_does_not_reintroduce_a_fix_claim():
+    """The checklist is new prose in a body the substance gate also reads."""
+    pat = _tracker_checklist_pattern()
+    checklist = "\n".join(ln for ln in _body().split("\n") if re.match(pat, ln))
+    assert not re.search(_gate_fix_regex(), checklist, re.I), (
+        "checklist wording must avoid close/fix/resolve — it rides in a body "
+        "the substance gate greps")
+
+
+def test_both_gates_agree_on_one_generated_body():
+    """End to end: not blocked by one gate, and visible to the other."""
+    body = _body()
+    assert _gate_verdict(f"{planner.SCAFFOLD_TITLE_PREFIX} x", body,
+                         _INERT_FILES) == "neutral"
+    assert planner.SCAFFOLD_TITLE_PREFIX.startswith(_tracker_title_prefix())
+    pat = _tracker_checklist_pattern()
+    assert [ln for ln in body.split("\n") if re.match(pat, ln)]

@@ -33,6 +33,35 @@
 # NOT retroactive on purpose: the 60 already merged would arrive as 60 issues
 # in one burst and be closed as noise. The backlog number is reported instead.
 #
+# ★ 2026-08-31 — THE GATE WATCHED ONE PRODUCER OF THREE.
+#
+# This fired on startsWith(title, '[brain-spec]'), which is ONE of the three
+# paths that open brain scaffold PRs:
+#
+#   [brain-spec]                 routes/brain_pr_opener.py           TRACKED
+#   [brain-l6 strategic-draft]   routes/brain_strategic_planner.py   missed
+#   [brain-l5 draft]             routes/brain_backlog_admin.py       missed
+#
+# 9 [brain-l6 strategic-draft] PRs had merged, 0 of 9 tracked. Their severity is
+# HIGHER than the case this was built for: a merged spec PR at least lands a
+# doc, while a merged strategic draft lands a doc plus a routes/_proposed_*
+# stub main.py never imports — it ships literally nothing. Measured live on
+# 08-31 at 19:14, one minute apart: brain-spec/inv-100399 -> success (filed),
+# brain-l6/strategic-pre-merge-metric-... -> skipped (nothing filed).
+#
+# The gate is now '[brain-' so the NEXT producer someone adds is covered by
+# default rather than silently unwatched. That default is the actual fix; the
+# two namespaces are just today's instance of it.
+#
+# There were TWO independent misses and widening this alone would not have been
+# enough: the strategic body also used a NUMBERED list, so the `^- [ ]` grep
+# below found nothing and the step exited 0 logging "spec was completed before
+# merge" — a false negative that reports as success. The planner now emits a
+# real checklist (routes/brain_strategic_planner.py::_scaffold_pr_body).
+#
+# NOT retroactive, unchanged: this triggers on pull_request[closed] only, so the
+# 9 already-merged drafts stay unfiled by construction, per the reasoning above.
+#
 # Kill switch: repo variable BRAIN_SPEC_DEBT_DISABLE=1.
 
 name: brain-spec-debt-tracker
@@ -50,7 +79,7 @@ jobs:
   file-spec-debt:
     if: >
       github.event.pull_request.merged == true &&
-      startsWith(github.event.pull_request.title, '[brain-spec]')
+      startsWith(github.event.pull_request.title, '[brain-')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -100,7 +129,7 @@ jobs:
             printf '%s\n\n' "Merged spec **$PR_URL** left its human checklist unchecked, so the work it describes has no other home."
             printf '%s\n\n' "$CHECKLIST"
             printf '%s\n' "---"
-            printf '%s\n\n' "Filed automatically because merging a \`[brain-spec]\` PR closes it, and a closed PR is not a backlog. This issue IS the backlog entry — close it when the spec is implemented, or when it is genuinely not worth doing."
+            printf '%s\n\n' "Filed automatically because merging a \`[brain-*]\` PR closes it, and a closed PR is not a backlog. This issue IS the backlog entry — close it when the spec is implemented, or when it is genuinely not worth doing."
             printf '%s\n\n' "Measured on 2026-08-13: 60 of 60 merged brain-spec PRs had an unchecked checklist and none was ever completed. This tracker exists so that number can go down instead of being invisible."
             printf '<sub>%s · brain-spec-debt-tracker</sub>\n' "$MARKER"
           } > /tmp/spec-debt-body.md
@@ -109,7 +138,7 @@ jobs:
           # swallowed a 401 and stayed green (see data-sync.yml). A tracker that
           # silently fails to track is worse than none — fail loudly instead.
           gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "[spec-debt] ${PR_TITLE#\[brain-spec\] }" \
+            --title "[spec-debt] ${PR_TITLE#\[*\] }" \
             --body-file /tmp/spec-debt-body.md \
             --label spec-debt
 
