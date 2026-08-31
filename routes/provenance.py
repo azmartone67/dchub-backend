@@ -56,6 +56,10 @@ only, backward compatible).
 """
 from __future__ import annotations
 
+import os
+import threading
+import time
+
 PROVENANCE_VERSION = 1
 LICENSE = "CC-BY-4.0"
 CITE_AS = "DC Hub, dchub.cloud"
@@ -282,3 +286,118 @@ def facility_verification_counts():
     except Exception:
         pass
     return None
+
+
+# ─── which POPULATION a verification_counts block describes ─────────────────
+#
+# ★2026-08-28 — `verification_counts` on /api/v1/facilities described a
+# DIFFERENT table than the rows beside it. The authenticated arm
+# (_list_facilities_full) serves `SELECT * FROM facilities WHERE
+# duplicate_of_id IS NULL`, but stamped the counts from
+# canonical_stats — which counts `discovered_facilities`. Measured live on
+# 2026-08-28: the GB slice returned 834 rows out of the `facilities` table
+# next to "verified 19,332 of tracked 27,099", and every one of those rows
+# carried v="tracked", because `facilities` has no is_duplicate column at
+# all. One response, two populations, presented as one.
+#
+# That is a PUBLISHED number, not an internal one: the MCP server tells
+# agents to cite it as "N analyst-verified of M tracked facilities".
+#
+# Two rules come out of this, and they are why the legacy block below
+# publishes `tracked` ALONE:
+#
+#  1. Count over the table you SERVE. A count of another table is not a
+#     conservative approximation of this one — it is a different fact.
+#  2. Do NOT invent a `verified` tier for a table that has none. The
+#     obvious "fix" — calling the 22,130 rows that pass `duplicate_of_id
+#     IS NULL` the verified subset — publishes a BIGGER over-claim than
+#     the bug did, and against this repo's standing rule (main.py ~21578,
+#     on the same ambiguity at /api/v1/stats): both dedup predicates "are
+#     DE-DUPLICATION states, not source verifications, and neither should
+#     be published as 'verified'". A row that survived cross-source
+#     de-duplication has not been analyst-verified.
+#
+# So the counts and the per-record `v` flags now agree on this surface:
+# every served row is "tracked", and the block says tracked-only.
+#
+# Both sentences below are quoted into `method` at the wiring sites so the
+# population is stated in the response rather than inferred from the table
+# name in `source`. tests/test_facilities_counts_population.py pins each
+# call site to the pair matching the table it actually queries.
+
+COUNTS_BASIS_DISCOVERED = (
+    "verification_counts describe discovered_facilities — the same corpus "
+    "these rows are drawn from (tracked = every row; verified = distinct "
+    "canonical_slug passing the fleet filter COALESCE(is_duplicate,0)=0)"
+)
+
+COUNTS_BASIS_LEGACY = (
+    "verification_counts describe the curated `facilities` table these rows "
+    "are drawn from (tracked = rows passing the cross-source de-duplication "
+    "filter duplicate_of_id IS NULL). That table carries no fleet-verification "
+    "flag, so NO verified count is published for it and every record here is "
+    "v='tracked'; do not compare this tracked figure with the "
+    "discovered_facilities counts published by the free tier and the "
+    "per-facility endpoints — they are different populations"
+)
+
+# 10-minute TTL, matching canonical_stats — these move slowly, and a hot
+# list endpoint must not pay a COUNT(*) per request.
+_LEGACY_TTL_S = 600
+# This query MUST name `facilities`. It exists solely to count the table that
+# `_list_facilities_full` actually serves; pointing it at `discovered_facilities`
+# would restore the exact defect this module was changed to fix — counts that
+# describe a different population than the rows beside them.
+# (Token must sit within 2 lines of the match; the scanner only looks that far.)
+# lint: legacy-facilities-ok
+_LEGACY_COUNT_SQL = "SELECT COUNT(*) FROM facilities WHERE duplicate_of_id IS NULL"
+_legacy_cache = None          # None = never measured; {} = measured-and-failed
+_legacy_cache_ts = 0.0
+_legacy_lock = threading.Lock()
+
+
+def legacy_facility_counts():
+    """{'tracked': N} counted over the `facilities` table AS SERVED by
+    _list_facilities_full — i.e. behind the same `duplicate_of_id IS NULL`
+    filter the rows come through.
+
+    Deliberately has NO 'verified' key: `facilities` carries no
+    is_duplicate column, so it has no verification tier to count, and
+    de-duplication is not verification (see the note above). An agent
+    reading this block can say how large the served population is and
+    cannot say any of it was analyst-verified — which is the true state.
+
+    Returns None on any failure so the caller omits the field: an omitted
+    count beats a wrong one. NEVER raises."""
+    global _legacy_cache, _legacy_cache_ts
+    now = time.time()
+    with _legacy_lock:
+        if _legacy_cache is not None and (now - _legacy_cache_ts) < _LEGACY_TTL_S:
+            return dict(_legacy_cache) or None
+    measured = {}
+    conn = None
+    try:
+        db = (os.environ.get("DATABASE_URL")
+              or os.environ.get("NEON_DATABASE_URL"))
+        if db:
+            import psycopg2
+            conn = psycopg2.connect(db, sslmode="require", connect_timeout=4)
+            cur = conn.cursor()
+            cur.execute(_LEGACY_COUNT_SQL)
+            n = int((cur.fetchone() or [0])[0] or 0)
+            if n > 0:
+                measured = {"tracked": n}
+    except Exception:
+        measured = {}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    # Cache the FAILURE too ({}), so a down DB costs one connect attempt per
+    # TTL rather than one per request on a hot list endpoint.
+    with _legacy_lock:
+        _legacy_cache = measured
+        _legacy_cache_ts = now
+    return dict(measured) or None

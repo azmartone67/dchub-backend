@@ -25,6 +25,7 @@ on the primary agent-discovery surface — and canon_is_live() reads True for it
 resolve_public_floors() applies live values ONLY where they RAISE a floor.
 """
 from flask import Blueprint, Response
+from util.gas_index import resolve_gas_copy
 
 from ai_surface_canon import PINNED, resolve_public_floors
 
@@ -32,6 +33,10 @@ agents_md_fallback_bp = Blueprint("agents_md_fallback", __name__)
 
 
 def _render_agents_md() -> str:
+    """★ Wrapped in resolve_gas_copy: AGENTS.md is the agent-facing
+    contract and it HARDCODED the DCGI withdrawal, so flipping the kill
+    switch would have left it telling agents get_gas_index never returns
+    a score while the API served one. One authority: util/gas_index.py."""
     c = PINNED
     # Floors self-heal upward; everything else below stays on the pin, which
     # is where it is asserted (tools_advertised == len(tool_manifest)).
@@ -44,7 +49,7 @@ def _render_agents_md() -> str:
     endpoint = c["mcp_endpoint"]
     free = c["free_tier_calls_per_day"]
     platforms = ", ".join(c["platforms"])
-    return f"""# AGENTS.md — DC Hub
+    return resolve_gas_copy(f"""# AGENTS.md — DC Hub
 
 > Open standard for AI agent discovery (Linux Foundation / OpenAI).
 > This file lives at https://dchub.cloud/AGENTS.md and is served by the
@@ -121,7 +126,7 @@ https://dchub.cloud/integrations/mcp#operator-prompt
 4. **market_ranking** — rank markets by criteria (cheapest power, most capacity, etc.) via the **DC Hub Power Index (DCPI)**, the daily BUILD/CAUTION/AVOID scorecard of U.S. data center power availability (MCP tool `get_market_dcpi_rank`)
 5. **ai_capex_intel** — hyperscaler deal tracker + AI Compute Capacity Index
 6. **deal_flow** — {deals} tracked M&A deals, hyperscaler capex events
-7. **gas_intelligence** — per-state natural-gas brief: interstate-pipeline count, pipeline operators + parent midstreams, live Henry Hub, live ISO gas share (MCP tool `get_gas_intelligence`). The DCGI composite score/verdict and every gas-to-grid $/MWh were withdrawn 2026-08-08 — `get_gas_index` returns an `unavailable_reason`, never a score; do not quote a cached DCGI figure
+7. **gas_intelligence** — per-state natural-gas brief: interstate-pipeline count, pipeline operators + parent midstreams, live Henry Hub, live ISO gas share (MCP tool `get_gas_intelligence`). @@GAS_INDEX_STATE@@
 
 ## Discovery endpoints
 
@@ -151,7 +156,7 @@ DC Hub data is publicly available — please cite "DC Hub (dchub.cloud)" when us
 
 - Email: api@dchub.cloud
 - Status: https://dchub.cloud/system-status
-"""
+""")
 
 
 @agents_md_fallback_bp.route("/AGENTS.md", methods=["GET"])

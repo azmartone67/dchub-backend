@@ -23,19 +23,46 @@ from tools.qa_superuser import probe_registries as pr
 #   The autouse stub makes the promise true for every test here. A test that
 #   wants a different rendered count overrides it; a test that wants the
 #   unreadable-page path returns None.
-RENDERED_TOOLS = 82   # matches the canon the tests below monkeypatch
+RENDERED_TOOLS = 82   # arbitrary; it only has to equal the canon each test mocks
+
+
+def schema_page(n):
+    """A stand-in glama schema page linking exactly `n` distinct tools.
+
+    Restored from #3410 (deleted by the #3414 revert). It is what lets the
+    rendered count be an INPUT to a test while still exercising the code that
+    derives it.
+    """
+    links = "".join(
+        f'<a href="/mcp/servers/azmartone67/dchub-mcp-server/tools/t{i}">t{i}</a>'
+        for i in range(n))
+    return (200, {}, f"<html><body>{links}</body></html>")
 
 
 @pytest.fixture(autouse=True)
 def _no_registry_network(monkeypatch):
-    """No test in this file may reach a third-party registry."""
-    monkeypatch.setattr(pr, "tools_rendered", lambda spec: RENDERED_TOOLS)
+    """No test in this file may reach a third-party registry.
 
-    def _no_fetch(*a, **kw):                      # belt and braces
-        raise AssertionError(
-            "a test in this file called pr.fetch() — this suite is offline by "
-            "contract; stub the helper you need instead of reaching the network")
-    monkeypatch.setattr(pr, "fetch", _no_fetch)
+    ★2026-08-30 — SEAL THE DOOR, NOT THE OBSERVABLE. This fixture used to stub
+    `tools_rendered` to a constant AND trap `fetch`. Both together made the
+    suite offline, but the constant also made tools_rendered() unreachable from
+    every test in the file. Measured on 8c4bd4b68: replacing that function's
+    ENTIRE BODY with `raise RuntimeError` still passed 16/16. Its schema-page
+    fetch, its status check and its /tools/<name> link-counting regex — the
+    probe's only observable, and the number the whole registry finding is
+    built on — were covered by nothing.
+
+    That is also how #3410's page pins became dead code and how the file spent
+    the day being reverted in both directions: a stub one level ABOVE the seam
+    a test is pinning silently wins, and both guards still read as present.
+
+    Serving a synthetic PAGE seals the door just as completely — `fetch` is
+    replaced, so nothing leaves the process — while letting tools_rendered()
+    run for real. A test that wants a different rendered count overrides
+    `pr.fetch` and wins, because its monkeypatch is applied later; a test that
+    wants the unreadable-page path returns a non-200 or raises Unreachable.
+    """
+    monkeypatch.setattr(pr, "fetch", lambda url, **kw: schema_page(RENDERED_TOOLS))
 
 # The real Glama description, verbatim as the API returns it (escaped M\&A).
 GLAMA = ("Description: Data-center, power & gas intelligence MCP server. 33 "
@@ -163,40 +190,9 @@ def test_over_claim_outranks_under_claim_in_severity(monkeypatch):
 # A unit test must not depend on a page we do not control. `schema_page` builds
 # a synthetic page with exactly N distinct /tools/<name> links so the count is
 # an input to the test rather than an observation of someone else's deploy.
-def schema_page(n):
-    """A stand-in glama schema page linking exactly `n` distinct tools."""
-    links = "".join(
-        f'<a href="/mcp/servers/azmartone67/dchub-mcp-server/tools/t{i}">t{i}</a>'
-        for i in range(n))
-    return (200, {}, f"<html><body>{links}</body></html>")
-
-
-@pytest.fixture(autouse=True)
-def _pin_the_schema_page(monkeypatch):
-    """No test in this file may ask glama.ai what it is serving.
-
-    Three further tests reached the live internet the same way the healthy-
-    listing one did — proved by running the file with socket.connect denied:
-    test_every_finding_states_red_when_and_basis,
-    test_over_claim_outranks_under_claim_in_severity and
-    test_remedy_names_the_human_action_since_code_cannot_fix_it all failed.
-    They passed in CI only because a third party happened to answer, and any of
-    them could have been the one to redden main next.
-
-    Default is 82 links, matching the canon these tests set. A test that cares
-    about the count overrides this with its own monkeypatch, which then WINS
-    because it is applied later.
-    """
-    monkeypatch.setattr(pr, "fetch", lambda url, **kw: schema_page(82),
-                        raising=False)
-
-
 def test_a_healthy_listing_passes(monkeypatch):
     monkeypatch.setattr(pr, "read_canon",
                         lambda: {"tools": 82, "facilities": 17096})
-    # Pin the rendered schema page to the same 82 the canon says, instead of
-    # asking glama.ai what it is serving this minute.
-    monkeypatch.setattr(pr, "fetch", lambda url, **kw: schema_page(82))
     monkeypatch.setattr(pr, "get_json", lambda url, **kw: (200, {
         "description": "82 tools covering 17,000+ facilities",
         "tools": [{"name": f"t{i}"} for i in range(82)]}))
@@ -212,6 +208,12 @@ def test_the_schema_page_count_is_an_input_not_the_live_internet(monkeypatch):
     the same code silently asserted whatever glama was serving.
     """
     monkeypatch.setattr(pr, "read_canon", lambda: {"tools": 82})
+    # ★ Pin the PAGE, not the function that reads it. Stubbing tools_rendered
+    # here was correct while the autouse fixture also stubbed it — but it means
+    # the 83 never passes through the link-counting regex, so this test asserts
+    # the probe's arithmetic without exercising the measurement it is named
+    # after. With the fixture on the fetch seam, the 83 below is produced by
+    # the real regex off a real page body.
     monkeypatch.setattr(pr, "fetch", lambda url, **kw: schema_page(83))
     monkeypatch.setattr(pr, "get_json", lambda url, **kw: (200, {
         "description": "82 tools", "tools": []}))
