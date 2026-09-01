@@ -41,6 +41,7 @@ import flask
 import pytest
 
 import ai_discovery_routes
+from routes.agents_md_fallback import agents_md_fallback_bp
 
 # Ported verbatim in intent from dchub-frontend/scripts/lint-front-door.mjs.
 # The rule is NOT "plan_query must not appear" — it is a real, supported
@@ -65,13 +66,30 @@ ALLOW = [
 
 # path -> minimum plausible rendered size. Below this the surface is broken and
 # a clean scan would be vacuous.
-SURFACES = {"/llms.txt": 4000, "/llms-full.txt": 4000}
+#
+# ★2026-09-01 /AGENTS.md ADDED, and finding the right one took four tries.
+# dchub-frontend/scripts/lint-front-door.mjs used to scan the FRONTEND's
+# AGENTS.md; that file is dead, so its coverage moves here with this commit.
+# But "the backend serves it" was not specific enough — ONE path had FOUR
+# artifacts, and only the last is real:
+#
+#   dchub-frontend/AGENTS.md                    2,588 b   dead (was linted)
+#   ai_discovery_routes.py /agents-md-inline    2,266 b   dead (404 via the edge)
+#   dchub-backend/static/AGENTS.md              5,453 b   dead
+#   routes/agents_md_fallback.py                5,812 b   SERVED  <-- this one
+#
+# Live /AGENTS.md is 5,988 b and names its own server in its body ("served by
+# the dchub-backend Flask app (routes/agents_md_fallback.py)"), which is how
+# the right one was identified. Same decoy shape as /.well-known/agent.json's
+# three definitions. Determine by FETCHING, never by reading one repo.
+SURFACES = {"/llms.txt": 4000, "/llms-full.txt": 4000, "/AGENTS.md": 3000}
 
 
 @pytest.fixture(scope="module")
 def served():
     app = flask.Flask(__name__)
     ai_discovery_routes.register_discovery_routes(app)
+    app.register_blueprint(agents_md_fallback_bp)   # the REAL /AGENTS.md
     client = app.test_client()
     out = {}
     for path in SURFACES:
@@ -119,6 +137,16 @@ def test_llms_txt_names_execute_plan_as_the_front_door(served):
         "reading it top-down gets no front door and probes the catalogue instead.")
     assert re.search(r"start[ _-]?here[^\n]{0,160}execute_plan", head, re.I), (
         "/llms.txt has no START HERE marker pointing at execute_plan.")
+
+
+def test_agents_md_names_execute_plan_as_the_front_door(served):
+    """/AGENTS.md is the Linux Foundation / OpenAI agent-discovery standard —
+    for many clients it is the FIRST file read. Its coverage moved here from the
+    frontend lint, which was scanning a dead 2,588-byte copy."""
+    _, body = served["/AGENTS.md"]
+    assert "execute_plan" in body, (
+        "/AGENTS.md does not name execute_plan. It is the first file many agents "
+        "read; no front door here means the catalogue gets probed instead.")
 
 
 def test_llms_full_names_execute_plan_as_the_front_door(served):
