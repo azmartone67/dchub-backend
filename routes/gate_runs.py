@@ -156,13 +156,18 @@ def _ensure(cur):
     # resetting a gate's history.
     for gate, (repo, cad, blocking) in GATE_REGISTRY.items():
         cur.execute(
+            # 'absent' is BOUND, not spelled inline: regression_lint's
+            # insert-no-on-conflict regex is `INSERT INTO (\w+)[^;"']*`, so a
+            # quoted literal in VALUES ends the match before ON CONFLICT and the
+            # statement reads as non-idempotent. Binding it is better SQL and
+            # keeps the rule able to see the clause.
             """INSERT INTO gate_runs (gate, repo, blocking, cadence_hours, selftest)
-               VALUES (%s, %s, %s, %s, 'absent')
+               VALUES (%s, %s, %s, %s, %s)
                ON CONFLICT (gate) DO UPDATE SET
                    repo          = EXCLUDED.repo,
                    blocking      = EXCLUDED.blocking,
                    cadence_hours = EXCLUDED.cadence_hours""",
-            (gate, repo, blocking, cad),
+            (gate, repo, blocking, cad, "absent"),
         )
 
 
