@@ -1305,7 +1305,10 @@ _REASON_SYSTEM = (
     "  - Banned figures (these are known-false): 50,000 facilities, $324B deal "
     "value, 340+ markets, 96+ AI platforms. Real canon: ~21,000 tracked "
     "facilities, ~178 countries, ~232-300 DCPI markets, ~2,032 deals.\n"
-    "  - You RECOMMEND only. You do not act. Surface the decision for the human.\n\n"
+    "  - You RECOMMEND only. You do not act. But `decision_for_human` is the ONE\n"
+    "    action you would take next — NOT a menu for someone else to pick from.\n"
+    "    Uncertainty belongs in `confidence` and `caveats`; it must never be\n"
+    "    smuggled into the action field as a fork.\n\n"
     "Output STRICTLY a JSON object:\n"
     "  {\"recommendation\": \"<2-4 sentences: what you'd recommend, grounded in "
     "the evidence>\",\n"
@@ -1313,7 +1316,12 @@ _REASON_SYSTEM = (
     "   \"cited_evidence\": [\"<which evidence items you relied on>\"],\n"
     "   \"confidence\": <0.0-1.0>,\n"
     "   \"caveats\": [\"<what could make this wrong>\"],\n"
-    "   \"decision_for_human\": \"<the explicit choice the human must make>\"}\n"
+    "   \"decision_for_human\": \"<ONE concrete next action, imperative mood, "
+    "specific enough to execute without any further choice — name the file, "
+    "endpoint, workflow or query it touches. NEVER a menu: no 'choose', "
+    "'decide', 'pick', '(A) ... or (B)', 'either ... or'. If the evidence "
+    "cannot discriminate between two paths, STILL name the one you would take, "
+    "put why the other is plausible in caveats, and lower confidence.>\"}\n"
 )
 
 _REFUTE_SYSTEM = (
@@ -1551,6 +1559,13 @@ def investigate(question: str, *, depth: str = "default") -> dict:
         refutation["fabrication_flagged"] = True
 
     # ── Step 5: SYNTHESIZE (assemble the final recommend-only result) ─
+    # Same shape as the honest-numbers fence above: flag, never silently
+    # publish. A menu reaching here means the prompt change stopped working.
+    _menu_why = _menu_marker(decision_for_human or "")
+    if _menu_why:
+        caveats.append("MENU FLAGGED: decision_for_human is a choice, not an "
+                       f"action ({_menu_why}) \u2014 approve\u2192PR cannot act on it")
+        base["decision_is_menu"] = _menu_why
     base["recommendation"] = recommendation
     base["confidence"] = round(confidence, 3)
     base["caveats"] = caveats
@@ -1559,6 +1574,50 @@ def investigate(question: str, *, depth: str = "default") -> dict:
     base["reasoning"] = draft.get("reasoning")
     base["cited_evidence"] = draft.get("cited_evidence") or []
     return base
+
+
+# ── Menu fence (2026-09-01) ──────────────────────────────────────────
+# ★ WHY. `decision_for_human` used to be specified as "<the explicit choice the
+# human must make>", so the model dutifully produced choices. Measured on four
+# consecutive approved investigations:
+#     100419  "Choose the remediation path: (A) ... or (B) ..."
+#     100418  "Choose the remedy tier: (a) minimal ... or (b) durable ..."
+#     100417  "Approve (a) ... OR direct a deeper investigation ..."
+#     100416  "Decide which ... is authoritative, then approve: ..."
+# The dashboard's approve button hands that text to the Layer-5 drafter, which
+# refuses anything that is not an exact single-file edit — correctly, it cannot
+# pick the operator's branch. So each of those approvals was a no-op by
+# construction. The prompt now forbids menus; this fence measures whether that
+# actually worked, the same way the honest-numbers fence measures fabrication.
+# (pattern, why, case_insensitive). `\sOR\s` is case-SENSITIVE on purpose:
+# an upper-case OR is a deliberate fork marker, while the word "or" appears in
+# perfectly good single actions ("delete the slot or the stale marker").
+_MENU_MARKERS = (
+    (r"^\s*(?:choose|decide|pick|select|determine)\b",
+     "opens by asking for a choice", True),
+    (r"\sOR\s", "'OR' fork between paths", False),
+    (r"\bor\s+\([A-Za-z0-9]\)", "'or (B)' option label", True),
+    (r"\beither\b[^.]{0,120}?\bor\b", "'either ... or'", True),
+)
+
+
+def _menu_marker(text: str) -> str:
+    """The reason `text` reads as a menu rather than an action, or "" if it
+    reads as an action. Pure; never raises.
+
+    Deliberately does NOT flag sequential '(a) ... then (b) ...' steps — those
+    are one action in two parts, not a fork. Only a CHOICE counts."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    import re as _re
+    for pat, why, ci in _MENU_MARKERS:
+        try:
+            if _re.search(pat, t, _re.IGNORECASE if ci else 0):
+                return why
+        except Exception:
+            continue
+    return ""
 
 
 # ── Storage ──────────────────────────────────────────────────────────
