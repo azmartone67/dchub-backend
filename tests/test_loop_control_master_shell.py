@@ -282,3 +282,83 @@ def test_writer_allowlist_is_the_canonical_writer():
     from routes.loop_control_master_shell import _WRITER_ALLOWLIST
     assert _WRITER_ALLOWLIST == ("brain_findings_writer.py",)
     assert os.path.exists(os.path.join(ROOT, "routes", "brain_findings_writer.py"))
+
+
+# ── surface_canon: surfaces track PINNED, PINNED tracks live ─────────
+
+def _surface_canon_lane(monkeypatch, tmp_path, files, live, pinned):
+    """Run the real lane against a temp repo of surface files."""
+    import types, sys as _sys
+    from routes import loop_control_master_shell as lc
+
+    for rel, count in files.items():
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f'"{count:,}+ facilities across 170+ countries"')
+    monkeypatch.setattr(lc, "_repo_root", lambda: str(tmp_path))
+
+    canon_mod = types.ModuleType("ai_surface_canon")
+    canon_mod.PINNED = {"public": {"facilities": f"{pinned:,}+"}}
+    monkeypatch.setitem(_sys.modules, "ai_surface_canon", canon_mod)
+
+    stats_mod = types.ModuleType("canonical_stats")
+    stats_mod.get_canonical_stats = lambda *a, **k: {"facilities_distinct": live}
+    monkeypatch.setitem(_sys.modules, "canonical_stats", stats_mod)
+
+    return {ch["id"]: ch for ch in lc._lane_surface_canon(None)}
+
+
+def test_surfaces_at_pinned_are_current_even_when_live_has_moved(monkeypatch, tmp_path):
+    """★ THE FIX. Hand-maintained files carry PINNED; live canon moves on its
+    own. Measuring the files against LIVE made them permanently stale the moment
+    live drifted 500 past the pin — and contradicted surface_truth, which
+    ACCEPTS PINNED. Two guards disagreeing about one file is how one gets
+    ignored."""
+    out = _surface_canon_lane(monkeypatch, tmp_path,
+                              {"llms.txt": 18500, "mcp.json": 18500},
+                              live=19935, pinned=18500)
+    assert out["floors_current"]["pass"] is True, out["floors_current"]["detail"]
+
+
+def test_a_surface_below_pinned_is_still_caught(monkeypatch, tmp_path):
+    """Loosening must not blind it — 15,000 against a pin of 18,500 is the real
+    defect this lane exists for, and it is what repo-root mcp.json carried."""
+    out = _surface_canon_lane(monkeypatch, tmp_path,
+                              {"llms.txt": 18500, "mcp.json": 15000},
+                              live=19935, pinned=18500)
+    assert out["floors_current"]["pass"] is False
+    assert "mcp.json" in out["floors_current"]["detail"]
+
+
+def test_a_live_healed_surface_inside_the_band_passes(monkeypatch, tmp_path):
+    """Some surfaces are heal-bound and carry the live floor. Within PINNED
+    x 1.10 — the same band surface_truth uses — that is correct, not stale."""
+    out = _surface_canon_lane(monkeypatch, tmp_path,
+                              {"llms.txt": 19700}, live=19935, pinned=18500)
+    assert out["floors_current"]["pass"] is True
+
+
+def test_pinned_falling_behind_live_is_its_own_single_finding(monkeypatch, tmp_path):
+    """The other half of the relationship, reported ONCE — "bump the pin" — not
+    as N identical per-file failures."""
+    out = _surface_canon_lane(monkeypatch, tmp_path,
+                              {"llms.txt": 15000}, live=25000, pinned=15000)
+    assert out["floors_current"]["pass"] is True, "the file matches its pin"
+    assert out["pinned_tracks_live"]["pass"] is False
+    assert "bump" in out["pinned_tracks_live"]["detail"].lower()
+
+
+def test_unreadable_pin_refuses_to_judge(monkeypatch, tmp_path):
+    """No pin means no contract to measure against — indeterminate, never a
+    silent pass."""
+    import types, sys as _sys
+    from routes import loop_control_master_shell as lc
+    (tmp_path / "llms.txt").write_text('"18,500+ facilities"')
+    monkeypatch.setattr(lc, "_repo_root", lambda: str(tmp_path))
+    bad = types.ModuleType("ai_surface_canon")   # no PINNED attribute
+    monkeypatch.setitem(_sys.modules, "ai_surface_canon", bad)
+    stats = types.ModuleType("canonical_stats")
+    stats.get_canonical_stats = lambda *a, **k: {"facilities_distinct": 19935}
+    monkeypatch.setitem(_sys.modules, "canonical_stats", stats)
+    out = {ch["id"]: ch for ch in lc._lane_surface_canon(None)}
+    assert out["floors_current"]["pass"] is None
