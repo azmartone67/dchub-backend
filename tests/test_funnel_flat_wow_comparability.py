@@ -30,6 +30,7 @@ The two pairs fail via DIFFERENT hazards, and the guard pins both:
 
 Pure functions: no DB, no network, no Flask app.
 """
+import ast
 import datetime as _dt
 from datetime import datetime, timezone
 
@@ -430,3 +431,75 @@ def test_tool_calls_pair_uses_date_anchored_spans():
     assert spans[1][1] == d.datetime.combine(t0, d.time.min,
                                              tzinfo=d.timezone.utc), (
         "the current window must end at CURRENT_DATE, excluding today")
+
+
+# ── the fence that would have caught #3112's half-migration ─────────────────
+# ★ 2026-09-01. This file has now detonated TWICE from one cause: a VERDICT
+# assertion built on a live-clock window that eventually stops containing
+# _CHANGE_AT. #3112 fixed it, added _rolling_spans_asof, migrated most call
+# sites — and left two behind, which went red on the clock 14 days later.
+#
+# No value assertion can catch that: on the day it is written, the live window
+# and the pinned window agree. Only the DEFINITION distinguishes them, so this
+# fence reads the call sites rather than their results — the same reasoning as
+# test_the_pin_is_a_constant_and_not_another_clock_read in
+# tests/test_reach_latest_complete_week.py.
+
+# The live helper reads the wall clock. It is legitimate in exactly two tests,
+# where the clock IS the thing under test:
+_LIVE_SPAN_CALLERS_ALLOWED = {
+    # asserts ordering/adjacency of the live windows — no fixed instant involved
+    "test_rolling_spans_are_consecutive_and_most_recent_first",
+    # replays the pinned mirror against the shipped function and demands a match
+    "test_the_pinned_rolling_mirror_matches_the_shipped_arithmetic",
+}
+# ★ SCOPE, stated so nobody reads more assurance into this than it gives: the
+# fence covers `_rolling_spans` — the helper behind both detonations — and NOT
+# every clock read. test_tool_calls_pair_uses_date_anchored_spans still calls
+# date.today(), and is safe for a different reason (both sides of its
+# assertion use the same t0, so it cannot drift apart). It was in this
+# allowlist for one revision until test_the_allowlist_still_names_real_tests
+# rejected it for never calling the live helper at all.
+
+
+def _live_span_callers():
+    """Every top-level function that calls the live `_rolling_spans`."""
+    tree = ast.parse(open(__file__, encoding="utf-8").read())
+    out = set()
+    for fn in tree.body:
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_rolling_spans"):   # NOT _rolling_spans_asof
+                out.add(fn.name)
+    return out
+
+
+def test_only_the_clock_tests_may_use_the_live_span_helper():
+    """★ A verdict built on a live window is a scheduled failure, not a test."""
+    offenders = _live_span_callers() - _LIVE_SPAN_CALLERS_ALLOWED
+    assert not offenders, (
+        "these tests build a window from the wall clock and then assert a "
+        "verdict that depends on where that window SITS relative to "
+        f"_CHANGE_AT ({_CHANGE_AT:%Y-%m-%d %H:%MZ}): {sorted(offenders)}. "
+        "Use _rolling_spans_asof(...) — pinned — as the other verdict "
+        "assertions do. This file has already gone red twice on the clock "
+        "alone, with no commit behind either one")
+
+
+def test_the_allowlist_still_names_real_tests():
+    """★ Guard the guard. A rename would empty the allowlist's meaning and the
+    fence above would pass by describing nobody — the same blindness
+    `assert len(lines) == 1` exists to prevent in the reach fence."""
+    defined = {fn.name for fn in ast.parse(open(__file__, encoding="utf-8").read()).body
+               if isinstance(fn, ast.FunctionDef)}
+    missing = _LIVE_SPAN_CALLERS_ALLOWED - defined
+    assert not missing, (
+        f"allowlist names tests that no longer exist: {sorted(missing)} — "
+        "re-point it at the renamed test; do NOT delete the entry")
+    stale = _LIVE_SPAN_CALLERS_ALLOWED - _live_span_callers()
+    assert not stale, (
+        f"allowlisted but no longer calls the live helper: {sorted(stale)} — "
+        "drop the entry so the fence keeps its teeth")
