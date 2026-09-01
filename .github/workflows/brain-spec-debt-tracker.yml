@@ -143,3 +143,41 @@ jobs:
             --label spec-debt
 
           echo "Filed spec-debt issue for PR #$PR_NUMBER"
+
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          JOB_STATUS: ${{ job.status }}
+          GATE_DISABLE: ${{ vars.BRAIN_SPEC_DEBT_DISABLE }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Two legitimate zero-work outcomes, and only one is healthy silence.
+          # Disabled is UNMEASURED (the tracker is OFF). No unchecked boxes is
+          # no_scope — it ran and there was genuinely nothing, the same
+          # distinction the feed board draws with no_new_data, without which
+          # every clean PR would climb the vacuous counter.
+          #
+          # Both read from the authoritative env, not from the step's log: the
+          # disabled and nothing-to-file paths exit immediately, so a tee'd log
+          # is not reliably flushed before this step runs.
+          N=$(printf '%s' "${PR_BODY:-}" | grep -c '^- \[ \]' || true)
+          if [ "${GATE_DISABLE:-0}" = "1" ]; then
+            # N is blanked, not zero: a disabled tracker did not examine zero
+            # things, it did not run. Zero would climb the vacuous counter and
+            # attribute work to a gate that was switched off.
+            V=unmeasured; N=""; NOTE="BRAIN_SPEC_DEBT_DISABLE=1 — tracker is OFF"
+          elif [ "${N:-0}" = "0" ]; then
+            V=no_scope; NOTE="ran, no unchecked checklist items to file"
+          else
+            case "${JOB_STATUS:-}" in
+              success) V=pass ;;
+              failure) V=fail ;;
+              *)       V=unmeasured ;;
+            esac
+            NOTE="N = unchecked checklist items"
+          fi
+          bash scripts/gate_beat.sh "brain-spec-debt-tracker:file-spec-debt" "$V" "$N" absent "$NOTE"

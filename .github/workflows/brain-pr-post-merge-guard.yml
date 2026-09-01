@@ -275,3 +275,23 @@ jobs:
             -d "{\"outcome\": \"$OUTCOME\", \"detail\": \"$DETAIL\"}" \
             "https://dchub-backend-production.up.railway.app/api/v1/brain/proposed-code/${PID}/mark-merge-outcome" \
             | python3 -m json.tool || echo "::warning::mark-merge-outcome callback failed (non-fatal)"
+
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # N = 3, the endpoints this guard probes (health, dcpi, heal/findings).
+          # A fixed number is honest here because the probe set is literal in
+          # this file — if that changes, this must change with it.
+          case "${JOB_STATUS:-}" in
+            success) V=pass ;;
+            failure) V=fail ;;
+            *)       V=unmeasured ;;
+          esac
+          bash scripts/gate_beat.sh "brain-pr-post-merge-guard:guard" "$V" 3 absent \
+            "N = 3 post-deploy probes (health, dcpi, heal/findings)"

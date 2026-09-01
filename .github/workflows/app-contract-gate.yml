@@ -62,7 +62,11 @@ jobs:
           # strict mode makes it a hard failure here, so the skip can never
           # hide a missing dependency in the job that enforces the gate.
           DCHUB_CONTRACT_GATE_STRICT: "1"
-        run: python3 scripts/app_contract_gate.py
+        # tee'd so the ledger beat can read the "booted in Xs — N routes" line.
+        # pipefail keeps the gate's own exit code authoritative through the pipe.
+        run: |
+          set -o pipefail
+          python3 scripts/app_contract_gate.py 2>&1 | tee /tmp/acg.log
 
       # ── the boot-only tests, in the only job that CAN boot ────────────────
       #
@@ -88,3 +92,35 @@ jobs:
           DCHUB_ADMIN_KEY: contract-gate-placeholder
           DCHUB_CONTRACT_GATE_STRICT: "1"
         run: python3 -m pytest tests/test_agentic_loop_inspect.py -v --tb=short
+
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # N = routes the booted app actually served, from the gate's own
+          # "booted in Xs — N routes" line. Derived from what booted, not from a
+          # static count of route files: a module that fails to import is
+          # precisely what this gate exists to catch, and must lower N.
+          # No "booted in" line means the app did not boot at all — that is
+          # zero routes served, not an unknown count. Empty would leave the
+          # vacuous counter untouched and this gate's whole point is that an
+          # import error must lower N.
+          if [ -f /tmp/acg.log ]; then
+            N=$(grep -oE 'booted in [0-9.]+s . [0-9]+ routes' /tmp/acg.log \
+                | grep -oE '[0-9]+ routes' | grep -oE '^[0-9]+' | head -1)
+            N="${N:-0}"
+          else
+            N=""
+          fi
+          case "${JOB_STATUS:-}" in
+            success) V=pass ;;
+            failure) V=fail ;;
+            *)       V=unmeasured ;;
+          esac
+          bash scripts/gate_beat.sh "app-contract-gate:app-contract-gate" "$V" "$N" absent \
+            "N = routes the booted app served"

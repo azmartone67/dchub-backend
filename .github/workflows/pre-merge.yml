@@ -81,6 +81,30 @@ jobs:
         if: github.event_name == 'pull_request'
         run: bash scripts/check_worker_version_bump.sh HEAD^1 HEAD
 
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf — a second
+      # writer is how tools/deadman/watch.py masked honest failures three times.
+      # if: always() so a refusal reaches the board too; `fail` means the gate
+      # REFUSED something and the ledger reads HEALTHY, not alarmed.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # N re-derived independently with the same find the AST step uses, so
+          # the count cannot be inherited from a step that silently did nothing.
+          N=$(find . -name '*.py' -not -path './.git/*' -not -path './node_modules/*' \
+                -not -path './.venv/*' | wc -l | tr -d ' ')
+          case "${JOB_STATUS:-}" in
+            success) V=pass ;;
+            failure) V=fail ;;
+            *)       V=unmeasured ;;
+          esac
+          bash scripts/gate_beat.sh "pre-merge:syntax-check" "$V" "$N" absent \
+            "N = .py files in the tree"
+
   regression-lint:
     runs-on: ubuntu-latest
     steps:
@@ -95,6 +119,32 @@ jobs:
       - name: Run delta-mode regression lint
         run: python3 scripts/regression_lint.py --mode delta --base origin/main
 
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf — a second
+      # writer is how tools/deadman/watch.py masked honest failures three times.
+      # if: always() so a refusal reaches the board too; `fail` means the gate
+      # REFUSED something and the ledger reads HEALTHY, not alarmed.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # Delta lint only inspects CHANGED lines, so a PR touching nothing
+          # legitimately examines zero. That is no_scope (an affirmative zero),
+          # never a vacuous pass — same distinction as the feed board's
+          # no_new_data. Without it every docs-only PR would climb the counter.
+          N=$(git diff --name-only origin/main...HEAD 2>/dev/null | wc -l | tr -d ' ')
+          case "${JOB_STATUS:-}" in
+            success) V=pass ;;
+            failure) V=fail ;;
+            *)       V=unmeasured ;;
+          esac
+          [ "${N:-0}" = "0" ] && [ "$V" = "pass" ] && V=no_scope
+          bash scripts/gate_beat.sh "pre-merge:regression-lint" "$V" "$N" absent \
+            "N = files changed vs origin/main"
+
   # Advisory only, and deliberately so: this probes PRODUCTION, which the PR
   # under test has not deployed to and therefore cannot have broken. Do NOT
   # make it a required check — a prod hiccup would then block unrelated merges.
@@ -105,6 +155,8 @@ jobs:
     continue-on-error: true
     steps:
       - name: Probe production endpoints
+        # tee'd so the ledger beat can read the real probe outcome: this job's
+        # continue-on-error means job.status is success no matter what happened.
         run: |
           # GitHub runs `run:` steps under `bash -e`, so the old bare
           #   S=$(curl ... --max-time 10 ...)
@@ -120,6 +172,7 @@ jobs:
           # -e's hands (a command on the left of `||` is "tested", not fatal),
           # so every path is probed and every failure is named.
           fail=0
+          exec > >(tee /tmp/smoke.log) 2>&1
           for path in \
             "/api/v1/health" \
             "/api/energy-discovery/status" \
@@ -152,6 +205,24 @@ jobs:
           else
             echo "advisory: all 4 probes completed"
           fi
+
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          # This job carries job-level continue-on-error, so it ALWAYS reports
+          # success to the PR and job.status can never say otherwise. The board
+          # records it as blocking=false and takes the verdict from the probe
+          # output instead — the one place the real outcome survives.
+          F=$(grep -oE 'advisory: [0-9]+ of 4 probes did not complete' /tmp/smoke.log 2>/dev/null \
+              | grep -oE '[0-9]+' | head -1)
+          if [ -z "${F:-}" ]; then V=pass; else V=fail; fi
+          bash scripts/gate_beat.sh "pre-merge:smoke-probe" "$V" 4 absent \
+            "advisory job (continue-on-error) — verdict from probe output, not job.status"
 
   # Phase PP (2026-05-13): pure-function unit tests on the hot paths
   # that have shipped regressions this week. Tests use source-extraction
@@ -199,8 +270,54 @@ jobs:
         # at the version production runs. importorskip there would make the
         # subtlest assertion in that file a silent green.
         run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0" "feedparser==6.0.12"
+      # The beat wiring's own must-fail control. Runs BEFORE the suite so a
+      # dishonest count fails fast — and it lives HERE rather than in
+      # syntax-check because it reads the workflow YAML and needs pyyaml, which
+      # the stdlib-only job deliberately does not install.
+      - name: Gate beat wiring must-fail control (exit 2 = UNMEASURED = failure)
+        run: python3 scripts/gate_beat_selftest.py
       - name: Run pure-function tests
-        run: python3 -m pytest tests/ -v --tb=short
+        # pipefail so tee cannot swallow pytest's exit code, and a tee'd log so
+        # the ledger beat can read the real passed/failed COUNTS. Counts, not the
+        # exit code: a collection abort exits 3 with ZERO tests run, which is the
+        # bug that hid an absent unit-test gate for weeks (#1797).
+        run: |
+          set -o pipefail
+          python3 -m pytest tests/ -v --tb=short | tee /tmp/unit-tests.log
+
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf — a second
+      # writer is how tools/deadman/watch.py masked honest failures three times.
+      # if: always() so a refusal reaches the board too; `fail` means the gate
+      # REFUSED something and the ledger reads HEALTHY, not alarmed.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # N = tests that actually RAN.
+          # ★ The distinction that makes G4 work: EMPTY means "unknown" and leaves
+          # the vacuous counter untouched; ZERO means "ran and examined nothing"
+          # and alarms. A collection abort produces a log with NO summary line —
+          # if that mapped to empty, the exact bug this gate exists to catch
+          # (2,285 tests, zero run, exit 3) would raise nothing. So: log present
+          # but unparseable => 0. Log absent entirely => empty, and job.status
+          # carries the failure instead.
+          if [ -f /tmp/unit-tests.log ]; then
+            N=$(grep -oE '[0-9]+ (passed|failed)' /tmp/unit-tests.log \
+                | awk '{t+=$1} END{if(NR)print t; else print 0}')
+          else
+            N=""
+          fi
+          case "${JOB_STATUS:-}" in
+            success) V=pass ;;
+            failure) V=fail ;;
+            *)       V=unmeasured ;;
+          esac
+          bash scripts/gate_beat.sh "pre-merge:unit-tests" "$V" "$N" absent \
+            "N = tests that ran, parsed from the pytest summary"
 
   # ── DB parity ───────────────────────────────────────────────────────────────
   # tests/test_fiber_provider_backfill.py's live-parity test asserts that the
@@ -264,3 +381,29 @@ jobs:
           if grep -qi "skipped" out.txt; then
             echo "::error::a parity test SKIPPED — this job proves nothing"; exit 1
           fi
+
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # out.txt is written by the prove-it-RAN step above, which already
+          # fails the job on a skip. N comes from the same file so the count and
+          # the skip check cannot disagree.
+          # Same empty-vs-zero rule as unit-tests: present-but-unparseable => 0.
+          if [ -f out.txt ]; then
+            N=$(grep -oE '[0-9]+ (passed|failed)' out.txt | awk '{t+=$1} END{if(NR)print t; else print 0}')
+          else
+            N=""
+          fi
+          case "${JOB_STATUS:-}" in
+            success) V=pass ;;
+            failure) V=fail ;;
+            *)       V=unmeasured ;;
+          esac
+          bash scripts/gate_beat.sh "pre-merge:db-parity" "$V" "$N" absent \
+            "N = parity tests that ran"

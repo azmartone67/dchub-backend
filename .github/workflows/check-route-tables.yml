@@ -131,8 +131,13 @@ jobs:
           PY
 
       - name: 3 — diff Flask routes vs the two tables, fail on mismatch
+        # Piped through tee (not exec+process-substitution) so the log is fully
+        # flushed when the step ends: the ledger beat reads it in the NEXT step,
+        # and this job's continue-on-error means its output is the only place
+        # the real outcome survives. pipefail keeps python's exit code.
         run: |
-          python3 <<'PY'
+          set -o pipefail
+          python3 <<'PY' 2>&1 | tee /tmp/crt.log
           import json, sys
 
           with open('/tmp/flask_html_routes.json') as f:
@@ -209,3 +214,27 @@ jobs:
 
           print(f"OK — {len(flask)} Flask HTML routes covered by both tables.")
           PY
+
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # This job carries job-level continue-on-error, so job.status is
+          # success no matter what it found — the board records blocking=false
+          # and takes the verdict from the step's own output instead.
+          N=$(grep -oE 'discovered [0-9]+ Flask HTML routes' /tmp/crt.log 2>/dev/null \
+              | grep -oE '[0-9]+' | head -1)
+          if grep -q 'route-table coherence ADVISORY' /tmp/crt.log 2>/dev/null; then
+            V=fail            # it found uncovered routes — the gate did its job
+          elif grep -q 'covered by both tables' /tmp/crt.log 2>/dev/null; then
+            V=pass
+          else
+            V=unmeasured      # neither line printed: the step did not conclude
+          fi
+          bash scripts/gate_beat.sh "check-route-tables:check" "$V" "$N" absent \
+            "advisory job (continue-on-error) — verdict from step output, not job.status"

@@ -62,3 +62,26 @@ jobs:
           cd dchub-backend
           pytest tests/test_pro_paywall_visibility.py -v --tb=short || \
             echo "::warning::Pro paywall test failed or skipped — review log"
+
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          # N = .py files the full-repo lint scans. The frontend half of this job
+          # self-skips without DCHUB_FRONTEND_RO_TOKEN and the job still reports
+          # success — the comment at the top of this file says so. The board
+          # cannot fix that, but the note keeps the limit visible instead of
+          # letting a backend-only run read as full coverage.
+          N=$(find dchub-backend -name '*.py' -not -path '*/.git/*' 2>/dev/null | wc -l | tr -d ' ')
+          case "${JOB_STATUS:-}" in
+            success) V=pass ;;
+            failure) V=fail ;;
+            *)       V=unmeasured ;;
+          esac
+          bash dchub-backend/scripts/gate_beat.sh "regression-lint:lint" "$V" "$N" absent \
+            "N = backend .py files; frontend lint self-skips without the RO token"
