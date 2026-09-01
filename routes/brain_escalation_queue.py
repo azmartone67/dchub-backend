@@ -129,34 +129,67 @@ def ensure_schema() -> bool:
         return False
 
 
-def _roster_escalations() -> list:
-    """The white-glove board's own verdict. Never re-derived here — a second
-    opinion on who is escalating would be a second source of truth."""
+def _roster_all() -> list:
+    """The white-glove board's own roster, unfiltered. Read ONCE per sync so
+    the escalating subset and the call counts used to resolve rows can never
+    disagree with each other."""
     try:
         from routes.customer_white_glove import _roster
     except Exception:
         from customer_white_glove import _roster  # local shell
-    return [r for r in (_roster() or []) if r.get("escalate")]
+    return list(_roster() or [])
+
+
+def _roster_escalations() -> list:
+    """The white-glove board's own verdict. Never re-derived here — a second
+    opinion on who is escalating would be a second source of truth."""
+    return [r for r in _roster_all() if r.get("escalate")]
 
 
 def sync() -> dict:
     """Idempotent. Upserts a row per currently-escalating customer, and
-    auto-resolves any open row whose customer has started calling.
+    auto-resolves an open row ONLY when that customer's own call count has
+    actually moved.
 
-    Never re-opens a row a human closed: the ON CONFLICT refreshes context
-    and last_seen_at only. The one thing that CAN overrule a human is the
-    customer themselves — first call writes `activated`, which is the
-    outcome the whole queue exists to produce.
+    Never re-opens a row a human closed. Two things can overrule a stored
+    status, both MEASURED rather than asserted:
+      - the customer's call count rises above `calls_at_open`  -> `activated`
+      - the roster still calls them escalating, but an earlier run had
+        auto-activated them                                    -> back to `open`
+
+    ★ AN EMPTY ROSTER IS A MISSING MEASUREMENT, NOT A MEASURED ZERO.
+    Measured 2026-08-31: at 11:19:05Z the roster read returned zero rows, every
+    open row fell through the membership test below, and all nine stranded
+    payers were stamped `activated` with a note claiming they were "making
+    calls" — while the roster reported them at total_calls=0, escalate=True,
+    subscription active, both before and 3h after. Because nothing here could
+    set `open` again, the queue that exists so "the nine cannot be silently
+    lost" silently lost all nine. The guard below is that bug's fix; the repair
+    block undoes its damage.
     """
     if not ensure_schema():
         return {"ok": False, "error": "schema unavailable"}
 
     from db_utils import safe_db
-    opened = refreshed = activated = 0
+    opened = refreshed = activated = reopened = 0
+    left_no_calls = unmeasured = 0
     try:
-        rows = _roster_escalations()
+        everyone = _roster_all()
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"roster unavailable: {str(e)[:140]}"}
+
+    # ★ Zero rows from the roster is UNMEASURED, not "nobody is escalating".
+    # Fail loudly and change nothing: the daily job treats {"ok": false} as a
+    # failure, which is the correct outcome for a read that produced no rows.
+    if not everyone:
+        return {"ok": False,
+                "error": "roster returned zero rows — UNMEASURED, no status changed",
+                "escalating_now": 0, "opened": 0, "refreshed": 0,
+                "auto_activated": 0, "reopened": 0}
+
+    rows = [r for r in everyone if r.get("escalate")]
+    calls_now = {(r.get("email") or "").lower(): int(r.get("total_calls") or 0)
+                 for r in everyone}
 
     try:
         with safe_db() as conn:
@@ -187,30 +220,73 @@ def sync() -> dict:
                 else:
                     refreshed += 1
 
-            # ★ the verifier: they started calling. Nobody has to mark this.
             still = {(r.get("email") or "").lower() for r in rows}
-            cur.execute("SELECT id, email FROM brain_escalations "
+
+            # ★ The verifier: they started calling. Nobody has to mark this.
+            # Dropping off the escalating subset is NOT sufficient evidence —
+            # an account also leaves it by cancelling, changing plan, or by the
+            # classifier changing its mind. Only a call count that actually
+            # rose past where the row opened counts as activation.
+            cur.execute("SELECT id, email, COALESCE(calls_at_open, 0) "
+                        "FROM brain_escalations "
                         "WHERE status IN ('open', 'contacted')")
-            for eid, email in (cur.fetchall() or ()):
-                if (email or "").lower() in still:
+            for eid, email, at_open in (cur.fetchall() or ()):
+                key = (email or "").lower()
+                if key in still:
+                    continue
+                if key not in calls_now:
+                    unmeasured += 1      # off the roster entirely: cannot measure
+                    continue
+                if calls_now[key] <= int(at_open or 0):
+                    left_no_calls += 1   # left the subset WITHOUT calling
                     continue
                 cur.execute("""
                     UPDATE brain_escalations
                        SET status = 'activated', resolved_at = NOW(),
                            resolved_by = 'system',
-                           resolution_note = 'no longer escalating — the '
-                                             'account is making calls'
-                     WHERE id = %s""", (eid,))
+                           resolution_note = %s
+                     WHERE id = %s""",
+                            ("activated: total_calls rose %s -> %s since this "
+                             "row opened" % (int(at_open or 0), calls_now[key]),
+                             eid))
                 activated += 1
+
+            # ★ The repair. An account the roster STILL calls escalating cannot
+            # be `activated`; that state is only reachable through the empty-
+            # roster bug above, and nothing else in this module can set `open`,
+            # so the undo lives where the bug did. Touches only rows resolved by
+            # 'system' — a human's decision is never overruled — and only when
+            # the call count still has not moved.
+            cur.execute("SELECT id, email, COALESCE(calls_at_open, 0) "
+                        "FROM brain_escalations "
+                        "WHERE status = 'activated' AND resolved_by = 'system'")
+            for eid, email, at_open in (cur.fetchall() or ()):
+                key = (email or "").lower()
+                if key not in still:
+                    continue
+                if calls_now.get(key, 0) > int(at_open or 0):
+                    continue             # genuinely called; leave it activated
+                cur.execute("""
+                    UPDATE brain_escalations
+                       SET status = 'open', resolved_at = NULL,
+                           resolved_by = NULL, resolution_note = NULL
+                     WHERE id = %s""", (eid,))
+                reopened += 1
             conn.commit()
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:200]}
 
     return {"ok": True, "escalating_now": len(rows), "opened": opened,
             "refreshed": refreshed, "auto_activated": activated,
+            "reopened": reopened, "left_roster_no_calls": left_no_calls,
+            "unmeasured": unmeasured,
             "basis": ("rows from customer_white_glove._roster where "
-                      "escalate=True; auto_activated = open rows that "
-                      "dropped off it, i.e. the account started calling")}
+                      "escalate=True; auto_activated counts ONLY rows whose "
+                      "total_calls rose above calls_at_open. Leaving the "
+                      "escalating set without calling is reported separately "
+                      "as left_roster_no_calls and is NEVER activation; a "
+                      "roster read of zero rows is UNMEASURED and changes "
+                      "nothing")}
 
 
 def queue(status: str = _OPEN, limit: int = 100) -> dict:
@@ -257,8 +333,9 @@ def queue(status: str = _OPEN, limit: int = 100) -> dict:
         "rows": out,
         "note": ("Terminal action is HUMAN by design — the loop already "
                  "concluded another automated email is the wrong move. "
-                 "`activated` is measured from the account's own first "
-                 "call, never self-reported."),
+                 "`activated` requires the account's own total_calls to have "
+                 "risen above calls_at_open; leaving the escalating set "
+                 "without calling is not activation and does not close a row."),
     }
 
 
