@@ -456,7 +456,88 @@ def load_allowlist(root: str) -> set:
     return out
 
 
+# ── MUST-FAIL CONTROL ────────────────────────────────────────────────────────
+# This guard's whole subject is a failure that is SILENT: db_utils' cursor
+# wrapper returns early on DDL, nothing raises, nothing logs, and the table is
+# never created. It hid mcp_sessions for three months (#2196). A silent-failure
+# guard that has itself gone silent is indistinguishable from a clean tree.
+#
+# The control drives scan_source() — the real scanner — over planted modules.
+# The GOOD cases matter as much as the BAD ones, and one of them is the entire
+# subtlety of this script: `from main import get_db` is a raw pooled connection
+# and DDL through it RUNS, while `from db_utils import get_db` is the wrapper
+# and DDL through it is dropped. A control that did not pin that distinction
+# would pass a scanner that flagged all 69 main-importers and got deleted.
+_SELFTEST_MUST_FIRE = {
+    "DDL through db_utils.get_db":
+        "from db_utils import get_db\n"
+        "def make():\n"
+        "    with get_db() as c, c.cursor() as cur:\n"
+        "        cur.execute('CREATE TABLE IF NOT EXISTS x (id int)')\n",
+    "DDL through db_utils.safe_db":
+        "import db_utils\n"
+        "def make():\n"
+        "    with db_utils.safe_db() as c, c.cursor() as cur:\n"
+        "        cur.execute('CREATE INDEX IF NOT EXISTS i ON x (id)')\n",
+}
+_SELFTEST_MUST_STAY_SILENT = {
+    "DDL through a raw psycopg2.connect":
+        "import psycopg2\n"
+        "def make():\n"
+        "    with psycopg2.connect(DSN) as c, c.cursor() as cur:\n"
+        "        cur.execute('CREATE TABLE IF NOT EXISTS x (id int)')\n",
+    "DDL through main.get_db (rebound to a raw pooled conn)":
+        "from main import get_db\n"
+        "def make():\n"
+        "    with get_db() as c, c.cursor() as cur:\n"
+        "        cur.execute('CREATE TABLE IF NOT EXISTS x (id int)')\n",
+    # A non-DDL WRITE through the wrapper is fine — the wrapper only drops DDL —
+    # and pinning that is what separates "drops DDL" from "drops everything".
+    # ★ Spelled as UPDATE, not INSERT, on purpose: scripts/ is NOT a test path,
+    # so regression_lint reads a bare INSERT-plus-table literal here as real
+    # code and blocks the PR on insert-no-on-conflict. regression_lint.py warns
+    # about this for its own source; the same applies to any fixture under
+    # scripts/. It caught this control on its first run.
+    "a plain UPDATE through db_utils":
+        "from db_utils import get_db\n"
+        "def upd():\n"
+        "    with get_db() as c, c.cursor() as cur:\n"
+        "        cur.execute('UPDATE x SET id = 1')\n",
+}
+
+
+def self_test():
+    """Prove the scanner still refuses DDL through the wrapper, and still does
+    NOT flag the sanctioned ways of running it. Exit 1 = the GUARD is broken."""
+    dead, noisy = [], []
+    for name, src in _SELFTEST_MUST_FIRE.items():
+        try:
+            if not scan_source(src, "<selftest>"):
+                dead.append(name)
+        except Exception as e:  # noqa: BLE001
+            dead.append(f"{name} (raised {type(e).__name__})")
+    for name, src in _SELFTEST_MUST_STAY_SILENT.items():
+        try:
+            if scan_source(src, "<selftest>"):
+                noisy.append(name)
+        except Exception as e:  # noqa: BLE001
+            noisy.append(f"{name} (raised {type(e).__name__})")
+    if dead or noisy:
+        if dead:
+            print("SELF-TEST FAILED — scanner no longer fires on: "
+                  + ", ".join(dead), file=sys.stderr)
+        if noisy:
+            print("SELF-TEST FAILED — false positive on sanctioned shape: "
+                  + ", ".join(noisy), file=sys.stderr)
+        return 1
+    print(f"self-test ok: {len(_SELFTEST_MUST_FIRE)} wrapper-DDL shapes fire, "
+          f"{len(_SELFTEST_MUST_STAY_SILENT)} sanctioned shapes stay silent")
+    return 0
+
+
 def main(argv):
+    if "--self-test" in argv:
+        return self_test()
     root = argv[1] if len(argv) > 1 else str(
         pathlib.Path(__file__).resolve().parent.parent)
     files, offences = scan_tree(root)
