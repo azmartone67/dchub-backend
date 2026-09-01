@@ -38,6 +38,20 @@ _CHECK = "check_llm_error_body_discarded"
 _CORE = "_handlers_discarding_error_body"
 
 
+def _module_consts() -> dict:
+    """Module-level constants the sliced functions close over, read from the
+    SHIPPED source so retuning them there retunes the test."""
+    src = _RADAR.read_text()
+    ns: dict = {}
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "_ANTHROPIC_MARKERS"
+                for t in node.targets):
+            exec(compile(ast.Module([node], []), str(_RADAR), "exec"), ns)  # noqa: S102
+    assert "_ANTHROPIC_MARKERS" in ns, "_ANTHROPIC_MARKERS vanished from the radar"
+    return ns
+
+
 def _load(name: str, seed: dict | None = None):
     """Execute one function out of the SHIPPED radar source — no Flask, no DB."""
     src = _RADAR.read_text()
@@ -46,7 +60,8 @@ def _load(name: str, seed: dict | None = None):
             seg = ast.get_source_segment(src, node)
             assert seg and seg.strip(), f"{name} extracted empty"
             # __file__ is how the detector locates the repo root
-            ns: dict = {"__file__": str(_RADAR), **(seed or {})}
+            ns: dict = {"__file__": str(_RADAR), **_module_consts(),
+                        **(seed or {})}
             exec(compile(seg, str(_RADAR), "exec"), ns)  # noqa: S102
             return ns[name]
     raise AssertionError(f"{name} not found in {_RADAR}")
@@ -58,6 +73,7 @@ scan = _load(_CORE)
 _PRE_FIX = '''
 import urllib.error
 def call():
+    url = anthropic_messages_url()
     try:
         pass
     except urllib.error.HTTPError as e:
@@ -68,6 +84,7 @@ def call():
 _SHIPPED_FIX = '''
 import urllib.error
 def call():
+    url = anthropic_messages_url()
     try:
         pass
     except urllib.error.HTTPError as e:
@@ -79,6 +96,7 @@ def call():
 _INLINE_READ = '''
 import urllib.error
 def call():
+    url = anthropic_messages_url()
     try:
         pass
     except urllib.error.HTTPError as e:
@@ -154,3 +172,53 @@ def test_the_detector_runs_against_the_real_tree():
     for f in findings:
         assert f["issue"] == "llm_error_body_discarded"
         assert f["count"] >= 1 and f["detail"]
+
+
+# ── the narrowing that keeps this readable ───────────────────────────────────
+_NOT_AN_LLM_CALL = '''
+import urllib.error
+def probe_a_website(url):
+    """A HEAD probe. Reads e.code for CONTROL FLOW, has no error string to
+    enrich — and lives in a file that also calls Anthropic elsewhere."""
+    try:
+        pass
+    except urllib.error.HTTPError as e:
+        if e.code == 405:
+            return retry_with_get(url)
+        return (False, e.code)
+
+def ask_claude(prompt):
+    url = anthropic_messages_url()
+    try:
+        pass
+    except urllib.error.HTTPError as e:
+        return None, f"http_{e.code}"
+'''
+
+
+def test_only_functions_that_call_anthropic_are_in_scope():
+    """★ 8 of the first 14 reports were website probes, redirect checks and an
+    internal _req helper that happened to share a file with an Anthropic call.
+    They read e.code for control flow and have no reason to lose. A detector
+    whose majority is noise gets ignored."""
+    lines = _NOT_AN_LLM_CALL.splitlines()
+    probe_at = next(i for i, l in enumerate(lines, 1) if "def probe_a_website" in l)
+    claude_at = next(i for i, l in enumerate(lines, 1) if "def ask_claude" in l)
+
+    hits = scan(_NOT_AN_LLM_CALL)
+
+    assert len(hits) == 1, f"expected only the Claude call, got {hits}"
+    assert "except urllib.error.HTTPError" in lines[hits[0] - 1]
+    # the reported handler is inside ask_claude, NOT probe_a_website
+    assert hits[0] > claude_at > probe_at
+
+
+def test_the_tree_is_clean():
+    """★ REGRESSION FENCE. Every Anthropic call site in this repo reports its
+    HTTP failure body. A new one that does not will fail here by name."""
+    findings = _load(_CHECK, {_CORE: scan})()
+    sites = findings[0]["sites"] if findings else []
+    assert sites == [], (
+        "Anthropic call site(s) discarding the HTTP error body:\n  "
+        + "\n  ".join(sites)
+        + "\nUse utils.anthropic_helper.http_error_detail(e) in the handler.")

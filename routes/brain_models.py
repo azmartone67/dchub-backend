@@ -40,7 +40,7 @@ up with one env-var change.
 """
 import os
 import logging
-from utils.anthropic_helper import anthropic_messages_url
+from utils.anthropic_helper import anthropic_messages_url, http_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -360,12 +360,19 @@ def probe_model_reachability(api_key: str,
         except urllib.error.HTTPError as e:
             # 404/400 = model not available to this key.
             # 429 = rate-limited but the model EXISTS (count as reachable).
+            # ★ 2026-09-01: all six models reported a bare
+            # "reachable_rate_limited" while a Cloudflare AI Gateway spend rule
+            # refused every one of them pre-auth — the body said so and this
+            # threw it away. The status TOKEN is unchanged (brain_model_for
+            # gates on startswith("reachable") / startswith("http_")); the
+            # cause is appended after it.
+            _d = http_error_detail(e, 160)
             if e.code == 429:
-                results[m] = "reachable_rate_limited"
+                results[m] = "reachable_rate_limited" + (f": {_d}" if _d else "")
                 if best_reachable is None:
                     best_reachable = m
             else:
-                results[m] = f"http_{e.code}"
+                results[m] = f"http_{e.code}" + (f": {_d}" if _d else "")
         except Exception as e:
             results[m] = f"error: {str(e)[:60]}"
 

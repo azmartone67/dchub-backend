@@ -185,3 +185,24 @@ def _smoke():
 
 
 _smoke()
+
+def http_error_detail(e, limit: int = 300) -> str:
+    """The response body of a urllib HTTPError, one line, truncated. "" on any
+    problem — NEVER raises, so it is safe to call from inside an except block.
+
+    ★ WHY THIS EXISTS (2026-09-01). Raw Anthropic callers across this tree
+    recorded `f"http_{e.code}"` and dropped the body, so three unrelated
+    failures — a Cloudflare AI Gateway spend rule, an Anthropic per-minute rate
+    limit, and a dead key — all reached the operator as the same `http_429`.
+    Diagnosing the real one (a gateway budget rule the body named outright)
+    took a live bisect. One helper so the fix is the same everywhere, and so a
+    caller that passes `e` here is visibly not discarding it.
+    """
+    try:
+        raw = e.read() or b""
+    except Exception:
+        return ""
+    try:
+        return " ".join(raw.decode("utf-8", "replace").split())[:max(0, int(limit))]
+    except Exception:
+        return ""

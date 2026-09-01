@@ -384,7 +384,7 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
     if not api_key:
         return None
     try:
-        from utils.anthropic_helper import anthropic_messages_url
+        from utils.anthropic_helper import anthropic_messages_url, http_error_detail
         url = anthropic_messages_url()
     except Exception:
         url = "https://api.anthropic.com/v1/messages"
@@ -460,12 +460,14 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
                         return text[:280]
             return None
         except urllib.error.HTTPError as e:
+            detail = http_error_detail(e)
             if e.code in (404, 400) and i + 1 < len(models):
-                logger.warning("[tool-tuner] %s/%s model=%s HTTP %s — trying "
-                               "next fallback rung", platform, tool_name, model, e.code)
+                logger.warning("[tool-tuner] %s/%s model=%s HTTP %s %s — trying "
+                               "next fallback rung", platform, tool_name, model,
+                               e.code, detail)
                 continue
-            logger.warning("[tool-tuner] %s/%s model=%s HTTP %s — no more rungs, "
-                           "giving up", platform, tool_name, model, e.code)
+            logger.warning("[tool-tuner] %s/%s model=%s HTTP %s %s — no more rungs, "
+                           "giving up", platform, tool_name, model, e.code, detail)
             return None
         except Exception as e:
             logger.warning("[tool-tuner] %s/%s model=%s rewrite error: %s",

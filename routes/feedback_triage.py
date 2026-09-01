@@ -50,7 +50,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from flask import Blueprint, jsonify, request
-from utils.anthropic_helper import anthropic_messages_url
+from utils.anthropic_helper import anthropic_messages_url, http_error_detail
 from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
@@ -223,7 +223,8 @@ def _call_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
                     return block.get("text", ""), None
             return None, "no_text_block"
         except urllib.error.HTTPError as e:
-            last_err = f"http_{e.code}"
+            _d = http_error_detail(e)
+            last_err = f"http_{e.code}" + (f": {_d}" if _d else "")
             if e.code in (404, 400) and i + 1 < len(models):
                 continue
             return None, last_err
