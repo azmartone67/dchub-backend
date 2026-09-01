@@ -106,10 +106,13 @@
 #     there is genuinely nothing to mirror. (Its "nothing would authenticate"
 #     wording is now imprecise — an mcp_dev_keys row does authenticate — but
 #     the abort itself is correct. Rotate that class with gen_dev_key.py.)
-#   - PR #3518 makes dchub-mcp-v2.1/gen_dev_key.py a symlink to the root file.
-#     Until it merges, that bundle copy is a SEPARATE, PRE-#2766 file whose
-#     revoke still only touches mcp_dev_keys. Run the ROOT tool, never the
-#     bundle copy.
+#   - dchub-mcp-v2.1/gen_dev_key.py WAS a separate, pre-#2766 copy whose revoke
+#     only touched mcp_dev_keys — so revoking through the bundle path reported
+#     success and left the credential live. #3518 LANDED 2026-09-01 and made it
+#     a symlink (git mode 120000) to the root file, guarded by
+#     tests/test_revoke_tool_has_one_implementation.py. There is now ONE
+#     implementation; either path runs it. If that guard ever goes red, assume
+#     a second copy is back and revoke from the ROOT file until it is fixed.
 # ==============================================================================
 set -euo pipefail
 
