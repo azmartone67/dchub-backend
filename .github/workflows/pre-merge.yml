@@ -33,6 +33,11 @@ jobs:
       # aborts collection and takes the guard with it (verified: exit 3, "no
       # tests ran"). The two are complementary; this is the one that still fires
       # once the suite is already dead.
+      # The control runs FIRST, as it does for api-response-contract: if the
+      # guard has stopped being able to fail, the scan below is worthless and
+      # must not get to report green.
+      - name: Collection-safety must-fail control
+        run: python3 scripts/check_collection_safety.py --self-test
       - name: No test module aborts collection
         run: python3 scripts/check_collection_safety.py tests
       # The gate liveness ledger's OWN must-fail control (2026-08-31). Runs
@@ -53,6 +58,8 @@ jobs:
       # Runs in syntax-check rather than unit-tests so it still reports when
       # the suite itself is down; tests/test_ddl_through_pool.py covers the
       # same scan with better messages and pins the analyser's behaviour.
+      - name: DDL-through-pool must-fail control
+        run: python3 scripts/check_ddl_through_pool.py --self-test
       - name: No DDL through the pooled cursor
         run: python3 scripts/check_ddl_through_pool.py
       # CONFIG_SNAPSHOT.md carried a live Redis password + Render deploy-hook
@@ -102,8 +109,15 @@ jobs:
             failure) V=fail ;;
             *)       V=unmeasured ;;
           esac
+          # ★ selftest stays `absent` and that is deliberate. This gate is a JOB
+          # of six checks; three now have must-fail controls (collection-safety,
+          # DDL-through-pool, leaked-credentials) and three do not (AST parse,
+          # worker-version bump, the ledger control covers gate_runs not this
+          # job). Reporting `pass` because SOME of it is proven is exactly the
+          # partial-truth this board exists to remove — so the ratio goes in the
+          # note, where it is visible, and the verdict stays honest.
           bash scripts/gate_beat.sh "pre-merge:syntax-check" "$V" "$N" absent \
-            "N = .py files in the tree"
+            "N = .py files; must-fail controls on 3 of 6 checks"
 
   regression-lint:
     runs-on: ubuntu-latest

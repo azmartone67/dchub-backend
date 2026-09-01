@@ -122,7 +122,55 @@ def offending_lines(tree):
     return sorted(set(found))
 
 
+# ── MUST-FAIL CONTROL ────────────────────────────────────────────────────────
+# This guard exists because a module-scope exit in tests/ killed all 2,285 tests
+# and CI read it as the known-red baseline (#1797). A guard against THAT class
+# is worth nothing unless it can still fail, and nothing here proved it could.
+#
+# The control drives offending_lines() — the real predicate the scan uses — with
+# a planted defect, and asserts it fires. It also asserts the SANCTIONED shapes
+# stay silent: a guard that flags `if __name__ == "__main__": sys.exit()` gets
+# switched off within a week, and a switched-off guard is the thing this whole
+# ledger exists to make visible.
+_SELFTEST_MUST_FIRE = {
+    "module-scope exit":      "import sys\nsys.exit(0)\n",
+    "the #1797 shape":        "import sys\nfail = 0\nsys.exit(1 if fail else 0)\n",
+    "guarded by a condition": "import sys\nDB = None\nif not DB:\n    sys.exit(0)\n",
+    "buried in try":          "import sys\ntry:\n    sys.exit(1)\nexcept Exception:\n    pass\n",
+    "raise SystemExit":       "raise SystemExit(0)\n",
+    "conftest-shaped exit":   "import sys\nimport os\nif not os.environ.get('DATABASE_URL'):\n    sys.exit(0)\n",
+}
+_SELFTEST_MUST_STAY_SILENT = {
+    "under a __main__ guard": "import sys\nif __name__ == '__main__':\n    sys.exit(0)\n",
+    "inside a function":      "import sys\ndef go():\n    sys.exit(0)\n",
+    "inside a method":        "import sys\nclass T:\n    def go(self):\n        sys.exit(0)\n",
+    "an ordinary test":       "def test_x():\n    assert True\n",
+}
+
+
+def self_test():
+    """Prove the guard still refuses each shape it claims to catch. Exit 1 = the
+    GUARD is broken, whatever the tests/ tree happens to look like."""
+    dead = [n for n, src in _SELFTEST_MUST_FIRE.items()
+            if not offending_lines(ast.parse(src))]
+    noisy = [n for n, src in _SELFTEST_MUST_STAY_SILENT.items()
+             if offending_lines(ast.parse(src))]
+    if dead or noisy:
+        if dead:
+            print("SELF-TEST FAILED — guard no longer fires on: "
+                  + ", ".join(dead), file=sys.stderr)
+        if noisy:
+            print("SELF-TEST FAILED — false positive on sanctioned shape: "
+                  + ", ".join(noisy), file=sys.stderr)
+        return 1
+    print(f"self-test ok: {len(_SELFTEST_MUST_FIRE)} offending shapes fire, "
+          f"{len(_SELFTEST_MUST_STAY_SILENT)} sanctioned shapes stay silent")
+    return 0
+
+
 def main(argv):
+    if "--self-test" in argv:
+        return self_test()
     tests_dir = pathlib.Path(argv[1] if len(argv) > 1 else 'tests')
 
     # EVERY .py under tests/, not just top-level test_*.py. pytest also imports
