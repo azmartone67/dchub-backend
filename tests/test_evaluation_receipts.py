@@ -189,7 +189,11 @@ def test_run_metadata_is_carried_not_summarised(app, monkeypatch):
     assert rec["evaluated_at"].startswith("2026-07-19")
     assert rec["published_at"].startswith("2026-07-19")
     assert rec["http_5xx_seen"] == 1, "a 5xx the model hit must stay visible"
-    assert rec["run_seconds"] == 74.0
+    assert "run_seconds" not in rec, (
+        "started_at and finished_at are BOTH stamped at INSERT, so any duration "
+        "derived from them measures the database write, not the run. Publishing "
+        "it as run_seconds is the fabricated-measurement class this page exists "
+        "to avoid.")
 
 
 def test_malformed_transcript_does_not_explode():
@@ -228,3 +232,39 @@ def test_counts_are_derived_not_asserted(app, monkeypatch):
     assert body["counts"]["published_runs"] == 2
     assert body["counts"]["by_platform"] == {"mistral": 2}
     assert body["counts"]["distinct_models"] == 1
+
+
+# ── 6. LIVE-DATA REGRESSIONS (found by reading the deployed payload) ─────────
+def test_harness_refusal_is_preserved_not_rendered_as_an_empty_response():
+    """The harness refuses an out-of-origin call with a bare JSON error and NO
+    "HTTP <code>" line. Splitting on the first newline dropped it into a 0-byte
+    body with a null status — which is exactly what the live perplexity receipt
+    (run #100018) showed, hiding the reason its verdict was hedged. The refusal
+    IS the response the model saw."""
+    refusal = '{"error": "harness: only DC Hub origin calls are executed"}'
+    calls = ais._transcript_calls([
+        {"role": "assistant", "content": '{"call": {"method": "GET", "url": "https://dchub.cloud/openapi.json"}}'},
+        {"role": "harness", "content": refusal},
+    ])
+    assert len(calls) == 1
+    c = calls[0]
+    assert c["executed"] is False, "a refused call must not read as an executed one"
+    assert c["http_status"] is None
+    assert c["response_bytes"] == len(refusal), "the refusal text must survive"
+    assert "only DC Hub origin calls" in c["response_excerpt"]
+
+
+def test_executed_calls_are_marked_executed():
+    calls = ais._transcript_calls([
+        {"role": "assistant", "content": '{"call": {"url": "/openapi.json"}}'},
+        {"role": "harness", "content": 'HTTP 200\n{"ok":true}'},
+    ])
+    assert calls[0]["executed"] is True and calls[0]["http_status"] == 200
+
+
+def test_envelope_says_what_the_timestamps_mean(app, monkeypatch):
+    _stub(monkeypatch, [_ROW])
+    with app.test_client() as c:
+        body = c.get("/api/v1/receipts").get_json()
+    assert "PERSISTED" in body["timestamps"], "evaluated_at is insert-time, not run-start"
+    assert "no run duration is published" in body["timestamps"]

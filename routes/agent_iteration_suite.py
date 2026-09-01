@@ -578,19 +578,26 @@ def _transcript_calls(transcript, excerpt=400, full_bodies=False):
             continue
         if role != "harness":
             continue
-        head, _, body = content.partition("\n")
         status = None
-        if head.startswith("HTTP "):
+        if content.startswith("HTTP "):
+            head, _, body = content.partition("\n")
             try:
                 status = int(head[5:].strip())
             except Exception:
                 status = None
+        else:
+            # The harness refuses an out-of-origin call with a bare JSON error
+            # and no HTTP line. That refusal IS what the model was handed, and
+            # it is often the reason a verdict is hedged — keep it, do not
+            # render it as an empty 0-byte response with no status.
+            body = content
         rec = {
             "n": len(calls) + 1,
             "method": str((pending or {}).get("method") or "GET").upper() if pending else None,
             "url": str((pending or {}).get("url") or "") or None,
             "request_body": (pending or {}).get("body") if pending else None,
             "http_status": status,
+            "executed": status is not None,
             "response_bytes": len(body),
             "response_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
             "response_truncated_by_harness": "[harness: truncated at 15000 chars]" in body,
@@ -653,9 +660,6 @@ def _receipt_rows(run_id=None, limit=40, full_bodies=False):
             for (rid, plat, model, status, calls, x5, verdict, diff, transcript,
                  notes, started, finished, published) in cur.fetchall():
                 iso = (lambda t: t.isoformat() if t else None)
-                dur = None
-                if started and finished:
-                    dur = round((finished - started).total_seconds(), 1)
                 out.append({
                     "run_id": rid,
                     "platform": plat,
@@ -663,9 +667,7 @@ def _receipt_rows(run_id=None, limit=40, full_bodies=False):
                     "model_id": model,
                     "status": status,
                     "evaluated_at": iso(started),
-                    "finished_at": iso(finished),
                     "published_at": iso(published),
-                    "run_seconds": dur,
                     "model_replies": calls,
                     "http_5xx_seen": x5,
                     "verdict_vs_previous": diff,
@@ -703,6 +705,11 @@ def receipts_json():
         counts={"published_runs": len(rows), "by_platform": by_platform,
                 "distinct_models": len({r["model_id"] for r in rows if r["model_id"]})},
         protocol=_protocol_block(),
+        timestamps=("evaluated_at is stamped when the run is PERSISTED, moments "
+                    "after the model returns its verdict — not when the first "
+                    "call was issued. The harness does not record a start "
+                    "instant, so no run duration is published: one derived from "
+                    "these columns would be measuring the database write."),
         receipts=rows,
         limitations=_RECEIPT_LIMITATIONS,
         note=("Each receipt is one published run: the exact model id, when it "
