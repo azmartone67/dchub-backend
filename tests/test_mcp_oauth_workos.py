@@ -211,7 +211,11 @@ def test_token_and_introspect_are_not_here(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════════
 # Route behaviour — CONFIGURED (WorkOS domain + advertise on)
 # ══════════════════════════════════════════════════════════════════════════
-DOMAIN = "https://beloved-stream-52.authkit.app"
+# Deliberately NOT the production domain. Feeding the real value here would
+# let this test pass even if the module ignored WORKOS_AUTHKIT_DOMAIN and
+# fell back to its default -- the assertion would match either way. A
+# synthetic value makes "the env was honoured" the only way to pass.
+DOMAIN = "https://authkit-fixture.example.com"
 
 
 def test_configured_advertises_workos_as(monkeypatch):

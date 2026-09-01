@@ -19,8 +19,12 @@ from flask import Flask
 import ai_agent_discovery
 import routes.agent_a2a as agent_a2a
 
-WORKOS = "https://beloved-stream-52.authkit.app"
-EXPECTED_SCOPES = ["openid", "profile", "email", "offline_access"]
+from workos_authkit import authkit_domain, AUTHKIT_SCOPES
+
+# Derived, never pinned: this asserts the CARD matches the single origin,
+# so a domain cutover does not have to be typed into the test as well.
+WORKOS = authkit_domain()
+EXPECTED_SCOPES = list(AUTHKIT_SCOPES)
 
 
 # ── /.well-known/agent-card.json (routes/agent_a2a.py — the marketplace card) ─
