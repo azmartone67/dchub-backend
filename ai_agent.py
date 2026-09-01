@@ -343,6 +343,7 @@ DASHBOARD_HTML = """
 """
 
 # Routes
+# AUTO-REPAIR: duplicate route '/' also in main.py:23962 — review and remove one
 @ai_agent.route('/')
 def dashboard():
     report = agent_cache["reports"][-1]["report"] if agent_cache["reports"] else "No reports yet. Click 'Generate Report'."
@@ -353,6 +354,7 @@ def dashboard():
         news_count=len(agent_cache["news"]),
         report=report
     )
+# AUTO-REPAIR: duplicate route '/status' also in enhanced_promotion.py:826 — review and remove one
 
 @ai_agent.route('/status')
 def status():
@@ -362,6 +364,7 @@ def status():
         "claude_enabled": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "last_updates": agent_cache["last_updates"],
         "counts": {"news": len(agent_cache["news"]), "reports": len(agent_cache["reports"])}
+# AUTO-REPAIR: duplicate route '/news' also in main.py:25263 — review and remove one
     })
 
 @ai_agent.route('/news')

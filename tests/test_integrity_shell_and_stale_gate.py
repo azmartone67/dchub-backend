@@ -65,6 +65,7 @@ def _app(monkeypatch, age_seconds):
     def _content():
         return flask.jsonify(ok=True, results=[1, 2, 3])
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7917 — review and remove one
     @app.route("/health")
     def _health():
         return flask.jsonify(ok=True)
