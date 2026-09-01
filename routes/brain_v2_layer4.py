@@ -338,6 +338,62 @@ def _auto_expand_find(find: str, snippet: str) -> str:
     return find
 
 
+# ── Anthropic HTTP error legibility (2026-09-01) ──────────────────
+# Bounded 429/5xx handling for the raw brain caller. The approve→PR path is
+# SYNCHRONOUS behind the edge (admin POSTs time out at 15s), so the whole call
+# gets ONE short Retry-After sleep, never a backoff ladder.
+_RETRY_CODES = (429, 500, 502, 503, 529)
+_RETRY_SLEEP_CAP_S = 4.0
+
+
+def _anthropic_error_body(e) -> str:
+    """The HTTPError response body, one line, truncated. NEVER raises.
+
+    Until 2026-09-01 the caller recorded `f"http_{e.code}"` and nothing else,
+    so the operator-facing toast read "claude call failed: http_429" — the one
+    place the actual reason was available, thrown away."""
+    try:
+        raw = e.read() or b""
+    except Exception:
+        return ""
+    return " ".join(raw.decode("utf-8", "replace").split())[:300]
+
+
+def _is_gateway_block(detail: str) -> bool:
+    """True when a proxy IN FRONT of Anthropic is rejecting on its own budget
+    rule instead of forwarding the call.
+
+    2026-09-01, gateway `dchub` (ANTHROPIC_BASE_URL points at Cloudflare AI
+    Gateway, on both dchub-backend and dchub-worker):
+
+      429 {"name":"AiGatewayError","internalCode":2041,
+           "message":"Spend limit exceeded: rule '5e7f1b6b' (cost limit 100
+           per 604800s, sliding) for anthropic anthropic/claude-fable-5"}
+
+    It hit EVERY model — fable-5, opus-4-8/4-7/4-5, sonnet-4-5 and a 1-token
+    haiku probe — and fired BEFORE authentication (a deliberately invalid key
+    got the same 429, not a 401). So neither degrading down resolve_chain nor
+    sleeping can clear it; only the gateway's own rule can. Fail fast and say
+    so, rather than spending the caller's request budget proving it."""
+    d = detail.lower()
+    return ("aigatewayerror" in d or "spend limit exceeded" in d
+            or "budget limit exceeded" in d)
+
+
+def _retry_after_s(e, cap: float) -> float:
+    """Retry-After as seconds, clamped to [0, cap]. 0 when absent, non-numeric
+    (an HTTP-date form), non-positive, or when the budget is already spent."""
+    if cap <= 0:
+        return 0.0
+    try:
+        v = float((e.headers.get("Retry-After") or "").strip())
+    except Exception:
+        return 0.0
+    if not (v > 0):          # also catches NaN
+        return 0.0
+    return min(v, cap)
+
+
 def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
     """Single Anthropic call. Returns (text, error)."""
     if not ANTHROPIC_API_KEY:
@@ -351,8 +407,10 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
     # chain (opus-4-8 → opus-4-7 → opus-4-5 → sonnet → haiku) instead
     # of the old 2-deep retry. On a 404/400 (model not accessible to
     # this key — the prior opus-4-7 attempt 404'd) we degrade one rung
-    # and retry, so a high default never zeros out the brain. Other
-    # codes (401/429/5xx) don't retry. Also opt-in 1M context: when the
+    # and retry, so a high default never zeros out the brain. 2026-09-01:
+    # 429/5xx degrade too (a PER-MODEL limit clears on another rung), after
+    # at most one Retry-After sleep — except a gateway budget block, which no
+    # rung escapes and which fails fast. Also opt-in 1M context: when the
     # resolved model supports it + DCHUB_BRAIN_1M_CONTEXT is on, add the
     # beta header so the inspector tier can hold far more findings.
     try:
@@ -364,7 +422,21 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
         supports_1m_context = lambda m: False  # noqa: E731
         one_m_beta_header = lambda: ""          # noqa: E731
     last_err = None
-    for _i, _model in enumerate(_models):
+    # ONE Retry-After sleep for the WHOLE call, not one per rung: if a second
+    # of patience did not clear the limit on the first model, spending another
+    # second on the next one will not either — degrading is the cheaper bet,
+    # and this path is synchronous behind a 15s edge timeout.
+    _slept = False
+    # Rungs left to try. A Retry-After retry re-queues the SAME model at the
+    # next index, so "retry once" and "degrade" are the same loop.
+    _attempts = list(_models)
+    # ★ The loop is bounded STRUCTURALLY, not just by `_slept`: `_attempts`
+    # grows by one on a retry, so a future edit that relaxes the retry
+    # condition would otherwise re-queue forever, sleeping the cap each pass.
+    _cap = len(_models) + 1
+    _i = 0
+    while _i < len(_attempts) and _i < _cap:
+        _model = _attempts[_i]
         # 4000, not 800: reasoning-tier models (opus-4-8 / fable-5) spend
         # tokens on thinking blocks before the text block — an 800-token
         # budget exhausted mid-think returns no text at all ("no_text_block")
@@ -412,11 +484,38 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
                 return "\n".join(texts), None
             return None, "no_text_block"
         except urllib.error.HTTPError as e:
-            last_err = f"http_{e.code}"
-            if e.code in (404, 400) and _i + 1 < len(_models):
+            # ★ READ THE BODY. It carries the only sentence that separates a
+            # gateway budget block from an Anthropic rate limit from a bad
+            # request — all three of which arrive as a bare status code.
+            detail = _anthropic_error_body(e)
+            last_err = f"http_{e.code}" + (f": {detail}" if detail else "")
+            if _is_gateway_block(detail):
+                print(f"[brain_v2_layer4] gateway refused {_model} "
+                      f"(http_{e.code}) — no rung escapes this: {detail}",
+                      file=sys.stderr)
+                return None, last_err
+            _more = _i + 1 < len(_attempts)
+            if e.code in (404, 400) and _more:
                 print(f"[brain_v2_layer4] model {_model} -> http_{e.code}; "
-                      f"self-heal retry with {_models[_i+1]}", file=sys.stderr)
+                      f"self-heal retry with {_attempts[_i+1]}", file=sys.stderr)
+                _i += 1
                 continue
+            if e.code in _RETRY_CODES:
+                _wait = _retry_after_s(e, _RETRY_SLEEP_CAP_S)
+                if not _slept and _wait > 0:
+                    _slept = True
+                    print(f"[brain_v2_layer4] model {_model} -> http_{e.code}; "
+                          f"Retry-After {_wait:.1f}s, one retry",
+                          file=sys.stderr)
+                    time.sleep(_wait)
+                    _attempts.insert(_i + 1, _model)
+                    _i += 1
+                    continue
+                if _more:
+                    print(f"[brain_v2_layer4] model {_model} -> http_{e.code}; "
+                          f"degrading to {_attempts[_i+1]}", file=sys.stderr)
+                    _i += 1
+                    continue
             return None, last_err
         except Exception as e:
             # EGRESS DIAGNOSTICS (2026-05-30): log the FULL exception repr
@@ -426,6 +525,7 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
             print(f"[brain_v2_layer4] _call_claude egress failure: {full}",
                   file=sys.stderr)
             return None, f"call_fail: {full}"
+        _i += 1        # unreachable today; keeps the loop finite if edited
     return None, last_err or "all_models_failed"
 
 
