@@ -29,7 +29,9 @@ stub compute a genuinely different verdict, so the predicate tests below fail on
 behaviour rather than on source text.
 """
 
+import ast
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -330,3 +332,82 @@ def test_fallout_guidance_still_prints_on_failure(tmp_path):
     r = _bash(p)
     assert r.returncode == 1
     assert "api_endpoint_log" in r.stdout
+
+
+# --------------------------------------------------------------------------
+# the .sh's hardcoded tier table must agree with the gate
+# --------------------------------------------------------------------------
+# gen_dev_key.py's mint banner IMPORTS util.tier_gate._PLAN_TO_TIER, so it
+# cannot disagree with the gate (#3526). A shell comment cannot import
+# anything, so this runbook restates that mapping as literal text — the one
+# hardcoded copy left in this area, and therefore the one most likely to rot
+# silently. That mapping went stale twice already when it was merely
+# *described*; these two tests are what stands in for the import.
+
+_TIER_ROW = re.compile(
+    r"--tier\s+(?P<tier>\w+)\s+/mcp\s+AUTHENTICATES,\s+REST\s+(?P<rest>[A-Z_]+)")
+
+
+def _sh_tier_table():
+    """The table as the runbook states it: {tier: REST_TIER_NAME}."""
+    rows = {m.group("tier"): m.group("rest")
+            for m in _TIER_ROW.finditer(_SCRIPT.read_text())}
+    assert rows, (
+        f"the per-tier table could not be parsed out of {_SCRIPT.name}. Either "
+        "it was deleted — in which case remove these tests deliberately — or it "
+        "was reformatted and this guard is now comparing NOTHING and passing. "
+        "Do not leave it in that state.")
+    return rows
+
+
+def _cli_tier_choices():
+    """The --tier values gen_dev_key.py actually accepts, read from argparse."""
+    src = (_ROOT / "gen_dev_key.py").read_text()
+    choices = set()
+    for node in ast.walk(ast.parse(src)):
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "attr", None) == "add_argument"
+                and node.args
+                and getattr(node.args[0], "value", None) == "--tier"):
+            for kw in node.keywords:
+                if kw.arg == "choices":
+                    choices |= {e.value for e in kw.value.elts}
+    assert choices, "could not read the --tier choices out of gen_dev_key.py"
+    return choices
+
+
+def test_sh_tier_table_agrees_with_tier_gate():
+    """★ The authority is util.tier_gate._PLAN_TO_TIER, not this table.
+
+    An operator reads the runbook to decide how alarmed to be about a key they
+    are rotating. "REST ANONYMOUS" and "REST ENTERPRISE" call for very
+    different urgency, and the difference is one dict entry away.
+    """
+    from util.tier_gate import _PLAN_TO_TIER, Tier
+
+    table = _sh_tier_table()
+    wrong = {t: (stated, _PLAN_TO_TIER.get(t, Tier.IDENTIFIED).name)
+             for t, stated in table.items()
+             if stated != _PLAN_TO_TIER.get(t, Tier.IDENTIFIED).name}
+    assert not wrong, (
+        "the runbook's tier table disagrees with util.tier_gate._PLAN_TO_TIER "
+        "— {tier: (runbook says, gate says)}: " + repr(wrong))
+
+
+def test_sh_tier_table_covers_every_tier_the_cli_can_mint():
+    """A tier the CLI offers but the table omits is the silent half of the same
+    drift: the operator looks it up, does not find it, and guesses."""
+    stated, offered = set(_sh_tier_table()), _cli_tier_choices()
+    assert stated == offered, (
+        f"runbook table covers {sorted(stated)} but gen_dev_key.py --tier "
+        f"accepts {sorted(offered)}; missing={sorted(offered - stated)}, "
+        f"stale={sorted(stated - offered)}")
+
+
+def test_the_tier_table_parser_actually_matches_something():
+    """★ Guard the guard. Both tests above are vacuous if the regex stops
+    matching, and a reformatted comment is the likely cause — so pin the shape
+    the parser depends on rather than trusting it to fail loudly on its own."""
+    rows = _sh_tier_table()
+    assert len(rows) >= 3, f"expected the full table, parsed only {rows}"
+    assert "free" in rows, "the default --tier must appear in the table"
