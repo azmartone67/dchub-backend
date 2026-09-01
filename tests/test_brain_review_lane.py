@@ -15,44 +15,80 @@ from routes.brain_review_lane import (
     REVIEW_BRANCH_PREFIX,
     REVIEW_KLASS,
     UNCLASSIFIED_BLOCKER,
-    is_unclassified_safe,
+    is_review_eligible,
+    is_patch_unsafe,
     open_review_draft_prs,
 )
 
 
 # ── The gate predicate ───────────────────────────────────────────────
-def test_admits_only_the_missing_class_blocker():
-    assert is_unclassified_safe(
+#
+# ★ CONTRACT CHANGED 2026-08-31, deliberately. The old predicate
+# (is_unclassified_safe) required blocked_by == [UNCLASSIFIED_BLOCKER] EXACTLY.
+# Measured across all 85 open proposals, that admitted ZERO — not one is blocked
+# solely by the missing class — so the lane was unreachable by construction and
+# had opened nothing, ever.
+#
+# The replacement separates two questions the old one conflated:
+#   1. is the PATCH applicable and safe to show a human?
+#   2. is it MECHANICAL enough to merge unattended?
+# The mechanical lane answers (2). This lane exists for proposals that fail (2)
+# and pass (1). On the live queue that is 81 reviewable / 3 excluded.
+
+def test_admits_the_missing_class_blocker():
+    assert is_review_eligible(
         {"is_mechanical": False, "blocked_by": [UNCLASSIFIED_BLOCKER]}) is True
 
 
-def test_rejects_when_a_second_blocker_is_present():
-    """★ The core safety property. The missing class alone is a labelling gap;
-    the missing class PLUS anything else is a real one."""
-    for extra in (
-        "12 changed lines > MECH_MAX_LINES=8",
-        "adds control-flow keyword(s): if,return",
-        "search_text occurs 3x in live file (ambiguous)",
-        "confidence 0.60 < MECH_MIN_CONF=0.8",
-        "forbidden path pattern(s): main.py",
-        "sqlite-data guard: search is a translation-table key",
-        "search_text not present in live file (stale/drifted)",
-    ):
-        assert is_unclassified_safe({
-            "is_mechanical": False,
-            "blocked_by": [UNCLASSIFIED_BLOCKER, extra],
-        }) is False, f"must reject when also blocked by: {extra}"
-        # order must not matter
-        assert is_unclassified_safe({
-            "is_mechanical": False,
-            "blocked_by": [extra, UNCLASSIFIED_BLOCKER],
-        }) is False
-
-
-def test_rejects_a_different_single_blocker():
-    assert is_unclassified_safe({
+@pytest.mark.parametrize("extra", [
+    "12 changed lines > MECH_MAX_LINES=8",
+    "adds control-flow keyword(s): if,return",
+    "confidence 0.60 < MECH_MIN_CONF=0.8",
+    "adds an import",
+    "adds call name(s) not in search: to_regclass",
+])
+def test_admits_not_mechanical_but_reviewable(extra):
+    """These mean "unproven", not "wrong". A human reading the diff is exactly
+    what they call for — and they are 81 of the 84 blocked proposals, so
+    rejecting them is what emptied the lane."""
+    assert is_review_eligible({
         "is_mechanical": False,
-        "blocked_by": ["adds control-flow keyword(s): return"]}) is False
+        "blocked_by": [UNCLASSIFIED_BLOCKER, extra]}) is True, extra
+    assert is_review_eligible({
+        "is_mechanical": False,
+        "blocked_by": [extra, UNCLASSIFIED_BLOCKER]}) is True, "order must not matter"
+
+
+@pytest.mark.parametrize("extra", [
+    "search_text occurs 3x in live file (ambiguous)",
+    "search_text not present in live file (stale/drifted)",
+    "search_text < 10 chars (6) — too ambiguous",
+    "forbidden path pattern(s): main.py",
+    "sqlite-data guard: search is a translation-table key",
+    "ambiguous: matched multiple allowlist classes",
+    "replacement_breaks_syntax: SyntaxError",
+])
+def test_still_rejects_an_unsound_patch(extra):
+    """★ The safety property that survives. These mean the PATCH is broken —
+    it would not apply, would apply in the wrong place, or is off-limits. A
+    draft PR built on one is garbage or dangerous, however well a human reads.
+
+    All three real exclusions on the live queue are in this set: a search_text
+    occurring 3x, one absent from the file, and one 6 characters long."""
+    assert is_review_eligible({
+        "is_mechanical": False,
+        "blocked_by": [UNCLASSIFIED_BLOCKER, extra]}) is False, extra
+    assert is_review_eligible({
+        "is_mechanical": False,
+        "blocked_by": [extra, UNCLASSIFIED_BLOCKER]}) is False
+    assert is_patch_unsafe(extra) is True
+
+
+def test_admits_a_different_single_blocker_when_the_patch_is_sound():
+    """Under the old exact-match rule this was a rejection. It is the change."""
+    assert is_review_eligible({
+        "is_mechanical": False,
+        "blocked_by": ["adds control-flow keyword(s): return"]}) is True
 
 
 def test_rejects_already_mechanical_rows():
@@ -63,18 +99,18 @@ def test_rejects_already_mechanical_rows():
     one that actually exercises the guard. With blocked_by=[] the predicate
     returns False anyway via the list compare, so that input alone lets the
     guard be deleted without any test noticing (it survived mutation)."""
-    assert is_unclassified_safe(
+    assert is_review_eligible(
         {"is_mechanical": True, "blocked_by": []}) is False
-    assert is_unclassified_safe(
+    assert is_review_eligible(
         {"is_mechanical": True, "blocked_by": [UNCLASSIFIED_BLOCKER]}) is False
 
 
 def test_rejects_empty_and_malformed_verdicts():
-    assert is_unclassified_safe({"is_mechanical": False, "blocked_by": []}) is False
-    assert is_unclassified_safe({}) is False
-    assert is_unclassified_safe(None) is False
-    assert is_unclassified_safe("nope") is False
-    assert is_unclassified_safe(
+    assert is_review_eligible({"is_mechanical": False, "blocked_by": []}) is False
+    assert is_review_eligible({}) is False
+    assert is_review_eligible(None) is False
+    assert is_review_eligible("nope") is False
+    assert is_review_eligible(
         {"is_mechanical": False, "blocked_by": UNCLASSIFIED_BLOCKER}) is False
 
 
@@ -200,3 +236,69 @@ def test_ineligible_rows_are_silently_passed_over(monkeypatch):
     assert out["opened"] == []
     assert out["previewed"] == []
     assert out["skipped"] == []
+
+
+# ── the silent-refusal bug ───────────────────────────────────────────
+
+def test_a_row_neither_lane_will_take_is_RECORDED(monkeypatch):
+    """★ THE BUG. `if not eligible: continue` had no skipped entry, so 85 real
+    proposals produced 0 previewed AND 0 skipped — byte-identical to an empty
+    queue. "Nothing to do" and "everything rejected" were indistinguishable on
+    the board, and the lane looked healthy while opening nothing for weeks.
+
+    A mechanical row stays silent (the other lane owns it). A row NEITHER lane
+    will take is reported by nobody, so it must surface here."""
+    monkeypatch.setenv("BRAIN_REVIEW_LANE_ENABLED", "1")
+    from routes import brain_review_lane as rl
+
+    monkeypatch.setattr(rl, "_classify", lambda row: {
+        "is_mechanical": False,
+        "blocked_by": ["search_text occurs 3x in live file (ambiguous)"],
+        "reasons": []})
+    out = open_review_draft_prs([_row(1), _row(2)], apply=False)
+    assert out["previewed"] == []
+    assert len(out["skipped"]) == 2, (
+        "an unsound patch must be recorded, not silently dropped — silence "
+        "here is what made a total refusal look like an empty queue")
+    assert out["skipped"][0]["reason"] == "not_review_eligible"
+    assert out["skipped"][0].get("blocked_by"), "say WHY it was refused"
+
+
+def test_mechanical_rows_stay_silent_so_they_are_not_double_reported(monkeypatch):
+    """The half of the original silence that was CORRECT, kept deliberately.
+    The mechanical lane already reports these; reporting them here too would
+    double-count every proposal on every tick."""
+    monkeypatch.setenv("BRAIN_REVIEW_LANE_ENABLED", "1")
+    from routes import brain_review_lane as rl
+
+    monkeypatch.setattr(rl, "_classify",
+                        lambda row: {"is_mechanical": True,
+                                     "blocked_by": [], "reasons": []})
+    out = open_review_draft_prs([_row(1), _row(2)], apply=False)
+    assert out["skipped"] == [] and out["previewed"] == []
+
+
+def test_every_row_is_accounted_for(monkeypatch):
+    """The invariant that would have caught this immediately: rows in must equal
+    previewed + skipped + opened + (mechanical, which another lane owns)."""
+    monkeypatch.setenv("BRAIN_REVIEW_LANE_ENABLED", "1")
+    from routes import brain_review_lane as rl
+
+    verdicts = {
+        1: {"is_mechanical": True, "blocked_by": []},
+        2: {"is_mechanical": False,
+            "blocked_by": ["forbidden path pattern(s): main.py"]},
+        3: {"is_mechanical": False, "blocked_by": [UNCLASSIFIED_BLOCKER]},
+    }
+    monkeypatch.setattr(rl, "_classify", lambda row: verdicts[row["id"]])
+    monkeypatch.setattr(rl, "open_review_draft_pr",
+                        lambda row, dry_run: {"ok": True, "branch": "brain/review-x",
+                                              "file_path": "x.py"})
+    rows = [_row(1), _row(2), _row(3)]
+    out = open_review_draft_prs(rows, apply=False)
+    mechanical = 1
+    accounted = (len(out["previewed"]) + len(out["skipped"])
+                 + len(out["opened"]) + mechanical)
+    assert accounted == len(rows), (
+        f"{len(rows)} rows in, {accounted} accounted for — the difference is "
+        f"proposals that vanished")

@@ -2146,6 +2146,93 @@ def check_funnel_step_collapse() -> list[dict]:
     return findings
 
 
+_REVIEW_LANE_REFUSED_FLOOR = int(
+    os.environ.get("RADAR_REVIEW_LANE_REFUSED_FLOOR", "10") or 10)
+
+
+def check_review_lane_unreachable() -> list[dict]:
+    """The escape valve for refused proposals must admit SOMETHING.
+
+    ★ WHY THIS DETECTOR EXISTS (2026-08-31). The review lane is the only path
+    out for a proposal the mechanical classifier refuses. It was unreachable by
+    construction for its entire life: `is_unclassified_safe` required
+    `blocked_by` to equal EXACTLY `["no allowlist transform class matched"]`,
+    and no live row ever did — of 82 proposals citing that blocker, every one
+    also tripped a second gate (47 had two, 24 had three, 3 had six). The lane
+    admitted zero rows on every tick, and a bare `continue` in the loop meant
+    it said nothing while doing so.
+
+    Nothing was broken in a way any existing surface could see. The tick
+    reported `review_prs_opened: 0`, which is indistinguishable from "nothing
+    was eligible today" — a flattering zero. The board read `idle`.
+
+    ★ It watches the INVARIANT, not the incident: "if the mechanical lane is
+    refusing a real backlog, the review lane admits a non-zero share of it."
+    Retuning a blocker string, adding a gate, or tightening
+    UNSAFE_BLOCKER_MARKERS can each re-close the valve silently; this fires
+    whenever the two populations stop intersecting, whatever the cause.
+
+    Fires when refused > _REVIEW_LANE_REFUSED_FLOOR and eligible == 0.
+    UNMEASURED on any read or import failure — never a reassuring 0.
+    """
+    try:
+        from routes.brain_autonomy_loop import _open_proposal_rows
+        from routes.brain_review_lane import _classify, is_review_eligible
+    except Exception as e:  # noqa: BLE001
+        return [{
+            "issue": "review_lane_unmeasured",
+            "url": "/api/v1/brain/autonomy/status",
+            "count": 1,
+            "detail": (f"Could not import the review lane to measure it "
+                       f"({str(e)[:120]}). Radar fails closed — this is not a "
+                       f"pass. If the lane was renamed, update this check in "
+                       f"the same PR."),
+        }]
+
+    rows, err = _open_proposal_rows()
+    if err or rows is None:
+        return [{
+            "issue": "review_lane_unmeasured",
+            "url": "/api/v1/brain/autonomy/status",
+            "count": 1,
+            "detail": (f"Open-proposal read failed ({str(err)[:120]}). "
+                       f"UNMEASURED, not zero."),
+        }]
+    if not rows:
+        return []          # a genuinely empty backlog is not a stuck valve
+
+    refused = eligible = 0
+    for row in rows:
+        try:
+            verdict = _classify(row)
+        except Exception:  # noqa: BLE001
+            continue
+        if verdict.get("is_mechanical"):
+            continue
+        refused += 1
+        try:
+            if is_review_eligible(verdict):
+                eligible += 1
+        except Exception:  # noqa: BLE001
+            pass
+
+    if refused > _REVIEW_LANE_REFUSED_FLOOR and eligible == 0:
+        return [{
+            "issue": "review_lane_unreachable",
+            "url": "/api/v1/brain/autonomy/status",
+            "count": refused,
+            "detail": (
+                f"{refused} open proposals are refused by the mechanical lane "
+                f"and NONE is review-eligible. The escape valve admits nothing, "
+                f"so every refused proposal is stuck with no path out and the "
+                f"tick reports review_prs_opened=0 — which reads as 'nothing "
+                f"was eligible' rather than 'the lane cannot be entered'. "
+                f"Check is_review_eligible / UNSAFE_BLOCKER_MARKERS against the "
+                f"blocker strings the classifier actually emits today."),
+        }]
+    return []
+
+
 def check_stale_stored_slug_404s() -> list[dict]:
     """A stored facility slug that is neither canonical nor aliased = a 404.
 
@@ -10954,6 +11041,13 @@ def scan_all() -> list[dict]:
                # slug has a rescue path), not the one-off backfill, because
                # re-ingestion churns slugs continuously.
                check_stale_stored_slug_404s,
+               # 2026-08-31 — the review lane was unreachable by
+               # construction for its entire life (exact-match on a
+               # blocker list no live row ever equalled) and reported
+               # review_prs_opened=0, indistinguishable from an empty
+               # day. Watches the invariant: a refused backlog must
+               # intersect the escape valve.
+               check_review_lane_unreachable,
                # Claim Loop step 4 (2026-08-21) — the first three PRODUCT
                # detectors, each shipped WITH its fixture test. Registered
                # here because tests/test_brain_prs_carry_detector.py parses

@@ -113,24 +113,75 @@ MAX_OPEN_REVIEW_PRS = lambda: _env_int("BRAIN_REVIEW_LANE_MAX_OPEN", 3)  # noqa:
 
 
 # ── The gate ─────────────────────────────────────────────────────────
-def is_unclassified_safe(verdict: dict) -> bool:
-    """True when the ONLY thing between this proposal and the mechanical lane
-    is the absence of a named transform class.
+# ── What the patch itself must satisfy before a human ever sees it ───
+# Two DIFFERENT questions were being conflated:
+#
+#   1. is this patch APPLICABLE and SAFE to show someone?
+#   2. is it MECHANICAL enough to merge unattended?
+#
+# The mechanical lane answers (2). This lane exists for proposals that fail (2)
+# but pass (1) — a human reads the diff and decides. The old predicate required
+# blocked_by == [UNCLASSIFIED_BLOCKER] EXACTLY, which is a much stronger claim:
+# "the only thing wrong is a labelling gap". Measured 2026-08-31 across all 85
+# open proposals, that admitted ZERO — not one proposal in the queue is blocked
+# solely by the missing class, so the lane was unreachable by construction and
+# had opened nothing, ever.
+#
+# These markers are the (1) failures: the patch is broken, ambiguous or
+# off-limits, so a draft PR built on it would be garbage or dangerous. Anything
+# else — too many lines, low confidence, a new import, new control flow, a new
+# call — is precisely "not mechanical, but a human can judge it", which is this
+# lane's whole job.
+#
+# On the live queue this splits 84 blocked proposals into 81 reviewable and 3
+# excluded, and the 3 are exactly right: a search_text that occurs 3x (would
+# patch the wrong place), one not present in the file at all (would not apply),
+# and one 6 characters long (ambiguous by construction).
+#
+# ★ Widen UNSAFE, never narrow it. Every marker here means the PATCH is wrong,
+# not merely unproven.
+UNSAFE_BLOCKER_MARKERS = (
+    "proposal is not a dict",
+    "no-op",                       # replace_text equals search_text
+    "not present in live file",    # stale / drifted — will not apply
+    "occurs",                      # occurs Nx in live file — ambiguous target
+    "chars",                       # search_text too short to be unambiguous
+    "forbidden path",
+    "sqlite-data guard",
+    "matched multiple allowlist",  # unclear intent
+    "breaks_syntax",
+    "unparseable",
+    "multi-file",
+    "multiple hunks",
+)
 
-    ★ Deliberately an EXACT list comparison, not a substring test and not
-    `blocked_by[0] ==`. A proposal blocked by the missing class AND anything
-    else (too many lines, new control flow, ambiguous search, low confidence,
-    forbidden path, sqlite-data guard) is NOT in this lane. Widening this
-    predicate is how the lane would stop being safe, so it is written to fail
-    closed on any additional blocker."""
+
+def is_patch_unsafe(reason: str) -> bool:
+    """True when a blocker means the PATCH is broken, not merely unproven."""
+    r = (reason or "").lower()
+    return any(m.lower() in r for m in UNSAFE_BLOCKER_MARKERS)
+
+
+def is_review_eligible(verdict: dict) -> bool:
+    """True when a human could usefully read this proposal as a draft PR.
+
+    Fails closed on a malformed verdict, on an already-mechanical row (that
+    belongs to the autofix lane — double-opening would create two PRs for one
+    proposal), and on any blocker meaning the patch itself is unsound.
+
+    Replaces is_unclassified_safe, which required blocked_by to be EXACTLY
+    [UNCLASSIFIED_BLOCKER] and therefore admitted nothing. The rename is
+    deliberate: the old name described a predicate whose meaning has changed,
+    and leaving it in place with new semantics is how a safety argument gets
+    read wrong later."""
     if not isinstance(verdict, dict):
         return False
     if verdict.get("is_mechanical"):
-        return False          # already handled by the mechanical lane
-    blocked = verdict.get("blocked_by")
-    if not isinstance(blocked, list):
         return False
-    return blocked == [UNCLASSIFIED_BLOCKER]
+    blocked = verdict.get("blocked_by")
+    if not isinstance(blocked, list) or not blocked:
+        return False
+    return not any(is_patch_unsafe(b) for b in blocked)
 
 
 # ── Backpressure: how many review PRs are already open ───────────────
@@ -202,7 +253,7 @@ def open_review_draft_pr(proposal: dict, dry_run: bool = True) -> dict:
         # Belongs to the mechanical lane; never double-open.
         return {"ok": True, "skipped": True, "reason": "is_mechanical",
                 "id": proposal.get("id")}
-    if not is_unclassified_safe(verdict):
+    if not is_review_eligible(verdict):
         return {"ok": False, "aborted": True, "reason": "not_review_eligible",
                 "blocked_by": verdict.get("blocked_by", [])[:6],
                 "id": proposal.get("id")}
@@ -400,8 +451,27 @@ def open_review_draft_prs(rows, *, apply: bool) -> dict:
             skipped.append({"id": row.get("id"),
                             "reason": f"classify_error: {str(e)[:120]}"})
             continue
-        if not is_unclassified_safe(verdict):
-            continue          # not this lane's business — stay quiet
+        if isinstance(verdict, dict) and verdict.get("is_mechanical"):
+            # Owned by the mechanical lane. Stay quiet ON PURPOSE — reporting it
+            # here too would double-count every proposal on every tick, which is
+            # what the original silent `continue` was protecting against.
+            continue
+        if not is_review_eligible(verdict):
+            # ★ WAS A SILENT `continue`, and this is the half that was wrong. That is why this lane reported 0
+            # previewed AND 0 skipped against 85 rows — a total refusal and an
+            # empty queue produce byte-identical output, so "nothing to do" and
+            # "everything rejected" were indistinguishable on the board.
+            # A row NEITHER lane will take is reported by nobody, so it must be
+            # recorded here — that is different from a mechanical row, which the
+            # other lane already owns and which stays silent above.
+            skipped.append({
+                "id": row.get("id"),
+                "reason": "not_review_eligible",
+                "blocked_by": [b for b in (verdict.get("blocked_by") or [])
+                               if is_patch_unsafe(b)][:4] or
+                             (verdict.get("blocked_by") or [])[:4],
+            })
+            continue
         if _already_opened(row):
             skipped.append({"id": row.get("id"), "reason": "already_pr_opened"})
             continue
