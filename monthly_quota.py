@@ -426,6 +426,95 @@ def record_wall_hit(cur, api_key, decision, ts=None):
     return True
 
 
+# ── What this block is, and what it is NOT (r-wall-scope, 2026-09-01) ───────
+# `quota_wall` renders on the funnel dashboard as "Quota wall hits (this
+# month) · enforce ON", directly beside the upgrade-signal counters. Read
+# there, a standing 0 says "the paywall works and nobody is bouncing off it".
+# It says no such thing, and after 2026-09-01 it is actively misleading.
+#
+# THIS block is the per-key MONTHLY quota (this module): quota =
+# TIER_LIMITS[tier].mcp_daily * 30, so free = 300/mo and identified = 1,500/mo.
+# Measured against it, avg_calls_per_key_30d is 5.03 and the heaviest
+# free/identified key of the month sat at 97. It is arithmetically incapable
+# of firing at current usage, so its 0 carries no information about the paywall.
+#
+# THE GATE THAT ACTUALLY BITES a free caller is the mcp-server's per-DAY
+# full-answer cap (_trialFullCallsExceeded, dchub-mcp-server), and until
+# 2026-09-01 it was not biting either: the durable count was read before the
+# peek that populated it, so the effective cap was (replicas x cap) and only
+# 27 of 1,985 real payable calls (1.4%) were ever gated. dchub-mcp-server#294
+# fixed that and added a per-CALLER budget alongside the per-tool one;
+# modelled gating goes 1.4% -> 69.6%. So from today there IS a wall firing at
+# scale, and it will never appear in the numbers below.
+#
+# Publishing the scope beside the count is the whole fix: a reader who sees 0
+# must be told which wall was 0.
+_WALL_MEASURES = (
+    "the per-key MONTHLY quota enforced by monthly_quota.py "
+    "(quota = TIER_LIMITS[tier].mcp_daily * %d; free=%d/mo, identified=%d/mo). "
+    "Counts allowed=false decisions on THAT gate only."
+) % (MCP_DAYS_PER_MONTH,
+     TIER_LIMITS["free"]["mcp_daily"] * MCP_DAYS_PER_MONTH,
+     TIER_LIMITS["identified"]["mcp_daily"] * MCP_DAYS_PER_MONTH)
+
+_WALL_NOT_MEASURED_HERE = (
+    "NOT the gate a free caller actually hits. That is the mcp-server's "
+    "per-DAY full-answer cap (_trialFullCallsExceeded, DCHUB_TRIAL_TOOL_DAILY_FULL, "
+    "per-tool AND per-caller since dchub-mcp-server#294 on 2026-09-01). Its hits "
+    "are NOT counted in this block and a 0 here is not evidence about it. "
+    "\u2605 Do not read hits_month=0 as 'the paywall works' or as 'the paywall is "
+    "broken' \u2014 it is evidence about the monthly quota and nothing else."
+)
+
+
+def wall_headroom(cur, ts=None):
+    """Can the monthly wall fire AT ALL this month? Answered with a number.
+
+    wall_stats' own `interpretation` told the reader to go and check
+    `max(calls)` in mcp_monthly_usage against the tier quota by hand. Nobody
+    does homework a payload could have done, so this publishes it.
+
+    The inference is deliberately ONE-WAY and stated as such: if the heaviest
+    key of the month is under the SMALLEST monthly quota (free, 300), then no
+    key of any tier can have reached its own wall, because every other tier's
+    quota is larger. The converse does not hold -- a key above 300 may still be
+    far under ITS tier's quota -- so `could_any_key_have_hit` is only ever
+    trusted in the False direction.
+
+    Fail-soft: mcp_monthly_usage may be absent on a fresh database, and this is
+    a diagnostic on a dashboard, never a gate. Returns None rather than raising.
+    """
+    try:
+        cur.execute("SELECT to_regclass('public.mcp_monthly_usage')")
+        row = cur.fetchone()
+        if not (row and row[0]):
+            return None
+        cur.execute(
+            "SELECT COALESCE(MAX(calls), 0), COUNT(*) "
+            "FROM mcp_monthly_usage WHERE month = %s",
+            (month_bucket(ts),),
+        )
+        r = cur.fetchone() or (0, 0)
+        heaviest = int(r[0] or 0)
+        smallest = TIER_LIMITS["free"]["mcp_daily"] * MCP_DAYS_PER_MONTH
+        return {
+            "heaviest_key_calls_month": heaviest,
+            "smallest_monthly_quota": smallest,
+            "keys_with_usage_month": int(r[1] or 0),
+            "could_any_key_have_hit": heaviest >= smallest,
+            "basis": (
+                "heaviest_key_calls_month = MAX(calls) over mcp_monthly_usage for "
+                "this month; smallest_monthly_quota = the FREE tier's. "
+                "could_any_key_have_hit is a ONE-WAY test: False proves no key of "
+                "any tier reached its wall (every other quota is larger). True "
+                "proves only that the cheapest tier's ceiling was passed by "
+                "someone, NOT that any key hit its own."
+            ),
+        }
+    except Exception:  # noqa: BLE001 - diagnostic only, never blocks the payload
+        return None
+
+
 def wall_stats(cur, ts=None):
     """Wall activity for the funnel dashboard: current-month totals plus
     the by-tier breakdown and the 7d first-hit count (new keys reaching
@@ -444,6 +533,11 @@ def wall_stats(cur, ts=None):
         "last_hit_at": None,
         "by_tier_month": [],
         "table_exists": True,
+        # r-wall-scope: which wall this is, and which one it is NOT. On the
+        # init dict so BOTH return paths carry it -- the missing-table path
+        # below is the one that is live today.
+        "measures": _WALL_MEASURES,
+        "not_measured_here": _WALL_NOT_MEASURED_HERE,
     }
     cur.execute("SELECT to_regclass('public.mcp_quota_wall_hits')")
     row = cur.fetchone()
@@ -475,6 +569,8 @@ def wall_stats(cur, ts=None):
             "enforcement is broken. Verify with max(calls) in mcp_monthly_usage "
             "against TIER_LIMITS[tier].mcp_daily * 30 before suspecting the gate."
         )
+        # ...and now we do that check here instead of asking the reader to.
+        out["headroom"] = wall_headroom(cur, ts)
         return out
     out["lazily_created"] = True
     bucket = month_bucket(ts)
@@ -510,4 +606,9 @@ def wall_stats(cur, ts=None):
          "blocked": int(r[4] or 0)}
         for r in (cur.fetchall() or [])
     ]
+    # Last on purpose: wall_headroom touches a DIFFERENT table, and a failed
+    # statement aborts the surrounding transaction. Running it after the wall
+    # queries means a missing mcp_monthly_usage can cost us the diagnostic but
+    # never the counts.
+    out["headroom"] = wall_headroom(cur, ts)
     return out
