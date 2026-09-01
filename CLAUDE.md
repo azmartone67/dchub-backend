@@ -41,15 +41,39 @@ minute. **Never disable a guard to make your own change land.**
 
 ### Why the hook exists when branch protection already does this
 
-`main` requires `substance-gate`, `syntax-check` and `unit-tests`, and GitHub
-enforces those on direct pushes too — a bot push is rejected with
-`GH006: Protected branch update failed`. But `enforce_admins` is **false**, so a
-push from the repo admin bypasses all of it. In the 7 days to 2026-07-28, **137
-of 223 commits (61%) reached main as ungated direct pushes.**
+`main` requires **six** checks — `substance-gate`, `syntax-check`, `unit-tests`,
+`regression-lint`, `db-parity` and `app-contract-gate` — and GitHub enforces
+them on direct pushes too: the push is rejected with
+`GH006: Protected branch update failed`.
 
-A GitHub ruleset with a bypass actor for the Actions app would solve the admin
-case, but Integration bypass actors are org-only and this repo is user-owned
-(GitHub returns HTTP 422). So the hook carries it until the repo moves to an org.
+★ **`enforce_admins` is `true`**, so that applies to the repo admin as well.
+This section used to say `false`, and recorded **137 of 223 commits (61%)
+reaching main as ungated admin pushes in the 7 days to 2026-07-28** — that is
+the regime the hook was written for, and it is over. Re-verify both facts in
+one call:
+
+```bash
+gh api repos/azmartone67/dchub-backend/branches/main/protection \
+  --jq '{admins: .enforce_admins.enabled, checks: .required_status_checks.contexts}'
+```
+
+Measured 2026-09-01: of **1089 commits on `main` since 2026-08-01, exactly one**
+— `f5df4f668`, 2026-08-05 — has no associated pull request. (Method: every
+commit whose subject does not end in `(#N)`, then
+`gh api repos/OWNER/REPO/commits/SHA/pulls` on each candidate. It would miss a
+direct push that hand-wrote a `(#N)` suffix.)
+
+**So the hook is no longer the only thing between an admin and `main`** — do
+not cite `enforce_admins: false` as its justification. It still earns its
+place: it fails in under a second, locally, printing the `gh pr create` recipe,
+instead of after a push round-trip; and it keeps working if protection is ever
+relaxed. It is the fast path now, not the last line.
+
+A GitHub ruleset with a bypass actor for the Actions app is still impossible
+here — Integration bypass actors are org-only and this repo is user-owned
+(GitHub returns HTTP 422). This repo has no rulesets at all
+(`gh api repos/azmartone67/dchub-backend/rulesets` returns `[]`), so branch
+protection is the whole story.
 
 **Nothing in CI writes to `main` any more.** `auto-rollback.yml` used to, and it
 never worked: the push was rejected with GH006 every time, and because the step
@@ -60,9 +84,8 @@ does not need CI to be green — the property that actually matters, since a
 rollback gated on green checks deadlocks exactly when production is broken. The
 git revert follows as an ordinary PR. See `docs/ROLLBACK-RUNBOOK.md`.
 
-So "auto-rollback must be able to write to main" is no longer a reason to keep
-`enforce_admins: false`. Whether to flip it is now purely about the 61% of
-commits arriving as ungated admin pushes.
+That removed the last argument for keeping `enforce_admins: false`, and it has
+since been flipped to `true` — the open question recorded here is closed.
 
 ## Working tree
 
