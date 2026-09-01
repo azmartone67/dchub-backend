@@ -164,6 +164,36 @@ expect("check-route-tables: step did not conclude reads UNMEASURED",
        run_beat(crt, {"JOB_STATUS": "success"}, {"/tmp/crt.log": "crashed\n"}),
        "verdict=unmeasured")
 
+# ── ★ every job that beats must be able to REACH the beat script ────────────
+# scripts/gate_beat.sh only exists after a checkout. pre-merge:smoke-probe and
+# brain-spec-debt-tracker both work entirely over the network and had none, so
+# the first version of their beats died with exit 127 — a gate reporting green
+# while its beat never landed, which reads as `never-run` forever. Structural,
+# so it is checked structurally rather than left to whoever wires the next one.
+for _wf in sorted(os.listdir(WF)):
+    if not _wf.endswith(".yml"):
+        continue
+    try:
+        with open(os.path.join(WF, _wf)) as fh:
+            _d = yaml.safe_load(fh)
+    except Exception:  # noqa: BLE001
+        continue
+    if not isinstance(_d, dict):
+        continue
+    for _job, _spec in (_d.get("jobs") or {}).items():
+        _steps = _spec.get("steps") or []
+        _beats = [x for x in _steps if str(x.get("name", "")).startswith("Beat the gate")]
+        if not _beats:
+            continue
+        _has_checkout = any("actions/checkout" in str(x.get("uses", "")) for x in _steps)
+        _prefix = "dchub-backend/" if "dchub-backend/scripts/gate_beat.sh" in _beats[0]["run"] else ""
+        results.append((
+            _has_checkout,
+            "%s:%s checks out before beating" % (_wf.replace(".yml", ""), _job),
+            "no actions/checkout — %sscripts/gate_beat.sh cannot exist (exit 127)" % _prefix
+            if not _has_checkout else "checkout present",
+        ))
+
 failed = [r for r in results if not r[0]]
 for ok, name, detail in results:
     print("  %s  %-56s %s" % ("PASS" if ok else "FAIL", name, detail))

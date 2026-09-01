@@ -154,6 +154,11 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
+      # Checked out ONLY so the ledger beat below can run scripts/gate_beat.sh.
+      # This job probes production over the network and needs no source
+      # otherwise — which is exactly why it had no checkout and why the first
+      # version of the beat died with exit 127.
+      - uses: actions/checkout@v5
       - name: Probe production endpoints
         # tee'd so the ledger beat can read the real probe outcome: this job's
         # continue-on-error means job.status is success no matter what happened.

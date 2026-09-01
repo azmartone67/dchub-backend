@@ -83,6 +83,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Checked out only so the ledger beat can run scripts/gate_beat.sh — this
+      # job otherwise works entirely through the gh API and needs no source.
+      - uses: actions/checkout@v5
       - name: Re-file the unchecked checklist as tracked debt
         env:
           GH_TOKEN: ${{ github.token }}
