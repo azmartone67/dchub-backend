@@ -219,6 +219,144 @@ def _check_restart_loop():
         log.warning("health_alerter restart-loop check: %s", e)
 
 
+# ── 3) AI Gateway spend-block monitor (2026-09-01) ───────────────────────────
+# WHY. On 2026-09-01 a Cloudflare AI Gateway spend rule ($100 per 604800s,
+# sliding) went over and the gateway 429'd EVERY Anthropic request — every
+# model, including a 1-token haiku call — for an unknown number of hours. The
+# whole brain went quiet: no PR drafts, no narratives, no layer work. Nothing
+# paged, because nothing was watching. It surfaced only when a human clicked
+# approve and read "PR draft skipped: claude call failed: http_429".
+#
+# Cloudflare has no notification for this: its alert catalog carries no AI
+# Gateway type at all, and under BYOK the spend is billed by Anthropic, so
+# Cloudflare's own usage-billing alerts never see it. Hence a probe here.
+#
+# ★ THE PROBE SENDS A DELIBERATELY INVALID API KEY, and that is the point:
+#   · it costs nothing — the request never reaches a model, so no tokens burn;
+#   · no real credential goes over the wire;
+#   · the gateway's spend rule fires BEFORE it authenticates upstream, so the
+#     status alone separates the two states. Verified live on 2026-09-01:
+#     blocked -> 429 {"name":"AiGatewayError","message":"Spend limit exceeded:
+#     rule '5e7f1b6b' ..."}; after the cap was raised -> 401
+#     authentication_error, i.e. the gateway forwarded to Anthropic.
+# Sending the REAL key here would cost money on every probe and prove less.
+_GW_DISABLED       = str(os.environ.get("GATEWAY_SPEND_MONITOR_DISABLE", "")).lower() in ("1", "true", "yes")
+_GW_CHECK_EVERY_S  = int(os.environ.get("GATEWAY_SPEND_CHECK_S", "600"))      # 10 min; a spend block persists
+_GW_RENOTIFY_S     = int(os.environ.get("GATEWAY_SPEND_RENOTIFY_S", "86400")) # nag once a day while still blocked
+_GW_PROBE_MODEL    = os.environ.get("GATEWAY_SPEND_PROBE_MODEL", "claude-haiku-4-5")
+_GW_INVALID_KEY    = "sk-ant-health-alerter-probe-not-a-real-key"
+
+_gw_blocked_since = None   # ts of the first blocked reading of the current episode
+_gw_last_notified = 0.0    # ts of the last block email (for the daily nag)
+
+
+def _gateway_spend_state() -> tuple[str, str]:
+    """Probe the AI Gateway with an INVALID key. Returns (state, detail).
+
+    state is "blocked" (a spend/budget rule is refusing traffic), "open" (the
+    gateway forwarded upstream and Anthropic rejected the bogus key, which is
+    the healthy answer), or "unknown" (no gateway configured, or anything we
+    cannot classify — never treated as either good or bad news).
+
+    ★ An Anthropic 429 is NOT a spend block. A genuine per-model rate limit
+    also arrives as 429, and paging the owner about it would train them to
+    ignore this alarm — so the body must actually name the gateway rule.
+    """
+    import urllib.error as _uerr
+    import urllib.request as _ureq
+    try:
+        from utils.anthropic_helper import anthropic_messages_url, gateway_active
+        if not gateway_active():
+            return "unknown", "no AI gateway configured (ANTHROPIC_BASE_URL is not a CF gateway)"
+        url = anthropic_messages_url()
+    except Exception as e:
+        return "unknown", f"helper unavailable: {e!r}"
+    payload = json.dumps({
+        "model": _GW_PROBE_MODEL,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "ping"}],
+    }).encode("utf-8")
+    req = _ureq.Request(url, data=payload, headers={
+        "Content-Type": "application/json",
+        "X-API-Key": _GW_INVALID_KEY,      # ★ deliberately invalid — see above
+        "Anthropic-Version": "2023-06-01",
+        "User-Agent": "dchub-health-alerter/1.0",
+    })
+    try:
+        _ureq.urlopen(req, timeout=20).read()
+        # A bogus key authenticating means the probe is not probing what it
+        # thinks it is. Say so rather than reporting a healthy gateway.
+        return "unknown", "invalid-key probe returned 200 — probe no longer valid"
+    except _uerr.HTTPError as e:
+        detail = ""
+        try:
+            detail = " ".join((e.read() or b"").decode("utf-8", "replace").split())[:300]
+        except Exception:
+            pass
+        low = detail.lower()
+        if e.code == 429 and ("spend limit" in low or "aigatewayerror" in low
+                              or "budget limit" in low):
+            return "blocked", f"http_429: {detail}"
+        if e.code in (401, 403):
+            return "open", f"http_{e.code} — gateway forwarded upstream"
+        return "unknown", f"http_{e.code}: {detail}"
+    except Exception as e:
+        return "unknown", f"probe failed: {e!r}"
+
+
+def _gateway_alert_decision(state, blocked_since, last_notified, now):
+    """Pure transition logic. Returns (action, blocked_since, last_notified).
+
+    action is "block" (page: newly blocked, or the daily nag while still
+    blocked), "clear" (it recovered — worth knowing, and it re-arms the alarm),
+    or None. "unknown" changes NOTHING: a probe that could not classify must
+    not clear a live block, which would silently disarm the alarm mid-outage.
+    """
+    if state == "blocked":
+        first = blocked_since is None
+        if first:
+            blocked_since = now
+        if first or (now - last_notified) >= _GW_RENOTIFY_S:
+            return "block", blocked_since, now
+        return None, blocked_since, last_notified
+    if state == "open" and blocked_since is not None:
+        return "clear", None, 0.0
+    return None, blocked_since, last_notified
+
+
+def _gateway_spend_loop():
+    global _gw_blocked_since, _gw_last_notified
+    time.sleep(_INITIAL_DELAY_S)
+    while True:
+        try:
+            state, detail = _gateway_spend_state()
+            now = time.time()
+            action, _gw_blocked_since, _gw_last_notified = _gateway_alert_decision(
+                state, _gw_blocked_since, _gw_last_notified, now)
+            if action == "block":
+                mins = int((now - (_gw_blocked_since or now)) / 60)
+                _alert("gateway_spend_block",
+                       "🚨 DC Hub: AI Gateway is REFUSING all Claude calls (spend rule)",
+                       f"<h2>The AI gateway's spend rule is blocking every model</h2>"
+                       f"<p>Every Anthropic call from the backend and the worker is "
+                       f"being refused by Cloudflare <b>before it reaches Anthropic</b> "
+                       f"— the brain cannot draft PRs, write narratives, or run any "
+                       f"layer. Blocked for ~{mins} min.</p>"
+                       f"<p><b>Gateway said:</b><br><code>{detail}</code></p>"
+                       f"<p>Fix: Cloudflare dashboard &rarr; AI &rarr; AI Gateway &rarr; "
+                       f"your gateway &rarr; Settings &rarr; spend limits, and raise or "
+                       f"clear the rule named above. Nothing in the code can lift it.</p>")
+            elif action == "clear":
+                _alert("gateway_spend_clear",
+                       "✅ DC Hub: AI Gateway spend block cleared",
+                       "<h2>Claude calls are getting through again</h2>"
+                       "<p>The gateway now forwards to Anthropic; the brain should "
+                       "resume on its own. No action needed.</p>")
+        except Exception as e:
+            log.warning("health_alerter gateway-spend probe: %s", e)
+        time.sleep(_GW_CHECK_EVERY_S)
+
+
 def start():
     """Idempotent. Records this boot + starts the pool monitor thread."""
     global _started
@@ -233,5 +371,19 @@ def start():
     except Exception:
         pass
     threading.Thread(target=_monitor_loop, daemon=True, name="health-alerter").start()
-    log.info("health_alerter: started (pool alert >=%s%% sustained, restart-loop >=%s/%smin, to=%s)",
-             _POOL_UTIL_ALERT, _RESTART_THRESHOLD, _RESTART_WINDOW_MIN, _TO)
+    # The gateway probe only makes sense when a gateway is actually in front of
+    # Anthropic; without one there is no spend rule that could block anything.
+    _gw_on = False
+    if not _GW_DISABLED:
+        try:
+            from utils.anthropic_helper import gateway_active
+            _gw_on = bool(gateway_active())
+        except Exception:
+            _gw_on = False
+    if _gw_on:
+        threading.Thread(target=_gateway_spend_loop, daemon=True,
+                         name="gateway-spend-alerter").start()
+    log.info("health_alerter: started (pool alert >=%s%% sustained, restart-loop >=%s/%smin, "
+             "gateway-spend probe %s, to=%s)",
+             _POOL_UTIL_ALERT, _RESTART_THRESHOLD, _RESTART_WINDOW_MIN,
+             ("every %ss" % _GW_CHECK_EVERY_S) if _gw_on else "off", _TO)
