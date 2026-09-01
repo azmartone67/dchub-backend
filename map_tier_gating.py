@@ -304,6 +304,40 @@ def detect_tier_failopen(decode_jwt_func=None, req=None):
     return tier, info
 
 
+def detect_tier_for_data_gate(decode_jwt_func=None, req=None):
+    """Tier for gating DATA: field masks, coordinate precision, record caps.
+
+    Identical to detect_tier_failopen() EXCEPT that it refuses the
+    credential-PRESENCE fail-open. `X-API-Key: x` is not evidence of a paid
+    account, and every data gate that trusted it was serving the full paid
+    view to anonymous callers.
+
+    2026-08-31 — measured live on dchub.cloud with the one-character key
+    `X-API-Key: x`, which no account has ever held:
+      /api/v1/map   anon -> _gated:true, _coord_precision_dp:2, 11 public fields
+                    junk -> ungated, native 6dp coords, plus power_mw /
+                            provider / facility_type / fiber_providers / address
+      /api/v1/search anon -> 50 rows (the anonymous record_cap)
+                     junk -> 5000 rows/page (TIER_LIMITS['pro']), offset-pageable
+    That is the whole of the PR #2091 / #2096 anon-bulk-exposure remediation,
+    bypassed by inventing a header. `_tier_from_refresh_cookie`'s docstring
+    already warned this helper "trusts the mere PRESENCE of a cookie: correct
+    for a fail-open teaser, unusable here" — four data gates used it anyway.
+
+    Real paid callers are unaffected: _detect_caller_tier resolves API keys on
+    its own (dual key_hash match against api_keys + the mcp_dev_keys fallback,
+    r-detect-tiermax 2026-07-26), so a genuine key never needed the fail-open.
+    What is given up is the outage case — during a DB failure a paying user now
+    sees the anonymous view rather than the paid one. For a data gate that is
+    the correct direction to fail, and it is a transient degradation instead of
+    a permanent, world-readable bypass.
+    """
+    tier, info = detect_tier_failopen(decode_jwt_func=decode_jwt_func, req=req)
+    if (info or {}).get('source') == 'credentialed_failopen':
+        return 'anonymous', {'source': 'unverified_credential_denied'}
+    return tier, info
+
+
 def _normalize_tier(plan):
     """Normalize plan name to tier level."""
     plan = (plan or 'anonymous').lower().strip()
