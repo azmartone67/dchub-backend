@@ -77,6 +77,7 @@ jobs:
       # If this step passes silently while the guard is broken, the step below
       # is worthless — so this runs FIRST.
       - name: Self-test — the guard must be able to FAIL and to say UNMEASURED
+        id: selftest
         run: python3 scripts/api_response_contract_selftest.py
 
       - name: Check response-key contract
@@ -128,3 +129,39 @@ jobs:
                     f"{len(eps)} new endpoint(s) — purely additive, not blocking. "
                     f"Refresh with: python3 scripts/api_response_contract.py baseline")
           PY
+
+      # ── Gate liveness ledger (2026-08-31) ────────────────────────────────
+      # This gate beats for ITSELF. Nothing beats on its behalf — a second
+      # writer is how tools/deadman/watch.py masked honest failures with a bare
+      # success three separate times (osm-crawl, news-ner, iso-queue).
+      #
+      # if: always() because a gate that only reports when it is green reports
+      # its health only when its health is not in question. All three outcomes
+      # reach the board, and `fail` here means the guard REFUSED a key removal —
+      # it did its job and the ledger reads HEALTHY, not alarmed.
+      #
+      # Values pass through env, never inlined into run: — ${{ }} interpolates
+      # as raw TEXT into the shell, which is how a previous wave shipped broken
+      # quoting that looked fine in the YAML.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          CONTRACT_CODE: ${{ steps.contract.outputs.code }}
+          SELFTEST_OUTCOME: ${{ steps.selftest.outcome }}
+        run: |
+          case "${CONTRACT_CODE:-}" in
+            0) V=pass ;;
+            1) V=fail ;;
+            2) V=unmeasured ;;
+            *) V=unmeasured ;;   # step never ran (selftest failed first) — not a pass
+          esac
+          case "${SELFTEST_OUTCOME:-}" in
+            success) ST=pass ;;
+            failure) ST=fail ;;
+            *)       ST=absent ;;
+          esac
+          # Population examined = endpoints in the derived key surface. 0 here
+          # with V=pass is a vacuous pass and the board alarms on it.
+          N=$(python3 -c "import json;print(len(json.load(open('contracts/api_response_surface.json'))['endpoints']))" 2>/dev/null || echo "")
+          bash scripts/gate_beat.sh "api-response-contract:contract" "$V" "$N" "$ST"
