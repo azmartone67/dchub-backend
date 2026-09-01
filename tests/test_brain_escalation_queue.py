@@ -113,21 +113,29 @@ def test_resolve_reports_a_miss_rather_than_claiming_success(patched):
 
 # ── rule 2: sync's open/close semantics ──────────────────────────────────
 
+OPEN_SWEEP = "status IN ('open', 'contacted')"
+REPAIR_SWEEP = "status = 'activated' AND resolved_by = 'system'"
+
+
+def _cust(email, calls=0, escalate=True):
+    return {"email": email, "name": "N", "plan": "pro", "stage": "stranded",
+            "action": "ESCALATE: nudged 39d ago, still zero calls",
+            "priority": 3, "total_calls": calls, "mcp_calls": 0,
+            "web_calls": calls, "joined_days": 60.0, "idle_days": None,
+            "nudge_days": 39.9, "welcomed": True, "nudged": True,
+            "welcome_attempted": True, "escalate": escalate}
+
+
 def _roster(*emails):
-    return [{"email": e, "name": "N", "plan": "pro", "stage": "stranded",
-             "action": "ESCALATE: nudged 39d ago, still zero calls",
-             "priority": 3, "total_calls": 0, "mcp_calls": 0, "web_calls": 0,
-             "joined_days": 60.0, "idle_days": None, "nudge_days": 39.9,
-             "welcomed": True, "nudged": True, "welcome_attempted": True}
-            for e in emails]
+    return [_cust(e) for e in emails]
 
 
 def test_sync_opens_a_row_for_each_escalating_customer(patched, monkeypatch):
-    monkeypatch.setattr(eq, "_roster_escalations",
+    monkeypatch.setattr(eq, "_roster_all",
                         lambda: _roster("a@b.com", "c@d.com"))
     cur, conn = patched({
         "INSERT INTO brain_escalations": (True,),          # xmax=0 -> inserted
-        "SELECT id, email FROM brain_escalations": [],
+        OPEN_SWEEP: [], REPAIR_SWEEP: [],
     })
     out = eq.sync()
     assert out["ok"] is True, out
@@ -136,44 +144,119 @@ def test_sync_opens_a_row_for_each_escalating_customer(patched, monkeypatch):
 
 
 def test_sync_refreshes_rather_than_duplicating_a_known_escalation(patched, monkeypatch):
-    monkeypatch.setattr(eq, "_roster_escalations", lambda: _roster("a@b.com"))
+    monkeypatch.setattr(eq, "_roster_all", lambda: _roster("a@b.com"))
     cur, conn = patched({
         "INSERT INTO brain_escalations": (False,),         # conflict -> update
-        "SELECT id, email FROM brain_escalations": [],
+        OPEN_SWEEP: [], REPAIR_SWEEP: [],
     })
     out = eq.sync()
     assert out["opened"] == 0 and out["refreshed"] == 1
 
 
-def test_sync_auto_activates_a_customer_who_started_calling(patched, monkeypatch):
-    """★ The verifier. c@d.com dropped off the escalating roster, which can
-    only mean the account is making calls. Nobody marks this by hand."""
-    monkeypatch.setattr(eq, "_roster_escalations", lambda: _roster("a@b.com"))
+def test_sync_auto_activates_only_when_the_call_count_actually_moved(patched, monkeypatch):
+    """★ The verifier. c@d.com left the escalating set AND its total_calls
+    rose above calls_at_open — that, and only that, is activation."""
+    monkeypatch.setattr(eq, "_roster_all",
+                        lambda: [_cust("a@b.com"),
+                                 _cust("c@d.com", calls=5, escalate=False)])
     cur, conn = patched({
         "INSERT INTO brain_escalations": (False,),
-        "SELECT id, email FROM brain_escalations": [(1, "a@b.com"),
-                                                    (2, "c@d.com")],
+        OPEN_SWEEP: [(1, "a@b.com", 0), (2, "c@d.com", 0)],
+        REPAIR_SWEEP: [],
     })
     out = eq.sync()
     assert out["auto_activated"] == 1, out
-    updates = [s for s, _ in cur.executed if "SET status = 'activated'" in s]
-    assert len(updates) == 1
-    ids = [p[0] for s, p in cur.executed if "SET status = 'activated'" in s]
+    ids = [p[-1] for s, p in cur.executed if "SET status = 'activated'" in s]
     assert ids == [2], "must activate c@d.com (id 2), not the still-stranded row"
+
+
+def test_sync_does_not_activate_a_row_that_left_the_roster_without_calling(patched, monkeypatch):
+    """★ THE REGRESSION. Measured 2026-08-31: nine rows were stamped
+    `activated` purely for leaving the escalating set, every one of them at
+    total_calls=0. Cancelling, changing plan, or the classifier changing its
+    mind all drop an account off that set. None of them is activation."""
+    monkeypatch.setattr(eq, "_roster_all",
+                        lambda: [_cust("a@b.com"),
+                                 _cust("c@d.com", calls=0, escalate=False)])
+    cur, conn = patched({
+        "INSERT INTO brain_escalations": (False,),
+        OPEN_SWEEP: [(2, "c@d.com", 0)],
+        REPAIR_SWEEP: [],
+    })
+    out = eq.sync()
+    assert out["auto_activated"] == 0, out
+    assert out["left_roster_no_calls"] == 1, out
+    assert not [s for s, _ in cur.executed if "SET status = 'activated'" in s]
+
+
+def test_sync_treats_an_empty_roster_as_unmeasured_and_changes_nothing(patched, monkeypatch):
+    """★ THE ROOT CAUSE. A roster read of zero rows is a missing measurement.
+    Treated as 'nobody is escalating' it empties the whole queue in one run —
+    which is exactly what happened at 2026-08-31T11:19:05Z."""
+    monkeypatch.setattr(eq, "_roster_all", lambda: [])
+    cur, conn = patched({"INSERT INTO brain_escalations": (False,),
+                         OPEN_SWEEP: [(1, "a@b.com", 0), (2, "c@d.com", 0)],
+                         REPAIR_SWEEP: []})
+    out = eq.sync()
+    assert out["ok"] is False, out
+    assert "UNMEASURED" in out["error"]
+    assert out["auto_activated"] == 0
+    assert cur.executed == [], "an unmeasured roster must not touch the table"
+
+
+def test_sync_reopens_a_row_the_system_wrongly_activated(patched, monkeypatch):
+    """★ THE REPAIR. An account the roster still calls escalating, at zero
+    calls, cannot be `activated`. Nothing else in this module can set `open`,
+    so the undo lives here."""
+    monkeypatch.setattr(eq, "_roster_all", lambda: _roster("a@b.com"))
+    cur, conn = patched({
+        "INSERT INTO brain_escalations": (False,),
+        OPEN_SWEEP: [],
+        REPAIR_SWEEP: [(1, "a@b.com", 0)],
+    })
+    out = eq.sync()
+    assert out["reopened"] == 1, out
+    assert [p[0] for s, p in cur.executed if "SET status = 'open'" in s] == [1]
+
+
+def test_repair_leaves_a_genuine_activation_alone(patched, monkeypatch):
+    """If the call count really did move, the row stays activated even while
+    the account lingers on the escalating set."""
+    monkeypatch.setattr(eq, "_roster_all",
+                        lambda: [_cust("a@b.com", calls=9)])
+    cur, conn = patched({
+        "INSERT INTO brain_escalations": (False,),
+        OPEN_SWEEP: [],
+        REPAIR_SWEEP: [(1, "a@b.com", 0)],
+    })
+    out = eq.sync()
+    assert out["reopened"] == 0, out
+    assert not [s for s, _ in cur.executed if "SET status = 'open'" in s]
+
+
+def test_repair_never_overrules_a_human(patched, monkeypatch):
+    """The repair sweep reads only resolved_by='system'. A row the owner
+    resolved or dismissed must never be dragged back into the queue."""
+    monkeypatch.setattr(eq, "_roster_all", lambda: _roster("a@b.com"))
+    cur, _ = patched({"INSERT INTO brain_escalations": (False,),
+                      OPEN_SWEEP: [], REPAIR_SWEEP: []})
+    eq.sync()
+    repair = [s for s, _ in cur.executed if "status = 'activated'" in s
+              and s.startswith("SELECT")]
+    assert len(repair) == 1
+    assert "resolved_by = 'system'" in repair[0]
 
 
 def test_sync_does_not_touch_rows_a_human_already_closed(patched, monkeypatch):
     """The auto-activate sweep reads only open/contacted. A resolved or
     dismissed row must never be revived — that would re-queue a customer
     the owner already decided about."""
-    monkeypatch.setattr(eq, "_roster_escalations", lambda: _roster("a@b.com"))
+    monkeypatch.setattr(eq, "_roster_all", lambda: _roster("a@b.com"))
     cur, _ = patched({"INSERT INTO brain_escalations": (False,),
-                      "SELECT id, email FROM brain_escalations": []})
+                      OPEN_SWEEP: [], REPAIR_SWEEP: []})
     eq.sync()
-    sweep = [s for s, _ in cur.executed
-             if "SELECT id, email FROM brain_escalations" in s]
+    sweep = [s for s, _ in cur.executed if OPEN_SWEEP in s and s.startswith("SELECT")]
     assert len(sweep) == 1
-    assert "status IN ('open', 'contacted')" in sweep[0]
 
 
 def test_sync_reports_a_broken_roster_instead_of_an_empty_queue(patched, monkeypatch):
@@ -181,7 +264,7 @@ def test_sync_reports_a_broken_roster_instead_of_an_empty_queue(patched, monkeyp
     is the exact failure this whole module exists to stop."""
     def boom():
         raise RuntimeError("white glove down")
-    monkeypatch.setattr(eq, "_roster_escalations", boom)
+    monkeypatch.setattr(eq, "_roster_all", boom)
     patched({})
     out = eq.sync()
     assert out["ok"] is False
