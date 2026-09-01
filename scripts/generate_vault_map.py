@@ -154,6 +154,14 @@ def collect_layers() -> list:
     return sorted(out, key=lambda r: (r["n"], r["file"]))
 
 
+class GraphConstantsUnavailable(RuntimeError):
+    """routes/graph_master_shell.py exists but could not be imported.
+
+    Emitting the map anyway would silently delete the Loop Graph's edges and
+    typed sources — a smaller map that reads as true. Refuse instead.
+    """
+
+
 def collect_loops() -> dict:
     loops_src = _read(os.path.join(_ROUTES, "system_loops.py"))
     graph_src = _read(os.path.join(_ROUTES, "graph_master_shell.py"))
@@ -179,17 +187,30 @@ def collect_loops() -> dict:
         nm = re.search(r'"name":\s*"([a-z_]+)"', body)
         probes.append(nm.group(1) if nm else m.group(1)[len("_probe_"):])
     edges, sources = [], []
-    try:
-        sys.path.insert(0, _REPO)
-        from routes.graph_master_shell import (  # noqa: E402
-            LOOP_EDGES, LOOP_SOURCE_PRODUCERS)
-        edges = list(LOOP_EDGES or ())
-        sources = list(LOOP_SOURCE_PRODUCERS or ())
-    except Exception as e:
-        print("  warn: could not import the graph constants: %s" % e,
-              file=sys.stderr)
-    return {"probes": sorted(set(probes)), "edges": edges,
-            "sources": sources, "has_graph_src": bool(graph_src)}
+    graph_error = None
+    # ★2026-08-31 — THIS USED TO RENDER A FAILURE AS A BENIGN VALUE. The import
+    # below needs the app's deps (flask, psycopg2, ...). When they are absent it
+    # raised, the handler printed a warning to stderr nobody reads, and the map
+    # was rebuilt with ZERO edges and ZERO typed sources — a SMALLER map that
+    # looks perfectly valid. The refresh-architecture-map job regenerated without
+    # those deps and opened PR #3483 proposing exactly that: 4 declared loop
+    # edges -> 0, the whole producer/consumer table deleted.
+    #
+    # This file's own docstring says the point is "to stop failures from being
+    # rendered as benign values, and a stale map is exactly that". A map that
+    # silently drops a section it could not compute is the same failure wearing
+    # the generator's own clothes. The error is recorded and build() refuses.
+    if graph_src:
+        try:
+            sys.path.insert(0, _REPO)
+            from routes.graph_master_shell import (  # noqa: E402
+                LOOP_EDGES, LOOP_SOURCE_PRODUCERS)
+            edges = list(LOOP_EDGES or ())
+            sources = list(LOOP_SOURCE_PRODUCERS or ())
+        except Exception as e:
+            graph_error = "%s: %s" % (type(e).__name__, e)
+    return {"probes": sorted(set(probes)), "edges": edges, "sources": sources,
+            "has_graph_src": bool(graph_src), "graph_error": graph_error}
 
 
 # ── renderers ─────────────────────────────────────────────────────────
@@ -344,6 +365,16 @@ def build() -> dict:
     shells = collect_shells()
     layers = collect_layers()
     g = collect_loops()
+    if g.get("graph_error"):
+        # ★ Never write a map whose Loop Graph silently collapsed. See the note
+        # in collect_loops: this is how PR #3483 came to propose deleting 4
+        # declared edges because a CI job lacked flask.
+        raise GraphConstantsUnavailable(
+            "routes/graph_master_shell.py is present but could not be imported "
+            "(%s).\nThe Loop Graph would be rebuilt EMPTY and the map would "
+            "shrink silently.\nFix: install the app deps this script imports "
+            "through, e.g.\n  python3 -m pip install flask psycopg2-binary "
+            "pyyaml requests" % g["graph_error"])
     nroutes = len(live_route_modules())
     return {
         "Architecture Map.md": render_hub(shells, layers, g, nroutes),
@@ -371,7 +402,11 @@ def main() -> int:
     ap.add_argument("--check-target", default=_REPO_DOCS,
                     help="directory --check compares against")
     a = ap.parse_args()
-    notes = build()
+    try:
+        notes = build()
+    except GraphConstantsUnavailable as e:
+        print("REFUSING to generate a degraded map:\n%s" % e, file=sys.stderr)
+        return 2
     if a.check:
         stale = []
         for name, text in notes.items():
