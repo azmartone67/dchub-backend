@@ -41,6 +41,23 @@ def test_a_bulk_harvest_is_never_demand():
     assert classify_platform("datacolo") == "harvester"
 
 
+def test_chain_hire_single_tool_loop_is_a_harvest_not_demand():
+    """★chain-hire, measured 2026-09-01: ONE IP, ONE tool (`search`, 1,473 of
+    1,475 calls), a flat 100-132 calls/hour for 14 hours, no api_key, and
+    1,410 of those calls served OVER the anonymous daily cap. Left unlabelled
+    it was 69.6% of the rolling-7d headline and the whole apparent +6.8% WoW.
+
+    This asserts the LABEL only. `real_calls_predicate()` does not read
+    `kind`, so — exactly as with datacolo — the rows stay inside
+    `real_external_calls_7d`; see the PR body for what a removal would need
+    to touch."""
+    from routes.platform_attribution import classify_platform
+    assert classify_platform("chain-hire") == "harvester"
+    # Case/whitespace robustness: the classifier lowercases and strips, and
+    # the client name arrives verbatim from the caller's clientInfo.
+    assert classify_platform("  Chain-Hire  ") == "harvester"
+
+
 def test_a_registry_crawl_is_tooling_not_a_user():
     """smithery: 2,518 calls from exactly ONE agent over 9 days."""
     from routes.platform_attribution import classify_platform
