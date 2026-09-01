@@ -6810,12 +6810,16 @@ def api_v1_map():
                 return None
         _map_tier = 'anonymous'
         try:
-            # detect_tier_failopen: a credentialed caller (cookie / dchub_ key /
-            # Bearer / internal key) that resolves to anonymous — e.g. a DB
-            # hiccup during a 503 or a JWT decode error — is treated as paid so
-            # Pro/Enterprise/Founding are NEVER downgraded into the masked view.
-            from map_tier_gating import detect_tier_failopen
-            _mt, _ = detect_tier_failopen(decode_jwt_func=_map_decode_jwt)
+            # 2026-08-31: this was detect_tier_failopen, which treats ANY
+            # credential-shaped header as paid so a resolution hiccup can't
+            # downgrade Pro/Enterprise/Founding. But `X-API-Key: x` is
+            # credential-shaped, so the field mask AND the coordinate
+            # coarsening below were both off for anyone who invented a header —
+            # PR #2091/#2096's anon-bulk fix, undone. Real keys resolve without
+            # the fail-open (_detect_caller_tier does its own dual-hash
+            # lookup); only the unverified promotion is refused.
+            from map_tier_gating import detect_tier_for_data_gate
+            _mt, _ = detect_tier_for_data_gate(decode_jwt_func=_map_decode_jwt)
             _map_tier = (_mt or 'anonymous').lower()
         except Exception:
             _map_tier = 'anonymous'
@@ -23623,12 +23627,18 @@ def search_facilities():
     # contract. Clamp to the caller's real record_cap, resolved from the same
     # registry every other gate reads, and fail CLOSED to anonymous so an
     # unresolvable caller gets the tightest cap rather than the loosest.
+    # ★ 2026-08-31: that "fail CLOSED" promise was not kept — the resolver was
+    # detect_tier_failopen, which returns 'pro' for ANY credential-shaped
+    # header, and TIER_LIMITS['pro']['record_cap'] is 5000. Measured live:
+    # `X-API-Key: x` + limit=5000 returned 5000 rows/page, offset-pageable,
+    # against 50 for the same call with no header. Now uses the data-gate
+    # resolver, which refuses the unverified promotion.
     _sr_cap = 100
     try:
         from tier_registry import TIER_LIMITS
-        from map_tier_gating import detect_tier_failopen
+        from map_tier_gating import detect_tier_for_data_gate
         try:
-            _sr_tier, _ = detect_tier_failopen()
+            _sr_tier, _ = detect_tier_for_data_gate()
         except Exception:
             _sr_tier = 'anonymous'
         _sr_cap = int(TIER_LIMITS.get((_sr_tier or 'anonymous').lower(),
