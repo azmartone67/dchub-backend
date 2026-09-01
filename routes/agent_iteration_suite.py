@@ -498,3 +498,230 @@ def iteration_packet_send():
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:160]), 500
     return jsonify(ok=True, sent=sent, failed=failed), 200
+
+
+# ── 4. Public evaluation receipts (2026-08-31) ──────────────────────────────
+# `/agent-verdicts` publishes the CONCLUSION (a 600-char assessment). Three of
+# the models featured on /what-ais-say — Perplexity, ChatGPT and Copilot —
+# independently asked for the EVIDENCE instead: exact model id, timestamp, the
+# prompt as issued, the calls the model actually made, what it saw back, and a
+# hash so a published quote can be checked against the record it came from.
+#
+# All of that is already stored in model_relations_runs (verdict + transcript
+# JSONB). This exposes it, for published runs only — the operator's per-run
+# consent gate (verdict_published_at) is the same one /agent-verdicts uses and
+# is NOT bypassed here. An unpublished run is invisible on this surface.
+
+_RECEIPT_LIMITATIONS = [
+    "These are dated model outputs, not endorsements. No card here is an "
+    "official evaluation by the vendor whose model produced it, and none "
+    "implies a commercial relationship.",
+    "The models were prompted. The exact system and kickoff prompts are "
+    "published in `protocol` below — read them before reading the verdicts.",
+    "A model evaluates the API with a comp DC Hub key issued by us. It is not "
+    "an anonymous member of the public, and it saw only what the harness "
+    "returned from the dchub.cloud origin.",
+    "Token-efficiency figures inside a verdict are the model's own estimates. "
+    "We measured our side; no one called a named competitor's API.",
+    "A verdict is one model's reading on one date. It does not validate every "
+    "underlying DC Hub datum, and we have not re-run it since.",
+    "Only runs the operator has explicitly published appear here. Runs that "
+    "errored, produced no verdict, or were never published are absent — so "
+    "this is not a complete record of every evaluation ever run.",
+]
+
+
+def _canon_sha256(obj) -> str:
+    """Stable hash of a JSON value: sorted keys, no incidental whitespace."""
+    return hashlib.sha256(
+        json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _loose_json(text: str):
+    """Best-effort parse of a model reply that may be fenced or prose-wrapped."""
+    s = (text or "").strip()
+    if s.startswith("```"):
+        s = s.split("```")[1] if s.count("```") >= 2 else s[3:]
+        if s.lstrip().lower().startswith("json"):
+            s = s.lstrip()[4:]
+    i = s.find("{")
+    if i < 0:
+        return None
+    try:
+        return json.loads(s[i:])
+    except Exception:
+        try:
+            return json.loads(s[i:s.rfind("}") + 1])
+        except Exception:
+            return None
+
+
+def _transcript_calls(transcript, excerpt=400, full_bodies=False):
+    """The API receipt trail for one run.
+
+    model_relations stores the transcript as alternating rows: role=assistant
+    (the model's own {"call":…} / {"verdict":…} JSON) and role=harness (the
+    literal "HTTP <code>\\n<body>" the model was handed back). Pairing them
+    reconstructs what was requested and what was actually returned.
+    """
+    calls, pending = [], None
+    for row in (transcript or []):
+        if not isinstance(row, dict):
+            continue
+        role = row.get("role")
+        content = str(row.get("content") or "")
+        if role == "assistant":
+            obj = _loose_json(content)
+            call = obj.get("call") if isinstance(obj, dict) else None
+            pending = call if isinstance(call, dict) else None
+            continue
+        if role != "harness":
+            continue
+        head, _, body = content.partition("\n")
+        status = None
+        if head.startswith("HTTP "):
+            try:
+                status = int(head[5:].strip())
+            except Exception:
+                status = None
+        rec = {
+            "n": len(calls) + 1,
+            "method": str((pending or {}).get("method") or "GET").upper() if pending else None,
+            "url": str((pending or {}).get("url") or "") or None,
+            "request_body": (pending or {}).get("body") if pending else None,
+            "http_status": status,
+            "response_bytes": len(body),
+            "response_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            "response_truncated_by_harness": "[harness: truncated at 15000 chars]" in body,
+        }
+        rec["response" if full_bodies else "response_excerpt"] = (
+            body if full_bodies else body[:excerpt])
+        calls.append(rec)
+        pending = None
+    return calls
+
+
+def _protocol_block():
+    """The method, verbatim from the harness that ran it."""
+    try:
+        from model_relations import (_SYSTEM, _KICKOFF, MAX_MODEL_CALLS,
+                                     MAX_TOKENS, TRUNCATE_AT, DCHUB_BASE)
+    except Exception as e:                                   # pragma: no cover
+        return {"error": "harness constants unavailable: %s" % str(e)[:120]}
+    return {
+        "harness": "model_relations.py (dchub-backend)",
+        "system_prompt": _SYSTEM,
+        "kickoff_prompt": _KICKOFF,
+        "max_model_calls": MAX_MODEL_CALLS,
+        "max_tokens_per_reply": MAX_TOKENS,
+        "response_truncated_at_chars": TRUNCATE_AT,
+        "origin_allowlist": DCHUB_BASE,
+        "browsing": ("none. The model issues HTTP calls by replying with JSON; "
+                     "the harness executes them against the DC Hub origin only "
+                     "and hands back the raw response. It cannot search the web "
+                     "or read DC Hub's marketing pages during a run."),
+        "auth": "a comp DC Hub API key issued to that partner (MODELREL_KEY_*)",
+        "model_selection": ("the partner's own general flagship, resolved from "
+                            "their live /models list at run time — the exact id "
+                            "resolved is recorded per run as model_id"),
+        "consent": ("a run is invisible here until the operator publishes it "
+                    "explicitly; publication is per-run and reversible"),
+    }
+
+
+def _receipt_rows(run_id=None, limit=40, full_bodies=False):
+    c = _conn()
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            _ensure_schema(cur)
+            sql = ("SELECT id, platform, model_id, status, calls_made, http_5xx, "
+                   "verdict, verdict_diff, transcript, notes, started_at, "
+                   "finished_at, verdict_published_at "
+                   "FROM model_relations_runs "
+                   "WHERE verdict_published_at IS NOT NULL AND status='ok'")
+            args = []
+            if run_id is not None:
+                sql += " AND id = %s"
+                args.append(run_id)
+            sql += " ORDER BY started_at DESC LIMIT %s"
+            args.append(limit)
+            cur.execute(sql, tuple(args))
+            out = []
+            for (rid, plat, model, status, calls, x5, verdict, diff, transcript,
+                 notes, started, finished, published) in cur.fetchall():
+                iso = (lambda t: t.isoformat() if t else None)
+                dur = None
+                if started and finished:
+                    dur = round((finished - started).total_seconds(), 1)
+                out.append({
+                    "run_id": rid,
+                    "platform": plat,
+                    "platform_label": _PLATFORM_LABELS.get(plat, (plat or "").title()),
+                    "model_id": model,
+                    "status": status,
+                    "evaluated_at": iso(started),
+                    "finished_at": iso(finished),
+                    "published_at": iso(published),
+                    "run_seconds": dur,
+                    "model_replies": calls,
+                    "http_5xx_seen": x5,
+                    "verdict_vs_previous": diff,
+                    "verdict": verdict,
+                    "verdict_sha256": _canon_sha256(verdict) if verdict is not None else None,
+                    "assessment": (str((verdict or {}).get("assessment") or "")
+                                   if isinstance(verdict, dict) else ""),
+                    "api_calls": _transcript_calls(transcript, full_bodies=full_bodies),
+                    "harness_notes": (notes or "") or None,
+                })
+            return out
+    except Exception as e:
+        logger.warning("receipts query failed: %s", e)
+        return None
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+@agent_iteration_suite_bp.route("/api/v1/receipts")
+def receipts_json():
+    """Public evidence behind every published agent verdict."""
+    rows = _receipt_rows()
+    if rows is None:
+        return jsonify(ok=False, error="receipts_unavailable",
+                       detail="the evaluation store could not be read"), 503
+    by_platform = {}
+    for r in rows:
+        by_platform[r["platform"]] = by_platform.get(r["platform"], 0) + 1
+    return jsonify(
+        ok=True,
+        as_of=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        counts={"published_runs": len(rows), "by_platform": by_platform,
+                "distinct_models": len({r["model_id"] for r in rows if r["model_id"]})},
+        protocol=_protocol_block(),
+        receipts=rows,
+        limitations=_RECEIPT_LIMITATIONS,
+        note=("Each receipt is one published run: the exact model id, when it "
+              "ran, every call it made against the live API, the HTTP status "
+              "and a hash of each response it saw, and its full verdict object "
+              "with a hash you can recompute. GET /api/v1/receipts/<run_id> "
+              "returns one run with full response bodies."),
+    ), 200
+
+
+@agent_iteration_suite_bp.route("/api/v1/receipts/<int:run_id>")
+def receipt_detail_json(run_id: int):
+    """One published run, with the response bodies the model actually saw."""
+    rows = _receipt_rows(run_id=run_id, limit=1, full_bodies=True)
+    if rows is None:
+        return jsonify(ok=False, error="receipts_unavailable"), 503
+    if not rows:
+        return jsonify(ok=False, error="not_found", run_id=run_id,
+                       detail=("no PUBLISHED ok-verdict run with that id. "
+                               "Unpublished runs are not exposed here.")), 404
+    return jsonify(ok=True, protocol=_protocol_block(), receipt=rows[0],
+                   limitations=_RECEIPT_LIMITATIONS), 200
