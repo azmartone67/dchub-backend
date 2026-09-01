@@ -2140,6 +2140,19 @@ try:
     except Exception as _pue_early:
         import logging
         logging.getLogger(__name__).warning('platform_updates wiring failed: %s', _pue_early)
+    # 2026-08-31: gate liveness ledger — the dead-man board for GATES.
+    # SAFE ZONE deliberately. routes/ingest_runs.py (the FEED ledger this
+    # mirrors) registers at ~line 37300 in the late-line region that silently
+    # 404s in prod; it happens to work, and main.py:2133 already names that as
+    # luck rather than a precedent to copy. A gate board that 404s would report
+    # nothing and look like every gate is fine, which is the exact failure it
+    # exists to catch.
+    try:
+        from routes.gate_runs import register_gate_runs
+        register_gate_runs(app)
+    except Exception as _gr_early:
+        import logging
+        logging.getLogger(__name__).warning('gate_runs wiring failed: %s', _gr_early)
     # Phase relocate (2026-07-26): competitor_recon was registered late-line
     # (~36110) and silently failed in prod (same late-line pattern that bit
     # market_deep_dive/press_loop). Safe-zone registration, same recipe.

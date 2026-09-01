@@ -35,6 +35,17 @@ jobs:
       # once the suite is already dead.
       - name: No test module aborts collection
         run: python3 scripts/check_collection_safety.py tests
+      # The gate liveness ledger's OWN must-fail control (2026-08-31). Runs
+      # HERE, in the stdlib-only job, for the same reason the collection-safety
+      # check does: it must still report when the suite is down, and it must not
+      # be able to fail for a reason unrelated to what it controls (the script
+      # stubs flask/psycopg2 so the pure predicate imports bare).
+      # A board that reports every gate healthy because its own predicate broke
+      # is precisely the failure the board exists to catch — and three of the
+      # four measurement surfaces audited on 2026-08-17 failed in exactly that
+      # direction, opposite to the bug each was built to find.
+      - name: Gate ledger must-fail control (exit 2 = UNMEASURED = failure)
+        run: python3 scripts/gate_runs_selftest.py
       # db_utils' PGCursorWrapper DROPS DDL when SKIP_DDL is set, and SKIP_DDL
       # defaults to '1' and is absent from prod config — so a lazy CREATE TABLE
       # written against db_utils.get_db()/safe_db() never creates anything, and
