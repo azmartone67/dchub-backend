@@ -491,11 +491,18 @@ _SELFTEST_MUST_STAY_SILENT = {
         "def make():\n"
         "    with get_db() as c, c.cursor() as cur:\n"
         "        cur.execute('CREATE TABLE IF NOT EXISTS x (id int)')\n",
-    "a plain INSERT through db_utils":
+    # A non-DDL WRITE through the wrapper is fine — the wrapper only drops DDL —
+    # and pinning that is what separates "drops DDL" from "drops everything".
+    # ★ Spelled as UPDATE, not INSERT, on purpose: scripts/ is NOT a test path,
+    # so regression_lint reads a bare INSERT-plus-table literal here as real
+    # code and blocks the PR on insert-no-on-conflict. regression_lint.py warns
+    # about this for its own source; the same applies to any fixture under
+    # scripts/. It caught this control on its first run.
+    "a plain UPDATE through db_utils":
         "from db_utils import get_db\n"
-        "def ins():\n"
+        "def upd():\n"
         "    with get_db() as c, c.cursor() as cur:\n"
-        "        cur.execute('INSERT INTO x VALUES (1)')\n",
+        "        cur.execute('UPDATE x SET id = 1')\n",
 }
 
 
