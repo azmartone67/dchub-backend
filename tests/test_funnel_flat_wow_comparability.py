@@ -317,8 +317,19 @@ def test_reach_wow_pair_is_wired_to_the_marker():
 def test_reach_wow_uses_the_same_rolling_windows_as_the_funnel_pair():
     """Same 7d-vs-prior-7d division, so it must carry the same verdict."""
     out_reach, out_funnel = {"real_agents_pct": -26.6}, {_ROLL_A: -27.7}
-    _mark(out_reach, _rolling_spans(7, 2), ("real_agents_pct",), "rolling")
-    _mark(out_funnel, _rolling_spans(7, 2), (_ROLL_A,), "real_external_rolling_wow")
+    # ★ 2026-09-01 — these two were the call sites #3112 MISSED. That PR added
+    # _rolling_spans_asof precisely because a live trailing 7d window stops
+    # containing the fixed _CHANGE_AT instant, and moved the other verdict
+    # assertions onto it. These two kept reading the wall clock, so the window
+    # aged past 2026-08-18 06:31Z and the verdict inverted: crosses_definition_
+    # change went False, quotable_as_trend went True, and main went red on a
+    # date rollover with no code change — the second detonation that docstring
+    # predicted. The live helper stays covered for SHAPE and ARITHMETIC by
+    # test_rolling_spans_are_consecutive_and_most_recent_first and
+    # test_the_pinned_rolling_mirror_matches_the_shipped_arithmetic; a verdict
+    # that depends on where the window SITS must be pinned.
+    _mark(out_reach, _rolling_spans_asof(7, 2), ("real_agents_pct",), "rolling")
+    _mark(out_funnel, _rolling_spans_asof(7, 2), (_ROLL_A,), "real_external_rolling_wow")
     a = out_reach["rolling_comparability"]
     b = out_funnel["real_external_rolling_wow_comparability"]
     assert a["quotable_as_trend"] == b["quotable_as_trend"] is False
