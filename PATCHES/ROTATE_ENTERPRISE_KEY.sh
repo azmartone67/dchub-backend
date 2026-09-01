@@ -78,13 +78,18 @@
 #     field names differ from this script's — it reports `rows_found` and
 #     `still_accepted_anywhere` — so read the tool's own output, do not assume
 #     these keys. The two agree on semantics, which is the point.
-#   - ★ ITS MINT BANNER IS STALE IN THE OPPOSITE DIRECTION. #3515 also rewrote
-#     cmd_mint's warning to "AUTHENTICATES ON /mcp BUT NOT ON REST … its
-#     mcp_dev_keys lookup is by key_hash — a column that table does not have —
-#     so that step always raises and is swallowed." That was true until #3288
-#     (a9d98800c, 2026-08-28) fixed the lookup — on the SAME main, step 1a now
-#     matches on api_key and grants a REST tier. A minted key authenticates on
-#     BOTH paths. Believe the query in util/tier_gate.py, not that banner.
+#   - Its mint banner used to claim "AUTHENTICATES ON /mcp BUT NOT ON REST",
+#     reasoning that step 1a "always raises" on a key_hash column mcp_dev_keys
+#     does not have. #3288 killed that premise; the banner outlived it. FIXED —
+#     it now reads the tier straight out of util.tier_gate._PLAN_TO_TIER and
+#     prints what the key ACTUALLY resolves to per path. Worth knowing when you
+#     mint one, because it is not uniform:
+#         --tier free        /mcp AUTHENTICATES,  REST ANONYMOUS  (unprivileged)
+#         --tier paid        /mcp AUTHENTICATES,  REST PRO        ★ live credential
+#         --tier enterprise  /mcp AUTHENTICATES,  REST ENTERPRISE ★ live credential
+#     So "an mcp_dev_keys-only key is harmless on REST" is true ONLY for free.
+#     Above free it is a live REST credential with no api_keys row anywhere —
+#     which is exactly the kind of key this script's revoke must not miss.
 #   - revoke below WAS origin-blind in the same way and was fixed on 2026-09-01:
 #     it used to warn "the key was NOT revoked" whenever n_api == 0, which is
 #     exactly backwards for an MCP-minted key that has no api_keys row and was
