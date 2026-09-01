@@ -100,15 +100,49 @@ _ENVELOPE_SHIPPED_AT = "2026-08-12 01:14:33"
 # blindness only when it pairs a null/absent VERDICT with an endpoint/payload
 # SUBJECT — "spike-decay predictions falsify when the post-spike week collapses"
 # is a real domain lesson and must not be swept in.
+#
+# ★2026-08-31 — TWO DEFECTS, IN OPPOSITE DIRECTIONS, THAT CANCELLED.
+# Measured against all 20 active lessons, the previous form scored 11/20. So
+# does this one. That is a coincidence, not a validation:
+#
+#   over-matched  `_NULL_VERDICT` ran against the WHOLE lesson, so "absent"
+#                 counted even when it named what the instrument SAW rather
+#                 than a null verdict. "Action-queue endpoint health verified
+#                 true when endpoint returns ok, populated queue data, and
+#                 specific finding is absent" is a SUCCESSFUL reading — the
+#                 finding cleared. Two of those, plus two "falsify when ...
+#                 detector:domain pair absent — indicates reclassification,
+#                 not operational fix", which is a genuine domain lesson about
+#                 QA semantics. 4 false positives.
+#   under-matched `payload` had no `s?` while `endpoint` was spelled twice to
+#                 get one. Four lessons ending "...without segmented demand
+#                 payloads" scored clean. 4 false negatives.
+#
+# The verdict is unchanged BECAUSE the counts happened to offset; the next
+# consolidation will not be so lucky. A blindness detector that is right by
+# accident is the exact failure this shell exists to name.
+#
+# The fix reads the VERDICT CLAUSE — the text before the condition — for the
+# null word, and the whole lesson for the subject. L18 writes
+# "<subject> predictions <verdict> when/based on <condition>", so a null word
+# after the split is describing the condition, not the outcome.
 _NULL_VERDICT = re.compile(
     r"\b(null|nulls|unavailable|insufficient|absent|blind)\b", re.I)
 _EMPTY_SUBJECT = re.compile(
-    r"\b(empty|returns? empty|non-empty|endpoint|payload|endpoints?)\b", re.I)
+    r"\b(empty|non-empty|endpoints?|payloads?)\b", re.I)
+# Leftmost of these ends the verdict and begins the condition.
+_CONDITION_START = re.compile(r"\s+when\s+|\s+based on\s+|\u2014|--")
 
 
 def _is_instrument_blindness(lesson: str) -> bool:
+    """True when the lesson reports NO reading from an endpoint/payload.
+
+    The null word must sit in the verdict clause. A lesson that reports a
+    verdict of verify-true or falsify had a working instrument, whatever the
+    condition clause goes on to say was absent."""
     t = str(lesson or "")
-    return bool(_NULL_VERDICT.search(t) and _EMPTY_SUBJECT.search(t))
+    verdict = _CONDITION_START.split(t, 1)[0]
+    return bool(_NULL_VERDICT.search(verdict) and _EMPTY_SUBJECT.search(t))
 
 
 # ── auth / kill ───────────────────────────────────────────────────────
