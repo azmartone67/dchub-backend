@@ -396,7 +396,13 @@ def extract_surface() -> dict[str, Any]:
             parse_errors.append(f"{rel}: {e}")
             continue
         except OSError as e:
-            parse_errors.append(f"{rel}: {e}")
+            # str(e) appends e.filename — the ABSOLUTE path we just opened.
+            # This list is written into a COMMITTED artifact, so that path
+            # becomes repo truth: it shipped once as a /private/tmp/.../wt-*
+            # path from whichever worktree happened to regenerate the
+            # baseline while the file was mid-delete. `rel` already names the
+            # file, repo-relative; keep the reason, drop the machine.
+            parse_errors.append(f"{rel}: [Errno {e.errno}] {e.strerror}")
             continue
 
         for fn in ast.walk(tree):
