@@ -655,17 +655,33 @@ def whats_new():
                     deals = (d7, d1, dtot)
                 except Exception:
                     c.rollback()
-                # Verified/deduped data-center count — IDENTICAL query to
-                # /api/v1/stats (is_duplicate = 0) so the site never shows two
-                # different "verified" numbers. The `total` is the raw tracked
-                # count; `verified` is the quality-passed subset. Surfacing both
-                # stops any consumer implying all ~21.9K are verified DCs.
+                # Distinct BUILDINGS — the citable facility figure, mirroring
+                # /api/v1/stats/canonical.facilities_distinct exactly so the site
+                # never shows two different facility numbers.
+                #
+                # ★2026-08-31: this was COUNT(*) WHERE is_duplicate = 0, published
+                # as `facilities_verified`. Three defects in one line:
+                #   1. NAME. /api/v1/stats/canonical's own provenance block says of
+                #      it, verbatim: "Both of the last two are DE-DUPLICATION
+                #      states, not source verifications — do not publish either as
+                #      'verified'." We were publishing exactly that, live, at
+                #      20,019 — ABOVE the 19,969 distinct-building count, so the
+                #      banned field was also the biggest number on the page.
+                #   2. FIELD. COUNT(*) WHERE is_duplicate = 0 is canon's
+                #      facilities_with_keeper, not facilities_verified
+                #      (COUNT(*) WHERE duplicate_of_id IS NULL). The comment named
+                #      a third thing again. Neither is citable.
+                #   3. NULLs. `is_duplicate = 0` drops rows where is_duplicate IS
+                #      NULL; the fleet filter is COALESCE(is_duplicate,0) = 0.
+                # Same defect was fixed in public_endpoints.py on 2026-08-01 and
+                # never swept here. Mirror the citable query instead.
                 try:
-                    cur.execute("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0")
-                    dc_verified = int(cur.fetchone()[0])
+                    cur.execute("SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
+                                "WHERE canonical_slug IS NOT NULL")
+                    dc_distinct = int(cur.fetchone()[0])
                 except Exception:
                     c.rollback()
-                    dc_verified = None
+                    dc_distinct = None
                 # ── Platform capability announcements (brain-staged, owner-approved)
                 # The "New platform capabilities" cards on /whats-new were hardcoded
                 # HTML and went stale ("36 grids", "tool #73"). They are data now.
@@ -764,12 +780,25 @@ def whats_new():
                 # like a live one.
                 "count_captured_at": l.get("count_captured_at"),
                 **_prov(l["layer"])}
-        # Data centers: expose the verified subset next to the raw tracked total
-        # and relabel so the headline can never read as "21.9K verified DCs".
+        # Data centers: distinct BUILDINGS next to the source RECORDS they were
+        # resolved from, so the headline can never read as "27.7K verified DCs".
+        #
+        # ★2026-08-31: this emitted `verified` + `tracked`. whats-new.html renders
+        # `it.distinct` + `it.records` and deliberately does NOT render it.verified
+        # (see its comment at whats-new.html:333). Neither key was ever emitted, so
+        # `factLines` built an empty string and the data-centers card rendered NO
+        # facility count at all — silently, 200 on both sides. The client half of
+        # the 2026-08-06 fix shipped; the server half did not.
+        #
+        # That is the FOURTH instance of the bug class qa-api-contract.mjs was
+        # written for, and it landed in that guard's documented blind spot: it is
+        # intra-procedural and tracks keys read off the fetch identifier, while
+        # `it` is a forEach loop variable over d.items[].
         if l["layer"] == "data_centers":
             item["label"] = "Data centers (tracked)"
-            item["verified"] = dc_verified
-            item["tracked"] = l["count"]
+            item["distinct"] = dc_distinct       # distinct buildings — the citable figure
+            item["records"] = l["count"]         # raw source rows they resolved from
+            item["tracked"] = l["count"]         # retained: pre-existing consumers
         items.append(item)
     # Everything counted here was added within the last 7 days (layer windows are ≤7d subsets).
     total_added = sum(i["added"] for i in items if isinstance(i["added"], int) and i["added"] > 0)
@@ -807,7 +836,7 @@ def whats_new():
                    platform_pending=_plat_pending,
                    total_added=total_added, items=items,
                    facilities_tracked=(layers and next((l["count"] for l in layers if l["layer"] == "data_centers"), None)) or None,
-                   facilities_verified=dc_verified,
+                   facilities_distinct=dc_distinct,
                    note="Live additions to DC Hub across infrastructure layers (rolling 7-day window). "
                         "Every layer carries a derived 'status' with the 'status_reason' that produced "
                         "it, because 'cadence' is a SCHEDULE and not a health verdict: 'growing' = new "
