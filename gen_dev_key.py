@@ -102,35 +102,89 @@ def cmd_list(args):
 def cmd_revoke(args):
     """Revoke a key EVERYWHERE it can authenticate.
 
-    ★★★ 2026-08-16 — THIS COMMAND DID NOT REVOKE ANYTHING.
+    ★★★ TWO DISJOINT TABLES AUTHENTICATE, AND WHICH ONE DEPENDS ON ORIGIN.
 
-    It only ran `UPDATE mcp_dev_keys SET status='revoked'`. But `mcp_dev_keys`
-    is NOT what authenticates: util/tier_gate.resolve_tier step 1a queries
-    `mcp_dev_keys WHERE key_hash = %s`, and that table HAS NO key_hash column
-    (see dchub-mcp-v2.1/migration_001_api_keys.sql — api_key is the PK and there
-    is no migration adding key_hash). So 1a raises UndefinedColumn, a bare
-    `except` swallows it, and EVERY key resolves through step 1b:
+      * `api_keys`     — dashboard / partner / paid keys. Read by
+                         util/tier_gate.resolve_tier step 1b:
+                             key_hash IN (sha256(key), rawkey)
+                               AND (is_active IS NULL OR is_active = 1)
+                         key_hash is sha256(key) for customer keys and the RAW
+                         string for partner/admin keys, so both are matched.
+                         is_active is an INTEGER: write 0, never FALSE — `IN (1,
+                         TRUE)` throws `operator does not exist: integer =
+                         boolean`, which the callers' bare excepts swallow into
+                         a silent anon fall-through.
 
-        api_keys WHERE key_hash IN (sha256(key), rawkey)
-                   AND (is_active IS NULL OR is_active = 1)
+      * `mcp_dev_keys` — MCP-minted keys (claim_free_key, OAuth, pair-code).
+                         Read by flask_mcp_endpoints POST /api/v1/keys/validate
+                         — the hop the Node MCP server relays — which matches
+                         `api_key = %s` and requires `status = 'active'`.
+                         Setting status='revoked' is a COMPLETE revoke for this
+                         class. There is no key_hash column and no api_keys row.
 
-    Net effect: you ran `revoke`, saw `"revoked": true`, and the key stayed
-    FULLY LIVE. During a credential rotation that is the worst possible failure
-    — it reports success while leaving the thing you are rotating in service.
+    resolve_tier step 1a LOOKS like a third path but is dead code: it queries
+    `mcp_dev_keys WHERE key_hash = %s`, and that table has no key_hash column
+    (migration_001_api_keys.sql — api_key is the PK), so it always raises
+    UndefinedColumn into a bare except.
 
-    Now revokes in api_keys (the authenticator) matching BOTH storage
-    conventions — customer keys store sha256(api_key), partner/admin keys store
-    the RAW string — and still marks mcp_dev_keys for tidiness. Both row counts
-    are reported separately so "I revoked it" is checkable rather than implied.
+    ── This command has now failed in BOTH directions ───────────────────────
+    2026-08-16: it wrote mcp_dev_keys ONLY, so revoking an api_keys-backed key
+    reported success and left the credential FULLY LIVE. Fixed by also writing
+    api_keys.
 
-    NB api_keys.is_active is an INTEGER column: write 0, never FALSE. `IN (1,
-    TRUE)` throws `operator does not exist: integer = boolean`, which the callers'
-    bare excepts swallow into a silent anon fall-through.
+    2026-08-31: that fix OVER-CORRECTED. It failed the whole command whenever
+    api_keys matched 0 rows — printing "REVOKE DID NOT TAKE … Do NOT treat this
+    as a successful rotation" and exiting 1 — and its JSON note claimed
+    "api_keys is the ONLY table consulted for auth". For an MCP-minted key both
+    are backwards: it has no api_keys row BY CONSTRUCTION, and
+    `revoked_in_mcp_dev_keys: 1` is already a complete revoke. Verified live on
+    2026-08-31 revoking a leaked free key: the tool printed the failure banner
+    and exited nonzero while the key was fully dead — mcp_dev_keys.status
+    ='revoked', the /api/v1/keys/validate query returned accept=false, and a
+    live tools/call on https://dchub.cloud/mcp with the key returned
+    byte-identical output to a bogus key and to no key at all.
+
+    A revoke tool that cries failure on a real revoke is not a safe tool: the
+    operator either stops trusting the exit code or re-runs a rotation that
+    already succeeded.
+
+    ── The failure condition is now measured against the key's ACTUAL home ──
+    Both tables are read BEFORE and AFTER the updates:
+
+      * no row in EITHER table   → hard failure, exit 1. Nothing was revoked,
+        because this tool never issued this key. (dch_trial_ keys live in a
+        THIRD table, auto_trial_keys, which this command does not manage.)
+      * still live afterwards    → hard failure, exit 1. The UPDATE did not take.
+      * a home, nothing left live → success, exit 0, naming the home and its gate.
+
+    The post-state is re-read rather than inferred from rowcount, so "it is
+    revoked" is a measurement rather than a claim.
     """
     import hashlib
     key_hash = hashlib.sha256(args.key.encode("utf-8")).hexdigest()
+
+    # Row census per table: (rows_present, rows_still_live). Presence answers
+    # "should this table have held the key"; liveness answers "is it dead yet".
+    _API_STATE = """SELECT COUNT(*)::int,
+                           COUNT(*) FILTER (
+                               WHERE is_active IS NULL OR is_active = 1)::int
+                      FROM api_keys WHERE key_hash IN (%s, %s)"""
+    _MCP_STATE = """SELECT COUNT(*)::int,
+                           COUNT(*) FILTER (WHERE status = 'active')::int
+                      FROM mcp_dev_keys WHERE api_key = %s"""
+    _GATE = {
+        "api_keys":     "util/tier_gate.resolve_tier step 1b, on is_active",
+        "mcp_dev_keys": "POST /api/v1/keys/validate, on status='active'",
+    }
+
     with _connect() as conn, conn.cursor() as cur:
-        # 1) the table that actually grants access
+        # ── BEFORE ────────────────────────────────────────────────────────
+        cur.execute(_API_STATE, (key_hash, args.key))
+        api_rows, api_live = cur.fetchone() or (0, 0)
+        cur.execute(_MCP_STATE, (args.key,))
+        mcp_rows, mcp_live = cur.fetchone() or (0, 0)
+
+        # ── REVOKE ── both tables; a given key normally lives in exactly one.
         cur.execute(
             """UPDATE api_keys SET is_active = 0
                 WHERE key_hash IN (%s, %s)
@@ -138,7 +192,6 @@ def cmd_revoke(args):
             (key_hash, args.key),
         )
         auth_n = cur.rowcount
-        # 2) the dev-key ledger — bookkeeping only, never sufficient on its own
         cur.execute(
             """UPDATE mcp_dev_keys SET status='revoked'
                 WHERE api_key = %s AND status = 'active'""",
@@ -146,23 +199,67 @@ def cmd_revoke(args):
         )
         ledger_n = cur.rowcount
 
+        # ── AFTER ── re-read; never infer the result from rowcount alone.
+        cur.execute(_API_STATE, (key_hash, args.key))
+        _, api_live_after = cur.fetchone() or (0, 0)
+        cur.execute(_MCP_STATE, (args.key,))
+        _, mcp_live_after = cur.fetchone() or (0, 0)
+
+    homes = [t for t, n in (("api_keys", api_rows),
+                            ("mcp_dev_keys", mcp_rows)) if n]
+    still_live = [t for t, n in (("api_keys", api_live_after),
+                                 ("mcp_dev_keys", mcp_live_after)) if n]
+    already = bool(homes) and not still_live and (api_live + mcp_live) == 0
+
     print(json.dumps({
         "api_key": args.key,
-        "revoked_in_api_keys": auth_n,      # ← the one that stops the key working
+        "found_in": homes,                  # ← which table SHOULD have held it
+        "revoked_in_api_keys": auth_n,
         "revoked_in_mcp_dev_keys": ledger_n,
-        "authenticating_rows_disabled": auth_n,
-        "note": ("api_keys is the ONLY table consulted for auth; a non-zero "
-                 "mcp_dev_keys count with api_keys 0 means the key is STILL LIVE"),
+        "authenticating_rows_disabled": auth_n + ledger_n,
+        "still_live_in": still_live,        # ← non-empty is the real failure
+        "already_revoked": already,
+        "revoked": bool(homes) and not still_live,
+        "note": ("api_keys (dashboard/partner/paid) and mcp_dev_keys "
+                 "(MCP-minted; gated by POST /api/v1/keys/validate on "
+                 "status='active') are DISJOINT authenticators and a key lives "
+                 "in ONE of them. The revoke is complete when no live row "
+                 "remains in the table that holds THIS key — so "
+                 "revoked_in_api_keys: 0 with revoked_in_mcp_dev_keys: 1 is a "
+                 "COMPLETE revoke, not a failure. still_live_in is the field "
+                 "that means the key may still work."),
     }, indent=2))
 
-    if auth_n == 0:
+    if not homes:
         sys.stderr.write(
-            "\nREVOKE DID NOT TAKE: no active api_keys row matched this key "
-            "(neither sha256 nor raw).\n"
-            "The key may already be revoked, or it may never have authenticated.\n"
-            "Do NOT treat this as a successful rotation — verify with a live call "
-            "before retiring the old credential.\n")
+            "\nREVOKE DID NOT TAKE: this key has no row in api_keys OR "
+            "mcp_dev_keys.\n"
+            "Nothing was revoked — this tool never issued this key. Trial keys "
+            "(dch_trial_…) live in auto_trial_keys, which this command does not "
+            "manage.\n"
+            "Do NOT treat this as a successful rotation — verify with a live "
+            "call before retiring the old credential.\n")
         sys.exit(1)
+
+    if still_live:
+        sys.stderr.write(
+            "\nREVOKE DID NOT TAKE: the key is STILL LIVE in "
+            f"{', '.join(still_live)} after the UPDATE.\n"
+            + "".join(f"  {t} gate: {_GATE[t]}\n" for t in still_live)
+            + "Do NOT treat this as a successful rotation — verify with a live "
+              "call before retiring the old credential.\n")
+        sys.exit(1)
+
+    sys.stderr.write(
+        "\nREVOKE COMPLETE"
+        + (" — already revoked before this run; no rows changed" if already else "")
+        + ".\n"
+        + "".join(f"  {t}: no live row remains (gate: {_GATE[t]})\n" for t in homes))
+    if homes == ["mcp_dev_keys"]:
+        sys.stderr.write(
+            "  This is an MCP-minted key: it has no api_keys row by "
+            "construction, so revoked_in_api_keys: 0 is expected here and is "
+            "NOT a failure.\n")
 
 
 def cmd_upgrade(args):
