@@ -43,8 +43,10 @@ surface; raw per-pipeline rows stay enterprise-gated on /api/v1/gas-pipelines):
   GET /api/v1/reports/pipeline      JSON report (Dataset JSON-LD + cite block)
   GET /pipeline-report              shareable HTML report
 """
+import datetime
 import json
 import math
+import re
 import time
 
 from flask import Blueprint, jsonify, request, Response
@@ -121,6 +123,104 @@ _MIDSTREAMS = [
 
 def _clamp(x, lo=0.0, hi=100.0):
     return max(lo, min(hi, x))
+
+
+def _as_date(v):
+    """datetime | date | None -> date | None. Naive about nothing: a tz-aware
+    timestamp and a date cannot be compared with min(), so everything that
+    feeds the as_of choice is flattened here first."""
+    if v is None:
+        return None
+    if isinstance(v, datetime.datetime):
+        return v.date()
+    if isinstance(v, datetime.date):
+        return v
+    return None
+
+
+def _stamp_as_of(row, pipelines_as_of):
+    """Date a DCGI state row from its OWN inputs, oldest-wins. Mutates `row`.
+
+    ★2026-08-31. DCGI published a real score (TX 81.9 GAS-ADVANTAGED) under
+    provenance.as_of = null / "UNMEASURED — this response carries no source
+    timestamp", while the SAME payload carried gas_price_period "2026-05". The
+    data had a date; the envelope never read it. An undated true score is how a
+    measurement turns into an undated claim in someone else's blog post.
+
+    `data_as_of` is a COLLECTION_AS_OF_KEY in the MCP attribution layer
+    (dchub-mcp-server/lib/attribution.mjs), so setting it here is what turns
+    provenance.as_of from null into a real date on get_gas_index.
+
+    OLDEST, not newest: DCGI blends a pipeline-access half and a gas-price half,
+    so it is no fresher than the staler of the two — the same rule this codebase
+    already applies to composed execute_plan envelopes. Taking MAX would only
+    hide the stale half behind a fresher-looking number.
+
+    The modeled territory seeds (DC/PR/VI/GU, tier 2) are deliberately left
+    UNSTAMPED. They are not derived from gas_pipelines — they exist precisely
+    because those rows are absent — and their price is a documented placeholder,
+    not a measurement. UNMEASURED is the CORRECT answer for a modeled estimate;
+    dating one would be this same defect in the opposite direction, and worse,
+    because the result would look measured.
+    """
+    if str(row.get("data_basis") or "").startswith("modeled_territory"):
+        return row
+    # Normalised to DATE before comparing: created_at is a timestamp (tz-aware
+    # in prod) and a period start is a date; min() across those raises
+    # TypeError rather than choosing.
+    pipe_at = _as_date(pipelines_as_of)
+    price_at = _period_to_date(row.get("gas_price_period"))
+    stamps = [d for d in (pipe_at, price_at) if d is not None]
+    if not stamps:
+        return row
+    oldest = min(stamps)
+    row["data_as_of"] = oldest.isoformat()
+    row["data_as_of_basis"] = (
+        "OLDEST of the two DCGI inputs — the score is no fresher than its stalest "
+        "half. gas_pipelines ingest "
+        + (pipe_at.isoformat() if pipe_at else "UNDATED")
+        + "; EIA gas price period "
+        + (str(row.get("gas_price_period")) if row.get("gas_price_period") else "UNDATED")
+        + " (dated from its FIRST day). Stalest: "
+        + ("gas_pipelines" if pipe_at is not None and oldest == pipe_at else "gas price")
+        + "."
+    )
+    return row
+
+
+def _period_to_date(period):
+    """EIA period label -> the FIRST day of the period it covers, or None.
+
+    Handles the two shapes this module publishes in gas_price_period: monthly
+    "2026-05" (what eia_gas_prices carries for real states) and quarterly
+    "2026-Q2" (the modeled territory seeds).
+
+    Returns the period's START deliberately. A month labelled 2026-05 describes
+    the whole of May, so the earliest moment it can honestly claim is 2026-05-01
+    — dating it to the end would make the figure look up to a month fresher than
+    it is, which is the failure this whole change exists to fix.
+
+    Unparseable input returns None. None is a real answer here: it flows into an
+    UNDATED basis string rather than a guess.
+    """
+    if not period:
+        return None
+    txt = str(period).strip()
+    m = re.match(r"^(\d{4})-Q([1-4])$", txt, re.I)
+    if m:
+        return datetime.date(int(m.group(1)), (int(m.group(2)) - 1) * 3 + 1, 1)
+    m = re.match(r"^(\d{4})-(\d{1,2})$", txt)
+    if m:
+        month = int(m.group(2))
+        if 1 <= month <= 12:
+            return datetime.date(int(m.group(1)), month, 1)
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", txt)
+    if m:
+        try:
+            return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    return None
 
 
 # ── Tier gating (2026-05-30) ────────────────────────────────────────────────
@@ -318,9 +418,31 @@ def _gas_state_rollup():
     us into the broken empty-state-column fallback). The legacy state-column
     grouping is kept only as a defensive guard so this never crashes."""
     states = {}
+    # Bound before the try so the scoring loop below can never hit an unbound
+    # name on a partial-failure path. Absent stays None, and None means the
+    # basis string says UNDATED rather than inventing a date.
+    pipelines_as_of = None
     try:
         with conn() as c, c.cursor() as cur:
             cur.execute("SET statement_timeout = 8000")
+            # ★2026-08-31 as_of. DCGI published a real score (TX 81.9
+            # GAS-ADVANTAGED) under provenance.as_of = null / "UNMEASURED —
+            # this response carries no source timestamp", while the SAME payload
+            # carried gas_price_period "2026-05". The data had a date; the
+            # envelope just never read it, and an undated true score is how a
+            # measurement becomes an undated claim in someone else's blog post.
+            #
+            # DCGI blends TWO inputs, so it is no fresher than the staler of
+            # them (the rule this codebase already applies to composed
+            # execute_plan envelopes). Capture the pipeline half here, in the
+            # cursor that is already open; the price half is per-state below.
+            try:
+                cur.execute("SELECT MAX(created_at) FROM gas_pipelines")
+                _row = cur.fetchone()
+                pipelines_as_of = _row[0] if _row else None
+            except Exception:
+                c.rollback()
+                pipelines_as_of = None
             if _lat_lng_to_state is not None:
                 # Pull raw rows (no state filter — the column is empty) and
                 # derive each row's state from coordinates in Python.
@@ -568,6 +690,8 @@ def _gas_state_rollup():
         s["gas_cost_score"] = round(cost, 1)
         s["dcgi"] = round(dcgi, 1)
         s["verdict"] = verdict
+
+        _stamp_as_of(s, pipelines_as_of)
     return states, None
 
 
