@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import pathlib
 import re
 import sys
@@ -123,6 +124,10 @@ _UNKNOWN = dict(rowcounts=[0, 0], fetches=[(0, 0), (0, 0)])
 _TRIAL_KEY = "dch_trial_deadbeefdeadbeefdeadbeefdeadbeef"
 # The write did not stick: a row is still accepted after the UPDATEs.
 _STILL_LIVE = dict(rowcounts=[0, 0], fetches=[(1, 1), (0, 1)])
+# ★ Already dead before this run: the rows are still there, none is live, so
+# both UPDATEs match ZERO. Note the rowcounts are IDENTICAL to _UNKNOWN's and
+# to _STILL_LIVE's — only the post-state separates success from failure here.
+_ALREADY_REVOKED = dict(rowcounts=[0, 0], fetches=[(0, 1), (0, 1)])
 
 
 def _load_cmd_revoke(rowcounts=(1, 1), fetches=((0, 1), (0, 0))):
@@ -306,6 +311,48 @@ def test_post_state_is_reread_from_both_id_spaces():
         f"no post-state re-read of api_keys; issued: {selects}")
     assert any("FROM mcp_dev_keys" in s for s in selects), (
         f"no post-state re-read of mcp_dev_keys; issued: {selects}")
+
+
+def test_already_revoked_key_is_not_a_failure(capsys):
+    """★ The distinction the test above ARGUES for, actually exercised.
+
+    Its docstring says "already revoked" (success) must be distinguishable from
+    "no such key" (failure). Nothing pinned that: _ALREADY_REVOKED and _UNKNOWN
+    issue IDENTICAL rowcounts — [0, 0], nothing flipped either way — and differ
+    only in the post-state. Here the rows exist and none is live; there, there
+    is no row at all. A rowcount cannot tell those apart.
+
+    It matters because rotations re-run this command. Failing on the second run
+    teaches the operator that the exit code lies, which is the habit that made
+    the 08-31 false alarm expensive.
+    """
+    # NB read stdout FIRST: capsys accumulates until it is read, so running the
+    # command twice before parsing yields two concatenated JSON documents.
+    payload = json.loads(_stdout(capsys, **_ALREADY_REVOKED))
+    assert payload["rows_found"] > 0, payload
+    assert payload["still_accepted_anywhere"] is False, payload
+    # ★ and it reached success with BOTH rowcounts at zero — the same numbers
+    # that make _UNKNOWN exit 1.
+    assert payload["revoked_in_api_keys"] == 0, payload
+    assert payload["revoked_in_mcp_dev_keys"] == 0, payload
+
+    assert _exit_code(**_ALREADY_REVOKED) == 0, (
+        "rows exist and nothing is live — the credential is dead, which is "
+        "exactly what a rotation needs to know")
+    assert _exit_code(**_UNKNOWN) == 1, (
+        "guard: _UNKNOWN must still FAIL on those same rowcounts, or this test "
+        "proves nothing about the post-state being what decides")
+
+
+def test_already_revoked_scenario_actually_exercises_that_path():
+    """★ Guard the guard, matching _FREE_KEY's. If the scenario ever drifted to
+    a non-zero rowcount it would pass through the ordinary success path and stop
+    testing 'already revoked' at all."""
+    assert _ALREADY_REVOKED["rowcounts"] == [0, 0], "both UPDATEs must match 0 rows"
+    assert _ALREADY_REVOKED["rowcounts"] == _UNKNOWN["rowcounts"], (
+        "the whole point is that these two are indistinguishable by rowcount")
+    assert all(live == 0 for live, _ in _ALREADY_REVOKED["fetches"]), "nothing may be live"
+    assert any(total > 0 for _, total in _ALREADY_REVOKED["fetches"]), "a row must exist"
 
 
 def test_free_key_scenario_actually_exercises_the_free_path():
