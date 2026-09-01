@@ -270,7 +270,22 @@
     var nodes = ctx.querySelectorAll('[data-gate]:not(.gated-redacted)');
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
-      var requiredIdx = tierIndex(el.getAttribute('data-gate'));
+      // 2026-09-01: [data-gate] is a SHARED attribute namespace. js/dchub-access-gate.js
+      // reads the SAME attribute with its own, different vocabulary (its TIER_HIERARCHY
+      // has registered:1, identified:1, starter:1, developer:1, pro:2, enterprise:3), and
+      // it owns every data-gate="registered" element on /platform and /app — 6 per page:
+      // #facilities-grid, #market-intel-grid, #news-feed-content, #announcements-container,
+      // #chart-bars, #pipeline-timeline. gating.js owns ONLY the TIER_ORDER words.
+      //
+      // Skipping unrecognized values explicitly is behaviour-identical to the old
+      // tierIndex()->0 fallthrough (0 is <= any currentTierIdx, so the loop already
+      // 'continue'd). It is written out so a future well-meaning fix — routing this
+      // through normalizeTier(), or making tierIndex() return -1 for unknowns — cannot
+      // silently hand these elements to the branch below, which does
+      // `el.textContent = placeholder` and would WIPE those JS-populated grids.
+      var rawGate = el.getAttribute('data-gate');
+      if (TIER_ORDER.indexOf(String(rawGate || '').toLowerCase()) < 0) continue;
+      var requiredIdx = tierIndex(rawGate);
       if (currentTierIdx >= requiredIdx) continue;
       var placeholder = el.getAttribute('data-placeholder') || 'Pro only';
       el.classList.add('gated-redacted');
