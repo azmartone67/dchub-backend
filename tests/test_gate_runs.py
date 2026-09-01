@@ -118,3 +118,56 @@ def test_missing_cadence_falls_back_and_does_not_crash():
     rec.pop("cadence_hours")
     alarms, _ = evaluate_gate(rec, NOW)
     assert alarms == []
+
+
+def _client(monkeypatch):
+    from flask import Flask
+    from routes.gate_runs import register_gate_runs
+    for v in ("DATABASE_URL", "NEON_DATABASE_URL", "POSTGRES_URL"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "k")
+    app = Flask(__name__)
+    register_gate_runs(app)
+    return app.test_client()
+
+
+def test_blueprint_is_routable_not_merely_registered(monkeypatch):
+    """Registered is not routable. A blueprint that imports fine and serves
+    nothing is the failure mode this whole ledger exists to make visible."""
+    from flask import Flask
+    from routes.gate_runs import register_gate_runs
+    app = Flask(__name__)
+    register_gate_runs(app)
+    urls = {str(r): sorted(r.methods - {"HEAD", "OPTIONS"}) for r in app.url_map.iter_rules()}
+    assert urls.get("/api/v1/ops/gates") == ["GET"]
+    assert urls.get("/api/v1/admin/gates/beat") == ["POST"]
+
+
+def test_beat_fails_closed_without_an_admin_key(monkeypatch):
+    c = _client(monkeypatch)
+    assert c.post("/api/v1/admin/gates/beat", json={"gate": "a:b"}).status_code == 401
+    assert c.post("/api/v1/admin/gates/beat", json={"gate": "a:b"},
+                  headers={"X-Admin-Key": "wrong"}).status_code == 401
+
+
+@pytest.mark.parametrize("payload,fragment", [
+    ({"verdict": "pass"}, "gate required"),
+    ({"gate": "a:b", "verdict": "greenish"}, "verdict must be one of"),
+    ({"gate": "a:b", "selftest": "maybe"}, "selftest must be one of"),
+])
+def test_bad_arguments_are_400_not_503(monkeypatch, payload, fragment):
+    """★ Argument validation must run BEFORE the DSN check. With the order
+    reversed a bad verdict returns 503 'no DATABASE_URL' — an infrastructure
+    error standing in for a caller error, which a sender retries forever.
+    Same family as an MCP tool answering 200 to a bad argument."""
+    r = _client(monkeypatch).post("/api/v1/admin/gates/beat", json=payload,
+                                  headers={"X-Admin-Key": "k"})
+    assert r.status_code == 400, r.get_json()
+    assert fragment in r.get_json()["error"]
+
+
+def test_valid_payload_without_a_database_is_503(monkeypatch):
+    r = _client(monkeypatch).post("/api/v1/admin/gates/beat",
+                                  json={"gate": "a:b", "verdict": "pass"},
+                                  headers={"X-Admin-Key": "k"})
+    assert r.status_code == 503

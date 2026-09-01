@@ -289,8 +289,12 @@ def beat():
     """
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
-    if not _dsn():
-        return jsonify(ok=False, error="no DATABASE_URL"), 503
+    # ★ Argument validation runs BEFORE the DSN check, deliberately. With the
+    # order reversed a bad `verdict` comes back 503 "no DATABASE_URL" — an
+    # infrastructure error standing in for a caller error, so a gate beating
+    # garbage would read as an outage and the sender would retry it forever.
+    # Same family as the MCP surface returning 200 on a bad argument: what the
+    # caller got wrong must be what the caller is told.
     j = request.get_json(silent=True) or {}
     gate = str(j.get("gate") or "").strip()[:120]
     if not gate:
@@ -315,6 +319,9 @@ def beat():
             return float(v) if v is not None else None
         except (TypeError, ValueError):
             return None
+
+    if not _dsn():
+        return jsonify(ok=False, error="no DATABASE_URL"), 503
 
     try:
         record_gate_beat(
