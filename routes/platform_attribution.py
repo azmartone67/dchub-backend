@@ -75,7 +75,18 @@ TOOLING_PLATFORMS = (
 # ★BULK HARVEST, its own kind. datacolo took 2,560 calls from 2 agents in a
 # SINGLE day (loop-control lane 6 named the same signature). Folding that into
 # any demand number would be the single largest distortion available.
-HARVESTER_PLATFORMS = ("datacolo",)
+# chain-hire is the SAME class, measured 2026-09-01: UA
+# `chain-hire/1.0 (MCP client; doubao 2026)`, ONE IP (175.147.105.129), ONE
+# tool (`search`, 1,473 of 1,475 calls), a flat 100-132 calls/hour for 14
+# straight hours (08-29 11:24Z -> 08-30 00:59Z) and then nothing. 1,410 of
+# those calls were served over the anonymous daily cap
+# (mcp_call_log.status='anon_daily_cap', DCHUB_ANON_DAILY_CAP=30) -- i.e. the
+# caller was told 1,410 times that it was past the free allowance and kept
+# going at a fixed machine cadence. It carried NO api_key at any point.
+# Left in the population it was 69.6% of the rolling-7d headline and the
+# entire "+6.8% WoW" it appeared to produce; net of it the same window is 643
+# calls from 39 agents, flat against the prior week's 331.
+HARVESTER_PLATFORMS = ("datacolo", "chain-hire")
 # ★THE BIGGEST BUCKET, AND STRUCTURALLY UNATTRIBUTABLE. `mcp` is the generic
 # tag for a client that did not identify itself — 9,220 calls, 207 agents, 48
 # tools over 24 days. It is NOT "unknown": we know it is an MCP client and we
