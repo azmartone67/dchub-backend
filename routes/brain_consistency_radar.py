@@ -3032,6 +3032,129 @@ def check_funnel_adjacent_step_collapse() -> list[dict]:
     return findings
 
 
+# ── LLM error-body discard (2026-09-01) ──────────────────────────────────────
+
+def _handlers_discarding_error_body(src: str) -> list[int]:
+    """Pure core: line numbers of `except ...HTTPError as e` handlers in `src`
+    that read `e.code` but never read the response body.
+
+    Flags ONLY when all three hold, which is what keeps this quiet enough to
+    be worth reading:
+      * the handler references `<e>.code` (it is BUILDING an error from the
+        status), and
+      * it never calls `<e>.read()`, and
+      * it never passes `<e>` to anything — a handler that hands the exception
+        to a helper may well read the body in there, and a detector that
+        cannot tell must not claim it did.
+
+    `ast`, never grep: a commented-out `e.read()` does not satisfy this, and a
+    `.read()` on some OTHER object in the same handler does not either.
+    Returns [] for source that will not parse — the caller treats that as
+    UNMEASURED, not as clean.
+    """
+    import ast as _ast
+    try:
+        tree = _ast.parse(src)
+    except Exception:
+        return []
+    hits: list[int] = []
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.ExceptHandler) or not node.name:
+            continue
+        t = node.type
+        names = [t] if isinstance(t, (_ast.Name, _ast.Attribute)) else (
+            list(t.elts) if isinstance(t, _ast.Tuple) else [])
+        caught = any((isinstance(n, _ast.Name) and n.id.endswith("HTTPError"))
+                     or (isinstance(n, _ast.Attribute) and n.attr == "HTTPError")
+                     for n in names)
+        if not caught:
+            continue
+        bound = node.name
+        reads_code = passed_on = reads_body = False
+        for sub in _ast.walk(node):
+            if (isinstance(sub, _ast.Attribute) and sub.attr == "code"
+                    and isinstance(sub.value, _ast.Name) and sub.value.id == bound):
+                reads_code = True
+            if isinstance(sub, _ast.Call):
+                f = sub.func
+                if (isinstance(f, _ast.Attribute) and f.attr == "read"
+                        and isinstance(f.value, _ast.Name) and f.value.id == bound):
+                    reads_body = True
+                for arg in list(sub.args) + [k.value for k in sub.keywords]:
+                    if isinstance(arg, _ast.Name) and arg.id == bound:
+                        passed_on = True
+        if reads_code and not reads_body and not passed_on:
+            hits.append(node.lineno)
+    return hits
+
+
+def check_llm_error_body_discarded() -> list[dict]:
+    """A raw Anthropic caller that turns an HTTP failure into a bare status code.
+
+    ★ WHY (2026-09-01). The innovation dashboard's approve button reported
+    `PR draft skipped: claude call failed: http_429` and nothing more. The
+    reason was in the response body the handler never read — Cloudflare AI
+    Gateway refusing on its OWN spend rule ("Spend limit exceeded: rule
+    '5e7f1b6b' (cost limit 100 per 604800s, sliding)"), which fires before the
+    request reaches Anthropic and hits every model in the chain. Kept as `429`
+    alone it is indistinguishable from an Anthropic rate limit or a dead key,
+    and separating them cost a live bisect against the gateway.
+    brain_v2_layer4._call_claude was `last_err = f"http_{e.code}"` with no
+    `e.read()` anywhere near it.
+
+    Scoped to files that actually reach Anthropic (they name
+    `anthropic_messages_url` or `api.anthropic.com`), because that is the
+    class the incident came from. Emits ONE aggregate finding, not one per
+    site: ~60 files in this tree call Anthropic, and 60 rows would drown the
+    table rather than inform it.
+
+    UNMEASURED — a file that will not open or will not parse — is skipped and
+    never counted as clean.
+    """
+    findings: list[dict] = []
+    import os as _os
+    backend_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    sites: list[str] = []
+    for root in (backend_root, _os.path.join(backend_root, "routes")):
+        try:
+            entries = sorted(_os.listdir(root))
+        except Exception:
+            continue
+        for f in entries:
+            if not f.endswith(".py"):
+                continue
+            path = _os.path.join(root, f)
+            if not _os.path.isfile(path):
+                continue
+            try:
+                with open(path, "rb") as fh:
+                    src = fh.read().decode("utf-8", "ignore")
+            except Exception:
+                continue                        # UNMEASURED
+            if ("anthropic_messages_url" not in src
+                    and "api.anthropic.com" not in src):
+                continue
+            rel = path.replace(backend_root, "").lstrip("/")
+            for lineno in _handlers_discarding_error_body(src):
+                sites.append(f"{rel}:{lineno}")
+    if sites:
+        findings.append({
+            "issue": "llm_error_body_discarded",
+            "url": sites[0].split(":")[0],
+            "count": len(sites),
+            "detail": (
+                f"{len(sites)} Anthropic call site(s) build an error string "
+                f"from the HTTP status and never read the response body, so "
+                f"a gateway spend block, an Anthropic rate limit and a dead "
+                f"key all surface to the operator as the same `http_429`. "
+                f"First {min(8, len(sites))}: {', '.join(sites[:8])}. "
+                f"Fix: read `e.read()` in the handler and append it to the "
+                f"error (see brain_v2_layer4._anthropic_error_body)."),
+            "sites": sites[:40],
+        })
+    return findings
+
+
 def check_csp_drift() -> list[dict]:
     """Phase TT-2 (2026-05-15) — detect CSP source-of-truth drift.
 
@@ -11056,6 +11179,13 @@ def scan_all() -> list[dict]:
                check_measurement_definition_changed,
                check_stored_slug_resolves,
                check_funnel_adjacent_step_collapse,
+               # 2026-09-01 — the approve button reported `claude call
+               # failed: http_429` and nothing else while a Cloudflare AI
+               # Gateway spend rule blocked EVERY model pre-auth. The body
+               # naming the rule was read and thrown away. Watches the
+               # invariant: an Anthropic caller that builds an error from
+               # e.code must also read the body that explains it.
+               check_llm_error_body_discarded,
                # Phase FF+7 (2026-05-19) — catches the bug L14 helped
                # find: jobs with `if: github.event.schedule == 'X'` where
                # 'X' isn't in on.schedule (stale check after cron move)
