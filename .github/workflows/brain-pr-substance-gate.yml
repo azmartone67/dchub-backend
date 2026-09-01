@@ -131,3 +131,39 @@ jobs:
               -f "output[title]=Changes real code ($real_count file(s))" \
               -f "output[summary]=Diff touches running code paths." || true
           fi
+
+      # ── Gate liveness ledger ─────────────────────────────────────────────
+      # This job beats for ITSELF. Nothing beats on its behalf.
+      # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      - name: Beat the gate liveness ledger
+        if: always()
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          JOB_STATUS: ${{ job.status }}
+          GATE_DISABLE: ${{ vars.BRAIN_SUBSTANCE_GATE_DISABLE }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # ★ The kill switch posts a NEUTRAL check and exits 0 so it cannot wedge
+          # merges — correct for CI, and indistinguishable from a working gate
+          # from the outside. To the ledger a disabled gate is UNMEASURED, not a
+          # pass, so the board alarms (G3) for as long as the switch is held.
+          #
+          # Read from the SAME env var the gate reads, not from its log: the
+          # disabled path exits immediately and a tee'd log is not reliably
+          # flushed before this step runs. The authoritative source has no race.
+          if [ "${GATE_DISABLE:-0}" = "1" ]; then
+            V=unmeasured; N=""
+            NOTE="BRAIN_SUBSTANCE_GATE_DISABLE=1 — gate is OFF and reporting neutral"
+          else
+            N=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
+                | grep -vE '^(docs/|routes/_proposed_|\.github/workflows/brain-pr-substance-gate\.yml)' \
+                | wc -l | tr -d ' ')
+            case "${JOB_STATUS:-}" in
+              success) V=pass ;;
+              failure) V=fail ;;
+              *)       V=unmeasured ;;
+            esac
+            NOTE="N = non-inert changed files (same inert set the gate uses)"
+          fi
+          bash scripts/gate_beat.sh "brain-pr-substance-gate:substance-gate" "$V" "$N" absent "$NOTE"

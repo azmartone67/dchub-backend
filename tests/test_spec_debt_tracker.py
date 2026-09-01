@@ -49,9 +49,33 @@ def _wf():
         return yaml.safe_load(fh)
 
 
+def _tracker_step():
+    """The step that carries the tracker's shell.
+
+    Found by CONTENT, not by index. This was `steps[0]` until 2026-09-01, when
+    the job gained an `actions/checkout` first step (the ledger beat needs
+    scripts/gate_beat.sh on disk) and five tests here died with KeyError: 'run'
+    on a `uses:` step. An index is a claim about step ORDER that these tests
+    never meant to make.
+    """
+    hits = [
+        st for st in _wf()["jobs"]["file-spec-debt"]["steps"]
+        if "spec-debt-body.md" in (st.get("run") or "")
+    ]
+    # EXACTLY one, and it fails loudly on ambiguity rather than taking the
+    # first. A looser predicate ("mentions BRAIN_SPEC_DEBT_DISABLE") also
+    # matches the ledger beat step, which names the switch in its own note —
+    # so it would have returned the right step only because that step happens
+    # to come first, which is the order-dependence this helper exists to remove.
+    assert len(hits) == 1, (
+        "expected exactly one step carrying the tracker shell, found %d: %r"
+        % (len(hits), [h.get("name") for h in hits])
+    )
+    return hits[0]
+
+
 def _run_block():
-    d = _wf()
-    return d["jobs"]["file-spec-debt"]["steps"][0]["run"]
+    return _tracker_step()["run"]
 
 
 def _run_code():
@@ -207,7 +231,7 @@ def test_has_a_kill_switch():
     A weaker version passed while the condition had been hard-wired to
     `[ "0" = "1" ]` — the variable was still named in `env:`, so the string was
     present and the switch was dead."""
-    env = _wf()["jobs"]["file-spec-debt"]["steps"][0]["env"]
+    env = _tracker_step()["env"]
     assert any("BRAIN_SPEC_DEBT_DISABLE" in str(v) for v in env.values()), (
         "the kill switch must be wired into the step env"
     )
