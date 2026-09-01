@@ -25,7 +25,7 @@ from datetime import datetime
 # ── Config ──────────────────────────────────────────────────────────────────
 
 DATABASE_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
-EIA_API_KEY = os.environ.get("EIA_API_KEY", "SuphqqIra7G46LHVDwb9CL5n4WYRwLu7ujeFXJMG")
+EIA_API_KEY = os.environ.get("EIA_API_KEY")  # env-only, no fallback
 EIA_BASE = "https://api.eia.gov/v2"
 
 # All 50 US states + DC
@@ -53,6 +53,18 @@ def get_conn():
 
 def eia_get(endpoint, params=None):
     """Make a request to the EIA API v2 with retry logic."""
+    # Raise rather than return None. main.py imports this module and calls
+    # fetch_electricity_rates / fetch_natural_gas_prices / fetch_gas_storage
+    # DIRECTLY — never main(), whose sys.exit would kill the gunicorn worker
+    # — so main()'s EIA_API_KEY guard never runs in production. Returning
+    # None here would land as a COMPLETED ingest with zero rows, which
+    # eia-pricing-ingest.yml reports as the affirmative "no_new_data". The
+    # raise is caught per-source in main.py and surfaced in results["errors"].
+    if not EIA_API_KEY:
+        raise RuntimeError(
+            "EIA_API_KEY is not set — refusing to call the EIA API without "
+            "one. Set it on the Railway service (free key: "
+            "https://www.eia.gov/opendata/register.php).")
     url = f"{EIA_BASE}/{endpoint}"
     base_params = {"api_key": EIA_API_KEY}
     if params:

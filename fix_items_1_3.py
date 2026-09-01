@@ -18,10 +18,20 @@ import ssl
 
 # --- Config ---
 DATABASE_URL = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
-EIA_API_KEY = os.environ.get('EIA_API_KEY', 'SuphqqIra7G46LHVDwb9CL5n4WYRwLu7ujeFXJMG')
+EIA_API_KEY = os.environ.get('EIA_API_KEY')  # env-only, no fallback
 
 if not DATABASE_URL:
     print("ERROR: No DATABASE_URL or NEON_DATABASE_URL found")
+    sys.exit(1)
+
+# Fail here, not mid-run: fix_eia_gas_consumption() TRUNCATEs
+# eia_gas_consumption and only then fetches. Without a key the fetch 403s and
+# the table is left empty, which reads as "EIA returned nothing" rather than
+# "we were never authenticated".
+if not EIA_API_KEY:
+    print("ERROR: No EIA_API_KEY found — item 1 would truncate "
+          "eia_gas_consumption and refill it with nothing. "
+          "Free key: https://www.eia.gov/opendata/register.php")
     sys.exit(1)
 
 # Use Neon URL if available

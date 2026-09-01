@@ -45,7 +45,10 @@ log = logging.getLogger('eia-reseed')
 # CONFIG
 # ═══════════════════════════════════════════════════════════
 
-EIA_API_KEY = os.environ.get('EIA_API_KEY', 'SuphqqIra7G46LHVDwb9CL5n4WYRwLu7ujeFXJMG')
+# Env-only. A hardcoded fallback key used to sit here, which made the
+# `if not EIA_API_KEY` guard in main() unreachable: a missing key looked
+# like a working one right up until EIA answered 403.
+EIA_API_KEY = os.environ.get('EIA_API_KEY')
 DB_URL = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
 EIA_BASE = 'https://api.eia.gov/v2/electricity/operating-generator-capacity/data/'
 PAGE_SIZE = 5000  # EIA API max
@@ -395,7 +398,12 @@ def main():
         raise RuntimeError("loader aborted: upstream API unavailable or guard tripped (was sys.exit(1))")
     if not EIA_API_KEY:
         log.error("No EIA_API_KEY set")
-        raise RuntimeError("loader aborted: upstream API unavailable or guard tripped (was sys.exit(1))")
+        raise RuntimeError(
+            "loader aborted: EIA_API_KEY is not set. This loader is driven "
+            "from /api/admin/load-power-plants-live and TRUNCATEs "
+            "eia_generators before it refills it, so it fails here rather "
+            "than emptying the table. Set EIA_API_KEY on the Railway "
+            "service (free key: https://www.eia.gov/opendata/register.php).")
     log.info("=" * 60)
     log.info("  DC Hub — EIA Generator Re-Seed")
     log.info("  Source: EIA API v2 (Form 860/860M)")
