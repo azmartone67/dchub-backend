@@ -60,12 +60,15 @@ def cmd_mint(args):
     }, indent=2))
     sys.stderr.write(
         "\nGive this key to the developer. They configure it as X-API-Key on /mcp.\n"
-        "\n★ WARNING — THIS KEY DOES NOT AUTHENTICATE YET.\n"
-        "  It was written to mcp_dev_keys only. util/tier_gate.resolve_tier grants\n"
-        "  access from api_keys (key_hash IN (sha256(key), rawkey) AND is_active=1);\n"
-        "  its mcp_dev_keys lookup is by key_hash, a column that table does not have,\n"
-        "  so that step always raises and is swallowed. Until an api_keys row exists\n"
-        "  this key resolves as ANONYMOUS.\n"
+        "\n★ SCOPE — THIS KEY AUTHENTICATES ON /mcp BUT NOT ON REST.\n"
+        "  It was written to mcp_dev_keys only. That IS a real credential on the\n"
+        "  MCP path: flask_mcp_endpoints POST /api/v1/keys/validate — the hop the\n"
+        "  Node MCP server relays — reads mcp_dev_keys WHERE api_key = %s and\n"
+        "  accepts status='active'.\n"
+        "  On REST it resolves ANONYMOUS: util/tier_gate.resolve_tier grants from\n"
+        "  api_keys (key_hash IN (sha256(key), rawkey) AND is_active=1), and its\n"
+        "  mcp_dev_keys lookup is by key_hash — a column that table does not have —\n"
+        "  so that step always raises and is swallowed.\n"
         "  Minting the api_keys row is deliberately NOT automated here: it grants\n"
         "  privilege and needs an explicit user_id + tier decision.\n"
     )
@@ -100,37 +103,54 @@ def cmd_list(args):
 
 
 def cmd_revoke(args):
-    """Revoke a key EVERYWHERE it can authenticate.
+    """Revoke a key EVERYWHERE it can authenticate, then VERIFY the post-state.
 
-    ★★★ 2026-08-16 — THIS COMMAND DID NOT REVOKE ANYTHING.
+    ★★★ 2026-08-16 — THIS COMMAND DID NOT REVOKE ANYTHING. It ran only
+    `UPDATE mcp_dev_keys SET status='revoked'`, so the operator saw
+    `"revoked": true` and the key stayed FULLY LIVE.
 
-    It only ran `UPDATE mcp_dev_keys SET status='revoked'`. But `mcp_dev_keys`
-    is NOT what authenticates: util/tier_gate.resolve_tier step 1a queries
-    `mcp_dev_keys WHERE key_hash = %s`, and that table HAS NO key_hash column
-    (see dchub-mcp-v2.1/migration_001_api_keys.sql — api_key is the PK and there
-    is no migration adding key_hash). So 1a raises UndefinedColumn, a bare
-    `except` swallows it, and EVERY key resolves through step 1b:
+    ★★★ 2026-08-31 — THE 08-16 FIX OVER-CORRECTED INTO THE MIRROR-IMAGE BUG.
+    It concluded "api_keys is the ONLY table consulted for auth" and exited 1
+    with "REVOKE DID NOT TAKE" whenever api_keys matched 0 rows. That is
+    backwards for MCP-minted keys, which are the MAJORITY (648 mcp_dev_keys
+    rows on 08-31). Revoking a leaked free key printed the full failure banner
+    and exited non-zero for a revoke that had completely succeeded.
 
-        api_keys WHERE key_hash IN (sha256(key), rawkey)
-                   AND (is_active IS NULL OR is_active = 1)
+    THERE ARE TWO KEY ID SPACES AND NEITHER IS "THE" AUTHENTICATOR — which one
+    applies depends on where the key was MINTED:
 
-    Net effect: you ran `revoke`, saw `"revoked": true`, and the key stayed
-    FULLY LIVE. During a credential rotation that is the worst possible failure
-    — it reports success while leaving the thing you are rotating in service.
+      • api_keys      — dashboard / partner / paid keys. Consulted by
+                        util/tier_gate.resolve_tier step 1b. key_hash is
+                        sha256(key) for customer keys and the RAW string for
+                        partner/admin keys, so both must be matched.
+      • mcp_dev_keys  — MCP-minted keys (claim_free_key, OAuth, pair-code).
+                        Consulted by flask_mcp_endpoints POST
+                        /api/v1/keys/validate — the hop the Node MCP server
+                        relays on every call — as
+                        `WHERE api_key = %s` requiring status='active'.
+                        ★ That is a REAL gate with teeth, not bookkeeping.
 
-    Now revokes in api_keys (the authenticator) matching BOTH storage
-    conventions — customer keys store sha256(api_key), partner/admin keys store
-    the RAW string — and still marks mcp_dev_keys for tidiness. Both row counts
-    are reported separately so "I revoked it" is checkable rather than implied.
+    (resolve_tier step 1a queries `mcp_dev_keys WHERE key_hash = %s`. That
+    column does not exist, so it always raises UndefinedColumn into a bare
+    except. It is dead code and authenticates nobody — do not count it.)
+
+    So `revoked_in_api_keys: 0` + `revoked_in_mcp_dev_keys: 1` is a COMPLETE,
+    SUCCESSFUL revoke of a free key, not a failure.
+
+    ★ The exit code is now decided by the POST-STATE, re-read after the writes,
+    not by rowcounts. Rowcounts say what changed; they cannot distinguish
+    "already revoked" (success — the credential is not live) from "no such key"
+    (failure — likely a typo or the wrong environment), and the old code failed
+    loudly on both.
 
     NB api_keys.is_active is an INTEGER column: write 0, never FALSE. `IN (1,
-    TRUE)` throws `operator does not exist: integer = boolean`, which the callers'
-    bare excepts swallow into a silent anon fall-through.
+    TRUE)` throws `operator does not exist: integer = boolean`, which the
+    callers' bare excepts swallow into a silent anon fall-through.
     """
     import hashlib
     key_hash = hashlib.sha256(args.key.encode("utf-8")).hexdigest()
     with _connect() as conn, conn.cursor() as cur:
-        # 1) the table that actually grants access
+        # 1) dashboard / partner / paid keys
         cur.execute(
             """UPDATE api_keys SET is_active = 0
                 WHERE key_hash IN (%s, %s)
@@ -138,7 +158,7 @@ def cmd_revoke(args):
             (key_hash, args.key),
         )
         auth_n = cur.rowcount
-        # 2) the dev-key ledger — bookkeeping only, never sufficient on its own
+        # 2) MCP-minted keys — /api/v1/keys/validate gates on this status
         cur.execute(
             """UPDATE mcp_dev_keys SET status='revoked'
                 WHERE api_key = %s AND status = 'active'""",
@@ -146,22 +166,57 @@ def cmd_revoke(args):
         )
         ledger_n = cur.rowcount
 
+        # 3) ★ re-read BOTH id spaces. This, not the rowcounts, decides the
+        #    exit code — "did I change a row" is a weaker question than
+        #    "is this credential still accepted anywhere".
+        cur.execute(
+            """SELECT COUNT(*) FILTER (WHERE is_active IS NULL OR is_active = 1),
+                      COUNT(*)
+                 FROM api_keys WHERE key_hash IN (%s, %s)""",
+            (key_hash, args.key),
+        )
+        ak_live, ak_rows = cur.fetchone()
+        cur.execute(
+            """SELECT COUNT(*) FILTER (WHERE COALESCE(status, 'active') = 'active'),
+                      COUNT(*)
+                 FROM mcp_dev_keys WHERE api_key = %s""",
+            (args.key,),
+        )
+        dk_live, dk_rows = cur.fetchone()
+
+    found_rows = (ak_rows or 0) + (dk_rows or 0)
+    still_live = (ak_live or 0) + (dk_live or 0)
+
     print(json.dumps({
-        "api_key": args.key,
-        "revoked_in_api_keys": auth_n,      # ← the one that stops the key working
+        # never echo the whole credential back — matches resolve_tier's
+        # `api_key[:8] + "…"` convention. Echoing it is how a live key ended up
+        # in a transcript on 08-31.
+        "api_key_prefix":          args.key[:12] + "…",
+        "revoked_in_api_keys":     auth_n,
         "revoked_in_mcp_dev_keys": ledger_n,
-        "authenticating_rows_disabled": auth_n,
-        "note": ("api_keys is the ONLY table consulted for auth; a non-zero "
-                 "mcp_dev_keys count with api_keys 0 means the key is STILL LIVE"),
+        "rows_found":              found_rows,
+        "still_accepted_anywhere": still_live > 0,
+        "note": ("BOTH tables authenticate — api_keys via tier_gate step 1b, "
+                 "mcp_dev_keys via /api/v1/keys/validate (the MCP hop). A key "
+                 "minted by claim_free_key has NO api_keys row, so "
+                 "revoked_in_api_keys=0 with mcp_dev_keys=1 is a COMPLETE "
+                 "revoke, not a failure."),
     }, indent=2))
 
-    if auth_n == 0:
+    if found_rows == 0:
         sys.stderr.write(
-            "\nREVOKE DID NOT TAKE: no active api_keys row matched this key "
-            "(neither sha256 nor raw).\n"
-            "The key may already be revoked, or it may never have authenticated.\n"
-            "Do NOT treat this as a successful rotation — verify with a live call "
-            "before retiring the old credential.\n")
+            "\nUNKNOWN KEY: matched no row in api_keys OR mcp_dev_keys.\n"
+            "Nothing was revoked because nothing was found. Check for a typo "
+            "and confirm you are pointed at the right environment "
+            "(NEON_DATABASE_URL) before concluding this key is retired.\n")
+        sys.exit(1)
+
+    if still_live > 0:
+        sys.stderr.write(
+            "\nREVOKE DID NOT TAKE: the key is STILL ACCEPTED after the write "
+            f"(api_keys live rows: {ak_live}, mcp_dev_keys active rows: {dk_live}).\n"
+            "Do NOT treat this as a successful rotation — verify with a live "
+            "call before retiring the old credential.\n")
         sys.exit(1)
 
 

@@ -53,9 +53,22 @@ _SRC = _ROOT / "gen_dev_key.py"
 _KEY = "dch_live_deadbeefdeadbeefdeadbeefdeadbeef"
 
 
+class _Exit(Exception):
+    """Raised in place of sys.exit so a test can assert the CODE and the STOP.
+
+    ★ The previous stub was `exit=lambda *a: None`, which let execution run on
+    past the exit. A test written against that stub cannot tell exit(1) from
+    exit(0) — nor from no exit at all.
+    """
+    def __init__(self, code):
+        self.code = code
+
+
 class _FakeCursor:
-    def __init__(self, calls):
+    def __init__(self, calls, rowcounts, fetches):
         self.calls = calls
+        self._rowcounts = list(rowcounts)
+        self._fetches = list(fetches)
         self.rowcount = 1
 
     def __enter__(self):
@@ -66,14 +79,25 @@ class _FakeCursor:
 
     def execute(self, sql, params=None):
         self.calls.append((" ".join(str(sql).split()), params))
+        if self._rowcounts:
+            self.rowcount = self._rowcounts.pop(0)
 
     def fetchall(self):
         return []
 
+    def fetchone(self):
+        assert self._fetches, (
+            "cmd_revoke called fetchone() more times than the scenario supplies "
+            "— the post-state re-read changed shape"
+        )
+        return self._fetches.pop(0)
+
 
 class _FakeConn:
-    def __init__(self, calls):
+    def __init__(self, calls, rowcounts, fetches):
         self._calls = calls
+        self._rowcounts = rowcounts
+        self._fetches = fetches
 
     def __enter__(self):
         return self
@@ -82,10 +106,23 @@ class _FakeConn:
         return False
 
     def cursor(self):
-        return _FakeCursor(self._calls)
+        return _FakeCursor(self._calls, self._rowcounts, self._fetches)
 
 
-def _load_cmd_revoke():
+# Scenario = the two UPDATE rowcounts, then the two post-state rows the
+# re-read returns: (live_rows, total_rows) for api_keys then mcp_dev_keys.
+# Default: a paid key revoked cleanly, nothing left live anywhere.
+_CLEAN = dict(rowcounts=[1, 1], fetches=[(0, 1), (0, 0)])
+# ★ THE REGRESSION CASE: a claim_free_key key. No api_keys row has ever
+# existed; the mcp_dev_keys row was just flipped to 'revoked'.
+_FREE_KEY = dict(rowcounts=[0, 1], fetches=[(0, 0), (0, 1)])
+# Key matched nothing at all — a typo, or the wrong database.
+_UNKNOWN = dict(rowcounts=[0, 0], fetches=[(0, 0), (0, 0)])
+# The write did not stick: a row is still accepted after the UPDATEs.
+_STILL_LIVE = dict(rowcounts=[0, 0], fetches=[(1, 1), (0, 1)])
+
+
+def _load_cmd_revoke(rowcounts=(1, 1), fetches=((0, 1), (0, 0))):
     """Exec just cmd_revoke against stubs — importing the module exits(2) with
     no NEON_DATABASE_URL, and psycopg may be absent.
 
@@ -98,16 +135,42 @@ def _load_cmd_revoke():
                if isinstance(n, ast.FunctionDef) and n.name == "cmd_revoke"), None)
     assert fn is not None and fn.body, "cmd_revoke parsed with an EMPTY body"
     calls: list = []
-    ns = {"_connect": lambda: _FakeConn(calls), "json": __import__("json"),
-          "sys": types.SimpleNamespace(stderr=sys.stderr, exit=lambda *a: None)}
+
+    def _exit(code=0):
+        raise _Exit(code)
+
+    ns = {"_connect": lambda: _FakeConn(calls, list(rowcounts), list(fetches)),
+          "json": __import__("json"),
+          "sys": types.SimpleNamespace(stderr=sys.stderr, exit=_exit)}
     exec(compile(ast.get_source_segment(src, fn), "<cmd_revoke>", "exec"), ns)
     return ns["cmd_revoke"], calls
 
 
-def _run():
-    fn, calls = _load_cmd_revoke()
+def _run(**scenario):
+    """Run cmd_revoke; return the SQL it issued. Fails the test on a non-zero
+    exit, so a scenario that is supposed to succeed cannot pass by accident."""
+    fn, calls = _load_cmd_revoke(**(scenario or _CLEAN))
     fn(types.SimpleNamespace(key=_KEY))
     return calls
+
+
+def _exit_code(**scenario):
+    """Run cmd_revoke and return its exit code (0 if it returned normally)."""
+    fn, _ = _load_cmd_revoke(**scenario)
+    try:
+        fn(types.SimpleNamespace(key=_KEY))
+    except _Exit as e:
+        return e.code
+    return 0
+
+
+def _stdout(capsys, **scenario):
+    fn, _ = _load_cmd_revoke(**scenario)
+    try:
+        fn(types.SimpleNamespace(key=_KEY))
+    except _Exit:
+        pass
+    return capsys.readouterr().out
 
 
 # ── (1) the authenticating table must be written ───────────────────────────
@@ -177,4 +240,91 @@ def test_mint_warns_that_the_key_does_not_authenticate():
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == "cmd_mint")
     body = ast.get_source_segment(src, fn)
-    assert "DOES NOT AUTHENTICATE" in body, "cmd_mint must not imply a live key"
+    assert "NOT ON REST" in body, "cmd_mint must scope where the key works"
+    assert "ANONYMOUS" in body, "cmd_mint must name the REST resolution"
+    # ★ 2026-08-31: this assertion used to demand the flat claim "THIS KEY DOES
+    # NOT AUTHENTICATE". That is false — mcp_dev_keys IS the gate on the MCP
+    # path (/api/v1/keys/validate), which is how every claim_free_key key works.
+    # Pinning the flat claim would re-import the bug this file now guards.
+    assert "DOES NOT AUTHENTICATE" not in body, (
+        "cmd_mint must not claim the key is inert — it authenticates on /mcp"
+    )
+
+
+# ── (5) 2026-08-31: the 08-16 fix's mirror-image bug ────────────────────────
+# It concluded api_keys was the ONLY authenticator and failed loudly whenever
+# api_keys matched nothing. For a claim_free_key key that is backwards: those
+# keys have no api_keys row at all, and mcp_dev_keys IS their gate (the
+# /api/v1/keys/validate hop the Node MCP server relays on every call).
+# Revoking a leaked free key on 08-31 printed the full "REVOKE DID NOT TAKE …
+# Do NOT treat this as a successful rotation" banner and exited 1 — for a
+# revoke that had entirely succeeded, verified dead three ways.
+
+def test_free_key_revoke_reports_success():
+    """★ THE PIN. mcp_dev_keys-only revoke is a COMPLETE revoke, not a failure."""
+    assert _exit_code(**_FREE_KEY) == 0, (
+        "a claim_free_key key with no api_keys row was revoked in mcp_dev_keys "
+        "(its real gate) — that is a successful rotation and must exit 0"
+    )
+
+
+def test_unknown_key_exits_nonzero():
+    """The 08-16 protection must survive: nothing matched is still a failure."""
+    assert _exit_code(**_UNKNOWN) == 1
+
+
+def test_key_still_accepted_after_write_exits_nonzero():
+    """If a row is STILL live after the UPDATEs, that is the real failure."""
+    assert _exit_code(**_STILL_LIVE) == 1
+
+
+def test_clean_paid_key_revoke_reports_success():
+    assert _exit_code(**_CLEAN) == 0
+
+
+# ── (6) the exit code must come from the POST-STATE, not the rowcounts ─────
+
+def test_post_state_is_reread_from_both_id_spaces():
+    """Rowcounts say what CHANGED; only a re-read says what is still accepted.
+
+    Without this, "already revoked" (success) is indistinguishable from
+    "no such key" (failure) — the old code failed loudly on both.
+    """
+    calls = _run(**_CLEAN)
+    selects = [sql for sql, _ in calls if sql.upper().startswith("SELECT")]
+    assert any("FROM api_keys" in s for s in selects), (
+        f"no post-state re-read of api_keys; issued: {selects}")
+    assert any("FROM mcp_dev_keys" in s for s in selects), (
+        f"no post-state re-read of mcp_dev_keys; issued: {selects}")
+
+
+def test_free_key_scenario_actually_exercises_the_free_path():
+    """★ Guard the guard: _FREE_KEY must really mean 'api_keys matched nothing'.
+
+    If the scenario ever drifted to a non-zero api_keys rowcount, the pin above
+    would pass for the wrong reason — it would be testing the paid path.
+    """
+    assert _FREE_KEY["rowcounts"][0] == 0, "api_keys UPDATE must match 0 rows"
+    assert _FREE_KEY["rowcounts"][1] == 1, "mcp_dev_keys UPDATE must match 1 row"
+    assert _FREE_KEY["fetches"][0] == (0, 0), "api_keys must hold NO row at all"
+
+
+# ── (7) the operator-facing text must not re-assert the false claim ────────
+
+def test_note_does_not_claim_api_keys_is_the_only_authenticator(capsys):
+    out = _stdout(capsys, **_FREE_KEY)
+    assert "ONLY table consulted for auth" not in out, (
+        "the JSON note still claims api_keys is the only authenticator — that "
+        "is the false premise this fix removes"
+    )
+    assert "keys/validate" in out, (
+        "the note must name the gate that DOES authenticate an MCP-minted key"
+    )
+
+
+def test_revoke_does_not_echo_the_full_key(capsys):
+    """It echoed the credential back; that is how a live key reached a
+    transcript on 08-31. Match resolve_tier's truncation convention."""
+    out = _stdout(capsys, **_CLEAN)
+    assert _KEY not in out, "cmd_revoke echoed the full API key to stdout"
+    assert _KEY[:12] in out, "the prefix should still be shown for identification"
