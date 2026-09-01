@@ -3034,9 +3034,21 @@ def check_funnel_adjacent_step_collapse() -> list[dict]:
 
 # ── LLM error-body discard (2026-09-01) ──────────────────────────────────────
 
+_ANTHROPIC_MARKERS = ("anthropic_messages_url", "api.anthropic.com")
+
+
 def _handlers_discarding_error_body(src: str) -> list[int]:
     """Pure core: line numbers of `except ...HTTPError as e` handlers in `src`
     that read `e.code` but never read the response body.
+
+    ★ SCOPED TO THE FUNCTIONS THAT ACTUALLY CALL ANTHROPIC (2026-09-01). A
+    file-level filter was too coarse: `ai_platform_onboarder.py` reaches
+    Anthropic in one function and HEAD-probes arbitrary websites in another,
+    and the website probe legitimately reads `e.code` for control flow with no
+    error string to enrich. 8 of the first 14 reports were that shape —
+    redirect probes, link-liveness checks, an internal `_req` helper. A
+    detector whose majority is noise gets ignored, so a handler now counts only
+    when an ENCLOSING function names one of _ANTHROPIC_MARKERS.
 
     Flags ONLY when all three hold, which is what keeps this quiet enough to
     be worth reading:
@@ -3057,9 +3069,24 @@ def _handlers_discarding_error_body(src: str) -> list[int]:
         tree = _ast.parse(src)
     except Exception:
         return []
+    # Handlers reachable from a function that names an Anthropic marker. Walking
+    # from the marked function (not just its own body) keeps nested helpers in
+    # scope; the set de-dupes overlapping walks.
+    in_scope = set()
+    for fn in _ast.walk(tree):
+        if not isinstance(fn, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        seg = _ast.get_source_segment(src, fn) or ""
+        if not any(m in seg for m in _ANTHROPIC_MARKERS):
+            continue
+        for sub in _ast.walk(fn):
+            if isinstance(sub, _ast.ExceptHandler):
+                in_scope.add(id(sub))
     hits: list[int] = []
     for node in _ast.walk(tree):
         if not isinstance(node, _ast.ExceptHandler) or not node.name:
+            continue
+        if id(node) not in in_scope:
             continue
         t = node.type
         names = [t] if isinstance(t, (_ast.Name, _ast.Attribute)) else (

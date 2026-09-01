@@ -213,7 +213,7 @@ def _claude_write_card(submission: dict, meta: dict, fit_score: int) -> str | No
     if not api_key:
         return None
     try:
-        from utils.anthropic_helper import anthropic_messages_url
+        from utils.anthropic_helper import anthropic_messages_url, http_error_detail
         url = anthropic_messages_url()
     except Exception:
         url = "https://api.anthropic.com/v1/messages"
@@ -270,8 +270,14 @@ def _claude_write_card(submission: dict, meta: dict, fit_score: int) -> str | No
                         return text[:2000]
             return None
         except urllib.error.HTTPError as e:
+            # The body is the only thing that separates a gateway spend block
+            # from a rate limit from a dead key; returning a bare None told the
+            # caller nothing at all.
+            detail = http_error_detail(e)
             if e.code in (404, 400) and i + 1 < len(models):
                 continue
+            logger.warning("[onboarder] claude call failed: http_%s %s",
+                           e.code, detail)
             return None
         except Exception:
             return None

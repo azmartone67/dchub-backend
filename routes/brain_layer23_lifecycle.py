@@ -52,7 +52,7 @@ import urllib.error
 from typing import Any
 
 from flask import Blueprint, jsonify, request, current_app
-from utils.anthropic_helper import anthropic_messages_url
+from utils.anthropic_helper import anthropic_messages_url, http_error_detail
 from routes._swallowed_writes import note_swallowed_write
 
 import logging
@@ -1777,7 +1777,8 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
                 return None, f"parse_fail: {text[:200]}"
         return None, f"no_json_in_response: {text[:200]}"
     except urllib.error.HTTPError as e:
-        return None, f"http_{e.code}: {e.reason}"
+        # e.reason is the status phrase ("Too Many Requests"), never the cause.
+        return None, f"http_{e.code}: {e.reason} {http_error_detail(e)}".strip()
     except Exception as e:
         return None, f"{type(e).__name__}: {str(e)[:120]}"
 
@@ -1882,7 +1883,9 @@ def _challenge_proposal(proposal: dict, audit_summary: str) -> dict:
             "improvement": str(parsed.get("improvement") or "")[:500],
         }
     except urllib.error.HTTPError as e:
-        return {"ok": False, "error": f"http_{e.code}", "model": model}
+        _d = http_error_detail(e)
+        return {"ok": False, "model": model,
+                "error": f"http_{e.code}" + (f": {_d}" if _d else "")}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}",
                 "model": model}
