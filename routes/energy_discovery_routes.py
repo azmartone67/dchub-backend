@@ -495,6 +495,7 @@ def energy_discovery_pipelines():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# AUTO-REPAIR: duplicate route '/api/energy-discovery/status' also in energy_auto_discovery.py:583 — review and remove one
 @energy_discovery_bp.route('/api/energy-discovery/status', methods=['GET'])
 def energy_discovery_status():
     """phase20_status_truth: query real DB tables instead of seed/cached state.
