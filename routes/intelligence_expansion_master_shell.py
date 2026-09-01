@@ -68,7 +68,10 @@ ORIGIN = (os.environ.get("SURFACE_TRUTH_ORIGIN") or "https://dchub.cloud").rstri
 _UA = "dchub-intel-expansion/1.0 (+https://dchub.cloud; internal-audit)"
 
 # Retired pre-dedup facility floors (same range the Surface Truth shell bans).
-_STALE_FLOOR = re.compile(r"\b(?:19|20|21|22|23),\d{3}\+")
+# ★ 2026-08-31: third copy of a rotted range ban, removed. It flagged the
+# live-healed floor as retired while sibling guards accepted the same bytes.
+# util/canon_floor.py is the single rule now.
+from util.canon_floor import floor_verdict as _floor_verdict
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -315,7 +318,8 @@ def _lane_evidence() -> list[dict]:
             canon_floor = (PINNED.get("public") or {}).get("facilities") or ""
             m = re.search(r"(\d+)\s+tools", body)
             got_tools = int(m.group(1)) if m else None
-            stale = sorted(set(_STALE_FLOOR.findall(body)))
+            _v = _floor_verdict(body, canon_floor)
+            stale = _v["retired"] or []
             problems = []
             if want_tools and got_tools is not None and got_tools != want_tools:
                 problems.append("advertises %d tools (canon %d)"
@@ -323,8 +327,15 @@ def _lane_evidence() -> list[dict]:
             if stale:
                 problems.append("serves retired floor(s): %s"
                                 % ", ".join(stale))
-            if canon_floor and canon_floor not in body and not stale:
-                problems.append("canon floor %s absent" % canon_floor)
+            if _v["retired"] is None:
+                problems.append("canon floor unresolvable — cannot judge")
+            elif canon_floor and not _v["found"] and not stale:
+                # A floor rounds DOWN and may lag: PINNED itself or any
+                # live-healed value inside the band counts as present. Exact
+                # string equality reported "absent" for correct content.
+                problems.append("no canon-family floor (accepts %s or a "
+                                "live-healed value within 10%% above it)"
+                                % canon_floor)
             out.append(_check(
                 "ev_zone_worker", "zone worker serves canon", not problems,
                 "in sync (%d tools)" % (got_tools or want_tools)
