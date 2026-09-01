@@ -41,9 +41,11 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import json
 import pathlib
 import re
+import secrets
 import sys
 import types
 
@@ -247,23 +249,88 @@ def test_zero_matches_exits_nonzero():
     )
 
 
-def test_mint_warns_that_the_key_does_not_authenticate():
-    """mint writes mcp_dev_keys only, so the key it prints resolves as ANONYMOUS.
-    It must say so rather than imply a working credential."""
+def _mint_banner(tier):
+    """Run cmd_mint against stubs and return the operator-facing stderr.
+
+    ★ RUN, not grepped. Two previous versions of this banner were pinned by
+    substring and both were false at the time they were pinned — a substring
+    assertion cannot tell a true claim from a stale one. This executes the real
+    function so the claim is checked against util.tier_gate itself.
+    """
     src = _SRC.read_text()
-    tree = ast.parse(src)
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == "cmd_mint")
-    body = ast.get_source_segment(src, fn)
-    assert "NOT ON REST" in body, "cmd_mint must scope where the key works"
-    assert "ANONYMOUS" in body, "cmd_mint must name the REST resolution"
-    # ★ 2026-08-31: this assertion used to demand the flat claim "THIS KEY DOES
-    # NOT AUTHENTICATE". That is false — mcp_dev_keys IS the gate on the MCP
-    # path (/api/v1/keys/validate), which is how every claim_free_key key works.
-    # Pinning the flat claim would re-import the bug this file now guards.
-    assert "DOES NOT AUTHENTICATE" not in body, (
-        "cmd_mint must not claim the key is inert — it authenticates on /mcp"
-    )
+    fn = next((n for n in ast.walk(ast.parse(src))
+               if isinstance(n, ast.FunctionDef) and n.name == "cmd_mint"), None)
+    assert fn is not None and fn.body, "cmd_mint parsed with an EMPTY body"
+
+    class _Cur:
+        def execute(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class _Conn(_Cur):
+        def cursor(self): return _Cur()
+
+    import datetime as _dt
+    buf = io.StringIO()
+    ns = {"_connect": lambda: _Conn(), "json": json, "secrets": secrets,
+          "datetime": _dt.datetime, "timezone": _dt.timezone,
+          "print": lambda *a, **k: None,
+          "sys": types.SimpleNamespace(stderr=buf)}
+    exec(compile(ast.get_source_segment(src, fn), "<cmd_mint>", "exec"), ns)
+    ns["cmd_mint"](types.SimpleNamespace(email="dev@acme.com", tier=tier, note=None))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("tier", ["free", "paid", "enterprise"])
+def test_mint_banner_names_the_rest_tier_that_tier_gate_will_actually_grant(tier):
+    """★ THE REGRESSION. The banner said "AUTHENTICATES ON /mcp BUT NOT ON REST",
+    because resolve_tier step 1a "always raises" on a missing key_hash column.
+    #3288 (2026-08-28) fixed that lookup: step 1a reads the mcp_dev_keys row by
+    api_key and RETURNS BEFORE step 1b. So a minted key is a REST credential at
+    whatever tier its row names — ANONYMOUS for free, but PRO for paid and
+    ENTERPRISE for enterprise. Telling an operator minting an enterprise key
+    that it does not work on REST understates what they just handed out.
+    """
+    from util.tier_gate import _PLAN_TO_TIER, Tier
+    expected = _PLAN_TO_TIER.get(tier, Tier.IDENTIFIED).name
+    banner = _mint_banner(tier)
+    assert expected in banner, (
+        f"--tier {tier} resolves as {expected} on REST; the banner never says so:"
+        f"\n{banner}")
+    assert "NOT ON REST" not in banner, (
+        "the flat 'not on REST' claim is false for every tier above free")
+
+
+def test_mint_banner_marks_a_privileged_key_as_live():
+    """free is unprivileged; paid/enterprise are live REST credentials. The
+    banner must not flatten that — the whole point is the operator knowing
+    which one they just minted."""
+    assert "LIVE, PRIVILEGED" not in _mint_banner("free"), (
+        "a free key resolves ANONYMOUS — do not cry wolf on it")
+    for tier in ("paid", "enterprise"):
+        assert "LIVE, PRIVILEGED" in _mint_banner(tier), (
+            f"--tier {tier} grants real REST access and must say so")
+
+
+def test_mint_banner_does_not_reassert_the_dead_key_hash_premise():
+    """The stale claim, pinned so it cannot come back: mcp_dev_keys still has no
+    key_hash column, but step 1a stopped asking for it in #3288."""
+    banner = _mint_banner("free")
+    for dead in ("always raises", "a column that table does not have",
+                 "DOES NOT AUTHENTICATE"):
+        assert dead not in banner, f"banner re-asserts the pre-#3288 premise: {dead!r}"
+
+
+def test_mint_banner_reads_the_tier_map_rather_than_restating_it():
+    """★ Guard the guard. If someone inlines the tier names as a literal here,
+    this banner drifts the next time _PLAN_TO_TIER changes — which is precisely
+    the failure being fixed. It must IMPORT the map."""
+    src = _SRC.read_text()
+    body = ast.get_source_segment(src, next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "cmd_mint"))
+    assert "_PLAN_TO_TIER" in body and "import" in body, (
+        "cmd_mint must read the tier from util.tier_gate, not restate it")
 
 
 # ── (5) 2026-08-31: the 08-16 fix's mirror-image bug ────────────────────────

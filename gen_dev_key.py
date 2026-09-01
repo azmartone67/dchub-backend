@@ -58,19 +58,47 @@ def cmd_mint(args):
         "tier":         args.tier,
         "created_at":   datetime.now(timezone.utc).isoformat(),
     }, indent=2))
+    # ★ What the REST side does with this key is READ FROM util.tier_gate, never
+    # restated here. A local copy of that map is exactly how this banner went
+    # stale: it claimed step 1a "always raises" because mcp_dev_keys has no
+    # key_hash column, which stopped being true on 2026-08-28 (#3288, a9d98800c).
+    # Step 1a now reads
+    #     mcp_dev_keys WHERE api_key = %s AND COALESCE(status,'active') = 'active'
+    # and RETURNS BEFORE step 1b ever looks at api_keys — so this key is a REST
+    # credential too, at whatever tier its own row names.
+    try:
+        from util.tier_gate import _PLAN_TO_TIER, Tier
+        _rest = _PLAN_TO_TIER.get(args.tier, Tier.IDENTIFIED).name
+        _rest_lines = (
+            f"  REST  resolves as {_rest} "
+            f"(util.tier_gate._PLAN_TO_TIER[{args.tier!r}], step 1a).\n"
+        ) + (
+            "        Unprivileged: a real row, but no more access than no key.\n"
+            if _rest == "ANONYMOUS" else
+            "        ★★★ THIS IS A LIVE, PRIVILEGED REST CREDENTIAL. Treat it\n"
+            "            like any other production secret.\n"
+        )
+    except Exception:
+        # Import can fail when the script is run from outside the repo root.
+        # Say less rather than guess — a hardcoded answer here is the bug above.
+        _rest_lines = (
+            "  REST  resolves at whatever util.tier_gate._PLAN_TO_TIER maps\n"
+            f"        {args.tier!r} to (step 1a). Could not import it here to\n"
+            "        tell you which — read it there before handing this out.\n"
+        )
+
     sys.stderr.write(
         "\nGive this key to the developer. They configure it as X-API-Key on /mcp.\n"
-        "\n★ SCOPE — THIS KEY AUTHENTICATES ON /mcp BUT NOT ON REST.\n"
-        "  It was written to mcp_dev_keys only. That IS a real credential on the\n"
-        "  MCP path: flask_mcp_endpoints POST /api/v1/keys/validate — the hop the\n"
-        "  Node MCP server relays — reads mcp_dev_keys WHERE api_key = %s and\n"
-        "  accepts status='active'.\n"
-        "  On REST it resolves ANONYMOUS: util/tier_gate.resolve_tier grants from\n"
-        "  api_keys (key_hash IN (sha256(key), rawkey) AND is_active=1), and its\n"
-        "  mcp_dev_keys lookup is by key_hash — a column that table does not have —\n"
-        "  so that step always raises and is swallowed.\n"
-        "  Minting the api_keys row is deliberately NOT automated here: it grants\n"
-        "  privilege and needs an explicit user_id + tier decision.\n"
+        "\n★ SCOPE — WHAT THIS KEY DOES, PER PATH. No api_keys row was created.\n"
+        "  /mcp  AUTHENTICATES. flask_mcp_endpoints POST /api/v1/keys/validate —\n"
+        "        the hop the Node MCP server relays on every call — reads\n"
+        "        mcp_dev_keys WHERE api_key = %s and requires status='active'.\n"
+        + _rest_lines +
+        "  Both paths read the SAME mcp_dev_keys row, so `gen_dev_key.py revoke`\n"
+        "  (status='revoked') closes both at once.\n"
+        "  Minting the api_keys row is still deliberately NOT automated here: it\n"
+        "  is a separate identity keyed to a user_id, and that is an explicit\n"
+        "  decision, not a default.\n"
     )
 
 
