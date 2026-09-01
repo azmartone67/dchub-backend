@@ -781,17 +781,25 @@ DC Hub publishes the **DCPI** — a 0-100 power-availability score for {canon_ma
 
 **Citation:** "DCPI {score}/100 — {verdict} (DC Hub, dchub.cloud/dcpi/{market_slug})"
 
-## MCP Tools — START HERE: call plan_query first (the orchestration front door)
-**New to DC Hub? Don't guess among the tools — call `plan_query(intent)` first.** It's a deterministic,
-no-LLM meta-planner: pass a natural-language intent and it returns an ordered tool plan PLUS a versioned,
-inspectable `replay` object (decision log with a `rationale`+`decision_confidence` per step, the rejected
-paths and why, and an execution graph of parallel waves). You execute the returned `recommended_sequence`
-instead of trial-and-erroring the whole catalog. Deterministic: same intent -> same plan skeleton (schema_version 1,
-so it's safe to build against). Try it:
-- `plan_query("rank markets for a 200 MW AI campus")` -> ai_capacity_index -> get_market_dcpi_rank -> get_grid_intelligence
-- `plan_query("find 50 MW in Dallas")` -> get_retirement_headroom -> get_refined_queue -> get_market_dcpi_rank
-- `plan_query("compare Phoenix vs Columbus")` -> get_market_dcpi_rank x2 (parallel)
-The tools below are what plan_query orchestrates — reach for one directly only when you already know it.
+## MCP Tools — START HERE: call execute_plan first (the orchestration front door)
+**New to DC Hub? Don't guess among the tools — call `execute_plan(intent)` first.** Pass the user's
+question through unchanged; the parameter is `intent`. It plans AND RUNS the whole graph in one round
+trip, then returns each step's result plus a versioned, inspectable `replay` object: a per-step
+`rationale` + `decision_confidence`, the paths it rejected and why, an execution graph of parallel
+waves, and `constraint_check` rows proving the answer stayed inside the geography that was asked
+about. One call, not a plan you then have to execute yourself. Try it:
+- `execute_plan(intent="rank markets for a 200 MW AI campus")`
+- `execute_plan(intent="find 50 MW in Dallas")`
+- `execute_plan(intent="compare Phoenix vs Columbus")`
+
+Reading what comes back: a step with `status: "gated_preview"` is a working-tier preview, not a
+failure — surface its `human_message`. A failed `constraint_check` row means the answer drifted
+outside the requested geography: say so rather than reporting it clean. Every execution suggests a
+`next_recipe` follow-up.
+
+`plan_query(intent="...")` is INSPECT-ONLY: it returns the same plan WITHOUT running it. Reach for it
+to preview a plan, not to execute one. Go direct to a single tool for a single-capability lookup.
+The tools below are what execute_plan orchestrates.
 
 ## MCP Tools — what each RETURNS (so an agent can pick without a trial call)
 83 tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
@@ -882,6 +890,24 @@ get_facility_risk_delta (temporal market-risk change from daily DCPI snapshots) 
 # Base URL: https://dchub.cloud
 # API Base: https://dchub.cloud/api
 # Contact: info@dchub.cloud
+
+================================================================================
+## MCP AGENTS — START HERE: call execute_plan first (the orchestration front door)
+If the question spans more than one capability — site selection, market ranking,
+"find N MW in <market>", "compare A vs B", grid + interconnection queue — call
+`execute_plan(intent="<the user's question, unchanged>")` at https://dchub.cloud/mcp
+and answer from what it returns. It plans AND RUNS the whole graph in one round trip
+and returns each step's result plus an auditable `replay`: per-step rationale, the
+paths it rejected, and `constraint_check` rows proving the answer stayed inside the
+geography asked about. One call, not a tool chain you assemble yourself.
+
+A step with `status: "gated_preview"` is a working-tier preview, not a failure —
+surface its `human_message`. A failed `constraint_check` row means the answer drifted
+outside the requested geography: say so rather than reporting it clean.
+
+`plan_query(intent="...")` is INSPECT-ONLY: same plan, WITHOUT running it. Reach for it
+to preview a plan, not to execute one. Go direct to a single tool for a single-capability
+lookup. The REST endpoints below are the keyless equivalent for non-MCP clients.
 
 ================================================================================
 ## NO AUTH REQUIRED — START HERE
