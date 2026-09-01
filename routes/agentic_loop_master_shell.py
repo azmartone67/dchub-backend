@@ -105,7 +105,14 @@ Kill: AGENTIC_LOOP_SHELL_DISABLE=1
   origin and fails the whole site over to stale Render. See
   tests/test_shell_killswitch_never_5xx.py.
 Beat: agentic-loop-shell-daily · cadence 24h · ONE writer (this file's tick) ·
-  idle beat rows_inserted=1 · status=error on a failed tick (never warn).
+  idle beat rows_inserted=1. Three statuses, and the difference matters to OTHER
+  monitors: `success` (all lanes green) · `lanes_failing` (the tick RAN and
+  measured red lanes — the normal state of a BORN RED board) · `error` (the tick
+  itself failed, i.e. a genuinely broken producer). ingestion-integrity-tick's
+  producer_liveness lane asserts "no producer is reporting status=error", so
+  beating `error` for a red board makes a working shell read as a crashed one and
+  fails that workflow. lanes_failing is still non-success and still marks this
+  feed overdue on /api/v1/ops/deadman — nothing is softened.
 Schedule: routes/cron_heartbeat.py _DISPATCH `agentic_loop_shell_daily`
   (11:xx UTC, POST through _hit() which attaches X-Admin-Key) — the same
   mechanism that drives surface-truth (08:xx) and relay-closure (09:xx).
@@ -2130,13 +2137,45 @@ def _tick(act: bool) -> dict:
 
 # ── dead-man beat — ONE writer, status success|error, never warn ──────────
 
-def _beat_ledger(ok: bool, note: str) -> None:
+def _beat_status(ok: bool, tick_failed: bool) -> str:
+    """The ledger status word for this tick. Pure, so it can be tested directly.
+
+    THREE states, and the difference is load-bearing for OTHER monitors:
+
+      success        every lane green.
+      lanes_failing  the tick RAN and measured red lanes. The normal state of a
+                     BORN RED board, and the word all ten sibling shells use.
+      error          the tick itself failed — nothing was measured. A genuinely
+                     broken producer.
+
+    ★ WHY NOT JUST ok/not-ok (2026-09-01). batch-3 correctly stopped a
+    "PASS 2 FAIL 2" run from beating `success`, but mapped the red board onto
+    `error`. routes/ingestion_integrity_master_shell runs a producer_liveness
+    lane asserting "no producer is reporting status=error"; this shell was the
+    only feed of 199 reporting it, so ingestion-integrity-tick failed on 08-30
+    and 08-31 on the word alone. A monitor whose red state is indistinguishable
+    from a crash makes every other monitor lie.
+    """
+    if ok:
+        return "success"
+    return "error" if tick_failed else "lanes_failing"
+
+
+def _beat_ledger(ok: bool, note: str, status: str | None = None) -> None:
     """Best-effort beat into the SHIPPED ingest_runs ledger. NEVER raises.
-    status=error on a failed tick (never warn); idle beat rows_inserted=1."""
+
+    `status` is the ledger vocabulary and defaults to the ok-derived pair.
+    Callers pass "lanes_failing" for a tick that RAN and measured red lanes —
+    see the caller for why that distinction is load-bearing.
+
+    The house shape for a shell OMITS rows_inserted entirely (batch-3): a shell
+    inserts no rows, and sending 0 on the failure path climbs ingest_runs'
+    consecutive-zero counter toward a second, unrelated alarm.
+    """
     try:
         body = json.dumps({
             "feed": FEED,
-            "status": "success" if ok else "error",
+            "status": status or ("success" if ok else "error"),
             "cadence_hours": CADENCE_HOURS,
             "last_run": _now().isoformat(),
             "note": (note or "")[:280],
@@ -2189,6 +2228,26 @@ def agentic_loop_tick():
         # status=success and the board read this shell as healthy. Deriving
         # the status is not enough — it has to derive from the VERDICT.
         ok = not bool(out.get("tick_failed")) and not (s.get("FAIL") or 0)
+        # ★2026-09-01: `ok` is right and its STATUS WORD was wrong. batch-3 above
+        # correctly stopped a "PASS 2 FAIL 2" run beating success — but it mapped
+        # the red board onto "error", and in this ledger "error" is reserved for a
+        # producer that is BROKEN.
+        #
+        # That is not a wording preference. routes/ingestion_integrity_master_shell
+        # runs a producer_liveness lane whose whole assertion is "no producer is
+        # reporting status=error", and it went RED on this shell — so
+        # ingestion-integrity-tick failed on 08-30 and 08-31 for no reason other
+        # than the word. Measured on the live board 2026-09-01: this shell was the
+        # ONLY feed of 199 reporting `error`; the ten sibling shells with failing
+        # lanes all report `lanes_failing` (relay_closure:699, loop_control:809,
+        # seven_levers:608 all use the identical
+        # `"lanes_failing" if failing else "success"`). A monitor whose red state
+        # is indistinguishable from a crash makes every OTHER monitor lie.
+        #
+        # Nothing is softened: lanes_failing is still non-success, still marks the
+        # feed overdue on /api/v1/ops/deadman, and this shell stays red while its
+        # lanes are red — which, being BORN RED, is the honest state.
+        beat_status = _beat_status(ok, bool(out.get("tick_failed")))
         note = (f"PASS {s.get('PASS')} FAIL {s.get('FAIL')} ? {s.get('?')} | "
                 f"filed {((out.get('graduation_filing') or {}).get('filed'))} | "
                 f"rate {((out.get('metrics') or {}).get('recurrence_rate'))}")
@@ -2196,8 +2255,9 @@ def agentic_loop_tick():
         out = {"ok": False, "shell": "agentic_loop", "number": SHELL_NUMBER,
                "error": f"{type(e).__name__}: {str(e)[:160]}", "tick_failed": True}
         ok = False
+        beat_status = "error"      # the tick itself failed — a genuinely broken producer
         note = "tick raised: " + out["error"]
-    _beat_ledger(ok, note)
+    _beat_ledger(ok, note, beat_status)
     logger.info("[agentic_loop] tick ok=%s %s", ok, note)
     # 200 even on a failed tick: the beat already said status=error, and a 5xx
     # here would fail the site over (see the kill-switch note).
