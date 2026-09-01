@@ -118,6 +118,9 @@ _CLEAN = dict(rowcounts=[1, 1], fetches=[(0, 1), (0, 0)])
 _FREE_KEY = dict(rowcounts=[0, 1], fetches=[(0, 0), (0, 1)])
 # Key matched nothing at all — a typo, or the wrong database.
 _UNKNOWN = dict(rowcounts=[0, 0], fetches=[(0, 0), (0, 0)])
+# ★ A THIRD id space this command does not manage: dch_trial_ keys live in
+# auto_trial_keys, so they match nothing here and land in the UNKNOWN branch.
+_TRIAL_KEY = "dch_trial_deadbeefdeadbeefdeadbeefdeadbeef"
 # The write did not stick: a row is still accepted after the UPDATEs.
 _STILL_LIVE = dict(rowcounts=[0, 0], fetches=[(1, 1), (0, 1)])
 
@@ -154,14 +157,21 @@ def _run(**scenario):
     return calls
 
 
-def _exit_code(**scenario):
+def _exit_code(key=_KEY, **scenario):
     """Run cmd_revoke and return its exit code (0 if it returned normally)."""
     fn, _ = _load_cmd_revoke(**scenario)
     try:
-        fn(types.SimpleNamespace(key=_KEY))
+        fn(types.SimpleNamespace(key=key))
     except _Exit as e:
         return e.code
     return 0
+
+
+def _stderr(capsys, key=_KEY, **scenario):
+    """The operator-facing text. cmd_revoke writes guidance to stderr, and
+    guidance that omits a live kill switch is the defect being pinned here."""
+    _exit_code(key=key, **scenario)
+    return capsys.readouterr().err
 
 
 def _stdout(capsys, **scenario):
@@ -328,3 +338,42 @@ def test_revoke_does_not_echo_the_full_key(capsys):
     out = _stdout(capsys, **_CLEAN)
     assert _KEY not in out, "cmd_revoke echoed the full API key to stdout"
     assert _KEY[:12] in out, "the prefix should still be shown for identification"
+
+
+# ── (7) UNKNOWN must not read as "retired" for a key class we cannot revoke ─
+
+def test_unknown_trial_key_says_this_command_cannot_revoke_it(capsys):
+    """★ dch_trial_ keys are a THIRD id space (auto_trial_keys), so they match
+    nothing in api_keys or mcp_dev_keys and land in the UNKNOWN branch.
+
+    UNKNOWN's guidance is "check for a typo and confirm NEON_DATABASE_URL" —
+    correct for a mistyped dev key, actively misleading here: the key exists,
+    is LIVE, and this command cannot touch it. An operator who follows that
+    text concludes a live trial credential is retired.
+
+    auto_trial_keys has no status column, so naming the table is not enough —
+    expiry is the kill switch and the message must say so.
+    """
+    err = _stderr(capsys, key=_TRIAL_KEY, **_UNKNOWN)
+    assert "auto_trial_keys" in err, (
+        "an unknown dch_trial_ key must name the table that DOES hold it; "
+        f"got: {err!r}")
+    assert "expires_at" in err, (
+        "auto_trial_keys has no status column — the message must name expiry "
+        f"as the kill switch, not just the table; got: {err!r}")
+    assert "STILL LIVE" in err, (
+        f"the message must say the key is not retired; got: {err!r}")
+
+
+def test_unknown_trial_key_still_exits_nonzero():
+    """The pointer is guidance, not absolution — nothing was revoked."""
+    assert _exit_code(key=_TRIAL_KEY, **_UNKNOWN) == 1
+
+
+def test_unknown_non_trial_key_does_not_get_the_trial_pointer(capsys):
+    """★ The branch must be keyed on the prefix, not printed unconditionally.
+    Telling someone with a mistyped dch_live_ key to go edit auto_trial_keys
+    sends them to the wrong table."""
+    err = _stderr(capsys, key=_KEY, **_UNKNOWN)
+    assert "auto_trial_keys" not in err, (
+        f"a dch_live_ key must not be pointed at the trial table; got: {err!r}")

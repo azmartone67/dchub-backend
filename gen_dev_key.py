@@ -208,7 +208,22 @@ def cmd_revoke(args):
             "\nUNKNOWN KEY: matched no row in api_keys OR mcp_dev_keys.\n"
             "Nothing was revoked because nothing was found. Check for a typo "
             "and confirm you are pointed at the right environment "
-            "(NEON_DATABASE_URL) before concluding this key is retired.\n")
+            "(NEON_DATABASE_URL) before concluding this key is retired.\n"
+            + (
+                "\n★ THIS IS A TRIAL KEY, AND THIS COMMAND CANNOT REVOKE IT.\n"
+                "  dch_trial_ keys are a THIRD id space: they live in "
+                "auto_trial_keys\n"
+                "  (routes/auto_trial.validate_trial_key), which this command "
+                "does not\n"
+                "  touch. That table has NO status column — expiry is the kill "
+                "switch:\n"
+                "      UPDATE auto_trial_keys SET expires_at = NOW() "
+                "WHERE api_key = '<key>';\n"
+                "  validate_trial_key then returns (False, 'expired'). Until "
+                "you run that,\n"
+                "  the key is STILL LIVE — 'unknown here' is not 'retired'.\n"
+                if args.key.startswith("dch_trial_") else ""
+            ))
         sys.exit(1)
 
     if still_live > 0:
