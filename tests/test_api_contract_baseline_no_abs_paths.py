@@ -53,11 +53,15 @@ def _load_extractor():
     sys.path.
 
     `sys.path.insert(0, ".../scripts")` is session-global once any test does
-    it, and five names under scripts/ collide with top-level repo modules
+    it. Five names under scripts/ used to collide with top-level repo modules
     (ai_wars_response_generator, eia_gas_bulk_loader, eia_generator_reseed,
-    firstlight_fiber_seed, push_firstlight). Shadowing those for every test
-    that runs after this one is not a trade this file needs to make — it wants
-    exactly one module, and it knows the path.
+    firstlight_fiber_seed, push_firstlight); those are gone as of #3536, and
+    tests/test_no_root_scripts_module_shadowing.py now rejects any new one.
+
+    The idiom here does not depend on that. Loading by path wants exactly one
+    module and knows where it is, so it never mutates state the rest of the
+    session inherits — which is the property worth keeping whether or not a
+    collision happens to exist today.
     """
     path = os.path.join(ROOT, "scripts", "api_response_contract.py")
     spec = importlib.util.spec_from_file_location("_api_response_contract", path)

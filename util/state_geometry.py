@@ -28,7 +28,9 @@ get the basis alongside the code and must not present a bbox-derived state as
 a surveyed one.
 
 ★There were already EIGHT separate lat/lon->state tables in this repo when
-this was written (eia_gas_bulk_loader.py, scripts/eia_gas_bulk_loader.py,
+this was written (eia_gas_bulk_loader.py — which had a second, stale copy at
+scripts/eia_gas_bulk_loader.py until 2026-09-01, when it was removed for
+shadowing the root module on sys.path —
 reveal_endpoints.py, power_plant_intel.py, infrastructure_discovery.py,
 infrastructure_gaps.py, air_permitting_patch.py, air_permitting_extras.py,
 routes/dcgi.py, and the one this replaced in water_drought_routes.py), with
