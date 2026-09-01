@@ -446,6 +446,48 @@ def innovation_approvals():
     return jsonify(ok=True, approved=approved), 200
 
 
+def _resolve_directive(operator_text: str, item_text: str) -> tuple[str, str]:
+    """Which text Layer-5 should actually act on. Returns (directive, source).
+
+    ★ WHY (2026-09-01). The brain writes `decision_for_human` as a MENU, not an
+    instruction — measured on the four most recently approved investigations:
+
+        100419  "Choose the remediation path: (A) ... or (B) ..."
+        100418  "Choose the remedy tier: (a) minimal ... or (b) durable ..."
+        100417  "Approve (a) ... OR direct a deeper investigation ..."
+        100416  "Decide which ... is authoritative, then approve: ..."
+
+    Approve recorded a "yes" to the menu without recording WHICH BRANCH, and
+    the Layer-5 drafter refuses anything that is not an exact single-file
+    substitution — correctly, since it cannot pick the operator's branch for
+    them. So every one of those approvals was a no-op by construction.
+
+    The operator's own words win when supplied. Blank falls back to the item's
+    text, which is exactly the old behaviour for items that already read as an
+    instruction."""
+    op = (operator_text or "").strip()
+    if op:
+        return op, "operator"
+    item = (item_text or "").strip()
+    return (item, "item") if item else ("", "none")
+
+
+def _should_file_spec_pr(pr_attempt) -> bool:
+    """True when the code drafter did not open a PR, so the approved directive
+    should still land as a draft spec PR.
+
+    ★ The bug this closes (2026-09-01): the condition was `.get("acted") is
+    False`, which is True for an explicit REFUSAL — `{ok:True, acted:False,
+    refused:True}` — but False for a FAILURE, because
+    `draft_and_open_pr` returns `{ok:False, error:"claude call failed:
+    http_429"}` with no `acted` key at all, and `None is False` is False. So
+    during the gateway spend outage the approval produced neither a code PR nor
+    a spec PR: a silent no-op, with `prs_today: 0` the only trace."""
+    if not isinstance(pr_attempt, dict):
+        return False
+    return not pr_attempt.get("acted")
+
+
 @brain_innovation_dashboard_bp.route("/api/v1/brain/innovation/approve", methods=["POST"])
 def innovation_approve():
     """RECORD the operator GREENLIGHTING the brain's guidance for one item.
@@ -468,6 +510,10 @@ def innovation_approve():
         return jsonify(ok=False, error="id must be an integer"), 400
     decision = str(body.get("decision") or "approved").strip() or "approved"
     open_pr = bool(body.get("open_pr"))
+    # The operator's instruction for THIS item, when the item's own
+    # "decision for human" is a menu rather than a directive. See
+    # _resolve_directive.
+    operator_directive = str(body.get("directive") or "").strip()
     conn = _conn()
     if conn is None:
         return jsonify(ok=False, error="database unavailable"), 503
@@ -500,7 +546,9 @@ def innovation_approve():
     # advisory insight that isn't a concrete single-file edit is recorded only.
     if open_pr and decision == "approved":
         try:
-            directive, heading = _item_directive(kind, item_id)
+            item_directive, heading = _item_directive(kind, item_id)
+            directive, _src = _resolve_directive(operator_directive, item_directive)
+            resp["directive_source"] = _src
             if not directive:
                 resp["pr_attempt"] = {
                     "ok": True, "acted": False,
@@ -516,7 +564,7 @@ def innovation_approve():
                 # approval 'recorded only'), file the approved plan as a DRAFT
                 # spec PR instead. Doc-only, draft, human-merged — so the approval
                 # becomes a visible, trackable, human-implementable PR.
-                if isinstance(_pr, dict) and _pr.get("acted") is False:
+                if _should_file_spec_pr(_pr):
                     try:
                         from routes.brain_pr_opener import open_spec_pr
                         _spec = open_spec_pr(directive, heading, kind, item_id,
@@ -657,7 +705,8 @@ footer{margin-top:2.5rem;padding-top:1.25rem;border-top:1px solid var(--bd);
 <p class="sub">The brain's verified, adversarially-refuted analysis — the agenda it
 chose for itself, the investigations it ran, and the ranked improvements it proposed.
 <b>Grade</b> each item to close the calibration loop the brain learns from, or
-<b>approve + open PR</b> to turn an item's recommendation into a guardrailed draft PR
+<b>approve + open PR</b> asks for the instruction to draft from (pre-filled with the
+item's own text — edit it to name the branch you want) and turns it into a guardrailed draft PR
 (human-merged, daily-capped; advisory insights that aren't a concrete single-file edit
 are just recorded).</p>
 <div class="bar">
@@ -803,8 +852,20 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
     var card = btn.closest('.card'); if(!card) return;
     var kind = card.getAttribute('data-kind');
     var id   = card.getAttribute('data-id');
+    // The item's own "decision for human" is usually a MENU ("Choose (A) or
+    // (B)…"), and approving a menu records agreement without recording WHICH
+    // branch — which is why those approvals drafted nothing. Pre-fill it and
+    // let the operator turn it into the instruction Layer-5 will actually act
+    // on. Cancel aborts; leaving it unchanged is the old behaviour.
+    var dnode = card.querySelector('.decision');
+    var seed  = dnode ? (dnode.textContent || '').trim() : '';
+    var directive = window.prompt(
+      'Instruction for the drafter — say WHICH branch to take, in the '
+      + 'imperative. It becomes the directive Layer-5 drafts from.', seed);
+    if(directive === null) return;            // cancelled: record nothing
+    directive = (directive || '').trim();
     btn.disabled = true; btn.textContent = '⏳ drafting…';
-    fetch(authq('/api/v1/brain/innovation/approve'), {method:'POST', headers:authh(), body:JSON.stringify({kind:kind, id:Number(id), decision:'approved', open_pr:true})})
+    fetch(authq('/api/v1/brain/innovation/approve'), {method:'POST', headers:authh(), body:JSON.stringify({kind:kind, id:Number(id), decision:'approved', open_pr:true, directive:directive})})
       .then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {ok:r.ok, j:j}; }); })
       .then(function(res){
         if(res.ok && res.j && res.j.ok!==false){
