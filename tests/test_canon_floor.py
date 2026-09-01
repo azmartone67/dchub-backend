@@ -147,3 +147,56 @@ def test_the_shells_delegate_rather_than_carry_a_copy(rel):
     assert "19|20|21|22|23" not in code, f"{rel} still carries a range ban"
     assert "canon_floor not in body" not in code, \
         f"{rel} still exact-matches the floor — a live-healed surface fails it"
+
+
+# ── the module is exempt from the stale-count scan; earn it ──────────
+
+def test_no_count_literal_escapes_the_denylist():
+    """★ canon_floor.py is in STALE_SCAN_SKIP_FILES because a denylist must be
+    allowed to name what it bans — the same reason ai_surface_canon.py is
+    exempt. A blanket file skip is the fail-open direction, so this stands in
+    for the scan and is stricter than it: EVERY comma-formatted count in the
+    module's code must be inside RETIRED_LITERALS. A stale floor added anywhere
+    else in this file fails here instead of passing unscanned."""
+    import ast
+    import re as _re
+    src = pathlib.Path(cf.__file__).read_text()
+    tree = ast.parse(src)
+
+    allowed = set(cf.RETIRED_LITERALS)
+    # Docstrings are prose and out of scope, exactly as they are for the scan
+    # this replaces ("None is an emitted string literal" — the note in
+    # test_canonical_counts_drift.py). This module's docstring narrates the
+    # 2026-08-31 incident and necessarily quotes the floors involved.
+    exempt = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            body = getattr(node, "body", None) or []
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                exempt.add(id(body[0].value))
+    # The token regex itself is the one string that must contain digit-group
+    # syntax without being a count. Identify it by node, not by spelling.
+    pattern_nodes = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign)
+                and any(getattr(x, "id", "") == "FLOOR_TOKEN"
+                        for x in node.targets)):
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    pattern_nodes.add(id(sub))
+
+    count = _re.compile(r"\b\d{1,3}(?:,\d{3})+\+?")
+    offenders = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in pattern_nodes
+                and id(node) not in exempt):
+            for hit in count.findall(node.value):
+                if hit not in allowed:
+                    offenders.append(f"line {node.lineno}: {hit!r}")
+    assert not offenders, (
+        "count literal(s) outside RETIRED_LITERALS in a file the stale-count "
+        "scan skips: " + "; ".join(offenders))

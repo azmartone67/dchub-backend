@@ -2999,6 +2999,17 @@ STALE_SCAN_SKIP_FILES = {
     # demand the ban list stop naming what it bans.
     "ai_surface_canon.py": "SoT for stale_markers — enumerating a value is not claiming it",
     "ai_surface_sentinel.py": "consumes the same marker set as data",
+    # ★2026-08-31 — a third member of the same class, and the reason is
+    # identical. util/canon_floor.py IS the retired-floor rule: RETIRED_LITERALS
+    # names 12,650+ precisely so that no surface may serve it. Flagging the
+    # denylist for containing the value it forbids is the self-reference above.
+    #
+    # A file skip is the fail-open direction, so this one does not rest on the
+    # precedent alone. test_canon_floor.py::test_no_count_literal_escapes_the_
+    # denylist walks the module's AST and asserts every comma-formatted count in
+    # it is inside RETIRED_LITERALS — a stricter check than the scan it replaces,
+    # because the scan would accept such a literal anywhere the regex missed.
+    "canon_floor.py": "IS the denylist — covered by test_canon_floor.py",
 }
 
 # ── (e) BARE-INT EVASION ──────────────────────────────────────────────────────
