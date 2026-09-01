@@ -453,13 +453,20 @@ def test_record_wall_hit_lazily_creates_the_rollup_table():
 def test_wall_stats_missing_table_reads_as_zeros_not_an_error():
     # Zeros are ACCURATE before the first hit — the dashboard must show an
     # explicit 0, not a hole, before the wall starts firing.
-    cur = _FakeCursor(rows=[(None,)])
+    cur = _FakeCursor(rows=[(None,), (None,)])
     st = mq.wall_stats(cur)
     assert st["table_exists"] is False
     assert st["hits_month"] == 0 and st["blocked_month"] == 0
     assert st["keys_month"] == 0 and st["keys_first_hit_7d"] == 0
     assert st["by_tier_month"] == [] and st["last_hit_at"] is None
-    assert len(cur.calls) == 1  # only the to_regclass probe, no aggregates
+    # No WALL aggregate may run when the wall table is absent. (Asserted on the
+    # SQL rather than on len(cur.calls): r-wall-scope added a headroom probe on
+    # this path, and a bare call-count would have made this test fail for a
+    # reason that has nothing to do with what it guards.)
+    wall_sql = [c for c, _ in cur.calls if "mcp_quota_wall_hits" in c]
+    assert len(wall_sql) == 1 and "to_regclass" in wall_sql[0]
+    assert not [c for c, _ in cur.calls if "SUM(" in c or "COUNT(*)" in c
+                and "mcp_quota_wall_hits" in c]
 
 
 def test_wall_stats_aggregates_and_casts_decimals(monkeypatch):
@@ -563,3 +570,79 @@ def test_paid_tier_quota_is_not_the_free_ceiling():
         f"pro={pro_month}/mo vs free={free_month}/mo — the observed 2,563-call "
         f"month is 4% of pro and 854% of free; which tier applies decides "
         f"whether zero wall hits is a bug or correct")
+
+
+# ── r-wall-scope (2026-09-01): the block must say WHICH wall it is ──────────
+# `quota_wall` renders beside the upgrade-signal counters as "Quota wall hits
+# (this month) · enforce ON". A standing 0 there was read as "the paywall
+# works". It is the MONTHLY quota (free 300/mo) measured against 5.03
+# calls/key/30d, so it cannot fire; the gate that actually bites is the
+# mcp-server per-day full-answer cap, whose hits never appear here.
+
+
+def test_wall_block_names_the_wall_it_measures_on_both_paths():
+    # BOTH return paths, because the live one today is the missing-table path.
+    missing = mq.wall_stats(_FakeCursor(rows=[(None,), (None,)]))
+    from decimal import Decimal
+    present = mq.wall_stats(_FakeCursor(rows=[
+        ("mcp_quota_wall_hits",), (Decimal(1), Decimal(1), 1, None), (0,), [],
+        (None,),
+    ]))
+    for st in (missing, present):
+        assert "MONTHLY" in st["measures"]
+        assert "monthly_quota.py" in st["measures"]
+        assert "300/mo" in st["measures"]        # computed, not hardcoded prose
+        assert "per-DAY full-answer cap" in st["not_measured_here"]
+        assert "dchub-mcp-server#294" in st["not_measured_here"]
+
+
+def test_not_measured_here_refuses_both_misreadings():
+    st = mq.wall_stats(_FakeCursor(rows=[(None,), (None,)]))
+    # The string must forbid reading 0 as EITHER verdict. A caveat that only
+    # blocked the optimistic misreading would invite the pessimistic one --
+    # which is exactly the false positive brain L15 filed as #2542.
+    assert "the paywall works" in st["not_measured_here"]
+    assert "the paywall is broken" in st["not_measured_here"]
+
+
+def test_wall_headroom_answers_can_it_fire_with_a_number():
+    # heaviest key well under the SMALLEST monthly quota -> provably no key of
+    # any tier reached its wall.
+    h = mq.wall_headroom(_FakeCursor(rows=[("mcp_monthly_usage",), (97, 12)]))
+    assert h["heaviest_key_calls_month"] == 97
+    assert h["smallest_monthly_quota"] == 300
+    assert h["keys_with_usage_month"] == 12
+    assert h["could_any_key_have_hit"] is False
+
+
+def test_wall_headroom_is_one_way_and_says_so():
+    h = mq.wall_headroom(_FakeCursor(rows=[("mcp_monthly_usage",), (5000, 3)]))
+    assert h["could_any_key_have_hit"] is True
+    # True must NOT be published as "a key hit its wall" -- every tier above
+    # free has a larger quota, so passing 300 proves nothing about that key.
+    assert "ONE-WAY" in h["basis"]
+    assert "NOT that any key hit its own" in h["basis"]
+
+
+def test_wall_headroom_is_fail_soft():
+    # A diagnostic on a dashboard must never take the payload down.
+    assert mq.wall_headroom(_FakeCursor(rows=[(None,)])) is None   # no table
+    assert mq.wall_headroom(_ExplodingCursor()) is None            # dead pool
+
+
+def test_headroom_failure_cannot_cost_the_wall_counts():
+    # wall_headroom runs LAST on the populated path. If mcp_monthly_usage is
+    # missing, the counts above it must still be intact -- the ordering is the
+    # guarantee, so assert the outcome that ordering buys.
+    from decimal import Decimal
+    st = mq.wall_stats(_FakeCursor(rows=[
+        ("mcp_quota_wall_hits",),
+        (Decimal(9), Decimal(4), 2, None),
+        (1,),
+        [("free", 300, 1, Decimal(9), Decimal(4))],
+        (None,),                      # headroom: mcp_monthly_usage absent
+    ]))
+    assert st["hits_month"] == 9 and st["blocked_month"] == 4
+    assert st["keys_month"] == 2 and st["keys_first_hit_7d"] == 1
+    assert st["by_tier_month"][0]["tier"] == "free"
+    assert st["headroom"] is None
