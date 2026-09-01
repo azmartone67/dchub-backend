@@ -34,6 +34,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from flask import Blueprint, request, jsonify, Response, send_file, make_response
 from db_utils import get_db, try_get_db
+from workos_authkit import authkit_endpoints, AUTHKIT_SCOPES
 from ai_surface_canon import canon_text
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,11 @@ Free API at https://dchub.cloud/api/v1
 """)
 
 # Inline A2A Agent Card
+# The WorkOS AuthKit AS, from its single origin (workos_authkit). Resolved at
+# import like routes/mcp_oauth_2025_06_18.py's _AUTHKIT, so a domain cutover is
+# an env change plus a restart, not an edit to this file.
+_AK = authkit_endpoints()
+
 A2A_AGENT_CARD = {
     "protocolVersion": "0.2.1",
     "name": "DC Hub Intelligence Agent",
@@ -302,11 +308,11 @@ A2A_AGENT_CARD = {
                 "scheme": "oauth2",
                 "flow": "authorizationCode",
                 "grantType": "authorization_code",
-                "issuer": "https://beloved-stream-52.authkit.app",
-                "authorizationUrl": "https://beloved-stream-52.authkit.app/oauth2/authorize",
-                "tokenUrl": "https://beloved-stream-52.authkit.app/oauth2/token",
-                "registrationUrl": "https://beloved-stream-52.authkit.app/oauth2/register",
-                "scopes": ["openid", "profile", "email", "offline_access"],
+                "issuer": _AK["issuer"],
+                "authorizationUrl": _AK["authorizationUrl"],
+                "tokenUrl": _AK["tokenUrl"],
+                "registrationUrl": _AK["registrationUrl"],
+                "scopes": list(AUTHKIT_SCOPES),
                 "description": ("Enterprise / marketplace path (Google Cloud "
                                 "Marketplace, Gemini Enterprise) via WorkOS AuthKit. "
                                 "Additive and OPTIONAL — the free tier stays keyless "

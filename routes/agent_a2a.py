@@ -18,6 +18,10 @@ from flask import Blueprint, jsonify
 # resolve_canon()) for the same reason ai_interconnection.py gives: this is a
 # crawler/marketplace hot path and resolve_canon() probes live HTTP.
 from ai_surface_canon import PINNED as _CANON, canon_text
+# ONE origin for the WorkOS AuthKit AS. `_ak` is a thin alias so each caller
+# re-reads the env rather than freezing it at import -- this module's block
+# below is module-level, but the securitySchemes builder runs per request.
+from workos_authkit import authkit_endpoints as _ak, AUTHKIT_SCOPES  # noqa: F401
 
 agent_a2a_bp = Blueprint("agent_a2a", __name__)
 
@@ -81,12 +85,12 @@ AGENT_CARD = {
             "grant_type":              "authorization_code",
             "flow":                    "authorization_code",
             "spec":                    "MCP 2025-06-18 OAuth Protected Resource",
-            "issuer":                  "https://beloved-stream-52.authkit.app",
-            "authorization_endpoint":  "https://beloved-stream-52.authkit.app/oauth2/authorize",
-            "token_endpoint":          "https://beloved-stream-52.authkit.app/oauth2/token",
+            "issuer":                  _ak()["issuer"],
+            "authorization_endpoint":  _ak()["authorization_endpoint"],
+            "token_endpoint":          _ak()["token_endpoint"],
             # Dynamic Client Registration (RFC 7591) — required by Google Cloud
             # Marketplace / Gemini Enterprise Custom-MCP OAuth data-store connect.
-            "registration_endpoint":   "https://beloved-stream-52.authkit.app/oauth2/register",
+            "registration_endpoint":   _ak()["registration_endpoint"],
             "scopes":                  ["openid", "profile", "email", "offline_access"],
             # RFC 8414 / RFC 9728 discovery docs (WorkOS AuthKit is the real AS).
             # metadata = our RFC 9728 protected-resource doc (served 200 at
@@ -97,7 +101,7 @@ AGENT_CARD = {
             # follow this pointer dead-ended. Point it at the AuthKit issuer,
             # which serves its /.well-known/oauth-authorization-server (SH52-015).
             "metadata":                "https://api.dchub.cloud/.well-known/oauth-protected-resource",
-            "authorization_server_metadata": "https://beloved-stream-52.authkit.app/.well-known/oauth-authorization-server",
+            "authorization_server_metadata": _ak()["authorization_server_metadata"],
             "note":     ("ENTERPRISE / marketplace path (Google Cloud Marketplace, "
                          "Gemini Enterprise). OAuth2 is ADDITIVE and OPTIONAL — the "
                          "free tier stays keyless (auth.default='none') and is NEVER "
@@ -207,7 +211,9 @@ def _card():
     # this is what lets a Gemini Enterprise "No Authentication" data store connect
     # /mcp with zero OAuth. apiKey (X-API-Key) and oauth2 (WorkOS AuthKit) follow
     # for the paid tiers. Additive — nothing existing is removed.
-    _authkit = os.environ.get("WORKOS_AUTHKIT_DOMAIN", "https://beloved-stream-52.authkit.app").rstrip("/")
+    # Was a SECOND origin in this same file (env-with-default, and without the
+    # .strip() that a hand-pasted value needs). Now the one origin.
+    _authkit = _ak()["issuer"]
     out["securitySchemes"] = {
         "apiKey": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
         "oauth2": {"type": "oauth2", "flows": {"authorizationCode": {
