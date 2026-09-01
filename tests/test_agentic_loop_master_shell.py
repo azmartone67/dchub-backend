@@ -585,12 +585,19 @@ def test_every_lane_is_wrapped_so_one_failure_cannot_5xx_the_tick(shell, monkeyp
 
 def _quiet(shell, monkeypatch):
     """A tick with nothing to read and spies on every write path."""
-    spies = {"beat": [], "ensure": [], "snapshot": [], "filing": []}
+    spies = {"beat": [], "beat_status": [], "ensure": [], "snapshot": [], "filing": []}
     monkeypatch.setattr(shell, "_conn", lambda: None)
     monkeypatch.setattr(shell, "_import_attr", lambda *a, **k: None)
     monkeypatch.setattr(shell, "_LANES", (("1", "x", "h", lambda ctx: [
         shell._check("a", "read", True, "ok", critical=True)]),))
-    monkeypatch.setattr(shell, "_beat_ledger", lambda ok, note: spies["beat"].append(ok))
+    # ★2026-09-01: records the STATUS WORD as well as ok. The beat now carries
+    # three states (success / lanes_failing / error) because `error` is what
+    # ingestion-integrity-tick's producer_liveness lane treats as a BROKEN
+    # producer — a spy that only saw the boolean could not tell a red board from
+    # a crashed one, which is exactly the distinction that was lost.
+    monkeypatch.setattr(shell, "_beat_ledger",
+                        lambda ok, note, status=None: (spies["beat"].append(ok),
+                                                       spies["beat_status"].append(status))[0])
     monkeypatch.setattr(shell, "_ensure_ledger", lambda ctx: spies["ensure"].append(1) or True)
     monkeypatch.setattr(shell, "_ledger_add",
                         lambda ctx, kind, n, payload: spies["snapshot"].append(kind) or True)
@@ -609,8 +616,8 @@ def test_get_json_and_board_never_write_or_beat(shell, monkeypatch):
     assert "no-store" in r.headers.get("Cache-Control", "")
     b = c.get("/admin/agentic-loop", headers=hdr)
     assert b.status_code == 200 and b"Agentic loop master shell #65" in b.data
-    assert spies == {"beat": [], "ensure": [], "snapshot": [], "filing": []}, (
-        "a GET wrote or beat: %r" % spies)
+    assert spies == {"beat": [], "beat_status": [], "ensure": [], "snapshot": [],
+                     "filing": []}, ("a GET wrote or beat: %r" % spies)
 
 
 def test_post_tick_writes_its_snapshot_and_beats_success(shell, monkeypatch):
@@ -636,10 +643,16 @@ def test_post_tick_beats_error_when_every_lane_raised_and_never_5xx(shell, monke
     assert r.status_code == 200, "a failed tick must not 5xx (CF fails the site over)"
     assert r.get_json()["tick_failed"] is True
     assert spies["beat"] == [False]
+    # ★2026-09-01: this test is named "beats_error" and used to assert only
+    # ok is False, which no longer distinguishes error from lanes_failing.
+    # EVERY lane raised here, so nothing was measured — that is a broken
+    # producer and must still be `error`, not the red-board word.
+    assert spies["beat_status"] == ["error"]
     # and a tick that RAISES outright still beats error, still 200
     monkeypatch.setattr(shell, "_tick", lambda act: (_ for _ in ()).throw(RuntimeError("tick")))
     r = c.post(TICK_ROUTE, headers={"X-Admin-Key": "test-admin-key"})
     assert r.status_code == 200 and spies["beat"] == [False, False]
+    assert spies["beat_status"] == ["error", "error"]
 
 
 def test_beat_body_is_the_house_shape_and_error_is_never_warn(shell, monkeypatch):
