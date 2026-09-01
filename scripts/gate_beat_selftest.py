@@ -54,8 +54,23 @@ def beat_run(workflow: str, job: str) -> str:
     raise KeyError("no beat step in %s:%s" % (workflow, job))
 
 
+# Absolute fixture paths land in the real /tmp, not the sandbox, so they
+# PERSIST between cases. Every path ever used is cleared before each run —
+# without this a case can pass by reading the previous case's file, which is
+# how "step did not conclude" read a population it was never given.
+_ABS_FIXTURES = {
+    "/tmp/unit-tests.log", "/tmp/acg.log", "/tmp/crt.log", "/tmp/crt1.log",
+    "/tmp/sg.log", "/tmp/sd.log", "/tmp/smoke.log",
+}
+
+
 def run_beat(script: str, env: dict, files: dict) -> str:
     """Execute the real run: block with gate_beat.sh stubbed to echo its args."""
+    for _p in _ABS_FIXTURES:
+        try:
+            os.remove(_p)
+        except OSError:
+            pass
     with tempfile.TemporaryDirectory() as td:
         os.makedirs(os.path.join(td, "scripts"), exist_ok=True)
         stub = os.path.join(td, "scripts", "gate_beat.sh")
@@ -109,7 +124,6 @@ expect("★ unit-tests: COLLECTION ABORT reports ZERO, not empty",
        run_beat(ut, {"JOB_STATUS": "failure"}, {"/tmp/unit-tests.log": PYTEST_ABORT}),
        "verdict=fail checked=[0]")
 
-os.path.exists("/tmp/unit-tests.log") and os.remove("/tmp/unit-tests.log")
 expect("unit-tests: no log at all reports empty (unknown, not zero)",
        run_beat(ut, {"JOB_STATUS": "cancelled"}, {}),
        "verdict=unmeasured checked=[]")
@@ -150,15 +164,20 @@ expect("spec-debt-tracker: unchecked boxes are counted",
        "verdict=pass checked=[2]")
 
 # ── continue-on-error job takes its verdict from OUTPUT, not job.status ─────
+# ★ The population and the verdict are printed by DIFFERENT steps, so these
+# fixtures use two files. The first version of this control put both lines in
+# one log — a log the real workflow never produces — so it passed while the
+# shipped beat sent checked=empty and G4 could never fire. A fixture that does
+# not match reality is a control that tests a workflow you did not write.
 expect("★ check-route-tables: advisory job still reports a real refusal",
        run_beat(crt, {"JOB_STATUS": "success"},
-                {"/tmp/crt.log": "discovered 140 Flask HTML routes\n"
-                                 "::notice::route-table coherence ADVISORY — 3 Flask route(s)\n"}),
+                {"/tmp/crt1.log": "discovered 140 Flask HTML routes\n",
+                 "/tmp/crt.log": "::notice::route-table coherence ADVISORY — 3 Flask route(s)\n"}),
        "verdict=fail checked=[140]")
 expect("check-route-tables: clean run passes",
        run_beat(crt, {"JOB_STATUS": "success"},
-                {"/tmp/crt.log": "discovered 140 Flask HTML routes\n"
-                                 "OK — 140 Flask HTML routes covered by both tables.\n"}),
+                {"/tmp/crt1.log": "discovered 140 Flask HTML routes\n",
+                 "/tmp/crt.log": "OK — 140 Flask HTML routes covered by both tables.\n"}),
        "verdict=pass checked=[140]")
 expect("check-route-tables: step did not conclude reads UNMEASURED",
        run_beat(crt, {"JOB_STATUS": "success"}, {"/tmp/crt.log": "crashed\n"}),
@@ -193,6 +212,12 @@ for _wf in sorted(os.listdir(WF)):
             "no actions/checkout — %sscripts/gate_beat.sh cannot exist (exit 127)" % _prefix
             if not _has_checkout else "checkout present",
         ))
+
+# Every absolute fixture a case writes must be declared in _ABS_FIXTURES, or it
+# is never cleared and leaks into the next case.
+_used = {"/tmp/unit-tests.log", "/tmp/acg.log", "/tmp/crt.log", "/tmp/crt1.log"}
+results.append((_used <= _ABS_FIXTURES, "every absolute fixture is cleared between cases",
+                "undeclared: %r" % sorted(_used - _ABS_FIXTURES)))
 
 failed = [r for r in results if not r[0]]
 for ok, name, detail in results:

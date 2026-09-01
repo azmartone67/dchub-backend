@@ -28,7 +28,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 1 — extract Flask HTML routes
+        # tee'd: this step — not step 3 — prints "discovered N Flask HTML
+        # routes", which is the POPULATION the ledger beat reports. The first
+        # version tee'd only step 3 and sent checked=empty, so G4 could never
+        # fire for this gate. The live board is what surfaced that.
         run: |
+          set -o pipefail
+          exec > >(tee /tmp/crt1.log) 2>&1
           # Pick out HTML routes (paths that don't start with /api or /static).
           # Pattern: @app.route('/foo')  or  @any_bp.route('/foo')
           python3 <<'PY'
@@ -227,7 +233,9 @@ jobs:
           # This job carries job-level continue-on-error, so job.status is
           # success no matter what it found — the board records blocking=false
           # and takes the verdict from the step's own output instead.
-          N=$(grep -oE 'discovered [0-9]+ Flask HTML routes' /tmp/crt.log 2>/dev/null \
+          # Population comes from step 1's log, verdict from step 3's — they are
+          # printed by different steps and there is no single file with both.
+          N=$(grep -hoE 'discovered [0-9]+ Flask HTML routes' /tmp/crt1.log /tmp/crt.log 2>/dev/null \
               | grep -oE '[0-9]+' | head -1)
           if grep -q 'route-table coherence ADVISORY' /tmp/crt.log 2>/dev/null; then
             V=fail            # it found uncovered routes — the gate did its job
