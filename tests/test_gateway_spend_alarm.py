@@ -205,3 +205,26 @@ def test_unknown_never_raises_an_alarm(mod):
 
 def test_open_when_never_blocked_is_silent(mod):
     assert mod.decide("open", None, 0.0, 5000.0) == (None, None, 0.0)
+
+
+# ── one fleet, not every process ─────────────────────────────────────────────
+@pytest.mark.parametrize("role,probes", [
+    ("web", False),       # dchub-backend — serves HTTP, brain does not run here
+    ("worker", True),     # dchub-worker — where the brain actually runs
+    ("all", True),        # single-process deployments
+    ("", True),           # unset defaults to "all"
+])
+def test_only_the_background_role_probes(monkeypatch, role, probes):
+    """main.py starts health_alerter wherever it is imported, and BOTH services
+    import it. A gateway spend block is GLOBAL, so without this gate every
+    process would email about the same outage."""
+    monkeypatch.setenv("DCHUB_ROLE", role)
+    src = _SRC.read_text()
+    ns = {"os": __import__("os")}
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id in ("_GW_ROLE", "_GW_ROLE_PROBES")
+                for t in node.targets):
+            exec(compile(ast.Module([node], []), str(_SRC), "exec"), ns)  # noqa: S102
+    assert "_GW_ROLE_PROBES" in ns, "the role gate vanished from the source"
+    assert ns["_GW_ROLE_PROBES"] is probes, f"role={role!r}"

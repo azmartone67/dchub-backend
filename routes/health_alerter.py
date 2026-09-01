@@ -244,6 +244,20 @@ _GW_DISABLED       = str(os.environ.get("GATEWAY_SPEND_MONITOR_DISABLE", "")).lo
 _GW_CHECK_EVERY_S  = int(os.environ.get("GATEWAY_SPEND_CHECK_S", "600"))      # 10 min; a spend block persists
 _GW_RENOTIFY_S     = int(os.environ.get("GATEWAY_SPEND_RENOTIFY_S", "86400")) # nag once a day while still blocked
 _GW_PROBE_MODEL    = os.environ.get("GATEWAY_SPEND_PROBE_MODEL", "claude-haiku-4-5")
+# ONE fleet, not every process. main.py starts health_alerter wherever it is
+# imported, and BOTH services import it (dchub-backend DCHUB_ROLE=web,
+# dchub-worker DCHUB_ROLE=worker, and the worker runs more than one process) —
+# measured 2026-09-01. The pool/restart alerts are about PER-PROCESS state so
+# duplicates there are information; a gateway spend block is GLOBAL, so every
+# process would report the same outage. Probe only from the background role,
+# where the brain actually runs and where the outage bites.
+#
+# ★ Deliberately NOT gated on the leader lock. Leadership is unheld for minutes
+# after every worker redeploy (48+ minutes observed 2026-08-22, see
+# util/leader_election) — an alarm that goes quiet exactly when the fleet is
+# already unhealthy is worse than one that occasionally pages twice.
+_GW_ROLE           = (os.environ.get("DCHUB_ROLE", "all").strip().lower() or "all")
+_GW_ROLE_PROBES    = _GW_ROLE != "web"
 _GW_INVALID_KEY    = "sk-ant-health-alerter-probe-not-a-real-key"
 
 _gw_blocked_since = None   # ts of the first blocked reading of the current episode
@@ -374,7 +388,7 @@ def start():
     # The gateway probe only makes sense when a gateway is actually in front of
     # Anthropic; without one there is no spend rule that could block anything.
     _gw_on = False
-    if not _GW_DISABLED:
+    if not _GW_DISABLED and _GW_ROLE_PROBES:
         try:
             from utils.anthropic_helper import gateway_active
             _gw_on = bool(gateway_active())
@@ -386,4 +400,5 @@ def start():
     log.info("health_alerter: started (pool alert >=%s%% sustained, restart-loop >=%s/%smin, "
              "gateway-spend probe %s, to=%s)",
              _POOL_UTIL_ALERT, _RESTART_THRESHOLD, _RESTART_WINDOW_MIN,
-             ("every %ss" % _GW_CHECK_EVERY_S) if _gw_on else "off", _TO)
+             ("every %ss" % _GW_CHECK_EVERY_S) if _gw_on
+             else ("off (role=%s)" % _GW_ROLE), _TO)
