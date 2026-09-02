@@ -145,6 +145,9 @@
     "test_outbound_copy_matches_canon.py": {
       "glob": 4
     },
+    "test_parametrize_ids_are_checkout_independent.py": {
+      "glob": 640
+    },
     "test_qa_smoke_ua_exclusion.py": {
       "pglob": 6
     },
