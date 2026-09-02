@@ -11139,6 +11139,72 @@ def check_dcpi_ssr_cross_tier() -> list[dict]:
     return findings
 
 
+# ── 2026-09-02 (brain-agents sweep finding 2) — approved, no PR, stale ──
+APPROVED_WITHOUT_PR_STALE_HOURS = 24
+APPROVED_WITHOUT_PR_WINDOW_DAYS = 7
+
+
+def check_approved_without_pr_stale() -> list[dict]:
+    """Fires when an innovation approval is older than 24h, inside the 7-day
+    redrive window, and still has NO PR — and its persisted draft attempt is
+    absent or a failure. Measured 2026-09-02 00:30Z: 40 approved rows,
+    5 with a merged PR, #100416 known lost to `http_429` during the gateway
+    spend outage, ~34 unknowable because brain_approvals held only
+    kind/item_id/decision. The dashboard now persists `pr_attempt`/`pr_url`
+    (routes/brain_innovation_dashboard) and the master tick re-drives
+    failures (tier2.approved_without_pr_redrive); this detector is the
+    instrument that says whether that loop is closing.
+
+    UNMEASURED yields no finding: no DB, no table, or a pre-migration table
+    without the pr_url column → [] (never a clean verdict)."""
+    conn = _db()
+    if conn is None:
+        return []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.brain_approvals')")
+                if not (cur.fetchone() or [None])[0]:
+                    return []
+                cur.execute(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'brain_approvals' AND column_name = 'pr_url'")
+                if not cur.fetchone():
+                    return []          # pre-migration: nothing to measure yet
+                from routes.brain_innovation_dashboard import (
+                    stale_approvals_without_pr)
+                stale = stale_approvals_without_pr(
+                    cur, older_than_hours=APPROVED_WITHOUT_PR_STALE_HOURS,
+                    window_days=APPROVED_WITHOUT_PR_WINDOW_DAYS) or []
+            except Exception:
+                return []
+    finally:
+        try: conn.close()
+        except Exception: pass
+    n = len(stale)
+    if n < 1:
+        return []
+    never = sum(1 for r in stale if not r.get("attempted"))
+    sample = ", ".join(
+        f"{r['key']} ({r.get('error') or 'no attempt recorded'}; "
+        f"redrives={r.get('redrives', 0)})" for r in stale[:5])
+    return [{
+        "issue":  "approved_without_pr_stale",
+        "url":    "/api/v1/brain/innovation/approvals",
+        "count":  n,
+        "detail": (f"{n} innovation approval(s) older than "
+                   f"{APPROVED_WITHOUT_PR_STALE_HOURS}h (within "
+                   f"{APPROVED_WITHOUT_PR_WINDOW_DAYS}d) still have no PR "
+                   f"and no successful draft attempt ({never} never "
+                   f"attempted). The master tick step "
+                   f"tier2.approved_without_pr_redrive should re-run the "
+                   f"draft (can_open_pr gate, 3/tick, 3/row); if this "
+                   f"persists the redrives are exhausted or the guardrail "
+                   f"is closed — read brain_approvals.pr_attempt. "
+                   f"Sample: {sample}"),
+    }]
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues.
@@ -11595,7 +11661,10 @@ def scan_all() -> list[dict]:
                check_gunicorn_worker_age,
                check_facility_dedupe_collisions,
                check_paid_user_zero_value_tools,
-               check_cf_kv_namespace_pressure):
+               check_cf_kv_namespace_pressure,
+               # 2026-09-02 brain-agents sweep finding 2: an approval whose
+               # PR draft was lost (gateway 429) used to be invisible.
+               check_approved_without_pr_stale):
         detectors.append(fn)
 
     # r43-L (2026-05-30): MCP discoverability/health — continuously detects

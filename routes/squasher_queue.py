@@ -74,6 +74,15 @@ def _register_action_classes(state):
         logger.warning("[squasher_queue] action_classes register skipped: %s", _e)
 
 
+def _classify_all_open(limit: int = 50) -> dict:
+    try:
+        from routes.squasher_action_classes import classify_all_open
+        return classify_all_open(limit=limit)
+    except Exception as _e:  # noqa: BLE001
+        return {"scanned": 0, "classified": 0, "by_class": {},
+                "error": f"{type(_e).__name__}: {str(_e)[:120]}"}
+
+
 def _action_classes_step(dry_run: bool = False) -> dict:
     """Claim loop step 2 — routes/squasher_action_classes.run_granted_actions.
     Lazy import + fail-soft: this drain must keep working if that module is
@@ -83,6 +92,18 @@ def _action_classes_step(dry_run: bool = False) -> dict:
         return run_granted_actions(dry_run=dry_run)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+
+
+def _classify_row_in_tx(cur, item_id: int, finding_key: str, title: str) -> bool:
+    """Enqueue-time classification (2026-09-02, finding 4a): the ONE rule
+    (classify_row — endpoint first, then the shell check ids the key/title
+    carry). Fail-soft; never fails the enqueue."""
+    try:
+        from routes.squasher_action_classes import classify_in_tx
+        return classify_in_tx(cur, item_id, finding_key=finding_key, title=title)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[squasher_queue] classify-on-enqueue skipped: %s", _e)
+        return False
 
 
 def _classify_in_tx(cur, item_id: int, *texts) -> bool:
@@ -558,7 +579,7 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
             # ★ Action classes (step 2): tag the row now when the submitted
             #   text already names a known endpoint. Pure mapping + one
             #   UPDATE under a SAVEPOINT; can never fail the enqueue.
-            classified = _classify_in_tx(cur, new_id, title, finding_key)
+            classified = _classify_row_in_tx(cur, new_id, finding_key, title)
             conn.commit()
             _register_fix_claim(new_id, finding_key, title)
             # ★lane 7 (remit, reported not enforced): `classified` is True when
@@ -1322,6 +1343,12 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
         return {"ok": True, "skipped": "SQUASHER_QUEUE_DISABLE=1"}
     out = {"ok": True, "processed": 0, "collapsed": 0, "reclaimed": 0,
            "reclaimed_running": 0, "results": []}
+    # ★ CLASSIFY-ALL (2026-09-02, finding 4c): tag up to 50 unclassified open
+    #   rows with the ONE rule before anything reads them. A pure tag on the
+    #   queue — no grant is consulted and nothing runs here; the grant gate
+    #   is still the first read of the action step below. Bounded, own
+    #   connection, fail-soft.
+    out["classified"] = _classify_all_open(50)
     # ★ ACTION CLASSES (claim loop step 2) run FIRST: a granted class's one
     #   bounded loopback action plus its verify read takes seconds, and
     #   placing it after two ~48s investigations would push it into the

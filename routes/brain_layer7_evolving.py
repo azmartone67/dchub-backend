@@ -162,12 +162,91 @@ def _top_scope_with_count() -> tuple[str | None, int, list[str]]:
     return None, 0, []
 
 
-def _call_claude_for_detector(scope: str, summaries: list[str]) -> dict | None:
-    if not _ANTHROPIC_KEY:
+# The proposal shape, sent natively as a JSON schema (routes/brain_llm_structured)
+# so the API guarantees syntactically-valid JSON when the model finishes. The
+# legacy fence-strip parse stays as the fallback for a model without structured
+# support / the kill switch / a 400 on the structured attempt.
+_DETECTOR_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "detector_name": {"type": "string"},
+        "detector_code": {"type": "string"},
+        "rationale": {"type": "string"},
+    },
+    "required": ["detector_name", "detector_code", "rationale"],
+}
+_L7_SYSTEM = ("You are the DC Hub brain — a Python module that detects "
+              "operational issues by polling endpoints and reading database "
+              "tables. Reply with ONLY the JSON object, no other text.")
+
+# Outcome classes of one proposal call. Everything that is NOT "ok" used to
+# collapse into `None` → a 503 whose hint named ANTHROPIC_API_KEY, whatever the
+# real cause (2026-08-31→09-01: 6/6 runs 503 while llm-spend recorded 28 calls,
+# 0 HTTP failures — the model answered, the JSON parse was what failed).
+CALL_OK = "ok"
+CALL_NO_KEY = "no_key"
+CALL_HTTP_ERROR = "http_error"
+CALL_EXCEPTION = "exception"
+CALL_NONJSON = "nonjson"          # 200 from the model, text is not the JSON asked for
+CALL_DECLINED = "declined"        # JSON, but no detector_code — the model passed
+DECLINED_REASON = "model_declined_or_nonjson"
+_HINT_BY_CLASS = {
+    CALL_NO_KEY: "ANTHROPIC_API_KEY is unset on this service",
+    CALL_HTTP_ERROR: ("non-200 from the messages endpoint — read `detail` "
+                      "(gateway spend rule / rate limit / auth); not a parse "
+                      "problem and not necessarily the key"),
+    CALL_EXCEPTION: "transport exception before a response — read `detail`",
+}
+
+
+def _model() -> str:
+    # 2026-05-24 r30: route via brain_models tier registry. L7 evolving is
+    # "reasoning" tier — multi-step thinking benefits from the 1M context.
+    from routes.brain_models import brain_model_for
+    return brain_model_for("reasoning")
+
+
+def _parse_detector_text(text: str, structured: bool) -> dict | None:
+    """The model's text block → the proposal dict, or None when it is not the
+    JSON object asked for. Structured mode is a strict parse (the API
+    guarantees the syntax when the model finishes); legacy strips fences."""
+    try:
+        from routes import brain_llm_structured as _so
+    except Exception:  # noqa: BLE001
+        _so = None
+    if structured and _so is not None:
+        return _so.parse_structured_json(text)
+    t = (text or "").strip()
+    # Strip code fences if Claude added them anyway
+    if t.startswith("```"):
+        t = t.split("```")[1] if "```" in t else t
+        if t.startswith("json"):
+            t = t[4:].lstrip("\n")
+    import json
+    try:
+        parsed = json.loads(t)
+    except Exception:  # noqa: BLE001
         return None
-    prompt = f"""You are the DC Hub brain — a Python module that detects
-operational issues by polling endpoints and reading database tables.
-We've shipped {len(summaries)} fixes for the same scope ({scope})
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _call_claude_for_detector(scope: str, summaries: list[str]) -> dict:
+    """ONE proposal call. Always returns an envelope — never None:
+
+        {"status": CALL_*, "proposal": dict | None, "raw": str, "detail": str}
+
+    status ok       → proposal is the parsed dict (has detector_code)
+    status nonjson  → 200 from the model, text was not the JSON asked for
+                      (raw carries text[:300]); declined → JSON without a
+                      detector_code. Both are the model PASSING, not the
+                      key failing — the route answers 200, not 503.
+    status no_key / http_error / exception → the call did not produce a
+    reply; detail names why so the 503 hint can too."""
+    if not _ANTHROPIC_KEY:
+        return {"status": CALL_NO_KEY, "proposal": None, "raw": "",
+                "detail": "ANTHROPIC_API_KEY unset"}
+    prompt = f"""We've shipped {len(summaries)} fixes for the same scope ({scope})
 in the last 14 days:
 
 {chr(10).join(f'  {i+1}. {s}' for i, s in enumerate(summaries))}
@@ -203,44 +282,68 @@ Constraints:
 
 Reply with ONLY the JSON object, no other text."""
     try:
-        import requests
-        r = _llm_post("brain_layer7_evolving",
-            anthropic_messages_url(),
-            headers={
-                "x-api-key": _ANTHROPIC_KEY,
-                "User-Agent": "dchub-brain/1.0",
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                # 2026-05-24 r30: route via brain_models tier registry.
-                # L7 evolving is "reasoning" tier — multi-step thinking
-                # benefits from Opus 4.7's 1M context.
-                "model": (
-                    __import__("routes.brain_models", fromlist=["brain_model_for"])
-                    .brain_model_for("reasoning")
-                ),
-                "max_tokens": 2000,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=45,
-        )
-        if r.status_code != 200:
-            logger.warning(f"L7 Claude {r.status_code}: {r.text[:200]}")
-            return None
+        from routes import brain_llm_structured as _so
+    except Exception:  # noqa: BLE001
+        _so = None
+    try:
+        model = _model()
+        headers = {
+            "x-api-key": _ANTHROPIC_KEY,
+            "User-Agent": "dchub-brain/1.0",
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        messages = [{"role": "user", "content": prompt}]
+        attempts = ((True, False)
+                    if (_so is not None
+                        and _so.structured_active(model, _DETECTOR_SCHEMA))
+                    else (False,))
+        r = None
+        structured = False
+        for structured in attempts:
+            if _so is not None:
+                body_dict, structured = _so.build_messages_body(
+                    model, _L7_SYSTEM, messages, 2000,
+                    _DETECTOR_SCHEMA if structured else None)
+            else:
+                body_dict = {"model": model, "max_tokens": 2000,
+                             "system": _L7_SYSTEM, "messages": messages}
+            r = _llm_post("brain_layer7_evolving", anthropic_messages_url(),
+                          headers=headers, json=body_dict, timeout=45)
+            if structured and r.status_code == 400:
+                # The structured param is plausibly the cause — memoize when
+                # the error blames it, then retry the SAME model legacy.
+                if _so is not None and _so.looks_like_structured_rejection(
+                        400, getattr(r, "text", "") or ""):
+                    _so.mark_model_unsupported(model)
+                continue
+            break
+        if r is None or r.status_code != 200:
+            code = getattr(r, "status_code", None)
+            detail = f"http_{code}: {(getattr(r, 'text', '') or '')[:200]}"
+            logger.warning("L7 Claude %s", detail)
+            return {"status": CALL_HTTP_ERROR, "proposal": None, "raw": "",
+                    "detail": detail}
         body = r.json() or {}
         text = "".join(b.get("text", "") for b in (body.get("content") or [])
                        if b.get("type") == "text").strip()
-        # Strip code fences if Claude added them anyway
-        if text.startswith("```"):
-            text = text.split("```")[1] if "```" in text else text
-            if text.startswith("json"):
-                text = text[4:].lstrip("\n")
-        import json
-        return json.loads(text)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"L7 Claude call failed: {e}")
-        return None
+        return {"status": CALL_EXCEPTION, "proposal": None, "raw": "",
+                "detail": f"{type(e).__name__}: {str(e)[:200]}"}
+    proposal = _parse_detector_text(text, structured)
+    if proposal is None:
+        # The model answered — with prose, not the object. Log what it said
+        # so the next operator reads the reply instead of rotating a key.
+        logger.warning("L7 model reply is not the JSON asked for (%s chars): %r",
+                       len(text), text[:300])
+        return {"status": CALL_NONJSON, "proposal": None, "raw": text[:300],
+                "detail": "reply is not a JSON object"}
+    if not str(proposal.get("detector_code") or "").strip():
+        return {"status": CALL_DECLINED, "proposal": None, "raw": text[:300],
+                "detail": "JSON without detector_code — the model declined"}
+    return {"status": CALL_OK, "proposal": proposal, "raw": text[:300],
+            "detail": ""}
 
 
 @brain_layer7_bp.route("/api/v1/brain/propose-detector",
@@ -266,10 +369,21 @@ def propose_detector():
                        hint=("Brain memory needs accumulation. Bootstrap "
                              "with POST /api/v1/brain/memory/backfill-from-commits")), 404
 
-    proposal = _call_claude_for_detector(scope, summaries)
+    res = _call_claude_for_detector(scope, summaries)
+    if res.get("status") in (CALL_NONJSON, CALL_DECLINED):
+        # The call SUCCEEDED and the model passed on proposing. That is a
+        # 200 with a reason, not a 503 — the key is fine and the operator
+        # must not be sent to rotate it (6/6 runs did exactly that,
+        # 2026-08-31→09-01, while llm-spend showed 0 HTTP failures).
+        return jsonify(ok=True, proposed=None, reason=DECLINED_REASON,
+                       raw=res.get("raw", ""), scope=scope,
+                       based_on_count=n_fixes, detail=res.get("detail", "")), 200
+    proposal = res.get("proposal") if res.get("status") == CALL_OK else None
     if not proposal:
-        return jsonify(ok=False, error="Claude call failed",
-                       hint="check ANTHROPIC_API_KEY"), 503
+        cls = res.get("status") or CALL_EXCEPTION
+        return jsonify(ok=False, error="Claude call failed", error_class=cls,
+                       detail=res.get("detail", ""),
+                       hint=_HINT_BY_CLASS.get(cls, "read `detail`")), 503
 
     # Persist
     try:

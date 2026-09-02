@@ -184,6 +184,14 @@ ACTION_CLASSES = {
         # which adds the budget ledger, the pre-image and the rollback that the
         # bare endpoint lacks.
         "match_paths": ("/api/v1/admin/news-ner/re-resolve",),
+        # 2026-09-02 (finding 4b): what a finding filed FROM the shells names
+        # in its key/title — the autonomy shell's actuator id and the
+        # graph-spine lane-5a check id (es_blindspot). Neither carries an
+        # endpoint, so path matching alone never classified them: measured
+        # 0/46 inbox rows classified, this class at runs_ok=0 while its
+        # verifier read blindspot=7. Whole-token match on key/title ONLY
+        # (never prose), and the registry still decides what RUNS.
+        "match_keys": ("news_entity_reresolve", "es_blindspot"),
         "method": "POST",
         "verifier_url": "/api/v1/brain/squasher/verifier/news_entity_reresolve",
         "metric": "blindspot",
@@ -211,6 +219,9 @@ ACTION_CLASSES = {
     "deals_exact_dupe_quarantine": {
         "path": "/api/v1/brain/squasher/actuate/deals_exact_dupe_quarantine",
         "match_paths": (),          # no endpoint on origin/main names this repair
+        # 2026-09-02 (finding 4b): the actuator id and the graph-spine
+        # lane-3a check id (deal_dupes) — see news_entity_reresolve.
+        "match_keys": ("deals_exact_dupe_quarantine", "deal_dupes"),
         "method": "POST",
         "verifier_url": "/api/v1/brain/squasher/verifier/deals_exact_dupe_quarantine",
         "metric": "excess",
@@ -246,6 +257,18 @@ for _name, _spec in ACTION_CLASSES.items():
     for _alias in (_spec.get("match_paths") or ()):
         _PATH_TO_CLASS[_alias] = _name
 del _name, _spec
+# Classification by KEY (2026-09-02, finding 4b): the identifiers a finding's
+# key or title may carry → the class. Only class-scoped classes (row_param
+# None) may be matched this way — a token cannot carry a row parameter.
+# The class's own name always maps to itself.
+_KEY_TO_CLASS = {}
+for _name, _spec in ACTION_CLASSES.items():
+    if _spec.get("row_param") is None:
+        _KEY_TO_CLASS[_name] = _name
+        for _key in (_spec.get("match_keys") or ()):
+            _KEY_TO_CLASS[_key] = _name
+del _name, _spec
+_KEY_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
 # Same shape as squasher_queue._ACTION_RE, with the query split out so the
 # row parameter can be validated on its own. A path with no verb is prose.
@@ -363,6 +386,33 @@ def classify_text(*texts) -> dict | None:
                     "action_url": build_action_url(cls, params),
                     "params": params}
     return None
+
+
+def classify_key(finding_key: str | None, title: str | None) -> dict | None:
+    """(finding_key, title) → the class-scoped class whose registered key
+    they name as a WHOLE token (`graph_spine:es_blindspot`,
+    `news_entity_reresolve — defect present`), else None. Prose is never
+    read here: a token in an analysis paragraph is not a finding about it."""
+    for text in (finding_key, title):
+        if not text:
+            continue
+        for tok in _KEY_TOKEN_RE.findall(str(text)):
+            cls = _KEY_TO_CLASS.get(tok) or _KEY_TO_CLASS.get(tok.lower())
+            if cls:
+                return {"action_class": cls,
+                        "action_method": ACTION_CLASSES[cls]["method"],
+                        "action_url": build_action_url(cls, {}),
+                        "params": {}}
+    return None
+
+
+def classify_row(finding_key: str | None, title: str | None, *texts) -> dict | None:
+    """The ONE classification rule for a queue row, used at enqueue, at
+    settle and by the backfill: the endpoint rule first (classify_text over
+    every text, key and title included), then the key rule (classify_key
+    over key and title only). None when neither names a registered class."""
+    return (classify_text(*texts, title, finding_key)
+            or classify_key(finding_key, title))
 
 
 def row_params_of(row: dict) -> dict | None:
@@ -581,19 +631,21 @@ def verified_runs_7d(cur) -> int:
 _OPEN_STATUSES = ("queued", "running", "awaiting_ops", "awaiting_decision")
 
 
-def classify_open_rows(cur) -> dict:
+def classify_open_rows(cur, limit: int = 500) -> dict:
     """Backfill action_class on OPEN rows that have none. Idempotent: a row
     already classified is never touched, a row that classifies to nothing is
-    re-read on the next pass (cheap, bounded) in case the registry grew."""
+    re-read on the next pass (cheap, bounded) in case the registry grew.
+    `limit` bounds the scan (the drain's classify-all pass uses 50)."""
     cur.execute(
         """SELECT id, finding_key, title, reason, decision, analysis
              FROM squasher_work_queue
             WHERE status IN %s AND action_class IS NULL
-            ORDER BY id DESC LIMIT 500""", (_OPEN_STATUSES,))
+            ORDER BY id DESC LIMIT %s""",
+        (_OPEN_STATUSES, int(max(1, min(500, int(limit))))))
     rows = cur.fetchall() or []
     out = {"scanned": len(rows), "classified": 0, "by_class": {}}
     for rid, fk, title, reason, decision, analysis in rows:
-        c = classify_text(reason, decision, analysis, title, fk)
+        c = classify_row(fk, title, reason, decision, analysis)
         if not c:
             continue
         cur.execute(
@@ -609,11 +661,15 @@ def classify_open_rows(cur) -> dict:
     return out
 
 
-def classify_in_tx(cur, item_id: int, *texts) -> bool:
+def classify_in_tx(cur, item_id: int, *texts, finding_key: str | None = None,
+                    title: str | None = None) -> bool:
     """Classify ONE row inside the caller's transaction, under a SAVEPOINT so
     a failure here can never poison the caller's commit (the reclaim_misfiled
-    lesson: a swallowed error inside a transaction is a silent rollback)."""
-    c = classify_text(*texts)
+    lesson: a swallowed error inside a transaction is a silent rollback).
+    With `finding_key`/`title` the key rule applies too (classify_row);
+    bare texts keep the endpoint-only rule."""
+    c = (classify_row(finding_key, title, *texts)
+         if (finding_key or title) else classify_text(*texts))
     if not c:
         return False
     try:
@@ -644,12 +700,32 @@ def classify_queue_row(item_id: int) -> bool:
             r = cur.fetchone()
             if not r:
                 return False
-            ok = classify_in_tx(cur, item_id, *r)
+            reason, decision, analysis, title, fk = r
+            ok = classify_in_tx(cur, item_id, reason, decision, analysis,
+                                finding_key=fk, title=title)
             conn.commit()
             return ok
     except Exception as e:  # noqa: BLE001
         logger.warning("[action_classes] classify row %s failed: %s", item_id, e)
         return False
+
+
+def classify_all_open(limit: int = 50) -> dict:
+    """The drain's classify-all pass (2026-09-02, finding 4c): own
+    connection, bounded to `limit` rows, fail-soft. A pure TAG on the queue —
+    no grant is read and nothing runs; the grant gate stays the first read of
+    run_granted_actions. Exists because the backfill inside the action step
+    only ran when ACTION_CLASSES_ENABLED was set on the service that drains,
+    so 0/46 inbox rows carried a class on 2026-09-02."""
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            out = classify_open_rows(cur, limit=limit)
+            conn.commit()
+            return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[action_classes] classify-all failed: %s", e)
+        return {"scanned": 0, "classified": 0, "by_class": {},
+                "error": f"{type(e).__name__}: {str(e)[:120]}"}
 
 
 def inbox_by_class(cur) -> dict:
@@ -1888,13 +1964,58 @@ def graduation_post():
     return _no_store(jsonify(ok=bool(out.get("known")), **out))
 
 
+def read_class_verifier(cls: str, args: dict | None = None,
+                        fetch=None) -> tuple[dict, int]:
+    """GET /verifier/<class> for a NON-actuator class (2026-09-02, finding
+    4d — facility_dedup_apply answered 404 "unknown actuator class"): read
+    the class row's verifier_url, with the row parameter from `args`
+    validated by the registry's own rule, through the same loopback the
+    drain verifies with; the metric comes back as a top-level int.
+    Unreadable → ok=False and the metric None (UNOBSERVED, never zero, never
+    5xx); an unknown class → 404; a missing/invalid row parameter → 400."""
+    spec = ACTION_CLASSES.get(cls or "")
+    if not spec:
+        return {"ok": False, "error": "unknown actuator class", "class": cls}, 404
+    metric = spec["metric"]
+    params: dict = {}
+    if spec.get("row_param"):
+        val = (args or {}).get(spec["row_param"])
+        if not val or not re.match(spec["row_param_re"], str(val)):
+            return {"ok": False, "class": cls, metric: None,
+                    "error": (f"row parameter `{spec['row_param']}` required "
+                              f"(pattern {spec['row_param_re']})")}, 400
+        params = {spec["row_param"]: str(val)}
+    verifier_url = None
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            row = class_row(cur, cls) or {}
+            verifier_url = str(row.get("verifier_url") or "").strip() or None
+    except Exception:  # noqa: BLE001
+        verifier_url = None
+    if not verifier_url:
+        verifier_url = spec["verifier_url"]
+    q = "&".join(f"{k}={v}" for k, v in params.items())
+    url = verifier_url + ("?" + q if q else "")
+    n, evidence = _read_metric(fetch or _loopback, url, metric)
+    out = {"ok": n is not None, "class": cls, metric: n,
+           "verifier_url": url, "source": "class_verifier_url",
+           "as_of": datetime.now(timezone.utc).isoformat()}
+    if n is None:
+        out["error"] = (f"verifier unreadable — UNMEASURED, not zero "
+                        f"({evidence})")
+    return out, 200
+
+
 @squasher_action_classes_bp.get("/api/v1/brain/squasher/verifier/<cls>")
 def verifier_get(cls):
     early = _gate()
     if early:
         return early
     if not is_actuator_class(cls):
-        return _no_store(jsonify(ok=False, error="unknown actuator class")), 404
+        # 2026-09-02 (finding 4d): a registered NON-actuator class falls
+        # back to its class row's verifier_url instead of a 404.
+        body, code = read_class_verifier(cls, request.args)
+        return _no_store(jsonify(body)), code
     return _no_store(jsonify(read_trigger(cls)))
 
 
