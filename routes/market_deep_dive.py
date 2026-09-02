@@ -668,6 +668,130 @@ MARKETS_CANONICAL_REDIRECT = {
 }
 
 
+# ── /markets hub inventory (seo F6, 2026-09-02) ─────────────────────────
+# ONE source for "which /markets/<slug> and /pockets/<slug> pages exist",
+# shared by main.py's sitemap-markets.xml builder and the /markets hub page
+# below, so the hub can never list a page the sitemap does not (or vice
+# versa). Before this the hub did not exist: /markets and /markets/ served
+# static/market-intelligence.html with <link rel=canonical> →
+# /market-intelligence (measured live 2026-09-02 00:40Z), so the 580-URL
+# markets shard (250 /markets/, 330 /pockets/) had a "hub" that disclaimed
+# itself and 561 of those pages were internal-link dead ends (SH52-092).
+CURATED_MARKET_SLUGS = (
+    'northern-virginia', 'dallas', 'phoenix', 'atlanta', 'chicago',
+    'silicon-valley', 'new-york', 'los-angeles', 'portland', 'seattle',
+    'salt-lake-city', 'toronto', 'columbus', 'houston', 'denver',
+    'london', 'frankfurt', 'amsterdam', 'paris', 'dublin', 'stockholm',
+    'singapore', 'tokyo', 'sydney', 'hong-kong', 'mumbai', 'seoul',
+    'jakarta', 'kuala-lumpur', 'bangkok', 'sao-paulo', 'mexico-city',
+    'santiago', 'bogota',
+)
+
+# ★★ 2026-07-28 — THE SITEMAP WAS SUBMITTING 404s. The old criterion (>=3
+# facilities for a city+state) was NOT the criterion /markets/<slug> serves
+# on: the route keys on market_power_scores slugs; `miami` is a market,
+# `miami-fl` is not. INNER JOIN on market_power_scores, so a slug can only
+# enter the list if a market page exists for it, and emit the CITY slug (the
+# city-state form 301s — a sitemap must never contain a redirect).
+US_CITY_MARKET_SQL = """
+    SELECT m.market_slug AS slug, MAX(f.first_seen) AS lm
+      FROM discovered_facilities f
+      JOIN market_power_scores m
+        ON m.market_slug = LOWER(REPLACE(TRIM(f.city),' ','-'))
+     WHERE f.city IS NOT NULL AND TRIM(f.city) <> ''
+       AND COALESCE(f.is_duplicate, 0) = 0
+       AND f.country IN ('US','USA','United States')
+     GROUP BY m.market_slug
+    HAVING COUNT(*) >= 3
+"""
+# fallback (no first_seen column) — SAME market-existence join, so the
+# degraded path can never re-introduce the 404s either
+US_CITY_MARKET_SQL_NODATE = """
+    SELECT m.market_slug AS slug
+      FROM discovered_facilities f
+      JOIN market_power_scores m
+        ON m.market_slug = LOWER(REPLACE(TRIM(f.city),' ','-'))
+     WHERE f.city IS NOT NULL AND TRIM(f.city) <> ''
+       AND COALESCE(f.is_duplicate, 0) = 0
+       AND f.country IN ('US','USA','United States')
+     GROUP BY m.market_slug
+    HAVING COUNT(*) >= 3
+"""
+POCKET_LIST_CEILING = 500
+
+
+def us_city_market_rows(conn):
+    """[(market_slug, lastmod-or-None)] for every DB-backed US city market
+    page. Dated query first; on a schema error roll back and run the
+    date-less twin (never a dead section)."""
+    cur = conn.cursor()
+    try:
+        cur.execute(US_CITY_MARKET_SQL)
+        return [(r[0], r[1]) for r in (cur.fetchall() or [])]
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+        cur.execute(US_CITY_MARKET_SQL_NODATE)
+        return [(r[0], None) for r in (cur.fetchall() or [])]
+
+
+def listable_market_slug(slug, seen):
+    """The slug if /markets/<slug> is a real, indexable, not-yet-listed page,
+    else None. Mutates `seen`. Skips: junk ('', '-x', 'x-', no alnum),
+    period slugs ('st.-louis' 301s to 'st-louis' — r-period-slug 2026-07-06),
+    every MARKETS_CANONICAL_REDIRECT key ('ashburn' 301s to
+    'northern-virginia' — r-portland-canon 2026-08-02), and duplicates."""
+    s = (slug or '').strip()
+    if (len(s) < 3 or s.startswith('-') or s.endswith('-')
+            or '.' in s
+            or not any(ch.isalnum() for ch in s)
+            or s in MARKETS_CANONICAL_REDIRECT
+            or s in seen):
+        return None
+    seen.add(s)
+    return s
+
+
+def _slug_title(slug):
+    return _SLUG_TO_MARKET_NAME.get(slug) or slug.replace('-', ' ').title()
+
+
+def markets_hub_inventory():
+    """{'metros': [(slug, name)], 'us_markets': [(slug, name)],
+        'pockets': [(slug, name, state)]} — the pages sitemap-markets.xml
+    lists, from the same queries and the same filters. Each section is
+    fail-soft on its own so a DB blip degrades to the curated list."""
+    seen = set(CURATED_MARKET_SLUGS)
+    metros = [(s, _slug_title(s)) for s in CURATED_MARKET_SLUGS]
+    us = []
+    try:
+        c = _conn()
+        if c is not None:
+            try:
+                for slug, _lm in us_city_market_rows(c):
+                    s = listable_market_slug(slug, seen)
+                    if s:
+                        us.append((s, _slug_title(s)))
+            finally:
+                try: c.close()
+                except Exception: pass
+    except Exception as e:
+        logger.warning("markets hub: US city market list unavailable: %s", e)
+    us.sort()
+    pockets = []
+    try:
+        from routes.pockets import _fetch_pockets
+        for p in _fetch_pockets(limit_hint=POCKET_LIST_CEILING):
+            slug = p.get("market_slug")
+            if not slug or "." in slug:
+                continue
+            pockets.append((slug, p.get("market_name") or _slug_title(slug),
+                            p.get("state") or ""))
+    except Exception as e:
+        logger.warning("markets hub: pockets list unavailable: %s", e)
+    return {"metros": metros, "us_markets": us, "pockets": pockets}
+
+
 def read_deep_dive(slug: str) -> dict | None:
     # r-portland-canon (2026-08-02): serve the flagship row for either slug
     # form, so /api/v1/markets/portland-or/deep-dive and facility-page splices
@@ -1272,6 +1396,82 @@ _SLUG_TO_MARKET_NAME = {
     "mumbai":                 "Mumbai",
     "sao-paulo":              "São Paulo",
 }
+
+
+_HUB_CACHE = {"html": None, "at": 0.0}
+_HUB_TTL = 3600
+
+
+def _render_markets_hub(inv):
+    """Self-canonical hub linking every /markets/<slug> and /pockets/<slug>."""
+    from facilities_hub import _shell, _ld_breadcrumb, _ld_itemlist, _e, SITE
+    metros = inv.get("metros") or []
+    us = inv.get("us_markets") or []
+    pockets = inv.get("pockets") or []
+    n_markets = len(metros) + len(us)
+
+    def _ul(items):
+        return '<ul class="grid">' + "".join(items) + "</ul>"
+
+    metro_li = [f'<li><a href="{SITE}/markets/{_e(sl)}">{_e(nm)}</a></li>'
+                for sl, nm in metros]
+    us_li = [f'<li><a href="{SITE}/markets/{_e(sl)}">{_e(nm)}</a></li>'
+             for sl, nm in us]
+    pk_li = [f'<li><a href="{SITE}/pockets/{_e(sl)}">{_e(nm)}</a>'
+             + (f' <span class="muted">{_e(st)}</span>' if st else '')
+             + '</li>'
+             for sl, nm, st in pockets]
+    body = (
+        "<h1>Data Center Markets</h1>"
+        f'<p class="muted">{n_markets} market pages and {len(pockets)} '
+        "power-pocket rankings, one page per metro. Each market page reads "
+        "from the same live tables as the API: facility count and MW in the "
+        "market, the DC Hub Power Index (DCPI) score, interconnection-queue "
+        "position in its ISO, and the deals that touched it. A "
+        "<em>power pocket</em> page ranks the same metro on excess grid "
+        "capacity, constraint and time-to-power, so you can read a market "
+        "two ways: what is built, and what can still be powered. "
+        f'For the cross-market table see <a href="{SITE}/market-intelligence">'
+        "Market Intelligence</a>; for the score leaderboard see "
+        f'<a href="{SITE}/dcpi">the Power Index</a>; for every metro grouped '
+        f'by state see the <a href="{SITE}/markets/directory">markets '
+        "directory</a>.</p>"
+        f"<h2>Global metros ({len(metros)})</h2>" + _ul(metro_li)
+        + f"<h2>US city markets ({len(us)})</h2>"
+        + (_ul(us_li) if us_li else '<p class="muted">List temporarily '
+           "unavailable — the curated metros above still resolve.</p>")
+        + f"<h2>Power pockets ({len(pockets)})</h2>"
+        + (_ul(pk_li) if pk_li else '<p class="muted">Pocket rankings are '
+           "recomputed daily; check back shortly.</p>")
+    )
+    entries = ([(nm, f"{SITE}/markets/{sl}") for sl, nm in metros + us]
+               + [(nm, f"{SITE}/pockets/{sl}") for sl, nm, _st in pockets])
+    ld = [_ld_breadcrumb([("Home", SITE + "/"), ("Markets", SITE + "/markets")]),
+          _ld_itemlist("Data center markets", entries)]
+    title = f"Data Center Markets — {n_markets} metros, {len(pockets)} power pockets | DC Hub"
+    desc = (f"Every data center market DC Hub tracks: {n_markets} metro pages "
+            f"with live facility counts, MW, DCPI score and queue position, "
+            f"plus {len(pockets)} power-pocket rankings.")
+    crumbs = f'<a href="{SITE}/">Home</a> › Markets'
+    return _shell(title, desc, f"{SITE}/markets", crumbs, body, ld)
+
+
+@market_deep_dive_bp.route("/markets", methods=["GET"])
+@market_deep_dive_bp.route("/markets/", methods=["GET"])
+def markets_hub_page():
+    """seo F6 (2026-09-02): the live, SELF-canonical /markets hub. Replaces
+    main.py's mapping of /markets → static/market-intelligence.html (whose
+    canonical → /market-intelligence). See markets_hub_inventory."""
+    import time
+    now = time.time()
+    html = _HUB_CACHE.get("html")
+    if not html or (now - float(_HUB_CACHE.get("at") or 0)) >= _HUB_TTL:
+        html = _render_markets_hub(markets_hub_inventory())
+        _HUB_CACHE["html"], _HUB_CACHE["at"] = html, now
+    resp = Response(html, status=200, mimetype="text/html")
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    resp.headers["X-DC-Hub-Source"] = "markets-hub"
+    return resp
 
 
 @market_deep_dive_bp.route("/markets/<slug>", methods=["GET"])

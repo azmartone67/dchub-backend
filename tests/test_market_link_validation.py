@@ -121,9 +121,20 @@ DEEPDIVE = REPO_ROOT / "routes" / "market_deep_dive.py"
 
 
 def _sitemap_market_block():
+    """The city-market shard's code in main.py PLUS the SQL it runs.
+
+    seo F6 (2026-09-02): the two queries (dated + no-first_seen fallback)
+    moved to routes/market_deep_dive.py (US_CITY_MARKET_SQL[_NODATE]) so the
+    /markets hub and the sitemap share ONE source. The shard must call that
+    helper, and the SQL must still carry the join — both are asserted on
+    the concatenation below, comments stripped."""
     src = MAIN.read_text(encoding="utf-8")
     seg = src.split("DB-driven US /markets/", 1)[1][:4000]
-    return "\n".join(ln for ln in seg.splitlines()
+    assert "_us_city_rows(_mk_conn)" in seg, (
+        "the sitemap shard no longer runs the shared US city-market query")
+    dd = DEEPDIVE.read_text(encoding="utf-8")
+    sql = dd.split("US_CITY_MARKET_SQL = ", 1)[1].split("def us_city_market_rows", 1)[0]
+    return "\n".join(ln for ln in (seg + "\n" + sql).splitlines()
                      if not ln.strip().startswith("#"))
 
 
