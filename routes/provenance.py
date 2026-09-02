@@ -273,12 +273,45 @@ def queue_flag(published=True):
 
 
 def facility_verification_counts():
-    """{'verified': N, 'tracked': N} from the cached canonical stats
-    (canonical_stats.get_canonical_stats — 10-min TTL, floor-safe).
-    Returns None on any failure so callers can omit the field."""
+    """{'verified': N, 'tracked': N} from the cached canonical stats —
+    but ONLY when both numbers were actually MEASURED.
+
+    ★2026-09-01 — this published canonical_stats' static seed floors as if
+    they were measurements. get_canonical_stats() returns `_FALLBACK` on a
+    cold-start DB failure, so with no database this returned
+    {'verified': 400, 'tracked': 21000} — indistinguishable, in the
+    response, from a real count. Those are hand-written seeds (see
+    canonical_stats._FALLBACK), not data.
+
+    It matters because these counts are PUBLISHED: the MCP server tells
+    agents to cite them as "N analyst-verified of M tracked facilities",
+    and lib/result-shaping.mjs renders them as "400/21,000 verified". A
+    transient DB outage would put a ~48x under-claim on verified into an
+    agent's answer as a hard fact.
+
+    The floors are citation-SAFE for the *_phrase() helpers, which round
+    DOWN and print "400+" — a floor that announces itself as a floor. A
+    bare integer in `verification_counts` announces itself as a count.
+
+    So gate on the liveness signal canonical_stats already keeps for
+    exactly this question, the same one ai_surface_canon.canon_nums() uses
+    to serve a pin instead of a seed. Fails CLOSED: anything unmeasured,
+    partially measured, or unreadable returns None and the caller omits
+    the field. An omitted count beats a wrong one — the house position
+    already, per dchub-mcp-server test/toplevel-attribution.test.mjs
+    ("omits verification_counts entirely rather than zero-filling ...
+    a flattering zero is a bug").
+
+    NEVER raises."""
     try:
-        from canonical_stats import get_canonical_stats
+        from canonical_stats import get_canonical_stats, stat_is_live
         s = get_canonical_stats()
+        # Both, not either: `tracked` and `verified` are separate queries with
+        # separate except-paths, so one can be a live measurement while the
+        # other is still the seed. Publishing that pair would be a ratio
+        # between a measurement and a hand-typed constant.
+        if not (stat_is_live("facilities") and stat_is_live("facilities_verified")):
+            return None
         v = s.get("facilities_verified")
         t = s.get("facilities")
         if v and t:

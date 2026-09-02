@@ -150,6 +150,16 @@ def _query_live() -> dict:
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
                 out["facilities"] = n            # raw "tracked" discovery pile
+                # ★2026-09-01: this was the ONLY metric here that set `out` but
+                # never marked itself live, so stat_is_live("facilities") read
+                # False even right after a successful COUNT. Harmless while
+                # nothing gated on it — but the moment a publisher asks "may I
+                # serve this as measured?" (routes/provenance.
+                # facility_verification_counts now does), an unmarked key means
+                # a correct, measured number is suppressed FOREVER. The four
+                # metrics below have always marked themselves; this one was
+                # simply missed.
+                _live_keys.add("facilities")
         except Exception:
             pass
         # VERIFIED/ACTIVE subset (deduped): the FLEET filter — excludes only

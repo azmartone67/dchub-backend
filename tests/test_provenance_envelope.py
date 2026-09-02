@@ -273,16 +273,18 @@ def test_attach_passes_v1_keys_through():
 
 # ─── facility_verification_counts (no DB → canonical floors) ─────────────
 
-def test_facility_verification_counts_shape():
-    counts = facility_verification_counts()
-    # Without a DB this comes from canonical_stats fallback floors; either
-    # way the contract is None OR {'verified': int, 'tracked': int} with
-    # verified <= tracked (the fleet is a subset of the discovery pile).
-    if counts is not None:
-        assert set(counts) == {"verified", "tracked"}
-        assert isinstance(counts["verified"], int)
-        assert isinstance(counts["tracked"], int)
-        assert 0 < counts["verified"] <= counts["tracked"]
+def test_facility_verification_counts_omits_without_a_measurement():
+    """★2026-09-01: this used to read "without a DB this comes from
+    canonical_stats fallback floors" and guard the shape only `if counts is
+    not None`. Once the helper stopped publishing those floors as counts, that
+    branch became unreachable in CI (no DB => always None) — a test that could
+    no longer fail, still reporting green. Assert the contract that actually
+    holds here instead: no measurement, no field.
+
+    The measured shape (verified <= tracked, both ints) is exercised against
+    driven module state in tests/test_provenance_counts_are_measured.py, which
+    is the only place that CAN reach it without a database."""
+    assert facility_verification_counts() is None
 
 
 # ─── wired endpoint shape: interconnection-queue snapshot (no DB) ────────
