@@ -59,7 +59,13 @@ ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
 _DOMAINS = [
     ("facilities",   ["facilities"],
      ["first_seen", "created_at", "updated_at", "last_seen"],            336),   # 14d (was 10d, bursty discovery)
-    ("transmission", ["transmission_lines", "transmission_segments", "transmission"],
+    # 2026-09-02: dropped "transmission_segments" and "transmission" — NEITHER
+    # TABLE EXISTS in production (checked against information_schema, not
+    # guessed). _first_existing_table walked past both to transmission_lines and
+    # said nothing, so this domain has read as a healthy 3-table declaration
+    # while two thirds of it was fiction. See _declaration_audit below, which
+    # now makes that state visible instead of silent.
+    ("transmission", ["transmission_lines"],
      ["updated_at", "created_at", "retrieved_at"],                       1440),  # 60d (was 30d, quarterly updates)
     ("fiber",        ["fiber_routes", "metro_dark_fiber"],
      ["updated_at", "created_at", "retrieved_at"],                       1440),  # 60d (was 30d, slow-moving)
@@ -73,8 +79,16 @@ _DOMAINS = [
      ["computed_at", "updated_at"],                                      48),
     ("news",         ["news"],
      ["published_date", "fetched_at", "created_at"],                     24),    # was 18h, +6h matches one cron miss
+    # 2026-09-02: the candidate columns were all fiction for `announcements` —
+    # it has NONE of created_at / announced_date / date / updated_at. Measured
+    # columns: published_at, published_date, discovered_at, processed_at. It has
+    # never mattered because _first_existing_table returns `deals` first, so
+    # announcements was never measured; but the day deals moved, this domain
+    # would have gone `unknown` for a reason nobody could read off the
+    # declaration. Both tables' real columns are now listed.
     ("transactions", ["deals", "announcements"],
-     ["created_at", "announced_date", "date", "updated_at"],             336),   # 14d (was 10d, fits actual cadence)
+     ["created_at", "published_at", "discovered_at", "published_date",
+      "processed_at", "updated_at"],                                     336),   # 14d (was 10d, fits actual cadence)
     ("substations",  ["substations"],
      ["updated_at", "created_at", "retrieved_at"],                       1440),  # 60d (was 30d, slow-moving)
     # DC Hub Media: the autonomous press worker. If the daily auto-press
@@ -152,6 +166,34 @@ def _first_existing_table(cur, tables):
     return None
 
 
+def _declaration_audit(cur, tables):
+    """Which of the DECLARED tables do not exist.
+
+    ★ A declaration is a claim, and an unsatisfiable one must be visible rather
+    than walked past. _first_existing_table returns the first table that exists
+    and says nothing about the rest, so a domain could declare three tables,
+    have two of them be fiction, and still read as a healthy three-table
+    domain. Measured 2026-09-02: the `transmission` domain declared
+    transmission_segments and transmission — NEITHER EXISTS — and had been
+    silently measuring transmission_lines alone.
+
+    Returns the missing names, in declaration order. Never raises: this runs
+    inside the scan and must not be able to break it.
+    """
+    missing = []
+    for t in tables:
+        if not _IDENT_RE.match(t):
+            missing.append(t)
+            continue
+        try:
+            cur.execute("SELECT to_regclass(%s)", (f"public.{t}",))
+            if not (cur.fetchone() or [None])[0]:
+                missing.append(t)
+        except Exception:
+            missing.append(t)
+    return missing
+
+
 def _max_ts_and_count(cur, table, ts_cols):
     """Return (last_record_at, ts_column_used, row_count). Tries each
     candidate timestamp column until one works; row_count is best-effort."""
@@ -208,6 +250,7 @@ def scan_domains():
             for domain, tables, ts_cols, default_sla in _DOMAINS:
                 sla = _sla_for(domain, default_sla)
                 table = _first_existing_table(cur, tables)
+                phantom = _declaration_audit(cur, tables)
                 last_at = ts_used = None
                 row_count = None
                 detail = None
@@ -247,6 +290,14 @@ def scan_domains():
                 elif status in ("warning", "breach"):
                     detail = (f"newest row {age_hours}h old — exceeds SLA {sla}h"
                               + (f" ({detail})" if detail else ""))
+
+                # ★ Appended to EVERY status, including "fresh". A domain
+                # measuring one real table out of three declared is fresh AND
+                # misdeclared, and the second half is the part nobody could see.
+                if phantom:
+                    detail = ((detail + " ") if detail else "") + (
+                        f"[⚠ declared table(s) that do not exist: "
+                        f"{', '.join(phantom)} — fix the declaration]")
 
                 row = {
                     "domain": domain, "source_table": table or tables[0],
