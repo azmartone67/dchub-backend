@@ -692,15 +692,24 @@ def seo_run():
 
 @autopilot_bp.route('/api/autopilot/seo/sitemap')
 def seo_sitemap():
-    """Generate and return sitemap"""
-    try:
-        from seo_promotion_engine import get_seo_engine
-        engine = get_seo_engine()
-        sitemap = engine.generate_sitemap()
-        from flask import Response
-        return Response(sitemap, mimetype='application/xml')
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    """410 Gone — retired 2026-09-02 (QA sweep F10).
+
+    This was an UNAUTHENTICATED second sitemap: 372 URLs rebuilt from the
+    legacy `facilities` table on every GET (and written to static/sitemap.xml
+    as a side effect), including 100+ `/locations/-<cc>` slugs composed from
+    an empty city that 404 live. robots.txt opens /api/ to Googlebot/Bingbot,
+    so crawlers were being handed a sitemap of 404s that contradicted the
+    real one. The canonical sitemap is /sitemap.xml (sitemapindex, 7,245
+    URLs, registered in GSC); nothing in the repo or the workflows fetched
+    this route. 410 (not 404) tells crawlers to drop it, and the response is
+    JSON with the canonical pointer, never XML."""
+    resp = jsonify({'error': 'gone',
+                    'reason': 'retired 2026-09-02 — this was a second, '
+                              'unauthenticated sitemap of legacy 404 URLs',
+                    'canonical_sitemap': 'https://dchub.cloud/sitemap.xml'})
+    resp.status_code = 410
+    resp.headers['X-Robots-Tag'] = 'noindex'
+    return resp
 
 
 @autopilot_bp.route('/api/autopilot/seo/press-release', methods=['POST'])
