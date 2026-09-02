@@ -225,8 +225,40 @@ def cmd_revoke(args):
         )
         dk_live, dk_rows = cur.fetchone()
 
-    found_rows = (ak_rows or 0) + (dk_rows or 0)
-    still_live = (ak_live or 0) + (dk_live or 0)
+        # 4) ★★★ THE THIRD ID SPACE — READ, NEVER WRITTEN.
+        #
+        # dch_trial_ keys are accepted by routes/auto_trial.validate_trial_key
+        # off auto_trial_keys, a table this command does not manage. Before
+        # 2026-09-02 that table was invisible here, so a trial key with an
+        # mcp_dev_keys row got: ledger row flipped to 'revoked', found_rows=1,
+        # still_live=0 -> "REVOKE COMPLETE", exit 0 — while the trial path kept
+        # accepting it. resolve_tier tests the dch_trial_ prefix BEFORE it ever
+        # looks at mcp_dev_keys, so the ledger write cannot stop it. That is a
+        # tool reporting a successful revoke on a live credential, which is the
+        # exact failure #2766 and #3515 were each fixing.
+        #
+        # Measured on production 2026-09-02: 2 dch_trial_ rows in mcp_dev_keys
+        # (both status='active'), 0 of them unexpired in auto_trial_keys. So the
+        # false-success set was EMPTY — by luck, not by construction, and
+        # nothing was stopping it from filling.
+        #
+        # Gated on the prefix because that is exactly what is_trial_key()
+        # requires: a row here under any other prefix can never authenticate
+        # through the trial path, so counting it as live would be a lie in the
+        # other direction. NOT wrapped in a bare except — a revocation tool
+        # that silently skips an id space is how this file got here twice.
+        at_live = at_rows = 0
+        if args.key.startswith("dch_trial_"):
+            cur.execute(
+                """SELECT COUNT(*) FILTER (WHERE expires_at > NOW()),
+                          COUNT(*)
+                     FROM auto_trial_keys WHERE api_key = %s""",
+                (args.key,),
+            )
+            at_live, at_rows = cur.fetchone()
+
+    found_rows = (ak_rows or 0) + (dk_rows or 0) + (at_rows or 0)
+    still_live = (ak_live or 0) + (dk_live or 0) + (at_live or 0)
 
     print(json.dumps({
         # never echo the whole credential back — matches resolve_tier's
@@ -237,6 +269,7 @@ def cmd_revoke(args):
         "revoked_in_mcp_dev_keys": ledger_n,
         "rows_found":              found_rows,
         "still_accepted_anywhere": still_live > 0,
+        "still_live_in_auto_trial_keys": at_live or 0,
         "note": ("BOTH tables authenticate — api_keys via tier_gate step 1b, "
                  "mcp_dev_keys via /api/v1/keys/validate (the MCP hop). A key "
                  "minted by claim_free_key has NO api_keys row, so "
@@ -270,7 +303,21 @@ def cmd_revoke(args):
     if still_live > 0:
         sys.stderr.write(
             "\nREVOKE DID NOT TAKE: the key is STILL ACCEPTED after the write "
-            f"(api_keys live rows: {ak_live}, mcp_dev_keys active rows: {dk_live}).\n"
+            f"(api_keys live rows: {ak_live}, mcp_dev_keys active rows: {dk_live}"
+            f", auto_trial_keys unexpired rows: {at_live}).\n"
+            + (
+                "\n★ STILL LIVE VIA auto_trial_keys — and this command CANNOT "
+                "revoke it there.\n"
+                "  resolve_tier checks the dch_trial_ prefix BEFORE mcp_dev_keys, "
+                "so the\n"
+                "  ledger write above does not stop it. That table has no status "
+                "column —\n"
+                "  expiry is the kill switch:\n"
+                "      UPDATE auto_trial_keys SET expires_at = NOW() "
+                "WHERE api_key = '<key>';\n"
+                "  Run that, then re-run this command to confirm.\n"
+                if at_live else ""
+            ) +
             "Do NOT treat this as a successful rotation — verify with a live "
             "call before retiring the old credential.\n")
         sys.exit(1)
