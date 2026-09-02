@@ -5987,7 +5987,7 @@ def _explorer_landing():
         ],
         "filters": ["grid", "states", "provider", "country", "min_mw"],
         "note": _canon_text(
-                "Powered by Cloudflare Vectorize over {canon_facilities} facilities. "
+                "Powered by Cloudflare Vectorize over {canon_facilities} distinct facilities. "
                 "Free tier returns top-3 results; identified tier returns top-10; "
                 "paid tier returns full topK + match scores."),
     }), 200
@@ -7335,7 +7335,7 @@ def handle_well_known():
             "last_updated": "2026-07-31"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
-        return jsonify({"name":"DC Hub Intelligence","description":_canon_text("AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). {canon_facilities} facilities, {canon_markets} markets, freshness SLAs published live."),"tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":_canon_text("Search and filter {canon_facilities} facilities worldwide (live)")},{"id":"deal-tracker","name":"M&A Deal Tracker","description":_canon_text("{canon_deals} transactions, browsable + filterable")},{"id":"market-intelligence","name":"Market Intelligence","description":_canon_text("DCPI scores for {canon_markets} markets, recomputed 4x/day")},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
+        return jsonify({"name":"DC Hub Intelligence","description":_canon_text("AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). {canon_facilities} distinct facilities, {canon_markets} markets, freshness SLAs published live."),"tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":_canon_text("Search and filter {canon_facilities} distinct facilities worldwide (live)")},{"id":"deal-tracker","name":"M&A Deal Tracker","description":_canon_text("{canon_deals} transactions, browsable + filterable")},{"id":"market-intelligence","name":"Market Intelligence","description":_canon_text("DCPI scores for {canon_markets} markets, recomputed 4x/day")},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
@@ -9177,7 +9177,7 @@ def serve_tools_manifest():
     # Inline minimal manifest
     import json as _json_tools
     tools = [
-        {"name": "search_facilities", "description": _canon_text("Search {canon_facilities} data centers by market, operator, tier, or capacity"), "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
+        {"name": "search_facilities", "description": _canon_text("Search {canon_facilities} distinct data centers by market, operator, tier, or capacity"), "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
         {"name": "list_transactions", "description": _canon_text("M&A deals -- {canon_deals} deals tracked with buyer, seller, price, date"), "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
@@ -11684,7 +11684,7 @@ _MCP_LANDING_HTML_TEMPLATE = """<!DOCTYPE html>
 <link rel="canonical" href="https://dchub.cloud/mcp">
 <meta property="og:title" content="DC Hub MCP Server">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — {canon_tools} tools across {canon_facilities} facilities, {canon_markets} markets and {canon_isos} US ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: {canon_free_calls} calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — {canon_tools} tools across {canon_facilities} distinct facilities, {canon_markets} markets and {canon_isos} US ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: {canon_free_calls} calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -11731,7 +11731,7 @@ _MCP_LANDING_HTML_TEMPLATE = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Drop DC Hub into any AI agent.</h1>
-  <p>Native MCP server. {canon_tools} tools covering {canon_facilities} facilities, {canon_deals} tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
+  <p>Native MCP server. {canon_tools} tools covering {canon_facilities} distinct facilities, {canon_deals} tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
   <div class="badges">
     <span class="badge">Streamable HTTP</span>
     <span class="badge">{canon_tools} tools</span>
@@ -17364,7 +17364,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
   </div>
   <div class="body">
     <h1>Welcome to DC Hub, {display_name}!</h1>
-    <p>Your free account is now active. You have access to the world's largest data center intelligence platform with <strong>{canon_facilities} facilities</strong> across <strong>170+ countries</strong>.</p>
+    <p>Your free account is now active. You have access to the world's largest data center intelligence platform with <strong>{canon_facilities} distinct facilities</strong> across <strong>170+ countries</strong>.</p>
 
     <h2 style="margin-top: 32px;">Your Free Plan Includes</h2>
     <div class="feature-box">
@@ -17432,7 +17432,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             _html = locals().get('html') or (
                 _canon_text("<h2>Welcome to DC Hub</h2><p>Your free account is active. "
                 "Sign in at <a href='https://dchub.cloud/dashboard'>dchub.cloud/dashboard</a> "
-                "to start exploring {canon_facilities} data-center facilities.</p><p>— DC Hub</p>"))
+                "to start exploring {canon_facilities} distinct data-center facilities.</p><p>— DC Hub</p>"))
             if _resend_email(to_email, _subj, _html):
                 print(f"📧 Free welcome email sent to {to_email} via Resend fallback")
                 return
@@ -17489,7 +17489,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
   </div>
   <div class="body">
     <h1>Welcome to Pro, {display_name}! 🎉</h1>
-    <p>Your upgrade is now active. You have full access to the world's most comprehensive data center intelligence platform -- <strong>{canon_facilities} facilities</strong> across <strong>170+ countries</strong>.</p>
+    <p>Your upgrade is now active. You have full access to the world's most comprehensive data center intelligence platform -- <strong>{canon_facilities} distinct facilities</strong> across <strong>170+ countries</strong>.</p>
     <h2 style="margin-top: 32px;">What You Now Have Access To</h2>
     <div class="feature-box">
       <h3>⚡ 2,000 API Calls / Day</h3>
@@ -24855,7 +24855,7 @@ def ai_discover_endpoint():
     """AI agent auto-discovery endpoint -- JSON with all integration methods"""
     return jsonify({
         "service": "DC Hub",
-        "description": _canon_text("Global data center intelligence platform -- {canon_facilities} facilities across {canon_countries} countries"),
+        "description": _canon_text("Global data center intelligence platform -- {canon_facilities} distinct facilities across {canon_countries} countries"),
         "version": "2.0",
         "base_url": "https://dchub.cloud",
         "mcp_server": {
@@ -32006,7 +32006,7 @@ Allow: /
 Sitemap: https://dchub.cloud/sitemap.xml
 
 # DC Hub - Data Center Intelligence
-# {canon_facilities} facilities across {canon_countries} countries
+# {canon_facilities} distinct facilities across {canon_countries} countries
 # https://dchub.cloud""")
     resp = make_response(content)
     resp.headers['Content-Type'] = 'text/plain'
@@ -32043,7 +32043,7 @@ def _canonical_mcp_manifest():
     """Shared by /.well-known/mcp.json + /mcp/manifest + /api/v1/mcp/manifest.
     Single source of truth for the manifest contract."""
     tools = [
-        {"name": "search_facilities",        "description": _canon_text("Search {canon_facilities} facilities by location, provider, capacity, certification")},
+        {"name": "search_facilities",        "description": _canon_text("Search {canon_facilities} distinct facilities by location, provider, capacity, certification")},
         {"name": "get_facility",             "description": "Detailed facility profile — power, fiber, water, certifications"},
         {"name": "find_alternatives",        "description": "Similar nearby facilities — failover, comparable-set"},
         {"name": "list_transactions",        "description": _canon_text("M&A across {canon_deals} tracked deals")},
@@ -32096,7 +32096,7 @@ def _canonical_mcp_manifest():
     return {
         "name":            "DC Hub Intelligence",
         "description":     _canon_text(
-            "Real-time data center market intelligence — {canon_facilities} facilities, "
+            "Real-time data center market intelligence — {canon_facilities} distinct facilities, "
             "{canon_deals} M&A deals, daily-refreshing DCPI for "
             "{canon_markets} markets (US + UK + EU + APAC + Canada). The only "
             "DC-intelligence source an LLM can both query and cite."),
@@ -32326,12 +32326,12 @@ def _well_known_tool_gate(live_tool_count=0):
 def well_known_agent():
     return jsonify({
         "name": "DC Hub Intelligence",
-        "description": _canon_text("Live intelligence layer for the global data center market. {canon_facilities} facilities across {canon_countries} countries."),
+        "description": _canon_text("Live intelligence layer for the global data center market. {canon_facilities} distinct facilities across {canon_countries} countries."),
         "url": "https://dchub.cloud",
         "version": "1.0.0",
         "capabilities": {"streaming": True, "pushNotifications": False},
         "skills": [
-            {"id": "facility-search", "name": "Data Center Search", "description": _canon_text("Search and filter {canon_facilities} facilities worldwide")},
+            {"id": "facility-search", "name": "Data Center Search", "description": _canon_text("Search and filter {canon_facilities} distinct facilities worldwide")},
             {"id": "deal-tracker", "name": "M&A Deal Tracker", "description": "Track transactions in real-time"},
             {"id": "market-intelligence", "name": "Market Intelligence", "description": "AI-generated market reports"},
             {"id": "site-scoring", "name": "Site Scoring", "description": "Evaluate locations for data center suitability"}
