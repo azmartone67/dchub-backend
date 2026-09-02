@@ -420,3 +420,134 @@ def test_version_probe_reads_the_authoritative_handshake_only():
     assert '"/mcp"' in code
     for echo in ("/mcp/health", "well-known", "mcp.json"):
         assert echo not in code, f"probe reads {echo} — a CF-synthesized echo surface"
+
+
+# ── (6) the two PINNED-reading surfaces (2026-09-02) ───────────────────────
+#
+# The 2026-08-30 self-heal wired the resolver into /.well-known/mcp.json,
+# /.well-known/mcp-server.json and /openapi.json. TWO public surfaces were
+# missed and kept publishing the cold-start pin. Measured live 2026-09-02,
+# same minute, against the Railway origin:
+#
+#     live `initialize` serverInfo   2.12.3   <- the SoT
+#     /openapi.json                  2.12.3   OK
+#     /.well-known/mcp-server.json   2.12.3   OK
+#     /mcp-server-card.json          2.12.1   STALE  <- test A
+#     /api/v1/mcp/platforms          2.12.1   STALE  <- test B
+#
+# ★ Neither is watched by ai_surface_sentinel: `/api/v1/mcp/platforms` is not
+# in its _SURFACES at all, and the entry it does carry for the card is the
+# CANONICAL /.well-known/mcp/server-card.json path, which on dchub.cloud is
+# answered by the CF zone worker off the origin's already-healed
+# /.well-known/mcp.json. The worker masked the origin's pin on the only path
+# the sentinel watches. That blind spot is why this sat, and it is why these
+# two tests exist instead of an alert.
+
+def test_mcp_server_card_route_serves_the_resolved_version():
+    """/mcp-server-card.json must render the RESOLVER, not canon_text's pin.
+
+    Behavioural, not substring: render the real route through a bare Flask app
+    and read the JSON. Mirrors test_origin_manifest_version_is_canon_derived —
+    seed a FRESH cache entry with a value the pin does not have, so a pin-reader
+    returns PINNED["version"] and fails while a resolver-reader returns the
+    sentinel. A fresh entry also keeps this offline: the resolver only starts
+    its background refresh when the cached value is stale.
+    """
+    import json
+    import time
+
+    import flask
+
+    import ai_discovery_routes
+    import ai_surface_canon as canon
+
+    sentinel = "99.9.9"
+    assert sentinel != canon.PINNED["version"], "sentinel must differ from the pin"
+
+    app = flask.Flask(__name__)
+    ai_discovery_routes.register_discovery_routes(app)
+
+    saved = dict(canon._server_version_cache)
+    try:
+        with canon._server_version_lock:
+            canon._server_version_cache["val"] = sentinel
+            canon._server_version_cache["at"] = time.time()
+        resp = app.test_client().get("/mcp-server-card.json")
+        body = resp.get_data(as_text=True)
+    finally:
+        with canon._server_version_lock:
+            canon._server_version_cache.clear()
+            canon._server_version_cache.update(saved)
+
+    assert resp.status_code == 200, f"server card returned {resp.status_code}"
+    got = json.loads(body).get("version")
+    assert got == sentinel, (
+        f"/mcp-server-card.json served {got!r}, not the resolved {sentinel!r} — "
+        "it is reading ai_surface_canon.PINNED, which is only the cold-start "
+        "fallback, so this surface cannot self-heal (it served 2.12.1 against a "
+        "live 2.12.3 on 2026-09-02)"
+    )
+    # ...and the fix must not have been bought by abandoning canon_text() for
+    # the REST of the card: every other {canon_*} placeholder still resolves.
+    assert "{canon_" not in body, (
+        "an unresolved {canon_*} placeholder is being served in the card body — "
+        "serving the literal placeholder is worse than the stale number"
+    )
+
+
+def test_mcp_platforms_endpoint_derives_the_version():
+    """/api/v1/mcp/platforms must CALL the resolver, not read PINNED.
+
+    AST-anchored, not substring. The house rule forbids importing main.py, and
+    mcp_platforms_status opens a DB besides, so this walks the function the same
+    way test_mcp_server_json_route_derives_the_version does — and for the same
+    reason recorded in that test's docstring: a mutation proved substring
+    presence VACUOUS, because reverting the assignment while leaving the import
+    line in place kept the string there and the test green.
+    """
+    import ast
+    src = _func_src(_MAIN, "mcp_platforms_status")
+    fn = ast.parse(src).body[0]
+
+    alias = None
+    for node in ast.walk(fn):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name == "resolve_server_version_cached":
+                    alias = a.asname or a.name
+    assert alias, "mcp_platforms_status does not import the resolver at all"
+
+    wired = False
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if "_server_version" not in targets:
+                continue
+            for sub in ast.walk(node.value):
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) \
+                        and sub.func.id == alias:
+                    wired = True
+    assert wired, (
+        f"`{alias}` is imported but its result never reaches _server_version — "
+        "the endpoint still publishes the pin"
+    )
+
+    # the derived value must actually reach the response body
+    assert '"server_version": _server_version' in _MAIN.read_text(), (
+        "the platforms response no longer serves _server_version"
+    )
+
+    # never blocks, never raises: every rung stays inside a try/except, and the
+    # fallback chain still ends at the pin (cold start) rather than at blank.
+    calls_in_try = False
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Try):
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) \
+                    and sub.func.id == alias:
+                calls_in_try = True
+    assert calls_in_try, (
+        "the resolver call is not inside a try/except — this is a request path "
+        "and the accessor's contract is that it never breaks one"
+    )

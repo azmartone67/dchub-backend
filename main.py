@@ -20471,11 +20471,30 @@ def mcp_platforms_status():
             _tools_count = len(_fcard())
         except Exception:
             _tools_count = None
+        #
+        # ★2026-09-02: `server_version` now reads the SERVED resolver, not the
+        # PIN. PINNED["version"] is ai_surface_canon's COLD-START fallback, and
+        # reading it directly meant this endpoint published 2.12.1 against a
+        # live `initialize` serverInfo of 2.12.3 — the same class of lag the
+        # 2026-07-31 note above was written for, one rung further in.
+        # resolve_server_version_cached() answers from memory and refreshes in a
+        # background thread, so it never blocks this request path and never
+        # raises (that is why it exists rather than resolve_canon(), which
+        # probes live per call). It returns PINNED["version"] on a cold cache,
+        # so the cold-start answer here is byte-identical to the old one; the
+        # pin below stays as the inner rung, and None remains the last resort so
+        # the "fail open to None, never to a literal" rule above still holds.
         try:
-            from ai_surface_canon import PINNED as _canon
-            _server_version = _canon.get("version")
+            from ai_surface_canon import resolve_server_version_cached as _live
+            _server_version = _live()
         except Exception:
             _server_version = None
+        if not _server_version:
+            try:
+                from ai_surface_canon import PINNED as _canon
+                _server_version = _canon.get("version")
+            except Exception:
+                _server_version = None
 
         return jsonify({
             "success": True,
