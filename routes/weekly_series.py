@@ -379,7 +379,8 @@ def _superseded_by(week_starts: list[str]) -> list[dict]:
     return out
 
 
-def _comparability(week_starts: list[str]) -> dict:
+def _comparability(week_starts: list[str],
+                   weeks: list[dict] | None = None) -> dict:
     """Is a delta over these weeks quotable as a trend?
 
     Takes the week_start strings a delta actually divided, so it cannot drift
@@ -409,17 +410,94 @@ def _comparability(week_starts: list[str]) -> dict:
         if ch["effective_at"] not in seen:
             seen.add(ch["effective_at"])
             uniq.append(ch)
-    return _verdict(uniq, _superseded_by(week_starts))
+    return _verdict(uniq, _superseded_by(week_starts),
+                    _harvester_dominated(week_starts, weeks))
 
 
-def _verdict(uniq: list[dict], sup: list[dict]) -> dict:
+# ── THE THIRD HAZARD: a baseline week that is mostly a bulk scraper ──────────
+#
+# ★ WHY THE OUTLIER TEST CANNOT COVER THIS (measured 2026-09-02).
+# 2026-W35 published calls=1,810 against a trailing median of 2,447 — a ratio
+# of 0.74, comfortably inside the 0.5-2.0 band, so `wow_baseline_check` reads
+# it as "in line" and every consumer treats it as a usable baseline. It is
+# not: 1,475 of those 1,810 calls (81.5%) were `chain-hire`, a bulk harvester
+# that took one tool from two IPs holding no api_key, at a flat 100-132
+# calls/hour for 14 hours, and then stopped. calls_net_of_harvesters for that
+# week is 335.
+#
+# The two tests are asking different questions and only one of them can answer
+# this. `_baseline_outlier_flag` is INFERENTIAL — it asks whether a week's
+# TOTAL looks unusual next to its neighbours, and a scraper that lands a week
+# squarely on its median is invisible to it. This one is ATTRIBUTIVE: the
+# harvester share is measured per week from a named tag, so the week does not
+# have to look strange to be disqualified. A week can be perfectly ordinary in
+# size and still be four-fifths not-demand.
+#
+# ★ IT DISQUALIFIES A BASELINE, IT DOES NOT CORRECT ONE. Nothing here rewrites
+# `calls`, and calls_net_of_harvesters is NOT quietly swapped in as the
+# baseline: netting a scraper out of one week while the weeks around it keep
+# theirs would just move the discontinuity somewhere a reader cannot see it.
+# The honest move is to refuse the delta and say which week, which harvester
+# and what share — the reader can then quote calls_net_of_harvesters across
+# ALL weeks deliberately, which is a different series and labelled as one.
+#
+# Threshold is mcp_calls_deloop.CONCENTRATION_PCT, the SAME 25.0 the funnel
+# already gates single-caller concentration on — deliberately not a second
+# number for a reader to reconcile against the first.
+def _harvester_dominated(week_starts: list[str],
+                         weeks: list[dict] | None) -> list[dict]:
+    """Weeks in this delta whose harvester share is at or above the threshold.
+
+    Silent (empty) when the per-week harvester query did not run — a missing
+    measurement must never manufacture a hazard, exactly as it must never
+    manufacture a clean bill. `harvester_pct is None` is unknown, not zero.
+    """
+    try:
+        from mcp_calls_deloop import CONCENTRATION_PCT as _thr
+    except Exception:
+        return []
+    wanted = set(week_starts or ())
+    out = []
+    for w in (weeks or ()):
+        if w.get("week_start") not in wanted:
+            continue
+        pct = w.get("harvester_pct")
+        if pct is None or pct < _thr:
+            continue
+        out.append({
+            "week_start": w.get("week_start"),
+            "harvester_pct": pct,
+            "harvester_calls": w.get("harvester_calls"),
+            "calls": w.get("calls"),
+            "calls_net_of_harvesters": w.get("calls_net_of_harvesters"),
+            "harvesters": w.get("harvester_names"),
+            "threshold_pct": _thr,
+            "means": (
+                "this week is mostly a NAMED BULK HARVESTER, not demand. Its "
+                "total may look ordinary next to its neighbours — the outlier "
+                "test compares totals and will not catch it — so a delta "
+                "against it describes when the scraper ran, not what changed"),
+        })
+    return out
+
+
+def _verdict(uniq: list[dict], sup: list[dict],
+             harv: list[dict] | None = None) -> dict:
     """The published comparability dict, built in exactly ONE place.
 
     Both the week-shaped and the span-shaped entry points land here, so a
     consumer branching on `quotable_as_trend` gets the same contract whichever
-    asked — and the two can never drift into disagreeing about what a refusal
-    means.
+    asked — and the three can never drift into disagreeing about what a
+    refusal means.
+
+    Three hazards now, each published as its own boolean so the REASON for a
+    refusal stays legible rather than collapsing into a bare false:
+      crosses_definition_change   the sides count different populations
+      superseded_by_correction    both sides count a population since declared wrong
+      baseline_harvester_dominated  a week in the delta is mostly a named bulk
+        harvester, so the delta describes when a scraper ran
     """
+    harv = list(harv or ())
     if uniq:
         _means = (
             "at least one week in this delta counts a DIFFERENT population "
@@ -435,6 +513,16 @@ def _verdict(uniq: list[dict], sup: list[dict]) -> dict:
             "arithmetically correct and is NOT a trend. Do not quote it, and "
             "do not compare either week to one measured after the correction."
         )
+    elif harv:
+        _weeks = ", ".join(str(h.get("week_start")) for h in harv)
+        _means = (
+            "every week in this delta counts the same population, but "
+            f"{_weeks} is mostly a NAMED BULK HARVESTER rather than demand — "
+            "see baseline_harvester[]. The percentage is arithmetically "
+            "correct and is NOT a trend: it describes when a scraper ran. "
+            "Read calls_net_of_harvesters across ALL weeks instead, which is "
+            "a different series and must be labelled as one."
+        )
     else:
         _means = "every week in this delta counts the same population"
     return {
@@ -442,7 +530,9 @@ def _verdict(uniq: list[dict], sup: list[dict]) -> dict:
         "changes": uniq,
         "superseded_by_correction": bool(sup),
         "superseded_by": sup,
-        "quotable_as_trend": not (uniq or sup),
+        "baseline_harvester_dominated": bool(harv),
+        "baseline_harvester": harv,
+        "quotable_as_trend": not (uniq or sup or harv),
         "means": _means,
     }
 
@@ -575,7 +665,8 @@ def _iso_label(d: _dt.date) -> str:
 
 def _assemble(rows: dict, week_starts: list[_dt.date],
               net: dict | None = None,
-              harness: dict | None = None) -> list[dict]:
+              harness: dict | None = None,
+              harvester: dict | None = None) -> list[dict]:
     """One row per expected week; nulls where nothing was observed.
 
     rows maps week_start -> (agents, calls, rows_observed). A week absent from
@@ -652,6 +743,25 @@ def _assemble(rows: dict, week_starts: list[_dt.date],
             # (net_calls, net_agents, harness_calls). Reported, never
             # deny-listed: the names ride along so a reader can see WHO was
             # subtracted (mcp_calls_deloop.HARNESS_CLIENT_NAMES).
+            # ★ 2026-09-02 (r-harvester-baseline). The harvester companion,
+            # same shape as the harness one below. harvester maps week_start
+            # -> (net_calls, net_agents, harvester_calls). harvester_pct is
+            # emitted here rather than left to the reader because it is the
+            # field _harvester_dominated() gates on, and a share a consumer
+            # has to compute is a share two consumers compute differently.
+            vrec = (harvester or {}).get(ws)
+            if vrec is not None:
+                from mcp_calls_deloop import HARVESTER_PLATFORMS as _hv_names
+                _v_calls = int(vrec[2] or 0)
+                _tot = int(base.get("calls") or 0)
+                base.update({
+                    "calls_net_of_harvesters": int(vrec[0] or 0),
+                    "agents_net_of_harvesters": int(vrec[1] or 0),
+                    "harvester_calls": _v_calls,
+                    "harvester_pct": (round(100.0 * _v_calls / _tot, 1)
+                                      if _tot else None),
+                    "harvester_names": sorted(_hv_names),
+                })
             hrec = (harness or {}).get(ws)
             if hrec is not None:
                 from mcp_calls_deloop import HARNESS_CLIENT_NAMES as _hn
@@ -707,7 +817,7 @@ def _wow(weeks: list[dict]) -> dict:
     out["agents_pct"] = pct(last["agents"], prev["agents"])
     out["calls_pct"] = pct(last["calls"], prev["calls"])
     out["comparability"] = _comparability(
-        [prev["week_start"], last["week_start"]])
+        [prev["week_start"], last["week_start"]], weeks)
     if out["agents_pct"] is None and out["calls_pct"] is None:
         out["reason"] = (
             f"baseline week {prev['week_start']} measured zero — percentage "
@@ -816,7 +926,7 @@ def _robust_wow(weeks: list[dict], window: int = _ROBUST_BASELINE_WEEKS) -> dict
     # This is the one delta the payload tells readers to quote, so it is the
     # one that most needs the warning attached.
     out["comparability"] = _comparability(
-        out["baseline_weeks_used"] + [last["week_start"]])
+        out["baseline_weeks_used"] + [last["week_start"]], weeks)
     if out["agents_pct"] is None and out["calls_pct"] is None:
         out["reason"] = ("trailing median measured zero — percentage change "
                          "from a zero baseline is undefined, so it is withheld")
@@ -1086,6 +1196,33 @@ def _run(weeks: int) -> dict:
             # self-isolated like the net-of-top query: a failure costs the
             # reader these three keys and nothing else. The predicate is
             # exact-name IN (...) — no LIKE, no %, so it is safe inlined.
+            # HARVESTERS, per week, same `where` + `pop` strings again. Same
+            # shape as the harness block below it and for the same reason —
+            # but a DIFFERENT question. A harness is ours; a harvester is
+            # someone else's bulk scrape. Both are reported and neither is
+            # deny-listed, so `calls` stays the published population.
+            # ★ This is what makes _harvester_dominated() possible: without a
+            # per-week harvester share, a week that is 81.4% one scraper is
+            # indistinguishable from a week of demand at the same total, and
+            # the outlier test cannot tell them apart (see that function).
+            harvester_rows = {}
+            try:
+                from mcp_calls_deloop import harvester_predicate as _hv_fn
+                _hv = _hv_fn()
+                cur.execute(
+                    "SELECT date_trunc('week', created_at)::date AS wk,"
+                    "       COUNT(*) FILTER (WHERE NOT (" + _hv + ")) AS net_calls,"
+                    "       COUNT(DISTINCT agent_id) FILTER (WHERE NOT (" + _hv + "))"
+                    "         AS net_agents,"
+                    "       COUNT(*) FILTER (WHERE " + _hv + ") AS harvester_calls"
+                    "  FROM " + _TABLE +
+                    " WHERE " + where + " AND " + pop +
+                    " GROUP BY 1 ORDER BY 1"
+                )
+                harvester_rows = {r[0]: r[1:] for r in (cur.fetchall() or [])}
+            except Exception:
+                harvester_rows = {}
+
             harness_rows = {}
             try:
                 from mcp_calls_deloop import harness_predicate as _hp_fn
@@ -1129,7 +1266,8 @@ def _run(weeks: int) -> dict:
             pass
 
     out["weeks"] = _assemble(fetched, _week_starts(cur_week, weeks), net_rows,
-                             harness=harness_rows)
+                             harness=harness_rows,
+                             harvester=harvester_rows)
     out["current_week_partial"] = _partial_week(
         cur_week, prow[0], prow[1], now_ts)
     out["wow"] = _wow(out["weeks"])
