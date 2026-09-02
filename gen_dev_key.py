@@ -158,9 +158,22 @@ def cmd_revoke(args):
                         `WHERE api_key = %s` requiring status='active'.
                         ★ That is a REAL gate with teeth, not bookkeeping.
 
-    (resolve_tier step 1a queries `mcp_dev_keys WHERE key_hash = %s`. That
-    column does not exist, so it always raises UndefinedColumn into a bare
-    except. It is dead code and authenticates nobody — do not count it.)
+    ★★★ AND SINCE #3288 (a9d98800c, 2026-08-28) mcp_dev_keys GATES REST TOO.
+    resolve_tier step 1a used to query `mcp_dev_keys WHERE key_hash = %s` — a
+    column the table has never had — so it raised UndefinedColumn into a bare
+    except and authenticated nobody. #3288 re-pointed it at the real column:
+
+        SELECT tier, email, developer_id FROM mcp_dev_keys
+         WHERE api_key = %s AND COALESCE(status, 'active') = 'active'
+
+    and it RETURNS BEFORE step 1b ever looks at api_keys. So `status` here is
+    load-bearing on BOTH paths now, not just on the Node relay. Do not "simplify"
+    this command back to writing api_keys alone: for an MCP-minted key that
+    leaves the row `active` and the key still authenticating through 1a.
+    (An earlier version of this docstring called 1a dead code and said "do not
+    count it". That was true until 08-28 and false after — cmd_mint below has
+    read the live tier map since #3526 rather than restating it, and this
+    paragraph is pinned against util/tier_gate.py for the same reason.)
 
     So `revoked_in_api_keys: 0` + `revoked_in_mcp_dev_keys: 1` is a COMPLETE,
     SUCCESSFUL revoke of a free key, not a failure.
