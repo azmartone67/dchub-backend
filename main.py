@@ -9164,16 +9164,25 @@ def verify_api_key_endpoint():
 @app.route('/integrations/tools.json', methods=['GET'])
 def serve_tools_manifest():
     """Serve function-calling tool manifest for AI platforms (Copilot, Gemini, etc.)"""
-    try:
-        with open('tools.json', 'r') as f:
-            return f.read(), 200, {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}
-    except:
-        pass
-    try:
-        with open('static/integrations/tools.json', 'r') as f:
-            return f.read(), 200, {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}
-    except:
-        pass
+    # ★2026-09-02: these two file reads WIN over the inline manifest below, and
+    # that is the whole bug this fixes. tools.json exists, so the inline
+    # canon-bound dict at the bottom of this function has never rendered — and
+    # the file previously carried a frozen literal facility floor (a retired
+    # pre-dedup value, deliberately not restated here — see BANNED_STALE).
+    # Measured: the live surface served 21,000+ while canon read 20,100+, and
+    # 21,000+ is not merely stale, it is the RAW DISCOVERY PILE
+    # (canonical_stats.facilities_phrase(), "the discovery pile (back-compat)"),
+    # a DIFFERENT population from the distinct fleet {canon_facilities} resolves
+    # to. #3626 fixed the inline fallback and changed nothing an agent sees.
+    # The file now carries {canon_*} placeholders and is substituted on serve, so
+    # the manifest keeps owning the SHAPE while every number derives from canon.
+    for _tools_path in ('tools.json', 'static/integrations/tools.json'):
+        try:
+            with open(_tools_path, 'r') as f:
+                return (_canon_text(f.read()), 200,
+                        {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'})
+        except Exception:
+            continue
     # Inline minimal manifest
     import json as _json_tools
     tools = [
