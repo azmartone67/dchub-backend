@@ -77,6 +77,9 @@ from mcp_calls_deloop import (
     CONCENTRATION_PCT as _CONCENTRATION_PCT,
     split_conversion_attribution as _split_conversion_attribution,
     CANONICAL_SIGNALS_BASIS as _CANONICAL_SIGNALS_BASIS,
+    canonical_harvester_split_sql as _canonical_harvester_split_sql,
+    CANONICAL_NET_OF_HARVESTER_BASIS as _CANONICAL_HARVESTER_BASIS,
+    HARVESTER_PLATFORMS as _HARVESTER_PLATFORMS,
 )
 
 # Compat: prefer psycopg (v3), fall back to psycopg2 if Railway only has the older one
@@ -3774,6 +3777,58 @@ def mcp_funnel():
                 out["top_caller_calls_7d_complete"] = None
                 out["top_caller_pct_7d_complete"] = None
                 out["demand_net_of_top_caller_7d"] = None
+
+            # ★ 2026-09-01 (r-harvester-split). demand_net_of_top_caller_7d
+            # answers "how much of the headline is ONE caller?" — it cannot
+            # answer "how much of it is a caller that is not demand at all?".
+            # On this date those were the same row and the coincidence hid the
+            # gap: `chain-hire` was BOTH the top caller AND a bulk harvester
+            # (one IP, one tool, no api_key, 1,410 calls served past the
+            # anonymous cap at a flat 100-132/hour for 14 hours), so
+            # net-of-top happened to read like net-of-harvester. The moment a
+            # real gateway is the top caller and a harvester sits second, the
+            # two diverge and only this block is still true.
+            #
+            # It is a DECOMPOSITION, not an exclusion: is_real_external is
+            # untouched, so no already-published week is restated. See
+            # mcp_calls_deloop.HARVESTER_PLATFORMS for why that is deliberate.
+            try:
+                cur.execute(_canonical_harvester_split_sql(7))
+                _hs = cur.fetchone() or (0, 0, 0, 0, 0, 0)
+                _h_calls, _h_hcalls, _h_netcalls = (int(_hs[0] or 0),
+                                                    int(_hs[1] or 0),
+                                                    int(_hs[2] or 0))
+                _h_agents, _h_hagents, _h_netagents = (int(_hs[3] or 0),
+                                                       int(_hs[4] or 0),
+                                                       int(_hs[5] or 0))
+                _h_pct = (round(100.0 * _h_hcalls / _h_calls, 1)
+                          if _h_calls else None)
+                out["demand_net_of_harvesters_7d"] = {
+                    "calls":               _h_netcalls,
+                    "agents":              _h_netagents,
+                    "headline_calls":      _h_calls,
+                    "headline_agents":     _h_agents,
+                    "harvester_calls":     _h_hcalls,
+                    "harvester_agents":    _h_hagents,
+                    "harvester_pct":       _h_pct,
+                    # Named, not counted-and-hidden. A reader can check any
+                    # one of these against calls_by_platform_30d, where the
+                    # same names carry kind='harvester'.
+                    "harvesters_named":    sorted(_HARVESTER_PLATFORMS),
+                    "excluded_from_headline": False,
+                    "identity": (
+                        "headline_calls == harvester_calls + calls — holds by "
+                        "construction (complementary FILTERs on one scan). "
+                        "AGENTS DO NOT SUM: an agent_id with both harvester "
+                        "and non-harvester rows is counted in headline_agents, "
+                        "harvester_agents AND agents, so those three are three "
+                        "populations, not a partition"),
+                    "basis": _CANONICAL_HARVESTER_BASIS,
+                }
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out["demand_net_of_harvesters_7d"] = None
 
             # ★ 2026-08-05: the #2254 rename landed in the SOURCE, but a reader
             # of this endpoint gets JSON, not comments — and from the JSON
