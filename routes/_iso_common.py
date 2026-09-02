@@ -4,16 +4,19 @@ import csv
 import http.client
 import io
 import json
+import logging
 import os
 import re
 import time
 import urllib.request
 import urllib.error
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg2 as _pg
 from routes._swallowed_writes import note_swallowed_write
+
+_log = logging.getLogger("dchub.iso_common")
 
 
 # ── secret scrubbing ───────────────────────────────────────────────────
@@ -240,19 +243,108 @@ def fetch_first_working(urls, timeout=6, ua="dchub-iso/1.0", total_budget=12):
     raise RuntimeError(scrub_secrets(f"all URLs failed; last={last}"))
 
 
-def persist_metrics(iso, metrics):
-    """Insert each metric to grid_data. Returns count actually inserted."""
+# ── observation time → grid_data.timestamp ───────────────────────────
+# D4 (2026-09-02). persist_metrics used to INSERT (iso, metric_name,
+# metric_value, unit) and let `timestamp` take its DEFAULT NOW() — the INSERT
+# clock. Its ON CONFLICT (iso, timestamp, metric_name) DO NOTHING guard could
+# therefore NEVER fire: the key differed on every write by construction. So a
+# frozen upstream reading was republished as a brand-new "now" row on every
+# 15-minute data-pulse tick, and health_for_iso's MAX(timestamp) reported the
+# insert clock as data freshness. Verified live 2026-07-29 on AEC: latest_data_at
+# 2026-07-29T07:09 with 14,776 rows for a feed whose newest genuine EIA
+# observation is 2021-09-01T05.
+#
+# The caller now DECLARES the upstream observation time. None is allowed — some
+# fallback sources carry no stamp — but it is logged, so an insert-clock row is
+# a visible choice rather than the silent default. UNMEASURED is None, never
+# "now". Guarded by tests/test_grid_ba_surface_guard.py.
+_OBSERVED_AT_UNDECLARED = object()
+
+_RE_OBSERVED_AT = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2})(?::?(\d{2}))?(?::?(\d{2}))?"
+    r"(?:\.\d+)?(Z|[+-]\d{2}(?::?\d{2})?)?$")
+
+
+def coerce_observed_at(value):
+    """Normalise an upstream observation stamp to an aware UTC datetime.
+
+    Accepts a datetime (naive = UTC) or the ISO-8601 shapes the extractors
+    actually see: EIA-930's hour-only "2026-07-29T02" (UTC) and local-hourly
+    "2026-07-29T02-04", ENTSO-E's "2026-08-07T23:00Z", and a full
+    "2026-08-07T23:00:00+00:00". Returns None for None / empty / unparseable —
+    a stamp we cannot read must never be replaced with the clock."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    s = str(value).strip()
+    if not s:
+        return None
+    m = _RE_OBSERVED_AT.match(s)
+    if not m:
+        return None
+    y, mo, d, hh, mm, ss, tz = m.groups()
+    try:
+        dt = datetime(int(y), int(mo), int(d), int(hh), int(mm or 0), int(ss or 0))
+    except ValueError:
+        return None
+    if tz and tz != "Z":
+        sign = 1 if tz[0] == "+" else -1
+        digits = tz[1:].replace(":", "")
+        dt = dt - sign * timedelta(hours=int(digits[:2]), minutes=int(digits[2:4] or 0))
+    return dt.replace(tzinfo=timezone.utc)
+
+
+def parse_eia_v2_latest_period(json_text):
+    """The newest `period` in an api.eia.gov/v2 envelope, or None.
+
+    Companion to parse_eia_v2_fuel_mix, which keeps the newest value per fuel
+    but drops the period it came from. Rows arrive sorted desc upstream; max()
+    is used rather than trusting that order. Periods are ISO-8601 prefixes of
+    one shape per response ("2026-07-29T02"), so lexical max is chronological."""
+    try:
+        d = json.loads(json_text)
+    except (TypeError, ValueError):
+        return None
+    rows = (d.get("response") or {}).get("data") or []
+    periods = [str(r.get("period")) for r in rows
+               if isinstance(r, dict) and r.get("period")]
+    return max(periods) if periods else None
+
+
+def persist_metrics(iso, metrics, observed_at=_OBSERVED_AT_UNDECLARED):
+    """Insert each metric to grid_data. Returns count actually inserted.
+
+    `observed_at` is the UPSTREAM observation time and becomes the row's
+    `timestamp`, so the (iso, timestamp, metric_name) dedup guard fires when the
+    same reading comes round again — a frozen feed stops growing instead of
+    being re-stamped "now" 96 times a day. Pass None ONLY when the source
+    genuinely carries no stamp; it is logged, and the row then takes the insert
+    clock through COALESCE. Leaving it undeclared is logged too — every call
+    site is expected to say which it is."""
     if not metrics:
         return 0
+    ts = None
+    if observed_at is _OBSERVED_AT_UNDECLARED:
+        _log.warning("persist_metrics(%s): observed_at not declared — rows take the "
+                     "INSERT clock and the dedup guard cannot fire", iso)
+    elif observed_at is None:
+        _log.warning("persist_metrics(%s): observed_at=None — upstream carried no "
+                     "observation time; rows take the INSERT clock", iso)
+    else:
+        ts = coerce_observed_at(observed_at)
+        if ts is None:
+            _log.warning("persist_metrics(%s): unparseable observed_at %r — rows take "
+                         "the INSERT clock", iso, observed_at)
     rows = 0
     with conn() as c, c.cursor() as cur:
         for name, data in metrics.items():
             try:
                 cur.execute(
-                    """INSERT INTO grid_data (iso, metric_name, metric_value, unit)
-                       VALUES (%s, %s, %s, %s)
+                    """INSERT INTO grid_data (iso, metric_name, metric_value, unit, timestamp)
+                       VALUES (%s, %s, %s, %s, COALESCE(%s, NOW()))
                        ON CONFLICT (iso, timestamp, metric_name) DO NOTHING""",
-                    (iso, name, data["value"], data.get("unit", "")),
+                    (iso, name, data["value"], data.get("unit", ""), ts),
                 )
                 if cur.rowcount > 0:
                     rows += 1
@@ -291,6 +383,15 @@ def health_for_iso(iso, source_id):
     return {
         "iso": iso,
         "latest_data_at": latest.isoformat() if latest else None,
+        # D4 (2026-09-02): say what the clock IS. Before persist_metrics took
+        # observed_at this was always the insert clock, so a feed frozen since
+        # 2021 read as "fresh this minute".
+        "latest_data_at_basis": (
+            "MAX(grid_data.timestamp). Extractors that know their upstream "
+            "observation time write THAT (EIA-930 hour for the EIA-fed ISOs and "
+            "balancing authorities); rows written before 2026-09-02, and rows "
+            "from sources that carry no stamp, hold the insert clock. An old "
+            "value here is a genuine last observation, not a stopped cron."),
         "total_records": int(total or 0),
         "source_id": source_id,
     }

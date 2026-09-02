@@ -636,17 +636,30 @@ def run_extraction():
         "metrics_extracted": 0, "rows_inserted": 0, "errors": [],
         "source": "ENTSO-E Transparency (A75 actual generation per type)",
     }
+    # D1 (2026-09-02): this summary never carried `status`, so the orchestrator
+    # counted ENTSOE as failed on EVERY tick (healthy or not) and the 50h ENTSO-E
+    # 503 outage was invisible among seven other status-less healthy feeds.
     try:
         if not _token():
             summary["errors"].append("entsoe_token_missing — set ENTSOE_API_Token on Railway (wrote nothing, no modeled fallback)")
+            summary["status"] = "error"
             summary["elapsed_ms"] = int((time.time() - started) * 1000)
             return summary
         snap = _live_snapshot()
         if snap is None:
             summary["errors"].append("entsoe_live_fetch_failed — all zones unreachable/empty (wrote nothing)")
+            summary["status"] = "error"
         else:
+            summary["status"] = "ok"
             summary["metrics_extracted"] = len(snap["metrics"])
             summary["rows_inserted"] = _persist_metrics(snap)
+            # Newest period end across the zones that answered: the CONTENT
+            # freshness the deadman beat carries as max_content_date, so
+            # "poller alive, rows flowing, readings hours stale" is visible.
+            _ends = [(_parse_ts_utc(z.get("data_period_end")), z.get("data_period_end"))
+                     for z in snap["zones"].values() if z.get("data_period_end")]
+            _ends = [e for e in _ends if e[0] is not None]
+            summary["data_period_end_newest"] = max(_ends)[1] if _ends else None
             # Two readings of "how many zones", named. They differ whenever a
             # zone's call fails (it is dropped silently) — never collapse them.
             summary["zones_configured"] = len(_ZONES)
@@ -656,6 +669,7 @@ def run_extraction():
             summary["snapshot"] = {k: v["value"] for k, v in snap["metrics"].items()}
     except Exception as e:
         summary["errors"].append(f"{type(e).__name__}: {e}")
+        summary["status"] = "error"
     summary["elapsed_ms"] = int((time.time() - started) * 1000)
     return summary
 
@@ -745,8 +759,13 @@ def http_dcpi_score():
 def http_health():
     tok = bool(_token())
     probe = _zone_snapshot("DE_LU") if tok else None
+    live_feed_ok = probe is not None
+    # D1 (2026-09-02): this answered HTTP 200 with live_feed_ok:false for the
+    # whole 50h ENTSO-E 503 outage while /snapshot answered 503 — so every
+    # monitor that reads a status code saw green. The body is unchanged; the
+    # code now carries the verdict (503 = feed dead, same as /snapshot).
     return jsonify({"iso": ISO_CODE, "token_configured": tok,
-                    "live_feed_ok": probe is not None,
+                    "live_feed_ok": live_feed_ok,
                     # Basis for live_feed_ok: 0 = fetched on this request,
                     # >0 = age (s) of the reused DE_LU reading, null = no probe.
                     # This probe used to be UNCACHED on every single hit.
@@ -757,7 +776,7 @@ def http_health():
                     "probe_data_period_end": (probe or {}).get("data_period_end"),
                     "zones_configured": len(_ZONES),
                     "registry_warnings": _ZONE_REGISTRY_WARNINGS,
-                    "source": "entsoe_transparency"}), 200
+                    "source": "entsoe_transparency"}), (200 if live_feed_ok else 503)
 
 
 @iso_eu_entsoe_bp.route("/debug", methods=["GET"])

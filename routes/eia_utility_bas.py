@@ -162,7 +162,11 @@ def extract_one(ba: dict) -> dict:
         if not metrics:
             summary["preview"] = res.get("preview")
             summary["no_metrics_reason"] = res.get("no_metrics_reason")
-        rows = persist_metrics(code, metrics)
+        # D4 (2026-09-02): write the EIA observation hour as the row timestamp.
+        # The comment above ("grid_data does NOT store it") described the old
+        # insert-clock write; a frozen BA (AEC, 2021-09-01T05) now dedups to
+        # ZERO new rows per tick instead of 96 fabricated-fresh ones a day.
+        rows = persist_metrics(code, metrics, observed_at=res.get("period"))
         summary["rows_inserted"] = rows
         summary["status"] = "ok"
         _heartbeat(f"{SOURCE_PREFIX}-{code.lower()}", status="success",

@@ -20,6 +20,38 @@ try:
 except ImportError:
     def _heartbeat(*args, **kwargs): pass
 
+from routes._iso_common import scrub_secrets
+
+# "The extractor ran and the zero is EARNED" — the same vocabulary the deadman
+# board accepts (routes/ingest_runs._OK_STATUS).
+_NO_NEW_DATA = ("no_new_data", "no-new-data")
+
+
+def classify_result(r):
+    """(verdict, reason) for one extractor summary: 'ok' | 'no_new_data' | 'failed'.
+
+    D1 (2026-09-02). `failed = status not in ("ok",)` counted EIGHT healthy
+    LIVE-only modules — NGESO/AEMO/ENTSOE/TAIPOWER/OCCTO/EMA/ONS/KEPCO-KR, none
+    of which ever sets `status`; their failure channel is `errors[]` — plus
+    AESO's honest `no_new_data`, so failed_count read 9 of 21 on every tick and
+    the ONE real failure (ENTSO-E answering 503 for 50h) was indistinguishable
+    from seven healthy feeds in a `::notice` that never named anyone. A
+    status-less summary is judged on errors[]; an earned zero is not a failure.
+    """
+    if not isinstance(r, dict):
+        return "failed", "non-dict result"
+    st = str(r.get("status") or "").strip().lower()
+    errs = [str(e) for e in (r.get("errors") or []) if e]
+    if st == "ok":
+        return "ok", None
+    if st in _NO_NEW_DATA:
+        return "no_new_data", (r.get("note") or None)
+    if st:
+        return "failed", (r.get("error") or (errs[0] if errs else st))
+    if errs:
+        return "failed", errs[0]
+    return "ok", None
+
 
 iso_orchestrator_bp = Blueprint("iso_orchestrator", __name__, url_prefix="/api/v1/iso/all")
 SOURCE_ID = "iso-orchestrator"
@@ -163,12 +195,27 @@ def extract_all():
 
     elapsed_ms = int((time.time() - started) * 1000)
     total_rows = sum(r.get("rows_inserted", 0) for r in results)
-    failed = [r for r in results if r.get("status") not in ("ok",)]
+    # D1 (2026-09-02): one verdict per extractor, NAMED. The workflow used to
+    # print `failed=9` and the first 1000 bytes of this body — the failing
+    # extractor's name never reached the log.
+    by_iso = {}
+    for r in results:
+        label = str((r.get("iso") if isinstance(r, dict) else None) or "?")
+        verdict, reason = classify_result(r)
+        entry = {"verdict": verdict,
+                 "rows_inserted": int((r.get("rows_inserted") if isinstance(r, dict) else 0) or 0)}
+        if reason:
+            entry["reason"] = scrub_secrets(str(reason))[:200]
+        by_iso[label] = entry
+    failed = [r for r in results if classify_result(r)[0] == "failed"]
+    failed_isos = [{"iso": k, "reason": v.get("reason")}
+                   for k, v in by_iso.items() if v["verdict"] == "failed"]
+    no_new_data_isos = [k for k, v in by_iso.items() if v["verdict"] == "no_new_data"]
 
     # Status logic: orchestrator's job is to run all extractors.
     # If at least ONE produced rows, the orchestrator succeeded — per-ISO
     # failures are still visible on each source's own page.
-    succeeded_count = sum(1 for r in results if r.get("status") == "ok")
+    succeeded_count = len(results) - len(failed)
     if total_rows > 0 or succeeded_count >= len(results) / 2:
         orch_status = "success"
     elif succeeded_count == 0:
@@ -184,7 +231,7 @@ def extract_all():
         metadata={
             "iso_count": len(results),
             "succeeded": succeeded_count,
-            "failed_isos": [r["iso"] for r in failed],
+            "failed_isos": [f["iso"] for f in failed_isos],
         },
     )
 
@@ -193,6 +240,11 @@ def extract_all():
         iso_count=len(results),
         total_rows_inserted=total_rows,
         failed_count=len(failed),
+        # Named, so the caller (data-pulse.yml) can print WHO failed and gate on
+        # a must-have family without parsing 21 heterogeneous summaries.
+        failed_isos=failed_isos,
+        no_new_data_isos=no_new_data_isos,
+        by_iso=by_iso,
         results=results,
     ), 200
 
