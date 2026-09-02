@@ -64,11 +64,34 @@ pricing_ab_bp = Blueprint("pricing_ab", __name__)
 
 # Two arms — Arm A is ALWAYS the control / fail-safe. Arm B only ships
 # when STRIPE_PRICE_PRO_B is configured.
-# r73: Arm A must be the CANONICAL Pro price ($199 — matches the static
-# /pricing page, schema.org Product offer, and STRIPE_PRICE_PRO_A). It was
-# 499, which made the live A/B "$499 vs $99" and showed ~half of visitors a
-# 2.5x price. The intended experiment is $199 (control) vs $99 (test).
-_ARM_A_PRICE_USD = 199
+# r73: Arm A must be the CANONICAL Pro price — it was 499, which made the
+# live A/B "$499 vs $99" and showed ~half of visitors a 2.5x price.
+#
+# ★ 2026-09-02: derived from tier_registry, not typed here. r73 typed 199;
+# r-reprice (06-19) moved Pro to $299 and the $199 link was retired 08-22,
+# but this literal stayed, so with the kill switch engaged and ab_active
+# false /api/v1/pricing/ab-cohort still answered display_price "$199" /
+# price_usd 199 beside the $299 payment link (live at the edge 2026-09-02
+# T00:26Z). tier_registry.price('pro') is what /pricing and the checkout-
+# integrity shell read; the control arm reads the same number.
+# NB (owner action, not code): STRIPE_PRICE_PRO_A in Railway is still the
+# $199/mo price id (read-only Stripe GET 2026-09-02) — harmless while the
+# A/B is off (pricing.html ignores the payload unless ab_active===true),
+# but re-arming the test would sell $199 through that id. Repoint or unset.
+
+
+def _canon_pro_price_usd() -> int:
+    try:
+        import tier_registry as _tr
+        p = int(_tr.price("pro") or 0)
+        if p > 0:
+            return p
+    except Exception:  # noqa: BLE001 — the fail-safe arm must always price
+        pass
+    return 299
+
+
+_ARM_A_PRICE_USD = _canon_pro_price_usd()
 _ARM_B_PRICE_USD = 99
 
 # Cookie name shared with pricing.html JS hook.
@@ -348,6 +371,8 @@ def init_pricing_ab_tables():
                 "source_path TEXT",
                 "utm_source TEXT",
                 "value_usd NUMERIC",
+                # 2026-09-02: the webhook's idempotency key (finding 4a).
+                "stripe_session_id TEXT",
             ]:
                 col = col_def.split()[0]
                 try:
@@ -367,6 +392,12 @@ def init_pricing_ab_tables():
                  "ON pricing_ab_events (session_hash)"),
                 ("CREATE INDEX IF NOT EXISTS pricing_ab_events_type_ts_idx "
                  "ON pricing_ab_events (event_type, event_at DESC)"),
+                # Partial UNIQUE: one checkout row per Stripe session. The
+                # INSERT's ON CONFLICT must repeat the WHERE predicate or
+                # Postgres will not use this index as its arbiter.
+                ("CREATE UNIQUE INDEX IF NOT EXISTS pricing_ab_events_stripe_sess_uidx "
+                 "ON pricing_ab_events (stripe_session_id) "
+                 "WHERE stripe_session_id IS NOT NULL"),
             ]:
                 try:
                     cur.execute(idx_sql)
@@ -383,6 +414,80 @@ def init_pricing_ab_tables():
 # Public endpoint — caller asks "what arm am I in?"
 # ─────────────────────────────────────────────────────────────────────
 
+def record_stripe_checkout_complete(session, conn_factory=None) -> dict:
+    """Record a Stripe `checkout.session.completed` as a
+    `stripe_checkout_complete` pricing_ab event. Called from the webhook.
+
+    2026-09-02 (finding 4a): this event type existed only as a browser
+    beacon (/api/v1/pricing/ab-event from the Stripe success page), which
+    nobody's browser ever sent — /api/v1/admin/pricing/ab-stats?days=60
+    read checkouts:0 on 09-02 while Stripe listed 13 completed sessions in
+    the same 8 weeks. The webhook is the one chokepoint every sale crosses,
+    so it is the one place the count can be true.
+
+    · idempotent on the Stripe session id (partial UNIQUE index +
+      ON CONFLICT carrying the same predicate);
+    · cohort comes from the session's metadata.cohort when a checkout
+      session was minted with one, else 'A' — a webhook has no browser
+      cookie to read, and NOT from the amount: Arm B's $99 is also the
+      founding price, so an amount rule would book every founding sale as
+      a B conversion. The A/B has been off since the kill switch anyway
+      (ab_stats: kill_switch_engaged true);
+    · never raises: a stats write must not be able to fail a payment.
+    Returns a dict the webhook prints, so the log line says what happened.
+    """
+    sess = session or {}
+    sid = str(sess.get("id") or "").strip()
+    if not sid:
+        return {"ok": False, "reason": "no_session_id"}
+    if str(sess.get("payment_status") or "").lower() == "unpaid":
+        return {"ok": False, "reason": "unpaid"}
+    try:
+        cents = int(sess.get("amount_total") or 0)
+    except (TypeError, ValueError):
+        cents = 0
+    value_usd = round(cents / 100.0, 2) if cents > 0 else None
+    meta_cohort = str((sess.get("metadata") or {}).get("cohort") or "").strip().upper()
+    cohort = meta_cohort if meta_cohort in ("A", "B") else "A"
+    ref = str(sess.get("client_reference_id") or "").strip()[:60] or None
+    sess_hash = _hash_session("stripe:" + sid)
+
+    conn = (conn_factory or _conn)()
+    if conn is None:
+        logger.warning("[pricing_ab] webhook checkout drop (no conn): %s", sid)
+        return {"ok": False, "reason": "no_db"}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO pricing_ab_events
+                    (session_hash, cohort, event_type,
+                     source_path, utm_source, value_usd, stripe_session_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (stripe_session_id) WHERE stripe_session_id IS NOT NULL
+                DO NOTHING
+                """,
+                (sess_hash, cohort, "stripe_checkout_complete",
+                 "stripe_webhook", ref, value_usd, sid),
+            )
+            inserted = bool(cur.rowcount and cur.rowcount > 0)
+            conn.commit()
+        return {"ok": True, "inserted": inserted, "cohort": cohort,
+                "value_usd": value_usd, "session": sid}
+    except Exception as e:  # noqa: BLE001 — never break the webhook
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning("[pricing_ab] webhook checkout record failed: %s", e)
+        return {"ok": False, "reason": str(e)[:120], "session": sid}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @pricing_ab_bp.route("/api/v1/pricing/ab-cohort", methods=["GET"])
 def get_ab_cohort():
     """Public. Returns the caller's cohort + the price + the Stripe
@@ -393,7 +498,7 @@ def get_ab_cohort():
 
     # Build the Stripe URL the front-end should link to. For Arm A we
     # fall back to the existing payment-link URL (STRIPE_LINKS["pro"])
-    # so we don't break the live $199 → checkout flow when no env var
+    # so we don't break the live Pro → checkout flow when no env var
     # is set. For Arm B we always have a price id (gated by _ab_active).
     stripe_url = ""
     try:

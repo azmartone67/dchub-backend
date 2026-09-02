@@ -52,6 +52,16 @@ human_relay_bp = Blueprint("human_relay", __name__)
 _MAX_AGE_S = 14 * 86400
 _DDL_DONE = [False]
 
+# 2026-09-02: the checkout-integrity master shell (routes/
+# checkout_integrity_master_shell.py, lane 3) now reads THIS page live every
+# tick to check that its button sells what its copy says. Its costume is an
+# exact prefix; an open wearing it is our own audit, not a human, and is not
+# written to relay_opens at all — the revenue shell scores that table as
+# "real human opens" and a 120-second tick would add ~720 rows a day. Write-
+# side, not read-side: the middleware's admin bail-out (test_paywall_funnel_
+# excludes_internal) is the precedent — the ordering IS the fix.
+_AUDIT_UA_PREFIXES = ("dchub-checkout-integrity/",)
+
 
 def _secret() -> bytes:
     return (os.environ.get("DCHUB_INTERNAL_KEY") or "").encode()
@@ -90,6 +100,8 @@ def parse_relay_token(token: str) -> dict | None:
 def _log_open(info: dict | None, token: str, valid: bool) -> None:
     """Append-only; never raises; never blocks the render."""
     if (os.environ.get("DCHUB_HUMAN_RELAY_DISABLE") or "").strip() == "1":
+        return
+    if (request.headers.get("User-Agent") or "").startswith(_AUDIT_UA_PREFIXES):
         return
     url = (os.environ.get("DATABASE_URL")
            or os.environ.get("NEON_DATABASE_URL") or "").strip()
@@ -144,11 +156,19 @@ def relay_page(token):
     _log_open(info, token, valid=info is not None)
     tool = (info or {}).get("tool") or ""
     sid = (info or {}).get("sid") or ""
-    tier = (info or {}).get("tier") or "free"
     # ONE button, riding the existing attribution chain (sid-preserve →
     # pack webhook claim→paid bridge). direct=1 skips the tier wall.
+    #
+    # ★ SELL THE PACK THIS PAGE ADVERTISES. `resolve_tier`'s `tier` param means
+    # "which plan to sell", NOT "what the visitor currently has". We used to
+    # pass the visitor's own tier from the token — but `free`/`identified` are
+    # not STRIPE_LINKS keys, so it fell through to the `developer` DEFAULT
+    # ($49/mo), or to `pro` ($299/mo) when the token carried a pro-gated tool,
+    # all under a "$10 one-time" label. `metered` IS a key, so it wins on the
+    # first branch. (Not `pack5`: same Stripe URL, but the webhook still reads
+    # pack5 as the legacy $5 SKU by amount.)
     from urllib.parse import urlencode
-    q = {"from": "mcp_relay", "tier": tier, "direct": "1"}
+    q = {"from": "mcp_relay", "tier": "metered", "direct": "1"}
     if tool:
         q["tool"] = tool
     if sid:

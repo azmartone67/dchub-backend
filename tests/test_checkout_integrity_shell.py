@@ -34,6 +34,19 @@ SHELL_SRC = os.path.join(ROOT, "routes", "checkout_integrity_master_shell.py")
 MAIN = os.path.join(ROOT, "main.py")
 
 CANON_FOUNDING = "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o"
+
+# 2026-09-02: lane 3 also reads the agent→human relay page (/upgrade/h/…),
+# whose button is a /pricing/upgrade?tier= link, not a Stripe anchor. A stub
+# that serves one Stripe anchor for EVERY path leaves the relay with no
+# button → indeterminate, so the "whole lane PASSES" tests serve the relay
+# its honest page. tests/test_relay_sells_what_it_says.py owns the relay cases.
+_HONEST_RELAY = ('<a href="https://api.dchub.cloud/pricing/upgrade?from=mcp_relay'
+                 '&amp;tier=metered&amp;direct=1">Unlock full data — $10 one-time</a>')
+
+
+def _serving(body, shell):
+    """_fetch stub: `body` on every surface, the honest relay on the relay path."""
+    return lambda p: (_HONEST_RELAY if p == shell._RELAY_SURFACE else body, None)
 RETIRED_FOUNDING = "9B6fZi1cCdjT3ml8i6aZi00"
 
 
@@ -185,7 +198,7 @@ def test_pro_label_over_the_founding_link_fails(shell, monkeypatch, canon):
 def test_honest_founding_label_passes(shell, monkeypatch, canon):
     monkeypatch.setattr(
         shell, "_fetch",
-        lambda p: ('<a href="%s">Become a Founding Member</a>' % CANON_FOUNDING, None))
+        _serving('<a href="%s">Become a Founding Member</a>' % CANON_FOUNDING, shell))
     checks = shell._lane_label_vs_plan(canon)
     assert shell._lane_verdict(checks) == "PASS"
 
@@ -212,7 +225,7 @@ def test_untiered_label_is_not_a_violation(shell, monkeypatch, canon):
     """'Claim Your Spot' names no plan, so it promises nothing to contradict."""
     monkeypatch.setattr(
         shell, "_fetch",
-        lambda p: ('<a href="%s">Claim Your Spot &rarr;</a>' % CANON_FOUNDING, None))
+        _serving('<a href="%s">Claim Your Spot &rarr;</a>' % CANON_FOUNDING, shell))
     checks = shell._lane_label_vs_plan(canon)
     assert shell._lane_verdict(checks) == "PASS"
 

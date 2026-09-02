@@ -161,8 +161,15 @@ _VARIANTS = {
 # read below. Two copies of "what counts as internal" would drift, and the
 # direction it would drift is toward flattering numbers.
 _ADMIN_PREFIXES = ("/api/v1/admin/", "/api/v1/internal/")
-_ADMIN_EXCLUDE = ("path NOT LIKE '/api/v1/admin/%' "
-                  "AND path NOT LIKE '/api/v1/internal/%'")
+# ★ '%%', not '%'. Every read that embeds this fragment binds a parameter
+# (the window: `(%s || ' days')`), so psycopg2 %-formats the WHOLE string
+# and a bare percent consumes a tuple slot — /api/v1/admin/funnel-ab
+# answered {"error":"tuple index out of range"} for every request from the
+# day this landed until 2026-09-02 (live at the Railway origin 00:24Z). The
+# doubled form is right in BOTH contexts: bound (→ one '%') and unbound
+# (LIKE '%%' is two wildcards, which matches exactly what '%' matches).
+_ADMIN_EXCLUDE = ("path NOT LIKE '/api/v1/admin/%%' "
+                  "AND path NOT LIKE '/api/v1/internal/%%'")
 
 
 def _pick_variant(ip: str, ua: str) -> str:
@@ -634,7 +641,8 @@ def funnel_ab_stats():
                 WHERE ts > NOW() - (%s || ' days')::interval
                   AND """ + _ADMIN_EXCLUDE + """
             """, (str(days),))
-            total = (cur.fetchone() or [0])[0]
+            _row = cur.fetchone()
+            total = int(_row[0] or 0) if _row else 0
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 500
 
