@@ -83,6 +83,101 @@ def _fetch(path):
         return r.read()
 
 
+# ── ★ THE STUB GUARD (2026-09-02) ───────────────────────────────────────────
+#
+# WHAT SHIPPED FOR THREE MONTHS. _fetch() calls these paths over localhost with
+# NO api_key, so a tier-gated endpoint answers it the way it answers any
+# anonymous caller: with the free preview. The builder gzipped that preview and
+# published it under the dataset's full description. Measured 2026-09-02 on the
+# live manifest:
+#
+#   facilities  "Data-center facilities (public set)"  count 5, total_matching
+#               20,191, tier 'free', full_results_available true, upgrade_url
+#   markets     "All tracked data-center markets"      count 5 of 300+,
+#               locked, upsell, signup_url
+#
+# 2,907 raw bytes offered as the facility corpus. Nothing failed and nothing
+# logged: a 200 with a paywall envelope in it is indistinguishable from a 200
+# with data unless something looks INSIDE the body, which nothing did.
+#
+# ★ THE GUARD REFUSES, IT DOES NOT REPAIR. Authenticating the fetch would make
+# these datasets full — and would publish a paid, ODbL-composite corpus at a
+# public presigned URL as a side effect of a bug fix. What a free bulk caller
+# may download is an owner decision with a licence in it, not a default this
+# module gets to pick. So a gated payload is NOT uploaded, the dataset stays in
+# the manifest marked unusable with the evidence attached, and /exports/<name>
+# refuses to serve it. The gap is published rather than closed.
+_GATE_MARKERS = ("upgrade_url", "upsell", "signup_url", "locked",
+                 "full_results_available")
+
+
+def _row_count(d):
+    """Rows in a payload, without knowing its shape: the longest top-level
+    list, or the list itself. None when neither applies."""
+    if isinstance(d, list):
+        return len(d)
+    if isinstance(d, dict):
+        lens = [len(v) for v in d.values() if isinstance(v, list)]
+        if lens:
+            return max(lens)
+    return None
+
+
+def _gate_evidence(raw):
+    """Evidence that this payload is a TIER PREVIEW, or None if it is data.
+
+    Two independent tests, because either alone has a false negative: marker
+    keys catch an envelope that happens to be complete, and the count/total
+    comparison catches a trimmed payload whose upsell keys were renamed.
+    Unparseable bytes are NOT evidence — an opaque body is a different failure
+    and must not be reported as a paywall.
+    """
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(d, (dict, list)):
+        return None
+    markers = ([k for k in _GATE_MARKERS if k in d] if isinstance(d, dict)
+               else [])
+    if isinstance(d, dict) and str(d.get("tier", "")).lower() == "free":
+        markers.append("tier=free")
+    n = _row_count(d)
+    total = None
+    if isinstance(d, dict):
+        for k in ("total_matching", "total", "total_available"):
+            if isinstance(d.get(k), int):
+                total = d[k]
+                break
+    truncated = (n is not None and total is not None and n < total)
+    if not markers and not truncated:
+        return None
+    return {"markers": sorted(set(markers)), "records": n,
+            "total_available": total, "truncated": bool(truncated)}
+
+
+def _as_of(raw, fallback):
+    """The payload's own freshness stamp when it has one — Mistral and any
+    other no-egress ingester needs to know WHEN, not just WHAT. Falls back to
+    build time, labelled as such by the caller."""
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None, "unparseable"
+    if isinstance(d, dict):
+        for k in ("as_of", "generated_at", "computed_at", "last_updated"):
+            v = d.get(k)
+            if isinstance(v, str) and v:
+                return v, k
+    return fallback, "build_time"
+
+
+# Per-dataset cache lifetime, published so an ingester can schedule a refetch
+# instead of polling. Conservative: shorter than the real cadence, never longer.
+_TTL_SECONDS = {"agent-registry": 3600, "markets": 86400,
+                "facilities": 86400, "news": 3600, "ai-capacity": 86400}
+
+
 @r2_exports_bp.route("/api/v1/admin/exports/build", methods=["POST", "GET"])
 def build():
     if not _authorized():
@@ -90,19 +185,49 @@ def build():
     if not _r2_ready():
         return jsonify({"ok": False, "error": "R2 not configured (R2_ENDPOINT_URL/KEY missing)"}), 503
     s3 = _r2()
-    built, failed = [], []
+    built, failed, blocked = [], [], []
     manifest = {"generated_at": datetime.datetime.utcnow().isoformat() + "Z", "datasets": []}
     for name, path, desc in DATASETS:
         try:
             raw = _fetch(path)
-            gz = gzip.compress(raw, compresslevel=6)
             key = R2_PREFIX + name + ".json.gz"
+            gate = _gate_evidence(raw)
+            if gate is not None:
+                # NOT uploaded. The previous object (if any) is left in place
+                # but download() will refuse to hand it out, so the stub stops
+                # being reachable without deleting anything.
+                blocked.append(name)
+                manifest["datasets"].append({
+                    "name": name, "description": desc,
+                    "usable": False,
+                    "blocked_by": "tier_gate",
+                    "evidence": gate,
+                    "means": (
+                        "the exporter fetched this path unauthenticated and "
+                        "got the free-tier preview, not the dataset. It is NOT "
+                        "published: a preview served under this description "
+                        "would misrepresent "
+                        + (str(gate.get("records")) if gate.get("records")
+                           is not None else "a handful of")
+                        + " rows as the full set. What a free bulk caller may "
+                        "download is an owner decision, not a default"),
+                    "download": None,
+                })
+                continue
+            stamp, stamp_source = _as_of(raw, manifest["generated_at"])
+            gz = gzip.compress(raw, compresslevel=6)
             s3.put_object(Bucket=R2_BUCKET, Key=key, Body=gz,
                           ContentType="application/json", ContentEncoding="gzip")
             built.append(name)
             manifest["datasets"].append({
                 "name": name, "key": key, "description": desc,
+                "usable": True,
                 "bytes_gz": len(gz), "bytes_raw": len(raw),
+                "records": _row_count(json.loads(raw)),
+                "as_of": stamp,
+                "as_of_source": stamp_source,
+                "ttl_seconds": _TTL_SECONDS.get(name),
+                "source_path": path,
                 "download": "https://dchub.cloud/api/v1/exports/" + name,
             })
         except Exception as e:
@@ -112,8 +237,12 @@ def build():
                       Body=json.dumps(manifest).encode(), ContentType="application/json")
     except Exception:
         pass
-    return jsonify({"ok": True, "built": built, "failed": failed, "bucket": R2_BUCKET,
-                    "manifest": manifest}), (200 if not failed else 207)
+    manifest["usable_datasets"] = len(built)
+    manifest["blocked_datasets"] = len(blocked)
+    return jsonify({"ok": True, "built": built, "blocked": blocked,
+                    "failed": failed, "bucket": R2_BUCKET,
+                    "manifest": manifest}), (200 if not (failed or blocked)
+                                             else 207)
 
 
 @r2_exports_bp.route("/api/v1/exports", methods=["GET"])
@@ -137,6 +266,26 @@ def download(name):
         return jsonify({"error": "R2 not configured"}), 503
     try:
         s3 = _r2()
+        # ★ A dataset the last build refused to publish must not be reachable
+        # through the redirect either — an older stub object can still be
+        # sitting in the bucket, and 302-ing to it would serve exactly the
+        # preview the build declined to ship. Manifest unreadable => serve as
+        # before (fail-open: a manifest hiccup must not take downloads down).
+        try:
+            _m = json.loads(s3.get_object(
+                Bucket=R2_BUCKET,
+                Key=R2_PREFIX + "manifest.json")["Body"].read())
+            for _d in (_m.get("datasets") or []):
+                if _d.get("name") == name and _d.get("usable") is False:
+                    return jsonify({
+                        "error": "dataset_not_published",
+                        "dataset": name,
+                        "blocked_by": _d.get("blocked_by"),
+                        "evidence": _d.get("evidence"),
+                        "means": _d.get("means"),
+                    }), 409
+        except Exception:
+            pass
         url = s3.generate_presigned_url(
             "get_object",
             Params={"Bucket": R2_BUCKET, "Key": R2_PREFIX + name + ".json.gz"},
