@@ -93,3 +93,71 @@ def test_the_corpus_payload_does_not_trip_the_stub_guard():
     raw = json.dumps(_sample_payload(20191)).encode()
     assert _gate_evidence(raw) is None
     assert _row_count(json.loads(raw)) == 20191
+
+
+# ── empty slug != absent slug (2026-09-02, found in the first live build) ───
+import types  # noqa: E402
+
+
+class _FakeCur:
+    def __init__(self, rows): self._rows = rows
+    def execute(self, *_a, **_k): return None
+    def fetchall(self): return self._rows
+
+
+class _FakeConn:
+    def __init__(self, rows): self._rows = rows
+    def cursor(self): return _FakeCur(self._rows)
+    def close(self): return None
+
+
+def _build_with(rows, monkeypatch):
+    """Run the REAL builder against injected rows — no DB, no HTTP."""
+    monkeypatch.setitem(
+        sys.modules, "db_utils",
+        types.SimpleNamespace(get_read_db=lambda: _FakeConn(rows)))
+    from routes.r2_exports import _build_public_facilities
+    return _build_public_facilities()
+
+
+_GOOD = ("007-hebergement-paris-a8b78433", "007 Hebergement Paris", None,
+         "Paris", None, "FR")
+# the live row that shipped a dead link
+_EMPTY = ("", "L7", "Digital Telecom IX LLC", "Kyiv", "", "UA")
+
+
+def test_an_empty_slug_gets_no_profile_url(monkeypatch):
+    """★ THE REGRESSION. It rendered 'https://dchub.cloud/facilities/' — a
+    bare directory URL asserting a page that does not exist."""
+    p = _build_with([_GOOD, _EMPTY], monkeypatch)
+    row = [r for r in p["data"] if r["name"] == "L7"][0]
+    assert row["profile_url"] is None, row
+    assert row["slug"] == ""
+
+
+def test_the_empty_slug_row_is_still_counted(monkeypatch):
+    """★ THE HALF THAT MUST NOT BE 'FIXED'. Dropping the row would make the
+    export 20,193 against a published 20,194 and break the reconciliation
+    that mirroring public_endpoints' basis exists to guarantee."""
+    p = _build_with([_GOOD, _EMPTY], monkeypatch)
+    assert p["count"] == 2
+    assert len(p["data"]) == 2
+
+
+def test_a_real_slug_still_gets_its_url(monkeypatch):
+    p = _build_with([_GOOD], monkeypatch)
+    assert p["data"][0]["profile_url"] == (
+        "https://dchub.cloud/facilities/007-hebergement-paris-a8b78433")
+
+
+def test_whitespace_only_slug_is_treated_as_empty(monkeypatch):
+    p = _build_with([("   ", "Ghost", None, None, None, "US")], monkeypatch)
+    assert p["data"][0]["profile_url"] is None
+    assert p["count"] == 1
+
+
+def test_a_null_slug_does_not_crash_the_builder(monkeypatch):
+    """WHERE canonical_slug IS NOT NULL should prevent this, but the row
+    projection must not be the thing that discovers it was wrong."""
+    p = _build_with([(None, "NullSlug", None, None, None, "US")], monkeypatch)
+    assert p["data"][0]["profile_url"] is None

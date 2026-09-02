@@ -124,7 +124,20 @@ def _build_public_facilities():
                 pass
     out = []
     for r in rows:
-        slug = r[0]
+        # ★ 2026-09-02, found in the first published build. canonical_slug is
+        # filtered IS NOT NULL, which is NOT the same as non-empty: one row of
+        # 20,194 (`L7`, Kyiv) carries the EMPTY STRING and rendered
+        # "https://dchub.cloud/facilities/" — a dead link shipped inside a
+        # citeable corpus.
+        #
+        # ★ THE ROW STAYS. Tightening the WHERE clause to <> '' would drop it,
+        # make the export 20,193 and break the reconciliation that is the whole
+        # point of mirroring public_endpoints' basis verbatim (export records
+        # == /api/agent/stats.total_facilities == 20,194, measured). The count
+        # is right; only the URL was wrong. So the URL goes null and the row is
+        # counted — null says "this facility has no page", which is true, where
+        # a bare directory URL said "here is its page", which was not.
+        slug = (r[0] or "").strip()
         out.append({
             "slug": slug,
             "name": r[1],
@@ -132,7 +145,8 @@ def _build_public_facilities():
             "city": r[3],
             "state": r[4],
             "country": r[5],
-            "profile_url": "https://dchub.cloud/facilities/" + str(slug),
+            "profile_url": ("https://dchub.cloud/facilities/" + slug
+                            if slug else None),
         })
     return {
         "dataset": "facilities",
