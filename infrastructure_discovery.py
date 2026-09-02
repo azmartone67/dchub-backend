@@ -591,10 +591,26 @@ class FiberRouteDiscovery:
         rather than day-of-year: `doy % N` silently repeats one slot and skips
         another every Jan 1, because 365 % N is rarely 0. Four runs/day are
         given distinct slots via hour//6 so a full sweep takes ~2.5 days.
+
+        ★ The day term steps by ONE, not by the runs-per-day. It used to read
+        `toordinal() * 4 + hour // 6`, which assumed the four-runs-a-day cadence
+        the docstring above describes. Production runs CRAWLER_SCHEDULE=once —
+        a single fire at 12:00 UTC — so `hour // 6` was frozen at 2 and the slot
+        advanced by 4 per day against 10 slots. gcd(4, 10) == 2, so only even
+        slots were ever produced and HALF the markets were unreachable: indices
+        2,3,6,7,10,11,14,15,18,19 — Phoenix, Chicago, Los Angeles, New York
+        Metro, Salt Lake City, Columbus, Reno, Des Moines, Denver and Houston
+        had never been swept by the scheduled path.
+
+        Stepping the day term by 1 makes the stride coprime with any slot count,
+        so coverage is complete under BOTH cadences (proved for once/day and
+        four/day in test_market_rotation_covers_every_market.py). Do not
+        reintroduce a runs-per-day multiplier here — the cadence is set by
+        CRAWLER_SCHEDULE and this function must not assume it.
         """
         now = datetime.utcnow()
         slots = max(1, len(DC_MARKETS) // cls.MARKETS_PER_RUN)
-        slot = (now.date().toordinal() * 4 + now.hour // 6) % slots
+        slot = (now.date().toordinal() + now.hour // 6) % slots
         return slot * cls.MARKETS_PER_RUN
 
     def sync(self):
