@@ -29,7 +29,23 @@ except Exception:  # standalone run: repo root may not be on sys.path
     def note_swallowed_write(table, where=""):
         pass
 
-EIA_API_KEY = os.environ.get("EIA_API_KEY", "SuphqqIra7G46LHVDwb9CL5n4WYRwLu7ujeFXJMG")
+EIA_API_KEY = os.environ.get("EIA_API_KEY")  # env-only, no fallback
+
+
+def _require_eia_key(what):
+    """Raise if EIA_API_KEY is unset.
+
+    main() wraps every fixer in its own try/except, so this skips just the
+    EIA work and lets the HIFLD / NASA / PeeringDB fixers run — while still
+    naming the reason in the results table. The alternative is what an
+    unkeyed call actually did: EIA answers 403, api_get() returns None, and
+    the fixer prints "[WARN] No data" and returns 0, which is
+    indistinguishable from EIA genuinely having nothing.
+    """
+    if not EIA_API_KEY:
+        raise RuntimeError(
+            "EIA_API_KEY is not set — skipping %s (free key: "
+            "https://www.eia.gov/opendata/register.php)" % what)
 DATABASE_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
 
 # Correct HIFLD Open Data ArcGIS URLs
@@ -119,6 +135,7 @@ def api_get(url, headers=None, timeout=30):
 # ──────────────────────────────────────────────
 
 def fix_eia_generators(conn):
+    _require_eia_key("eia_generators")
     print("\n" + "="*60)
     print("FIX 1: EIA-860 Generators (continue from offset 5000)")
     print("="*60)
@@ -731,6 +748,7 @@ def fix_peeringdb(conn):
 # ──────────────────────────────────────────────
 
 def fix_eia_rto(conn):
+    _require_eia_key("eia_rto_hourly")
     print("\n" + "="*60)
     print("FIX 5: EIA RTO Hourly Grid Operations")
     print("="*60)

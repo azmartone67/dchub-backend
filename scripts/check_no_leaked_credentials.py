@@ -174,8 +174,6 @@ def _sha256(value):
 # scan on purpose.
 # ──────────────────────────────────────────────────────────────────────────
 KNOWN_EXPOSURES = {
-    "7fb04d1a32034bc7705402a0b29462ca0db30214634941d8eea1c44127d63931":
-        "EIA_API_KEY hardcoded fallback, 6 files — rotate at eia.gov",
     "f22dd328c3eb6349b23790a6c070d8b9413cfdd4e17d02a08011e1415a47ac20":
         "PJM_QUEUE_KEY fallback, 2 files — code calls it a public website "
         "constant; confirm with PJM, then pragma or rotate",

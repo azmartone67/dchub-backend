@@ -80,7 +80,16 @@ from urllib.error import HTTPError
 import psycopg2
 
 DB_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
-EIA_KEY = os.environ.get("EIA_API_KEY", "SuphqqIra7G46LHVDwb9CL5n4WYRwLu7ujeFXJMG")
+EIA_KEY = os.environ.get("EIA_API_KEY")
+
+# Guard before connecting: the next statements TRUNCATE eia_gas_consumption
+# and refill it from the API. With no key the fetch 403s and the table is
+# left empty. This script has no `set -e`, so TASK 4 still runs.
+if not EIA_KEY:
+    raise SystemExit(
+        "  \u274c EIA_API_KEY not set — skipping TASK 3 rather than "
+        "truncating eia_gas_consumption and refilling it with nothing. "
+        "Free key: https://www.eia.gov/opendata/register.php")
 
 conn = psycopg2.connect(DB_URL)
 cur = conn.cursor()
