@@ -114,6 +114,43 @@ def _innermost_try_swallows(fn: ast.FunctionDef, lineno: int) -> bool:
     return True
 
 
+def flat_body(rel: str, name: str) -> str:
+    src, fn = _fn(rel, name)
+    return " ".join((ast.get_source_segment(src, fn) or "").split())
+
+
+def _mirror_triggers(src: str, fn: ast.FunctionDef) -> int:
+    """How many bind branches lead to a mirror.
+
+    ★ A DIRECT CALL IS NOT THE ONLY VALID SHAPE. mint_trial_for_request() binds
+    in three branches but must not call the mirror inline — it holds the caller's
+    connection open, and the mirror opens its own, so an inline call writes
+    mid-transaction. It instead RECORDS intent per branch and fires once in the
+    `finally`, which is the ordering the two bind endpoints already use.
+
+    So count trigger points: direct calls PLUS per-branch assignments to a
+    `*mirror*` variable (excluding its `= None` initialiser). Counting only
+    calls would reject the correct deferred shape and push the code back to the
+    inline one.
+    """
+    calls = len(_mirror_call_lines(src, fn))
+    recorded = 0
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign) and not (
+                isinstance(node.value, ast.Constant) and node.value.value is None):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and "mirror" in t.id.lower():
+                    recorded += 1
+    # ★ max(), NOT calls + recorded. Summing them ADDS THE SINGLE SINK to the
+    # per-branch count, so a function with 3 branches and one deferred call still
+    # totalled 3 after a branch was deleted. Verified by mutation: dropping one
+    # of the three recorded branches passed. The two shapes are alternatives —
+    # either every branch calls, or every branch records and one sink fires.
+    if recorded and not calls:
+        return 0        # intent recorded and never consumed: nothing mirrors
+    return max(calls, recorded)
+
+
 def _binding_functions():
     """Every (file, funcname, lineno) whose body issues an UPDATE that SETs a
     bind column on auto_trial_keys.
@@ -157,6 +194,15 @@ def test_the_finder_still_finds_the_known_paths():
     assert "routes/auto_trial.py" in files, files
     assert "flask_mcp_endpoints.py" in files, (
         f"the identify endpoint's bind was not found; files seen: {files}")
+    by_name = {n: b for _, n, _, b in found}
+    assert "mint_trial_for_request" in by_name, sorted(by_name)
+    n_binds = len(re.findall(r"UPDATE\s+auto_trial_keys\s+SET",
+                             flat_body("routes/auto_trial.py",
+                                       "mint_trial_for_request"), re.I))
+    assert n_binds >= 3, (
+        f"mint_trial_for_request() binds in 3 branches (first-mint, grace-reuse, "
+        f"backfill); the counter sees {n_binds}. A counter that undercounts lets "
+        "an unmirrored branch through.")
     assert len(found) >= 4, (
         f"expected at least the 4 known bind paths (2 in auto_trial, identify, "
         f"and mint_trial_for_request), found {len(found)}: "
@@ -170,7 +216,13 @@ def test_the_finder_still_finds_the_known_paths():
 # makes, so it is marked strict-xfail rather than half-fixed. strict=True means
 # that when someone DOES fix it this test XPASSes and fails the build, forcing
 # the marker off — a gap that cannot be quietly forgotten.
-_KNOWN_GAPS = {("routes/auto_trial.py", "mint_trial_for_request")}
+_KNOWN_GAPS: set[tuple[str, str]] = set()
+# ★ CLEARED 2026-09-02. mint_trial_for_request() was the entry here — it set
+# operator_email in 3 branches and never mirrored. It is fixed, and the strict
+# xfail is what said so: with the fix in place the marked test XPASSed and
+# failed the build, which is exactly the forcing function it was added for.
+# Leave this set EMPTY rather than deleting it — a future gap gets tracked the
+# same way instead of being silently exempted.
 
 
 def _cases():
@@ -196,6 +248,27 @@ def test_every_trial_bind_path_mirrors_into_mcp_dev_keys(rel, name, lineno, body
         f"{_MIRROR}(). Without it, a later payment by that email cannot flip "
         f"this key's tier — the agent pays and its own key stays free. "
         "(A comment naming the symbol does not count.)")
+
+    # ★ ONE CALL IS NOT ENOUGH IN A FUNCTION THAT BINDS IN SEVERAL BRANCHES.
+    # mint_trial_for_request() binds in THREE (first-mint, grace-reuse and
+    # backfill); mirroring in one of them leaves the other two leaking exactly
+    # as before, and a `>= 1` assertion cannot see it. Verified by mutation:
+    # deleting 2 of the 3 calls passed. Require one mirror per bind UPDATE.
+    binds = len(re.findall(r"UPDATE\s+auto_trial_keys\s+SET", flat_body(rel, name),
+                           re.I))
+    # ★ GUARD THE GUARD. _binding_functions() only yields functions that DO issue
+    # a bind UPDATE, so counting zero means this regex stopped matching, not that
+    # the code stopped binding — and `len(calls) >= 0` then passes for anything.
+    # Verified by mutation: blinding the counter passed 7/7.
+    assert binds >= 1, (
+        f"counted 0 bind UPDATEs in {rel} {name}() although it was FOUND as a "
+        "bind path — the counter regex is broken, not the code")
+    triggers = _mirror_triggers(src, fnode)
+    assert triggers >= binds, (
+        f"{rel}:{lineno} {name}() issues {binds} bind UPDATE(s) but only "
+        f"{triggers} mirror trigger(s) (direct calls + deferred assignments) — "
+        "a branch that binds without mirroring leaks the paid unlock just as if "
+        "none of them did")
 
 
 def _fn(rel, name):
