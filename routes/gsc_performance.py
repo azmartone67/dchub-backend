@@ -67,7 +67,8 @@ import requests
 from flask import Blueprint, jsonify, request
 
 from db_utils import get_db
-from google_search_console import GSC_SITE_URL, get_access_token
+from google_search_console import (GSC_SITE_URL, get_access_token,
+                                   refresh_proven_pages)
 from internal_auth import require_internal_or_admin
 
 logger = logging.getLogger(__name__)
@@ -202,11 +203,21 @@ def _query_gsc(token: str, start: str, end: str, dimensions: list[str],
 
 
 def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
-                             row_limit: int = DEFAULT_ROW_LIMIT) -> dict:
+                             row_limit: int = DEFAULT_ROW_LIMIT,
+                             refresh_proven: bool = True) -> dict:
     """Fetch and upsert `days` of daily performance at all three grains.
 
     Idempotent: re-running over the same window updates in place, so a cron that
-    double-fires and a manual re-run both converge on the same rows."""
+    double-fires and a manual re-run both converge on the same rows.
+
+    F4 (2026-09-02): also refreshes `seo_proven_pages` — the table sitemap
+    admission (#2946) reads to readmit GSC-proven facility URLs past the
+    capacity gate. That table had NO caller: POST /api/gsc/proven/refresh was
+    only ever hand-fired, and /api/gsc/proven read last_refreshed
+    2026-08-24 06:45:03 on 2026-09-02 while the sitemap rebuilt every 4h on
+    a frozen admission list. The one daily cron that already holds a GSC token
+    now carries both writes; a proven refresh failure is an ingest failure by
+    the partial-failure rule below, never a quiet skip."""
     if not token:
         return {"success": False, "error": "no GSC access token "
                                            "(GOOGLE_SERVICE_ACCOUNT_JSON unset "
@@ -297,6 +308,18 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
             except Exception:
                 pass
 
+    proven = None
+    if refresh_proven:
+        try:
+            proven = refresh_proven_pages(token)
+        except Exception as ex:  # noqa: BLE001
+            proven = {"success": False,
+                      "error": f"{type(ex).__name__}: {str(ex)[:200]}"}
+        if not (isinstance(proven, dict) and proven.get("success")):
+            errors["proven_pages"] = str(
+                (proven or {}).get("error") if isinstance(proven, dict) else proven
+                or "refresh_proven_pages reported success:false")[:300]
+
     return {
         # A partial failure is a failure. Reporting success:true with one grain
         # missing is exactly the "green board, dead lane" pattern the audit found.
@@ -304,6 +327,8 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
         "window": {"start": s, "end": e, "days": int(days)},
         "rows_written": written,
         "gsc_rows_scanned": scanned,
+        # F4: the sitemap-admission table this cron now also refreshes.
+        "proven_pages": proven,
         # Say so when the ceiling bit. A silent truncation reads as full
         # coverage, which is the failure mode this whole module exists to refuse.
         "rows_capped": ({"per_grain_ceiling": _SEED_ROW_CEILING,

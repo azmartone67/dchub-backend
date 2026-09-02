@@ -319,3 +319,75 @@ def test_a_truncation_is_reported_not_silent():
     assert '"rows_capped"' in src
     assert "_wanted > _SEED_ROW_CEILING" in src, \
         "rows_capped must be None when the ceiling did NOT bite"
+
+
+# ── F4 (2026-09-02): the ingest also refreshes seo_proven_pages ──────────
+# MEASURED 2026-09-02: /api/gsc/proven -> last_refreshed 2026-08-24 06:45:03,
+# 21,672 rows, qualifying_at_threshold 7,292. No workflow, scheduler or route
+# called POST /api/gsc/proven/refresh (grep of .github/workflows, main.py,
+# routes/) — yet sitemap admission (#2946) reads that table, so the admission
+# list froze on 08-24 while the sitemap rebuilt every 4h. The daily ingest,
+# which already holds a GSC token, now carries the refresh; a refresh failure
+# is an ingest failure by this module's partial-failure rule.
+
+def test_ingest_calls_refresh_proven_pages():
+    fn = _func("ingest_daily_performance")
+    assert fn is not None
+    called = {getattr(n.func, "id", None) or getattr(n.func, "attr", None)
+              for n in ast.walk(fn) if isinstance(n, ast.Call)}
+    assert "refresh_proven_pages" in called, (
+        "ingest_daily_performance no longer refreshes seo_proven_pages — the "
+        "sitemap admission table has no other caller")
+    assert re.search(r"from google_search_console import \(?[^)]*refresh_proven_pages", TEXT), (
+        "refresh_proven_pages must come from google_search_console (one integration)")
+
+
+def _exec_ingest(monkey_refresh):
+    """Run ingest_daily_performance against stubs: GSC returns nothing, the DB
+    is never touched, and refresh_proven_pages is `monkey_refresh`."""
+    fn = _func("ingest_daily_performance")
+    from datetime import datetime, timedelta
+    ns = {
+        "datetime": datetime, "timedelta": timedelta,
+        "DEFAULT_WINDOW_DAYS": 5, "DEFAULT_ROW_LIMIT": 500,
+        "_GSC_MAX_ROW_LIMIT": 25000, "_SEED_ROW_CEILING": 100000,
+        "_UPSERT": "x", "_ensure_table": lambda: None,
+        "_query_gsc": lambda *a, **k: ([], None),
+        "get_db": lambda: pytest.fail("no grain had rows — the DB must not be opened"),
+        "refresh_proven_pages": monkey_refresh,
+    }
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(SRC), "exec"), ns)
+    return ns["ingest_daily_performance"]
+
+
+def test_a_proven_refresh_failure_is_an_ingest_failure():
+    calls = []
+
+    def _bad(token, **kw):
+        calls.append(token)
+        return {"success": False, "error": "HTTP 403: quota"}
+
+    out = _exec_ingest(_bad)("tok")
+    assert calls == ["tok"], "the ingest's token must be reused, not re-minted"
+    assert out["success"] is False
+    assert "quota" in out["errors"]["proven_pages"]
+    assert out["proven_pages"]["success"] is False
+
+
+def test_a_raising_proven_refresh_is_an_ingest_failure_not_a_crash():
+    def _boom(token, **kw):
+        raise RuntimeError("neon down")
+
+    out = _exec_ingest(_boom)("tok")
+    assert out["success"] is False and "neon down" in out["errors"]["proven_pages"]
+
+
+def test_a_healthy_proven_refresh_is_reported_and_keeps_success():
+    out = _exec_ingest(lambda token, **kw: {"success": True, "upserted": 7})("tok")
+    assert out["success"] is True and out["proven_pages"]["upserted"] == 7
+
+
+def test_the_refresh_can_be_switched_off_explicitly_only():
+    ingest = _exec_ingest(lambda token, **kw: pytest.fail("must not refresh when refresh_proven=False"))
+    out = ingest("tok", refresh_proven=False)
+    assert out["success"] is True and out["proven_pages"] is None

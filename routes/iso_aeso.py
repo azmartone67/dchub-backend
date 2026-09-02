@@ -52,7 +52,10 @@ def run_extraction():
         summary["metrics_extracted"] = len(metrics)
         if not metrics:
             summary["html_preview"] = text[:400]
-        rows = persist_metrics("AESO", metrics)
+        # D4 (2026-09-02): the CSD report row has no stamp we parse -> the
+        # insert clock, declared (logged) rather than defaulted. (This module
+        # is not imported by main.py; iso_aeso_intl owns /api/v1/iso/aeso.)
+        rows = persist_metrics("AESO", metrics, observed_at=None)
         summary["rows_inserted"] = rows
         elapsed = int((time.time() - started) * 1000)
         summary["duration_ms"] = elapsed

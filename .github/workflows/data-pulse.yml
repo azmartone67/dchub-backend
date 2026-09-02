@@ -16,6 +16,15 @@ on:
     - cron: "3-59/15 * * * *"
   workflow_dispatch: {}  # allow manual trigger from Actions UI
 
+env:
+  # D1 (2026-09-02): feed families whose failure FAILS this job. ENTSO-E (34 EU
+  # zones) answered HTTP 503 for >24h while this job stayed green: it failed
+  # only when EVERY extractor failed, and 9 of 21 were counted "failed" on every
+  # tick anyway, so nothing distinguished the one real outage. Comma-separated
+  # feed names from the orchestrator's `families` block (routes/iso_orchestrator
+  # .py _FAMILIES); the verdict is derived THERE, this file never asserts one.
+  MUST_HAVE_FAMILIES: iso-eu-entsoe
+
 jobs:
   pulse:
     runs-on: ubuntu-latest
@@ -28,18 +37,50 @@ jobs:
           echo "minute=$(date -u +%-M)" >> $GITHUB_OUTPUT
           echo "start_epoch=$(date +%s)" >> $GITHUB_OUTPUT
 
-      - name: Trigger ISO orchestrator (all 6 ISOs)
+      - name: Trigger ISO orchestrator (all 21 extractors)
         id: iso
         run: |
           ISO_RESPONSE=$(curl -sS --max-time 90 -X POST \
             https://dchub-backend-production.up.railway.app/api/v1/iso/all/extract)
           echo "$ISO_RESPONSE" | head -c 1000
           echo ""
-          ROWS=$(echo "$ISO_RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total_rows_inserted', 0))" 2>/dev/null || echo 0)
-          FAILED=$(echo "$ISO_RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('failed_count', 0))" 2>/dev/null || echo 0)
-          echo "rows=$ROWS" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "::notice title=ISO Orchestrator::rows=$ROWS failed=$FAILED"
+          printf '%s' "$ISO_RESPONSE" > iso_response.json
+          # D1 (2026-09-02): NAME the failures. `failed=9` beside the first
+          # 1000 bytes of the body never said WHO failed — ENTSOE sat past the
+          # truncation for 50 hours. The must-have gate reads the orchestrator's
+          # derived per-family verdict (`families`, routes/iso_orchestrator.py).
+          python3 - <<'PY'
+          import json, os, re
+          try:
+              d = json.load(open("iso_response.json"))
+          except Exception as e:
+              d = {}
+              print(f"::error title=ISO Orchestrator::response was not JSON: {e}")
+          rows = int(d.get("total_rows_inserted", 0) or 0)
+          failed = d.get("failed_isos") or []
+          names = ",".join("%s(%s)" % (f.get("iso"), (f.get("reason") or "")[:60])
+                           for f in failed) or "none"
+          quiet = ",".join(d.get("no_new_data_isos") or []) or "none"
+          print(f"::notice title=ISO Orchestrator::rows={rows} failed={len(failed)} "
+                f"failed_isos={names} no_new_data={quiet}")
+          fams = d.get("families") or {}
+          must = [f.strip() for f in os.environ.get("MUST_HAVE_FAMILIES", "").split(",") if f.strip()]
+          bad = []
+          for feed in must:
+              fam = fams.get(feed) or {}
+              st = str(fam.get("status") or "missing")
+              if st not in ("success", "no_new_data"):
+                  bad.append("%s=%s %s" % (feed, st, (fam.get("note") or "")[:120]))
+                  print(f"::error title=must-have feed family {feed}::status={st} "
+                        f"rows={fam.get('rows_inserted')} {fam.get('note')}")
+          # The error text is embedded raw into JSON downstream — keep it plain.
+          err = re.sub(r"[^A-Za-z0-9 _=:;,.()/-]", " ", "; ".join(bad))[:300]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"rows={rows}\n")
+              fh.write(f"failed={len(failed)}\n")
+              fh.write("must_have_failed=%s\n" % ("1" if bad else "0"))
+              fh.write(f"must_have_error={err}\n")
+          PY
 
       - name: Scan grid metrics for anomalies (after ISO pull)
         id: anomalies
@@ -99,7 +140,12 @@ jobs:
           # Success if at least one extractor produced rows. Per-source failures
           # are still visible on the dashboard via individual source heartbeats —
           # the orchestrator's aggregate doesn't need to fail just because one ISO did.
-          if [ "$TOTAL_ROWS" -gt 0 ]; then
+          # D1 (2026-09-02): EXCEPT a must-have family. 586 rows from the US ISOs
+          # do not make a 50-hour ENTSO-E outage a success.
+          if [ "${{ steps.iso.outputs.must_have_failed }}" = "1" ]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "error=\"must-have feed family failed: ${{ steps.iso.outputs.must_have_error }}\"" >> $GITHUB_OUTPUT
+          elif [ "$TOTAL_ROWS" -gt 0 ]; then
             echo "status=success" >> $GITHUB_OUTPUT
             echo "error=null" >> $GITHUB_OUTPUT
           elif [ "$TOTAL_FAILED" -gt 0 ]; then
@@ -150,6 +196,49 @@ jobs:
             }' \
             https://dchub.cloud/api/v1/sources/github-actions-data-pulse/heartbeat | head -c 500
 
+      - name: Beat the per-family deadman feeds (verdict copied, never asserted)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          # D1 (2026-09-02): one ledger row per producer family (iso-eu-entsoe,
+          # iso-intl) so /api/v1/ops/deadman shows the EU feed red/overdue instead
+          # of green. No feed existed for ENTSO-E at all (iso-data-pull covers the
+          # 7 US ISOs only). status / rows_inserted / max_content_date are copied
+          # from the orchestrator's derived `families` block — this step never
+          # writes a literal status. cadence_hours: the cron is every 15 min, so
+          # 1h = 4 cycles; the board alarms at 2x. A dropped beat is a WARNING
+          # here and an AGING row on the board, which is the alarm.
+          python3 - <<'PY'
+          import json, os, urllib.request
+          try:
+              fams = (json.load(open("iso_response.json")) or {}).get("families") or {}
+          except Exception as e:
+              fams = {}
+          if not fams:
+              print("::warning title=deadman beat::orchestrator response carried no "
+                    "families — nothing beaten; the ledger rows age (that IS the alarm)")
+          base = "https://dchub-backend-production.up.railway.app"
+          key = os.environ.get("ADMIN_KEY", "")
+          for feed, fam in fams.items():
+              body = {"feed": feed, "status": fam.get("status"),
+                      "rows_inserted": fam.get("rows_inserted"),
+                      "cadence_hours": 1,
+                      "note": (fam.get("note") or "")[:280]}
+              if fam.get("max_content_date"):
+                  body["max_content_date"] = fam["max_content_date"]
+              req = urllib.request.Request(
+                  base + "/api/v1/admin/ingest-runs/beat",
+                  data=json.dumps(body).encode(), method="POST",
+                  headers={"Content-Type": "application/json", "X-Admin-Key": key,
+                           "User-Agent": "dchub-data-pulse/1.0 (+https://dchub.cloud)"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      print("beat %s status=%s rows=%s -> HTTP %s"
+                            % (feed, body["status"], body["rows_inserted"], r.status))
+              except Exception as e:
+                  print(f"::warning title=deadman beat::{feed} beat failed: {e}")
+          PY
+
       - name: Pulse summary
         run: |
           echo "## Pulse Summary"
@@ -162,3 +251,11 @@ jobs:
           echo "- Total failed: ${{ steps.totals.outputs.total_failed }}"
           echo "- Duration:    ${{ steps.totals.outputs.duration_ms }}ms"
           echo "- Status:      ${{ steps.totals.outputs.status }}"
+
+      - name: Fail the job when a must-have feed family failed
+        if: steps.iso.outputs.must_have_failed == '1'
+        run: |
+          # Last on purpose: the brain notify, source heartbeat and deadman beat
+          # above have already recorded the failure. This turns the run red.
+          echo "::error title=data-pulse::must-have feed family failed: ${{ steps.iso.outputs.must_have_error }}"
+          exit 1

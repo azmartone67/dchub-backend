@@ -47,6 +47,39 @@ except Exception:
 
 dcpi_freshness_bp = Blueprint("dcpi_freshness", __name__)
 
+# ── live feed families (D1, 2026-09-02) ──────────────────────────────────
+# The EU DCPI markets (frankfurt/paris/amsterdam/... — iso ENTSOE-<cc> in
+# routes/dcpi.py) ride ONE upstream call. During the 2026-09-01 ENTSO-E 503
+# outage every EU zone froze for >24h and this endpoint — the one the L23
+# audit dim reads to decide whether DCPI is fresh — said nothing, because it
+# only buckets market_power_scores.computed_at, and the recompute keeps running
+# on frozen inputs. The live grid_data ages for the ENTSOE / EU_* streams are
+# rolled up here through the same family rule freshness_public uses, so a dead
+# EU feed is one named line on the DCPI freshness surface.
+# Target: freshness_public.DOMAIN_SLA_HOURS["iso"] (4h) — upstream A75 lags
+# 1-2h and the pull runs every 15 min.
+_LIVE_FEED_TARGET_H = 4.0
+
+
+def live_feeds_from_ages(rows, target_hours=_LIVE_FEED_TARGET_H):
+    """PURE. rows = [(iso, age_hours|None)] for the ENTSOE / EU_* streams ->
+    {"families": {...}, "stale": [family, ...]}. Empty rows -> no families,
+    and `stale` is [] with `measured` False — absence is not "fresh"."""
+    from routes.freshness_public import summarize_feed_families
+    per_stream = [{"stream": str(iso), "age_hours": (float(age) if age is not None else None)}
+                  for iso, age in (rows or [])]
+    fams = summarize_feed_families(per_stream, float(target_hours))
+    return {
+        "families": fams,
+        "stale": sorted(k for k, v in fams.items() if not v.get("live_feed_ok")),
+        "measured": bool(fams),
+        "target_hours": float(target_hours),
+        "basis": ("MAX(grid_data.timestamp) per ENTSOE / EU_* stream, rolled up per "
+                  "producer family (routes/freshness_public.summarize_feed_families). "
+                  "Since 2026-09-02 that timestamp is the upstream observation time, "
+                  "so age here is data age, not insert age."),
+    }
+
 
 def _conn():
     if not psycopg2:
@@ -128,10 +161,22 @@ def dcpi_freshness():
                 if d.get("hours_stale") is not None:
                     d["hours_stale"] = round(float(d["hours_stale"]), 1)
                 oldest.append(d)
+            # D1 (2026-09-02): the live feed families behind the EU markets.
+            cur.execute("""
+                SELECT iso,
+                       EXTRACT(EPOCH FROM (NOW() - MAX(timestamp)))/3600.0 AS age_hours
+                  FROM grid_data
+                 WHERE iso = %s OR iso LIKE %s
+                 GROUP BY iso
+            """, ("ENTSOE", "EU\\_%"))
+            live_feeds = live_feeds_from_ages(
+                [(r["iso"], r["age_hours"]) for r in cur.fetchall()])
         return jsonify({
             "ok":           True,
             "stats":        stats,
             "oldest_15":    oldest,
+            "live_feeds":   live_feeds,
+            "stale_live_feeds": live_feeds["stale"],
             "checked_at":   datetime.datetime.utcnow().isoformat() + "Z",
             "purpose":      ("Per-market DCPI freshness. Cron is supposed to "
                               "refresh all 300+ markets every 6h. Markets in "
