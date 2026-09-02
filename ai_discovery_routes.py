@@ -471,6 +471,7 @@ def register_discovery_routes(app):
     # =========================================================================
     # /.well-known/mcp/server-card.json — MCP Server Card
     # =========================================================================
+# AUTO-REPAIR: duplicate route '/.well-known/mcp/server-card.json' also in backend_patch_mcp_routes.py:91 — review and remove one
     @app.route('/.well-known/mcp/server-card.json')
     @app.route('/mcp-server-card.json')  # Railway alias (/.well-known/ blocked on Railway)
     def serve_mcp_server_card():
@@ -882,6 +883,7 @@ get_facility_risk_delta (temporal market-risk change from daily DCPI snapshots) 
 
     # =========================================================================
     # /llms-full.txt — Full API documentation for LLMs
+# AUTO-REPAIR: duplicate route '/llms-full.txt' also in ai_agent_discovery.py:517 — review and remove one
     # =========================================================================
     @app.route('/llms-full.txt')
     def serve_llms_full_txt():
