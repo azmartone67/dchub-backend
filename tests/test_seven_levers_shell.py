@@ -205,11 +205,36 @@ def test_repo_worker_is_canon_clean_and_current():
     # the server logs `tier=free key=none`. The declaration was simply wrong.
     # Adds required:false + anonymous_access:true to all three blocks;
     # type/header unchanged, so clients keying off them still send credentials.
-    # ★ PASTE OUTSTANDING — this change is edge-only. No third-party parser
-    # sees any of it until the manual Cloudflare dashboard paste happens.
+    # ✓ PASTED — live confirmed 2026-09-02: api.dchub.cloud/api/v1/iso/eu/health
+    # returned X-DC-Worker-Version: 4.9.48-anon-callable-flag. (This line read
+    # "PASTE OUTSTANDING"; it had already happened. FIFTH time this note has
+    # lagged reality — the header is the authority, never the comment.)
+    #
+    # 4.9.48 -> 4.9.49-verdict-routes (2026-09-02): STEP 2 returns Railway's
+    # response only when `resp.status < 500`, so a DELIBERATE 503 fell through
+    # to the STEP 2.5 Render failover, which asked the STALE build the same
+    # question and shipped its 200 because `< 400` passes. Measured during the
+    # ENTSO-E maintenance outage, bodies BYTE-IDENTICAL (only the status
+    # differed, so a body diff does not catch it):
+    #     railway .../api/v1/iso/eu/health -> 503   16.5s   (correct)
+    #     edge    .../api/v1/iso/eu/health -> 200   38.6s
+    #             x-dc-hub-failover: true   x-dc-worker-version: 4.9.48
+    # #3568 had just made that route `200 if live_feed_ok else 503` so that
+    # "every monitor that reads a status code" would stop seeing green through
+    # a 50h outage; the edge undid it one hop later. STEP 2.4 adds an EXPLICIT
+    # verdict-route allowlist, before STEP 2.5 AND before STEP 3 (KV stale
+    # would serve a cached 200 from when the feed was healthy — the same lie by
+    # another route).
+    # ★ dchub-frontend#1303 fixed this in the PAGES worker first and changed
+    # NOTHING here: api.dchub.cloud is THIS script (4.9.x), not Pages (4.6x.x).
+    # Read x-dc-worker-version before choosing which file to edit.
+    # ★ PASTE OUTSTANDING — merging does not ship this. Until the manual
+    # Cloudflare dashboard paste happens, the live zone worker still launders
+    # that 503 into a stale-Render 200 and every status-code monitor reads
+    # green through the outage.
     # Verify with:
-    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.48
-    assert "WORKER_VERSION = '4.9.48-anon-callable-flag'" in src
+    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.49
+    assert "WORKER_VERSION = '4.9.49-verdict-routes'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
