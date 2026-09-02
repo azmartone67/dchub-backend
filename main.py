@@ -33967,12 +33967,38 @@ def phase12g_load_facilities_live():
 
 @app.route('/api/admin/loader-status', methods=['GET'])
 def phase12g_loader_status():
-    """Read the latest state of every async loader."""
+    """Read the latest state of every async loader.
+
+    ★ Accepts EITHER header carrying EITHER key (2026-09-02). This used to read
+    only `X-Admin-Key` while comparing against `DCHUB_ADMIN_KEY or
+    DCHUB_INTERNAL_KEY` — a single expected value. Both workflows that fire the
+    phase12g loaders send `X-Internal-Key`:
+
+        data-sync.yml:210          dchub-osm-refresh.yml:54
+
+    so every read of this endpoint returned 401 and both steps exit 0 over it.
+    Observed live 2026-09-02 in run 33599180707: the four loaders were fired,
+    then `Final loader status:` printed {"error":"unauthorized"}. Same shape on
+    2026-08-30 in the OSM run.
+
+    These are the only doors still writing to `substations` — the canonical
+    HIFLD lane is deliberately blocked (land_power_crawler.SUBSTATION_WRITES_BLOCKED)
+    — so their outcome has never been observable by anyone.
+
+    This does not widen who may call: DCHUB_INTERNAL_KEY was already an accepted
+    credential here via the `or` fallback, and is the standard internal-caller
+    key elsewhere in this file (e.g. the land-power sync gate). It widens which
+    HEADER may carry it. Read-only; returns loader state, no data.
+    """
     import os
-    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
-    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
-    if expected and provided != expected:
-        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
+    accepted = {k for k in (os.environ.get("DCHUB_ADMIN_KEY"),
+                            os.environ.get("DCHUB_INTERNAL_KEY")) if k}
+    provided = (request.headers.get("X-Admin-Key")
+                or request.headers.get("X-Internal-Key")
+                or request.args.get("admin_key"))
+    if accepted and provided not in accepted:
+        return jsonify(error="unauthorized",
+                       hint="X-Admin-Key or X-Internal-Key required"), 401
     return jsonify({'success': True, 'loaders': dict(phase12g_loader_state)})
 # --- end phase 12g ----------------------------------------------------------
 
