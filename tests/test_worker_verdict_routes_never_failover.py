@@ -86,9 +86,13 @@ def test_matching_is_exact_not_prefix():
     m = re.search(r"const isVerdictRoute = ([^;]+);", SRC)
     body = m.group(1)
     assert ".has(" in body, "predicate no longer uses Set.has — %s" % body
+    # f-string, not %s: regression_lint's [url-format-typo] rule blocks a
+    # literal %s on a line carrying a URL path, because that shape is the
+    # psycopg2/URL formatting bug it exists to catch. The rule is right about
+    # the shape even when this instance is only a message.
     assert "startsWith" not in body, (
         "prefix matching would swallow /api/v1/iso/eu/healthz and "
-        "/api/v1/iso/eu/health/deep: %s" % body)
+        f"/api/v1/iso/eu/health/deep: {body}")
 
 
 def test_it_short_circuits_before_failover_AND_before_kv_stale():
