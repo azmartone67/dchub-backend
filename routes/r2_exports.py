@@ -44,7 +44,9 @@ DATASETS = [
     # anonymous tier. Path kept for the manifest's source_path field.
     ("facilities", "/api/v1/facilities?limit=50000",
      "Data-center facility inventory — public fields, all rows"),
-    ("news", "/api/v1/news", "Curated industry news feed"),
+    # built in-process (see _BUILDERS) — the HTTP page is 50 of 13,009.
+    ("news", "/api/v1/news",
+     "Industry news LINK INDEX — headlines, URLs, attribution (no article text)"),
     ("ai-capacity", "/ai-capacity-index/today.json", "AI capacity index (daily)"),
 ]
 _NAMES = {d[0] for d in DATASETS}
@@ -168,7 +170,98 @@ def _build_public_facilities():
 
 # Datasets built in-process rather than fetched over localhost, because the
 # HTTP path can only ever see what an anonymous caller sees.
-_BUILDERS = {"facilities": _build_public_facilities}
+# ── ★ THE NEWS LINK INDEX (2026-09-02) ──────────────────────────────────────
+#
+# /api/v1/news returns 50 of 13,009 — caught by the stub guard's count test
+# alone, with NO upsell markers on the payload, which is why it survived three
+# months looking like a real 35KB dataset. It is the third stub the guard
+# found and the only one nobody had suspected.
+#
+# ★ THIS EXPORT DELIBERATELY DROPS TWO FIELDS THE API RETURNS.
+#   · summary    news_engine.py:290 builds it from
+#                `entry.get('summary', entry.get('description',''))` — the
+#                PUBLISHER'S OWN TEXT, lifted from their feed. One summary
+#                beside a link is ordinary feed behaviour; 13,009 of them in a
+#                downloadable file is republishing someone else's writing at
+#                scale, and DC Hub does not hold that right.
+#   · image_url  points at the publisher's server. Shipping 13,009 of them
+#                invites bulk hotlinking of assets we do not host or pay for.
+#
+# What ships is the link-and-fact layer: title, url, source, published_at,
+# category, relevance_score. A headline plus a link plus an attribution is how
+# an index works, and relevance_score is ours. An ingester that wants the
+# article reads it from the publisher, which is also the outcome the publisher
+# wants — this file sends traffic to them rather than standing in for them.
+_NEWS_SQL = """
+SELECT id, title, url, source, published_at, category, relevance_score
+  FROM news_articles
+ WHERE url IS NOT NULL AND url <> ''
+ ORDER BY published_at DESC NULLS LAST
+"""
+
+_NEWS_LICENCE = {
+    "layer": "news_index",
+    "terms": "link index — headlines, URLs and attribution only",
+    "attribution": "DC Hub (dchub.cloud); each item credits its own source",
+    "note": ("article TEXT is NOT included and is not DC Hub's to license: "
+             "`summary` and `image_url` are the publisher's and are excluded "
+             "from this export by design. Follow `url` to the source"),
+}
+
+
+def _build_news_index():
+    """The news link index, or None if the DB is unreachable."""
+    try:
+        from db_utils import get_read_db
+    except Exception:
+        return None
+    conn = None
+    try:
+        conn = get_read_db()
+        cur = conn.cursor()
+        cur.execute(_NEWS_SQL)
+        rows = cur.fetchall() or []
+    except Exception:
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    out = []
+    for r in rows:
+        pub = r[4]
+        out.append({
+            "id": r[0],
+            "title": r[1],
+            "url": r[2],
+            "source": r[3],
+            # isoformat when the driver hands back a datetime, str otherwise —
+            # a raw datetime is not JSON-serialisable and would fail the whole
+            # build at json.dumps, not here where it could be diagnosed.
+            "published_at": (pub.isoformat() if hasattr(pub, "isoformat")
+                             else (str(pub) if pub is not None else None)),
+            "category": r[5],
+            "relevance_score": r[6],
+        })
+    return {
+        "dataset": "news",
+        "count": len(out),
+        "basis": ("news_articles WHERE url IS NOT NULL AND url <> '', newest "
+                  "first — every indexed article, not the 50-item API page"),
+        "fields": ["id", "title", "url", "source", "published_at", "category",
+                   "relevance_score"],
+        "fields_note": ("summary and image_url are deliberately NOT exported "
+                        "— see licence.note"),
+        "licence": _NEWS_LICENCE,
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "data": out,
+    }
+
+
+_BUILDERS = {"facilities": _build_public_facilities,
+             "news": _build_news_index}
 
 
 
