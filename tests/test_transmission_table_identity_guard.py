@@ -53,6 +53,9 @@ UNPATCHED (origin/main @ 044cd4ed, extracted via `git archive origin/main`):
     The other 10 must fail on main — they are this branch's actual contribution.
 PATCHED (this branch):
     19 passed, 1 xfailed, 0 failed
+    Now 20 passed, 1 xfailed: test_parametrized_node_ids_are_checkout_independent
+    was added 2026-09-01 with the switch to repo-relative parametrize values
+    (it passes in both states — it pins this file's node IDs, not the contract).
 
 MUST-FAIL CONTROL
 ─────────────────
@@ -71,13 +74,37 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+def _abs(rel):
+    """Repo-RELATIVE (posix-style) path -> absolute path in this checkout."""
+    return os.path.join(ROOT, *rel.split("/"))
+
+
 # NEVER import main (house rule). Nothing here runs at module scope beyond
 # cheap, side-effect-free path arithmetic and file reads.
-INFRA = os.path.join(ROOT, "routes", "infrastructure_data_routes.py")
-GRID = os.path.join(ROOT, "routes", "grid_intelligence_routes.py")
-ENERGY = os.path.join(ROOT, "routes", "energy_discovery_routes.py")
-MCP = os.path.join(ROOT, "dchub_mcp_server.py")
-TXMOD = os.path.join(ROOT, "util", "transmission_tables.py")
+#
+# ★ PARAMETRIZE OVER THE `REL_*` FORMS, NEVER THE ABSOLUTE ONES, and call
+#   _abs() inside the test body. A parametrized absolute path is copied
+#   verbatim into the pytest node ID, so the ID carries the checkout location:
+#     ...::test_x[/Users/me/.claude/worktrees/hungry-brattain-0a65fd/foo.py]
+#   Two runs from two worktrees then share no test NAMES, and diffing failures
+#   by name — the standard way to tell a real regression from a pre-existing
+#   one — reports every test in this file as removed and a same-named one as
+#   added. With a worktree per change that is the normal case, not the corner
+#   case, and it makes CI-vs-local diffs noise too. Same class as #3530, which
+#   fixed the absolute path baked into contracts/api_response_surface.json.
+#   Fenced below by test_parametrized_node_ids_are_checkout_independent.
+REL_INFRA = "routes/infrastructure_data_routes.py"
+REL_GRID = "routes/grid_intelligence_routes.py"
+REL_ENERGY = "routes/energy_discovery_routes.py"
+REL_MCP = "dchub_mcp_server.py"
+REL_TXMOD = "util/transmission_tables.py"
+
+INFRA = _abs(REL_INFRA)
+GRID = _abs(REL_GRID)
+ENERGY = _abs(REL_ENERGY)
+MCP = _abs(REL_MCP)
+TXMOD = _abs(REL_TXMOD)
 
 # Live-verified 2026-07-29 via /api/v1/admin/schema (prod, DATABASE_URL-backed)
 # and /api/v1/energy/discovery/status. These are the facts the contract rests on.
@@ -223,13 +250,14 @@ def test_stats_never_publishes_zero_for_an_unmeasured_member():
 
 # ── C4: every spatial surface labels its count and ships coverage ────────────
 
-@pytest.mark.parametrize("path,label", [
-    (INFRA, "paid Land & Power map layer"),
-    (MCP, "MCP transmission layer served to agents"),
-    (ENERGY, "Energy Discovery panel"),
+@pytest.mark.parametrize("rel,label", [
+    (REL_INFRA, "paid Land & Power map layer"),
+    (REL_MCP, "MCP transmission layer served to agents"),
+    (REL_ENERGY, "Energy Discovery panel"),
 ])
-def test_spatial_consumers_declare_their_count_is_a_floor(path, label):
+def test_spatial_consumers_declare_their_count_is_a_floor(rel, label):
     """C4 — a 41%-incomplete count published bare is the silent shortfall."""
+    path = _abs(rel)  # relative in the ID, absolute in the body — see _abs()
     _parsed(path)
     src = _src(path)
     assert "count_is_floor" in src, (
@@ -237,9 +265,10 @@ def test_spatial_consumers_declare_their_count_is_a_floor(path, label):
         "with no indication it is a floor. UNPATCHED: absent everywhere.")
 
 
-@pytest.mark.parametrize("path", [INFRA, MCP])
-def test_spatial_consumers_ship_a_coverage_block(path):
+@pytest.mark.parametrize("rel", [REL_INFRA, REL_MCP])
+def test_spatial_consumers_ship_a_coverage_block(rel):
     """C4 — the vintage and the gap must travel with the rows."""
+    path = _abs(rel)  # relative in the ID, absolute in the body — see _abs()
     src = _src(path)
     assert "_tx_coverage" in src, (
         f"{os.path.basename(path)} serves snapshot rows without the coverage "
@@ -421,13 +450,62 @@ def _stats_members():
     return {k: (t, role) for k, t, role in members}
 
 
+# ── Node-ID hygiene: an ID must not name the checkout it ran in ──────────────
+
+def test_parametrized_node_ids_are_checkout_independent():
+    """No parametrized value in this file may be an absolute path.
+
+    pytest copies a string argvalue verbatim into the node ID, so parametrizing
+    over INFRA/MCP/ENERGY stamps the checkout location into the ID:
+        ...::test_x[/Users/me/.claude/worktrees/<name>/dchub_mcp_server.py]
+    Runs from two worktrees then share no test NAMES at all, which breaks the
+    one reliable way to separate a real regression from a pre-existing failure
+    (diff the failures by name against a baseline) and makes every CI-vs-local
+    diff noise. The repo's worktree-per-change workflow makes that the normal
+    case. #3530 was the same class in contracts/api_response_surface.json.
+
+    Reads this module's OWN live marks, so re-adding an absolute path to a
+    decorator fails here; a comment describing the old shape cannot satisfy it.
+    """
+    import sys
+    checked = 0
+    for name, obj in vars(sys.modules[__name__]).items():
+        if not (name.startswith("test_") and callable(obj)):
+            continue
+        for mark in getattr(obj, "pytestmark", []):
+            if mark.name != "parametrize":
+                continue
+            argvalues = (mark.args[1] if len(mark.args) > 1
+                         else mark.kwargs.get("argvalues", []))
+            for row in argvalues:
+                row = getattr(row, "values", row)  # unwrap pytest.param()
+                for value in (row if isinstance(row, (tuple, list)) else (row,)):
+                    if not isinstance(value, str):
+                        continue
+                    checked += 1
+                    assert not os.path.isabs(value), (
+                        f"{name} parametrizes over the absolute path {value!r}; "
+                        "the checkout location lands in the node ID. Pass the "
+                        "repo-relative form and call _abs() in the test body.")
+                    assert ROOT not in value, (
+                        f"{name} parametrizes over a value carrying this "
+                        f"checkout's root: {value!r}")
+    assert checked >= 5, (
+        f"only {checked} parametrized string values were inspected — the two "
+        "spatial-consumer parametrizations alone supply 8. The scan has gone "
+        "vacuous (marks moved, or the attribute is no longer `pytestmark`) and "
+        "is passing without checking anything.")
+
+
 def test_helpers_actually_resolve():
     """Free-variable check: a helper that raises NameError, or a target function
     that has been renamed, would otherwise make the tests above vacuous or error
     out ambiguously. Prove every name resolves before relying on it.
     """
-    for h in (_func, _func_src, _stats_members, _targets_subscript_of, _str_parts):
+    for h in (_abs, _func, _func_src, _stats_members, _targets_subscript_of,
+              _str_parts):
         assert callable(h), f"{h} is not callable"
+    assert _abs("routes/x.py") == os.path.join(ROOT, "routes", "x.py")
     fn = _func(_parsed(INFRA), "get_infrastructure_stats")
     assert fn.name == "get_infrastructure_stats"
     assert len(_func_src(INFRA, "get_infrastructure_stats")) > 200

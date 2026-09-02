@@ -464,7 +464,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.47-tools-83-summarize-for-citation';
+const WORKER_VERSION = '4.9.48-anon-callable-flag';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -2124,7 +2124,23 @@ async function wellKnownResponse(pathname, kv) {
       version:        MCP_SERVER_INFO.version,
       tools:          mcpTools,
       tools_count:    mcpTools.length,
-      authentication: { type: 'api_key', header: 'X-API-Key', optional_for: ['free_tier'] },
+      // ★r-anon-callable (2026-09-01): `type:'api_key'` ALONE reads as AUTH
+      // REQUIRED to every third-party parser, and `optional_for` is a DC Hub
+      // invention nothing else knows how to read. MEASURED: Glimind indexed
+      // every dchub tool as `anonymousCallable:false` while its OWN liveness
+      // probe recorded `authRequired:false` — and its docs instruct agents to
+      // pre-filter on that flag, so we were silently skipped in routing while
+      // a PAID competitor marked `true` survived. `required`+`anonymous_access`
+      // are the unambiguous machine-readable answer. `type`/`header` STAY so
+      // any client keying off them still sends the credential (additive, no
+      // behaviour change for existing callers).
+      authentication: {
+        type:             'api_key',
+        header:           'X-API-Key',
+        required:         false,
+        anonymous_access: true,
+        optional_for:     ['free_tier'],
+      },
       pricing: {
         anonymous:  '3 calls/day taste, no signup',
         free_tier:  `Free key — 10 calls/day, all ${mcpTools.length} tools, no credit card`,
@@ -2170,7 +2186,14 @@ async function wellKnownResponse(pathname, kv) {
         url:          MCP_SERVER_INFO.homepage,
         contact:      MCP_SERVER_INFO.contact,
       },
-      authentication: { type: 'api_key', header: 'X-API-Key', optional_for: ['free_tier'] },
+      // ★r-anon-callable — see the note on the /.well-known/mcp.json block above.
+      authentication: {
+        type:             'api_key',
+        header:           'X-API-Key',
+        required:         false,
+        anonymous_access: true,
+        optional_for:     ['free_tier'],
+      },
       tools,
       tools_count:    tools.length,
       gated_tools:    ['get_intelligence_index', 'compare_sites', 'analyze_site', 'get_infrastructure', 'get_fiber_intel', 'get_grid_intelligence'],
@@ -2789,11 +2812,14 @@ export default {
           url:          MCP_SERVER_INFO.homepage,
           contact:      MCP_SERVER_INFO.contact,
         },
+        // ★r-anon-callable — see /.well-known/mcp.json block.
         authentication: {
-          type:         'api_key',
-          header:       'X-API-Key',
-          optional_for: ['free_tier'],
-          note:         'Free tier (10 calls/day) requires no auth. Paid tiers add X-API-Key header.',
+          type:             'api_key',
+          header:           'X-API-Key',
+          required:         false,
+          anonymous_access: true,
+          optional_for:     ['free_tier'],
+          note:         'Anonymous calls succeed with NO credential (3/day). Free key = 10 calls/day, no signup. X-API-Key only raises limits and result depth.',
         },
         capabilities:    { tools: { listChanged: true } },
         tools_count:     _mTools.length,
