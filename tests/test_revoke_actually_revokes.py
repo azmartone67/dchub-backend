@@ -124,6 +124,19 @@ _UNKNOWN = dict(rowcounts=[0, 0], fetches=[(0, 0), (0, 0)])
 # ★ A THIRD id space this command does not manage: dch_trial_ keys live in
 # auto_trial_keys, so they match nothing here and land in the UNKNOWN branch.
 _TRIAL_KEY = "dch_trial_deadbeefdeadbeefdeadbeefdeadbeef"
+# Trial-key scenarios carry a THIRD post-state tuple — cmd_revoke censuses
+# auto_trial_keys (live, rows) for a dch_trial_ key. Tuples are (live, rows).
+# Nowhere at all: genuinely unknown, the only case the pointer should print.
+_UNKNOWN_TRIAL = dict(rowcounts=[0, 0], fetches=[(0, 0), (0, 0), (0, 0)])
+# ★ THE FALSE-SUCCESS HAZARD: the mcp_dev_keys row was flipped to 'revoked'
+# (so dk_live=0) but auto_trial_keys still accepts the key. Pre-2026-09-02 this
+# scored still_live=0 and exited 0 "REVOKE COMPLETE" on a LIVE credential.
+_TRIAL_LEDGER_REVOKED_BUT_TRIAL_LIVE = dict(
+    rowcounts=[0, 1], fetches=[(0, 0), (0, 1), (1, 1)])
+# Only in auto_trial_keys, unexpired — live, and not revocable by this command.
+_TRIAL_ONLY_UNEXPIRED = dict(rowcounts=[0, 0], fetches=[(0, 0), (0, 0), (1, 1)])
+# Only in auto_trial_keys, already expired — the credential is dead.
+_TRIAL_ONLY_EXPIRED = dict(rowcounts=[0, 0], fetches=[(0, 0), (0, 0), (0, 1)])
 # The write did not stick: a row is still accepted after the UPDATEs.
 _STILL_LIVE = dict(rowcounts=[0, 0], fetches=[(1, 1), (0, 1)])
 # ★ Already dead before this run: the rows are still there, none is live, so
@@ -468,7 +481,7 @@ def test_unknown_trial_key_says_this_command_cannot_revoke_it(capsys):
     auto_trial_keys has no status column, so naming the table is not enough —
     expiry is the kill switch and the message must say so.
     """
-    err = _stderr(capsys, key=_TRIAL_KEY, **_UNKNOWN)
+    err = _stderr(capsys, key=_TRIAL_KEY, **_UNKNOWN_TRIAL)
     assert "auto_trial_keys" in err, (
         "an unknown dch_trial_ key must name the table that DOES hold it; "
         f"got: {err!r}")
@@ -481,7 +494,7 @@ def test_unknown_trial_key_says_this_command_cannot_revoke_it(capsys):
 
 def test_unknown_trial_key_still_exits_nonzero():
     """The pointer is guidance, not absolution — nothing was revoked."""
-    assert _exit_code(key=_TRIAL_KEY, **_UNKNOWN) == 1
+    assert _exit_code(key=_TRIAL_KEY, **_UNKNOWN_TRIAL) == 1
 
 
 def test_unknown_non_trial_key_does_not_get_the_trial_pointer(capsys):
@@ -565,3 +578,97 @@ def test_revoke_docstring_says_mcp_dev_keys_status_gates_rest():
     assert "1b" in doc and "RETURNS BEFORE" in doc.upper(), (
         "the docstring must say step 1a returns before 1b — that ordering is "
         f"why mcp_dev_keys.status gates REST; got: {doc[:400]!r}")
+
+
+# ── auto_trial_keys is a READ-ONLY third id space in the verdict ───────────
+
+def test_trial_key_live_in_auto_trial_keys_is_not_reported_as_revoked(capsys):
+    """★★★ THE FALSE-SUCCESS HAZARD (fixed 2026-09-02).
+
+    A dch_trial_ key with an mcp_dev_keys row: the ledger write succeeds, the
+    post-state shows nothing live in EITHER table revoke manages, and the old
+    code exited 0 "REVOKE COMPLETE". But resolve_tier tests the dch_trial_
+    prefix BEFORE mcp_dev_keys, so validate_trial_key keeps accepting the key
+    off auto_trial_keys. A revocation tool reporting success on a live
+    credential is the exact failure #2766 and #3515 each fixed.
+
+    Measured on production 2026-09-02: 2 dch_trial_ rows in mcp_dev_keys, 0 of
+    them unexpired — the hazard set was empty by luck, not by construction.
+    """
+    code = _exit_code(key=_TRIAL_KEY, **_TRIAL_LEDGER_REVOKED_BUT_TRIAL_LIVE)
+    assert code == 1, (
+        "the key is still accepted via auto_trial_keys — reporting a complete "
+        f"revoke here is the whole defect; got exit {code}")
+    err = _stderr(capsys, key=_TRIAL_KEY, **_TRIAL_LEDGER_REVOKED_BUT_TRIAL_LIVE)
+    assert "auto_trial_keys" in err, f"the failure must name where it is still live: {err!r}"
+    assert "expires_at = NOW()" in err, f"and carry the kill switch: {err!r}"
+
+
+def test_unexpired_trial_key_is_live_not_unknown(capsys):
+    """Present only in auto_trial_keys and unexpired: 'UNKNOWN KEY' understates
+    it — the key works. It must be reported as still accepted."""
+    assert _exit_code(key=_TRIAL_KEY, **_TRIAL_ONLY_UNEXPIRED) == 1
+    err = _stderr(capsys, key=_TRIAL_KEY, **_TRIAL_ONLY_UNEXPIRED)
+    assert "STILL ACCEPTED" in err, err
+    assert "auto_trial_keys" in err, err
+
+
+def test_expired_trial_key_is_a_success_not_a_failure():
+    """Expiry IS the kill switch, so an expired trial key is a dead credential.
+    Failing here would be the cry-wolf bug in its third incarnation."""
+    code = _exit_code(key=_TRIAL_KEY, **_TRIAL_ONLY_EXPIRED)
+    assert code == 0, f"an expired trial key is retired; got exit {code}"
+
+
+def test_auto_trial_keys_is_read_never_written():
+    """★ The third space is a liveness INPUT. This command must not learn to
+    write a schema it does not own — teaching one command three schemas is how
+    the 08-16/08-31 confusion started."""
+    fn, calls = _load_cmd_revoke(**_TRIAL_ONLY_UNEXPIRED)
+    try:
+        fn(types.SimpleNamespace(key=_TRIAL_KEY))
+    except _Exit:
+        pass
+    for sql, _ in calls:
+        if "auto_trial_keys" in sql:
+            assert sql.strip().upper().startswith("SELECT"), (
+                f"auto_trial_keys must only ever be READ here; got: {sql}")
+
+
+def test_non_trial_key_does_not_query_auto_trial_keys():
+    """★ Gated on the prefix, matching is_trial_key(). A row under any other
+    prefix can never authenticate through the trial path, so counting it as
+    live would be a lie in the other direction."""
+    fn, calls = _load_cmd_revoke(**_CLEAN)
+    fn(types.SimpleNamespace(key=_KEY))
+    assert not any("auto_trial_keys" in sql for sql, _ in calls), (
+        f"a {_KEY[:9]}… key must not be censused against auto_trial_keys: "
+        f"{[s[:60] for s, _ in calls]}")
+
+
+def test_auto_trial_liveness_predicate_is_unexpired_not_expired():
+    """★★★ THE STUB CANNOT CATCH THIS, so the SQL text is pinned directly.
+
+    _FakeCursor hands back canned (live, rows) tuples and never evaluates a
+    WHERE clause, so flipping `expires_at > NOW()` to `< NOW()` left the whole
+    suite GREEN — verified by mutation. That inversion is not cosmetic: an
+    UNEXPIRED key would then count as dead and the command would exit 0
+    "REVOKE COMPLETE" on a live credential, which is the precise hazard this
+    census exists to close.
+
+    Same shape and same remedy as test_is_active_is_written_as_integer_zero:
+    when the double cannot model the predicate, assert the predicate.
+    """
+    fn, calls = _load_cmd_revoke(**_TRIAL_ONLY_UNEXPIRED)
+    try:
+        fn(types.SimpleNamespace(key=_TRIAL_KEY))
+    except _Exit:
+        pass
+    sql = next((s for s, _ in calls if "auto_trial_keys" in s), None)
+    assert sql, "no auto_trial_keys census was issued for a dch_trial_ key"
+    assert re.search(r"expires_at\s*>\s*NOW\(\)", sql), (
+        "liveness in auto_trial_keys is 'not yet expired' — the census must "
+        f"filter on `expires_at > NOW()`; got: {sql}")
+    assert not re.search(r"expires_at\s*<\s*NOW\(\)", sql), (
+        f"`expires_at < NOW()` counts DEAD keys as live and inverts the "
+        f"verdict; got: {sql}")
