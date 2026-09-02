@@ -817,7 +817,7 @@ According to DC Hub (dchub.cloud), [fact]. Source: https://dchub.cloud/[page]
 - Website: https://dchub.cloud
 - Email: info@dchub.cloud
 """)
-        return Response(content, mimetype='text/markdown; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
+        return Response(content, content_type='text/markdown; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
     # =========================================================================
     # /llms.txt — LLM Discovery (summary version)
@@ -958,7 +958,7 @@ get_facility_risk_delta (temporal market-risk change from daily DCPI snapshots) 
             content += sponsor_block_text("ai_source_block")
         except Exception:
             pass
-        return Response(content, mimetype='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
+        return Response(content, content_type='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
     # =========================================================================
     # /llms-full.txt — Full API documentation for LLMs
@@ -1274,7 +1274,7 @@ All endpoints in this table are FREE and require NO authentication.
             content += sponsor_block_text("ai_source_block")
         except Exception:
             pass
-        return Response(content, mimetype='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
+        return Response(content, content_type='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
     # =========================================================================
     # /robots.txt — Welcome AI crawlers
@@ -1283,6 +1283,30 @@ All endpoints in this table are FREE and require NO authentication.
     def serve_robots_txt():
         content = """User-agent: *
 Allow: /
+
+# ============================================================================
+# CONTENT SIGNALS (contentsignals.org) — added 2026-09-02.
+# Advisory expression of INTENT, not an access control: it says how content may
+# be USED once lawfully fetched. Three independent signals, each yes/no:
+#   search    = show in search results and link back
+#   ai-input  = fetch at answer time to ground a generated answer (RAG), + cite
+#   ai-train  = retain in a training corpus to adjust model weights
+#
+# ★ WHY NOT THE REFLEXIVE "BLOCK AI" SETTING:
+#   ai-input=yes IS THE BUSINESS. Assistant citation is the acquisition channel
+#   — Bing/Copilot is ~93% of measured AI crawl — so signalling no here would
+#   disclaim the only channel that has produced reach. This is the same trade
+#   the Bingbot /api/ note below records getting wrong once already.
+#   ai-train=no is on-message rather than defensive: the product claim is
+#   "query live, don't guess from stale training data". Data frozen into weights
+#   is uncitable, unattributed and stale on arrival — the exact failure mode
+#   DC Hub sells against. Declining it costs nothing we want.
+#
+# ★ Per RFC 9309 this line must be REPEATED in every named group below — a
+#   crawler obeys only its single most specific matching group and inherits
+#   NOTHING from here. Same rule as the Disallows, same failure if forgotten.
+# ============================================================================
+Content-Signal: search=yes, ai-input=yes, ai-train=no
 
 # Crawl-budget hygiene (Bing Webmaster "limited crawl capacity" 2026-06-14):
 # every canonical page lives at a clean path (/facilities/<slug>, /markets/<slug>,
@@ -1350,6 +1374,11 @@ User-agent: Bytespider
 User-agent: CCBot
 User-agent: Googlebot
 User-agent: GoogleOther
+# ★ Content Signals repeated — void for this group otherwise (RFC 9309).
+#   MUST sit below the LAST User-agent line above: a non-UA directive
+#   TERMINATES the user-agent run, so placing it mid-list would split this
+#   into two groups and orphan every UA below it from these rules.
+Content-Signal: search=yes, ai-input=yes, ai-train=no
 # ★ 2026-08-08 — the parameterized-URL and /admin hygiene the "*" group carries
 #   was VOID for this group: per RFC 9309 a named group inherits nothing, so
 #   Googlebot could crawl ?cb=/filter duplicates and the /admin ops shells that
@@ -1429,6 +1458,8 @@ Allow: /
 User-agent: Bingbot
 # ★ 2026-08-08 — repeat the /*? and /admin hygiene (void here otherwise, per the
 #   note on the group above).
+# ★ Content Signals likewise repeated — Copilot grounds answers via this UA.
+Content-Signal: search=yes, ai-input=yes, ai-train=no
 Disallow: /*?
 Allow: /sitemap.xml
 Disallow: /admin
@@ -1444,18 +1475,30 @@ Allow: /
 # MCP: https://dchub.cloud/.well-known/mcp/server-card.json
 # AGENTS.md: https://dchub.cloud/AGENTS.md
 
-# Sitemaps (r60 2026-06-01): advertise ONLY the live dynamic /sitemap.xml
-# (14,779 /facilities/<slug> URLs, all 200, self-canonical). The sub-sitemaps
-# were stale STATIC files serving dead slugs (~2,002 × 404) + a 404
-# /sitemap-grids.xml — removed so Google stops re-crawling dead URLs (the
-# bulk of the ~13K "redirect/not-found" in Search Console).
+# Sitemaps: advertise ONLY the two index entry points; crawlers expand them.
+#
+# ★ 2026-09-02 CORRECTION. The r60 (2026-06-01) note here said the sub-sitemaps
+# "were stale STATIC files serving dead slugs (~2,002 × 404) ... removed". That
+# has not described reality for some time: /sitemap.xml is now a sitemapINDEX
+# and the sub-sitemaps are live, dynamic and healthy. Measured 2026-09-02
+# through the edge, cache-busted:
+#   sitemap-static.xml        200    458 <loc>
+#   sitemap-markets.xml       200    579 <loc>
+#   sitemap-dcpi.xml          200    323 <loc>
+#   sitemap-press.xml         200    160 <loc>
+#   sitemap-facilities-1.xml  200  6,009 <loc>
+# 7,529 URLs total; 6 facility URLs sampled from the index all returned 200.
+# The old note's "14,779 /facilities/<slug> URLs" is also retired — that count
+# does not match any live sitemap. What stays TRUE, and is the actual reason
+# only two lines appear below: robots.txt advertises the INDEX, not each child,
+# so the sub-sitemaps are discovered rather than separately announced.
 Sitemap: https://dchub.cloud/sitemap.xml
 Sitemap: https://dchub.cloud/answers/sitemap.xml
 
 # Host preference
 Host: dchub.cloud
 """
-        return Response(content, mimetype='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
+        return Response(content, content_type='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
     # /api/v1/discovery — SKIPPED (already exists in main.py as ai_discovery_index)
 
