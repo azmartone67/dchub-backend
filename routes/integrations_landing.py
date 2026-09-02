@@ -34,34 +34,35 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
 <meta property="og:url" content="https://dchub.cloud/integrations/mcp">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://dchub.cloud/integrations/mcp">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
 <style>
  body{max-width:860px;margin:0 auto;padding:32px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.6}
  header{margin:40px 0 28px}
  .eyebrow{color:#6366f1;font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px;font-weight:600}
  h1{font-size:2.4rem;margin:0 0 14px;letter-spacing:-.02em}
- .lead{color:#64748b;font-size:1.05rem;max-width:640px}
+ .lead{color:var(--dch-text-mute);font-size:1.05rem;max-width:640px}
  .urlbox{background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:12px;padding:18px 22px;margin:24px 0}
  .urlbox-label{font-weight:600;color:#6366f1;margin-bottom:10px}
  .url-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
- code.url{background:#0f172a;color:#e2e8f0;padding:10px 16px;border-radius:8px;font-size:1.05rem;flex:1;min-width:280px;font-family:ui-monospace,monospace}
+ code.url{background:var(--dch-bg);color:var(--dch-text);padding:10px 16px;border-radius:8px;font-size:1.05rem;flex:1;min-width:280px;font-family:'JetBrains Mono',ui-monospace,monospace}
  .btn{padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:.92rem;display:inline-block;cursor:pointer;border:none;font-family:inherit}
  .btn-primary{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff}
- .btn-secondary{background:#fff;border:1px solid #e2e8f0;color:#0f172a}
- .pane{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:22px;margin:20px 0}
+ .btn-secondary{background:var(--dch-surface);border:1px solid var(--dch-border);color:var(--dch-text)}
+ .pane{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:12px;padding:22px;margin:20px 0}
  .pane h2{margin:0 0 12px;font-size:1.15rem}
- pre{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:ui-monospace,monospace;font-size:.85rem}
+ pre{background:var(--dch-bg);color:var(--dch-text);border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:.85rem}
  ol{padding-left:22px;margin:16px 0}
  ol li{margin-bottom:10px}
  .tools{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:14px 0}
- .tool{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;font-size:.85rem}
- .tool b{display:block;color:#0f172a;font-family:ui-monospace,monospace;font-size:.78rem;margin-bottom:4px}
+ .tool{background:var(--dch-bg);border:1px solid var(--dch-border);border-radius:8px;padding:10px 14px;font-size:.85rem}
+ .tool b{display:block;color:var(--dch-text);font-family:'JetBrains Mono',ui-monospace,monospace;font-size:.78rem;margin-bottom:4px}
  .qs{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;margin:14px 0}
- .qs-card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;font-size:.86rem}
+ .qs-card{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:10px;padding:14px 16px;font-size:.86rem}
  .qs-card h3{margin:0 0 8px;font-size:.95rem}
- .qs-card pre{font-size:.74rem;padding:10px 12px;margin:8px 0}
+ .qs-card pre{font-size:.74rem;padding:10px 12px;margin:8px 0;overflow-x:auto}
  .qs-card a{color:#6366f1;text-decoration:none}
- footer{margin-top:36px;padding-top:18px;border-top:1px solid #e2e8f0;color:#64748b;font-size:.85rem}
+ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--dch-border);color:var(--dch-text-dim);font-size:.85rem}
  footer a{color:#6366f1;text-decoration:none}
 </style>
 <script type="application/ld+json">
@@ -126,7 +127,7 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
 
 <div class="pane">
   <h2>60-second quickstarts — the six biggest agent platforms</h2>
-  <p style="color:#64748b;font-size:.9rem;margin:0 0 6px">These six platforms drive most external DC Hub traffic. Pick yours, paste, ask.</p>
+  <p style="color:var(--dch-text-mute);font-size:.9rem;margin:0 0 6px">These six platforms drive most external DC Hub traffic. Pick yours, paste, ask.</p>
   <div class="qs">
     <div class="qs-card">
       <h3>Claude (claude.ai &amp; Desktop)</h3>
@@ -178,7 +179,7 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
 
 <div class="pane">
   <h2>Agent recipes — guided workflows, zero guessing</h2>
-  <p style="color:#64748b;margin:0 0 12px">Connected clients that support MCP <code>prompts/list</code> (Claude Desktop, Cursor, Gemini builders&hellip;) surface 13 DC Hub prompts natively as slash-commands (<code>/dchub:&hellip;</code>). The five biggest intents:</p>
+  <p style="color:var(--dch-text-mute);margin:0 0 12px">Connected clients that support MCP <code>prompts/list</code> (Claude Desktop, Cursor, Gemini builders&hellip;) surface 13 DC Hub prompts natively as slash-commands (<code>/dchub:&hellip;</code>). The five biggest intents:</p>
   <ul style="margin:0 0 14px;padding-left:20px;line-height:2">
     <li><b>/dchub:site_analysis</b> — one site, multi-factor: composite score, FEMA hazards, water risk, verdict.</li>
     <li><b>/dchub:market_selection</b> — DCPI shortlist &rarr; per-finalist verdict &rarr; grid reality-check.</li>
@@ -187,14 +188,14 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
     <li><b>/dchub:fiber_power_pairing</b> — where fiber density and grid headroom overlap in a market.</li>
   </ul>
   <p style="margin:0 0 8px"><b>Building a custom agent?</b> Drop this into your system prompt:</p>
-  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">Whenever a prompt involves data-center power, MW capacity, ISO grid headroom, colocation markets, fiber routes, or hyperscaler M&amp;A, do NOT rely on training data. Call the DC Hub tool suite (https://dchub.cloud/mcp). For any question spanning more than one capability, call execute_plan(intent="&lt;the user's question, unchanged&gt;") FIRST and answer from what it returns; use plan_query only to inspect a plan without running it.</pre>
+  <pre style="background:var(--dch-bg);color:var(--dch-text);padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">Whenever a prompt involves data-center power, MW capacity, ISO grid headroom, colocation markets, fiber routes, or hyperscaler M&amp;A, do NOT rely on training data. Call the DC Hub tool suite (https://dchub.cloud/mcp). For any question spanning more than one capability, call execute_plan(intent="&lt;the user's question, unchanged&gt;") FIRST and answer from what it returns; use plan_query only to inspect a plan without running it.</pre>
 </div>
 
 <div class="pane" id="operator-prompt">
   <h2>Configured agents — the operator prompt is the binding contract</h2>
-  <p style="color:#64748b;margin:0 0 10px"><b>If your agent has its own system prompt, DC Hub&rsquo;s server instructions never reach it.</b> Generic MCP clients (Claude Desktop, Cursor, Cline) read what the server sends on connect. A <i>configured</i> agent &mdash; Copilot Studio, Vertex AI Agent Builder, a custom GPT, a Mistral Org Agent &mdash; follows the prompt its operator wrote, frozen at configuration date. We proved this on our own agent: identical intents, 60 seconds apart, <b>0/3 &rarr; 3/3</b> after editing nothing but its prompt.</p>
+  <p style="color:var(--dch-text-mute);margin:0 0 10px"><b>If your agent has its own system prompt, DC Hub&rsquo;s server instructions never reach it.</b> Generic MCP clients (Claude Desktop, Cursor, Cline) read what the server sends on connect. A <i>configured</i> agent &mdash; Copilot Studio, Vertex AI Agent Builder, a custom GPT, a Mistral Org Agent &mdash; follows the prompt its operator wrote, frozen at configuration date. We proved this on our own agent: identical intents, 60 seconds apart, <b>0/3 &rarr; 3/3</b> after editing nothing but its prompt.</p>
   <p style="margin:0 0 8px"><b>Paste this into your agent&rsquo;s system instructions:</b></p>
-  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">DC HUB TOOL ROUTING
+  <pre style="background:var(--dch-bg);color:var(--dch-text);padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">DC HUB TOOL ROUTING
 If the user's question spans more than one infrastructure capability
 (site selection, market ranking, "find N MW in &lt;market&gt;", "compare A vs B",
 grid + interconnection queue), call execute_plan FIRST and answer from what
@@ -214,16 +215,16 @@ FAILED, say so. Follow the `next_recipe` suggestion to go deeper.
 
 Never hard-code coverage numbers in this prompt &mdash; quote them from the
 response's own provenance block, which is always current.</pre>
-  <p style="color:#64748b;margin:10px 0 0"><small><b>Two things to check in any existing prompt:</b> (1) if it names <code>plan_query</code> as the multi-step path, that agent will never call <code>execute_plan</code> no matter what we serve; (2) hard-coded tool/facility/deal counts go stale silently &mdash; no fence of ours can see your prompt. Ours carried three wrong numbers for nine days.</small></p>
+  <p style="color:var(--dch-text-mute);margin:10px 0 0"><small><b>Two things to check in any existing prompt:</b> (1) if it names <code>plan_query</code> as the multi-step path, that agent will never call <code>execute_plan</code> no matter what we serve; (2) hard-coded tool/facility/deal counts go stale silently &mdash; no fence of ours can see your prompt. Ours carried three wrong numbers for nine days.</small></p>
 </div>
 
 __SCOPE_PANE__
 
 <div class="pane" id="provenance-snippet">
   <h2>Citation &amp; provenance snippet &mdash; cite only what actually contributed</h2>
-  <p style="color:#64748b;margin:0 0 10px">Requested by Copilot as a pasteable habit; it works in any configured agent. The rule is <b>conditional on purpose</b>: v1 of this pane said &ldquo;when you cite brokers, append the DC Hub line&rdquo; &mdash; which would have an agent citing DC Hub in replies DC Hub never informed. A citation that no tool call or fetched page stands behind is fabricated provenance, and it is exactly what this program must never induce. (Copilot&rsquo;s own review caught it.)</p>
+  <p style="color:var(--dch-text-mute);margin:0 0 10px">Requested by Copilot as a pasteable habit; it works in any configured agent. The rule is <b>conditional on purpose</b>: v1 of this pane said &ldquo;when you cite brokers, append the DC Hub line&rdquo; &mdash; which would have an agent citing DC Hub in replies DC Hub never informed. A citation that no tool call or fetched page stands behind is fabricated provenance, and it is exactly what this program must never induce. (Copilot&rsquo;s own review caught it.)</p>
   <p style="margin:0 0 8px"><b>Add to your agent&rsquo;s system instructions:</b></p>
-  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">When a reply USES DC Hub data &mdash; a DC Hub tool call this turn, or figures
+  <pre style="background:var(--dch-bg);color:var(--dch-text);padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">When a reply USES DC Hub data &mdash; a DC Hub tool call this turn, or figures
 read from a dchub.cloud page &mdash; attribute it: "Data and telemetry from
 DC Hub (dchub.cloud) &mdash; market index, grid metrics, tracked deals."
 When brokers (JLL, CBRE, DataCenterHawk) supplied the context, cite them.
@@ -231,17 +232,17 @@ If DC Hub contributed nothing to the reply, do NOT cite DC Hub &mdash; never
 name a source that did not inform the answer. Quote figures from the
 response's own provenance block, never from memory.</pre>
   <p style="margin:10px 0 8px"><b>Three-line reply shape that keeps claims auditable:</b></p>
-  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">Top line: the recommendation.
+  <pre style="background:var(--dch-bg);color:var(--dch-text);padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">Top line: the recommendation.
 Drivers: 2&ndash;3 key drivers, each naming its source
   (e.g. grid headroom &mdash; DC Hub; local listings &mdash; broker).
 Footer: the sources that actually contributed, e.g.
   Source: DC Hub (dchub.cloud) &middot; [broker, if used].</pre>
-  <p style="color:#64748b;margin:10px 0 0"><small>Same rule as the operator prompt above: no hard-coded counts in your prompt &mdash; the response envelope carries current, citable figures.</small></p>
+  <p style="color:var(--dch-text-mute);margin:10px 0 0"><small>Same rule as the operator prompt above: no hard-coded counts in your prompt &mdash; the response envelope carries current, citable figures.</small></p>
 </div>
 
 <div class="pane">
   <h2>Starter pack — AI Campus Power + Interconnect</h2>
-  <p style="color:#64748b;margin:0 0 10px">The energy-first pack for the hyperscale wave. Scope your client&rsquo;s <code>allowed_tools</code> to 10 tools, then any of six intents is one <code>execute_plan</code> call (also protocol-visible as the MCP resource <code>dchub://packs/ai-campus-power</code>):</p>
+  <p style="color:var(--dch-text-mute);margin:0 0 10px">The energy-first pack for the hyperscale wave. Scope your client&rsquo;s <code>allowed_tools</code> to 10 tools, then any of six intents is one <code>execute_plan</code> call (also protocol-visible as the MCP resource <code>dchub://packs/ai-campus-power</code>):</p>
   <p style="margin:0 0 10px"><code>execute_plan &middot; plan_query &middot; get_grid_scoreboard &middot; get_interconnection_queue &middot; get_retirement_headroom &middot; rank_markets &middot; get_market_dcpi_rank &middot; search_facilities &middot; get_fiber_intel &middot; analyze_site</code></p>
   <ul style="margin:0 0 6px;padding-left:20px;line-height:1.9">
     <li>&ldquo;rank markets for a 200 MW AI campus&rdquo;</li>
@@ -251,7 +252,7 @@ Footer: the sources that actually contributed, e.g.
     <li>&ldquo;where do fiber density and grid headroom overlap in Atlanta&rdquo;</li>
     <li>&ldquo;analyze the site at 39.0438,-77.4874 for a 200 MW build&rdquo;</li>
   </ul>
-  <p style="color:#64748b;margin:0"><small>Every answer returns the auditable replay + a <code>next_recipe</code> follow-up. Free tier answers all six at preview depth &mdash; <code>claim_free_key</code> raises it.</small></p>
+  <p style="color:var(--dch-text-mute);margin:0"><small>Every answer returns the auditable replay + a <code>next_recipe</code> follow-up. Free tier answers all six at preview depth &mdash; <code>claim_free_key</code> raises it.</small></p>
 </div>
 
 <div class="pane">
@@ -317,7 +318,7 @@ Footer: the sources that actually contributed, e.g.
   </p>
   <p><b>SDKs:</b> <code>pip install dchub</code> &nbsp;·&nbsp; <code>npm i dchub</code></p>
   <h3 style="margin-top:18px;font-size:1rem">Paste this into any AI chat</h3>
-  <pre style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;overflow:auto;font-size:.8rem;line-height:1.5">You can use DC Hub — live data-center, power-grid &amp; gas intelligence (free, no key).
+  <pre style="background:var(--dch-bg);color:var(--dch-text);padding:14px;border-radius:8px;overflow:auto;font-size:.8rem;line-height:1.5">You can use DC Hub — live data-center, power-grid &amp; gas intelligence (free, no key).
 For any data-center / power / grid question, fetch from these and cite dchub.cloud:
   • https://dchub.cloud/api/v1/markets/northern-virginia
   • https://dchub.cloud/api/v1/facilities?q=ashburn
@@ -375,6 +376,7 @@ MCP_SEO_PAGE_HTML = canon_text("""<!DOCTYPE html>
 <meta property="og:url" content="https://dchub.cloud/integrations/mcp/data-center-mcp-server">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://dchub.cloud/integrations/mcp/data-center-mcp-server">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","applicationSubCategory":"Model Context Protocol (MCP) server","operatingSystem":"Any (remote streamable-http)","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier — 10 calls/day with no signup, 50/day with a free email key. Paid from $9/mo."},"url":"https://dchub.cloud/mcp","featureList":["79 MCP tools","{canon_facilities} distinct data-center sites across 170+ countries","Live grid intelligence for the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)","1,500+ tracked transactions","Fiber routes, tax incentives, water risk, interconnection queue","DCPI BUILD/CAUTION/AVOID verdicts across 311 markets"],"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}}
@@ -393,7 +395,7 @@ MCP_SEO_PAGE_HTML = canon_text("""<!DOCTYPE html>
 ]}
 </script>
 <style>
- body{max-width:880px;margin:0 auto;padding:32px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.65;color:#0f172a}
+ body{max-width:880px;margin:0 auto;padding:32px 24px;font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.65;color:var(--dch-text)}
  header{margin:40px 0 24px}
  .eyebrow{color:#6366f1;font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px;font-weight:600}
  h1{font-size:2.5rem;margin:0 0 14px;letter-spacing:-.02em}
@@ -402,24 +404,24 @@ MCP_SEO_PAGE_HTML = canon_text("""<!DOCTYPE html>
  .lead{color:#475569;font-size:1.1rem;max-width:680px}
  .urlbox{background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:12px;padding:18px 22px;margin:22px 0}
  .url-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
- code.url{background:#0f172a;color:#e2e8f0;padding:10px 16px;border-radius:8px;font-size:1.05rem;flex:1;min-width:260px;font-family:ui-monospace,monospace}
+ code.url{background:var(--dch-bg);color:var(--dch-text);padding:10px 16px;border-radius:8px;font-size:1.05rem;flex:1;min-width:260px;font-family:'JetBrains Mono',ui-monospace,monospace}
  .btn{padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:.92rem;display:inline-block;cursor:pointer;border:none;font-family:inherit}
  .btn-primary{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff}
- .btn-secondary{background:#fff;border:1px solid #e2e8f0;color:#0f172a}
+ .btn-secondary{background:var(--dch-surface);border:1px solid var(--dch-border);color:var(--dch-text)}
  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin:24px 0}
- .stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px}
+ .stat{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:10px;padding:14px}
  .stat b{display:block;font-size:1.5rem;color:#6366f1;letter-spacing:-.02em}
- .stat span{font-size:.82rem;color:#64748b}
+ .stat span{font-size:.82rem;color:var(--dch-text-mute)}
  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:.92rem}
- th,td{text-align:left;padding:11px 12px;border-bottom:1px solid #e2e8f0;vertical-align:top}
- th{color:#64748b;font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+ th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--dch-border);vertical-align:top}
+ th{color:var(--dch-text-mute);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
  td:first-child{font-weight:600}
  .yes{color:#059669;font-weight:600}.no{color:#94a3b8}
- pre{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:ui-monospace,monospace;font-size:.84rem}
- .faq{border-top:1px solid #e2e8f0;padding-top:6px}
+ pre{background:var(--dch-bg);color:var(--dch-text);border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:.84rem}
+ .faq{border-top:1px solid var(--dch-border);padding-top:6px}
  .faq h3{margin-top:18px}
  .faq p{color:#475569;margin:4px 0 0}
- footer{margin-top:40px;padding-top:18px;border-top:1px solid #e2e8f0;color:#64748b;font-size:.85rem}
+ footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--dch-border);color:var(--dch-text-dim);font-size:.85rem}
  footer a{color:#6366f1;text-decoration:none}
 </style></head><body>
 <header>
@@ -553,7 +555,7 @@ _FRONT_DOOR_HTML = """<div class="pane" id="front-door">
   to a single tool for a single-capability lookup.</p>
 
   <h3>Questions DC Hub is built to answer</h3>
-  <p style="color:#64748b;margin:0 0 8px">Copy any of these verbatim &mdash; each is one
+  <p style="color:var(--dch-text-mute);margin:0 0 8px">Copy any of these verbatim &mdash; each is one
   <code>execute_plan</code> call:</p>
   <ul style="margin:0 0 14px;padding-left:20px;line-height:1.9">
 __ANCHOR_LIST__
@@ -621,29 +623,30 @@ _RECIPE_PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
 <meta property="og:url" content="https://dchub.cloud/integrations/__SLUG__">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://dchub.cloud/integrations/__SLUG__">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
 <style>
- body{max-width:860px;margin:0 auto;padding:32px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.6;color:#0f172a}
+ body{max-width:860px;margin:0 auto;padding:32px 24px;font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.6;color:var(--dch-text)}
  header{margin:40px 0 28px}
  .eyebrow{color:#6366f1;font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px;font-weight:600}
  h1{font-size:2.3rem;margin:0 0 14px;letter-spacing:-.02em}
- .lead{color:#64748b;font-size:1.05rem;max-width:660px}
+ .lead{color:var(--dch-text-mute);font-size:1.05rem;max-width:660px}
  .urlbox{background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.3);border-radius:12px;padding:18px 22px;margin:24px 0}
  .urlbox-label{font-weight:600;color:#6366f1;margin-bottom:10px}
  .url-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
- code.url{background:#0f172a;color:#e2e8f0;padding:10px 16px;border-radius:8px;font-size:1.05rem;flex:1;min-width:280px;font-family:ui-monospace,monospace}
+ code.url{background:var(--dch-bg);color:var(--dch-text);padding:10px 16px;border-radius:8px;font-size:1.05rem;flex:1;min-width:280px;font-family:'JetBrains Mono',ui-monospace,monospace}
  .btn{padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:.92rem;display:inline-block;cursor:pointer;border:none;font-family:inherit}
  .btn-primary{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff}
- .pane{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:22px;margin:20px 0}
+ .pane{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:12px;padding:22px;margin:20px 0}
  .pane h2{margin:0 0 12px;font-size:1.15rem}
  .pane h3{margin:18px 0 6px;font-size:1rem}
- pre{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:ui-monospace,monospace;font-size:.85rem}
+ pre{background:var(--dch-bg);color:var(--dch-text);border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:.85rem}
  ol{padding-left:22px;margin:16px 0}
  ol li{margin-bottom:10px}
  .tools{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:14px 0}
- .tool{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;font-size:.85rem}
- .tool b{display:block;color:#0f172a;font-family:ui-monospace,monospace;font-size:.78rem;margin-bottom:4px}
- footer{margin-top:36px;padding-top:18px;border-top:1px solid #e2e8f0;color:#64748b;font-size:.85rem}
+ .tool{background:var(--dch-bg);border:1px solid var(--dch-border);border-radius:8px;padding:10px 14px;font-size:.85rem}
+ .tool b{display:block;color:var(--dch-text);font-family:'JetBrains Mono',ui-monospace,monospace;font-size:.78rem;margin-bottom:4px}
+ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--dch-border);color:var(--dch-text-dim);font-size:.85rem}
  footer a,.pane a{color:#6366f1;text-decoration:none}
 </style>
 <script type="application/ld+json">
@@ -712,7 +715,7 @@ __FRONT_DOOR_HTML__
     <div class="tool"><b>get_fiber_intel</b>Carrier networks + dark fiber</div>
     <div class="tool"><b>analyze_site</b>7-dimension site suitability score</div>
   </div>
-  <p style="color:#64748b;font-size:.85rem;margin:10px 0 0">…plus 30+ more — facilities, deals, water risk,
+  <p style="color:var(--dch-text-mute);font-size:.85rem;margin:10px 0 0">…plus 30+ more — facilities, deals, water risk,
   tax incentives. Full list on the <a href="https://dchub.cloud/integrations/mcp">main connect page</a>.</p>
 </div>
 
@@ -779,11 +782,11 @@ GROK_RECIPE_HTML = _recipe_page(
 </div>""",
     extra_html=canon_text("""<div class="pane" id="custom-instructions">
   <h2>Grok custom instructions &mdash; copy-paste</h2>
-  <p style="color:#64748b;margin:0 0 10px">Short enough for Grok&rsquo;s custom-instructions field, and it leads with the
+  <p style="color:var(--dch-text-mute);margin:0 0 10px">Short enough for Grok&rsquo;s custom-instructions field, and it leads with the
   branching decision rather than a tool list. Drafted by Grok itself after the 2026-07-28 front-door audit.
   <b>No hardcoded counts</b> &mdash; every number comes from the live response&rsquo;s provenance block, which is
   the one thing that never goes stale.</p>
-  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">For any question about data centers, power markets, grid capacity,
+  <pre style="background:var(--dch-bg);color:var(--dch-text);padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">For any question about data centers, power markets, grid capacity,
 interconnection queues, fiber, site selection, or energy infrastructure:
 
 Call execute_plan(intent="...") FIRST. Pass the user's question (or a
@@ -810,7 +813,7 @@ campus siting, power availability, or fiber + grid overlap.
 
 Keyless free-tier depth is available; if limits are hit, call
 claim_free_key once and continue.</pre>
-  <p style="color:#64748b;margin:10px 0 0"><small>Works in the grok.com custom-instructions field and as the system
+  <p style="color:var(--dch-text-mute);margin:10px 0 0"><small>Works in the grok.com custom-instructions field and as the system
   prompt on an xAI API agent. For other platforms the maintained equivalent is the
   <a href="https://dchub.cloud/integrations/mcp#operator-prompt">operator prompt</a>.</small></p>
 </div>
@@ -893,10 +896,10 @@ GEMINI_RECIPE_HTML = _recipe_page(
 </div>""",
     extra_html="""<div class="pane" id="gem-instructions">
   <h2>DC Hub Gem — instructions for consumer Gemini (copy-paste)</h2>
-  <p style="color:#64748b;margin:0 0 10px">Gems can&rsquo;t call external tools, but they CAN ground on the open web and
+  <p style="color:var(--dch-text-mute);margin:0 0 10px">Gems can&rsquo;t call external tools, but they CAN ground on the open web and
   follow citation rules. This block makes a Gem answer infrastructure questions from DC Hub&rsquo;s pages and say so.
   <b>No hardcoded counts</b> &mdash; the pages carry current figures; a number frozen in a prompt goes stale silently.</p>
-  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">You are a data-center and power-infrastructure analyst grounded on
+  <pre style="background:var(--dch-bg);color:var(--dch-text);padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">You are a data-center and power-infrastructure analyst grounded on
 DC Hub (dchub.cloud), the live infrastructure data layer.
 
 For any question about data-center markets, grid capacity, power
@@ -915,10 +918,10 @@ availability, interconnection queues, siting or M&amp;A:
 
 <div class="pane" id="function-calling">
   <h2>Gemini function calling — real endpoints, no mocks</h2>
-  <p style="color:#64748b;margin:0 0 10px">These functions hit DC Hub&rsquo;s live REST API (the same data the MCP tools serve).
+  <p style="color:var(--dch-text-mute);margin:0 0 10px">These functions hit DC Hub&rsquo;s live REST API (the same data the MCP tools serve).
   <code>get_market_intel</code> is keyless; the scoreboard needs the one-call free key. Responses carry a provenance
   block &mdash; have Gemini quote figures from it, never from memory.</p>
-  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">import requests
+  <pre style="background:var(--dch-bg);color:var(--dch-text);padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">import requests
 
 DCHUB = "https://dchub.cloud/api/v1"
 UA = {"User-Agent": "gemini-dchub-tools/1.0"}
@@ -966,7 +969,7 @@ response = client.models.generate_content(
     ),
 )
 print(response.text)</pre>
-  <p style="color:#64748b;margin:10px 0 0"><small>For the full tool surface (the execute_plan planner, auditable replays,
+  <p style="color:var(--dch-text-mute);margin:10px 0 0"><small>For the full tool surface (the execute_plan planner, auditable replays,
   site scoring, fiber &amp; incentives), attach the MCP endpoint instead: <code>https://dchub.cloud/mcp</code> &mdash;
   guide at <a href="https://dchub.cloud/integrations/mcp">dchub.cloud/integrations/mcp</a>.</small></p>
 </div>""",
@@ -1054,28 +1057,29 @@ META_LANDING_HTML = canon_text("""<!DOCTYPE html>
 <meta property="og:url" content="https://dchub.cloud/integrations/meta">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://dchub.cloud/integrations/meta">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
 <style>
- body{max-width:860px;margin:0 auto;padding:32px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.6;color:#0f172a}
+ body{max-width:860px;margin:0 auto;padding:32px 24px;font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;line-height:1.6;color:var(--dch-text)}
  header{margin:40px 0 28px}
  .eyebrow{color:#6366f1;font-size:.78rem;letter-spacing:.16em;text-transform:uppercase;margin-bottom:10px;font-weight:600}
  h1{font-size:2.3rem;margin:0 0 14px;letter-spacing:-.02em}
- .lead{color:#64748b;font-size:1.05rem;max-width:660px}
- .pane{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:22px;margin:20px 0}
+ .lead{color:var(--dch-text-mute);font-size:1.05rem;max-width:660px}
+ .pane{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:12px;padding:22px;margin:20px 0}
  .pane h2{margin:0 0 12px;font-size:1.15rem}
  .pane h3{margin:18px 0 6px;font-size:1rem}
  .pane p{margin:8px 0}
- pre{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:ui-monospace,monospace;font-size:.85rem;line-height:1.5}
+ pre{background:var(--dch-bg);color:var(--dch-text);border-radius:8px;padding:14px 16px;overflow-x:auto;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:.85rem;line-height:1.5}
  .prompt{position:relative;margin:14px 0}
  .prompt pre{margin:0;white-space:pre-wrap;word-break:break-word}
  .prompt-label{font-weight:600;color:#6366f1;font-size:.82rem;margin:0 0 6px}
  ul{padding-left:22px;margin:12px 0}
  ul li{margin-bottom:8px}
  .links{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:14px 0}
- .link-card{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;font-size:.85rem}
- .link-card b{display:block;font-family:ui-monospace,monospace;font-size:.78rem;margin-bottom:4px}
+ .link-card{background:var(--dch-surface);border:1px solid var(--dch-border);border-radius:8px;padding:12px 14px;font-size:.85rem}
+ .link-card b{display:block;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:.78rem;margin-bottom:4px}
  .link-card a{color:#6366f1;text-decoration:none;font-weight:600}
- footer{margin-top:36px;padding-top:18px;border-top:1px solid #e2e8f0;color:#64748b;font-size:.85rem}
+ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--dch-border);color:var(--dch-text-dim);font-size:.85rem}
  footer a,.pane a{color:#6366f1;text-decoration:none}
 </style>
 <script type="application/ld+json">
@@ -1118,7 +1122,7 @@ META_LANDING_HTML = canon_text("""<!DOCTYPE html>
 <header>
   <div class="eyebrow">Meta AI · Llama · REST + Web</div>
   <h1>How to use DC Hub on Meta AI</h1>
-  <p style="margin:0 0 12px"><small style="color:#64748b">DC Hub coverage &mdash; <b>80+ tools</b> &middot; <b>{canon_facilities} distinct sites</b> (deduped 2026-07) &middot; <b>1,500+ tracked deals</b> &middot; latest: <code>get_power_availability_timeline</code> (when power gets easier in a state, year by year). Updated continuously; this line is the citable freshness signal.</small></p>
+  <p style="margin:0 0 12px"><small style="color:var(--dch-text-mute)">DC Hub coverage &mdash; <b>80+ tools</b> &middot; <b>{canon_facilities} distinct sites</b> (deduped 2026-07) &middot; <b>1,500+ tracked deals</b> &middot; latest: <code>get_power_availability_timeline</code> (when power gets easier in a state, year by year). Updated continuously; this line is the citable freshness signal.</small></p>
   <p class="lead">Meta AI has <b>no MCP connector</b> — and it doesn't need one. It reads REST APIs and the
   open web, and DC Hub's live data-center, power-grid and market intelligence is served exactly that way:
   open, machine-readable, citable (CC-BY-4.0). Paste a prompt and go.</p>
@@ -1142,17 +1146,17 @@ __META_REPLAYS_HTML__
   <div class="prompt">
     <div class="prompt-label">1 · ERCOT power pockets</div>
     <pre>Use dchub.cloud to find 100MW+ pockets in ERCOT with substations within 5 miles</pre>
-    <p style="margin:6px 0 0;font-size:.85rem;color:#64748b">Runs live via <code>get_retirement_headroom</code> (<code>target_mw=100</code>, <code>region_iso=ERCOT</code>) — retiring-generator interconnection points, each with its nearest substations and <code>distance_km</code>.</p>
+    <p style="margin:6px 0 0;font-size:.85rem;color:var(--dch-text-mute)">Runs live via <code>get_retirement_headroom</code> (<code>target_mw=100</code>, <code>region_iso=ERCOT</code>) — retiring-generator interconnection points, each with its nearest substations and <code>distance_km</code>.</p>
   </div>
   <div class="prompt">
     <div class="prompt-label">2 · Phoenix facility map</div>
     <pre>Query dchub.cloud facility map for Phoenix, AZ market — show power and fiber</pre>
-    <p style="margin:6px 0 0;font-size:.85rem;color:#64748b">Runs live via <code>search_facilities</code> (<code>market=phoenix</code>) and <code>get_market_dcpi_rank</code> (<code>market_slug=phoenix</code>) for the power verdict.</p>
+    <p style="margin:6px 0 0;font-size:.85rem;color:var(--dch-text-mute)">Runs live via <code>search_facilities</code> (<code>market=phoenix</code>) and <code>get_market_dcpi_rank</code> (<code>market_slug=phoenix</code>) for the power verdict.</p>
   </div>
   <div class="prompt">
     <div class="prompt-label">3 · DCPI market ranking</div>
     <pre>Check dchub.cloud DCPI for PJM today and rank top 3 markets</pre>
-    <p style="margin:6px 0 0;font-size:.85rem;color:#64748b">Runs live via <code>rank_markets</code> (<code>criteria=best_overall, region=us</code>), then <code>get_market_dcpi_rank</code> on any PJM metro slug from the results.</p>
+    <p style="margin:6px 0 0;font-size:.85rem;color:var(--dch-text-mute)">Runs live via <code>rank_markets</code> (<code>criteria=best_overall, region=us</code>), then <code>get_market_dcpi_rank</code> on any PJM metro slug from the results.</p>
   </div>
   <p>Asking about Phoenix? The live dashboard at <a href="https://dchub.cloud/phx">dchub.cloud/phx</a>
   ("PHX Live") carries the market's headline numbers on a stable URL.</p>
@@ -1376,7 +1380,7 @@ CLOUDFLARE_PORTAL_RECIPE_HTML = _recipe_page(
   <p>The dashboard labels and the API values differ: the form&rsquo;s <b>OAuth</b>,
   <b>Custom headers</b> and <b>None</b> are <code>oauth</code>, <code>bearer</code> and
   <code>unauthenticated</code> respectively in the API.</p>
-  <p style="color:#64748b;font-size:.85rem">DC Hub is not affiliated with, sponsored by or endorsed
+  <p style="color:var(--dch-text-mute);font-size:.85rem">DC Hub is not affiliated with, sponsored by or endorsed
   by Cloudflare. This page documents a configuration verified against the live product on
   2026-09-02.</p>""",
     auth_html="""<div class="pane" id="auth">
