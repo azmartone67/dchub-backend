@@ -464,7 +464,23 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.48-anon-callable-flag';
+const WORKER_VERSION = '4.9.49-verdict-routes';
+
+// ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
+// Consumed at STEP 2.4 (see the block comment there for the measurement and
+// for why this landed in the WRONG worker first). A route earns a place here
+// by being MEASURED to answer 5xx deliberately while the origin is healthy.
+//
+// ★ EXPLICIT PATHS ONLY, never a prefix: a prefix would suppress failover for
+// genuinely broken routes, which is the failure the whole ladder exists to
+// prevent. Other backend routes use `200 if ok else 503`
+// (routes/slo_error_budget.py, sponsor_ops.py, activation_emails.py,
+// claim_ledger.py); they are NOT listed because their edge behaviour has not
+// been measured — add them with evidence, not by shape.
+const VERDICT_ROUTES = new Set([
+  '/api/v1/iso/eu/health',
+]);
+const isVerdictRoute = (p) => VERDICT_ROUTES.has(String(p || '').replace(/\/+$/, '') || '/');
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -3647,6 +3663,57 @@ export default {
       if (isGet && !hasApiKey && tier.browserMaxAge > 0) result.headers.set('Cache-Control', `public, max-age=${tier.browserMaxAge}, stale-while-revalidate=${tier.browserMaxAge * 2}`);
       if (cacheClone) ctx.waitUntil((async () => { const body = await cacheClone.text(); await kvCacheStore(env.DCHUB_CACHE, kvCacheKey(url.toString()), body, cacheClone.headers.get('content-type') || 'application/json', tier.kvStaleTtl); })());
       return result;
+    }
+
+    // ★★★ STEP 2.4 — VERDICT ROUTES: A 5xx HERE IS THE ANSWER, NOT A SICK ORIGIN.
+    //
+    // Everything below reads a Railway 5xx as "the primary is broken, try the
+    // other one". For a route whose job is to report on a THIRD PARTY that is
+    // backwards: it answers 5xx to say "the thing I watch is down", STEP 2.5
+    // asks the STALE Render build the same question, and Render's 200 is
+    // `< 400` so it ships — the endpoint can never say it is sick.
+    //
+    // Measured 2026-09-02 during the ENTSO-E Transparency maintenance outage,
+    // bodies BYTE-IDENTICAL (only the status differed, so a body diff does NOT
+    // catch this):
+    //
+    //   railway .../api/v1/iso/eu/health -> 503  1.6s   (correct: feed is dead)
+    //   edge    .../api/v1/iso/eu/health -> 200  19-39s
+    //           x-dc-hub-backend: render   x-dc-hub-failover: true
+    //           x-dc-worker-version: 4.9.48   <-- THIS worker, not Pages
+    //
+    // dchub-backend#3568 had just changed that route to `200 if live_feed_ok
+    // else 503`, for the stated reason that "every monitor that reads a status
+    // code saw green" through a 50h outage. It deployed, it is correct at the
+    // origin, and this worker converted it back to 200 one hop later.
+    //
+    // ★★★ FIXED IN THE WRONG WORKER FIRST — THE SECOND TIME THIS EXACT MISTAKE
+    // HAS BEEN MADE HERE, IN THE OPPOSITE DIRECTION. dchub-frontend#1303 put
+    // this guard in the PAGES worker (_worker.js, v4.67.x). api.dchub.cloud is
+    // NOT Pages-served: it is this zone worker, and the measured response
+    // carried x-dc-worker-version 4.9.48. The Pages fix is correct for
+    // Pages-served routes and changed NOTHING here. The mirror-image of this
+    // is already written down in dchub-frontend/tests/qa-failover-render-2xx-
+    // only.test.mjs ("THIS BUG WAS FIXED IN THE WRONG WORKER FIRST"), where
+    // the backend worker got a fix that Pages needed.
+    // ★ READ x-dc-worker-version BEFORE deciding which file to edit:
+    //     4.9.x  = this worker (dchubapiproxy zone routes, api.dchub.cloud)
+    //     4.6x.x = dchub-frontend/_worker.js (Pages)
+    //
+    // ★ `resp &&` is load-bearing: a null resp is a TIMEOUT with no verdict to
+    // preserve, so the normal ladder (and KV stale) must still run.
+    // ★ Placed BEFORE STEP 2.5 and STEP 3 on purpose — KV stale would serve a
+    // cached 200 from when the feed was healthy, which is the same lie by a
+    // different route.
+    if (resp && isVerdictRoute(pathname)) {
+      const out = addCORS(new Response(resp.body, resp), request);
+      out.headers.set('x-dc-hub-backend', 'railway');
+      out.headers.set('X-DC-Worker-Version', WORKER_VERSION);
+      out.headers.set('X-DC-Response-Time', `${Date.now() - startTime}ms`);
+      out.headers.set('X-DC-Verdict-Route', 'no-failover');
+      // Never cache a verdict; the next caller must get a fresh one.
+      out.headers.set('Cache-Control', 'no-store');
+      return out;
     }
 
     // STEP 2.5: Render failover (Phase ZZZZZ-round26, 2026-05-23)
