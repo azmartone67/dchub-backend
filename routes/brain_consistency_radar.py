@@ -765,6 +765,70 @@ def check_paywall_capacity_gating() -> list[dict]:
     return findings
 
 
+def check_findings_deferred_over_7d() -> list[dict]:
+    """★2026-09-02 (QA sweep D10). The finding-router measured 27 of 29 active
+    findings at `deferred_rate_cap` and the propose stage `backlog=29
+    proposed=0` — detection works, actuation is throttled to zero, and no
+    lane alarmed on "deferred for N days" because nothing surfaced the age.
+
+    The cap is BRAIN_MAX_LEARN in routes/brain_v2_layer5 (10 model calls per
+    6h learn tick; r78 2026-06-12 raised it from an effective 3 and added
+    rotation so the tail gets budget). It is NOT raised here: 10/tick is a
+    spend decision, and rotation means a deferral should clear within
+    ceil(n/10) ticks — a finding still parked after 7 DAYS (28 ticks) is the
+    rotation not reaching it, which is what this alarms on. Age is since the
+    row was first seen (there is no per-outcome timestamp), stated as the
+    ceiling it is."""
+    try:
+        from routes.brain_finding_router import DEFERRED_OUTCOME, DEFERRED_ALARM_H
+    except Exception:
+        return []
+    c = _db()
+    if c is None:
+        return []
+    try:
+        cur = c.cursor()
+        cur.execute(
+            "SELECT issue_label, url, "
+            "       EXTRACT(EPOCH FROM (NOW() - first_seen_at)) / 3600.0, "
+            "       seen_count "
+            "  FROM brain_issue_persistence "
+            " WHERE last_outcome = %s "
+            "   AND last_seen_at >= NOW() - INTERVAL '24 hours' "
+            "   AND first_seen_at < NOW() - make_interval(hours => %s) "
+            " ORDER BY first_seen_at ASC LIMIT 50",
+            (DEFERRED_OUTCOME, float(DEFERRED_ALARM_H)))
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    if not rows:
+        return []
+    oldest = float(rows[0][2] or 0)
+    sample = "; ".join(f"{r[0][:60]} @ {r[1][:50]} ({float(r[2] or 0) / 24:.0f}d)"
+                       for r in rows[:8])
+    return [{
+        "issue": "findings_deferred_over_7d",
+        "url": "dchub://brain/finding-router",
+        "count_kind": "item_count",
+        "count": len(rows),
+        "detail": (f"{len(rows)} live finding(s) have sat at "
+                   f"`{DEFERRED_OUTCOME}` for over "
+                   f"{DEFERRED_ALARM_H / 24:.0f} days (oldest {oldest / 24:.0f}d) — "
+                   "the Layer-5 learn tick's rotation is not reaching them. "
+                   "The cap (BRAIN_MAX_LEARN=10 calls / 6h tick, "
+                   "routes/brain_v2_layer5) is a spend decision and is not "
+                   "raised by this detector; either the tail needs a dedicated "
+                   "tick or these should be triaged out (config_not_code / "
+                   "wont_fix). Ages on /api/v1/brain/finding-routes "
+                   "(`deferred_age_h`). Sample: " + sample)[:1500],
+    }]
+
+
 def check_cron_coverage() -> list[dict]:
     """Parse evolve-cron.yml. For each workflow_dispatch phase option,
     check if any job has a `cron:` trigger that fires it. Flag
@@ -11239,6 +11303,9 @@ def scan_all() -> list[dict]:
                check_dcpi_ssr_cross_tier,
                check_cron_coverage,
                check_cron_collisions,
+               # 2026-09-02 (D10) — findings parked at deferred_rate_cap for
+               # over 7 days; the propose stage's "green with zero output".
+               check_findings_deferred_over_7d,
                # 2026-08-19 — the guard for the marker nobody remembers to add.
                # #202 removed our own GitHub Actions runners from the counted
                # population mid-week (62.2% -> 0.0% of calls across the deploy,

@@ -297,6 +297,11 @@ def to_findings(rows: list, board_as_of: str | None = None) -> list:
             "issue": "%s%s %s" % (_ISSUE_PREFIX, kind,
                                   (f.get("title") or key)[:240]),
             "count": 1,
+            # ★2026-09-02: the board key travels with the finding, and the
+            # claim that will judge any "fix" is named here — the RED itself is
+            # the instrument (claim_ledger `qa:` scheme). See mint_fix_claims.
+            "finding_key": key,
+            "fix_claim_metric": fix_claim_metric(key),
             "detail": (
                 "QA super-user board finding %s (surface=%s, verdict=%s, "
                 "severity=%s%s%s). This is an OUTSIDE-IN probe of "
@@ -309,6 +314,87 @@ def to_findings(rows: list, board_as_of: str | None = None) -> list:
                    "platform" if fault else "",
                    age_txt, board_as_of or "unknown")),
         })
+    return out
+
+
+# ── fix claims: the RED is the instrument ───────────────────────────────
+#
+# ★ 2026-09-02. `media::item-links` was RED for 142h while two merged
+#   [brain-spec] PRs (#3444 on 08-31, #3494 on 09-01) each counted as its fix:
+#   the loop graded documents, and nothing ever re-read the key that was red.
+#   Every RED the intake seeds now mints ONE open `fix` claim whose expected
+#   metric is the board key itself (`qa:<key> verdict == PASS`, 168h horizon).
+#   L16 judges it against the next canary-verified board: still RED at the
+#   horizon -> `refuted`, which is evidence nobody has to argue with; PASS ->
+#   `confirmed`. register_claim dedupes on the open (subject, statement,
+#   metric), so re-seeding the same RED every hour cannot flood the ledger.
+
+_FIX_HORIZON_H = 168
+
+
+def fix_claim_metric(key: str) -> str:
+    return "qa:%s verdict" % key
+
+
+def fix_claim_for(f: dict, board_as_of: str | None = None) -> dict | None:
+    """The claim one seeded board finding implies, or None when it implies
+    none. Pure. Only an observed RED is a fix to claim — an instrument fault is
+    OUR probe being broken, and "PASS" would just mean we fixed the probe."""
+    f = f or {}
+    key = str(f.get("key") or "").strip()
+    if not key or f.get("instrument_fault") or f.get("verdict") != "RED":
+        return None
+    return {
+        "kind": "fix",
+        "subject": "qa:%s" % key,
+        "statement": ("QA super-user RED %s (%s) reads PASS on a canary-verified "
+                      "board within %dh of being seeded to the brain"
+                      % (key, (f.get("title") or key)[:120], _FIX_HORIZON_H)),
+        "expected_metric": fix_claim_metric(key),
+        "expected_value": "== PASS",
+        "horizon_hours": _FIX_HORIZON_H,
+        "regime": {"severity": f.get("severity"),
+                   "surface": f.get("surface"),
+                   "failing_since": f.get("failing_since"),
+                   "board_as_of": board_as_of,
+                   "producer": "brain_qa_superuser_intake"},
+        "surfaces": ["/admin/qa-superuser"],
+        # The finding is on the bus the moment it is seeded — the clock starts
+        # now; there is no separate artefact to wait for.
+        "shipped": True,
+    }
+
+
+def mint_fix_claims(rows: list, board_as_of: str | None = None,
+                    register_fn=None) -> dict:
+    """Register the fix claim for every seeded RED. Fail-soft per row; a
+    ledger error never blocks the seed. Returns counts, never raises."""
+    out = {"minted": 0, "already": 0, "refused": 0, "errors": 0, "ids": []}
+    try:
+        if register_fn is None:
+            from routes.claim_ledger import register_claim as register_fn
+    except Exception:  # noqa: BLE001
+        out["errors"] = len(rows or [])
+        return out
+    for f in rows or []:
+        spec = fix_claim_for(f, board_as_of)
+        if not spec:
+            continue
+        try:
+            r = register_fn(**spec) or {}
+        except Exception:  # noqa: BLE001
+            out["errors"] += 1
+            continue
+        if r.get("refused"):
+            out["refused"] += 1
+        elif not r.get("ok"):
+            out["errors"] += 1
+        elif r.get("already"):
+            out["already"] += 1
+        else:
+            out["minted"] += 1
+            if r.get("id") is not None:
+                out["ids"].append(r["id"])
     return out
 
 
@@ -350,6 +436,7 @@ def refresh_snapshot(force: bool = False, load_fn=None) -> dict:
             return {"ok": True, "refreshed": True, "refused": refusal,
                     "rows": 0}
         rows, eligible = select_seedable(latest.get("findings") or [])
+        claims = mint_fix_claims(rows, latest.get("generated_at"))
         snap = {"ts": time.time(),
                 "as_of": datetime.now(timezone.utc).isoformat(),
                 "board_as_of": latest.get("generated_at"),
@@ -357,6 +444,7 @@ def refresh_snapshot(force: bool = False, load_fn=None) -> dict:
                 "refused": None,
                 "eligible_total": eligible,
                 "cycle": _cycle_no(),
+                "fix_claims": claims,
                 "rows": rows}
         _state_set(_STATE_KEY, snap)
         # ★ NO SILENT CAPS: say what was left out. A bounded lane that reports
@@ -365,6 +453,7 @@ def refresh_snapshot(force: bool = False, load_fn=None) -> dict:
         return {"ok": True, "refreshed": True, "rows": len(rows),
                 "eligible_total": eligible,
                 "deferred_to_next_cycle": deferred,
+                "fix_claims": claims,
                 "board_as_of": latest.get("generated_at")}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:160]}
@@ -410,6 +499,7 @@ def qa_intake_status():
            # When this is set the lane is deliberately quiet, and saying so is
            # the whole point — a silent zero looks identical to a clean board.
            "refused": snap.get("refused"),
+           "fix_claims": snap.get("fix_claims"),
            "eligible_total": eligible,
            "cycle": snap.get("cycle"),
            "deferred_to_next_cycle": (max(0, eligible - len(seeded))

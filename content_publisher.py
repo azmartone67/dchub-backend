@@ -3240,15 +3240,19 @@ def _disparages_partner(text: str, window: int = 70):
     return None
 
 
-def _run_claim_breaker(text: str, kind: str):
+def _run_claim_breaker(text: str, kind: str, platform: str = ""):
     """Indirection to the claim-breaker gate (Claim Loop step 3).
 
     Isolated so it can be stubbed in tests and so an import failure of the
     breaker module never touches the publisher's own import graph. Returns the
     breaker's decision dict, or None if the gate is unavailable (caller ships).
+    `platform` travels as context so the gate's durable ledger can say WHICH
+    poster it ran for (2026-09-02: its status read calls=0 for its whole life
+    because the counters were per process).
     """
     from routes.claim_breaker import breaker
-    return breaker(text, kind)
+    return breaker(text, kind, {"platform": (platform or "").lower(),
+                                "source": "content_publisher"})
 
 
 def _should_skip_publish(cur, content_text: str, platform: str):
@@ -3478,7 +3482,7 @@ def _should_skip_publish(cur, content_text: str, platform: str):
     # SHIP — a gate that cannot pass its own control must not block on its own
     # say-so. Fail-OPEN on any import/exception, like every other gate here.
     try:
-        _cb = _run_claim_breaker(content_text or "", "post")
+        _cb = _run_claim_breaker(content_text or "", "post", platform)
         if _cb is not None:
             if _cb.get("trusted") and not _cb.get("ok"):
                 _cls = ", ".join(

@@ -37,7 +37,7 @@ def quality_open(monkeypatch):
 
 
 def test_publish_skipped_when_breaker_is_trusted_and_not_ok(monkeypatch, quality_open):
-    monkeypatch.setattr(cp, "_run_claim_breaker", lambda text, kind: {
+    monkeypatch.setattr(cp, "_run_claim_breaker", lambda text, kind, platform=None: {
         "ok": False, "trusted": True, "disabled": False,
         "violations": [{"cls": "rows_ne_buildings", "detail": "26,000 vs 18,406"}]})
     skip, why = cp._should_skip_publish(None, CLEAN, "twitter")
@@ -47,7 +47,7 @@ def test_publish_skipped_when_breaker_is_trusted_and_not_ok(monkeypatch, quality
 
 def test_publish_proceeds_when_breaker_is_untrusted(monkeypatch, quality_open):
     """UNTRUSTED (its control failed) -> log + ship, never block."""
-    monkeypatch.setattr(cp, "_run_claim_breaker", lambda text, kind: {
+    monkeypatch.setattr(cp, "_run_claim_breaker", lambda text, kind, platform=None: {
         "ok": True, "trusted": False, "disabled": False,
         "violations": [{"cls": "rows_ne_buildings", "detail": "x"}]})
     skip, why = cp._should_skip_publish(None, CLEAN, "twitter")
@@ -56,7 +56,7 @@ def test_publish_proceeds_when_breaker_is_untrusted(monkeypatch, quality_open):
 
 def test_publish_proceeds_when_breaker_is_clean(monkeypatch, quality_open):
     """Control: a trusted, ok verdict does not add a skip."""
-    monkeypatch.setattr(cp, "_run_claim_breaker", lambda text, kind: {
+    monkeypatch.setattr(cp, "_run_claim_breaker", lambda text, kind, platform=None: {
         "ok": True, "trusted": True, "disabled": False, "violations": []})
     skip, why = cp._should_skip_publish(None, CLEAN, "twitter")
     assert skip is False
@@ -64,7 +64,7 @@ def test_publish_proceeds_when_breaker_is_clean(monkeypatch, quality_open):
 
 def test_publish_proceeds_when_breaker_unavailable(monkeypatch, quality_open):
     """Fail-OPEN: an exception in the gate never dark-holds the publisher."""
-    def _boom(text, kind):
+    def _boom(text, kind, platform=None):
         raise RuntimeError("breaker import blew up")
     monkeypatch.setattr(cp, "_run_claim_breaker", _boom)
     skip, why = cp._should_skip_publish(None, CLEAN, "twitter")

@@ -1228,6 +1228,12 @@ def run():
         if _pg and _dsn():
             with _conn() as _gc, _gc.cursor() as _gcur:
                 _skip, _why = _gate(_gcur, text, "linkedin")
+        else:
+            # ★2026-09-02: no DB used to mean NO GATE AT ALL — the claim
+            # breaker and every content-truth check were skipped along with
+            # the dedup round-trip. The gate is built to run with cur=None
+            # (dedup fails open; the breaker still fails closed).
+            _skip, _why = _gate(None, text, "linkedin")
         if _skip:
             print(f"[quad-daily] pre-publish gate BLOCKED: {_why}")
             _record(slot_date, target_slot["hour"], target_slot["topic"],

@@ -65,6 +65,7 @@ from __future__ import annotations
 import logging
 import os
 import re as _re
+import json
 import threading
 import time
 from collections import deque
@@ -398,6 +399,151 @@ _COUNTS = {"calls": 0, "blocked": 0, "untrusted": 0, "disabled": 0,
            "clean": 0, "by_class": {}}
 
 
+# ── durable ledger (2026-09-02) ──────────────────────────────────────────────
+# /claim-breaker/status read `calls: 0` for the gate's whole life — not because
+# the publisher never called it (content_publisher._should_skip_publish has
+# run it on every LinkedIn/X/Bluesky post since 2026-08-21) but because the
+# counters above are PER PROCESS: gunicorn workers each keep their own, the
+# publisher threads and the status request land in different ones, and 40
+# deploys a day zero them all. A guard whose only evidence of running is a
+# number that resets on deploy is unverifiable. Every decision is now also
+# appended to claim_breaker_decisions (fail-soft) and the status endpoint
+# reads the table, so "did the gate run on that post" has a durable answer.
+_LEDGER_TABLE = "claim_breaker_decisions"
+_LEDGER_DISABLE_ENV = "CLAIM_BREAKER_LEDGER_DISABLE"
+
+
+def _ledger_conn():
+    if (os.environ.get(_LEDGER_DISABLE_ENV) or "").strip() == "1":
+        return None
+    url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not url:
+        return None
+    try:
+        import psycopg2
+        c = psycopg2.connect(url, connect_timeout=5)
+        c.autocommit = True
+        return c
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[claim_breaker] ledger connect failed: %s", str(e)[:120])
+        return None
+
+
+def _ledger_ensure(cur) -> None:
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS claim_breaker_decisions ("
+        "  id BIGSERIAL PRIMARY KEY,"
+        "  at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+        "  kind TEXT NOT NULL,"
+        "  platform TEXT,"
+        "  source TEXT,"
+        "  ok BOOLEAN NOT NULL,"
+        "  trusted BOOLEAN NOT NULL,"
+        "  disabled BOOLEAN NOT NULL DEFAULT FALSE,"
+        "  control_ok BOOLEAN,"
+        "  violations JSONB,"
+        "  classes_run JSONB,"
+        "  text_len INTEGER)")
+    cur.execute("CREATE INDEX IF NOT EXISTS claim_breaker_decisions_at_idx "
+                "ON claim_breaker_decisions (at DESC)")
+
+
+def ledger_row(decision: dict, ctx: dict | None, text_len: int) -> tuple:
+    """Pure: the column tuple one decision writes. Tested so the INSERT and
+    the shape cannot drift apart silently."""
+    ctx = ctx or {}
+    return (str(decision.get("kind") or "")[:40],
+            (str(ctx.get("platform") or "")[:40] or None),
+            (str(ctx.get("source") or "")[:80] or None),
+            bool(decision.get("ok")), bool(decision.get("trusted")),
+            bool(decision.get("disabled")),
+            (decision.get("control") or {}).get("ok"),
+            json.dumps([{"cls": v.get("cls"), "detail": str(v.get("detail") or "")[:300]}
+                        for v in (decision.get("violations") or [])]),
+            json.dumps(list(decision.get("classes_run") or [])),
+            int(text_len or 0))
+
+
+def _persist(decision: dict, ctx: dict | None, text_len: int) -> bool:
+    """Append one decision. NEVER raises — the ledger must not be able to
+    fail the gate, and the gate must not be able to fail the publisher."""
+    try:
+        c = _ledger_conn()
+        if c is None:
+            return False
+        try:
+            with c.cursor() as cur:
+                _ledger_ensure(cur)
+                # append-only decision log: serial PK, no natural key
+                cur.execute(
+                    "INSERT INTO claim_breaker_decisions (kind, platform, source, ok, trusted, disabled, control_ok, violations, classes_run, text_len) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s) ON CONFLICT DO NOTHING",  # noqa: E501
+                    ledger_row(decision, ctx, text_len))
+            return True
+        finally:
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[claim_breaker] ledger write failed: %s", str(e)[:160])
+        return False
+
+
+def ledger_summary(days: int = 7, limit: int = 20) -> dict:
+    """Durable counts (all processes, survives deploys) + the newest rows.
+    `measured: False` when the table could not be read — an unreadable ledger
+    is UNMEASURED, never zero."""
+    out = {"measured": False, "days": int(days), "calls": None,
+           "blocked": None, "untrusted": None, "by_platform": {},
+           "recent": []}
+    try:
+        c = _ledger_conn()
+        if c is None:
+            out["why"] = "no ledger connection"
+            return out
+        try:
+            with c.cursor() as cur:
+                _ledger_ensure(cur)
+                cur.execute(
+                    "SELECT COALESCE(platform, '?'), COUNT(*), "
+                    "       SUM(CASE WHEN trusted AND NOT ok THEN 1 ELSE 0 END), "
+                    "       SUM(CASE WHEN NOT trusted THEN 1 ELSE 0 END), "
+                    "       MAX(at)::text "
+                    "  FROM claim_breaker_decisions "
+                    " WHERE at >= NOW() - make_interval(days => %s) "
+                    " GROUP BY 1 ORDER BY 2 DESC", (int(days),))
+                calls = blocked = untrusted = 0
+                for plat, n, b, u, last in cur.fetchall() or []:
+                    out["by_platform"][plat] = {
+                        "calls": int(n or 0), "blocked": int(b or 0),
+                        "untrusted": int(u or 0), "last_at": last}
+                    calls += int(n or 0); blocked += int(b or 0)
+                    untrusted += int(u or 0)
+                cur.execute(
+                    "SELECT at::text, kind, platform, source, ok, trusted, "
+                    "       control_ok, violations "
+                    "  FROM claim_breaker_decisions "
+                    " ORDER BY at DESC LIMIT %s", (max(1, min(int(limit), 100)),))
+                for r in cur.fetchall() or []:
+                    viol = r[7] if isinstance(r[7], list) else []
+                    out["recent"].append({
+                        "at": r[0], "kind": r[1], "platform": r[2],
+                        "source": r[3], "ok": r[4], "trusted": r[5],
+                        "control_ok": r[6],
+                        "violations": [v.get("cls") for v in viol
+                                       if isinstance(v, dict)]})
+            out.update(measured=True, calls=calls, blocked=blocked,
+                       untrusted=untrusted)
+        finally:
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as e:  # noqa: BLE001
+        out["why"] = f"ledger read failed: {str(e)[:120]}"
+    return out
+
+
 def _record(decision: dict) -> None:
     with _LOCK:
         _LOG.append(decision)
@@ -451,6 +597,7 @@ def breaker(text_or_payload, kind: str, context: dict | None = None) -> dict:
                                            "classes": []},
              "classes_run": []}
         _record(d)
+        _persist(d, ctx, len(text_or_payload) if isinstance(text_or_payload, str) else 0)
         return d
 
     names = classes_for(kind)
@@ -495,6 +642,8 @@ def breaker(text_or_payload, kind: str, context: dict | None = None) -> dict:
         "classes_run": names,
     }
     _record(decision)
+    _persist(decision, ctx,
+             len(text_or_payload) if isinstance(text_or_payload, str) else 0)
     return decision
 
 
@@ -518,6 +667,9 @@ def breaker_summary(limit: int = 50) -> dict:
         "control_ok": (d.get("control") or {}).get("ok"),
     } for d in recent]
     return {"disabled": _disabled(), "counts": counts, "recent": trimmed,
+            "counts_note": ("in-process only — per worker, reset on deploy; "
+                            "read `durable` for the cross-process record"),
+            "durable": ledger_summary(),
             "control_text_len": len(_CONTROL_POST_TEXT),
             "classes": sorted(_CLASSES.keys())}
 
