@@ -179,7 +179,8 @@ def test_expire_is_fail_soft(monkeypatch):
 def test_the_master_tick_runs_the_expiry_beside_draft_pr_expire():
     orch = pytest.importorskip("routes.brain_master_orchestrator")
     src = inspect.getsource(orch._run_master_tick)
-    assert '"tier2.draft_pr_expire_rotten"' in src and "expire_rotten_proposals" in src
+    assert src.count('"tier2.draft_pr_expire_rotten"') == 2   # success + error path
+    assert "expire_rotten_proposals" in src and "_rot()" in src
     assert src.index('"tier2.draft_pr_expire"') < src.index('"tier2.draft_pr_expire_rotten"')
 
 

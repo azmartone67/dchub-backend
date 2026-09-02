@@ -262,8 +262,9 @@ def test_a_refused_claim_means_no_attempt(monkeypatch):
 def test_the_master_tick_carries_the_step():
     orch = pytest.importorskip("routes.brain_master_orchestrator")
     src = inspect.getsource(orch._run_master_tick)
-    assert '"tier2.approved_without_pr_redrive"' in src
-    assert "redrive_approved_without_pr" in src
+    # named on BOTH the success and the error path, and actually called
+    assert src.count('"tier2.approved_without_pr_redrive"') == 2, src.count('"tier2.approved_without_pr_redrive"')
+    assert "redrive_approved_without_pr" in src and "_redrive()" in src
     assert src.index("tier2.draft_pr_expire") < src.index("tier2.approved_without_pr_redrive")
 
 
@@ -315,10 +316,13 @@ def test_the_detector_is_silent_when_clean(monkeypatch):
 
 
 def test_unmeasured_is_not_a_clean_verdict(monkeypatch):
-    _radar_db(monkeypatch, column=False)
+    reads = []
     monkeypatch.setattr(dash, "stale_approvals_without_pr",
-                        lambda cur, **kw: (_ for _ in ()).throw(AssertionError("must not be read")))
+                        lambda cur, **kw: reads.append(1) or [{"key": "inv:1", "attempted": False,
+                                                              "error": "", "redrives": 0}])
+    _radar_db(monkeypatch, column=False)
     assert radar.check_approved_without_pr_stale() == []
+    assert reads == [], "a pre-migration table is never read as a measurement"
     _radar_db(monkeypatch, table=False)
     assert radar.check_approved_without_pr_stale() == []
     monkeypatch.setattr(radar, "_db", lambda: None)
