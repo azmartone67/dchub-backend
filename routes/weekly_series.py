@@ -163,6 +163,75 @@ _DEFINITION_CHANGES = [
         ),
         "ref": "dchub-mcp-server#202",
     },
+    # ★ 2026-09-02 — TWO ENFORCEMENT CHANGES LANDED INSIDE 2026-W36, UNREGISTERED.
+    # Both were measured on 2026-09-02 00:23Z against the live series, and
+    # both change what the population CAN contain after their timestamp:
+    #
+    #   #294 (03:37:23Z)  the free-tier full-answer cap finally bites, per
+    #                     caller. Before it a free caller took unlimited full
+    #                     answers and never raised a paywall signal, so every
+    #                     pre-#294 signal count is an undercount we have since
+    #                     declared wrong — a CORRECTION, and it supersedes.
+    #   #302 (21:10:22Z)  anonymous callers are hard-walled at 10x the daily
+    #                     cap per IP. 2026-W35's top caller (`chain-hire`,
+    #                     api_key NULL, one IP, one tool) was 1,473 of the
+    #                     week's 1,810 real external calls — 81.4%. The wall
+    #                     removes exactly that shape of caller going forward,
+    #                     so W36-vs-W35 calls will read as a collapse that is
+    #                     the wall, not demand.
+    #
+    # Without these two entries comparability_for_spans declared the W36 delta
+    # quotable, and the funnel, the press headline and ops/activation would
+    # all have rendered it as a trend.
+    {
+        "effective_at": "2026-09-01T03:37:23+00:00",
+        "change": (
+            "the free-tier full-answer cap is now ENFORCED, per caller "
+            "instead of per tool. Before this it never fired, so a free "
+            "caller could take unlimited full answers without ever raising "
+            "a paywall signal"
+        ),
+        "direction": "REDUCES signals; may reduce calls",
+        "is_correction": True,
+        "measured_effect": (
+            "registered 2026-09-02 with under 48h of post-change data — the "
+            "effect is not yet measurable. Rolling 7d to 2026-09-02 00:23Z "
+            "already read real_external_signals_7d 204 vs prior 497 (-59.0%) "
+            "beside calls +8.3%, which is two populations, not a trend"
+        ),
+        "means": (
+            "weeks on opposite sides of this timestamp were served under "
+            "DIFFERENT free-tier rules: paywall signals before it are an "
+            "undercount (the cap never fired) and calls after it may fall as "
+            "capped callers stop. A week-over-week percentage across it is "
+            "not a trend"
+        ),
+        "ref": "dchub-mcp-server#294",
+    },
+    {
+        "effective_at": "2026-09-01T21:10:22+00:00",
+        "change": (
+            "anonymous (keyless) callers are hard-walled at 10x the daily "
+            "anonymous cap per IP (300 calls/IP/day in production), checked "
+            "before the handler. 2026-W35's top caller `chain-hire` was "
+            "1,473 of 1,810 real external calls (81.4%) from one IP with no "
+            "key — the population this removes"
+        ),
+        "direction": "REDUCES calls",
+        "is_correction": False,
+        "measured_effect": (
+            "2026-W35 (2026-08-24): top_caller_pct 81.4 (chain-hire, 1,473 "
+            "of 1,810), calls_net_of_top 337. Post-wall effect not yet "
+            "measurable at registration (2026-09-02)"
+        ),
+        "means": (
+            "weeks after this timestamp cannot contain a single anonymous "
+            "caller above the wall; weeks before it could and did. A "
+            "call-count drop across it is the wall, not demand — compare "
+            "calls_net_of_top across it, never calls"
+        ),
+        "ref": "dchub-mcp-server#302",
+    },
 ]
 
 

@@ -258,7 +258,12 @@ def test_weeks_after_the_correction_stay_quotable():
     made. If supersession swallowed it too, the endpoint would never publish
     a trend again and the fix would be worse than the bug.
     """
-    got = _comparability(["2026-08-24", "2026-08-31"])
+    # ★ 2026-09-02: the first clean pair MOVED. 2026-W36 (08-31..09-07)
+    # contains dchub-mcp-server#294 and #302, so the 08-24/08-31 pair this
+    # test used to pin is now CROSSING — see
+    # test_the_W35_to_W36_delta_is_withheld_by_both_markers. The first pair
+    # after every registered marker is W37/W38.
+    got = _comparability(["2026-09-07", "2026-09-14"])
     assert got[_SUP] is False
     assert got["superseded_by"] == []
     assert got["quotable_as_trend"] is True
@@ -272,7 +277,12 @@ def test_a_straddling_delta_is_crossing_not_superseded():
     that case and supersession must stay quiet — otherwise a reader gets two
     different explanations for one fact.
     """
-    got = _comparability(["2026-08-10", "2026-08-17"])
+    # Isolated to the #202 marker. Against the FULL list this pair is also
+    # superseded by #294 — a later correction — which is TWO changes firing
+    # two hazards: legitimate, and not the property under test here.
+    only_202 = [c for c in _DEFINITION_CHANGES if c["ref"] == "dchub-mcp-server#202"]
+    assert len(only_202) == 1
+    got = _fresh(only_202)["_comparability"](["2026-08-10", "2026-08-17"])
     assert got["crosses_definition_change"] is True
     assert got[_SUP] is False
 
@@ -324,4 +334,55 @@ def test_quotable_as_trend_is_false_when_either_hazard_fires():
     """The one boolean consumers branch on."""
     assert _comparability(["2026-08-03", "2026-08-10"])["quotable_as_trend"] is False
     assert _comparability(["2026-08-10", "2026-08-17"])["quotable_as_trend"] is False
-    assert _comparability(["2026-08-24", "2026-08-31"])["quotable_as_trend"] is True
+    assert _comparability(["2026-09-07", "2026-09-14"])["quotable_as_trend"] is True
+
+
+# ── 2026-09-02: the two enforcement changes inside W36 ───────────────────────
+#
+# Measured 2026-09-02 00:23Z: weekly-series `definition_changes_all` held ONE
+# entry (#202) while dchub-mcp-server#294 (merged 2026-09-01T03:37:23Z, free
+# full-answer cap enforced per caller) and #302 (2026-09-01T21:10:22Z,
+# anonymous hard wall at 10x the daily cap) had both landed inside 2026-W36.
+# W35's top caller `chain-hire` was 1,473 of 1,810 calls (81.4%) and is the
+# population #302 removes, so the W35 -> W36 delta was about to publish a
+# collapse that is the wall, not demand. comparability_for_spans is shared by
+# the funnel's *_wow_pct keys, the press headline and ops/activation, so the
+# marker is the ONE place all of them learn to withhold it.
+
+W35 = _dt.date(2026, 8, 24)
+W36 = _dt.date(2026, 8, 31)
+_REFS_0901 = ["dchub-mcp-server#294", "dchub-mcp-server#302"]
+
+
+def test_the_0901_enforcement_changes_are_registered_and_land_in_W36():
+    hits = _changes_in(W36, W36 + _dt.timedelta(weeks=1))
+    assert [h["ref"] for h in hits] == _REFS_0901
+    by_ref = {h["ref"]: h for h in hits}
+    assert by_ref["dchub-mcp-server#294"]["is_correction"] is True
+    assert by_ref["dchub-mcp-server#294"]["direction"].startswith("REDUCES signals")
+    assert by_ref["dchub-mcp-server#302"]["direction"] == "REDUCES calls"
+    assert "chain-hire" in by_ref["dchub-mcp-server#302"]["change"]
+    # and W35 itself is clean of them — the changes are INSIDE W36, not before
+    assert [h["ref"] for h in _changes_in(W35, W36)] == []
+
+
+def test_the_W35_to_W36_delta_is_withheld_by_both_markers():
+    """The delta every consumer was about to render as a trend."""
+    got = _comparability([W35.isoformat(), W36.isoformat()])
+    assert got["crosses_definition_change"] is True
+    assert got["quotable_as_trend"] is False
+    assert [c["ref"] for c in got["changes"]] == _REFS_0901
+    assert "NOT a trend" in got["means"]
+
+
+def test_wow_across_W36_carries_the_refusal_the_press_headline_reads():
+    """flask_mcp_endpoints._fixed_window_claim reads wow.comparability off
+    _wow's output — so the refusal must be on THAT dict, not only on the bare
+    helper. The level still publishes; only the delta is withheld."""
+    weeks = _assemble({W35: (35, 1810, 5000), W36: (30, 400, 3000)}, [W35, W36])
+    got = _wow(weeks)
+    assert got["calls_pct"] is not None, "the arithmetic still publishes"
+    assert got["comparability"]["crosses_definition_change"] is True
+    assert got["comparability"]["quotable_as_trend"] is False
+    assert [c["ref"] for c in weeks[1]["definition_changes"]] == _REFS_0901
+    assert weeks[0]["definition_changes"] == [], "W35 is clean; W36 carries them"

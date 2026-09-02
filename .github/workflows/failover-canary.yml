@@ -18,7 +18,7 @@ name: Failover canary
 
 on:
   schedule:
-    - cron: '7 */6 * * *'   # every 6 hours
+    - cron: '6 */6 * * *'   # every 6 hours — :06, staggered off brain-inspector's `7 */6` (D15, 2026-09-02)
   workflow_dispatch:        # manual "Run workflow" button
 
 permissions:

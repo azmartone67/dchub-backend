@@ -18,7 +18,7 @@ name: Public API — programmatic access
 
 on:
   schedule:
-    - cron: '23 */6 * * *'
+    - cron: '26 */6 * * *'   # every 6h at :26 — staggered off indexnow's `23 */6` (D15, 2026-09-02)
   push:
     branches: [main]
     paths:

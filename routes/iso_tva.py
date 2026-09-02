@@ -14,7 +14,7 @@ from flask import Blueprint, jsonify
 from routes._iso_common import (
     fetch_first_working, parse_json_numeric, parse_csv_numeric_columns,
     parse_eia_v2_fuel_mix, scrub_url,
-    persist_metrics, latest_for_iso, health_for_iso,
+    persist_metrics, parse_eia_v2_latest_period, latest_for_iso, health_for_iso,
     scrub_secrets,
 )
 # ws2 (2026-07-29): one shared EIA-930 URL builder instead of a 5th copy of
@@ -79,7 +79,12 @@ def run_extraction():
         summary["metrics_extracted"] = len(metrics)
         if not metrics:
             summary["html_preview"] = text[:400]
-        rows = persist_metrics("TVA", metrics)
+        # D4 (2026-09-02): the EIA observation hour is the row timestamp, so a
+        # repeated reading dedups instead of being re-stamped "now". Non-EIA
+        # fallbacks carry no stamp we parse -> None (logged, insert clock).
+        observed_at = (parse_eia_v2_latest_period(text)
+                       if "api.eia.gov/v2/" in url else None)
+        rows = persist_metrics("TVA", metrics, observed_at=observed_at)
         summary["rows_inserted"] = rows
         elapsed = int((time.time() - started) * 1000)
         summary["duration_ms"] = elapsed

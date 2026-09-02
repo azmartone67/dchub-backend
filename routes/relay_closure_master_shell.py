@@ -752,8 +752,11 @@ def relay_closure_tick():
         return jsonify(ok=False, error="admin key required"), 401
     st = _state()
     reds = st.get("reds") or []
-    _beat_ledger("lanes: %s | reds: %s"
-                 % (len(st.get("lanes") or []), ",".join(reds) or "none"),
-                 failing=bool(reds))
+    # ★2026-09-02 (D5): only the scheduled POST beats. A GET of this route is a
+    # read, and a read must never keep a dead cron "alive" on the board.
+    if request.method == "POST":
+        _beat_ledger("lanes: %s | reds: %s"
+                     % (len(st.get("lanes") or []), ",".join(reds) or "none"),
+                     failing=bool(reds))
     logger.info("[relay_closure] tick reds=%s", reds)
     return jsonify(st), 200, _NO_STORE

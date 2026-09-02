@@ -415,7 +415,10 @@ def _beat_ledger(note: str, failing: bool = False) -> None:
         logger.debug("[webmcp] ledger beat failed: %s", e)
 
 
-def _run_tick() -> dict:
+def _run_tick(beat: bool = True) -> dict:
+    # ★2026-09-02 (D5): beat=False on every GET. A dashboard view — with its
+    # auto-refresh — must never stamp the daily beat, or a browser tab keeps a
+    # dead cron "alive" on /api/v1/ops/deadman. Only the POST master-tick beats.
     c = _conn()
     lanes = []
     for key, label, fn, actuator in _LANES:
@@ -445,16 +448,17 @@ def _run_tick() -> dict:
                 "routes/webmcp_master_shell.py",
     }
     payload["findings_filed"] = _file_findings(payload)
-    _beat_ledger(f"lanes {payload['lanes_pass']}/{payload['lanes_total']} pass",
-                 failing=payload["lanes_pass"] < payload["lanes_total"])
+    if beat:
+        _beat_ledger(f"lanes {payload['lanes_pass']}/{payload['lanes_total']} pass",
+                     failing=payload["lanes_pass"] < payload["lanes_total"])
     return payload
 
 
-def _tick_cached() -> dict:
+def _tick_cached(beat: bool = False) -> dict:
     with _cache_lock:
         if _cache["payload"] is not None and time.time() - _cache["ts"] < _TICK_TTL:
             return _cache["payload"]
-    payload = _run_tick()
+    payload = _run_tick(beat=beat)
     with _cache_lock:
         _cache["ts"] = time.time()
         _cache["payload"] = payload
@@ -470,10 +474,14 @@ def webmcp_master_tick():
         return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden"), 403
-    if (request.args.get("fresh") or "") == "1":
+    beat = request.method == "POST"
+    # A POST is the scheduled beat path: it must run a REAL tick, never
+    # serve the 30s cache a dashboard view just filled (that would skip the
+    # beat and read as a missed slot).
+    if beat or (request.args.get("fresh") or "") == "1":
         with _cache_lock:
             _cache["payload"] = None
-    return jsonify(_tick_cached())
+    return jsonify(_tick_cached(beat=beat))
 
 
 @webmcp_master_shell_bp.route("/admin/webmcp", methods=["GET"])
@@ -483,7 +491,7 @@ def webmcp_dashboard():
         return Response("webmcp shell disabled", status=404)
     if not _admin_ok():
         return Response("forbidden — X-Admin-Key or ?admin_key=", status=403)
-    p = _tick_cached()
+    p = _tick_cached(beat=False)
 
     def _chip(v):
         if v is True:

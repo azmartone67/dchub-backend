@@ -274,10 +274,21 @@ def test_ai_agents_when_blocked_free_cap_is_canon_derived():
 
 
 def test_upgrade_hint_tiers_are_registry_reads():
+    """★2026-09-02 merge: this called the private _hint_tiers() helper. The
+    helper is gone — the table is a dict literal inside the handler again, so
+    scripts/api_response_contract.py can still see `tiers.<tier>.<field>` (a
+    Call value marks the level OPEN and read as 30 KEY REMOVED breaks). Assert
+    against the SERVED response instead, which is the stronger claim anyway:
+    it is what an agent quotes."""
     pytest.importorskip("flask")
+    from flask import Flask
     import tier_registry as tr
     from routes import mcp_funnel_upgrade as m
-    t = m._hint_tiers()
+    app = Flask("t")
+    app.register_blueprint(m.mcp_funnel_upgrade_bp)
+    r = app.test_client().get("/api/v1/upgrade-hint")
+    assert r.status_code == 200, r.data
+    t = r.get_json()["tiers"]
     for tier in ("anonymous", "free", "starter", "developer", "pro"):
         assert t[tier]["calls_per_day"] == tr.calls_per_day(tier), tier
     for tier in ("starter", "developer", "pro"):
@@ -341,11 +352,29 @@ def _get(app, qs):
     return r.get_json()
 
 
+# ★2026-09-02 MERGE NOTE. These were written against
+# ?tool=get_dchub_recommendation, a tool that is NOT in TOOL_TIER_MAP — so it
+# exercised resolve_tier's fall-through, which was "developer" at the time.
+# main has since moved that fall-through to PACK_TIER (the $10 one-time pack):
+# a caller we cannot classify gets the cheapest non-recurring offer, not a
+# $49/mo plan. That rule is deliberately NOT touched here, and
+# test_an_unclassified_caller_still_gets_the_pack below pins it. The founding
+# lift is for the case it was actually written for: a TOOL_TIER_MAP row that
+# NAMES "developer", with no explicit ?tier=.
+_DEV_TOOL = "search_facilities"     # TOOL_TIER_MAP -> developer
+
+
+def test_the_dev_tool_fixture_really_is_a_developer_row():
+    """If this stops being true the two tests below prove nothing."""
+    from routes._stripe_links import TOOL_TIER_MAP
+    assert TOOL_TIER_MAP.get(_DEV_TOOL) == "developer", TOOL_TIER_MAP.get(_DEV_TOOL)
+
+
 def test_checkout_defaults_to_founding_while_the_program_is_open(checkout_app, monkeypatch):
     app, sd = checkout_app
     import routes.founding_customers as fc
     monkeypatch.setattr(fc, "founding_status", lambda: {"program_active": True})
-    j = _get(app, "?tool=get_dchub_recommendation")
+    j = _get(app, f"?tool={_DEV_TOOL}")
     assert j["tier"] == "founding", j
     assert j["checkout_url"].startswith(sd.STRIPE_LINKS["founding"])
     assert j["tier_pricing"] == "$99/mo"
@@ -355,10 +384,23 @@ def test_checkout_falls_back_to_developer_when_seats_are_gone(checkout_app, monk
     app, sd = checkout_app
     import routes.founding_customers as fc
     monkeypatch.setattr(fc, "founding_status", lambda: {"program_active": False})
-    j = _get(app, "?tool=get_dchub_recommendation")
+    j = _get(app, f"?tool={_DEV_TOOL}")
     assert j["tier"] == "developer", j
     assert j["checkout_url"].startswith(sd.STRIPE_LINKS["developer"])
     assert j["tier_pricing"] == "$49/mo"
+
+
+def test_an_unclassified_caller_still_gets_the_pack(checkout_app, monkeypatch):
+    """The founding lift must not resurrect the $49/mo default for a caller
+    nobody classified — that is the leak main fixed (102 relay opens, 0 paid)."""
+    from routes._stripe_links import PACK_TIER, TIER_PRICE_LABEL
+    app, sd = checkout_app
+    import routes.founding_customers as fc
+    monkeypatch.setattr(fc, "founding_status", lambda: {"program_active": True})
+    for qs in ("", "?tool=not_a_real_tool"):
+        j = _get(app, qs)
+        assert j["tier"] == PACK_TIER, (qs, j)
+        assert j["tier_pricing"] == TIER_PRICE_LABEL[PACK_TIER], (qs, j)
 
 
 def test_checkout_never_overrides_an_explicit_or_pro_choice(checkout_app, monkeypatch):

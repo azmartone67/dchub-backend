@@ -20,6 +20,117 @@ try:
 except ImportError:
     def _heartbeat(*args, **kwargs): pass
 
+from routes._iso_common import scrub_secrets, coerce_observed_at
+
+# "The extractor ran and the zero is EARNED" — the same vocabulary the deadman
+# board accepts (routes/ingest_runs._OK_STATUS).
+_NO_NEW_DATA = ("no_new_data", "no-new-data")
+
+
+def classify_result(r):
+    """(verdict, reason) for one extractor summary: 'ok' | 'no_new_data' | 'failed'.
+
+    D1 (2026-09-02). `failed = status not in ("ok",)` counted EIGHT healthy
+    LIVE-only modules — NGESO/AEMO/ENTSOE/TAIPOWER/OCCTO/EMA/ONS/KEPCO-KR, none
+    of which ever sets `status`; their failure channel is `errors[]` — plus
+    AESO's honest `no_new_data`, so failed_count read 9 of 21 on every tick and
+    the ONE real failure (ENTSO-E answering 503 for 50h) was indistinguishable
+    from seven healthy feeds in a `::notice` that never named anyone. A
+    status-less summary is judged on errors[]; an earned zero is not a failure.
+    """
+    if not isinstance(r, dict):
+        return "failed", "non-dict result"
+    st = str(r.get("status") or "").strip().lower()
+    errs = [str(e) for e in (r.get("errors") or []) if e]
+    if st == "ok":
+        return "ok", None
+    if st in _NO_NEW_DATA:
+        return "no_new_data", (r.get("note") or None)
+    if st:
+        return "failed", (r.get("error") or (errs[0] if errs else st))
+    if errs:
+        return "failed", errs[0]
+    return "ok", None
+
+
+# ── feed FAMILIES the deadman board reads (D1, 2026-09-02) ───────────────
+# One ledger row per PRODUCER family, not per extractor: 21 rows would be a
+# second orchestrator dashboard, and the failure that hid for 50h was a whole
+# family (every EU zone rides ONE ENTSO-E call). The feed names are what
+# data-pulse.yml POSTs to /api/v1/admin/ingest-runs/beat — the workflow copies
+# these verdicts verbatim and asserts no status of its own. The 7 US ISOs are
+# NOT here: the iso-data-pull feed (routes/iso_grid_adapters via iso-data-pull
+# .yml) already owns them, and a second writer for the same fact is the
+# one-direction-masking trap tests/test_alarm_reachability.py fences.
+_FAMILIES = (
+    ("iso-eu-entsoe", ("ENTSOE",)),
+    ("iso-intl", ("NGESO", "AEMO", "TAIPOWER", "OCCTO", "EMA", "ONS", "KEPCO-KR",
+                  "IESO", "AESO", "HYDROQUEBEC")),
+)
+
+# What each member summary calls the newest upstream period it wrote, if it
+# says at all. Only ENTSO-E carries one today; a family whose members are
+# silent gets max_content_date=None — never the clock.
+_CONTENT_DATE_KEYS = ("data_period_end_newest", "data_period_end")
+
+
+def summarize_families(by_iso, results, families=_FAMILIES):
+    """PURE. {feed: {status, rows_inserted, max_content_date, note, members}}.
+
+    `status` is DERIVED from the members' verdicts (classify_result):
+      success      every member ok/no_new_data and the family wrote rows
+      no_new_data  every member ok/no_new_data and nothing new was written —
+                   an EARNED zero (the reading already stored dedups on
+                   (iso, timestamp, metric_name) now that persist_metrics
+                   writes the observation time), so the board's zero-row
+                   counter resets instead of climbing on a healthy feed
+      degraded     some members failed (named in `note`)
+      failed       every member failed, or none reported at all
+    `rows_inserted` is the SUM the members reported (a measured number).
+    `max_content_date` is the newest upstream period a member reported, or
+    None when none carries one.
+    """
+    content = {}
+    for r in results or ():
+        if not isinstance(r, dict) or not r.get("iso"):
+            continue
+        for k in _CONTENT_DATE_KEYS:
+            ts = coerce_observed_at(r.get(k))
+            if ts is not None:
+                content[str(r["iso"])] = ts
+                break
+    out = {}
+    for feed, members in families:
+        present = {m: by_iso[m] for m in members if m in (by_iso or {})}
+        if not present:
+            out[feed] = {"status": "failed", "rows_inserted": 0,
+                         "max_content_date": None, "members": {},
+                         "note": "no member extractor reported a result"}
+            continue
+        failed = sorted(m for m, v in present.items() if v.get("verdict") == "failed")
+        rows = sum(int(v.get("rows_inserted") or 0) for v in present.values())
+        if len(failed) == len(present):
+            status = "failed"
+        elif failed:
+            status = "degraded"
+        elif rows == 0:
+            status = "no_new_data"
+        else:
+            status = "success"
+        stamps = [content[m] for m in present if m in content]
+        mcd = max(stamps).isoformat() if stamps else None
+        if failed:
+            note = "failed: " + "; ".join(
+                "%s (%s)" % (m, (present[m].get("reason") or "?")[:80]) for m in failed)
+        elif status == "no_new_data":
+            note = "ran; every member reported ok with 0 new rows (readings already stored)"
+        else:
+            note = "ok: %d member(s), %d rows" % (len(present), rows)
+        out[feed] = {"status": status, "rows_inserted": rows,
+                     "max_content_date": mcd, "note": note[:280],
+                     "members": {m: v.get("verdict") for m, v in present.items()}}
+    return out
+
 
 iso_orchestrator_bp = Blueprint("iso_orchestrator", __name__, url_prefix="/api/v1/iso/all")
 SOURCE_ID = "iso-orchestrator"
@@ -163,12 +274,28 @@ def extract_all():
 
     elapsed_ms = int((time.time() - started) * 1000)
     total_rows = sum(r.get("rows_inserted", 0) for r in results)
-    failed = [r for r in results if r.get("status") not in ("ok",)]
+    # D1 (2026-09-02): one verdict per extractor, NAMED. The workflow used to
+    # print `failed=9` and the first 1000 bytes of this body — the failing
+    # extractor's name never reached the log.
+    by_iso = {}
+    for r in results:
+        label = str((r.get("iso") if isinstance(r, dict) else None) or "?")
+        verdict, reason = classify_result(r)
+        entry = {"verdict": verdict,
+                 "rows_inserted": int((r.get("rows_inserted") if isinstance(r, dict) else 0) or 0)}
+        if reason:
+            entry["reason"] = scrub_secrets(str(reason))[:200]
+        by_iso[label] = entry
+    failed = [r for r in results if classify_result(r)[0] == "failed"]
+    failed_isos = [{"iso": k, "reason": v.get("reason")}
+                   for k, v in by_iso.items() if v["verdict"] == "failed"]
+    no_new_data_isos = [k for k, v in by_iso.items() if v["verdict"] == "no_new_data"]
+    families = summarize_families(by_iso, results)
 
     # Status logic: orchestrator's job is to run all extractors.
     # If at least ONE produced rows, the orchestrator succeeded — per-ISO
     # failures are still visible on each source's own page.
-    succeeded_count = sum(1 for r in results if r.get("status") == "ok")
+    succeeded_count = len(results) - len(failed)
     if total_rows > 0 or succeeded_count >= len(results) / 2:
         orch_status = "success"
     elif succeeded_count == 0:
@@ -184,7 +311,7 @@ def extract_all():
         metadata={
             "iso_count": len(results),
             "succeeded": succeeded_count,
-            "failed_isos": [r["iso"] for r in failed],
+            "failed_isos": [f["iso"] for f in failed_isos],
         },
     )
 
@@ -193,6 +320,13 @@ def extract_all():
         iso_count=len(results),
         total_rows_inserted=total_rows,
         failed_count=len(failed),
+        # Named, so the caller (data-pulse.yml) can print WHO failed and gate on
+        # a must-have family without parsing 21 heterogeneous summaries.
+        failed_isos=failed_isos,
+        no_new_data_isos=no_new_data_isos,
+        by_iso=by_iso,
+        # Per-producer-family verdicts the deadman beat copies verbatim.
+        families=families,
         results=results,
     ), 200
 

@@ -37,6 +37,13 @@ _OK_STATUS = {"success", "ok", "idle", "no-op", "noop", "skipped", "",
 # exactly as we already trust `status` itself).
 _NO_NEW_DATA = {"no_new_data", "no-new-data"}
 
+# ★2026-09-02 (D2): which `kinds` tokens mean LATE (the loop did not run) and
+# which mean RED (it ran and reported a fault). /api/v1/ops/deadman publishes
+# them as two counts; the in-DB mirrors (growthfix lane 3, loop-flywheel lane
+# 9) split on the same line.
+_LATE_KINDS = frozenset({"never_ran", "stale_age"})
+_RED_KINDS = frozenset({"run_failed", "zero_rows", "future_content_date"})
+
 
 def _dsn():
     return (
@@ -265,13 +272,26 @@ def purge():
 
 @ingest_runs_bp.route("/api/v1/ops/deadman", methods=["GET"])
 def deadman():
-    """PUBLIC read — the overdue view. `any_overdue=true` ⇒ a loop stopped succeeding.
+    """PUBLIC read — the board. Two DIFFERENT faults, two different words:
 
-    A feed is overdue when ANY holds:
-      • last success older than 2x its cadence (the classic dead-man),
-      • last_status is not a known-OK status (it ran and reported failure/anomaly),
+    OVERDUE (late) — the loop did not run when it should have:
+      • never ran,
+      • last beat older than 2x its cadence (the classic dead-man).
+    RED (ran, but reported a fault) — the loop fired on time and said so:
+      • last_status is not a known-OK status (failure / lanes_failing / anomaly),
       • >=3 consecutive zero-row runs (loop fires but inserts nothing),
       • max_content_date is in the future (>6h ahead — the news-future-date rot class).
+
+    `any_overdue` / `overdue_count` / `overdue[]` mean LATE only. `red_count` /
+    `red[]` (feed names) / `any_red` mean ran-on-time-but-red. `unhealthy_count`
+    is the union, so nothing that was alarming before is lost — it is just
+    named. Per feed: `overdue`, `red`, `unhealthy` booleans + `kinds` tokens.
+
+    ★2026-09-02 (D2): before this split a shell that ran 6 minutes ago and beat
+    `lanes_failing` (#3365 made shells beat HEALTH) counted as "overdue", so
+    11 on-time shells sat on the overdue list and three OTHER shells' cadence
+    lanes failed because the board listed them — a self-referential red
+    cascade that buried the one genuinely late feed.
     """
     dsn = _dsn()
     if not dsn:
@@ -290,18 +310,17 @@ def deadman():
         log.warning("ingest_runs deadman read failed: %s", e)
         return jsonify(ok=False, error=str(e)[:200]), 500
 
-    feeds, overdue = [], []
+    feeds, overdue, red = [], [], []
     for feed, lr, st, ri, mcd, cad, cz, note in rows:
         cad_h = float(cad) if cad is not None else _DEFAULT_CADENCE_H
-        # ★2026-08-25: `overdue` is ONE boolean carrying FIVE different faults,
+        # ★2026-08-25: `overdue` was ONE boolean carrying FIVE different faults,
         # and two of them mean opposite things operationally. A feed 36h into an
         # 18h cadence is LATE — nothing broke, it just has not run. A feed 7h
         # into a 16h cadence whose last run FAILED is not late at all; it ran
-        # and it broke. Both published `overdue: true` with only prose in
-        # `reasons[]` to tell them apart, so a consumer either parsed English or
-        # read a failure as staleness. `kinds` emits the same rules as tokens.
-        # The boolean is deliberately UNCHANGED — the off-worker watcher alarms
-        # on it, and narrowing it here would silently stop the alarm.
+        # and it broke. `kinds` emits the rules as tokens; ★2026-09-02 the
+        # boolean itself is split: `overdue` = LATE kinds only, `red` = ran-
+        # but-faulted kinds, `unhealthy` = either. The off-worker watcher
+        # (tools/deadman/watch.py) folds `unhealthy`, so the alarm is unchanged.
         reasons, kinds = [], []
         if lr is None:
             reasons.append("never ran")
@@ -322,6 +341,8 @@ def deadman():
         if mcd and mcd > now + datetime.timedelta(hours=6):
             reasons.append(f"content date in the FUTURE ({mcd.date().isoformat()})")
             kinds.append("future_content_date")
+        is_late = any(k in _LATE_KINDS for k in kinds)
+        is_red = any(k in _RED_KINDS for k in kinds)
         rec = {
             "feed": feed,
             "last_run": lr.isoformat() if lr else None,
@@ -329,7 +350,12 @@ def deadman():
             "rows_inserted": ri,
             "cadence_hours": cad_h,
             "age_hours": round((now - lr).total_seconds() / 3600.0, 1) if lr else None,
-            "overdue": bool(reasons),
+            # LATE only (never_ran | stale_age) — see the docstring.
+            "overdue": is_late,
+            # Ran on time (or not) but the last beat carried a fault
+            # (run_failed | zero_rows | future_content_date).
+            "red": is_red,
+            "unhealthy": is_late or is_red,
             # Machine-readable companion to `reasons`, same rules in the same
             # order, one token each: never_ran | stale_age | run_failed |
             # zero_rows | future_content_date. `stale_age` and `run_failed` are
@@ -340,10 +366,13 @@ def deadman():
         if note:
             rec["note"] = note
         feeds.append(rec)
-        if reasons:
+        if is_late:
             overdue.append(rec)
+        if is_red:
+            red.append(rec)
 
-    feeds.sort(key=lambda r: (not r["overdue"], r["feed"]))
+    feeds.sort(key=lambda r: (not r["overdue"], not r["red"], r["feed"]))
+    unhealthy_count = sum(1 for r in feeds if r["unhealthy"])
     resp = jsonify(
         ok=True,
         generated_at=now.isoformat(),
@@ -351,6 +380,14 @@ def deadman():
         any_overdue=bool(overdue),
         overdue_count=len(overdue),
         overdue=overdue,
+        any_red=bool(red),
+        red_count=len(red),
+        red=[r["feed"] for r in red],
+        unhealthy_count=unhealthy_count,
+        basis=("overdue = LATE (never ran, or last beat >2x cadence). red = ran "
+               "but the last beat carried a fault (non-OK status, >=3 zero-row "
+               "runs, future content date). unhealthy = either. A shell that "
+               "beat lanes_failing six minutes ago is red, not overdue."),
         feeds=feeds,
     )
     resp.headers["Cache-Control"] = "public, max-age=60"

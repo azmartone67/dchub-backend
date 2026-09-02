@@ -221,6 +221,9 @@ def _build_digest() -> dict:
                 _mark = "IMPROVING"
             elif _s.get("improving") is False:
                 _mark = "WORSENING"
+            elif _s.get("direction") == "withheld":
+                _mark = ("WITHHELD — the two weeks straddle a definition change; "
+                         "not a trend (see comparability)")
             elif _s.get("direction") == "flat":
                 _mark = "flat"
             else:
@@ -230,7 +233,8 @@ def _build_digest() -> dict:
         if not _vd:
             _vd = {}
         add(f"  = {_vd.get('improving', 0)} improving · {_vd.get('worsening', 0)} worsening · "
-            f"{_vd.get('flat', 0)} flat · {_vd.get('unknown', 0)} unread")
+            f"{_vd.get('flat', 0)} flat · {_vd.get('unknown', 0)} unread · "
+            f"{_vd.get('withheld', 0)} withheld")
     else:
         # A failed read is NOT zero. Say so rather than printing five zeros.
         add(f"LEADING SIGNALS · unavailable this run ({_act.get('error') or 'unknown'}) — "

@@ -82,11 +82,68 @@ _ensure_table()
 
 
 def _resolve_tier(tool, tier_param):
-    if tier_param and tier_param.lower() in STRIPE_LINKS:
-        return tier_param.lower()
-    if tool and tool in TOOL_TIER_MAP:
-        return TOOL_TIER_MAP[tool]
-    return "developer"
+    """Delegates to the ONE resolver (routes/_stripe_links.resolve_tier).
+
+    2026-09-02: this used to be a private copy whose fall-through was
+    'developer' — the same silent-monthly-default the canon resolver just
+    lost. Two resolvers with different defaults is how a paywall hit lands
+    on a plan nobody named; keep exactly one.
+    """
+    from routes._stripe_links import resolve_tier
+    return resolve_tier(tool, tier_param)
+
+
+def _price_label(tier):
+    """Human price label for the capture page — canon first, never '—' for a
+    plan canon can price (the pack used to render as 'Metered — —')."""
+    try:
+        from routes._stripe_links import TIER_PRICE_LABEL
+        lbl = TIER_PRICE_LABEL.get(tier)
+        if lbl:
+            return lbl
+    except Exception:
+        pass
+    return {"starter":"$9/mo","developer":"$49/mo","pro":"$299/mo","enterprise":"Custom"}.get(tier, "—")
+
+
+def mark_converted(email, stripe_session_id="", conn_factory=None):
+    """Flip every un-converted identified_checkout_signals row for `email`
+    to converted. Called from the Stripe checkout.session.completed webhook.
+
+    2026-09-02 (finding 4c): nothing ever set `converted`. tj@karklins.com
+    captured 08-08 (tier developer, outreach sent), paid $49 on Stripe the
+    same day, and /api/v1/checkout/funnel-stats still read converted:0 on
+    09-02 — the outreach loop kept treating a paying customer as a lead.
+
+    Idempotent by construction (WHERE converted = FALSE), never raises —
+    a failure here must not touch payment handling. Returns a dict the
+    webhook prints so the log line says what happened.
+    """
+    email = (email or "").strip().lower()
+    if not email or "@" not in email:
+        return {"ok": False, "reason": "no_email"}
+    note = ("converted via stripe webhook session=%s" % (stripe_session_id or "?"))[:200]
+    try:
+        factory = conn_factory or _conn
+        with factory() as c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE identified_checkout_signals
+                   SET converted = TRUE,
+                       converted_at = NOW(),
+                       notes = COALESCE(notes, '') || %s
+                 WHERE lower(email) = %s
+                   AND converted = FALSE
+            """, (" · " + note, email))
+            n = cur.rowcount if cur.rowcount is not None else 0
+            c.commit()
+        return {"ok": True, "updated": int(n)}
+    except Exception as e:  # noqa: BLE001 — never break the webhook
+        try:
+            note_swallowed_write("identified_checkout_signals",
+                                 where="checkout_email_capture.mark_converted")
+        except Exception:
+            pass
+        return {"ok": False, "reason": str(e)[:120]}
 
 
 _CAPTURE_HTML = """<!DOCTYPE html>
@@ -157,7 +214,7 @@ def start():
     ref     = (request.args.get("ref") or "").strip()
     tier = _resolve_tier(tool, tier_param)
     stripe_url = STRIPE_LINKS[tier]
-    price = {"starter":"$9/mo","developer":"$49/mo","pro":"$299/mo","enterprise":"Custom"}.get(tier, "—")
+    price = _price_label(tier)
     html = (_CAPTURE_HTML
             .replace("__TOOL__", _esc_attr(tool) or "MCP")
             .replace("__TIER__", _esc_attr(tier))

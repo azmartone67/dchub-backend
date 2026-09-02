@@ -67,7 +67,8 @@ import requests
 from flask import Blueprint, jsonify, request
 
 from db_utils import get_db
-from google_search_console import GSC_SITE_URL, get_access_token
+from google_search_console import (GSC_SITE_URL, get_access_token,
+                                   refresh_proven_pages)
 from internal_auth import require_internal_or_admin
 
 logger = logging.getLogger(__name__)
@@ -202,11 +203,21 @@ def _query_gsc(token: str, start: str, end: str, dimensions: list[str],
 
 
 def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
-                             row_limit: int = DEFAULT_ROW_LIMIT) -> dict:
+                             row_limit: int = DEFAULT_ROW_LIMIT,
+                             refresh_proven: bool = True) -> dict:
     """Fetch and upsert `days` of daily performance at all three grains.
 
     Idempotent: re-running over the same window updates in place, so a cron that
-    double-fires and a manual re-run both converge on the same rows."""
+    double-fires and a manual re-run both converge on the same rows.
+
+    F4 (2026-09-02): also refreshes `seo_proven_pages` — the table sitemap
+    admission (#2946) reads to readmit GSC-proven facility URLs past the
+    capacity gate. That table had NO caller: POST /api/gsc/proven/refresh was
+    only ever hand-fired, and /api/gsc/proven read last_refreshed
+    2026-08-24 06:45:03 on 2026-09-02 while the sitemap rebuilt every 4h on
+    a frozen admission list. The one daily cron that already holds a GSC token
+    now carries both writes; a proven refresh failure is an ingest failure by
+    the partial-failure rule below, never a quiet skip."""
     if not token:
         return {"success": False, "error": "no GSC access token "
                                            "(GOOGLE_SERVICE_ACCOUNT_JSON unset "
@@ -297,6 +308,18 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
             except Exception:
                 pass
 
+    proven = None
+    if refresh_proven:
+        try:
+            proven = refresh_proven_pages(token)
+        except Exception as ex:  # noqa: BLE001
+            proven = {"success": False,
+                      "error": f"{type(ex).__name__}: {str(ex)[:200]}"}
+        if not (isinstance(proven, dict) and proven.get("success")):
+            errors["proven_pages"] = str(
+                (proven or {}).get("error") if isinstance(proven, dict) else proven
+                or "refresh_proven_pages reported success:false")[:300]
+
     return {
         # A partial failure is a failure. Reporting success:true with one grain
         # missing is exactly the "green board, dead lane" pattern the audit found.
@@ -304,6 +327,8 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
         "window": {"start": s, "end": e, "days": int(days)},
         "rows_written": written,
         "gsc_rows_scanned": scanned,
+        # F4: the sitemap-admission table this cron now also refreshes.
+        "proven_pages": proven,
         # Say so when the ceiling bit. A silent truncation reads as full
         # coverage, which is the failure mode this whole module exists to refuse.
         "rows_capped": ({"per_grain_ceiling": _SEED_ROW_CEILING,
@@ -342,6 +367,64 @@ def admin_ingest():
     return jsonify(result), (200 if result.get("success") else 502)
 
 
+def _coverage_of(raw, dim: str):
+    """(oldest, newest, rows_stored) for one grain — the table-wide extent,
+    NOT the window, so a caller can tell 'not ingested' from 'no traffic'."""
+    raw.execute(
+        "SELECT MIN(date), MAX(date), COUNT(*) "
+        "FROM gsc_daily_performance WHERE dimension = %s", (dim,))
+    return raw.fetchone() or (None, None, 0)
+
+
+def _site_rows(raw, days: int) -> list[dict]:
+    """The site grain, newest first, over the trailing `days`."""
+    raw.execute(
+        "SELECT date, clicks, impressions, ctr, position "
+        "FROM gsc_daily_performance "
+        " WHERE dimension = 'site' AND date >= CURRENT_DATE - %s "
+        " ORDER BY date DESC", (days,))
+    return [{"date": str(r[0]), "clicks": r[1], "impressions": r[2],
+             "ctr": round(float(r[3] or 0), 4),
+             "position": (round(float(r[4]), 2) if r[4] is not None else None)}
+            for r in raw.fetchall()]
+
+
+def site_series(days: int = 14) -> dict:
+    """The site grain, IN-PROCESS — for boards and the brain, never via HTTP.
+
+    ★ 2026-09-02. routes/surface_integrity_master_shell's SEO lane was a
+    hardcoded UNMEASURED/FAIL string ("rank/impression truth lives in Google
+    Search Console ... behind interactive auth unavailable to this process")
+    while this module had been ingesting the service-account series daily:
+    247 site-day rows, newest 2026-08-29, at the read route on 2026-09-02
+    00:24Z. A lane that reads its own service over HTTP through the edge
+    grades a cache and a timeout budget; reading the table grades the series.
+
+    Same two queries as the read route's site branch — _coverage_of and
+    _site_rows are shared, so the board and the API cannot drift. Raises on a
+    DB failure: the caller decides what an unreadable series means (the shell
+    renders it '?', never PASS).
+    """
+    days = max(1, min(int(days), 480))
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        raw = getattr(c, "_cur", c)
+        oldest, newest, total = _coverage_of(raw, "site")
+        return {
+            "rows": _site_rows(raw, days),
+            "window_days": days,
+            "coverage": {"oldest": str(oldest) if oldest else None,
+                         "newest": str(newest) if newest else None,
+                         "rows_stored": int(total or 0)},
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @gsc_perf_bp.route("/api/v1/seo/performance", methods=["GET"])
 def read_performance():
     """The series, for dashboards, the brain, and anyone asking whether SEO is
@@ -372,21 +455,10 @@ def read_performance():
         c = conn.cursor()
         raw = getattr(c, "_cur", c)
 
-        raw.execute(
-            "SELECT MIN(date), MAX(date), COUNT(*) "
-            "FROM gsc_daily_performance WHERE dimension = %s", (dim,))
-        oldest, newest, total = raw.fetchone() or (None, None, 0)
+        oldest, newest, total = _coverage_of(raw, dim)
 
         if dim == "site":
-            raw.execute(
-                "SELECT date, clicks, impressions, ctr, position "
-                "FROM gsc_daily_performance "
-                " WHERE dimension = 'site' AND date >= CURRENT_DATE - %s "
-                " ORDER BY date DESC", (days,))
-            rows = [{"date": str(r[0]), "clicks": r[1], "impressions": r[2],
-                     "ctr": round(float(r[3] or 0), 4),
-                     "position": (round(float(r[4]), 2) if r[4] is not None else None)}
-                    for r in raw.fetchall()]
+            rows = _site_rows(raw, days)
         else:
             # Aggregate the window so a caller gets "top queries this month",
             # not one row per query per day they then have to sum themselves.

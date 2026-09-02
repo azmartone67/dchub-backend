@@ -460,6 +460,40 @@ def _run_master_tick(dry: bool, tiers: set) -> dict:
             except Exception as _exp_e:
                 report["steps"].append({"step": "tier2.draft_pr_expire", "ok": False,
                                         "error": str(_exp_e)[:160]})
+            # 2026-09-02 (brain-agents sweep finding 7): the L22 recipe pool
+            # was 14/14 ROTTEN — every tick re-skipped the same proposals
+            # ("patched file fails ast.parse" ×10, "search text not in
+            # main.py" ×4) and nothing ever retired them, so L22 replayed
+            # instead of regenerating. draft_prs_run now counts rotten skips
+            # per proposal; this expiry marks a proposal `stale` after 3.
+            try:
+                from routes.brain_backlog_admin import expire_rotten_proposals as _rot
+                _rr = _rot() or {}
+                report["steps"].append({"step": "tier2.draft_pr_expire_rotten",
+                                        "ok": bool(_rr.get("ok")),
+                                        "stale": _rr.get("marked_stale", 0),
+                                        "detail": _rr})
+            except Exception as _rot_e:
+                report["steps"].append({"step": "tier2.draft_pr_expire_rotten",
+                                        "ok": False, "error": str(_rot_e)[:160]})
+            # 2026-09-02 (brain-agents sweep finding 2): re-drive approvals
+            # whose PR draft FAILED (gateway 429, drafter exception) and that
+            # still have no PR — the outcome is persisted on brain_approvals
+            # now, so a lost draft is visible and retried instead of silently
+            # indistinguishable from a landed one. Same can_open_pr() gate
+            # (kill switch + 8/day cap) the dashboard button inherits; at most
+            # 3 rows per tick, 3 redrives per row, claimed before attempted.
+            try:
+                from routes.brain_innovation_dashboard import (
+                    redrive_approved_without_pr as _redrive)
+                _rd = _redrive() or {}
+                report["steps"].append({"step": "tier2.approved_without_pr_redrive",
+                                        "ok": bool(_rd.get("ok")),
+                                        "redriven": _rd.get("redriven", 0),
+                                        "detail": _rd})
+            except Exception as _rd_e:
+                report["steps"].append({"step": "tier2.approved_without_pr_redrive",
+                                        "ok": False, "error": str(_rd_e)[:160]})
 
     # ── Tier 3 — HUMAN-GATED (propose only) ─────────────────────────
     if "3" in tiers:

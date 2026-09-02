@@ -428,7 +428,10 @@ def _safe_lane(fn, *a) -> list[dict]:
                        critical=True)]
 
 
-def _run_tick() -> dict:
+def _run_tick(beat: bool = True) -> dict:
+    # ★2026-09-02 (D5): beat=False on every GET. A dashboard view — with its
+    # auto-refresh — must never stamp the daily beat, or a browser tab keeps a
+    # dead cron "alive" on /api/v1/ops/deadman. Only the POST master-tick beats.
     canon = _canon_floor()
     if not canon:
         # No canon = nothing to compare against. Every lane is indeterminate;
@@ -464,7 +467,8 @@ def _run_tick() -> dict:
         "summary": summary,
         "any_fail": any(ln["verdict"] == "FAIL" for ln in lanes),
     }
-    _beat_ledger("lanes: " + summary, failing=out["any_fail"])
+    if beat:
+        _beat_ledger("lanes: " + summary, failing=out["any_fail"])
     return out
 
 
@@ -482,7 +486,7 @@ def master_tick():
         return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
-    return jsonify(_run_tick())
+    return jsonify(_run_tick(beat=(request.method == "POST")))
 
 
 def _esc(s) -> str:
@@ -498,7 +502,7 @@ def dashboard():
         return "<h1>Surface Truth</h1><p>disabled</p>", 404
     if not _admin_ok():
         return "<h1>401</h1><p>admin key required</p>", 401
-    t = _run_tick()
+    t = _run_tick(beat=False)
     color = {"PASS": "#22c55e", "FAIL": "#ef4444", "?": "#eab308"}
     rows = []
     for ln in t["lanes"]:

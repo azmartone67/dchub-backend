@@ -28,6 +28,7 @@ to MATCH the US/UK scoreboard definition (biomass reported separately) so the
 grids rank apples-to-apples. ISO_CODE = "ENTSOE" for the aggregate; per-zone
 rows persist under EU_<code> so the ENTSOE-tagged DCPI markets can join.
 """
+import logging
 import os
 import time
 import datetime
@@ -38,6 +39,7 @@ from contextlib import contextmanager
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+from routes._iso_common import coerce_observed_at
 
 try:
     import requests as _rq
@@ -49,6 +51,7 @@ SOURCE_ID = "iso-eu-entsoe-live"
 ISO_CODE = "ENTSOE"
 
 _ENTSOE_BASE = "https://web-api.tp.entsoe.eu/api"
+_log = logging.getLogger("dchub.iso_eu_entsoe")
 
 # ENTSO-E PSR (Production Source) B-codes → our fuel category.
 _PSR = {
@@ -600,31 +603,49 @@ def _live_snapshot():
 
 
 def _persist_metrics(snap):
-    """Persist the EU aggregate (iso=ENTSOE) + each zone (iso=EU_<code>)."""
+    """Persist the EU aggregate (iso=ENTSOE) + each zone (iso=EU_<code>).
+
+    D4 (2026-09-02): `timestamp` is the zone's data_period_end — the instant
+    the A75 reading covers — and the aggregate takes the newest period end
+    across the zones that answered. The column used to be OMITTED, so it took
+    DEFAULT NOW() (the insert clock), the ON CONFLICT (iso, timestamp,
+    metric_name) guard could never fire, and the same cached reading was
+    re-stamped "now" on every 15-minute tick. A zone whose document carried no
+    parseable period writes with the insert clock through COALESCE — logged by
+    name, never silently."""
     if not snap:
         return 0
     rows = 0
+    zone_ts = {code: coerce_observed_at((z or {}).get("data_period_end"))
+               for code, z in snap["zones"].items()}
+    stamped = [t for t in zone_ts.values() if t is not None]
+    agg_ts = max(stamped) if stamped else None
+    unstamped = sorted(c for c, t in zone_ts.items() if t is None)
+    if unstamped:
+        _log.warning("entsoe _persist_metrics: %d zone(s) carry no data_period_end "
+                     "— their rows take the INSERT clock: %s", len(unstamped), unstamped)
     with _conn() as c, c.cursor() as cur:
-        def _ins(iso, name, value, unit):
+        def _ins(iso, name, value, unit, observed_at):
             nonlocal rows
             try:
                 cur.execute(
-                    """INSERT INTO grid_data (iso, metric_name, metric_value, unit)
-                       VALUES (%s, %s, %s, %s)
+                    """INSERT INTO grid_data (iso, metric_name, metric_value, unit, timestamp)
+                       VALUES (%s, %s, %s, %s, COALESCE(%s, NOW()))
                        ON CONFLICT (iso, timestamp, metric_name) DO NOTHING""",
-                    (iso, name, value, unit))
+                    (iso, name, value, unit, observed_at))
                 if cur.rowcount > 0:
                     rows += 1
             except Exception:
                 note_swallowed_write("grid_data", where="iso_eu_entsoe._ins")
                 pass
         for name, data in snap["metrics"].items():
-            _ins(ISO_CODE, name, data["value"], data.get("unit", ""))
+            _ins(ISO_CODE, name, data["value"], data.get("unit", ""), agg_ts)
         for code, z in snap["zones"].items():
             zi = f"EU_{code}"
-            _ins(zi, "generation_total_mw", z["generation_total_mw"], "MW")
-            _ins(zi, "renewable_pct", z["renewable_pct"], "pct")
-            _ins(zi, "gas_pct", z["gas_pct"], "pct")
+            ts = zone_ts.get(code)
+            _ins(zi, "generation_total_mw", z["generation_total_mw"], "MW", ts)
+            _ins(zi, "renewable_pct", z["renewable_pct"], "pct", ts)
+            _ins(zi, "gas_pct", z["gas_pct"], "pct", ts)
         c.commit()
     return rows
 
@@ -636,17 +657,30 @@ def run_extraction():
         "metrics_extracted": 0, "rows_inserted": 0, "errors": [],
         "source": "ENTSO-E Transparency (A75 actual generation per type)",
     }
+    # D1 (2026-09-02): this summary never carried `status`, so the orchestrator
+    # counted ENTSOE as failed on EVERY tick (healthy or not) and the 50h ENTSO-E
+    # 503 outage was invisible among seven other status-less healthy feeds.
     try:
         if not _token():
             summary["errors"].append("entsoe_token_missing — set ENTSOE_API_Token on Railway (wrote nothing, no modeled fallback)")
+            summary["status"] = "error"
             summary["elapsed_ms"] = int((time.time() - started) * 1000)
             return summary
         snap = _live_snapshot()
         if snap is None:
             summary["errors"].append("entsoe_live_fetch_failed — all zones unreachable/empty (wrote nothing)")
+            summary["status"] = "error"
         else:
+            summary["status"] = "ok"
             summary["metrics_extracted"] = len(snap["metrics"])
             summary["rows_inserted"] = _persist_metrics(snap)
+            # Newest period end across the zones that answered: the CONTENT
+            # freshness the deadman beat carries as max_content_date, so
+            # "poller alive, rows flowing, readings hours stale" is visible.
+            _ends = [(_parse_ts_utc(z.get("data_period_end")), z.get("data_period_end"))
+                     for z in snap["zones"].values() if z.get("data_period_end")]
+            _ends = [e for e in _ends if e[0] is not None]
+            summary["data_period_end_newest"] = max(_ends)[1] if _ends else None
             # Two readings of "how many zones", named. They differ whenever a
             # zone's call fails (it is dropped silently) — never collapse them.
             summary["zones_configured"] = len(_ZONES)
@@ -656,6 +690,7 @@ def run_extraction():
             summary["snapshot"] = {k: v["value"] for k, v in snap["metrics"].items()}
     except Exception as e:
         summary["errors"].append(f"{type(e).__name__}: {e}")
+        summary["status"] = "error"
     summary["elapsed_ms"] = int((time.time() - started) * 1000)
     return summary
 
@@ -745,8 +780,13 @@ def http_dcpi_score():
 def http_health():
     tok = bool(_token())
     probe = _zone_snapshot("DE_LU") if tok else None
+    live_feed_ok = probe is not None
+    # D1 (2026-09-02): this answered HTTP 200 with live_feed_ok:false for the
+    # whole 50h ENTSO-E 503 outage while /snapshot answered 503 — so every
+    # monitor that reads a status code saw green. The body is unchanged; the
+    # code now carries the verdict (503 = feed dead, same as /snapshot).
     return jsonify({"iso": ISO_CODE, "token_configured": tok,
-                    "live_feed_ok": probe is not None,
+                    "live_feed_ok": live_feed_ok,
                     # Basis for live_feed_ok: 0 = fetched on this request,
                     # >0 = age (s) of the reused DE_LU reading, null = no probe.
                     # This probe used to be UNCACHED on every single hit.
@@ -757,7 +797,7 @@ def http_health():
                     "probe_data_period_end": (probe or {}).get("data_period_end"),
                     "zones_configured": len(_ZONES),
                     "registry_warnings": _ZONE_REGISTRY_WARNINGS,
-                    "source": "entsoe_transparency"}), 200
+                    "source": "entsoe_transparency"}), (200 if live_feed_ok else 503)
 
 
 @iso_eu_entsoe_bp.route("/debug", methods=["GET"])

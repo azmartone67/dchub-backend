@@ -23,6 +23,7 @@ forwards to backend via PHASE_282_RAILWAY_PATHS prefix match).
 
 import math
 import os
+import re as _re
 from util.iso_taxonomy import is_registered_label as _is_registered_label
 from routes.url_registry import build_public_url
 from ai_surface_canon import PINNED as _CANON
@@ -1558,12 +1559,14 @@ def _render_profile(fac: dict, slug: str) -> str:
 </html>"""
 
 
-def _canonical_twin_url(dup_of_id):
-    """URL of the surviving facility a duplicate should canonicalise to.
+def _canonical_twin_row(dup_of_id):
+    """The surviving facility a duplicate points at, as a dict, or None.
 
-    Returns None unless the target exists, is NOT itself a duplicate, and has a
-    real frozen slug — a canonical pointing at a 404 is worse than a
-    self-canonical. Fail-soft: any error returns None.
+    Keys: canonical_slug, address, latitude, longitude, duplicate_of_id,
+    slug_rows (how many discovered_facilities rows share that frozen slug).
+    Returns None unless the target exists, is NOT itself flagged duplicate,
+    and has a real frozen slug — a canonical pointing at a 404 is worse than
+    a self-canonical. Fail-soft: any error returns None.
     """
     if not dup_of_id:
         return None
@@ -1579,21 +1582,138 @@ def _canonical_twin_url(dup_of_id):
             return None
         try:
             with conn.cursor() as cur:
+                # slug_rows: the /facilities/<slug> exact lookup ORDERs by
+                # power then id, so when two rows share one frozen slug the
+                # keeper we 301 to may not be the row that URL then serves.
+                # The redirect path refuses a shared slug (see
+                # _twin_redirect_target); the rel=canonical path does not
+                # need to — a canonical is a hint, a 301 is a hop.
                 cur.execute(
-                    "SELECT canonical_slug FROM discovered_facilities "
-                    "WHERE id = %s AND COALESCE(is_duplicate, 0) = 0 "
-                    "  AND canonical_slug IS NOT NULL AND canonical_slug <> '' "
-                    "LIMIT 1",
+                    "SELECT k.canonical_slug, k.address, k.latitude, "
+                    "       k.longitude, k.duplicate_of_id, "
+                    "       (SELECT COUNT(*) FROM discovered_facilities s "
+                    "         WHERE s.canonical_slug = k.canonical_slug) "
+                    "         AS slug_rows "
+                    "  FROM discovered_facilities k "
+                    " WHERE k.id = %s AND COALESCE(k.is_duplicate, 0) = 0 "
+                    "   AND k.canonical_slug IS NOT NULL "
+                    "   AND k.canonical_slug <> '' "
+                    " LIMIT 1",
                     (dup_of_id,))
                 row = cur.fetchone()
         finally:
             try: conn.close()
             except Exception: pass
         if row and row[0]:
-            return "https://dchub.cloud/facilities/" + str(row[0])
+            return {"canonical_slug": str(row[0]), "address": row[1],
+                    "latitude": row[2], "longitude": row[3],
+                    "duplicate_of_id": row[4],
+                    "slug_rows": int(row[5] or 0)}
     except Exception:
         return None
     return None
+
+
+def _canonical_twin_url(dup_of_id):
+    """URL of the surviving facility a duplicate should canonicalise to.
+
+    Returns None unless the target exists, is NOT itself a duplicate, and has a
+    real frozen slug — a canonical pointing at a 404 is worse than a
+    self-canonical. Fail-soft: any error returns None.
+    """
+    row = _canonical_twin_row(dup_of_id)
+    if row and row.get("canonical_slug"):
+        return "https://dchub.cloud/facilities/" + str(row["canonical_slug"])
+    return None
+
+
+# ★ seo F5 (2026-09-02): a duplicate twin that shares its keeper's PHYSICAL
+# SITE 301s to the keeper instead of serving 200 + a cross-canonical.
+#
+# MEASURED (GSC page grain, 14d vs prior 14d): /facilities/equinix-equinix-
+# fr5-frankfurt-kleyerstrasse-3366f937 (in the sitemap) fell 249 → 5
+# impressions, 5 → 0 clicks; its twin /facilities/equinix-equinix-fr5-
+# ad94b281 (NOT in the sitemap; 200 + rel=canonical → 3366f937) fell 158 → 3.
+# Google indexed both, then "chose a different canonical" for both (1,033
+# such URLs on 08-06) and dropped the pair together. Same shape:
+# aws-eu-central-1-frankfurt-1d2f0b85 (200, canonical → …-campus-af54722f,
+# identical coordinates 50.1109/8.6821) and lumen-technologies-level-3-
+# hayward-dc0928e2 (an ALIAS of level3-hayward-dc0928e2 — same row, other
+# name-part). A rel=canonical is a hint Google may ignore; a 301 is the
+# consolidation the alias slugs already get (7 of 12 probed non-sitemap
+# earners were 301s and kept their clicks).
+#
+# Two cases, both loop-proof by construction:
+#   A. ALIAS of this very row — the request slug differs from the row's
+#      frozen canonical_slug → 301 to the frozen slug. The frozen slug's own
+#      request matches canonical_slug exactly, so it never re-enters case A.
+#   B. DUPLICATE ROW — duplicate_of_id resolves to a keeper that (1) has a
+#      frozen slug of its own, (2) points onward to nobody
+#      (duplicate_of_id IS NULL — the guard that makes a cycle impossible),
+#      (3) is the ONLY row wearing that slug (slug_rows == 1, so the URL we
+#      send Google to serves the keeper, not a namesake with its own
+#      pointer), and (4) is the same physical site: identical normalised
+#      street address, or — when either side lacks an address, which is the
+#      live shape of the FR5 pair (twin 'Kleyerstraße', keeper NULL) —
+#      coordinates within _SAME_SITE_METRES. Two rows with DIFFERENT street
+#      addresses are two buildings the dedup job merely grouped: they keep
+#      200 + cross-canonical exactly as before.
+_SAME_SITE_METRES = 250.0
+_FROZEN_SLUG_RE = _re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{8}$")
+
+
+def _norm_address(value):
+    """Lower-case, alnum-only, single-spaced — 'Kleyerstraße 90' == 'kleyerstrasse-90'
+    is NOT claimed (ß ≠ ss); only trivially-different spellings collapse."""
+    s = str(value or "").lower()
+    s = _re.sub(r"[^a-z0-9\u00c0-\u024f]+", " ", s)
+    return " ".join(s.split())
+
+
+def _same_physical_site(a, b, max_m=_SAME_SITE_METRES):
+    """True when rows a and b describe ONE building (see case B above)."""
+    aa, ab = _norm_address(a.get("address")), _norm_address(b.get("address"))
+    if aa and ab:
+        return aa == ab
+    try:
+        la, lo = float(a.get("latitude")), float(a.get("longitude"))
+        lb, lob = float(b.get("latitude")), float(b.get("longitude"))
+    except (TypeError, ValueError):
+        return False
+    if not all(math.isfinite(v) for v in (la, lo, lb, lob)):
+        return False
+    # equirectangular approximation — metre-accurate at these distances
+    x = math.radians(lob - lo) * math.cos(math.radians((la + lb) / 2.0))
+    y = math.radians(lb - la)
+    return math.hypot(x, y) * 6371000.0 <= max_m
+
+
+def _twin_redirect_target(fac, slug):
+    """Frozen slug this request should 301 to, or None to render as before."""
+    slug = str(slug or "")
+    frozen = str(fac.get("canonical_slug") or "").strip()
+    # case A — alias of this row
+    if frozen and frozen != slug and _FROZEN_SLUG_RE.match(frozen):
+        return frozen
+    # case B — duplicate row → keeper
+    dup = fac.get("duplicate_of_id")
+    if not dup:
+        return None
+    keeper = _canonical_twin_row(dup)
+    if not keeper:
+        return None
+    kslug = str(keeper.get("canonical_slug") or "").strip()
+    if not kslug or not _FROZEN_SLUG_RE.match(kslug):
+        return None
+    if kslug == slug or kslug == frozen:
+        return None
+    if keeper.get("duplicate_of_id"):
+        return None                      # a keeper never points onward
+    if int(keeper.get("slug_rows") or 0) != 1:
+        return None                      # shared frozen slug — see above
+    if not _same_physical_site(fac, keeper):
+        return None                      # different building: hint, not hop
+    return kslug
 
 
 @facility_profile_bp.route("/facilities/<path:slug>", methods=["GET"])
@@ -1650,6 +1770,20 @@ text-align:center;padding:80px 20px">
 </body></html>""",
             status=404, mimetype="text/html"
         )
+
+    # seo F5 (2026-09-02): twin → keeper 301 (cases A/B documented at
+    # _twin_redirect_target). Same header shape as the alias 301s above so
+    # the edge caches it identically.
+    try:
+        _hop = _twin_redirect_target(fac, slug)
+    except Exception:
+        _hop = None
+    if _hop:
+        return Response(status=301, headers={
+            "Location": f"/facilities/{_hop}",
+            "Cache-Control": "public, max-age=86400",
+            "X-DC-Hub-Source": "facility-twin-301",
+        })
 
     # One lookup per PAGE, before render — never inside the renderer. See
     # _nearby_generation_rows for why that separation is load-bearing.

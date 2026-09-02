@@ -76,6 +76,7 @@ TIER_PRICE_LABEL = {
     "starter":    "$9/mo",
     "developer":  "$49/mo",
     "pro":        "$299/mo",
+    "founding":   "$99/mo",
     "pro_annual": "$1,188/yr",
     "metered":    "$10 / 1,000 API calls",
     "pack5":      "$10 / 1,000 API calls (one-time)",
@@ -84,10 +85,38 @@ TIER_PRICE_LABEL = {
     "research_seed_nlr": "$3,000/yr (NLR FY 2026 Research Seed)",
 }
 
+# ── the one-time pack ─────────────────────────────────────────────────
+# 2026-09-02 (relay-sells-what-it-says). The $10 one-time pack is the ONLY
+# thing an anonymous or merely-identified caller is ever offered by copy
+# ("Unlock full data — $10 one-time" on /upgrade/h/<token>), so it is also
+# the only thing an unresolvable tier may fall through to. `metered` and
+# `pack5` are the same Stripe link (see STRIPE_LINKS); `metered` is the
+# canonical key, `pack5` the legacy alias mcp_conversion_plays still emits.
+# The USD figure is the charge on that link — cross-pinned against
+# mcp_conversion_plays.PACK10_PRICE_CENTS by tests/test_relay_sells_what_it_says.py.
+PACK_TIER = "metered"
+ONE_TIME_TIERS = frozenset({"metered", "pack5"})
+TIER_ONE_TIME_USD = {"metered": 10, "pack5": 10}
+
+# Caller-tier words that are NOT plans. `free`/`identified`/`anon` describe
+# who is asking, not what they are buying; a URL that carries one of these as
+# ?tier= must never resolve to a subscription.
+NON_PLAN_TIERS = frozenset({"free", "anonymous", "anon", "identified", "none", ""})
+
 
 def resolve_tier(tool: str, tier_param: str, budget_hint: str = "") -> str:
     """Pick the right tier — explicit param wins, then budget hint, then tool lookup,
-    then default. r45.1 (2026-05-25): added budget hint for downsell flow."""
+    then the one-time pack. r45.1 (2026-05-25): added budget hint for downsell flow.
+
+    ★ 2026-09-02: the fall-through is PACK_TIER, never a monthly plan. For
+    three months the default was 'developer' ($49/mo), and the agent→human
+    relay page (routes/human_relay.py) emitted ?tier=free|identified — the
+    CALLER's tier, not a plan — so its "$10 one-time" button 302'd to the
+    $49/mo Developer link. 102 real human opens in 30d, 0 paid. Verified
+    live 2026-09-02T00:29Z at api.dchub.cloud and the Railway origin. A
+    tier we cannot name is a caller we cannot classify; the honest offer to
+    an unclassified caller is the cheapest, non-recurring one.
+    """
     if tier_param and tier_param.lower() in STRIPE_LINKS:
         return tier_param.lower()
     # r45.1: ?budget=tight, ?budget=cheap, ?intent=starter → starter ($9/mo)
@@ -95,8 +124,8 @@ def resolve_tier(tool: str, tier_param: str, budget_hint: str = "") -> str:
         return "starter"
     if tool and tool in TOOL_TIER_MAP:
         return TOOL_TIER_MAP[tool]
-    return "developer"
+    return PACK_TIER
 
 
 def get_stripe_url(tier: str) -> str:
-    return STRIPE_LINKS.get(tier, STRIPE_LINKS["developer"])
+    return STRIPE_LINKS.get(tier) or STRIPE_LINKS[PACK_TIER]

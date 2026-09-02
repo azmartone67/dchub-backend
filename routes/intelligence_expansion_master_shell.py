@@ -626,7 +626,10 @@ def _safe_lane(fn) -> list[dict]:
                        critical=True)]
 
 
-def _run_tick() -> dict:
+def _run_tick(beat: bool = True) -> dict:
+    # ★2026-09-02 (D5): beat=False on every GET. A dashboard view — with its
+    # auto-refresh — must never stamp the daily beat, or a browser tab keeps a
+    # dead cron "alive" on /api/v1/ops/deadman. Only the POST master-tick beats.
     lanes = [
         {"id": "rag", "name": "1 · RAG retrieval",
          "checks": _safe_lane(_lane_rag)},
@@ -650,7 +653,8 @@ def _run_tick() -> dict:
         "summary": summary,
         "any_fail": any(ln["verdict"] == "FAIL" for ln in lanes),
     }
-    _beat_ledger("lanes: " + summary, failing=out["any_fail"])
+    if beat:
+        _beat_ledger("lanes: " + summary, failing=out["any_fail"])
     return out
 
 
@@ -670,7 +674,7 @@ def master_tick():
             ok=False, error="INTEL_EXPANSION_SHELL_DISABLE=1")), 404
     if not _admin_ok():
         return _no_store(jsonify(ok=False, error="admin key required")), 401
-    return _no_store(jsonify(_run_tick()))
+    return _no_store(jsonify(_run_tick(beat=(request.method == "POST"))))
 
 
 def _esc(s) -> str:
@@ -691,7 +695,7 @@ def dashboard():
     if not _admin_ok():
         return _no_store(make_response(
             "<h1>401</h1><p>admin key required</p>", 401))
-    t = _run_tick()
+    t = _run_tick(beat=False)
     color = {"PASS": "#22c55e", "FAIL": "#ef4444", "?": "#eab308"}
     rows = []
     for ln in t["lanes"]:

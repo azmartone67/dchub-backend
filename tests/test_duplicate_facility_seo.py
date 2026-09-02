@@ -72,13 +72,18 @@ def test_duplicate_pages_canonicalise_to_their_twin():
 def test_twin_lookup_refuses_an_unusable_target():
     """A canonical pointing at a 404 or at another duplicate is worse than a
     self-canonical, so the target must be live and non-duplicate."""
+    # seo F5 (2026-09-02): the query moved into _canonical_twin_row (the
+    # 301 path reads address/coords/pointer off the same row); the URL
+    # wrapper delegates to it. The guards are asserted where the SQL is.
     src = PROFILE.read_text(encoding="utf-8")
-    seg = src.split("def _canonical_twin_url", 1)[1].split("\ndef ", 1)[0]
+    seg = src.split("def _canonical_twin_row", 1)[1].split("\ndef ", 1)[0]
     seg = "\n".join(ln for ln in seg.splitlines()
                     if not ln.strip().startswith("#"))
-    assert "COALESCE(is_duplicate, 0) = 0" in seg
-    assert "canonical_slug <> ''" in seg
+    assert "COALESCE(k.is_duplicate, 0) = 0" in seg
+    assert "k.canonical_slug <> ''" in seg
     assert "if not dup_of_id:" in seg, "a null pointer must not query at all"
+    wrapper = src.split("def _canonical_twin_url", 1)[1].split("\ndef ", 1)[0]
+    assert "_canonical_twin_row(dup_of_id)" in wrapper
 
 
 def test_twin_lookup_uses_a_connection_helper_that_exists():

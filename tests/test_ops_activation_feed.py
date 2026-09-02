@@ -19,7 +19,8 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from routes.ops_activation import (  # noqa: E402
-    SHAPE, _ratio, _verdict, direction_of, signal,
+    SHAPE, _complete_week_comparability, _complete_week_starts, _ratio,
+    _verdict, direction_of, signal, withhold_across_definition_change,
 )
 
 
@@ -97,9 +98,14 @@ def test_verdict_counts_each_state_once():
         _sig((4, 4), "up"),      # flat
         _sig((None, 2), "up"),   # unknown
         _sig((1, 9), "down"),    # improving (lower is better)
+        withhold_across_definition_change(   # withheld: read, but not a trend
+            _sig((35, 17), "up"), {"crosses_definition_change": True,
+                                   "superseded_by_correction": False,
+                                   "means": "x"}),
     ]
     v = _verdict(sigs)
-    assert v == {"improving": 2, "worsening": 1, "flat": 1, "unknown": 1}
+    assert v == {"improving": 2, "worsening": 1, "flat": 1, "unknown": 1,
+                 "withheld": 1}
     assert sum(v.values()) == len(sigs), "every signal must land in exactly one bucket"
 
 
@@ -198,3 +204,96 @@ def test_the_brain_digest_reads_the_same_source():
     assert "LEADING SIGNALS" in dig
     # a failed read must not print five zeros
     assert "not zero, unread" in dig
+
+
+# ── withheld across a definition change (2026-09-02) ─────────────────────
+#
+# Measured live 2026-09-02 00:23Z, signals[3]:
+#     agents_complete_week  value 35  prior 17  direction up  improving TRUE
+# W34 (2026-08-17) contains dchub-mcp-server#202, which removed DC Hub's own
+# GitHub Actions — 72% of agents — from the population. weekly-series refuses
+# that exact pair (quotable_as_trend=false); this feed rendered it as the
+# funnel turning, with no comparability field a reader could branch on.
+
+import datetime as _dt  # noqa: E402
+
+_ASOF = _dt.date(2026, 9, 2)   # the Wednesday it was measured (UTC)
+_CROSSING = {"crosses_definition_change": True, "superseded_by_correction": False,
+             "quotable_as_trend": False, "means": "NOT a trend"}
+_CLEAN = {"crosses_definition_change": False, "superseded_by_correction": False,
+          "quotable_as_trend": True, "means": "same population"}
+
+
+def test_the_two_complete_weeks_are_the_ones_the_sql_counts():
+    """weeks_back=1 then 0: on Wed 2026-09-02 that is 08-17 and 08-24."""
+    assert _complete_week_starts(_ASOF) == [_dt.date(2026, 8, 17), _dt.date(2026, 8, 24)]
+    # a Monday is already in the NEW partial week — the complete pair rolls
+    assert _complete_week_starts(_dt.date(2026, 9, 7)) == [_dt.date(2026, 8, 24), _dt.date(2026, 8, 31)]
+
+
+def test_the_live_35_over_17_is_withheld_not_improving():
+    """★ THE REGRESSION, against the REAL marker list."""
+    comp = _complete_week_comparability(today=_ASOF)
+    assert comp is not None and comp["crosses_definition_change"] is True
+    assert "dchub-mcp-server#202" in [c["ref"] for c in comp["changes"]]
+    s = withhold_across_definition_change(
+        signal("agents_complete_week", "l", 35, 17, "up", "b", unit="agents"), comp)
+    assert s["direction"] == "withheld"
+    assert s["improving"] is None
+    assert s["value"] == 35 and s["prior"] == 17, "the LEVELS still publish"
+    assert s["comparability"]["quotable_as_trend"] is False
+    assert "NOT a trend" in s["withheld_reason"]
+
+
+def test_a_clean_pair_keeps_its_movement():
+    """★ THE FALSE BRANCH. A gate that withholds everything is not a gate."""
+    s = withhold_across_definition_change(
+        signal("agents_complete_week", "l", 35, 17, "up", "b"), _CLEAN)
+    assert s["direction"] == "up"
+    assert s["improving"] is True
+    assert s["comparability"] is _CLEAN
+    assert "withheld_reason" not in s
+
+
+def test_a_superseded_pair_is_withheld_too():
+    s = withhold_across_definition_change(
+        signal("agents_complete_week", "l", 72, 38, "up", "b"),
+        {"crosses_definition_change": False, "superseded_by_correction": True,
+         "means": "SUPERSEDED"})
+    assert s["direction"] == "withheld" and s["improving"] is None
+
+
+def test_an_uncomputable_comparability_fails_closed():
+    """Publishing improving:true on an UNCHECKED pair is the defect."""
+    s = withhold_across_definition_change(
+        signal("agents_complete_week", "l", 35, 17, "up", "b"), None)
+    assert s["direction"] == "withheld" and s["improving"] is None
+    assert s["comparability"] is None
+    assert "could not be computed" in s["withheld_reason"]
+
+
+def test_withheld_is_counted_as_withheld_never_as_worsening():
+    """improving is null on a withheld signal; before the bucket existed that
+    fell through _verdict's else-branch and was counted as WORSENING."""
+    s = withhold_across_definition_change(_sig((35, 17), "up"), _CROSSING)
+    v = _verdict([s])
+    assert v["withheld"] == 1
+    assert v["worsening"] == 0 and v["improving"] == 0 and v["unknown"] == 0
+
+
+def test_the_feed_wires_the_withholding_to_the_agents_signal():
+    src = open(os.path.join(REPO_ROOT, "routes", "ops_activation.py"),
+               encoding="utf-8").read()
+    body = src[src.index("out[\"signals\"] = ["):src.index("out[\"session_upgrades_all_time\"]")]
+    assert "withhold_across_definition_change(signal(" in body
+    assert "\"agents_complete_week\"" in body
+    assert "_complete_week_comparability()" in body
+    assert "withheld" in SHAPE["direction"]
+    assert "withheld" in SHAPE["verdict"]
+
+
+def test_the_brain_digest_renders_withheld_not_no_read():
+    dig = open(os.path.join(REPO_ROOT, "routes", "growth_ops_digest.py"),
+               encoding="utf-8").read()
+    assert '_s.get("direction") == "withheld"' in dig
+    assert "WITHHELD" in dig

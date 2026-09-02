@@ -112,6 +112,9 @@
     "test_freshness_sources_are_real.py": {
       "pglob": 640
     },
+    "test_grid_ba_surface_guard.py": {
+      "glob": 650
+    },
     "test_gsc_performance.py": {
       "pglob": 130
     },
@@ -161,6 +164,9 @@
       "pglob": 20
     },
     "test_shell_beat_reports_red.py": {
+      "glob": 60
+    },
+    "test_shell_get_does_not_beat.py": {
       "glob": 60
     },
     "test_shell_killswitch_never_5xx.py": {

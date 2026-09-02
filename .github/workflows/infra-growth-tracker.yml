@@ -19,7 +19,7 @@ on:
     # clear of every sync window. The authoritative baselines now come from the
     # re-baseline step at the END of each ingest; this daily run is the backstop
     # and the reporting surface (it is what prints the flatline warnings).
-    - cron: '40 5 * * *'
+    - cron: '38 5 * * *'   # 05:38 UTC daily — staggered off data-growth-radar's `40 5` (D15, 2026-09-02)
   workflow_dispatch: {}
 
 concurrency:

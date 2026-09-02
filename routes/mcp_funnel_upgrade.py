@@ -227,17 +227,46 @@ def _hp(tier: str):
         return 0
 
 
-def _hint_tiers() -> dict:
-    """The /api/v1/upgrade-hint tier table. Every cap and price is a registry
-    read; the only literals left are per-call result depths and the
-    enterprise contact row. results_per_call mirrors TIER_LIMITS mcp_results
-    where the registry has one."""
-    def _res(tier, default):
-        try:
-            return int(tier_registry.TIER_LIMITS[tier].get("mcp_results") or default)
-        except Exception:
-            return default
-    out = {
+def _res(tier: str, default: int) -> int:
+    """results_per_call for `tier`, mirroring TIER_LIMITS mcp_results where the
+    registry has one; `default` is the depth this endpoint published before."""
+    try:
+        return int(tier_registry.TIER_LIMITS[tier].get("mcp_results") or default)
+    except Exception:
+        return default
+
+
+@mcp_funnel_upgrade_bp.route("/api/v1/upgrade-hint", methods=["GET"])
+def upgrade_hint():
+    """Agent-quotable copy explaining the upgrade path.
+
+    Designed for AI agents that hit a paywall — they can quote this
+    VERBATIM to their user.
+    """
+    tool = (request.args.get("from") or request.args.get("tool") or "").strip()
+    platform = (request.args.get("platform") or "").strip()
+
+    base = ("DC Hub blocked this query because the requested tool needs "
+            "a free developer key. Anyone can claim one in 30 seconds.")
+    if tool and tool in _TOOL_PREVIEWS:
+        base = (f"{tool} returns {_TOOL_PREVIEWS[tool]['you_unlock']} "
+                f"DC Hub blocks anonymous access to this tool; a free "
+                f"developer key unlocks it.")
+
+    # ★2026-09-02: the tier table is DERIVED — every cap and price is a
+    # tier_registry read. The dict it replaces served free=1,000/day and
+    # starter=10,000/day (live 2026-09-02 00:26Z) against an enforced 10 and
+    # 200, and "$199/mo Pro" against a $299 registry price (QA-sweep pricing 6).
+    #
+    # ★It stays a DICT LITERAL IN THIS HANDLER on purpose. Behind a helper
+    # (`"tiers": _hint_tiers()`) the CI `contract` job read 30 KEY REMOVED
+    # breaks on this endpoint: scripts/api_response_contract.py is an
+    # intra-function constant propagator, so a Call value marks the level OPEN
+    # and every `tiers.<tier>.<field>` disappears from the derived key surface.
+    # Nothing was actually removed — but a guard that cannot see the keys
+    # cannot protect them either, which is worse than the red. Derive the
+    # VALUES from canon; keep the SHAPE where the guard can read it.
+    tiers = {
         "anonymous":  {"calls_per_day": _hn("anonymous"),  "results_per_call": _res("anonymous", 1),
                        "price_usd_month": 0, "needs_key": False,
                        "label": f"No signup, {_hn('anonymous')}/day"},
@@ -261,25 +290,6 @@ def _hint_tiers() -> dict:
                        "label": "Enterprise — dedicated support",
                        "contact": "api@dchub.cloud"},
     }
-    return out
-
-
-@mcp_funnel_upgrade_bp.route("/api/v1/upgrade-hint", methods=["GET"])
-def upgrade_hint():
-    """Agent-quotable copy explaining the upgrade path.
-
-    Designed for AI agents that hit a paywall — they can quote this
-    VERBATIM to their user.
-    """
-    tool = (request.args.get("from") or request.args.get("tool") or "").strip()
-    platform = (request.args.get("platform") or "").strip()
-
-    base = ("DC Hub blocked this query because the requested tool needs "
-            "a free developer key. Anyone can claim one in 30 seconds.")
-    if tool and tool in _TOOL_PREVIEWS:
-        base = (f"{tool} returns {_TOOL_PREVIEWS[tool]['you_unlock']} "
-                f"DC Hub blocks anonymous access to this tool; a free "
-                f"developer key unlocks it.")
 
     return jsonify({
         "ok":                True,
@@ -299,11 +309,7 @@ def upgrade_hint():
             f"${_hp('starter')}/mo for {_hn('starter')}/day. "
             f"${_hp('developer')}/mo for {_hn('developer')}/day."
         ),
-        # ★2026-09-02: the tier table is DERIVED — see _hint_tiers(). The dict
-        # it replaces served free=1,000/day and starter=10,000/day (live
-        # 2026-09-02 00:26Z) against an enforced 10 and 200, and "$199/mo Pro"
-        # against a $299 registry price (QA-sweep pricing 6).
-        "tiers": _hint_tiers(),
+        "tiers": tiers,
     }), 200, {
         # r48 (2026-05-25): The zone-level CF worker (out-of-repo,
         # 4.34.15-r45-pages-force-redeploy) was caching this endpoint

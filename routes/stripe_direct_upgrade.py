@@ -27,7 +27,22 @@ stripe_direct_bp = Blueprint("stripe_direct_upgrade", __name__)
 
 # r39 (2026-05-25): centralized in routes/_stripe_links.py. Re-export
 # locally so existing _resolve_tier callers don't need to change.
-from routes._stripe_links import STRIPE_LINKS, TOOL_TIER_MAP, resolve_tier as _resolve_tier
+from routes._stripe_links import (STRIPE_LINKS, TOOL_TIER_MAP, TIER_PRICE_LABEL,
+                                  resolve_tier as _resolve_tier)
+
+
+def _price_label(tier):
+    """The published label for `tier`, from the one canon in _stripe_links.
+
+    ★2026-09-02 merge: this arrived with a hand-typed fallback dict
+    ({developer: $49/mo, pro: $299/mo, starter: $9/mo, enterprise: Custom}).
+    Every one of those four keys is already in TIER_PRICE_LABEL with the same
+    value, so the fallback was unreachable — and it was a SECOND copy of the
+    prices, which is the exact defect this PR exists to remove (the scan in
+    tests/test_agent_surfaces_one_canon.py flags it). One canon, or the two
+    drift apart the next time a price moves.
+    """
+    return TIER_PRICE_LABEL.get(tier) or "—"
 
 
 def _build_url(tier, tool, ref, surface=None, sid=None):
@@ -106,16 +121,23 @@ def upgrade_redirect():
 def _default_paid_tier() -> str:
     """The tier a paywall checkout lands on when nothing chose one.
 
-    ★2026-09-02 (QA-sweep pricing 3): resolve_tier() falls to "developer"
-    ($49), but the only plan with completed web-direct checkouts in the 8-week
-    licences read is Founding Member ($99) — and agents never saw it: this
-    endpoint, unlock_more_data and mcp_facts all omitted it. While
-    routes/founding_customers.founding_status() says the program is open, the
-    default is founding; when the seats are gone it is developer again. An
-    explicit ?tier= is never overridden, and a tool mapped to "pro" stays
-    pro — only an unchosen "developer" (the resolver default, or a
-    TOOL_TIER_MAP developer row such as get_dchub_recommendation's
-    neighbours) is lifted to the plan that sells.
+    ★2026-09-02 (QA-sweep pricing 3): the only plan with completed web-direct
+    checkouts in the 8-week licences read is Founding Member ($99) — and
+    agents never saw it: this endpoint, unlock_more_data and mcp_facts all
+    omitted it. While routes/founding_customers.founding_status() says the
+    program is open, an unchosen "developer" becomes founding; when the seats
+    are gone it is developer again.
+
+    ★MERGE NOTE 2026-09-02: this was written when resolve_tier() fell through
+    to "developer". It no longer does — the relay finding moved the
+    fall-through to PACK_TIER ("metered", the $10 one-time pack), because a
+    caller we cannot classify should be offered the cheapest non-recurring
+    thing, not a $49/mo plan. That rule is UNTOUCHED here: "metered" is not
+    "developer", so an unclassified caller never reaches this helper. What is
+    left is the case this was actually for — a TOOL_TIER_MAP row that names
+    "developer" (get_dchub_recommendation and its neighbours) with no explicit
+    ?tier=. An explicit ?tier= is never overridden, and a tool mapped to "pro"
+    stays pro.
     """
     try:
         from routes.founding_customers import founding_status
@@ -124,20 +146,6 @@ def _default_paid_tier() -> str:
     except Exception:
         pass
     return "developer"
-
-
-def _tier_price_label(tier: str) -> str:
-    """"$49/mo" from tier_registry.price(); "Custom" when the registry has no
-    dollar figure (enterprise); "—" when it cannot be read. Replaces a
-    hand-typed 4-row dict that had no founding row at all."""
-    try:
-        import tier_registry as _tr
-        p = _tr.price(tier)
-        if p:
-            return f"${int(p)}/mo"
-        return "Custom" if tier in _tr.TIER_PRICE_USD_MONTH else "—"
-    except Exception:
-        return "—"
 
 
 @stripe_direct_bp.route("/api/v1/paywall/checkout", methods=["GET"])
@@ -166,7 +174,9 @@ def paywall_checkout_json():
         "tier":           chosen,
         "checkout_url":   _build_url(chosen, tool, ref, surface),
         "stripe_managed": True,
-        "tier_pricing":   _tier_price_label(chosen),
+        # 2026-09-02: label from canon so the pack (now the fall-through
+        # tier) reads "$10 / 1,000 API calls", not "—".
+        "tier_pricing":   _price_label(chosen),
         "client_reference_id": _cref,
     }), 200, {"Cache-Control": "public, max-age=300"}
 

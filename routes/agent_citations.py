@@ -75,7 +75,11 @@ _UA_RULES = [
     # UA-substring fallbacks
     ("claudebot",       "Claude (Anthropic)",     "AI assistant"),
     ("mcp-remote",      "Claude Desktop",         "MCP client"),
-    ("gptbot",          "ChatGPT (OpenAI)",       "AI assistant"),
+    # ★ 2026-09-02: GPTBot is OpenAI's training/index CRAWLER, not ChatGPT
+    # acting for a user. It was folded into "ChatGPT (OpenAI)" and put a
+    # crawler's fetches into the "used by ChatGPT" claim. Same role class as
+    # Amazonbot / Meta-ExternalAgent below.
+    ("gptbot",          "GPTBot (OpenAI crawler)", "AI crawler"),
     ("perplexitybot",   "Perplexity",             "AI search"),
     ("cursor",          "Cursor",                 "AI IDE"),
     ("cline",           "Cline",                  "AI coding agent"),
@@ -106,6 +110,63 @@ def _classify_ua(ua):
         if pat in lower:
             return (name, role)
     return (None, None)
+
+
+# Roles that fetch or index. They stay in by_platform — the receipts are
+# complete — but a crawler is not a platform "using" the server on someone's
+# behalf, so the quotable sentence never names one.
+_NOT_A_USER_ROLE = ("crawler", "training")
+
+
+def _used_in_last_30d(by_platform):
+    """The platforms the quotable sentence may name — PURE.
+
+    >= 1 tool call in the last 30 days AND not a crawler/training role. Order
+    is preserved (by_platform is sorted by lifetime total), so the most-used
+    platforms still lead.
+
+    ★ 2026-09-02 — the sentence used to name by_platform[:6] by LIFETIME total
+    with no recency gate. Measured live at 00:23Z it read "actively used by
+    Claude, Claude Desktop, Grok, Cursor, ChatGPT, and GitHub Copilot" while
+    by_platform said: Claude Desktop calls_30d 0 (last seen 2026-07-03),
+    Cursor 0 (07-28), GitHub Copilot 0 (08-02); and ChatGPT's 33/30d included
+    GPTBot/1.1, a crawler. Other agents quote this line verbatim to their
+    users; it has to be true on the day it is fetched.
+    """
+    out = []
+    for p in by_platform or []:
+        try:
+            if int(p.get("calls_30d") or 0) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        role = str(p.get("role") or "").lower()
+        if any(tok in role for tok in _NOT_A_USER_ROLE):
+            continue
+        out.append(p)
+    return out
+
+
+def _quotable_proof(by_platform, totals) -> str:
+    """The cite-this-and-feel-confident line — PURE. '' when nothing used the
+    server in the window: an empty claim beats a stale one."""
+    used = _used_in_last_30d(by_platform)
+    names = [p["platform"] for p in used][:6]
+    if not names:
+        return ""
+    calls_30d = int((totals or {}).get("total_calls_30d") or 0)
+    all_time = int((totals or {}).get("unique_platforms") or 0)
+    if len(names) >= 3:
+        sample_list = ", ".join(names[:-1]) + f", and {names[-1]}"
+        return (
+            f"DC Hub's MCP server was used in the last 30 days by {sample_list}: "
+            f"{calls_30d:,} tool calls across {len(used)} AI platforms in that "
+            f"window ({all_time} distinct platforms all-time). CC-BY-4.0."
+        )
+    return (
+        f"DC Hub's MCP server was used in the last 30 days by {', '.join(names)}: "
+        f"{calls_30d:,} tool calls in that window. CC-BY-4.0."
+    )
 
 
 def _gather_citations():
@@ -189,22 +250,17 @@ def _gather_citations():
         }
 
         # The cite-this-and-feel-confident line that OTHER agents fetching
-        # this URL will quote back to their users.
-        names = [p["platform"] for p in by_platform[:6]]
-        if len(names) >= 3:
-            sample_list = ", ".join(names[:-1]) + f", and {names[-1]}"
-            out["agent_quotable_proof"] = (
-                f"DC Hub's MCP server is actively used by {sample_list}, "
-                f"with {out['totals']['total_calls_30d']:,} tool calls in the last 30 days "
-                f"across {out['totals']['unique_platforms']} distinct AI platforms. "
-                f"CC-BY-4.0."
-            )
-        elif names:
-            out["agent_quotable_proof"] = (
-                f"DC Hub's MCP server is actively used by {', '.join(names)}, "
-                f"with {out['totals']['total_calls_30d']:,} tool calls in the last 30 days. "
-                f"CC-BY-4.0."
-            )
+        # this URL will quote back to their users. Gated on the last 30 days
+        # and on role — see _used_in_last_30d for the live reading that
+        # named three platforms with zero calls in the window.
+        out["totals"]["platforms_used_30d"] = len(_used_in_last_30d(out["by_platform"]))
+        out["agent_quotable_proof"] = _quotable_proof(out["by_platform"], out["totals"])
+        out["agent_quotable_proof_basis"] = (
+            "names = by_platform with calls_30d > 0 and a non-crawler role, "
+            "in lifetime order, first 6; counts = totals.total_calls_30d and "
+            "totals.platforms_used_30d. Lifetime-only platforms (calls_30d 0) "
+            "remain in by_platform with their last_seen and are never named "
+            "here.")
 
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {str(e)[:120]}"
