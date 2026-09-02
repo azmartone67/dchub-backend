@@ -62,8 +62,16 @@ oauth_challenge_bp = Blueprint("oauth_challenge_ledger", __name__)
 # This kind fires on THEIR arrival: passive, issues no 401, changes no behavior.
 # ★It is NOT comparable to claude_connector and must never be divided into it -- one
 # counts arrivals, the other counts challenges issued. Different populations.
+# oauth_authorize_started (2026-09-02, QA sweep F2): the MIDDLE of the OAuth
+# on-ramp. challenge_issued (claude_connector rows above) and identity_created
+# (mcp_dev_keys dch_oauth_ rows) were the only two ends measured, and the ratio
+# ran 1,111 challenges per new identity in 30d with no way to say WHERE the loss
+# was. The gateway emits this kind when a challenged client actually reaches
+# /oauth/authorize. ★ It is listed here because this whitelist is CLOSED: an
+# emitted kind that is not in _KINDS is silently dropped by the handler below,
+# which is precisely how a new counter reads 0 forever without an instrument.
 _KINDS = {"claude_connector", "invalid_bearer", "chatgpt_connector_seen",
-          "claude_connector_seen"}
+          "claude_connector_seen", "oauth_authorize_started"}
 _METHODS = {"initialize", "tools/call", "other"}
 _BEAT_METHODS = {"workos_on", "workos_off"}
 
