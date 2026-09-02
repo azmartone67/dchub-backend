@@ -685,5 +685,62 @@ def hub_sitemap_counts():
     return countries, states
 
 
+def _ymd(value):
+    """'YYYY-MM-DD' from a date/datetime/str, or None when it is not one."""
+    txt = str(value or "")[:10]
+    return txt if re.match(r"^\d{4}-\d{2}-\d{2}$", txt) else None
+
+
+def hub_sitemap_lastmod():
+    """(country → 'YYYY-MM-DD', us-state-slug → 'YYYY-MM-DD'): MAX(first_seen)
+    over EXACTLY the rows hub_sitemap_counts counts — the same three filters,
+    so the date describes the page that renders.
+
+    seo F11 (2026-09-02): sitemap-static.xml carried 559/560 entries pinned
+    <lastmod>2026-08-19</lastmod>, including every /facilities/in/<cc> hub
+    whose membership changes daily. The pin is right for hand-curated
+    pages (main.py _STATIC_LASTMOD) and wrong for DB-driven ones: an
+    always-stale date is the mirror image of the always-"today" date the
+    r-lastmod-honesty note retired — both teach Google to ignore the signal.
+    Pattern lifted from the city-state markets shard (MAX(f.first_seen)).
+    Fail-soft: ({}, {}) on any error, and the caller keeps the pin.
+    """
+    countries: dict = {}
+    states: dict = {}
+    try:
+        conn = _conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT LOWER(btrim(country)) AS cc, MAX(first_seen) AS lm
+              FROM discovered_facilities
+             WHERE name IS NOT NULL AND name <> ''
+               AND country IS NOT NULL AND btrim(country) <> ''
+               AND duplicate_of_id IS NULL
+             GROUP BY 1
+        """)
+        for cc, lm in (cur.fetchall() or []):
+            d = _ymd(lm)
+            if cc and d:
+                countries[cc] = d
+        cur.execute("""
+            SELECT btrim(state) AS st, MAX(first_seen) AS lm
+              FROM discovered_facilities
+             WHERE LOWER(btrim(country)) = 'us'
+               AND name IS NOT NULL AND name <> ''
+               AND duplicate_of_id IS NULL
+             GROUP BY 1
+        """)
+        for stv, lm in (cur.fetchall() or []):
+            ss = us_state_slug(stv)
+            d = _ymd(lm)
+            if ss and d:
+                # 'TX' and 'Texas' both map to 'texas' — keep the newest
+                states[ss] = max(states.get(ss, ""), d)
+        conn.close()
+    except Exception:
+        pass
+    return countries, states
+
+
 def register_facilities_hub(app):
     app.register_blueprint(facilities_hub_bp)

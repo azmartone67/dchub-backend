@@ -25298,8 +25298,10 @@ def news_page():
 
 @app.route('/market-intelligence')
 @app.route('/market-intelligence.html')
-@app.route('/markets')
-@app.route('/markets/')   # Round 24: user reported /markets/ → 404
+# seo F6 (2026-09-02): /markets and /markets/ moved to routes/market_deep_dive
+# .markets_hub_page — a self-canonical hub. This page kept serving them with
+# <link rel=canonical> → /market-intelligence (measured live), so the 580-URL
+# markets shard had a hub that disclaimed itself. Do not re-add them here.
 def market_intelligence_page():
     try:
         from market_intelligence_api import MARKET_DATA
@@ -25331,7 +25333,7 @@ def market_intelligence_page():
         "description": ("Live vacancy rates, inventory (MW) and asking rates "
                         f"across {_market_count or 'global'} data center "
                         "markets, updated continuously."),
-        "url": "https://dchub.cloud/markets",
+        "url": "https://dchub.cloud/market-intelligence",
         "license": "https://creativecommons.org/licenses/by/4.0/",
         "isAccessibleForFree": True,
         "creator": {"@type": "Organization", "name": "DC Hub",
@@ -30918,6 +30920,10 @@ def _build_sitemap_sections():
         ('/pricing', '0.9', 'monthly'),
         ('/analytics', '0.8', 'daily'),
         ('/market-intelligence', '0.8', 'weekly'),
+        # seo F6 (2026-09-02): the live /markets hub (routes/market_deep_dive
+        # .markets_hub_page, self-canonical) — moved here from the markets
+        # shard so the static shard lists every hub.
+        ('/markets', '0.8', 'weekly'),
         ('/ecosystem', '0.8', 'weekly'),
         ('/transaction-comps', '0.8', 'daily'),
         ('/ai-pipeline', '0.8', 'daily'),
@@ -31223,16 +31229,14 @@ def _build_sitemap_sections():
     logger.info(f"sitemap: {_press_added} press-release pages added")
 
     # ---- Market pages ----
-    markets = [
-        'northern-virginia', 'dallas', 'phoenix', 'atlanta', 'chicago',
-        'silicon-valley', 'new-york', 'los-angeles', 'portland', 'seattle',
-        'salt-lake-city', 'toronto', 'columbus', 'houston', 'denver',
-        'london', 'frankfurt', 'amsterdam', 'paris', 'dublin', 'stockholm',
-        'singapore', 'tokyo', 'sydney', 'hong-kong', 'mumbai', 'seoul',
-        'jakarta', 'kuala-lumpur', 'bangkok', 'sao-paulo', 'mexico-city',
-        'santiago', 'bogota',
-    ]
-    sections['markets'].append(f'  <url><loc>https://dchub.cloud/markets</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>')
+    # seo F6 (2026-09-02): the curated metro list, the US city-market SQL and
+    # the junk/redirect filter live in routes/market_deep_dive so the /markets
+    # hub lists EXACTLY what this shard emits. /markets itself moved to the
+    # static shard (static_pages above).
+    from routes.market_deep_dive import (CURATED_MARKET_SLUGS as _curated_markets,
+                                         us_city_market_rows as _us_city_rows,
+                                         listable_market_slug as _listable_market)
+    markets = list(_curated_markets)
     _seen_market_slugs = set(markets)
     for m in markets:
         sections['markets'].append(f'  <url><loc>https://dchub.cloud/markets/{m}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>')
@@ -31244,57 +31248,15 @@ def _build_sitemap_sections():
     # city-state so thin one-facility market pages don't dilute crawl budget.
     try:
         _mk_conn = get_read_db()
-        _mkc = _mk_conn.cursor()
         # r-lastmod-honesty (2026-07-04): carry a REAL per-market date =
         # MAX(first_seen) across the city's facilities (was: uniform 'today',
         # which Google distrusts). Inner fallback to the date-less query so a
         # missing first_seen column can never drop these 222 indexed URLs.
-        try:
-            # ★★ 2026-07-28 — THE SITEMAP WAS SUBMITTING 404s. Sampled 14 of
-            # the 295 market URLs it emits: TWELVE returned 404
-            # (goodyear-az, miami-fl, tacoma-wa, charlotte-nc, richmond-va...).
-            # Cause: this query's criterion (>=3 facilities for a city+state)
-            # is NOT the criterion the /markets/<slug> route serves on. The
-            # route keys on CURATED market slugs; `miami` is a market, `miami-fl`
-            # is not. So we were telling Google to crawl pages we never built —
-            # which is why the Not-found bucket keeps refilling and validation
-            # keeps failing: the sitemap re-submits them after every fix.
-            # ★ Emit the CITY slug (no state suffix) and require it to be a real
-            #   market. INNER JOIN, so a URL can only enter the sitemap if a
-            #   market page exists for it. Verified live: /markets/miami,
-            #   /markets/goodyear, /markets/charlotte, /markets/richmond,
-            #   /markets/tucson all 200.
-            # ★ A sitemap must never contain redirects either, so we list the
-            #   canonical city slug rather than the city-state form that 301s.
-            _mkc.execute("""
-                SELECT m.market_slug AS slug, MAX(f.first_seen) AS lm
-                  FROM discovered_facilities f
-                  JOIN market_power_scores m
-                    ON m.market_slug = LOWER(REPLACE(TRIM(f.city),' ','-'))
-                 WHERE f.city IS NOT NULL AND TRIM(f.city) <> ''
-                   AND COALESCE(f.is_duplicate, 0) = 0
-                   AND f.country IN ('US','USA','United States')
-                 GROUP BY m.market_slug
-                HAVING COUNT(*) >= 3
-            """)
-            _mk_rows = _mkc.fetchall()
-        except Exception:
-            try: _mk_conn.rollback()
-            except Exception: pass
-            # fallback (no first_seen column) — SAME market-existence join, so
-            # the degraded path can never re-introduce the 404s either
-            _mkc.execute("""
-                SELECT m.market_slug AS slug
-                  FROM discovered_facilities f
-                  JOIN market_power_scores m
-                    ON m.market_slug = LOWER(REPLACE(TRIM(f.city),' ','-'))
-                 WHERE f.city IS NOT NULL AND TRIM(f.city) <> ''
-                   AND COALESCE(f.is_duplicate, 0) = 0
-                   AND f.country IN ('US','USA','United States')
-                 GROUP BY m.market_slug
-                HAVING COUNT(*) >= 3
-            """)
-            _mk_rows = [(r[0], None) for r in _mkc.fetchall()]
+        # ★★ 2026-07-28 — THE SITEMAP WAS SUBMITTING 404s (12 of 14 sampled
+        # market URLs). The INNER JOIN on market_power_scores that fixed it,
+        # and its date-less fallback, are US_CITY_MARKET_SQL[_NODATE] in
+        # routes/market_deep_dive — one query for this shard and the hub.
+        _mk_rows = _us_city_rows(_mk_conn)
         # r-portland-canon (2026-08-02): a sitemap must never list a URL that
         # redirects, and /markets/<slug> now 301s every alias/retired-twin
         # slug (ashburn→northern-virginia, washington→dc, cheyenne-wy→
@@ -31303,11 +31265,6 @@ def _build_sitemap_sections():
         # 'washington' both clear the >=3-facilities city join), so filter on
         # the SAME map the route redirects from — one source of truth.
         # Degraded fallback is the pre-fix behavior (emit), never a dead shard.
-        try:
-            from routes.market_deep_dive import MARKETS_CANONICAL_REDIRECT \
-                as _mk_redirect_slugs
-        except Exception:
-            _mk_redirect_slugs = ()
         for _row in _mk_rows:
             _mslug = (_row[0] or '').strip()
             _mlm = _STATIC_LASTMOD
@@ -31321,13 +31278,9 @@ def _build_sitemap_sections():
             # 'st.-louis-mo' from city 'St. Louis' — REPLACE(city,' ','-')
             # never stripped the period). Those URLs 404 at /markets/<slug>,
             # so they must not sit in the sitemap as soft-404s.
-            if (len(_mslug) < 3 or _mslug.startswith('-') or _mslug.endswith('-')
-                    or '.' in _mslug
-                    or not any(ch.isalnum() for ch in _mslug)
-                    or _mslug in _mk_redirect_slugs
-                    or _mslug in _seen_market_slugs):
+            _mslug = _listable_market(_mslug, _seen_market_slugs)
+            if not _mslug:
                 continue
-            _seen_market_slugs.add(_mslug)
             sections['markets'].append(f'  <url><loc>https://dchub.cloud/markets/{_mslug}</loc><lastmod>{_mlm}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>')
         try: _mk_conn.close()
         except Exception: pass
@@ -31624,15 +31577,30 @@ def _build_sitemap_sections():
     except Exception as _hub_ct_e:
         logger.warning(f"sitemap: hub_sitemap_counts failed ({_hub_ct_e}) — "
                        "country pages only, no /page/N or state URLs")
+    # seo F11 (2026-09-02): these hubs are DB-driven, so they carry a REAL
+    # per-URL date — MAX(first_seen) of the member facilities, from the same
+    # filters the pages serve (facilities_hub.hub_sitemap_lastmod; the
+    # city-state markets shard pattern). Measured before: 559/560 static
+    # entries pinned 2026-08-19, hubs included. The pin stays the fallback
+    # for a country with no date, and for the hand-curated tuples above.
+    _hub_lm, _us_lm = {}, {}
+    try:
+        from facilities_hub import hub_sitemap_lastmod as _hub_lmf
+        _hub_lm, _us_lm = _hub_lmf()
+    except Exception as _hub_lm_e:
+        logger.warning(f"sitemap: hub_sitemap_lastmod failed ({_hub_lm_e}) — "
+                       "hub pages carry the pinned static date")
     import math as _math
     for _hc in sorted(_hub_countries | set(_hub_counts)):
-        sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/{_hc}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+        _hlm = _hub_lm.get(_hc) or _STATIC_LASTMOD
+        sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/{_hc}</loc><lastmod>{_hlm}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
         for _pn in range(2, _math.ceil(_hub_counts.get(_hc, 0) / _hub_psize) + 1):
-            sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/{_hc}/page/{_pn}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.4</priority></url>')
+            sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/{_hc}/page/{_pn}</loc><lastmod>{_hlm}</lastmod><changefreq>weekly</changefreq><priority>0.4</priority></url>')
     for _ss in sorted(_us_state_counts):
-        sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/us/{_ss}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+        _slm = _us_lm.get(_ss) or _STATIC_LASTMOD
+        sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/us/{_ss}</loc><lastmod>{_slm}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
         for _pn in range(2, _math.ceil(_us_state_counts[_ss] / _hub_psize) + 1):
-            sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/us/{_ss}/page/{_pn}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.4</priority></url>')
+            sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/us/{_ss}/page/{_pn}</loc><lastmod>{_slm}</lastmod><changefreq>weekly</changefreq><priority>0.4</priority></url>')
 
     # ★ r-thin-sitemap (2026-08-14) — COLLAPSE FLOOR. The capacity gate above is
     # the one change here that can only ever REMOVE URLs, so a bad query, a
