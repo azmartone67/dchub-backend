@@ -198,14 +198,26 @@ def test_flatline_is_withheld_when_the_table_was_recently_reingested():
 
 
 # ── 4. imports in job_fiber_sync must name things that exist ───────────────
-@pytest.mark.parametrize("relpath,funcname", [
-    ("main.py", "job_fiber_sync"),
+@pytest.mark.parametrize("relpath,funcname,min_imports", [
+    ("main.py", "job_fiber_sync", 2),
     # The regex-twin: same three dead imports, registered live at
     # crawler_scheduler.py:112. Both call sites are checked so they cannot
     # drift apart again — fixing one and not the other is how this survived.
-    ("crawler_scheduler.py", "_run_infrastructure_sync"),
+    ("crawler_scheduler.py", "_run_infrastructure_sync", 2),
+    # ★ The THIRD call site, added 2026-09-02. This is the one the two daily
+    # crons actually POST — dchub-jobs.yml 01:00 and daily-infra-sync.yml
+    # 04:08 — and it was on none of these fences. It imported
+    # `run_permit_scan` from construction_permit_tracker, a name that has
+    # never existed there, and reported the resulting ImportError as
+    # {'status': 'not_available'} every day.
+    #
+    # Its floor is 1, not 2: the dead permits import was REMOVED rather than
+    # repaired (run_permit_scan has never existed anywhere), so this handler
+    # legitimately has one local import. The floor stays per-site so dropping
+    # it here cannot silently weaken the other two.
+    ("routes/jobs_routes.py", "job_infrastructure_sync", 1),
 ])
-def test_fiber_sync_imports_resolve_to_real_names(relpath, funcname):
+def test_fiber_sync_imports_resolve_to_real_names(relpath, funcname, min_imports):
     """Generic guard: every `from X import Y` in the fiber sync paths finds Y in X.
 
     This is the check that caught all THREE dead imports — including
@@ -238,17 +250,53 @@ def test_fiber_sync_imports_resolve_to_real_names(relpath, funcname):
                 f"{funcname} imports {alias.name!r} from {imp.module!r}, "
                 f"which does not define it — this raises ImportError on every "
                 f"run and gets swallowed into a success response")
-    assert checked >= 2, f"only verified {checked} imports; expected the fiber ones"
+    assert checked >= min_imports, (
+        f"{funcname}: only verified {checked} import(s), floor is {min_imports} — "
+        f"this fence must never pass by checking nothing")
 
 
-def test_job_fiber_sync_success_is_computed_not_asserted():
-    tree, _ = _parse("main.py")
-    fn = _func(tree, "job_fiber_sync")
-    src = ast.unparse(fn)
-    assert "'success': True" not in src and '"success": True' not in src, (
-        "job_fiber_sync hardcodes success=True again; it reported success for "
-        "months while two of its three steps raised ImportError every run")
-    assert "errors" in src, "job_fiber_sync no longer collects per-step errors"
+@pytest.mark.parametrize("relpath,funcname", [
+    ("main.py", "job_fiber_sync"),
+    # ★ 2026-09-02: the handler the crons actually call. It hardcoded
+    # `'success': True` and could not fail, publishing four green reports a
+    # day while fiber_routes grew by two rows in twelve days.
+    ("routes/jobs_routes.py", "job_infrastructure_sync"),
+])
+def test_job_sync_success_is_computed_not_asserted(relpath, funcname):
+    """`success` must be COMPUTED, never a literal True.
+
+    ★ AST, not substring (hardened 2026-09-02). This test used to scan
+    `ast.unparse(fn)` for the text "'success': True" — which also matches the
+    DOCSTRING of a handler that quotes the defect to explain it, so documenting
+    the bug made the fence fire on the fixed code. Reading the dict node looks
+    at what is returned and nothing else.
+    """
+    tree, _ = _parse(relpath)
+    fn = _func(tree, funcname)
+
+    literal_true = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if (isinstance(key, ast.Constant) and key.value == "success"
+                    and isinstance(value, ast.Constant) and value.value is True):
+                literal_true.append(node)
+    assert not literal_true, (
+        f"{funcname} returns a literal success=True; that is how a job reports "
+        f"success while its steps raise on every run")
+
+    # Anchored: the handler must actually publish a `success` key, or the check
+    # above passes because there is nothing to find.
+    # Either shape counts: a dict literal key, or `results['success'] = ...`.
+    publishes = [k for node in ast.walk(fn) if isinstance(node, ast.Dict)
+                 for k in node.keys
+                 if isinstance(k, ast.Constant) and k.value == "success"]
+    publishes += [n for n in ast.walk(fn)
+                  if isinstance(n, ast.Subscript)
+                  and isinstance(n.slice, ast.Constant) and n.slice.value == "success"]
+    assert publishes, f"{funcname} no longer publishes a success field at all"
+    assert "errors" in ast.unparse(fn), f"{funcname} no longer collects per-step errors"
 
 
 # ── 5. the market rotation actually rotates ────────────────────────────────
@@ -311,7 +359,11 @@ def test_fiber_route_discovery_does_not_hard_reset_market_index():
 
 
 # ── 6. the loader's own counter is never the ingest proof ──────────────────
-def test_fiber_sync_reports_a_measured_row_delta_not_just_the_counter():
+@pytest.mark.parametrize("relpath,funcname", [
+    ("main.py", "job_fiber_sync"),
+    ("routes/jobs_routes.py", "job_infrastructure_sync"),   # ★ 2026-09-02
+])
+def test_fiber_sync_reports_a_measured_row_delta_not_just_the_counter(relpath, funcname):
     """job_fiber_sync must COUNT(*) fiber_routes before/after and publish it.
 
     THE DEFECT, measured live 2026-08-07 against the merged #2320 fix: the job
@@ -326,15 +378,41 @@ def test_fiber_sync_reports_a_measured_row_delta_not_just_the_counter():
 
     A loader that reports phantom inserts is worse than a dead one.
     """
-    tree, _ = _parse("main.py")
-    fn = _func(tree, "job_fiber_sync")
-    src = ast.unparse(fn)
-    assert "COUNT(*) FROM fiber_routes" in src, (
-        "job_fiber_sync no longer measures fiber_routes directly — total_new "
-        "is the loaders' self-reported attempt count and was observed "
-        "overstating persisted rows by 321 to 0")
-    for field in ("rows_persisted", "fiber_rows_before", "fiber_rows_after"):
-        assert field in src, f"job_fiber_sync no longer publishes {field}"
-    assert "counter_unreliable" in src, (
-        "the discrepancy between total_new and the measured delta is no "
-        "longer surfaced; a phantom insert count would read as a real one")
+    tree, _ = _parse(relpath)
+    fn = _func(tree, funcname)
+
+    # ★ AST, not substring (hardened 2026-09-02). This block used to assert
+    # `"rows_persisted" in ast.unparse(fn)`. A handler that DOCUMENTS the
+    # fields it publishes satisfies that from its docstring alone — verified by
+    # mutation: renaming results['rows_persisted'] to results['ROWS_GONE'] left
+    # all 15 tests green, because the docstring still said the word. The fence
+    # now reads what the handler ASSIGNS.
+    # ★ STORE context only. Collecting every Subscript counts READS too, so
+    # renaming just the assignment (`results['rows_persisted'] = ...` ->
+    # `results['ROWS_GONE'] = ...`) left the name visible via the later
+    # `if results['rows_persisted'] == 0` and the mutation survived. Verified.
+    assigned = set()
+    for node in ast.walk(fn):
+        if (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
+                and isinstance(node.ctx, ast.Store)):
+            assigned.add(node.slice.value)
+        elif isinstance(node, ast.Dict):
+            for k in node.keys:
+                if isinstance(k, ast.Constant):
+                    assigned.add(k.value)
+
+    # The COUNT may live in a helper the handler calls rather than inline, so
+    # this one is allowed to look at the whole module — but with the comments
+    # and docstrings stripped, for the same reason as above.
+    module_code = ast.unparse(ast.parse(_parse(relpath)[1]))
+    module_code = "\n".join(l for l in module_code.splitlines() if "COUNT(*) FROM fiber_routes" in l)
+    assert module_code, (
+        f"{relpath} no longer measures fiber_routes with a real COUNT(*) — the "
+        f"loader's self-reported attempt count was observed overstating "
+        f"persisted rows by 321 to 0")
+
+    for field in ("rows_persisted", "fiber_rows_before", "fiber_rows_after",
+                  "counter_unreliable"):
+        assert field in assigned, (
+            f"{funcname} no longer ASSIGNS {field!r}. Naming it in a docstring "
+            f"is not publishing it.")
