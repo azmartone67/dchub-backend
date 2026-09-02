@@ -246,6 +246,76 @@ INTERNAL_PLATFORM_VALUES = (
 # a false inclusion (a slightly generous count we can still see and name).
 _AMBIGUOUS_NOT_EXCLUDED = ('smithery', 'glama', 'agent-toolscloud')
 
+# ★★ BULK HARVESTERS — counted, NAMED, and never folded into demand.
+#
+# A THIRD class, and neither of the two above. Not our own traffic (so not
+# INTERNAL_PLATFORM_VALUES) and not ambiguous (so the false-exclusion argument
+# that protects _AMBIGUOUS_NOT_EXCLUDED does not apply): each name below was
+# measured as ONE IP taking ONE tool at a fixed machine cadence while holding
+# NO api_key.
+#
+#   · datacolo    2,560 calls from 2 agents in a SINGLE day; loop-control
+#                 lane 6 named the same signature.
+#   · chain-hire  measured 2026-09-01. UA `chain-hire/1.0 (MCP client; doubao
+#                 2026)`, ONE IP (175.147.105.129 — CHINA UNICOM Liaoning
+#                 province, APNIC, no rDNS), ONE tool (`search`, 1,473 of
+#                 1,475 calls), a flat 100-132 calls/hour for 14 straight
+#                 hours (08-29 11:24Z → 08-30 00:59Z), then nothing. It
+#                 carried NO api_key at any point, and 1,410 of its calls were
+#                 served with status='anon_daily_cap' — the caller was told
+#                 1,410 times that it was past the free allowance of 30 and
+#                 kept going at the same cadence. Left unlabelled it was 68.1%
+#                 of the rolling-7d headline.
+#
+# ★ THEY ARE **NOT** REMOVED FROM is_real_external, AND THAT IS THE DESIGN.
+# is_real_external is a predicate on the mcp_calls_identity VIEW, evaluated at
+# query time over ALL history — so excluding a name there does not fix this
+# week, it silently RESTATES every week already published. The series ceiling
+# is routes/weekly_series.py _MAX_WEEKS (26), so a chart half a year deep
+# redraws under readers who were handed no marker that it had. The
+# net-of-top-caller decomposition (2026-08-24, r-net-of-top) answered the same
+# question the same way: publish the subtraction the share already implies,
+# from ONE query, rather than delete rows to make a number prettier.
+# Harvesters get the identical treatment — a named line and a net-of figure
+# BESIDE the headline, never a quiet deletion.
+#
+# ★ SINGLE-SOURCED HERE, not in routes/platform_attribution.py, which is where
+# this tuple first landed (2026-09-01). That module's classify_platform only
+# labels the admin artifact and the `kind` field on calls_by_platform_30d, so
+# `chain-hire` was named a harvester in one module and still 68.1% of the
+# PUBLIC headline hours later, because the headline reads this module. A
+# family lives here or it does not exist.
+#
+# None of these may match _AMBIGUOUS_NOT_EXCLUDED, and none may already be
+# caught by the internal/crawler families — a harvester that was ALREADY
+# outside is_real_external would make every net-of-harvester figure a no-op
+# that reads as a fix. tests/test_harvester_net_of.py probes both.
+HARVESTER_PLATFORMS = ("datacolo", "chain-hire")
+
+
+def harvester_predicate(col: str = "platform") -> str:
+    """TRUE when the write-time platform tag is a known BULK HARVESTER.
+
+    Reads the same `platform` column mcp_calls_identity already exposes — the
+    canonical view's OWN name-space, the one routes/platform_attribution
+    groups by, NOT PLATFORM_CASE's (see that module's name-space warning).
+    There is deliberately no `is_harvester` view column: adding one would put a
+    migration between this predicate and every surface that reads it, and a
+    half-applied view is a window in which some surfaces see a column the
+    others do not. This works against the LIVE view with no DDL.
+
+    ★ NOT part of real_calls_predicate(), and must never be added to it. A
+    harvester stays INSIDE is_real_external on purpose (see
+    HARVESTER_PLATFORMS). This predicate exists to SPLIT that population and
+    publish both halves — never to shrink it.
+
+    No %s placeholders: literal-only over trusted constants, so it is safe to
+    inline beside the LIKE forms in this module."""
+    p = f"COALESCE(LOWER(TRIM({col})), '')"
+    names = ",".join("'" + str(h).replace("'", "''") + "'"
+                     for h in sorted(HARVESTER_PLATFORMS))
+    return f"({p} IN ({names}))"
+
 # r-registry-crawlers family fragments (2026-07-28), single-sourced here since
 # 2026-07-30: external_platform_predicate() (LIKE form) AND
 # internal_tag_regex_predicate() (the bound-params-safe regex twin) both render
@@ -871,6 +941,68 @@ def canonical_top_caller_sql(days: int = 7, offset_days: int = 0) -> str:
         "         COUNT(*) FILTER (WHERE agent_id IS NOT NULL) - 1, 0) "
         "         AS callers_net_of_top "
         "FROM per"
+    )
+
+
+CANONICAL_NET_OF_HARVESTER_BASIS = (
+    "One query over mcp_calls_identity WHERE is_public_ip AND is_real_external "
+    "— the SAME table, window and exclusions as real_external_calls_7d — split "
+    "by mcp_calls_deloop.harvester_predicate() over the view's own `platform` "
+    "column. Harvesters are NOT excluded from is_real_external and no week is "
+    "restated: this is a DECOMPOSITION of the published headline, emitted "
+    "beside it, exactly as demand_net_of_top_caller_7d is. CALLS are additive "
+    "by construction — headline_calls == harvester_calls + calls — because "
+    "both come from complementary FILTERs on one scan. AGENTS ARE NOT "
+    "ADDITIVE and must never be summed: an agent_id with both harvester and "
+    "non-harvester rows is counted in BOTH agent figures, so "
+    "harvester_agents + agents can exceed headline_agents. A harvester here is "
+    "a NAMED tag measured as one IP / one tool / no api_key at machine "
+    "cadence, not a heuristic — see HARVESTER_PLATFORMS for the evidence per "
+    "name. IP-derived PROXY, same caveat as every agent figure: NAT "
+    "under-counts, rotating egress over-counts."
+)
+
+
+def canonical_harvester_split_sql(days: int = 7, offset_days: int = 0) -> str:
+    """THE one query that splits the published headline into harvester and
+    non-harvester halves (aliases: calls, harvester_calls, agents,
+    harvester_agents, calls_net_of_harvesters, agents_net_of_harvesters —
+    tuple and dict cursors both work).
+
+    ★ WHY ONE QUERY. On 2026-09-01 `chain-hire` was 1,473 of 2,163 rolling-7d
+    calls (68.1%) and was ALREADY classified `harvester` by
+    routes/platform_attribution.classify_platform — but that classification
+    reached only the admin artifact and a `kind` label, so every public
+    surface still carried it inside the headline with no way to net it out.
+    Answering "then what is the rest?" meant subtracting one payload field
+    from another BY HAND across two bases, which is the precise defect
+    r-basis-align fixed on 2026-08-05 and r-net-of-top fixed again on
+    2026-08-24. Emitting numerator and denominator from the SAME scan means
+    the identity cannot drift.
+
+    offset_days shifts the window BACK by that many days, matching
+    canonical_external_activity_sql and canonical_top_caller_sql, so the prior
+    period is measurable on exactly this basis."""
+    d = int(days)  # int() so the fragment stays literal-only (no bound params)
+    o = int(offset_days)
+    harv = harvester_predicate("platform")
+    if o:
+        window = (f"AND created_at >= now() - interval '{d + o} days' "
+                  f"AND created_at < now() - interval '{o} days' ")
+    else:
+        window = f"AND created_at >= now() - interval '{d} days' "
+    return (
+        "SELECT COUNT(*) AS calls, "
+        f"       COUNT(*) FILTER (WHERE {harv}) AS harvester_calls, "
+        f"       COUNT(*) FILTER (WHERE NOT {harv}) AS calls_net_of_harvesters, "
+        "       COUNT(DISTINCT agent_id) AS agents, "
+        f"       COUNT(DISTINCT agent_id) FILTER (WHERE {harv}) "
+        "         AS harvester_agents, "
+        f"       COUNT(DISTINCT agent_id) FILTER (WHERE NOT {harv}) "
+        "         AS agents_net_of_harvesters "
+        "FROM mcp_calls_identity "
+        "WHERE is_public_ip AND is_real_external "
+        + window.rstrip()
     )
 
 
