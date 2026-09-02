@@ -356,6 +356,7 @@ NOT_WATCHED = {
     #    workflow; verified against the live /api/v1/ops/deadman feed list, not
     #    inferred from the code that sends the beat.
     "agent-pay-shell-tick.yml": "already on the board as feed 'agent-pay-shell-daily' (self-beat)",
+    "bug-squash-nightly.yml": "already on the board as feed 'bug-squash-nightly' (self-beat; degraded when the frontend was not scanned — 2026-09-02)",
     "daily-infra-sync.yml": "already on the board as feed 'daily-infra-sync' (self-beat)",
     "eia-pricing-ingest.yml": "already on the board as feed 'eia-pricing-ingest' (self-beat)",
     "iso-lmp-ingest.yml": "already on the board as feed 'iso-lmp-ingest' (self-beat)",

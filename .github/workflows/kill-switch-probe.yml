@@ -27,7 +27,7 @@ name: kill-switch-probe — "config set" must equal "config in effect"
 
 on:
   schedule:
-    - cron: '29 */2 * * *'   # every 2h → the 3h-cadence feed is overdue after 6h of silence
+    - cron: '32 */2 * * *'   # every 2h (:32, staggered off content-enqueue-hourly's `29 */2`) → the 3h-cadence feed is overdue after 6h of silence
   workflow_dispatch: {}
 
 permissions:
