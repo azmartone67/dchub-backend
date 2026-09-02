@@ -147,12 +147,28 @@ def test_each_reason_is_paired_with_its_own_kind(reason_marker, expected_kind):
     )
 
 
-def test_overdue_still_means_any_reason_not_just_staleness():
-    """The watcher alarms on this boolean. Narrowing it stops the alarm."""
+def test_overdue_is_late_only_and_unhealthy_carries_every_reason():
+    """★2026-09-02 (D2) — this pin used to read `"overdue": bool(reasons)`
+    with the note "the watcher alarms on this boolean; narrowing it stops the
+    alarm". The boolean IS now narrowed (overdue = LATE only), and the alarm
+    moved with it: the record carries `unhealthy` = late OR red, and
+    tools/deadman/watch.py folds `unhealthy`, so a feed whose run FAILED still
+    alarms — it just no longer reads as late. Both halves are pinned here:
+    narrowing `overdue` without `unhealthy` (or without the watcher reading it)
+    would be exactly the silent-alarm-loss the old pin guarded against."""
     src = open(_IR, encoding="utf-8").read()
-    assert '"overdue": bool(reasons),' in src, (
-        "`overdue` no longer derives from the full reasons list — a feed whose "
-        "run FAILED would stop alarming while reading as healthy"
+    assert '"overdue": is_late,' in src, (
+        "`overdue` no longer means LATE only — a shell that ran on time and beat "
+        "lanes_failing would sit on the overdue list again (the D2 cascade)"
+    )
+    assert '"unhealthy": is_late or is_red,' in src, (
+        "`unhealthy` no longer carries every reason — a feed whose run FAILED "
+        "would stop alarming while reading as healthy"
+    )
+    watch = open(os.path.join(_ROOT, "tools", "deadman", "watch.py"), encoding="utf-8").read()
+    assert 'r.get("unhealthy", r.get("overdue"))' in watch, (
+        "tools/deadman/watch.py no longer folds `unhealthy` — the off-worker "
+        "alarm would fire on LATE feeds only and miss every failed run"
     )
 
 

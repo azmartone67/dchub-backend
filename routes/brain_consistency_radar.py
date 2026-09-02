@@ -8857,6 +8857,25 @@ _INTENTIONAL_STALE_CRONS: set[str] = {
 }
 
 
+def _declared_interval_s(job_name: str):
+    """The interval a job DECLARES (routes/jobs_routes._JOB_INTERVALS) — the
+    fallback when its cron_last_run row carries no expected_interval_s.
+
+    ★2026-09-02 (D11): the column is only stamped by _record_cron_run on the
+    job's NEXT run, so a weekly arm (gas-refresh / site-baseline, dchub-jobs
+    `30 6 * * 0`) sat at NULL and was judged against the 30h default — filed
+    cron_silently_dead six days out of seven. Reading the declared map here
+    makes the threshold right before the next Sunday stamps it. None (no
+    declaration, or import failure) keeps the 30h default: fail-closed, the
+    detector over-reports rather than certifies."""
+    try:
+        from routes.jobs_routes import _JOB_INTERVALS
+        v = _JOB_INTERVALS.get(job_name)
+        return int(v) if v else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def check_cron_freshness() -> list[dict]:
     """Phase QQQ (2026-05-17) — flag crons that haven't run when they
     were supposed to.
@@ -8907,12 +8926,19 @@ def check_cron_freshness() -> list[dict]:
                 job_name, last_start, expected_s, run_count, seconds_since = row
                 if seconds_since is None or job_name in _INTENTIONAL_STALE_CRONS:
                     continue
+                declared = None
+                if not expected_s:
+                    # ★D11: NULL column -> the interval the job declares.
+                    declared = _declared_interval_s(job_name)
+                    expected_s = declared
                 threshold = (expected_s * 2) if (expected_s and expected_s > 0) else _DEFAULT_STALE_S
                 # Flag when the job is past its stale threshold. The 2× buffer
                 # (or generous default) prevents flapping on natural jitter.
                 if seconds_since > threshold:
                     hours_late = (seconds_since - threshold) / 3600.0
                     exp_txt = (f"expected every {expected_s}s"
+                               + (" (declared in jobs_routes._JOB_INTERVALS)"
+                                  if declared else "")
                                if expected_s else "no declared interval")
                     findings.append({
                         "issue":  "cron_silently_dead",

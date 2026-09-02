@@ -564,7 +564,10 @@ def _beat_ledger(note: str, failing: bool = False) -> None:
         logger.debug("[context-integrity] ledger beat failed: %s", e)
 
 
-def _run_tick() -> dict:
+def _run_tick(beat: bool = True) -> dict:
+    # ★2026-09-02 (D5): beat=False on every GET. A dashboard view — with its
+    # auto-refresh — must never stamp the daily beat, or a browser tab keeps a
+    # dead cron "alive" on /api/v1/ops/deadman. Only the POST master-tick beats.
     lanes = [
         {"id": "envelope", "name": "1 · probe envelope (failed vs empty)",
          "checks": _safe_lane(_lane_envelope)},
@@ -586,7 +589,8 @@ def _run_tick() -> dict:
         "summary": summary,
         "any_fail": any(ln["verdict"] == "FAIL" for ln in lanes),
     }
-    _beat_ledger("lanes: " + summary, failing=out["any_fail"])
+    if beat:
+        _beat_ledger("lanes: " + summary, failing=out["any_fail"])
     return out
 
 
@@ -600,7 +604,7 @@ def master_tick():
         return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden — X-Admin-Key or ?admin_key="), 403
-    return jsonify(_run_tick())
+    return jsonify(_run_tick(beat=(request.method == "POST")))
 
 
 _MARK = {True: ("✓", "#0a7"), False: ("✗", "#c22"), None: ("?", "#b80")}
@@ -617,7 +621,7 @@ def dashboard():
     if not _admin_ok():
         return Response("forbidden — X-Admin-Key or ?admin_key=", status=403,
                         mimetype="text/plain")
-    t = _run_tick()
+    t = _run_tick(beat=False)
     rows = []
     for ln in t["lanes"]:
         rows.append('<h2>%s <small>%s</small></h2><table>'
@@ -637,7 +641,7 @@ def dashboard():
         "<title>Context Integrity — shell #63</title>"
         "<style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;"
         "margin:2rem;max-width:1100px}table{border-collapse:collapse;"
-        "width:100%;margin:.5rem 0 1.5rem}td{border-top:1px solid #e5e5e5;"
+        "width:100%%;margin:.5rem 0 1.5rem}td{border-top:1px solid #e5e5e5;"
         "padding:.4rem .6rem;vertical-align:top}h2{margin:1.4rem 0 .2rem;"
         "font-size:15px}small{font-weight:400;color:#666}"
         "code{background:#f5f5f5;padding:.1rem .3rem}</style>"

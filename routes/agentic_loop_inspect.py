@@ -1012,6 +1012,8 @@ def metrics() -> dict:
         "recurrence_30d": _rate_block(c30),
         "recurrence_7d": _rate_block(c7),
         "deadman_overdue": dm["data"].get("overdue_count") if _readable(dm) else None,
+        # ★2026-09-02 (D2): overdue = LATE only; red = ran on time, beat a fault.
+        "deadman_red": dm["data"].get("red_count") if _readable(dm) else None,
         "deadman_tracked": dm["data"].get("tracked") if _readable(dm) else None,
         "shell": shell or {"available": False, "recurrence_delta_7d": None},
         "sources": {name: _source_status(r)

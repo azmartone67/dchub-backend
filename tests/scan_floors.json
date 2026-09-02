@@ -163,6 +163,9 @@
     "test_shell_beat_reports_red.py": {
       "glob": 60
     },
+    "test_shell_get_does_not_beat.py": {
+      "glob": 60
+    },
     "test_shell_killswitch_never_5xx.py": {
       "pglob": 60
     },
