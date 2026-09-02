@@ -604,8 +604,17 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
         try: c.close()
         except Exception: pass
         # ★ AFTER the connection closes, and inside `finally` so it still fires
-        # on the several `return`s inside the try body above — the block after
-        # the finally (where the CRM capture sits) never sees those paths.
+        # on the several `return`s inside the try body above (the reuse and
+        # probe paths at the `return out`s) — code placed AFTER the finally
+        # never sees those.
+        #
+        # ★ AND THAT IS CORRECT FOR THE CRM CAPTURE BELOW, WHICH IS NOT A BUG.
+        # An earlier note here implied it was. Checked 2026-09-02: the new-key
+        # INSERT is the LAST statement in the try body and its only `return` is
+        # the `mint_failed` error, so a successful FIRST MINT falls through to
+        # the capture — precisely its documented scope, "first mint (not
+        # reuse)". The paths it misses are the reuse ones it excludes by design.
+        # The mirror differs because it must fire on reuse binds too.
         if _mirror_after:
             _mirror_trial_to_mcp_dev_keys(*_mirror_after)
 
