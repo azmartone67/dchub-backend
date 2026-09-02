@@ -342,6 +342,64 @@ def admin_ingest():
     return jsonify(result), (200 if result.get("success") else 502)
 
 
+def _coverage_of(raw, dim: str):
+    """(oldest, newest, rows_stored) for one grain — the table-wide extent,
+    NOT the window, so a caller can tell 'not ingested' from 'no traffic'."""
+    raw.execute(
+        "SELECT MIN(date), MAX(date), COUNT(*) "
+        "FROM gsc_daily_performance WHERE dimension = %s", (dim,))
+    return raw.fetchone() or (None, None, 0)
+
+
+def _site_rows(raw, days: int) -> list[dict]:
+    """The site grain, newest first, over the trailing `days`."""
+    raw.execute(
+        "SELECT date, clicks, impressions, ctr, position "
+        "FROM gsc_daily_performance "
+        " WHERE dimension = 'site' AND date >= CURRENT_DATE - %s "
+        " ORDER BY date DESC", (days,))
+    return [{"date": str(r[0]), "clicks": r[1], "impressions": r[2],
+             "ctr": round(float(r[3] or 0), 4),
+             "position": (round(float(r[4]), 2) if r[4] is not None else None)}
+            for r in raw.fetchall()]
+
+
+def site_series(days: int = 14) -> dict:
+    """The site grain, IN-PROCESS — for boards and the brain, never via HTTP.
+
+    ★ 2026-09-02. routes/surface_integrity_master_shell's SEO lane was a
+    hardcoded UNMEASURED/FAIL string ("rank/impression truth lives in Google
+    Search Console ... behind interactive auth unavailable to this process")
+    while this module had been ingesting the service-account series daily:
+    247 site-day rows, newest 2026-08-29, at the read route on 2026-09-02
+    00:24Z. A lane that reads its own service over HTTP through the edge
+    grades a cache and a timeout budget; reading the table grades the series.
+
+    Same two queries as the read route's site branch — _coverage_of and
+    _site_rows are shared, so the board and the API cannot drift. Raises on a
+    DB failure: the caller decides what an unreadable series means (the shell
+    renders it '?', never PASS).
+    """
+    days = max(1, min(int(days), 480))
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        raw = getattr(c, "_cur", c)
+        oldest, newest, total = _coverage_of(raw, "site")
+        return {
+            "rows": _site_rows(raw, days),
+            "window_days": days,
+            "coverage": {"oldest": str(oldest) if oldest else None,
+                         "newest": str(newest) if newest else None,
+                         "rows_stored": int(total or 0)},
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @gsc_perf_bp.route("/api/v1/seo/performance", methods=["GET"])
 def read_performance():
     """The series, for dashboards, the brain, and anyone asking whether SEO is
@@ -372,21 +430,10 @@ def read_performance():
         c = conn.cursor()
         raw = getattr(c, "_cur", c)
 
-        raw.execute(
-            "SELECT MIN(date), MAX(date), COUNT(*) "
-            "FROM gsc_daily_performance WHERE dimension = %s", (dim,))
-        oldest, newest, total = raw.fetchone() or (None, None, 0)
+        oldest, newest, total = _coverage_of(raw, dim)
 
         if dim == "site":
-            raw.execute(
-                "SELECT date, clicks, impressions, ctr, position "
-                "FROM gsc_daily_performance "
-                " WHERE dimension = 'site' AND date >= CURRENT_DATE - %s "
-                " ORDER BY date DESC", (days,))
-            rows = [{"date": str(r[0]), "clicks": r[1], "impressions": r[2],
-                     "ctr": round(float(r[3] or 0), 4),
-                     "position": (round(float(r[4]), 2) if r[4] is not None else None)}
-                    for r in raw.fetchall()]
+            rows = _site_rows(raw, days)
         else:
             # Aggregate the window so a caller gets "top queries this month",
             # not one row per query per day they then have to sum themselves.
