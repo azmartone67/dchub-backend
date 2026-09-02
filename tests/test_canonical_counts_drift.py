@@ -931,6 +931,12 @@ def test_agent_code_surfaces_free_of_stale_counts():
     canonical_tool_count_seen = False
     for rel, i, line in _iter_surface_lines(AGENT_CODE_SURFACES):
         low = line.lower()
+        if "{canon_tools} tools" in line:
+            # ★2026-09-02: the last hand-typed "83 tools" on a served surface
+            # (llms.txt) became a canon placeholder. A DERIVED count is what
+            # this fence always wanted; it still proves a surface states the
+            # count at all, so the vacuity check below has something to hold.
+            canonical_tool_count_seen = True
         for n in _stated_tool_counts(line):
             if n == CANONICAL["tools"]:
                 canonical_tool_count_seen = True
@@ -3219,7 +3225,6 @@ KNOWN_STALE_COUNT_DEBT = {
     # canonical_stats.deals_phrase() or name no number at all.
     # ★This test failing is how the drop was FOUND — it fails when the
     # ledger names debt that no longer exists, which is the good direction.
-    'ai_discovery_routes.py': {'tool_count_literal'},
     'ai_outreach_agent.py': {'tool_count_literal'},
     'canonical_stats.py': {'facilities_bare_int'},
     'content_publisher.py': {'deals_stale_floor'},

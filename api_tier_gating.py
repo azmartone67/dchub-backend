@@ -186,7 +186,7 @@ PLAN_INFO = {
         'price_monthly': 0,
         'price_annual': 0,
         'rate_limit': 10,
-        'tagline': 'Headline stats, news, and AI discovery (10 calls/day)',
+        'tagline': f"Headline stats, news, and AI discovery ({tier_registry.TIER_LIMITS['free']['rate_limit']:,} calls/day)",
         'show_in_gate': True,
         'features': {
             'headline_stats': True,
@@ -213,7 +213,7 @@ PLAN_INFO = {
         'price_monthly': 49,
         'price_annual': 390,
         'rate_limit': 1000,
-        'tagline': 'Full facility DB + M&A + pipeline + energy (1,000 calls/day)',
+        'tagline': f"Full facility DB + M&A + pipeline + energy ({tier_registry.TIER_LIMITS['developer']['rate_limit']:,} calls/day)",
         'show_in_gate': True,
         'features': {
             'headline_stats': True,
@@ -240,7 +240,7 @@ PLAN_INFO = {
         'price_monthly': 299,   # audit #9: was 199 — canonical is tier_registry PRICES['pro']=299 (r-reprice 2026-06-19)
         'price_annual': 2392,   # preserves the prior ~8x annual ratio at the new $299 anchor
         'rate_limit': 5000,     # audit #9 follow-up: was 10000 — enforced limit is tier_registry TIER_LIMITS['pro']['rate_limit']=5000; no public surface sells 10k (pricing.html quotes the 2,000/day MCP lane)
-        'tagline': 'Developer + market compare + PDF reports (5,000 calls/day)',
+        'tagline': f"Developer + market compare + PDF reports ({tier_registry.TIER_LIMITS['pro']['rate_limit']:,} calls/day)",
         'show_in_gate': True,
         'features': {
             'headline_stats': True,
@@ -267,7 +267,7 @@ PLAN_INFO = {
         'price_monthly': 699,
         'price_annual': 5990,
         'rate_limit': 100000,
-        'tagline': 'Pro + AI Brain + grid monitoring + land/power (100,000 calls/day)',
+        'tagline': f"Pro + AI Brain + grid monitoring + land/power ({tier_registry.TIER_LIMITS['enterprise']['rate_limit']:,} calls/day)",
         'show_in_gate': True,
         'features': {
             'headline_stats': True,
@@ -1247,13 +1247,28 @@ def build_record_cap_error(user_key, tier, records_used, cap):
     """Build a standardized 429 error response for record cap exceeded."""
     from flask import jsonify
     
-    upgrade_msg = {
-        'anon': 'Sign up free at dchub.cloud to get 50 records/day.',
-        'free': 'Upgrade to Developer ($49/mo) for 500 records/day.',
-        'founding': 'Upgrade to Developer ($49/mo) for 500 records/day.',
-        'developer': 'Upgrade to Pro ($199/mo) for 5,000 records/day.',
-        'pro': 'Contact us for Enterprise access with unlimited records.',
-    }
+    # ★2026-09-02: every cap and price here is a registry read. The literal
+    # dict it replaces said "Pro ($199/mo)" — a price retired 2026-06-19 —
+    # and hand-typed record caps that TIER_LIMITS already owns.
+    try:
+        import tier_registry as _tr
+
+        def _rc(t):
+            return int(_tr.TIER_LIMITS[t]['record_cap'])
+
+        def _pr(t):
+            return int(_tr.price(t) or 0)
+
+        _dev = f"Upgrade to Developer (${_pr('developer')}/mo) for {_rc('developer'):,} records/day."
+        upgrade_msg = {
+            'anon': f"Sign up free at dchub.cloud to get {_rc('free'):,} records/day.",
+            'free': _dev,
+            'founding': _dev,
+            'developer': f"Upgrade to Pro (${_pr('pro')}/mo) for {_rc('pro'):,} records/day.",
+            'pro': 'Contact us for Enterprise access with unlimited records.',
+        }
+    except Exception:
+        upgrade_msg = {}
     
     return jsonify({
         'success': False,

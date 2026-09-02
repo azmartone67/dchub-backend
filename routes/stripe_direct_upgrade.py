@@ -32,9 +32,17 @@ from routes._stripe_links import (STRIPE_LINKS, TOOL_TIER_MAP, TIER_PRICE_LABEL,
 
 
 def _price_label(tier):
-    return TIER_PRICE_LABEL.get(tier) or {
-        "developer": "$49/mo", "pro": "$299/mo", "starter": "$9/mo",
-        "enterprise": "Custom"}.get(tier, "—")
+    """The published label for `tier`, from the one canon in _stripe_links.
+
+    ★2026-09-02 merge: this arrived with a hand-typed fallback dict
+    ({developer: $49/mo, pro: $299/mo, starter: $9/mo, enterprise: Custom}).
+    Every one of those four keys is already in TIER_PRICE_LABEL with the same
+    value, so the fallback was unreachable — and it was a SECOND copy of the
+    prices, which is the exact defect this PR exists to remove (the scan in
+    tests/test_agent_surfaces_one_canon.py flags it). One canon, or the two
+    drift apart the next time a price moves.
+    """
+    return TIER_PRICE_LABEL.get(tier) or "—"
 
 
 def _build_url(tier, tool, ref, surface=None, sid=None):
@@ -110,6 +118,36 @@ def upgrade_redirect():
     return redirect(url, code=302)
 
 
+def _default_paid_tier() -> str:
+    """The tier a paywall checkout lands on when nothing chose one.
+
+    ★2026-09-02 (QA-sweep pricing 3): the only plan with completed web-direct
+    checkouts in the 8-week licences read is Founding Member ($99) — and
+    agents never saw it: this endpoint, unlock_more_data and mcp_facts all
+    omitted it. While routes/founding_customers.founding_status() says the
+    program is open, an unchosen "developer" becomes founding; when the seats
+    are gone it is developer again.
+
+    ★MERGE NOTE 2026-09-02: this was written when resolve_tier() fell through
+    to "developer". It no longer does — the relay finding moved the
+    fall-through to PACK_TIER ("metered", the $10 one-time pack), because a
+    caller we cannot classify should be offered the cheapest non-recurring
+    thing, not a $49/mo plan. That rule is UNTOUCHED here: "metered" is not
+    "developer", so an unclassified caller never reaches this helper. What is
+    left is the case this was actually for — a TOOL_TIER_MAP row that names
+    "developer" (get_dchub_recommendation and its neighbours) with no explicit
+    ?tier=. An explicit ?tier= is never overridden, and a tool mapped to "pro"
+    stays pro.
+    """
+    try:
+        from routes.founding_customers import founding_status
+        if (founding_status() or {}).get("program_active") and "founding" in STRIPE_LINKS:
+            return "founding"
+    except Exception:
+        pass
+    return "developer"
+
+
 @stripe_direct_bp.route("/api/v1/paywall/checkout", methods=["GET"])
 def paywall_checkout_json():
     """JSON variant so MCP paywall responses can embed a one-click link
@@ -119,6 +157,8 @@ def paywall_checkout_json():
     ref     = (request.args.get("ref")  or "mcp-paywall").strip()
     surface = (request.args.get("surface") or "").strip()  # per-surface-attr
     chosen  = _resolve_tier(tool, tier)
+    if not tier and chosen == "developer":
+        chosen = _default_paid_tier()      # founding while open — see helper
     # partner-attr (2026-08-07): same cookie fallback as /pricing/upgrade, so
     # the JSON paywall link an agent embeds carries partner attribution too.
     from routes._attribution_ref import PARTNER_COOKIE, resolve_attribution

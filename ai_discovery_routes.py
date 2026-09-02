@@ -34,6 +34,59 @@ except Exception:  # pragma: no cover - canon must never break discovery routes
         return _re.sub(r"\s*\{canon_[a-z_]+\}\s*", " ", s) if s else s
 
 
+_PAID_HEADING_TTL_S = 900          # 15 min — llms.txt is crawler-hot
+_paid_heading_cache = {"at": 0.0, "val": None}
+
+
+def _founding_open_cached() -> bool:
+    """Is the Founding Member program still open? Cached 15 min.
+
+    Delegates to founding_status(), the ONE source of truth both /pricing
+    surfaces read, so llms.txt can never contradict the seats meter (that
+    function fails OPEN on a DB outage by design — an outage must not read as
+    "sold out" on a money surface, and this heading follows it). Only an
+    import/raise here renders the standing Developer price alone.
+    """
+    now = time.time()
+    if _paid_heading_cache["val"] is not None and \
+            now - _paid_heading_cache["at"] < _PAID_HEADING_TTL_S:
+        return bool(_paid_heading_cache["val"])
+    try:
+        from routes.founding_customers import founding_status
+        val = bool((founding_status() or {}).get("program_active"))
+    except Exception:
+        val = False
+    _paid_heading_cache["val"] = val
+    _paid_heading_cache["at"] = now
+    return val
+
+
+def _llms_paid_heading() -> str:
+    """The llms.txt paid-API heading, rendered from the pricing canon.
+
+    ★2026-09-02: was the literal "## Pro API (Key Required — $49/mo)" — a
+    price that is neither Pro's nor the plan that actually sells (Founding
+    Member, the only SKU with completed web-direct checkouts in the 8-week
+    licences read). Every dollar figure comes from tier_registry.price();
+    the founding line is present only while the program is open. A registry
+    read failure yields a price-free heading — a missing number is visible
+    where a wrong one is not (same contract as canon_text).
+    """
+    try:
+        import tier_registry as _tr
+        dev = _tr.price("developer")
+        if not dev:
+            return "## Paid API (Key Required)"
+        if _founding_open_cached():
+            fnd = _tr.price("founding")
+            if fnd:
+                return ("## Paid API (Key Required — Founding Member $%d/mo while "
+                        "seats remain, then Developer $%d/mo)" % (int(fnd), int(dev)))
+        return "## Paid API (Key Required — Developer $%d/mo)" % int(dev)
+    except Exception:
+        return "## Paid API (Key Required)"
+
+
 def _canon_int(placeholder, default):
     """Resolve a {canon_*} placeholder to an INT for the numeric claim blocks.
 
@@ -108,11 +161,17 @@ def register_discovery_routes(app):
         # 2026-07-01: info.version from canon (was hand-typed 2.1.0). This is the
         # ROOT /openapi.json — backend-served (the CF worker just proxies it), so
         # no dchubapiproxy edit needed.
+        # ★2026-09-02: the served version, not the cold-start pin — see
+        # routes/openapi_autogen.py for the 2.12.1-vs-2.12.3 drift this ends.
         try:
-            from ai_surface_canon import PINNED as _C
-            _ver = _C["version"]
+            from ai_surface_canon import resolve_server_version_cached as _rsv
+            _ver = _rsv()
         except Exception:
-            _ver = "2.4.3"
+            try:
+                from ai_surface_canon import PINNED as _C
+                _ver = _C["version"]
+            except Exception:
+                _ver = "2.4.3"
         spec = {
             "openapi": "3.1.0",
             "info": {
@@ -762,7 +821,7 @@ All endpoints below require NO API key. Just GET the URL. CORS enabled for all o
 - [Markets List](https://dchub.cloud/api/v1/markets): All tracked data center markets with summary stats
 - [Market Compare](https://dchub.cloud/api/v1/markets/compare?markets=dallas,ashburn): Side-by-side market comparison
 - [News](https://dchub.cloud/api/news?limit=10): Latest industry news from 40+ sources
-- [M&A Transactions](https://dchub.cloud/api/v1/transactions?limit=10): Recent acquisitions, investments, JVs
+- [M&A Transactions](https://dchub.cloud/api/v1/transactions?limit=10): {canon_deals} tracked M&A deals — recent acquisitions, investments, JVs
 - [Construction Pipeline](https://dchub.cloud/api/v1/pipeline): Capacity data — data centers under construction or announced
 - [Site Score](https://dchub.cloud/api/site-score?lat=33.4484&lon=-112.074&state=AZ): Site suitability rating (0-100)
 - [Grid Fuel Mix](https://dchub.cloud/api/grid/fuel-mix?iso=ERCOT): Real-time power grid energy mix
@@ -802,8 +861,8 @@ to preview a plan, not to execute one. Go direct to a single tool for a single-c
 The tools below are what execute_plan orchestrates.
 
 ## MCP Tools — what each RETURNS (so an agent can pick without a trial call)
-83 tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
-catalog — "11 tools", "53 tools" and "60 tools" are previously advertised, now-retired counts). Site risk now has BOTH
+{canon_tools} tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
+catalog). Site risk now has BOTH
 shapes: analyze_site is the one-call composite read (power/grid + fiber + water + disaster + climate
 + tax + verdict), AND the standalone tools get_composite_site_score (blended BUILD/CAUTION/AVOID with
 coverage map), get_disaster_risk (FEMA NRI), get_climate_intel (USGS seismic + NOAA normals), and
@@ -832,7 +891,7 @@ get_facility_risk_delta (temporal market-risk change from daily DCPI snapshots) 
 - Standing Intents (POST https://dchub.cloud/api/v1/agentic/intents): Register standing queries with HMAC-signed webhook pushes on change. Kinds: new_deal_in_market, news_keyword, permitting_change.
 - [REST/MCP parity map](https://dchub.cloud/api/v1/agent/tools-manifest): every MCP tool's REST equivalent + the rest_native endpoints above
 
-## Pro API (Key Required — $49/mo)
+""" + _llms_paid_heading() + """
 - [Facility Detail](https://dchub.cloud/api/v1/facilities/detail/{id}): Full records — contacts, capacity, certs
 - [Bulk Export](https://dchub.cloud/api/v1/facilities/export?format=csv): CSV/JSON export up to 5,000 records
 - [AI Facilities](https://dchub.cloud/api/ai/query?type=facilities): AI-optimized facility data

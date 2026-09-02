@@ -181,6 +181,28 @@ def _db():
 # contract the self-traffic exclusions ship under. A silent skip here would be
 # indistinguishable from the `drift_detected = FALSE` blind spot in the module
 # docstring above.
+# ★2026-09-02 (QA-sweep F4): listings recorded dead IN CODE, dated, so the
+# lane stops paging on URLs that were never listings. The DB table (the
+# mark-defunct endpoint) wins on a shared key. Both probed OUT-IN 2026-09-02
+# before being recorded here; re-probe before removing an entry.
+CODE_DEFUNCT = {
+    "cline": ("2026-09-02: tracked URL docs.cline.bot/mcp/mcp-marketplace#dchub "
+              "was a docs anchor, not a listing — it now 200-redirects to "
+              "/mcp/mcp-overview with 0 'dchub' mentions, and cline.bot/"
+              "mcp-marketplace has none either. Submissions cline/"
+              "mcp-marketplace#1668 and #1823 are still open; re-track when one "
+              "is accepted."),
+    "klavis_ai": ("2026-09-02: klavis.ai/mcp-servers/dchub is 404 (never "
+                  "listed; the submitter is a manual review queue). Re-track "
+                  "when a listing URL exists."),
+}
+
+
+def all_defunct() -> dict:
+    """CODE_DEFUNCT overlaid by the DB table — one map for both call sites."""
+    return {**CODE_DEFUNCT, **defunct_registries()}
+
+
 def defunct_registries() -> dict:
     """{registry_name: reason} recorded dead in `mcp_registry_defunct`.
 
@@ -349,7 +371,7 @@ def run_scan() -> dict:
     except Exception:  # noqa: BLE001
         canon_tools = None
     results = []
-    dead = defunct_registries()
+    dead = all_defunct()
     skipped: list = []
     try:
         with c.cursor() as cur:
@@ -424,7 +446,7 @@ def read_state() -> dict:
             c.close()
         except Exception:
             pass
-    dead = defunct_registries()
+    dead = all_defunct()
     listings, counts = [], {}
     broken, stale_unverified, excluded = [], [], []
     for name, verdict, reason, checked, ok_at, days in rows:

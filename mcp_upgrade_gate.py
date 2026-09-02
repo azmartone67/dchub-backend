@@ -31,7 +31,59 @@ PAID_ONLY_TOOLS = {
     "get_fiber_intel",
 }
 
-FREE_DAILY_LIMIT = int(os.environ.get("MCP_FREE_DAILY_LIMIT", "100"))
+
+
+def _registry_free_daily() -> int:
+    """The enforced free cap, from the tier registry — never a literal here.
+
+    ★2026-09-02: the default was "100", one of FOUR free-cap values live at
+    once (5 / 10 / 100 / 1,000 / 10,000 across surfaces — QA-sweep pricing 6)
+    while every enforcement lane agrees on TIER_LIMITS['free'] = 10. The env
+    var still overrides for an experiment; the DEFAULT is the registry.
+    """
+    try:
+        import tier_registry
+        n = tier_registry.calls_per_day("free")
+        if n:
+            return int(n)
+    except Exception:
+        pass
+    try:
+        from ai_surface_canon import PINNED
+        return int(PINNED["free_tier_calls_per_day"])
+    except Exception:
+        return 10
+
+
+FREE_DAILY_LIMIT = int(os.environ.get("MCP_FREE_DAILY_LIMIT") or _registry_free_daily())
+
+
+def _reg_calls(tier: str):
+    """calls/day for `tier` from the registry ("" when unreadable — a missing
+    number is visible in the paywall copy where a wrong one is not)."""
+    try:
+        import tier_registry
+        n = tier_registry.calls_per_day(tier)
+        return f"{int(n):,}" if n else ""
+    except Exception:
+        return ""
+
+
+def _reg_price(tier: str):
+    try:
+        import tier_registry
+        p = tier_registry.price(tier)
+        return int(p) if p else ""
+    except Exception:
+        return ""
+
+
+def _reg_link(tier: str):
+    try:
+        import tier_registry
+        return tier_registry._stripe_link(tier)
+    except Exception:
+        return None
 UPGRADE_URL      = os.environ.get("DCHUB_UPGRADE_URL", "https://dchub.cloud/pricing")
 SIGNUP_URL       = os.environ.get("DCHUB_SIGNUP_URL",  "https://dchub.cloud/ai")
 
@@ -304,7 +356,7 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
         f"🤖 **AI agents — unlock this yourself in one API call (no browser, no email):**\n"
         f"`POST https://dchub.cloud/api/v1/keys/claim` with body "
         f"`{{\"client_name\": \"<your agent>\"}}` → returns a free dev key instantly. "
-        f"Then retry `{tool_name}` with header `X-API-Key: <key>`. Free tier: 10 calls/day.\n\n"
+        f"Then retry `{tool_name}` with header `X-API-Key: <key>`. Free tier: {FREE_DAILY_LIMIT} calls/day.\n\n"
 
         # r32-paywall (2026-05-20): added the DIRECT Stripe checkout
         # link for the Developer tier ($49/mo). Old paywall only had
@@ -319,9 +371,9 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
         f"\n\n"
         f"FREE unlock (email only, no card, 60 seconds):\n"
         f"  → {_redeem_url}\n"
-        f"  Unlocks 50 facility lookups + 7 ISOs grid + fiber intel + M&A deals.\n\n"
-        f"DIRECT upgrade (Developer $49/mo, 500 per day):\n"
-        f"  → https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c\n\n"
+        f"  Unlocks {_reg_calls('identified')} calls/day + 7 ISOs grid + fiber intel + M&A deals.\n\n"
+        f"DIRECT upgrade (Developer ${_reg_price('developer')}/mo, {_reg_calls('developer')} per day):\n"
+        f"  → {_reg_link('developer') or 'https://dchub.cloud/pricing'}\n\n"
         f"Compare plans: {UPGRADE_URL}"
         )
         # r32-conv-2: pass api_key so fire_upgrade_signal can resolve
