@@ -154,6 +154,26 @@ def ingest_gas_pipelines():
     if dry:
         return jsonify(ok=True, dry_run=True, fetched=len(rows), sample=rows[:3])
 
+    # ★ REFUSE AN EMPTY FULL-REPLACE (2026-09-02). Below this point the write is
+    # DELETE-then-INSERT in one transaction. With rows == [] the DELETE still
+    # runs, nothing is inserted, and the endpoint returns ok=true — so a single
+    # upstream response that parses to zero features silently empties
+    # gas_pipelines (32,851 rows) and reports success.
+    #
+    # Every way in reaches this line with an empty list and no error of its own:
+    # a POSTed {"rows": []}, a body whose row coercion dropped everything, or a
+    # server-side _fetch of an ArcGIS payload with no `features` key — ArcGIS
+    # signals failure as an HTTP 200 carrying an `error` object, which
+    # _fetch reads as zero features rather than raising.
+    #
+    # routes/transmission_ingest.py has had this guard since it was written;
+    # this endpoint was copied from it without it. A feed returning nothing is a
+    # broken feed, and the correct response to a broken feed is to keep the last
+    # good data.
+    if not rows:
+        return jsonify(ok=False, fetched=0,
+                       error="no rows to ingest (refused empty full-replace)"), 400
+
     inserted = 0
     try:
         with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:

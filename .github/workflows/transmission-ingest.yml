@@ -45,7 +45,13 @@ jobs:
       - name: Fetch EIA transmission lines + ingest
         run: |
           set -uo pipefail
+          # ★ 2026-09-02: was `::warning ... exit 0`, i.e. a deleted or rotated
+          # DCHUB_ADMIN_KEY turned the weekly transmission refresh into a green
+          # no-op. Same fix, same reasoning, as gas-pipeline-ingest.yml
+          # (2026-08-08, audit SH52-120): a red run is cheap and honest, and the
+          # ingest is an idempotent full-replace so a retry after a fix is safe.
           if [ -z "${DCHUB_ADMIN_KEY:-}" ]; then
-            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
+            echo "::error::DCHUB_ADMIN_KEY not set — transmission ingest cannot run; failing loudly instead of a silent green no-op"
+            exit 1
           fi
           python tools/infra_fetch.py transmission-lines "${CAP}"

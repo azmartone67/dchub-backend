@@ -44,7 +44,10 @@ jobs:
       - name: Fetch EIA power plants + ingest
         run: |
           set -uo pipefail
+          # ★ 2026-09-02: see gas-pipeline-ingest.yml (2026-08-08, SH52-120).
+          # A missing secret must not read as a completed refresh.
           if [ -z "${DCHUB_ADMIN_KEY:-}" ]; then
-            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
+            echo "::error::DCHUB_ADMIN_KEY not set — power-plants ingest cannot run; failing loudly instead of a silent green no-op"
+            exit 1
           fi
           python tools/infra_fetch.py power-plants "${CAP}"

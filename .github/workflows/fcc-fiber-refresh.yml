@@ -57,9 +57,14 @@ jobs:
       - name: Refresh FCC provider fiber
         run: |
           set -uo pipefail
+          # ★ 2026-09-02: see gas-pipeline-ingest.yml (2026-08-08, SH52-120).
+          # This lane is idle by design most weeks (FCC republishes ~2x/year and
+          # the script exits early when already current), which makes a missing
+          # secret indistinguishable from a normal quiet run — the one lane where
+          # a silent green is hardest to notice.
           if [ -z "${DCHUB_ADMIN_KEY:-}" ] || [ -z "${FCC_BDC_USERNAME:-}" ] || [ -z "${FCC_BDC_TOKEN:-}" ]; then
-            echo "::warning::missing DCHUB_ADMIN_KEY / FCC_BDC_USERNAME / FCC_BDC_TOKEN secret — skipping"
-            exit 0
+            echo "::error::missing DCHUB_ADMIN_KEY / FCC_BDC_USERNAME / FCC_BDC_TOKEN — FCC fiber refresh cannot run; failing loudly instead of a silent green no-op"
+            exit 1
           fi
           ARGS=""
           if [ "${{ github.event.inputs.force_all }}" = "true" ]; then ARGS="--force-all"; fi
