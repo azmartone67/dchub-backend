@@ -474,15 +474,23 @@ class TestPublicDeadmanReadIsUncurated:
         reads = [q for q in executed if q.startswith("SELECT") and "FROM ingest_runs" in q]
         assert reads and all("WHERE" not in q for q in reads), reads
 
-    def test_an_honest_error_status_reads_overdue_at_once(self, monkeypatch):
+    def test_an_honest_error_status_reads_red_at_once(self, monkeypatch):
+        """★2026-09-02 (D2): a feed that RAN and reported a fault is RED, not
+        overdue — `overdue` now means LATE only. It is still not green on the
+        wire: red/unhealthy/kinds carry it (tests/test_deadman_late_vs_red.py)."""
         now = dt.datetime.now(dt.timezone.utc)
         rows = [("worker:news", now, "error: boom", None, None, 18.0, 0, None),
                 ("worker:deals", now, "timeout", None, None, 18.0, 0, None)]
         client, _ = self._client(monkeypatch, rows)
         body = client.get("/api/v1/ops/deadman").get_json()
-        assert body["any_overdue"] is True and body["overdue_count"] == 2
-        reasons = {r["feed"]: r["reasons"] for r in body["overdue"]}
-        assert reasons == {"worker:news": ["status=error: boom"], "worker:deals": ["status=timeout"]}
+        assert body["any_overdue"] is False and body["overdue_count"] == 0
+        assert body["any_red"] is True and body["red_count"] == 2
+        assert body["unhealthy_count"] == 2
+        assert sorted(body["red"]) == ["worker:deals", "worker:news"]
+        by = {r["feed"]: r for r in body["feeds"]}
+        assert by["worker:news"]["reasons"] == ["status=error: boom"]
+        assert by["worker:deals"]["reasons"] == ["status=timeout"]
+        assert all(r["red"] and r["unhealthy"] and not r["overdue"] for r in by.values())
 
 
 # ───────────────────────── dchub-scheduler ─────────────────────────

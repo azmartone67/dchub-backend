@@ -147,7 +147,8 @@ def app(monkeypatch):
     a = flask.Flask(__name__)
     a.register_blueprint(wms.webmcp_master_shell_bp)
     # No probes / DB in route tests.
-    monkeypatch.setattr(wms, "_run_tick", lambda: {
+    # ★2026-09-02 (D5): _tick_cached passes `beat` through — the stub takes it.
+    monkeypatch.setattr(wms, "_run_tick", lambda beat=False: {
         "ok": True, "generated_at": "t", "lanes_pass": 0, "lanes_total": 0,
         "lanes": [], "note": "", "findings_filed": 0})
     wms._cache["payload"] = None

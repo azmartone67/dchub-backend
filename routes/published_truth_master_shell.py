@@ -218,15 +218,17 @@ def _lane_backup_health(ctx: dict) -> list:
     for f in guarded:
         name = str(f.get("feed"))
         status = str(f.get("status") or "")
-        bad = bool(f.get("overdue")) or bool(
+        # ★2026-09-02 (D2): the board split `overdue` (late) from `red` (ran,
+        # reported a fault). "Healthy" means neither — read the union.
+        bad = bool(f.get("unhealthy", f.get("overdue"))) or bool(
             re.search(r"fail|cancel|error", status, re.I))
         out.append(_check(
             "b_%s" % re.sub(r"[^a-z0-9]+", "_", name.lower()),
             "%s is healthy" % name,
             not bad,
-            "status=%s age=%sh cadence=%sh overdue=%s reasons=%s"
+            "status=%s age=%sh cadence=%sh overdue=%s red=%s reasons=%s"
             % (status or "?", f.get("age_hours"), f.get("cadence_hours"),
-               f.get("overdue"), f.get("reasons")),
+               f.get("overdue"), f.get("red"), f.get("reasons")),
             critical=True))
     return out
 

@@ -545,7 +545,7 @@ def growth_funnel_dashboard():
         "line-height:1.55}.w{max-width:1180px;margin:0 auto}"
         "h1{font-size:1.6rem;margin:0 0 .3rem}"
         ".sub{color:#9ca3af;font-size:.9rem;margin:0 0 1.4rem;max-width:820px}"
-        "table{width:100%;border-collapse:collapse;background:#11121a;"
+        "table{width:100%%;border-collapse:collapse;background:#11121a;"
         "border:1px solid #1f2030;border-radius:12px;overflow:hidden}"
         "th{text-align:left;padding:.6rem .8rem;color:#6b7280;font-size:.7rem;"
         "text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid #1f2030}"

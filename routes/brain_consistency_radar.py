@@ -765,6 +765,70 @@ def check_paywall_capacity_gating() -> list[dict]:
     return findings
 
 
+def check_findings_deferred_over_7d() -> list[dict]:
+    """★2026-09-02 (QA sweep D10). The finding-router measured 27 of 29 active
+    findings at `deferred_rate_cap` and the propose stage `backlog=29
+    proposed=0` — detection works, actuation is throttled to zero, and no
+    lane alarmed on "deferred for N days" because nothing surfaced the age.
+
+    The cap is BRAIN_MAX_LEARN in routes/brain_v2_layer5 (10 model calls per
+    6h learn tick; r78 2026-06-12 raised it from an effective 3 and added
+    rotation so the tail gets budget). It is NOT raised here: 10/tick is a
+    spend decision, and rotation means a deferral should clear within
+    ceil(n/10) ticks — a finding still parked after 7 DAYS (28 ticks) is the
+    rotation not reaching it, which is what this alarms on. Age is since the
+    row was first seen (there is no per-outcome timestamp), stated as the
+    ceiling it is."""
+    try:
+        from routes.brain_finding_router import DEFERRED_OUTCOME, DEFERRED_ALARM_H
+    except Exception:
+        return []
+    c = _db()
+    if c is None:
+        return []
+    try:
+        cur = c.cursor()
+        cur.execute(
+            "SELECT issue_label, url, "
+            "       EXTRACT(EPOCH FROM (NOW() - first_seen_at)) / 3600.0, "
+            "       seen_count "
+            "  FROM brain_issue_persistence "
+            " WHERE last_outcome = %s "
+            "   AND last_seen_at >= NOW() - INTERVAL '24 hours' "
+            "   AND first_seen_at < NOW() - make_interval(hours => %s) "
+            " ORDER BY first_seen_at ASC LIMIT 50",
+            (DEFERRED_OUTCOME, float(DEFERRED_ALARM_H)))
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    if not rows:
+        return []
+    oldest = float(rows[0][2] or 0)
+    sample = "; ".join(f"{r[0][:60]} @ {r[1][:50]} ({float(r[2] or 0) / 24:.0f}d)"
+                       for r in rows[:8])
+    return [{
+        "issue": "findings_deferred_over_7d",
+        "url": "dchub://brain/finding-router",
+        "count_kind": "item_count",
+        "count": len(rows),
+        "detail": (f"{len(rows)} live finding(s) have sat at "
+                   f"`{DEFERRED_OUTCOME}` for over "
+                   f"{DEFERRED_ALARM_H / 24:.0f} days (oldest {oldest / 24:.0f}d) — "
+                   "the Layer-5 learn tick's rotation is not reaching them. "
+                   "The cap (BRAIN_MAX_LEARN=10 calls / 6h tick, "
+                   "routes/brain_v2_layer5) is a spend decision and is not "
+                   "raised by this detector; either the tail needs a dedicated "
+                   "tick or these should be triaged out (config_not_code / "
+                   "wont_fix). Ages on /api/v1/brain/finding-routes "
+                   "(`deferred_age_h`). Sample: " + sample)[:1500],
+    }]
+
+
 def check_cron_coverage() -> list[dict]:
     """Parse evolve-cron.yml. For each workflow_dispatch phase option,
     check if any job has a `cron:` trigger that fires it. Flag
@@ -8793,6 +8857,25 @@ _INTENTIONAL_STALE_CRONS: set[str] = {
 }
 
 
+def _declared_interval_s(job_name: str):
+    """The interval a job DECLARES (routes/jobs_routes._JOB_INTERVALS) — the
+    fallback when its cron_last_run row carries no expected_interval_s.
+
+    ★2026-09-02 (D11): the column is only stamped by _record_cron_run on the
+    job's NEXT run, so a weekly arm (gas-refresh / site-baseline, dchub-jobs
+    `30 6 * * 0`) sat at NULL and was judged against the 30h default — filed
+    cron_silently_dead six days out of seven. Reading the declared map here
+    makes the threshold right before the next Sunday stamps it. None (no
+    declaration, or import failure) keeps the 30h default: fail-closed, the
+    detector over-reports rather than certifies."""
+    try:
+        from routes.jobs_routes import _JOB_INTERVALS
+        v = _JOB_INTERVALS.get(job_name)
+        return int(v) if v else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def check_cron_freshness() -> list[dict]:
     """Phase QQQ (2026-05-17) — flag crons that haven't run when they
     were supposed to.
@@ -8843,12 +8926,19 @@ def check_cron_freshness() -> list[dict]:
                 job_name, last_start, expected_s, run_count, seconds_since = row
                 if seconds_since is None or job_name in _INTENTIONAL_STALE_CRONS:
                     continue
+                declared = None
+                if not expected_s:
+                    # ★D11: NULL column -> the interval the job declares.
+                    declared = _declared_interval_s(job_name)
+                    expected_s = declared
                 threshold = (expected_s * 2) if (expected_s and expected_s > 0) else _DEFAULT_STALE_S
                 # Flag when the job is past its stale threshold. The 2× buffer
                 # (or generous default) prevents flapping on natural jitter.
                 if seconds_since > threshold:
                     hours_late = (seconds_since - threshold) / 3600.0
                     exp_txt = (f"expected every {expected_s}s"
+                               + (" (declared in jobs_routes._JOB_INTERVALS)"
+                                  if declared else "")
                                if expected_s else "no declared interval")
                     findings.append({
                         "issue":  "cron_silently_dead",
@@ -11139,6 +11229,72 @@ def check_dcpi_ssr_cross_tier() -> list[dict]:
     return findings
 
 
+# ── 2026-09-02 (brain-agents sweep finding 2) — approved, no PR, stale ──
+APPROVED_WITHOUT_PR_STALE_HOURS = 24
+APPROVED_WITHOUT_PR_WINDOW_DAYS = 7
+
+
+def check_approved_without_pr_stale() -> list[dict]:
+    """Fires when an innovation approval is older than 24h, inside the 7-day
+    redrive window, and still has NO PR — and its persisted draft attempt is
+    absent or a failure. Measured 2026-09-02 00:30Z: 40 approved rows,
+    5 with a merged PR, #100416 known lost to `http_429` during the gateway
+    spend outage, ~34 unknowable because brain_approvals held only
+    kind/item_id/decision. The dashboard now persists `pr_attempt`/`pr_url`
+    (routes/brain_innovation_dashboard) and the master tick re-drives
+    failures (tier2.approved_without_pr_redrive); this detector is the
+    instrument that says whether that loop is closing.
+
+    UNMEASURED yields no finding: no DB, no table, or a pre-migration table
+    without the pr_url column → [] (never a clean verdict)."""
+    conn = _db()
+    if conn is None:
+        return []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.brain_approvals')")
+                if not (cur.fetchone() or [None])[0]:
+                    return []
+                cur.execute(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'brain_approvals' AND column_name = 'pr_url'")
+                if not cur.fetchone():
+                    return []          # pre-migration: nothing to measure yet
+                from routes.brain_innovation_dashboard import (
+                    stale_approvals_without_pr)
+                stale = stale_approvals_without_pr(
+                    cur, older_than_hours=APPROVED_WITHOUT_PR_STALE_HOURS,
+                    window_days=APPROVED_WITHOUT_PR_WINDOW_DAYS) or []
+            except Exception:
+                return []
+    finally:
+        try: conn.close()
+        except Exception: pass
+    n = len(stale)
+    if n < 1:
+        return []
+    never = sum(1 for r in stale if not r.get("attempted"))
+    sample = ", ".join(
+        f"{r['key']} ({r.get('error') or 'no attempt recorded'}; "
+        f"redrives={r.get('redrives', 0)})" for r in stale[:5])
+    return [{
+        "issue":  "approved_without_pr_stale",
+        "url":    "/api/v1/brain/innovation/approvals",
+        "count":  n,
+        "detail": (f"{n} innovation approval(s) older than "
+                   f"{APPROVED_WITHOUT_PR_STALE_HOURS}h (within "
+                   f"{APPROVED_WITHOUT_PR_WINDOW_DAYS}d) still have no PR "
+                   f"and no successful draft attempt ({never} never "
+                   f"attempted). The master tick step "
+                   f"tier2.approved_without_pr_redrive should re-run the "
+                   f"draft (can_open_pr gate, 3/tick, 3/row); if this "
+                   f"persists the redrives are exhausted or the guardrail "
+                   f"is closed — read brain_approvals.pr_attempt. "
+                   f"Sample: {sample}"),
+    }]
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues.
@@ -11173,6 +11329,9 @@ def scan_all() -> list[dict]:
                check_dcpi_ssr_cross_tier,
                check_cron_coverage,
                check_cron_collisions,
+               # 2026-09-02 (D10) — findings parked at deferred_rate_cap for
+               # over 7 days; the propose stage's "green with zero output".
+               check_findings_deferred_over_7d,
                # 2026-08-19 — the guard for the marker nobody remembers to add.
                # #202 removed our own GitHub Actions runners from the counted
                # population mid-week (62.2% -> 0.0% of calls across the deploy,
@@ -11595,7 +11754,10 @@ def scan_all() -> list[dict]:
                check_gunicorn_worker_age,
                check_facility_dedupe_collisions,
                check_paid_user_zero_value_tools,
-               check_cf_kv_namespace_pressure):
+               check_cf_kv_namespace_pressure,
+               # 2026-09-02 brain-agents sweep finding 2: an approval whose
+               # PR draft was lost (gateway 429) used to be invisible.
+               check_approved_without_pr_stale):
         detectors.append(fn)
 
     # r43-L (2026-05-30): MCP discoverability/health — continuously detects

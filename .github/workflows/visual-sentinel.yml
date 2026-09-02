@@ -8,7 +8,7 @@ name: Visual Sentinel
 
 on:
   schedule:
-    - cron: '17 */6 * * *'   # every 6 hours
+    - cron: '16 */6 * * *'   # every 6 hours at :16 — staggered off agent-pay-signal-watch's `17 */6` (D15, 2026-09-02)
   workflow_dispatch:
 
 permissions:

@@ -146,6 +146,7 @@ def _init_approvals() -> None:
                 "  PRIMARY KEY (kind, item_id)"
                 ")"
             )
+            _ensure_approval_columns(cur)
         conn.commit()
     except Exception as e:
         logger.warning("brain_innovation_dashboard: _init_approvals failed: %s", e)
@@ -154,6 +155,163 @@ def _init_approvals() -> None:
     finally:
         try: conn.close()
         except Exception: pass
+
+
+# ── PR-draft outcome, PERSISTED (2026-09-02, brain-agents sweep finding 2) ──
+# ★ WHY. brain_approvals held kind / item_id / decision only; the approve→PR
+# outcome (`pr_attempt`) lived in the HTTP response and nowhere else. Measured
+# 2026-09-02 00:30Z on the live table: 40 approved rows, 5 with a merged PR,
+# #100416 known lost to `claude call failed: http_429` during the gateway
+# spend outage — and the other ~34 UNKNOWABLE, because a 429-era approval and
+# a successful one were byte-identical rows. Nothing re-drove any of them.
+# Four columns, added only when ABSENT on the live table (information_schema
+# first: `ADD COLUMN IF NOT EXISTS` takes ACCESS EXCLUSIVE before it evaluates
+# its condition — the squasher_queue lesson of 2026-08-30).
+_APPROVAL_PR_COLUMNS = (
+    ("pr_attempt", "JSONB"),             # the draft outcome, verbatim
+    ("pr_url", "TEXT"),                  # the PR that landed (code or spec), else NULL
+    ("pr_attempted_at", "TIMESTAMPTZ"),  # last draft attempt (approve or redrive)
+    ("pr_redrives", "INTEGER NOT NULL DEFAULT 0"),
+)
+_APPROVAL_COLUMNS_ENSURED = False
+
+
+def _ensure_approval_columns(cur) -> bool:
+    """Add the PR-outcome columns the live brain_approvals table LACKS — and
+    only those. Once per process; the memo is set only after the DDL landed,
+    so a run that loses a lock race retries on the next call. Returns False
+    when the table is not visible yet (nothing to alter)."""
+    global _APPROVAL_COLUMNS_ENSURED
+    if _APPROVAL_COLUMNS_ENSURED:
+        return True
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'brain_approvals'")
+    present = {str(r[0]) for r in (cur.fetchall() or [])}
+    if not present:
+        return False
+    for col, typ in _APPROVAL_PR_COLUMNS:
+        if col not in present:
+            # Column names are constants from the tuple above — never input.
+            cur.execute(f"ALTER TABLE brain_approvals ADD COLUMN {col} {typ}")
+    _APPROVAL_COLUMNS_ENSURED = True
+    return True
+
+
+def _pr_url_of(pr_attempt) -> str | None:
+    """The URL of the PR a draft attempt opened, or None when nothing landed.
+
+    Shapes (verbatim from the producers):
+      code PR   draft_and_open_pr → {ok, acted, proposal, pr: <opener envelope>}
+                where the envelope is {ok, pr: {number, url}}   (nested twice)
+      spec PR   the approve fallback → {..., acted: True,
+                fallback_spec_pr: {ok, acted, spec_pr, pr: {number, url}}}
+      refusal   {ok: True, acted: False, refused: True}  → None
+      failure   {ok: False, error: ...}                  → None
+    `acted` is the contract: a URL under a non-acted attempt is not a PR."""
+    if not isinstance(pr_attempt, dict) or not pr_attempt.get("acted"):
+        return None
+
+    def _find(node, depth=0):
+        if depth > 3 or not isinstance(node, dict):
+            return None
+        for k in ("html_url", "pr_url", "url"):
+            v = node.get(k)
+            if isinstance(v, str) and v.startswith("http"):
+                return v
+        for k in ("pr", "fallback_spec_pr"):
+            v = _find(node.get(k), depth + 1)
+            if v:
+                return v
+        return None
+    return _find(pr_attempt)
+
+
+def _write_approval(sql: str, params: tuple) -> int:
+    """One UPDATE on brain_approvals on its own connection, columns ensured
+    first. -> rowcount; -1 on any failure (logged, never raised — the
+    greenlight row is already committed and bookkeeping must not undo it)."""
+    conn = _conn()
+    if conn is None:
+        return -1
+    try:
+        with conn.cursor() as cur:
+            _ensure_approval_columns(cur)
+            cur.execute(sql, params)
+            n = cur.rowcount
+        conn.commit()
+        return int(n if n is not None else 0)
+    except Exception as e:
+        logger.warning("brain_innovation_dashboard: approval write failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return -1
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _record_pr_attempt(kind: str, item_id: int, pr_attempt: dict) -> bool:
+    """Persist the draft outcome on the approval row: the attempt verbatim,
+    the PR url when one landed (never cleared by a later failure), and the
+    attempt time. True when the row was updated."""
+    return _write_approval(
+        "UPDATE brain_approvals SET pr_attempt = %s::jsonb, "
+        "pr_url = COALESCE(%s, pr_url), pr_attempted_at = NOW() "
+        "WHERE kind = %s AND item_id = %s",
+        (json.dumps(pr_attempt, default=str)[:20000], _pr_url_of(pr_attempt),
+         kind, int(item_id))) > 0
+
+
+def _claim_redrive(kind: str, item_id: int, max_redrives: int) -> bool:
+    """Claim a row for ONE redrive attempt — committed BEFORE the attempt so
+    a crash mid-draft still records that it was tried. False when the row
+    is gone, already has a PR, or is out of redrives."""
+    return _write_approval(
+        "UPDATE brain_approvals SET pr_redrives = COALESCE(pr_redrives, 0) + 1, "
+        "pr_attempted_at = NOW() "
+        "WHERE kind = %s AND item_id = %s AND pr_url IS NULL "
+        "AND COALESCE(pr_redrives, 0) < %s",
+        (kind, int(item_id), int(max_redrives))) > 0
+
+
+def _redrive_wanted(pr_attempt) -> bool:
+    """Which persisted outcomes the redrive re-runs: a FAILED attempt only —
+    `ok` is literally False (claude call failed, autonomy gate closed, PR
+    handoff failed, JSON parse failed). A refusal ({ok:True, acted:False,
+    refused:True}) is the drafter's judgement and re-asking it is a wasted
+    model call; a 'no directive — recorded only' record is ok:True too; a
+    NULL pr_attempt is an approval that never asked for a PR (open_pr unset)
+    or predates the column — unknowable, left alone (no duplicate PRs for
+    the 5 approvals whose PRs already merged before the column existed)."""
+    return isinstance(pr_attempt, dict) and pr_attempt.get("ok") is False
+
+
+def stale_approvals_without_pr(cur, older_than_hours: int = 24,
+                               window_days: int = 7) -> list[dict]:
+    """What routes/brain_consistency_radar.check_approved_without_pr_stale
+    reports: approved within `window_days`, older than `older_than_hours`,
+    no PR landed, and the persisted attempt is absent or a failure. Raises
+    on a pre-migration table (no pr_url column) so the caller reports
+    nothing rather than 'clean'."""
+    cur.execute(
+        "SELECT kind, item_id, approved_at, pr_attempt, COALESCE(pr_redrives, 0) "
+        "FROM brain_approvals WHERE decision = 'approved' AND pr_url IS NULL "
+        "AND approved_at > NOW() - (%s * INTERVAL '1 day') "
+        "AND approved_at < NOW() - (%s * INTERVAL '1 hour') "
+        "ORDER BY approved_at ASC LIMIT 200",
+        (int(window_days), int(older_than_hours)))
+    out: list[dict] = []
+    for kind, item_id, approved_at, attempt, redrives in (cur.fetchall() or []):
+        a = _as_obj(attempt)
+        if a and a.get("ok") is not False:
+            continue          # refusal / recorded-only: the brain answered
+        out.append({"key": f"{kind}:{item_id}", "approved_at": _iso(approved_at),
+                    "attempted": bool(a),
+                    "error": (str(a.get("error") or a.get("reason") or "")[:120]
+                              if a else ""),
+                    "redrives": int(redrives or 0)})
+    return out
 
 
 def _as_obj(v) -> dict:
@@ -544,44 +702,138 @@ def innovation_approve():
     # greenlight. Only fires on a real greenlight ('approved'); inherits
     # can_open_pr() (kill switch + daily cap) and the drafter's REFUSE path, so an
     # advisory insight that isn't a concrete single-file edit is recorded only.
+    # 2026-09-02: the outcome is PERSISTED on the approval row (pr_attempt,
+    # pr_url) — it used to live only in this response, so a failed draft was
+    # indistinguishable from a landed one and nothing could re-drive it.
     if open_pr and decision == "approved":
-        try:
-            item_directive, heading = _item_directive(kind, item_id)
-            directive, _src = _resolve_directive(operator_directive, item_directive)
-            resp["directive_source"] = _src
-            if not directive:
-                resp["pr_attempt"] = {
-                    "ok": True, "acted": False,
-                    "note": "no actionable 'decision for human' on this item — recorded only",
-                }
-            else:
-                from routes.brain_guardrails import draft_and_open_pr
-                _pr = draft_and_open_pr(
-                    directive, "", label=f"{kind} #{item_id}: {heading[:60]}")
-                # r-brain-loop (2026-06-30): ACTUATOR FALLBACK (#4). If the code
-                # drafter REFUSED (the directive is a 'build/instrument/gather'
-                # PLAN, not a single-file edit — the common case that made every
-                # approval 'recorded only'), file the approved plan as a DRAFT
-                # spec PR instead. Doc-only, draft, human-merged — so the approval
-                # becomes a visible, trackable, human-implementable PR.
-                if _should_file_spec_pr(_pr):
-                    try:
-                        from routes.brain_pr_opener import open_spec_pr
-                        _spec = open_spec_pr(directive, heading, kind, item_id,
-                                             label=f"{kind} #{item_id}")
-                        if isinstance(_spec, dict) and _spec.get("acted"):
-                            _pr = {**_pr, "acted": True,
-                                   "note": "filed as draft spec PR for a human",
-                                   "fallback_spec_pr": _spec}
-                    except Exception as _se:
-                        logger.warning(
-                            "brain_innovation_dashboard: approve→spec-PR fallback failed: %s", _se)
-                resp["pr_attempt"] = _pr
-        except Exception as e:
-            logger.warning("brain_innovation_dashboard: approve→PR failed: %s", e)
-            resp["pr_attempt"] = {"ok": False, "acted": False, "error": str(e)}
+        _pr = _attempt_pr(kind, item_id, operator_directive)
+        resp["directive_source"] = _pr.get("directive_source")
+        resp["pr_attempt"] = _pr
+        resp["pr_url"] = _pr_url_of(_pr)
+        resp["pr_attempt_persisted"] = _record_pr_attempt(kind, item_id, _pr)
 
     return jsonify(**resp), 200
+
+
+def _attempt_pr(kind: str, item_id: int, operator_directive: str = "") -> dict:
+    """The approve→PR act, factored so the master-tick redrive runs the SAME
+    path as the dashboard button. Always returns the pr_attempt dict (never
+    raises); `directive_source` is folded in."""
+    try:
+        item_directive, heading = _item_directive(kind, item_id)
+        directive, _src = _resolve_directive(operator_directive, item_directive)
+        if not directive:
+            return {"ok": True, "acted": False, "directive_source": _src,
+                    "note": "no actionable 'decision for human' on this item — recorded only"}
+        from routes.brain_guardrails import draft_and_open_pr
+        _pr = draft_and_open_pr(
+            directive, "", label=f"{kind} #{item_id}: {heading[:60]}")
+        # r-brain-loop (2026-06-30): ACTUATOR FALLBACK (#4). If the code
+        # drafter REFUSED (the directive is a 'build/instrument/gather'
+        # PLAN, not a single-file edit — the common case that made every
+        # approval 'recorded only'), file the approved plan as a DRAFT
+        # spec PR instead. Doc-only, draft, human-merged — so the approval
+        # becomes a visible, trackable, human-implementable PR.
+        if _should_file_spec_pr(_pr):
+            try:
+                from routes.brain_pr_opener import open_spec_pr
+                _spec = open_spec_pr(directive, heading, kind, item_id,
+                                     label=f"{kind} #{item_id}")
+                if isinstance(_spec, dict) and _spec.get("acted"):
+                    _pr = {**_pr, "acted": True,
+                           "note": "filed as draft spec PR for a human",
+                           "fallback_spec_pr": _spec}
+            except Exception as _se:
+                logger.warning(
+                    "brain_innovation_dashboard: approve→spec-PR fallback failed: %s", _se)
+        if not isinstance(_pr, dict):
+            return {"ok": False, "acted": False, "directive_source": _src,
+                    "error": "drafter returned a non-dict"}
+        _pr.setdefault("directive_source", _src)
+        return _pr
+    except Exception as e:
+        logger.warning("brain_innovation_dashboard: approve→PR failed: %s", e)
+        return {"ok": False, "acted": False, "error": str(e)}
+
+
+def redrive_approved_without_pr(max_rows: int = 3, window_days: int = 7,
+                                max_redrives: int = 3,
+                                min_gap_hours: int = 1) -> dict:
+    """Master-tick step `tier2.approved_without_pr_redrive`
+    (routes/brain_master_orchestrator, beside tier2.l22_draft_prs).
+
+    Re-runs the draft for approvals whose persisted attempt FAILED and that
+    still have no PR, within `window_days`. Guardrail FIRST: the same
+    can_open_pr() (kill switch + 8/day cap) the button inherits, read before
+    any row is touched and re-read by draft_and_open_pr per attempt.
+    Idempotent per tick: a row is claimed (pr_redrives+1, pr_attempted_at)
+    and committed BEFORE its attempt, at most `max_rows` rows per tick,
+    `max_redrives` per row, and not again within `min_gap_hours`."""
+    out = {"ok": True, "scanned": 0, "redriven": 0, "results": [],
+           "skipped": None}
+    try:
+        from routes.brain_guardrails import can_open_pr
+        allowed, why = can_open_pr()
+    except Exception as e:
+        allowed, why = False, f"guardrail unreadable: {type(e).__name__}"
+    if not allowed:
+        out["skipped"] = why
+        return out
+    conn = _conn()
+    if conn is None:
+        out.update(ok=False, error="database unavailable")
+        return out
+    rows: list = []
+    try:
+        with conn.cursor() as cur:
+            _ensure_approval_columns(cur)
+            cur.execute(
+                "SELECT kind, item_id, pr_attempt FROM brain_approvals "
+                "WHERE decision = 'approved' AND pr_url IS NULL "
+                "AND pr_attempt IS NOT NULL "
+                "AND approved_at > NOW() - (%s * INTERVAL '1 day') "
+                "AND COALESCE(pr_redrives, 0) < %s "
+                "AND (pr_attempted_at IS NULL "
+                "     OR pr_attempted_at < NOW() - (%s * INTERVAL '1 hour')) "
+                "ORDER BY approved_at ASC LIMIT %s",
+                (int(window_days), int(max_redrives), int(min_gap_hours),
+                 int(max_rows) * 4))
+            rows = [(str(r[0]), int(r[1]), _as_obj(r[2]))
+                    for r in (cur.fetchall() or [])]
+        conn.commit()
+    except Exception as e:
+        logger.warning("brain_innovation_dashboard: redrive read failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        out.update(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}")
+        return out
+    finally:
+        try: conn.close()
+        except Exception: pass
+    out["scanned"] = len(rows)
+    for kind, item_id, prev in rows:
+        if out["redriven"] >= max_rows:
+            break
+        key = f"{kind}:{item_id}"
+        if not _redrive_wanted(prev):
+            out["results"].append({"key": key,
+                                   "skipped": "previous attempt is not a failure"})
+            continue
+        if not _claim_redrive(kind, item_id, max_redrives):
+            out["results"].append({"key": key, "skipped": "claim refused"})
+            continue
+        pr = _attempt_pr(kind, item_id, "")
+        pr["redrive"] = True
+        pr["previous_error"] = str(prev.get("error") or prev.get("reason") or "")[:200]
+        persisted = _record_pr_attempt(kind, item_id, pr)
+        out["redriven"] += 1
+        out["results"].append({"key": key, "acted": bool(pr.get("acted")),
+                               "pr_url": _pr_url_of(pr),
+                               "error": pr.get("error"), "persisted": persisted})
+        if pr.get("error") == "autonomy_gate_closed":
+            out["skipped"] = str(pr.get("reason") or "autonomy_gate_closed")
+            break
+    return out
 
 
 @brain_innovation_dashboard_bp.route("/api/v1/brain/innovation/dashboard", methods=["GET"])

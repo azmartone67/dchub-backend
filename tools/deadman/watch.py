@@ -356,6 +356,7 @@ NOT_WATCHED = {
     #    workflow; verified against the live /api/v1/ops/deadman feed list, not
     #    inferred from the code that sends the beat.
     "agent-pay-shell-tick.yml": "already on the board as feed 'agent-pay-shell-daily' (self-beat)",
+    "bug-squash-nightly.yml": "already on the board as feed 'bug-squash-nightly' (self-beat; degraded when the frontend was not scanned — 2026-09-02)",
     "daily-infra-sync.yml": "already on the board as feed 'daily-infra-sync' (self-beat)",
     "eia-pricing-ingest.yml": "already on the board as feed 'eia-pricing-ingest' (self-beat)",
     "iso-lmp-ingest.yml": "already on the board as feed 'iso-lmp-ingest' (self-beat)",
@@ -474,13 +475,22 @@ def main():
             f"{API}/api/v1/ops/deadman", headers={"User-Agent": UA})
         with urllib.request.urlopen(greq, timeout=20) as r:
             d = json.loads(r.read())
-        for rec in d.get("overdue", []):
+        # ★2026-09-02 (D2): the board now splits LATE (`overdue`) from RED
+        # (ran on time, last beat carried a fault). This watcher alarms on
+        # BOTH — a shell that beat lanes_failing is still a loop not
+        # succeeding — so it folds every `unhealthy` feed, and falls back to
+        # the old `overdue[]` list against a backend that predates the split.
+        recs = [r for r in (d.get("feeds") or [])
+                if r.get("unhealthy", r.get("overdue"))] or d.get("overdue", [])
+        for rec in recs:
             feed = rec.get("feed")
             if feed and feed not in seen_feeds:
                 overdue.append((feed, "; ".join(rec.get("reasons", [])) or "overdue",
                                 rec.get("cadence_hours")))
-                print(f"OVERDUE  {feed} (ledger): {rec.get('reasons')}")
-        print(f"ledger: tracked={d.get('tracked')} any_overdue={d.get('any_overdue')}")
+                tag = "OVERDUE" if rec.get("overdue") else "RED    "
+                print(f"{tag}  {feed} (ledger): {rec.get('reasons')}")
+        print(f"ledger: tracked={d.get('tracked')} any_overdue={d.get('any_overdue')} "
+              f"red_count={d.get('red_count')}")
     except Exception as e:  # noqa: BLE001
         print(f"ledger read failed (non-fatal): {e}")
 

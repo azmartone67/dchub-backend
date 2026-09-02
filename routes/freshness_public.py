@@ -374,6 +374,63 @@ _INTERMITTENT_STREAMS: dict = {
 _INTERMITTENT_MAX_H = 168.0   # 7 days — past this, even "irregular" means dead
 
 
+# ── feed FAMILIES (D1, 2026-09-02) ───────────────────────────────────
+# The iso domain names every stale STREAM — 34 EU_* rows during the 2026-09-01
+# ENTSO-E outage — but nothing rolled them up to the FAMILY a reader acts on
+# ("is the ENTSO-E feed alive?"), and /api/v1/iso/eu/health answered HTTP 200
+# with live_feed_ok:false. One roll-up per producer, keyed to its health route
+# and to the deadman feed data-pulse.yml beats, so a dead family is one line.
+#
+# live_feed_ok is judged on the family's ANCHOR stream — the aggregate row the
+# producer writes on every successful fan-out — not on "no member is stale":
+# an upstream-intermittent zone (EU_BG) would otherwise pin the family dead
+# forever. Members past target are still counted and named.
+_FEED_FAMILIES = (
+    {"family": "entsoe", "anchor": "ENTSOE",
+     "member": lambda s: s == "ENTSOE" or s.startswith("EU_"),
+     "health": "/api/v1/iso/eu/health", "deadman_feed": "iso-eu-entsoe",
+     "producer": "routes/iso_eu_entsoe.py via .github/workflows/data-pulse.yml"},
+)
+
+
+def summarize_feed_families(per_stream, target_hours, families=_FEED_FAMILIES):
+    """PURE. Roll per-stream ages up to producer families. {} when no family
+    has a stream in `per_stream` (a missing family is absent, never "ok")."""
+    ages = {}
+    for s in per_stream or []:
+        if s.get("age_hours") is None:
+            continue
+        ages[str(s.get("stream"))] = float(s["age_hours"])
+    out = {}
+    for fam in families:
+        members = {n: a for n, a in ages.items() if fam["member"](n)}
+        if not members:
+            continue
+        stale = sorted(((n, a) for n, a in members.items() if a > target_hours),
+                       key=lambda t: -t[1])
+        anchor_age = members.get(fam["anchor"])
+        if anchor_age is not None:
+            live = anchor_age <= target_hours
+            basis = ("anchor stream %s is %.2fh old against a %sh target"
+                     % (fam["anchor"], anchor_age, target_hours))
+        else:
+            live = not stale
+            basis = ("no anchor stream %s in grid_data — judged on members: %d of "
+                     "%d past target" % (fam["anchor"], len(stale), len(members)))
+        out[fam["family"]] = {
+            "live_feed_ok": live,
+            "live_feed_ok_basis": basis,
+            "streams_total": len(members),
+            "streams_stale": len(stale),
+            "worst_age_hours": round(max(members.values()), 2),
+            "stale_streams": [n for n, _ in stale],
+            "health": fam["health"],
+            "deadman_feed": fam["deadman_feed"],
+            "producer": fam["producer"],
+        }
+    return out
+
+
 def summarize_stream_ages(rows, *, table, col, stream, intermittent=None):
     """PURE. Collapse per-stream ages into the domain reading.
 
@@ -654,6 +711,11 @@ def _sla_breakdown(surfaces):
             entry["streams_within_sla"] = real["streams_total"] - len(_breaching)
             if _breaching:
                 entry["stale_streams"] = _breaching
+            # D1 (2026-09-02): family roll-up — "is ENTSO-E alive?" as one
+            # line beside the 34 zone streams it explains.
+            _fams = summarize_feed_families(real.get("per_stream", []), target)
+            if _fams:
+                entry["feed_families"] = _fams
         # Only surface the stale-surface list when the REAL data is actually
         # behind (status warning/breach) — otherwise it's just tracking drift.
         if status in ("warning", "breach") and stale_list:

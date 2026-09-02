@@ -556,7 +556,10 @@ def _lane_evolution_story() -> list[dict]:
     return checks
 
 
-def _run_tick() -> dict:
+def _run_tick(beat: bool = True) -> dict:
+    # ★2026-09-02 (D5): beat=False on every GET. A dashboard view — with its
+    # auto-refresh — must never stamp the daily beat, or a browser tab keeps a
+    # dead cron "alive" on /api/v1/ops/deadman. Only the POST master-tick beats.
     c = _conn()
     try:
         lanes = [
@@ -592,7 +595,8 @@ def _run_tick() -> dict:
         "summary": summary,
         "any_fail": any(ln["verdict"] == "FAIL" for ln in lanes),
     }
-    _beat_ledger("lanes: " + summary, failing=out["any_fail"])
+    if beat:
+        _beat_ledger("lanes: " + summary, failing=out["any_fail"])
     return out
 
 
@@ -607,7 +611,7 @@ def master_tick():
         return jsonify(ok=False, error="BRAIN_ASCENSION_SHELL_DISABLE=1"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
-    resp = jsonify(_run_tick())
+    resp = jsonify(_run_tick(beat=(request.method == "POST")))
     # CF edge cached a wave-1 GET of this endpoint for >30 min post-deploy
     # (the Cache-Rules leak) — the operator read a stale board. Never cache.
     resp.headers["Cache-Control"] = "no-store"
@@ -624,7 +628,7 @@ def dashboard():
     if not _admin_ok():
         return Response("admin key required (?admin_key=)", status=401,
                         mimetype="text/plain")
-    d = _run_tick()
+    d = _run_tick(beat=False)
     color = {"PASS": "#22c55e", "FAIL": "#ef4444", "?": "#eab308"}
     rows = []
     for ln in d["lanes"]:

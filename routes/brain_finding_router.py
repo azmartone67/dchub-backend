@@ -97,6 +97,53 @@ def _load_outcomes() -> dict:
         return {}
 
 
+DEFERRED_OUTCOME = "deferred_rate_cap"
+DEFERRED_ALARM_H = 7 * 24.0
+
+
+def _load_outcome_ages() -> dict:
+    """{(issue_label, url): first_seen_at} for rows parked at deferred_rate_cap.
+    ★2026-09-02 (D10): 27 of 29 active findings sat at deferred_rate_cap and
+    nothing said for how long — the propose stage read "green with zero
+    output". The age is since the row was FIRST seen (brain_issue_persistence
+    keeps no per-outcome timestamp); a finding cannot have been deferred for
+    longer than it has existed, so this is a ceiling stated as such."""
+    try:
+        from routes.brain_v2_store import _conn
+        c = _conn()
+        if c is None:
+            return {}
+        try:
+            with c, c.cursor() as cur:
+                cur.execute(
+                    "SELECT issue_label, url, first_seen_at "
+                    "  FROM brain_issue_persistence "
+                    " WHERE last_outcome = %s ORDER BY last_seen_at DESC LIMIT 500",
+                    (DEFERRED_OUTCOME,))
+                return {(r[0], r[1] or ""): r[2] for r in cur.fetchall()}
+        finally:
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def deferred_age_h(item: dict, ages: dict, now=None) -> float | None:
+    """Hours a finding has been parked at deferred_rate_cap (ceiling: since
+    first seen). None when the row is unknown — unknown is not zero."""
+    issue = item.get("issue") or ""
+    url = item.get("url") or ""
+    seen = ages.get((issue[:200], url)) or ages.get((issue, url))
+    if seen is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    if getattr(seen, "tzinfo", None) is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    return round(max(0.0, (now - seen).total_seconds() / 3600.0), 1)
+
+
 def _outcome_for(item: dict, outcomes: dict) -> str:
     issue = item.get("issue") or ""
     url = item.get("url") or ""
@@ -115,21 +162,35 @@ def _names_mcp_surface(item: dict) -> bool:
     return any(h in text for h in MCP_SERVER_HINTS)
 
 
-def classify_items(items: list, outcomes: dict | None = None) -> dict:
+def classify_items(items: list, outcomes: dict | None = None,
+                   ages: dict | None = None, now=None) -> dict:
     """Split findings into active / operator_config / mcp_server / terminal.
 
     Bucket precedence: operator outcomes are unambiguous and win first;
     refused/no_source_map findings that name the mcp-server surface route to
     mcp_server; every other terminal outcome is `terminal`; anything without
-    a recorded terminal outcome is the honest `active` backlog."""
+    a recorded terminal outcome is the honest `active` backlog.
+
+    Active findings parked at deferred_rate_cap carry `deferred_age_h`, and
+    `deferred_over_7d` counts the ones older than DEFERRED_ALARM_H — the
+    number the radar's check_findings_deferred_over_7d alarms on."""
     if outcomes is None:
         outcomes = _load_outcomes()
+    if ages is None:
+        ages = _load_outcome_ages() if any(
+            v == DEFERRED_OUTCOME for v in outcomes.values()) else {}
     buckets = {"active": [], "operator_config": [],
                "mcp_server": [], "terminal": []}
+    over = 0
     for item in items or []:
         oc = _outcome_for(item, outcomes)
         entry = dict(item)
         entry["last_outcome"] = oc or None
+        if oc == DEFERRED_OUTCOME:
+            age = deferred_age_h(item, ages, now)
+            entry["deferred_age_h"] = age
+            if age is not None and age >= DEFERRED_ALARM_H:
+                over += 1
         if not _is_terminal(oc):
             buckets["active"].append(entry)
         elif oc in OPERATOR_OUTCOMES:
@@ -140,6 +201,7 @@ def classify_items(items: list, outcomes: dict | None = None) -> dict:
             buckets["terminal"].append(entry)
     buckets["counts"] = {k: len(v) for k, v in buckets.items()
                          if isinstance(v, list)}
+    buckets["deferred_over_7d"] = over
     return buckets
 
 

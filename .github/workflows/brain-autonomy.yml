@@ -21,7 +21,7 @@ name: brain autonomy loop
 
 on:
   schedule:
-    - cron: '*/30 * * * *'   # every 30 minutes
+    - cron: '2,32 * * * *'   # every 30 minutes at :02/:32 — staggered off main-branch-health's `*/30` (D15, 2026-09-02)
   workflow_dispatch: {}
 
 permissions:

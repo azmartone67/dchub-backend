@@ -1424,7 +1424,12 @@ def test_wrapper_endpoints_are_gated_and_answer_404_on_kill_and_unknown_class(mo
     assert c.post("/api/v1/brain/squasher/actuate/" + NEWS).status_code == 401
     assert c.post("/api/v1/brain/squasher/rollback-run", json={}).status_code == 401
     assert c.post("/api/v1/brain/squasher/graduation").status_code == 401
-    assert c.get("/api/v1/brain/squasher/verifier/" + FAC, headers=h).status_code == 404
+    assert c.get("/api/v1/brain/squasher/verifier/nope", headers=h).status_code == 404
+    # 2026-09-02 (brain-agents sweep finding 4d): a registered NON-actuator
+    # class is no longer "unknown actuator class" 404 — it reads its class
+    # row's verifier_url; without its row parameter that is a 400, not a
+    # blind read (tests/test_squasher_classify_on_enqueue.py has the rest).
+    assert c.get("/api/v1/brain/squasher/verifier/" + FAC, headers=h).status_code == 400
     assert c.post("/api/v1/brain/squasher/actuate/nope", headers=h).status_code == 404
     _fake_autonomy(monkeypatch, trigger=4)
     monkeypatch.setattr(sac, "_conn", lambda: _Conn(_Cur()))

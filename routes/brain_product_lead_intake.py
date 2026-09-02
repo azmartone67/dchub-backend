@@ -295,6 +295,180 @@ _BOARD_SQL = (
     " ORDER BY outcome_at DESC NULLS LAST, id DESC LIMIT %s")
 
 
+# ── the second source: PRODUCT GAPS the machines already measured ───────
+#
+# ★ 2026-09-02. The refuted-claims board above has had ONE row in its life
+#   (#100959, a throwaway probe, retracted): nothing registers fact/score/
+#   tool_answer claims, so this lane read an empty feed forever
+#   (board_as_of=null, judged_total=0). Two instruments already measure what
+#   the product lacks and nobody consumes them:
+#     · agentic_query_misses — the question an agent asked that no tool
+#       answered (served on /api/v1/admin/agentic/unmet-demand, GROUP BY norm)
+#     · mcp_upgrade_signals  — the tool an agent asked for and hit the paywall
+#   Neither is an opinion; both are counts of a caller's own request. They
+#   become `product_gap:<intent|tool>` findings, through the same discipline
+#   as the claims: TRUST GATE (the source read succeeded and is fresh, and a
+#   gap has been asked for at least PLEAD_GAP_MIN_COUNT times — one miss is
+#   noise), ELIGIBILITY, CAP + ROTATE, and a PERSISTED refusal.
+
+_GAP_ISSUE_PREFIX = _ISSUE_PREFIX + "product_gap:"
+
+
+def _gap_max_rows() -> int:
+    return _int_env("PLEAD_GAP_MAX", 2)
+
+
+def _gap_min_count() -> int:
+    return _int_env("PLEAD_GAP_MIN_COUNT", 3, lo=1)
+
+
+def _gap_max_age_h() -> float:
+    try:
+        return max(1.0, float(os.environ.get("PLEAD_GAP_MAX_AGE_H", "720")))
+    except Exception:
+        return 720.0
+
+
+def gap_rows(unmet: list | None, pressure: list | None) -> list:
+    """Normalise the two sources into one row shape. Pure.
+    unmet:    [{norm, count, last, surfaces, samples}]  (30d, by intent)
+    pressure: [{tool, count, distinct, last}]           (7d, by tool)
+    -> [{key, kind, count, distinct, last, samples}]"""
+    out = []
+    for r in unmet or []:
+        norm = str((r or {}).get("norm") or "").strip()
+        if not norm:
+            continue
+        out.append({"key": norm[:120], "kind": "intent",
+                    "count": int(r.get("count") or 0),
+                    "distinct": None, "last": r.get("last"),
+                    "samples": list(r.get("samples") or [])[:3]})
+    for r in pressure or []:
+        tool = str((r or {}).get("tool") or "").strip()
+        if not tool:
+            continue
+        out.append({"key": tool[:120], "kind": "tool",
+                    "count": int(r.get("count") or 0),
+                    "distinct": r.get("distinct"), "last": r.get("last"),
+                    "samples": []})
+    return out
+
+
+def gap_refusal(source: dict | None, max_age_h: float | None = None) -> str | None:
+    """Trust gate for the gap source. None = may seed; else the reason."""
+    if not source:
+        return "no product-gap source could be read"
+    if source.get("error"):
+        return "product-gap source read failed: %s" % str(source["error"])[:120]
+    newest = source.get("newest_at")
+    rows = source.get("rows") or []
+    if not rows:
+        return None                      # an empty source is a quiet state
+    age = age_hours(newest)
+    limit = _gap_max_age_h() if max_age_h is None else max_age_h
+    if age is None:
+        return ("newest product-gap observation has an unreadable timestamp "
+                "(%r)" % (newest,))
+    if age > limit:
+        return ("the newest product-gap observation is %.1fh old (limit %.1fh) "
+                "— the instruments have gone quiet, these gaps may not describe "
+                "now" % (age, limit))
+    return None
+
+
+def _gap_eligible(r: dict, min_count: int) -> bool:
+    return bool((r or {}).get("key")) and int((r or {}).get("count") or 0) >= min_count
+
+
+def select_seedable_gaps(rows: list, limit: int | None = None,
+                         cycle: int | None = None,
+                         min_count: int | None = None) -> tuple[list, int]:
+    """(rows to seed, how many eligible). Most-asked first, rotated, capped."""
+    limit = _gap_max_rows() if limit is None else limit
+    floor = _gap_min_count() if min_count is None else min_count
+    real = [r for r in (rows or []) if _gap_eligible(r or {}, floor)]
+    real.sort(key=lambda r: (-int(r.get("count") or 0), str(r.get("key"))))
+    total = len(real)
+    cyc = cycle_no(_ttl_s()) if cycle is None else cycle
+    return rotate_window(real, limit, cyc), total
+
+
+def to_gap_findings(rows: list, source_as_of=None) -> list:
+    """Gap rows -> the heal shape. `count` is the number of times callers asked
+    for it (a magnitude, not a recurrence tally — count_kind says so)."""
+    out = []
+    for r in rows or []:
+        key = str((r or {}).get("key") or "")
+        if not key:
+            continue
+        kind = r.get("kind") or "?"
+        out.append({
+            "url": "dchub://product-lead/gap/%s/%s" % (kind, key),
+            "issue": "%s%s" % (_GAP_ISSUE_PREFIX, key[:200]),
+            "count": int(r.get("count") or 0),
+            "count_kind": "item_count",
+            "detail": (
+                "PRODUCT GAP (%s): callers asked for `%s` %d time(s)%s and the "
+                "product had no answer%s. Source: %s — a count of the callers' "
+                "own requests, not an opinion. %sInstrument as of %s. "
+                "Board: /api/v1/admin/agentic/unmet-demand"
+                % (kind, key, int(r.get("count") or 0),
+                   (" (%s distinct callers)" % r.get("distinct"))
+                   if r.get("distinct") is not None else "",
+                   " (paywall hit — the tool exists but is gated)"
+                   if kind == "tool" else "",
+                   "mcp_upgrade_signals 7d" if kind == "tool"
+                   else "agentic_query_misses 30d",
+                   ("Samples: %s. " % "; ".join(
+                       str(x)[:80] for x in (r.get("samples") or [])[:3]))
+                   if r.get("samples") else "",
+                   source_as_of or "unknown")),
+        })
+    return out
+
+
+def _load_gap_source() -> dict:
+    """Both instruments, one dict: {rows, newest_at, error}. Fail-soft."""
+    src = {"rows": [], "newest_at": None, "error": None}
+    url = _db_url()
+    if not url:
+        src["error"] = "no database"
+        return src
+    try:
+        import psycopg2
+        with psycopg2.connect(url, connect_timeout=5) as conn, \
+                conn.cursor() as cur:
+            cur.execute("""
+                SELECT norm, count(*), max(created_at)::text,
+                       (array_agg(query ORDER BY created_at DESC))[1:3]
+                  FROM agentic_query_misses
+                 WHERE created_at > NOW() - INTERVAL '30 days'
+                 GROUP BY norm ORDER BY count(*) DESC LIMIT 40""")
+            unmet = [{"norm": r[0], "count": int(r[1]), "last": r[2],
+                      "samples": list(r[3] or [])} for r in cur.fetchall() or []]
+            pressure = []
+            try:
+                cur.execute("""
+                    SELECT tool_requested, count(*),
+                           count(DISTINCT session_id), max(created_at)::text
+                      FROM mcp_upgrade_signals
+                     WHERE created_at > NOW() - INTERVAL '7 days'
+                       AND tool_requested IS NOT NULL
+                     GROUP BY tool_requested ORDER BY count(*) DESC LIMIT 40""")
+                pressure = [{"tool": r[0], "count": int(r[1]),
+                             "distinct": int(r[2] or 0), "last": r[3]}
+                            for r in cur.fetchall() or []]
+            except Exception:  # noqa: BLE001
+                conn.rollback()  # the table may not exist on this DB
+            rows = gap_rows(unmet, pressure)
+            src["rows"] = rows
+            lasts = [r["last"] for r in rows if r.get("last")]
+            src["newest_at"] = max(lasts) if lasts else None
+    except Exception as e:  # noqa: BLE001
+        src["error"] = "%s: %s" % (type(e).__name__, str(e)[:120])
+    return src
+
+
 def _load_board() -> dict:
     """Judged product claims + the newest verdict time. Fail-soft; never raises.
 
@@ -326,7 +500,23 @@ def _load_board() -> dict:
     return board
 
 
-def refresh_snapshot(force: bool = False, load_fn=None) -> dict:
+def _gap_snapshot(gap_fn=None) -> dict:
+    """The gap half of one refresh: read, trust-gate, select. Pure given
+    gap_fn; never raises."""
+    try:
+        source = (gap_fn or _load_gap_source)() or {}
+    except Exception as e:  # noqa: BLE001
+        source = {"error": "%s: %s" % (type(e).__name__, str(e)[:120])}
+    refusal = gap_refusal(source)
+    if refusal:
+        return {"gap_rows": [], "gap_eligible_total": 0,
+                "gap_refused": refusal, "gap_as_of": source.get("newest_at")}
+    rows, eligible = select_seedable_gaps(source.get("rows") or [])
+    return {"gap_rows": rows, "gap_eligible_total": eligible,
+            "gap_refused": None, "gap_as_of": source.get("newest_at")}
+
+
+def refresh_snapshot(force: bool = False, load_fn=None, gap_fn=None) -> dict:
     """Read the judged product claims and persist the seedable slice."""
     if _disabled():
         return {"ok": True, "skipped": "PLEAD_INTAKE_DISABLE=1"}
@@ -338,13 +528,18 @@ def refresh_snapshot(force: bool = False, load_fn=None) -> dict:
     try:
         board = (load_fn or _load_board)() or {}
         judged = board.get("claims") or []
+        # The gap source is independent of the claims board: a refused board
+        # must not silence the machines, and a broken gap read must not
+        # silence the verifier. Each carries its own persisted refusal.
+        gaps = _gap_snapshot(gap_fn)
         base = {"ts": time.time(),
                 "as_of": datetime.now(timezone.utc).isoformat(),
                 "board_as_of": board.get("newest_outcome_at"),
                 "judged_total": len(judged),
                 "blast_radius_applied": blast_radius_applied(board),
                 "min_sample": _min_sample(),
-                "cycle": cycle_no(_ttl_s())}
+                "cycle": cycle_no(_ttl_s()),
+                **gaps}
         refusal = run_refusal(board)
         if refusal:
             # ★ Persist the refusal, or the last trusted snapshot keeps
@@ -352,7 +547,8 @@ def refresh_snapshot(force: bool = False, load_fn=None) -> dict:
             snap = dict(base, refused=refusal, eligible_total=0, rows=[])
             state_set(_STATE_KEY, snap)
             return {"ok": True, "refreshed": True, "refused": refusal,
-                    "rows": 0}
+                    "rows": 0, "gap_rows": len(gaps["gap_rows"]),
+                    "gap_refused": gaps["gap_refused"]}
         rows, eligible = select_seedable(judged)
         snap = dict(base, refused=None, eligible_total=eligible, rows=rows)
         state_set(_STATE_KEY, snap)
@@ -360,7 +556,12 @@ def refresh_snapshot(force: bool = False, load_fn=None) -> dict:
                 "eligible_total": eligible,
                 "deferred_to_next_cycle": max(0, eligible - len(rows)),
                 "judged_total": len(judged),
-                "blast_radius_applied": base["blast_radius_applied"]}
+                "blast_radius_applied": base["blast_radius_applied"],
+                "gap_rows": len(gaps["gap_rows"]),
+                "gap_eligible_total": gaps["gap_eligible_total"],
+                "gap_deferred_to_next_cycle": max(
+                    0, (gaps["gap_eligible_total"] or 0) - len(gaps["gap_rows"])),
+                "gap_refused": gaps["gap_refused"]}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:160]}
 
@@ -371,7 +572,9 @@ def product_lead_findings() -> list:
         return []
     try:
         snap = state_get(_STATE_KEY) or {}
-        return to_findings(snap.get("rows") or [], snap.get("board_as_of"))
+        return (to_findings(snap.get("rows") or [], snap.get("board_as_of"))
+                + to_gap_findings(snap.get("gap_rows") or [],
+                                  snap.get("gap_as_of")))
     except Exception:
         return []
 
@@ -478,7 +681,19 @@ def product_lead_intake_status():
            "cycle": snap.get("cycle"),
            "deferred_to_next_cycle": (max(0, eligible - len(seeded))
                                       if isinstance(eligible, int) else None),
-           "seeded": seeded}
+           "seeded": seeded,
+           # ★2026-09-02 the machine source (finding 8): counts of callers'
+           #   own requests, gated/capped/rotated like the claims lane.
+           "gaps": {"sources": ["agentic_query_misses 30d (intent)",
+                                "mcp_upgrade_signals 7d (tool)"],
+                    "max_rows": _gap_max_rows(),
+                    "min_count": _gap_min_count(),
+                    "max_age_h": _gap_max_age_h(),
+                    "as_of": snap.get("gap_as_of"),
+                    "refused": snap.get("gap_refused"),
+                    "eligible_total": snap.get("gap_eligible_total"),
+                    "seeded": to_gap_findings(snap.get("gap_rows") or [],
+                                              snap.get("gap_as_of"))}}
     resp = jsonify(out)
     resp.headers["Cache-Control"] = "no-store"
     return resp

@@ -89,6 +89,53 @@ _FINDING_LABEL_RE = re.compile(r"Brain finding:\s*([A-Za-z0-9_.:\-]+)")
 
 _BACKFILL_LOOP = "merge_reconciler_backfill"
 
+# ★ 2026-09-02 — a merged DOC does not act on a QA RED. `media::item-links`
+#   was RED for 142h while #3444 and #3494 (both [brain-spec] docs drafted from
+#   QA-derived investigations #100399 / #100405) were each credited as its fix
+#   through record_review_decision. The investigation an `inv #N` spec PR was
+#   drafted from is looked up; when its question came off the QA super-user
+#   board (derive_question's "observed from the <seat> seat on <surface>"
+#   shape, or a dchub://qa-superuser/ finding url) the PR is recorded with
+#   acted=False, NO review credit, and the fix verdict is left to the `qa:`
+#   claim the intake minted (claim_ledger, brain_qa_superuser_intake).
+_INV_REF_RE = re.compile(r"\binv\s*#\s*(\d+)")
+_QA_ORIGIN_RE = re.compile(
+    r"dchub://qa-superuser/|qa-superuser|QA super-user|"
+    r"observed from the \S+ seat on ", re.I)
+_QA_ORIGIN_STATE = "spec_doc_qa_red_ungraded"
+
+
+def investigation_ref(title: str):
+    """The `inv #N` an innovation-drafted spec PR names, or None."""
+    m = _INV_REF_RE.search(title or "")
+    return int(m.group(1)) if m else None
+
+
+def text_derives_from_qa_red(*texts) -> bool:
+    """Pure: does any of these texts carry a QA super-user origin marker?"""
+    return any(_QA_ORIGIN_RE.search(str(t or "")) for t in texts)
+
+
+def pr_derives_from_qa_red(cur, pr: dict) -> bool:
+    """Does this PR's source investigation come off the QA board? Reads the
+    brain_investigations row the title names; the title itself counts too.
+    Fail-soft: an unreadable row is NOT a QA origin (no credit is withheld on
+    a guess)."""
+    if text_derives_from_qa_red(pr.get("title"), pr.get("branch")):
+        return True
+    inv = investigation_ref(pr.get("title"))
+    if inv is None or cur is None:
+        return False
+    try:
+        cur.execute("SELECT question, result_json::text FROM brain_investigations "
+                    " WHERE id = %s", (inv,))
+        row = cur.fetchone()
+    except Exception:
+        return False
+    if not row:
+        return False
+    return text_derives_from_qa_red(row[0], (row[1] or "")[:20000])
+
 
 def _token() -> str:
     """GH_TOKEN / PR_SUBMIT_TOKEN exist on Railway (task note); GITHUB_TOKEN
@@ -515,6 +562,13 @@ def run_reconciliation(dry: bool = False) -> dict:
                 label = parse_finding_label(pr["title"])
                 entry["issue_label"] = label
 
+                is_spec = ref.startswith(_SPEC_PREFIX)
+                qa_origin = is_spec and pr_derives_from_qa_red(cur, pr)
+                # A doc never acts; a doc drafted from a QA RED must not even
+                # be credited — the RED's own `qa:` claim is its verdict.
+                entry["acted"] = False if is_spec else None
+                entry["qa_red_origin"] = qa_origin
+
                 marked = backfilled = False
                 if not dry and not retry:
                     if pid is not None:
@@ -526,7 +580,7 @@ def run_reconciliation(dry: bool = False) -> dict:
                             method = "backfill_insert"
                             entry.update(match=method,
                                          proposal_id=pid)
-                    if pid is not None:
+                    if pid is not None and not qa_origin:
                         record_review_decision(pid, label, pr)
                 entry.update(proposal_id=pid, marked_merged=marked,
                              backfilled=backfilled)
@@ -551,6 +605,11 @@ def run_reconciliation(dry: bool = False) -> dict:
                     state, still_broken = "spec_doc_ungraded", None
                     evidence = ("doc-only spec PR — merge credited, not "
                                 "graded as a fix outcome; " + evidence)[:500]
+                if qa_origin:
+                    state, still_broken = _QA_ORIGIN_STATE, None
+                    evidence = ("doc-only spec PR drafted from a QA super-user "
+                                "RED — acted=False, no review credit; the RED's "
+                                "own qa: fix claim is the verdict; " + evidence)[:500]
                 entry.update(outcome_state=state, still_broken=still_broken,
                              evidence=evidence)
                 if not dry:
@@ -570,6 +629,9 @@ def run_reconciliation(dry: bool = False) -> dict:
                 report["errors"].append(
                     {"pr": pr["number"], "error": f"{type(e).__name__}: {e}"[:200]})
         report["acted"] = acted
+        report["qa_red_origin_uncredited"] = sum(
+            1 for e in report["reconciled"] + report["pending"]
+            if e.get("qa_red_origin"))
     except Exception as e:
         report.update(ok=False, error=f"{type(e).__name__}: {str(e)[:200]}")
     finally:

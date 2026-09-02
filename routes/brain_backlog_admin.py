@@ -425,6 +425,172 @@ def _open_draft_pr_for_proposal(prop: dict) -> dict:
             "confidence": confidence, "file": cf}
 
 
+# ── Rotten recipes (2026-09-02, brain-agents sweep finding 7) ─────────
+# ★ WHY. master-tick 2026-09-01T22:24Z: tier2.l22_draft_prs skipped 14/14 —
+# "patched file fails ast.parse" (ids 140,138,135,96,15,1,53,32,127,95) and
+# "search text not in main.py (file changed since proposal)" (133,107,182,41)
+# — the SAME ids every tick, because a skip left the proposal `proposed` and
+# pending-pr served it again. A recipe whose search text is gone from main
+# or whose patch cannot parse will never open; replaying it costs the whole
+# over-fetch every tick and starves anything fresh. The run now COUNTS
+# rotten skips per proposal (draft_skips, last_skip_reason) and the tick's
+# expiry marks a proposal `stale` after ROTTEN_SKIP_THRESHOLD of them, so
+# L22 regenerates instead of replaying. pending-pr filters status='proposed',
+# so a stale row leaves the pool the moment it is marked.
+ROTTEN_SKIP_THRESHOLD = 3
+_ROTTEN_SKIP_MARKERS = (
+    "patched file fails ast.parse",
+    "search text not in",
+    "file not in main",
+)
+_SKIP_COLUMNS = (
+    ("draft_skips", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_skip_reason", "TEXT"),
+    ("last_skip_at", "TIMESTAMPTZ"),
+)
+_SKIP_COLUMNS_ENSURED = False
+
+
+def is_rotten_skip(reason: str | None) -> bool:
+    """A skip reason that will not clear on its own: the patch cannot parse
+    or its anchor is gone from main. duplicate_open_pr, multi-file, no-op and
+    the like are NOT rot — they say nothing about the recipe's health."""
+    r = (reason or "").strip()
+    return any(r.startswith(m) for m in _ROTTEN_SKIP_MARKERS)
+
+
+def rotten_skip_ids(skipped: list) -> list[tuple[int, str]]:
+    """(proposal id, reason) for every rotten skip in a draft_prs_run
+    `skipped` list — the rows record_draft_skips counts."""
+    out: list[tuple[int, str]] = []
+    for sk in skipped or []:
+        if not isinstance(sk, dict):
+            continue
+        reason = str(sk.get("reason") or "")
+        pid = sk.get("id")
+        if pid is None or not is_rotten_skip(reason):
+            continue
+        try:
+            out.append((int(pid), reason[:200]))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _pg_conn():
+    """Direct psycopg2 connection (mirrors brain_innovation_dashboard._conn).
+    None, never raises."""
+    try:
+        import psycopg2 as _pg
+        dsn = (os.environ.get("DATABASE_URL")
+               or os.environ.get("NEON_DATABASE_URL") or "")
+        if dsn:
+            return _pg.connect(dsn, sslmode="require", connect_timeout=6)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("brain_backlog_admin: _pg_conn failed: %s", e)
+    return None
+
+
+def _ensure_skip_columns(cur) -> bool:
+    """Add the skip-counter columns brain_proposed_code_fixes LACKS, and only
+    those (information_schema first — `ADD COLUMN IF NOT EXISTS` takes
+    ACCESS EXCLUSIVE before it evaluates its condition). Once per process,
+    memoised only after the DDL landed. False when the table is absent."""
+    global _SKIP_COLUMNS_ENSURED
+    if _SKIP_COLUMNS_ENSURED:
+        return True
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'brain_proposed_code_fixes'")
+    present = {str(r[0]) for r in (cur.fetchall() or [])}
+    if not present:
+        return False
+    for col, typ in _SKIP_COLUMNS:
+        if col not in present:
+            # Column names are constants from the tuple above — never input.
+            cur.execute(f"ALTER TABLE brain_proposed_code_fixes ADD COLUMN {col} {typ}")
+    _SKIP_COLUMNS_ENSURED = True
+    return True
+
+
+def record_draft_skips(skipped: list) -> dict:
+    """Count this run's ROTTEN skips on their proposals. Idempotent per run
+    (one increment per proposal per call), guarded on pr_url IS NULL so a
+    proposal that opened meanwhile is never touched. Fail-soft."""
+    rows = rotten_skip_ids(skipped)
+    out = {"ok": True, "rotten": len(rows), "counted": 0}
+    if not rows:
+        return out
+    conn = _pg_conn()
+    if conn is None:
+        out.update(ok=False, error="database unavailable")
+        return out
+    try:
+        with conn.cursor() as cur:
+            if not _ensure_skip_columns(cur):
+                out.update(ok=False, error="brain_proposed_code_fixes absent")
+                return out
+            for pid, reason in rows:
+                cur.execute(
+                    "UPDATE brain_proposed_code_fixes "
+                    "SET draft_skips = COALESCE(draft_skips, 0) + 1, "
+                    "last_skip_reason = %s, last_skip_at = NOW() "
+                    "WHERE id = %s AND pr_url IS NULL",
+                    (reason, pid))
+                out["counted"] += max(0, int(cur.rowcount or 0))
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("brain_backlog_admin: record_draft_skips failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        out.update(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}")
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return out
+
+
+def expire_rotten_proposals(threshold: int = ROTTEN_SKIP_THRESHOLD) -> dict:
+    """Master-tick tier2.draft_pr_expire_rotten: mark `stale` every still-
+    `proposed`, PR-less proposal with >= `threshold` rotten skips. The
+    reviewer_note keeps the last reason so the row explains itself.
+    Idempotent (a stale row no longer matches). Fail-soft."""
+    out = {"ok": True, "threshold": int(threshold), "marked_stale": 0, "ids": []}
+    conn = _pg_conn()
+    if conn is None:
+        out.update(ok=False, error="database unavailable")
+        return out
+    try:
+        with conn.cursor() as cur:
+            if not _ensure_skip_columns(cur):
+                out.update(ok=False, error="brain_proposed_code_fixes absent")
+                return out
+            cur.execute(
+                "UPDATE brain_proposed_code_fixes "
+                "SET status = 'stale', "
+                "reviewer_note = COALESCE(reviewer_note, '') || %s "
+                "|| COALESCE(last_skip_reason, '') "
+                "WHERE COALESCE(status, 'proposed') = 'proposed' "
+                "AND pr_url IS NULL AND COALESCE(draft_skips, 0) >= %s "
+                "RETURNING id",
+                (f" [stale {_dt.datetime.now(_dt.timezone.utc).date().isoformat()}: "
+                 f"{int(threshold)} consecutive rotten draft skips — ",
+                 int(threshold)))
+            ids = [int(r[0]) for r in (cur.fetchall() or [])]
+        conn.commit()
+        out["ids"] = ids[:50]
+        out["marked_stale"] = len(ids)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("brain_backlog_admin: expire_rotten_proposals failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        out.update(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}")
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return out
+
+
 # ── Endpoints ────────────────────────────────────────────────────────
 
 @brain_backlog_admin_bp.route("/api/v1/admin/brain/backlog",
@@ -565,6 +731,10 @@ def draft_prs_run():
             errors.append({"id": prop.get("id"),
                             "error": (res.get("error") or "")[:200]})
 
+    # 2026-09-02 (finding 7): count the rotten skips so the tick's expiry
+    # can retire a recipe instead of replaying it every tick.
+    rotten = record_draft_skips(skipped)
+
     return jsonify(
         ok=True,
         acted=bool(opened),
@@ -574,6 +744,7 @@ def draft_prs_run():
         opened=opened,
         skipped=skipped,
         errors=errors,
+        rotten_skips=rotten,
         candidates_examined=len(items),
     ), 200
 

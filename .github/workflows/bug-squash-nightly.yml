@@ -66,6 +66,38 @@ jobs:
         run: |
           echo "::warning title=bug-squash coverage degraded::Could not check out azmartone67/dchub-frontend (DCHUB_FRONTEND_RO_TOKEN lacks access). Frontend patterns were NOT scanned; backend patterns ran normally."
 
+      # ★ 2026-09-02 (QA sweep finding 5). The warning above is the ONLY
+      # trace of the degraded run, and nobody reads step annotations. For 13+
+      # nights (verified run 33473482241, 2026-09-01T05:24Z) this job was green
+      # with 3 of its 5 patterns unscanned and "0 findings all-time", and the
+      # dead-man board had no feed for it at all. Beat the board from here:
+      # a frontend-absent night is `degraded` (outside ingest_runs._OK_STATUS,
+      # so /api/v1/ops/deadman reads it RED) and a full scan is `success`.
+      # Fail-OPEN on the beat itself (a 401 must not kill the scan) but never
+      # silent — the code is printed, the same shape as daily-infra-sync.
+      - name: Dead-man beat (degraded when the frontend was not scanned)
+        if: always()
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          FRONTEND_OUTCOME: ${{ steps.frontend.outcome }}
+        run: |
+          if [ "$FRONTEND_OUTCOME" = "success" ]; then
+            STATUS="success"; NOTE="backend + frontend patterns scanned"
+          else
+            STATUS="degraded"; NOTE="frontend checkout ${FRONTEND_OUTCOME:-absent}: DCHUB_FRONTEND_RO_TOKEN lacks access — 3 of 5 patterns NOT scanned (owner: rotate the token)"
+          fi
+          CODE=$(curl -s -o /tmp/beat.json -w '%{http_code}' \
+            -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: dchub-ingest-beat/1.0" \
+            -d "{\"feed\":\"bug-squash-nightly\",\"status\":\"$STATUS\",\"cadence_hours\":30,\"note\":\"$NOTE\"}" || echo 000)
+          echo "beat HTTP $CODE status=$STATUS"
+          case "$CODE" in
+            200|201|202|204) ;;
+            *) echo "::warning::dead-man beat returned $CODE — feed bug-squash-nightly will read STALE on /api/v1/ops/deadman";;
+          esac
+
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
