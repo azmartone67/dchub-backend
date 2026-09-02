@@ -441,6 +441,16 @@ def _comparability(week_starts: list[str],
 # and what share — the reader can then quote calls_net_of_harvesters across
 # ALL weeks deliberately, which is a different series and labelled as one.
 #
+# ★ NAMED FOR WHAT IT CHECKS (renamed 2026-09-02, hours after #3581 shipped
+# it as `baseline_harvester_dominated`). It scopes to `week_starts`, which is
+# BOTH sides of the delta — the current week trips it exactly as the baseline
+# does, and on the first production read it was the CURRENT week (2026-W35,
+# 81.4%) that fired, not the baseline. The old name described a narrower
+# check than the code performs, which is the more dangerous direction for a
+# name to be wrong in: a reader would have believed a scraper-dominated
+# current week went unchecked. Renamed with no alias — #3581 merged
+# 06:30:34Z and the key had no consumer outside its own tests.
+#
 # Threshold is mcp_calls_deloop.CONCENTRATION_PCT, the SAME 25.0 the funnel
 # already gates single-caller concentration on — deliberately not a second
 # number for a reader to reconcile against the first.
@@ -494,8 +504,8 @@ def _verdict(uniq: list[dict], sup: list[dict],
     refusal stays legible rather than collapsing into a bare false:
       crosses_definition_change   the sides count different populations
       superseded_by_correction    both sides count a population since declared wrong
-      baseline_harvester_dominated  a week in the delta is mostly a named bulk
-        harvester, so the delta describes when a scraper ran
+      includes_harvester_dominated_week  a week in the delta is mostly a named
+        bulk harvester, so the delta describes when a scraper ran
     """
     harv = list(harv or ())
     if uniq:
@@ -518,7 +528,7 @@ def _verdict(uniq: list[dict], sup: list[dict],
         _means = (
             "every week in this delta counts the same population, but "
             f"{_weeks} is mostly a NAMED BULK HARVESTER rather than demand — "
-            "see baseline_harvester[]. The percentage is arithmetically "
+            "see harvester_dominated_weeks[]. The percentage is arithmetically "
             "correct and is NOT a trend: it describes when a scraper ran. "
             "Read calls_net_of_harvesters across ALL weeks instead, which is "
             "a different series and must be labelled as one."
@@ -530,8 +540,8 @@ def _verdict(uniq: list[dict], sup: list[dict],
         "changes": uniq,
         "superseded_by_correction": bool(sup),
         "superseded_by": sup,
-        "baseline_harvester_dominated": bool(harv),
-        "baseline_harvester": harv,
+        "includes_harvester_dominated_week": bool(harv),
+        "harvester_dominated_weeks": harv,
         "quotable_as_trend": not (uniq or sup or harv),
         "means": _means,
     }
@@ -1022,7 +1032,8 @@ def _baseline_outlier_flag(weeks: list[dict],
     return out
 
 
-def _partial_week(week_start: _dt.date, agents, calls, now: _dt.datetime) -> dict:
+def _partial_week(week_start: _dt.date, agents, calls, now: _dt.datetime,
+                  harvester=None) -> dict:
     """The live, still-accumulating week — labelled so it cannot be misread.
 
     Published because it is real and a reader watching adoption wants it, and
@@ -1048,6 +1059,18 @@ def _partial_week(week_start: _dt.date, agents, calls, now: _dt.datetime) -> dic
         "agents": None if agents is None else int(agents),
         "calls": None if calls is None else int(calls),
         "definition_changes": changes,
+        # ★ 2026-09-02. #3581 gave every COMPLETE week a harvester share and
+        # left this one without: _partial_week is a separate path and never
+        # got the block. The live week is the one a reader stares at mid-week
+        # — precisely when a scrape is still running and the number is at its
+        # least trustworthy — so it was the worst week to leave unlabelled.
+        # None means NOT MEASURED (the companion query failed), never zero.
+        "harvester_calls": None,
+        "harvester_pct": None,
+        "calls_net_of_harvesters": None,
+        "agents_net_of_harvesters": None,
+        "harvester_names": None,
+        "harvester_dominated": None,
         "warning": (
             "IN PROGRESS — not comparable to any complete week above. This "
             "week has had "
@@ -1056,6 +1079,28 @@ def _partial_week(week_start: _dt.date, agents, calls, now: _dt.datetime) -> dic
             "not in weeks[]"
         ),
     }
+    if harvester is not None:
+        from mcp_calls_deloop import (CONCENTRATION_PCT as _thr,
+                                      HARVESTER_PLATFORMS as _hv_names)
+        _hc = int(harvester[0] or 0)
+        _pct = (round(100.0 * _hc / int(calls), 1)
+                if calls else None)
+        out.update({
+            "harvester_calls": _hc,
+            "harvester_pct": _pct,
+            "calls_net_of_harvesters": int(harvester[1] or 0),
+            "agents_net_of_harvesters": int(harvester[2] or 0),
+            "harvester_names": sorted(_hv_names),
+            "harvester_dominated": (_pct is not None and _pct >= _thr),
+        })
+        if out["harvester_dominated"]:
+            out["harvester_warning"] = (
+                f"{_pct}% of this week SO FAR is a named bulk harvester "
+                f"({', '.join(sorted(_hv_names))}), not demand. The "
+                "elapsed-hours rate above is therefore mostly a scrape in "
+                "progress — read calls_net_of_harvesters instead, and expect "
+                "this share to move as the week fills"
+            )
     if changes:
         # ★ The live week is where a fresh change is ALWAYS caught first, and
         # it is the week a reader is most likely to be staring at while
@@ -1250,6 +1295,28 @@ def _run(weeks: int) -> dict:
             )
             prow = cur.fetchone() or (None, None)
 
+            # Harvester split for the LIVE week, self-isolated like the two
+            # per-week blocks above: a failure costs the reader six keys on
+            # current_week_partial and nothing else. Kept OUT of the query
+            # above on purpose — folding it in would mean a harvester-query
+            # failure took agents and calls down with it.
+            pv_row = None
+            try:
+                from mcp_calls_deloop import harvester_predicate as _hv_fn2
+                _hv2 = _hv_fn2()
+                cur.execute(
+                    "SELECT COUNT(*) FILTER (WHERE " + _hv2 + "),"
+                    "       COUNT(*) FILTER (WHERE NOT (" + _hv2 + ")),"
+                    "       COUNT(DISTINCT agent_id) FILTER (WHERE NOT ("
+                    + _hv2 + "))"
+                    "  FROM " + _TABLE +
+                    " WHERE created_at >= date_trunc('week', now())"
+                    "   AND " + pop
+                )
+                pv_row = cur.fetchone()
+            except Exception:
+                pv_row = None
+
             # Parity: the canonical ROLLING 7d, run from the shared helper so
             # this endpoint cannot quietly disagree with the funnel headline.
             cur.execute(canonical_external_activity_sql(7))
@@ -1269,7 +1336,7 @@ def _run(weeks: int) -> dict:
                              harness=harness_rows,
                              harvester=harvester_rows)
     out["current_week_partial"] = _partial_week(
-        cur_week, prow[0], prow[1], now_ts)
+        cur_week, prow[0], prow[1], now_ts, harvester=pv_row)
     out["wow"] = _wow(out["weeks"])
     # Both published. `wow` keeps its key and meaning for existing consumers;
     # `robust_wow` is the one to quote, and `wow_baseline_check` is what makes

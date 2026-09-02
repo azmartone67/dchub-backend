@@ -65,9 +65,9 @@ def test_the_outlier_test_does_NOT_catch_it():
 def test_wow_against_that_baseline_is_refused():
     out = _wow([W35, W36])
     comp = out["comparability"]
-    assert comp["baseline_harvester_dominated"] is True
+    assert comp["includes_harvester_dominated_week"] is True
     assert comp["quotable_as_trend"] is False
-    assert [h["week_start"] for h in comp["baseline_harvester"]] == ["2026-08-24"]
+    assert [h["week_start"] for h in comp["harvester_dominated_weeks"]] == ["2026-08-24"]
     # the arithmetic is still published — refused, not hidden
     assert out["calls_pct"] == round((340 - 1810) * 100.0 / 1810, 1)
 
@@ -87,7 +87,7 @@ def test_the_harvester_hazard_ALONE_flips_quotability():
     comp = _wow([dirty, clean])["comparability"]
     assert comp["crosses_definition_change"] is False, "pair must be otherwise clean"
     assert comp["superseded_by_correction"] is False, "pair must be otherwise clean"
-    assert comp["baseline_harvester_dominated"] is True
+    assert comp["includes_harvester_dominated_week"] is True
     assert comp["quotable_as_trend"] is False
     assert "NAMED BULK HARVESTER" in comp["means"]
 
@@ -105,7 +105,7 @@ def test_a_clean_pair_stays_quotable():
     comp = _wow([a, b])["comparability"]
     assert comp["crosses_definition_change"] is False
     assert comp["superseded_by_correction"] is False
-    assert comp["baseline_harvester_dominated"] is False
+    assert comp["includes_harvester_dominated_week"] is False
     assert comp["quotable_as_trend"] is True
 
 
@@ -140,7 +140,7 @@ def test_definition_change_still_wins_the_message():
     v = _verdict([{"effective_at": "x", "change": "c"}], [],
                  [{"week_start": "2026-08-24", "harvester_pct": 81.5}])
     assert v["crosses_definition_change"] is True
-    assert v["baseline_harvester_dominated"] is True
+    assert v["includes_harvester_dominated_week"] is True
     assert v["quotable_as_trend"] is False
     assert "DIFFERENT population" in v["means"]
 
@@ -149,8 +149,8 @@ def test_verdict_stays_backward_compatible_for_span_callers():
     """comparability_for_spans calls _verdict with two args; that must keep
     working and must not invent a hazard."""
     v = _verdict([], [])
-    assert v["baseline_harvester_dominated"] is False
-    assert v["baseline_harvester"] == []
+    assert v["includes_harvester_dominated_week"] is False
+    assert v["harvester_dominated_weeks"] == []
     assert v["quotable_as_trend"] is True
 
 
@@ -158,4 +158,59 @@ def test_comparability_without_weeks_is_silent():
     """Every existing caller passes no week rows — none of them may start
     refusing deltas because of a hazard that cannot be evaluated."""
     v = _comparability(["2026-08-10", "2026-08-17"])
-    assert v["baseline_harvester_dominated"] is False
+    assert v["includes_harvester_dominated_week"] is False
+
+
+# ── the live partial week (2026-09-02 follow-up) ────────────────────────────
+import datetime as _dt  # noqa: E402
+
+from routes.weekly_series import _partial_week  # noqa: E402
+
+_NOW = _dt.datetime(2026, 9, 2, 6, 0, tzinfo=_dt.timezone.utc)
+_WK = _dt.date(2026, 8, 31)
+
+
+def test_partial_week_reports_its_harvester_share():
+    p = _partial_week(_WK, 30, 400, _NOW, harvester=(340, 60, 28))
+    assert p["harvester_calls"] == 340
+    assert p["harvester_pct"] == 85.0
+    assert p["calls_net_of_harvesters"] == 60
+    assert p["agents_net_of_harvesters"] == 28
+    assert p["harvester_dominated"] is True
+    assert "not demand" in p["harvester_warning"]
+
+
+def test_partial_week_below_threshold_is_not_flagged():
+    p = _partial_week(_WK, 30, 400, _NOW, harvester=(20, 380, 29))
+    assert p["harvester_pct"] == 5.0
+    assert p["harvester_dominated"] is False
+    assert "harvester_warning" not in p
+
+
+def test_partial_week_unmeasured_is_None_not_zero():
+    """★ The shape #3581 actually shipped: no harvester keys at all. They must
+    now be PRESENT and null when the companion query fails — absent keys and
+    zero both read as 'no harvester here', which is the wrong answer."""
+    p = _partial_week(_WK, 30, 400, _NOW)
+    for k in ("harvester_calls", "harvester_pct", "calls_net_of_harvesters",
+              "agents_net_of_harvesters", "harvester_names",
+              "harvester_dominated"):
+        assert k in p, f"{k} missing — a reader cannot tell unmeasured from clean"
+        assert p[k] is None, k
+    assert "harvester_warning" not in p
+
+
+def test_partial_week_zero_calls_does_not_divide():
+    p = _partial_week(_WK, 0, 0, _NOW, harvester=(0, 0, 0))
+    assert p["harvester_pct"] is None
+    assert p["harvester_dominated"] is False
+
+
+def test_the_old_misleading_key_is_gone():
+    """`baseline_harvester_dominated` described a narrower check than the code
+    performs — it fires on the CURRENT week too. Renamed with no alias."""
+    v = _verdict([], [], [{"week_start": "2026-08-24", "harvester_pct": 81.4}])
+    assert "baseline_harvester_dominated" not in v
+    assert "baseline_harvester" not in v
+    assert v["includes_harvester_dominated_week"] is True
+    assert len(v["harvester_dominated_weeks"]) == 1
