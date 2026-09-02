@@ -295,3 +295,36 @@ def test_admin_gate_is_fail_closed():
             "query-param keys must not be accepted"
     finally:
         os.environ.pop("DCHUB_ADMIN_KEY", None)
+
+
+# ── 6 · the probe's evaluator for this switch (pure) ────────────────────────
+def _probe():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_ksp_act", os.path.join(ROOT, "tools", "kill_switch_probe.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_probe_convicts_a_process_that_publishes_enabled_while_the_registry_says_off():
+    p = _probe()
+    assert p.SWITCHES["ACTIVATION_EMAILS_ENABLED"]["expected"] == "0"
+    v = p.evaluate("ACTIVATION_EMAILS_ENABLED", "0", {"enabled": True, "sent_in_window": 0})
+    assert v["state"] == p.VIOLATION and "enabled=True" in v["detail"]
+
+
+def test_probe_convicts_a_send_while_off_and_agrees_on_silence():
+    p = _probe()
+    v = p.evaluate("ACTIVATION_EMAILS_ENABLED", "0", {"enabled": False, "sent_in_window": 2})
+    assert v["state"] == p.VIOLATION and "2 activation email(s)" in v["detail"]
+    ok = p.evaluate("ACTIVATION_EMAILS_ENABLED", "0", {"enabled": False, "sent_in_window": 0})
+    assert ok["state"] == p.AGREE
+    armed = p.evaluate("ACTIVATION_EMAILS_ENABLED", "1", {"enabled": True, "sent_in_window": 3})
+    assert armed["state"] == p.AGREE, "when the owner arms it, sending is permitted"
+
+
+def test_probe_reads_unknown_never_red_when_the_surface_is_absent():
+    p = _probe()
+    assert p.evaluate("ACTIVATION_EMAILS_ENABLED", "0", None)["state"] == p.UNKNOWN
+    assert p.evaluate("ACTIVATION_EMAILS_ENABLED", "0", {})["state"] == p.UNKNOWN

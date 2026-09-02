@@ -131,9 +131,8 @@ LEDGER_DDL = (
 # SAME string literal as the INSERT (regression_lint requires that) and is
 # what makes a repeat sweep a no-op: rowcount 0 => somebody already holds
 # this (customer, step) => do not send.
-CLAIM_SQL = (
-    "INSERT INTO activation_email_ledger (customer_id, step, email) "
-    "VALUES (%s, %s, %s) ON CONFLICT (customer_id, step) DO NOTHING"
+CLAIM_SQL = (  # ONE literal: regression_lint reads INSERT..ON CONFLICT per string
+    "INSERT INTO activation_email_ledger (customer_id, step, email) VALUES (%s, %s, %s) ON CONFLICT (customer_id, step) DO NOTHING"
 )
 
 
