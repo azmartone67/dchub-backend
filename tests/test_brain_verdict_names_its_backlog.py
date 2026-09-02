@@ -30,10 +30,18 @@ out of it, and that distinction is the entire purpose of this verdict. Only
 proposals in flight earn `healthy_working` on their own.
 
 ★ WHY THE BACKLOG IS NOT MERELY "ROUTED ELSEWHERE". The old detail line said
-these findings "route to autopilot + Layer 5". Measured the same day, the
-latest brain-autonomy run evaluated 22 proposals and opened ZERO — 21 rejected
-`not_mechanical` against a 6-class SQL/datetime allowlist. A backlog that
-routes into a filter which rejects everything is not routed, it is parked.
+these findings "route to autopilot + Layer 5", and a backlog that routes into
+a filter which rejects everything is parked, not routed.
+
+★ CORRECTION (2026-09-02). This docstring used to finish that thought by
+naming the culprit: "21 rejected `not_mechanical` against a 6-class
+SQL/datetime allowlist." That attribution was REFUTED the next day by
+brain_mechanical_classifier.attribute_blockers() — of 85 open proposals 82
+cited that gate and removing it would release ZERO, because every one carried
+another blocker. The most-cited gate is not the deciding one. The claim is
+struck here because it had already propagated from the verdict text into this
+test, and a refuted claim repeated in a guard is how it survives being fixed
+in the code. See tests/test_brain_verdict_no_frozen_measurement.py.
 """
 from routes.brain_v2_layer4 import compute_brain_verdict
 

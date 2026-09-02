@@ -1483,8 +1483,57 @@ def _cached_actionable_count() -> int:
         return 0
 
 
+# ── the deciding blocker, never the most-cited one ────────────────────
+# WHY THIS EXISTS. Until 2026-09-02 the `healthy_backlog` verdict carried a
+# HARDCODED sentence: "measured 2026-08-30, brain-autonomy evaluated 22
+# proposals and opened 0 — 21 `not_mechanical` against a 6-class SQL/datetime
+# allowlist." It named the allowlist as the thing to widen.
+#
+# The very next day brain_mechanical_classifier.attribute_blockers() measured
+# that claim and refuted it: of 85 open proposals, 82 cited the allowlist gate
+# and removing it would have released ZERO, because every one of the 82 carried
+# at least one other blocker (34 were low_confidence + no_class, the model
+# scoring its own fix at 0.55 against a 0.8 bar).
+#
+# ★ The frozen sentence outlived the measurement that refuted it, and it is
+# published live on /api/v1/brain/status. Every reader — humans and agents
+# alike — was told to widen the one gate that releases nothing. That is not a
+# stale comment; it is a status endpoint actively pointing at a dead lever.
+#
+# THE INVARIANT THIS ENFORCES: the verdict may name a blocker gate ONLY when
+# live attribution shows that gate is SOLELY responsible for at least one
+# refusal. With no attribution, or with every refusal held by 2+ gates, it
+# names NO gate and points at the instrument instead. A gate with
+# sole_blocker=0 is not what is stopping you, and this text can no longer say
+# it is. Guarded by tests/test_brain_verdict_no_frozen_measurement.py.
+def _deciding_blocker_clause(attribution) -> str:
+    """The blocker sentence, derived live or omitted. NEVER hardcodes a count."""
+    instrument = ("/api/v1/brain/proposals/mechanical → `sole_blocker` names "
+                  "the gate actually deciding; the most-cited gate is usually "
+                  "not it.")
+    if not isinstance(attribution, dict):
+        return ("★ Verify that routing rather than assuming it: read "
+                + instrument)
+    sole = attribution.get("sole_blocker") or {}
+    blocked = attribution.get("blocked")
+    # Only a gate that owns a refusal ALONE may be named — removing any other
+    # gate leaves its proposals refused by the blocker beside it.
+    deciding = max(sole.items(), key=lambda kv: kv[1]) if sole else None
+    if not deciding or deciding[1] <= 0:
+        n = blocked if isinstance(blocked, int) else "the"
+        return (f"★ {n} refused proposal(s), and NO single gate would release "
+                f"any of them on its own — every refusal is held by two or "
+                f"more gates, so widening any one of them releases nothing. "
+                f"Read " + instrument)
+    gate, n = deciding
+    return (f"★ The gate actually deciding is `{gate}` — it alone holds {n} "
+            f"refusal(s); widening any other gate releases nothing. Read "
+            + instrument)
+
+
 def compute_brain_verdict(has_api_key, run_age_min, stale_min,
-                          pf_count, log_count, actionable_count=0):
+                          pf_count, log_count, actionable_count=0,
+                          blocker_attribution=None):
     """The honest, unambiguous Layer-4 state — shared by
     /api/v1/brain/status AND the /brain dashboard so both tell the same
     story. Returns (verdict, verdict_detail).
@@ -1548,12 +1597,7 @@ def compute_brain_verdict(has_api_key, run_age_min, stale_min,
                     f"need backend/SEO/infra fixes, not HTML edits. These "
                     f"route to autopilot + Layer 5, not Layer 4. See "
                     f"/api/v1/heal/findings and /api/v1/brain/findings/triage. "
-                    f"★ Verify that routing rather than assuming it: measured "
-                    f"2026-08-30, brain-autonomy evaluated 22 proposals and "
-                    f"opened 0 — 21 `not_mechanical` against a 6-class "
-                    f"SQL/datetime allowlist. A backlog that routes into a "
-                    f"filter which rejects everything is not routed, it is "
-                    f"parked.")
+                    + _deciding_blocker_clause(blocker_attribution))
         if stale_min is not None and stale_min < 180:
             return ("healthy_working",
                     f"Running normally — last pass {run_age_min}m ago, "
