@@ -154,6 +154,40 @@ def test_ledger_whitelist_accepts_oauth_authorize_started():
         "kinds with a bare `continue`, so the gateway's counter would read 0 forever")
 
 
+def test_ledger_keeps_the_three_stage_kinds_and_still_drops_an_unknown_one():
+    """mcp-server#307 emits challenge_issued / oauth_authorize_started /
+    identity_created into the same sink. The whitelist is CLOSED, so each must
+    be listed, and listing them must not open the fence: an unknown kind, an
+    unknown method, a key without ':' and a non-positive count are all still
+    dropped. Mutation: remove any one stage kind from _KINDS -> RED."""
+    led = _load("routes/oauth_challenge_ledger.py", "_ocl_0902")
+    day = dt.date(2026, 9, 2)
+    rows = led.parse_counts({
+        "challenge_issued:tools/call": 249,
+        "challenge_issued:initialize": 3,
+        "oauth_authorize_started:other": 12,
+        "identity_created:other": 2,
+        "claude_connector:tools/call": 249,       # the existing kind still flows
+        "totally_made_up_kind:other": 99,         # unknown kind -> dropped
+        "oauth_authorize_started:bogus_method": 5,  # unknown method -> dropped
+        "no_colon_here": 7,                        # malformed -> dropped
+        "identity_created:other:": 1,              # empty method -> dropped
+        "challenge_issued:other": 0,               # non-positive -> dropped
+        "challenge_issued:tools/call ": "x",       # non-int -> dropped
+    }, day)
+    kept = {(k, m): n for (_d, k, m, n) in rows}
+    assert kept == {("challenge_issued", "tools/call"): 249,
+                    ("challenge_issued", "initialize"): 3,
+                    ("oauth_authorize_started", "other"): 12,
+                    ("identity_created", "other"): 2,
+                    ("claude_connector", "tools/call"): 249}, kept
+    assert all(d == day for (d, *_r) in rows)
+    for k in ("challenge_issued", "oauth_authorize_started", "identity_created"):
+        assert k in led._KINDS, f"{k} missing from _KINDS"
+    assert "totally_made_up_kind" not in led._KINDS
+    assert led.parse_counts("not a dict", day) == []
+
+
 def test_retention_publishes_authorize_started_with_an_instrumented_since():
     src = _src("routes", "mcp_retention.py")
     assert "kind = 'oauth_authorize_started'" in src, "retention never aggregates the kind"
