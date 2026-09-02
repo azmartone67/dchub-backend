@@ -30479,7 +30479,7 @@ def _build_sitemap_sections():
     # ONLY when you actually edit the static_pages / markets / locations lists.
     # DB-driven shards below carry their REAL per-row timestamps: dcpi →
     # computed_at, city-state markets → MAX(first_seen), facilities → first_seen.
-    _STATIC_LASTMOD = '2026-08-19'  # bumped: +/guide (onboarding consolidation)
+    _STATIC_LASTMOD = '2026-09-02'  # bumped: +/integrations/cloudflare (portal recipe)
 
     def slugify(text):
         """Convert facility name to URL slug."""
@@ -31017,6 +31017,18 @@ def _build_sitemap_sections():
         ('/for/meta', '0.8', 'weekly'),
         ('/for/cursor', '0.8', 'weekly'),
         ('/for/windsurf', '0.8', 'weekly'),
+        # 2026-09-02: /integrations/cloudflare — the Cloudflare Zero Trust MCP
+        # Server Portal recipe. The WHOLE /integrations/* family is absent from
+        # every sitemap shard (live sitemap-static.xml: 457 <loc>, zero matching
+        # 'integrations'), so a new recipe page is invisible to crawlers unless
+        # it is listed here. Same omission class as /install/* above. Listed
+        # only for the page this change ships; the six pre-existing siblings
+        # stay unlisted rather than being swept in on an unrelated PR.
+        # NOTE: a deploy alone does NOT publish this — /sitemap-static.xml
+        # returns the sitemap_snapshot DB row before the live builder runs, so
+        # the 4-hourly cron or POST /api/v1/admin/sitemap/rebuild-snapshot has
+        # to fire first. Verify with the X-Sitemap-Source header.
+        ('/integrations/cloudflare', '0.8', 'weekly'),
         ('/capabilities', '0.8', 'weekly'),
         ('/whats-new', '0.7', 'weekly'),
         ('/testimonials', '0.7', 'weekly'),
