@@ -230,11 +230,13 @@ def test_read_state_publishes_exclusion_and_last_verdict(rt, monkeypatch):
 
 def test_read_state_still_goes_critical_on_a_live_broken_listing(rt, monkeypatch):
     """The exclusion must not be able to suppress a REAL red."""
-    rows = STATE_ROWS + [("cline", "broken", "not our page", None, None, 9.0)]
+    # ("cline" was this fixture until 2026-09-02, when it became a CODE_DEFUNCT
+    # entry — a live broken listing must be one that is NOT recorded dead.)
+    rows = STATE_ROWS + [("pulsemcp", "broken", "not our page", None, None, 9.0)]
     conn = _StateConn(rows, DEFUNCT)
     _install(rt, monkeypatch, conn)
     out = rt.read_state()
-    assert out["broken"] == ["cline"]
+    assert out["broken"] == ["pulsemcp"]
     assert out["critical"] is True
 
 
@@ -245,3 +247,27 @@ def test_read_state_with_no_defunct_rows_is_unchanged(rt, monkeypatch):
     assert sum(out["counts"].values()) == 3
     assert out["excluded_defunct"] == []
     assert out["critical"] is True
+
+
+# ── CODE_DEFUNCT (QA-sweep F4, 2026-09-02) ───────────────────────────────
+
+def test_code_defunct_excludes_a_never_listed_registry_with_a_dated_reason(rt, monkeypatch):
+    """cline's tracked URL was a docs anchor (now a redirect with 0 dchub
+    mentions) and klavis_ai is 404 — both probed 2026-09-02. With NO DB rows
+    the scan must still skip them and publish why, dated."""
+    listings = LISTINGS + [("cline", "https://docs.cline.bot/mcp/mcp-marketplace#dchub"),
+                           ("klavis_ai", "https://www.klavis.ai/mcp-servers/dchub")]
+    out, fetched = _scan(rt, monkeypatch, listings, [])
+    assert not any("cline" in u or "klavis" in u for u in fetched), fetched
+    ex = {e["registry"]: e["reason"] for e in out["excluded_defunct"]}
+    assert set(ex) == {"cline", "klavis_ai"}
+    assert all(r.startswith("2026-") for r in ex.values()), ex
+    assert "#1668" in ex["cline"]
+    assert out["tracked_including_defunct"] == len(listings)
+
+
+def test_db_defunct_reason_wins_over_the_code_seed(rt, monkeypatch):
+    listings = LISTINGS + [("cline", "https://docs.cline.bot/mcp/mcp-marketplace#dchub")]
+    out, _ = _scan(rt, monkeypatch, listings, [("cline", "owner override")])
+    ex = {e["registry"]: e["reason"] for e in out["excluded_defunct"]}
+    assert ex["cline"] == "owner override"

@@ -112,7 +112,10 @@ def _default_paid_tier() -> str:
     endpoint, unlock_more_data and mcp_facts all omitted it. While
     routes/founding_customers.founding_status() says the program is open, the
     default is founding; when the seats are gone it is developer again. An
-    explicit ?tier= or a tool with a TOOL_TIER_MAP entry is never overridden.
+    explicit ?tier= is never overridden, and a tool mapped to "pro" stays
+    pro — only an unchosen "developer" (the resolver default, or a
+    TOOL_TIER_MAP developer row such as get_dchub_recommendation's
+    neighbours) is lifted to the plan that sells.
     """
     try:
         from routes.founding_customers import founding_status
@@ -146,7 +149,7 @@ def paywall_checkout_json():
     ref     = (request.args.get("ref")  or "mcp-paywall").strip()
     surface = (request.args.get("surface") or "").strip()  # per-surface-attr
     chosen  = _resolve_tier(tool, tier)
-    if not tier and tool not in TOOL_TIER_MAP and chosen == "developer":
+    if not tier and chosen == "developer":
         chosen = _default_paid_tier()      # founding while open — see helper
     # partner-attr (2026-08-07): same cookie fallback as /pricing/upgrade, so
     # the JSON paywall link an agent embeds carries partner attribution too.

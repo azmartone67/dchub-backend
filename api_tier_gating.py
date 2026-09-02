@@ -186,7 +186,7 @@ PLAN_INFO = {
         'price_monthly': 0,
         'price_annual': 0,
         'rate_limit': 10,
-        'tagline': 'Headline stats, news, and AI discovery (10 calls/day)',
+        'tagline': f"Headline stats, news, and AI discovery ({tier_registry.TIER_LIMITS['free']['rate_limit']:,} calls/day)",
         'show_in_gate': True,
         'features': {
             'headline_stats': True,
@@ -213,7 +213,7 @@ PLAN_INFO = {
         'price_monthly': 49,
         'price_annual': 390,
         'rate_limit': 1000,
-        'tagline': 'Full facility DB + M&A + pipeline + energy (1,000 calls/day)',
+        'tagline': f"Full facility DB + M&A + pipeline + energy ({tier_registry.TIER_LIMITS['developer']['rate_limit']:,} calls/day)",
         'show_in_gate': True,
         'features': {
             'headline_stats': True,
@@ -240,7 +240,7 @@ PLAN_INFO = {
         'price_monthly': 299,   # audit #9: was 199 — canonical is tier_registry PRICES['pro']=299 (r-reprice 2026-06-19)
         'price_annual': 2392,   # preserves the prior ~8x annual ratio at the new $299 anchor
         'rate_limit': 5000,     # audit #9 follow-up: was 10000 — enforced limit is tier_registry TIER_LIMITS['pro']['rate_limit']=5000; no public surface sells 10k (pricing.html quotes the 2,000/day MCP lane)
-        'tagline': 'Developer + market compare + PDF reports (5,000 calls/day)',
+        'tagline': f"Developer + market compare + PDF reports ({tier_registry.TIER_LIMITS['pro']['rate_limit']:,} calls/day)",
         'show_in_gate': True,
         'features': {
             'headline_stats': True,
@@ -267,7 +267,7 @@ PLAN_INFO = {
         'price_monthly': 699,
         'price_annual': 5990,
         'rate_limit': 100000,
-        'tagline': 'Pro + AI Brain + grid monitoring + land/power (100,000 calls/day)',
+        'tagline': f"Pro + AI Brain + grid monitoring + land/power ({tier_registry.TIER_LIMITS['enterprise']['rate_limit']:,} calls/day)",
         'show_in_gate': True,
         'features': {
             'headline_stats': True,
