@@ -40,11 +40,122 @@ _BASE = "http://127.0.0.1:" + str(_PORT)
 DATASETS = [
     ("agent-registry", "/api/agents/registry", "Connected AI platforms + activity"),
     ("markets", "/api/v1/markets", "All tracked data-center markets"),
-    ("facilities", "/api/v1/facilities?limit=50000", "Data-center facilities (public set)"),
+    # built in-process (see _BUILDERS) — the HTTP path only ever sees the
+    # anonymous tier. Path kept for the manifest's source_path field.
+    ("facilities", "/api/v1/facilities?limit=50000",
+     "Data-center facility inventory — public fields, all rows"),
     ("news", "/api/v1/news", "Curated industry news feed"),
     ("ai-capacity", "/ai-capacity-index/today.json", "AI capacity index (daily)"),
 ]
 _NAMES = {d[0] for d in DATASETS}
+
+# ── ★ THE PUBLIC FACILITY CORPUS (2026-09-02, owner-decided) ────────────────
+#
+# The stub guard below refuses to publish a tier preview. That left `facilities`
+# blocked and correctly so — but blocked is not the answer, it is the absence
+# of one. The answer, decided by the owner on 2026-09-02:
+#
+#   BULK CARRIES EXACTLY THE FIELDS ALREADY PUBLISHED ON EVERY PUBLIC
+#   dchub.cloud/facilities/<slug> PAGE, FOR EVERY ROW.
+#
+# name, provider, city, state, country, slug, profile_url — main.py's
+# BASIC_FIELDS, the same set the free API already returns (for 5 rows) and the
+# same set the crawlable profile pages already render (for all of them). NO
+# field becomes public that was not already public; only the SHAPE changes.
+# capacity, coordinates, tenants, specs and every scored field stay paid and
+# are not selectable here — the query names its columns, so a paid field
+# cannot arrive by accident the way the tier preview arrived by accident.
+#
+# ★ WHAT THIS DOES CHANGE, STATED PLAINLY: crawl economics. One fetch replaces
+# 20,191 page loads. The fields were always reachable; the cost of taking all
+# of them was not. That was the trade accepted when this was chosen, and it is
+# recorded here rather than discovered later by whoever asks why.
+#
+# ★ ROW BASIS IS THE CITEABLE ONE, VERBATIM. public_endpoints.py publishes
+# facilities as COUNT(DISTINCT canonical_slug) FROM discovered_facilities
+# WHERE canonical_slug IS NOT NULL, and /api/agent/stats calls that "the
+# citeable figure". This query mirrors it exactly so the export's row count
+# RECONCILES with the number on the homepage. An export that disagrees with
+# the published total is a new inconsistency dressed as a fix.
+_PUBLIC_FACILITY_SQL = """
+SELECT DISTINCT ON (canonical_slug)
+       canonical_slug, name, provider, city, state, country
+  FROM discovered_facilities
+ WHERE canonical_slug IS NOT NULL
+ ORDER BY canonical_slug, confidence_score DESC NULLS LAST
+"""
+
+# Per-layer terms, the same split summarize_for_citation publishes. Stamped ON
+# the payload because a bulk file outlives the page that described it.
+_FACILITY_LICENCE = {
+    "layer": "facility_inventory",
+    "terms": "Composite — see https://dchub.cloud/data-sources",
+    "attribution": "DC Hub (dchub.cloud)",
+    "note": ("per-source terms differ and some are share-alike (ODbL 1.0); "
+             "this file may NOT be relicensed as CC-BY. Fields are limited to "
+             "those already published on the public facility pages."),
+}
+
+
+def _build_public_facilities():
+    """The public facility corpus as an export payload, or None if the DB is
+    unreachable (the caller then reports it as a normal dataset failure).
+
+    Reads the columns it names and nothing else — there is no SELECT * here on
+    purpose.
+    """
+    try:
+        from db_utils import get_read_db
+    except Exception:
+        return None
+    conn = None
+    try:
+        conn = get_read_db()
+        cur = conn.cursor()
+        cur.execute(_PUBLIC_FACILITY_SQL)
+        rows = cur.fetchall() or []
+    except Exception:
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    out = []
+    for r in rows:
+        slug = r[0]
+        out.append({
+            "slug": slug,
+            "name": r[1],
+            "provider": r[2],
+            "city": r[3],
+            "state": r[4],
+            "country": r[5],
+            "profile_url": "https://dchub.cloud/facilities/" + str(slug),
+        })
+    return {
+        "dataset": "facilities",
+        "count": len(out),
+        "basis": ("DISTINCT canonical_slug over discovered_facilities WHERE "
+                  "canonical_slug IS NOT NULL — distinct BUILDINGS, the same "
+                  "query behind the published facilities total"),
+        "fields": ["slug", "name", "provider", "city", "state", "country",
+                   "profile_url"],
+        "fields_note": ("exactly the fields already rendered on the public "
+                        "facility pages. Capacity, coordinates, tenants and "
+                        "scored fields are NOT in this export and are not "
+                        "free"),
+        "licence": _FACILITY_LICENCE,
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "data": out,
+    }
+
+
+# Datasets built in-process rather than fetched over localhost, because the
+# HTTP path can only ever see what an anonymous caller sees.
+_BUILDERS = {"facilities": _build_public_facilities}
+
 
 
 def _r2():
@@ -189,7 +300,16 @@ def build():
     manifest = {"generated_at": datetime.datetime.utcnow().isoformat() + "Z", "datasets": []}
     for name, path, desc in DATASETS:
         try:
-            raw = _fetch(path)
+            _builder = _BUILDERS.get(name)
+            if _builder is not None:
+                _payload = _builder()
+                if _payload is None:
+                    failed.append({"name": name,
+                                   "error": "builder returned no rows (DB unreachable?)"})
+                    continue
+                raw = json.dumps(_payload).encode()
+            else:
+                raw = _fetch(path)
             key = R2_PREFIX + name + ".json.gz"
             gate = _gate_evidence(raw)
             if gate is not None:
