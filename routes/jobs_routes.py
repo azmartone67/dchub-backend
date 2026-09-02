@@ -1140,15 +1140,36 @@ def job_infrastructure_sync():
 
     rows_before = _fiber_row_count()
 
+    # ★ The fiber block is normalised into a DICT LITERAL rather than passing
+    # the loader's return value straight through. Two reasons, one of them
+    # enforced by CI: the response-key contract gate reads the handler
+    # statically, and `results['fiber'] = run_fiber_discovery()` makes the whole
+    # sub-object dynamic — the endpoint silently drops out of contract coverage,
+    # which the gate correctly reports as UNMEASURED rather than as a pass.
+    # It also pins the shape, so a loader that changes its keys cannot change
+    # this endpoint's contract without someone noticing here.
+    fiber_raw, fiber_status, fiber_error = {}, 'ok', None
     try:
         from fiber_network_discovery import run_fiber_discovery
-        fiber = run_fiber_discovery()
-        results['fiber'] = fiber
-        if isinstance(fiber, dict) and fiber.get('status') == 'error':
-            errors.append('fiber: %s' % str(fiber.get('message', 'reported status=error'))[:160])
+        fiber_raw = run_fiber_discovery() or {}
+        if not isinstance(fiber_raw, dict):
+            fiber_raw = {}
+        if fiber_raw.get('status') == 'error':
+            fiber_status = 'error'
+            fiber_error = str(fiber_raw.get('message', 'loader reported status=error'))[:200]
     except Exception as e:
-        results['fiber'] = {'error': str(e)[:200]}
-        errors.append('fiber: %s' % str(e)[:160])
+        fiber_status, fiber_error = 'error', str(e)[:200]
+    if fiber_error:
+        errors.append('fiber: %s' % fiber_error[:160])
+
+    results['fiber'] = {
+        'status': fiber_status,
+        'error': fiber_error,
+        'seeded': fiber_raw.get('seeded'),
+        'discovered': fiber_raw.get('discovered'),
+        'errors': fiber_raw.get('errors'),
+        'total': fiber_raw.get('total'),
+    }
 
     # ★ The permits leg is GONE, not broken. It read
     # `from construction_permit_tracker import run_permit_scan`, and
@@ -1158,8 +1179,14 @@ def job_infrastructure_sync():
     # {'status': 'not_available'}, which reads like a benign absence rather
     # than a loader that was never wired. Permit scanning is not scheduled from
     # this job; saying so plainly is more honest than a daily dead import.
+    # `error` is kept (as null) so the published contract does not lose a key.
+    # It could only ever have been set by the `except Exception` around that
+    # dead import, and an ImportError took the earlier branch every time — so
+    # this key has never carried a value in production. Keeping it null is the
+    # compat alias the response-key gate asks for, without inventing an error.
     results['permits'] = {
         'status': 'not_wired',
+        'error': None,
         'detail': ('run_permit_scan has never existed in '
                    'construction_permit_tracker; this leg never ran. Permit '
                    'scanning is not scheduled from this job.'),
