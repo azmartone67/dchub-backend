@@ -37,6 +37,8 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+import tier_registry   # the cap/price source of truth — every number served here reads it
+
 try:
     import psycopg2
     import psycopg2.extras
@@ -207,6 +209,61 @@ def mcp_tool_preview(tool: str):
     return resp, 200
 
 
+def _hn(tier: str):
+    """calls/day for `tier` from tier_registry, as an int (None if unknown)."""
+    try:
+        v = tier_registry.calls_per_day(tier)
+        return int(v) if v else None
+    except Exception:
+        return None
+
+
+def _hp(tier: str):
+    """$/mo for `tier` from tier_registry, as an int (0 when free/unknown)."""
+    try:
+        v = tier_registry.price(tier)
+        return int(v) if v else 0
+    except Exception:
+        return 0
+
+
+def _hint_tiers() -> dict:
+    """The /api/v1/upgrade-hint tier table. Every cap and price is a registry
+    read; the only literals left are per-call result depths and the
+    enterprise contact row. results_per_call mirrors TIER_LIMITS mcp_results
+    where the registry has one."""
+    def _res(tier, default):
+        try:
+            return int(tier_registry.TIER_LIMITS[tier].get("mcp_results") or default)
+        except Exception:
+            return default
+    out = {
+        "anonymous":  {"calls_per_day": _hn("anonymous"),  "results_per_call": _res("anonymous", 1),
+                       "price_usd_month": 0, "needs_key": False,
+                       "label": f"No signup, {_hn('anonymous')}/day"},
+        "free":       {"calls_per_day": _hn("free"),       "results_per_call": _res("free", 5),
+                       "price_usd_month": 0, "needs_key": "email signup",
+                       "label": f"Free dev key — {_hn('free')}/day",
+                       "signup_url": "https://dchub.cloud/signup"},
+        "starter":    {"calls_per_day": _hn("starter"),    "results_per_call": _res("starter", 50),
+                       "price_usd_month": _hp("starter"),
+                       "label": f"${_hp('starter')}/mo Starter — {_hn('starter'):,}/day",
+                       "stripe_url": tier_registry._stripe_link("starter")},
+        "developer":  {"calls_per_day": _hn("developer"),  "results_per_call": _res("developer", 100),
+                       "price_usd_month": _hp("developer"),
+                       "label": f"${_hp('developer')}/mo Developer — {_hn('developer'):,}/day",
+                       "stripe_url": tier_registry._stripe_link("developer")},
+        "pro":        {"calls_per_day": _hn("pro"),        "results_per_call": _res("pro", 5000),
+                       "price_usd_month": _hp("pro"),
+                       "label": f"${_hp('pro')}/mo Pro — {_hn('pro'):,}/day + Pro tools"},
+        "enterprise": {"calls_per_day": "unlimited", "results_per_call": "unlimited",
+                       "price_usd_month": "custom",
+                       "label": "Enterprise — dedicated support",
+                       "contact": "api@dchub.cloud"},
+    }
+    return out
+
+
 @mcp_funnel_upgrade_bp.route("/api/v1/upgrade-hint", methods=["GET"])
 def upgrade_hint():
     """Agent-quotable copy explaining the upgrade path.
@@ -229,43 +286,24 @@ def upgrade_hint():
         "tool":              tool or "<unspecified>",
         "platform_hint":     platform or None,
         "agent_quotable":    (
-            f"{base} A free key (10 calls/day, no credit card) is at "
-            f"https://dchub.cloud/signup. Paid plans start at $9/mo "
-            f"for 200 calls/day. Once you have a key, retry with the "
+            f"{base} A free key ({_hn('free')} calls/day, no credit card) is at "
+            f"https://dchub.cloud/signup. Paid plans start at ${_hp('starter')}/mo "
+            f"for {_hn('starter')} calls/day. Once you have a key, retry with the "
             f"X-API-Key header."
         ),
         "user_facing_url":   "https://dchub.cloud/signup",
         "machine_endpoint":  "https://dchub.cloud/api/v1/keys/claim",
-        "what_you_get":      "10 MCP tool calls/day for free with email signup. $9/mo for 200/day. $49/mo for 500/day.",
-        # r48 (2026-05-25): tier values aligned with worker + Stripe links.
-        # Prior version had free=10000 vs developer=1000 (developer was numerically
-        # LESS than free), causing agents to interpret blocked queries as "user
-        # already has a generous free tier" and skip the signup CTA. Fixed:
-        # ascending limits with $9 Starter slot now included.
-        "tiers": {
-            "anonymous":  {"calls_per_day": 10,         "results_per_call": 1,
-                           "price_usd_month": 0,         "needs_key": False,
-                           "label": "No signup, 10/day"},
-            "free":       {"calls_per_day": 1000,       "results_per_call": 25,
-                           "price_usd_month": 0,         "needs_key": "email signup",
-                           "label": "Free dev key — 10/day",
-                           "signup_url": "https://dchub.cloud/signup"},
-            "starter":    {"calls_per_day": 10000,      "results_per_call": 100,
-                           "price_usd_month": 9,
-                           "label": "$9/mo Starter — 200/day",
-                           "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
-            "developer":  {"calls_per_day": 500,        "results_per_call": 500,
-                           "price_usd_month": 49,
-                           "label": "$49/mo Developer — 500/day",
-                           "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"},
-            "pro":        {"calls_per_day": 2000,       "results_per_call": 5000,
-                           "price_usd_month": 199,
-                           "label": "$199/mo Pro — 2,000/day + Pro tools"},
-            "enterprise": {"calls_per_day": "unlimited","results_per_call": "unlimited",
-                           "price_usd_month": "custom",
-                           "label": "Enterprise — dedicated support",
-                           "contact": "api@dchub.cloud"},
-        },
+        "what_you_get":      (
+            f"{_hn('free')} MCP tool calls/day with a free key "
+            f"({_hn('identified')}/day once an email is bound). "
+            f"${_hp('starter')}/mo for {_hn('starter')}/day. "
+            f"${_hp('developer')}/mo for {_hn('developer')}/day."
+        ),
+        # ★2026-09-02: the tier table is DERIVED — see _hint_tiers(). The dict
+        # it replaces served free=1,000/day and starter=10,000/day (live
+        # 2026-09-02 00:26Z) against an enforced 10 and 200, and "$199/mo Pro"
+        # against a $299 registry price (QA-sweep pricing 6).
+        "tiers": _hint_tiers(),
     }), 200, {
         # r48 (2026-05-25): The zone-level CF worker (out-of-repo,
         # 4.34.15-r45-pages-force-redeploy) was caching this endpoint

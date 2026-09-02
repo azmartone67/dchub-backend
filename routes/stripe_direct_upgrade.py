@@ -103,6 +103,40 @@ def upgrade_redirect():
     return redirect(url, code=302)
 
 
+def _default_paid_tier() -> str:
+    """The tier a paywall checkout lands on when nothing chose one.
+
+    ★2026-09-02 (QA-sweep pricing 3): resolve_tier() falls to "developer"
+    ($49), but the only plan with completed web-direct checkouts in the 8-week
+    licences read is Founding Member ($99) — and agents never saw it: this
+    endpoint, unlock_more_data and mcp_facts all omitted it. While
+    routes/founding_customers.founding_status() says the program is open, the
+    default is founding; when the seats are gone it is developer again. An
+    explicit ?tier= or a tool with a TOOL_TIER_MAP entry is never overridden.
+    """
+    try:
+        from routes.founding_customers import founding_status
+        if (founding_status() or {}).get("program_active") and "founding" in STRIPE_LINKS:
+            return "founding"
+    except Exception:
+        pass
+    return "developer"
+
+
+def _tier_price_label(tier: str) -> str:
+    """"$49/mo" from tier_registry.price(); "Custom" when the registry has no
+    dollar figure (enterprise); "—" when it cannot be read. Replaces a
+    hand-typed 4-row dict that had no founding row at all."""
+    try:
+        import tier_registry as _tr
+        p = _tr.price(tier)
+        if p:
+            return f"${int(p)}/mo"
+        return "Custom" if tier in _tr.TIER_PRICE_USD_MONTH else "—"
+    except Exception:
+        return "—"
+
+
 @stripe_direct_bp.route("/api/v1/paywall/checkout", methods=["GET"])
 def paywall_checkout_json():
     """JSON variant so MCP paywall responses can embed a one-click link
@@ -112,6 +146,8 @@ def paywall_checkout_json():
     ref     = (request.args.get("ref")  or "mcp-paywall").strip()
     surface = (request.args.get("surface") or "").strip()  # per-surface-attr
     chosen  = _resolve_tier(tool, tier)
+    if not tier and tool not in TOOL_TIER_MAP and chosen == "developer":
+        chosen = _default_paid_tier()      # founding while open — see helper
     # partner-attr (2026-08-07): same cookie fallback as /pricing/upgrade, so
     # the JSON paywall link an agent embeds carries partner attribution too.
     from routes._attribution_ref import PARTNER_COOKIE, resolve_attribution
@@ -127,12 +163,7 @@ def paywall_checkout_json():
         "tier":           chosen,
         "checkout_url":   _build_url(chosen, tool, ref, surface),
         "stripe_managed": True,
-        "tier_pricing":   {
-            "developer": "$49/mo",
-            "pro":       "$299/mo",
-            "starter":   "$9/mo",
-            "enterprise": "Custom",
-        }.get(chosen, "—"),
+        "tier_pricing":   _tier_price_label(chosen),
         "client_reference_id": _cref,
     }), 200, {"Cache-Control": "public, max-age=300"}
 

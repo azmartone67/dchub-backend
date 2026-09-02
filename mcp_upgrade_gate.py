@@ -31,7 +31,31 @@ PAID_ONLY_TOOLS = {
     "get_fiber_intel",
 }
 
-FREE_DAILY_LIMIT = int(os.environ.get("MCP_FREE_DAILY_LIMIT", "100"))
+
+
+def _registry_free_daily() -> int:
+    """The enforced free cap, from the tier registry — never a literal here.
+
+    ★2026-09-02: the default was "100", one of FOUR free-cap values live at
+    once (5 / 10 / 100 / 1,000 / 10,000 across surfaces — QA-sweep pricing 6)
+    while every enforcement lane agrees on TIER_LIMITS['free'] = 10. The env
+    var still overrides for an experiment; the DEFAULT is the registry.
+    """
+    try:
+        import tier_registry
+        n = tier_registry.calls_per_day("free")
+        if n:
+            return int(n)
+    except Exception:
+        pass
+    try:
+        from ai_surface_canon import PINNED
+        return int(PINNED["free_tier_calls_per_day"])
+    except Exception:
+        return 10
+
+
+FREE_DAILY_LIMIT = int(os.environ.get("MCP_FREE_DAILY_LIMIT") or _registry_free_daily())
 UPGRADE_URL      = os.environ.get("DCHUB_UPGRADE_URL", "https://dchub.cloud/pricing")
 SIGNUP_URL       = os.environ.get("DCHUB_SIGNUP_URL",  "https://dchub.cloud/ai")
 

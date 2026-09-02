@@ -127,8 +127,23 @@ from util.canon_floor import (
 # resolve_canon()'s live floor (15,300+/15,500+), not PINNED (15,000+), which
 # is why it was deferred on 07-30 ("red by construction" under the exact-PINNED
 # check). _acceptable_floor below takes either, so the beat can hold it now.
+# ★2026-09-02 (QA-sweep D7): the PRE-EDGE origin, checked as its own lane.
+# Every lane below fetches through Cloudflare, which is the right path for
+# what an agent sees today — but the zone worker can serve its own copy of
+# /.well-known/mcp.json, so an edge PASS says nothing about the bytes Flask
+# emits, and a failover to the origin (or a registry that scrapes
+# api.dchub.cloud) exposes them. Measured 2026-09-02: edge 20,100+/2,000+
+# while the Railway origin served "18,500+ facilities" x3 and "1,400+
+# tracked deals" on the same path (the tool catalog froze the cold-start
+# pin at import). Lane 3 could not catch it: it compares the EDGE to the
+# frontend repo copy, never the backend handler.
+PRE_EDGE_ORIGIN = (os.environ.get("SURFACE_TRUTH_PRE_EDGE_ORIGIN")
+                   or "https://dchub-backend-production.up.railway.app").rstrip("/")
+
 _TEXT_SURFACES = ("/llms.txt", "/llms-full.txt", "/agent", "/ai")
 _MANIFEST_SURFACES = ("/.well-known/mcp.json", "/mcp.json")
+# Backend-emitted surfaces audited at PRE_EDGE_ORIGIN (lane 2b).
+_PRE_EDGE_SURFACES = _MANIFEST_SURFACES + ("/llms.txt", "/openapi.json")
 
 # Lane 3: the files the canonical-counts FENCE scans -> the URL that actually
 # serves that surface. A disagreement means the fence is guarding a file nobody
@@ -189,7 +204,7 @@ def _canon_floor() -> str | None:
         return None
 
 
-def _fetch(path: str):
+def _fetch(path: str, base: str | None = None):
     """GET a live surface. Returns (body, error). Never raises.
 
     requests, not urllib (regression_lint urllib-request-on-railway).
@@ -198,7 +213,7 @@ def _fetch(path: str):
     """
     try:
         import requests as _rq
-        r = _rq.get(ORIGIN + path, headers={"User-Agent": _UA}, timeout=12)
+        r = _rq.get((base or ORIGIN) + path, headers={"User-Agent": _UA}, timeout=12)
         if r.status_code >= 400:
             return None, "HTTP %d" % r.status_code
         return r.text, None
@@ -282,6 +297,17 @@ def _lane_served_manifests(canon: str) -> list[dict]:
                                      False, "parse failed: %s" % str(e)[:90],
                                      critical=False))
         out.extend(checks)
+    return out
+
+
+def _lane_pre_edge_origin(canon: str) -> list[dict]:
+    """The bytes Flask emits, before the edge can mask them. Same two checks
+    per surface as lanes 1-2, against PRE_EDGE_ORIGIN — see its comment."""
+    out: list[dict] = []
+    for path in _PRE_EDGE_SURFACES:
+        body, err = _fetch(path, base=PRE_EDGE_ORIGIN)
+        cid = "origin_" + path.strip("/").replace("/", "_").replace(".", "_").replace("-", "_")
+        out.extend(_audit_body(cid, PRE_EDGE_ORIGIN + path, body, err, canon))
     return out
 
 
@@ -418,6 +444,8 @@ def _run_tick() -> dict:
              "checks": _safe_lane(_lane_served_text, canon)},
             {"id": "served_manifests", "name": "2 · served manifests",
              "checks": _safe_lane(_lane_served_manifests, canon)},
+            {"id": "pre_edge_origin", "name": "2b · served at the pre-edge origin",
+             "checks": _safe_lane(_lane_pre_edge_origin, canon)},
             {"id": "repo_vs_served", "name": "3 · repo vs served (fence honesty)",
              "checks": _safe_lane(_lane_repo_vs_served, canon)},
             {"id": "emitter_sources", "name": "4 · emitter sources",

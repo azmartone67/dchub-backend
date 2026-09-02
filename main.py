@@ -4494,7 +4494,7 @@ try:
         elif u == 0:
             diagnosis = "mints_unused — agents receive trial keys in JSON response but never extract+use them. Switch key delivery to HTTP header X-Trial-Key, or reduce response nesting."
         elif u > 0 and s == 0:
-            diagnosis = "used_but_no_signup — agents use the trial key for free 200 calls/day, but never claim to a permanent account. The /auto-trial/redeem CTA is failing."
+            diagnosis = "used_but_no_signup — agents use the trial key's free daily allowance, but never claim to a permanent account. The /auto-trial/redeem CTA is failing."
         elif s > 0 and up == 0:
             diagnosis = "signed_up_but_no_upgrade — users redeem trial→identified but never pay. Pricing or perceived-value issue. Test cheaper Starter tier surfacing."
         else:
@@ -7750,7 +7750,10 @@ def handle_well_known():
                     "preview_manifest": "/api/v1/mcp/preview-manifest",
                     "claim_key":        "/api/v1/keys/claim",
                     "signup":           "/signup",
-                    "free_tier":        {"calls_per_day": 10000, "results_per_call": 5},
+                    # ★2026-09-02: was the literal 10000 — 1,000x the enforced free
+                    # cap, served live on /api/v1/ai-agents.json (QA-sweep pricing 6).
+                    "free_tier":        {"calls_per_day": _canon_int("{canon_free_calls}", 10),
+                                         "results_per_call": 5},
                 },
             },
 
