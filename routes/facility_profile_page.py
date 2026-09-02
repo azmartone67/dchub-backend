@@ -1082,6 +1082,22 @@ def _render_profile(fac: dict, slug: str) -> str:
     _disp = f"{_op}{name}".strip()
     title = (f"{_disp} — {loc_short} Data Center | DC Hub" if loc_short
              else f"{_disp} Data Center | DC Hub")
+    # r-site-code-title (2026-09-02, QA sweep expansion #1): operator
+    # site-code queries ("interxion mad1", "iad14 data center", "fra28",
+    # "htl05", "ewr12 piscataway", "dus2") sit at pos 6–13 with 0 clicks —
+    # the code is buried mid-title. When the NAME carries one unambiguous
+    # code (util/facility_site_code — no DB column exists), lead the
+    # <title>, <h1> and og:title with "<Operator> <CODE> — <City> Data
+    # Center"; every other facility keeps the title above, and the slug /
+    # canonical / JSON-LD name are never touched by this.
+    from util.facility_site_code import site_code_headline as _sc_headline
+    _sc_head = _sc_headline(name, "" if provider == "Operator" else provider, city)
+    _h1 = _disp
+    _og_title = f"{_disp} — Data Center"
+    if _sc_head:
+        title = f"{_sc_head} | DC Hub"
+        _h1 = _sc_head
+        _og_title = _sc_head
     desc = (f"{_disp} is a data center"
             f"{f' operated by {provider}' if _op else ''}"
             f"{f' in {loc_short}' if loc_short else ''}. "
@@ -1435,7 +1451,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 <meta name="description" content="{_esc(desc)}">
 <meta name="robots" content="{_robots}">
 <link rel="canonical" href="{_esc(canonical)}">
-<meta property="og:title" content="{_esc(_disp)} — Data Center">
+<meta property="og:title" content="{_esc(_og_title)}">
 <meta property="og:description" content="{_esc(desc)}">
 <meta property="og:type" content="place">
 <meta property="og:url" content="{_esc(canonical)}">
@@ -1515,7 +1531,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 
   <div class="container">
     <div class="hero">
-      <h1>{_esc(_disp)}</h1>
+      <h1>{_esc(_h1)}</h1>
       {f'<div class="prov">{_esc(provider)}</div>' if (provider and provider.strip().lower() != name.strip().lower()) else ''}
       <div class="loc">📍 {f'<a href="/dcpi/{_esc(_mslug0)}" class="loc-link">{_esc(loc_short)}</a>' if _mslug0 else _esc(loc_short)}</div>
     </div>
