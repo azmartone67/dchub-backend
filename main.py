@@ -7222,11 +7222,31 @@ def handle_well_known():
         # `jq '.pricing.pro.price_usd_month'` and get a number, not
         # a string from .tiers.PRO.monthly_price_usd. Both shapes are
         # now present — old clients on .tiers, new clients on
+        # ★2026-09-02: two fixes to the .description below, which is the single
+        # most agent-quotable string on this domain — registries and MCP clients
+        # render it verbatim, so it is what an assistant repeats when asked what
+        # DC Hub is.
+        #  1. "126,427 substations" was a LITERAL, and specifically it was
+        #     canonical_stats._FALLBACK["substations"] — the DB-DOWN seed — pasted
+        #     into prose and frozen. The snapshot measured 127,269 while this
+        #     surface published 126,427, i.e. it served the fallback as though it
+        #     were the measurement. substations had a snapshot key but no floor
+        #     spec, so no placeholder could reach it; {canon_substations} exists
+        #     now (canonical_stats._PUBLIC_FLOOR_SPECS) and this derives.
+        #  2. "facilities" was unqualified. /api/v1/stats/canonical serves FIVE
+        #     facility counts and its own provenance names facilities_distinct as
+        #     "the field to cite"; {canon_facilities} IS that population, so the
+        #     noun now says so. Same change already shipped across the frontend.
+        # ★NOT changed: "{canon_isos} US ISOs". Checked — _FALLBACK["isos"]=7 is
+        #  ERCOT/CAISO/NYISO/MISO/PJM/SPP/ISO-NE, all genuine ISOs/RTOs. The
+        #  frontend Grid Pulse seven is a DIFFERENT list (it includes WECC and
+        #  SERC, which are NERC regions) and was relabelled there. Two sevens,
+        #  two populations; do not "align" them.
         # .pricing. Bumped version 2.3.0 → 2.3.1 as a deploy marker.
         return _R(_j.dumps({
             "schema_version": "1",
             "name": "DC Hub MCP Server",
-            "description": _canon_text("AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). {canon_facilities} facilities, {canon_markets} markets (US + international), {canon_isos} US ISOs, 126,427 substations, {canon_deals} tracked M&A deals. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON."),
+            "description": _canon_text("AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). {canon_facilities} distinct facilities, {canon_markets} markets (US + international), {canon_isos} US ISOs, {canon_substations} substations, {canon_deals} tracked M&A deals. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON."),
             "tagline":     "AI-powered. Real-time. Actionable. No BS.",
             "positioning": "The live, MCP-native data center intelligence platform. Where static research (DCHawk, dcByte, DCK) ships quarterly PDFs, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
             "url": "https://dchub.cloud/mcp",
