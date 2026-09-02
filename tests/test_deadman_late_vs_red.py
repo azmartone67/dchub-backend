@@ -26,6 +26,9 @@ counted in `unhealthy_count` — it is just not "late".
 from __future__ import annotations
 
 import datetime as dt
+import io
+import json
+import os
 
 import pytest
 
@@ -309,3 +312,77 @@ def test_audit_closure_health_checks_read_the_union(ac, monkeypatch):
     checks = {c["id"]: c for c in ac._lane_inventory()}
     assert checks["h_geninv"]["pass"] is False, checks["h_geninv"]["detail"]
     assert checks["h_geninv"]["detail"].startswith("red 2.0h")
+
+
+# ── consumer 4: the off-worker watcher (tools/deadman/watch.py) ──────────
+#
+# The alarm that the old `overdue` boolean carried must survive the split: a
+# feed that ran on time and beat a fault is RED on the board, and the watcher
+# folds `unhealthy` (late OR red). A watcher reading `overdue` alone would go
+# quiet on every failed run — the exact loss the 2026-08-25 pin refused.
+
+_WATCH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      "tools", "deadman", "watch.py")
+
+
+class _Resp(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _watch_main(monkeypatch, capsys, board: dict) -> str:
+    """Run watch.main() with every edge stubbed: every GitHub workflow green,
+    the ledger answering `board`, DRY_RUN so no issue is opened."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("deadman_watch_late_vs_red", _WATCH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("DEADMAN_DRY_RUN", "1")
+    monkeypatch.setattr(mod, "beat", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "_assert_watch_margin", lambda: None)
+    monkeypatch.setattr(mod, "last_success", lambda wf: (mod.NOW.isoformat(), "success"))
+    payload = json.dumps(board).encode()
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _Resp(payload))
+    mod.main()
+    return capsys.readouterr().out
+
+
+def test_watcher_alarms_on_a_red_but_on_time_feed(monkeypatch, capsys):
+    """Kills: folding `overdue[]` only. The board says nothing is late, one
+    feed is red — the watcher must still alarm (it is a loop not succeeding)."""
+    out = _watch_main(monkeypatch, capsys, {
+        "tracked": 70, "any_overdue": False, "overdue": [],
+        "any_red": True, "red_count": 1, "red": ["agent-pay-shell-daily"],
+        "unhealthy_count": 1,
+        "feeds": [{"feed": "agent-pay-shell-daily", "overdue": False, "red": True,
+                   "unhealthy": True, "age_hours": 0.1, "cadence_hours": 24.0,
+                   "kinds": ["run_failed"], "reasons": ["status=lanes_failing"]}],
+    })
+    assert "RED      agent-pay-shell-daily (ledger)" in out, out
+    assert "would alarm on 1 loop(s)" in out, out
+    assert "DEADMAN ✓" not in out
+
+
+def test_watcher_still_reads_an_old_shape_board(monkeypatch, capsys):
+    """A backend that predates the split publishes only `overdue[]` — the
+    watcher must not go blind on it during a deploy window."""
+    out = _watch_main(monkeypatch, capsys, {
+        "tracked": 70, "any_overdue": True, "overdue_count": 1,
+        "overdue": [{"feed": "worker:news", "overdue": True, "cadence_hours": 18.0,
+                     "reasons": ["status=error: boom"]}],
+    })
+    assert "OVERDUE  worker:news (ledger)" in out, out
+    assert "would alarm on 1 loop(s)" in out, out
+
+
+def test_watcher_is_quiet_on_a_clean_split_board(monkeypatch, capsys):
+    out = _watch_main(monkeypatch, capsys, {
+        "tracked": 70, "any_overdue": False, "overdue": [], "any_red": False,
+        "red_count": 0, "red": [], "unhealthy_count": 0,
+        "feeds": [{"feed": "iso-lmp-pjm", "overdue": False, "red": False,
+                   "unhealthy": False, "reasons": [], "kinds": []}],
+    })
+    assert "DEADMAN ✓" in out, out
