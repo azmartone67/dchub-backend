@@ -339,7 +339,9 @@ def test_entsoe_run_extraction_sets_status_on_every_path(monkeypatch):
     monkeypatch.setattr(eu, "_token", lambda: "")
     assert eu.run_extraction()["status"] == "error"
     monkeypatch.setattr(eu, "_token", lambda: "tok")
-    monkeypatch.setattr(eu, "_live_snapshot", lambda: None)
+    # force=True: run_extraction must MEASURE, never inherit the negative
+    # cache (routes/iso_eu_entsoe._SNAP_DOWN). Stub mirrors the real signature.
+    monkeypatch.setattr(eu, "_live_snapshot", lambda force=False: None)
     s = eu.run_extraction()
     assert s["status"] == "error" and s["rows_inserted"] == 0
     snap = {"metrics": {"generation_total_mw": {"value": 1.0, "unit": "MW"}},
@@ -347,7 +349,7 @@ def test_entsoe_run_extraction_sets_status_on_every_path(monkeypatch):
                                 "generation_total_mw": 1.0, "renewable_pct": 1.0, "gas_pct": 1.0},
                       "FR": {"data_period_end": "2026-09-02T02:00:00+00:00",
                              "generation_total_mw": 1.0, "renewable_pct": 1.0, "gas_pct": 1.0}}}
-    monkeypatch.setattr(eu, "_live_snapshot", lambda: snap)
+    monkeypatch.setattr(eu, "_live_snapshot", lambda force=False: snap)
     monkeypatch.setattr(eu, "_persist_metrics", lambda s: 7)
     s = eu.run_extraction()
     assert s["status"] == "ok" and s["rows_inserted"] == 7
