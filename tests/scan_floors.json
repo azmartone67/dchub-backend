@@ -19,7 +19,7 @@
     "test_anchor_card_clickable.py": {
       "pglob": 640
     },
-    "test_audit_closure_shell.py": {
+    "test_asset_ingest_secret_guards_are_loud.py": {"pglob": 140}, "test_audit_closure_shell.py": {
       "glob": 640
     },
     "test_authkit_one_origin.py": {
