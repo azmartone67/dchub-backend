@@ -193,11 +193,27 @@ def _build_public_facilities():
 # article reads it from the publisher, which is also the outcome the publisher
 # wants — this file sends traffic to them rather than standing in for them.
 _NEWS_SQL = """
-SELECT id, title, url, source, published_at, category, relevance_score
+SELECT id, title, url, source, published_at, category, relevance_score,
+       publisher_url
   FROM news_articles
  WHERE url IS NOT NULL AND url <> ''
  ORDER BY published_at DESC NULLS LAST
 """
+
+# Same statement without publisher_url, for a database that has not taken the
+# ALTER yet. The export must not vanish because one column is new.
+_NEWS_SQL_LEGACY = _NEWS_SQL.replace(",\n       publisher_url", "")
+
+# Hosts that are aggregators, not publishers. A row whose `url` points here is
+# a link TO a link: following it lands on a Google interstitial, not on the
+# article. Declared per row so a downstream index can tell the two apart
+# instead of discovering it by clicking.
+_AGGREGATOR_HOSTS = ("news.google.com",)
+
+
+def _is_aggregator(url):
+    u = (url or "").lower()
+    return any(("://" + h) in u or ("//" + h) in u for h in _AGGREGATOR_HOSTS)
 
 _NEWS_LICENCE = {
     "layer": "news_index",
@@ -219,8 +235,17 @@ def _build_news_index():
     try:
         conn = get_read_db()
         cur = conn.cursor()
-        cur.execute(_NEWS_SQL)
-        rows = cur.fetchall() or []
+        try:
+            cur.execute(_NEWS_SQL)
+            rows = cur.fetchall() or []
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            cur = conn.cursor()
+            cur.execute(_NEWS_SQL_LEGACY)
+            rows = [tuple(r) + (None,) for r in (cur.fetchall() or [])]
     except Exception:
         return None
     finally:
@@ -244,6 +269,10 @@ def _build_news_index():
                              else (str(pub) if pub is not None else None)),
             "category": r[5],
             "relevance_score": r[6],
+            # Who actually published it. For the 70% of rows whose `url` is an
+            # opaque Google News token this is the only attribution there is.
+            "publisher_url": r[7],
+            "url_is_aggregator": _is_aggregator(r[2]),
         })
     return {
         "dataset": "news",
@@ -251,9 +280,12 @@ def _build_news_index():
         "basis": ("news_articles WHERE url IS NOT NULL AND url <> '', newest "
                   "first — every indexed article, not the 50-item API page"),
         "fields": ["id", "title", "url", "source", "published_at", "category",
-                   "relevance_score"],
+                   "relevance_score", "publisher_url", "url_is_aggregator"],
         "fields_note": ("summary and image_url are deliberately NOT exported "
-                        "— see licence.note"),
+                        "— see licence.note. Where url_is_aggregator is true "
+                        "the `url` is a Google News token that resolves only "
+                        "in a browser; `publisher_url` names the publisher and "
+                        "is the attribution to use"),
         "licence": _NEWS_LICENCE,
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
         "data": out,
