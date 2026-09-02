@@ -80,6 +80,14 @@ def model_probe():
             store_reachability(result.get("results", {}))
         except Exception:
             pass
+    # ★2026-09-02: the load-shedding governor's state rides on the probe —
+    # "can the brain reach its models" and "is the brain about to be starved
+    # by the demo/narrative consumers" are the same operator question.
+    try:
+        from util.llm_spend_governor import status as _gov_status
+        result["spend_governor"] = _gov_status()
+    except Exception as _ge:  # noqa: BLE001
+        result["spend_governor"] = {"error": str(_ge)[:120]}
     return jsonify(result), (200 if result.get("ok") else 500), {
         # Don't edge-cache — reachability can change as the account's
         # model access changes.

@@ -218,6 +218,23 @@ def instrumented_post(layer: str, url, **kwargs):
     than a boring one."""
     import time as _t
     import requests
+    # ★2026-09-02 load-shedding governor (util/llm_spend_governor). Dark by
+    # default; when armed it refuses the listed customer-facing consumers
+    # before the request is made, with a 429-shaped structured `shed` reply,
+    # so the reasoning layers keep headroom under the gateway's 7d rule. A
+    # broken governor can never break the call (fail-open to "proceed").
+    try:
+        from util.llm_spend_governor import shed_response as _shed
+        _refusal = _shed(layer)
+    except Exception:  # noqa: BLE001
+        _refusal = None
+    if _refusal is not None:
+        try:
+            record(layer, model=_model_of(kwargs), body=None, ms=0, ok=False,
+                   stop_reason="shed")
+        except Exception:
+            pass
+        return _refusal
     t0 = _t.time()
     try:
         resp = requests.post(url, **kwargs)

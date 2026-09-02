@@ -156,20 +156,47 @@ def _explainable(query):
     return re.sub(r"\$\d+", "NULL", q)
 
 
+def _write_finding(cur, issue: str, url: str, count: int, detail: str,
+                   detector: str) -> str:
+    """★2026-09-02 (D14): route through the canonical brain_findings_writer.
+    This module's conn is AUTOCOMMIT (DDL rule, see _conn), and the writer is
+    savepoint-wrapped: `SAVEPOINT` outside a transaction block fails, and the
+    writer then reports "skipped" — the reason the two INSERTs below were
+    hand-rolled, and the reason every hand-rolled writer re-opens the 477k-
+    duplicates class (no episode ledger, no runaway quarantine). Open a real
+    transaction around the write instead. Returns the writer's verdict."""
+    from routes.brain_findings_writer import upsert_brain_finding
+    conn = cur.connection
+    was_autocommit = bool(getattr(conn, "autocommit", False))
+    if was_autocommit:
+        conn.autocommit = False
+    try:
+        verdict = upsert_brain_finding(cur, issue=issue, url=url, count=count,
+                                       detail=detail, detector=detector,
+                                       status="open")
+        conn.commit()
+        return verdict
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        if was_autocommit:
+            conn.autocommit = True
+
+
 def _file_finding(cur, applied, proposed):
-    """Direct INSERT into brain_findings (mirrors L14's hand-rolled path — avoids
-    the savepoint-wrapped canonical writer, which no-ops under our autocommit conn)."""
+    """File the run's finding through the canonical writer (D14)."""
     try:
         n_app, n_prop = len(applied), len(proposed)
         idx_list = ", ".join(a["index"] for a in applied) or "—"
         detail = (f"self-growing index engine: auto-created {n_app} index(es) [{idx_list}] "
                   f"for hot seq-scans; proposed {n_prop} more (cap/complex). "
                   f"Pillar: performance_self_heal.")
-        cur.execute(
-            "INSERT INTO brain_findings (issue, url, count, detail, detector, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            ("self_growing_index", "", n_app, detail[:800], "self_growing_index", "open"),
-        )
+        _write_finding(cur, "self_growing_index", "", n_app, detail[:800],
+                       "self_growing_index")
     except Exception as e:
         logger.warning("sgi: finding write failed: %s", e)
 
@@ -325,12 +352,8 @@ def check_edge_origin_divergence(probes=None):
                       + f". Best-effort edge purge attempted={purged}. If it persists the "
                         "dchubapiproxy worker is stuck (no backend breaker-reset channel) "
                         "-> needs a worker redeploy/rollback. Pillar: edge_origin_integrity.")
-            cur.execute(
-                "INSERT INTO brain_findings (issue, url, count, detail, detector, status) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                ("edge_origin_divergence", diverged[0]["path"], len(diverged),
-                 detail[:900], "edge_origin_divergence", "open"),
-            )
+            _write_finding(cur, "edge_origin_divergence", diverged[0]["path"],
+                           len(diverged), detail[:900], "edge_origin_divergence")
         except Exception as e:
             logger.warning("sgi: divergence finding write failed: %s", str(e)[:120])
         finally:

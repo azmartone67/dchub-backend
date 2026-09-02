@@ -202,7 +202,14 @@ def ensure_schema(force: bool = False) -> bool:
 
 _CMP_RE = re.compile(r"^\s*(==|!=|<=|>=|<|>)\s*(.+?)\s*$")
 _METRIC_RE = re.compile(r"^\s*([a-z_]+):(\S+)(?:\s+(\S+))?\s*$")
-_SCHEMES = ("get", "finding", "linkedin", "canon")
+# ★2026-09-02 `qa:` — the QA super-user board itself as an instrument.
+#   `qa:<board key> verdict == PASS` is the fix claim brain_qa_superuser_intake
+#   mints for every RED it seeds. Without it a RED was "fixed" by whatever
+#   merged next: #3444 and #3494 (both doc-only [brain-spec] PRs) each earned
+#   credit for `media::item-links` while the RED ran on for 142h, because
+#   nothing ever re-read the key that was red. Reads the LATEST recorded run
+#   (the same row the intake seeds from), needs no cursor.
+_SCHEMES = ("get", "finding", "linkedin", "canon", "qa")
 
 
 def parse_expectation(expected_value):
@@ -706,6 +713,9 @@ _SECOND_READERS = {
     "finding": _second_reading_finding,
     "get": _second_reading_get,
     # 'linkedin' intentionally absent — see the note above.
+    # 'qa' intentionally absent (2026-09-02): the board is written by ONE
+    # harness; a second read of the same qa_superuser_runs row is the same
+    # instrument twice. The verdict stands on the board's own must-fail canary.
 }
 
 
@@ -763,6 +773,46 @@ def corroborate(verdict: str, expected_metric: str, expected_value: str,
     return verdict, note
 
 
+def _qa_board_latest(load_fn=None) -> dict:
+    """The latest recorded QA super-user run (its own DB read; fail-soft)."""
+    try:
+        if load_fn is None:
+            from routes.qa_superuser_dashboard import _load as load_fn
+        return (load_fn(limit=1) or {}).get("latest") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def resolve_qa_board(target: str, field, latest: dict):
+    """Pure half of the `qa:` scheme. `latest` is one board run; `target` is a
+    finding key on it. -> (actual, evidence).
+
+    `actual is None` is reserved for NOT MEASURED: no run, an unverified run
+    (canary did not fire — its verdicts are readings, not evidence), or a key
+    that is not on the board at all. A key that IS on the board yields its
+    verdict string (or `field`), so `== PASS` judges RED as refuted instead of
+    quietly deferring on it."""
+    if not latest:
+        return None, {"qa": target, "status": "no_run"}
+    if not latest.get("canary_fired"):
+        return None, {"qa": target, "status": "canary_not_fired",
+                      "board_as_of": latest.get("generated_at")}
+    for f in latest.get("findings") or []:
+        if str((f or {}).get("key") or "") == target:
+            rec = {"verdict": f.get("verdict"), "severity": f.get("severity"),
+                   "failing_since": f.get("failing_since"),
+                   "instrument_fault": bool(f.get("instrument_fault")),
+                   "board_as_of": latest.get("generated_at")}
+            val = rec.get(field or "verdict")
+            return val, {"qa": target, **rec}
+    return None, {"qa": target, "status": "key_not_on_board",
+                  "board_as_of": latest.get("generated_at")}
+
+
+def _resolve_qa_board(target: str, field):
+    return resolve_qa_board(target, field, _qa_board_latest())
+
+
 def resolve_metric(expected_metric: str, cur=None, fetch=None):
     """-> (actual, evidence). `actual is None` means the instrument did not
     measure (no row, not synced yet, endpoint failed) — never a value."""
@@ -778,6 +828,8 @@ def resolve_metric(expected_metric: str, cur=None, fetch=None):
             val = dig(payload, field) if field else payload
             return val, {"endpoint": target, "field": field,
                          "value": _short(val)}
+        if scheme == "qa":
+            return _resolve_qa_board(target, field)
         if cur is None:
             return None, {"error": "no cursor for scheme " + scheme}
         if scheme == "finding":
