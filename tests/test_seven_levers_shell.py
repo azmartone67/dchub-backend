@@ -182,13 +182,34 @@ def test_repo_worker_is_canon_clean_and_current():
     # named it — mcp_tool_catalog auto-syncs from live, so the catalog moved and
     # the canon pin did not. The /mcp envelope reports THIS array's length, so
     # the fallback under-reported by one tool.
-    # ★ PASTE OUTSTANDING — the backend half (PINNED, llms.txt, server.json,
-    # the registry drafts) ships and deploys with this PR, but the fallback
-    # array and the server-card description reach agents only after a manual
-    # Cloudflare dashboard paste. Until then the fallback path still answers 82.
+    # ✓ PASTED — live confirmed 2026-09-01: /.well-known/mcp.json returns
+    # X-DC-Worker-Version: 4.9.47-tools-83-summarize-for-citation. (This line
+    # read "PASTE OUTSTANDING"; it had already happened. FOURTH time this note
+    # has lagged reality — the header is the authority, never the comment.)
+    #
+    # 4.9.47 -> 4.9.48-anon-callable-flag (2026-09-01): all three discovery
+    # surfaces (/.well-known/mcp.json, /mcp/manifest, /.well-known/mcp/
+    # server-card.json) declared authentication {type:'api_key',
+    # header:'X-API-Key', optional_for:['free_tier']}. `type:'api_key'` ALONE
+    # reads as AUTH REQUIRED to every third-party parser, and `optional_for` is
+    # a DC Hub invention nothing else knows how to read — the one place we
+    # stated the truth ("3 calls/day taste, no signup") was prose inside a
+    # pricing string.
+    # MEASURED: Glimind (glimind.com — the SentinelOracle/0.1 prober in our
+    # logs) indexes EVERY dchub tool as access:paid + anonymousCallable:FALSE,
+    # while its OWN liveness probe of the same tool records authRequired:false.
+    # Its docs instruct agents to "pre-filter on anonymousCallable to skip tools
+    # you can't call without a signup" — so we are dropped from routing while a
+    # PAID competitor (ai.dynamicfeed/energy_grid) marked true survives.
+    # Control: POST https://dchub.cloud/mcp with NO credential returns 200 and
+    # the server logs `tier=free key=none`. The declaration was simply wrong.
+    # Adds required:false + anonymous_access:true to all three blocks;
+    # type/header unchanged, so clients keying off them still send credentials.
+    # ★ PASTE OUTSTANDING — this change is edge-only. No third-party parser
+    # sees any of it until the manual Cloudflare dashboard paste happens.
     # Verify with:
-    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.47
-    assert "WORKER_VERSION = '4.9.47-tools-83-summarize-for-citation'" in src
+    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.48
+    assert "WORKER_VERSION = '4.9.48-anon-callable-flag'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
