@@ -3367,11 +3367,55 @@ def _build_press_headline(out: dict, series=None) -> None:
         # module-level helper would NameError inside this try and silently
         # degrade every headline to the lifetime sentence.
         _conc = ""
+        # ★ 2026-09-02. The clause below said "came from a single caller
+        # (chain-hire)" — true, and it reads as a large CUSTOMER. chain-hire
+        # is a bulk harvester: two IPs, one tool (`search`), no api_key, a flat
+        # 100-132 calls/hour for 14 hours, 1,410 of its calls served past the
+        # anonymous cap. A sentence built to be quoted verbatim must not let a
+        # journalist or a board read a scraper as demand, so when the week is
+        # harvester-dominated the clause NAMES it as one and leads with the
+        # net figure.
+        #
+        # Dominance is NOT re-derived here against a second threshold: it is
+        # read off wow.comparability.harvester_dominated_weeks, the verdict
+        # weekly_series already published (#3581/#3585). One gate, one answer.
+        # Inline like everything else in this block — the fence tests exec this
+        # function with only PRESS_HEADLINE_BASIS and _fixed_window_claim
+        # bound, so a module-level helper would NameError and silently degrade
+        # every headline to the lifetime sentence.
+        _harv_weeks = set()
+        try:
+            for _hw in (((series or {}).get("wow") or {}).get("comparability")
+                        or {}).get("harvester_dominated_weeks") or []:
+                if isinstance(_hw, dict) and _hw.get("week_start"):
+                    _harv_weeks.add(_hw["week_start"])
+        except (AttributeError, TypeError):
+            _harv_weeks = set()
         try:
             for _w in ((series or {}).get("weeks") or []):
                 if not (isinstance(_w, dict)
                         and _w.get("week_start") == _week_label):
                     continue
+                if (_week_label in _harv_weeks
+                        and _w.get("harvester_calls") is not None):
+                    _hc = int(_w["harvester_calls"])
+                    _hnet = _w.get("calls_net_of_harvesters")
+                    _hnet = (int(_hnet) if _hnet is not None
+                             else max(int(_wk) - _hc, 0))
+                    _hpct = _w.get("harvester_pct")
+                    _hpct_s = (f"{float(_hpct):.0f}%" if _hpct is not None
+                               else f"{100.0 * _hc / max(int(_wk), 1):.0f}%")
+                    # Name the one that actually ran when we can (the top
+                    # caller, if it is a known harvester); otherwise the class.
+                    _top = str(_w.get("top_caller_client") or "")
+                    _names = [str(n) for n in (_w.get("harvester_names") or [])]
+                    _who = (_top if _top and _top in _names
+                            else (", ".join(_names) if _names else "a bulk harvester"))
+                    _conc = (f", of which {_hc:,} ({_hpct_s}) were a BULK "
+                             f"HARVESTER ({_who} — one tool, no API key) and "
+                             f"NOT demand; {_hnet:,} came from all other "
+                             f"callers")
+                    break
                 if _w.get("concentration_flag") and _w.get("top_caller_calls") is not None:
                     _tc = int(_w["top_caller_calls"])
                     _net = _w.get("calls_net_of_top")
@@ -3392,14 +3436,32 @@ def _build_press_headline(out: dict, series=None) -> None:
                 f"in the week of {_week_label} ({_wow_s}){_conc}; {_ext:,} "
                 f"external requests {_lead}since launch."
             )
+            _harv_rendered = "BULK HARVESTER" in _conc
             out["press_headline_metric_basis"] = PRESS_HEADLINE_BASIS + (
-                " ★ Concentration clause: weeks[-1].top_caller_calls / "
-                "top_caller_pct / calls_net_of_top / top_caller_client, read "
-                "off the SAME week row as the level and rendered only when "
-                "weeks[-1].concentration_flag is true (top caller >= "
-                "CONCENTRATION_PCT of the week's calls); top_caller_calls + "
-                "calls_net_of_top == calls. The caller is named by its "
-                "client_name/platform; whether it held a key is not in the row."
+                (" ★ Harvester clause: weeks[-1].harvester_calls / "
+                 "harvester_pct / calls_net_of_harvesters / harvester_names, "
+                 "read off the SAME week row as the level. Rendered only when "
+                 "that week appears in "
+                 "wow.comparability.harvester_dominated_weeks — the verdict "
+                 "weekly_series already published, NOT a threshold this "
+                 "renderer owns, so there is one gate and one answer. A "
+                 "harvester is a NAMED tag measured as one caller taking one "
+                 "tool at machine cadence holding no api_key "
+                 "(mcp_calls_deloop.HARVESTER_PLATFORMS); it is reported "
+                 "INSIDE the level and subtracted beside it, never excluded — "
+                 "no week is restated. harvester_calls + "
+                 "calls_net_of_harvesters == calls. This clause SUPERSEDES "
+                 "the concentration clause when both would apply: 'a single "
+                 "caller' reads as a customer, and a scraper is not one."
+                 if _harv_rendered else
+                 " ★ Concentration clause: weeks[-1].top_caller_calls / "
+                 "top_caller_pct / calls_net_of_top / top_caller_client, read "
+                 "off the SAME week row as the level and rendered only when "
+                 "weeks[-1].concentration_flag is true (top caller >= "
+                 "CONCENTRATION_PCT of the week's calls); top_caller_calls + "
+                 "calls_net_of_top == calls. The caller is named by its "
+                 "client_name/platform; whether it held a key is not in the "
+                 "row.")
                 if _conc else "")
         elif _ext:
             out["press_headline_metric"] = (

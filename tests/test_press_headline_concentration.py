@@ -164,3 +164,93 @@ def test_the_clause_is_inline_so_the_fence_harness_can_still_run_it():
     src = ast.get_source_segment(open(_FUNNEL, encoding="utf-8").read(), fn)
     assert "concentration_flag" in src
     assert "calls_net_of_top" in src and "top_caller_client" in src
+
+
+# ── the harvester clause (2026-09-02, second pass) ──────────────────────────
+#
+# The clause above is TRUE and still misleads: "came from a single caller
+# (chain-hire)" reads as a large CUSTOMER. chain-hire is a bulk harvester —
+# two IPs, one tool, no api_key, a flat 100-132 calls/hour for 14 hours, 1,410
+# of its calls served past the anonymous cap. A board or a journalist quoting
+# that sentence verbatim would report a scraper as demand.
+
+# W35 as weekly-series publishes it AFTER #3581/#3585 added the harvester block.
+_W35_HARV = dict(
+    _W35,
+    harvester_calls=1473, harvester_pct=81.4, calls_net_of_harvesters=337,
+    agents_net_of_harvesters=34, harvester_names=["chain-hire", "datacolo"],
+)
+
+
+def _series_harv(last_week, dominated=True):
+    s = _series(last_week)
+    s["wow"]["comparability"]["harvester_dominated_weeks"] = (
+        [{"week_start": last_week["week_start"], "harvester_pct":
+          last_week.get("harvester_pct")}] if dominated else [])
+    s["wow"]["comparability"]["includes_harvester_dominated_week"] = dominated
+    return s
+
+
+def test_a_harvester_week_is_named_as_one_not_as_a_caller():
+    build, _ = _load_headline_builder(_series_harv(_W35_HARV))
+    out = _payload()
+    build(out)
+    line = out["press_headline_metric"]
+    assert "BULK HARVESTER" in line, line
+    assert "NOT demand" in line, line
+    assert "chain-hire" in line
+    assert "337 came from all other callers" in line, line
+    # and it must NOT also render the softer single-caller clause
+    assert "came from a single caller" not in line, line
+    assert "1,810" in line and "WoW withheld" in line
+    b = out["press_headline_metric_basis"]
+    assert "Harvester clause" in b and "no week is restated" in b, b
+    assert "Concentration clause" not in b, "one clause rendered, one basis"
+
+
+def test_dominance_comes_from_the_published_gate_not_a_local_threshold():
+    """★ The renderer must not own a second copy of the 25% rule. Same row,
+    same 81.4 — only the gate's verdict differs, and the sentence follows it."""
+    build, _ = _load_headline_builder(_series_harv(_W35_HARV, dominated=False))
+    out = _payload()
+    build(out)
+    line = out["press_headline_metric"]
+    assert "BULK HARVESTER" not in line, line
+    # falls back to the concentration clause, which the row still warrants
+    assert "came from a single caller (chain-hire)" in line, line
+
+
+def test_a_harvester_week_with_no_harvester_counts_falls_back():
+    """Gate says dominated, row carries no harvester_calls (an older
+    weekly-series still deploying). Must degrade to the existing clause, not
+    invent numbers."""
+    row = {k: v for k, v in _W35_HARV.items() if not k.startswith("harvester")
+           and k != "calls_net_of_harvesters"}
+    build, _ = _load_headline_builder(_series_harv(row))
+    out = _payload()
+    build(out)
+    assert "BULK HARVESTER" not in out["press_headline_metric"]
+    assert "single caller" in out["press_headline_metric"]
+
+
+def test_a_clean_week_still_renders_no_clause_at_all():
+    quiet = dict(_W35_HARV, top_caller_calls=300, top_caller_pct=16.6,
+                 calls_net_of_top=1510, concentration_flag=False,
+                 harvester_calls=0, harvester_pct=0.0,
+                 calls_net_of_harvesters=1810)
+    build, basis = _load_headline_builder(_series_harv(quiet, dominated=False))
+    out = _payload()
+    build(out)
+    line = out["press_headline_metric"]
+    assert "of which" not in line and "HARVESTER" not in line, line
+    assert out["press_headline_metric_basis"] == basis
+
+
+def test_the_harvester_numbers_are_read_off_the_row():
+    row = dict(_W35_HARV, harvester_calls=900, harvester_pct=50.0,
+               calls_net_of_harvesters=910)
+    build, _ = _load_headline_builder(_series_harv(row))
+    out = _payload()
+    build(out)
+    line = out["press_headline_metric"]
+    assert "900 (50%)" in line and "910 came from all other callers" in line, line
