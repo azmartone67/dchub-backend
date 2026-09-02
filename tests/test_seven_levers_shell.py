@@ -228,13 +228,45 @@ def test_repo_worker_is_canon_clean_and_current():
     # ★ dchub-frontend#1303 fixed this in the PAGES worker first and changed
     # NOTHING here: api.dchub.cloud is THIS script (4.9.x), not Pages (4.6x.x).
     # Read x-dc-worker-version before choosing which file to edit.
+    # ✓ PASTED — live confirmed 2026-09-02: api.dchub.cloud/api/v1/iso/eu/health
+    # returned HTTP 503 with x-dc-verdict-route: no-failover and NO
+    # x-dc-hub-failover, on x-dc-worker-version 4.9.49-verdict-routes.
+    #
+    # 4.9.49 -> 4.9.50-origin-edge-key-2026-09-02: the Railway MCP origin
+    # answered ANY caller keylessly and accepted a spoofed X-Forwarded-For,
+    # which is what agent_id is derived from — so a direct caller could mint
+    # agent_ids at will. Adds the x-dc-edge-key stamp (delete-before-set) and
+    # makes GET /mcp report the ORIGIN's version instead of a frozen literal.
+    #
+    # ★★★ THIS VERSION WAS PASTED BEFORE IT WAS COMMITTED. For roughly an hour
+    # production ran 4.9.50 while `main` still held 4.9.49 — code that existed
+    # NOWHERE in git, and no guard could see it: this test pins the REPO
+    # constant, and nothing compares it to the wire. Worse, the version number
+    # went UP while the content of `main` went BACKWARD, so any "is live
+    # current?" check by version comparison would have passed. Reconciled here
+    # from the pasted dashboard source.
+    # ★ COMMIT BEFORE YOU PASTE. The paste is the deploy, but the commit is the
+    # only thing the next person can read.
+    #
+    # 4.9.50 -> 4.9.51-verdict-route-timeout: the STEP 2.4 verdict exemption
+    # fired only ~2 of 3 times. getTimeout() matched no prefix for
+    # /api/v1/iso/eu/health so it took DEFAULT 15s, and the origin's own
+    # /health ran an UNCACHED zone probe with requests timeout=15 — the same
+    # 15 seconds, i.e. a coin flip by construction. When Railway overran it,
+    # proxyToRailway aborted, `resp` came back null, the `resp &&` guard
+    # skipped the verdict, and the stale Render 200 shipped. Measured 6 runs:
+    #     503 railway verdict=no-failover  x4   (9.5s, 11.6s, 14.4s, 22.9s)
+    #     200 render  failover=true        x2   (20.0s, 25.3s)
+    # ★ `resp &&` is SELF-DEFEATING for this class of route: the endpoint whose
+    # job is to report a dead upstream is the one most likely to be slow
+    # BECAUSE that upstream is dead. Verdict routes now get their own generous
+    # timeout, and the origin /health no longer blocks on a live probe.
     # ★ PASTE OUTSTANDING — merging does not ship this. Until the manual
-    # Cloudflare dashboard paste happens, the live zone worker still launders
-    # that 503 into a stale-Render 200 and every status-code monitor reads
-    # green through the outage.
+    # Cloudflare dashboard paste happens, the live worker keeps failing the
+    # verdict over to Render whenever the origin is slow.
     # Verify with:
-    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.49
-    assert "WORKER_VERSION = '4.9.49-verdict-routes'" in src
+    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.51
+    assert "WORKER_VERSION = '4.9.51-verdict-route-timeout'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

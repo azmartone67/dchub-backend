@@ -84,7 +84,7 @@ def _counting_zone(monkeypatch, result):
     """
     calls = []
 
-    def _stub(code, max_age=None):
+    def _stub(code, max_age=None, timeout=None):
         calls.append(code)
         return result(code)
 
