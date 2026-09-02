@@ -957,3 +957,47 @@ CANONICAL_NET_OF_TOP_CALLER_BASIS = (
     "excludes it — so calls_net_of_top includes CF-POP rows by design. "
     "callers_net_of_top is distinct non-NULL agents minus one, floored at 0."
 )
+
+
+# ★ QA sweep 2026-09-02 (finding 2:F7). Four verification HARNESSES sit inside
+# the external population: actionist-apps-verification (88 calls/30d, 2 IPs,
+# 75 in W36 alone), skeptic-verifier (3), vouch-census (1), mcp-spec-study
+# (1). They are NOT deny-listed — the exact-fingerprint rule above says live
+# third-party verifiers are real countable traffic, and a family match on
+# "verif" would delete LinerMCPVerifier/TrimtabVerifier — they are REPORTED:
+# weekly_series publishes calls_net_of_harnesses / agents_net_of_harnesses
+# beside *_net_of_top, from the same rows, with the names attached. Adding a
+# name here changes a companion column, never the canonical count.
+HARNESS_CLIENT_NAMES = (
+    "actionist-apps-verification",
+    "skeptic-verifier",
+    "vouch-census",
+    "mcp-spec-study",
+)
+
+
+def harness_name_expr(client_col: str = "client_name",
+                      platform_col: str = "platform") -> str:
+    """The SAME naming expression weekly_series uses for top_caller_client, so
+    a harness named here is the name a reader sees published."""
+    return f"lower(COALESCE(NULLIF({client_col}, ''), {platform_col}, ''))"
+
+
+def harness_predicate(client_col: str = "client_name",
+                      platform_col: str = "platform") -> str:
+    """TRUE for a row whose published caller name is a known harness. Exact
+    names, lowercase, no LIKE — so no literal % and it is safe under bound
+    params as well as inlined."""
+    names = ", ".join("'" + n.replace("'", "''") + "'" for n in HARNESS_CLIENT_NAMES)
+    return f"{harness_name_expr(client_col, platform_col)} IN ({names})"
+
+
+CANONICAL_NET_OF_HARNESSES_BASIS = (
+    "calls_net_of_harnesses / agents_net_of_harnesses = the same weekly rows "
+    "as calls / agents MINUS rows whose published caller name is one of "
+    "mcp_calls_deloop.HARNESS_CLIENT_NAMES (exact, lowercase). An ARITHMETIC "
+    "COMPANION like *_net_of_top: the harnesses stay in every canonical "
+    "count on purpose (a false exclusion deletes a real customer); this "
+    "column exists so a reader can see how much of a week was verification "
+    "traffic without subtracting by hand. harness_calls is the subtrahend."
+)

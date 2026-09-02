@@ -16404,6 +16404,18 @@ def stripe_webhook_diagnostics():
             'stats.received_total should increment.'
         ),
     }
+    # QA sweep 2026-09-02 (finding 5:4e): the counters above are a module
+    # dict that restarts at 0 on every deploy, so this surface read
+    # `received_total: 0, last_received_at: null` while conversions-audit
+    # said Stripe 4 <-> DB 4. The persisted twin counts stripe_webhook_events
+    # (one row per verified event id, written by the idempotency gate).
+    try:
+        from util.stripe_webhook_stats import persisted_stats as _pws, NOTE as _pws_note
+        out['stats'].update(_pws(_pg_execute))
+        out['stats']['process_counters_are_in_memory'] = True
+        out['stats']['in_memory_note'] = _pws_note
+    except Exception as _pws_e:
+        out['stats']['persisted_error'] = str(_pws_e)[:120]
     # Best-effort conversion counters (won't raise if tables missing)
     try:
         _, rows = _pg_execute(
@@ -39449,6 +39461,17 @@ try:
         print("[main] oauth_challenge_bp registered: OAuth challenge ledger", flush=True)
     except Exception as _oc_e:
         print(f"[main] oauth_challenge_bp register failed: {_oc_e}", flush=True)
+
+    # QA sweep 2026-09-02 (finding 5:9): paid-customer activation emails.
+    # SHIPS DARK — ACTIVATION_EMAILS_ENABLED must be exactly "1" for a send;
+    # the sweep otherwise reports would_send and writes nothing. Ledger is
+    # created on the first ARMED sweep, never at boot.
+    try:
+        from routes.activation_emails import activation_emails_bp
+        app.register_blueprint(activation_emails_bp)
+        print("[main] activation_emails_bp registered: paid activation emails (DARK)", flush=True)
+    except Exception as _ae_e:
+        print(f"[main] activation_emails_bp register failed: {_ae_e}", flush=True)
 except Exception as _mo_e:
     print(f"[main] mcp_oauth_2025_bp register failed: {_mo_e}", flush=True)
 

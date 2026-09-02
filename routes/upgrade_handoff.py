@@ -603,6 +603,54 @@ def upgrade_go(token: str, tier: str):
     return redirect(f"{base}{sep}client_reference_id={cref}", code=302)
 
 
+# ★ QA sweep 2026-09-02 (finding 5:4d). This endpoint read 0 views / 0 clicks
+# for 30d while revenue master shell lane 3 counted 102 human opens of the
+# relay page in the same 30d. Two tables, one hop: the live paywall
+# (get_dchub_recommendation, verified 00:42Z) mints /upgrade/h/<token> relay
+# links (routes/human_relay.py), which log to `relay_opens`; the /upgrade/k
+# pages this file serves log to `upgrade_page_events`, and nothing mints
+# those links any more. The stats now read BOTH and say which is which.
+RELAY_TABLE = "relay_opens"
+RELAY_STATS_SQL = (
+    "SELECT COUNT(*)::int, COUNT(*) FILTER (WHERE valid IS TRUE)::int, "
+    "       COUNT(DISTINCT session_id)::int "
+    f"  FROM {RELAY_TABLE} WHERE ts >= NOW() - INTERVAL '30 days'"
+)
+RELAY_BY_TOOL_SQL = (
+    "SELECT COALESCE(tool, '-'), COUNT(*)::int "
+    f"  FROM {RELAY_TABLE} WHERE ts >= NOW() - INTERVAL '30 days' "
+    " GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+)
+LEGACY_SOURCE_NOTE = (
+    "views_30d / clicks_30d / keys_*_30d / clicks_by_tier / views_by_src are "
+    "DEPRECATED: they count upgrade_page_events, written only by the /upgrade/k "
+    "per-key pages, which no live surface mints any more. The human hop that "
+    "actually happens is the /upgrade/h relay (routes/human_relay.py) and it "
+    "writes relay_opens — read human_opens_30d."
+)
+
+
+def relay_stats(c) -> dict:
+    """30d human opens from relay_opens. None (not 0) on any read failure."""
+    out = {"human_opens_30d": None, "human_opens_valid_30d": None,
+           "human_sessions_30d": None, "human_opens_by_tool": {},
+           "human_opens_source": RELAY_TABLE}
+    try:
+        with c.cursor() as cur:
+            cur.execute(RELAY_STATS_SQL)
+            r = cur.fetchone() or (0, 0, 0)
+            out.update(human_opens_30d=int(r[0] or 0),
+                       human_opens_valid_30d=int(r[1] or 0),
+                       human_sessions_30d=int(r[2] or 0))
+            cur.execute(RELAY_BY_TOOL_SQL)
+            out["human_opens_by_tool"] = {row[0]: int(row[1]) for row in (cur.fetchall() or [])}
+    except Exception as e:  # noqa: BLE001
+        try: c.rollback()
+        except Exception: pass
+        out["human_opens_error"] = f"{type(e).__name__}:{str(e)[:80]}"
+    return out
+
+
 @upgrade_handoff_bp.route("/api/v1/mcp/upgrade-handoff/stats", methods=["GET"])
 def upgrade_handoff_stats():
     """Funnel instrumentation: 30d views/clicks on the per-key upgrade
@@ -655,6 +703,9 @@ def upgrade_handoff_stats():
             except Exception: pass
         view_rate = (round(100.0 * out["clicks_30d"] / out["views_30d"], 2)
                      if out["views_30d"] else 0.0)
+        out.update(relay_stats(c))
+        out["legacy_source"] = "upgrade_page_events"
+        out["legacy_source_note"] = LEGACY_SOURCE_NOTE
         return jsonify(ok=True, click_rate_pct=view_rate,
                        threshold=HANDOFF_THRESHOLD, **out)
     finally:
