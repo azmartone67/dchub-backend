@@ -37695,8 +37695,14 @@ def founding_spots():
     live 18 of 25 claimed / 7 remaining (edge + origin, 00:23Z). dashboard.html reads `remaining`
     from here, so the dashboard quoted a scarcity number no other surface
     agreed with. Same keys as before (`remaining`, `total`) plus the
-    counter's own fields; what "founding" COUNTS is unchanged and is the
-    owner's call (see the PR that landed this).
+    counter's own fields.
+
+    What "founding" COUNTS was settled the same day: founding_status() now
+    counts the $99 founding SKU only (owner decision), not the first 25 paid
+    customers of any plan. This route derives EVERY number it publishes from
+    that one call — see tests/test_founding_counter_counts_the_sku.py, which
+    runs this function's own source against the same stub as
+    /api/founding-members and fails if the two ever disagree.
     """
     try:
         from routes.founding_customers import founding_status
