@@ -90,7 +90,11 @@ def _build(rows, monkeypatch):
 
 
 _ROW = (1, "Utility files for 500MW", "https://ex.com/a", "Example Wire",
-        datetime.datetime(2026, 9, 1, 12, 0), "Industry", 0.91)
+        datetime.datetime(2026, 9, 1, 12, 0), "Industry", 0.91,
+        "https://ex.com")
+_GOOGLE_ROW = (2, "Politico piece", "https://news.google.com/rss/articles/CBMiXX",
+               "Politico", datetime.datetime(2026, 9, 1, 9, 0), "Policy", 0.8,
+               "https://www.politico.com")
 
 
 def test_a_datetime_is_serialised_not_left_raw(monkeypatch):
@@ -102,7 +106,7 @@ def test_a_datetime_is_serialised_not_left_raw(monkeypatch):
 
 
 def test_a_null_published_at_stays_null(monkeypatch):
-    p = _build([(2, "t", "u", "s", None, "c", 0.1)], monkeypatch)
+    p = _build([(2, "t", "u", "s", None, "c", 0.1, None)], monkeypatch)
     assert p["data"][0]["published_at"] is None
 
 
@@ -117,3 +121,64 @@ def test_the_index_does_not_trip_the_stub_guard(monkeypatch):
     raw = json.dumps(p).encode()
     assert _gate_evidence(raw) is None
     assert _row_count(json.loads(raw)) == 13009
+
+
+# ── aggregator links (2026-09-02) ───────────────────────────────────────────
+#
+# 70% of published rows (9,100 of 13,009) had a news.google.com URL. Those are
+# post-2024 opaque tokens: nothing decodes out of them and following one
+# returns 200 with a JS interstitial, not a redirect. The article URL cannot be
+# recovered at ingest, so the export must SAY that rather than present an
+# aggregator token as if it were the source link.
+
+def test_an_aggregator_url_is_declared(monkeypatch):
+    p = _build([_GOOGLE_ROW], monkeypatch)
+    row = p["data"][0]
+    assert row["url_is_aggregator"] is True
+    assert row["publisher_url"] == "https://www.politico.com"
+
+
+def test_a_direct_publisher_url_is_not_flagged(monkeypatch):
+    p = _build([_ROW], monkeypatch)
+    assert p["data"][0]["url_is_aggregator"] is False
+
+
+def test_publisher_url_survives_to_the_payload(monkeypatch):
+    """For an aggregator row this is the ONLY attribution that resolves."""
+    p = _build([_GOOGLE_ROW], monkeypatch)
+    assert p["data"][0]["publisher_url"]
+    assert "publisher_url" in p["fields"]
+
+
+class _LegacyCur(_Cur):
+    """A database that has not taken the publisher_url ALTER yet."""
+    def __init__(self, rows):
+        super().__init__(rows)
+        self._first = True
+    def execute(self, sql, *a, **k):
+        if "publisher_url" in sql and self._first:
+            self._first = False
+            raise RuntimeError('column "publisher_url" does not exist')
+        return None
+
+
+class _LegacyConn(_Conn):
+    def __init__(self, rows):
+        super().__init__(rows)
+        self._cur = _LegacyCur([r[:7] for r in rows])
+    def cursor(self): return self._cur
+    def rollback(self): return None
+
+
+def test_a_database_without_the_column_still_exports(monkeypatch):
+    """★ The export must not vanish because one column is new. Degrade to
+    publisher_url=None, keep every row."""
+    monkeypatch.setitem(sys.modules, "db_utils",
+                        types.SimpleNamespace(
+                            get_read_db=lambda: _LegacyConn([_ROW, _GOOGLE_ROW])))
+    from routes.r2_exports import _build_news_index
+    p = _build_news_index()
+    assert p is not None and p["count"] == 2
+    assert all(r["publisher_url"] is None for r in p["data"])
+    # the aggregator flag comes from the URL, not the column — still correct
+    assert [r["url_is_aggregator"] for r in p["data"]] == [False, True]

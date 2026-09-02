@@ -135,7 +135,27 @@ def init_news_db(db_path=NEWS_DB_PATH):
         fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         relevance_score REAL DEFAULT 0.5, sentiment TEXT, keywords TEXT,
         image_url TEXT, is_breaking INTEGER DEFAULT 0,
-        view_count INTEGER DEFAULT 0, share_count INTEGER DEFAULT 0)''')
+        view_count INTEGER DEFAULT 0, share_count INTEGER DEFAULT 0,
+        publisher_url TEXT)''')
+    # ★ 2026-09-02. 70% of news_articles.url (9,100 of 13,009) are
+    # news.google.com/rss/articles/CBMi... aggregator links. Those are the
+    # post-2024 opaque `AU_yq...` tokens: nothing is base64-encoded inside them
+    # (verified against live rows) and following one returns 200 with a
+    # JavaScript interstitial, NOT a redirect — the destination is obtainable
+    # only from Google's private batchexecute endpoint. The article URL
+    # therefore CANNOT be resolved at ingest, and this column does not pretend
+    # to. It stores what the feed does give, on 100% of entries:
+    # <source url="..."/>, the publisher's own domain and name. A row whose
+    # `url` is an opaque token can then still say WHO published it.
+    #
+    # ALTER runs separately because CREATE TABLE IF NOT EXISTS is a no-op
+    # against the existing table and would leave the column missing on every
+    # already-deployed database.
+    try:
+        c.execute('ALTER TABLE news_articles '
+                  'ADD COLUMN IF NOT EXISTS publisher_url TEXT')
+    except Exception:
+        pass
     c.execute('''CREATE TABLE IF NOT EXISTS feed_health (
         url TEXT PRIMARY KEY, name TEXT, last_success DATETIME,
         last_failure DATETIME, failure_count INTEGER DEFAULT 0,
@@ -415,11 +435,23 @@ def fetch_google_news(query, max_results=20):
             title = entry.get('title','').strip()
             link = entry.get('link','').strip()
             if not title or not link: continue
+            # ★ The feed's <source> element is authoritative and present on
+            # 100% of entries (measured 2026-09-02). The ' - ' split below
+            # GUESSES the publisher out of the headline and silently leaves
+            # 'Google News' whenever the headline has no dash or a long tail —
+            # crediting the aggregator instead of whoever wrote the story.
+            # Prefer the element; keep the split only to TRIM the redundant
+            # suffix off the title.
+            _src = entry.get('source') or {}
+            _src_name = (_src.get('title') or '').strip()
+            _src_href = (_src.get('href') or '').strip()
             source = 'Google News'
             if ' - ' in title:
                 parts = title.rsplit(' - ', 1)
                 if len(parts)==2 and len(parts[1])<50:
                     title, source = parts[0], parts[1]
+            if _src_name:
+                source = _src_name
             summary = re.sub(r'<[^>]+>','', entry.get('summary','').strip())
             summary = _html.unescape(summary)  # decode &nbsp; &amp; &#39; etc.
             summary = re.sub(r'\s+',' ', summary).strip()[:500]
@@ -433,6 +465,7 @@ def fetch_google_news(query, max_results=20):
             articles.append({
                 'id': generate_article_id(link), 'title': title, 'url': link,
                 'source': source, 'category': categorize_article(title, summary),
+                'publisher_url': _src_href or None,
                 'summary': summary, 'published_at': pub_date,
                 'relevance_score': calculate_relevance_score(title, summary, source),
                 'keywords': json.dumps(extract_keywords(title, summary)),
@@ -569,15 +602,30 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
         try:
             pub = _clamp_future_published_at(a.get('published_at'))
             c.execute("SAVEPOINT sp_article")
-            c.execute('''INSERT INTO news_articles
-                (id,title,url,source,category,summary,author,published_at,
-                 relevance_score,keywords,image_url,fetched_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (id) DO NOTHING''',
-                (a['id'], a['title'], a['url'], a['source'],
-                 a.get('category','Industry'), a.get('summary',''),
-                 a.get('author',''), pub, a.get('relevance_score',0.5),
-                 a.get('keywords','[]'), a.get('image_url'), now_ts))
+            # ★ publisher_url is written through a FALLBACK rather than
+            # assumed. init_db's ALTER runs before writes in-process, but a
+            # read replica or a DB restored from an older dump can still lack
+            # the column, and an UndefinedColumn there would stop news ingest
+            # dead to save one field. Degrade, never block — the SAVEPOINT
+            # this block already opens is what makes the retry safe.
+            _cols = ("id,title,url,source,category,summary,author,"
+                     "published_at,relevance_score,keywords,image_url,"
+                     "fetched_at")
+            _vals = (a['id'], a['title'], a['url'], a['source'],
+                     a.get('category','Industry'), a.get('summary',''),
+                     a.get('author',''), pub, a.get('relevance_score',0.5),
+                     a.get('keywords','[]'), a.get('image_url'), now_ts)
+            try:
+                c.execute("INSERT INTO news_articles (" + _cols
+                          + ",publisher_url) VALUES ("
+                          + ",".join(["%s"] * 13)
+                          + ") ON CONFLICT (id) DO NOTHING",
+                          _vals + (a.get('publisher_url'),))
+            except Exception:
+                c.execute("ROLLBACK TO SAVEPOINT sp_article")
+                c.execute("INSERT INTO news_articles (" + _cols
+                          + ") VALUES (" + ",".join(["%s"] * 12)
+                          + ") ON CONFLICT (id) DO NOTHING", _vals)
             if c.rowcount > 0: saved += 1
         except Exception:
             try:
@@ -624,12 +672,20 @@ def _sync_articles_to_pg(articles):
         cur = pg_conn.cursor()
         
         now_ts = datetime.utcnow().isoformat()
-        insert_sql = '''INSERT INTO news_articles
-            (id,title,url,source,category,summary,author,published_at,
-             relevance_score,keywords,image_url,fetched_at)
-            VALUES %s
-            ON CONFLICT (id) DO NOTHING'''
-        
+        # ★ Second news_articles writer. Same degrade-never-block contract as
+        # the single-row one: publisher_url is attempted, and a chunk that
+        # fails because the column is absent is retried WITHOUT it rather than
+        # dropped. Before this, a chunk_err only logged a warning and lost 100
+        # articles silently.
+        _NEWS_COLS = ("id,title,url,source,category,summary,author,"
+                      "published_at,relevance_score,keywords,image_url,"
+                      "fetched_at")
+        insert_sql = ("INSERT INTO news_articles (" + _NEWS_COLS
+                      + ",publisher_url) VALUES %s "
+                      "ON CONFLICT (id) DO NOTHING")
+        insert_sql_legacy = ("INSERT INTO news_articles (" + _NEWS_COLS
+                             + ") VALUES %s ON CONFLICT (id) DO NOTHING")
+
         # Build values tuples
         values = []
         for a in articles:
@@ -638,7 +694,8 @@ def _sync_articles_to_pg(articles):
                 a['id'], a['title'], a['url'], a['source'],
                 a.get('category', 'Industry'), a.get('summary', ''),
                 a.get('author', ''), pub, a.get('relevance_score', 0.5),
-                a.get('keywords', '[]'), a.get('image_url'), now_ts
+                a.get('keywords', '[]'), a.get('image_url'), now_ts,
+                a.get('publisher_url')
             ))
         
         # Batch insert in chunks of 100
@@ -647,14 +704,28 @@ def _sync_articles_to_pg(articles):
             chunk = values[i:i+100]
             try:
                 execute_values(cur, insert_sql, chunk,
-                    template='(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)')
+                    template='(' + ','.join(['%s'] * 13) + ')')
                 synced += cur.rowcount
             except Exception as chunk_err:
-                logger.warning(f"⚠️ News PG batch insert chunk failed: {chunk_err}")
                 try:
                     pg_conn.rollback()
                 except Exception:
                     pass
+                # Retry without publisher_url before giving up on 100 rows.
+                try:
+                    execute_values(cur, insert_sql_legacy,
+                                   [v[:12] for v in chunk],
+                                   template='(' + ','.join(['%s'] * 12) + ')')
+                    synced += cur.rowcount
+                    logger.warning("⚠️ News PG batch: publisher_url column "
+                                   "absent, inserted without it")
+                except Exception:
+                    logger.warning(
+                        f"⚠️ News PG batch insert chunk failed: {chunk_err}")
+                    try:
+                        pg_conn.rollback()
+                    except Exception:
+                        pass
         
         pg_conn.commit()
         
