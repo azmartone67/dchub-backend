@@ -258,13 +258,22 @@ def test_sitemap_city_shard_skips_markets_redirect_slugs():
     """A sitemap must never list a URL that redirects. The city-markets
     shard joins on mps slugs, which include twins that /markets now 301s
     ('ashburn', 'washington' both clear the >=3-facilities city join)."""
+    # seo F6 (2026-09-02): the filter moved to
+    # routes/market_deep_dive.listable_market_slug so the /markets hub and
+    # the shard skip the same slugs. The shard must route every DB slug
+    # through it, and it must still consult the redirect map.
     src = _src("main.py")
     i = src.index("sitemap city-state markets DB fetch failed")
-    seg = src[max(0, i - 8000):i]
-    assert "MARKETS_CANONICAL_REDIRECT" in seg, (
-        "city-markets sitemap shard no longer imports the /markets redirect "
-        "map — redirect URLs re-enter the sitemap"
+    seg = "\n".join(ln for ln in src[max(0, i - 8000):i].splitlines()
+                    if not ln.strip().startswith("#"))
+    assert "_listable_market(_mslug, _seen_market_slugs)" in seg, (
+        "city-markets sitemap shard no longer filters slugs through the "
+        "shared listable_market_slug — redirect URLs re-enter the sitemap"
     )
-    assert "_mslug in _mk_redirect_slugs" in seg, (
-        "city-markets sitemap shard no longer filters redirect slugs"
+    dd = _src("routes/market_deep_dive.py")
+    fn = dd.split("def listable_market_slug", 1)[1].split("\ndef ", 1)[0]
+    fn = "\n".join(ln for ln in fn.splitlines()
+                   if not ln.strip().startswith("#"))
+    assert "s in MARKETS_CANONICAL_REDIRECT" in fn, (
+        "listable_market_slug no longer consults the /markets redirect map"
     )
