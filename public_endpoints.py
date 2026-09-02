@@ -204,6 +204,11 @@ def founding_members_status():
     # licenses claimed" and self-disabled the money CTA. Cohort + cap now both
     # come from routes.founding_customers (FOUNDING_CUSTOMERS_CAP env,
     # default 25 — the owner's scarcity knob).
+    # 2026-09-02: that counter now counts the $99 founding SKU only (owner
+    # decision) instead of the first 25 paid customers of any plan. Nothing
+    # changes here — this route publishes founding_status()'s numbers and
+    # computes none of its own, which is the property
+    # tests/test_founding_counter_counts_the_sku.py pins.
     try:
         from routes.founding_customers import founding_status
         st = founding_status()

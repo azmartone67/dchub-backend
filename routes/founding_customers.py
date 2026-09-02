@@ -167,6 +167,71 @@ def list_founding():
         except Exception: pass
 
 
+# ── What the counter COUNTS (owner decision, 2026-09-02) ─────────────
+# The public counter is a scarcity meter for the $99 FOUNDING LICENCE, so
+# it must count that SKU and nothing else.
+#
+# Until this change it counted every row in founding_customers, and the
+# Stripe webhook auto-tagged EVERY paid plan into that table. Measured at
+# the Railway origin 2026-09-02T06:16Z, the 18 it published were:
+#   founding 5 · starter 5 · pro 4 (incl. the owner's own $0 comp)
+#   · developer 3 · enterprise 1 (the $3,000/yr research seat)
+# i.e. 13 of the 18 "founding licences claimed" were not founding licences.
+#
+# WHICH FIELD: `users.plan` — the plan the Stripe webhook itself writes and
+# the field tier_registry treats as canonical ('founding' is its own tier,
+# priced at 99 in TIER_PRICE_USD_MONTH). NOT founding_customers.plan_at_tag,
+# which is a snapshot taken at FIRST payment: three customers who started on
+# starter/developer and later upgraded onto the founding licence still carry
+# their old plan_at_tag, so plan_at_tag alone reports 5 where Stripe reports 7.
+#
+# WHY STILL JOINED TO THE COHORT TABLE: `users.plan='founding'` alone is 10
+# live — it includes three Feb/Mar-2026 accounts granted the founding tier by
+# hand, before the $99 SKU existed (r-founder99, 2026-06-26) and before this
+# cohort table did. A founding_customers row is only ever created from a
+# Stripe checkout/subscription event (or a deliberate admin tag), so the join
+# is the "actually bought the SKU" half of the predicate. Cohort ∩
+# users.plan='founding' = 7, which is exactly the number of Founding Member
+# $99 subscriptions Stripe has ever created.
+FOUNDING_SKU_PLAN = "founding"
+
+# fc.email is stored lower-cased; LOWER() on both sides anyway so a
+# differently-cased users row cannot silently drop a paid licence.
+_SKU_COUNT_SQL = (
+    "SELECT COUNT(*) FROM founding_customers fc "
+    "JOIN users u ON LOWER(u.email) = LOWER(fc.email) "
+    "WHERE u.plan = %s"
+)
+# Degraded path only (no users table / join unavailable). Still SKU-filtered:
+# there is deliberately NO code path left that counts the cohort unfiltered.
+_SKU_COUNT_FALLBACK_SQL = (
+    "SELECT COUNT(*) FROM founding_customers WHERE plan_at_tag = %s"
+)
+
+
+def _count_founding_sku(cur) -> int:
+    """How many $99 founding licences have been claimed.
+
+    Raises if BOTH the join and the plan_at_tag fallback fail — callers
+    treat that as "unreadable" and report claimed=0 / programme open,
+    which is the safe direction on a money surface.
+    """
+    try:
+        cur.execute(_SKU_COUNT_SQL, (FOUNDING_SKU_PLAN,))
+        return int((cur.fetchone() or [0])[0] or 0)
+    except Exception as e:
+        logger.warning(f"[founding-customers] SKU join failed, "
+                       f"falling back to plan_at_tag: {e}")
+    # Postgres aborts the transaction on a failed statement; the fallback
+    # cannot run on the same connection until it is rolled back.
+    try:
+        cur.connection.rollback()
+    except Exception:
+        pass
+    cur.execute(_SKU_COUNT_FALLBACK_SQL, (FOUNDING_SKU_PLAN,))
+    return int((cur.fetchone() or [0])[0] or 0)
+
+
 def founding_status() -> dict:
     """The ONE source of truth for the public founding counters.
 
@@ -179,8 +244,11 @@ def founding_status() -> dict:
     card to "All founding licenses claimed" and self-disabled the money
     CTA mid-renewal-wave.
 
-    claimed = rows in founding_customers — the same table the Stripe
-    webhook auto-tag writes and auto_tag_if_under_cap's cap reads.
+    claimed = founding_customers rows whose customer is ON the $99
+    founding SKU (_count_founding_sku above) — the same population
+    auto_tag_if_under_cap now writes and measures its cap against. It is
+    NOT "the first 25 paid customers of any plan"; see the note above
+    _SKU_COUNT_SQL for the owner decision and the live numbers.
     cap     = FOUNDING_CUSTOMERS_CAP env (default 25), the owner's
     scarcity knob; setting it at or below claimed closes the program.
     A DB failure reports claimed=0 / program still active — an outage
@@ -191,8 +259,7 @@ def founding_status() -> dict:
     if c is not None:
         try:
             with c.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM founding_customers")
-                claimed = int((cur.fetchone() or [0])[0] or 0)
+                claimed = _count_founding_sku(cur)
         except Exception as e:
             logger.warning(f"[founding-customers] status count failed: {e}")
         finally:
@@ -227,13 +294,18 @@ def public_count():
 
 # ── Auto-tag hook ────────────────────────────────────────────────────
 # Called from the Stripe webhook on checkout.session.completed +
-# customer.subscription.created so every paid signup auto-tags into the
-# founding cohort UNTIL the cap is hit. After cap, ordinary paid
-# customers just become regular customers and no founding row is added.
+# customer.subscription.created.
 #
-# Cap is FOUNDING_CUSTOMERS_CAP env var (default 25). After hitting the
-# cap the auto-tag stops permanently — those 25 become the canonical
-# "founding 25" cohort for marketing / reference use.
+# 2026-09-02: this used to tag EVERY paid plan, which is how the public
+# counter came to publish 18 "founding licences claimed" of which 13 were
+# starters, developers, pros, the owner's own comp and a research seat.
+# It now tags only customers on the $99 founding SKU, so a starter no
+# longer consumes a founding seat — nor receives the "you are founding
+# member #N of 25" admin ping and welcome mail, which fire off `tagged`.
+#
+# Cap is FOUNDING_CUSTOMERS_CAP env var (default 25) and is measured with
+# the SAME SKU predicate the public counter reads, so the gate and the
+# published number can never disagree about what a founding member is.
 FOUNDING_CAP = int(os.environ.get("FOUNDING_CUSTOMERS_CAP", "25"))
 
 
@@ -249,12 +321,22 @@ def auto_tag_if_under_cap(
     no exception bubbles up if the table is missing or the connection
     fails.
 
+    Only the $99 founding SKU is tagged: any other plan returns
+    {tagged: False, reason: "not_founding_sku (<plan>)"} and writes
+    nothing.
+
     Returns {tagged: bool, position: int|None, cap: int}.
     """
     out: dict = {"tagged": False, "position": None,
                  "cap": FOUNDING_CAP, "reason": ""}
     if not email or "@" not in email:
         out["reason"] = "invalid_email"
+        return out
+    plan_key = (plan or "").strip().lower()
+    if plan_key != FOUNDING_SKU_PLAN:
+        # A paid customer on any other plan is a customer, not a founding
+        # licence holder. Nothing is written and no founding mail fires.
+        out["reason"] = f"not_founding_sku ({plan_key or 'unknown'})"
         return out
     email = email.lower().strip()
     try:
@@ -265,8 +347,7 @@ def auto_tag_if_under_cap(
             return out
         try:
             with c.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM founding_customers")
-                cohort_size = int((cur.fetchone() or [0])[0] or 0)
+                cohort_size = _count_founding_sku(cur)
                 if cohort_size >= FOUNDING_CAP:
                     out["reason"] = f"cap_reached ({cohort_size}/{FOUNDING_CAP})"
                     return out
