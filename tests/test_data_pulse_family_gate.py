@@ -362,12 +362,12 @@ def test_entsoe_health_carries_the_verdict_in_the_status_code(monkeypatch):
     app = Flask(__name__)
     app.register_blueprint(eu.iso_eu_entsoe_bp)
     monkeypatch.setattr(eu, "_token", lambda: "tok")
-    monkeypatch.setattr(eu, "_zone_snapshot", lambda code, max_age=None: None)
+    monkeypatch.setattr(eu, "_zone_snapshot", lambda code, max_age=None, timeout=None: None)
     r = app.test_client().get("/api/v1/iso/eu/health")
     assert r.status_code == 503 and r.get_json()["live_feed_ok"] is False
     monkeypatch.setattr(eu, "_zone_snapshot",
-                        lambda code, max_age=None: {"observed_age_s": 0, "data_age_s": 60,
-                                                    "data_period_end": "x"})
+                        lambda code, max_age=None, timeout=None: {"observed_age_s": 0, "data_age_s": 60,
+                                                                  "data_period_end": "x"})
     r = app.test_client().get("/api/v1/iso/eu/health")
     assert r.status_code == 200 and r.get_json()["live_feed_ok"] is True
 

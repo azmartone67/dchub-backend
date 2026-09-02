@@ -1,6 +1,14 @@
 
 /**
- * DC Hub API Proxy Worker v4.9.30 — manifest 72-tool / 2.4.4 sync
+ * DC Hub API Proxy Worker v4.9.50 — origin edge key (2026-09-02)
+ *
+ * ★ THIS TITLE LINE READ v4.9.30 FOR EIGHTEEN EDITS. The version this worker
+ * actually reports — `const WORKER_VERSION` below, and the X-DC-Worker-Version
+ * header it stamps on every response — was already 4.9.48 while this line said
+ * 4.9.30 and the block directly beneath it was headed "v4.9.47 CHANGES".
+ * Anyone comparing the dashboard's title against a file they were handed would
+ * conclude they were looking at the same code. Keep this in step with
+ * WORKER_VERSION, or delete it.
  * ================================================================================
  * v4.9.47 CHANGES (Aug 30 2026) — Phase tools-83:
  *   - FIX: MCP_FALLBACK_TOOLS carried 82 entries while the live
@@ -464,7 +472,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.49-verdict-routes';
+const WORKER_VERSION = '4.9.51-verdict-route-timeout';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -619,6 +627,50 @@ function isFlaskHtmlPath(pathname) {
 // content negotiation. Facility counts are now LINKED, never baked; the tool
 // count interpolates MCP_FALLBACK_TOOLS.length so it cannot drift at all.
 // ─────────────────────────────────────────────────────────────────
+// r-origin-edge-key (2026-09-02). The Railway MCP origin answered ANY caller
+// keylessly (measured: POST <origin>/mcp -> 200 + full tools/list) and accepted
+// a spoofed X-Forwarded-For. agent_id is md5(the first public XFF token) and
+// this worker OVERWRITES XFF with cf-connecting-ip below, so the whole
+// external-demand identity model assumes arrival here. A direct caller supplies
+// its own and can mint agent_ids at will. Origin gate: dchub-mcp-server#309,
+// shipped in OBSERVE mode (stamps x-dc-edge-key: ok|missing|bad, refuses
+// nothing) until DCHUB_EDGE_KEY_ENFORCE=1.
+//
+// ★ DELETE BEFORE SET, always. The caller's headers are copied wholesale into
+// the forward set; without the delete a stranger can supply the very header the
+// origin is being taught to trust. With the DCHUB_EDGE_KEY binding absent this
+// still strips the caller's copy and forwards none — the correct fail-safe.
+const MCP_EDGE_KEY_HEADER = 'x-dc-edge-key';
+function applyMcpEdgeKey(headers, env) {
+  headers.delete(MCP_EDGE_KEY_HEADER);
+  const k = env && env.DCHUB_EDGE_KEY;
+  if (k) headers.set(MCP_EDGE_KEY_HEADER, k);
+  return headers;
+}
+const mcpEdgeKeyHeaders = (env) =>
+  (env && env.DCHUB_EDGE_KEY) ? { [MCP_EDGE_KEY_HEADER]: env.DCHUB_EDGE_KEY } : {};
+
+// The origin's own /health, cached 60s in KV where available. Bounded at 2s and
+// fail-soft to the constant: /mcp/health must answer even when the origin does
+// not, because uptime monitors read it and a hang reads as "server down".
+async function mcpOriginVersion(env, ctx) {
+  const KEY = 'mcp:origin-version:v1';
+  try {
+    const kv = env && env.DCHUB_CACHE;
+    if (kv) { const c = await kv.get(KEY); if (c) return c; }
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 2000);
+    const r = await fetch(`${MCP_BACKEND}/health`, {
+      headers: { accept: 'application/json', ...mcpEdgeKeyHeaders(env) },
+      signal: ctl.signal,
+    });
+    clearTimeout(timer);
+    const v = r.ok ? (await r.json()).version : null;
+    if (v && kv && ctx) ctx.waitUntil(kv.put(KEY, String(v), { expirationTtl: 60 }));
+    return v || MCP_SERVER_INFO.version;
+  } catch (_) { return MCP_SERVER_INFO.version; }
+}
+
 const MCP_SERVER_INFO = {
   name:             'DC Hub MCP Server',
   version:          '2.5.0',
@@ -1954,7 +2006,7 @@ function _parseToolsList(text) {
   }
   return null;
 }
-async function resolveManifestTools(kv) {
+async function resolveManifestTools(kv, env) {
   // 1) fresh KV cache
   try {
     if (kv) {
@@ -1968,7 +2020,7 @@ async function resolveManifestTools(kv) {
     const timer = setTimeout(() => ctl.abort(), 2500);
     const resp = await fetch(`${MCP_BACKEND}/mcp`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'accept': 'application/json, text/event-stream' },
+      headers: { 'content-type': 'application/json', 'accept': 'application/json, text/event-stream', ...mcpEdgeKeyHeaders(env) },
       body: JSON.stringify({ jsonrpc: '2.0', id: 'manifest', method: 'tools/list' }),
       signal: ctl.signal,
     });
@@ -2057,7 +2109,7 @@ async function resolveManifestExtras(kv) {
   return extras;
 }
 
-async function wellKnownResponse(pathname, kv) {
+async function wellKnownResponse(pathname, kv, env) {
   // v4.9.37: stamp the worker version on these inline responses. They carried
   // no version marker at all, so a paste that only changes well-known output
   // (like 4.9.36 itself — fallback tools count and $.description are both
@@ -2129,7 +2181,7 @@ async function wellKnownResponse(pathname, kv) {
   }
   if (pathname === '/.well-known/mcp.json') {
     const [mcpTools, mcpExtras] = await Promise.all([
-      resolveManifestTools(kv),
+      resolveManifestTools(kv, env),
       resolveManifestExtras(kv),
     ]);
     return new Response(JSON.stringify({
@@ -2186,7 +2238,7 @@ async function wellKnownResponse(pathname, kv) {
     // disagreeing about the server's own version — which is the exact class of
     // bug MCP_SERVER_INFO was introduced to end.
     const [tools, cardExtras] = await Promise.all([
-      resolveManifestTools(kv),
+      resolveManifestTools(kv, env),
       resolveManifestExtras(kv),
     ]);
     return new Response(JSON.stringify({
@@ -2814,7 +2866,7 @@ export default {
       // so tool count is always honest. Pre-v4.9.1 this was hardcoded 40 (wrong).
       // v4.9.29 manifest-live — tools_count now reflects the mcp-server's live
       // tools/list (KV-cached, falls back to MCP_FALLBACK_TOOLS.length on error).
-      const _mTools = await resolveManifestTools(env.DCHUB_CACHE);
+      const _mTools = await resolveManifestTools(env.DCHUB_CACHE, env);
       return new Response(JSON.stringify({
         schema_version:   'mcp-server-card/v1',
         name:             MCP_SERVER_INFO.name,
@@ -2956,7 +3008,13 @@ export default {
             status: 'ok',
             server: MCP_SERVER_INFO.name,
             transport: MCP_SERVER_INFO.transport,
-            version: MCP_SERVER_INFO.version,
+            // ★ 2026-09-02: was MCP_SERVER_INFO.version, a hardcoded '2.5.0'
+            // that had not moved while the running server reached 2.12.3 and
+            // this worker reached 4.9.x. A health endpoint whose version is a
+            // frozen literal is not a deploy marker — it is a claim that
+            // happens to be a number. The running origin is asked instead, and
+            // the constant survives only as the offline fallback.
+            version: await mcpOriginVersion(env, ctx),
             tools: MCP_FALLBACK_TOOLS.length,
             product: 'A read-mostly DATA LAYER about the data-center industry, for AI agents: facilities, DCPI market scores, live ISO grid feeds, fiber routes, interconnection queues, tax incentives and tracked M&A.',
             not: 'NOT a DCIM or monitoring product. No rack telemetry, no per-customer equipment monitoring, no workload scheduler, no webhooks, no websocket stream. Nothing here connects to or operates your infrastructure. It answers questions ABOUT data centers; it does not run one.',
@@ -3030,6 +3088,7 @@ export default {
         if (!_acc.includes('text/event-stream') || !_acc.includes('application/json')) {
           fwdHeaders.set('Accept', 'application/json, text/event-stream');
         }
+        applyMcpEdgeKey(fwdHeaders, env);
         const upstream = await fetch(`${MCP_BACKEND}${pathname}${url.search}`, {
           method:   request.method,
           headers:  fwdHeaders,
@@ -3193,7 +3252,7 @@ export default {
     // manifest (a legit discovery convention) could never (re)discover the
     // server - alias it to the .well-known handler.
     if (pathname.startsWith('/.well-known/') || pathname === '/mcp.json') {
-      const wk = await wellKnownResponse(pathname === '/mcp.json' ? '/.well-known/mcp.json' : pathname, env.DCHUB_CACHE);
+      const wk = await wellKnownResponse(pathname === '/mcp.json' ? '/.well-known/mcp.json' : pathname, env.DCHUB_CACHE, env);
       if (wk) return wk;
     }
 
@@ -3508,7 +3567,35 @@ export default {
 
     const isGet = request.method === 'GET';
     const tier = getRouteTier(pathname);
-    const timeoutMs = getTimeout(pathname);
+    // ★★★ A VERDICT ROUTE MUST BE GIVEN TIME TO DELIVER ITS VERDICT (2026-09-02).
+    //
+    // STEP 2.4 below exempts these routes from failover — but only `if (resp &&
+    // …)`, and getTimeout() matched NO prefix for /api/v1/iso/eu/health, so it
+    // took DEFAULT 15s. The origin's own /health ran an UNCACHED upstream probe
+    // with requests timeout=15. THE SAME 15 SECONDS: a coin flip by
+    // construction. When Railway overran it, proxyToRailway aborted, `resp`
+    // came back null, the `resp &&` guard skipped the verdict, and the stale
+    // Render 200 shipped. Measured on 4.9.50, six consecutive runs:
+    //     503 railway verdict=no-failover  x4   (9.5s, 11.6s, 14.4s, 22.9s)
+    //     200 render  failover=true        x2   (20.0s, 25.3s)
+    // An intermittently-correct health check is worse than a broken one: it
+    // reads green often enough to be believed.
+    //
+    // ★ `resp &&` is SELF-DEFEATING for this class of route and cannot simply
+    // be dropped — a null resp really is "no verdict", and a genuinely dead
+    // Railway must still fail over. The fix is to stop manufacturing nulls:
+    // the endpoint whose job is to report a dead upstream is the one most
+    // likely to be SLOW precisely because that upstream is dead, so it needs a
+    // budget wider than the origin's own worst case, not the generic default.
+    //
+    // ★ Paired with the origin fix (routes/iso_eu_entsoe.py): /health no longer
+    // blocks on a live probe at all. This is the belt to that fix's braces —
+    // either alone closes the race, and the next verdict route added to the
+    // Set inherits both without anyone remembering this comment.
+    const VERDICT_ROUTE_TIMEOUT_MS = 45_000;
+    const timeoutMs = isVerdictRoute(pathname)
+      ? VERDICT_ROUTE_TIMEOUT_MS
+      : getTimeout(pathname);
     const hasApiKey = request.headers.get('X-API-Key') || url.searchParams.get('api_key');
 
     // Publish proxy

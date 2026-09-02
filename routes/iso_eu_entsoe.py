@@ -447,7 +447,7 @@ def _with_ages(snap, observed_age_s, now=None):
     return out
 
 
-def _zone_snapshot(code, max_age=None):
+def _zone_snapshot(code, max_age=None, timeout=15):
     """Live fuel-mix snapshot for one EIC zone, or None. No fabrication.
 
     Reuses a cached reading younger than `max_age` (default _ZONE_TTL) instead
@@ -481,7 +481,7 @@ def _zone_snapshot(code, max_age=None):
             "in_Domain": eic,
             "periodStart": frm,
             "periodEnd": to,
-        }, timeout=15)
+        }, timeout=timeout)
         if not r.ok:
             return None
         parsed = _parse_generation_xml(r.text)
@@ -551,6 +551,13 @@ _ZONE_ERRORS = {}
 # can be, so recovery is visible within one cooldown.
 _SNAP_DOWN = {"until": 0.0, "since": 0.0, "reason": ""}
 _SNAP_DOWN_TTL = 60
+
+# ★ The /health probe's own budget. Deliberately FAR below the edge's route
+# timeout: a health endpoint that can outlive its caller's patience reports
+# nothing at all, and the caller then falls over to a stale mirror that says
+# the opposite. 4s is comfortably inside every consumer (edge verdict budget
+# 45s, deadman, uptime monitors) while still being a real network probe.
+_HEALTH_PROBE_TIMEOUT_S = 4
 
 # ★ ...but the PROBE must never read the negative cache. run_extraction() is
 # what the data-pulse must-have gate and the iso-eu-entsoe deadman feed derive
@@ -856,14 +863,44 @@ def http_dcpi_score():
 @iso_eu_entsoe_bp.route("/health", methods=["GET"])
 def http_health():
     tok = bool(_token())
-    probe = _zone_snapshot("DE_LU") if tok else None
-    live_feed_ok = probe is not None
     # D1 (2026-09-02): this answered HTTP 200 with live_feed_ok:false for the
     # whole 50h ENTSO-E 503 outage while /snapshot answered 503 — so every
     # monitor that reads a status code saw green. The body is unchanged; the
     # code now carries the verdict (503 = feed dead, same as /snapshot).
+    #
+    # ★★★ A HEALTH ENDPOINT MUST NOT BLOCK ON THE THING IT IS REPORTING ON.
+    # This probed DE_LU with the module default `timeout=15` on a cache miss —
+    # and the edge gave the route DEFAULT 15s. The same 15 seconds, so whether
+    # the verdict survived the hop was a coin flip: when the origin overran,
+    # the worker's fetch aborted, `resp` was null, STEP 2.4's `resp &&` guard
+    # skipped the exemption, and the stale Render 200 shipped. Measured on
+    # worker 4.9.50: 4 of 6 runs correct, 2 of 6 laundered.
+    #
+    # Two changes, either of which closes the race on its own:
+    #   1. the probe is bounded FAR below the edge budget (_HEALTH_PROBE_TIMEOUT_S), and
+    #   2. a live negative cache answers WITHOUT probing at all.
+    #
+    # ★ THE SHORT-CIRCUIT IS ONE-DIRECTIONAL ON PURPOSE. It can only report the
+    # feed DOWN, never up. A stale "down" is bounded by _SNAP_DOWN_TTL and
+    # self-corrects on the next probe; a stale "up" would be the exact lie this
+    # endpoint exists to prevent. Never invert this.
+    probe = None
+    if not tok:
+        basis = "token_missing — no probe attempted"
+    elif time.time() < _SNAP_DOWN["until"]:
+        basis = ("negative_cache — every zone failed within the last %ds, so this "
+                 "reports the last MEASUREMENT rather than making a new one. It can "
+                 "only report DOWN; a recovery is picked up by the next probe."
+                 % _SNAP_DOWN_TTL)
+    else:
+        probe = _zone_snapshot("DE_LU", timeout=_HEALTH_PROBE_TIMEOUT_S)
+        basis = "live_probe — DE_LU, %ss budget" % _HEALTH_PROBE_TIMEOUT_S
+    live_feed_ok = probe is not None
     return jsonify({"iso": ISO_CODE, "token_configured": tok,
                     "live_feed_ok": live_feed_ok,
+                    # HOW this verdict was reached — a health check that cannot
+                    # say whether it actually asked is not a measurement.
+                    "basis": basis,
                     # Basis for live_feed_ok: 0 = fetched on this request,
                     # >0 = age (s) of the reused DE_LU reading, null = no probe.
                     # This probe used to be UNCACHED on every single hit.
