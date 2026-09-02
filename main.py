@@ -37718,7 +37718,7 @@ def founding_spots():
 
     2026-09-02: this served a hardcoded {remaining:47,total:50} while
     /api/founding-members and /api/v1/founding-customers/count served the
-    live 7 of 25 (edge + origin, 00:23Z). dashboard.html reads `remaining`
+    live 18 of 25 claimed / 7 remaining (edge + origin, 00:23Z). dashboard.html reads `remaining`
     from here, so the dashboard quoted a scarcity number no other surface
     agreed with. Same keys as before (`remaining`, `total`) plus the
     counter's own fields; what "founding" COUNTS is unchanged and is the

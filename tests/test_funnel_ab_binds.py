@@ -29,7 +29,9 @@ def _bind(sql, params):
 
 def test_the_exclusion_fragment_carries_no_bare_percent():
     from routes.paywall_hint_middleware import _ADMIN_EXCLUDE
-    assert not re.search(r"%(?![%s])", _ADMIN_EXCLUDE), _ADMIN_EXCLUDE
+    # a bare percent = one not doubled and not a %s bind
+    assert not re.search(r"(?<!%)%(?![%s])", _ADMIN_EXCLUDE), _ADMIN_EXCLUDE
+    assert "%%" in _ADMIN_EXCLUDE
     assert "NOT LIKE" in _ADMIN_EXCLUDE
 
 
