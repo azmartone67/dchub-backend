@@ -365,6 +365,23 @@ def deadman():
         }
         if note:
             rec["note"] = note
+        # ── triage: can an ENGINEER clear this red, or not? ───────────
+        # ★2026-09-02. The board said "10 red" and treated every red alike.
+        # Read lane by lane, most were not defects: loop_control/agent_identity
+        # asserts "no one caller is >40pct" (chain-hire is 66.8%) and
+        # agent_pay/demand asserts "a REAL agent has ever paid" (none has) —
+        # both CORRECT, and no PR clears either. A board whose red is mostly
+        # unclearable trains everyone to scroll past all of it, which is how
+        # failover-canary sat red while the DR mirror drifted 112 commits
+        # behind. Purely ADDITIVE: overdue/red/unhealthy/kinds are untouched,
+        # so tools/deadman/watch.py and every existing reader are unaffected.
+        # Fail-soft — a triage error must never take the board down with it.
+        if is_red:
+            try:
+                from routes.lane_triage import triage_feed
+                rec["triage"] = triage_feed(feed, note or "")
+            except Exception as e:  # noqa: BLE001
+                log.debug("lane triage failed for %s: %s", feed, e)
         feeds.append(rec)
         if is_late:
             overdue.append(rec)
@@ -373,6 +390,26 @@ def deadman():
 
     feeds.sort(key=lambda r: (not r["overdue"], not r["red"], r["feed"]))
     unhealthy_count = sum(1 for r in feeds if r["unhealthy"])
+    # Roll the per-feed triage up. `red_lanes_unnamed` counts shells that
+    # report HOW MANY lanes failed but not WHICH — those cannot be triaged
+    # from the board at all, and that gap is published rather than counted
+    # as zero.
+    tri = [r["triage"] for r in feeds if isinstance(r.get("triage"), dict)]
+    red_triage = {
+        "code_actionable": sum(t.get("code_actionable_count", 0) for t in tri),
+        "not_code": sum(t.get("not_code_count", 0) for t in tri),
+        "unclassified": sum(t.get("unclassified_count", 0) for t in tri),
+        "red_lanes_unnamed": sum(1 for t in tri
+                                 if not t.get("lanes_named")
+                                 and not t.get("triage_skipped")),
+        "basis": ("failing lanes parsed from each red shell's own beat note "
+                  "and classified by routes/lane_triage.LANE_TRIAGE, which "
+                  "keys on WHO CLOSES IT. code_actionable = build|instrument "
+                  "(an engineer). not_code = commercial|owner-flag|judgment|"
+                  "diagnose — correct reds that no PR clears. "
+                  "red_lanes_unnamed = shells whose note counts failures "
+                  "without naming them; that is a blind spot, NOT a zero."),
+    }
     resp = jsonify(
         ok=True,
         generated_at=now.isoformat(),
@@ -384,6 +421,7 @@ def deadman():
         red_count=len(red),
         red=[r["feed"] for r in red],
         unhealthy_count=unhealthy_count,
+        red_triage=red_triage,
         basis=("overdue = LATE (never ran, or last beat >2x cadence). red = ran "
                "but the last beat carried a fault (non-OK status, >=3 zero-row "
                "runs, future content date). unhealthy = either. A shell that "

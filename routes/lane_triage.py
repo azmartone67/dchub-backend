@@ -182,19 +182,19 @@ LANE_TRIAGE: dict[tuple[str, str], tuple[str, str]] = {
         "clear until everything else already has. Circular by construction"),
 
     # ── relay_closure ────────────────────────────────────────────────
-    ("relay_closure", "a_redeem"): ("build",
+    ("relay_closure", "A/redeem_declared_vs_writer"): ("build",
         "declared redeem basis vs writer liveness — a consistency check"),
-    ("relay_closure", "b_demand"): ("commercial",
+    ("relay_closure", "B/relay_demand_verdict"): ("commercial",
         "counts REAL external relay opens. Demand, and the shell states its "
         "own actuators are 'NONE — read-only'"),
-    ("relay_closure", "c_attributability"): ("diagnose",
+    ("relay_closure", "C/mint_attributability"): ("diagnose",
         "whether minted claims can be attributed to a platform at all; the "
         "shell deliberately does NOT fire this lane's actuator"),
-    ("relay_closure", "d_typed_params"): ("commercial",
+    ("relay_closure", "D/typed_params_window"): ("commercial",
         "execute_plan planner-selection share. audit_closure already "
         "classified the same fact (SH52-011, adoption 0/242 episodes) as "
         "commercial — this agrees with it rather than re-deciding"),
-    ("relay_closure", "e_asks"): ("build",
+    ("relay_closure", "E/schema_selection_asks"): ("build",
         "the lane names its own actuator: 'tool description strings in "
         "dchub-mcp-server — NAMED, not fired here'"),
 
@@ -247,4 +247,102 @@ def split_lanes(lanes):
             out["code_actionable"].append((shell, lane, hit[0], hit[1]))
         else:
             out["not_code"].append((shell, lane, hit[0], hit[1]))
+    return out
+
+
+# ── reading the board ─────────────────────────────────────────────────
+# The dead-man ledger stores each shell's lane verdicts as FREE TEXT in
+# `note`. Three formats are in use and three shells use none of them:
+#
+#   A  "lanes: demand=FAIL reachability=FAIL pricing=PASS ..."   agent_pay
+#   B  "closure 59/138 (42.8%) · p0_incidents=FAIL secrets=PASS" audit_closure
+#   C  "lanes: 5 | reds: B/relay_demand_verdict,C/mint_..."      relay_closure
+#   -  "3 failing / 1 unknown of 4 lanes"                        growth_funnel
+#   -  "lanes 2/4 pass"                                          webmcp
+#   -  "PASS 2 FAIL 2 ? 0 | filed 0 | rate 0.602"                agentic_loop
+#
+# ★ The last three COUNT their failures without NAMING them, so nothing —
+# not this module, not a human — can triage those from the board. That is a
+# real gap and it is reported as `lanes_named: false`, never as "no failing
+# lanes". A count is not a name, and an unparseable note is not an empty one.
+import re as _re
+
+_FAIL_TOKEN = _re.compile(r"([A-Za-z0-9_]+)=FAIL")
+_REDS_LIST = _re.compile(r"reds:\s*([^|]+)")
+_FEED_SUFFIX = "-shell-daily"
+
+
+def feed_to_shell(feed: str) -> str | None:
+    """'agent-pay-shell-daily' -> 'agent_pay'. None for non-shell feeds."""
+    if not feed or not feed.endswith(_FEED_SUFFIX):
+        return None
+    return feed[: -len(_FEED_SUFFIX)].replace("-", "_")
+
+
+def parse_failing_lanes(note: str) -> tuple[list[str], bool]:
+    """(failing lane names, whether the note NAMES its lanes at all).
+
+    ★ The bool is the whole point. `([], True)` means the note named its
+    lanes and none failed; `([], False)` means the note could not be read and
+    we know nothing. Collapsing those two is how a blind spot reads as
+    health — the same error as `no_new_data` asserted without evidence."""
+    if not note:
+        return [], False
+    named = _FAIL_TOKEN.findall(note)
+    if named:
+        return named, True
+    m = _REDS_LIST.search(note)
+    if m:
+        body = m.group(1).strip()
+        if body.lower() in ("none", "-", ""):
+            return [], True
+        return [x.strip() for x in body.split(",") if x.strip()], True
+    # The note may legitimately name lanes with none failing (all PASS).
+    if "=PASS" in note or "=pass" in note:
+        return [], True
+    return [], False
+
+
+def triage_feed(feed: str, note: str) -> dict:
+    """Classify one board feed's failing lanes. Never raises.
+
+    `lanes_named` false means the shell counts its failures without naming
+    them — reported, never silently treated as zero."""
+    shell = feed_to_shell(feed)
+    lanes, named = parse_failing_lanes(note or "")
+    out = {
+        "shell": shell,
+        "lanes_named": bool(named and shell),
+        "failing_lanes": [],
+        "code_actionable_count": 0,
+        "not_code_count": 0,
+        "unclassified_count": 0,
+    }
+    if shell in UNCLASSIFIED_SHELLS:
+        # ★ Empty `failing_lanes` here means NOT TRIAGED, not "nothing
+        # failed" — audit_closure names its lanes perfectly well, we simply
+        # decline to class them twice. Say so in a field, not only in prose.
+        out["triage_skipped"] = True
+        out["note"] = UNCLASSIFIED_SHELLS[shell]
+        return out
+    if not out["lanes_named"]:
+        out["note"] = ("this shell reports how MANY lanes failed but not "
+                       "WHICH — nothing can triage it from the board")
+        return out
+    for lane in lanes:
+        hit = classify(shell, lane)
+        if hit is None:
+            out["failing_lanes"].append(
+                {"lane": lane, "class": None, "code_actionable": None})
+            out["unclassified_count"] += 1
+            continue
+        klass, why = hit
+        actionable = klass in CODE_ACTIONABLE
+        out["failing_lanes"].append({"lane": lane, "class": klass,
+                                     "code_actionable": actionable,
+                                     "why": why})
+        if actionable:
+            out["code_actionable_count"] += 1
+        else:
+            out["not_code_count"] += 1
     return out

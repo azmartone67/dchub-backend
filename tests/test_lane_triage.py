@@ -166,3 +166,121 @@ def test_the_two_circular_or_miscalibrated_lanes_are_named():
     wrong; if either is reclassified, that should be a deliberate edit."""
     assert classify("loop_flywheel", "cron")[0] == "instrument"
     assert "itself" in classify("loop_flywheel", "cron")[1]
+
+
+# ── reading the board's free-text notes ───────────────────────────────
+# Verbatim from GET /api/v1/ops/deadman on 2026-09-02. Fixtures are the real
+# strings, not idealised ones — three of these shells name nothing.
+REAL_NOTES = {
+    "agent-pay-shell-daily":
+        "lanes: demand=FAIL reachability=FAIL pricing=PASS rail_health=FAIL "
+        "metric_integrity=PASS",
+    "loop-control-shell-daily":
+        "lanes: cron_liveness=PASS count_semantics=PASS triage_wired=PASS "
+        "surface_canon=PASS writer_discipline=PASS agent_identity=FAIL "
+        "counter_canon=FAIL relay_two_artifact=PASS",
+    "relay-closure-shell-daily":
+        "lanes: 5 | reds: B/relay_demand_verdict,C/mint_attributability",
+    "loop-flywheel-shell-daily":
+        "lanes: infra=? edge=PASS failover=PASS identity=PASS rag=PASS "
+        "mcp=PASS ai_doors=PASS inventory=PASS cron=FAIL",
+    # ★ these three COUNT failures without NAMING them
+    "growth-funnel-shell-daily": "3 failing / 1 unknown of 4 lanes",
+    "webmcp-shell-daily": "lanes 2/4 pass",
+    "agentic-loop-shell-daily": "PASS 2 FAIL 2 ? 0 | filed 0 | rate 0.602",
+}
+
+
+def test_feed_names_map_to_shell_module_stems():
+    from routes.lane_triage import feed_to_shell
+    assert feed_to_shell("agent-pay-shell-daily") == "agent_pay"
+    assert feed_to_shell("loop-control-shell-daily") == "loop_control"
+    assert feed_to_shell("relay-closure-shell-daily") == "relay_closure"
+    assert feed_to_shell("iso-intl") is None
+    assert feed_to_shell("") is None
+
+
+def test_it_parses_the_equals_fail_format():
+    from routes.lane_triage import parse_failing_lanes
+    lanes, named = parse_failing_lanes(REAL_NOTES["agent-pay-shell-daily"])
+    assert named is True
+    assert lanes == ["demand", "reachability", "rail_health"]
+
+
+def test_it_parses_the_reds_list_format():
+    from routes.lane_triage import parse_failing_lanes
+    lanes, named = parse_failing_lanes(REAL_NOTES["relay-closure-shell-daily"])
+    assert named is True
+    assert lanes == ["B/relay_demand_verdict", "C/mint_attributability"]
+
+
+def test_a_question_mark_lane_is_not_read_as_a_failure():
+    """loop_flywheel's note carries `infra=?`. Unknown is not FAIL."""
+    from routes.lane_triage import parse_failing_lanes
+    lanes, _ = parse_failing_lanes(REAL_NOTES["loop-flywheel-shell-daily"])
+    assert lanes == ["cron"]
+
+
+def test_all_pass_is_named_with_no_failures():
+    """★ ([], True) — the note named its lanes and none failed."""
+    from routes.lane_triage import parse_failing_lanes
+    assert parse_failing_lanes("lanes: a=PASS b=PASS") == ([], True)
+
+
+def test_an_unreadable_note_is_false_never_an_empty_pass():
+    """★★ THE LOAD-BEARING DISTINCTION. ([], False) means we could not read
+    the note; ([], True) means we read it and nothing failed. Collapsing them
+    turns a blind spot into a clean bill of health — the same error as
+    asserting no_new_data without evidence."""
+    from routes.lane_triage import parse_failing_lanes
+    for feed in ("growth-funnel-shell-daily", "webmcp-shell-daily",
+                 "agentic-loop-shell-daily"):
+        lanes, named = parse_failing_lanes(REAL_NOTES[feed])
+        assert (lanes, named) == ([], False), f"{feed} parsed as readable"
+    assert parse_failing_lanes("") == ([], False)
+
+
+def test_triage_feed_classifies_a_real_board_row():
+    from routes.lane_triage import triage_feed
+    t = triage_feed("loop-control-shell-daily",
+                    REAL_NOTES["loop-control-shell-daily"])
+    assert t["shell"] == "loop_control" and t["lanes_named"] is True
+    got = {x["lane"]: x["class"] for x in t["failing_lanes"]}
+    assert got == {"agent_identity": "commercial", "counter_canon": "instrument"}
+    assert t["code_actionable_count"] == 1   # counter_canon (fix the CHECK)
+    assert t["not_code_count"] == 1          # agent_identity (fix demand)
+
+
+def test_triage_feed_reports_an_unnamed_shell_as_a_gap_not_a_zero():
+    from routes.lane_triage import triage_feed
+    t = triage_feed("webmcp-shell-daily", REAL_NOTES["webmcp-shell-daily"])
+    assert t["lanes_named"] is False
+    assert t["failing_lanes"] == []
+    assert "not WHICH" in t["note"]
+
+
+def test_a_skipped_meta_shell_is_flagged_not_silently_empty():
+    """audit_closure names its lanes fine; we decline to class them twice.
+    Empty here must not read as 'nothing failed'."""
+    from routes.lane_triage import triage_feed
+    t = triage_feed("audit-closure-shell-daily", "p0_incidents=FAIL secrets=PASS")
+    assert t.get("triage_skipped") is True
+    assert t["failing_lanes"] == []
+
+
+def test_triage_feed_never_raises_on_junk():
+    from routes.lane_triage import triage_feed
+    for feed, note in (("x-shell-daily", None), ("", ""), ("iso-intl", "x=FAIL")):
+        assert isinstance(triage_feed(feed, note), dict)
+
+
+# ── the wiring ────────────────────────────────────────────────────────
+def test_the_board_routes_red_feeds_through_triage_and_publishes_a_rollup():
+    """STRUCTURAL. deadman() opens a live psycopg2 connection, so driving it
+    here would test a stub. The coupling asserted is exactly the wiring: red
+    feeds get a triage block and the response carries the rollup."""
+    src = io.open(os.path.join(ROUTES, "ingest_runs.py"), encoding="utf-8").read()
+    assert "from routes.lane_triage import triage_feed" in src
+    assert 'rec["triage"] = triage_feed(' in src
+    assert "red_triage=red_triage" in src
+    assert "red_lanes_unnamed" in src
