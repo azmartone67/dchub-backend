@@ -42,9 +42,10 @@ import argparse
 import json
 import os
 import sys
-import urllib.parse
-import urllib.request
+import time
 from collections import defaultdict
+
+import requests
 
 # The canonical HIFLD org. services1 is SUPERSEDED (52,244 lines vs 89,744) and
 # its Electric_Substations layer 400/404s — see util/hifld_layers.py, which is
@@ -126,29 +127,51 @@ def plan_links(upstream, held, precision=PRECISION):
     }
 
 
-def fetch_upstream(url=UPSTREAM, page=2000):
-    """Page the FeatureServer for (ID, lat, lng). Runner-side by convention."""
+def fetch_upstream(url=UPSTREAM, page=2000, tries=5):
+    """Page the FeatureServer for (ID, lat, lng). Runner-side by convention.
+
+    ★ `requests`, not urllib — the repo lint bans urllib here and the reason is
+    operational, not stylistic: urllib's default User-Agent gets refused
+    (Cloudflare 1010) by several of the hosts these fetchers touch. An explicit
+    UA is sent for the same reason.
+
+    ★ Paging is ORDERED. An unordered `resultOffset` walk overlaps and drops
+    features — the same defect that put 682 duplicate features per cycle into
+    fiber_kmz_routes.
+    """
     out, offset = [], 0
     while True:
-        q = urllib.parse.urlencode({
+        params = {
             "where": "1=1", "outFields": "ID", "returnGeometry": "true",
             "outSR": "4326", "f": "json",
             "resultOffset": offset, "resultRecordCount": page,
-            "orderByFields": "ID",          # unordered paging overlaps
-        })
-        req = urllib.request.Request(f"{url}/query?{q}",
-                                     headers={"User-Agent": "dchub-substation-link/1.0"})
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode())
+            "orderByFields": "ID",
+        }
+        last = None
+        for attempt in range(tries):
+            try:
+                resp = requests.get(f"{url}/query", params=params, timeout=120,
+                                    headers={"User-Agent": "dchub-substation-link/1.0"})
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except Exception as exc:                       # noqa: BLE001
+                last = exc
+                print(f"    fetch attempt {attempt + 1}/{tries}: {str(exc)[:90]}", flush=True)
+                time.sleep(min(2 * (attempt + 1), 12))
+        else:
+            raise SystemExit(f"upstream unreachable after {tries} tries: {last}")
+
+        # An ArcGIS error is an HTTP 200 with an `error` key. Treating it as an
+        # empty page would silently plan zero links and read as "nothing to do".
         if "error" in data:
             raise SystemExit(f"upstream error: {data['error']}")
+
         feats = data.get("features", [])
         for f in feats:
             geom = f.get("geometry") or {}
             out.append((f.get("attributes", {}).get("ID"), geom.get("y"), geom.get("x")))
-        if not data.get("exceededTransferLimit") and len(feats) < page:
-            break
-        if not feats:
+        if not feats or (not data.get("exceededTransferLimit") and len(feats) < page):
             break
         offset += len(feats)
     return out
