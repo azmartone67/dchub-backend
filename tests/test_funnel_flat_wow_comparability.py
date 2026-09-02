@@ -156,13 +156,23 @@ def test_the_level_keys_are_never_touched():
 
 # ── the rolling pair: CROSSES (a different hazard) ───────────────────────────
 
-def test_rolling_pair_is_withheld_as_CROSSING_not_superseded():
+def test_rolling_pair_is_withheld_as_CROSSING_not_superseded(monkeypatch):
     """The window ending now CONTAINS the correction; the prior does not.
 
     Distinguishing the two matters: a reader told "these weeks predate a
     correction" about a window that straddles one would go looking for the
     wrong thing.
+
+    ★ 2026-09-02: isolated to the #202 marker. dchub-mcp-server#294 is a
+    later CORRECTION (2026-09-01T03:37:23Z) that took effect after BOTH of
+    these pinned windows, so against the full list the pair is crossing AND
+    superseded — two changes, two hazards. This test is about ONE change
+    producing exactly one explanation.
     """
+    import routes.weekly_series as _ws
+    monkeypatch.setattr(_ws, "_DEFINITION_CHANGES",
+                        [c for c in _ws._DEFINITION_CHANGES
+                         if c["ref"] == "dchub-mcp-server#202"])
     out = {_ROLL_A: -27.7}
     _mark(out, _rolling_spans_asof(7, 2), (_ROLL_A,), "real_external_rolling_wow")
     comp = out["real_external_rolling_wow_comparability"]
@@ -170,6 +180,28 @@ def test_rolling_pair_is_withheld_as_CROSSING_not_superseded():
     assert comp["superseded_by_correction"] is False
     assert comp["quotable_as_trend"] is False
     assert out[_ROLL_A] is None
+
+
+def test_the_W35_W36_complete_pair_is_withheld_by_the_0901_markers():
+    """★ 2026-09-02. dchub-mcp-server#294 (2026-09-01T03:37:23Z, free
+    full-answer cap enforced per caller) and #302 (21:10:22Z, anonymous hard
+    wall at 10x the daily cap) both landed inside 2026-W36 and neither was
+    registered. This pair — the first the funnel would render after #202 —
+    was about to publish "calls -X% WoW" for a week whose top caller (81.4%
+    of W35, `chain-hire`) had been hard-walled. One shared helper withholds
+    it here, in the press headline and in ops/activation.
+    """
+    spans = _week_spans([_dt.date(2026, 8, 24), _dt.date(2026, 8, 31)])
+    out = {_CALLS: -77.9, "real_external_calls_complete_wk": 400}
+    _mark(out, spans, (_CALLS,), "real_external_complete_wk")
+    assert out[_CALLS] is None, "the dashboard renders this scalar directly"
+    assert out[f"{_CALLS}_withheld"] == -77.9
+    comp = out["real_external_complete_wk_comparability"]
+    assert comp["crosses_definition_change"] is True
+    assert comp["quotable_as_trend"] is False
+    assert [c["ref"] for c in comp["changes"]] == [
+        "dchub-mcp-server#294", "dchub-mcp-server#302"]
+    assert out["real_external_calls_complete_wk"] == 400, "the level is untouched"
 
 
 # ── the anchor itself ───────────────────────────────────────────────────────

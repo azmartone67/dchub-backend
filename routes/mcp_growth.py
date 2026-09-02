@@ -197,6 +197,61 @@ def _admin_ok() -> bool:
     return not expected or provided == expected
 
 
+def _publish_conversions(out: dict, conversions_7d, keys_activated_7d,
+                         upgrade_signals_7d) -> dict:
+    """Set the conversion keys from their honest inputs — PURE, one place.
+
+    conversions_7d     rows in mcp_conversions (the canonical ledger), 7d.
+    keys_activated_7d  auto_trial_keys minted in 7d with call_count > 0 —
+                       free trial keys that made >= 1 call. An ACTIVATION.
+    conversion_ratio   upgrade_signals_7d : conversions_7d, from the ledger
+                       ONLY. None when signals are unread or zero; "1:N+"
+                       when N signals produced no ledger conversion.
+
+    ★ 2026-09-02. Phase HH (2026-05-17) folded the activated trial keys INTO
+    conversions_7d so that a working auto-mint pipeline stopped reading as
+    "0 conversions". Measured live at 00:23Z this endpoint published
+    conversions_7d 190 and conversion_ratio "1:3" — of which 189 were trial
+    keys that fired once and 1 was a ledger row; the funnel's honest paid
+    count for 30d was 3, with 0 bridged to any signal. A trial key that made
+    a call is not a conversion and now lives under its own name; the alias
+    keeps its VALUE for existing readers and is declared deprecated in the
+    payload, checkable by a machine.
+    """
+    convs = int(conversions_7d or 0)
+    out["conversions_7d"] = convs
+    out["keys_activated_7d"] = keys_activated_7d
+    out["auto_trial_conversions_7d"] = keys_activated_7d
+    out["deprecated_aliases"] = {"auto_trial_conversions_7d": "keys_activated_7d"}
+    out["deprecated_aliases_note"] = (
+        "auto_trial_conversions_7d is unchanged in VALUE and kept only so "
+        "existing readers do not break; it counts free trial keys that made "
+        ">= 1 call, which are activations, not conversions. Read "
+        "keys_activated_7d. Before 2026-09-02 conversions_7d was the SUM of "
+        "this and the mcp_conversions ledger (190, of which 189 were trial "
+        "keys on the day it was measured) and conversion_ratio was derived "
+        "from that sum.")
+    out["conversions_basis"] = (
+        "COUNT(*) FROM mcp_conversions WHERE created_at >= NOW() - 7 days — "
+        "the canonical conversion ledger and nothing else. Free trial keys "
+        "that fired are keys_activated_7d. For paid truth read "
+        "/api/v1/mcp/funnel conversions_reconciliation_30d.honest_paid_30d.")
+    if upgrade_signals_7d is None:
+        out["conversion_ratio"] = None
+    else:
+        sigs = int(upgrade_signals_7d or 0)
+        if sigs > 0:
+            out["conversion_ratio"] = (f"1:{int(sigs / convs)}" if convs > 0
+                                       else f"1:{sigs}+")
+        else:
+            out["conversion_ratio"] = None
+    out["conversion_ratio_basis"] = (
+        "upgrade_signals_7d : conversions_7d (mcp_conversions only). "
+        "'1:N+' means N paywall signals and zero ledger conversions in the "
+        "window.")
+    return out
+
+
 # ── Growth pulse ──────────────────────────────────────────────────────
 def _compute_growth() -> dict:
     """One-shot growth snapshot. Read-only — never writes."""
@@ -207,6 +262,7 @@ def _compute_growth() -> dict:
         "unique_ips_7d":       0,
         "upgrade_signals_7d":  0,
         "conversions_7d":      0,
+        "keys_activated_7d":   None,
         "conversion_ratio":    None,
         "top_demand_tools":    [],
         "top_converted_tools": [],
@@ -352,34 +408,25 @@ def _compute_growth() -> dict:
                 out["conversions_7d"] = int((cur.fetchone() or {"n":0})["n"] or 0)
             except Exception:
                 pass
-            # Phase HH (2026-05-17): augment legacy mcp_pair_codes count
-            # with auto_trial_keys actually used (call_count > 0). Phase
-            # DDDDD's auto-mint trial flow generates conversions that
-            # never touch mcp_pair_codes — so the pre-HH dashboard
-            # showed "0 conversions" while the auto-trial pipeline was
-            # quietly working. Both numbers go into conversions_7d so
-            # the brain's stale-conversion detector + this snapshot
-            # measure the SAME thing (any agent that started using a
-            # dchub-issued key in the last 7 days).
-            out["auto_trial_conversions_7d"] = 0
+            # Phase HH (2026-05-17) counted auto_trial_keys actually used
+            # (call_count > 0) here and ADDED them to conversions_7d. That
+            # sum is what this endpoint published as its headline conversion
+            # count until 2026-09-02 (190, of which 189 were trial keys).
+            # The count is still taken — a trial key that fired is a real
+            # activation — but it is published as keys_activated_7d and never
+            # folded into the ledger count. See _publish_conversions.
+            keys_activated = None
             try:
                 cur.execute("""
                     SELECT COUNT(*) AS n FROM auto_trial_keys
                      WHERE minted_at >= NOW() - INTERVAL '7 days'
                        AND call_count > 0
                 """)
-                atc = int((cur.fetchone() or {"n":0})["n"] or 0)
-                out["auto_trial_conversions_7d"] = atc
-                out["conversions_7d"] = (out.get("conversions_7d") or 0) + atc
+                keys_activated = int((cur.fetchone() or {"n":0})["n"] or 0)
             except Exception:
                 pass
-
-            sigs = out["upgrade_signals_7d"]
-            convs = out["conversions_7d"]
-            if sigs > 0:
-                out["conversion_ratio"] = (
-                    f"1:{int(sigs / max(1, convs))}" if convs > 0 else f"1:{sigs}+"
-                )
+            _publish_conversions(out, out.get("conversions_7d"), keys_activated,
+                                 out.get("upgrade_signals_7d"))
 
             # ── Top demand tools (called the most) ──
             try:

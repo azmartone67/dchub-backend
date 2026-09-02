@@ -35,6 +35,7 @@ Lanes born red are work orders, not regressions.
 """
 from __future__ import annotations
 
+import datetime
 import os
 
 from flask import Blueprint, jsonify
@@ -180,31 +181,97 @@ def _lane_self_call_gate() -> list[dict]:
 
 
 # ── lane 3 · SEO measurement ─────────────────────────────────────────────────
-def _lane_seo_measurement() -> list[dict]:
-    """Born red, and honest about WHY it cannot self-satisfy.
+# GSC finalises a day over ~72h and the ingest cron runs daily, so the newest
+# site row is normally 2-3 days old: 4 is the allowance. 5 rows is the floor
+# that proves a SERIES was read, not a single row; the window is 14d so that
+# floor is reachable at the allowance (a 7d window at 4d lag holds 3-4 rows).
+_SEO_MAX_AGE_DAYS = 4
+_SEO_MIN_ROWS = 5
+_SEO_WINDOW_DAYS = 14
 
-    The last SEO read (2026-08-01: bingbot 93% = Bing Webmaster Tools, IndexNow
-    healthy, 1 of 17 tracked queries in the top 10, an AI-citation cliff on
-    06-24 that was NOT robots-related) is stale, and none of it can be
-    re-measured from inside the app: rank and impression data live in Google
-    Search Console and Bing Webmaster Tools, behind interactive auth this
-    process does not hold. A lane that quietly grades itself on a proxy it CAN
-    reach would manufacture a number for a question it never asked — which is
-    the fabricated-metric defect, wearing a board as a disguise.
+
+def _as_date(v):
+    if v is None:
+        return None
+    if isinstance(v, datetime.datetime):
+        return v.date()
+    if isinstance(v, datetime.date):
+        return v
+    try:
+        return datetime.date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
+
+
+def _read_seo_series() -> dict:
+    """In-process read of the service-account GSC site series. Never HTTP: a
+    self-call through the edge grades a cache and a timeout budget, not the
+    data. Raises when the series cannot be read; the lane renders that '?'."""
+    from routes.gsc_performance import site_series
+    return site_series(days=_SEO_WINDOW_DAYS)
+
+
+def _lane_seo_measurement(today=None) -> list[dict]:
+    """Was born red as a hardcoded UNMEASURED string; now reads the series.
+
+    ★ 2026-09-02. This lane said "rank/impression truth lives in Google
+    Search Console ... behind interactive auth unavailable to this process
+    ... the honest state is UNMEASURED", and had said so since 2026-08-08.
+    Meanwhile routes/gsc_performance.py had a service-account daily ingest
+    (/api/gsc/status: verified true, permission siteFullUser; cron green
+    2026-09-01T06:43Z) and the read route held 247 site-day rows, newest
+    2026-08-29, on 2026-09-02 00:24Z. A lane that cannot see its own
+    measurement is a false red on a health board — the mirror image of the
+    fabricated-metric defect the old docstring warned about, and just as
+    misleading to whoever reads the board.
+
+    Google: PASS iff coverage.newest is <= _SEO_MAX_AGE_DAYS old AND the
+    window holds >= _SEO_MIN_ROWS rows; FAIL otherwise; '?' when the series
+    cannot be read at all (an unreadable series is not a stale one).
+    Bing: stays UNMEASURED, separately labelled and non-critical — Bing
+    Webmaster Tools has no API this process can read, and IndexNow acceptance
+    is delivery, not standing. It can neither pass nor fail the lane.
     """
-    return [_check(
-        "seo_measurement_current", "search standing is currently measured",
-        False,
-        "OPEN. Last measured 2026-08-01 and NOT re-verified since: bingbot 93% "
-        "of crawl attributed to Bing Webmaster Tools, IndexNow healthy, 1 of 17 "
-        "tracked queries in the top 10, AI-citation cliff on 06-24 (NOT "
-        "robots-caused). Those numbers are a week old and must not be quoted as "
-        "current. This lane CANNOT close itself: rank/impression truth lives in "
-        "Google Search Console and Bing Webmaster Tools, behind interactive auth "
-        "unavailable to this process. Closing it means either an owner-run "
-        "export or a service-account credential — until then the honest state is "
-        "UNMEASURED, and no in-app proxy may stand in for it.",
-        critical=True)]
+    checks = []
+    try:
+        series = _read_seo_series()
+    except Exception as e:  # noqa: BLE001 - unreadable is '?', never PASS
+        checks.append(_check(
+            "seo_gsc_series_current",
+            "Google search standing is measured (SA-backed daily series)",
+            None, f"series unreadable: {type(e).__name__}: {str(e)[:100]}",
+            critical=True))
+    else:
+        today = today or datetime.datetime.now(datetime.timezone.utc).date()
+        cov = (series or {}).get("coverage") or {}
+        rows = (series or {}).get("rows") or []
+        newest = _as_date(cov.get("newest"))
+        age = (today - newest).days if newest else None
+        fresh = age is not None and age <= _SEO_MAX_AGE_DAYS
+        enough = len(rows) >= _SEO_MIN_ROWS
+        checks.append(_check(
+            "seo_gsc_series_current",
+            "Google search standing is measured (SA-backed daily series)",
+            bool(fresh and enough),
+            (f"gsc_daily_performance site grain: newest {cov.get('newest')} "
+             f"({'unknown' if age is None else age}d old, max "
+             f"{_SEO_MAX_AGE_DAYS}), {len(rows)} rows in the last "
+             f"{_SEO_WINDOW_DAYS}d (min {_SEO_MIN_ROWS}), "
+             f"{cov.get('rows_stored')} stored since {cov.get('oldest')}. "
+             "Read in-process via routes.gsc_performance.site_series, not "
+             "over HTTP. Same series as GET /api/v1/seo/performance"
+             "?dimension=site."),
+            critical=True))
+    checks.append(_check(
+        "seo_bing_standing_measured",
+        "Bing search standing is measured",
+        None,
+        "UNMEASURED by design, and separately from Google: Bing Webmaster "
+        "Tools has no API this process can read, and IndexNow acceptance is "
+        "delivery, not standing. Closes only with an owner-run BWT export. "
+        "Non-critical so it can neither pass nor fail the lane.",
+        critical=False))
+    return checks
 
 
 _LANES = [
