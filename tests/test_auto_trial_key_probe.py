@@ -52,6 +52,10 @@ class _Cur:
         self.queries = []
         self._last = None
         self.updates = []
+        # 2026-09-02: mint-time binds now mirror into mcp_dev_keys so a later
+        # Stripe payment can lift THAT key's tier. Recorded so a test can assert
+        # the mirror FIRED, not merely that it did not crash.
+        self.mirrored = []
 
     def execute(self, sql, params=None):
         self.queries.append((" ".join(sql.split()), params))
@@ -131,6 +135,10 @@ def _run(presented=None, key_row=None, ip_row=None, env=None,
         "request": req,
         "_conn": lambda: conn,
         "_ensure_schema": lambda c: None,
+        # This harness execs mint_trial_for_request ALONE, so every module-level
+        # name it touches must be declared here — an undeclared one surfaces as a
+        # bare NameError swallowed into {"_fell_through": "NameError"}.
+        "_mirror_trial_to_mcp_dev_keys": lambda k, e: cur.mirrored.append((k, e)),
         "note_swallowed_write": lambda *a, **k: None,
         "TRIAL_FREE_CALLS_UNBOUND": 5,
         "TRIAL_DAILY_CALLS": 50,
@@ -196,6 +204,10 @@ def test_supplying_an_email_binds_on_the_spot_and_lifts_the_gate():
     assert cur.updates[0][0] == "ops@example.com", "email must be normalised"
     assert out.get("bind_required") is None
     assert out.get("daily_calls") == 50
+    # ★ the bind must also MIRROR into mcp_dev_keys — without it a later Stripe
+    # payment by this email has no row to lift and the key stays free.
+    assert cur.mirrored, "a mint-time bind must mirror into mcp_dev_keys"
+    assert cur.mirrored[0][1] == "Ops@Example.COM ", cur.mirrored
 
 
 def test_already_bound_key_reports_the_full_allowance():
@@ -253,6 +265,10 @@ def test_bearer_header_is_accepted_as_a_presented_key():
         "os": types.SimpleNamespace(environ={}),
         "hashlib": hashlib, "request": req, "_conn": lambda: conn,
         "_ensure_schema": lambda c: None,
+        # This harness execs mint_trial_for_request ALONE, so every module-level
+        # name it touches must be declared here — an undeclared one surfaces as a
+        # bare NameError swallowed into {"_fell_through": "NameError"}.
+        "_mirror_trial_to_mcp_dev_keys": lambda k, e: cur.mirrored.append((k, e)),
         "note_swallowed_write": lambda *a, **k: None,
         "TRIAL_FREE_CALLS_UNBOUND": 5, "TRIAL_DAILY_CALLS": 50,
         "TRIAL_DAILY_UNBOUND": 10, "TRIAL_DAYS": 7, "datetime": _dt,

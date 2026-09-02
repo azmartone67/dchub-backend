@@ -217,6 +217,11 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
     # Reuse window, hoisted so BOTH the gated-identity probe and the legacy
     # (ip_hash, ua) reuse share it. _reuse_days is int()-built → f-string safe.
     _reuse_days = max(1, int(os.environ.get("AUTO_TRIAL_REUSE_DAYS", "30") or 30))
+    # Deferred so the mirror never runs on the caller's connection mid-
+    # transaction: set in the bind branches below, fired in the finally once
+    # this function's DB work is done — the same ordering the two bind
+    # ENDPOINTS use (they call it after closing their connection).
+    _mirror_after = None
     try:
         _ensure_schema(c)
         with c.cursor() as cur:
@@ -293,6 +298,17 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                                      (operator_name or None),
                                      (client_name[:80] or None) if client_name else None,
                                      k[0]))
+                                # ★★★ 2026-09-02: MINT-TIME BINDS MUST MIRROR TOO.
+                                # An operator email captured here is a bind like any
+                                # other, so the same r88h unlock applies: the Stripe
+                                # webhook lifts mcp_dev_keys.tier, and with no row there
+                                # is nothing to lift — the agent pays and its own key
+                                # stays free. The two bind ENDPOINTS mirrored; these three
+                                # mint-time sites never did. Found by the structural guard
+                                # in #3577, which held this as a strict xfail.
+                                # Idempotent (ON CONFLICT DO UPDATE) and internally
+                                # fail-soft, so a repeat bind is harmless.
+                                _mirror_after = (k[0], operator_email)
                                 _k_bound = True
                             except Exception:
                                 note_swallowed_write(
@@ -390,6 +406,8 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                                 "WHERE api_key = %s",
                                 (operator_email.strip().lower(), (operator_name or None),
                                  (client_name[:80] or None) if client_name else None, g[0]))
+                            # mirror the mint-time bind — see the note above
+                            _mirror_after = (g[0], operator_email)
                             _bound_now = True
                         except Exception:
                             note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
@@ -482,6 +500,8 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                                 "WHERE api_key = %s",
                                 (operator_email.strip().lower(), (operator_name or None),
                                  (client_name[:80] or None) if client_name else None, r[0]))
+                            # mirror the backfilled bind — see the note above
+                            _mirror_after = (r[0], operator_email)
                         except Exception:
                             note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
                             pass
@@ -583,6 +603,11 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
     finally:
         try: c.close()
         except Exception: pass
+        # ★ AFTER the connection closes, and inside `finally` so it still fires
+        # on the several `return`s inside the try body above — the block after
+        # the finally (where the CRM capture sits) never sees those paths.
+        if _mirror_after:
+            _mirror_trial_to_mcp_dev_keys(*_mirror_after)
 
     # r74 (2026-06-07): emit CRM reverse-ETL capture on first mint (not reuse).
     # Only fires when an operator email is bound at mint time. Fail-soft.
