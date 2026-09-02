@@ -52,6 +52,7 @@ import datetime
 import glob
 import json
 import logging
+import ast
 import os
 import re
 import time
@@ -1393,14 +1394,43 @@ def _lane_closeout() -> list[dict]:
                           "(SH52-126)", None, "rate_limiter.py %s" % state,
                           critical=False))
     else:
+        # ★2026-09-02 — THIS CHECK USED TO GREP, AND PROSE IS NOT CODE. It read
+        #     substr = "'dchub.cloud' in origin" in txt
+        # against the whole file, so the two COMMENTS that explain the original
+        # vulnerability (rate_limiter.py's header block, and the note left where
+        # the second call site was deleted) both matched it. The check could not
+        # go green no matter what the code did — and symmetrically it would have
+        # gone green on a live `if "dchub.cloud" in origin_header:` that merely
+        # spelled the variable differently. Parse the module instead and look for
+        # a real `'<something with dchub.cloud>' in <name>` comparison NODE.
         host_gate = "_origin_host_is_trusted" in txt
-        substr = "'dchub.cloud' in origin" in txt or '"dchub.cloud" in origin' in txt
-        out.append(_check(
-            "z_ratelimit", "rate-limiter bypass is host-exact (SH52-126)",
-            host_gate and not substr,
-            "host-allowlist present, substring gone" if host_gate and not substr
-            else "host_gate=%s substring=%s" % (host_gate, substr),
-            critical=False))
+        try:
+            tree = ast.parse(txt)
+        except SyntaxError as e:  # unparseable is NOT clean — three-valued truth
+            out.append(_check(
+                "z_ratelimit", "rate-limiter bypass is host-exact (SH52-126)",
+                None, "rate_limiter.py did not parse: %s" % str(e)[:80],
+                critical=False))
+            tree = None
+        if tree is not None:
+            substr_nodes = [
+                n for n in ast.walk(tree)
+                if isinstance(n, ast.Compare)
+                and any(isinstance(o, ast.In) for o in n.ops)
+                and isinstance(n.left, ast.Constant)
+                and isinstance(n.left.value, str)
+                and "dchub.cloud" in n.left.value
+            ]
+            substr = bool(substr_nodes)
+            where = ", ".join("line %d" % n.lineno for n in substr_nodes[:4])
+            out.append(_check(
+                "z_ratelimit", "rate-limiter bypass is host-exact (SH52-126)",
+                host_gate and not substr,
+                "host-allowlist present; no substring-origin comparison in the AST"
+                if host_gate and not substr
+                else "host_gate=%s substring_compare=%s%s" % (
+                    host_gate, substr, (" at %s" % where) if where else ""),
+                critical=False))
 
     # SH52-127/128: legacy internal-key literal and pre-migration Azure Neon
     # strings scrubbed from tracked source.

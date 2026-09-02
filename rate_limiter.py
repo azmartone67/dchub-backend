@@ -410,14 +410,28 @@ def rate_limit_before():
         # not auth — acceptable for an internal-traffic bypass.)
         return None
 
-    # Bypass dchub.cloud frontend — the map fires dozens of spatial API
-    # calls on every pan/zoom.  These are already gated by the tier-aware
-    # enforce_tier_rate_limits() in main.py; double-limiting here causes
-    # pro/paid users to see 429s with tier=anonymous.
-    # v2.7: Fixes orange-dot disappearing bug on Land & Power map.
-    origin = request.headers.get('Origin', '') or request.headers.get('Referer', '')
-    if 'dchub.cloud' in origin:
-        return None
+    # ★2026-09-02 (SH52-126, second call site) — THE SUBSTRING BYPASS THAT
+    # SURVIVED ITS OWN FIX. This function carried TWO same-origin bypasses.
+    # The one at the top was migrated to the exact-host allowlist
+    # (`_origin_host_is_trusted`); this one was left behind, still testing
+    # `'dchub.cloud' in origin`. Because the host-exact gate returns FIRST,
+    # this block was only ever reached when the host gate had ALREADY said
+    # no — so it did nothing except re-admit exactly the hosts the fix
+    # existed to exclude:
+    #     Origin: https://dchub.cloud.evil.com   -> host gate False, substring True
+    #     Origin: https://evil.com/?r=dchub.cloud -> host gate False, substring True
+    # and rate limiting was skipped entirely for both.
+    #
+    # It is deleted rather than migrated: the legitimate case (the map's
+    # pan/zoom storm from the dchub.cloud SPA, and the pro/paid 429s that
+    # motivated v2.7) is fully covered by the host-exact gate above, which
+    # runs unconditionally on every request. A second copy can only differ
+    # from the first by being wrong.
+    #
+    # ★ tests/test_rate_limit_origin_host.py proved the HELPER was correct
+    # the whole time — it never called rate_limit_before(). A unit test on a
+    # helper cannot see an unmigrated call site. The behavioural tests added
+    # alongside this change drive the real function.
 
     key, tier = _get_key_and_tier()
     # Phase FF / GEO-0704: elevate anonymous hits so crawlers + visitors aren't
