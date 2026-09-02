@@ -411,6 +411,43 @@ def _parse_eria_jukyu(text):
     return out
 
 
+# ── month-rollover: a 404 on an unpublished file is not a broken URL ──
+# WHY THIS EXISTS. On 2026-09-03 JST the iso-intl lane read
+# `failed: OCCTO (mix: hokkaido:http_404 — no fuel mix written for these
+# areas)`. `http_404` is what you write when a URL is wrong, so that note
+# sends every reader to go re-derive a URL that is in fact correct. Measured
+# the same morning:
+#
+#   eria_jukyu_202609_01.csv -> 404      (this month, not yet published)
+#   eria_jukyu_202608_01.csv -> 200      last row 2026/08/31 23:30
+#   eria_jukyu_202607_01.csv -> 200
+#
+# The URL template is right; HEPCO simply had not posted September yet, which
+# _MIX_STALE_AFTER_H's own comment already records ("Hokkaido lags ~1wk").
+# Because these files are MONTHLY, this recurs at the start of every month,
+# and the previous month cannot rescue it — August's newest row is already
+# older than the 6h freshness bar, so falling further back would only trade a
+# false 404 for stale data published as current.
+#
+# ★ So the lane stays DEGRADED — the data really is missing and must not be
+# laundered green — but it now says WHICH of the two it is. Same rule as the
+# brain verdict: a surface may not publish a diagnosis it has not earned.
+# Guarded by tests/test_jp_month_rollover_note.py.
+_MONTH_ROLLOVER_GRACE_DAYS = 2
+
+
+def _month_gap_note(now_jst, last_note):
+    """Name an unpublished current-month file as exactly that.
+
+    Only reached when THIS month's monthly CSV 404'd. Keeps the raw status in
+    the string so the underlying fact is never hidden, and carries the month
+    so a reader can re-run the one curl that settles it."""
+    ym = now_jst.strftime("%Y%m")
+    return (f"month_not_published_yet:{ym} (day {now_jst.day} JST; "
+            f"monthly file absent upstream, URL template unchanged; "
+            f"raw={last_note})")
+
+
 def _fetch_eria(code):
     """Fetch + parse one area's eria_jukyu fuel mix. Returns
     (metrics-or-None, note). Never raises. Freshness-guarded here."""
@@ -423,14 +460,18 @@ def _fetch_eria(code):
                       for d in (0, 1)]
     else:  # monthly-rolling file; fall back one month right after rollover
         months = [now_jst.strftime("%Y%m")]
-        if now_jst.day <= 2:
+        if now_jst.day <= _MONTH_ROLLOVER_GRACE_DAYS:
             months.append((now_jst.replace(day=1) - timedelta(days=1)).strftime("%Y%m"))
         candidates = [url_tpl.format(ym=ym) for ym in months]
     last_note = "fetch_failed"
-    for url in candidates:
+    # ★ A 404 on THIS month's file is not a broken URL — see _month_gap_note.
+    this_month_404 = False
+    for i, url in enumerate(candidates):
         try:
             r = _rq.get(url, headers=_HEADERS, timeout=10)
             if not r.ok:
+                if i == 0 and r.status_code == 404 and "{ymd}" not in url_tpl:
+                    this_month_404 = True
                 last_note = f"http_{r.status_code}"
                 continue
             # TEPCO is UTF-8, everyone else cp932 — keep whichever parses
@@ -459,6 +500,8 @@ def _fetch_eria(code):
             return parsed, "ok"
         except Exception as e:
             last_note = f"{type(e).__name__}"
+    if this_month_404:
+        return None, _month_gap_note(now_jst, last_note)
     return None, last_note
 
 
