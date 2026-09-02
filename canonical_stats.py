@@ -416,6 +416,22 @@ _PUBLIC_FLOOR_SPECS = {
     "countries":  ("countries_verified",  _countries_floor),
     "markets":    ("markets",             _markets_floor),
     "deals":      ("deals",               _deals_floor),
+    # ★2026-09-02: substations added because /.well-known/mcp.json — the single
+    # most agent-quotable string on the domain, rendered verbatim by registries
+    # and MCP clients — carried the LITERAL "126,427 substations" in its
+    # top-level .description. That number is this file's own _FALLBACK seed
+    # (line ~71, "HIFLD substations (had no SoT home before)"), pasted into
+    # prose and then frozen: the snapshot measured 127,269 while the manifest
+    # published 126,427, i.e. the surface was serving the DB-DOWN fallback as
+    # though it were the measurement, permanently.
+    #
+    # It is the shape this whole module exists to end — a hand-typed literal
+    # beside a live one — and the reason it survived is that substations had a
+    # snapshot key but no FLOOR SPEC, so no {canon_*} placeholder could reach it
+    # and every surface had to hardcode. step=1000 matches the other
+    # infrastructure-scale floors; an exact count in prose invites a diff every
+    # ingest, which is how 126,427 became something nobody dared touch.
+    "substations": ("substations",        lambda n: _floor_phrase(n, step=1000)),
 }
 
 

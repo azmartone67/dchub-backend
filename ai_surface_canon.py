@@ -261,6 +261,12 @@ PINNED = {
         # 690 subsea + 1.9k landings). An unpinned number cannot be swept,
         # cannot be sentinel-checked, and cannot be healed — pin it.
         "assets": "320,000+",
+        # ★2026-09-02 cold-start floor for {canon_substations}. Like every other
+        # entry here this is the DB-DOWN fallback only — live_public_floors()
+        # overrides it from the snapshot. Floored DOWN from a measured 127,269,
+        # because a floor above reality is the defect this block's own history
+        # records three times.
+        "substations": "127,000+",
         "countries": "170+",  # ★2026-07-30 VERIFIED correct: the deduped fleet spans 178 distinct codes (incl. territories) → floor "170+". NOT "180+": /api/v1/stats served countries=186 off the legacy `facilities` table, which double-counts 9 full-name/ISO-code pairs ("USA"+"US"). resolve_canon() now overrides this live (countries_verified_phrase).
     },
     # Values known to be STALE/WRONG on some surface — the sentinel flags these.
@@ -751,6 +757,10 @@ def canon_nums() -> dict:
         '{canon_version}':    _p.get('version') or '',
         '{canon_tools}':      str(_tools) if _tools else '',
         '{canon_facilities}': _live.get('facilities') or _pub.get('facilities') or '',
+        # ★2026-09-02: see canonical_stats._PUBLIC_FLOOR_SPECS. /.well-known/mcp.json
+        # hardcoded "126,427 substations" — this module's own DB-DOWN seed, pasted
+        # into prose and frozen while the snapshot measured 127,269.
+        '{canon_substations}': _live.get('substations') or _pub.get('substations') or '',
         '{canon_deals}':      _live.get('deals')      or _pub.get('deals') or '',
         '{canon_markets}':    _live.get('markets')    or _pub.get('markets') or '',
         '{canon_countries}':  _live.get('countries')  or _pub.get('countries') or '',
