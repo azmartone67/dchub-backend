@@ -156,21 +156,19 @@ def relay_page(token):
     _log_open(info, token, valid=info is not None)
     tool = (info or {}).get("tool") or ""
     sid = (info or {}).get("sid") or ""
-    tier = (info or {}).get("tier") or "free"
     # ONE button, riding the existing attribution chain (sid-preserve →
     # pack webhook claim→paid bridge). direct=1 skips the tier wall.
     #
-    # ★ 2026-09-02: the button carries PACK_TIER, not the token's tier. The
-    # token's `tier` is the CALLER's tier (free / identified) — it says who
-    # hit the wall, not what to sell them — and _stripe_links.resolve_tier
-    # used to fall through to 'developer' for any word it did not know, so
-    # this "$10 one-time" button 302'd to the $49/mo Developer link (102
-    # real human opens / 30d, 0 paid; live 302 verified 2026-09-02T00:29Z).
-    # The copy below promises the pack; the href must sell the pack. The
-    # caller tier still goes to relay_opens (above) for the funnel read.
+    # ★ SELL THE PACK THIS PAGE ADVERTISES. `resolve_tier`'s `tier` param means
+    # "which plan to sell", NOT "what the visitor currently has". We used to
+    # pass the visitor's own tier from the token — but `free`/`identified` are
+    # not STRIPE_LINKS keys, so it fell through to the `developer` DEFAULT
+    # ($49/mo), or to `pro` ($299/mo) when the token carried a pro-gated tool,
+    # all under a "$10 one-time" label. `metered` IS a key, so it wins on the
+    # first branch. (Not `pack5`: same Stripe URL, but the webhook still reads
+    # pack5 as the legacy $5 SKU by amount.)
     from urllib.parse import urlencode
-    from routes._stripe_links import PACK_TIER
-    q = {"from": "mcp_relay", "tier": PACK_TIER, "direct": "1"}
+    q = {"from": "mcp_relay", "tier": "metered", "direct": "1"}
     if tool:
         q["tool"] = tool
     if sid:
