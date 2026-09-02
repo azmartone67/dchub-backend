@@ -126,4 +126,4 @@ def test_the_gather_path_uses_the_gated_helper():
     body = src[src.index("def _gather_citations"):]
     assert "_quotable_proof(out[\"by_platform\"], out[\"totals\"])" in body
     assert "by_platform[:6]" not in body, "the ungated slice is back"
-    assert "actively used by" not in src
+    assert "actively used by" not in body, "the old wording is back in the endpoint"

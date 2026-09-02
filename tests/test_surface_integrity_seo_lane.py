@@ -69,18 +69,12 @@ def test_a_stale_series_fails(monkeypatch):
     assert _lane_verdict(checks) == "FAIL"
 
 
-def test_one_day_past_the_allowance_fails():
+def test_one_day_past_the_allowance_fails(monkeypatch):
     """The boundary is <= 4 days: 4 passes, 5 fails."""
     for age, expect in ((4, True), (5, False)):
-        checks = sims._lane_seo_measurement.__wrapped__(today=TODAY) if hasattr(
-            sims._lane_seo_measurement, "__wrapped__") else None
-        # (no wrapper) — drive through the module hook instead
-        sims_read = sims._read_seo_series
-        try:
-            sims._read_seo_series = lambda a=age: _series(TODAY - _dt.timedelta(days=a), 10)
-            checks = sims._lane_seo_measurement(today=TODAY)
-        finally:
-            sims._read_seo_series = sims_read
+        monkeypatch.setattr(sims, "_read_seo_series",
+                            lambda a=age: _series(TODAY - _dt.timedelta(days=a), 10))
+        checks = sims._lane_seo_measurement(today=TODAY)
         assert _gsc(checks)["pass"] is expect, (age, _gsc(checks)["detail"])
 
 
