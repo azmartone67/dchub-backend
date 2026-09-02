@@ -312,7 +312,8 @@ Footer: the sources that actually contributed, e.g.
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/llamaindex">LlamaIndex</a> ·
     <a href="https://huggingface.co/spaces/dchubcloud/dchub">Hugging Face (live MCP Space)</a> ·
     <a href="https://dchub.cloud/integrations/bedrock">Amazon Bedrock AgentCore</a> ·
-    <a href="https://dchub.cloud/integrations/copilot-studio">Copilot Studio</a>
+    <a href="https://dchub.cloud/integrations/copilot-studio">Copilot Studio</a> ·
+    <a href="https://dchub.cloud/integrations/cloudflare">Cloudflare MCP Server Portal</a>
   </p>
   <p><b>SDKs:</b> <code>pip install dchub</code> &nbsp;·&nbsp; <code>npm i dchub</code></p>
   <h3 style="margin-top:18px;font-size:1rem">Paste this into any AI chat</h3>
@@ -1320,6 +1321,186 @@ paths:
 )
 
 
+
+# ── Cloudflare Zero Trust MCP Server Portal (2026-09-02) ─────────────────────
+# DC Hub is NOT affiliated with, sponsored by or endorsed by Cloudflare. This
+# page documents a customer-side configuration that works against the live
+# product today, LIMITATIONS INCLUDED — the direct-URL bypass, the MFA /
+# purpose-justification non-enforcement, and the OAuth-vs-service-token
+# exclusivity are Cloudflare's own documented behaviour and stay on the page on
+# purpose: a portal guide that hides them is worse than no guide.
+#
+# Every figure was measured 2026-09-02. The tool count and the server version
+# render from ai_surface_canon via canon_text(), never a fresh literal — the
+# same canon-binding rule the Copilot Studio page follows, because a hardcoded
+# "83 tools" / "2.12.x" rots the day canon moves and nothing in CI scans this
+# module for version literals.
+CLOUDFLARE_PORTAL_RECIPE_HTML = _recipe_page(
+    slug="cloudflare",
+    title="Add DC Hub to a Cloudflare MCP Server Portal &mdash; Zero Trust upstream for live data-center &amp; grid intelligence",
+    description=canon_text("Add https://dchub.cloud/mcp as an upstream server in your Cloudflare Zero Trust MCP Server Portal: OAuth with automatic client registration, a custom X-API-Key header, or keyless. {canon_tools} tools over {canon_facilities} distinct data-center sites, grid, fiber and gas intelligence, behind your own Access policies."),
+    og_title="DC Hub in a Cloudflare MCP Server Portal — one upstream URL",
+    og_desc="Live grid + data-center intelligence behind your own Zero Trust Access policies · OAuth dynamic client registration supported · Cloudflare-side limits documented",
+    jsonld_altname="DC Hub for Cloudflare Zero Trust MCP Server Portals",
+    jsonld_desc=canon_text("Model Context Protocol server addable as an upstream server inside a Cloudflare Zero Trust MCP Server Portal — {canon_tools} tools covering {canon_facilities} distinct data-center sites, live grid scoreboards, interconnection queues, fiber and gas intelligence, with per-response citations. Supports OAuth dynamic client registration, custom headers, or keyless access. Free tier: {canon_free_calls} calls/day, no signup."),
+    eyebrow="Cloudflare Zero Trust · MCP Server Portal · Model Context Protocol",
+    h1="Add DC Hub to your Cloudflare portal.",
+    lead=canon_text("Run DC Hub as an upstream server inside your own Cloudflare Zero Trust MCP Server Portal &mdash; your portal URL, your Access policies, your audit trail. {canon_tools} tools and 13 prompts over Streamable HTTP, MCP protocol 2025-06-18. Nothing changes on our side, and the Cloudflare-side limits are written down below rather than left out."),
+    steps_heading="Register DC Hub as an MCP server",
+    steps_html="""<p><b>Before you start:</b> a Cloudflare Zero Trust account with Access configured and at
+  least one identity provider connected &mdash; and, if you want more than the keyless free tier,
+  a DC Hub API key from <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.</p>
+  <p><b>Get the key first.</b> The free-tier pane further down this page says an agent can mint its
+  own durable key mid-conversation by calling <code>claim_free_key</code>. That is true everywhere
+  <i>except</i> behind a portal: the upstream credential is set by an administrator in the Cloudflare
+  dashboard, and a running agent cannot rewrite portal configuration. Register with no key and the
+  portal stays anonymous until an administrator changes it.</p>
+  <ol>
+    <li>In the Cloudflare dashboard open <b>Zero Trust &rarr; Access controls &rarr; AI controls</b>,
+    pick the <b>MCP servers</b> tab, and choose <b>Add a server</b>.</li>
+    <li><b>Name</b> &mdash; anything your team will recognise, e.g. <code>DC Hub Intelligence</code>.
+    <b>Description</b> &mdash; free text.</li>
+    <li><b>Enter the full URL of the remote server</b> &mdash; <code>https://dchub.cloud/mcp</code>.
+    No path suffix, no query string. Transport is Streamable HTTP and DC Hub speaks MCP protocol
+    <code>2025-06-18</code>.</li>
+    <li><b>Route traffic through Cloudflare Gateway</b> &mdash; a toggle. Leave it off unless you
+    specifically want Gateway inspection; it adds a hop in front of a streaming endpoint.</li>
+    <li><b>Authentication type</b> &mdash; <b>OAuth</b>, <b>Custom headers</b> or <b>None</b>.
+    See the next section: OAuth with <b>Automatic (recommended)</b> credentials is what we suggest,
+    and it is the choice we have verified end to end.</li>
+    <li>Add the server to an <b>MCP server portal</b>, attach an Access application to that portal,
+    and write at least one policy. <b>Policies are default-deny</b> &mdash; a portal with no policy
+    admits nobody. Then hand your agents the portal URL in place of
+    <code>https://dchub.cloud/mcp</code>.</li>
+  </ol>
+  <p>The dashboard labels and the API values differ: the form&rsquo;s <b>OAuth</b>,
+  <b>Custom headers</b> and <b>None</b> are <code>oauth</code>, <code>bearer</code> and
+  <code>unauthenticated</code> respectively in the API.</p>
+  <p style="color:#64748b;font-size:.85rem">DC Hub is not affiliated with, sponsored by or endorsed
+  by Cloudflare. This page documents a configuration verified against the live product on
+  2026-09-02.</p>""",
+    auth_html="""<div class="pane" id="auth">
+  <h2>Choosing an authentication type</h2>
+  <p>All three modes work against DC Hub. They differ in who the traffic looks like when it reaches
+  us &mdash; which decides both the data your agents get back and whether you can attribute usage
+  per seat.</p>
+
+  <h3>OAuth &mdash; recommended</h3>
+  <p>Nothing is shared: each portal user completes their own sign-in and gets a durable per-user
+  identity. Under <b>OAuth credentials</b>, choose <b>Automatic (recommended)</b>.
+  Cloudflare&rsquo;s own hint on that option says it works only where the provider supports OAuth
+  Dynamic Client Registration, and that most production providers &mdash; it names GitHub, Snowflake
+  and Asana &mdash; need <b>Manual credentials</b> instead. DC Hub supports DCR, so Automatic works
+  and there is no client to pre-register:
+  <code>https://dchub.cloud/.well-known/oauth-protected-resource</code> returns 200 and names an
+  authorization server that publishes a <code>registration_endpoint</code> and PKCE
+  <code>S256</code>, with scopes <code>openid</code>, <code>profile</code>, <code>email</code> and
+  <code>offline_access</code>.</p>
+  <p><b>Verified end to end on 2026-09-02:</b> a portal configured OAuth + Automatic completed
+  registration and minted a durable per-user identity &mdash; observed server-side as an MCP session
+  carrying a <code>dch_oauth_</code> key rather than <code>key=none</code>. Fresh identities start on
+  the free tier until they are attached to your plan, so talk to us before you rely on it.</p>
+
+  <h3>Custom headers</h3>
+  <p>One admin-set credential, forwarded verbatim, shared by every portal user. Cloudflare passes
+  custom headers through unchanged, so the header name you set is the header we read. DC Hub
+  resolves credentials in the order <code>X-API-Key</code> &rarr;
+  <code>Authorization: Bearer</code> &rarr; <code>?apiKey=</code>, and header names are
+  case-insensitive &mdash; Cloudflare&rsquo;s <code>X-Api-Key</code> and our <code>X-API-Key</code>
+  are the same slot.</p>
+  <pre>{
+  "headers": {
+    "X-Api-Key": "&lt;your-dchub-key&gt;"
+  }
+}</pre>
+  <p>Your paid tier then applies to the whole portal, and the whole org counts as <b>one caller</b>
+  &mdash; there is no per-seat attribution in this mode.</p>
+
+  <h3>None</h3>
+  <p>No credential at all. Every call lands on the keyless free tier: trimmed previews, most result
+  rows withheld. Fine for evaluation, not for production.</p>
+
+  <h3>OAuth and headless agents are mutually exclusive</h3>
+  <p>Per-user identity has a real cost. Cloudflare excludes OAuth-backed upstream servers from
+  service-token sessions and requires a browser sign-in, so an autonomous agent running with no
+  human present cannot reach DC Hub through an OAuth-configured portal entry. Choose by what you
+  actually need: <b>OAuth</b> for per-seat attribution with humans in the loop, <b>Custom headers</b>
+  for unattended agents. You cannot have both through one entry &mdash; though nothing stops you
+  registering DC Hub twice, once each way.</p>
+</div>""",
+    extra_html=canon_text("""<div class="pane" id="portal-limits">
+  <h2>Two documented limits of portal-based access</h2>
+  <p>Both are Cloudflare&rsquo;s own documented behaviour, and both matter before you treat a portal
+  as a control boundary:</p>
+  <ol>
+    <li>A user blocked by your Access policy <b>can still reach an upstream server directly by its
+    own URL</b>. A portal governs how you distribute DC Hub; it does not seal DC Hub off &mdash; and
+    <code>https://dchub.cloud/mcp</code> is a public endpoint by design.</li>
+    <li>Independent MFA, purpose justification and temporary authentication are <b>not enforced</b>
+    for MCP servers reached through a portal. If your controls depend on any of those, verify the
+    behaviour yourself before you rely on it.</li>
+  </ol>
+</div>
+
+<div class="pane" id="verify">
+  <h2>Verify it before you announce it</h2>
+  <p>Two checks. The first proves the server is reachable and complete; the second proves your
+  credential is actually arriving.</p>
+  <h3>1 &middot; Reachability</h3>
+  <p>Once the server syncs, Cloudflare should show the full DC Hub surface &mdash;
+  <b>{canon_tools} tools</b> and <b>13 prompts</b>, with <code>serverInfo</code> reporting
+  <code>DC Hub Intelligence</code> <code>{canon_version}</code>. A lower tool count means a partial
+  sync; re-sync before going further.</p>
+  <h3>2 &middot; Credential passthrough</h3>
+  <p>Call <code>search_facilities</code> with <code>query=Ashburn</code> and <code>limit=25</code>
+  through your portal, then compare against an anonymous caller. The measured anonymous baseline on
+  2026-09-02: <code>tier</code> is <code>free</code>, <code>data</code> carries 3 rows,
+  <code>_data_total_in_pro</code> is 5, and <code>upgrade_url</code> is
+  <code>https://dchub.cloud/pricing</code>. If your credential arrived, those free-tier markers are
+  absent and the full result set comes back.</p>
+  <p><b>An invalid key looks exactly like no key.</b> A rejected credential falls back to anonymous
+  and produces output identical to sending nothing at all &mdash; so a passthrough test run with a
+  placeholder value proves nothing. Test with a real key, and keep a no-credential run as the
+  control.</p>
+  <p>If you chose OAuth, the decisive evidence is not visible in your dashboard: it is the
+  <code>dch_oauth_</code> key on the session, server-side. Ask us to read it for your first
+  connection.</p>
+</div>
+
+<div class="pane" id="context-optimization">
+  <h2>Leave context optimization off</h2>
+  <p>Portals offer two token-saving modes. Both degrade DC Hub quietly rather than visibly &mdash;
+  your agents keep answering, just less correctly.</p>
+  <ul>
+    <li><code>minimize_tools</code> &ldquo;strips tool descriptions and input schemas from all
+    upstream tools, leaving only their names.&rdquo;</li>
+    <li><code>search_and_execute</code> &ldquo;hides all upstream tools&rdquo; behind a generic
+    search-then-execute pair.</li>
+  </ul>
+  <p>Both hurt here for the same reason: DC Hub publishes its own limits alongside its answers, and
+  those contracts live in the tool schemas. <code>rank_sites</code>,
+  <code>site_selection_canvas</code> and <code>get_power_availability_timeline</code> each return a
+  <code>constraint_coverage</code> block naming what the answer does <i>not</i> cover;
+  <code>get_composite_site_score</code> returns <code>coverage</code> and
+  <code>coverage_ratio</code>. Strip the schemas and you keep the answers while discarding the
+  caveats &mdash; the opposite of what an audited deployment wants.</p>
+</div>
+
+<div class="pane" id="what-we-see">
+  <h2>What DC Hub sees, and what it does not</h2>
+  <ul>
+    <li>Under <b>Custom headers</b> every portal user reaches us on one credential, so we do not
+    receive your users&rsquo; identities. If your compliance position needs per-user attribution on
+    our side, that is the OAuth path above.</li>
+    <li>A portal sync enumerates the full tool and prompt surface with no credential at all. Tool
+    <i>discovery</i> is public on DC Hub; tool <i>data</i> is what the tier gate controls.</li>
+    <li>Source IP is not usable for attribution in either direction &mdash; DC Hub&rsquo;s own edge
+    is Cloudflare too.</li>
+  </ul>
+</div>"""),
+)
+
+
 @integrations_landing_bp.route("/integrations/bedrock", strict_slashes=False, methods=["GET"])
 def integrations_bedrock():
     return BEDROCK_RECIPE_HTML, 200, {
@@ -1331,6 +1512,19 @@ def integrations_bedrock():
 @integrations_landing_bp.route("/integrations/copilot-studio", strict_slashes=False, methods=["GET"])
 def integrations_copilot_studio():
     return COPILOT_RECIPE_HTML, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=600, s-maxage=1800",
+    }
+
+
+@integrations_landing_bp.route("/integrations/cloudflare", strict_slashes=False, methods=["GET"])
+def integrations_cloudflare():
+    # strict_slashes=False is load-bearing, not cosmetic: without it
+    # /integrations/cloudflare/ falls through to main.py's legacy
+    # /integrations/<platform>/ package handler, which answers
+    # {"error": "Integration package not found for cloudflare"} with a 404.
+    # Same reason every sibling on this blueprint sets it.
+    return CLOUDFLARE_PORTAL_RECIPE_HTML, 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
