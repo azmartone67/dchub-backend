@@ -7472,15 +7472,24 @@ def handle_well_known():
             # Manifest must never fail to serve — fall back to static strings.
             _live_counts = {}
         return Response(_j2.dumps({
+            # ★2026-09-02: the .tagline and .description below say "distinct
+            # facilities" because canonical serves FIVE facility counts and
+            # {canon_facilities} is facilities_distinct — the field its own
+            # provenance names as "the field to cite".
+            # ★THIS handler is the SERVED one. routes/mcp_tool_catalog.py also
+            # registers a blueprint route for /.well-known/ai-agents.json and it
+            # is SHADOWED by this path check — measured 2026-09-02, editing that
+            # one changed nothing at either the edge or the Railway origin. Fix
+            # here; the blueprint twin is dead weight for this path.
             "$schema": "https://dchub.cloud/.well-known/ai-agents.schema.json",
             "schema_version": "ai-agents/v2",
             "name": "DC Hub",
             "tagline": _canon_text(
-                "Data center intelligence platform — {canon_facilities} facilities, "
+                "Data center intelligence platform — {canon_facilities} distinct facilities, "
                 "170+ countries, real-time grid & infrastructure."
             ),
             "description": _canon_text(
-                "Live data-center, energy, and grid intelligence. {canon_facilities} facilities "
+                "Live data-center, energy, and grid intelligence. {canon_facilities} distinct facilities "
                 "in 170+ countries, {canon_deals} tracked M&A deals, real-time DCPI scoring for "
                 "300+ markets across the U.S., UK, EU, Japan, Australia, Singapore, "
                 "and Canada. The only DC-intelligence source an LLM can both query "
