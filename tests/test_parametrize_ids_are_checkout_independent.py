@@ -22,9 +22,15 @@ This is the class fence: it is what stops instance #3.
 TWO CHECKS, DELIBERATELY DIFFERENT IN KIND
 -------------------------------------------
 1. `test_no_collected_node_id_names_this_checkout` reads the REAL node IDs of
-   everything pytest collected this run. It is ground truth — no inference, no
-   false positives — but it only ever sees what the current invocation
-   collected, so under `-k` or a single-file run its coverage is whatever ran.
+   everything pytest collected this run, so it judges outcomes rather than
+   source. Its coverage is whatever the invocation collected — full under
+   `pytest tests/`, narrower under `-k` or a single-file run.
+
+   ★ It is NOT inference-free, and the first cut of this file claimed it was.
+     Half of it is exact (does the ID contain THIS checkout's root?); the other
+     half is a heuristic for OTHER machines' roots, and that heuristic read
+     "s:/" inside "https://" as a Windows drive letter and failed unit-tests on
+     54 URL-bearing IDs. `_REAL_URL_IDS` pins those shapes as controls.
 2. `test_no_test_file_parametrizes_over_a_checkout_derived_path` statically
    sweeps every file under tests/ regardless of what was selected, so its
    coverage is total and floored. It is the one that cannot be narrowed by an
@@ -84,9 +90,31 @@ _SEED_CALLS = {"abspath", "realpath", "getcwd", "resolve", "cwd", "expanduser"}
 
 # Literals that hardcode one machine's filesystem. Deliberately narrow: it must
 # not match a URL path, which is what nearly every absolute literal here is.
-_MACHINE_ROOT = r"(?:[A-Za-z]:[\\/]|/(?:Users|home|private|tmp|var/folders|Volumes)/)"
+# ★ The drive-letter half is the one that bit. `[A-Za-z]:[\\/]` searched
+#   unanchored matches "s:/" inside "https://" and "g:/" inside "finding:/api",
+#   which failed unit-tests on 54 node IDs whose params are URLs. Two guards,
+#   either of which alone is sufficient, kept for defence in depth:
+#     (?<![A-Za-z])  a drive letter is ONE letter — "https" has "p" before "s"
+#     (?!/)          a drive path is "C:/", a URL scheme is "://"
+_DRIVE = r"(?<![A-Za-z])[A-Za-z]:[\\/](?!/)"
+_UNIX_MACHINE = r"/(?:Users|home|private|tmp|var/folders|Volumes)/"
+_MACHINE_ROOT = r"(?:" + _DRIVE + r"|" + _UNIX_MACHINE + r")"
 _MACHINE_PATH_RE = re.compile(r"^" + _MACHINE_ROOT)
 _MACHINE_PATH_SEARCH_RE = re.compile(_MACHINE_ROOT)
+
+# Real node IDs from the suite whose params are URLs or URL-ish text. These are
+# the exact strings that made unit-tests red on the first cut of this file, kept
+# verbatim so the regression cannot return quietly.
+_REAL_URL_IDS = (
+    "tests/test_bare_link_credit.py::test_destinations_count_as_links"
+    "[See https://dchub.cloud/dcpi for the index]",
+    "tests/test_claim_ledger.py::test_parse_metric"
+    "[finding:/api/v1/admin/facility-dedup/analyze?country=FR status-expect1]",
+    "tests/test_media_post_quality.py::"
+    "test_a_call_to_action_ending_in_a_url_is_not_truncation"
+    "[Browse the tool surface: https://dchub.cloud/capabilities]",
+    "tests/test_claim_ledger.py::test_parse_metric[get:/api/v1/stats facilities-expect3]",
+)
 
 # The pre-#3542 shape, kept verbatim as the must-fail control. If the detector
 # stops flagging THIS, the sweeps below protect nothing.
@@ -412,6 +440,26 @@ def test_detector_does_not_flag_a_helper_that_returns_labels():
     assert seen == 1
     assert offences == [], (
         f"a helper that reads the repo but returns labels is flagged: {offences}")
+
+
+def test_node_id_detector_does_not_flag_url_bearing_ids():
+    """REGRESSION CONTROL. The first cut of this file failed unit-tests on 54
+    real node IDs because the drive-letter branch matched "s:/" inside
+    "https://". These are four of those IDs, verbatim.
+
+    A fence that cries wolf gets deleted, and this one cried wolf on its own
+    first CI run.
+    """
+    for nodeid in _REAL_URL_IDS:
+        assert not id_names_a_checkout(nodeid), (
+            f"the drive-letter branch is matching inside a URL again: {nodeid}")
+
+
+def test_node_id_detector_still_flags_a_real_windows_drive_path():
+    """The narrowing must not cost the detector the case it was there for."""
+    for nodeid in ("tests/t.py::test_x[C:/repo/dchub-backend/a.py]",
+                   "tests/t.py::test_x[D:\\repo\\a.py]"):
+        assert id_names_a_checkout(nodeid), nodeid
 
 
 def test_node_id_detector_does_not_flag_ordinary_ids():
