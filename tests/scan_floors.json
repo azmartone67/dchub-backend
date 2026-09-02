@@ -112,6 +112,9 @@
     "test_freshness_sources_are_real.py": {
       "pglob": 640
     },
+    "test_grid_ba_surface_guard.py": {
+      "glob": 650
+    },
     "test_gsc_performance.py": {
       "pglob": 130
     },

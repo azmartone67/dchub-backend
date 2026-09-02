@@ -28,6 +28,7 @@ to MATCH the US/UK scoreboard definition (biomass reported separately) so the
 grids rank apples-to-apples. ISO_CODE = "ENTSOE" for the aggregate; per-zone
 rows persist under EU_<code> so the ENTSOE-tagged DCPI markets can join.
 """
+import logging
 import os
 import time
 import datetime
@@ -38,6 +39,7 @@ from contextlib import contextmanager
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+from routes._iso_common import coerce_observed_at
 
 try:
     import requests as _rq
@@ -49,6 +51,7 @@ SOURCE_ID = "iso-eu-entsoe-live"
 ISO_CODE = "ENTSOE"
 
 _ENTSOE_BASE = "https://web-api.tp.entsoe.eu/api"
+_log = logging.getLogger("dchub.iso_eu_entsoe")
 
 # ENTSO-E PSR (Production Source) B-codes → our fuel category.
 _PSR = {
@@ -600,31 +603,49 @@ def _live_snapshot():
 
 
 def _persist_metrics(snap):
-    """Persist the EU aggregate (iso=ENTSOE) + each zone (iso=EU_<code>)."""
+    """Persist the EU aggregate (iso=ENTSOE) + each zone (iso=EU_<code>).
+
+    D4 (2026-09-02): `timestamp` is the zone's data_period_end — the instant
+    the A75 reading covers — and the aggregate takes the newest period end
+    across the zones that answered. The column used to be OMITTED, so it took
+    DEFAULT NOW() (the insert clock), the ON CONFLICT (iso, timestamp,
+    metric_name) guard could never fire, and the same cached reading was
+    re-stamped "now" on every 15-minute tick. A zone whose document carried no
+    parseable period writes with the insert clock through COALESCE — logged by
+    name, never silently."""
     if not snap:
         return 0
     rows = 0
+    zone_ts = {code: coerce_observed_at((z or {}).get("data_period_end"))
+               for code, z in snap["zones"].items()}
+    stamped = [t for t in zone_ts.values() if t is not None]
+    agg_ts = max(stamped) if stamped else None
+    unstamped = sorted(c for c, t in zone_ts.items() if t is None)
+    if unstamped:
+        _log.warning("entsoe _persist_metrics: %d zone(s) carry no data_period_end "
+                     "— their rows take the INSERT clock: %s", len(unstamped), unstamped)
     with _conn() as c, c.cursor() as cur:
-        def _ins(iso, name, value, unit):
+        def _ins(iso, name, value, unit, observed_at):
             nonlocal rows
             try:
                 cur.execute(
-                    """INSERT INTO grid_data (iso, metric_name, metric_value, unit)
-                       VALUES (%s, %s, %s, %s)
+                    """INSERT INTO grid_data (iso, metric_name, metric_value, unit, timestamp)
+                       VALUES (%s, %s, %s, %s, COALESCE(%s, NOW()))
                        ON CONFLICT (iso, timestamp, metric_name) DO NOTHING""",
-                    (iso, name, value, unit))
+                    (iso, name, value, unit, observed_at))
                 if cur.rowcount > 0:
                     rows += 1
             except Exception:
                 note_swallowed_write("grid_data", where="iso_eu_entsoe._ins")
                 pass
         for name, data in snap["metrics"].items():
-            _ins(ISO_CODE, name, data["value"], data.get("unit", ""))
+            _ins(ISO_CODE, name, data["value"], data.get("unit", ""), agg_ts)
         for code, z in snap["zones"].items():
             zi = f"EU_{code}"
-            _ins(zi, "generation_total_mw", z["generation_total_mw"], "MW")
-            _ins(zi, "renewable_pct", z["renewable_pct"], "pct")
-            _ins(zi, "gas_pct", z["gas_pct"], "pct")
+            ts = zone_ts.get(code)
+            _ins(zi, "generation_total_mw", z["generation_total_mw"], "MW", ts)
+            _ins(zi, "renewable_pct", z["renewable_pct"], "pct", ts)
+            _ins(zi, "gas_pct", z["gas_pct"], "pct", ts)
         c.commit()
     return rows
 

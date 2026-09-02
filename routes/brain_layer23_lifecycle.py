@@ -1037,8 +1037,15 @@ def _audit_dcpi_freshness() -> dict:
         }
     stats = f.get("stats") or {}
     stale_3d = int(stats.get("stale_3_7d") or 0) + int(stats.get("stale_7d") or 0)
+    # D1 (2026-09-02): a dead live feed family (ENTSO-E behind every EU market)
+    # is a freshness failure even while every market's computed_at is recent —
+    # the recompute kept running on frozen inputs for >24h and this dim stayed
+    # green. The endpoint names the families; an absent key (older deploy) is
+    # not read as "fresh".
+    stale_feeds = list(f.get("stale_live_feeds") or [])
     return {
-        "ok": stale_3d <= 5,
+        "ok": stale_3d <= 5 and not stale_feeds,
+        "stale_live_feeds": stale_feeds,
         "total_markets":    int(stats.get("total") or 0),
         "fresh_24h":        int(stats.get("fresh_24h") or 0),
         "stale_1_3d":       int(stats.get("stale_1_3d") or 0),
@@ -1047,6 +1054,7 @@ def _audit_dcpi_freshness() -> dict:
         "stale_3d_total":   stale_3d,
         "oldest_market":    ((f.get("oldest_15") or [{}])[0]).get("market_name"),
         "verdict": (
+            "live-feed-dead:" + ",".join(stale_feeds) if stale_feeds else
             "all-fresh" if stale_3d == 0 else
             "minor-drift" if stale_3d <= 5 else
             "silent-cron-failures"
