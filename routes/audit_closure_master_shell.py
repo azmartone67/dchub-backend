@@ -262,6 +262,17 @@ def _data_keys(sc: dict) -> list:
             and k not in _ENVELOPE_KEYS and k not in scaffold]
 
 
+def _feed_bad(row) -> bool:
+    """Any fault at all — LATE or RED. ★2026-09-02 (D2): the board split
+    `overdue` (late) from `red` (ran, reported a fault); checks that ask
+    "is this feed healthy" read the union, checks that ask "did it run on
+    schedule" read `overdue`. Falls back to `overdue` for a board that
+    predates the split."""
+    if not row:
+        return False
+    return bool(row.get("unhealthy", row.get("overdue")))
+
+
 def _deadman_feed(name):
     """Row for one feed on the deadman board, or (None, why)."""
     d, err = _jget(_local("/api/v1/ops/deadman"), timeout=10)
@@ -393,11 +404,20 @@ def _lane_p0_incidents() -> list[dict]:
         critical=True))
 
     row, why = _deadman_feed("loop-control-shell-daily")
+    # ★2026-09-02 (D2): "beats on schedule" is a CADENCE question. Since
+    # #3365 that shell beats lanes_failing whenever one of its own lanes is
+    # red, and the board used to count that as overdue — so this check failed
+    # on "overdue 0.0h: status=lanes_failing", a feed that had run six minutes
+    # earlier. LATE fails here; RED is reported in the detail, and is that
+    # shell's own board to read.
+    _red = bool(row.get("red")) if row else False
     out.append(_check(
         "a_loopctl", "loop-control shell beats on schedule (SH52-001)",
         None if row is None else (not row.get("overdue")),
         why if row is None else
-        ("beating — age %.1fh" % row.get("age_hours", -1)
+        (("beating — age %.1fh" % row.get("age_hours", -1)
+          + (" — but RED (%s): its own lanes, not a cadence fault"
+             % ("; ".join(row.get("reasons") or [])[:100]) if _red else ""))
          if not row.get("overdue") else
          "overdue %.1fh: %s" % (row.get("age_hours", -1),
                                 "; ".join(row.get("reasons") or [])[:120])),
@@ -879,21 +899,22 @@ def _lane_inventory() -> list[dict]:
                                    for r in row.get("reasons") or [])
     out.append(_check(
         "h_osm", "OSM crawl lands rows (SH52-002)",
-        None if row is None else (not row.get("overdue") and not zero),
+        None if row is None else (not _feed_bad(row) and not zero),
         why if row is None else
         ("healthy — age %.1fh" % row.get("age_hours", -1)
-         if not row.get("overdue") and not zero else
+         if not _feed_bad(row) and not zero else
          "; ".join(row.get("reasons") or ["overdue"])[:140]),
         critical=False))
     row, why = _deadman_feed("generator-inventory-ingest")
     out.append(_check(
         "h_geninv", "generator inventory ingest green (SH52-003/055)",
-        None if row is None else (not row.get("overdue")),
+        None if row is None else (not _feed_bad(row)),
         why if row is None else
         ("green — age %.1fh" % row.get("age_hours", -1)
-         if not row.get("overdue") else
-         "overdue %.1fh (%s)" % (row.get("age_hours", -1),
-                                 row.get("status"))), critical=False))
+         if not _feed_bad(row) else
+         "%s %.1fh (%s)" % ("overdue" if row.get("overdue") else "red",
+                            row.get("age_hours", -1),
+                            row.get("status"))), critical=False))
     ed, e1 = _jget(_local("/api/energy-discovery/status"), timeout=10)
     lp, e2 = _jget(_local("/api/land-power/status"), timeout=10)
     # ★energy-discovery nests under "data" (routes/energy_discovery_routes) —

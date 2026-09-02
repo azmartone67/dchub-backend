@@ -165,6 +165,17 @@ _JOB_INTERVALS = {
     # energy-discovery: scheduled runs RETIRED 2026-08-21 (dead HIFLD sources);
     # no declared interval — it is manual-only and allowlisted in
     # brain_consistency_radar._INTENTIONAL_STALE_CRONS.
+    # ★2026-09-02 (D11): the two WEEKLY Railway arms — dchub-jobs.yml
+    # `30 6 * * 0` (Sunday 06:30 UTC). Nothing ever stamped their
+    # expected_interval_s, so check_cron_freshness and loop-control lane 1
+    # judged them against the 30h default and filed cron_silently_dead six
+    # days a week (measured 2026-09-02: gas-refresh "silent 65.7h", "no
+    # declared interval, 34.8h past the stale threshold"). Both detectors now
+    # also read this map when the column is NULL, so the fix is immediate
+    # rather than waiting for the next Sunday run to stamp it. 7d -> stale
+    # at 14d, i.e. one missed Sunday is reported the following Sunday.
+    "gas-refresh": 7 * 86400,
+    "site-baseline": 7 * 86400,
 }
 
 

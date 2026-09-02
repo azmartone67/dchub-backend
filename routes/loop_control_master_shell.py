@@ -160,6 +160,27 @@ def _row(c, sql: str, params=None):
         return None
 
 
+def _rows(c, sql: str, params=None):
+    """Fail-soft fetchall. None on error. Same two modes (and the same percent
+    trap) as _row — read its docstring before adding a placeholder."""
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            if params is None:
+                cur.execute(sql)
+            else:
+                cur.execute(sql, params)
+            return cur.fetchall()
+    except Exception as e:
+        logger.debug("[loop-control] rows failed: %s -- %s", sql[:80], e)
+        try:
+            c.rollback()
+        except Exception:
+            pass
+        return None
+
+
 def _has_table(c, name: str) -> bool:
     r = _row(c, f"SELECT to_regclass('public.{name}')")
     return bool(r and r[0])
@@ -244,9 +265,34 @@ def _retired_crons() -> set[str]:
         return set()
 
 
+def _declared_intervals() -> dict:
+    """routes/jobs_routes._JOB_INTERVALS — the interval a job DECLARES, read
+    when its cron_last_run row has no expected_interval_s yet.
+
+    ★2026-09-02 (D11): the weekly Railway arms (gas-refresh, site-baseline —
+    dchub-jobs.yml `30 6 * * 0`) were judged against the 30h default six
+    days a week because nothing had stamped the column. Same fallback as
+    brain_consistency_radar._declared_interval_s so the two agree. Fail-
+    closed: {} means no fallback, so the lane over-reports rather than
+    certifying a genuinely dead cron."""
+    try:
+        from routes.jobs_routes import _JOB_INTERVALS
+        return {k: int(v) for k, v in _JOB_INTERVALS.items() if v}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _stale_threshold_s(expected_s, declared_s) -> int:
+    """2x the stamped interval, else 2x the declared one, else the 30h default
+    — the same three-step rule as brain_consistency_radar.check_cron_freshness."""
+    exp = expected_s or declared_s
+    return int(exp) * 2 if exp and exp > 0 else _DEFAULT_STALE_S
+
+
 def _lane_cron_liveness(c) -> list[dict]:
     """The real outage the 'seen x477455' misread hid. Same source, same
-    threshold AND the same retirement allowlist as
+    threshold (stamped interval, else the DECLARED interval, else 30h) AND
+    the same retirement allowlist as
     brain_consistency_radar._check_cron_silently_dead."""
     checks = []
     if c is None or not _has_table(c, "cron_last_run"):
@@ -254,37 +300,54 @@ def _lane_cron_liveness(c) -> list[dict]:
                        "cron_last_run absent or DB unreachable", critical=True)]
 
     _retired = _retired_crons()
-    r = _row(c, f"""
-        SELECT count(*) FROM cron_last_run
-         WHERE last_started_at IS NOT NULL
-           AND NOT (job_name = ANY(%(retired)s))
-           AND EXTRACT(EPOCH FROM (NOW() - last_started_at))
-               > COALESCE(NULLIF(expected_interval_s, 0) * 2, {_DEFAULT_STALE_S})
-    """, {"retired": sorted(_retired)})
-    dead = int(r[0]) if r and r[0] is not None else None
-    checks.append(_check(
-        "no_dead_crons", "no cron past its stale threshold",
-        None if dead is None else (dead == 0),
-        "could not count" if dead is None else f"{dead} job(s) past threshold",
-        critical=True))
-
-    r = _row(c, """
-        SELECT job_name,
+    _declared = _declared_intervals()
+    rows = _rows(c, """
+        SELECT job_name, expected_interval_s,
                EXTRACT(EPOCH FROM (NOW() - last_started_at))::INTEGER
           FROM cron_last_run
          WHERE last_started_at IS NOT NULL
            AND NOT (job_name = ANY(%(retired)s))
-         ORDER BY 2 DESC
+    """, {"retired": sorted(_retired)})
+    if rows is None:
+        dead = None
+    else:
+        dead = []
+        for job, exp, secs in rows:
+            if secs is None:
+                continue
+            thr = _stale_threshold_s(exp, _declared.get(job))
+            if int(secs) > thr:
+                dead.append(f"{job} silent {int(secs) / 3600.0:.1f}h > {thr / 3600.0:.0f}h")
+    checks.append(_check(
+        "no_dead_crons", "no cron past its stale threshold",
+        None if dead is None else (len(dead) == 0),
+        "could not count" if dead is None else
+        (f"{len(dead)} job(s) past threshold"
+         + (": " + "; ".join(dead[:4]) if dead else "")),
+        critical=True))
+
+    r = _row(c, """
+        SELECT job_name, expected_interval_s,
+               EXTRACT(EPOCH FROM (NOW() - last_started_at))::INTEGER
+          FROM cron_last_run
+         WHERE last_started_at IS NOT NULL
+           AND NOT (job_name = ANY(%(retired)s))
+         ORDER BY 3 DESC
          LIMIT 1
     """, {"retired": sorted(_retired)})
     if r:
-        job, secs = r[0], int(r[1] or 0)
+        job, exp, secs = r[0], r[1], int(r[2] or 0)
+        # 48h, or the job's own stale threshold when it declares a longer
+        # cadence — a weekly arm is not "the worst offender" at 65h.
+        limit = max(172800, _stale_threshold_s(exp, _declared.get(job)))
         checks.append(_check(
-            "worst_offender", "worst job is inside 48h",
-            secs <= 172800,
-            f"{job} silent {secs}s ({secs / 3600.0:.1f}h / {secs / 86400.0:.2f}d)"))
+            "worst_offender", "worst job is inside 48h (or its own threshold)",
+            secs <= limit,
+            f"{job} silent {secs}s ({secs / 3600.0:.1f}h / {secs / 86400.0:.2f}d), "
+            f"limit {limit / 3600.0:.0f}h"))
     else:
-        checks.append(_check("worst_offender", "worst job is inside 48h", None,
+        checks.append(_check("worst_offender",
+                             "worst job is inside 48h (or its own threshold)", None,
                              "no cron rows readable"))
     return checks
 
@@ -837,7 +900,10 @@ def _safe_lane(fn, *a) -> list[dict]:
                        critical=True)]
 
 
-def _run_tick() -> dict:
+def _run_tick(beat: bool = True) -> dict:
+    # ★2026-09-02 (D5): beat=False on every GET. A dashboard view — with its
+    # auto-refresh — must never stamp the daily beat, or a browser tab keeps a
+    # dead cron "alive" on /api/v1/ops/deadman. Only the POST master-tick beats.
     c = _conn()
     try:
         lanes = [
@@ -875,7 +941,8 @@ def _run_tick() -> dict:
         "summary": summary,
         "any_fail": any(ln["verdict"] == "FAIL" for ln in lanes),
     }
-    _beat_ledger("lanes: " + summary, failing=out["any_fail"])
+    if beat:
+        _beat_ledger("lanes: " + summary, failing=out["any_fail"])
     return out
 
 
@@ -890,7 +957,7 @@ def master_tick():
         return jsonify(ok=False, error="LOOP_CONTROL_SHELL_DISABLE=1"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
-    resp = jsonify(_run_tick())
+    resp = jsonify(_run_tick(beat=(request.method == "POST")))
     # CF Cache-Rules have cached admin GETs before — never serve a stale board.
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -905,7 +972,7 @@ def dashboard():
     if not _admin_ok():
         return Response("admin key required (?admin_key=)", status=401,
                         mimetype="text/plain")
-    d = _run_tick()
+    d = _run_tick(beat=False)
     color = {"PASS": "#22c55e", "FAIL": "#ef4444", "?": "#eab308"}
     rows = []
     for ln in d["lanes"]:

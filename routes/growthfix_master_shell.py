@@ -258,30 +258,41 @@ def _lane_ingest_board(c) -> list[dict]:
         return [_check("board", "all board feeds within cadence", None,
                        "ingest_runs unreadable", critical=True)]
     now = datetime.datetime.now(datetime.timezone.utc)
-    reds = []
+    # ★2026-09-02 (D2): LATE and RED are different faults. This lane asks
+    # "did every loop RUN within cadence" — so only late feeds fail it. A
+    # shell that ran on time and beat lanes_failing (#3365 made shells beat
+    # HEALTH) is that shell's own red to read on its own board; listing it
+    # here made this lane fail because OTHER shells were red, a cascade that
+    # buried the one genuinely late feed. Red feeds are still named, as a
+    # note. Same split as routes/ingest_runs.deadman (_LATE_KINDS/_RED_KINDS).
+    late, reds = [], []
     for feed, lr, st, cad, cz, mcd in rows:
         cad_h = float(cad) if cad is not None else _DEFAULT_CADENCE_H
         stl = (st or "").lower()
-        why = []
+        why_late, why_red = [], []
         lrz = _as_dt(lr)
         if lrz is None:
-            why.append("never ran")
+            why_late.append("never ran")
         elif (now - lrz).total_seconds() / 3600.0 > 2 * cad_h:
-            why.append("stale")
+            why_late.append("stale")
         if stl not in _OK_STATUS:
-            why.append("status=" + stl)
+            why_red.append("status=" + stl)
         if cz and cz >= 3 and stl not in _NO_NEW_DATA:
-            why.append(str(cz) + " zero-row runs")
+            why_red.append(str(cz) + " zero-row runs")
         mz = _as_dt(mcd)
         if mz is not None and mz > now + datetime.timedelta(hours=6):
-            why.append("future content date")
-        if why:
-            reds.append(feed + "(" + ",".join(why) + ")")
+            why_red.append("future content date")
+        if why_late:
+            late.append(feed + "(" + ",".join(why_late + why_red) + ")")
+        elif why_red:
+            reds.append(feed + "(" + ",".join(why_red) + ")")
+    detail = (f"{len(rows)} feeds, {len(late)} overdue"
+              + (": " + "; ".join(late[:6]) if late else ""))
+    if reds:
+        detail += (f" · {len(reds)} red but ON TIME (their own lanes, not a "
+                   f"cadence fault): " + "; ".join(reds[:6]))
     return [_check("board", "all board feeds within cadence",
-                   len(reds) == 0,
-                   (f"{len(rows)} feeds, 0 overdue" if not reds
-                    else f"{len(reds)} overdue: " + "; ".join(reds[:6])),
-                   critical=True)]
+                   len(late) == 0, detail, critical=True)]
 
 
 # ── lane 4: linkedin token ────────────────────────────────────────────
@@ -382,7 +393,10 @@ def _safe_lane(fn, *a) -> list[dict]:
                        critical=True)]
 
 
-def _run_tick() -> dict:
+def _run_tick(beat: bool = True) -> dict:
+    # ★2026-09-02 (D5): beat=False on every GET. A dashboard view — with its
+    # auto-refresh — must never stamp the daily beat, or a browser tab keeps a
+    # dead cron "alive" on /api/v1/ops/deadman. Only the POST master-tick beats.
     c = _conn()
     try:
         lanes = [
@@ -414,7 +428,8 @@ def _run_tick() -> dict:
         "summary": summary,
         "any_fail": any(ln["verdict"] == "FAIL" for ln in lanes),
     }
-    _beat_ledger("lanes: " + summary, failing=out["any_fail"])
+    if beat:
+        _beat_ledger("lanes: " + summary, failing=out["any_fail"])
     return out
 
 
@@ -429,7 +444,7 @@ def master_tick():
         return jsonify(ok=False, error="GROWTHFIX_SHELL_DISABLE=1"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
-    return jsonify(_run_tick())
+    return jsonify(_run_tick(beat=(request.method == "POST")))
 
 
 @growthfix_master_shell_bp.route("/admin/growthfix", methods=["GET"])
@@ -440,7 +455,7 @@ def dashboard():
     if not _admin_ok():
         return Response("admin key required (?admin_key=)", status=401,
                         mimetype="text/plain")
-    d = _run_tick()
+    d = _run_tick(beat=False)
     color = {"PASS": "#22c55e", "FAIL": "#ef4444", "?": "#eab308"}
     rows = []
     for ln in d["lanes"]:
