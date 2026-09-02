@@ -491,3 +491,77 @@ def test_unknown_non_trial_key_does_not_get_the_trial_pointer(capsys):
     err = _stderr(capsys, key=_KEY, **_UNKNOWN)
     assert "auto_trial_keys" not in err, (
         f"a dch_live_ key must not be pointed at the trial table; got: {err!r}")
+
+
+# ── the revoke docstring must track util/tier_gate, not a frozen belief ────
+
+def _step_1a_sql():
+    """The SQL resolve_tier step 1a actually issues against mcp_dev_keys.
+
+    ★ Read from util/tier_gate.py, never restated here. This guard exists
+    because the claim it checks was TRUE when written and FALSE 3 days later;
+    a guard that hardcodes either answer inherits that same expiry.
+    """
+    src = (_ROOT / "util" / "tier_gate.py").read_text()
+    fn = next((n for n in ast.walk(ast.parse(src))
+               if isinstance(n, ast.FunctionDef) and n.name == "resolve_tier"), None)
+    assert fn is not None and fn.body, "resolve_tier parsed with an EMPTY body"
+    body = ast.get_source_segment(src, fn)
+    sql = [" ".join(c.value.split()) for c in ast.walk(ast.parse(body))
+           if isinstance(c, ast.Constant) and isinstance(c.value, str)
+           and "FROM mcp_dev_keys" in c.value]
+    assert len(sql) == 1, (
+        f"expected exactly one mcp_dev_keys query in resolve_tier, got {len(sql)}; "
+        "this guard can no longer tell which one is step 1a — fix it, do not delete it")
+    return sql[0]
+
+
+def _revoke_docstring():
+    fn = next(n for n in ast.walk(ast.parse(_SRC.read_text()))
+              if isinstance(n, ast.FunctionDef) and n.name == "cmd_revoke")
+    doc = ast.get_docstring(fn)
+    assert doc, "cmd_revoke has no docstring — it is the rotation runbook"
+    return doc
+
+
+def test_step_1a_is_live_and_the_revoke_docstring_does_not_call_it_dead():
+    """★ #3288 (2026-08-28) re-pointed step 1a at `api_key`, so mcp_dev_keys
+    now gates REST as well as the Node relay.
+
+    The docstring said 1a "is dead code and authenticates nobody — do not count
+    it", which invites exactly the regression the 08-16 bug was: writing
+    api_keys alone and leaving the mcp_dev_keys row active. cmd_mint got this
+    corrected in #3526; cmd_revoke's copy of the same premise was missed.
+    """
+    sql = _step_1a_sql()
+    live = "key_hash" not in sql          # asking for a column that exists
+    doc = _revoke_docstring()
+    # ★ Both branches assert on the SAME discriminating phrase, in opposite
+    # directions. An earlier cut asserted `"dead" in doc.lower()` here and was
+    # VACUOUS — the word appears in the docstring's own history sentence, so
+    # reverting tier_gate to key_hash left this test green. A reverse branch
+    # that any plausible text satisfies is not a branch.
+    claims_live = "RETURNS BEFORE" in doc.upper()
+    if live:
+        assert claims_live, (
+            f"step 1a is LIVE ({sql!r}) — the docstring must say it returns "
+            "before step 1b, which is why mcp_dev_keys.status gates REST")
+        for dead in ("is dead code", "authenticates nobody — do not count it",
+                     "do not count it"):
+            assert dead not in doc, (
+                f"step 1a is LIVE ({sql!r}) but cmd_revoke still calls it {dead!r}")
+    else:
+        assert not claims_live, (
+            f"step 1a is back to a column mcp_dev_keys lacks ({sql!r}) — it "
+            "authenticates nobody, so the docstring must NOT say it returns "
+            "before step 1b or that it gates REST")
+
+
+def test_revoke_docstring_says_mcp_dev_keys_status_gates_rest():
+    """Naming 1a as live is not enough — the operator conclusion is what
+    matters: status='revoked' is load-bearing on REST, so a revoke that writes
+    api_keys alone is incomplete for an MCP-minted key."""
+    doc = _revoke_docstring()
+    assert "1b" in doc and "RETURNS BEFORE" in doc.upper(), (
+        "the docstring must say step 1a returns before 1b — that ordering is "
+        f"why mcp_dev_keys.status gates REST; got: {doc[:400]!r}")
