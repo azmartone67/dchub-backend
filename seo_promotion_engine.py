@@ -31,15 +31,19 @@ SITE_URL = os.environ.get('SITE_URL', 'https://dchub.cloud')
 
 INDEXNOW_KEY = os.environ.get('INDEXNOW_KEY', '')
 
+# 2026-09-02 (QA sweep F10): Google retired the /ping?sitemap= endpoint in
+# 2023 (404 since) and Bing deprecated its /ping in favour of IndexNow. Both
+# engines are now reached through the channels that actually work — the
+# Search Console API (routes/google_search_console.py) and IndexNow
+# (routes/indexnow.py) — so neither carries a `ping_url` any more.
+# submit_sitemap_to_engines skips an engine without one; it had been logging
+# a 404 "submission" per cycle for each.
 SEARCH_ENGINES = {
     'google': {
-        'ping_url': 'https://www.google.com/ping?sitemap=',
         'search_console': 'https://search.google.com/search-console',
         'enabled': True
     },
     'bing': {
-        'ping_url': 'https://www.bing.com/ping?sitemap=',
-        'webmaster_url': 'https://www.bing.com/webmaster/ping.aspx?siteMap=',
         'indexnow_url': 'https://www.bing.com/indexnow',
         'enabled': True
     },
@@ -49,6 +53,19 @@ SEARCH_ENGINES = {
         'enabled': True
     }
 }
+
+def compose_location_slug(city, state=None, country=None):
+    """`<city>-<state-or-country>` slug for /locations/, or '' when there is
+    no city. Before 2026-09-02 an empty-string city (the legacy `facilities`
+    table has ~100 of them; `IS NOT NULL` let them through) produced
+    "-al", "-ao", ... — 372-URL sitemaps carrying 100+ live 404s."""
+    city = (city or "").strip()
+    if not city:
+        return ""
+    region = (state or "").strip() or (country or "").strip()
+    parts = [city] + ([region] if region else [])
+    return "-".join(parts).lower().replace(" ", "-")
+
 
 INDUSTRY_SITES = [
     {'name': 'Data Center Dynamics', 'url': 'https://www.datacenterdynamics.com', 'contact': 'press@datacenterdynamics.com'},
@@ -173,12 +190,14 @@ class SEOPromotionEngine:
             
             cursor.execute('''
                 SELECT DISTINCT city, state, country FROM facilities
-                WHERE city IS NOT NULL
+                WHERE city IS NOT NULL AND TRIM(city) <> ''
                 LIMIT 500
             ''')
             
             for city, state, country in cursor.fetchall():
-                location_slug = f"{city}-{state or country}".lower().replace(' ', '-')
+                location_slug = compose_location_slug(city, state, country)
+                if not location_slug:
+                    continue   # empty city used to emit "/locations/-al" (404)
                 url_elem = ET.SubElement(root, 'url')
                 ET.SubElement(url_elem, 'loc').text = urljoin(self.site_url, f'/locations/{location_slug}')
                 ET.SubElement(url_elem, 'changefreq').text = 'weekly'
@@ -206,9 +225,9 @@ class SEOPromotionEngine:
         sitemap_url = quote(urljoin(self.site_url, '/sitemap.xml'), safe=':/')
         
         for engine, config in SEARCH_ENGINES.items():
-            if not config.get('enabled'):
+            if not config.get('enabled') or not config.get('ping_url'):
                 continue
-                
+
             try:
                 ping_url = config['ping_url'] + sitemap_url
                 response = self.session.get(ping_url, timeout=10)

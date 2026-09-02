@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 from flask import Blueprint, jsonify, request
@@ -376,17 +376,74 @@ def _coverage_of(raw, dim: str):
     return raw.fetchone() or (None, None, 0)
 
 
-def _site_rows(raw, days: int) -> list[dict]:
-    """The site grain, newest first, over the trailing `days`."""
+def _site_rows(raw, start, end) -> list[dict]:
+    """The site grain, newest first, over the INCLUSIVE window [start, end].
+
+    ★ 2026-09-02 merge note. #3566 introduced this helper taking `days` and
+    running `date >= CURRENT_DATE - days`; #3569 gave the read route explicit
+    start/end windows so it can compare a window against the one before it.
+    The helper takes the window, and BOTH callers resolve their window through
+    _resolve_windows — so the board and the API still run one query, which is
+    the whole reason #3566 extracted it. With the defaults (end = today UTC =
+    the DB's CURRENT_DATE, start = end - days) the predicate is the same set of
+    dates as before: the added upper bound can only exclude future-dated rows,
+    and the GSC series lags 2-3 days behind today.
+    """
     raw.execute(
         "SELECT date, clicks, impressions, ctr, position "
         "FROM gsc_daily_performance "
-        " WHERE dimension = 'site' AND date >= CURRENT_DATE - %s "
-        " ORDER BY date DESC", (days,))
+        " WHERE dimension = 'site' AND date >= %s AND date <= %s "
+        " ORDER BY date DESC", (start, end))
     return [{"date": str(r[0]), "clicks": r[1], "impressions": r[2],
              "ctr": round(float(r[3] or 0), 4),
              "position": (round(float(r[4]), 2) if r[4] is not None else None)}
             for r in raw.fetchall()]
+
+
+_ORDERS = {
+    # column expression over the CURRENT window → sort direction
+    "impressions": ("cur_impr", "DESC"),
+    "clicks": ("cur_clicks", "DESC"),
+    "position": ("cur_pos", "ASC"),          # rank 1 is best → ascending
+    # compare=1 only: what LOST the most between the two windows
+    "lost_clicks": ("(prior_clicks - cur_clicks)", "DESC"),
+    "lost_impressions": ("(prior_impr - cur_impr)", "DESC"),
+}
+MAX_READ_LIMIT = 5000
+
+
+def _parse_iso_date(raw):
+    """YYYY-MM-DD → date, or None when absent. Raises ValueError on junk."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    return datetime.strptime(raw, "%Y-%m-%d").date()
+
+
+def _resolve_windows(days, start, end):
+    """The current window [start, end] and the EQUAL-LENGTH window that
+    precedes it, both inclusive.
+
+    Defaults reproduce the pre-2026-09-02 predicate `date >= CURRENT_DATE -
+    days` exactly: end = today (UTC, the DB's CURRENT_DATE), start = end -
+    days — i.e. days+1 calendar dates. The prior window is the same number of
+    dates ending the day before `start`, so a 7-vs-7 or 28-vs-28 comparison
+    never compares 8 dates against 7 (the off-by-one that turns a flat week
+    into a fake -12%).
+
+    `end` alone anchors a window of `days` ending there (useful because the
+    GSC series lags 2–3 days: end=newest gives a full trailing window)."""
+    today = datetime.now(timezone.utc).date()
+    if end is None:
+        end = today
+    if start is None:
+        start = end - timedelta(days=days)
+    if start > end:
+        raise ValueError("start must not be after end")
+    length = (end - start).days + 1
+    prior_end = start - timedelta(days=1)
+    prior_start = prior_end - timedelta(days=length - 1)
+    return start, end, prior_start, prior_end
 
 
 def site_series(days: int = 14) -> dict:
@@ -400,19 +457,20 @@ def site_series(days: int = 14) -> dict:
     00:24Z. A lane that reads its own service over HTTP through the edge
     grades a cache and a timeout budget; reading the table grades the series.
 
-    Same two queries as the read route's site branch — _coverage_of and
-    _site_rows are shared, so the board and the API cannot drift. Raises on a
-    DB failure: the caller decides what an unreadable series means (the shell
-    renders it '?', never PASS).
+    Same two queries as the read route's site branch — _coverage_of, _site_rows
+    and _resolve_windows are shared, so the board and the API cannot drift.
+    Raises on a DB failure: the caller decides what an unreadable series means
+    (the shell renders it '?', never PASS).
     """
     days = max(1, min(int(days), 480))
+    start, end, _prior_start, _prior_end = _resolve_windows(days, None, None)
     conn = get_db()
     try:
         c = conn.cursor()
         raw = getattr(c, "_cur", c)
         oldest, newest, total = _coverage_of(raw, "site")
         return {
-            "rows": _site_rows(raw, days),
+            "rows": _site_rows(raw, start, end),
             "window_days": days,
             "coverage": {"oldest": str(oldest) if oldest else None,
                          "newest": str(newest) if newest else None,
@@ -428,9 +486,20 @@ def site_series(days: int = 14) -> dict:
 @gsc_perf_bp.route("/api/v1/seo/performance", methods=["GET"])
 def read_performance():
     """The series, for dashboards, the brain, and anyone asking whether SEO is
-    working.
+    working — and, since 2026-09-02, WHAT IS LOSING.
 
-    `?dimension=site|query|page` (default site), `?days=28`, `?limit=50`.
+    `?dimension=site|query|page` (default site), `?days=28`, `?limit=50`
+    (cap 5000), `?start=YYYY-MM-DD`, `?end=YYYY-MM-DD`,
+    `?order=impressions|clicks|position` (default impressions),
+    `?compare=1` → every row also carries `prior_clicks`, `prior_impressions`,
+    `prior_position` for the equal-length window that precedes the current
+    one; the site grain gets a `compare` block of totals instead. With
+    compare, `order=lost_clicks|lost_impressions` sorts by the drop.
+
+    Backward compatible: a call with none of the new args returns the same
+    row shapes and the same window as before (QA sweep F8: the old route
+    could only say "top 1000 by impressions since CURRENT_DATE - days",
+    which covered 38% of clicks and could not name a losing page).
 
     ★ Always returns a `coverage` block. An empty result here means "not
     ingested", which is NOT the same as "no traffic" — until the 480-day seed
@@ -445,9 +514,23 @@ def read_performance():
     except (TypeError, ValueError):
         days = 28
     try:
-        limit = max(1, min(int(request.args.get("limit") or 50), 1000))
+        limit = max(1, min(int(request.args.get("limit") or 50), MAX_READ_LIMIT))
     except (TypeError, ValueError):
         limit = 50
+    compare = (request.args.get("compare") or "").strip().lower() in ("1", "true", "yes")
+    order = (request.args.get("order") or "impressions").strip().lower()
+    if order not in _ORDERS or (order.startswith("lost_") and not compare):
+        return jsonify({"success": False,
+                        "error": "order must be impressions, clicks or position"
+                                 " (lost_clicks / lost_impressions with compare=1)"}), 400
+    try:
+        start, end, prior_start, prior_end = _resolve_windows(
+            days, _parse_iso_date(request.args.get("start")),
+            _parse_iso_date(request.args.get("end")))
+    except ValueError as e:
+        return jsonify({"success": False,
+                        "error": f"start/end must be YYYY-MM-DD ({e})"}), 400
+    days = (end - start).days   # echoes the effective window, as before
 
     conn = None
     try:
@@ -457,32 +540,93 @@ def read_performance():
 
         oldest, newest, total = _coverage_of(raw, dim)
 
+        compare_block = None
         if dim == "site":
-            rows = _site_rows(raw, days)
+            rows = _site_rows(raw, start, end)
+            if compare:
+                # Totals for both windows in one pass; position is
+                # impression-weighted for the same reason as the grain query.
+                raw.execute(
+                    "SELECT "
+                    "  SUM(CASE WHEN date >= %s THEN clicks ELSE 0 END), "
+                    "  SUM(CASE WHEN date >= %s THEN impressions ELSE 0 END), "
+                    "  CASE WHEN SUM(CASE WHEN date >= %s THEN impressions ELSE 0 END) > 0 "
+                    "       THEN SUM(CASE WHEN date >= %s THEN position * impressions ELSE 0 END) "
+                    "          / SUM(CASE WHEN date >= %s THEN impressions ELSE 0 END) END, "
+                    "  SUM(CASE WHEN date < %s THEN clicks ELSE 0 END), "
+                    "  SUM(CASE WHEN date < %s THEN impressions ELSE 0 END), "
+                    "  CASE WHEN SUM(CASE WHEN date < %s THEN impressions ELSE 0 END) > 0 "
+                    "       THEN SUM(CASE WHEN date < %s THEN position * impressions ELSE 0 END) "
+                    "          / SUM(CASE WHEN date < %s THEN impressions ELSE 0 END) END "
+                    "  FROM gsc_daily_performance "
+                    " WHERE dimension = 'site' AND date >= %s AND date <= %s",
+                    (start,) * 5 + (start,) * 5 + (prior_start, end))
+                t = raw.fetchone() or (0, 0, None, 0, 0, None)
+                compare_block = {
+                    "clicks": int(t[0] or 0), "impressions": int(t[1] or 0),
+                    "position": (round(float(t[2]), 2) if t[2] is not None else None),
+                    "prior_clicks": int(t[3] or 0), "prior_impressions": int(t[4] or 0),
+                    "prior_position": (round(float(t[5]), 2) if t[5] is not None else None),
+                }
         else:
             # Aggregate the window so a caller gets "top queries this month",
             # not one row per query per day they then have to sum themselves.
             # Position is impression-weighted — a flat AVG over days would let a
             # single 1-impression day at rank 3 outvote 10,000 impressions at 40.
-            raw.execute(
-                "SELECT dim_value, SUM(clicks), SUM(impressions), "
-                "       CASE WHEN SUM(impressions) > 0 "
-                "            THEN SUM(position * impressions) / SUM(impressions) "
-                "            ELSE NULL END "
-                "  FROM gsc_daily_performance "
-                " WHERE dimension = %s AND date >= CURRENT_DATE - %s "
-                " GROUP BY dim_value "
-                " ORDER BY SUM(impressions) DESC "
-                " LIMIT %s", (dim, days, limit))
-            rows = [{"value": r[0], "clicks": int(r[1] or 0),
-                     "impressions": int(r[2] or 0),
-                     "position": (round(float(r[3]), 2) if r[3] is not None else None)}
-                    for r in raw.fetchall()]
+            col, direction = _ORDERS[order]
+            if compare:
+                # ONE grouped pass over both windows (a row absent from the
+                # current window but present in the prior one is exactly the
+                # "lost" row this exists to surface, so the join is on the
+                # UNION of both windows, not the current one).
+                raw.execute(
+                    "SELECT dim_value, "
+                    "  SUM(CASE WHEN date >= %s THEN clicks ELSE 0 END) AS cur_clicks, "
+                    "  SUM(CASE WHEN date >= %s THEN impressions ELSE 0 END) AS cur_impr, "
+                    "  CASE WHEN SUM(CASE WHEN date >= %s THEN impressions ELSE 0 END) > 0 "
+                    "       THEN SUM(CASE WHEN date >= %s THEN position * impressions ELSE 0 END) "
+                    "          / SUM(CASE WHEN date >= %s THEN impressions ELSE 0 END) END AS cur_pos, "
+                    "  SUM(CASE WHEN date < %s THEN clicks ELSE 0 END) AS prior_clicks, "
+                    "  SUM(CASE WHEN date < %s THEN impressions ELSE 0 END) AS prior_impr, "
+                    "  CASE WHEN SUM(CASE WHEN date < %s THEN impressions ELSE 0 END) > 0 "
+                    "       THEN SUM(CASE WHEN date < %s THEN position * impressions ELSE 0 END) "
+                    "          / SUM(CASE WHEN date < %s THEN impressions ELSE 0 END) END AS prior_pos "
+                    "  FROM gsc_daily_performance "
+                    " WHERE dimension = %s AND date >= %s AND date <= %s "
+                    " GROUP BY dim_value "
+                    f" ORDER BY {col} {direction} NULLS LAST "
+                    " LIMIT %s",
+                    (start,) * 5 + (start,) * 5 + (dim, prior_start, end, limit))
+                rows = [{"value": r[0], "clicks": int(r[1] or 0),
+                         "impressions": int(r[2] or 0),
+                         "position": (round(float(r[3]), 2) if r[3] is not None else None),
+                         "prior_clicks": int(r[4] or 0),
+                         "prior_impressions": int(r[5] or 0),
+                         "prior_position": (round(float(r[6]), 2) if r[6] is not None else None)}
+                        for r in raw.fetchall()]
+            else:
+                raw.execute(
+                    "SELECT dim_value, SUM(clicks) AS cur_clicks, "
+                    "       SUM(impressions) AS cur_impr, "
+                    "       CASE WHEN SUM(impressions) > 0 "
+                    "            THEN SUM(position * impressions) / SUM(impressions) "
+                    "            ELSE NULL END AS cur_pos "
+                    "  FROM gsc_daily_performance "
+                    " WHERE dimension = %s AND date >= %s AND date <= %s "
+                    " GROUP BY dim_value "
+                    f" ORDER BY {col} {direction} NULLS LAST "
+                    " LIMIT %s", (dim, start, end, limit))
+                rows = [{"value": r[0], "clicks": int(r[1] or 0),
+                         "impressions": int(r[2] or 0),
+                         "position": (round(float(r[3]), 2) if r[3] is not None else None)}
+                        for r in raw.fetchall()]
 
-        return jsonify({
+        out = {
             "success": True,
             "dimension": dim,
             "window_days": days,
+            "window": {"start": str(start), "end": str(end)},
+            "order": order,
             "rows": rows,
             "coverage": {
                 "oldest": str(oldest) if oldest else None,
@@ -492,7 +636,12 @@ def read_performance():
                          "POST /api/v1/admin/gsc/performance/ingest?days=480 "
                          "seeds history"),
             },
-        })
+        }
+        if compare:
+            out["prior_window"] = {"start": str(prior_start), "end": str(prior_end)}
+            if compare_block is not None:
+                out["compare"] = compare_block
+        return jsonify(out)
     except Exception as e:  # noqa: BLE001
         logger.warning("gsc performance read failed: %s", e)
         return jsonify({"success": False,

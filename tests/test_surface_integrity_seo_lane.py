@@ -140,9 +140,22 @@ def test_site_series_shares_the_read_routes_queries():
                encoding="utf-8").read()
     assert "def site_series(" in src
     body = src[src.index("def site_series("):src.index("def read_performance(")]
-    assert "_coverage_of(raw, \"site\")" in body and "_site_rows(raw, days)" in body
+    assert "_coverage_of(raw, \"site\")" in body and "_site_rows(raw, start, end)" in body
     route = src[src.index("def read_performance("):]
-    assert "_coverage_of(raw, dim)" in route and "_site_rows(raw, days)" in route
+    assert "_coverage_of(raw, dim)" in route and "_site_rows(raw, start, end)" in route
+    # ★2026-09-02 (#3569 merge): _site_rows takes the WINDOW, not `days`, now
+    # that the read route resolves explicit start/end for compare=1. Both
+    # callers still go through _resolve_windows, and site_series takes its
+    # DEFAULT path — end = today, start = end - days — which is the same set of
+    # dates the pre-#3569 `date >= CURRENT_DATE - days` predicate returned.
+    assert "_resolve_windows(days, None, None)" in body
+    # ...and the shared helpers are the ONLY place those two queries live. The
+    # substring checks above pass just as well if a caller ALSO grew a private
+    # copy, which is the exact drift this test exists to prevent.
+    assert src.count("SELECT MIN(date), MAX(date), COUNT(*)") == 1, \
+        "the coverage query exists more than once — a caller has its own copy"
+    assert src.count("SELECT date, clicks, impressions, ctr, position") == 1, \
+        "the site-grain query exists more than once — a caller has its own copy"
 
 
 def test_thresholds_are_the_documented_ones():
