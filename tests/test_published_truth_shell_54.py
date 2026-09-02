@@ -419,7 +419,9 @@ def test_every_lane_is_registered():
     ids = {lid for lid, _n, _f in _M._LANES}
     assert ids == {"press_level", "backup_health", "wall_reachability",
                    "conversion_honesty", "identity_label",
-                   "retention_population", "gateway_disclosure", "prose_vs_data"}
+                   "retention_population", "gateway_disclosure", "prose_vs_data",
+                   # QA sweep 2026-09-02 (F6): one complete week, one call count
+                   "series_parity"}
 
 
 def test_a_crashing_lane_never_500s_the_shell_and_never_reads_green():

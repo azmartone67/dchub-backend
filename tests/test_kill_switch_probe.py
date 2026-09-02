@@ -522,7 +522,9 @@ def _main(monkeypatch, mod, observations, beat_resp=None):
 def _healthy():
     return {"review_lane": {"review_prs_opened": 0}, "automerge": {"autofix_prs_merged": 1},
             "action_classes": {"resolved_by_action_class": 0}, "squasher_queue": {"rows_requested": 2},
-            "quota_wall": {"enforce": True}}
+            "quota_wall": {"enforce": True},
+            # QA sweep 2026-09-02: activation emails ship DARK — healthy is OFF + 0 sent
+            "activation_emails": {"enabled": False, "sent_in_window": 0}}
 
 
 class TestMain:

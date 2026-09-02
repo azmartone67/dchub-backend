@@ -381,6 +381,11 @@ def mcp_retention():
                                                 AND method = 'tools/call'), 0) AS connector_call,
                       COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector'), 0) AS connector_all,
                       COALESCE(SUM(n) FILTER (WHERE kind = 'invalid_bearer'), 0)   AS bearer_all,
+                      -- QA sweep F2 (2026-09-02): the MIDDLE of the on-ramp. The
+                      -- gateway emits oauth_authorize_started when a challenged
+                      -- client actually reaches /oauth/authorize, so the
+                      -- 1,111:1 challenge->identity loss can be placed.
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'oauth_authorize_started'), 0) AS authorize_started,
                       -- r-claude-passive-arrivals (2026-08-28): ARRIVALS, not challenges.
                       -- *_seen kinds fire on THEIR arrival and issue no 401; the
                       -- claude_connector rows above fire on OURS. Never divide one
@@ -445,6 +450,23 @@ def mcp_retention():
                     "connector_all_30d": ca,
                     "invalid_bearer_30d": int(ch.get("bearer_all") or 0),
                     "new_identities_30d": new_ids,
+                    # ★QA sweep F2 (2026-09-02): challenge_issued -> authorize_
+                    # started -> identity_created. Before this only the two ENDS
+                    # were measured (connector_* and new_identities_30d); the
+                    # middle names WHERE the loss is: a low authorize_started
+                    # against a high connector_call means the 401 never turns
+                    # into a browser hop; a high one against low new_identities
+                    # means the WorkOS page loses them.
+                    "authorize_started_30d": int(ch.get("authorize_started") or 0),
+                    "authorize_started_instrumented_since": "2026-09-02",
+                    "authorize_started_note": (
+                        "★READ authorize_started_instrumented_since BEFORE trending. The "
+                        "counter did not exist before 2026-09-02 (backend whitelist + "
+                        "gateway emit shipped together), so every earlier day reads 0 "
+                        "because there was NO INSTRUMENT. Events, not people: one client "
+                        "can start authorize several times. Same population rule as the "
+                        "rest of this block: never divide it into arrivals_*."
+                    ),
                     "gateway_reporting": bool(beats),
                     "method_switched_at": "2026-08-15",
                     # ★ARRIVAL side (r-claude-passive-arrivals, 2026-08-28). Passive:

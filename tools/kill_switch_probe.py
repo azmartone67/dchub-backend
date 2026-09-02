@@ -105,6 +105,17 @@ SWITCHES = {
         "rule": "the wall's own published state, GET /api/v1/mcp/funnel "
                 "quota_wall.enforce, must equal the registry value",
     },
+    # QA sweep 2026-09-02 (finding 5:9): the activation-email sweep ships
+    # DARK. Intent is OFF until the owner arms it deliberately; a customer
+    # send while the registry says 0 is the review-lane incident in email.
+    "ACTIVATION_EMAILS_ENABLED": {
+        "expected": "0", "service": "dchub-backend", "since": "2026-09-02",
+        "observe": "activation_emails",
+        "rule": "GET /api/v1/admin/activation-emails/stats publishes the running "
+                "process's own view as `enabled`; it must equal the registry value, "
+                "and when 0 ZERO activation emails may be sent in the window "
+                "(sent_in_window). Endpoint absent is unknown, not red",
+    },
 }
 
 
@@ -181,6 +192,23 @@ def evaluate(name, expected, obs, registry=None):
         if bool(enforce) != (expected == "1"):
             return _v(VIOLATION, f"set {expected} but the wall publishes enforce={enforce}")
         return _v(AGREE, f"wall publishes enforce={enforce}")
+
+    if kind == "activation_emails":
+        enabled = obs.get("enabled")          # the process's OWN view of the switch
+        n = obs.get("sent_in_window")
+        if enabled is None and n is None:
+            return _v(UNKNOWN, "activation-emails stats served without enabled/sent_in_window")
+        if enabled is not None and bool(enabled) != (expected == "1"):
+            return _v(VIOLATION, f"set {expected} but the running process publishes enabled={enabled} "
+                                 f"(/api/v1/admin/activation-emails/stats — the env change is not in effect)")
+        if n is not None and expected == "0" and n > 0:
+            return _v(VIOLATION, f"set 0 but {n} activation email(s) sent in the last {WINDOW_H}h")
+        parts = []
+        if enabled is not None:
+            parts.append(f"process publishes enabled={enabled}")
+        if n is not None:
+            parts.append(f"{n} activation email(s) sent in the last {WINDOW_H}h")
+        return _v(AGREE, "; ".join(parts))
 
     return _v(UNKNOWN, f"no evaluator for observe={kind!r}")
 
@@ -364,12 +392,29 @@ def observe_quota_wall(now=None):
     return {"enforce": bool(qw["enforce"])}
 
 
+def observe_activation_emails(now=None):
+    """The sweep's own stats surface: `enabled` is what the RUNNING process
+    thinks ACTIVATION_EMAILS_ENABLED is; `sent_in_window` counts ledger rows
+    with status=sent inside the probe window. None when not served."""
+    status, body = _get(f"/api/v1/admin/activation-emails/stats?hours={WINDOW_H}",
+                        admin=True, timeout=TIMEOUT_PUBLIC_S)
+    if status != 200 or not isinstance(body, dict):
+        return None
+    out = {}
+    if isinstance(body.get("enabled"), bool):
+        out["enabled"] = body["enabled"]
+    if isinstance(body.get("sent_in_window"), int):
+        out["sent_in_window"] = body["sent_in_window"]
+    return out or None
+
+
 OBSERVERS = {
     "review_lane": observe_review_lane,
     "automerge": observe_automerge,
     "action_classes": observe_action_classes,
     "squasher_queue": observe_squasher_queue,
     "quota_wall": observe_quota_wall,
+    "activation_emails": observe_activation_emails,
 }
 
 

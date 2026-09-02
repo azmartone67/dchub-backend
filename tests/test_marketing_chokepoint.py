@@ -153,6 +153,13 @@ _TRANSACTIONAL_SENDERS = frozenset({
     "render_build_monitor.py",       # ops alert on failed Render build (to operator)
     "site_sentinel.py",              # page-health/error ops alerts (to operator)
     "state_visitor_claim.py",        # delivers the trial key the visitor claimed
+    "activation_emails.py",          # paid-customer ACTIVATION (day-1 first query
+                                     # with their connector URL, day-3 no-usage
+                                     # nudge): onboarding of a customer who has
+                                     # already paid, one send per step per
+                                     # customer by ledger, founder reply-to. Same
+                                     # class as the welcome/key delivery. DARK
+                                     # until ACTIVATION_EMAILS_ENABLED == "1".
     "upgrade_outreach.py",           # draft-and-approve outreach engine: its
                                      # TRANSACTIONAL path (keyless_payer +
                                      # at_risk_paid) sends via
