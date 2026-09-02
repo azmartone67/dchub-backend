@@ -31064,6 +31064,16 @@ def _build_sitemap_sections():
         # the citable, recurring data event — stable/unversioned URL, daily
         # refresh, JSON-LD Dataset. Priority 0.9.
         ('/state-of-power', '0.9', 'daily'),
+        # seo expansion #4 (2026-09-02): three more report landings that were
+        # live but absent from every shard. Each probed 2026-09-02 ~04:30Z:
+        # 200 + SELF-canonical (/interconnection-queue,
+        # /data-center-power-availability, /powered-shell). /state-of-power
+        # (above) was already listed. List only what is verified 200 +
+        # self-canonical: a sitemap entry that redirects or cross-canonicals
+        # is a GSC "page with redirect"/"duplicate" row, not a discovery.
+        ('/interconnection-queue', '0.8', 'daily'),
+        ('/data-center-power-availability', '0.8', 'weekly'),
+        ('/powered-shell', '0.7', 'weekly'),
         # 2026-06-05 (Phase HJ-2 SEO recovery) — SEO landings re-routed under
         # CF-allowed prefixes. r-facility-dupe (2026-07-04): DROPPED the 5
         # hand-picked singular /facility/<slug> URLs (aws-iad36/db1/kix10/sjc29 +
@@ -31387,36 +31397,17 @@ def _build_sitemap_sections():
                        "the error) — section is short or empty: %s",
                        _pocket_emitted, _e_sitemap_pockets)
 
-    # ---- Location pages (CURATED static list) ----
-    # r43-J (2026-05-30): the previous DB-loop emitted 1,367 country+state combos
-    # from facilities data (e.g. 'us-vlaams-brabant', 'id-central java') — almost
-    # ALL of them 404'd because dchub-frontend/locations/ only has 107 actual
-    # static pages. Google Search Console reported "1.37K pages aren't indexed:
-    # Redirect error" — a near-exact match for that 1,367. Replaced with the 107
-    # known-good slugs (mirrors the markets hardcoded list above) so the sitemap
-    # only tells Google about pages that actually exist.
-    _LOCATION_STATIC_SLUGS = [  # 107 curated, all backed by dchub-frontend/locations/<slug>.html
-        'ae', 'at', 'au', 'au-nsw', 'au-vic', 'australia',
-        'australia-nsw', 'be', 'br', 'br-rj', 'br-sp', 'brazil',
-        'ca', 'ca-ab', 'ca-on', 'ca-qc', 'ch', 'ch-ge',
-        'ch-zh', 'cl', 'cn', 'de', 'de-hessen', 'de-hessia',
-        'dk', 'es', 'es-madrid', 'fi', 'fr', 'france',
-        'gb', 'gb-england', 'germany', 'hk', 'hk-hong-kong', 'hong-kong',
-        'id', 'id-jakarta', 'ie', 'in', 'in-karnataka', 'in-maharashtra',
-        'in-tamil-nadu', 'in-uttar-pradesh', 'ireland', 'it', 'japan', 'jp',
-        'jp-osaka', 'jp-tokyo', 'kr', 'mx', 'my', 'netherlands',
-        'ng', 'ng-lagos', 'nl', 'pl', 'pl-masovian-voivodeship', 'ru',
-        'se', 'sg', 'singapore', 'th', 'tr', 'uk',
-        'us', 'us-az', 'us-ca', 'us-co', 'us-ct', 'us-dc',
-        'us-fl', 'us-ga', 'us-il', 'us-ks', 'us-ky', 'us-ma',
-        'us-md', 'us-mn', 'us-mo', 'us-nc', 'us-ne', 'us-nj',
-        'us-nv', 'us-ny', 'us-oh', 'us-ok', 'us-or', 'us-pa',
-        'us-tn', 'us-tx', 'us-ut', 'us-va', 'us-wa', 'usa',
-        'usa-az', 'usa-ca', 'usa-co', 'usa-ga', 'usa-il', 'usa-nv',
-        'usa-ny', 'usa-tx', 'usa-va', 'usa-wa', 'za',
-    ]
-    for _slug in _LOCATION_STATIC_SLUGS:
-        sections['static'].append(f'  <url><loc>https://dchub.cloud/locations/{_slug}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+    # ---- Location pages: REMOVED from the sitemap (seo F9, 2026-09-02) ----
+    # r43-J (2026-05-30) curated 107 /locations/<slug> URLs here (the ones
+    # backed by dchub-frontend/locations/<slug>.html). Measured 2026-09-02:
+    # /locations/au serves 200, 13.5 KB, ZERO JSON-LD, title "Data Centers in
+    # AU - 22 Facilities" while /facilities/in/au serves 82 KB, ItemList
+    # JSON-LD, "Data Centers in Australia (470)" — two sitemap-listed pages
+    # for one intent with contradictory counts, and the geo head terms sat at
+    # position 70-96. The frontend worker now 301s /locations/<cc>[-<region>]
+    # to /facilities/in/<cc>, and a sitemap must never list a redirect, so the
+    # whole class is gone from here. /facilities/in/<cc> (below) is the one
+    # geo hub the sitemap names. Do NOT re-add a /locations/ emission.
 
     # ---- Facility pages (from DB) ----
     # URL format: /facilities/{provider-slug}-{name-slug}-{hash8}
