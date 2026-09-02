@@ -151,6 +151,7 @@ def _run_one(extractor_module_name, iso_label):
                 "error": f"{type(e).__name__}: {e}"}
 
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/iso_ieso.py:426 — review and remove one
 @iso_orchestrator_bp.route("/extract", methods=["POST", "GET"])
 def extract_all():
     started = time.time()
@@ -330,6 +331,7 @@ def extract_all():
         results=results,
     ), 200
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7917 — review and remove one
 
 @iso_orchestrator_bp.route("/health", methods=["GET"])
 def health():
