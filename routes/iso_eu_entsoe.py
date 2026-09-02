@@ -532,18 +532,52 @@ _SNAP_TTL = 300
 # describes the current cache generation, not history.
 _ZONE_ERRORS = {}
 
+# ★★★ NEGATIVE CACHE (2026-09-02) — _SNAP_CACHE ABOVE ONLY EVER HELD SUCCESS.
+#
+# Measured during the ENTSO-E Transparency scheduled-maintenance outage:
+# `/api/v1/iso/eu/snapshot` took 30-40s and then 503'd, on EVERY request. The
+# fan-out below is only skipped when _SNAP_CACHE holds DATA, and a total
+# failure stores nothing — so each caller re-opened 33 sockets against a
+# vendor that was answering 503 to all of them, and burned the full
+# `as_completed(timeout=25)` budget before returning None. A dead upstream
+# therefore cost MORE per request than a healthy one, and did it forever.
+#
+# ★ The cost is not just latency: it is 33 outbound sockets per request per
+# gunicorn worker per replica, aimed at an origin already in maintenance. That
+# is a stampede we point at someone else's outage.
+#
+# So a total failure is now REMEMBERED, briefly, and short-circuits the
+# fan-out. Kept deliberately short: this bounds how stale the "down" verdict
+# can be, so recovery is visible within one cooldown.
+_SNAP_DOWN = {"until": 0.0, "since": 0.0, "reason": ""}
+_SNAP_DOWN_TTL = 60
 
-def _live_snapshot():
+# ★ ...but the PROBE must never read the negative cache. run_extraction() is
+# what the data-pulse must-have gate and the iso-eu-entsoe deadman feed derive
+# their verdict from (#3568). If it could short-circuit on a breaker set 30
+# seconds earlier by some dashboard's read, it would report "all zones
+# unreachable" WITHOUT HAVING ASKED — a measured-looking claim that was never
+# measured. force=True is that guarantee, and it is why this is a parameter
+# rather than a module-level flag.
+
+
+def _live_snapshot(force=False):
     """Aggregate EU snapshot across all reachable zones + per-zone detail.
     Fans the registry out in PARALLEL (sequential was 12-24s — long enough to
     blow the scoreboard's edge/tool timeout) and caches for 5 min. None only if
     the token is unset or EVERY zone failed (LIVE-only). A zone that fails is
-    dropped, so len(zones) <= len(_ZONES); callers must report both counts."""
+    dropped, so len(zones) <= len(_ZONES); callers must report both counts.
+
+    force=True skips BOTH caches (positive and negative) and always measures —
+    use it for anything whose output is a verdict about the feed."""
     if not _token():
         return None
     now = time.time()
-    if _SNAP_CACHE["data"] is not None and (now - _SNAP_CACHE["ts"]) < _SNAP_TTL:
-        return _SNAP_CACHE["data"]
+    if not force:
+        if _SNAP_CACHE["data"] is not None and (now - _SNAP_CACHE["ts"]) < _SNAP_TTL:
+            return _SNAP_CACHE["data"]
+        if now < _SNAP_DOWN["until"]:
+            return None
     zones = {}
     zone_errors = {}
     # ws2-merged (2026-07-29): width scales with the registry so adding zones
@@ -581,7 +615,19 @@ def _live_snapshot():
     _ZONE_ERRORS.clear()
     _ZONE_ERRORS.update({k: v for k, v in zone_errors.items() if k not in zones})
     if not zones:
+        # EVERY zone failed. Remember it briefly so the next caller does not
+        # repeat the whole 33-socket fan-out against a dead upstream. `since`
+        # is preserved across consecutive failures so the outage's true start
+        # survives; only a success clears it.
+        _SNAP_DOWN["until"] = time.time() + _SNAP_DOWN_TTL
+        _SNAP_DOWN["since"] = _SNAP_DOWN["since"] or now
+        _SNAP_DOWN["reason"] = "all_zones_failed"
         return None
+    # A zone answered: the upstream is reachable, so the negative cache must go
+    # immediately — a stale breaker would keep serving 503 through a recovery.
+    _SNAP_DOWN["until"] = 0.0
+    _SNAP_DOWN["since"] = 0.0
+    _SNAP_DOWN["reason"] = ""
     agg_total = sum(z["generation_total_mw"] for z in zones.values())
     agg_renew = sum((z["fuel_wind_mw"] + z["fuel_solar_mw"] + z["fuel_hydro_mw"]) for z in zones.values())
     agg_gas = sum(z["fuel_gas_mw"] for z in zones.values())
@@ -666,7 +712,11 @@ def run_extraction():
             summary["status"] = "error"
             summary["elapsed_ms"] = int((time.time() - started) * 1000)
             return summary
-        snap = _live_snapshot()
+        # ★ force=True: this summary IS the verdict the data-pulse must-have
+        # gate and the iso-eu-entsoe deadman feed read (#3568). It must be
+        # MEASURED every tick — never inherited from the negative cache a
+        # dashboard read may have set seconds ago.
+        snap = _live_snapshot(force=True)
         if snap is None:
             summary["errors"].append("entsoe_live_fetch_failed — all zones unreachable/empty (wrote nothing)")
             summary["status"] = "error"
@@ -732,6 +782,12 @@ def http_snapshot():
     if not _token():
         return jsonify({"iso": ISO_CODE, "error": "entsoe_token_missing",
                         "hint": "Set ENTSOE_API_Token in Railway env on the backend service."}), 503
+    # ★ SAMPLED BEFORE THE CALL, ON PURPOSE. _live_snapshot() OPENS the breaker
+    # on its way out of a failed fan-out, so reading _SNAP_DOWN afterwards says
+    # "open" for the very request that did the measuring — and this endpoint
+    # would report "fan-out skipped" about 33 calls it had just made. The
+    # question here is not "is the breaker open now" but "did THIS request ask".
+    _skipped = time.time() < _SNAP_DOWN["until"]
     try:
         snap = _live_snapshot()
     except Exception as e:
@@ -739,8 +795,29 @@ def http_snapshot():
         return jsonify({"iso": ISO_CODE, "error": "entsoe_live_unavailable",
                         "reason": f"fanout_failed:{type(e).__name__}"}), 503
     if snap is None:
+        # ★ TWO DIFFERENT FACTS, TWO DIFFERENT WORDS. "no_zone_answered" is a
+        # claim about 33 calls we made. When the negative cache short-circuits
+        # we made NONE of them, and saying "no zone answered" would be a
+        # measured-sounding sentence about a measurement that did not happen.
+        _now = time.time()
+        if _skipped:
+            _retry = max(1, int(_SNAP_DOWN["until"] - _now))
+            _resp = jsonify({
+                "iso": ISO_CODE, "error": "entsoe_live_unavailable",
+                "reason": "upstream_down_recently — fan-out skipped, not retried",
+                "basis": ("every zone failed at %s; suppressing the %d-zone fan-out "
+                          "for %ds so a dead upstream is not stampeded. This response "
+                          "asked NOTHING — it reports the last measurement, not a new one."
+                          % (datetime.datetime.fromtimestamp(
+                                 _SNAP_DOWN["since"], datetime.timezone.utc).isoformat(),
+                             len(_ZONES), _SNAP_DOWN_TTL)),
+                "retry_after_s": _retry,
+            })
+            _resp.headers["Retry-After"] = str(_retry)
+            return _resp, 503
         return jsonify({"iso": ISO_CODE, "error": "entsoe_live_unavailable",
-                        "reason": "no_zone_answered"}), 503
+                        "reason": "no_zone_answered",
+                        "zones_attempted": len(_ZONES)}), 503
     from routes.tier_gate import jsonify_gated_snapshot
     _missing = {k: v for k, v in _ZONE_ERRORS.items() if k not in snap["zones"]}
     # HONEST NUMBERS: BOTH readings, named. zones_configured / zones_live are
