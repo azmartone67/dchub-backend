@@ -608,24 +608,28 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
             # the column, and an UndefinedColumn there would stop news ingest
             # dead to save one field. Degrade, never block — the SAVEPOINT
             # this block already opens is what makes the retry safe.
-            _cols = ("id,title,url,source,category,summary,author,"
-                     "published_at,relevance_score,keywords,image_url,"
-                     "fetched_at")
+            # Both statements are written out in full rather than composed
+            # from a shared column list: regression_lint's insert-no-on-conflict
+            # rule reads the literal, and a concatenated INSERT hides its
+            # ON CONFLICT from the one check that guarantees it is there.
             _vals = (a['id'], a['title'], a['url'], a['source'],
                      a.get('category','Industry'), a.get('summary',''),
                      a.get('author',''), pub, a.get('relevance_score',0.5),
                      a.get('keywords','[]'), a.get('image_url'), now_ts)
             try:
-                c.execute("INSERT INTO news_articles (" + _cols
-                          + ",publisher_url) VALUES ("
-                          + ",".join(["%s"] * 13)
-                          + ") ON CONFLICT (id) DO NOTHING",
-                          _vals + (a.get('publisher_url'),))
+                c.execute('''INSERT INTO news_articles
+                    (id,title,url,source,category,summary,author,published_at,
+                     relevance_score,keywords,image_url,fetched_at,publisher_url)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (id) DO NOTHING''',
+                    _vals + (a.get('publisher_url'),))
             except Exception:
                 c.execute("ROLLBACK TO SAVEPOINT sp_article")
-                c.execute("INSERT INTO news_articles (" + _cols
-                          + ") VALUES (" + ",".join(["%s"] * 12)
-                          + ") ON CONFLICT (id) DO NOTHING", _vals)
+                c.execute('''INSERT INTO news_articles
+                    (id,title,url,source,category,summary,author,published_at,
+                     relevance_score,keywords,image_url,fetched_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (id) DO NOTHING''', _vals)
             if c.rowcount > 0: saved += 1
         except Exception:
             try:
@@ -677,14 +681,16 @@ def _sync_articles_to_pg(articles):
         # fails because the column is absent is retried WITHOUT it rather than
         # dropped. Before this, a chunk_err only logged a warning and lost 100
         # articles silently.
-        _NEWS_COLS = ("id,title,url,source,category,summary,author,"
-                      "published_at,relevance_score,keywords,image_url,"
-                      "fetched_at")
-        insert_sql = ("INSERT INTO news_articles (" + _NEWS_COLS
-                      + ",publisher_url) VALUES %s "
-                      "ON CONFLICT (id) DO NOTHING")
-        insert_sql_legacy = ("INSERT INTO news_articles (" + _NEWS_COLS
-                             + ") VALUES %s ON CONFLICT (id) DO NOTHING")
+        insert_sql = '''INSERT INTO news_articles
+            (id,title,url,source,category,summary,author,published_at,
+             relevance_score,keywords,image_url,fetched_at,publisher_url)
+            VALUES %s
+            ON CONFLICT (id) DO NOTHING'''
+        insert_sql_legacy = '''INSERT INTO news_articles
+            (id,title,url,source,category,summary,author,published_at,
+             relevance_score,keywords,image_url,fetched_at)
+            VALUES %s
+            ON CONFLICT (id) DO NOTHING'''
 
         # Build values tuples
         values = []
