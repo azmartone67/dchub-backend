@@ -49,6 +49,9 @@ jobs:
         run: |
           set -uo pipefail
           if [ -z "${DCHUB_ADMIN_KEY:-}" ]; then
-            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
+            # ★ 2026-09-02: see gas-pipeline-ingest.yml (2026-08-08, SH52-120).
+            # A missing secret must not read as a completed refresh.
+            echo "::error::DCHUB_ADMIN_KEY not set — planned-generators ingest cannot run; failing loudly instead of a silent green no-op"
+            exit 1
           fi
           python tools/infra_fetch.py planned-generators "${CAP}"
