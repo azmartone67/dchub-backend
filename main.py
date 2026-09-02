@@ -9167,7 +9167,8 @@ def serve_tools_manifest():
     # ★2026-09-02: these two file reads WIN over the inline manifest below, and
     # that is the whole bug this fixes. tools.json exists, so the inline
     # canon-bound dict at the bottom of this function has never rendered — and
-    # the file carried the frozen literal "21,000+ data center facilities".
+    # the file previously carried a frozen literal facility floor (a retired
+    # pre-dedup value, deliberately not restated here — see BANNED_STALE).
     # Measured: the live surface served 21,000+ while canon read 20,100+, and
     # 21,000+ is not merely stale, it is the RAW DISCOVERY PILE
     # (canonical_stats.facilities_phrase(), "the discovery pile (back-compat)"),
