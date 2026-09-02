@@ -208,6 +208,10 @@ def _webhook_checkout_branch():
     return branch, parents
 
 
+def src_main():
+    return open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+
+
 def _calls_named(node, name):
     out = []
     for n in ast.walk(node):
@@ -231,13 +235,30 @@ def test_the_checkout_branch_calls_each_recorder_inside_its_own_try(alias, helpe
     calls = _calls_named(branch, alias)
     assert calls, f"{alias}() is not called in the checkout.session.completed branch"
     for call in calls:
-        node, fenced = call, False
-        while node in parents and node is not branch:
+        # The NEAREST enclosing Try must be the recorder's OWN fence: its body
+        # is nothing but the import and the one statement that makes the call,
+        # and its handler swallows (catches Exception, never re-raises). The
+        # whole checkout branch already sits inside the r43-H try (main.py
+        # ~15610), so "some Try above it" is true of every statement here and
+        # proves nothing — a mutation that deleted the inner try stayed green
+        # under that weaker check (2026-09-02).
+        node, stmt = call, None
+        while node in parents and node is not branch and not isinstance(node, ast.Try):
+            if isinstance(node, ast.stmt):
+                stmt = node
             node = parents[node]
-            if isinstance(node, ast.Try):
-                fenced = True
-                break
-        assert fenced, f"{alias}() is not inside a try"
+        assert isinstance(node, ast.Try), f"{alias}() is not inside a try"
+        assert stmt in node.body, f"{alias}() is not in the try BODY of its fence"
+        assert 1 <= len(node.body) <= 2, \
+            f"{alias}()'s try fences {len(node.body)} statements, not just the call"
+        for extra in node.body:
+            assert extra is stmt or isinstance(extra, ast.ImportFrom), \
+                f"{alias}()'s try also fences: {ast.dump(extra)[:80]}"
+        assert node.handlers and all(
+            h.type is not None and ast.get_source_segment(src_main(), h.type) == "Exception"
+            for h in node.handlers), f"{alias}()'s fence must catch Exception"
+        assert not any(isinstance(n, ast.Raise) for h in node.handlers for n in ast.walk(h)), \
+            f"{alias}()'s fence re-raises"
     imports = [n for n in ast.walk(branch) if isinstance(n, ast.ImportFrom)
                and n.module == module and any(a.name == helper and a.asname == alias for a in n.names)]
     assert imports, f"{helper} must be imported from {module} as {alias}"
