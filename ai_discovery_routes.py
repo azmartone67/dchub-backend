@@ -550,12 +550,33 @@ def register_discovery_routes(app):
             _card_tools = flat_tools_for_card()
         except Exception:
             _card_tools = []
+        # ★2026-09-02: the SERVED version, not the cold-start pin.
+        # canon_text() substitutes {canon_version} out of ai_surface_canon.PINNED
+        # (:36), which is a COLD-START FALLBACK, not the truth — so this card
+        # published 2.12.1 while the live `initialize` serverInfo handshake, the
+        # only source of truth, answered 2.12.3. Same accessor serve_openapi_json()
+        # above already uses: it answers from memory, refreshes in a background
+        # thread, never blocks the request path and never raises, and is monotonic
+        # so it can only move TOWARD the live server. A cold cache returns
+        # PINNED['version'] — exactly what canon_text() returned here before — so
+        # the cold-start answer does not change.
+        try:
+            from ai_surface_canon import resolve_server_version_cached as _rsv
+            _card_ver = _rsv()
+        except Exception:
+            _card_ver = ""
+        if not _card_ver:
+            # Only reachable if ai_surface_canon is un-importable, in which case
+            # this degrades to the exact expression the "version" key carried
+            # before this change rather than to a new failure mode.
+            _card_ver = canon_text("{canon_version}")
         card = {
             "schema_version": "mcp-server-card/v1",
             "name": "DC Hub — Data Center Intelligence",
             # ★2026-08-16: was the literal "2.1.22" — a version sitting on
             # ai_surface_canon's OWN stale_markers denylist and served anyway.
-            "version": canon_text("{canon_version}"),
+            # ★2026-09-02: and then it was the PIN. See _card_ver above.
+            "version": _card_ver,
             "description": canon_text(
                 "The de-facto MCP server for data center market "
                 "intelligence. {canon_facilities} distinct facilities across "
