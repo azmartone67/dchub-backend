@@ -1078,30 +1078,153 @@ def job_market_report():
         return jsonify({'success': False, 'job': 'market-report', 'error': str(e)}), 500
 
 
+def _fiber_row_count():
+    """Measured truth: COUNT(*) on fiber_routes, or None if it cannot be read.
+
+    None is NOT zero. A failed read must never be published as "the table is
+    empty" or differenced into a fake delta.
+    """
+    dsn = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
+    if not dsn:
+        return None
+    try:
+        with psycopg2.connect(dsn, sslmode='require', connect_timeout=8) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM fiber_routes")
+                return int(cur.fetchone()[0])
+    except Exception:
+        return None
+
+
 @jobs_bp.route('/api/jobs/infrastructure-sync', methods=['POST'])
 def job_infrastructure_sync():
-    """Cron: Infrastructure sync -- fiber, properties, permits, substations"""
+    """Cron: Infrastructure sync -- fiber routes.
+
+    ★ THIS HANDLER USED TO HARDCODE `'success': True` (2026-09-02).
+
+    It counted nothing and could not fail. Two crons drive it — dchub-jobs.yml
+    at 01:00 and daily-infra-sync.yml at 04:08 — so it published four green
+    reports a day while `fiber_routes` grew by TWO ROWS IN TWELVE DAYS
+    (64,830 on 2026-08-20 -> 64,836 on 2026-09-02, read from the
+    infra-growth-tracker run logs). One of those crons then fires a dead-man
+    beat, so the no-op was actively refreshing a liveness signal.
+
+    The contract below is not new. main.py's `job_fiber_sync` already
+    implements it, already carries the comment "dead imports for months behind
+    a 200 + {'success': true}", and is already fenced by
+    tests/test_infra_growth_truth_and_fiber_rotation.py. It was simply attached
+    to an endpoint NOTHING CALLS: no workflow references /api/jobs/fiber-sync.
+    This ports the contract to the door the traffic actually uses.
+
+    WHAT IS PUBLISHED
+      fiber_rows_before / fiber_rows_after  real COUNT(*), or null if unreadable
+      rows_persisted                        the measured delta, or null
+      counter_unreliable                    set when the loader claimed writes
+                                            and the table did not move
+
+    ★ ONE DELIBERATE DIVERGENCE FROM job_fiber_sync. There, a zero delta is
+    explicitly NOT an error, because its sources may legitimately have had
+    nothing new. Here it IS an error, because this lane's only fiber loader
+    re-upserts a HARDCODED 20-route list every run (fiber_network_discovery
+    MAJOR_ROUTES) before attempting discovery. "Claimed 20 writes, table moved
+    0" is therefore not "nothing new upstream" — it is the fake green itself,
+    and it is the measured state every day for twelve days. A lane whose whole
+    job is to add rows, reporting attempts that never persist, is failing.
+    """
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
+
     results = {}
+    errors = []
+
+    rows_before = _fiber_row_count()
+
+    # ★ The fiber block is normalised into a DICT LITERAL rather than passing
+    # the loader's return value straight through. Two reasons, one of them
+    # enforced by CI: the response-key contract gate reads the handler
+    # statically, and `results['fiber'] = run_fiber_discovery()` makes the whole
+    # sub-object dynamic — the endpoint silently drops out of contract coverage,
+    # which the gate correctly reports as UNMEASURED rather than as a pass.
+    # It also pins the shape, so a loader that changes its keys cannot change
+    # this endpoint's contract without someone noticing here.
+    fiber_raw, fiber_status, fiber_error = {}, 'ok', None
     try:
         from fiber_network_discovery import run_fiber_discovery
-        results['fiber'] = run_fiber_discovery()
-    except ImportError:
-        results['fiber'] = {'status': 'not_available'}
+        fiber_raw = run_fiber_discovery() or {}
+        if not isinstance(fiber_raw, dict):
+            fiber_raw = {}
+        if fiber_raw.get('status') == 'error':
+            fiber_status = 'error'
+            fiber_error = str(fiber_raw.get('message', 'loader reported status=error'))[:200]
     except Exception as e:
-        results['fiber'] = {'error': str(e)[:200]}
-    try:
-        from construction_permit_tracker import run_permit_scan
-        results['permits'] = run_permit_scan()
-    except ImportError:
-        results['permits'] = {'status': 'not_available'}
-    except Exception as e:
-        results['permits'] = {'error': str(e)[:200]}
+        fiber_status, fiber_error = 'error', str(e)[:200]
+    if fiber_error:
+        errors.append('fiber: %s' % fiber_error[:160])
+
+    results['fiber'] = {
+        'status': fiber_status,
+        'error': fiber_error,
+        'seeded': fiber_raw.get('seeded'),
+        'discovered': fiber_raw.get('discovered'),
+        'errors': fiber_raw.get('errors'),
+        'total': fiber_raw.get('total'),
+    }
+
+    # ★ The permits leg is GONE, not broken. It read
+    # `from construction_permit_tracker import run_permit_scan`, and
+    # run_permit_scan has never existed in that module — `git log -S` over the
+    # file returns nothing and no other caller imports it. So this leg raised
+    # ImportError on every run since it was written and was reported as
+    # {'status': 'not_available'}, which reads like a benign absence rather
+    # than a loader that was never wired. Permit scanning is not scheduled from
+    # this job; saying so plainly is more honest than a daily dead import.
+    # `error` is kept (as null) so the published contract does not lose a key.
+    # It could only ever have been set by the `except Exception` around that
+    # dead import, and an ImportError took the earlier branch every time — so
+    # this key has never carried a value in production. Keeping it null is the
+    # compat alias the response-key gate asks for, without inventing an error.
+    results['permits'] = {
+        'status': 'not_wired',
+        'error': None,
+        'detail': ('run_permit_scan has never existed in '
+                   'construction_permit_tracker; this leg never ran. Permit '
+                   'scanning is not scheduled from this job.'),
+    }
+
+    rows_after = _fiber_row_count()
+    results['fiber_rows_before'] = rows_before
+    results['fiber_rows_after'] = rows_after
+    results['rows_persisted'] = (
+        None if (rows_before is None or rows_after is None)
+        else rows_after - rows_before)
+
+    fiber_res = results.get('fiber') or {}
+    attempts = 0
+    if isinstance(fiber_res, dict):
+        attempts = int(fiber_res.get('seeded') or 0) + int(fiber_res.get('discovered') or 0)
+
+    if results['rows_persisted'] == 0 and attempts > 0:
+        results['counter_unreliable'] = (
+            "loader reported %d write attempt(s) (seeded+discovered) but "
+            "fiber_routes did not change (%s rows). seeded counts a hardcoded "
+            "route list re-upserted every run, so these attempts conflict and "
+            "insert nothing." % (attempts, rows_after))
+        errors.append(
+            'fiber: %d write attempts persisted 0 rows' % attempts)
+
+    results['errors'] = errors
+    success = not errors
+
     _reg_update('infrastructure_sync')
-    logger.info("JOB infrastructure-sync: ✅ %s", {k: 'ok' if 'error' not in v else 'err' for k, v in results.items()})
-    return jsonify({'success': True, 'job': 'infrastructure-sync', 'results': results, 'ts': datetime.utcnow().isoformat()})
+    logger.info("JOB infrastructure-sync: %s persisted=%s attempts=%s errors=%s",
+                '✅' if success else '❌', results['rows_persisted'], attempts, errors)
+    return jsonify({
+        'success': success,
+        'job': 'infrastructure-sync',
+        'results': results,
+        'ts': datetime.utcnow().isoformat(),
+    }), (200 if success else 500)
 
 
 # ──────────────────────────────────────────────────────────────────
