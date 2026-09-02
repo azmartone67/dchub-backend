@@ -186,6 +186,44 @@ def run_daily(api_base: str = DCHUB_API_BASE) -> dict:
     }
 
 
+# ── the 07-02 positive-only directive, enforced at ONE choke point ────
+# WHY A CHOKE POINT AND NOT A WHERE-CLAUSE FIX. The DCPI alert rail publishes
+# verdicts against NAMED, REAL markets ("Westmont DCPI AVOID"). The 2026-07-02
+# directive is that this rail is positive-only: we may say a market is worth
+# building in; we do not publish a named place as one to avoid.
+#
+# That rule was already written into the SQL once and leaked anyway, because
+# the query exists in FOUR places — v1's fallback body, v2, v3, and the hub's
+# dcpi_alerts rail — and `aggregate_announcements` DELEGATES to v3, so the v1
+# body only runs when v3 raises. A reader fixing "the query" fixes one copy and
+# leaves the rollback path leaking. Measured live 2026-09-02: 17 of 119 feed
+# items were AVOID, six of them published that evening.
+#
+# ★ So the rule lives here, downstream of every query, and each aggregator
+# returns THROUGH it. A new alert query added later cannot reintroduce the leak
+# without deleting this call — which the guard catches.
+# Guarded by tests/test_media_feed_positive_only.py.
+VERDICTS_NOT_PUBLISHED = ("AVOID",)
+
+
+def drop_unpublishable_verdicts(items):
+    """Remove feed items that publish a negative verdict on a named market.
+
+    Matches on the rendered TITLE, because that is what ships: every alert
+    query builds `market_name || ' DCPI ' || verdict`, and one of them wraps
+    the verdict in an emoji ('🚨 AVOID'), so a title-substring match is the
+    one test that holds across all of them. Non-alert items are untouched."""
+    if not items:
+        return items
+    out = []
+    for it in items:
+        title = (it.get("title") or "") if isinstance(it, dict) else ""
+        if any(v in title.upper() for v in VERDICTS_NOT_PUBLISHED):
+            continue
+        out.append(it)
+    return out
+
+
 def aggregate_announcements(limit_per_source=20):
     """Phase VVV (2026-05-16): the original v1 query bank had hardcoded
     column names (`summary`, `url`, `title`) that don't match every
@@ -214,11 +252,11 @@ def aggregate_announcements(limit_per_source=20):
     DATABASE_URL = os.environ.get("DATABASE_URL")
     items = []
     if not DATABASE_URL:
-        return items
+        return drop_unpublishable_verdicts(items)
     try:
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
     except Exception:
-        return items
+        return drop_unpublishable_verdicts(items)
 
     queries = [
         # (category, sql, columns)
@@ -263,7 +301,7 @@ def aggregate_announcements(limit_per_source=20):
                computed_at AS ts
             FROM market_power_scores
             WHERE computed_at > NOW() - INTERVAL '7 days'
-              AND (verdict = 'BUILD' OR verdict = 'AVOID'
+              AND (verdict = 'BUILD'
                    OR constraint_score >= 80 OR excess_power_score >= 80)
             ORDER BY computed_at DESC LIMIT %s""",
          (limit_per_source,)),
@@ -308,7 +346,7 @@ def aggregate_announcements(limit_per_source=20):
     # reverse=True descending, '' sorts to the END so undated items don't
     # masquerade as freshest content.
     items.sort(key=lambda x: x.get("ts") or "", reverse=True)
-    return items
+    return drop_unpublishable_verdicts(items)
 
 
 
@@ -463,11 +501,11 @@ def aggregate_announcements_v2(limit_per_source=20):
     items = []
     errors = {}
     if not DATABASE_URL:
-        return items
+        return drop_unpublishable_verdicts(items)
     try:
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
     except Exception:
-        return items
+        return drop_unpublishable_verdicts(items)
 
     queries = [
         ("news",
@@ -521,7 +559,7 @@ def aggregate_announcements_v2(limit_per_source=20):
             FROM market_power_scores
             WHERE published = true
               AND computed_at > NOW() - INTERVAL '7 days'
-              AND verdict IN ('BUILD','AVOID')
+              AND verdict = 'BUILD'
             ORDER BY computed_at DESC LIMIT %s""",
          (limit_per_source,)),
     ]
@@ -567,7 +605,7 @@ def aggregate_announcements_v2(limit_per_source=20):
             if by_cat.get(cat):
                 interleaved.append(by_cat[cat].pop(0))
     items = interleaved
-    return items
+    return drop_unpublishable_verdicts(items)
 
 
 # ============================================================================
@@ -598,11 +636,11 @@ def aggregate_announcements_v3(limit_per_source=20):
     items = []
     errors = {}
     if not DATABASE_URL:
-        return items
+        return drop_unpublishable_verdicts(items)
     try:
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
     except Exception:
-        return items
+        return drop_unpublishable_verdicts(items)
 
     with conn.cursor() as cur:
         # Introspect all relevant tables
@@ -839,7 +877,7 @@ def aggregate_announcements_v3(limit_per_source=20):
             FROM market_power_scores
             WHERE published = true
               AND computed_at > NOW() - INTERVAL '7 days'
-              AND verdict IN ('BUILD','AVOID')
+              AND verdict = 'BUILD'
             ORDER BY computed_at DESC LIMIT %s""",
             (limit_per_source,)))
 
@@ -890,4 +928,4 @@ def aggregate_announcements_v3(limit_per_source=20):
         _agg_errors = errors
     except Exception:
         pass
-    return items
+    return drop_unpublishable_verdicts(items)
