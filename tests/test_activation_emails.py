@@ -211,7 +211,7 @@ def test_max_sends_per_run_caps_a_runaway_candidate_query():
 # ── 3 · the day-1 email is a first RESULT, not a key ────────────────────────
 def test_day1_email_carries_the_real_connect_url_and_a_paid_only_tool():
     subject, html = ae.render_day1("c@example.com", "dch_live_deadbeef")
-    assert "https://dchub.cloud/mcp?api_key=dch_live_deadbeef" in html
+    assert "https://dchub.cloud/mcp?api_key=dch_live_deadbeef" in html  # secretscan:allow (placeholder)
     assert "X-API-Key: dch_live_deadbeef" in html
     assert ae.FIRST_QUERY_TOOL in html and ae.SECOND_QUERY_TOOL in html
     assert '"lat": 33.45' in html and '"capacity_mw": 100' in html, "the query must be paste-able"

@@ -254,7 +254,7 @@ def render_day1(email: str, mcp_key: str) -> tuple[str, str]:
 
 def render_day3(email: str) -> tuple[str, str]:
     subject = "Want me to run your first DC Hub query for you?"
-    html = f"""<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:600px;margin:0 auto;color:#1f2937;line-height:1.55">
+    html = """<div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:600px;margin:0 auto;color:#1f2937;line-height:1.55">
 <p>Hi &mdash; Jonathan again.</p>
 <p>Three days in, your DC Hub key has not made a call yet. That is usually a connector that did not stick, not a lack of questions.</p>
 <p>Reply with one sentence about the site, market or ISO you are looking at and I will run the query on your account and email you the scored output &mdash; or, if the connector is the problem, a working URL.</p>
