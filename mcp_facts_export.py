@@ -72,6 +72,12 @@ import canonical_stats as c        # noqa: E402
 PRICE_TIERS = ["starter", "developer", "pro", "team", "enterprise"]
 DAILY_TIERS = ["free", "identified", "starter", "developer", "pro", "enterprise"]
 
+# The founding counter — the same endpoint the checkout-integrity shell
+# reads (lane 4). Deliberately NOT under /api/v1/: CF rule #3 caches that
+# prefix with override_origin, and a stale "program_active" would publish
+# a price that has sold out.
+FOUNDING_COUNTER_PATH = "/api/founding-members"
+
 BASE_URL = os.environ.get("DCHUB_BASE_URL", "https://dchub.cloud").rstrip("/")
 
 # MEASURED CONSTANTS — no queryable endpoint exposes these yet; each was
@@ -189,6 +195,34 @@ def _live_numbers() -> dict:
     }
 
 
+def _pricing() -> dict:
+    """pricing_usd_month — the flat monthly tiers, plus `founding` while the
+    founding program is OPEN.
+
+    2026-09-02 (finding 3): $99 founding is the SKU that sells — 10 of 14
+    active external subs, 7 of 16 completions in 8 weeks — and it was absent
+    from every agent-facing surface, this file included. It is a LIMITED
+    programme (FOUNDING_CUSTOMERS_CAP), so it is emitted only while the live
+    counter says there is stock; a closed programme drops the key and the
+    next export publishes the standing tiers alone. The counter is read like
+    every other figure here — fetched, fail-hard — because a facts file that
+    advertises a sold-out price is the exact drift this exporter exists to
+    end. What "founding" COUNTS (first-25-paid-of-any-plan today) is the
+    owner's decision and is not decided here.
+    """
+    pricing = {k: t.price(k) for k in PRICE_TIERS}
+    fc = _get_json(FOUNDING_COUNTER_PATH)
+    active = fc.get("program_active")
+    remaining = fc.get("remaining")
+    if not isinstance(active, bool) or not isinstance(remaining, int):
+        raise ExportError(f"{FOUNDING_COUNTER_PATH} missing program_active/remaining "
+                          f"(got {active!r}/{remaining!r}) — refusing to guess "
+                          "whether the founding price is still for sale")
+    if active and remaining > 0:
+        pricing["founding"] = t.price("founding")
+    return pricing
+
+
 def build() -> dict:
     s = c.get_canonical_stats()
     numbers = _live_numbers()
@@ -219,7 +253,7 @@ def build() -> dict:
         "remote_url": "https://dchub.cloud/mcp",
         "repo": "github.com/azmartone67/dchub-mcp-server",
         "license": "CC-BY-4.0",
-        "pricing_usd_month": {k: t.price(k) for k in PRICE_TIERS},
+        "pricing_usd_month": _pricing(),
         "calls_per_day": {k: t.calls_per_day(k) for k in DAILY_TIERS},
         # ★★ MERGE RESOLUTION 2026-07-30 (#1944 x #1949). Two owners collided
         # here and only one can be right per key:

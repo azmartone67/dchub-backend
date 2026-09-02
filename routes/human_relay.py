@@ -52,6 +52,16 @@ human_relay_bp = Blueprint("human_relay", __name__)
 _MAX_AGE_S = 14 * 86400
 _DDL_DONE = [False]
 
+# 2026-09-02: the checkout-integrity master shell (routes/
+# checkout_integrity_master_shell.py, lane 3) now reads THIS page live every
+# tick to check that its button sells what its copy says. Its costume is an
+# exact prefix; an open wearing it is our own audit, not a human, and is not
+# written to relay_opens at all — the revenue shell scores that table as
+# "real human opens" and a 120-second tick would add ~720 rows a day. Write-
+# side, not read-side: the middleware's admin bail-out (test_paywall_funnel_
+# excludes_internal) is the precedent — the ordering IS the fix.
+_AUDIT_UA_PREFIXES = ("dchub-checkout-integrity/",)
+
 
 def _secret() -> bytes:
     return (os.environ.get("DCHUB_INTERNAL_KEY") or "").encode()
@@ -90,6 +100,8 @@ def parse_relay_token(token: str) -> dict | None:
 def _log_open(info: dict | None, token: str, valid: bool) -> None:
     """Append-only; never raises; never blocks the render."""
     if (os.environ.get("DCHUB_HUMAN_RELAY_DISABLE") or "").strip() == "1":
+        return
+    if (request.headers.get("User-Agent") or "").startswith(_AUDIT_UA_PREFIXES):
         return
     url = (os.environ.get("DATABASE_URL")
            or os.environ.get("NEON_DATABASE_URL") or "").strip()
@@ -147,8 +159,18 @@ def relay_page(token):
     tier = (info or {}).get("tier") or "free"
     # ONE button, riding the existing attribution chain (sid-preserve →
     # pack webhook claim→paid bridge). direct=1 skips the tier wall.
+    #
+    # ★ 2026-09-02: the button carries PACK_TIER, not the token's tier. The
+    # token's `tier` is the CALLER's tier (free / identified) — it says who
+    # hit the wall, not what to sell them — and _stripe_links.resolve_tier
+    # used to fall through to 'developer' for any word it did not know, so
+    # this "$10 one-time" button 302'd to the $49/mo Developer link (102
+    # real human opens / 30d, 0 paid; live 302 verified 2026-09-02T00:29Z).
+    # The copy below promises the pack; the href must sell the pack. The
+    # caller tier still goes to relay_opens (above) for the funnel read.
     from urllib.parse import urlencode
-    q = {"from": "mcp_relay", "tier": tier, "direct": "1"}
+    from routes._stripe_links import PACK_TIER
+    q = {"from": "mcp_relay", "tier": PACK_TIER, "direct": "1"}
     if tool:
         q["tool"] = tool
     if sid:

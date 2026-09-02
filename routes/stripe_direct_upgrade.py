@@ -27,7 +27,14 @@ stripe_direct_bp = Blueprint("stripe_direct_upgrade", __name__)
 
 # r39 (2026-05-25): centralized in routes/_stripe_links.py. Re-export
 # locally so existing _resolve_tier callers don't need to change.
-from routes._stripe_links import STRIPE_LINKS, TOOL_TIER_MAP, resolve_tier as _resolve_tier
+from routes._stripe_links import (STRIPE_LINKS, TOOL_TIER_MAP, TIER_PRICE_LABEL,
+                                  resolve_tier as _resolve_tier)
+
+
+def _price_label(tier):
+    return TIER_PRICE_LABEL.get(tier) or {
+        "developer": "$49/mo", "pro": "$299/mo", "starter": "$9/mo",
+        "enterprise": "Custom"}.get(tier, "—")
 
 
 def _build_url(tier, tool, ref, surface=None, sid=None):
@@ -127,12 +134,9 @@ def paywall_checkout_json():
         "tier":           chosen,
         "checkout_url":   _build_url(chosen, tool, ref, surface),
         "stripe_managed": True,
-        "tier_pricing":   {
-            "developer": "$49/mo",
-            "pro":       "$299/mo",
-            "starter":   "$9/mo",
-            "enterprise": "Custom",
-        }.get(chosen, "—"),
+        # 2026-09-02: label from canon so the pack (now the fall-through
+        # tier) reads "$10 / 1,000 API calls", not "—".
+        "tier_pricing":   _price_label(chosen),
         "client_reference_id": _cref,
     }), 200, {"Cache-Control": "public, max-age=300"}
 

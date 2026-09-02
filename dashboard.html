@@ -1378,14 +1378,16 @@
   border:1px solid #7c3aed;border-radius:8px;
   padding:10px 16px;margin-bottom:12px;text-align:center;font-size:13px;color:#c4b5fd;">
   ⚡ <strong style="color:#a78bfa;">Founding member pricing</strong> —
-  <span id="founding-count" style="color:#fbbf24;font-weight:700;">47</span> of 50 spots remaining.
+  <span id="founding-count" style="color:#fbbf24;font-weight:700;">…</span> of <span id="founding-total">…</span> spots remaining.
   Price locks in at $99/mo forever.
 </div>
 <script>
-// Fetch live founding count
+// Live founding counter — /api/v1/founding-spots is an alias of the one
+// counter every other surface reads (2026-09-02; it was a hardcoded 47/50).
 fetch('/api/v1/founding-spots').then(r=>r.json()).then(d=>{
-  var el=document.getElementById('founding-count');
-  if(el&&d.remaining!==undefined) el.textContent=d.remaining;
+  var el=document.getElementById('founding-count'), tl=document.getElementById('founding-total');
+  if(el&&d.remaining!==undefined&&d.remaining!==null) el.textContent=d.remaining;
+  if(tl&&d.total!==undefined&&d.total!==null) tl.textContent=d.total;
 }).catch(()=>{});
 </script>🚀 Upgrade to Pro</h2>
                         <button onclick="closeUpgradeModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--text2);">×</button>

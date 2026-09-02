@@ -15873,6 +15873,29 @@ def stripe_webhook():
                 data.get('customer_details', {}).get('email') or ''
             ).lower().strip()
 
+            # 2026-09-02 (findings 4a/4c): this webhook is the one chokepoint
+            # every sale crosses, yet the two checkout ledgers only ever heard
+            # about a sale from a browser: pricing_ab's stripe_checkout_complete
+            # came solely from the success-page beacon (0 rows in 60d against
+            # 13 Stripe completions) and identified_checkout_signals.converted
+            # had no writer at all (a $49 buyer still "awaiting outreach" on
+            # 09-02). Both writes are idempotent (session id / WHERE converted
+            # = FALSE) and each is fenced on its own so a stats failure can
+            # never reach payment handling — the r43-H 500-and-retry below is
+            # for provisioning, not bookkeeping.
+            try:
+                from routes.pricing_ab import record_stripe_checkout_complete as _rec_ab
+                print(f"📈 pricing_ab checkout record: {_rec_ab(data)}")
+            except Exception as _ab_err:
+                print(f"⚠️ pricing_ab checkout record error (non-fatal): {_ab_err}")
+            if customer_email:
+                try:
+                    from routes.checkout_email_capture import mark_converted as _mark_conv
+                    print(f"📈 identified-signal conversion: "
+                          f"{_mark_conv(customer_email, data.get('id') or '')}")
+                except Exception as _ic_err:
+                    print(f"⚠️ identified-signal conversion error (non-fatal): {_ic_err}")
+
             # r-receipt (2026-08-17): a paying customer gets a payment RECEIPT,
             # not only welcomes — Stripe's own receipt emails are off and hosted
             # payment links never touch our code, so this webhook is the one
@@ -37691,8 +37714,27 @@ def map_geo_pins():
 
 @app.route('/api/v1/founding-spots')
 def founding_spots():
-    remaining = 47
-    return jsonify({'remaining': remaining, 'total': 50})
+    """Alias of the ONE founding counter (routes.founding_customers.founding_status).
+
+    2026-09-02: this served a hardcoded {remaining:47,total:50} while
+    /api/founding-members and /api/v1/founding-customers/count served the
+    live 7 of 25 (edge + origin, 00:23Z). dashboard.html reads `remaining`
+    from here, so the dashboard quoted a scarcity number no other surface
+    agreed with. Same keys as before (`remaining`, `total`) plus the
+    counter's own fields; what "founding" COUNTS is unchanged and is the
+    owner's call (see the PR that landed this).
+    """
+    try:
+        from routes.founding_customers import founding_status
+        st = founding_status()
+        return jsonify({'remaining': st['remaining'], 'total': st['cap'],
+                        'claimed': st['claimed'],
+                        'program_active': st['program_active'],
+                        'source': 'routes.founding_customers.founding_status'})
+    except Exception as e:
+        # Never a hardcoded number again: an unreadable counter says so.
+        return jsonify({'remaining': None, 'total': None, 'error': str(e)[:120],
+                        'source': 'routes.founding_customers.founding_status'}), 503
 # =============================================================================
 # CLOUDFLARE WORKER FAILOVER STUBS (v1.0)
 # These mirror the endpoints served by the Cloudflare Worker at the edge.
