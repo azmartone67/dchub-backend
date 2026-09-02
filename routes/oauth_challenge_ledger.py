@@ -62,8 +62,20 @@ oauth_challenge_bp = Blueprint("oauth_challenge_ledger", __name__)
 # This kind fires on THEIR arrival: passive, issues no 401, changes no behavior.
 # ★It is NOT comparable to claude_connector and must never be divided into it -- one
 # counts arrivals, the other counts challenges issued. Different populations.
+# r-oauth-funnel-stages (2026-09-02, QA sweep F2; dchub-mcp-server#307): three
+# STAGE kinds — challenge_issued -> oauth_authorize_started -> identity_created —
+# so the retention read can say WHERE the 1,111-challenges-per-identity loss
+# happens. Before this only the two ENDS were measured (claude_connector rows =
+# 401s we issued; mcp_dev_keys dch_oauth_ rows = identities that resolved).
+# challenge_issued carries the MCP method; the other two happen on the OAuth
+# routes and land on the 'other' method axis. ★ They are listed here because
+# this whitelist is CLOSED: an emitted kind that is not in _KINDS is dropped by
+# parse_counts() below with a bare `continue`, which is exactly how a new
+# counter reads 0 forever without an instrument (tests/test_qa_sweep_0902_
+# measurement.py mutation-proves the drop AND the keep).
 _KINDS = {"claude_connector", "invalid_bearer", "chatgpt_connector_seen",
-          "claude_connector_seen"}
+          "claude_connector_seen",
+          "challenge_issued", "oauth_authorize_started", "identity_created"}
 _METHODS = {"initialize", "tools/call", "other"}
 _BEAT_METHODS = {"workos_on", "workos_off"}
 
@@ -153,6 +165,34 @@ def _clamp_day(raw):
     return d
 
 
+def parse_counts(counts, day) -> list:
+    """The cardinality fence, pure. `{"kind:method": n}` -> [(day, kind, method, n)].
+
+    Anything outside the closed _KINDS x _METHODS set is dropped — never stored,
+    never errored — so the table stays bounded whatever the gateway (or an
+    attacker holding its key) POSTs. The flip side is the F2 lesson: a kind the
+    gateway starts emitting reads 0 forever until it is added to _KINDS."""
+    rows = []
+    if not isinstance(counts, dict):
+        return rows
+    for key, raw_n in counts.items():
+        # Split on the LAST ':' — methods contain '/', not ':'.
+        k = str(key)
+        if ":" not in k:
+            continue
+        kind, _, method = k.rpartition(":")
+        if kind not in _KINDS or method not in _METHODS:
+            continue  # skip, never store, an unrecognised dimension
+        try:
+            n = int(raw_n)
+        except Exception:
+            continue
+        if n <= 0:
+            continue
+        rows.append((day, kind, method, min(n, 1_000_000)))
+    return rows
+
+
 @oauth_challenge_bp.route("/api/v1/mcp/oauth-challenge/emit", methods=["POST"])
 def oauth_challenge_emit():
     """Additive delta upsert of 401-challenge counts from the MCP gateway.
@@ -177,22 +217,7 @@ def oauth_challenge_emit():
         counts = {}
     workos_enabled = bool(body.get("workos_enabled"))
 
-    rows = []
-    for key, raw_n in counts.items():
-        # Split on the LAST ':' — methods contain '/', not ':'.
-        k = str(key)
-        if ":" not in k:
-            continue
-        kind, _, method = k.rpartition(":")
-        if kind not in _KINDS or method not in _METHODS:
-            continue  # skip, never store, an unrecognised dimension
-        try:
-            n = int(raw_n)
-        except Exception:
-            continue
-        if n <= 0:
-            continue
-        rows.append((day, kind, method, min(n, 1_000_000)))
+    rows = parse_counts(counts, day)
 
     c = None
     try:

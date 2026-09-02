@@ -574,7 +574,8 @@ def _iso_label(d: _dt.date) -> str:
 
 
 def _assemble(rows: dict, week_starts: list[_dt.date],
-              net: dict | None = None) -> list[dict]:
+              net: dict | None = None,
+              harness: dict | None = None) -> list[dict]:
     """One row per expected week; nulls where nothing was observed.
 
     rows maps week_start -> (agents, calls, rows_observed). A week absent from
@@ -645,6 +646,20 @@ def _assemble(rows: dict, week_starts: list[_dt.date],
                     "calls_net_of_top": int(nrec[2] or 0),
                     "agents_net_of_top": int(nrec[4] or 0),
                     "concentration_flag": pct >= _CONCENTRATION_PCT,
+                })
+            # ★ QA sweep 2026-09-02 (F7): the harness companion, beside
+            # *_net_of_top and from the same rows. harness maps week_start ->
+            # (net_calls, net_agents, harness_calls). Reported, never
+            # deny-listed: the names ride along so a reader can see WHO was
+            # subtracted (mcp_calls_deloop.HARNESS_CLIENT_NAMES).
+            hrec = (harness or {}).get(ws)
+            if hrec is not None:
+                from mcp_calls_deloop import HARNESS_CLIENT_NAMES as _hn
+                base.update({
+                    "calls_net_of_harnesses": int(hrec[0] or 0),
+                    "agents_net_of_harnesses": int(hrec[1] or 0),
+                    "harness_calls": int(hrec[2] or 0),
+                    "harness_names": list(_hn),
                 })
         out.append(base)
     return out
@@ -1065,6 +1080,30 @@ def _run(weeks: int) -> dict:
                 # _assemble renders as absent rather than as zero.
                 net_rows = {}
 
+            # ★ QA sweep 2026-09-02 (F7): net of the named verification
+            # HARNESSES, per week, same `where` + `pop` strings as above so it
+            # cannot drift onto a different population. Additive and
+            # self-isolated like the net-of-top query: a failure costs the
+            # reader these three keys and nothing else. The predicate is
+            # exact-name IN (...) — no LIKE, no %, so it is safe inlined.
+            harness_rows = {}
+            try:
+                from mcp_calls_deloop import harness_predicate as _hp_fn
+                _hp = _hp_fn()
+                cur.execute(
+                    "SELECT date_trunc('week', created_at)::date AS wk,"
+                    "       COUNT(*) FILTER (WHERE NOT (" + _hp + ")) AS net_calls,"
+                    "       COUNT(DISTINCT agent_id) FILTER (WHERE NOT (" + _hp + "))"
+                    "         AS net_agents,"
+                    "       COUNT(*) FILTER (WHERE " + _hp + ") AS harness_calls"
+                    "  FROM " + _TABLE +
+                    " WHERE " + where + " AND " + pop +
+                    " GROUP BY 1 ORDER BY 1"
+                )
+                harness_rows = {r[0]: r[1:] for r in (cur.fetchall() or [])}
+            except Exception:
+                harness_rows = {}
+
             # The live week, on the same population, from its own query.
             cur.execute(
                 "SELECT COUNT(DISTINCT agent_id), COUNT(*)"
@@ -1089,7 +1128,8 @@ def _run(weeks: int) -> dict:
         except Exception:
             pass
 
-    out["weeks"] = _assemble(fetched, _week_starts(cur_week, weeks), net_rows)
+    out["weeks"] = _assemble(fetched, _week_starts(cur_week, weeks), net_rows,
+                             harness=harness_rows)
     out["current_week_partial"] = _partial_week(
         cur_week, prow[0], prow[1], now_ts)
     out["wow"] = _wow(out["weeks"])

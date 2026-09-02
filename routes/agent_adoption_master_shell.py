@@ -123,7 +123,10 @@ def _measure():
             except Exception as e:
                 logger.warning("[aa] reach: %s", str(e)[:120])
 
-            # real tool-use per platform (de-looped) — is_real_external only
+            # real tool-use per platform (de-looped) — the canonical basis:
+            # is_public_ip AND is_real_external (QA sweep 2026-09-02, F6:
+            # this query lacked is_public_ip, so it counted a population no
+            # other surface publishes).
             real = {}
             try:
                 cur.execute("""
@@ -131,7 +134,7 @@ def _measure():
                            COUNT(*) AS calls,
                            COUNT(DISTINCT agent_id) AS agents
                       FROM mcp_calls_identity
-                     WHERE is_real_external IS TRUE
+                     WHERE is_public_ip AND is_real_external IS TRUE
                        AND created_at > NOW() - INTERVAL '7 days'
                      GROUP BY 1
                 """)
@@ -140,6 +143,7 @@ def _measure():
             except Exception as e:
                 logger.warning("[aa] real: %s", str(e)[:120])
 
+            all_tokens = []
             for disp, tokens in PLATFORMS:
                 rch = sum(reach.get(t, 0) for t in tokens)
                 rc = sum(real.get(t, (0, 0))[0] for t in tokens)
@@ -149,7 +153,28 @@ def _measure():
                                          "real_agents_7d": ag})
                 out["reach_7d"] += rch
                 out["real_calls_7d"] += rc
-                out["real_agents_7d"] += ag
+                out["real_agents_7d_platform_sum"] = (
+                    out.get("real_agents_7d_platform_sum", 0) + ag)
+                all_tokens.extend(tokens)
+
+            # ★ F6: DISTINCT agents ONCE over the union of every named token.
+            # Summing per-platform distinct counts double-counts an agent seen
+            # under two tags (claude + anthropic, cursor + cline) — the sum is
+            # kept beside it as real_agents_7d_platform_sum so the old series
+            # is still readable, but real_agents_7d is the honest headcount.
+            try:
+                cur.execute("""
+                    SELECT COUNT(DISTINCT agent_id)
+                      FROM mcp_calls_identity
+                     WHERE is_public_ip AND is_real_external IS TRUE
+                       AND created_at > NOW() - INTERVAL '7 days'
+                       AND lower(platform) = ANY(%s)
+                """, (list(all_tokens),))
+                out["real_agents_7d"] = int((cur.fetchone() or [0])[0] or 0)
+            except Exception as e:
+                logger.warning("[aa] distinct agents: %s", str(e)[:120])
+                out["real_agents_7d"] = int(out.get("real_agents_7d_platform_sum") or 0)
+                out["real_agents_7d_fallback"] = "platform_sum"
 
             # generic (unattributable) real calls — the 'mcp'/null bucket
             try:
@@ -302,7 +327,16 @@ def _funnel(now=None):
         "funnel": {
             "reach_7d": m["reach_7d"],
             "real_calls_7d": m["real_calls_7d"],
+            # ★ F6 (2026-09-02): this is calls on NAMED platforms only (the
+            # PLATFORMS tokens), on is_public_ip AND is_real_external. It is
+            # NOT the funnel's real_external_calls_7d, which also carries the
+            # unattributed 'mcp'/null bucket (generic_unattributed_calls_7d).
+            "real_calls_7d_label": "calls on NAMED platforms (7d)",
             "real_agents_7d": m["real_agents_7d"],
+            "real_agents_7d_basis": ("COUNT(DISTINCT agent_id) ONCE over the union of "
+                                     "named-platform tokens, is_public_ip AND "
+                                     "is_real_external, 7d"),
+            "real_agents_7d_platform_sum": m.get("real_agents_7d_platform_sum"),
             "generic_unattributed_calls_7d": attr_gap,
             "attribution_gap_pct": round(100.0 * attr_gap / max(total_real, 1), 1),
             "planner_first_pct": pfp,
@@ -324,7 +358,7 @@ def _funnel(now=None):
 
 def _headline(m, lanes):
     gap = sum(1 for l in lanes if l["lane"] == "CONNECTOR_GAP")
-    return (f"{m['real_agents_7d']} real agents · {m['real_calls_7d']} real calls/7d "
+    return (f"{m['real_agents_7d']} real agents · {m['real_calls_7d']} calls on NAMED platforms/7d "
             f"vs {m['reach_7d']:,} reach · planner-first {m.get('planner_first_pct')}% · "
             f"{gap} platforms in CONNECTOR_GAP (reach, no execution)")
 
@@ -460,6 +494,7 @@ def aa_digest():
     try:
         import requests as _rq
         subj = (f"DC Hub agent adoption: {f['funnel']['real_agents_7d']} real agents, "
+                f"{f['funnel']['real_calls_7d']} calls on NAMED platforms/7d, "
                 f"planner-first {f['funnel']['planner_first_pct']}%")
         for em in recipients:
             try:

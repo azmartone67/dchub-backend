@@ -33,6 +33,7 @@ Lanes
   F retention_population every cohort must declare its population filter
   G gateway_disclosure  a gateway must not be summed into demand undisclosed
   H prose_vs_data       published prose must not contradict its own payload
+  I series_parity       one complete week must have ONE call count across surfaces
 
 Routes (registered via published_truth_master_shell_bp in main.py):
   GET /api/v1/admin/published-truth-shell/master-tick  -> JSON verdicts
@@ -591,6 +592,50 @@ def _lane_prose_vs_data(ctx: dict) -> list:
     return out
 
 
+# ── LANE I — one complete week, one call count ──────────────────────────────
+def _lane_series_parity(ctx: dict) -> list:
+    """★ QA sweep 2026-09-02 (finding 2:F6): the same complete week was
+    published at three call levels — weekly-series W35 1,810, funnel
+    real_external_calls_complete_wk 1,834, /ai/reach 1,834 — because
+    weekly_series re-applies external_platform_predicate + real_ua_predicate
+    on top of the view's is_real_external ("belt-and-braces… two renderings
+    of ONE definition cannot drift"), and they drifted by 24 rows.
+
+    INVARIANT (not a value): weekly_series.weeks[-1].calls MUST equal
+    funnel.real_external_calls_complete_wk — both claim the last COMPLETE
+    ISO week on the canonical population. Any delta is named, with both
+    sources, so the reader knows which rendering moved."""
+    f = ctx.get("funnel")
+    ws = ctx.get("weekly_series")
+    if not isinstance(f, dict) or not isinstance(ws, dict):
+        return [_check("i_read", "funnel + weekly-series readable", None,
+                       "could not read /api/v1/mcp/funnel and/or "
+                       "/api/v1/reports/weekly-series", critical=True)]
+    weeks = [w for w in (ws.get("weeks") or []) if isinstance(w, dict)]
+    last = weeks[-1] if weeks else None
+    fc = _num(f.get("real_external_calls_complete_wk"))
+    wc = _num(last.get("calls")) if last else None
+    if fc is None or wc is None:
+        return [_check("i_both_published", "both surfaces publish the complete week",
+                       None, "funnel complete-week calls=%r · weekly-series weeks[-1].calls=%r "
+                             "(null = unobserved, not zero)" % (fc, wc), critical=True)]
+    delta = int(wc) - int(fc)
+    wk = (last or {}).get("week_start", "?")
+    return [_check(
+        "i_same_week_same_count",
+        "weekly_series.weeks[-1].calls == funnel.real_external_calls_complete_wk",
+        delta == 0,
+        ("week %s: weekly-series calls=%s vs funnel complete-week calls=%s — "
+         "delta %+d rows. Two renderings of ONE population disagree: "
+         "weekly_series re-applies the live predicates on top of "
+         "is_real_external; the view DDL and those predicates are no longer "
+         "the same definition (or the funnel's canonical SQL differs)."
+         % (wk, wc, fc, delta))
+        if delta != 0 else
+        "week %s: both surfaces publish %s calls" % (wk, wc),
+        critical=True)]
+
+
 _LANES = [
     ("press_level", "A published LEVEL vs a superseded population", _lane_press_level),
     ("backup_health", "Backup feeds are actually healthy", _lane_backup_health),
@@ -600,6 +645,7 @@ _LANES = [
     ("retention_population", "Every cohort declares its denominator", _lane_retention_population),
     ("gateway_disclosure", "A dominant gateway is disclosed", _lane_gateway_disclosure),
     ("prose_vs_data", "Published prose matches its payload", _lane_prose_vs_data),
+    ("series_parity", "One complete week has one call count", _lane_series_parity),
 ]
 
 
@@ -614,6 +660,8 @@ def _run() -> dict:
         "funnel": _get_json("/api/v1/mcp/funnel"),
         "deadman": _get_json("/api/v1/ops/deadman"),
         "retention": _get_json("/api/v1/mcp/retention"),
+        # Lane I. weeks=2 keeps the read cheap; only weeks[-1] is used.
+        "weekly_series": _get_json("/api/v1/reports/weekly-series?weeks=2"),
     }
     lanes = []
     for lid, name, fn in _LANES:

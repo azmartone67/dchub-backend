@@ -406,6 +406,19 @@ _DISPATCH = [
      "POST",
      lambda now: True),
 
+    # QA sweep 2026-09-02 (finding 5:9): paid-customer ACTIVATION emails —
+    # day-1 "your first query, pre-filled" + day-3 no-usage nudge. 17/17
+    # paying customers had calls_total=0; the two fastest cancels (day 4, day
+    # 6) never made a call. Hourly window (wide, per the contract above).
+    # Idempotent by ledger (UNIQUE customer_id+step, reserved before send).
+    # ★ DARK: ACTIVATION_EMAILS_ENABLED must be exactly "1" for a send; until
+    # then the tick reports would_send and writes nothing. _hit() attaches
+    # X-Admin-Key. Registered in tools/kill_switch_probe.py with intent OFF.
+    ("activation_emails_sweep",
+     f"{BASE}/api/v1/admin/activation-emails/run",
+     "POST",
+     lambda now: now.minute < 10),
+
     # 2026-07-16: optimization-engine pre-warm — EVERY invocation. A COLD
     # leadership/utilization tick costs ~13.7s (6 internal prefetches), which
     # exceeds the CF worker's per-attempt timeout → failover → the stale
