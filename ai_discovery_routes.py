@@ -179,7 +179,7 @@ def register_discovery_routes(app):
                 "version": _ver,
                 "description": canon_text(
                     "DC Hub provides real-time data center intelligence: "
-                    "facility search ({canon_facilities} facilities, "
+                    "facility search ({canon_facilities} distinct facilities, "
                     "{canon_countries} countries), "
                     "M&A deal tracking, construction pipeline data, "
                     "energy pricing, and site scoring."
@@ -271,7 +271,7 @@ def register_discovery_routes(app):
                     "get": {
                         "operationId": "searchFacilities",
                         "summary": "Search data center facilities",
-                        "description": canon_text("Search {canon_facilities} facilities by location, provider, or market"),
+                        "description": canon_text("Search {canon_facilities} distinct facilities by location, provider, or market"),
                         "parameters": [
                             {"name": "q", "in": "query", "schema": {"type": "string"}, "description": "Search term (city, provider, market)"},
                             {"name": "country", "in": "query", "schema": {"type": "string"}, "description": "ISO 3166-1 alpha-2 country code"},
@@ -496,13 +496,13 @@ def register_discovery_routes(app):
             "name_for_human": "DC Hub Data Center Intelligence",
             "name_for_model": "dchub",
             "description_for_human": canon_text(
-                "Search {canon_facilities} data centers worldwide, track M&A deals, "
+                "Search {canon_facilities} distinct data centers worldwide, track M&A deals, "
                 "analyze sites for data center suitability, and get real-time "
                 "energy infrastructure data."
             ),
             "description_for_model": canon_text(
                 "DC Hub provides real-time data center intelligence: "
-                "facility search ({canon_facilities} facilities, "
+                "facility search ({canon_facilities} distinct facilities, "
                 "{canon_countries} countries), "
                 "M&A deal tracking ({canon_deals} deals), construction pipeline data, "
                 "grid data for {canon_isos} US ISOs, daily DCPI BUILD/CAUTION/"
@@ -558,7 +558,7 @@ def register_discovery_routes(app):
             "version": canon_text("{canon_version}"),
             "description": canon_text(
                 "The de-facto MCP server for data center market "
-                "intelligence. {canon_facilities} facilities across "
+                "intelligence. {canon_facilities} distinct facilities across "
                 "{canon_countries} countries, "
                 "DCPI (Data Center Power Index) for {canon_markets} "
                 "markets, M&A transactions ({canon_deals} deals tracked), "
