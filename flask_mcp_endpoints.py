@@ -2059,6 +2059,34 @@ def identify_key():
                     )
                     trow = cur.fetchone()
                     if trow:
+                        # ★★★ 2026-09-02: THE THIRD BIND PATH NEVER MIRRORED.
+                        # routes/auto_trial calls _mirror_trial_to_mcp_dev_keys
+                        # from BOTH of its bind endpoints (940 signed_up_email,
+                        # 987 operator_email) so a later Stripe payment by this
+                        # email flips THIS key's tier — the r88h hands-free
+                        # unlock. This endpoint binds the same column and never
+                        # called it, so a key bound here got no mcp_dev_keys row
+                        # and the webhook had nothing to lift: the agent pays and
+                        # its own key stays free. That is the identified->paid
+                        # leak r88h was built to close, still open on this path.
+                        #
+                        # Measured 2026-09-02: of 4 binds after the mirror
+                        # shipped (2026-06-30), only 1 has an mcp_dev_keys row.
+                        # Same shape as this path's earlier signed_up_email miss
+                        # (see the comment above) — one bind path quietly not
+                        # doing what the other two do.
+                        #
+                        # Ordering: the mirror opens its OWN connection and is
+                        # internally fail-soft, so it cannot break this bind. It
+                        # runs before this block's commit; on a failed commit the
+                        # row is still keyed to a key the agent holds and the
+                        # INSERT is ON CONFLICT DO UPDATE, so it is idempotent.
+                        try:
+                            from routes.auto_trial import (
+                                _mirror_trial_to_mcp_dev_keys as _mirror)
+                            _mirror(api_key, email)
+                        except Exception:
+                            pass  # never let the mirror affect the bind
                         return jsonify(
                             ok=True, identified=True, key_type="trial",
                             operator_email=email,
