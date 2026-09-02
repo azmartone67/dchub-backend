@@ -57,268 +57,286 @@ _CATEGORIES = [
 # get_fiber_intel, get_dchub_recommendation) are "pro"; the email-key
 # group is "identified"; everything else is anonymous "free". Every
 # summary is >=80 chars so the brain MCP-health detector grades them A.
-TOOLS = [
-    # ── DECISION ── (given criteria, pick the best markets/sites/ISOs)
-    ("rank_markets",          "decision",       "identified",
-     "Use when a user wants 'the top N markets for X' — one ranked list across the 300+-market set instead of N separate get_market_intel calls. Example: 'What are the 10 fastest-growing US markets with at least 100MW of capacity?'. Params: criteria one of cheapest_power|most_capacity|most_operators|fastest_growing|best_overall (default best_overall); region one of global|us|canada|eu|apac|americas (default us); limit 1-50; min_capacity_mw floor. Returns: {criteria, region, markets:[{rank, slug, name, country, score, criterion_value, dcpi_verdict, attribution_url}], total_eligible}. Do NOT use for one market deep read (use get_market_intel) or single lat/lon scoring (use analyze_site).",
-     'rank_markets(criteria="fastest_growing", region="us", limit=10, min_capacity_mw=100)'),
-    ("find_alternatives",     "decision",       "free",
-     "Given a target facility, find similar nearby alternatives ranked by a weighted match on capacity, tier, and proximity. Returns similarity_score, match_reasons, and key_differences for each.",
-     'find_alternatives(facility_id="qts-ashburn", radius_km=50, limit=5)'),
-    ("compare_isos",          "decision",       "identified",
-     "Use when a user wants a pairwise side-by-side of 2-4 ISO grids — fuel mix, demand, real-time prices, carbon intensity — in one call instead of N sequential get_grid_data calls. Example: 'Compare PJM vs ERCOT vs CAISO on price, gas share, and carbon intensity right now.'. Params: isos = comma-separated list (2-4 max) from PJM|ERCOT|CAISO|MISO|SPP|NYISO|ISO-NE|HYDROQUEBEC|AESO|NORDPOOL. Returns: {isos[], comparison:{<iso>:{demand_mw, lmp_usd_per_mwh, fuel_mix_pct, carbon_intensity_g_per_kwh, renewable_pct}}, as_of}. Do NOT use to rank ALL grids globally (use get_grid_scoreboard) or the per-ISO queue brief (use get_grid_intelligence).",
-     'compare_isos(isos="PJM,ERCOT,CAISO")'),
-    ("ai_capacity_index",     "decision",       "identified",
-     "AI Compute Capacity Index — ranks markets by where 100MW of AI training capacity can land in the next 30/60/90 days. Returns facility_count, deployable_mw, hyperscale_ready flag, and composite score.",
-     'ai_capacity_index(horizon=90, limit=20)'),
-    ("get_dchub_recommendation","decision",     "pro",
-     "Use when a user asks an open-ended siting question ('where should I put a 100MW AI training cluster?') and you want ONE call that returns a ready-to-quote answer instead of orchestrating 5+ separate tools. Example: 'Where should I site a 100MW AI training campus in Texas with short time-to-power?'. Params: context = free-text describing the user request (MW, geography, workload, deadline, constraints). Returns: {top_markets:[{slug, name, verdict (BUILD/CAUTION/AVOID), composite_score, excess_power_mw, time_to_power_months, why}], candidate_facilities[], factor_breakdown, summary_text (LLM-quotable, CC-BY-4.0), citation_url}. Do NOT use for a single specific lat/lon (use analyze_site) or to rank by ONE criterion (use rank_markets).",
-     'get_dchub_recommendation(context="100MW AI training campus in Texas")'),
-    # ── INTELLIGENCE ── (facts about markets, facilities, deals)
-    ("get_market_intel",      "intelligence",   "identified",
-     "Use when a user asks about ONE data-center market — vacancy, capacity pricing, supply pipeline, dominant operators, YoY growth — across any of 300+ markets. Example: 'What is Northern Virginia\\'s vacancy rate, $/MW-day pricing, and current DCPI verdict?'. Params: market = market_slug (e.g. northern-virginia, dallas, phoenix, frankfurt, tokyo, singapore). Returns: {market, country, capacity_mw_total, capacity_mw_under_construction, vacancy_pct, absorption_mw_ttm, price_per_mw_day_usd, yoy_growth_pct, dominant_operators[], dcpi_verdict, composite_score, last_updated}. Do NOT use to rank multiple markets (use rank_markets) or for one facility (use get_facility).",
-     'get_market_intel(market="northern-virginia")'),
-    ("get_market_dcpi_rank",  "intelligence",   "free",
-     "DCPI rank for one market: BUILD/CAUTION/AVOID verdict, 0-100 composite_score, excess_power_score, constraint_score, time_to_power_months — plus a ~100-word analyst narrative ready to cite (CC-BY-4.0).",
-     'get_market_dcpi_rank(market_slug="northern-virginia")'),
-    ("get_intelligence_index","intelligence",   "identified",
-     "Real-time composite market health score (0-100) aggregating supply/demand balance, vacancy, absorption velocity, fiber depth, power availability, and pricing trend, with percentile rank and 7d/30d trend.",
-     'get_intelligence_index(market="northern-virginia")'),
-    ("get_news",              "intelligence",   "free",
-     "Curated data center industry news from 40+ trade sources (DCD, Data Center Frontier, Capacity Media, etc.) refreshed every 30 min. Returns title, summary, source, published_at, and entities mentioned.",
-     'get_news(topic="AI", limit=10)'),
-    ("get_pipeline",          "intelligence",   "identified",
-     "Use when a user asks 'what is being built / announced / permitted' in a market or by an operator — the forward-looking construction pipeline (540+ projects, 369 GW). Example: 'What data centers are under construction in Northern Virginia and when do they come online?'. Params: status one of announced|permitted|construction|operational; operator (e.g. Equinix, Digital Realty, AWS); country (ISO-2 like US, DE); min_capacity_mw (e.g. 50 for hyperscale); expected_completion_before (ISO date). Returns: {projects:[{name, operator, capacity_mw, status, expected_commissioning, market_slug, country, lat, lon}], total}. Do NOT use for operational facilities (use search_facilities) or M&A flow (use list_transactions).",
-     'get_pipeline(market="northern-virginia", status="construction")'),
-    ("list_transactions",     "intelligence",   "identified",
-     "M&A and capital transactions in the data center sector — 1,400+ tracked deals (2019-present). Returns deal name, buyer, seller, value, date, market, target operator, and deal type.",
-     'list_transactions(year=2026, min_value_usd=1000000000)'),
-    ("hyperscaler_deals",     "intelligence",   "identified",
-     "Hyperscaler AI Deal Tracker — live feed of Stargate, OpenAI, Anthropic, Microsoft, Oracle, CoreWeave, NVIDIA, sovereign-AI deals. Extracts $-figures + MW and classifies by actor. ~$1B+/week typical.",
-     'hyperscaler_deals(limit=20)'),
-    ("get_agent_registry",    "intelligence",   "free",
-     "AI platforms + agent frameworks currently calling DC Hub (Claude and Cursor, Groq, Cursor, Cline, Continue, Windsurf) with citation counts, tool-usage breakdown, and tier.",
-     'get_agent_registry()'),
-    # ── INFRASTRUCTURE ── (the physical-layer signals)
-    ("get_grid_data",         "infrastructure", "identified",
-     "Real-time electricity grid data across 7 US ISOs (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE) + Hydro-Quebec (Canada), AESO (Alberta), Nord Pool (15 European zones). Fuel mix, demand, prices.",
-     'get_grid_data(iso="PJM")'),
-    ("get_grid_intelligence", "infrastructure", "pro",
-     "Use when a user asks 'can I get N MW of power in <ISO> and how long will it take?' — the flagship grid-headroom + interconnection-queue brief for one ISO. Example: 'How much excess power does PJM have right now and what is the time-to-power for a 200MW load?'. Params: region_id (aliases iso/region) one of PJM|ERCOT|CAISO|MISO|SPP|NYISO|ISO-NE|HYDROQUEBEC|AESO|NORDPOOL. Returns: {iso, excess_power_mw, constraint_score (0-100), queue_depth_mw, queue_depth_count, avg_time_to_power_months, top_constraints[], data_center_share_pct, generation_mix_pct, last_updated}. Do NOT use to compare 2+ ISOs (use compare_isos) or for the global greenest-first ranking (use get_grid_scoreboard).",
-     'get_grid_intelligence(region_id="PJM")'),
-    ("get_interconnection_queue","infrastructure","identified",
-     "ISO interconnection queue snapshot: total large-load MW queued per ISO, data-center share %, and top BUILD subregions with Time-to-Power (TTP) months. Sources: ERCOT MIS, PJM, MISO, SPP, CAISO, NYISO, ISO-NE.",
-     'get_interconnection_queue(iso="ERCOT")'),
-    ("get_fiber_intel",       "infrastructure", "pro",
-     "Use when scoring a site for fiber depth, mapping long-haul routes between metros, or locating carrier-advertised dark-fiber corridors for a hyperscale build. Example: 'Show all Lumen long-haul fiber routes through Northern Virginia I can put on a Leaflet map.'. Params: carrier one of Lumen|Zayo|Crown Castle|Cogent|Verizon|AT&T (omit for all 6); route_type one of metro|longhaul|dark|ix. Returns: GeoJSON FeatureCollection {features:[{geometry, properties:{carrier, route_type, service_class ('dark'=carrier-advertised corridor, not confirmed strands), v, fiber_count, distance_miles}}]} ready to drop into Leaflet/Mapbox. Per-route lit capacity is NOT tracked. Do NOT use to count fibers at one facility (use get_facility) or for IX density scores (use analyze_site).",
-     'get_fiber_intel(carrier="Lumen", route_type="longhaul")'),
-    ("get_water_risk",        "infrastructure", "free",
-     "USGS water stress index + Drought Monitor risk for any US location by state, county, or lat/lon. Returns stress score (0-100), drought category (D0-D4), 12-month outlook, and cooling-water sustainability.",
-     'get_water_risk(state="AZ")'),
-    ("get_energy_prices",     "infrastructure", "identified",
-     "Energy pricing across the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool): retail rates, natural gas, and real-time grid status. Filter by state or ISO to compare delivered power costs for site selection.",
-     'get_energy_prices(state="VA", iso="PJM")'),
-    ("get_renewable_energy",  "infrastructure", "identified",
-     "Use when siting a renewable-powered data center, sizing a PPA, or assessing RE100/24-7-CFE feasibility for one US state. Example: 'What is Texas wind+solar capacity and how much utility-scale solar is operating today?'. Params: energy_type one of solar|wind|combined (omit for all); state = 2-letter US code (TX, VA, AZ); lat+lon (optional) for nearest projects within 50mi. Returns: {capacity_mw_total, by_fuel:{solar_utility, solar_rooftop, wind_onshore, wind_offshore}, capacity_factor_pct, top_projects[{name, mw, operator, cod}], state_rps_target_pct, source:'EIA-860 + state RPS'}. Do NOT use for live grid generation (use get_grid_data) or non-US (use get_grid_scoreboard).",
-     'get_renewable_energy(energy_type="solar", state="TX")'),
-    ("get_tax_incentives",    "infrastructure", "free",
-     "Data center tax incentive packages by US state — sales-tax exemptions, property-tax abatements, income-tax credits, electricity-tax discounts, minimum-investment thresholds, expiration dates, and statutes.",
-     'get_tax_incentives(state="VA")'),
-    ("get_infrastructure",    "infrastructure", "identified",
-     "Nearby infrastructure for a location — substations (count + max voltage_kv), transmission lines (>69 kV), interstate + lateral gas pipelines, and power plants (operating + planned) within a radius. HIFLD/EIA.",
-     'get_infrastructure(lat=33.45, lon=-112.07, radius_km=25)'),
-    ("get_gas_index",         "infrastructure", "free",
-     "Data Center Gas Index (DCGI) — DC Hub's 0-100 per-US-state natural-gas suitability score (the gas analog to DCPI): gas_access_score, gas_cost_score, interstate-pipeline count, operators, and a GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED verdict. Omit state for the national ranking.",
-     'get_gas_index(state="TX")'),
-    ("get_grid_scoreboard",   "infrastructure", "identified",
-     "Live all-ISO grid scoreboard — all 7 US grid operators (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE) ranked side-by-side right now by renewable share %, gas share %, full fuel mix, and demand. Answers 'which US grid is greenest / most gas-reliant?' in one call. EIA hourly RTO.",
-     'get_grid_scoreboard()'),
-    # ── PORTFOLIO + SEARCH ── (facility-level search, scoring, comparison)
-    ("search_facilities",     "portfolio",      "free",
-     canon_text("Search {canon_facilities} global data center facilities across 170+ countries by location, capacity (MW), operator, fiber connectivity, status, or DCPI verdict. Returns name, provider, lat/lon, power_mw, fiber count."),
-     'search_facilities(country="US", state="VA", min_mw=10, status="operational")'),
-    ("get_facility",          "portfolio",      "identified",
-     "Full metadata for one facility — name, operator, address, lat/lon, power capacity (MW total/used), cooling type, fiber providers, commissioning year, status, its market DCPI verdict, and peer facilities.",
-     'get_facility(slug="digital-realty-iad8")'),
-    ("score_facility",        "portfolio",      "free",
-     "Independent facility scoring across 7 dimensions: power, fiber, water, climate_risk, tax_environment, talent_pool, expansion. Returns composite 0-100 + tier_classification + peer comparison + per-dimension detail.",
-     'score_facility(facility_id="qts-ashburn", weighting="balanced")'),
-    ("analyze_site",          "portfolio",      "pro",
-     "Use when a user has ONE specific lat/lon (a parcel, a candidate site) and wants the full multi-factor data-center suitability read in one call. Example: 'Score this Phoenix parcel for a 100MW build — grid, fiber, water, tax, climate.'. Params: lat (-90 to 90, required), lon (-180 to 180, required), capacity_mw (target MW, e.g. 50-500), state (2-letter US, optional), include_grid/include_risk/include_fiber (bools, default true). Returns: {composite_score (0-100), verdict (BUILD/CAUTION/AVOID), grid_headroom_mw, nearest_substation_km, max_voltage_kv, fiber_carrier_count, nearest_ix_km, water_stress_score, drought_category, climate_risk_score, tax_incentive_value_usd, biggest_risk_factor, recommended_action}. Do NOT use to compare 2+ sites (use compare_sites) or to find matches (use find_alternatives).",
-     'analyze_site(lat=33.45, lon=-112.07, capacity_mw=100)'),
-    ("compare_sites",         "portfolio",      "pro",
-     "Use when a user has narrowed to 2-4 candidate parcels and wants a side-by-side winner picker — grid headroom, fiber, water, tax, climate — with a recommended pick and the reason. Example: 'Compare a Phoenix parcel and an Ashburn parcel for a 50MW build — which wins and why?'. Params: locations = semicolon-separated list of 'lat,lon' pairs (2-4 max); capacity_mw = target load (50-500). Returns: {sites:[{lat, lon, composite_score, verdict, grid_headroom_mw, nearest_substation_km, fiber_carrier_count, water_stress_score, tax_incentive_value_usd, biggest_risk}], winner:{lat, lon, why}, decision_rationale}. Do NOT use for one site (use analyze_site) or to rank entire markets (use rank_markets).",
-     'compare_sites(locations="39.04,-77.48;33.45,-112.07", capacity_mw=50)'),
-    ("get_backup_status",     "portfolio",      "free",
-     "DC Hub platform health: database backup status, data freshness across 49 sources (green/yellow/red), agentic heartbeat score (0-100), MCP call volume, and DCPI recompute cadence — trust/uptime signals.",
-     'get_backup_status()'),
-    # ── DC Hub DECISION-LAYER PRODUCTS (2026-06-03) ─────────────────────────
-    # Shipped in dchub-mcp-server/server.mjs the same day; SYNTHESIS layer is
-    # gated server-side by tier_gate (paid keys see verdict/thesis/autopsy
-    # narrative; free/anon agents see the ranked shortlist hook + citations).
-    ("site_selection_canvas", "decision",       "free",
-     "Guided end-to-end data-center site selection. Give a capacity target + geography + deadline and get a ranked shortlist of US markets (DCPI verdict, excess-power headroom, time-to-power, ISO) — and, with a paid key, the synthesis decision layer: the #1 pick, the why, a build sequence, and risk flags.",
-     'site_selection_canvas(capacity_mw=100, region="TX", max_months=24)'),
-    ("grid_transition_radar", "decision",       "free",
-     "Forward-looking 'where is the next hyperscale-friendly grid emerging' radar. Returns the US markets + ISOs with the strongest near-term emergence signal (BUILD verdict + excess-power headroom + short time-to-power), an ISO rollup, and a grid-headroom leaderboard. Paid key adds the transition thesis.",
-     'grid_transition_radar(max_months=24)'),
-    ("deal_autopsy",          "intelligence",   "free",
-     "Tracked data-center M&A / capex deal flow with the DCPI grid-reality verdict overlaid on each deal market — 'what is the real play?'. Returns recent deals (buyer, seller, value, market) + each market DCPI verdict and time-to-power; paid key adds the per-deal autopsy narrative.",
-     'deal_autopsy(limit=15)'),
-    # ── Agent MOAT — persistence + monitoring + incremental sync (2026-06-06).
-    # Live in server.mjs; turns DC Hub from a stateless lookup into agent state.
-    ("get_changes",           "intelligence",   "free",
-     "Incremental sync — what changed in DC Hub since a timestamp (DCPI 7-day movers, newly discovered facilities, new M&A deals, news) so an agent pulls only the delta instead of re-fetching everything. Pass since=<ISO> or '24h'/'7d'.",
-     'get_changes(since="7d")'),
-    # r-free-shortlist + r-free-alerts (2026-06-24): the persist + monitor
-    # retention loop is FREE-with-a-key, not PRO — see PRO_ONLY_TOOLS below.
-    # "identified" (not "free") because persistence needs a key to hang an
-    # account off: anon gets 401 auth_required from _require_keyed_user().
-    ("save_site",             "portfolio",      "identified",
-     "Save a candidate site (lat/lon + optional name/state/market/target_mw/notes) to your DC Hub account so an agent can track + revisit it across sessions — free with a key, call claim_free_key if you don't have one. Returns the saved site id.",
-     'save_site(lat=39.04, lon=-77.48, name="Ashburn parcel", target_mw=100)'),
-    ("list_saved_sites",      "portfolio",      "identified",
-     "List the sites saved to your account — the persistent shortlist from save_site, each with its saved DCPI score, target MW, market, and notes, plus how each has moved since you saved it. Free with a key.",
-     'list_saved_sites()'),
-    ("set_market_alert",      "portfolio",      "identified",
-     "Subscribe to movement alerts for a DCPI market — get notified when its Excess-Power / Constraint score moves. Lets an agent MONITOR markets, not just query them. Free with a key: email alerts go to the address your human bound via bind_email (call that first — the destination is forced to it). Webhook delivery is Pro.",
-     'set_market_alert(market="northern-virginia", channel="email")'),
-    ("export_dataset",        "portfolio",      "pro",
-     "Bulk export your saved sites as CSV or GeoJSON for offline analysis / ingestion.",
-     'export_dataset(format="csv")'),
-    # r-catalog-46 (2026-06-20): the 8 tools that were live on the MCP server
-    # (tools/list=46) but missing from this catalog (=42) → drift across every
-    # catalog-fed manifest. Backfilled so LIVE_MCP_TOOL_COUNT + the well-known /
-    # card surfaces all read 46. (set_site_alert was also added to PRO_ONLY_TOOLS
-    # then; r-free-alerts un-gated it on 2026-06-24 — see PRO_ONLY_TOOLS below.)
-    # ── INFRASTRUCTURE ──
-    ("get_fiber_readiness",   "infrastructure", "identified",
-     "Fiber-readiness verdict for ONE parcel (lat/lon): near-net distance to a carrier-served facility, how many distinct carriers can serve it, and single-carrier path-diversity risk — the connectivity screen site-selectors run before committing.",
-     'get_fiber_readiness(lat=39.04, lon=-77.48, radius_km=50)'),
-    ("get_gas_economics",     "infrastructure", "identified",
-     "Behind-the-meter / gas-fired power ECONOMICS for a US data-center market: Henry Hub spot, basis differential, delivered industrial + electric gas tariff, and the gas-to-grid levelized cost ($/MWh) across CCGT/peaker heat-rate scenarios.",
-     'get_gas_economics(market="northern-virginia")'),
-    ("plan_fiber_leadin",     "infrastructure", "identified",
-     "Plan N diverse, road-following fibre lead-in routes from a candidate site to a carrier hotel / POP, each with length + GeoJSON geometry, a route-diversity read, and indicative build cost. Indicative auto-routed corridors, not engineered alignments.",
-     'plan_fiber_leadin(from="250 Paringa Rd, Murarrie QLD", to="20 Wharf St, Brisbane QLD", n=4)'),
-    # r-cluster-open (2026-07-11): OPEN/adoption-first by design (Gemini
-    # partnership spec) — /api/v1/fiber/cluster-latency is on free_tier_gate's
-    # open-exemption list and the MCP layer exempts it from the anon trim
-    # (server.mjs FREE_FULL_TOOLS), so the catalog tier is "free", NOT
-    # "identified" like the other fiber tools.
-    ("cluster_sites_by_latency", "infrastructure", "free",
-     "Physics-bounded latency clustering across 2-8 candidate sites: per-pair haversine distance, round-trip physics floor (km × 4.9 µs/km ×2), estimated real RTT, viable vs physics-impossible against your µs budget, and the largest site subsets whose pairwise estimates all fit — deterministic pruning before detailed routing.",
-     'cluster_sites_by_latency(sites="39.04,-77.48:ashburn;38.98,-77.42:sterling", max_latency_us=2000)'),
-    # ── PORTFOLIO ──
-    # r-free-alerts (2026-06-24): free with a key, destination bound-email-locked.
-    ("set_site_alert",        "portfolio",      "identified",
-     "Arm an email watch on a site you already saved (free with a key): DC Hub emails you when that site's DCPI score, grid capacity, or nearby facilities move — the 'monitor my shortlist' loop. Call save_site first, then set_site_alert on the returned id. On the free tier the alert is delivered to your human's bind_email address (notify_email is forced to it); Pro can send anywhere.",
-     'set_site_alert(saved_site_id=12, trigger_type="dcpi_change", threshold=5, notify_email="you@firm.com")'),
-    # ── ACCOUNT & ACCESS ──
-    ("claim_free_key",        "account",        "free",
-     "Mint a FREE DC Hub dev key instantly — no email, no browser, one call. Returns an api_key you set as the X-API-Key header to unlock the full free tier (10 calls/day, all 300+ markets + grid/fiber/DCPI). The fastest path from anonymous to identified.",
-     'claim_free_key(client_name="your-agent")'),
-    ("bind_email",            "account",        "free",
-     "Tie your DC Hub key to your human's email so the key is RECOVERABLE and upgrade receipts reach the right inbox. Optional — the key already works without it. Email is used ONLY for recovery + transactional receipts (no marketing without opt-in).",
-     'bind_email(email="you@firm.com")'),
-    ("recover_my_key",        "account",        "free",
-     "Recover a LOST DC Hub key: pass your human's email and DC Hub re-sends any key tied to that address to that inbox. It never returns the key over the wire, and the confirmation is enumeration-safe (identical whether or not a key exists).",
-     'recover_my_key(email="you@firm.com")'),
-    ("unlock_more_data",      "account",        "free",
-     "Unlock DC Hub's full depth — call this when a result came back as a 1-of-N preview or a tool was locked. Returns the upgrade ladder + ready-to-paste one-click checkout links your human completes in one click; cheapest start is $10 one-time = 1,000 API calls.",
-     'unlock_more_data(reason="need the full market report")'),
-    # ── r-catalog-73 (2026-07-11): the 26 tools that were live on the MCP server
-    # (tools/list=73) but missing from this hand catalog (=47) → drift across every
-    # catalog-fed manifest (/.well-known/mcp.json via tools_for_well_known, /mcp/tools,
-    # /api/v1/mcp/tools.json). Backfilled from server.mjs trackedTool() + the live
-    # tools/list descriptions so LIVE_MCP_TOOL_COUNT + every discovery surface read 73.
-    # Tiers mirror server.mjs: only generate_site_analysis is PAID/PRO_ONLY_TOOLS → "pro";
-    # the rest are anonymous "free" (none are in PAID_ONLY_TOOLS; get_gas_intelligence /
-    # get_iso_context / get_market_context are DEPTH_TEASE_TOOLS but that's a preview
-    # behavior, not a base gate — same as get_gas_index/grid_transition_radar above).
-    # ── SITE GEOMETRY + SCORING (portfolio) ──
-    ("analyze_parcel",        "portfolio",      "free",
-     "Structured read of a parcel BOUNDARY — pass a GeoJSON Polygon/MultiPolygon, OR just lat+lon to find the containing parcel in DC Hub's hosted county/state GIS layer (free polygons rolling out by market, Loudoun County VA first; a point outside coverage returns an honest 404 with the coverage list, never a guess). Returns geodesic total_acres, a per-part acreage breakdown, a contiguous flag, representative_point = the centroid of the LARGEST part (never an off-parcel multi-part centroid that poisons every point-keyed read), and a site_evaluation_handoff to pipe into analyze_site + get_water_risk. Use when you HAVE a boundary or a point on a specific parcel; for a general lat/lon site score use analyze_site.",
-     'analyze_parcel(lat=39.04, lon=-77.48, capacity_mw=100)'),
-    ("get_composite_site_score","portfolio",    "free",
-     "Use when a user wants ONE honest 0-100 site suitability/risk verdict for a lat/lon WITH an explicit per-factor coverage map — which factors are actually measured vs declared unavailable. Scores ONLY over VALIDATED factors and never imputes a missing one: power/grid, fiber, natural-hazard risk (FEMA NRI) and water (live WRI Aqueduct 4.0 baseline stress) are live; water is 'unavailable' outside basin coverage; market/DCPI is v1-unavailable (use rank_markets). Returns {composite_score, verdict (BUILD/CAUTION/AVOID), confidence, coverage{power_grid|fiber|water|risk_resilience|market_dcpi}, coverage_ratio, sub_scores, caveats}. Use analyze_site for the full raw data dump, compare_sites for 2-4 sites.",
-     'get_composite_site_score(lat=33.45, lon=-112.07, state="AZ")'),
-    ("rank_sites",            "portfolio",      "free",
-     "Deterministic multi-site ranking/optimization under constraints — the normalization contract that lets you compare sites across separate analyze_site calls WITHOUT dropping into code. Pass candidates you already enriched (each an object with lat/lng + metric fields like risk_resilience, water_stress, fiber_km, pulled from analyze_site + get_refined_queue), hard constraints, and weighted objectives (SIGNED: +weight maximizes a field, -weight minimizes it). Returns top_k ranked with rank, objective_score, per-field normalized{} (0-100 across the set), and normalization_basis; constraints are hard filters, fail-closed on a missing field. Alternatively re-rank a SAVED shortlist via shortlist_name. For one site use analyze_site; to get the candidate set first use get_refined_queue.",
-     'rank_sites(candidates=[{"lat":39.04,"lng":-77.48,"risk_resilience":72,"water_stress":30,"fiber_km":2.1}], constraints={"risk_resilience":{"min":50}}, objectives={"risk_resilience":1,"water_stress":-0.6,"fiber_km":-0.4})'),
-    ("generate_site_analysis","portfolio",      "pro",
-     "Use when a user wants a SHAREABLE, branded multi-page Site Analysis PDF for ONE lat/lon (a powered-land parcel, a candidate campus) — the polished client deliverable, not just a score. Params: lat, lon (required), capacity_mw (target load MW), prepared_for (client name on the cover), prepared_by (your firm — brands the report; defaults to DC Hub), use_case. Returns {survey:{verdict, power/transmission, gas, water, air-permitting, fiber carriers, latency-to-nearest-carrier-hotel, market, tax}, pdf_report_url} — a ready-to-open link to the branded 5-page PDF (no login, valid ~7 days) you hand to your human. For just the numeric suitability score (no PDF) use analyze_site instead.",
-     'generate_site_analysis(lat=37.694, lon=-88.65, capacity_mw=150, prepared_for="TON Infrastructure", prepared_by="Martone Advisors")'),
-    ("search",                "portfolio",      "free",
-     "Search DC Hub for relevant records in the OpenAI Deep Research / ChatGPT connector format — a natural-language query returns matching data-center facilities as {id, title, url}. Pass an id to the `fetch` tool for the full record, or open the url to cite the live facility page. For structured queries (by MW, operator, status, market) use search_facilities directly. Params: query (required).",
-     'search(query="data centers in Northern Virginia")'),
-    ("fetch",                 "portfolio",      "free",
-     "Fetch one DC Hub facility record by an id returned from the `search` tool — the OpenAI Deep Research / ChatGPT connector companion to `search`. Returns {id, title, text, url, metadata}: a citable public summary of one data-center facility (name, operator, location, status, market). For full structured specs (capacity MW, coordinates) use get_facility or open the url. Params: id (required).",
-     'fetch(id="equinix-dc1-ashburn")'),
-    ("get_shortlist",         "portfolio",      "free",
-     "Retrieve a saved siting shortlist. With refresh=true (default) each site is RE-SCORED against the current national percentile baseline and returns saved_score, current_score, and score_delta_since_saved — so you see whether a site slipped because IT changed or the POPULATION did. The reliable way to maintain a siting campaign across days/weeks; scoped to your API key. Params: name, refresh. Build the list with save_to_shortlist; set a drift alert with set_shortlist_alert.",
-     'get_shortlist(name="Q3-2026-1GW-targets", refresh=true)'),
-    ("save_to_shortlist",     "portfolio",      "free",
-     "Save a site into a PERSISTENT, named shortlist that survives across conversations — snapshots the site's objectives + its current percentile objective_score, so you can re-score it later against the evolving national baseline. Use to build a durable siting shortlist across days/weeks; scoped to your API key. Params: shortlist_name, site (required — {lat, lng, capacity_mw + the analyze_site metric fields you ranked on}), objectives (required — {field: signedWeight}), notes. Pair with get_shortlist to re-score + see drift and set_shortlist_alert to be notified when a site's standing moves.",
-     'save_to_shortlist(shortlist_name="Q3-2026-1GW-targets", site={"lat":39.04,"lng":-77.48,"capacity_mw":100,"risk_resilience":72}, objectives={"risk_resilience":1,"water_stress":-0.6})'),
-    ("set_shortlist_alert",   "portfolio",      "free",
-     "Set a DRIFT ALERT on a saved shortlist so you can stop polling and be notified when a site's national standing moves materially. Fires when any site's current percentile score < percentile_below OR score_delta_since_saved < delta_below (e.g. -8 = dropped 8 points vs when saved). Evaluated after each daily baseline refresh; delivers via webhook and/or email. Params: shortlist_name, percentile_below, delta_below, notify (required — {webhook} and/or {email}). The 'wake me when it matters' loop for long-running siting campaigns; scoped to your API key.",
-     'set_shortlist_alert(shortlist_name="Q3-2026-1GW-targets", delta_below=-8, notify={"email":"you@firm.com"})'),
-    ("suggest_reallocation",  "portfolio",      "free",
-     "When a saved site DRIFTS (its national standing dropped — surfaced by get_shortlist refresh or a set_shortlist_alert firing), get replacement candidates from the rest of that shortlist so the alert becomes an action, not just a warning. Returns TWO tiers — tier_1_same_region (a near-in tactical swap) and tier_2_cross_region (a different-region arbitrage) — each re-scored against the DRIFTED slot's own objectives, PLUS drift_is_systemic: if the rest of your shortlist also slipped the drop is region/baseline-wide (prefer cross_region); if peers held it's idiosyncratic (tactical_ok). Params: shortlist_name, drifted_site_ref (optional; defaults to the lowest-scoring site). Candidates come from THIS shortlist only (widen it with save_to_shortlist).",
-     'suggest_reallocation(shortlist_name="Q3-2026-1GW-targets")'),
-    # ── INFRASTRUCTURE (grid, gas, fiber, climate, hazard — the physical-layer signals) ──
-    ("get_power_pipeline",    "infrastructure", "free",
-     "Use when a user asks WHERE NEW POWER GENERATION is coming online (the forward supply pipeline) — 'how much new generation is planned in Virginia / ERCOT, and when?'. Planned, permitting, and under-construction generators NATIONWIDE from EIA-860M, INCLUDING non-ISO regions (TVA, Southern Co, Arizona PS, PacifiCorp, LADWP) that interconnection-queue feeds miss. Each generator has lat/lng, state, county, balancing authority, technology/fuel, nameplate MW, status, and planned online month/year. Filter by state, ba (BA/ISO code e.g. PJM, ERCO, SOCO, TVA), status (P/L/T=planned, U/V=under construction), or min_mw. Returns a summary (total planned MW, mix by technology + status) plus the largest projects. For already-operating capacity / grid headroom use get_grid_intelligence; for data-center construction use get_pipeline.",
-     'get_power_pipeline(state="VA", status="U")'),
-    ("get_refined_queue",     "infrastructure", "free",
-     "Server-side SET-REDUCTION over the US ISO interconnection queue (~5,300 projects, 7 ISOs, ~1,744 GW) — push predicates to the data layer instead of pulling the raw queue into context to filter. Filter by min_mw, max_ttp_months (ISO-level avg wait; HARD cut — SPP ~24 is the only ISO under 30, so use >=34 to include MISO/ERCOT/ISO-NE), iso (comma-union), baseload_only (firm/dispatchable — excludes wind/solar/storage), fuel_type, and the spatial max_fiber_km + geocoded_only. Returns per-project name, ISO, state/county, fuel, capacity_mw, queue_status, estimated_ttp_months plus (~83% of rows) lat/lng and a compact site_evaluation_handoff to pipe into analyze_site + get_water_risk. For the ISO-level GW aggregate use get_interconnection_queue; for a single-site read use analyze_site.",
-     'get_refined_queue(min_mw=1000, fuel_type="gas", max_ttp_months=34)'),
-    ("get_retirement_headroom","infrastructure","free",
-     "Scans scheduled EIA-860M generator retirements to find near-term transmission grid headroom — a retiring plant is a CONCRETE headroom event (its point of interconnection frees injection capacity), from FILED data, not forecasts. Returns retiring generators inside your horizon (name, MW, fuel, prime mover, retirement_date), representative_point, nearest substations with distance_km + count within 25 km, county-level queue_pressure (competing in-progress MW), iso_context, and a pre-filled site_evaluation_handoff (analyze_site + get_water_risk args, capacity_mw = YOUR target load). Honesty: meta.caveat flags that filed dates are subject to ISO reliability reviews (RMR extensions). Params: target_mw + horizon_months (required), region_iso, fuel_filter. For what's already queued use get_refined_queue; for one site use analyze_site.",
-     'get_retirement_headroom(target_mw=50, horizon_months=18, region_iso="MISO")'),
-    ("get_gas_intelligence",  "infrastructure", "free",
-     "The GAS analogue of get_grid_intelligence — use when a human asks about gas-fired / behind-the-meter power economics for a data center in a US state ('is gas power cheaper than the grid in Texas?'). Fuses the DC Hub Gas Index (DCGI), live Henry Hub, gas-to-grid $/MWh across heat-rate scenarios, pipeline-operator presence, and the live grid gas share into one per-STATE brief. Params: region (US state code or name). Returns {dcgi_score (0-100), dcgi_verdict (GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED), gas_access, henry_hub_usd_mmbtu, delivered_price_usd_mmbtu (null where the tariff table is sparse — surfaced honestly, never fabricated), gas_to_grid_usd_per_mwh, live_grid_gas_share_pct, headline_behind_meter_vs_grid_delta_usd_mwh, data_basis}. Firm pipeline capacity / LNG are deliberately OMITTED. For grid headroom use get_grid_intelligence; for the DCGI score alone use get_gas_index.",
-     'get_gas_intelligence(region="TX")'),
-    ("get_iso_context",       "infrastructure", "free",
-     "Use when an agent needs a WHOLE-grid briefing to drop straight into its context window — one call returns a token-budgeted context pack for a US ISO/RTO: live grid snapshot (demand, fuel-mix shares), DCPI verdict mix & grid economics across the ISO's tracked markets, interconnection-queue depth with the largest projects, real-time benchmark LMP, the tracked market list, deep-dive narrative excerpts, and recent news — each section with its own token count, as_of timestamp, and citable URL, greedily filled in priority order under your max_tokens budget. Params: iso (required: ERCOT, PJM, MISO, CAISO, SPP, NYISO, ISONE); max_tokens (200-8000, default 4000). For raw single-ISO telemetry use get_grid_data; for the decision brief with headroom/TTP use get_grid_intelligence; for multi-ISO scalar comparison use compare_isos.",
-     'get_iso_context(iso="ERCOT", max_tokens=4000)'),
-    ("get_metro_fiber",       "infrastructure", "free",
-     "Use when a user asks which US metro has the DEEPEST fiber, or wants a metro's fiber profile — carrier count, total route-miles, on-net buildings, a 0-100 fiber-density score, tier, key internet-exchange (IX) points and carrier hotels — across the tracked top US data-center metros (Northern Virginia, Dallas-Fort Worth, Silicon Valley, Chicago, Atlanta, Phoenix, and more). Params: market (optional metro name OR slug, e.g. 'Dallas-Fort Worth', 'ashburn'; omit to list every tracked metro ranked by density). Returns without market -> {markets:[{market, tier, fiber_density_score, total_carriers, total_route_miles, total_on_net_buildings}]}; with market -> {summary{...}, carriers:[{carrier, route_miles_approx, on_net_buildings, fiber_type, services}]} including dark-fiber routes. For the parcel-level connectivity verdict at one lat/lon use get_fiber_readiness; for long-haul route GEOMETRY use get_fiber_intel.",
-     'get_metro_fiber(market="Dallas-Fort Worth")'),
-    ("get_climate_intel",     "infrastructure", "free",
-     "Use when a user wants seismic + climate intel for a lat/lon — the layer that drives structural-bracing cost (seismic) and cooling design (cooling degree-days, extreme temps). Grounded STRICTLY in USGS ASCE 7 (seismic) + NOAA climate normals via ACIS; every value traces to a federal source and missing data is declared unavailable, never estimated. Returns {seismic_hazard_usgs:{peak_ground_acceleration_g, ss, s1, seismic_design_category, hazard_class}, climate_normals_noaa:{reference_station, cooling_degree_days_annual, extreme_max_dry_bulb_f, extreme_max_wet_bulb_f, data_vintage}, overall_climate_summary, sources}. radius_km (default 25) snaps to the nearest NOAA station; seismic is US-only (ASCE 7). For natural-hazard ratings use get_disaster_risk; for one blended verdict use get_composite_site_score.",
-     'get_climate_intel(lat=33.45, lon=-112.07)'),
-    ("get_disaster_risk",     "infrastructure", "free",
-     "Use when a user wants the natural-hazard / disaster risk for a lat/lon — flood, wildfire, hurricane, earthquake, heat, drought, tornado, etc. Grounded in the FEMA National Risk Index (NRI), the authoritative US county-level hazard dataset (live query, never estimated; a point outside US NRI coverage returns coverage=unavailable). Returns {disaster_risk:{composite_score (0-100, higher=worse), rating (Very Low..Very High), national_percentile}, hazards:{Wildfire, Hurricane, Earthquake, Heat Wave, ...: rating}, top_hazards[{hazard, rating}], coverage, source}. County-level resolution. For chronic water stress use get_water_risk; for one blended site verdict use get_composite_site_score.",
-     'get_disaster_risk(lat=33.45, lon=-112.07)'),
-    # ── MARKET INTELLIGENCE (describe markets, deals, change over time) ──
-    ("get_market_context",    "intelligence",   "free",
-     "Use when an agent needs a WHOLE-market briefing to drop straight into its context window — one call returns a token-budgeted context pack for a data-center market: DCPI verdict, power & grid facts, the Claude-written 12-month outlook, M&A deals, construction pipeline, operator footprint, transaction comps, risk factors, and top news — each section with its own token count, as_of timestamp, and citable URL, greedily filled in priority order under your max_tokens budget. Params: market (required slug e.g. northern-virginia — valid slugs come from rank_markets); max_tokens (200-8000, default 4000). For a single metric use get_market_dcpi_rank, the raw structured metric set use get_market_intel, cross-market ranking use rank_markets; this is the narrative briefing pack.",
-     'get_market_context(market="columbus", max_tokens=4000)'),
-    ("predict_market_trajectory","intelligence", "free",
-     "Forecast a DCPI market's near-term trajectory (next 1-8 quarters) — projects excess_power_score and constraint_score forward with confidence bands that WIDEN with horizon, from DC Hub's daily DCPI snapshot history (the only source that can, because it owns the time-series). Answers 'is this market trending toward BUILD or AVOID?' or 'will Dallas power stay tight over the next 6 months?'. Params: market_slug (required, e.g. dallas — valid slugs from rank_markets); horizon_quarters (1-8, default 4; 2 = ~6 months). Returns {basis{history_points, slope_per_day, trend}, projection[{quarter_out, excess_power_score, excess_power_band, constraint_score, constraint_band}], caveat}. HONEST: linear trend extrapolation, NOT a guarantee — bands widen with horizon and short history; needs >=3 daily snapshots. For a single point-in-time verdict use get_market_dcpi_rank; to rank many markets use rank_markets.",
-     'predict_market_trajectory(market_slug="dallas", horizon_quarters=4)'),
-    ("get_facility_risk_delta","intelligence",  "free",
-     "Use when a user asks what has CHANGED in a facility's (or its market's) risk profile recently — 'has this site gotten riskier lately?', 'which way is this market moving?' — a temporal question static-trained models can't answer. Returns the REAL DCPI market-health delta (excess-power score change over the window, direction improving/worsening/flat) from DC Hub's history-preserving daily snapshots. INTEGRITY: only DCPI market-health has a short-term temporal series; the site-hazard dimensions (FEMA disaster / USGS seismic / NOAA climate / WRI water) are DECLARED static with a pointer to the point-in-time tool, never a fabricated week-over-week delta. Params: facility_id OR market, since (default 7d). For the current point-in-time risk use get_composite_site_score / get_disaster_risk / get_climate_intel.",
-     'get_facility_risk_delta(market="northern-virginia", since="30d")'),
-    ("semantic_search",       "intelligence",   "free",
-     canon_text("Use for CONCEPTUAL / fuzzy questions where keyword filters fall short — semantic (meaning-based) retrieval across DC Hub's industry news, M&A deals, {canon_facilities} discovered facilities, and per-market DCPI deep-dive analysis narratives, ranked by relevance with citable source fields (news url/title, deal parties/value, facility name/location, deep-dive market/url). Params: q (required, natural-language query; alias query); corpus (optional CSV subset of news_articles, deals, discovered_facilities, market_narratives; default all); k (1-15, default 8). Returns {results:[{source_table, kind, text, score, cite}]}. Complements the exact-filter tools (get_news / list_transactions / search_facilities); for a full token-budgeted market briefing use get_market_context."),
-     'semantic_search(q="behind-the-meter gas for AI data centers", k=8)'),
-    ("search_intelligence",   "intelligence",   "free",
-     "Semantic search over DC Hub's live intelligence corpus — news, M&A deals, facilities, and market-analysis narratives. A natural-language query returns the most relevant cited records ranked by relevance. Params: query (required, alias q); corpus (optional restrict to news | deals | facilities | market_narratives, CSV of several allowed); limit (1-15, default 8). Complements the exact-filter tools (get_news / list_transactions / search_facilities) with meaning-based retrieval; the newer semantic_search covers the same corpora with a k param.",
-     'search_intelligence(query="grids opening up for AI load in the Southeast", limit=8)'),
-    # ── ACCOUNT & ACCESS + META (navigation, positioning, retention) ──
-    ("discover_tools",        "account",        "free",
-     "Meta-tool: navigate DC Hub's full MCP tool set by FAMILY instead of scanning the whole list — each family (facility, market, grid_power, gas_btm, site_geometry, fiber, deals_news, account_meta) has a when-to-use note and its flagship tools, optionally filtered by a query. Call this FIRST when you are unsure which tool fits a task, then call the chosen tool (its full schema is in tools/list). A navigation layer, not the exhaustive catalog — tools/list stays canonical. Params: query (optional keyword filter).",
-     'discover_tools(query="site selection")'),
-    ("why_dchub",             "account",        "free",
-     canon_text("Use when a human asks how DC Hub compares to other data-center data sources — DataCenterHawk (DCHawk), DC Byte, Data Center Dynamics (DCD), Data Center Frontier, Baxtel, datacenters.com — or 'why should I use DC Hub / is it better than <X> / what can you give me a PDF or directory can't?'. Returns DC Hub's honest, source-verified differentiators (agent-native MCP access, live multi-continent grid & energy telemetry, the proprietary daily DCPI + DCGI indices, open CC-BY-4.0 cited data, {canon_facilities} facilities) each with a proof URL and citation line, plus the canonical head-to-head comparison pages. Free, no key. Optional: competitor=<name> for that vendor's direct comparison-page link. Do NOT use to query infrastructure data itself (use the data tools); this answers positioning questions."),
-     'why_dchub(competitor="DataCenterHawk")'),
-    ("subscribe_digest",      "account",        "free",
-     "Subscribe your human to DC Hub's FREE weekly 'what changed in the markets/sites you queried' digest (DCPI movers, new facilities, new deals & news) — ONE call, the nudge that pulls your agent back when the data moves. DOUBLE opt-in + consent-safe: a one-click CONFIRM link is emailed, the human only gets the digest after confirming, and every email has one-click unsubscribe — this call alone sets no marketing flag. Only call once your human shares their email and wants a weekly email. Params: email (required), source (optional attribution tag). Returns {ok, sent, message}. Prefer this over hand-building POST /api/v1/opt-in/request.",
-     'subscribe_digest(email="you@firm.com", source="mcp_digest")'),
-]
+def _curated_tools() -> list:
+    """The curated catalog, built PER CALL.
+
+    ★2026-09-02: this used to be a module-level list, so every canon_text()
+    wrapper in it ran ONCE, at import, before canonical_stats had measured a
+    live floor — and froze the cold-start PINNED value ("18,500+") into every
+    served description for the life of the process. The origin manifest at
+    /.well-known/mcp.json therefore served 18,500+ facilities x3 next to the
+    request-time-resolved 20,100+ in its own description (measured at the
+    Railway origin, 2026-09-02). Building the list on each call makes the
+    catalog read the same live floor every request-time surface reads.
+    canon_text() is a dict lookup + str.replace per placeholder — cheap.
+    """
+    return [
+        # ── DECISION ── (given criteria, pick the best markets/sites/ISOs)
+        ("rank_markets",          "decision",       "identified",
+         "Use when a user wants 'the top N markets for X' — one ranked list across the 300+-market set instead of N separate get_market_intel calls. Example: 'What are the 10 fastest-growing US markets with at least 100MW of capacity?'. Params: criteria one of cheapest_power|most_capacity|most_operators|fastest_growing|best_overall (default best_overall); region one of global|us|canada|eu|apac|americas (default us); limit 1-50; min_capacity_mw floor. Returns: {criteria, region, markets:[{rank, slug, name, country, score, criterion_value, dcpi_verdict, attribution_url}], total_eligible}. Do NOT use for one market deep read (use get_market_intel) or single lat/lon scoring (use analyze_site).",
+         'rank_markets(criteria="fastest_growing", region="us", limit=10, min_capacity_mw=100)'),
+        ("find_alternatives",     "decision",       "free",
+         "Given a target facility, find similar nearby alternatives ranked by a weighted match on capacity, tier, and proximity. Returns similarity_score, match_reasons, and key_differences for each.",
+         'find_alternatives(facility_id="qts-ashburn", radius_km=50, limit=5)'),
+        ("compare_isos",          "decision",       "identified",
+         "Use when a user wants a pairwise side-by-side of 2-4 ISO grids — fuel mix, demand, real-time prices, carbon intensity — in one call instead of N sequential get_grid_data calls. Example: 'Compare PJM vs ERCOT vs CAISO on price, gas share, and carbon intensity right now.'. Params: isos = comma-separated list (2-4 max) from PJM|ERCOT|CAISO|MISO|SPP|NYISO|ISO-NE|HYDROQUEBEC|AESO|NORDPOOL. Returns: {isos[], comparison:{<iso>:{demand_mw, lmp_usd_per_mwh, fuel_mix_pct, carbon_intensity_g_per_kwh, renewable_pct}}, as_of}. Do NOT use to rank ALL grids globally (use get_grid_scoreboard) or the per-ISO queue brief (use get_grid_intelligence).",
+         'compare_isos(isos="PJM,ERCOT,CAISO")'),
+        ("ai_capacity_index",     "decision",       "identified",
+         "AI Compute Capacity Index — ranks markets by where 100MW of AI training capacity can land in the next 30/60/90 days. Returns facility_count, deployable_mw, hyperscale_ready flag, and composite score.",
+         'ai_capacity_index(horizon=90, limit=20)'),
+        ("get_dchub_recommendation","decision",     "pro",
+         "Use when a user asks an open-ended siting question ('where should I put a 100MW AI training cluster?') and you want ONE call that returns a ready-to-quote answer instead of orchestrating 5+ separate tools. Example: 'Where should I site a 100MW AI training campus in Texas with short time-to-power?'. Params: context = free-text describing the user request (MW, geography, workload, deadline, constraints). Returns: {top_markets:[{slug, name, verdict (BUILD/CAUTION/AVOID), composite_score, excess_power_mw, time_to_power_months, why}], candidate_facilities[], factor_breakdown, summary_text (LLM-quotable, CC-BY-4.0), citation_url}. Do NOT use for a single specific lat/lon (use analyze_site) or to rank by ONE criterion (use rank_markets).",
+         'get_dchub_recommendation(context="100MW AI training campus in Texas")'),
+        # ── INTELLIGENCE ── (facts about markets, facilities, deals)
+        ("get_market_intel",      "intelligence",   "identified",
+         "Use when a user asks about ONE data-center market — vacancy, capacity pricing, supply pipeline, dominant operators, YoY growth — across any of 300+ markets. Example: 'What is Northern Virginia\\'s vacancy rate, $/MW-day pricing, and current DCPI verdict?'. Params: market = market_slug (e.g. northern-virginia, dallas, phoenix, frankfurt, tokyo, singapore). Returns: {market, country, capacity_mw_total, capacity_mw_under_construction, vacancy_pct, absorption_mw_ttm, price_per_mw_day_usd, yoy_growth_pct, dominant_operators[], dcpi_verdict, composite_score, last_updated}. Do NOT use to rank multiple markets (use rank_markets) or for one facility (use get_facility).",
+         'get_market_intel(market="northern-virginia")'),
+        ("get_market_dcpi_rank",  "intelligence",   "free",
+         "DCPI rank for one market: BUILD/CAUTION/AVOID verdict, 0-100 composite_score, excess_power_score, constraint_score, time_to_power_months — plus a ~100-word analyst narrative ready to cite (CC-BY-4.0).",
+         'get_market_dcpi_rank(market_slug="northern-virginia")'),
+        ("get_intelligence_index","intelligence",   "identified",
+         "Real-time composite market health score (0-100) aggregating supply/demand balance, vacancy, absorption velocity, fiber depth, power availability, and pricing trend, with percentile rank and 7d/30d trend.",
+         'get_intelligence_index(market="northern-virginia")'),
+        ("get_news",              "intelligence",   "free",
+         "Curated data center industry news from 40+ trade sources (DCD, Data Center Frontier, Capacity Media, etc.) refreshed every 30 min. Returns title, summary, source, published_at, and entities mentioned.",
+         'get_news(topic="AI", limit=10)'),
+        ("get_pipeline",          "intelligence",   "identified",
+         "Use when a user asks 'what is being built / announced / permitted' in a market or by an operator — the forward-looking construction pipeline (announced, permitted and under-construction projects by market and operator). Example: 'What data centers are under construction in Northern Virginia and when do they come online?'. Params: status one of announced|permitted|construction|operational; operator (e.g. Equinix, Digital Realty, AWS); country (ISO-2 like US, DE); min_capacity_mw (e.g. 50 for hyperscale); expected_completion_before (ISO date). Returns: {projects:[{name, operator, capacity_mw, status, expected_commissioning, market_slug, country, lat, lon}], total}. Do NOT use for operational facilities (use search_facilities) or M&A flow (use list_transactions).",
+         'get_pipeline(market="northern-virginia", status="construction")'),
+        ("list_transactions",     "intelligence",   "identified",
+         canon_text("M&A and capital transactions in the data center sector — {canon_deals} tracked deals (2019-present). Returns deal name, buyer, seller, value, date, market, target operator, and deal type."),
+         'list_transactions(year=2026, min_value_usd=1000000000)'),
+        ("hyperscaler_deals",     "intelligence",   "identified",
+         "Hyperscaler AI Deal Tracker — live feed of Stargate, OpenAI, Anthropic, Microsoft, Oracle, CoreWeave, NVIDIA, sovereign-AI deals. Extracts $-figures + MW and classifies by actor. ~$1B+/week typical.",
+         'hyperscaler_deals(limit=20)'),
+        ("get_agent_registry",    "intelligence",   "free",
+         "AI platforms + agent frameworks currently calling DC Hub (Claude and Cursor, Groq, Cursor, Cline, Continue, Windsurf) with citation counts, tool-usage breakdown, and tier.",
+         'get_agent_registry()'),
+        # ── INFRASTRUCTURE ── (the physical-layer signals)
+        ("get_grid_data",         "infrastructure", "identified",
+         "Real-time electricity grid data across 7 US ISOs (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE) + Hydro-Quebec (Canada), AESO (Alberta), Nord Pool (15 European zones). Fuel mix, demand, prices.",
+         'get_grid_data(iso="PJM")'),
+        ("get_grid_intelligence", "infrastructure", "pro",
+         "Use when a user asks 'can I get N MW of power in <ISO> and how long will it take?' — the flagship grid-headroom + interconnection-queue brief for one ISO. Example: 'How much excess power does PJM have right now and what is the time-to-power for a 200MW load?'. Params: region_id (aliases iso/region) one of PJM|ERCOT|CAISO|MISO|SPP|NYISO|ISO-NE|HYDROQUEBEC|AESO|NORDPOOL. Returns: {iso, excess_power_mw, constraint_score (0-100), queue_depth_mw, queue_depth_count, avg_time_to_power_months, top_constraints[], data_center_share_pct, generation_mix_pct, last_updated}. Do NOT use to compare 2+ ISOs (use compare_isos) or for the global greenest-first ranking (use get_grid_scoreboard).",
+         'get_grid_intelligence(region_id="PJM")'),
+        ("get_interconnection_queue","infrastructure","identified",
+         "ISO interconnection queue snapshot: total large-load MW queued per ISO, data-center share %, and top BUILD subregions with Time-to-Power (TTP) months. Sources: ERCOT MIS, PJM, MISO, SPP, CAISO, NYISO, ISO-NE.",
+         'get_interconnection_queue(iso="ERCOT")'),
+        ("get_fiber_intel",       "infrastructure", "pro",
+         "Use when scoring a site for fiber depth, mapping long-haul routes between metros, or locating carrier-advertised dark-fiber corridors for a hyperscale build. Example: 'Show all Lumen long-haul fiber routes through Northern Virginia I can put on a Leaflet map.'. Params: carrier one of Lumen|Zayo|Crown Castle|Cogent|Verizon|AT&T (omit for all 6); route_type one of metro|longhaul|dark|ix. Returns: GeoJSON FeatureCollection {features:[{geometry, properties:{carrier, route_type, service_class ('dark'=carrier-advertised corridor, not confirmed strands), v, fiber_count, distance_miles}}]} ready to drop into Leaflet/Mapbox. Per-route lit capacity is NOT tracked. Do NOT use to count fibers at one facility (use get_facility) or for IX density scores (use analyze_site).",
+         'get_fiber_intel(carrier="Lumen", route_type="longhaul")'),
+        ("get_water_risk",        "infrastructure", "free",
+         "USGS water stress index + Drought Monitor risk for any US location by state, county, or lat/lon. Returns stress score (0-100), drought category (D0-D4), 12-month outlook, and cooling-water sustainability.",
+         'get_water_risk(state="AZ")'),
+        ("get_energy_prices",     "infrastructure", "identified",
+         "Energy pricing across the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool): retail rates, natural gas, and real-time grid status. Filter by state or ISO to compare delivered power costs for site selection.",
+         'get_energy_prices(state="VA", iso="PJM")'),
+        ("get_renewable_energy",  "infrastructure", "identified",
+         "Use when siting a renewable-powered data center, sizing a PPA, or assessing RE100/24-7-CFE feasibility for one US state. Example: 'What is Texas wind+solar capacity and how much utility-scale solar is operating today?'. Params: energy_type one of solar|wind|combined (omit for all); state = 2-letter US code (TX, VA, AZ); lat+lon (optional) for nearest projects within 50mi. Returns: {capacity_mw_total, by_fuel:{solar_utility, solar_rooftop, wind_onshore, wind_offshore}, capacity_factor_pct, top_projects[{name, mw, operator, cod}], state_rps_target_pct, source:'EIA-860 + state RPS'}. Do NOT use for live grid generation (use get_grid_data) or non-US (use get_grid_scoreboard).",
+         'get_renewable_energy(energy_type="solar", state="TX")'),
+        ("get_tax_incentives",    "infrastructure", "free",
+         "Data center tax incentive packages by US state — sales-tax exemptions, property-tax abatements, income-tax credits, electricity-tax discounts, minimum-investment thresholds, expiration dates, and statutes.",
+         'get_tax_incentives(state="VA")'),
+        ("get_infrastructure",    "infrastructure", "identified",
+         "Nearby infrastructure for a location — substations (count + max voltage_kv), transmission lines (>69 kV), interstate + lateral gas pipelines, and power plants (operating + planned) within a radius. HIFLD/EIA.",
+         'get_infrastructure(lat=33.45, lon=-112.07, radius_km=25)'),
+        ("get_gas_index",         "infrastructure", "free",
+         "Data Center Gas Index (DCGI) — DC Hub's 0-100 per-US-state natural-gas suitability score (the gas analog to DCPI): gas_access_score, gas_cost_score, interstate-pipeline count, operators, and a GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED verdict. Omit state for the national ranking.",
+         'get_gas_index(state="TX")'),
+        ("get_grid_scoreboard",   "infrastructure", "identified",
+         "Live all-ISO grid scoreboard — all 7 US grid operators (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE) ranked side-by-side right now by renewable share %, gas share %, full fuel mix, and demand. Answers 'which US grid is greenest / most gas-reliant?' in one call. EIA hourly RTO.",
+         'get_grid_scoreboard()'),
+        # ── PORTFOLIO + SEARCH ── (facility-level search, scoring, comparison)
+        ("search_facilities",     "portfolio",      "free",
+         canon_text("Search {canon_facilities} global data center facilities across 170+ countries by location, capacity (MW), operator, fiber connectivity, status, or DCPI verdict. Returns name, provider, lat/lon, power_mw, fiber count."),
+         'search_facilities(country="US", state="VA", min_mw=10, status="operational")'),
+        ("get_facility",          "portfolio",      "identified",
+         "Full metadata for one facility — name, operator, address, lat/lon, power capacity (MW total/used), cooling type, fiber providers, commissioning year, status, its market DCPI verdict, and peer facilities.",
+         'get_facility(slug="digital-realty-iad8")'),
+        ("score_facility",        "portfolio",      "free",
+         "Independent facility scoring across 7 dimensions: power, fiber, water, climate_risk, tax_environment, talent_pool, expansion. Returns composite 0-100 + tier_classification + peer comparison + per-dimension detail.",
+         'score_facility(facility_id="qts-ashburn", weighting="balanced")'),
+        ("analyze_site",          "portfolio",      "pro",
+         "Use when a user has ONE specific lat/lon (a parcel, a candidate site) and wants the full multi-factor data-center suitability read in one call. Example: 'Score this Phoenix parcel for a 100MW build — grid, fiber, water, tax, climate.'. Params: lat (-90 to 90, required), lon (-180 to 180, required), capacity_mw (target MW, e.g. 50-500), state (2-letter US, optional), include_grid/include_risk/include_fiber (bools, default true). Returns: {composite_score (0-100), verdict (BUILD/CAUTION/AVOID), grid_headroom_mw, nearest_substation_km, max_voltage_kv, fiber_carrier_count, nearest_ix_km, water_stress_score, drought_category, climate_risk_score, tax_incentive_value_usd, biggest_risk_factor, recommended_action}. Do NOT use to compare 2+ sites (use compare_sites) or to find matches (use find_alternatives).",
+         'analyze_site(lat=33.45, lon=-112.07, capacity_mw=100)'),
+        ("compare_sites",         "portfolio",      "pro",
+         "Use when a user has narrowed to 2-4 candidate parcels and wants a side-by-side winner picker — grid headroom, fiber, water, tax, climate — with a recommended pick and the reason. Example: 'Compare a Phoenix parcel and an Ashburn parcel for a 50MW build — which wins and why?'. Params: locations = semicolon-separated list of 'lat,lon' pairs (2-4 max); capacity_mw = target load (50-500). Returns: {sites:[{lat, lon, composite_score, verdict, grid_headroom_mw, nearest_substation_km, fiber_carrier_count, water_stress_score, tax_incentive_value_usd, biggest_risk}], winner:{lat, lon, why}, decision_rationale}. Do NOT use for one site (use analyze_site) or to rank entire markets (use rank_markets).",
+         'compare_sites(locations="39.04,-77.48;33.45,-112.07", capacity_mw=50)'),
+        ("get_backup_status",     "portfolio",      "free",
+         "DC Hub platform health: database backup status, data freshness across 49 sources (green/yellow/red), agentic heartbeat score (0-100), MCP call volume, and DCPI recompute cadence — trust/uptime signals.",
+         'get_backup_status()'),
+        # ── DC Hub DECISION-LAYER PRODUCTS (2026-06-03) ─────────────────────────
+        # Shipped in dchub-mcp-server/server.mjs the same day; SYNTHESIS layer is
+        # gated server-side by tier_gate (paid keys see verdict/thesis/autopsy
+        # narrative; free/anon agents see the ranked shortlist hook + citations).
+        ("site_selection_canvas", "decision",       "free",
+         "Guided end-to-end data-center site selection. Give a capacity target + geography + deadline and get a ranked shortlist of US markets (DCPI verdict, excess-power headroom, time-to-power, ISO) — and, with a paid key, the synthesis decision layer: the #1 pick, the why, a build sequence, and risk flags.",
+         'site_selection_canvas(capacity_mw=100, region="TX", max_months=24)'),
+        ("grid_transition_radar", "decision",       "free",
+         "Forward-looking 'where is the next hyperscale-friendly grid emerging' radar. Returns the US markets + ISOs with the strongest near-term emergence signal (BUILD verdict + excess-power headroom + short time-to-power), an ISO rollup, and a grid-headroom leaderboard. Paid key adds the transition thesis.",
+         'grid_transition_radar(max_months=24)'),
+        ("deal_autopsy",          "intelligence",   "free",
+         "Tracked data-center M&A / capex deal flow with the DCPI grid-reality verdict overlaid on each deal market — 'what is the real play?'. Returns recent deals (buyer, seller, value, market) + each market DCPI verdict and time-to-power; paid key adds the per-deal autopsy narrative.",
+         'deal_autopsy(limit=15)'),
+        # ── Agent MOAT — persistence + monitoring + incremental sync (2026-06-06).
+        # Live in server.mjs; turns DC Hub from a stateless lookup into agent state.
+        ("get_changes",           "intelligence",   "free",
+         "Incremental sync — what changed in DC Hub since a timestamp (DCPI 7-day movers, newly discovered facilities, new M&A deals, news) so an agent pulls only the delta instead of re-fetching everything. Pass since=<ISO> or '24h'/'7d'.",
+         'get_changes(since="7d")'),
+        # r-free-shortlist + r-free-alerts (2026-06-24): the persist + monitor
+        # retention loop is FREE-with-a-key, not PRO — see PRO_ONLY_TOOLS below.
+        # "identified" (not "free") because persistence needs a key to hang an
+        # account off: anon gets 401 auth_required from _require_keyed_user().
+        ("save_site",             "portfolio",      "identified",
+         "Save a candidate site (lat/lon + optional name/state/market/target_mw/notes) to your DC Hub account so an agent can track + revisit it across sessions — free with a key, call claim_free_key if you don't have one. Returns the saved site id.",
+         'save_site(lat=39.04, lon=-77.48, name="Ashburn parcel", target_mw=100)'),
+        ("list_saved_sites",      "portfolio",      "identified",
+         "List the sites saved to your account — the persistent shortlist from save_site, each with its saved DCPI score, target MW, market, and notes, plus how each has moved since you saved it. Free with a key.",
+         'list_saved_sites()'),
+        ("set_market_alert",      "portfolio",      "identified",
+         "Subscribe to movement alerts for a DCPI market — get notified when its Excess-Power / Constraint score moves. Lets an agent MONITOR markets, not just query them. Free with a key: email alerts go to the address your human bound via bind_email (call that first — the destination is forced to it). Webhook delivery is Pro.",
+         'set_market_alert(market="northern-virginia", channel="email")'),
+        ("export_dataset",        "portfolio",      "pro",
+         "Bulk export your saved sites as CSV or GeoJSON for offline analysis / ingestion.",
+         'export_dataset(format="csv")'),
+        # r-catalog-46 (2026-06-20): the 8 tools that were live on the MCP server
+        # (tools/list=46) but missing from this catalog (=42) → drift across every
+        # catalog-fed manifest. Backfilled so LIVE_MCP_TOOL_COUNT + the well-known /
+        # card surfaces all read 46. (set_site_alert was also added to PRO_ONLY_TOOLS
+        # then; r-free-alerts un-gated it on 2026-06-24 — see PRO_ONLY_TOOLS below.)
+        # ── INFRASTRUCTURE ──
+        ("get_fiber_readiness",   "infrastructure", "identified",
+         "Fiber-readiness verdict for ONE parcel (lat/lon): near-net distance to a carrier-served facility, how many distinct carriers can serve it, and single-carrier path-diversity risk — the connectivity screen site-selectors run before committing.",
+         'get_fiber_readiness(lat=39.04, lon=-77.48, radius_km=50)'),
+        ("get_gas_economics",     "infrastructure", "identified",
+         "Behind-the-meter / gas-fired power ECONOMICS for a US data-center market: Henry Hub spot, basis differential, delivered industrial + electric gas tariff, and the gas-to-grid levelized cost ($/MWh) across CCGT/peaker heat-rate scenarios.",
+         'get_gas_economics(market="northern-virginia")'),
+        ("plan_fiber_leadin",     "infrastructure", "identified",
+         "Plan N diverse, road-following fibre lead-in routes from a candidate site to a carrier hotel / POP, each with length + GeoJSON geometry, a route-diversity read, and indicative build cost. Indicative auto-routed corridors, not engineered alignments.",
+         'plan_fiber_leadin(from="250 Paringa Rd, Murarrie QLD", to="20 Wharf St, Brisbane QLD", n=4)'),
+        # r-cluster-open (2026-07-11): OPEN/adoption-first by design (Gemini
+        # partnership spec) — /api/v1/fiber/cluster-latency is on free_tier_gate's
+        # open-exemption list and the MCP layer exempts it from the anon trim
+        # (server.mjs FREE_FULL_TOOLS), so the catalog tier is "free", NOT
+        # "identified" like the other fiber tools.
+        ("cluster_sites_by_latency", "infrastructure", "free",
+         "Physics-bounded latency clustering across 2-8 candidate sites: per-pair haversine distance, round-trip physics floor (km × 4.9 µs/km ×2), estimated real RTT, viable vs physics-impossible against your µs budget, and the largest site subsets whose pairwise estimates all fit — deterministic pruning before detailed routing.",
+         'cluster_sites_by_latency(sites="39.04,-77.48:ashburn;38.98,-77.42:sterling", max_latency_us=2000)'),
+        # ── PORTFOLIO ──
+        # r-free-alerts (2026-06-24): free with a key, destination bound-email-locked.
+        ("set_site_alert",        "portfolio",      "identified",
+         "Arm an email watch on a site you already saved (free with a key): DC Hub emails you when that site's DCPI score, grid capacity, or nearby facilities move — the 'monitor my shortlist' loop. Call save_site first, then set_site_alert on the returned id. On the free tier the alert is delivered to your human's bind_email address (notify_email is forced to it); Pro can send anywhere.",
+         'set_site_alert(saved_site_id=12, trigger_type="dcpi_change", threshold=5, notify_email="you@firm.com")'),
+        # ── ACCOUNT & ACCESS ──
+        ("claim_free_key",        "account",        "free",
+         "Mint a FREE DC Hub dev key instantly — no email, no browser, one call. Returns an api_key you set as the X-API-Key header to unlock the full free tier (10 calls/day, all 300+ markets + grid/fiber/DCPI). The fastest path from anonymous to identified.",
+         'claim_free_key(client_name="your-agent")'),
+        ("bind_email",            "account",        "free",
+         "Tie your DC Hub key to your human's email so the key is RECOVERABLE and upgrade receipts reach the right inbox. Optional — the key already works without it. Email is used ONLY for recovery + transactional receipts (no marketing without opt-in).",
+         'bind_email(email="you@firm.com")'),
+        ("recover_my_key",        "account",        "free",
+         "Recover a LOST DC Hub key: pass your human's email and DC Hub re-sends any key tied to that address to that inbox. It never returns the key over the wire, and the confirmation is enumeration-safe (identical whether or not a key exists).",
+         'recover_my_key(email="you@firm.com")'),
+        ("unlock_more_data",      "account",        "free",
+         "Unlock DC Hub's full depth — call this when a result came back as a 1-of-N preview or a tool was locked. Returns the upgrade ladder + ready-to-paste one-click checkout links your human completes in one click; cheapest start is $10 one-time = 1,000 API calls.",
+         'unlock_more_data(reason="need the full market report")'),
+        # ── r-catalog-73 (2026-07-11): the 26 tools that were live on the MCP server
+        # (tools/list=73) but missing from this hand catalog (=47) → drift across every
+        # catalog-fed manifest (/.well-known/mcp.json via tools_for_well_known, /mcp/tools,
+        # /api/v1/mcp/tools.json). Backfilled from server.mjs trackedTool() + the live
+        # tools/list descriptions so LIVE_MCP_TOOL_COUNT + every discovery surface read 73.
+        # Tiers mirror server.mjs: only generate_site_analysis is PAID/PRO_ONLY_TOOLS → "pro";
+        # the rest are anonymous "free" (none are in PAID_ONLY_TOOLS; get_gas_intelligence /
+        # get_iso_context / get_market_context are DEPTH_TEASE_TOOLS but that's a preview
+        # behavior, not a base gate — same as get_gas_index/grid_transition_radar above).
+        # ── SITE GEOMETRY + SCORING (portfolio) ──
+        ("analyze_parcel",        "portfolio",      "free",
+         "Structured read of a parcel BOUNDARY — pass a GeoJSON Polygon/MultiPolygon, OR just lat+lon to find the containing parcel in DC Hub's hosted county/state GIS layer (free polygons rolling out by market, Loudoun County VA first; a point outside coverage returns an honest 404 with the coverage list, never a guess). Returns geodesic total_acres, a per-part acreage breakdown, a contiguous flag, representative_point = the centroid of the LARGEST part (never an off-parcel multi-part centroid that poisons every point-keyed read), and a site_evaluation_handoff to pipe into analyze_site + get_water_risk. Use when you HAVE a boundary or a point on a specific parcel; for a general lat/lon site score use analyze_site.",
+         'analyze_parcel(lat=39.04, lon=-77.48, capacity_mw=100)'),
+        ("get_composite_site_score","portfolio",    "free",
+         "Use when a user wants ONE honest 0-100 site suitability/risk verdict for a lat/lon WITH an explicit per-factor coverage map — which factors are actually measured vs declared unavailable. Scores ONLY over VALIDATED factors and never imputes a missing one: power/grid, fiber, natural-hazard risk (FEMA NRI) and water (live WRI Aqueduct 4.0 baseline stress) are live; water is 'unavailable' outside basin coverage; market/DCPI is v1-unavailable (use rank_markets). Returns {composite_score, verdict (BUILD/CAUTION/AVOID), confidence, coverage{power_grid|fiber|water|risk_resilience|market_dcpi}, coverage_ratio, sub_scores, caveats}. Use analyze_site for the full raw data dump, compare_sites for 2-4 sites.",
+         'get_composite_site_score(lat=33.45, lon=-112.07, state="AZ")'),
+        ("rank_sites",            "portfolio",      "free",
+         "Deterministic multi-site ranking/optimization under constraints — the normalization contract that lets you compare sites across separate analyze_site calls WITHOUT dropping into code. Pass candidates you already enriched (each an object with lat/lng + metric fields like risk_resilience, water_stress, fiber_km, pulled from analyze_site + get_refined_queue), hard constraints, and weighted objectives (SIGNED: +weight maximizes a field, -weight minimizes it). Returns top_k ranked with rank, objective_score, per-field normalized{} (0-100 across the set), and normalization_basis; constraints are hard filters, fail-closed on a missing field. Alternatively re-rank a SAVED shortlist via shortlist_name. For one site use analyze_site; to get the candidate set first use get_refined_queue.",
+         'rank_sites(candidates=[{"lat":39.04,"lng":-77.48,"risk_resilience":72,"water_stress":30,"fiber_km":2.1}], constraints={"risk_resilience":{"min":50}}, objectives={"risk_resilience":1,"water_stress":-0.6,"fiber_km":-0.4})'),
+        ("generate_site_analysis","portfolio",      "pro",
+         "Use when a user wants a SHAREABLE, branded multi-page Site Analysis PDF for ONE lat/lon (a powered-land parcel, a candidate campus) — the polished client deliverable, not just a score. Params: lat, lon (required), capacity_mw (target load MW), prepared_for (client name on the cover), prepared_by (your firm — brands the report; defaults to DC Hub), use_case. Returns {survey:{verdict, power/transmission, gas, water, air-permitting, fiber carriers, latency-to-nearest-carrier-hotel, market, tax}, pdf_report_url} — a ready-to-open link to the branded 5-page PDF (no login, valid ~7 days) you hand to your human. For just the numeric suitability score (no PDF) use analyze_site instead.",
+         'generate_site_analysis(lat=37.694, lon=-88.65, capacity_mw=150, prepared_for="TON Infrastructure", prepared_by="Martone Advisors")'),
+        ("search",                "portfolio",      "free",
+         "Search DC Hub for relevant records in the OpenAI Deep Research / ChatGPT connector format — a natural-language query returns matching data-center facilities as {id, title, url}. Pass an id to the `fetch` tool for the full record, or open the url to cite the live facility page. For structured queries (by MW, operator, status, market) use search_facilities directly. Params: query (required).",
+         'search(query="data centers in Northern Virginia")'),
+        ("fetch",                 "portfolio",      "free",
+         "Fetch one DC Hub facility record by an id returned from the `search` tool — the OpenAI Deep Research / ChatGPT connector companion to `search`. Returns {id, title, text, url, metadata}: a citable public summary of one data-center facility (name, operator, location, status, market). For full structured specs (capacity MW, coordinates) use get_facility or open the url. Params: id (required).",
+         'fetch(id="equinix-dc1-ashburn")'),
+        ("get_shortlist",         "portfolio",      "free",
+         "Retrieve a saved siting shortlist. With refresh=true (default) each site is RE-SCORED against the current national percentile baseline and returns saved_score, current_score, and score_delta_since_saved — so you see whether a site slipped because IT changed or the POPULATION did. The reliable way to maintain a siting campaign across days/weeks; scoped to your API key. Params: name, refresh. Build the list with save_to_shortlist; set a drift alert with set_shortlist_alert.",
+         'get_shortlist(name="Q3-2026-1GW-targets", refresh=true)'),
+        ("save_to_shortlist",     "portfolio",      "free",
+         "Save a site into a PERSISTENT, named shortlist that survives across conversations — snapshots the site's objectives + its current percentile objective_score, so you can re-score it later against the evolving national baseline. Use to build a durable siting shortlist across days/weeks; scoped to your API key. Params: shortlist_name, site (required — {lat, lng, capacity_mw + the analyze_site metric fields you ranked on}), objectives (required — {field: signedWeight}), notes. Pair with get_shortlist to re-score + see drift and set_shortlist_alert to be notified when a site's standing moves.",
+         'save_to_shortlist(shortlist_name="Q3-2026-1GW-targets", site={"lat":39.04,"lng":-77.48,"capacity_mw":100,"risk_resilience":72}, objectives={"risk_resilience":1,"water_stress":-0.6})'),
+        ("set_shortlist_alert",   "portfolio",      "free",
+         "Set a DRIFT ALERT on a saved shortlist so you can stop polling and be notified when a site's national standing moves materially. Fires when any site's current percentile score < percentile_below OR score_delta_since_saved < delta_below (e.g. -8 = dropped 8 points vs when saved). Evaluated after each daily baseline refresh; delivers via webhook and/or email. Params: shortlist_name, percentile_below, delta_below, notify (required — {webhook} and/or {email}). The 'wake me when it matters' loop for long-running siting campaigns; scoped to your API key.",
+         'set_shortlist_alert(shortlist_name="Q3-2026-1GW-targets", delta_below=-8, notify={"email":"you@firm.com"})'),
+        ("suggest_reallocation",  "portfolio",      "free",
+         "When a saved site DRIFTS (its national standing dropped — surfaced by get_shortlist refresh or a set_shortlist_alert firing), get replacement candidates from the rest of that shortlist so the alert becomes an action, not just a warning. Returns TWO tiers — tier_1_same_region (a near-in tactical swap) and tier_2_cross_region (a different-region arbitrage) — each re-scored against the DRIFTED slot's own objectives, PLUS drift_is_systemic: if the rest of your shortlist also slipped the drop is region/baseline-wide (prefer cross_region); if peers held it's idiosyncratic (tactical_ok). Params: shortlist_name, drifted_site_ref (optional; defaults to the lowest-scoring site). Candidates come from THIS shortlist only (widen it with save_to_shortlist).",
+         'suggest_reallocation(shortlist_name="Q3-2026-1GW-targets")'),
+        # ── INFRASTRUCTURE (grid, gas, fiber, climate, hazard — the physical-layer signals) ──
+        ("get_power_pipeline",    "infrastructure", "free",
+         "Use when a user asks WHERE NEW POWER GENERATION is coming online (the forward supply pipeline) — 'how much new generation is planned in Virginia / ERCOT, and when?'. Planned, permitting, and under-construction generators NATIONWIDE from EIA-860M, INCLUDING non-ISO regions (TVA, Southern Co, Arizona PS, PacifiCorp, LADWP) that interconnection-queue feeds miss. Each generator has lat/lng, state, county, balancing authority, technology/fuel, nameplate MW, status, and planned online month/year. Filter by state, ba (BA/ISO code e.g. PJM, ERCO, SOCO, TVA), status (P/L/T=planned, U/V=under construction), or min_mw. Returns a summary (total planned MW, mix by technology + status) plus the largest projects. For already-operating capacity / grid headroom use get_grid_intelligence; for data-center construction use get_pipeline.",
+         'get_power_pipeline(state="VA", status="U")'),
+        ("get_refined_queue",     "infrastructure", "free",
+         "Server-side SET-REDUCTION over the US ISO interconnection queue (~5,300 projects, 7 ISOs, ~1,744 GW) — push predicates to the data layer instead of pulling the raw queue into context to filter. Filter by min_mw, max_ttp_months (ISO-level avg wait; HARD cut — SPP ~24 is the only ISO under 30, so use >=34 to include MISO/ERCOT/ISO-NE), iso (comma-union), baseload_only (firm/dispatchable — excludes wind/solar/storage), fuel_type, and the spatial max_fiber_km + geocoded_only. Returns per-project name, ISO, state/county, fuel, capacity_mw, queue_status, estimated_ttp_months plus (~83% of rows) lat/lng and a compact site_evaluation_handoff to pipe into analyze_site + get_water_risk. For the ISO-level GW aggregate use get_interconnection_queue; for a single-site read use analyze_site.",
+         'get_refined_queue(min_mw=1000, fuel_type="gas", max_ttp_months=34)'),
+        ("get_retirement_headroom","infrastructure","free",
+         "Scans scheduled EIA-860M generator retirements to find near-term transmission grid headroom — a retiring plant is a CONCRETE headroom event (its point of interconnection frees injection capacity), from FILED data, not forecasts. Returns retiring generators inside your horizon (name, MW, fuel, prime mover, retirement_date), representative_point, nearest substations with distance_km + count within 25 km, county-level queue_pressure (competing in-progress MW), iso_context, and a pre-filled site_evaluation_handoff (analyze_site + get_water_risk args, capacity_mw = YOUR target load). Honesty: meta.caveat flags that filed dates are subject to ISO reliability reviews (RMR extensions). Params: target_mw + horizon_months (required), region_iso, fuel_filter. For what's already queued use get_refined_queue; for one site use analyze_site.",
+         'get_retirement_headroom(target_mw=50, horizon_months=18, region_iso="MISO")'),
+        ("get_gas_intelligence",  "infrastructure", "free",
+         "The GAS analogue of get_grid_intelligence — use when a human asks about gas-fired / behind-the-meter power economics for a data center in a US state ('is gas power cheaper than the grid in Texas?'). Fuses the DC Hub Gas Index (DCGI), live Henry Hub, gas-to-grid $/MWh across heat-rate scenarios, pipeline-operator presence, and the live grid gas share into one per-STATE brief. Params: region (US state code or name). Returns {dcgi_score (0-100), dcgi_verdict (GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED), gas_access, henry_hub_usd_mmbtu, delivered_price_usd_mmbtu (null where the tariff table is sparse — surfaced honestly, never fabricated), gas_to_grid_usd_per_mwh, live_grid_gas_share_pct, headline_behind_meter_vs_grid_delta_usd_mwh, data_basis}. Firm pipeline capacity / LNG are deliberately OMITTED. For grid headroom use get_grid_intelligence; for the DCGI score alone use get_gas_index.",
+         'get_gas_intelligence(region="TX")'),
+        ("get_iso_context",       "infrastructure", "free",
+         "Use when an agent needs a WHOLE-grid briefing to drop straight into its context window — one call returns a token-budgeted context pack for a US ISO/RTO: live grid snapshot (demand, fuel-mix shares), DCPI verdict mix & grid economics across the ISO's tracked markets, interconnection-queue depth with the largest projects, real-time benchmark LMP, the tracked market list, deep-dive narrative excerpts, and recent news — each section with its own token count, as_of timestamp, and citable URL, greedily filled in priority order under your max_tokens budget. Params: iso (required: ERCOT, PJM, MISO, CAISO, SPP, NYISO, ISONE); max_tokens (200-8000, default 4000). For raw single-ISO telemetry use get_grid_data; for the decision brief with headroom/TTP use get_grid_intelligence; for multi-ISO scalar comparison use compare_isos.",
+         'get_iso_context(iso="ERCOT", max_tokens=4000)'),
+        ("get_metro_fiber",       "infrastructure", "free",
+         "Use when a user asks which US metro has the DEEPEST fiber, or wants a metro's fiber profile — carrier count, total route-miles, on-net buildings, a 0-100 fiber-density score, tier, key internet-exchange (IX) points and carrier hotels — across the tracked top US data-center metros (Northern Virginia, Dallas-Fort Worth, Silicon Valley, Chicago, Atlanta, Phoenix, and more). Params: market (optional metro name OR slug, e.g. 'Dallas-Fort Worth', 'ashburn'; omit to list every tracked metro ranked by density). Returns without market -> {markets:[{market, tier, fiber_density_score, total_carriers, total_route_miles, total_on_net_buildings}]}; with market -> {summary{...}, carriers:[{carrier, route_miles_approx, on_net_buildings, fiber_type, services}]} including dark-fiber routes. For the parcel-level connectivity verdict at one lat/lon use get_fiber_readiness; for long-haul route GEOMETRY use get_fiber_intel.",
+         'get_metro_fiber(market="Dallas-Fort Worth")'),
+        ("get_climate_intel",     "infrastructure", "free",
+         "Use when a user wants seismic + climate intel for a lat/lon — the layer that drives structural-bracing cost (seismic) and cooling design (cooling degree-days, extreme temps). Grounded STRICTLY in USGS ASCE 7 (seismic) + NOAA climate normals via ACIS; every value traces to a federal source and missing data is declared unavailable, never estimated. Returns {seismic_hazard_usgs:{peak_ground_acceleration_g, ss, s1, seismic_design_category, hazard_class}, climate_normals_noaa:{reference_station, cooling_degree_days_annual, extreme_max_dry_bulb_f, extreme_max_wet_bulb_f, data_vintage}, overall_climate_summary, sources}. radius_km (default 25) snaps to the nearest NOAA station; seismic is US-only (ASCE 7). For natural-hazard ratings use get_disaster_risk; for one blended verdict use get_composite_site_score.",
+         'get_climate_intel(lat=33.45, lon=-112.07)'),
+        ("get_disaster_risk",     "infrastructure", "free",
+         "Use when a user wants the natural-hazard / disaster risk for a lat/lon — flood, wildfire, hurricane, earthquake, heat, drought, tornado, etc. Grounded in the FEMA National Risk Index (NRI), the authoritative US county-level hazard dataset (live query, never estimated; a point outside US NRI coverage returns coverage=unavailable). Returns {disaster_risk:{composite_score (0-100, higher=worse), rating (Very Low..Very High), national_percentile}, hazards:{Wildfire, Hurricane, Earthquake, Heat Wave, ...: rating}, top_hazards[{hazard, rating}], coverage, source}. County-level resolution. For chronic water stress use get_water_risk; for one blended site verdict use get_composite_site_score.",
+         'get_disaster_risk(lat=33.45, lon=-112.07)'),
+        # ── MARKET INTELLIGENCE (describe markets, deals, change over time) ──
+        ("get_market_context",    "intelligence",   "free",
+         "Use when an agent needs a WHOLE-market briefing to drop straight into its context window — one call returns a token-budgeted context pack for a data-center market: DCPI verdict, power & grid facts, the Claude-written 12-month outlook, M&A deals, construction pipeline, operator footprint, transaction comps, risk factors, and top news — each section with its own token count, as_of timestamp, and citable URL, greedily filled in priority order under your max_tokens budget. Params: market (required slug e.g. northern-virginia — valid slugs come from rank_markets); max_tokens (200-8000, default 4000). For a single metric use get_market_dcpi_rank, the raw structured metric set use get_market_intel, cross-market ranking use rank_markets; this is the narrative briefing pack.",
+         'get_market_context(market="columbus", max_tokens=4000)'),
+        ("predict_market_trajectory","intelligence", "free",
+         "Forecast a DCPI market's near-term trajectory (next 1-8 quarters) — projects excess_power_score and constraint_score forward with confidence bands that WIDEN with horizon, from DC Hub's daily DCPI snapshot history (the only source that can, because it owns the time-series). Answers 'is this market trending toward BUILD or AVOID?' or 'will Dallas power stay tight over the next 6 months?'. Params: market_slug (required, e.g. dallas — valid slugs from rank_markets); horizon_quarters (1-8, default 4; 2 = ~6 months). Returns {basis{history_points, slope_per_day, trend}, projection[{quarter_out, excess_power_score, excess_power_band, constraint_score, constraint_band}], caveat}. HONEST: linear trend extrapolation, NOT a guarantee — bands widen with horizon and short history; needs >=3 daily snapshots. For a single point-in-time verdict use get_market_dcpi_rank; to rank many markets use rank_markets.",
+         'predict_market_trajectory(market_slug="dallas", horizon_quarters=4)'),
+        ("get_facility_risk_delta","intelligence",  "free",
+         "Use when a user asks what has CHANGED in a facility's (or its market's) risk profile recently — 'has this site gotten riskier lately?', 'which way is this market moving?' — a temporal question static-trained models can't answer. Returns the REAL DCPI market-health delta (excess-power score change over the window, direction improving/worsening/flat) from DC Hub's history-preserving daily snapshots. INTEGRITY: only DCPI market-health has a short-term temporal series; the site-hazard dimensions (FEMA disaster / USGS seismic / NOAA climate / WRI water) are DECLARED static with a pointer to the point-in-time tool, never a fabricated week-over-week delta. Params: facility_id OR market, since (default 7d). For the current point-in-time risk use get_composite_site_score / get_disaster_risk / get_climate_intel.",
+         'get_facility_risk_delta(market="northern-virginia", since="30d")'),
+        ("semantic_search",       "intelligence",   "free",
+         canon_text("Use for CONCEPTUAL / fuzzy questions where keyword filters fall short — semantic (meaning-based) retrieval across DC Hub's industry news, M&A deals, {canon_facilities} discovered facilities, and per-market DCPI deep-dive analysis narratives, ranked by relevance with citable source fields (news url/title, deal parties/value, facility name/location, deep-dive market/url). Params: q (required, natural-language query; alias query); corpus (optional CSV subset of news_articles, deals, discovered_facilities, market_narratives; default all); k (1-15, default 8). Returns {results:[{source_table, kind, text, score, cite}]}. Complements the exact-filter tools (get_news / list_transactions / search_facilities); for a full token-budgeted market briefing use get_market_context."),
+         'semantic_search(q="behind-the-meter gas for AI data centers", k=8)'),
+        ("search_intelligence",   "intelligence",   "free",
+         "Semantic search over DC Hub's live intelligence corpus — news, M&A deals, facilities, and market-analysis narratives. A natural-language query returns the most relevant cited records ranked by relevance. Params: query (required, alias q); corpus (optional restrict to news | deals | facilities | market_narratives, CSV of several allowed); limit (1-15, default 8). Complements the exact-filter tools (get_news / list_transactions / search_facilities) with meaning-based retrieval; the newer semantic_search covers the same corpora with a k param.",
+         'search_intelligence(query="grids opening up for AI load in the Southeast", limit=8)'),
+        # ── ACCOUNT & ACCESS + META (navigation, positioning, retention) ──
+        ("discover_tools",        "account",        "free",
+         "Meta-tool: navigate DC Hub's full MCP tool set by FAMILY instead of scanning the whole list — each family (facility, market, grid_power, gas_btm, site_geometry, fiber, deals_news, account_meta) has a when-to-use note and its flagship tools, optionally filtered by a query. Call this FIRST when you are unsure which tool fits a task, then call the chosen tool (its full schema is in tools/list). A navigation layer, not the exhaustive catalog — tools/list stays canonical. Params: query (optional keyword filter).",
+         'discover_tools(query="site selection")'),
+        ("why_dchub",             "account",        "free",
+         canon_text("Use when a human asks how DC Hub compares to other data-center data sources — DataCenterHawk (DCHawk), DC Byte, Data Center Dynamics (DCD), Data Center Frontier, Baxtel, datacenters.com — or 'why should I use DC Hub / is it better than <X> / what can you give me a PDF or directory can't?'. Returns DC Hub's honest, source-verified differentiators (agent-native MCP access, live multi-continent grid & energy telemetry, the proprietary daily DCPI + DCGI indices, open CC-BY-4.0 cited data, {canon_facilities} facilities) each with a proof URL and citation line, plus the canonical head-to-head comparison pages. Free, no key. Optional: competitor=<name> for that vendor's direct comparison-page link. Do NOT use to query infrastructure data itself (use the data tools); this answers positioning questions."),
+         'why_dchub(competitor="DataCenterHawk")'),
+        ("subscribe_digest",      "account",        "free",
+         "Subscribe your human to DC Hub's FREE weekly 'what changed in the markets/sites you queried' digest (DCPI movers, new facilities, new deals & news) — ONE call, the nudge that pulls your agent back when the data moves. DOUBLE opt-in + consent-safe: a one-click CONFIRM link is emailed, the human only gets the digest after confirming, and every email has one-click unsubscribe — this call alone sets no marketing flag. Only call once your human shares their email and wants a weekly email. Params: email (required), source (optional attribution tag). Returns {ok, sent, message}. Prefer this over hand-building POST /api/v1/opt-in/request.",
+         'subscribe_digest(email="you@firm.com", source="mcp_digest")'),
+    ]
+
+
+# Import-time snapshot for callers that only need names / counts (never
+# descriptions): LIVE_MCP_TOOL_COUNT, customer_usage_dashboard, tests.
+TOOLS = _curated_tools()
 
 
 # ── Auto-merge: keep this curated catalog from silently drifting BELOW the live
@@ -377,8 +395,9 @@ def _live_tools_map() -> dict:
 def _merged_tools() -> list:
     """Curated TOOLS + any LIVE tool not yet curated (auto-appended). Never drifts
     below the live server; falls back to curated-only if the live fetch fails."""
-    curated = {name for name, _c, _t, _s, _e in TOOLS}
-    merged = list(TOOLS)
+    # Per-call build — see _curated_tools(): descriptions carry the live floor.
+    merged = _curated_tools()
+    curated = {name for name, _c, _t, _s, _e in merged}
     for nm, desc in _live_tools_map().items():
         if nm not in curated:
             tier = "pro" if nm in PRO_ONLY_TOOLS else "free"

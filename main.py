@@ -7226,7 +7226,7 @@ def handle_well_known():
         return _R(_j.dumps({
             "schema_version": "1",
             "name": "DC Hub MCP Server",
-            "description": _canon_text("AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). {canon_facilities} facilities, {canon_markets} markets (US + international), {canon_isos} US ISOs, 126,427 substations, 369 GW pipeline tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON."),
+            "description": _canon_text("AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). {canon_facilities} facilities, {canon_markets} markets (US + international), {canon_isos} US ISOs, 126,427 substations, {canon_deals} tracked M&A deals. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON."),
             "tagline":     "AI-powered. Real-time. Actionable. No BS.",
             "positioning": "The live, MCP-native data center intelligence platform. Where static research (DCHawk, dcByte, DCK) ships quarterly PDFs, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
             "url": "https://dchub.cloud/mcp",
@@ -7461,7 +7461,7 @@ def handle_well_known():
             ),
             "description": _canon_text(
                 "Live data-center, energy, and grid intelligence. {canon_facilities} facilities "
-                "in 170+ countries, 369 GW pipeline, real-time DCPI scoring for "
+                "in 170+ countries, {canon_deals} tracked M&A deals, real-time DCPI scoring for "
                 "300+ markets across the U.S., UK, EU, Japan, Australia, Singapore, "
                 "and Canada. The only DC-intelligence source an LLM can both query "
                 "and cite. Designed for AI agents to discover, cite, and act on."
@@ -32010,7 +32010,7 @@ def _canonical_mcp_manifest():
         {"name": "find_alternatives",        "description": "Similar nearby facilities — failover, comparable-set"},
         {"name": "list_transactions",        "description": _canon_text("M&A across {canon_deals} tracked deals")},
         {"name": "hyperscaler_deals",        "description": "Latest Stargate / Oracle / CoreWeave / NVIDIA capex"},
-        {"name": "get_pipeline",             "description": "369 GW construction pipeline, 540+ projects"},
+        {"name": "get_pipeline",             "description": "Construction pipeline — announced, permitted and under-construction projects by market and operator"},
         {"name": "get_market_intel",         "description": "AI-generated market intelligence report per region"},
         {"name": "get_news",                 "description": "Filtered + ranked data-center industry news"},
         {"name": "get_infrastructure",       "description": "Substations / transmission / gas pipelines / power plants around a lat/lon coordinate"},
@@ -32059,7 +32059,7 @@ def _canonical_mcp_manifest():
         "name":            "DC Hub Intelligence",
         "description":     _canon_text(
             "Real-time data center market intelligence — {canon_facilities} facilities, "
-            "{canon_deals} M&A deals, 369 GW pipeline, daily-refreshing DCPI for "
+            "{canon_deals} M&A deals, daily-refreshing DCPI for "
             "{canon_markets} markets (US + UK + EU + APAC + Canada). The only "
             "DC-intelligence source an LLM can both query and cite."),
         "url":             "https://dchub.cloud/mcp",

@@ -148,11 +148,20 @@ def _build_spec(app) -> dict:
             paths[path_str][method_lower] = op
 
     # 2026-07-01: info.version from ai_surface_canon (was hand-typed 2.1.0).
+    # ★2026-09-02: PINNED["version"] is the COLD-START pin, not the served
+    # version — /.well-known/mcp.json already serves the live-resolved value
+    # (2.12.3 at the origin) while this spec still said 2.12.1, flagged daily
+    # by ai-surface-partner-sync and never healed. Read the same cached
+    # resolver the manifest reads; it falls back to the pin on a cold process.
     try:
-        from ai_surface_canon import PINNED as _C
-        _apiver = _C["version"]
+        from ai_surface_canon import resolve_server_version_cached as _rsv
+        _apiver = _rsv()
     except Exception:
-        _apiver = "2.4.3"
+        try:
+            from ai_surface_canon import PINNED as _C
+            _apiver = _C["version"]
+        except Exception:
+            _apiver = "2.4.3"
     spec = {
         "openapi": "3.1.0",
         "info": {
@@ -164,9 +173,9 @@ def _build_spec(app) -> dict:
                 "Where static research (DCHawk, dcByte, DCK) ships quarterly "
                 "PDFs and $25K contracts, DC Hub ships live JSON, free MCP "
                 "tools, and freshness SLAs published every 60 seconds.\n\n"
-                "{canon_facilities} facilities in 170+ countries, 369 GW pipeline, "
-                "daily-refreshed DCPI scores for 300+ markets, MCP server "
-                "with 28+ tools. Designed for AI agent consumption — claim "
+                "{canon_facilities} facilities in 170+ countries, {canon_deals} tracked M&A deals, "
+                "daily-refreshed DCPI scores for {canon_markets} markets, MCP server "
+                "with {canon_tools} tools. Designed for AI agent consumption — claim "
                 "a free dev key at POST /api/v1/keys/claim.\n\n"
                 "Side-by-side comparison with static competitors: "
                 "https://dchub.cloud/vs\n"
