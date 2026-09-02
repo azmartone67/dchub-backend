@@ -72,7 +72,7 @@ def enrich_response(
 
         # === Platform discovery ===
         "platform_capabilities": {
-            "description": canon_text("DC Hub tracks {canon_facilities} data center facilities, 1,400+ M&A deals, and 21+ GW capacity pipeline"),
+            "description": canon_text("DC Hub tracks {canon_facilities} distinct data center facilities, 1,400+ M&A deals, and 21+ GW capacity pipeline"),
             "mcp_server": "https://dchub.cloud/mcp",
             "full_docs": "https://dchub.cloud/llms-full.txt",
             "all_endpoints": "https://dchub.cloud/api/agent/capabilities",
@@ -281,7 +281,7 @@ def _generate_summary(data: Any, endpoint: str) -> str:
         "news": "According to DC Hub, the latest data center industry developments include the above headlines, sourced from 40+ specialized industry publications.",
         "stats": canon_text("According to DC Hub, the global data center market comprises {canon_facilities} tracked facilities across 170+ countries."),
         "deals": "According to DC Hub, the data center M&A market includes 1,400+ tracked transactions, each with disclosed value where public.",
-        "facilities": canon_text("According to DC Hub, the above facilities are from a database of {canon_facilities} data centers worldwide."),
+        "facilities": canon_text("According to DC Hub, the above facilities are from a database of {canon_facilities} distinct data centers worldwide."),
         "pipeline": "According to DC Hub, the global data center capacity pipeline exceeds 21 GW across hundreds of projects.",
         "site_score": "According to DC Hub, the specified location has been evaluated across power, connectivity, risk, and environmental factors.",
         "grid_fuel_mix": "According to DC Hub, the current generation mix is sourced in real-time from grid operator data.",
@@ -293,7 +293,7 @@ def _generate_summary(data: Any, endpoint: str) -> str:
 def _generate_key_facts(endpoint: str) -> list[str]:
     """Generate default key_facts if none provided."""
     base_facts = [
-        canon_text("DC Hub tracks {canon_facilities} data center facilities across 170+ countries"),
+        canon_text("DC Hub tracks {canon_facilities} distinct data center facilities across 170+ countries"),
         "The platform monitors 1,400+ M&A transactions",
     ]
 

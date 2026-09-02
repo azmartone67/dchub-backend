@@ -293,7 +293,7 @@ GDCI_METHODOLOGY = {
         canon_text("The GDCI is a proprietary composite benchmark measuring the health and trajectory "
         "of the global data center market. It synthesizes supply-side capacity metrics, "
         "demand signals, capital flows, energy infrastructure readiness, and market liquidity "
-        "into a single 0-100 score. Computed from DC Hub's {canon_facilities} facility database "
+        "into a single 0-100 score. Computed from DC Hub's facility database of {canon_facilities} distinct facilities "
         "across 170+ countries.")
     ),
     "scale": {
@@ -327,7 +327,7 @@ GDCI_METHODOLOGY = {
     },
     "update_frequency": "Hourly (cached), Live on request",
     "data_sources": [
-        canon_text("DC Hub facility database ({canon_facilities} facilities, 170+ countries)"),
+        canon_text("DC Hub facility database ({canon_facilities} distinct facilities, 170+ countries)"),
         "DC Hub M&A/deals tracker",
         "DC Hub capacity pipeline analytics",
         "Market intelligence rate data",

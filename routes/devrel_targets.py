@@ -71,7 +71,7 @@ PLATFORM_BLUEPRINTS = {
         "draft_title": "DC Hub — Data Center Intelligence MCP",
         "draft_pitch": (
             canon_text("DC Hub gives Claude real-time data center market intelligence: "
-            "{canon_facilities} facilities, ISO grid headroom, M&A transactions, fiber "
+            "{canon_facilities} distinct facilities, ISO grid headroom, M&A transactions, fiber "
             "routes, site scoring. Free dev key with email only. The MCP server "
             "at https://dchub.cloud/mcp is open and stable — your callers "
             "({signal_count} hits in the last 30 days from Claude alone) are "

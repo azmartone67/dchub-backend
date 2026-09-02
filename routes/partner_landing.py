@@ -68,12 +68,12 @@ _PARTNERS = {
         "tagline":  "Ground-truth data-center intelligence for Cohere's enterprise RAG.",
         "hero":     (canon_text("Cohere's enterprise RAG customers in infrastructure, energy, and "
                        "real estate need ground truth on data-center capacity — not "
-                       "hallucinated numbers. DC Hub is the live tool: {canon_facilities} facilities "
+                       "hallucinated numbers. DC Hub is the live tool: {canon_facilities} distinct facilities "
                        "across 170+ countries, live grid / fiber / water / market data, "
                        "every record citation-ready. Wire it into command-a tool-use or "
                        "your RAG document pipeline in minutes.")),
         "value_bullets": [
-            canon_text("{canon_facilities} facilities, 170+ countries — daily-refreshed, every record carries a citation URL for grounded generation"),
+            canon_text("{canon_facilities} distinct facilities, 170+ countries — daily-refreshed, every record carries a citation URL for grounded generation"),
             "Two paths: MCP server (dchub.cloud/mcp, 48 tools) for command-a tool-use, or REST for classic RAG documents",
             "Live DCPI market verdicts (BUILD/CAUTION/AVOID), grid headroom, fiber routes, 650+ GW pipeline",
             "Free dev key in one API call (no email); Enterprise partner key available for evaluation",

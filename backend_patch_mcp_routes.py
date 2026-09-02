@@ -15,7 +15,7 @@ SERVER_CARD = {
     "capabilities": {"tools": True, "resources": True, "prompts": True},
     "authentication": {"type": "api_key", "header": "Authorization", "prefix": "Bearer"},
     "tools": [
-        {"name": "search_facilities", "description": canon_text("Search {canon_facilities} data center facilities worldwide")},
+        {"name": "search_facilities", "description": canon_text("Search {canon_facilities} distinct data center facilities worldwide")},
         {"name": "get_facility", "description": "Get detailed facility profile by ID"},
         {"name": "list_transactions", "description": "List M&A deals and transactions"},
         {"name": "get_pipeline", "description": "Get construction pipeline data"},

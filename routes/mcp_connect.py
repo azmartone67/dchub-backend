@@ -413,7 +413,7 @@ _PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DC Hub for {NAME} — {canon_tools} MCP tools, free tier, 30s to install</title>
-<meta name="description" content="Install DC Hub's MCP server in {NAME} in 30 seconds. {canon_tools} tools across {canon_facilities} data centers, {canon_markets} power markets, live ISO grids, {canon_deals} tracked deals. Free trial — no credit card.">
+<meta name="description" content="Install DC Hub's MCP server in {NAME} in 30 seconds. {canon_tools} tools across {canon_facilities} distinct data centers, {canon_markets} power markets, live ISO grids, {canon_deals} tracked deals. Free trial — no credit card.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="https://dchub.cloud/connect/{KEY}">
 <meta property="og:title" content="DC Hub MCP for {NAME}">

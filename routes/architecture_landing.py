@@ -24,7 +24,7 @@ _TEMPLATE = canon_text("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Platform Architecture | DC Hub</title>
-<meta name="description" content="How DC Hub aggregates real-time intelligence from {canon_facilities} data center facilities across 170+ countries — ingestion pipelines, ISO grid feeds, DCPI scoring, MCP surface, and AI-agent integration.">
+<meta name="description" content="How DC Hub aggregates real-time intelligence from {canon_facilities} distinct data center facilities across 170+ countries — ingestion pipelines, ISO grid feeds, DCPI scoring, MCP surface, and AI-agent integration.">
 <meta name="robots" content="index,follow,max-snippet:-1">
 <link rel="canonical" href="https://dchub.cloud/architecture">
 <meta property="og:title" content="Platform Architecture — DC Hub">
@@ -59,7 +59,7 @@ _TEMPLATE = canon_text("""<!DOCTYPE html>
 </style></head><body>
 <div class="eyebrow">DC Hub · Platform Architecture</div>
 <h1>How DC Hub Works</h1>
-<p class="lead">DC Hub is a real-time intelligence platform for data center infrastructure: {canon_facilities} facilities,
+<p class="lead">DC Hub is a real-time intelligence platform for data center infrastructure: {canon_facilities} distinct facilities,
 170+ countries, 300+ power markets scored daily, 4,000+ M&amp;A deals tracked, and an MCP server that lets
 AI agents query all of it directly. Here's how it fits together.</p>
 

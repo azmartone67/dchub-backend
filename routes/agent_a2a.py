@@ -36,7 +36,7 @@ AGENT_CARD = {
     "agent": {
         "name":         "DC Hub Intelligence",
         "version":      "2.1.2",
-        "description":  (canon_text("Data center intelligence agent — {canon_facilities} facilities, "
+        "description":  (canon_text("Data center intelligence agent — {canon_facilities} distinct facilities, "
                          "M&A deals, grid data across live grid operators on 5 continents "
                          "(7 US ISOs plus TVA, BPA and Ontario's IESO) and 43 US utility "
                          "balancing authorities, (Hydro-Québec, AESO, Nord Pool remain modeled), "
@@ -112,7 +112,7 @@ AGENT_CARD = {
     "skills": [
         {
             "name":     "facility_intelligence",
-            "summary":  canon_text("Search {canon_facilities} data center facilities, get detailed profiles, find alternatives."),
+            "summary":  canon_text("Search {canon_facilities} distinct data center facilities, get detailed profiles, find alternatives."),
             "tools":    ["search_facilities", "get_facility", "find_alternatives", "semantic_search"],
             "examples": ["Find hyperscale campuses over 500MW in Virginia",
                           "Get full profile for facility #3000",

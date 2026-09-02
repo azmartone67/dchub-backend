@@ -1998,7 +1998,7 @@ def outreach_agent_card():
         "description": (
             canon_text("DC Hub gives AI agents real-time access to data center "
             "capacity, power, fiber, water risk, ISO grid status, tax "
-            "incentives, and M&A transactions across {canon_facilities} facilities "
+            "incentives, and M&A transactions across {canon_facilities} distinct facilities "
             "in {canon_countries} countries. The Data Center Power Index (DCPI) "
             "scores {canon_markets} US markets daily for BUILD/AVOID verdicts. "
             "MCP server, REST API, and OpenAPI all available.")

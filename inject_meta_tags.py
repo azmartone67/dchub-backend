@@ -36,11 +36,11 @@ _CANON_FAC = canon_text("{canon_facilities}")
 # ============================================================
 
 HOME_META = {
-    "title": canon_text("DC Hub | Data Center Intelligence Platform | {canon_facilities} Facilities Worldwide"),
-    "description": canon_text("Track {canon_facilities} data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals."),
+    "title": canon_text("DC Hub | Data Center Intelligence Platform | {canon_facilities} distinct Facilities Worldwide"),
+    "description": canon_text("Track {canon_facilities} distinct data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals."),
     "keywords": "data center, colocation, site selection, market intelligence, data center map, capacity tracking, M&A deals, construction pipeline, hyperscale",
     "og_title": "DC Hub — Data Center Intelligence Platform",
-    "og_description": canon_text("Real-time intelligence for {canon_facilities} data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries."),
+    "og_description": canon_text("Real-time intelligence for {canon_facilities} distinct data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries."),
 }
 
 MARKET_META = {
@@ -149,7 +149,7 @@ TOOL_META = {
     },
     "ai-agents": {
         "title": "AI Research Agents for Data Center Intelligence | DC Hub",
-        "description": canon_text("4 AI-powered agents: Sales intelligence, data enrichment, social media, and ecosystem analysis. Instant answers from {canon_facilities} facility database."),
+        "description": canon_text("4 AI-powered agents: Sales intelligence, data enrichment, social media, and ecosystem analysis. Instant answers from facility database of {canon_facilities} distinct facilities."),
         "keywords": "AI data center agent, data center research assistant, AI market intelligence",
     },
     "api-docs": {
@@ -159,7 +159,7 @@ TOOL_META = {
     },
     "pricing": {
         "title": "DC Hub Pricing | Data Center Intelligence from $9/month",
-        "description": canon_text("Pricing from $9/month for {canon_facilities} facilities, Land & Power mapping, AI agents, M&A tracker, and API."),
+        "description": canon_text("Pricing from $9/month for {canon_facilities} distinct facilities, Land & Power mapping, AI agents, M&A tracker, and API."),
         "keywords": "DC Hub pricing, data center intelligence pricing, data center SaaS",
     },
     "ecosystem": {
@@ -174,12 +174,12 @@ TOOL_META = {
     },
     "about": {
         "title": "About DC Hub | Data Center Intelligence Platform",
-        "description": canon_text("DC Hub tracks {canon_facilities} data center facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ."),
+        "description": canon_text("DC Hub tracks {canon_facilities} distinct data center facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ."),
         "keywords": "about DC Hub, data center platform, data center intelligence",
     },
     "assets": {
         "title": canon_text("Data Center Asset Explorer | {canon_facilities} Global Facilities | DC Hub"),
-        "description": canon_text("Browse {canon_facilities} data centers worldwide. Filter by provider, location, power, tier. Detailed profiles with satellite imagery and infrastructure data."),
+        "description": canon_text("Browse {canon_facilities} distinct data centers worldwide. Filter by provider, location, power, tier. Detailed profiles with satellite imagery and infrastructure data."),
         "keywords": "data center database, facility explorer, colocation directory, data center search",
     },
     "ai-inventory": {

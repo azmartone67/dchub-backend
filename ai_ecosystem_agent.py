@@ -329,10 +329,10 @@ Return ONLY valid JSON."""
         
         return {
             "name": "DC Hub - Data Center Intelligence",
-            "description": canon_text("Comprehensive data center intelligence platform with {canon_facilities} facilities worldwide. Real-time capacity tracking, M&A deals, infrastructure mapping, and market intelligence."),
+            "description": canon_text("Comprehensive data center intelligence platform with {canon_facilities} distinct facilities worldwide. Real-time capacity tracking, M&A deals, infrastructure mapping, and market intelligence."),
             "version": "1.0.0",
             "capabilities": [
-                canon_text("Search {canon_facilities} data center facilities globally"),
+                canon_text("Search {canon_facilities} distinct data center facilities globally"),
                 "Track M&A deals and transactions in real-time",
                 "Analyze site infrastructure (power, fiber, water)",
                 "Monitor capacity pipeline and expansions",

@@ -129,7 +129,7 @@ _VARIANTS = {
     },
     "C": {
         401: (canon_text("You just hit DC Hub's paywall. With a free key (10 "
-              "calls/day) you'd get: {canon_facilities} data center facilities, "
+              "calls/day) you'd get: {canon_facilities} distinct data center facilities, "
               "daily DCPI power scores for 32+ markets, 4,000+ tracked "
               "M&A deals, 10-ISO interconnection queues, fiber routes. Claim "
               "in 30 seconds: https://dchub.cloud/signup. No card.")),

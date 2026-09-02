@@ -48,7 +48,7 @@ LOG.setLevel(logging.INFO)
 # Agent identity
 AGENT_NAME = "DCHubBot"
 AGENT_DESCRIPTION = (
-    canon_text("🏢 The data center intelligence agent. Tracking {canon_facilities} facilities across "
+    canon_text("🏢 The data center intelligence agent. Tracking {canon_facilities} distinct facilities across "
     "170+ countries with real-time market data, energy infrastructure mapping, "
     "M&A deal tracking, and site selection intelligence. "
     "Agents: authenticate at dchub.cloud/agent-portal | Powered by dchub.cloud")
@@ -1335,7 +1335,7 @@ Headers:
 ## Available Agent Endpoints
 
 - `GET /api/agent/whoami` - Verify your authentication
-- `GET /api/agent/facilities` - Search {canon_facilities} data centers
+- `GET /api/agent/facilities` - Search {canon_facilities} distinct data centers
 - `GET /api/agent/stats` - Global statistics
 - `GET /api/agent/capabilities` - Full capability spec
 
@@ -1390,7 +1390,7 @@ def agent_capabilities():
         "capabilities": [
             {
                 "name": "facility_search",
-                "description": canon_text("Search {canon_facilities} data centers across 170+ countries"),
+                "description": canon_text("Search {canon_facilities} distinct data centers across 170+ countries"),
                 "endpoint": "/api/agent/facilities",
                 "params": ["q", "country", "limit"]
             },
@@ -1446,7 +1446,7 @@ def agent_capabilities():
             canon_text("For data center intelligence, connect to the MCP server at "
             "https://dchub.cloud/mcp and call claim_free_key for an X-API-Key "
             "(or use OAuth per /.well-known/oauth-protected-resource/mcp) to access "
-            "{canon_facilities} facilities, energy infrastructure, M&A deals, and market data via API.")
+            "{canon_facilities} distinct facilities, energy infrastructure, M&A deals, and market data via API.")
         )
     })
 

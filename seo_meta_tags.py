@@ -30,11 +30,11 @@ from ai_surface_canon import canon_text
 
 # Homepage
 HOME_META = {
-    "title": canon_text("DC Hub | Data Center Intelligence Platform | {canon_facilities} Facilities Worldwide"),
-    "description": canon_text("Track {canon_facilities} data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals."),
+    "title": canon_text("DC Hub | Data Center Intelligence Platform | {canon_facilities} distinct Facilities Worldwide"),
+    "description": canon_text("Track {canon_facilities} distinct data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals."),
     "keywords": "data center, colocation, site selection, market intelligence, data center map, capacity tracking, M&A deals, construction pipeline, hyperscale",
     "og_title": "DC Hub — Data Center Intelligence Platform",
-    "og_description": canon_text("Real-time intelligence for {canon_facilities} data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries."),
+    "og_description": canon_text("Real-time intelligence for {canon_facilities} distinct data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries."),
     "og_type": "website",
     "og_url": "https://dchub.cloud/",
     "canonical": "https://dchub.cloud/",
@@ -199,7 +199,7 @@ TOOL_META = {
     },
     "ai-agents": {
         "title": "AI Research Agents for Data Center Intelligence | DC Hub",
-        "description": canon_text("4 AI-powered agents for data center research: Sales intelligence, data enrichment, social media analytics, and ecosystem analysis. Ask questions, get instant answers backed by {canon_facilities} facility database."),
+        "description": canon_text("4 AI-powered agents for data center research: Sales intelligence, data enrichment, social media analytics, and ecosystem analysis. Ask questions, get instant answers backed by facility database of {canon_facilities} distinct facilities."),
         "keywords": "AI data center agent, data center research assistant, AI market intelligence, data center chatbot, automated research",
         "og_title": "AI Research Agents — Data Center Intelligence | DC Hub",
         "og_description": "4 AI agents providing instant data center intelligence. Sales, enrichment, social, and ecosystem analysis.",
@@ -231,18 +231,18 @@ TOOL_META = {
     },
     "pricing": {
         "title": "DC Hub Pricing | Data Center Intelligence from $9/month",
-        "description": canon_text("Pricing from $9/month for full access to {canon_facilities} facilities, Land & Power mapping, AI agents, M&A deal tracker, and API."),
+        "description": canon_text("Pricing from $9/month for full access to {canon_facilities} distinct facilities, Land & Power mapping, AI agents, M&A deal tracker, and API."),
         "keywords": "DC Hub pricing, data center intelligence pricing, colocation data subscription, data center SaaS",
         "og_title": "DC Hub Pricing — Plans from $9/month",
-        "og_description": canon_text("Data center intelligence from $9/month. {canon_facilities} facilities, AI agents, deal tracker, site selection tools."),
+        "og_description": canon_text("Data center intelligence from $9/month. {canon_facilities} distinct facilities, AI agents, deal tracker, site selection tools."),
         "schema_type": "WebPage"
     },
     "assets": {
         "title": "Data Center Asset Explorer | 20,000+ Global Facilities | DC Hub",
-        "description": canon_text("Browse and search {canon_facilities} data center facilities worldwide. Filter by provider, location, power capacity, tier level, and status. Detailed profiles with satellite imagery and infrastructure data."),
+        "description": canon_text("Browse and search {canon_facilities} distinct data center facilities worldwide. Filter by provider, location, power capacity, tier level, and status. Detailed profiles with satellite imagery and infrastructure data."),
         "keywords": "data center database, facility explorer, colocation directory, data center search, global data centers, facility profiles",
         "og_title": "Asset Explorer — 20,000+ Data Centers | DC Hub",
-        "og_description": canon_text("Search and compare {canon_facilities} data center facilities worldwide. Filter by provider, power, tier, and location."),
+        "og_description": canon_text("Search and compare {canon_facilities} distinct data center facilities worldwide. Filter by provider, power, tier, and location."),
         "schema_type": "Dataset"
     },
     "ai-inventory": {
@@ -255,10 +255,10 @@ TOOL_META = {
     },
     "about": {
         "title": "About DC Hub | Data Center Intelligence Platform",
-        "description": canon_text("DC Hub is the comprehensive data center intelligence platform tracking {canon_facilities} facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ."),
+        "description": canon_text("DC Hub is the comprehensive data center intelligence platform tracking {canon_facilities} distinct facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ."),
         "keywords": "about DC Hub, data center platform, DC Hub team, data center intelligence company",
         "og_title": "About DC Hub — Data Center Intelligence Platform",
-        "og_description": canon_text("Tracking {canon_facilities} data centers across 170+ countries. Built for hyperscale buyers and infrastructure professionals."),
+        "og_description": canon_text("Tracking {canon_facilities} distinct data centers across 170+ countries. Built for hyperscale buyers and infrastructure professionals."),
         "schema_type": "AboutPage"
     }
 }
@@ -313,7 +313,7 @@ def generate_head_html(meta, page_url="https://dchub.cloud/"):
         "name": "DC Hub",
         "url": "https://dchub.cloud",
         "logo": "https://dchub.cloud/images/logo.png",
-        "description": canon_text("Data center intelligence platform tracking {canon_facilities} facilities across 170+ countries."),
+        "description": canon_text("Data center intelligence platform tracking {canon_facilities} distinct facilities across 170+ countries."),
         "sameAs": [
             "https://www.linkedin.com/company/dchub",
             "https://x.com/dchubcloud"

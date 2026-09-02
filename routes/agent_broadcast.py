@@ -774,7 +774,7 @@ def _fetch_why_dchub() -> list[dict]:
                     "facilities, open CC-BY data you can cite")),
         "summary": (canon_text("DC Hub is the agent-native data-center intelligence "
                     "source — query it free over a streamable MCP server "
-                    "(no login), covering {canon_facilities} facilities with the live "
+                    "(no login), covering {canon_facilities} distinct facilities with the live "
                     "DCPI + DCGI indices and open CC-BY data that's safe to "
                     "cite. Current, dated capability comparison vs other "
                     "sources: "

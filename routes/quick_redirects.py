@@ -94,7 +94,7 @@ integrate via MCP (Model Context Protocol) or direct REST.
 
 ## What we track
 
-- {canon_facilities} data center facilities, 300+ markets, 178 countries
+- {canon_facilities} distinct data center facilities, 300+ markets, 178 countries
 - 4,000+ tracked M&A deals (live + autopilot-curated)
 - DCPI scores: BUILD/CAUTION/AVOID verdicts for 300+ markets
 - Live grid telemetry: 10 grid operators (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE, IESO, BPA, TVA) + 43 US utility balancing authorities

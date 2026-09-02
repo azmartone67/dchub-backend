@@ -531,7 +531,7 @@ register_surface(Surface(
 register_surface(Surface(
     surface_id="map",
     name="Facility Map",
-    description=canon_text("The /map facility browser — {canon_facilities} data centers worldwide"),
+    description=canon_text("The /map facility browser — {canon_facilities} distinct data centers worldwide"),
     routes=["/map"],
     paid_tools=["search_facilities", "search_facilities_semantic", "get_facility"],
     expected_event_types=["view", "zoom", "search", "facility_click", "filter"],
