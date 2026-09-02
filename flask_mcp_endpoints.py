@@ -3319,13 +3319,57 @@ def _build_press_headline(out: dict, series=None) -> None:
                 for p in (out.get("ai_agent_top_platforms_external") or [])
                 if (p.get("name") or p.get("platform"))][:2]
         _lead = f"led by {' and '.join(_top)} " if _top else ""
+        # ★ 2026-09-02 — THE LEVEL WAS HONEST AND THE SENTENCE WAS NOT.
+        # weeks[-1] carries top_caller_calls / top_caller_pct /
+        # calls_net_of_top / top_caller_client and sets concentration_flag
+        # when one caller is at or above CONCENTRATION_PCT of the week; this
+        # renderer read `calls` and ignored the rest. Measured 2026-09-02
+        # 00:23Z: "served 1,810 external AI-agent tool calls in the week of
+        # 2026-08-24" — of which 1,473 (81.4%) were ONE caller (`chain-hire`,
+        # one IP, one tool, no key) and 337 were everyone else. A sentence
+        # built to be quoted verbatim must carry its own concentration; the
+        # numbers are read off the same week row the level comes from and
+        # never recomputed here (top_caller_calls + calls_net_of_top == calls
+        # holds by construction in weekly_series).
+        # Inline on purpose: the fence tests exec this function with only
+        # PRESS_HEADLINE_BASIS and _fixed_window_claim bound, so a new
+        # module-level helper would NameError inside this try and silently
+        # degrade every headline to the lifetime sentence.
+        _conc = ""
+        try:
+            for _w in ((series or {}).get("weeks") or []):
+                if not (isinstance(_w, dict)
+                        and _w.get("week_start") == _week_label):
+                    continue
+                if _w.get("concentration_flag") and _w.get("top_caller_calls") is not None:
+                    _tc = int(_w["top_caller_calls"])
+                    _net = _w.get("calls_net_of_top")
+                    _net = (int(_net) if _net is not None
+                            else max(int(_wk) - _tc, 0))
+                    _pct = _w.get("top_caller_pct")
+                    _pct_s = (f"{float(_pct):.0f}%" if _pct is not None
+                              else f"{100.0 * _tc / max(int(_wk), 1):.0f}%")
+                    _who = str(_w.get("top_caller_client") or "unidentified")
+                    _conc = (f", of which {_tc:,} ({_pct_s}) came from a "
+                             f"single caller ({_who}); {_net:,} from all others")
+                break
+        except (TypeError, ValueError):
+            _conc = ""
         if _wk is not None and _ext:
             out["press_headline_metric"] = (
                 f"DC Hub served {_wk:,} external AI-agent tool calls "
-                f"in the week of {_week_label} ({_wow_s}); {_ext:,} external "
-                f"requests {_lead}since launch."
+                f"in the week of {_week_label} ({_wow_s}){_conc}; {_ext:,} "
+                f"external requests {_lead}since launch."
             )
-            out["press_headline_metric_basis"] = PRESS_HEADLINE_BASIS
+            out["press_headline_metric_basis"] = PRESS_HEADLINE_BASIS + (
+                " ★ Concentration clause: weeks[-1].top_caller_calls / "
+                "top_caller_pct / calls_net_of_top / top_caller_client, read "
+                "off the SAME week row as the level and rendered only when "
+                "weeks[-1].concentration_flag is true (top caller >= "
+                "CONCENTRATION_PCT of the week's calls); top_caller_calls + "
+                "calls_net_of_top == calls. The caller is named by its "
+                "client_name/platform; whether it held a key is not in the row."
+                if _conc else "")
         elif _ext:
             out["press_headline_metric"] = (
                 f"DC Hub has served {_ext:,} external AI-agent requests "

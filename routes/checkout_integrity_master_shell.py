@@ -36,7 +36,9 @@ served bytes — rather than any one artifact's self-consistency.
 LANES
   1 · links resolve       every link on a served surface really loads at Stripe
   2 · charge agreement    Stripe's own amount == tier_registry.price(tier)
-  3 · label vs plan       a CTA naming a tier links THAT tier's link
+  3 · label vs plan       a CTA naming a tier links THAT tier's link — and
+                          (2026-09-02) the agent→human relay page's button,
+                          resolved the way the backend resolves it
   4 · founding capacity   a capped program still has stock to sell
 
 HOUSE RULES
@@ -122,6 +124,24 @@ _LABEL_TIERS = (
 )
 
 _MONEY_RE = re.compile(r"\$\s?(\d[\d,]*)\s*/\s*(?:mo|month)\b", re.I)
+
+# ── the agent→human relay page (lane 3, added 2026-09-02) ─────────────
+# /upgrade/h/<token> is the ONE human hop the MCP funnel produces (102 real
+# opens / 30d per the revenue shell) and its button is not a buy.stripe.com
+# anchor — it is api.dchub.cloud/pricing/upgrade?tier=<x>&direct=1, resolved
+# server-side by routes/_stripe_links.resolve_tier. So the 14 anchored CTAs
+# this lane examined could all be honest while THE hop that matters sold the
+# wrong plan: the page said "$10 one-time" and ?tier=free|identified fell
+# through resolve_tier's default to the $49/mo Developer link (live 302,
+# 2026-09-02T00:29Z). This lane now reads the page live, resolves the href
+# exactly as the backend would, and holds the label to it. Any token renders
+# (the page is stateless at mint); the open is NOT logged — human_relay
+# recognises _UA's prefix as our own audit costume.
+_RELAY_SURFACE = "/upgrade/h/checkout-integrity-probe"
+_UPGRADE_ANCHOR_RE = re.compile(
+    r"<a\b[^>]*href=[\"']([^\"']*/pricing/upgrade\?[^\"']*)[\"'][^>]*>(.*?)</a>",
+    re.I | re.S)
+_ONE_TIME_RE = re.compile(r"\$\s?(\d[\d,]*)\s*(?:one[- ]time|once)\b", re.I)
 
 
 # ── auth / kill ───────────────────────────────────────────────────────
@@ -446,6 +466,10 @@ def _lane_label_vs_plan(canon: dict) -> list[dict]:
                 except Exception:  # noqa: BLE001
                     pass
 
+    relay_checks, relay_examined = _relay_label_vs_plan(canon)
+    checks.extend(relay_checks)
+    examined += relay_examined
+
     if unreadable:
         checks.append(_check("labels_readable", "every surface was readable", None,
                              "could not read: " + "; ".join(unreadable[:6]),
@@ -462,6 +486,108 @@ def _lane_label_vs_plan(canon: dict) -> list[dict]:
         checks.append(_check("labels_agree", "every labelled CTA sells its plan",
                              True, "%d CTA(s) examined, all consistent" % examined))
     return checks
+
+
+def _relay_label_vs_plan(canon: dict):
+    """The relay page's button, held to its copy. Returns (checks, examined).
+
+    The href is resolved with the SAME function the backend uses, so this
+    lane fails exactly when a buyer would be sold something else — and it
+    fails on the CLAIM (a ?tier= canon cannot name) before the price, because
+    a tier we cannot name is what the 2026-09-02 drift looked like.
+    """
+    checks = []
+    body, err = _fetch(_RELAY_SURFACE)
+    if err:
+        return [_check("relay_readable", "the agent→human relay page was readable",
+                       None, "%s: %s" % (_RELAY_SURFACE, err), critical=True)], 0
+    try:
+        from html import unescape as _unescape
+        from urllib.parse import urlsplit, parse_qs
+        from routes._stripe_links import (resolve_tier, ONE_TIME_TIERS,
+                                          TIER_ONE_TIME_USD)
+    except Exception as e:  # noqa: BLE001
+        return [_check("relay_resolver", "the relay resolver is importable", None,
+                       "%s: %s" % (type(e).__name__, str(e)[:100]),
+                       critical=True)], 0
+
+    buttons = _UPGRADE_ANCHOR_RE.findall(body)
+    if not buttons:
+        return [_check("relay_button", "the relay page has an upgrade button", None,
+                       "no /pricing/upgrade anchor parsed on %s" % _RELAY_SURFACE,
+                       critical=True)], 0
+
+    examined = 0
+    for raw_href, raw_label in buttons:
+        examined += 1
+        href = _unescape(raw_href)
+        label = re.sub(r"<[^>]+>", " ", raw_label)
+        label = re.sub(r"\s+", " ", label).strip()
+        q = parse_qs(urlsplit(href).query)
+        tier_param = (q.get("tier") or [""])[0]
+        tool_param = (q.get("tool") or [""])[0]
+        sells = resolve_tier(tool_param, tier_param)
+
+        if tier_param.lower() not in canon:
+            # The href names a tier canon cannot: whatever it sells is the
+            # resolver's fall-through, not a choice anyone made. This is the
+            # exact live shape (tier=free → Developer) and must never be green.
+            checks.append(_check(
+                "relay_tier_named", "the relay button names a plan canon can name",
+                False, "%r carries tier=%r, not a canon key; resolve_tier would "
+                       "sell '%s'" % (label[:60], tier_param, sells), critical=True))
+            continue
+
+        once = _ONE_TIME_RE.search(label)
+        monthly = _MONEY_RE.search(label)
+        if once:
+            quoted = float(once.group(1).replace(",", ""))
+            real = TIER_ONE_TIME_USD.get(sells)
+            if sells not in ONE_TIME_TIERS or real is None:
+                checks.append(_check(
+                    "relay_label_plan", "the relay button sells what it says", False,
+                    "%r promises a one-time charge but links the '%s' plan"
+                    % (label[:60], sells), critical=True))
+            elif abs(quoted - float(real)) >= 0.01:
+                checks.append(_check(
+                    "relay_label_price", "the relay button quotes its plan's price",
+                    False, "%r quotes $%s but the '%s' pack is $%s"
+                    % (label[:60], quoted, sells, real), critical=True))
+            else:
+                checks.append(_check(
+                    "relay_label_plan", "the relay button sells what it says", True,
+                    "%r → tier=%s → '%s' ($%s one-time)"
+                    % (label[:60], tier_param, sells, real)))
+        elif monthly:
+            quoted = float(monthly.group(1).replace(",", ""))
+            try:
+                import tier_registry
+                real = float(tier_registry.price(sells) or 0)
+            except Exception:  # noqa: BLE001
+                real = 0.0
+            if sells in ONE_TIME_TIERS or not real or abs(quoted - real) >= 0.01:
+                checks.append(_check(
+                    "relay_label_price", "the relay button quotes its plan's price",
+                    False, "%r quotes $%s/mo but links '%s' (%s)"
+                    % (label[:60], quoted, sells,
+                       ("$%s/mo" % real) if real else "no monthly price"),
+                    critical=True))
+            else:
+                checks.append(_check(
+                    "relay_label_plan", "the relay button sells what it says", True,
+                    "%r → '%s' ($%s/mo)" % (label[:60], sells, real)))
+        else:
+            named = next((t for word, t in _LABEL_TIERS if word in label.lower()), None)
+            if named and named != sells:
+                checks.append(_check(
+                    "relay_label_plan", "the relay button sells what it says", False,
+                    "%r links the '%s' plan, not '%s'" % (label[:60], sells, named),
+                    critical=True))
+            else:
+                checks.append(_check(
+                    "relay_label_plan", "the relay button sells what it says", True,
+                    "%r → '%s' (no price quoted)" % (label[:60], sells)))
+    return checks, examined
 
 
 def _lane_founding_capacity(canon: dict) -> list[dict]:

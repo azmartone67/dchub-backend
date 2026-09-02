@@ -129,6 +129,71 @@ def signal(name, label, value, prior, better, basis, unit=None):
     }
 
 
+def _complete_week_starts(today: _dt.date) -> list[_dt.date]:
+    """Mondays of the two COMPLETE ISO weeks canonical_external_complete_week_sql
+    counts — weeks_back=1 then 0 — for a UTC `today`. The SQL's
+    date_trunc('week', now()) is the same Monday boundary on a UTC server."""
+    this_monday = today - _dt.timedelta(days=today.weekday())
+    return [this_monday - _dt.timedelta(weeks=2),
+            this_monday - _dt.timedelta(weeks=1)]
+
+
+def _complete_week_spans(today: _dt.date) -> list[tuple]:
+    """Half-open [Mon 00:00Z, next Mon 00:00Z) spans for those two weeks —
+    the shape weekly_series.comparability_for_spans takes."""
+    return [(_dt.datetime.combine(d, _dt.time.min, tzinfo=_dt.timezone.utc),
+             _dt.datetime.combine(d + _dt.timedelta(weeks=1), _dt.time.min,
+                                  tzinfo=_dt.timezone.utc))
+            for d in _complete_week_starts(today)]
+
+
+def _complete_week_comparability(today: _dt.date | None = None):
+    """weekly_series.comparability_for_spans over the same two windows the
+    agents signal divides, or None when the marker list cannot be read.
+    Lazy import: weekly_series is a reports module and this feed must not
+    fail to import because of it."""
+    try:
+        from routes.weekly_series import comparability_for_spans
+    except Exception:
+        return None
+    today = today or _dt.datetime.now(_dt.timezone.utc).date()
+    try:
+        return comparability_for_spans(_complete_week_spans(today))
+    except Exception:
+        return None
+
+
+def withhold_across_definition_change(sig: dict, comp) -> dict:
+    """★ 2026-09-02. Measured live at 00:23Z: agents_complete_week published
+    value 35, prior 17, direction "up", improving TRUE — across
+    dchub-mcp-server#202 (2026-08-18 06:31Z), which removed DC Hub's own
+    GitHub Actions from the population INSIDE the prior week. weekly-series
+    refuses that exact pair (comparability.quotable_as_trend=false); this
+    feed had no comparability field at all and rendered it as the funnel
+    turning.
+
+    Same rule flask_mcp_endpoints._mark_wow_comparability applies to the
+    funnel's *_wow_pct keys: when the two windows straddle a definition
+    change (or both predate a correction) the MOVEMENT is withheld —
+    direction "withheld", improving null — and `comparability` says why. The
+    two LEVELS stay published. A comparability that could not be computed is
+    withheld too: publishing improving:true on an unchecked pair is the
+    defect, so the check fails closed.
+    """
+    sig["comparability"] = comp
+    unsafe = (not isinstance(comp, dict)
+              or bool(comp.get("crosses_definition_change"))
+              or bool(comp.get("superseded_by_correction")))
+    if unsafe:
+        sig["direction"] = "withheld"
+        sig["improving"] = None
+        sig["withheld_reason"] = (
+            comp.get("means") if isinstance(comp, dict) else
+            "comparability could not be computed (weekly_series marker list "
+            "unreadable) — an unchecked pair is not published as a movement")
+    return sig
+
+
 def _ratio(num, den, places=1):
     if num is None or den in (None, 0):
         return None
@@ -356,14 +421,18 @@ def read_signals() -> dict:
                    act_now, act_prev, "up", unit="percent",
                    basis=(f"distinct minted_api_key with >=1 mcp_call_log row / distinct keys "
                           f"issued, last {COHORT_DAYS}d vs the {COHORT_DAYS}d before.")),
-            signal("agents_complete_week",
+            withhold_across_definition_change(signal(
+                   "agents_complete_week",
                    "Distinct real external agents, complete ISO week",
                    agents_now, agents_prev, "up", unit="agents",
                    basis=("mcp_calls_deloop.canonical_external_complete_week_sql — COMPLETE ISO "
                           "weeks, most recent complete vs the one before. NOT a rolling window and "
                           "never the partial current week: comparing windows of unequal "
                           "composition is how the same population read -65% rolling and +37% on "
-                          "complete weeks.")),
+                          "complete weeks. ★ direction is 'withheld' (improving null) when "
+                          "the two weeks straddle a registered definition change — see "
+                          "comparability / withheld_reason on this signal.")),
+                _complete_week_comparability()),
             signal("session_upgrades",
                    "Checkouts that bound to an MCP session",
                    su_now, su_prev, "up", unit="upgrades",
@@ -401,26 +470,39 @@ SHAPE = {
                         "that table, so a 0 there may mean callers were routed to a "
                         "key- or anon-bound link, not that nobody converted. Maps are "
                         "null (never {}) when the probe failed.",
-    "signal": "{signal, label, value, prior, unit, direction, better, improving, basis}",
-    "direction": "up | down | flat | unknown — the raw movement between the two "
+    "signal": "{signal, label, value, prior, unit, direction, better, improving, basis} "
+              "— plus comparability and withheld_reason on agents_complete_week.",
+    "direction": "up | down | flat | unknown | withheld — the raw movement between the two "
                  "windows. 'unknown' means a window could not be read; it is NEVER "
-                 "reported as 'flat'.",
+                 "reported as 'flat'. 'withheld' means both windows were read but "
+                 "straddle a registered definition change (weekly_series "
+                 "comparability), so the movement is not a trend and is not published "
+                 "as one — the two levels still are.",
     "better": "up | down — which direction is GOOD for this signal. Two of the five "
               "improve by going DOWN, so never read 'direction' as a verdict on its own.",
     "improving": "true | false | null — direction == better. null when the movement is "
-                 "flat or unknown.",
+                 "flat, unknown or withheld.",
+    "comparability": "agents_complete_week only: weekly_series.comparability_for_spans "
+                     "over the same two complete weeks — {crosses_definition_change, "
+                     "changes[], superseded_by_correction, superseded_by[], "
+                     "quotable_as_trend, means}. null when it could not be computed, "
+                     "which also withholds.",
     "value": "null means the probe FAILED. 0 means it ran and found nothing. Never "
              "conflate them: this feed exists because a flat 0 was being read as a finding.",
-    "verdict": "{improving, worsening, flat, unknown} — counts of signals by state. A "
-               "summary of the five, not a business conclusion.",
+    "verdict": "{improving, worsening, flat, unknown, withheld} — counts of signals by "
+               "state. A summary of the five, not a business conclusion.",
 }
 
 
 def _verdict(signals) -> dict:
-    v = {"improving": 0, "worsening": 0, "flat": 0, "unknown": 0}
+    v = {"improving": 0, "worsening": 0, "flat": 0, "unknown": 0, "withheld": 0}
     for s in signals:
         if s["direction"] == "unknown":
             v["unknown"] += 1
+        elif s["direction"] == "withheld":
+            # improving is null here; without this branch it fell through to
+            # the else and a withheld movement was COUNTED AS WORSENING.
+            v["withheld"] += 1
         elif s["direction"] == "flat":
             v["flat"] += 1
         elif s["improving"]:
