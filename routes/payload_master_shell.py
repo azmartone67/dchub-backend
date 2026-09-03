@@ -526,7 +526,7 @@ def _run_tick() -> dict:
             _ensure_tables(w)
             with w.cursor() as cur:
                 cur.execute("INSERT INTO payload_shell_snapshots"
-                            " (lanes_pass, lanes_total, payload) VALUES (%s,%s,%s)",
+                            " (lanes_pass, lanes_total, payload) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                             (payload["lanes_pass"], payload["lanes_total"],
                              json.dumps(payload)))
             payload["persisted"] = True

@@ -256,6 +256,7 @@ def run_extraction():
     return summary
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:831 — review and remove one
 @iso_br_ons_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
@@ -279,6 +280,7 @@ def http_snapshot():
         "source": "ONS Balanço de Energia (live, minute-level)",
     }, 200)
 
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 
 @iso_br_ons_bp.route("/health", methods=["GET"])
 def http_health():
