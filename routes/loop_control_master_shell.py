@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import ast
 import os
 import re
 from html import escape as _esc
@@ -728,63 +729,138 @@ def _lane_agent_identity(c) -> list[dict]:
 
 # ── lane 7: counter canon ─────────────────────────────────────────────
 
-def _lane_counter_canon() -> list[dict]:
-    """Three surfaces, three answers, opposite signs. Actuator: one SQL, one
-    helper, every surface reads it."""
-    checks = []
-    # ★ This lane USED to count grep hits and call them "independent
-    # implementations ... free to drift". Three faults, all found by audit:
-    #  (a) SELF-COUNT — this file contains the needle literal, so it always
-    #      matched itself and inflated the count by one, forever.
-    #  (b) DEAD "?" BRANCH — because of (a) the no-hits branch was
-    #      unreachable, so an os.listdir failure rendered the confident
-    #      "no site found" instead of an honest indeterminate.
-    #  (c) OVERCLAIM — a grep hit is not a distinct counter. Some hits are
-    #      different measurements (a COUNT(...) FILTER variant), and a fixed
-    #      string missed real ones (SELECT DISTINCT agent_id) plus every
-    #      file outside routes/.
-    # Now: a regex over the whole repo, self excluded, reported as a
-    # CANDIDATE list and explicitly not scored as proof of drift.
-    _SELF = os.path.basename(__file__)
-    pat = re.compile(r"DISTINCT\s+(?:\w+\.)?agent_id", re.I)
-    root = _repo_root()
-    sites, scanned, failed = [], 0, False
-    try:
-        for sub in ("routes", "."):
-            base = os.path.join(root, sub)
-            for fn in sorted(os.listdir(base)):
-                if not fn.endswith(".py") or fn == _SELF:
-                    continue
-                p = os.path.join(base, fn)
-                if not os.path.isfile(p):
-                    continue
-                scanned += 1
-                body = _read(p)
-                if body and pat.search(body):
-                    sites.append(os.path.relpath(p, root))
-    except Exception as e:
-        failed = True
-        logger.debug("[loop-control] counter scan failed: %s", e)
-    sites = sorted(set(sites))
+def _lane_counter_canon(c=None) -> list[dict]:
+    """Do the agent counters AGREE? Measured on values, not on file counts.
 
-    if failed or not scanned:
-        # Honest indeterminate — NOT "no sites found", which would state a
-        # fact about the repo when what actually happened was an IO error.
-        checks.append(_check("agent_count_sites", "repo scannable for agent-count SQL",
-                             None, "could not scan the repo — result unknown",
-                             critical=True))
+    ★ REWRITTEN 2026-09-03. Two previous versions both counted TEXT. The
+    first grepped for a fixed string, matched itself, and inflated the count
+    forever. The second widened to a regex over the repo and reported a
+    CANDIDATE list — honest about its own weakness, and its note said so
+    outright: "a grep hit is not proof two counters DISAGREE". That is an
+    accurate disclaimer on a check that therefore could never pass, and a
+    lane that cannot pass is a lane everyone learns to scroll past.
+
+    The lane's name promises canon over VALUES, so it now measures values:
+    it runs THE canonical query and, in the same scan, the two retired bases
+    that caused the 2026-07-31 incident (three surfaces, three answers on one
+    day: badge 64, widget 95, funnel 129). The spread between them is
+    published — it is the size of the error a surface still on an old basis
+    would print. Then it asserts, by AST rather than by substring, that the
+    public emitters actually CALL the canonical helper."""
+    checks = []
+    close_after = False
+    if c is None:
+        c = _conn()
+        close_after = True
+    try:
+        # ── the canonical value ───────────────────────────────────────
+        if c is None or not _has_table(c, "mcp_calls_identity"):
+            checks.append(_check(
+                "canon_value", "the canonical agent count is readable", None,
+                "mcp_calls_identity unreadable — a failed read is UNKNOWN, "
+                "never a zero and never a pass", critical=True))
+            return checks
+        cols = _columns(c, "mcp_calls_identity")
+        tcol = next((x for x in ("created_at", "ts", "called_at", "timestamp",
+                                 "request_time") if x in cols), None)
+        if not tcol:
+            checks.append(_check(
+                "canon_value", "identity view has a time column", None,
+                f"no usable time column; have {sorted(cols)[:10]}",
+                critical=True))
+            return checks
+
+        alts, alt_names = [], []
+        for cand, label in (("ip_address", "raw ip_address"),
+                            ("session_id", "session_id")):
+            if cand in cols:
+                alts.append(f"COUNT(DISTINCT {cand})")
+                alt_names.append(label)
+        sel = ", ".join(["COUNT(DISTINCT agent_id)"] + alts)
+        r = _row(c, f"""
+            SELECT {sel} FROM mcp_calls_identity
+             WHERE is_public_ip AND is_real_external
+               AND {tcol} > NOW() - INTERVAL '7 days'
+        """)
+        if not r:
+            checks.append(_check(
+                "canon_value", "the canonical agent count is readable", None,
+                "the canonical query did not return — UNKNOWN", critical=True))
+            return checks
+
+        canon = int(r[0] or 0)
+        others = [int(x or 0) for x in r[1:]]
+        checks.append(_check(
+            "canon_value", "the canonical agent count is readable", True,
+            f"{canon} distinct agents (7d) on the canonical basis "
+            f"(mcp_calls_identity, is_public_ip AND is_real_external)"))
+
+        # ── how wrong an old basis would print, right now ─────────────
+        if others:
+            spread = ", ".join(f"{n}={v}" for n, v in zip(alt_names, others))
+            worst = max(abs(v - canon) for v in others)
+            checks.append(_check(
+                "canon_spread", "retired counting bases are published for "
+                "comparison, not scored", None,
+                f"canonical={canon} vs {spread} — a surface still on a "
+                f"retired basis would print up to {worst} agents off today. "
+                f"Report-only: these SHOULD differ; that is why the canonical "
+                f"basis exists (2026-07-31: badge 64 / widget 95 / funnel 129 "
+                f"on one day)"))
+
+        # ── centralisation, by AST call-site not by substring ─────────
+        emitters = ("flask_mcp_endpoints.py", "routes/ai_reach.py",
+                    "routes/weekly_series.py")
+        missing, unreadable = [], []
+        for rel in emitters:
+            body = _read(os.path.join(_repo_root(), rel))
+            if not body:
+                unreadable.append(rel)
+                continue
+            try:
+                tree = ast.parse(body)
+            except SyntaxError:
+                unreadable.append(rel)
+                continue
+            # ★ Resolve ALIASES. flask_mcp_endpoints imports the helper as
+            # `_canonical_activity_sql`; matching the bare name would have
+            # reported the repo's most important emitter as non-compliant.
+            # Caught by this lane's own guard on the first run.
+            names = {"canonical_external_activity_sql"}
+            for n in ast.walk(tree):
+                if isinstance(n, ast.ImportFrom):
+                    for a in n.names:
+                        if a.name == "canonical_external_activity_sql" and a.asname:
+                            names.add(a.asname)
+            calls = any(
+                isinstance(n, ast.Call)
+                and getattr(n.func, "id", getattr(n.func, "attr", None)) in names
+                for n in ast.walk(tree))
+            if not calls:
+                missing.append(rel)
+        if unreadable:
+            checks.append(_check(
+                "canon_emitters", "public agent-count emitters call the one "
+                "helper", None,
+                f"could not parse {', '.join(unreadable)} — UNKNOWN, not a pass",
+                critical=True))
+        else:
+            checks.append(_check(
+                "canon_emitters", "public agent-count emitters call the one "
+                "helper", not missing,
+                (f"{', '.join(missing)} publish an agent count without calling "
+                 f"canonical_external_activity_sql()"
+                 if missing else
+                 f"all {len(emitters)} emitters call "
+                 f"canonical_external_activity_sql() (AST call-site, not a "
+                 f"substring — a mention in a comment does not count)")))
         return checks
-    checks.append(_check(
-        "agent_count_sites", "agent-count SQL is centralised",
-        len(sites) <= 1,
-        f"{len(sites)} file(s) query DISTINCT agent_id directly across "
-        f"{scanned} scanned: " + ", ".join(sites[:6])
-        + ("…" if len(sites) > 6 else "")
-        + (" — candidates only: a grep hit is not proof two counters DISAGREE, "
-           "and these are not all the same measurement. The measured drift is "
-           "portal 62 (-19 WoW) vs reach 99 (+73.7pct) on the same day."
-           if len(sites) > 1 else "")))
-    return checks
+    finally:
+        if close_after and c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
 
 
 # ── lane 8: relay two-artifact ────────────────────────────────────────
@@ -920,7 +996,7 @@ def _run_tick(beat: bool = True) -> dict:
             {"id": "agent_identity", "name": "6 · agent identity split",
              "checks": _safe_lane(_lane_agent_identity, c)},
             {"id": "counter_canon", "name": "7 · counter canon (one SQL)",
-             "checks": _safe_lane(_lane_counter_canon)},
+             "checks": _safe_lane(_lane_counter_canon, c)},
             {"id": "relay_two_artifact", "name": "8 · relay two-artifact",
              "checks": _safe_lane(_lane_relay_two_artifact, c)},
         ]

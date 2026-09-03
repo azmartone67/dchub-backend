@@ -241,9 +241,29 @@ def test_loop_flywheel_shell_honest():
     from routes.loop_flywheel_master_shell import _check, _lane_verdict, _lane_infra
     assert _lane_verdict([_check("a", "a", None, "", critical=True)]) == "?"
     assert _lane_verdict([_check("a", "a", False, "")]) == "FAIL"
-    # the Neon deadline lane must actually count down, not hardcode a pass
-    details = " ".join(k["detail"] for k in _lane_infra())
-    assert "2026-10-05" in details
+    # ★2026-09-03: this asserted the countdown date "2026-10-05" appeared in
+    # the lane's output — "must actually count down, not hardcode a pass". The
+    # countdown is GONE: it counted down to a Neon cutover that had already
+    # executed (2026-07-13), observed nothing but the calendar, and would have
+    # gone red permanently from 09-13 with nobody able to clear it.
+    # The INTENT — the lane must MEASURE, never hardcode a verdict — survives,
+    # and is now checked against what the lane actually observes: the live DSN.
+    import os as _os
+    _prev = _os.environ.get("DATABASE_URL")
+    try:
+        _os.environ["DATABASE_URL"] = (
+            "postgresql://u:p@ep-x.westus3.azure.neon.tech/db")
+        azure = next(k for k in _lane_infra() if k["id"] == "neon_off_azure")
+        _os.environ["DATABASE_URL"] = (
+            "postgresql://u:p@ep-x.c-2.us-west-2.aws.neon.tech/db")
+        aws = next(k for k in _lane_infra() if k["id"] == "neon_off_azure")
+    finally:
+        if _prev is None:
+            _os.environ.pop("DATABASE_URL", None)
+        else:
+            _os.environ["DATABASE_URL"] = _prev
+    assert azure["pass"] is False and aws["pass"] is True, \
+        "the infra lane hardcodes a verdict instead of observing the live host"
 
 
 def test_shell29_lanes_have_no_missing_helpers():

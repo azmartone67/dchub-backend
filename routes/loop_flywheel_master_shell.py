@@ -51,6 +51,7 @@ import datetime
 import json
 import logging
 import os
+from urllib.parse import urlsplit
 import urllib.error
 import urllib.request
 from html import escape as _esc
@@ -61,10 +62,23 @@ logger = logging.getLogger(__name__)
 
 loop_flywheel_master_shell_bp = Blueprint("loop_flywheel_master_shell", __name__)
 
-# Neon Azure→AWS migration deadline. A calendar fact, not a metric — the only
-# honest way to watch it is to count down and go red before it bites.
-_NEON_MIGRATION_DUE = datetime.date(2026, 10, 5)
-_NEON_WARN_DAYS = 45        # amber inside this window, red inside half of it
+# ★2026-09-03: this WAS a calendar countdown to the Neon Azure→AWS cutover
+# (_NEON_MIGRATION_DUE = 2026-10-05, red inside 22d). It was replaced because
+# it had become a clock that could only ever go red:
+#
+#   · the cutover EXECUTED 2026-07-13; the Azure project was DELETED 08-05
+#   · the countdown constant was added 2026-07-24 — ELEVEN DAYS AFTER the
+#     cutover it was counting down to — and was never edited again
+#   · it observed NOTHING about the system: pure date arithmetic. It would
+#     have gone FAIL on 2026-09-13 and OVERDUE from 10-06, permanently,
+#     with no action by anyone able to clear it
+#
+# A deadline check that cannot see whether the deadline was already met is
+# not a deadline check. What the countdown was a PROXY for is directly
+# measurable — and the cutover runbook already named the measurement
+# `verify_no_azure` — so the lane now asserts the thing itself: the live DSN
+# does not point at Azure.
+_AZURE_HOST_MARKERS = ("azure.neon.tech", "westus3", "azure-")
 
 # Flywheel identity thresholds (mirror routes/flywheel_master_shell.py so this
 # shell never imports a sibling shell — kept literal on purpose).
@@ -203,20 +217,34 @@ def _http_head(url: str, timeout: float = 6.0, headers: dict | None = None):
 
 def _lane_infra() -> list[dict]:
     checks = []
-    days = (_NEON_MIGRATION_DUE - datetime.date.today()).days
-    # Deliberately hard: this is a deadline nobody else tracks. Amber at 45d,
-    # red at 22d — early enough that a migration still fits in the window.
-    if days < 0:
-        ok, note = False, f"OVERDUE by {abs(days)}d"
-    elif days <= _NEON_WARN_DAYS // 2:
-        ok, note = False, f"{days}d left — schedule the cutover NOW"
-    elif days <= _NEON_WARN_DAYS:
-        ok, note = None, f"{days}d left — inside the planning window"
+    # ★ Measures the migration, not the calendar. A DSN we cannot read is
+    # UNKNOWN ("?"), never a pass — the old check's failure mode was asserting
+    # a state it had not observed, and inverting that into a fake green would
+    # be the same defect facing the other way.
+    dsn = (os.environ.get("DATABASE_URL")
+           or os.environ.get("NEON_DATABASE_URL") or "").strip()
+    if not dsn:
+        ok, note = None, ("no DATABASE_URL/NEON_DATABASE_URL in this process — "
+                          "cannot observe which host is live")
     else:
-        ok, note = True, f"{days}d out"
+        # Host only. The DSN carries a password and must never reach a note,
+        # a log, or /api/v1/ops/deadman, which is PUBLIC.
+        try:
+            host = urlsplit(dsn).hostname or ""
+        except Exception:
+            host = ""
+        if not host:
+            ok, note = None, "DSN present but unparseable — host unknown"
+        else:
+            on_azure = any(m in host.lower() for m in _AZURE_HOST_MARKERS)
+            ok = not on_azure
+            note = (f"live DB host {host} is still on Azure — the cutover has "
+                    f"regressed or a service was re-pointed"
+                    if on_azure else
+                    f"off Azure; live DB host {host} (cutover 2026-07-13, "
+                    f"Azure project deleted 08-05)")
     checks.append(_check(
-        "neon_migration", "Neon Azure→AWS migration on schedule", ok,
-        f"due {_NEON_MIGRATION_DUE.isoformat()} · {note}", critical=True))
+        "neon_off_azure", "live database is off Azure", ok, note, critical=True))
     replica = bool((os.environ.get("NEON_REPLICA_URL") or "").strip())
     checks.append(_check(
         "read_replica", "read replica configured for heavy reads", replica,
