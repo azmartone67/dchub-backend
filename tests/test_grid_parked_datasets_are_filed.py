@@ -99,8 +99,9 @@ def test_it_reports_NOTHING_when_the_allowlist_covers_the_registry(monkeypatch):
 
 def test_a_widened_allowlist_shrinks_the_finding(monkeypatch):
     before = len(g.parked_datasets())
-    extra = next(t["id"] for t in g.TARGET_DATASETS
-                 if t["id"] not in g._GS_ALLOWLIST)
+    # must be one that is ACTUALLY parked — a dataset already repointed to a
+    # direct source is not parked, so allowlisting it would shrink nothing.
+    extra = next(t["id"] for t in g.parked_datasets())
     monkeypatch.setattr(g, "_GS_ALLOWLIST", set(g._GS_ALLOWLIST) | {extra})
     assert len(g.parked_datasets()) == before - 1
     assert extra not in {t["id"] for t in g.parked_datasets()}

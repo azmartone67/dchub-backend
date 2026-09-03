@@ -513,12 +513,207 @@ def _caiso_fuel_mix(entry: dict) -> dict:
                     "source_url": "%s/fuelsource.csv" % _CAISO_BASE}}
 
 
+# ── ERCOT direct — five datasets from three KEYLESS dashboards ──────────
+#
+# ★★★ 2026-09-03, the second repoint. ERCOT's authenticated Azure-APIM feed
+#   (iso_grid_adapters.fetch_ercot, OAuth + Ocp-Apim-Subscription-Key) stays
+#   exactly as it is — it serves the real-time gen/load record and is untouched
+#   here. These five parked datasets need none of it: ERCOT publishes them on
+#   public, unauthenticated dashboard JSON.
+#
+#     supply-demand.json   forecast[].forecastedDemand  -> ercot_load_forecast
+#                          forecast[].availCapGen       -> ercot_capacity_forecast
+#                          data[] where forecast==0     -> ercot_capacity_committed
+#     daily-prc.json       data[].prc                   -> ercot_real_time_adders…
+#     fuel-mix.json        data[date][ts][fuel].gen     -> ercot_fuel_mix_detailed
+#
+#   Probed live 2026-09-03: 200 / 84KB, 191KB, 107KB respectively.
+#   (todays-outlook.json is 403 to non-browser agents — not used.)
+#
+# ★ NO TIMEZONE INFERENCE HERE, unlike CAISO. Every ERCOT timestamp carries an
+#   explicit offset ("2026-09-03 04:47:14-0500"), so the instant is read, never
+#   reconstructed from the server clock. That removed the whole class of bug
+#   the CAISO repoint had to be careful about.
+#
+# ★ as_of FOLLOWS WHAT THE NUMBER IS. An observation carries its OWN interval;
+#   a forecast carries its PUBLICATION time (lastUpdated), never the future
+#   hour it describes. Stamping a forecast at its target hour would write rows
+#   ahead of the clock and make every freshness reader argue with itself.
+_ERCOT_DASH = "https://www.ercot.com/api/1/services/read/dashboards"
+
+
+def _http_json(url: str, timeout: int = 10):
+    """Fetch JSON. None on anything unexpected (fail-soft)."""
+    import urllib.request as _u
+    try:
+        req = _u.Request(url, headers={"User-Agent": "dchub-grid-shell/1.0"})
+        with _u.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read(4_000_000).decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _ercot_ts(s):
+    """'2026-09-03 04:47:14-0500' -> aware UTC datetime, or None."""
+    from datetime import datetime, timezone as _tz
+    txt = str(s or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S%z", "%Y-%m-%d %H:%M%z", "%Y-%m-%d %H:%M:%S"):
+        try:
+            d = datetime.strptime(txt, fmt)
+        except Exception:
+            continue
+        if d.tzinfo is None:
+            return None          # a bare local string is NOT an instant
+        return d.astimezone(_tz.utc)
+    return None
+
+
+def _ercot_dash_json(name: str):
+    return _http_json("%s/%s" % (_ERCOT_DASH, name))
+
+
+def _ercot_next_forecast_row(d):
+    """The soonest forecast hour at-or-after now, from supply-demand.forecast[]."""
+    rows = (d or {}).get("forecast") or []
+    now = _utcnow()
+    dated = [(r, _ercot_ts(r.get("timestamp"))) for r in rows if isinstance(r, dict)]
+    ahead = [(r, t) for r, t in dated if t is not None and t >= now]
+    if ahead:
+        return min(ahead, key=lambda rt: rt[1])
+    past = [(r, t) for r, t in dated if t is not None]
+    return max(past, key=lambda rt: rt[1]) if past else (None, None)
+
+
+def _ercot_load_forecast(entry: dict) -> dict:
+    d = _ercot_dash_json("supply-demand.json")
+    if not d:
+        return {"ok": False, "error": "ercot_supply_demand_unavailable"}
+    row, target = _ercot_next_forecast_row(d)
+    pub = _ercot_ts(d.get("lastUpdated"))
+    if row is None or pub is None:
+        return {"ok": False, "error": "ercot_supply_demand_no_forecast_row"}
+    mw = _num(row.get("forecastedDemand"))
+    if mw is None:
+        return {"ok": False, "error": "ercot_forecast_row_missing_demand"}
+    return {"ok": True, "primary_value": mw, "as_of": pub,
+            "raw": {"forecasted_demand_mw": mw,
+                    "avail_cap_gen_mw": _num(row.get("availCapGen")),
+                    "for_hour_utc": str(target), "hour_ending": row.get("hourEnding"),
+                    "published_utc": str(pub),
+                    "source_url": "%s/supply-demand.json" % _ERCOT_DASH}}
+
+
+def _ercot_capacity_forecast(entry: dict) -> dict:
+    d = _ercot_dash_json("supply-demand.json")
+    if not d:
+        return {"ok": False, "error": "ercot_supply_demand_unavailable"}
+    row, target = _ercot_next_forecast_row(d)
+    pub = _ercot_ts(d.get("lastUpdated"))
+    if row is None or pub is None:
+        return {"ok": False, "error": "ercot_supply_demand_no_forecast_row"}
+    mw = _num(row.get("availCapGen"))
+    if mw is None:
+        return {"ok": False, "error": "ercot_forecast_row_missing_capacity"}
+    return {"ok": True, "primary_value": mw, "as_of": pub,
+            "raw": {"avail_cap_gen_mw": mw,
+                    "forecasted_demand_mw": _num(row.get("forecastedDemand")),
+                    "for_hour_utc": str(target), "hour_ending": row.get("hourEnding"),
+                    "published_utc": str(pub),
+                    "source_url": "%s/supply-demand.json" % _ERCOT_DASH}}
+
+
+def _ercot_capacity_committed(entry: dict) -> dict:
+    """Committed capacity — the newest ACTUAL row, never a forecast row.
+
+    supply-demand.data[] carries `forecast` as a 0/1 FLAG, not a value; rows
+    with forecast==1 are tomorrow's projection and would otherwise be read as
+    today's committed capacity.
+    """
+    d = _ercot_dash_json("supply-demand.json")
+    if not d:
+        return {"ok": False, "error": "ercot_supply_demand_unavailable"}
+    rows = [r for r in (d.get("data") or [])
+            if isinstance(r, dict) and not _num(r.get("forecast"))]
+    dated = [(r, _ercot_ts(r.get("timestamp"))) for r in rows]
+    live = [(r, t) for r, t in dated if t is not None and _num(r.get("capacity")) is not None]
+    if not live:
+        return {"ok": False, "error": "ercot_supply_demand_no_actual_row"}
+    row, ts = max(live, key=lambda rt: rt[1])
+    return {"ok": True, "primary_value": _num(row.get("capacity")), "as_of": ts,
+            "raw": {"capacity_mw": _num(row.get("capacity")),
+                    "demand_mw": _num(row.get("demand")),
+                    "hour_ending": row.get("hourEnding"), "is_forecast_row": False,
+                    "source_url": "%s/supply-demand.json" % _ERCOT_DASH}}
+
+
+def _ercot_reserves(entry: dict) -> dict:
+    """Physical Responsive Capability — ERCOT's operating-reserve signal.
+
+    The registry declares value_col 'prc' for this dataset and the dashboard
+    field is literally `prc`, so the two already agree.
+    """
+    d = _ercot_dash_json("daily-prc.json")
+    if not d:
+        return {"ok": False, "error": "ercot_daily_prc_unavailable"}
+    dated = [(r, _ercot_ts(r.get("timestamp"))) for r in (d.get("data") or [])
+             if isinstance(r, dict) and _num(r.get("prc")) is not None]
+    live = [(r, t) for r, t in dated if t is not None]
+    if not live:
+        return {"ok": False, "error": "ercot_daily_prc_no_row"}
+    row, ts = max(live, key=lambda rt: rt[1])
+    cond = d.get("current_condition") or {}
+    return {"ok": True, "primary_value": _num(row.get("prc")), "as_of": ts,
+            "raw": {"prc_mw": _num(row.get("prc")), "interval": row.get("interval"),
+                    "eea_level": cond.get("eea_level"), "state": cond.get("state"),
+                    "source_url": "%s/daily-prc.json" % _ERCOT_DASH}}
+
+
+def _ercot_fuel_mix_detailed(entry: dict) -> dict:
+    """Per-fuel generation at the newest published interval.
+
+    data is {date: {timestamp: {fuel: {"gen": MW}}}}. Power Storage goes
+    negative while charging — kept as reported, because clamping it would
+    inflate the total exactly the way it would for CAISO's night-time solar.
+    """
+    d = _ercot_dash_json("fuel-mix.json")
+    if not d or not isinstance(d.get("data"), dict):
+        return {"ok": False, "error": "ercot_fuel_mix_unavailable"}
+    best_ts, best_slot = None, None
+    for _day, slots in (d.get("data") or {}).items():
+        if not isinstance(slots, dict):
+            continue
+        for stamp, fuels in slots.items():
+            t = _ercot_ts(stamp)
+            if t is None or not isinstance(fuels, dict):
+                continue
+            if best_ts is None or t > best_ts:
+                best_ts, best_slot = t, fuels
+    if best_slot is None:
+        return {"ok": False, "error": "ercot_fuel_mix_no_parseable_interval"}
+    mix, total = {}, 0.0
+    for fuel, v in best_slot.items():
+        n = _num(v.get("gen")) if isinstance(v, dict) else _num(v)
+        if n is not None:
+            mix[fuel] = round(n, 2)
+            total += n
+    if not mix:
+        return {"ok": False, "error": "ercot_fuel_mix_interval_empty"}
+    return {"ok": True, "primary_value": round(total, 1), "as_of": best_ts,
+            "raw": {"fuel_mw": mix, "total_generation_mw": round(total, 1),
+                    "source_url": "%s/fuel-mix.json" % _ERCOT_DASH}}
+
+
 # dataset_id -> (source_label, fetcher). A dataset listed here is NO LONGER
 # parked: parked_datasets() subtracts it, so the standing finding shrinks by
 # arithmetic as repoints land rather than by anyone remembering to edit it.
 _DIRECT_SOURCES = {
     "caiso_load_forecast": ("caiso_todays_outlook", _caiso_load_forecast),
     "caiso_fuel_mix":      ("caiso_todays_outlook", _caiso_fuel_mix),
+    "ercot_load_forecast":               ("ercot_dashboard", _ercot_load_forecast),
+    "ercot_capacity_forecast":           ("ercot_dashboard", _ercot_capacity_forecast),
+    "ercot_capacity_committed":          ("ercot_dashboard", _ercot_capacity_committed),
+    "ercot_real_time_adders_and_reserves": ("ercot_dashboard", _ercot_reserves),
+    "ercot_fuel_mix_detailed":           ("ercot_dashboard", _ercot_fuel_mix_detailed),
 }
 
 
