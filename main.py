@@ -27458,6 +27458,74 @@ logger.info("✅ Public heatmap endpoint registered: /api/v1/capacity/heatmap/pu
 # FIBER ROUTES MANAGEMENT ENDPOINTS
 # =============================================================================
 
+# ── fiber viewport + carrier identity helpers (2026-09-03) ───────────────────
+# Two measured defects behind "FiberLocator shows carriers at this address and
+# we don't", both fixed here rather than by ingesting more fiber:
+#   1. ?bbox= filtered on the START POINT, dropping routes that cross the
+#      viewport. See migrations/2026-09-03_fiber_routes_bbox_columns.sql.
+#   2. ?carrier= was exact `provider = %s`, so the same carrier stored under
+#      two spellings answered only to one of them.
+
+from routes.fiber_viewport import (match_carriers as _fv_match_carriers,
+                                   thin_coords as _fv_thin_coords,
+                                   thinning_stride as _fv_thinning_stride)
+
+_FIBER_BBOX_COLS = {"checked": False, "present": False}
+
+
+def _fiber_bbox_columns_present(cursor):
+    """True iff fiber_routes carries the materialized min/max lat/lng box.
+
+    Feature-detected ONCE per process, not assumed: the code ships before the
+    migration is applied, and an endpoint that 500s on a missing column until
+    someone runs SQL is a worse outcome than a viewport that stays as accurate
+    as it is today. Checked against information_schema so a partially applied
+    migration (columns added, backfill not yet run) still reads as present —
+    NULL boxes are handled per-row by the query itself."""
+    if _FIBER_BBOX_COLS["checked"]:
+        return _FIBER_BBOX_COLS["present"]
+    try:
+        cursor.execute("""SELECT COUNT(*) FROM information_schema.columns
+                           WHERE table_name = 'fiber_routes'
+                             AND column_name IN ('min_lat','max_lat','min_lng','max_lng')""")
+        _FIBER_BBOX_COLS["present"] = int((cursor.fetchone() or [0])[0]) == 4
+    except Exception:
+        _FIBER_BBOX_COLS["present"] = False
+    _FIBER_BBOX_COLS["checked"] = True
+    return _FIBER_BBOX_COLS["present"]
+
+
+_FIBER_CARRIERS_CACHE = {"at": 0.0, "names": []}
+_FIBER_CARRIERS_TTL = 600
+
+
+def _fiber_resolve_carriers(cursor, wanted):
+    """Resolve one user-supplied carrier name to the exact `provider` values
+    that mean it, so the filter stays an indexable equality test.
+
+    The matching RULE lives in routes/fiber_viewport.match_carriers (pure, and
+    tested there); this function only supplies the candidate names and caches
+    them. Returns [] when nothing matches, which the caller turns into a
+    literal `provider = <wanted>` so an unknown carrier yields an empty set
+    rather than silently unfiltered results."""
+    now = time.time()
+    if (not _FIBER_CARRIERS_CACHE["names"]
+            or (now - _FIBER_CARRIERS_CACHE["at"]) > _FIBER_CARRIERS_TTL):
+        try:
+            # 745 distinct carriers (measured 2026-09-03) — a cheap scan,
+            # cached for 10 min. Doing this ONCE and then filtering with an
+            # IN list keeps the hot query on equality instead of a LIKE the
+            # planner can't index (see the 2026-08-23 un-indexable-prefix
+            # incident, which died on the 15s statement_timeout).
+            cursor.execute("SELECT DISTINCT provider FROM fiber_routes "
+                           "WHERE provider IS NOT NULL AND provider <> ''")
+            _FIBER_CARRIERS_CACHE["names"] = [r[0] for r in cursor.fetchall()]
+            _FIBER_CARRIERS_CACHE["at"] = now
+        except Exception:
+            return []
+    return _fv_match_carriers(wanted, _FIBER_CARRIERS_CACHE["names"])
+
+
 @app.route('/api/v1/fiber/sources', methods=['GET'])
 @require_plan('pro')
 def fiber_sources():
@@ -27542,16 +27610,43 @@ def _build_fiber_routes_geojson(max_features=None):
         # p99 payload. Bounds the row count for every caller (the map's
         # limit=5000 clamps to 2000 real backbone routes — plenty for overview;
         # the class sub-layers pull their own detail).
+        #
+        # ★ 2026-09-03: 2,000 was applied to EVERY caller, including narrowed
+        # ones, and that is what capped the map. fiber_routes holds 64,836
+        # rows (/api/v1/fiber/summary, live) and `carrier=Zayo`, `class=
+        # longhaul` and a statewide bbox each returned EXACTLY 2000 — the
+        # clamp, not a count. The map asks for limit=10000 and silently got
+        # 2,000, so the UI's "2,000 real" badge was rendering the cap.
+        #
+        # The 23MB p99 payload the cap was introduced for came from UNFILTERED
+        # bulk pulls of multi-vertex geometry. A narrowed query (carrier /
+        # class / type / bbox / market) is already bounded by its own filter —
+        # a metro viewport is a few hundred routes — so it gets the higher
+        # ceiling and the bulk path keeps the old one.
+        #
+        # ★ ROWS ALONE ARE THE WRONG CONTROL, so raising this is only safe
+        # alongside the vertex budget below. Measured 2026-09-03: Zayo holds
+        # 19,545 routes and one of them carries 27,388 vertices, so a bare
+        # `carrier=Zayo&limit=20000` at full geometry is tens of MB. The budget
+        # bounds BYTES; this bounds rows. Both are needed.
+        _MAX_ROWS_BULK, _MAX_ROWS_NARROWED = 2000, 20000
         limit = request.args.get('limit', 500, type=int)
-        limit = min(max(limit, 1), 2000)
+        limit = min(max(limit, 1),
+                    _MAX_ROWS_NARROWED if _has_filter else _MAX_ROWS_BULK)
         if max_features is not None:
             limit = min(limit, max(int(max_features), 1))
 
         query = 'SELECT * FROM fiber_routes WHERE (start_lat IS NOT NULL OR coordinates IS NOT NULL)'
         params = []
+        _carrier_matched = None
         if carrier:
-            query += ' AND provider = %s'
-            params.append(carrier)
+            # Fold the carrier's spellings together (see _fiber_resolve_carriers).
+            # No match → fall back to the literal name so an unknown carrier
+            # returns nothing, never an accidentally unfiltered set.
+            _carrier_matched = _fiber_resolve_carriers(cursor, carrier)
+            _names = _carrier_matched or [carrier]
+            query += ' AND provider IN (' + ','.join(['%s'] * len(_names)) + ')'
+            params.extend(_names)
         if route_type:
             query += ' AND route_type = %s'
             params.append(route_type)
@@ -27559,15 +27654,56 @@ def _build_fiber_routes_geojson(max_features=None):
             types = CLASS_TYPES[route_class]
             query += ' AND route_type IN (' + ','.join(['%s'] * len(types)) + ')'
             params.extend(types)
-        # GEO-0704: optional viewport filter (start point in the box). Narrows the
-        # set AND qualifies the caller for full multi-vertex geometry.
+        # Viewport filter. Narrows the set AND qualifies the caller for full
+        # multi-vertex geometry.
+        #
+        # ★ 2026-09-03: this tested the START POINT ONLY —
+        #     AND start_lng BETWEEN ... AND start_lat BETWEEN ...
+        # which drops every route that CROSSES the viewport without beginning
+        # in it. Routes here are whole carrier segments (one Zayo row carries
+        # 493 vertices across several counties), so at metro zoom "starts on
+        # this screen" is close to a random filter.
+        #
+        # MEASURED at 2675 Olthoff Dr, Muskegon MI — the address a customer
+        # used to compare us against FiberLocator (viewport
+        # -86.30,43.19,-86.08,43.30): 21 routes' geometry passes through it,
+        # the start-point test kept 16, and the 5 it dropped included THE ONLY
+        # Zayo route reaching Muskegon. Bluebird survived purely because its
+        # start points happened to land inside the box. That was the whole of
+        # "they show Zayo and we only show Bluebird" — not missing data.
+        #
+        # Now: standard box-overlap against the materialized per-route extent.
+        # Rows whose box is NULL (unparseable geometry, or the backfill not yet
+        # run) fall back to the old endpoint test rather than vanishing.
+        # Box overlap is a SUPERSET of true line-intersection — a diagonal
+        # route's box covers ground its line never touches — which is the
+        # correct trade here: a cheap indexable pre-filter that never hides a
+        # route that is genuinely present.
+        _bbox_mode = None
         if bbox:
             try:
                 _mnx, _mny, _mxx, _mxy = [float(v) for v in bbox.split(',')]
-                query += (' AND start_lng BETWEEN %s AND %s'
-                          ' AND start_lat BETWEEN %s AND %s')
-                params.extend([min(_mnx, _mxx), max(_mnx, _mxx),
-                               min(_mny, _mxy), max(_mny, _mxy)])
+                _w, _e = min(_mnx, _mxx), max(_mnx, _mxx)
+                _s, _n = min(_mny, _mxy), max(_mny, _mxy)
+                if _fiber_bbox_columns_present(cursor):
+                    _bbox_mode = "box-overlap"
+                    query += (' AND ( (min_lng IS NOT NULL'
+                              '        AND min_lng <= %s AND max_lng >= %s'
+                              '        AND min_lat <= %s AND max_lat >= %s)'
+                              '   OR (min_lng IS NULL'
+                              '        AND ( (start_lng BETWEEN %s AND %s AND start_lat BETWEEN %s AND %s)'
+                              '           OR (end_lng   BETWEEN %s AND %s AND end_lat   BETWEEN %s AND %s) ) ) )')
+                    params.extend([_e, _w, _n, _s,
+                                   _w, _e, _s, _n,
+                                   _w, _e, _s, _n])
+                else:
+                    # Migration not applied yet. Still strictly better than the
+                    # start-point test — an endpoint at EITHER end of the route
+                    # now counts — without assuming columns that may not exist.
+                    _bbox_mode = "endpoints-only (bbox columns not present)"
+                    query += (' AND ( (start_lng BETWEEN %s AND %s AND start_lat BETWEEN %s AND %s)'
+                              '    OR (end_lng   BETWEEN %s AND %s AND end_lat   BETWEEN %s AND %s) )')
+                    params.extend([_w, _e, _s, _n, _w, _e, _s, _n])
             except Exception:
                 pass  # malformed bbox → ignore (behaves as unfiltered)
         # r-depth (2026-07-06): market= filter — routes TOUCHING a metro (either
@@ -27621,20 +27757,24 @@ def _build_fiber_routes_geojson(max_features=None):
         columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
 
-        # provenance-v1 (2026-07-11, dark-fiber honesty pass): per-record
-        # helpers — source→v tier, vintage as_of (2016-wayback Zayo KMZ),
-        # dark/lit service_class. Pure module; any import failure leaves the
-        # legacy property shape untouched (fail-soft).
-        try:
-            from routes.fiber_provenance import (source_v as _fp_source_v,
-                                                 source_as_of as _fp_as_of,
-                                                 service_class as _fp_svc,
-                                                 DARK_BASIS as _fp_dark_basis)
-        except Exception:
-            _fp_source_v = _fp_as_of = _fp_svc = None
-            _fp_dark_basis = "carrier-advertised"
-
-        features = []
+        # ── vertex budget (2026-09-03) ──────────────────────────────────────
+        # Bounds the RESPONSE BYTES independently of the row cap, so raising
+        # the narrowed row ceiling can't resurrect the 23MB payload.
+        #
+        # ★ WHEN OVER BUDGET WE THIN GEOMETRY, WE DO NOT DROP ROUTES. Dropping
+        # is precisely the bug this whole change exists to fix: a missing route
+        # reads to the customer as "that carrier isn't here", which is a false
+        # statement about the physical world. A route drawn with fewer vertices
+        # still answers the question the map is asked — does this carrier reach
+        # this site — so the budget spends its bytes on presence, not detail.
+        #
+        # Two-pass so the stride is decided from the real total rather than
+        # drifting as rows stream past a running counter: parse every row's
+        # coordinates once, sum the vertices, derive one global stride, then
+        # emit. First and last vertex are always kept, so endpoints stay exact
+        # and no route ever collapses below a 2-point line.
+        _VERTEX_BUDGET = 300000     # ~7MB of coordinate text at ~24 B/vertex
+        _parsed = []
         for row in rows:
             row_dict = dict(zip(columns, row))
             coords = []
@@ -27655,13 +27795,32 @@ def _build_fiber_routes_geojson(max_features=None):
                     coords = [[slng, slat], [elng, elat]] if slat and slng and elat and elng else []
                 except Exception:
                     coords = []
-
-            # GEO-0704: unfiltered programmatic bulk pull → collapse multi-vertex
-            # polylines to endpoints so the response stays bounded. (Browser map
-            # + narrowed callers keep full geometry; the teaser path is untouched.)
+            # Unfiltered bulk pull: collapse to endpoints (pre-existing GEO-0704
+            # behaviour) BEFORE the budget, so bulk never consumes it.
             if _simplify_geo and len(coords) > 2:
                 coords = [coords[0], coords[-1]]
+            _parsed.append((row_dict, coords))
 
+        _total_vertices = sum(len(c) for _, c in _parsed)
+        _stride = _fv_thinning_stride(_total_vertices, _VERTEX_BUDGET)
+        if _stride > 1:
+            _parsed = [(_rd, _fv_thin_coords(_c, _stride)) for _rd, _c in _parsed]
+
+        # provenance-v1 (2026-07-11, dark-fiber honesty pass): per-record
+        # helpers — source→v tier, vintage as_of (2016-wayback Zayo KMZ),
+        # dark/lit service_class. Pure module; any import failure leaves the
+        # legacy property shape untouched (fail-soft).
+        try:
+            from routes.fiber_provenance import (source_v as _fp_source_v,
+                                                 source_as_of as _fp_as_of,
+                                                 service_class as _fp_svc,
+                                                 DARK_BASIS as _fp_dark_basis)
+        except Exception:
+            _fp_source_v = _fp_as_of = _fp_svc = None
+            _fp_dark_basis = "carrier-advertised"
+
+        features = []
+        for row_dict, coords in _parsed:
             props = {
                 "name": row_dict.get('name', ''),
                 "carrier": row_dict.get('provider', ''),
@@ -27708,6 +27867,34 @@ def _build_fiber_routes_geojson(max_features=None):
             })
 
         result = {"type": "FeatureCollection", "features": features, "total": len(features)}
+        # Say what the filters actually did (2026-09-03). Each of these was an
+        # invisible behaviour that made a wrong answer look like a real one:
+        # `total` sitting exactly on the cap read as a count, a viewport
+        # silently testing the wrong thing, and two spellings of one carrier
+        # answering to only one of them.
+        if _carrier_matched is not None:
+            # Every stored spelling folded into this answer. One name here
+            # means no folding happened; [] means the carrier is unknown and
+            # the empty result is real, not a filter failure.
+            result["_carrier_matched"] = _carrier_matched
+        if _bbox_mode:
+            result["_bbox_match"] = _bbox_mode
+        if len(features) >= limit:
+            result["_truncated"] = True
+            result["_limit"] = limit
+            result["_note_truncated"] = (
+                f"Result hit the {limit}-row ceiling, so `total` is the cap, not a count. "
+                "Narrow with ?bbox=, ?carrier= or ?class=, or raise ?limit=.")
+        if _stride > 1:
+            result["_geometry_thinned"] = {
+                "stride": _stride,
+                "vertices_before": _total_vertices,
+                "budget": _VERTEX_BUDGET,
+                "note": ("Response exceeded the vertex budget, so polylines were "
+                         "thinned (every Nth vertex, endpoints preserved). Every "
+                         "matching route is still present — no route was dropped. "
+                         "Narrow the query for full-detail geometry."),
+            }
         # provenance-v1 (2026-07-11): collection block (GeoJSON foreign member —
         # spec-legal, ignored by geometry parsers). Carrier dataset vintage:
         # surveyed carrier KMZ (Zayo) + NTIA middle-mile routes, plus synthetic
