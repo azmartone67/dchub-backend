@@ -254,6 +254,7 @@ def _shell(title, desc, canonical, breadcrumb_html, body_html, jsonld=None):
 <meta property="og:url" content="{canonical}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/dchub-brand.css">
 {ld_html}
 <style>
 :root{{--bg:#0a0a0f;--surf:#131319;--surf2:#1a1a22;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--indd:#6366f1;--vio:#a855f7;--grad:linear-gradient(135deg,#6366f1,#a855f7)}}
@@ -287,10 +288,7 @@ footer{{max-width:1100px;margin:48px auto 0;padding:20px 24px 40px;border-top:1p
 footer a{{color:var(--mut)}}
 </style>
 </head><body>
-<header class="header"><div class="wrap" style="display:flex;align-items:center;justify-content:space-between">
-<a class="logo" href="{SITE}/">DC<span>Hub</span></a>
-<nav><a href="{SITE}/facilities">Facilities</a><a href="{SITE}/dcpi">Power Index</a><a href="{SITE}/markets">Markets</a><a href="{SITE}/grid">Grid</a><a class="px" href="{SITE}/pricing">Pricing</a></nav>
-</div></header>
+<!-- canonical nav is injected by /js/dchub-nav.js, loaded before </body> -->
 <main>
 <nav class="bc">{breadcrumb_html}</nav>
 {body_html}
@@ -302,6 +300,7 @@ footer a{{color:var(--mut)}}
 <a href="{SITE}/grid">Grid</a> · <a href="{SITE}/pricing">Pricing</a>
 <div class="muted" style="margin-top:8px;color:var(--dim)">DC Hub — live data-center infrastructure intelligence across 170+ countries.</div>
 </footer>
+<script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
 
 
