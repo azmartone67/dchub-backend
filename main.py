@@ -31079,13 +31079,30 @@ def _build_sitemap_sections():
         # every sitemap shard (live sitemap-static.xml: 457 <loc>, zero matching
         # 'integrations'), so a new recipe page is invisible to crawlers unless
         # it is listed here. Same omission class as /install/* above. Listed
-        # only for the page this change ships; the six pre-existing siblings
-        # stay unlisted rather than being swept in on an unrelated PR.
         # NOTE: a deploy alone does NOT publish this — /sitemap-static.xml
         # returns the sitemap_snapshot DB row before the live builder runs, so
         # the 4-hourly cron or POST /api/v1/admin/sitemap/rebuild-snapshot has
         # to fire first. Verify with the X-Sitemap-Source header.
         ('/integrations/cloudflare', '0.8', 'weekly'),
+        # 2026-09-03: the siblings #3609 deliberately left out ("stay unlisted
+        # rather than being swept in on an unrelated PR") — this IS that PR.
+        # All nine measured live before listing: HTTP 200, self-referential
+        # <link rel=canonical>, no robots meta, and nothing in robots.txt
+        # disallowing /integrations. A sitemap entry for a non-canonical or
+        # noindex URL is a contradiction crawlers discount, so eligibility was
+        # checked per URL rather than assumed from the route table.
+        # ★ /integrations is NOT listed: it canonicals to /integrations/mcp
+        # (both routes decorate the same handler and serve a byte-identical
+        # body), so the canonical target is what belongs in the sitemap.
+        ('/integrations/mcp', '0.8', 'weekly'),
+        ('/integrations/mcp/data-center-mcp-server', '0.8', 'weekly'),
+        ('/integrations/meta', '0.8', 'weekly'),
+        ('/integrations/bedrock', '0.8', 'weekly'),
+        ('/integrations/copilot-studio', '0.8', 'weekly'),
+        ('/integrations/grok', '0.8', 'weekly'),
+        ('/integrations/gemini', '0.8', 'weekly'),
+        ('/integrations/mistral', '0.8', 'weekly'),
+        ('/integrations/perplexity', '0.8', 'weekly'),
         ('/capabilities', '0.8', 'weekly'),
         ('/whats-new', '0.7', 'weekly'),
         ('/testimonials', '0.7', 'weekly'),
