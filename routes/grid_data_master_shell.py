@@ -408,6 +408,59 @@ _GAP_FINDINGS = [
 ]
 
 
+def parked_datasets() -> list:
+    """The registry rows the budget allowlist currently refuses to ingest.
+
+    ★★★ 2026-09-03 — THE PROMISE THAT WAS NEVER WIRED.
+      _ingest_gridstatus_dataset's own docstring says the non-allowlisted
+      datasets are "skipped with an honest marker so the brain can repoint them
+      (finding filed by the caller)". The caller filed _GAP_FINDINGS — a static
+      list of nine — and the repoint gap was not one of them. So the marker was
+      returned into a dict nobody read, no finding was ever filed, the brain
+      never saw it, and nobody repointed anything.
+
+      Measured today: TARGET_DATASETS holds 21 rows and
+      GRIDSTATUS_DATASET_ALLOWLIST defaults to four PJM ids — but only THREE of
+      those four exist in the registry (`pjm_load` is allowlisted and never
+      declared), so the shell can reach three datasets and 18 are parked. It
+      has been that way since the 2026-07-26 budget cut (gridstatus free tier
+      is 250 req/MONTH; July burned 375), which means the shell whose stated
+      job is "constantly widening + freshening coverage" has cycled three
+      datasets for five weeks while every tick reported success.
+
+      DERIVED, never restated. A second hand-written list of parked ids would
+      rot exactly the way the nine did — this reads TARGET_DATASETS and the
+      live allowlist, so it is right on the day someone widens either one, and
+      it reports NOTHING once the allowlist covers the registry.
+    """
+    return [t for t in TARGET_DATASETS if t["id"] not in _GS_ALLOWLIST]
+
+
+def _parked_finding() -> tuple | None:
+    """(issue, detail) for the parked registry rows, or None when none are."""
+    parked = parked_datasets()
+    if not parked:
+        return None
+    by_iso: dict = {}
+    for t in parked:
+        by_iso.setdefault(t["iso"], []).append(t["id"])
+    shown = ", ".join(
+        "%s×%d (%s)" % (iso, len(ids), ids[0])
+        for iso, ids in sorted(by_iso.items(), key=lambda kv: -len(kv[1]))[:6])
+    return (
+        "grid_datasets_parked_pending_repoint",
+        ("%d of %d registry datasets cannot be ingested: they are outside "
+         "GRIDSTATUS_DATASET_ALLOWLIST (currently %s), which was narrowed to "
+         "PJM-only on 2026-07-26 because the gridstatus free tier is 250 "
+         "req/month and July burned 375. Each one has a free direct source we "
+         "already hold credentials for, and each needs its adapter repointed "
+         "there — that repoint is the work. Until it happens this shell can "
+         "only cycle %d dataset(s), so 'widening coverage' is inert. Parked: %s."
+         % (len(parked), len(TARGET_DATASETS),
+            ",".join(sorted(_GS_ALLOWLIST)) or "(empty)",
+            len(TARGET_DATASETS) - len(parked), shown)))
+
+
 def _file_gap_findings() -> int:
     """Upsert the standing code-shaped gaps into brain_findings (idempotent) so the
     brain's autonomy loop can draft them. Returns count actually inserted/updated.
@@ -429,7 +482,14 @@ def _file_gap_findings() -> int:
         conn = psycopg2.connect(db, sslmode="require", connect_timeout=8)
         conn.autocommit = False
         with conn.cursor() as cur:
-            for issue, detail in _GAP_FINDINGS:
+            # The standing nine, plus the DERIVED parked-datasets gap. Derived
+            # last so a change to the allowlist is reflected on the next tick
+            # without anyone editing a list.
+            _gaps = list(_GAP_FINDINGS)
+            _parked = _parked_finding()
+            if _parked:
+                _gaps.append(_parked)
+            for issue, detail in _gaps:
                 try:
                     r = upsert_brain_finding(
                         cur, issue=issue,
