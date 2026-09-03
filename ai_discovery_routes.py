@@ -1443,6 +1443,35 @@ User-agent: Bytespider
 User-agent: CCBot
 User-agent: Googlebot
 User-agent: GoogleOther
+# ★ 2026-09-03 — PARTNER PARITY. A crawler NOT named here falls through to
+#   "User-agent: *", which carries Disallow: /api/ — and /api/* is, per the note
+#   above, "the only surface the assistant crawlers fetch". So an unnamed AI
+#   partner is not merely un-welcomed, it is served a STRICTER policy than every
+#   named one, silently, by omission.
+#
+#   You.com was the measured case: 1.34K reach/7d while unnamed, i.e. real and
+#   sustained traffic from a partner we were quietly restricting harder than
+#   Grok. That is the whole reason this block is a list and not a wildcard —
+#   and the reason onboarding an AI partner means adding its UA HERE, not
+#   anywhere else.
+#
+#   Adding a UA that no crawler uses costs nothing (it simply never matches);
+#   omitting one that does costs that partner its /api/ surface. The asymmetry
+#   says: when in doubt, name it.
+User-agent: YouBot
+User-agent: MistralAI-User
+User-agent: DuckAssistBot
+User-agent: cohere-ai
+User-agent: Meta-ExternalFetcher
+# Applebot governs the CRAWL; Applebot-Extended (already above) governs only
+# AI-training use. Naming just the -Extended variant left the crawler itself
+# under the wildcard — the same omission class as You.com.
+User-agent: Applebot
+# Anthropic's CURRENT user-agents. ClaudeBot/Claude-Web/anthropic-ai above are
+# the older set and stay for compatibility; these two are what Claude uses for
+# user-initiated fetches and search indexing today.
+User-agent: Claude-User
+User-agent: Claude-SearchBot
 # ★ Content Signals repeated — void for this group otherwise (RFC 9309).
 #   MUST sit below the LAST User-agent line above: a non-UA directive
 #   TERMINATES the user-agent run, so placing it mid-list would split this
