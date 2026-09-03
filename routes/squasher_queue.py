@@ -130,7 +130,8 @@ _MAX_PR_PER_DAY = 12        # PRs opened/24h — the budget the message meant
 _MAX_WORK_PER_DAY = 40      # investigations/24h — model spend, a separate cost
 
 STATUSES = ("queued", "running", "proposed", "refused", "failed",
-            "awaiting_ops", "awaiting_decision", "resolved", "superseded")
+            "awaiting_ops", "awaiting_decision", "resolved", "superseded",
+            "self_cleared")
 
 # ★ 2026-08-20 — WHY THE QUEUE NEVER DRAINED.
 #
@@ -214,7 +215,8 @@ _REFRESH_OPEN_ROW_SQL = (
 _COLLAPSE_SELECT_SQL = (
     "SELECT id, finding_key, status, requested_at, COALESCE(seen_count, 1),"
     " COALESCE(last_seen, requested_at),"
-    " COALESCE(NULLIF(action_url, ''), finding_key)"
+    " COALESCE(NULLIF(action_url, ''), finding_key),"
+    " COALESCE(action_url, ''), COALESCE(title, '')"
     " FROM squasher_work_queue WHERE status IN (" + _OPEN_STATUSES_SQL + ")"
     " ORDER BY requested_at ASC, id ASC")
 _SUPERSEDE_SQL = (
@@ -223,6 +225,10 @@ _SUPERSEDE_SQL = (
     " finished_at = NOW()"
     " WHERE id = %s AND status IN (" + _OPEN_STATUSES_SQL + ")"
     " AND status <> 'running'")
+_FLEET_KEEPER_REASON_SQL = (
+    "UPDATE squasher_work_queue"
+    " SET reason = LEFT(%s || ' | ' || COALESCE(reason, ''), 600)"
+    " WHERE id = %s AND COALESCE(reason, '') NOT LIKE 'fleet finding:%%'")
 _KEEPER_SQL = (
     "UPDATE squasher_work_queue"
     " SET seen_count = COALESCE(seen_count, 1) + %s,"
@@ -1248,6 +1254,85 @@ def _age_key(row):
     return (ts, row[0])
 
 
+# ── fleet families ──────────────────────────────────────────────────────
+#
+# ★★★ 2026-09-03 — ONE OUTAGE, 31 INVESTIGATIONS.
+#
+# The collapse below groups by the operator action, else by finding_key. That
+# is exactly right for facility_dedup_apply, where `?country=FR` and
+# `?country=NL` are two different calls somebody has to make. It is exactly
+# wrong for a shared feed: on the board that morning 31 EU bidding zones each
+# held their own `iso_metric_count_zero_24h` row, keys byte-distinct
+# ("grid_data: iso=EU_CZ" vs "...EU_SK"), so nothing grouped them — and the
+# lane paid ~48s of model time PER ZONE to reach the same conclusion. Three of
+# those analyses are still on the board saying it in their own words: "treat it
+# as one shared-feed outage rather than filing per-ISO tickets".
+#
+# They were right, and the reason is structural, not incidental: routes/
+# iso_eu_entsoe.py is ONE module reading ONE ENTSOE_API_Token for all 33 zones.
+# There is no per-zone failure mode to investigate separately.
+#
+# ★ SCOPED, NOT GLOBAL. Collapsing every `iso_metric_count_zero_24h` into one
+#   row would hide a real PJM outage behind an unrelated European one. So a
+#   family carries a SCOPE rule and only same-scope members merge: every EU_*
+#   zone is one row, PJM stays its own. A family with no rule collapses
+#   nothing, which is the current behaviour and the safe default.
+def _iso_fleet_scope(finding_key: str) -> str | None:
+    """"grid_data: iso=EU_CZ" -> "EU"; "...iso=PJM" -> "PJM".
+
+    The scope is the ISO code's leading segment, because that is where the
+    shared upstream lives: EU_* is one ENTSO-E token, US ISOs are independent
+    operators with independent feeds. Returns None when the key is not an ISO
+    finding, which leaves the row grouped exactly as before.
+    """
+    key = str(finding_key or "")
+    marker = "iso="
+    i = key.find(marker)
+    if i < 0:
+        return None
+    code = key[i + len(marker):].strip()
+    if not code:
+        return None
+    head = code.split("_", 1)[0].strip().upper()
+    # The aggregate row and its zones are the same module and the same token
+    # (routes/iso_eu_entsoe.py writes ISO_CODE='ENTSOE' alongside every EU_*
+    # zone), so they are one finding. Without this the board keeps a 32nd row
+    # saying the identical thing.
+    if head == "ENTSOE":
+        return "EU"
+    return head or None
+
+
+# Family name (the detector's `issue`, stored as the row title) -> scope rule.
+_FLEET_FAMILIES = {
+    "iso_metric_count_zero_24h": _iso_fleet_scope,
+    "iso_metric_count_dropped": _iso_fleet_scope,
+}
+
+
+def fleet_group_key(title: str, finding_key: str, action_url: str = "") -> str | None:
+    """The group key for a fleet finding, or None to group normally.
+
+    ★ An action_url ALWAYS wins. Once a row is classified to an endpoint an
+      operator must call, per-target identity is the whole point — that is the
+      facility_dedup_apply lesson and collapsing across it would drop calls on
+      the floor.
+    """
+    if (action_url or "").strip():
+        return None
+    fam = str(title or "").strip()
+    rule = _FLEET_FAMILIES.get(fam)
+    if rule is None:
+        return None
+    try:
+        scope = rule(finding_key)
+    except Exception:  # noqa: BLE001 — a scope rule must never break a collapse
+        return None
+    if not scope:
+        return None
+    return "fleet:%s:%s" % (fam, scope)
+
+
 def collapse_duplicate_open_rows(cur, dry_run: bool = False) -> dict:
     """Collapse duplicate OPEN rows: keep the OLDEST per finding, mark the
     rest 'superseded' with a note naming the keeper.
@@ -1292,8 +1377,22 @@ def collapse_duplicate_open_rows(cur, dry_run: bool = False) -> dict:
         return out
     groups: dict = {}
     for r in rows:
+        # A fleet family (one shared upstream, N per-target rows) groups by
+        # family+scope; everything else keeps the action_url/finding_key
+        # identity the SQL already computed.
+        # ★ The fleet lookup DEGRADES, it does not drop. A row too short to
+        #   carry title/action_url (an older SELECT shape mid-deploy) must fall
+        #   back to the pre-fleet grouping — swallowing it into `continue`
+        #   would turn a shape mismatch into a collapse that silently stops
+        #   collapsing, which is the failure this whole function exists to fix.
+        gk = None
         try:
-            groups.setdefault(r[6], []).append(r)
+            if len(r) > 8:
+                gk = fleet_group_key(r[8], r[1], r[7])
+        except Exception:  # noqa: BLE001
+            gk = None
+        try:
+            groups.setdefault(gk or r[6], []).append(r)
         except Exception:  # noqa: BLE001 — a short row is not a group
             continue
     for gk, members in groups.items():
@@ -1304,12 +1403,22 @@ def collapse_duplicate_open_rows(cur, dry_run: bool = False) -> dict:
         dups = [m for m in members[1:] if m[2] != "running"]
         if not dups:
             continue
-        entry = {"key": str(gk)[:200], "keep": keeper[0],
+        fleet = str(gk).startswith("fleet:")
+        entry = {"key": str(gk)[:200], "keep": keeper[0], "fleet": fleet,
                  "keep_status": keeper[2], "supersede": [m[0] for m in dups]}
+        if fleet:
+            # The targets this one row now stands for. Named on the row itself:
+            # a human answering "is the EU feed down?" must see that the answer
+            # settles 31 zones, not one, or they answer it 31 times.
+            entry["members"] = [str(m[1])[:60] for m in members][:40]
         if not dry_run:
             note = (f"superseded by #{keeper[0]} — duplicate open row for the "
                     f"same finding; re-observations now refresh the open row "
                     f"(seen_count/last_seen) instead of inserting another")
+            if fleet:
+                note = (f"superseded by #{keeper[0]} — same fleet finding "
+                        f"({str(gk)[:80]}): these targets share one upstream, "
+                        f"so they are one investigation, not {len(members)}")
             try:
                 cur.execute("SAVEPOINT sq_collapse")
                 for m in dups:
@@ -1319,6 +1428,13 @@ def collapse_duplicate_open_rows(cur, dry_run: bool = False) -> dict:
                              max((m[5] for m in dups if m[5] is not None),
                                  default=None),
                              keeper[0]))
+                if fleet:
+                    cur.execute(_FLEET_KEEPER_REASON_SQL,
+                                (f"fleet finding: stands for {len(members)} "
+                                 f"target(s) — "
+                                 + ", ".join(str(m[1])[:40] for m in members[:12])
+                                 + ("…" if len(members) > 12 else ""),
+                                 keeper[0]))
                 cur.execute("RELEASE SAVEPOINT sq_collapse")
             except Exception as e:  # noqa: BLE001
                 out.setdefault("errors", []).append(
@@ -1334,6 +1450,237 @@ def collapse_duplicate_open_rows(cur, dry_run: bool = False) -> dict:
         out["detail"].append(entry)
     if not dry_run:
         out["index_ready"] = _ensure_open_index(cur)
+    return out
+
+
+# ── self-clearing findings ──────────────────────────────────────────────
+#
+# ★★★ 2026-09-03 — THE QUEUE HAD NO EXIT FOR "IT FIXED ITSELF".
+#
+# Measured on the live board that morning: 60 open rows, oldest 313.9h, and
+# 31 of them were ONE upstream outage. Every EU_* zone carried its own
+# `iso_metric_count_zero_24h` row in awaiting_decision. The cause was never
+# code — .github/workflows/data-pulse.yml:20 records it: "ENTSO-E (34 EU
+# zones) answered HTTP 503 for >24h while this job stayed green". By the time
+# the rows were read the upstream had recovered: /api/v1/iso/eu/health
+# returned token_configured=true, live_feed_ok=true, 29 of 33 zones live.
+#
+# The finding was true when filed, false by morning, and NOTHING could say so.
+# The only writes to a closed status were an operator running the named
+# endpoint (resolve_post) or a human answering the decision
+# (close_decision_family). A finding that healed on its own had no path out of
+# the queue at all, so it sat in the inbox forever, aged, and made the human
+# queue look like a backlog of decisions when it was a backlog of ghosts.
+#
+# ★ WHY THIS IS NOT "CLOSE WHAT THE DETECTOR STOPPED SAYING". Absence of a
+#   finding is NOT evidence the finding cleared — it is equally consistent
+#   with a detector that crashed, was disabled, or changed its key format.
+#   That is the ABSENT≠empty rule this repo has been burned by before, and it
+#   is why every guard below is POSITIVE: the sweep runs only when the
+#   detector demonstrably ran and produced a populated answer, and it closes
+#   nothing on a read it could not make.
+#
+# ★ AND IT IS NOT A FIX. A self-cleared row gets its OWN status, never
+#   'resolved': convergence() counts closed rows to measure whether fixes are
+#   holding, and folding "the world changed under us" into that denominator
+#   would drive the recurrence rate down while nothing improved. The dashboard
+#   verdict reads landed_7d from the automerge + action-class lanes, which
+#   this never touches — but the seam is one edit away, so the status keeps
+#   them apart by construction rather than by care.
+_SELF_CLEARED_STATUS = "self_cleared"
+
+# Never 'running' (mid-investigate; _finish() would resurrect it) and never
+# 'refused' (already closed — reclaim_misfiled owns that status).
+_SWEEPABLE_STATUSES = ("queued", "awaiting_ops", "awaiting_decision")
+
+# Which rows the detector is ALLOWED to speak for. Fail-closed: a source not
+# named here is never swept, because absence from the heal list only means
+# "cleared" for rows the heal list is the authority on. `graduation` rows are
+# the action-class grant proposals filed by file_decision_row() — lane-internal
+# asks that no detector will ever re-observe, and sweeping them would silently
+# retract every pending grant request.
+_SWEEPABLE_SOURCES = ("heal", "operator", "radar", "audit")
+
+# ★ 6h is NOT arbitrary: /api/v1/heal/findings is cache-served with
+#   _HEAL_FINDINGS_TTL = 3h (main.py), so a row must be absent across at least
+#   one full refresh cycle before it can be swept. A shorter grace would let a
+#   merely-stale cache close a finding that is still true. (That failure is
+#   self-correcting — self_cleared is not an open status, so the detector's
+#   next re-file opens a fresh row — but it would churn the board for nothing.)
+_SELF_CLEARED_MIN_AGE_H = 6
+_SELF_CLEARED_MAX_ROWS = 200     # bounded like every other lane here
+# A sweep that would close nearly the whole open queue is far more likely a
+# finding_key FORMAT change than a world that healed all at once. Refuse and
+# say so rather than emptying the board on a rename.
+_SELF_CLEARED_MAX_FRACTION = 0.9
+# ★ And a ratio needs a denominator. Without this floor the guard fires on the
+#   ordinary case — one open row, one cleared finding, 1/1 = 100% — and the
+#   sweep refuses every small board it was built for. Same rule convergence()
+#   already states for recurrence_rate: a 100% rate over 2 findings is noise,
+#   not a signal.
+_SELF_CLEARED_MIN_FOR_FRACTION = 10
+
+
+def live_finding_keys() -> dict:
+    """The detector's CURRENT finding set — or an honest refusal.
+
+    Reads /api/v1/heal/findings, the same surface brain_finding_router.
+    classify_live() reads, and takes EVERY item rather than the `active`
+    bucket: a finding routed to `terminal` or `operator_config` is still being
+    reported, and treating it as absent would sweep rows that are very much
+    still true.
+
+    `ok` is the whole contract. It is False — and the sweep therefore closes
+    nothing — when the read failed, when the source says it is still warming
+    up, or when the payload is EMPTY. That last one is deliberate and is the
+    part most likely to be "simplified" away later: a detector returning zero
+    findings and a detector that is broken are indistinguishable from here, so
+    an empty answer proves nothing and is refused rather than believed.
+    """
+    try:
+        from flask import current_app
+        with current_app.test_client() as c:
+            r = c.get("/api/v1/heal/findings", headers=_self_headers())
+            if r.status_code != 200:
+                return {"ok": False, "reason": "heal/findings HTTP %s"
+                                               % r.status_code, "keys": set()}
+            d = r.get_json() or {}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "keys": set(),
+                "reason": "heal/findings unreadable: %s: %s"
+                          % (type(e).__name__, str(e)[:120])}
+    if d.get("_warming_up"):
+        return {"ok": False, "keys": set(),
+                "reason": "detector reports _warming_up — its answer is not "
+                          "yet a statement about the world"}
+    items = (list(d.get("actionable_backend_issues") or [])
+             + list(d.get("actionable_frontend_issues") or []))
+    keys = {str(i.get("url") or "").strip() for i in items if isinstance(i, dict)}
+    keys.discard("")
+    if not keys:
+        return {"ok": False, "keys": set(), "items": len(items),
+                "reason": "detector returned no findings — a broken detector "
+                          "and a clean world read identically from here, so "
+                          "this closes nothing"}
+    return {"ok": True, "keys": keys, "items": len(items),
+            "issues": sorted({str(i.get("issue") or "")[:80]
+                              for i in items if isinstance(i, dict)})[:40]}
+
+
+_SELF_CLEARED_SELECT_SQL = (
+    "SELECT id, finding_key, status, source,"
+    " COALESCE(last_seen, requested_at)"
+    " FROM squasher_work_queue"
+    " WHERE status IN (" + ", ".join("'%s'" % s for s in _SWEEPABLE_STATUSES) + ")"
+    " ORDER BY requested_at ASC, id ASC")
+
+_SELF_CLEARED_UPDATE_SQL = (
+    "UPDATE squasher_work_queue"
+    " SET status = '" + _SELF_CLEARED_STATUS + "', finished_at = NOW(),"
+    " reason = LEFT(%s || ' | ' || COALESCE(reason, ''), 600)"
+    " WHERE id = %s AND status IN ("
+    + ", ".join("'%s'" % s for s in _SWEEPABLE_STATUSES) + ")")
+
+
+def sweep_self_cleared(cur, live: dict | None = None, *,
+                       min_age_hours: float = _SELF_CLEARED_MIN_AGE_H,
+                       limit: int = _SELF_CLEARED_MAX_ROWS,
+                       dry_run: bool = False, now=None) -> dict:
+    """Close open rows whose finding the detector no longer reports.
+
+    Every counter it returns is published by the drain, including the reasons
+    it skipped rows. A sweep that closes nothing because no row matched the
+    source allow-list is a REAL failure mode of this design — the allow-list
+    is a guess about strings written elsewhere — and it must show up as
+    `skipped_source: {...}` on the board rather than as a quiet zero.
+    """
+    out = {"ok": True, "dry_run": bool(dry_run), "closed": [], "eligible": 0,
+           "considered": 0, "skipped_source": {}, "skipped_recent": 0,
+           "skipped_still_reported": 0}
+    if live is None:
+        live = live_finding_keys()
+    if not live.get("ok"):
+        out["ok"] = False
+        out["reason"] = live.get("reason") or "detector unreadable"
+        return out
+    keys = live.get("keys") or set()
+    out["live_findings"] = len(keys)
+    now = now or datetime.now(timezone.utc)
+    try:
+        cur.execute("SAVEPOINT sq_selfclear_read")
+        cur.execute(_SELF_CLEARED_SELECT_SQL)
+        rows = list(cur.fetchall() or [])
+        cur.execute("RELEASE SAVEPOINT sq_selfclear_read")
+    except Exception as e:  # noqa: BLE001
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT sq_selfclear_read")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"ok": False, "error": "%s: %s" % (type(e).__name__, str(e)[:160]),
+                "closed": [], "eligible": 0}
+    out["considered"] = len(rows)
+    candidates = []
+    for r in rows:
+        rid, fkey, _status, source, seen = r[0], r[1], r[2], r[3], r[4]
+        if (source or "") not in _SWEEPABLE_SOURCES:
+            k = (source or "").strip() or "(empty)"
+            out["skipped_source"][k] = out["skipped_source"].get(k, 0) + 1
+            continue
+        if str(fkey or "") in keys:
+            out["skipped_still_reported"] += 1
+            continue
+        age_h = None
+        if seen is not None:
+            try:
+                ref = seen if seen.tzinfo else seen.replace(tzinfo=timezone.utc)
+                age_h = (now - ref).total_seconds() / 3600.0
+            except Exception:  # noqa: BLE001
+                age_h = None
+        # ★ FAIL-CLOSED ON AN UNKNOWN AGE. `age_h is None` means the row's
+        #   timestamp was NULL or unparseable, so the grace window cannot be
+        #   evaluated at all — and "cannot tell" must not read as "old enough".
+        #   Every other guard here refuses on doubt; this one used to pass on
+        #   it, which is the one direction that closes a row nobody checked.
+        if age_h is None or age_h < float(min_age_hours):
+            out["skipped_recent"] += 1
+            continue
+        candidates.append((rid, fkey))
+    out["eligible"] = len(candidates)
+    # ★ The rename guard. Checked against rows this sweep was ALLOWED to touch
+    #   (source-eligible), not against the whole table, so an inbox full of
+    #   graduation rows cannot mask a wholesale key-format change.
+    touchable = out["eligible"] + out["skipped_still_reported"] + out["skipped_recent"]
+    if (touchable >= _SELF_CLEARED_MIN_FOR_FRACTION
+            and (out["eligible"] / touchable) > _SELF_CLEARED_MAX_FRACTION):
+        out["ok"] = False
+        out["reason"] = (
+            "refusing to sweep %d of %d eligible rows (>%.0f%%) — a whole-queue "
+            "clear is far more likely a finding_key format change than a world "
+            "that healed at once; inspect before forcing"
+            % (out["eligible"], touchable, _SELF_CLEARED_MAX_FRACTION * 100))
+        out["would_close"] = [c[0] for c in candidates[:20]]
+        return out
+    if dry_run:
+        out["would_close"] = [c[0] for c in candidates[:limit]]
+        return out
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    for rid, fkey in candidates[:limit]:
+        note = ("self-cleared %s: the detector ran and no longer reports this "
+                "finding (%d live finding(s) read from /api/v1/heal/findings). "
+                "No fix was shipped and none is claimed — the condition stopped "
+                "being true." % (stamp, len(keys)))
+        try:
+            cur.execute("SAVEPOINT sq_selfclear")
+            cur.execute(_SELF_CLEARED_UPDATE_SQL, (note, rid))
+            cur.execute("RELEASE SAVEPOINT sq_selfclear")
+            out["closed"].append(rid)
+        except Exception as e:  # noqa: BLE001
+            out.setdefault("errors", []).append(
+                "#%s: %s: %s" % (rid, type(e).__name__, str(e)[:120]))
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT sq_selfclear")
+            except Exception:  # noqa: BLE001
+                pass
     return out
 
 
@@ -1365,6 +1712,13 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
             #   moved reads as "nothing to do".
             out["collapsed"] = len(
                 collapse_duplicate_open_rows(cur).get("superseded") or [])
+            # ★ Close what healed itself BEFORE selecting work below. A queued
+            #   row whose finding the detector no longer reports would
+            #   otherwise be picked up in this very pass and billed a ~48s
+            #   investigation to analyse a condition that has stopped being
+            #   true. Publishes the whole result, skip reasons included: this
+            #   lane's failure mode is closing nothing quietly.
+            out["self_cleared"] = sweep_self_cleared(cur)
             # Heal mis-filed closures BEFORE selecting work, so a reclaimed
             # row can be picked up in this very pass.
             out["reclaimed"] = reclaim_misfiled(cur)
@@ -1481,6 +1835,7 @@ _CONVERGENCE_SQL = """
           FROM squasher_work_queue
          WHERE finished_at IS NOT NULL
            AND status <> 'superseded'   -- a merged duplicate, not a verdict
+           AND status <> 'self_cleared' -- the world changed; we shipped nothing
            AND finished_at > NOW() - (%s || ' days')::INTERVAL
     ),
     recurred AS (
@@ -1497,7 +1852,10 @@ _CONVERGENCE_SQL = """
       (SELECT COUNT(DISTINCT c.id) FROM closed c JOIN recurred r ON r.id = c.id
         WHERE c.status = 'proposed'),
       (SELECT COUNT(*) FROM squasher_work_queue
-        WHERE status IN ('awaiting_ops','awaiting_decision'))
+        WHERE status IN ('awaiting_ops','awaiting_decision')),
+      (SELECT COUNT(*) FROM squasher_work_queue
+        WHERE status = 'self_cleared'
+          AND finished_at > NOW() - (%s || ' days')::INTERVAL)
 """
 
 
@@ -1528,13 +1886,14 @@ def convergence(days: int = 30) -> dict:
     try:
         with _conn() as conn, conn.cursor() as cur:
             _ensure_table(cur)
-            cur.execute(_CONVERGENCE_SQL, (str(int(days)),))
-            row = cur.fetchone() or (0, 0, 0, 0, 0)
+            cur.execute(_CONVERGENCE_SQL, (str(int(days)), str(int(days))))
+            row = cur.fetchone() or (0, 0, 0, 0, 0, 0)
     except Exception as e:  # noqa: BLE001
         logger.warning("[squasher_queue] convergence failed: %s", e)
         return {"ok": False, "error": str(e)[:200]}
 
-    closed, recurred, pr_closed, pr_recurred, waiting = (int(x or 0) for x in row)
+    (closed, recurred, pr_closed, pr_recurred, waiting,
+     self_cleared) = (int(x or 0) for x in row)
 
     def _rate(n, d):
         # None, not 0.0 — "no data" and "zero recurrence" are different claims,
@@ -1552,6 +1911,13 @@ def convergence(days: int = 30) -> dict:
         "pr_recurred": pr_recurred,
         "pr_recurrence_rate": _rate(pr_recurred, pr_closed),
         "waiting_on_human": waiting,
+        # ★ REPORTED, NOT COUNTED. Deliberately outside `closed` above: these
+        #   rows left the queue because the condition stopped being true, not
+        #   because this lane did anything. Folding them in would push
+        #   recurrence_rate down for free. Read it as queue hygiene — a large
+        #   number means the detector files findings that outlive their cause,
+        #   which is a detector question, not a convergence one.
+        "self_cleared": self_cleared,
         "reading": (
             "recurrence_rate is the convergence signal: the share of closed "
             "findings that came back. Falling = fixes are holding. Flat and "
