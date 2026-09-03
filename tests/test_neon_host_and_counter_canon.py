@@ -29,8 +29,8 @@ from routes.loop_flywheel_master_shell import _lane_infra
 from routes.loop_control_master_shell import _lane_counter_canon
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-AWS = "postgresql://u:s3cr3t@ep-polished-breeze-af22mhng-pooler.c-2.us-west-2.aws.neon.tech/db"
-AZURE = "postgresql://u:s3cr3t@ep-old-waterfall.westus3.azure.neon.tech/db"
+AWS = "postgresql://u:s3cr3t@ep-polished-breeze-af22mhng-pooler.c-2.us-west-2.aws.neon.tech/db"  # secretscan:allow (synthetic DSN, host-routing fixture)
+AZURE = "postgresql://u:s3cr3t@ep-old-waterfall.westus3.azure.neon.tech/db"  # secretscan:allow (synthetic DSN, host-routing fixture)
 
 
 def _neon(monkeypatch, dsn):

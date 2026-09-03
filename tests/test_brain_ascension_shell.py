@@ -252,10 +252,10 @@ def test_loop_flywheel_shell_honest():
     _prev = _os.environ.get("DATABASE_URL")
     try:
         _os.environ["DATABASE_URL"] = (
-            "postgresql://u:p@ep-x.westus3.azure.neon.tech/db")
+            "postgresql://u:p@ep-x.westus3.azure.neon.tech/db")  # secretscan:allow (synthetic DSN, host-routing fixture)
         azure = next(k for k in _lane_infra() if k["id"] == "neon_off_azure")
         _os.environ["DATABASE_URL"] = (
-            "postgresql://u:p@ep-x.c-2.us-west-2.aws.neon.tech/db")
+            "postgresql://u:p@ep-x.c-2.us-west-2.aws.neon.tech/db")  # secretscan:allow (synthetic DSN, host-routing fixture)
         aws = next(k for k in _lane_infra() if k["id"] == "neon_off_azure")
     finally:
         if _prev is None:
