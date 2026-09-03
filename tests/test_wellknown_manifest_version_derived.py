@@ -59,6 +59,54 @@ def _func_src(path: pathlib.Path, name: str) -> str:
     raise AssertionError(f"{name} not found in {path.name}")
 
 
+# ── Quiesce the version cache for EVERY test in this file (2026-09-02) ─────
+#
+# ★ WHY THIS EXISTS — A REAL, REPRODUCED RACE, NOT A PRECAUTION.
+# Most tests here seed _server_version_cache with the sentinel "99.9.9" and
+# assert a surface renders it. That seed is only honoured while no BACKGROUND
+# REFRESH is in flight: resolve_server_version_cached() spawns a daemon thread
+# that probes the LIVE `initialize` handshake and writes the result into the
+# same dict. A thread started by an EARLIER test can land AFTER a later test
+# seeds, overwriting 99.9.9 with the live version.
+#
+# Reproduced 2026-09-02, and it is order-dependent, which is the worst kind:
+#     pytest tests/test_agents_md_live_floors.py \
+#            tests/test_wellknown_manifest_version_derived.py
+#   -> test_mcp_server_card_route_serves_the_resolved_version
+#      assert '2.12.3' == '99.9.9'
+# test_agents_md_live_floors.py renders /AGENTS.md, /AGENTS.md now resolves its
+# version through the accessor, the accessor starts a probe, and the probe's
+# write lands in the middle of a LATER test in this file. Reversing the two
+# files hides it again. CI runs `pytest tests/` in one process, so this is
+# exactly the shape that shows up as an unreproducible red once a week.
+#
+# So: join any in-flight refresh, then latch the "already refreshing" flag so no
+# test in this file can start a new one. Also makes this file honestly offline —
+# the house rule at the top says no network, and without this the rule was true
+# only by luck of ordering.
+@pytest.fixture(autouse=True)
+def _quiesce_server_version_cache():
+    import threading
+
+    import ai_surface_canon as _c
+
+    for _th in threading.enumerate():
+        if _th.name == "server-version-refresh" and _th.is_alive():
+            _th.join(timeout=30)
+
+    with _c._server_version_lock:
+        saved_cache = dict(_c._server_version_cache)
+        saved_flag = _c._server_version_refreshing
+        _c.__dict__["_server_version_refreshing"] = True
+    try:
+        yield
+    finally:
+        with _c._server_version_lock:
+            _c._server_version_cache.clear()
+            _c._server_version_cache.update(saved_cache)
+            _c.__dict__["_server_version_refreshing"] = saved_flag
+
+
 # ── (1)+(2) the canon must not contradict itself ───────────────────────────
 
 def test_canon_version_is_not_on_its_own_denylist():
@@ -694,4 +742,336 @@ def test_fallback_tool_descriptions_carry_no_facility_count():
         f"a fallback tool description states a facility count {hits} — the "
         "backend catalog builds the same text through canon_text('{canon_facilities}') "
         "and the worker cannot, so the worker copy must state no count at all."
+    )
+
+
+# ── (8) the two AGENT-FACING surfaces still on the pin (2026-09-02) ────────
+#
+# #3628 (section 6) healed /mcp-server-card.json and /api/v1/mcp/platforms.
+# The same sweep, same minute, same Railway origin, found two MORE surfaces
+# still publishing the cold-start pin — and these two are the ones AI agents
+# actually read first:
+#
+#     live `initialize` serverInfo        2.12.3   <- the SoT
+#     /.well-known/mcp-server.json        2.12.3   OK
+#     /openapi.json                       2.12.3   OK
+#     /mcp/health                         2.12.3   OK
+#     /api/v1/agents/capabilities.json    2.12.1   STALE  <- test A
+#     /AGENTS.md                          2.12.1   STALE  <- test B
+#
+# ★★★ THESE TESTS ARE THE ONLY GUARD. BOTH SURFACES ARE SENTINEL-BLIND.
+#   · /AGENTS.md IS in ai_surface_sentinel._SURFACES — but as kind "text"
+#     (a deliberate choice: the CF zone worker runs one patch AHEAD by design,
+#     so a json check would false-RED). The version comparison lives under
+#     `if kind == "json"`, so it NEVER RUNS for this surface. Text mode scans
+#     stale_markers only, and 2.12.1 is not a stale marker — it is the PIN.
+#   · /api/v1/agents/capabilities.json is not in _SURFACES AT ALL.
+# Nothing alerts if either regresses. Do not delete these without replacing
+# them with an alert that actually fires.
+
+def _pin_floors():
+    """Offline stand-in for resolve_public_floors().
+
+    ★ NOT a convenience. resolve_public_floors() is live-probing and UNCACHED,
+    and was measured at 12.9s on a cold call with no DATABASE_URL while writing
+    this test. The house rule at the top of this file is no DB and no network,
+    and a 13s unit test is how a suite starts getting skipped.
+    """
+    import ai_surface_canon as canon
+    # PINNED["public"] is exactly the dict resolve_public_floors() starts from
+    # before the live overlay, so this stub IS the "no live value raised a
+    # floor" branch of the real function — not an invented shape.
+    return dict(canon.PINNED["public"])
+
+
+def test_agents_md_serves_the_resolved_version_not_the_pin():
+    """/AGENTS.md must render the RESOLVER, not PINNED["version"].
+
+    Behavioural: renders the real handler and reads the served markdown. Seeds
+    a FRESH cache entry holding a value the pin does not have, so a pin-reader
+    returns PINNED["version"] and FAILS while a resolver-reader returns the
+    sentinel. Fresh keeps it offline — the resolver only starts its background
+    refresh when the cached value is stale.
+    """
+    import time
+
+    import ai_surface_canon as canon
+    import routes.agents_md_fallback as amd
+
+    sentinel = "99.9.9"
+    pin = canon.PINNED["version"]
+    assert sentinel != pin, "sentinel must differ from the pin"
+
+    saved = dict(canon._server_version_cache)
+    saved_floors = amd.resolve_public_floors
+    try:
+        amd.resolve_public_floors = _pin_floors
+        with canon._server_version_lock:
+            canon._server_version_cache["val"] = sentinel
+            canon._server_version_cache["at"] = time.time()
+        body = amd._render_agents_md()
+    finally:
+        amd.resolve_public_floors = saved_floors
+        with canon._server_version_lock:
+            canon._server_version_cache.clear()
+            canon._server_version_cache.update(saved)
+
+    assert f"version {sentinel}," in body, (
+        f"/AGENTS.md did not render the resolved version {sentinel!r} — it is "
+        f"reading PINNED['version'], which is the COLD-START FLOOR, so the "
+        f"primary agent-discovery surface cannot self-heal (it served {pin} "
+        f"against a live 2.12.3 on 2026-09-02). ai_surface_sentinel audits this "
+        f"surface as kind='text' and runs NO version comparison on it, so "
+        f"nothing else will ever tell you."
+    )
+    assert f"version {pin}," not in body, (
+        "the pin is STILL being rendered as the version alongside the resolved "
+        "value — the fix added a rung instead of replacing one"
+    )
+
+
+def test_agents_md_changed_ONLY_the_version():
+    """The version fix must not have quietly swapped the rest of the page.
+
+    ★ THE DANGEROUS FIX HERE IS THE PLAUSIBLE ONE. This file's docstring records,
+    measured 2026-08-28, that resolve_canon() with no DATABASE_URL returns PUBLIC
+    STRINGS — facilities "400+" against a pinned "18,500+", a 46x UNDER-claim on
+    the primary agent-discovery surface — WITHOUT raising, while canon_is_live()
+    reads True for it. A "just use resolve_canon" cleanup would look like a
+    generalisation of the version fix and would be a regression that reports
+    healthy. So: `c = PINNED` stands, and the floors keep coming from
+    resolve_public_floors(), which applies live values ONLY where they RAISE.
+    """
+    src = _func_src(_ROOT / "routes" / "agents_md_fallback.py", "_render_agents_md")
+    fn = ast.parse(src).body[0]
+
+    # `c = PINNED` — untouched
+    assert any(
+        isinstance(n, ast.Assign)
+        and {t.id for t in n.targets if isinstance(t, ast.Name)} == {"c"}
+        and isinstance(n.value, ast.Name) and n.value.id == "PINNED"
+        for n in ast.walk(fn)
+    ), "`c = PINNED` is gone — every non-version field just changed basis"
+
+    # floors still come from resolve_public_floors(), not resolve_canon()
+    called = {n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "resolve_public_floors" in called, (
+        "resolve_public_floors() is no longer called — the floors stopped "
+        "self-healing upward"
+    )
+    assert "resolve_canon" not in called, (
+        "resolve_canon() reached _render_agents_md. Measured 2026-08-28 with no "
+        "DATABASE_URL it returns public strings ('400+' facilities) without "
+        "raising while canon_is_live() reads True — a REGRESSION that looks "
+        "healthy. resolve_server_version_cached() is version-only and monotonic; "
+        "resolve_canon() is neither. See this module's docstring."
+    )
+    assert "resolve_server_version_cached" in called, (
+        "the version resolver is not called — /AGENTS.md is back on the pin"
+    )
+
+
+def test_agent_capabilities_feed_derives_and_has_no_rotting_literal():
+    """/api/v1/agents/capabilities.json: resolver first, PIN as the deepest rung.
+
+    Two defects, one function. It read canon_text("{canon_version}") — the pin —
+    and its except/or fallback was the hand-typed "2.1.10", ELEVEN minors behind
+    the pin it was supposedly backing up. On a CC-BY-4.0 feed built to be quoted,
+    that made the failure path publish a citable claim WORSE than the one it was
+    protecting.
+    """
+    import time
+
+    import ai_surface_canon as canon
+    from routes.agent_capabilities_feed import _canon_version
+
+    sentinel = "99.9.9"
+    pin = canon.PINNED["version"]
+    assert sentinel != pin, "sentinel must differ from the pin"
+
+    saved = dict(canon._server_version_cache)
+    try:
+        with canon._server_version_lock:
+            canon._server_version_cache["val"] = sentinel
+            canon._server_version_cache["at"] = time.time()
+        warm = _canon_version()
+    finally:
+        with canon._server_version_lock:
+            canon._server_version_cache.clear()
+            canon._server_version_cache.update(saved)
+
+    assert warm == sentinel, (
+        f"_canon_version() returned {warm!r}, not the resolved {sentinel!r} — the "
+        f"feed is publishing ai_surface_canon.PINNED, the cold-start floor "
+        f"(it served {pin} against a live 2.12.3 on 2026-09-02). This endpoint is "
+        f"NOT in ai_surface_sentinel._SURFACES, so nothing else watches it."
+    )
+
+    # ★ AST-anchored, not `"2.1.10" in text`: a substring check would pass on a
+    # mention inside a comment or docstring, and this file's neighbours record
+    # that exact vacuity being proved by mutation. Only real string CONSTANTS in
+    # the executable body count.
+    src = _func_src(_ROOT / "routes" / "agent_capabilities_feed.py", "_canon_version")
+    fn = ast.parse(src).body[0]
+    body_wo_doc = fn.body[1:] if (fn.body and isinstance(fn.body[0], ast.Expr)
+                                  and isinstance(fn.body[0].value, ast.Constant)
+                                  and isinstance(fn.body[0].value.value, str)) else fn.body
+    consts = {n.value for stmt in body_wo_doc for n in ast.walk(stmt)
+              if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    versionish = {c for c in consts if re.fullmatch(r"\d+\.\d+\.\d+", c)}
+    assert not versionish, (
+        f"_canon_version() carries hand-typed version literal(s) {sorted(versionish)}. "
+        "Every rung must derive: the deepest one is PINNED['version'], which is "
+        "chased upward in ai_surface_canon.py and leaves a diff. A literal here "
+        "rots silently — '2.1.10' sat eleven minors behind the pin."
+    )
+
+    called = {n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "resolve_server_version_cached" in called, (
+        "the resolver is not called — the feed is back on the pin"
+    )
+
+
+def test_both_surfaces_are_blank_proof_when_the_cache_is_cold():
+    """COLD START MUST SERVE THE PIN — never None, never "".
+
+    ★ MEASURED, NOT ASSUMED. The cache is emptied AND _server_version_refreshing
+    is latched True so the background refresh cannot start: this is the state of
+    a process in the first moments after boot, before any probe has landed. An
+    empty version field is worse than a stale one for a registry scraper, and a
+    literal `None` on a CC-BY card is worse still.
+    """
+    import ai_surface_canon as canon
+    import routes.agents_md_fallback as amd
+    from routes.agent_capabilities_feed import _canon_version
+
+    pin = canon.PINNED["version"]
+    saved = dict(canon._server_version_cache)
+    saved_flag = canon._server_version_refreshing
+    saved_floors = amd.resolve_public_floors
+    try:
+        amd.resolve_public_floors = _pin_floors
+        with canon._server_version_lock:
+            canon._server_version_cache["val"] = None
+            canon._server_version_cache["at"] = 0.0
+            canon.__dict__["_server_version_refreshing"] = True
+        cold_feed = _canon_version()
+        cold_md = amd._render_agents_md()
+    finally:
+        amd.resolve_public_floors = saved_floors
+        with canon._server_version_lock:
+            canon._server_version_cache.clear()
+            canon._server_version_cache.update(saved)
+            canon.__dict__["_server_version_refreshing"] = saved_flag
+
+    assert cold_feed, f"capabilities.json cold-start version is falsy: {cold_feed!r}"
+    assert cold_feed == pin, (
+        f"cold start served {cold_feed!r}, expected the pin {pin!r} — the "
+        f"cold-start answer must be byte-identical to what canon_text("
+        f"'{{canon_version}}') produced before this change"
+    )
+    assert f"version {pin}," in cold_md, (
+        "/AGENTS.md cold start did not fall back to the pin"
+    )
+    for bad in ("version ,", "version None,", "version ."):
+        assert bad not in cold_md, f"/AGENTS.md cold start served {bad!r}"
+
+
+def test_capabilities_json_RESPONSE_BODY_carries_the_resolved_version():
+    """★ THE GAP THE HELPER TEST LEAVES OPEN. Testing _canon_version() proves
+    the HELPER derives; it does not prove the FEED serves it. Mutation, run
+    2026-09-02: with _canon_version() left perfectly wired and
+    `"version": _canon_version()` in _gather() replaced by the literal
+    "2.1.10", the whole section-7 suite AND all 95 tests in
+    tests/test_canonical_counts_drift.py stayed GREEN while the served body
+    published 2.1.10 — the exact rotting literal this PR exists to kill. That
+    is #3628's mutation (b) one level out.
+
+    So: render the real route and read the response. Offline and DB-free by
+    construction — _gather() guards every query with `if _pg and _dsn():`
+    inside try/except (measured: 0.019s, zero outbound sockets, no
+    DATABASE_URL).
+
+    ★ _CAPS_CACHE is a PROCESS-LOCAL memo and pre-merge runs every test file in
+    ONE process, so a sentinel version left in it would poison
+    _render_canon_routes() in tests/test_canonical_counts_drift.py, which
+    renders this same path. Cleared before AND in the finally — the house
+    pattern from that file.
+    """
+    import json
+    import time
+
+    import flask
+
+    import ai_surface_canon as canon
+    from routes import agent_capabilities_feed as feed
+
+    sentinel = "99.9.9"
+    assert sentinel != canon.PINNED["version"], "sentinel must differ from the pin"
+
+    app = flask.Flask(__name__)
+    app.register_blueprint(feed.agent_capabilities_bp)
+
+    saved = dict(canon._server_version_cache)
+    try:
+        with canon._server_version_lock:
+            canon._server_version_cache["val"] = sentinel
+            canon._server_version_cache["at"] = time.time()
+        feed._CAPS_CACHE.update({"data_version": None, "payload": None, "computed_at": 0.0})
+        resp = app.test_client().get("/api/v1/agents/capabilities.json")
+        body = resp.get_data(as_text=True)
+    finally:
+        with canon._server_version_lock:
+            canon._server_version_cache.clear()
+            canon._server_version_cache.update(saved)
+        feed._CAPS_CACHE.update({"data_version": None, "payload": None, "computed_at": 0.0})
+
+    assert resp.status_code == 200, f"capabilities feed returned {resp.status_code}"
+    got = json.loads(body).get("version")
+    assert got == sentinel, (
+        f"/api/v1/agents/capabilities.json SERVED {got!r}, not the resolved "
+        f"{sentinel!r}. The helper may derive correctly and still not reach the "
+        "response body — that is the mutation this test exists for. This "
+        "endpoint is not in ai_surface_sentinel._SURFACES, so nothing alerts."
+    )
+
+
+def test_capabilities_feed_deepest_rung_is_the_PIN_not_None_or_blank(monkeypatch):
+    """The DEEPEST fallback rung must be PINNED['version'] — not None, not "".
+
+    ★ THIS TEST EXISTS BECAUSE TWO MUTATIONS SURVIVED WITHOUT IT (2026-09-02).
+    test_both_surfaces_are_blank_proof_when_the_cache_is_cold empties the cache,
+    but rung 1 — resolve_server_version_cached() — is itself blank-proof and
+    hands back PINNED["version"] on a cold cache. So the cold-start test never
+    reaches rungs 2 and 3 at all: changing the deepest rung to `return None` or
+    `return ""` left the whole file GREEN. The rung the PR is specifically about
+    ("deepest fallback is the PIN, never a hand-typed literal") was untested.
+
+    So drive the ladder down on purpose: make rung 1 (the resolver) and rung 2
+    (canon_text) both RAISE, which is the only state in which rung 3 runs, and
+    assert it still publishes the pin. This is the state that replaced the old
+    hand-typed "2.1.10" — a fallback ELEVEN minors behind the pin it was
+    supposedly backing up, on a CC-BY-4.0 feed built to be quoted.
+    """
+    import ai_surface_canon as canon
+    from routes.agent_capabilities_feed import _canon_version
+
+    def _boom(*a, **k):
+        raise RuntimeError("canon is down")
+
+    # Both rungs import from the module INSIDE the function, so patching the
+    # module attribute reaches them at call time.
+    monkeypatch.setattr(canon, "resolve_server_version_cached", _boom)
+    monkeypatch.setattr(canon, "canon_text", _boom)
+
+    got = _canon_version()
+    assert got == canon.PINNED["version"], (
+        f"with the resolver and canon_text both down, _canon_version() returned "
+        f"{got!r}. The deepest rung must be PINNED['version'] "
+        f"({canon.PINNED['version']!r}) — the pin is chased upward in "
+        f"ai_surface_canon.py and leaves a diff, while None/'' publishes a null "
+        f"or empty version on a CC-BY-4.0 card and a hand-typed literal rots "
+        f"unwatched (the old '2.1.10' sat eleven minors behind the pin)."
     )

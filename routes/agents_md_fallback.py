@@ -27,7 +27,11 @@ resolve_public_floors() applies live values ONLY where they RAISE a floor.
 from flask import Blueprint, Response
 from util.gas_index import resolve_gas_copy
 
-from ai_surface_canon import PINNED, resolve_public_floors
+from ai_surface_canon import (
+    PINNED,
+    resolve_public_floors,
+    resolve_server_version_cached,
+)
 
 agents_md_fallback_bp = Blueprint("agents_md_fallback", __name__)
 
@@ -45,7 +49,32 @@ def _render_agents_md() -> str:
     deals = floors["deals"]
     countries = floors["countries"]
     tools = c.get("tools_advertised", 51)
-    ver = c["version"]
+    # ★2026-09-02: THE VERSION, AND ONLY THE VERSION, LEAVES THE PIN.
+    # c["version"] is PINNED["version"] — the COLD-START floor the docstring
+    # above warns about — so this surface published 2.12.1 while the live
+    # `initialize` serverInfo handshake, the only source of truth, answered
+    # 2.12.3. It is the same defect the 2026-08-28 note records for facilities,
+    # one field over.
+    #
+    # ★ THIS IS NOT THE resolve_canon() SWAP THE DOCSTRING REFUSES, and the
+    # difference is the whole reason it is safe here. resolve_canon() probes
+    # live per call and, with no DATABASE_URL, hands back PUBLIC STRINGS
+    # ("400+" facilities) without raising while canon_is_live() reads True —
+    # a regression that looks healthy. resolve_server_version_cached() is a
+    # different function with a different contract: version-only, answered
+    # from memory with a single-flighted background refresh, so it never
+    # blocks this request path and never raises; MONOTONIC, so a reading
+    # behind the pin is refused and it can only move TOWARD the live server;
+    # and blank-proof, returning PINNED["version"] on a cold cache — which is
+    # byte-identical to what c["version"] produced here before.
+    #
+    # ★ EVERY OTHER NUMBER ON THIS PAGE IS UNTOUCHED. `c = PINNED` stands, and
+    # the floors still come from resolve_public_floors(), which applies live
+    # values ONLY where they RAISE a floor.
+    try:
+        ver = resolve_server_version_cached() or c["version"]
+    except Exception:  # noqa: BLE001
+        ver = c["version"]
     endpoint = c["mcp_endpoint"]
     free = c["free_tier_calls_per_day"]
     platforms = ", ".join(c["platforms"])

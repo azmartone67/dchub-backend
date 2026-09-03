@@ -49,13 +49,55 @@ def _canon_tool_count():
 
 
 def _canon_version():
-    """Canonical server version, or the last-known literal as a fallback."""
+    """The SERVED server version, falling back down to the pin — never a literal.
+
+    ★2026-09-02: the first rung was canon_text("{canon_version}"), which
+    substitutes out of ai_surface_canon.PINNED — the COLD-START FLOOR, not the
+    truth. So this feed published 2.12.1 while the live `initialize` serverInfo
+    handshake, the ONLY source of truth, answered 2.12.3.
+    resolve_server_version_cached() is the accessor built for exactly this:
+    it answers from memory and refreshes in a background thread, so it never
+    blocks this request path and never raises, and it reaches the live handshake
+    through _mcp_server_version() — never through /mcp/health or
+    /.well-known/mcp.json, which are CF-synthesized and echo the canon back (the
+    closed loop that let the pin sit six minor versions behind in August). It is
+    monotonic, so it can only move TOWARD the live server. On a cold cache it
+    returns PINNED["version"] — exactly what canon_text("{canon_version}")
+    returned here before — so the cold-start answer does not change.
+
+    ★ AND THE DEEPEST RUNG IS NOW THE PIN, NOT A ROTTING LITERAL. The old
+    fallback was the hand-typed "2.1.10", ELEVEN minors behind the pin it was
+    supposedly backing up: a canon hiccup made this CC-BY card publish a citable
+    version claim WORSE than the one it was protecting — the cure was worse than
+    the disease. The pin is chased upward in ai_surface_canon.py and leaves a
+    diff; a literal here rots unwatched, and this endpoint is NOT in
+    ai_surface_sentinel._SURFACES, so nothing would ever have flagged it. Only
+    an un-importable ai_surface_canon now reaches None, which is the fail-open
+    contract the module comment above states for these helpers.
+    """
+    try:
+        from ai_surface_canon import resolve_server_version_cached
+        v = (resolve_server_version_cached() or "").strip()
+        if v:
+            return v
+    except Exception:  # noqa: BLE001
+        pass
+    # Next rung down: the exact expression this field carried before, so a
+    # resolver outage degrades to the previous behaviour rather than to a new one.
     try:
         from ai_surface_canon import canon_text
         v = canon_text("{canon_version}").strip()
-        return v or "2.1.10"
+        if v:
+            return v
     except Exception:  # noqa: BLE001
-        return "2.1.10"
+        pass
+    # Deepest rung: the PIN itself, read directly, in case canon_text() is what
+    # broke. This is the floor the old literal was pretending to be.
+    try:
+        from ai_surface_canon import PINNED
+        return (PINNED.get("version") or "").strip() or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ★2026-08-20 — THE HEADLINE COUNTS DERIVE TOO.
@@ -174,6 +216,9 @@ def _gather():
         "namespace":        "cloud.dchub/mcp-server",
         # ★2026-08-19: was the literal "2.1.10" while the gateway served 2.12.0.
         # A version string on a CC-BY card is a citable claim like any other.
+        # ★2026-09-02: ...and then it derived from the PIN, which is a cold-start
+        # floor and not the truth — 2.12.1 served against a live 2.12.3. It now
+        # reads the resolver. See _canon_version() above.
         "version":          _canon_version(),
         "description":      "Live data layer for data-center infrastructure. AI-agent native MCP server.",
         "license":          "CC-BY-4.0",
