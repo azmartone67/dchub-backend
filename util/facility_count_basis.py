@@ -1,4 +1,5 @@
-"""The shared vocabulary for "how many facilities are in <market>".
+"""The shared vocabulary for "how many facilities are in <market>" — and, since
+2026-09-03, for "how much capacity is in <market>" (see capacity_basis below).
 
 Four public surfaces answer that question with four different numbers. For
 Ashburn on 2026-08-01 they read 130, 141, 179 and 206 — every one of them
@@ -72,6 +73,68 @@ GROUPINGS = {
 }
 
 FLEET_FILTER = "COALESCE(is_duplicate,0)=0"
+
+# ── the MW axis this module was missing ──────────────────────────────────────
+# Everything above fixes "how many facilities". Nothing fixed "how much
+# capacity", and a market's MW moves on its own axes. Measured live 2026-09-03,
+# all for Ashburn / Northern Virginia, all correct, none interchangeable:
+#
+#     5,793 MW  rank_markets            operational · sum_rows   · city_state
+#    11,052 MW  /markets/ashburn page   tracked     · sum_sites  · market_slug
+#    12,438 MW  /api/v1/markets "NoVA"  operational · sum_rows   · alias_group
+#
+# The page's figure is larger because it counts PLANNED capacity the ranking
+# excludes, and because it collapses each site to MAX(mw) before summing rather
+# than adding every row. Both choices are defensible; publishing all three under
+# the bare name `total_mw` is not. An agent that crawls the page and also calls
+# the tool sees us contradict ourselves, and a source that contradicts itself
+# does not get cited — which is worse than not being found.
+#
+# `population` and `grouping` are the SAME axes as a count, deliberately: a MW
+# total and the count beside it must be able to declare that they describe the
+# same rows.
+AGGREGATIONS = {
+    "sum_rows": (
+        "SUM(power_mw) over every qualifying row — the plain total. Adds a "
+        "site twice when it is held as several keeper rows"),
+    "sum_sites": (
+        "collapse each site to one figure first (MAX(mw) per identity), then "
+        "sum — immune to multi-row sites, but silently drops a genuinely "
+        "separate building that shares an identity key"),
+    "sum_metered_rows": (
+        "sum_rows narrowed to rows carrying power_mw > 0 — the only aggregation "
+        "whose MW describes exactly the rows a `metered` count describes"),
+}
+
+
+def capacity_basis(population: str, aggregation: str, grouping: str,
+                   note: str | None = None) -> dict:
+    """The `capacity_basis` disclosure a surface publishes beside a MW total.
+
+    Same contract as basis() above — unknown terms raise rather than shipping a
+    plausible-looking basis nobody can cross-reference.
+    """
+    for value, vocab, axis in ((population, POPULATIONS, "population"),
+                               (aggregation, AGGREGATIONS, "aggregation"),
+                               (grouping, GROUPINGS, "grouping")):
+        if value not in vocab:
+            raise ValueError(
+                f"unknown {axis} {value!r} — util/facility_count_basis.py "
+                f"defines {sorted(vocab)}. Add the term there (and say what it "
+                f"means) rather than inventing one at the call site.")
+    out = {
+        "population": population, "population_means": POPULATIONS[population],
+        "aggregation": aggregation, "aggregation_means": AGGREGATIONS[aggregation],
+        "grouping": grouping, "grouping_means": GROUPINGS[grouping],
+        "fleet_filter": FLEET_FILTER,
+        "compare_note": (
+            "MW totals from different surfaces are comparable only when all "
+            "three axes match. A larger number is usually a wider population, "
+            "not more capacity. See util/facility_count_basis.py."),
+    }
+    if note:
+        out["note"] = note
+    return out
 
 
 def basis(population: str, unit: str, grouping: str, note: str | None = None) -> dict:
