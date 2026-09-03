@@ -261,12 +261,40 @@ def test_repo_worker_is_canon_clean_and_current():
     # job is to report a dead upstream is the one most likely to be slow
     # BECAUSE that upstream is dead. Verdict routes now get their own generous
     # timeout, and the origin /health no longer blocks on a live probe.
-    # ★ PASTE OUTSTANDING — merging does not ship this. Until the manual
-    # Cloudflare dashboard paste happens, the live worker keeps failing the
-    # verdict over to Render whenever the origin is slow.
-    # Verify with:
-    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.51
-    assert "WORKER_VERSION = '4.9.51-verdict-route-timeout'" in src
+    # ✓ PASTED — live confirmed 2026-09-02: /.well-known/ai-plugin.json,
+    # /.well-known/mcp.json, /.well-known/agent.json, /.well-known/mcp/
+    # server-card.json and /robots.txt probed in one cache-busted sweep; the
+    # four worker-served paths all returned x-dc-worker-version:
+    # 4.9.51-verdict-route-timeout. (This line read "PASTE OUTSTANDING"; it had
+    # already happened. SIXTH time this note has lagged reality — the header is
+    # the authority, never the comment.)
+    #
+    # 4.9.51 -> 4.9.52-ai-plugin-canon-bound: /.well-known/ai-plugin.json and
+    # /.well-known/agent.json transcribed MCP_SERVER_INFO.description instead of
+    # deriving it, so they served a literal frozen at "15,700+ facilities /
+    # 1,600+ tracked M&A deals" — and agent.json a version frozen at 2.5.0.
+    # Measured live 2026-09-02, ONE cache-busted sweep, ONE worker (4.9.51):
+    #     /.well-known/mcp.json              20,100+ / 2,000+   v2.12.3   canon
+    #     /.well-known/mcp/server-card.json  20,100+ / 2,000+   v2.12.3   canon
+    #     /.well-known/ai-plugin.json        15,700+ / 1,600+             FROZEN
+    #     /.well-known/agent.json            15,700+ / 1,600+   v2.5.0    FROZEN
+    # v4.9.45 wired the first two to the origin's canon-built manifest and
+    # stopped; the other two were never in scope and nothing was watching them
+    # (ai_surface_sentinel carries the canonical server-card path, which the
+    # worker answers off the ALREADY-HEALED origin manifest — the healed pair
+    # masked the frozen pair on the only path the sentinel reads).
+    # ★ The counts were DELETED from MCP_SERVER_INFO.description, not re-typed
+    # to 20,100+/2,000+. Re-typing is the `_TOOL_COUNT = 59` refreeze, and here
+    # it would ALSO be un-landable: BANNED_STALE in
+    # tests/test_canonical_counts_drift.py bans `(19|20|21|22|23),\d{3}\+` near
+    # "facilit" and `2,000\+ ... deals` outright — both patterns retired the
+    # PREVIOUS floors and now match the CURRENT canon, so the honest literal
+    # fails the drift fence. Only derivation lands.
+    # ★ PASTE OUTSTANDING — merging does not ship this.
+    # Verify with (want 4.9.52):
+    #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.52-ai-plugin-canon-bound'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

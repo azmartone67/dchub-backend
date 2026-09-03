@@ -551,3 +551,147 @@ def test_mcp_platforms_endpoint_derives_the_version():
         "the resolver call is not inside a try/except — this is a request path "
         "and the accessor's contract is that it never breaks one"
     )
+
+
+# ── (7) the two WORKER-served surfaces that v4.9.45 missed (2026-09-02) ────
+#
+# Section (4) above fences /.well-known/mcp.json and /.well-known/mcp/
+# server-card.json. Two MORE well-known docs on the same zone worker were never
+# in that scope and kept transcribing MCP_SERVER_INFO. Measured live 2026-09-02
+# in ONE cache-busted sweep, ONE worker (x-dc-worker-version 4.9.51 on all four):
+#
+#     /.well-known/mcp.json              20,100+ / 2,000+   v2.12.3   canon
+#     /.well-known/mcp/server-card.json  20,100+ / 2,000+   v2.12.3   canon
+#     /.well-known/ai-plugin.json        15,700+ / 1,600+             FROZEN
+#     /.well-known/agent.json            15,700+ / 1,600+   v2.5.0    FROZEN
+#
+# ★ WHY NOTHING CAUGHT IT. ai_surface_sentinel watches the CANONICAL server-card
+# path, which the worker answers off the origin's already-healed manifest. The
+# healed pair MASKED the frozen pair on the only path anything was reading —
+# the same blind spot section (6) records one surface earlier.
+#
+# ★ AND WHY THE FIX IS DELETION, NOT A NEW LITERAL. Re-typing 20,100+/2,000+
+# into MCP_SERVER_INFO.description is the `_TOOL_COUNT = 59` refreeze — right on
+# the day of the paste, stale at the next canon bump, and this worker deploys by
+# MANUAL dashboard paste so it stays stale for months. It is also un-landable:
+# BANNED_STALE in tests/test_canonical_counts_drift.py retired the PREVIOUS
+# floors with patterns that now match the CURRENT canon (`(19|20|21|22|23),\d{3}\+`
+# near "facilit"; `2,000+ ... deals`), so the honest literal reds the drift
+# fence. Derivation is the only thing that lands, which is the point.
+
+_POPULATION_MAGNITUDE = re.compile(r"\d{1,3}(?:,\d{3})+")
+
+
+def _worker_handler_block(path_literal: str) -> str:
+    """The body of one `if (pathname === '<path>')` handler in worker.js.
+
+    Sliced to the NEXT handler so an assertion cannot accidentally read a
+    neighbouring block's wiring and pass — the failure mode this whole section
+    exists to catch is one handler deriving while its sibling transcribes.
+    """
+    w = _WORKER.read_text()
+    start = w.index(f"if (pathname === '{path_literal}')")
+    nxt = w.find("\n  if (pathname ===", start + 1)
+    assert nxt > start, f"could not find the handler after {path_literal}"
+    block = w[start:nxt]
+    assert len(block) > 200, f"{path_literal} handler sliced to {len(block)}b — extraction failed"
+    return block
+
+
+def test_ai_plugin_json_derives_its_description():
+    """★ THE DEFECT. ai-plugin.json is the doc the OpenAI-style plugin crawlers
+    read, and it published a description frozen two canon generations back.
+
+    Asserted as a NEGATIVE as well as a positive: the revert is one character —
+    putting `MCP_SERVER_INFO.description` back on the served key — and a test
+    that only checks "resolveManifestExtras appears somewhere in the block"
+    stays green through it (this repo has shipped that vacuous shape before;
+    see the `alias is imported but never reaches _ver` note in section 6).
+    """
+    block = _worker_handler_block("/.well-known/ai-plugin.json")
+    assert "resolveManifestExtras(" in block, (
+        "ai-plugin.json no longer reads the origin's canon manifest at all"
+    )
+    for key in ("description_for_human", "description_for_model"):
+        assert not re.search(rf"{key}:\s*(?:`\$\{{)?MCP_SERVER_INFO\.description", block), (
+            f"ai-plugin.json serves MCP_SERVER_INFO.description on `{key}` again — "
+            "that literal is the OFFLINE FALLBACK, not the served value"
+        )
+    assert "pluginExtras.description || MCP_SERVER_INFO.description" in block, (
+        "the fail-open fallback is gone — a missing origin field must degrade to "
+        "the literal, never to a blank description"
+    )
+
+
+def test_agent_json_derives_its_description_and_version():
+    """agent.json carried BOTH halves: the frozen description AND version 2.5.0,
+    while the server card on the SAME worker served the derived 2.12.3 in the
+    same second. Fixing only ai-plugin.json would leave exactly the split-brain
+    test_worker_server_card_also_derives refuses one section up."""
+    block = _worker_handler_block("/.well-known/agent.json")
+    assert "resolveManifestExtras(" in block, (
+        "agent.json no longer reads the origin's canon manifest at all"
+    )
+    assert not re.search(r"\bdescription:\s*MCP_SERVER_INFO\.description", block), (
+        "agent.json serves the MCP_SERVER_INFO description literal again"
+    )
+    assert not re.search(r"\bversion:\s*MCP_SERVER_INFO\.version", block), (
+        "agent.json serves the MCP_SERVER_INFO version literal again — it froze "
+        "at 2.5.0 against a live 2.12.3"
+    )
+    assert "agentExtras.description || MCP_SERVER_INFO.description" in block
+    assert "agentExtras.version || MCP_SERVER_INFO.version" in block
+
+
+def test_worker_card_literal_carries_no_population_count():
+    """★ THE ANTI-REFREEZE FENCE. The fallback literal must state NO facility,
+    deal or asset magnitude — deleted, not updated.
+
+    test_worker_mcp_card_is_canonical (test_canonical_counts_drift.py) already
+    pins the TOOL count in this same string, and that guard works: the count is
+    83 and correct. It has never checked a population count, which is how
+    "15,700+ facilities / 1,600+ deals" sat in the served bytes underneath a
+    green fence for a month.
+
+    Any comma-grouped number is refused, rather than a denylist of the specific
+    retired values — a value-denylist catches the LAST wrong number, never the
+    next one, which is the lesson `facilities_retired_12650` records in
+    BANNED_STALE. The tool count survives because it is not comma-grouped.
+    """
+    w = _WORKER.read_text()
+    m = re.search(r"MCP_SERVER_INFO\s*=\s*\{.*?\bdescription:\s*'([^']*)'", w, re.S)
+    assert m, "MCP_SERVER_INFO.description not found — update this guard to follow it"
+    desc = m.group(1)
+    assert "canon/phrases" in desc, (
+        "the card no longer links the canonical counts — if the numbers are not "
+        "in the string, the URL that has them must be"
+    )
+    hits = _POPULATION_MAGNITUDE.findall(desc)
+    assert not hits, (
+        f"MCP_SERVER_INFO.description states population count(s) {hits} again. "
+        "This worker deploys by manual dashboard paste, so a literal here "
+        "re-freezes for months (it shipped 15,700+/1,600+ against canon "
+        "20,100+/2,000+). Link https://dchub.cloud/api/v1/canon/phrases instead."
+    )
+
+
+def test_fallback_tool_descriptions_carry_no_facility_count():
+    """MCP_FALLBACK_TOOLS is what the manifest serves when the origin tools/list
+    is unreachable, so its descriptions are agent-facing bytes too. `why_dchub`
+    carried the SAME "15,700+ facilities" literal as the card — one edit, two
+    homes, and only one of them was ever looked at.
+
+    Scoped to the array so the `*`-prefixed changelog header above it, which
+    RECORDS retired counts on purpose, is never scanned.
+    """
+    w = _WORKER.read_text()
+    m = re.search(r"const MCP_FALLBACK_TOOLS = \[\n(.*?)\n\];", w, re.S)
+    assert m, "MCP_FALLBACK_TOOLS array missing from worker.js"
+    body = m.group(1)
+    assert len(body) > 10_000, f"array sliced to {len(body)}b — extraction failed"
+    hits = re.findall(r"\d{1,3}(?:,\d{3})+\+?\s*(?:distinct\s+)?facilit\w*", body)
+    assert not hits, (
+        f"a fallback tool description states a facility count {hits} — the "
+        "backend catalog builds the same text through canon_text('{canon_facilities}') "
+        "and the worker cannot, so the worker copy must state no count at all."
+    )
