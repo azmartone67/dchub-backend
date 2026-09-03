@@ -159,12 +159,37 @@ def test_intl_family_is_failed_only_when_every_member_fails():
 
 def test_us_isos_are_not_in_any_family():
     """iso-data-pull already owns the US ISOs' ledger row — a second writer
-    for the same fact is the one-direction-masking trap."""
+    for the same fact is the one-direction-masking trap.
+
+    ★ 2026-09-03 — UTILITY_BAS was in this list and should not have been.
+      The rule is "whoever else owns the ledger row keeps it", and the owner
+      is iso_grid_adapters.ISO_REGISTRY, read live below rather than restated:
+      it holds exactly ERCOT CAISO PJM MISO NYISO SPP ISONE. TVA, BPA and
+      UTILITY_BAS are NOT in it — nothing owned them — so they had no family
+      and no MUST_HAVE_FAMILIES entry could name them. Measured that morning:
+      the iso domain sat in BREACH with 71 of 104 streams stale (worst
+      grid_data:MISO at 26.0h against a 4h target) while `feed_families` held
+      one key, 'entsoe', reporting live_feed_ok true. A 45-BA outage was
+      invisible for 25 hours.
+
+      Asserting against the REGISTRY rather than a hand-copied list is the
+      point: if iso-data-pull ever takes ownership of another code, this test
+      follows it instead of going stale."""
+    from iso_grid_adapters import ISO_REGISTRY
     from routes.iso_orchestrator import _FAMILIES
     members = {m for _, ms in _FAMILIES for m in ms}
-    for us in ("PJM", "ERCOT", "CAISO", "NYISO", "MISO", "SPP", "ISONE", "UTILITY_BAS"):
-        assert us not in members
-    assert {f for f, _ in _FAMILIES} == {"iso-eu-entsoe", "iso-intl"}
+    for us in sorted(ISO_REGISTRY):
+        assert us not in members, (
+            "%s is owned by iso-data-pull (/api/v1/iso/pull); a family here "
+            "would be a second writer for the same ledger row" % us)
+    for orphan in ("TVA", "BPA", "UTILITY_BAS"):
+        assert orphan not in ISO_REGISTRY, (
+            "%s gained an owner — if iso-data-pull now pulls it, take it OUT "
+            "of _FAMILIES rather than leaving two writers" % orphan)
+        assert orphan in members, (
+            "%s is pulled by data-pulse and owned by nobody else, so it must "
+            "roll up to a family or its outage is unreportable" % orphan)
+    assert {f for f, _ in _FAMILIES} == {"iso-eu-entsoe", "iso-intl", "iso-us-eia"}
 
 
 def test_extract_all_publishes_families_and_named_failures():

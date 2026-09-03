@@ -32,6 +32,7 @@ the orchestrator (routes/iso_orchestrator.py) can register this as a single
 """
 import os
 import time
+from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 from internal_auth import is_valid_internal_key
 
@@ -183,6 +184,33 @@ def extract_one(ba: dict) -> dict:
     return summary
 
 
+# EIA-930 is hourly. A frozen period is ordinary for an hour or two (the feed
+# publishes with a lag) and abnormal well beyond that. Past this, a stall stops
+# being a "wait" and is reported as the failure it is.
+_UPSTREAM_STALL_H = 6.0
+
+
+def _period_age_hours(period, now=None):
+    """Hours since an EIA observation period, or None if unparseable.
+
+    None is UNMEASURED, never 0 — a period we cannot read must not present as
+    perfectly fresh, and must not silently become a 'wait' either.
+    """
+    if not period:
+        return None
+    txt = str(period).strip().replace("Z", "+00:00")
+    for fmt in (None, "%Y-%m-%dT%H", "%Y-%m-%d %H", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            dt = (datetime.fromisoformat(txt) if fmt is None
+                  else datetime.strptime(txt, fmt))
+        except Exception:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return ((now or datetime.now(timezone.utc)) - dt).total_seconds() / 3600.0
+    return None
+
+
 def run_extraction() -> dict:
     """Orchestrator entry — extract EVERY registered BA. Parallel (I/O-bound
     EIA calls) so all BAs finish in a few seconds and fit the orchestrator's
@@ -200,6 +228,69 @@ def run_extraction() -> dict:
     ran_ok = sum(1 for r in results if r.get("status") == "ok")
     live = sum(1 for r in results if r.get("eia_cached") is False)
     cached = sum(1 for r in results if r.get("eia_cached") is True)
+
+    # ★★★ 2026-09-03 — "partial" COULD NOT SAY WHICH KIND OF BROKEN.
+    #
+    #   `status = "ok" if ok else "partial"` collapsed two opposite situations
+    #   into one word, because `ok` counts BAs that persisted a ROW:
+    #
+    #     · every fetch worked and EIA simply has not published a newer hour
+    #       -> 0 rows (D4 dedups an unchanged period, by design)  -> "partial"
+    #     · every fetch FAILED                                     -> "partial"
+    #
+    #   Measured this morning: data-pulse printed
+    #   `failed_isos=UTILITY_BAS(partial)` on every tick for 25 hours while the
+    #   newest stored observation stood at 2026-09-02T06:00Z across 45 BAs, and
+    #   nothing anywhere could say whether EIA had stopped publishing or we had
+    #   stopped reading. The orchestrator gained the vocabulary for exactly this
+    #   distinction on 2026-09-03 (iso_orchestrator.AWAITING_UPSTREAM); this
+    #   extractor never spoke it.
+    #
+    #   ★ THE STATUS KEY IS LOAD-BEARING AND THE ORDER IS A TRAP.
+    #     classify_result tests `if st:` -> failed BEFORE it looks at
+    #     `awaiting_upstream`, so ANY non-empty status that is not "ok" or
+    #     "no_new_data" is a failure and the wait list is never read. To be
+    #     classified as waiting, an extractor must leave `status` UNSET.
+    #
+    #   ★ AND A LONG WAIT IS NOT A WAIT. EIA-930 is hourly; a frozen period is
+    #     benign for an hour or two and abnormal after that. Past
+    #     _UPSTREAM_STALL_H the feed stops calling itself "waiting" and goes
+    #     back to being a failure that names the frozen hour — otherwise this
+    #     change would convert a real 25h outage into a permanently reassuring
+    #     "awaiting upstream", which is the exact shape of the bug it fixes.
+    errored = [r for r in results if r.get("status") == "error"]
+    periods = sorted({str(r.get("eia_period")) for r in results
+                      if r.get("status") == "ok" and r.get("eia_period")})
+    newest = periods[-1] if periods else None
+    stall_h = _period_age_hours(newest)
+    out_status, waiting, note = None, [], None
+
+    if errored:
+        # A real error outranks a wait — an extractor must not launder a
+        # failure by also being late.
+        out_status = "partial"
+        note = ("%d of %d BA fetches FAILED: %s"
+                % (len(errored), len(_BAS),
+                   "; ".join("%s=%s" % (r.get("code"), str(r.get("error"))[:60])
+                             for r in errored[:4])))
+    elif ok:
+        out_status = "ok"
+    elif stall_h is not None and stall_h > _UPSTREAM_STALL_H:
+        out_status = "partial"
+        # ★ The first 60 characters are all data-pulse prints (it truncates
+        #   the reason), so the WHICH-kind-of-broken has to lead.
+        note = ("EIA published nothing newer than %s (%.1fh ago) — all %d BAs "
+                "fetched cleanly, so this is an UPSTREAM stall, not a read "
+                "failure; past the %.0fh tolerance it is reported as a failure "
+                "rather than a wait"
+                % (newest, stall_h, len(_BAS), _UPSTREAM_STALL_H))
+    else:
+        # status deliberately UNSET so classify_result reaches the wait list.
+        waiting = ["%s (all %d BAs fetched cleanly; newest EIA hour %s%s)"
+                   % ("EIA-930", len(_BAS), newest or "unknown",
+                      "" if stall_h is None else ", %.1fh ago" % stall_h)]
+        note = "no newer EIA hour published yet — nothing to insert"
+
     return {
         "iso": "UTILITY_BAS",
         "total_bas": len(_BAS),
@@ -212,7 +303,20 @@ def run_extraction() -> dict:
                            "one replica of two, not the fleet"),
         "rows_inserted": sum(r.get("rows_inserted", 0) for r in results),
         "duration_ms": int((time.time() - started) * 1000),
-        "status": "ok" if ok else "partial",
+        # Only set when there is something to say. An UNSET status is what lets
+        # classify_result reach `awaiting_upstream` — see the block above.
+        **({"status": out_status} if out_status else {}),
+        # ★ classify_result derives its reason from `error` (then errors[0]),
+        #   NEVER from `note` — so a diagnosis parked in `note` alone reaches
+        #   nobody. This is why the log said only "UTILITY_BAS(partial)" for 25
+        #   hours: the extractor had no `error` to report and the status word
+        #   was the whole message.
+        **({"error": note} if (out_status and note) else {}),
+        **({"awaiting_upstream": waiting} if waiting else {}),
+        **({"note": note} if note else {}),
+        "newest_eia_period": newest,
+        "upstream_stall_hours": (None if stall_h is None else round(stall_h, 2)),
+        "bas_failed": len(errored),
         "per_ba": results,
     }
 

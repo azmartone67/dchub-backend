@@ -93,10 +93,45 @@ def classify_result(r):
 # NOT here: the iso-data-pull feed (routes/iso_grid_adapters via iso-data-pull
 # .yml) already owns them, and a second writer for the same fact is the
 # one-direction-masking trap tests/test_alarm_reachability.py fences.
+# ★★★ 2026-09-03 — THE ROLL-UP COULD NOT SEE NORTH AMERICA.
+#
+#   The family layer was added 2026-09-02 (D1) so a reader could ask "is the
+#   feed alive?" instead of reading 104 stream rows. It shipped covering the
+#   international feeds only. Seven of the ten uncovered extractors are the
+#   organized US markets, which iso-data-pull.yml owns on purpose — but THREE
+#   were owned by nobody:
+#
+#       TVA   BPA   UTILITY_BAS   (45 balancing authorities behind one code)
+#
+#   Measured this morning: /api/v1/freshness reported the iso domain in BREACH
+#   with 71 of 104 streams stale (worst grid_data:MISO at 26.0h against a 4h
+#   target) while `feed_families` contained exactly one key, 'entsoe', showing
+#   live_feed_ok: true. Nothing was wrong with that answer — entsoe really was
+#   fine — but it was the only question the roll-up could be asked, so a
+#   45-balancing-authority outage stayed invisible for 25 hours.
+#
+#   It also means MUST_HAVE_FAMILIES (data-pulse.yml) could never protect them:
+#   you cannot name a family that does not exist. That env var is deliberately
+#   NOT changed here — making these visible is a fact, deciding that they
+#   should fail the build is a judgement about alert noise, and the two should
+#   not ride in on one commit.
 _FAMILIES = (
     ("iso-eu-entsoe", ("ENTSOE",)),
     ("iso-intl", ("NGESO", "AEMO", "TAIPOWER", "OCCTO", "EMA", "ONS", "KEPCO-KR",
                   "IESO", "AESO", "HYDROQUEBEC")),
+    # ★ THE SEVEN ORGANIZED US MARKETS ARE DELIBERATELY ABSENT, and stay that
+    #   way. iso-data-pull.yml already owns their ledger row via
+    #   POST /api/v1/iso/pull (iso_grid_adapters.ISO_REGISTRY = ERCOT, CAISO,
+    #   PJM, MISO, NYISO, SPP, ISONE), and a second writer for the same fact is
+    #   the one-direction-masking trap that
+    #   tests/test_data_pulse_family_gate.py fences.
+    #
+    #   But that registry does NOT contain TVA, BPA or UTILITY_BAS — verified
+    #   by reading it — so nothing owned them, and the fence's member list had
+    #   swept UTILITY_BAS in with the ISOs it was really about. They share ONE
+    #   upstream (EIA), so they fail together and a reader asking "is the EIA
+    #   feed alive?" gets one answer instead of forty-seven.
+    ("iso-us-eia", ("TVA", "BPA", "UTILITY_BAS")),
 )
 
 # What each member summary calls the newest upstream period it wrote, if it
