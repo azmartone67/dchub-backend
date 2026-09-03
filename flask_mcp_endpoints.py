@@ -2779,6 +2779,96 @@ def mcp_signal_paywall():
     return jsonify({"ok": True}), 200
 
 
+# ── GET /api/v1/mcp/continuation-compliance — DID THE AGENT ACT? ──────────
+#
+# The eighth row of the funnel instrumentation table, the one that was called
+# unmeasurable: "did the agent surface the continuation at all?"
+#
+# It is measurable, because the continuation instruction IS a tool call. Every
+# gated response names a `next_tool` — unlock_more_data / claim_free_key /
+# bind_email — and an agent that preserved and acted on the instruction calls
+# it, in the same session, after the gate. mcp_upgrade_signals writes
+# session_id; mcp_calls_identity exposes it. No new telemetry, no human needed.
+#
+# Why that matters: "did a human open the link" ran n=1 over 5,704 signals and
+# is therefore useless as a signal about anything. "Did the agent do the thing
+# we asked" happens thousands of times a week and is fully observed. It also
+# separates the two explanations that a dead link cannot: the human ignored it,
+# versus the human never saw it.
+#
+# ★ And it splits by arm. message_shown carries :quantified or :generic, so the
+# same query answers the copy experiment — does naming what was withheld get
+# acted on more than not naming it?
+#
+# READ-ONLY. One SELECT, internal-key gated, no writes anywhere.
+@mcp_bp.get("/api/v1/mcp/continuation-compliance")
+@_require_internal
+def mcp_continuation_compliance():
+    from continuation_compliance import CONTINUATION_TOOLS, summarize_compliance
+    try:
+        days = max(1, min(int(request.args.get("days", "7")), 90))
+    except ValueError:
+        days = 7
+
+    # DISTINCT ON pins each session to its FIRST gate, so a session that saw
+    # two gates is counted once and attributed to the arm it actually met
+    # first. Counting it in both arms would let one session move both rates.
+    sql = """
+        WITH gated AS (
+            SELECT DISTINCT ON (session_id)
+                   session_id,
+                   created_at    AS first_gate,
+                   message_shown
+              FROM mcp_upgrade_signals
+             WHERE created_at >= now() - make_interval(days => %s)
+               AND session_id IS NOT NULL AND session_id <> ''
+               AND message_shown LIKE 'trial_preview%%'
+             ORDER BY session_id, created_at
+        )
+        SELECT g.message_shown,
+               COUNT(*) AS gated_sessions,
+               COUNT(*) FILTER (
+                   WHERE EXISTS (
+                       SELECT 1
+                         FROM mcp_calls_identity c
+                        WHERE c.session_id = g.session_id
+                          AND c.tool_name  = ANY(%s)
+                          AND c.created_at > g.first_gate
+                          AND c.is_real_external
+                   )
+               ) AS acted_sessions
+          FROM gated g
+         GROUP BY g.message_shown
+    """
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, (days, list(CONTINUATION_TOOLS)))
+            rows = cur.fetchall() or []
+    except Exception as e:
+        # A query that cannot run reports that it could not run. It does NOT
+        # report zeros — an unreachable table and a silent agent produce the
+        # same 0 and mean opposite things.
+        return jsonify({"ok": False, "window_days": days,
+                        "state": "UNMEASURED",
+                        "error": f"{type(e).__name__}: {e}"[:300]}), 200
+
+    out = summarize_compliance(rows)
+    out.update({
+        "ok": True,
+        "window_days": days,
+        "measures": "share of gated SESSIONS in which the agent afterwards "
+                    "called one of the tools the gated response told it to call",
+        "session_attribution": "first gate per session (DISTINCT ON), so a "
+                               "session that met two gates counts once, in the "
+                               "arm it met first",
+        "read_this_before_the_relay_funnel": "relay opens ran 1 in 5,704 and "
+                                             "cannot distinguish 'the human "
+                                             "ignored it' from 'the human never "
+                                             "saw it'. This can.",
+    })
+    return jsonify(out), 200
+
+
 # ── GET /api/v1/mcp/stats — for our own admin dashboard ───────────────────
 
 @mcp_bp.get("/api/v1/mcp/stats")
