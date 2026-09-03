@@ -770,12 +770,20 @@ def test_fallback_tool_descriptions_carry_no_facility_count():
 # them with an alert that actually fires.
 
 def _pin_floors():
-    """Offline stand-in for resolve_public_floors().
+    """Offline stand-in for resolve_public_floors_cached().
 
-    ★ NOT a convenience. resolve_public_floors() is live-probing and UNCACHED,
-    and was measured at 12.9s on a cold call with no DATABASE_URL while writing
-    this test. The house rule at the top of this file is no DB and no network,
-    and a 13s unit test is how a suite starts getting skipped.
+    ★ NOT a convenience. This stub was written because resolve_public_floors()
+    is live-probing and UNCACHED, measured at 12.9s on a cold call with no
+    DATABASE_URL while writing this test. The house rule at the top of this
+    file is no DB and no network, and a 13s unit test is how a suite starts
+    getting skipped.
+
+    ★2026-09-02: that 12.9s was not only a test problem. The handler called
+    the same uncached resolver ON THE REQUEST PATH — re-measured cold at
+    15.4s against a 15s edge ROUTE_TIMEOUTS DEFAULT, i.e. already over — and
+    it now calls resolve_public_floors_cached(). This stub therefore no longer
+    exists for SPEED; it stays for DETERMINISM, so these version assertions do
+    not depend on whether a process-global floors cache happens to be warm.
     """
     import ai_surface_canon as canon
     # PINNED["public"] is exactly the dict resolve_public_floors() starts from
@@ -803,15 +811,15 @@ def test_agents_md_serves_the_resolved_version_not_the_pin():
     assert sentinel != pin, "sentinel must differ from the pin"
 
     saved = dict(canon._server_version_cache)
-    saved_floors = amd.resolve_public_floors
+    saved_floors = amd.resolve_public_floors_cached
     try:
-        amd.resolve_public_floors = _pin_floors
+        amd.resolve_public_floors_cached = _pin_floors
         with canon._server_version_lock:
             canon._server_version_cache["val"] = sentinel
             canon._server_version_cache["at"] = time.time()
         body = amd._render_agents_md()
     finally:
-        amd.resolve_public_floors = saved_floors
+        amd.resolve_public_floors_cached = saved_floors
         with canon._server_version_lock:
             canon._server_version_cache.clear()
             canon._server_version_cache.update(saved)
@@ -853,11 +861,19 @@ def test_agents_md_changed_ONLY_the_version():
         for n in ast.walk(fn)
     ), "`c = PINNED` is gone — every non-version field just changed basis"
 
-    # floors still come from resolve_public_floors(), not resolve_canon()
+    # floors still come from the resolve_public_floors overlay, not resolve_canon()
     called = {n.func.id for n in ast.walk(fn)
               if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
-    assert "resolve_public_floors" in called, (
-        "resolve_public_floors() is no longer called — the floors stopped "
+    # ★2026-09-02: EITHER spelling satisfies this, because the property being
+    # guarded is "the floors self-heal upward through the raise-only overlay",
+    # not which of the two entry points reaches it. _cached() returns
+    # resolve_public_floors()' own result verbatim once warm and PINNED when
+    # cold — same overlay, same raise-only rule. The handler moved to the
+    # cached one because the uncached one probes live HTTP per request and was
+    # measured cold at 15.4s against a 15s edge timeout. resolve_canon() is
+    # still banned below, and that is the assertion with the teeth.
+    assert called & {"resolve_public_floors", "resolve_public_floors_cached"}, (
+        "no resolve_public_floors* accessor is called — the floors stopped "
         "self-healing upward"
     )
     assert "resolve_canon" not in called, (
@@ -950,9 +966,9 @@ def test_both_surfaces_are_blank_proof_when_the_cache_is_cold():
     pin = canon.PINNED["version"]
     saved = dict(canon._server_version_cache)
     saved_flag = canon._server_version_refreshing
-    saved_floors = amd.resolve_public_floors
+    saved_floors = amd.resolve_public_floors_cached
     try:
-        amd.resolve_public_floors = _pin_floors
+        amd.resolve_public_floors_cached = _pin_floors
         with canon._server_version_lock:
             canon._server_version_cache["val"] = None
             canon._server_version_cache["at"] = 0.0
@@ -960,7 +976,7 @@ def test_both_surfaces_are_blank_proof_when_the_cache_is_cold():
         cold_feed = _canon_version()
         cold_md = amd._render_agents_md()
     finally:
-        amd.resolve_public_floors = saved_floors
+        amd.resolve_public_floors_cached = saved_floors
         with canon._server_version_lock:
             canon._server_version_cache.clear()
             canon._server_version_cache.update(saved)
