@@ -2813,12 +2813,18 @@ def mcp_continuation_compliance():
     # DISTINCT ON pins each session to its FIRST gate, so a session that saw
     # two gates is counted once and attributed to the arm it actually met
     # first. Counting it in both arms would let one session move both rates.
+    # continued_sessions is the SAME join without the tool filter: did this
+    # session make ANY real external call after the gate? A session that made
+    # none had no turn in which to comply, so counting it as non-compliance
+    # would report a gateway's session model as an agent's refusal.
     sql = """
         WITH gated AS (
             SELECT DISTINCT ON (session_id)
                    session_id,
                    created_at    AS first_gate,
-                   message_shown
+                   message_shown,
+                   COALESCE(NULLIF(TRIM(LOWER(mcp_client)), ''), 'unattributed')
+                       AS client
               FROM mcp_upgrade_signals
              WHERE created_at >= now() - make_interval(days => %s)
                AND session_id IS NOT NULL AND session_id <> ''
@@ -2826,19 +2832,24 @@ def mcp_continuation_compliance():
              ORDER BY session_id, created_at
         )
         SELECT g.message_shown,
-               COUNT(*) AS gated_sessions,
-               COUNT(*) FILTER (
-                   WHERE EXISTS (
-                       SELECT 1
-                         FROM mcp_calls_identity c
-                        WHERE c.session_id = g.session_id
-                          AND c.tool_name  = ANY(%s)
-                          AND c.created_at > g.first_gate
-                          AND c.is_real_external
-                   )
-               ) AS acted_sessions
+               g.client,
+               COUNT(*)                          AS gated_sessions,
+               COUNT(*) FILTER (WHERE a.any_call) AS continued_sessions,
+               COUNT(*) FILTER (WHERE a.acted)    AS acted_sessions
           FROM gated g
-         GROUP BY g.message_shown
+          LEFT JOIN LATERAL (
+              -- ONE pass over the post-gate calls per session, answering both
+              -- questions. Two EXISTS subqueries would walk mcp_calls_identity
+              -- twice for the same rows, and this route already runs a GROUP BY
+              -- per request — the pool-saturation trap this file warns about.
+              SELECT COUNT(*) > 0                                     AS any_call,
+                     COUNT(*) FILTER (WHERE c.tool_name = ANY(%s)) > 0 AS acted
+                FROM mcp_calls_identity c
+               WHERE c.session_id  = g.session_id
+                 AND c.created_at  > g.first_gate
+                 AND c.is_real_external
+          ) a ON TRUE
+         GROUP BY g.message_shown, g.client
     """
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
@@ -2861,6 +2872,21 @@ def mcp_continuation_compliance():
         "session_attribution": "first gate per session (DISTINCT ON), so a "
                                "session that met two gates counts once, in the "
                                "arm it met first",
+        "opportunity": "continued_sessions counts gated sessions that made ANY "
+                       "real external call afterwards. A bucket where nothing "
+                       "continued is UNMEASURED, not 0%: a client whose "
+                       "sessions are one call long never had a turn to comply.",
+        "concentration_unit": "gated SESSIONS on mcp_upgrade_signals — NOT the "
+                              "tool-call concentration /api/v1/ai/reach "
+                              "publishes on mcp_calls_identity. Different "
+                              "basis, different number; never divide across "
+                              "the two.",
+        "client_identity": "mcp_client — the SELF-DECLARED client string, not "
+                           "the IP-derived agent_id /api/v1/ai/reach counts "
+                           "agents by. Session durability is a property of the "
+                           "client SOFTWARE, so the software is what this "
+                           "splits on; the two identities do not line up and "
+                           "their counts are not interchangeable.",
         "read_this_before_the_relay_funnel": "relay opens ran 1 in 5,704 and "
                                              "cannot distinguish 'the human "
                                              "ignored it' from 'the human never "

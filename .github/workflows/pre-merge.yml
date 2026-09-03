@@ -401,6 +401,33 @@ jobs:
             echo "::error::a parity test SKIPPED — this job proves nothing"; exit 1
           fi
 
+      # ── The continuation-compliance QUERY, against the same Postgres ─────
+      # The summariser is covered by pure-function tests; the SQL was not, and
+      # the SQL is where the measurement lives. Its first real execution would
+      # otherwise be production — on the one endpoint whose entire purpose is
+      # not reporting a wrong number confidently.
+      #
+      # Safe to share the `parity` database: this test owns and recreates only
+      # mcp_upgrade_signals / mcp_calls_identity, and runs after the fiber lane
+      # above has already reported.
+      - name: Continuation-compliance SQL against a real Postgres
+        env:
+          CONTINUATION_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_continuation_compliance_sql.py -v --tb=short
+
+      - name: Prove the compliance SQL test actually RAN
+        # It skips itself when no DSN is set, which is exactly how it would
+        # ride green here. A skipped proof is not a proof.
+        env:
+          CONTINUATION_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_continuation_compliance_sql.py \
+            -q -rs --tb=no > cc.txt 2>&1 || { cat cc.txt; exit 1; }
+          cat cc.txt
+          if grep -qi "skipped" cc.txt; then
+            echo "::error::the compliance SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -410,12 +437,16 @@ jobs:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # out.txt is written by the prove-it-RAN step above, which already
-          # fails the job on a skip. N comes from the same file so the count and
-          # the skip check cannot disagree.
+          # out.txt and cc.txt are written by the two prove-it-RAN steps above,
+          # each of which already fails the job on a skip. N sums the SAME files
+          # those checks read, so the count and the skip checks cannot disagree
+          # — a lane that ran but is not counted here reports fewer tests than
+          # the job actually proved.
           # Same empty-vs-zero rule as unit-tests: present-but-unparseable => 0.
-          if [ -f out.txt ]; then
-            N=$(grep -oE '[0-9]+ (passed|failed)' out.txt | awk '{t+=$1} END{if(NR)print t; else print 0}')
+          if [ -f out.txt ] || [ -f cc.txt ]; then
+            N=$(cat out.txt cc.txt 2>/dev/null \
+                | grep -oE '[0-9]+ (passed|failed)' \
+                | awk '{t+=$1} END{if(NR)print t; else print 0}')
           else
             N=""
           fi
