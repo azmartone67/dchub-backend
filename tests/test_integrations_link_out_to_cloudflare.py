@@ -94,3 +94,50 @@ def test_no_stale_one_dash_deep_links():
     src = _source()
     bad = re.findall(r'href="https://one\.dash\.cloudflare\.com[^"]*"', src)
     assert not bad, f"stale Zero Trust deep link(s) that lose their target: {bad}"
+
+def _quickstart_grid():
+    """The <div class="qs"> card grid near the TOP of MCP_LANDING_HTML."""
+    blob = _blob("MCP_LANDING_HTML")
+    i = blob.index('<div class="qs">')
+    j = blob.index("<h2>Agent recipes", i)
+    grid = blob[i:j]
+    assert grid.count('<div class="qs-card">') >= 6, (
+        "quickstart grid lost its cards — slice boundary is wrong"
+    )
+    return grid
+
+
+def test_cloudflare_has_a_quickstart_card_not_just_a_tail_link():
+    """PRESENT IS NOT VISIBLE (2026-09-03).
+
+    The first fix put the Cloudflare links on the page and every assertion
+    passed — but the entry rendered at 44,889px down a 49,689px page (90%),
+    as the last of ~20 undifferentiated text links, while the quickstart
+    cards sit at 4,291px. Measured in the live DOM:
+
+        [...document.querySelectorAll('a')]
+          .find(x => x.href.includes('integrations/cloudflare'))
+          .getBoundingClientRect().top + scrollY   // -> 44889 of 49689
+
+    A guard that only asks "is the href in the file" cannot tell those two
+    outcomes apart. This one pins it to the card grid.
+    """
+    grid = _quickstart_grid()
+    assert "integrations/cloudflare" in grid, (
+        "Cloudflare is missing from the quickstart card grid — it is back to "
+        "being a tail link 90% down the page, which is why nobody sees it"
+    )
+    assert "Cloudflare Zero Trust" in grid, "the Cloudflare card lost its heading"
+
+
+def test_the_quickstart_pane_does_not_miscount_its_own_cards():
+    """The pane claimed 'the six biggest agent platforms'; there are now seven
+    cards. A stale hard-coded count is the cheapest kind of lie on the page."""
+    blob = _blob("MCP_LANDING_HTML")
+    n = _quickstart_grid().count('<div class="qs-card">')
+    assert "six biggest agent platforms" not in blob, (
+        f"heading still claims six platforms but the grid renders {n} cards"
+    )
+    assert "These six platforms drive" not in blob, (
+        f"sub-heading still says 'These six platforms' but the grid renders {n} cards"
+    )
