@@ -437,12 +437,16 @@ jobs:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # out.txt is written by the prove-it-RAN step above, which already
-          # fails the job on a skip. N comes from the same file so the count and
-          # the skip check cannot disagree.
+          # out.txt and cc.txt are written by the two prove-it-RAN steps above,
+          # each of which already fails the job on a skip. N sums the SAME files
+          # those checks read, so the count and the skip checks cannot disagree
+          # — a lane that ran but is not counted here reports fewer tests than
+          # the job actually proved.
           # Same empty-vs-zero rule as unit-tests: present-but-unparseable => 0.
-          if [ -f out.txt ]; then
-            N=$(grep -oE '[0-9]+ (passed|failed)' out.txt | awk '{t+=$1} END{if(NR)print t; else print 0}')
+          if [ -f out.txt ] || [ -f cc.txt ]; then
+            N=$(cat out.txt cc.txt 2>/dev/null \
+                | grep -oE '[0-9]+ (passed|failed)' \
+                | awk '{t+=$1} END{if(NR)print t; else print 0}')
           else
             N=""
           fi

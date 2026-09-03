@@ -88,7 +88,9 @@ D = dt.timedelta(days=1)
 
 
 def _fixture(cur):
-    now = dt.datetime.utcnow()
+    # NAIVE utc: mcp_upgrade_signals.created_at is TIMESTAMP without tz,
+    # and utcnow() is deprecated on the 3.13 CI runs this job uses.
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     gate, old_gate = now - 2 * H, now - 30 * D
 
     def sig(sid, arm, client, at=None):
