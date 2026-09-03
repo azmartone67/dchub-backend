@@ -290,7 +290,7 @@ def attach_review(cur, slug: str, gate: dict, where: str = "") -> bool:
         cur.execute("""
             INSERT INTO press_integrity_reviews
                 (slug, ok, hard, issues, composer, reviewed_at)
-            VALUES (%s, %s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
             ON CONFLICT (slug) DO UPDATE
                SET ok = EXCLUDED.ok, hard = EXCLUDED.hard,
                    issues = EXCLUDED.issues, composer = EXCLUDED.composer,

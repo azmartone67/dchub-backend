@@ -11,6 +11,7 @@ def _deals_floor() -> str:
     except Exception:
         return "2,000+"
 
+# AUTO-REPAIR: duplicate route '/api/marketing/stats' also in main.py:19913 — review and remove one
 @app.route('/api/marketing/stats', methods=['GET'])
 def get_marketing_stats():
     """

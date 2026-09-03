@@ -148,6 +148,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
     # ---------------------------------------------------------------
     # Category index
     # ---------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '/api/rankings' also in routes/energy_routes.py:149 — review and remove one
     @rankings_bp.route('/api/rankings', methods=['GET'])
     def rankings_index():
         categories = [
@@ -165,6 +166,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
 
     # ---------------------------------------------------------------
     # Construction Rankings
+# AUTO-REPAIR: duplicate route '/api/rankings/construction' also in routes/energy_routes.py:167 — review and remove one
     # ---------------------------------------------------------------
     @rankings_bp.route('/api/rankings/construction', methods=['GET'])
     def rankings_construction():
@@ -271,6 +273,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
         })
 
     # ---------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '/api/rankings/power' also in routes/energy_routes.py:272 — review and remove one
     # Power Capacity Rankings
     # ---------------------------------------------------------------
     @rankings_bp.route('/api/rankings/power', methods=['GET'])
@@ -332,6 +335,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
         finally:
             if conn: release_conn(conn)
 
+# AUTO-REPAIR: duplicate route '/api/rankings/gas' also in routes/energy_routes.py:334 — review and remove one
     # ---------------------------------------------------------------
     # Gas Pipeline Rankings — direct query, no schema discovery
     # ---------------------------------------------------------------
@@ -388,6 +392,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             return jsonify({"success": False, "error": str(e)}), 500
         finally:
             if conn: release_conn(conn)
+# AUTO-REPAIR: duplicate route '/api/rankings/fiber' also in routes/energy_routes.py:391 — review and remove one
 
     # ---------------------------------------------------------------
     # Fiber Rankings — lat/lng → state mapping, no schema discovery

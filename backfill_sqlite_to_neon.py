@@ -173,7 +173,7 @@ def backfill_ai_tracking(pg):
             try:
                 psycopg2.extras.execute_batch(cur, """
                     INSERT INTO ai_requests (platform, endpoint, user_agent, ip_address, status_code, response_ms, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, batch_data, page_size=100)
                 pg.commit()
                 inserted += len(batch_data)
@@ -320,7 +320,7 @@ def backfill_mcp_gateway(pg):
             try:
                 psycopg2.extras.execute_batch(cur, """
                     INSERT INTO mcp_connections (platform, method, user_agent, ip_address, tool_name, params, status_code, response_ms, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, batch_data, page_size=100)
                 pg.commit()
                 inserted += len(batch_data)
