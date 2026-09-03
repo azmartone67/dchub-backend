@@ -908,6 +908,7 @@ def _tick_cached(allow_stale: bool = True) -> dict:
 
 # ── routes ────────────────────────────────────────────────────────────
 
+# AUTO-REPAIR: duplicate route '/api/v1/admin/flywheel/master-tick' also in tests/test_integrity_shell_and_stale_gate.py:60 — review and remove one
 @flywheel_master_shell_bp.route("/api/v1/admin/flywheel/master-tick", methods=["GET", "POST"])
 def flywheel_master_tick():
     if _disabled():
