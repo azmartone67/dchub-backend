@@ -1859,7 +1859,7 @@ def media_rss():
 {chr(10).join(item_xml)}
   </channel>
 </rss>"""
-    resp = Response(rss, mimetype="application/rss+xml; charset=utf-8")
+    resp = Response(rss, content_type="application/rss+xml; charset=utf-8")
     resp.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=600"
     return resp
 

@@ -460,7 +460,7 @@ def market_context_pack(slug):
                                 "locked_sections": _locked}
     if fmt == "md":
         return Response(_to_markdown(name, canonical, sections, used, max_tokens),
-                        mimetype="text/markdown; charset=utf-8")
+                        content_type="text/markdown; charset=utf-8")
     return jsonify(out), 200
 
 
@@ -722,7 +722,7 @@ def iso_context_pack(iso_raw):
                                 "locked_sections": _locked}
     if fmt == "md":
         return Response(_to_markdown(iso, iso.lower(), sections, used, max_tokens, kind="grid"),
-                        mimetype="text/markdown; charset=utf-8")
+                        content_type="text/markdown; charset=utf-8")
     return jsonify(out), 200
 
 

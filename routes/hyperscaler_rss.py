@@ -106,7 +106,7 @@ def feed():
             '</channel></rss>'
         )
         return Response(body, status=503,
-                        mimetype="application/rss+xml; charset=utf-8",
+                        content_type="application/rss+xml; charset=utf-8",
                         headers={"Cache-Control": "no-store",
                                  "X-DC-Feed-Error": read_error[:120]})
 
@@ -142,6 +142,6 @@ def feed():
         f"{''.join(items)}"
         '</channel></rss>'
     )
-    return Response(body, mimetype="application/rss+xml; charset=utf-8",
+    return Response(body, content_type="application/rss+xml; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=3600",
                              "X-DC-Phase": "ZZZZZ-round40-rss"})

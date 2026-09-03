@@ -1796,7 +1796,7 @@ def site_report_portal():
     'Generate Report' button lands here ready to go."""
     prefill = {"lat": (request.args.get("lat") or "").strip(),
                "lon": (request.args.get("lon") or "").strip()}
-    return Response(_render_portal(prefill), mimetype="text/html; charset=utf-8",
+    return Response(_render_portal(prefill), content_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=300"})
 
 
@@ -1893,7 +1893,7 @@ def site_report():
                              or request.args.get("api_key"))
             _wants_html = "text/html" in (request.headers.get("Accept") or "")
             if request.method == "GET" and _wants_html and not _has_auth:
-                return Response(_render_unlock_page(), mimetype="text/html; charset=utf-8",
+                return Response(_render_unlock_page(), content_type="text/html; charset=utf-8",
                                 headers={"Cache-Control": "private, no-store",
                                          "X-Content-Type-Options": "nosniff"})
             return _gate_response(tier, "PRO", "site_report", {
@@ -2023,7 +2023,7 @@ def site_report():
             "X-Content-Type-Options": "nosniff",
         })
 
-    return Response(_render_for(form, survey, lat, lon), mimetype="text/html; charset=utf-8", headers={
+    return Response(_render_for(form, survey, lat, lon), content_type="text/html; charset=utf-8", headers={
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
     })

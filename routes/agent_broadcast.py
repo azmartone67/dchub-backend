@@ -1002,7 +1002,7 @@ def agent_broadcast_rss():
 {chr(10).join(items_xml)}
   </channel>
 </rss>"""
-    resp = Response(xml, mimetype="application/rss+xml; charset=utf-8")
+    resp = Response(xml, content_type="application/rss+xml; charset=utf-8")
     for k, v in _cors_headers().items():
         resp.headers[k] = v
     return resp

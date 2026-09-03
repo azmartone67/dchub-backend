@@ -406,7 +406,7 @@ def energy_quarterly_html():
 def energy_monthly_md():
     d = _attach_narrative_safe(_gather_energy("monthly"), kind="energy_monthly")
     return Response(_render_md(d, "monthly"),
-                    mimetype="text/markdown; charset=utf-8",
+                    content_type="text/markdown; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=900",
                              "Link": _CC_LINK_HEADER,
                              "Access-Control-Allow-Origin": "*"})
@@ -417,7 +417,7 @@ def energy_monthly_md():
 def energy_quarterly_md():
     d = _attach_narrative_safe(_gather_energy("quarterly"), kind="energy_quarterly")
     return Response(_render_md(d, "quarterly"),
-                    mimetype="text/markdown; charset=utf-8",
+                    content_type="text/markdown; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=900",
                              "Link": _CC_LINK_HEADER,
                              "Access-Control-Allow-Origin": "*"})

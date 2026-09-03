@@ -1179,7 +1179,7 @@ def agent_landing():
             .replace("{canon_markets}", _CANON["public"]["markets"])
             .replace("{canon_deals}", _CANON["public"]["deals"])
         )
-    return Response(body, mimetype="text/html; charset=utf-8",
+    return Response(body, content_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=300, "
                                                 "s-maxage=300, "
                                                 "stale-while-revalidate=1800",

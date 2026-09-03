@@ -1383,7 +1383,7 @@ def monthly_md():
     Slack, Discord, blog posts, journalist briefings."""
     d = _attach_narrative_safe(_compute_report())
     return Response(_render_markdown(d),
-                    mimetype="text/markdown; charset=utf-8",
+                    content_type="text/markdown; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=900",
                              "Access-Control-Allow-Origin": "*",
                              "Link": '<https://creativecommons.org/licenses/by/4.0/>; rel="license"'})

@@ -60,7 +60,7 @@ def index_text():
     d = _compute()
     if "error" in d:
         return Response(f"AI Compute Capacity Index unavailable: {d.get('detail', d['error'])}\n",
-                        mimetype="text/plain; charset=utf-8", status=503)
+                        content_type="text/plain; charset=utf-8", status=503)
     c = d.get("components", {})
     txt = (
         f"DC Hub AI Compute Capacity Index — {d['as_of']}\n"
@@ -72,7 +72,7 @@ def index_text():
         f"Methodology: {d['methodology']}\n"
         f"Source: {d['source']}\n"
     )
-    return Response(txt, mimetype="text/plain; charset=utf-8",
+    return Response(txt, content_type="text/plain; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=3600"})
 
 

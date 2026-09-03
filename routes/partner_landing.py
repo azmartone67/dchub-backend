@@ -840,7 +840,7 @@ def partners_index():
 </div>
 <script src="/js/dchub-nav.js?v=phase262-1778556606"></script>
 </body></html>"""
-    return Response(html, mimetype="text/html; charset=utf-8")
+    return Response(html, content_type="text/html; charset=utf-8")
 
 
 @partner_landing_bp.route("/partners/<slug>", methods=["GET"], strict_slashes=False)
@@ -872,10 +872,10 @@ def partner_page(slug):
     # to re-enable the full page.
     if p.get("pre_execution"):
         html = _render_pre_execution_stub(canonical_slug, p)
-        return Response(html, mimetype="text/html; charset=utf-8")
+        return Response(html, content_type="text/html; charset=utf-8")
 
     html = _render_partner_page(canonical_slug, p)
-    return Response(html, mimetype="text/html; charset=utf-8")
+    return Response(html, content_type="text/html; charset=utf-8")
 
 
 @partner_landing_bp.route("/api/v1/partners/<slug>", methods=["GET"], strict_slashes=False)

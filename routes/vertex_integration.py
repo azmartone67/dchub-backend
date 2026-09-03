@@ -518,7 +518,7 @@ response = model.generate_content(
                               strict_slashes=False)
 def vertex_landing():
     """Partner landing page for Google Cloud + Gemini developers."""
-    return Response(_VERTEX_HTML, mimetype="text/html; charset=utf-8",
+    return Response(_VERTEX_HTML, content_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=300",
                              "X-DC-Hub-Surface": "vertex-landing"})
 

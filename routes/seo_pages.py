@@ -1786,7 +1786,7 @@ def facilities_directory(page: int = 1):
 <nav class="pager">{' '.join(nav)}</nav>
 <p style="font-size:.8rem;color:#64748b">All pages: {allp}</p>
 </body></html>"""
-    return Response(html_out, mimetype="text/html; charset=utf-8")
+    return Response(html_out, content_type="text/html; charset=utf-8")
 
 
 # ── MARKETS DIRECTORY — crawlable hub for /markets/<slug> (2026-06-29) ──
@@ -1965,4 +1965,4 @@ def markets_directory(page: int = 1):
 <nav class="pager">{' '.join(nav)}</nav>
 <p style="font-size:.8rem;color:#64748b">All pages: {allp}</p>
 </body></html>"""
-    return Response(html_out, mimetype="text/html; charset=utf-8")
+    return Response(html_out, content_type="text/html; charset=utf-8")

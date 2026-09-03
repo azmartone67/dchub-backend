@@ -15,7 +15,7 @@ Two guards, both added 2026-09-02 for defects measured live:
    Nothing about the rendered file looks wrong; only parsing it as a crawler
    does reveals it. Hence: parse, don't grep.
 
-2. NO DOUBLED CHARSET. `Response(..., mimetype='text/plain; charset=utf-8')`
+2. NO DOUBLED CHARSET (fence since MOVED, see note at end of file). `Response(..., mimetype='text/plain; charset=utf-8')`
    double-appends, because Werkzeug adds the charset to a text/* mimetype
    itself -- shipping `text/plain; charset=utf-8; charset=utf-8`, a malformed
    header served alongside `nosniff` on the most agent-facing files on the site.
@@ -123,14 +123,8 @@ def test_ai_input_stays_enabled():
                 assert "ai-input=yes" in value, f"{uas[0]} disclaims ai-input"
 
 
-@pytest.mark.parametrize(
-    "path", ["ai_discovery_routes.py", "routes/agents_md_fallback.py"]
-)
-def test_no_mimetype_with_embedded_charset(path):
-    """`mimetype=` must not carry parameters -- Werkzeug appends its own."""
-    src = (REPO / path).read_text(encoding="utf-8")
-    offenders = re.findall(r"mimetype\s*=\s*['\"]text/[^'\"]*charset[^'\"]*['\"]", src)
-    assert not offenders, (
-        f"{path}: mimetype= with an embedded charset double-appends "
-        f"(serves 'charset=utf-8; charset=utf-8'); use content_type= instead: {offenders}"
-    )
+# NOTE: the Content-Type half of this file's original remit moved to
+# tests/test_response_content_type_charset.py when the fix was swept repo-wide
+# (28 -> 0 call sites). That fence scans ALL production sources via AST, so it
+# strictly covers the two files checked here before -- verified by mutation, not
+# by assumption. Removing the narrow copy therefore loses no coverage.

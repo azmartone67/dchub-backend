@@ -725,7 +725,7 @@ def quarterly_md():
     """Paste-ready markdown view of the quarterly deep-dive."""
     d = _attach_narrative_safe(_gather(quarter_window=True), "quarterly")
     return Response(_render_markdown_quarter(d),
-                    mimetype="text/markdown; charset=utf-8",
+                    content_type="text/markdown; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=900",
                              "Access-Control-Allow-Origin": "*",
                              "Link": _CC_LINK_HEADER})

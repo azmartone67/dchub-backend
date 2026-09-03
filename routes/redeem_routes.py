@@ -943,7 +943,7 @@ def phase63_redeem(session_id):
             .replace('__MINT_CTA_BLOCK__', mint_cta_block))
     return Response(
         html,
-        mimetype='text/html; charset=utf-8',
+        content_type='text/html; charset=utf-8',
         headers={'Cache-Control': 'no-store, must-revalidate'},
     )
 
