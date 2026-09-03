@@ -130,6 +130,21 @@ def _floor_int(phrase: str) -> int:
     m = re.search(r"(\d{1,3}(?:,\d{3})+|\d+)", phrase or "")
     return int(m.group(1).replace(",", "")) if m else 0
 
+
+# ── The REST of the advice text, derived for the same reason CANON_FACILITIES
+#    was on 2026-08-18: a guard that hands out a literal as the fix re-seeds the
+#    drift it exists to catch.
+#
+#    ★2026-09-02: these were hand-typed and had rotted exactly as predicted. The
+#    deals advice read "1,400+ tracked deals" while canon carried 1,900+ (three
+#    floor moves behind: 1,400 -> 1,600 -> 1,700 -> 1,800 -> 1,900), and the
+#    bare-int advice read "82 tools" against a canonical 83. Every failure this
+#    fence printed was telling the reader to write a stale number. ────────────
+CANON_DEALS = (PINNED.get("public") or {}).get("deals") or ""
+CANON_DEALS_PHRASE = f"{CANON_DEALS} tracked deals"
+CANON_MARKETS = (PINNED.get("public") or {}).get("markets") or ""
+CANON_MARKETS_PHRASE = f"{CANON_MARKETS} markets"
+
 # ── CANONICAL: the fence's independent baseline (DESIGN #3). Kept as explicit
 #    literals so a *malicious/accidental* edit to the SoT can't quietly move the
 #    goalposts — test_fence_baseline_matches_canon_sot cross-checks that the
@@ -260,7 +275,20 @@ BANNED_STALE = [
         "21,000+ and 22,000+ were all live simultaneously — llms.txt served "
         "21,000+ from ai_discovery_routes while the repo-root copy the fence "
         "scanned said 22,000+ and dchub-frontend said 20,000+. Pinning a single "
-        "retired value would have caught one of the three.",
+        "retired value would have caught one of the three. "
+        "★2026-09-02 — REALITY HAS GROWN INTO THIS BAND. It was written to "
+        "separate a RAW DISCOVERY PILE (~23,000, an artifact that barely grows) "
+        "from the DISTINCT count (15,367 then — 1.5x apart). Distinct is now "
+        "20,100+ live, i.e. INSIDE the band, so the band was banning the "
+        "current canon: walking PINNED['public'] to the live resolver reddened "
+        "four tests, printing the self-refuting line \"'20,100+' contradicts "
+        "canonical '20,100+ facilities'\". The band is deliberately NOT "
+        "narrowed — 19/20/21,000+ are still retired over-claims sitting on ~7 "
+        "ledgered files, and dropping them would trade a false positive for a "
+        "blind spot. _canon_now_values() exempts the value that IS canon "
+        "instead, which is both correct (the canon is by definition not stale) "
+        "and TEMPORAL: when canon moves past a retired value, that value is "
+        "banned again automatically, with no edit here.",
     ),
     (
         "facilities_retired_12650",
@@ -292,7 +320,7 @@ BANNED_STALE = [
             r"(?:deals|transactions|M&(?:amp;)?A)\b",
             re.I,
         ),
-        "1,400+ tracked deals",
+        CANON_DEALS_PHRASE,
         None,
         "'4,000+/3,000+/2,200+/2,000+ deals' floored duplicate ROWS; deduped "
         "canonical floor is 1,400+ (deals_phrase). ★2026-07-31: now also "
@@ -332,6 +360,84 @@ BANNED_STALE = [
         "coverage.",
     ),
 ]
+
+# ── ★2026-09-02 — THE CANON IS NEVER STALE ───────────────────────────────────
+#
+# BANNED_STALE and _STALE_INT_TWINS name RETIRED VALUES, and the population they
+# describe GROWS. Sooner or later the true count walks INTO a band written to
+# catch a retired one, and from that moment the fence rejects the honest number.
+# It says so itself; this is a real line from the failure output:
+#
+#     [facilities_stale_floor] '20,100+' contradicts canonical '20,100+ facilities'
+#
+# Measured 2026-09-02 (live /api/v1/canon/phrases): facilities 20,100+, deals
+# 2,000+, both INSIDE their own bands — `facilities_stale_floor` bans
+# (19|20|21|22|23),NNN+ near "facilit", `deals_stale_floor` bans "2,000+ deals"
+# outright. Walking PINNED['public'] forward to those live values reddens FOUR
+# tests whose surfaces render canon correctly. So the fence had made the honest
+# number un-shippable: PR #3633 could not write the true facility count into
+# worker.js, and the next canon hand-walk (the seventh) could not land at all.
+# That is worse than a stale guard — it is a guard that forces the next person
+# to publish a wrong number or switch it off.
+#
+# THE RULE, once, for every dimension and every future bump:
+#   a token whose value IS the canon value is not stale, by definition.
+#
+# ★ The canon value is read from the entry's OWN `canonical_phrase` — the field
+#   that until now was advice text only. That makes it load-bearing and keeps
+#   the exemption DIMENSION-CORRECT for free: a global "is this number canon"
+#   set would exempt "10 ISOs" because 10 is the canonical free-tier quota.
+#
+# ★ EQUALITY, not ">= floor". ">= floor" would exempt every over-claim above the
+#   floor as well, and 22,000+ is the raw discovery pile, which must stay banned.
+#
+# ★ TEMPORAL, not permanent. The exemption follows canon, so the moment the
+#   floor moves past a value, that value is banned again — automatically, with
+#   no edit here. That is the property every hand-walked band in this file has
+#   lacked, and the reason none of them is narrowed by this change: 19/20/21,000+
+#   are still retired over-claims carried by ~7 ledgered files, and dropping them
+#   would trade a false positive for a blind spot.
+#
+# ★ The value is read from the canon MODULE at import, so a canon bump moves the
+#   exemption on the very next run with no edit here — which is the whole point.
+#   test_fence_survives_the_canon_walking_forward proves it by loading a second
+#   copy of this file against a canon walked forward to the live reading.
+
+_TOKEN_INT_RE = re.compile(r"\d{1,3}(?:,\d{3})+|\d+")
+
+
+def _first_int(text: str) -> int | None:
+    """First number in `text`, commas stripped. None when there is none."""
+    m = _TOKEN_INT_RE.search(text or "")
+    return int(m.group(0).replace(",", "")) if m else None
+
+
+def _hit_is_the_canon_value(token: str, canonical_phrase: str) -> bool:
+    """True when the matched token states exactly the value the entry advises.
+
+    Both sides are read as plain ints, so '20,100+' matches '20,100+ facilities'
+    across the comma, the plus and the noun.
+    """
+    tok, canon = _first_int(token), _first_int(canonical_phrase)
+    return tok is not None and canon is not None and tok == canon
+
+
+def _banned_stale_hits(text: str):
+    """Yield (tok_id, token, canonical_phrase, why) for each BANNED_STALE match.
+
+    ★ THE ONE PLACE the denylist is evaluated. It used to be four byte-identical
+    copies of this loop (surfaces, worker card, agent code, main.py blobs), which
+    is precisely why the canon exemption could not simply be added: there was
+    nowhere to add it once, and four places to forget it.
+    """
+    low = text.lower()
+    for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
+        if requires and requires.lower() not in low:
+            continue
+        m = pat.search(text)
+        if not m or _hit_is_the_canon_value(m.group(0), canonical_phrase):
+            continue
+        yield tok_id, m.group(0), canonical_phrase, why
 
 # ── Tool-count phrasings. TOOL_COUNT_RE is the original shape ("82 tools").
 #    TOOL_ALT_COUNT_RE covers the two ways the SAME claim gets written WITHOUT
@@ -803,17 +909,12 @@ def test_surfaces_free_of_banned_stale_counts():
     """
     failures = []
     for rel, i, line in _surface_lines():
-        low = line.lower()
-        for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
-            if requires and requires.lower() not in low:
-                continue
-            m = pat.search(line)
-            if m:
-                failures.append(
-                    f"  [{tok_id}] {rel}:{i}: {m.group(0)!r} contradicts "
-                    f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}\n"
-                    f"        why: {why}"
-                )
+        for tok_id, token, canonical_phrase, why in _banned_stale_hits(line):
+            failures.append(
+                f"  [{tok_id}] {rel}:{i}: {token!r} contradicts "
+                f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}\n"
+                f"        why: {why}"
+            )
     assert not failures, (
         "Stale headline count(s) on agent-facing surface(s) — advisory canon "
         f"is not enough, this is the build-breaking gate ({FIXWAVE}):\n"
@@ -893,17 +994,11 @@ def test_worker_mcp_card_is_canonical():
     )
 
     # (b) no BANNED_STALE deal/market/gas/ISO token may appear in the card.
-    low = desc.lower()
-    banned_hits = []
-    for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
-        if requires and requires.lower() not in low:
-            continue
-        hit = pat.search(desc)
-        if hit:
-            banned_hits.append(
-                f"  [{tok_id}] {hit.group(0)!r} contradicts canonical "
-                f"'{canonical_phrase}'\n        why: {why}"
-            )
+    banned_hits = [
+        f"  [{tok_id}] {token!r} contradicts canonical "
+        f"'{canonical_phrase}'\n        why: {why}"
+        for tok_id, token, canonical_phrase, why in _banned_stale_hits(desc)
+    ]
     assert not banned_hits, (
         "Stale count token(s) in the served /mcp server card "
         f"(worker.js MCP_SERVER_INFO.description) ({FIXWAVE}):\n"
@@ -930,7 +1025,6 @@ def test_agent_code_surfaces_free_of_stale_counts():
     failures = []
     canonical_tool_count_seen = False
     for rel, i, line in _iter_surface_lines(AGENT_CODE_SURFACES):
-        low = line.lower()
         if "{canon_tools} tools" in line:
             # ★2026-09-02: the last hand-typed "83 tools" on a served surface
             # (llms.txt) became a canon placeholder. A DERIVED count is what
@@ -945,15 +1039,11 @@ def test_agent_code_surfaces_free_of_stale_counts():
                     f"  {rel}:{i}: advertises {n} tools (canonical "
                     f"{CANONICAL['tools']}) -> {line.strip()[:90]!r}"
                 )
-        for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
-            if requires and requires.lower() not in low:
-                continue
-            hit = pat.search(line)
-            if hit:
-                failures.append(
-                    f"  [{tok_id}] {rel}:{i}: {hit.group(0)!r} contradicts "
-                    f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}"
-                )
+        for tok_id, token, canonical_phrase, _why in _banned_stale_hits(line):
+            failures.append(
+                f"  [{tok_id}] {rel}:{i}: {token!r} contradicts "
+                f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}"
+            )
     assert not failures, (
         "Stale count(s) hard-coded in agent-facing server code — fix to canon "
         f"({FIXWAVE}):\n" + "\n".join(failures)
@@ -1013,7 +1103,7 @@ _STALE_INT_TWINS = (
         "markets_bare_int",
         "market",
         frozenset({232, 311, 320, 330}),
-        "300+ markets",
+        CANON_MARKETS_PHRASE,
         "232 is pre-intl-expansion; 311/320/330 count score ROWS, not scored "
         "markets (canonical is COUNT(DISTINCT market_name) minus 3 aggregates).",
     ),
@@ -1021,7 +1111,7 @@ _STALE_INT_TWINS = (
         "deals_bare_int",
         "deal",
         frozenset({4000, 4275, 1972, 2097}),
-        "1,400+ tracked deals",
+        CANON_DEALS_PHRASE,
         "row counts over-state deals ~2.9x (the AUTO id embeds the ingest date, "
         "so one deal accrues a row per day).",
     ),
@@ -1029,7 +1119,7 @@ _STALE_INT_TWINS = (
         "tools_bare_int",
         "tool",
         frozenset({29, 40, 48, 53, 59, 60, 73, 80, 81}),
-        "82 tools",
+        f"{CANONICAL['tools']} tools",
         "every previously-advertised catalog size, incl. the _TOOL_COUNT = 59 "
         "refreeze and the 73 a partner AI found on /connect from the outside.",
     ),
@@ -1070,6 +1160,16 @@ def _scan_bare_int_twins(rel, src):
         low = key.lower()
         for tok_id, requires, banned, canonical_phrase, why in _STALE_INT_TWINS:
             if requires not in low:
+                continue
+            # ★2026-09-02 — same exemption as _banned_stale_hits, and the same
+            # reason: `facilities_bare_int` bans range(19000, 24000) while the
+            # live distinct count is 20,100, so the band already contains the
+            # truth. The maintenance note above this tuple asked for the band to
+            # be "re-based upward in the same commit that moves canon" — that is
+            # a hand-walk nobody performed, and it is exactly the treadmill this
+            # file exists to end. The canon value is read from the entry's own
+            # canonical_phrase, so it follows a bump with no edit here.
+            if val == _first_int(canonical_phrase):
                 continue
             if val in banned:
                 out.append(
@@ -1420,16 +1520,11 @@ def _assert_blob_canonical(label: str, body: str) -> None:
                     f"what anonymous already gets. If {n} is a PAID tier's "
                     f"figure, name the plan or link /pricing; do not attach it "
                     f"to a free path -> {line.strip()[:90]!r}")
-        low = line.lower()
-        for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
-            if requires and requires.lower() not in low:
-                continue
-            hit = pat.search(line)
-            if hit:
-                failures.append(
-                    f"  [{tok_id}] {label}:{i}: {hit.group(0)!r} contradicts "
-                    f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}"
-                    f"\n        why: {why}")
+        for tok_id, token, canonical_phrase, why in _banned_stale_hits(line):
+            failures.append(
+                f"  [{tok_id}] {label}:{i}: {token!r} contradicts "
+                f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}"
+                f"\n        why: {why}")
     assert not failures, (
         f"Stale count(s) in an agent-facing {MAIN_PY} blob — render from "
         f"ai_surface_canon.PINNED instead of hard-coding ({FIXWAVE}):\n"
@@ -2386,16 +2481,11 @@ def test_shadow_html_surfaces_free_of_stale_counts():
     """
     failures = []
     for rel, i, line in _iter_surface_lines(SHADOW_HTML_SURFACES):
-        low = line.lower()
-        for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
-            if requires and requires.lower() not in low:
-                continue
-            hit = pat.search(line)
-            if hit:
-                failures.append(
-                    f"  [{tok_id}] {rel}:{i}: {hit.group(0)!r} contradicts "
-                    f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}"
-                )
+        for tok_id, token, canonical_phrase, _why in _banned_stale_hits(line):
+            failures.append(
+                f"  [{tok_id}] {rel}:{i}: {token!r} contradicts "
+                f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}"
+            )
     assert not failures, (
         "Stale count(s) in backend-served HTML shadow(s) — these bytes serve "
         f"at the Railway origin and in failover ({FIXWAVE}):\n"
@@ -2592,15 +2682,10 @@ def test_rendered_platform_pages_bind_every_count_to_canon():
                 f"{canon_tools!r} — the count is not bound to canon")
 
         # 3. and no banned stale figure may survive the render
-        low = html.lower()
-        for tok_id, pat, canonical_phrase, requires, _why in BANNED_STALE:
-            if requires and requires.lower() not in low:
-                continue
-            hit = pat.search(html)
-            if hit:
-                failures.append(
-                    f"  /connect/{key}: [{tok_id}] {hit.group(0)!r} contradicts "
-                    f"canonical '{canonical_phrase}'")
+        for tok_id, token, canonical_phrase, _why in _banned_stale_hits(html):
+            failures.append(
+                f"  /connect/{key}: [{tok_id}] {token!r} contradicts "
+                f"canonical '{canonical_phrase}'")
 
     assert not failures, (
         "Rendered /connect/<client> page(s) are not canon-bound. These are the "
@@ -3102,16 +3187,12 @@ def _scan_python_source(text):
             line = src(node.lineno)
             if _HISTORICAL_RE.search(line):
                 continue
-            value, low = node.value, node.value.lower()
+            value = node.value
             for n in _stated_tool_counts(value):
                 if n != CANONICAL["tools"]:
                     record("tool_count_literal", node.lineno, f"{n} tools")
-            for tok_id, pat, _phrase, requires, _why in BANNED_STALE:
-                if requires and requires.lower() not in low:
-                    continue
-                hit = pat.search(value)
-                if hit:
-                    record(tok_id, node.lineno, hit.group(0))
+            for tok_id, token, _phrase, _why in _banned_stale_hits(value):
+                record(tok_id, node.lineno, token)
 
         # (e) bare ints, keyed on the dict key that gives them meaning.
         elif isinstance(node, ast.Dict):
@@ -3510,3 +3591,150 @@ def test_inverted_fence_covers_more_than_the_allow_list():
             f"{rel} is in AGENT_CODE_SURFACES but fell OUT of the inverted "
             f"scan — coverage went backwards ({FIXWAVE})."
         )
+
+
+# ── ★2026-09-02 — GUARD THE GUARD: the fence must never ban the canon ────────
+#
+# Everything above is machinery. These two tests are the thing that makes the
+# machinery hold, and the first of them is the test that was missing on
+# 2026-09-02 when `facilities_stale_floor` and `deals_stale_floor` were found
+# banning 20,100+ and 2,000+ — the values /api/v1/canon/phrases was serving.
+#
+# A denylist of retired values sitting under a population that grows is a timer.
+# Nothing in this file was watching it, so the expiry surfaced as a PR that
+# could not write a true number (#3633) rather than as a red test.
+
+def _fence_against_canon(facilities: str, deals: str):
+    """A SECOND, independent copy of this module built against a walked canon.
+
+    The derived phrases and the BANNED_STALE tuples are built at import, so a
+    runtime patch of PINNED cannot move them — the canon has to be walked and
+    the module re-executed, which is exactly what CI does after a canon commit.
+    Loaded under a throwaway name so the module pytest is currently running is
+    never rebound mid-session.
+    """
+    import importlib.util as _u
+
+    pub = PINNED.setdefault("public", {})
+    saved = dict(pub)
+    try:
+        pub["facilities"], pub["deals"] = facilities, deals
+        spec = _u.spec_from_file_location("_fence_walked_canon", str(Path(__file__)))
+        mod = _u.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        pub.clear()
+        pub.update(saved)
+    assert mod.CANON_FACILITIES_PHRASE.startswith(facilities), (
+        "HARNESS ERROR: the walked canon did not reach the reloaded module — "
+        f"got {mod.CANON_FACILITIES_PHRASE!r}, wanted {facilities!r}"
+    )
+    return mod
+
+
+def test_every_banned_entry_advises_the_current_canon():
+    """Each entry's `canonical_phrase` must state a number that IS canon today.
+
+    Two jobs in one assertion:
+
+    1. NOT VACUOUS — the exemption reads the canon value out of this very
+       field, so an entry whose advice carries no digits would silently never
+       be exempted: a mechanism that looks installed and never fires.
+
+    2. THE ADVICE CANNOT ROT. Every one of these strings is printed to whoever
+       trips the fence, as the number to write instead. Three had already gone
+       stale by 2026-09-02 — "1,400+ tracked deals" against a canon of 1,900+
+       (four floor moves behind) on TWO entries, and "82 tools" against a
+       canonical 83. A guard that hands out a literal as the fix re-seeds the
+       drift it exists to catch, which is the reason CANON_FACILITIES was
+       derived on 2026-08-18; the rest of the advice text is derived now too,
+       and this is what stops the next person re-typing one.
+    """
+    canon_now = {
+        _floor_int(CANON_FACILITIES), _floor_int(CANON_DEALS),
+        _floor_int(CANON_MARKETS), CANONICAL["tools"], CANONICAL["isos"],
+        CANONICAL["gas"], CANONICAL["markets_min"],
+    }
+    canon_now.discard(0)
+    assert len(canon_now) >= 5, (
+        f"HARNESS ERROR: only {len(canon_now)} canon values readable — this "
+        "guard would pass by accident"
+    )
+    for label, entries in (("BANNED_STALE", [(e[0], e[2]) for e in BANNED_STALE]),
+                           ("_STALE_INT_TWINS", [(e[0], e[3]) for e in _STALE_INT_TWINS])):
+        for tok_id, canonical_phrase in entries:
+            val = _first_int(canonical_phrase)
+            assert val is not None, (
+                f"{label}[{tok_id}].canonical_phrase = {canonical_phrase!r} "
+                "states no number, so the canon exemption can never fire for it"
+            )
+            assert val in canon_now, (
+                f"{label}[{tok_id}] advises {canonical_phrase!r}, and {val} is "
+                f"not a current canon value {sorted(canon_now)}. This field is "
+                "printed to whoever trips the fence as the number to write "
+                "instead — derive it from ai_surface_canon rather than typing "
+                "it, or the guard starts handing out stale numbers as fixes."
+            )
+
+
+def test_fence_survives_the_canon_walking_forward():
+    """★ THE DEFECT, driven. Walk canon to the live reading and the fence must
+    stop objecting to it — while still objecting to everything genuinely retired.
+
+    Measured live 2026-09-02, /api/v1/canon/phrases: facilities '20,100+',
+    deals '2,000+'. Both sit INSIDE their own denylists — range(19000, 24000)
+    near "facilit", and the literal '2,000+ ... deals'. Before the exemption,
+    walking PINNED to those values reddened four tests whose surfaces render
+    canon CORRECTLY, with the self-refuting message:
+
+        [facilities_stale_floor] '20,100+' contradicts canonical '20,100+ facilities'
+
+    The two control assertions are what stop this from passing by simply
+    switching the bands off: with canon at 20,100 the raw discovery pile
+    (22,000+) and a retired row-count (4,000+ deals) must STILL fail.
+    """
+    walked = _fence_against_canon("20,100+", "2,000+")
+
+    for text in ("83 tools over 20,100+ facilities across 170+ countries",
+                 "20,100+ distinct facilities, 2,000+ tracked M&A deals"):
+        hits = list(walked._banned_stale_hits(text))
+        assert not hits, (
+            f"the fence still bans the canon it advises: {text!r} -> {hits}"
+        )
+
+    bare = walked._scan_bare_int_twins("feed.py", '{"facilities": 20100}')
+    assert not bare, f"bare-int twin still bans the canon facility count: {bare}"
+
+    # ── controls: the exemption must be surgical, not a mute switch ──
+    over_claim = list(walked._banned_stale_hits("22,000+ facilities tracked"))
+    assert any(t == "facilities_stale_floor" for t, *_ in over_claim), (
+        "the raw discovery pile (22,000+) stopped failing — the exemption is "
+        f"muting the whole band, not just the canon value: {over_claim}"
+    )
+    rows = list(walked._banned_stale_hits("4,000+ tracked M&A deals"))
+    assert any(t == "deals_stale_floor" for t, *_ in rows), (
+        f"a retired row-count deal floor stopped failing: {rows}"
+    )
+    assert walked._scan_bare_int_twins("feed.py", '{"facilities": 22000}'), (
+        "the bare-int over-claim stopped failing"
+    )
+
+
+def test_a_value_is_banned_again_once_canon_moves_past_it():
+    """The exemption is TEMPORAL, and that is what makes it safe.
+
+    While 20,100+ is canon it is legal everywhere. The moment canon moves to
+    20,900+, a surface still carrying 20,100+ is an under-claim and the fence
+    must say so again — with no edit to any band. Without this property the
+    exemption would be a permanent hole punched in the denylist by whichever
+    value happened to be canon on the day it was added.
+    """
+    later = _fence_against_canon("20,900+", "2,100+")
+    hits = [t for t, *_ in later._banned_stale_hits("20,100+ facilities")]
+    assert "facilities_stale_floor" in hits, (
+        "20,100+ stayed exempt after canon moved past it — the exemption is "
+        f"frozen, not canon-following: {hits}"
+    )
+    assert later._scan_bare_int_twins("feed.py", '{"facilities": 20100}'), (
+        "the bare-int exemption is frozen too"
+    )
