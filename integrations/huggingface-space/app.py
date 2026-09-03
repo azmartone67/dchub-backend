@@ -5,10 +5,16 @@ A live demo of the DC Hub Power Index (DCPI) that ALSO runs as an MCP server
 can query it. Seven tools: the two DCPI classics (dcpi_score, compare_markets)
 plus five bridge tools (grid scoreboard, facility search, market ranking,
 interconnection queue, hyperscaler deals) forwarded to DC Hub's canonical MCP
-server. The complete DC Hub MCP — 79 tools across 21,900+ data-center
-facilities (4,900+ verified), real-time grid telemetry, fiber, gas, and 1,400+
-tracked deals — lives at https://dchub.cloud/mcp. Connect that for the full
-dataset (10 calls/day free anonymous; free key via its claim_free_key tool).
+server. The complete DC Hub MCP — every tool over the full facility base, plus
+real-time grid telemetry, fiber, gas and tracked M&A — lives at
+https://dchub.cloud/mcp. Connect that for the full dataset (10 calls/day free
+anonymous; free key via its claim_free_key tool). Live counts are published at
+https://dchub.cloud/api/v1/canon/phrases and are NOT restated here: a docstring
+is the MCP tool schema, it cannot interpolate, and a number baked into one goes
+stale silently — which is what happened here, twice over. The retired values and
+their measurements are recorded in the CANON note below, deliberately in a
+comment rather than in this docstring, because a docstring cannot restate a
+count without becoming the very thing it is warning about.
 
 Optional Space secret DCHUB_API_KEY (a dchub_ key) lifts the bridge tools to
 full-tier responses; without it they ride the anonymous free tier.
@@ -31,6 +37,61 @@ SPACE_MCP = "https://dchubcloud-dchub.hf.space/gradio_api/mcp/sse"
 TIMEOUT = 20
 API_KEY = (os.environ.get("DCHUB_API_KEY") or "").strip()
 UA = "huggingface-space-dchub-bridge/1.0 (+https://dchub.cloud)"
+
+# ── CANON (2026-09-02): every headline count is FETCHED, never baked. ────────
+# This file shipped, and the Space was LIVE-SERVING, four wrong numbers at once:
+#   "21,900+ facilities"   canon 20,100+  — an OVER-claim, and a retired
+#                                           PRE-DEDUP floor that sits on
+#                                           ai_surface_canon's stale_markers
+#                                           denylist (raw rows, not distinct
+#                                           buildings)
+#   "4,900+ verified"      no canon source — see the note below
+#   "1,400+ tracked deals" canon 2,000+   — stale under-claim
+#   "79 tools"             canon 83       — stale under-claim
+#   "311 markets"          canon 300+     — 311 counts score ROWS, not scored
+#                                           markets; the exact number is on the
+#                                           bare-int denylist for that reason
+#
+# This Space runs on Hugging Face and CANNOT import ai_surface_canon, so the
+# numbers come from the endpoint that exists for exactly this purpose. One call,
+# at import, 6s, fail-soft.
+#
+# ★ THE FALLBACK IS COUNT-FREE, never a baked literal. A literal here refreezes
+#   the moment canon moves, and this Space deploys on its own cadence from the
+#   Hugging Face remote — not with this repo — so a frozen number would sit
+#   public for months, which is exactly how 21,900+ survived. Saying less is
+#   always honest; saying a stale number is not.
+#
+# ★ "verified" IS DELIBERATELY NOT REPUBLISHED. /api/v1/canon/phrases does not
+#   carry it, and the one live field that looks like it does — stats
+#   `discovered_verified` — ships its own warning: "a DE-DUPLICATION state (a
+#   keeper was elected), NOT a source verification. Do not publish as
+#   'verified'." Sourcing it from the other field would mean inventing a second
+#   rounding rule out here, and canonical_stats._countries_floor already records
+#   why that is a bug: two surfaces rounding the same number two different ways.
+CANON_URL = f"{API}/api/v1/canon/phrases"
+
+
+def _fetch_canon() -> dict:
+    """Canonical count phrases, or {} — never raises, never blocks boot."""
+    try:
+        r = requests.get(CANON_URL, headers={"User-Agent": UA}, timeout=6)
+        d = r.json() if r.ok else {}
+        return d if isinstance(d, dict) and d.get("ok") else {}
+    except Exception:
+        return {}
+
+
+_CANON = _fetch_canon()
+FACILITIES = (f"{_CANON['facilities']} facilities" if _CANON.get("facilities")
+              else "the global data-center facility base")
+DEALS = (f"{_CANON['deals']} tracked deals" if _CANON.get("deals")
+         else "tracked M&A deals")
+MARKETS = (f"{_CANON['markets']} markets" if _CANON.get("markets")
+           else "markets worldwide")
+COUNTRIES = (f"{_CANON['countries']} countries" if _CANON.get("countries")
+             else "countries worldwide")
+TOOLS = f"{_CANON['tools']} tools" if _CANON.get("tools") else "the full tool set"
 
 
 def _verdict(score):
@@ -78,7 +139,7 @@ def dcpi_score(market: str) -> str:
             f"- Excess-power headroom: {d.get('excess_power_score', '?')}/100  ·  "
             f"grid constraint: {d.get('constraint_score', '?')}/100\n\n"
             f"_Modeled estimate from public ISO/EIA/queue data · DC Hub (dchub.cloud) · CC-BY-4.0._\n\n"
-            f"_Full grid headroom, interconnection queue, fiber + 79 tools: connect the DC Hub MCP → **{FULL_MCP}**._"
+            f"_Full grid headroom, interconnection queue, fiber + {TOOLS}: connect the DC Hub MCP → **{FULL_MCP}**._"
         )
     except Exception as e:
         return f"DC Hub lookup failed ({e}). Query the full live MCP at {FULL_MCP}."
@@ -110,7 +171,7 @@ def compare_markets(markets: str) -> str:
     for s, name, cost, ttp in rows:
         ttp_s = f"~{int(ttp)}mo" if isinstance(ttp, (int, float)) else "n/a"
         out.append(f"- {_verdict(s)} **{name}** — {s}/100 · {cost}¢/kWh · {ttp_s} to power")
-    out.append(f"\n_Full ranking across 311 markets: DC Hub MCP → {FULL_MCP}._")
+    out.append(f"\n_Full ranking across {MARKETS}: DC Hub MCP → {FULL_MCP}._")
     return "\n".join(out)
 
 
@@ -166,8 +227,11 @@ def grid_scoreboard() -> str:
 def search_facilities(query: str = "", country: str = "", state: str = "",
                       operator: str = "", min_capacity_mw: float = 0,
                       limit: int = 10) -> str:
-    """Search DC Hub's index of 21,900+ data-center facilities (4,900+ independently
-    verified) across 170+ countries.
+    """Search DC Hub's global index of data-center facilities.
+
+    Live facility, deal and market counts: https://dchub.cloud/api/v1/canon/phrases
+    (not restated here — this docstring IS the MCP tool schema and cannot
+    interpolate, so any number in it would freeze).
 
     Args:
         query: Free-text search over facility name/operator/location.
@@ -207,7 +271,10 @@ def interconnection_queue(iso: str = "") -> str:
 
 
 def hyperscaler_deals(limit: int = 10) -> str:
-    """Recent hyperscaler / AI-capex deals from DC Hub's tracker of 1,400+ deals.
+    """Recent hyperscaler / AI-capex deals from DC Hub's M&A tracker.
+
+    Live deal count: https://dchub.cloud/api/v1/canon/phrases (not restated —
+    this docstring is the MCP tool schema and cannot interpolate).
 
     Args:
         limit: Number of recent deals to return.
@@ -263,16 +330,16 @@ HERO = f"""
 <div class="dc-hero">
   <h1><span class="amp">⚡</span> DC Hub — Power Index</h1>
   <p class="sub"><strong>Can you actually get power to build a data center here?</strong>
-  Live 0–100 power-availability scores for 311 U.S. + global markets, with a verdict,
+  Live 0–100 power-availability scores for {MARKETS} (U.S. + global), with a verdict,
   power cost, and modeled time-to-power — from <a href="https://dchub.cloud">dchub.cloud</a>.</p>
   <div class="dc-chips">
     <span class="dc-chip build">🟢 BUILD ≥ 60</span>
     <span class="dc-chip caution">🟡 CAUTION 30–59</span>
     <span class="dc-chip avoid">🔴 AVOID &lt; 30</span>
-    <span class="dc-chip">311 markets</span>
-    <span class="dc-chip">21,900+ facilities · 4,900+ verified</span>
+    <span class="dc-chip">{MARKETS}</span>
+    <span class="dc-chip">{FACILITIES}</span>
     <span class="dc-chip">live grid telemetry</span>
-    <span class="dc-chip">1,400+ tracked deals</span>
+    <span class="dc-chip">{DEALS}</span>
     <span class="dc-chip">CC-BY-4.0</span>
   </div>
 </div>
@@ -281,7 +348,7 @@ HERO = f"""
 CLAUDE_CODE_SNIPPET = f"""# This Space (7 tools, free)
 claude mcp add --transport sse dchub-power-index {SPACE_MCP}
 
-# Full DC Hub MCP (79 tools; 10 calls/day free, no key needed)
+# Full DC Hub MCP ({TOOLS}; 10 calls/day free, no key needed)
 claude mcp add --transport http dchub {FULL_MCP}"""
 
 JSON_SNIPPET = f"""{{
@@ -309,7 +376,7 @@ with gr.Blocks(title="DC Hub — Power Index",
         gr.Markdown(
             f"<p class='dc-mcp-note'>This Space <strong>is an MCP server</strong> "
             f"(7 tools) at <code>{SPACE_MCP}</code>. The full DC Hub MCP — "
-            f"<strong>79 tools</strong>, real-time grid telemetry, fiber, gas, "
+            f"<strong>{TOOLS}</strong>, real-time grid telemetry, fiber, gas, "
             f"water, tax incentives, deal intelligence — is at "
             f"<code>{FULL_MCP}</code> (10 calls/day free anonymous; mint a free "
             f"key with its <code>claim_free_key</code> tool, or try it with zero "
@@ -361,7 +428,7 @@ with gr.Blocks(title="DC Hub — Power Index",
             s_m = gr.Number(label="Min capacity (MW)", value=0)
             s_l = gr.Number(label="Limit", value=10)
         sout = gr.Code(language="json", label="facilities")
-        gr.Button("Search 21,900+ facilities", variant="primary").click(
+        gr.Button(f"Search {FACILITIES}", variant="primary").click(
             search_facilities, [s_q, s_c, s_s, s_o, s_m, s_l], sout)
     with gr.Tab("📊 Rank markets"):
         with gr.Row():
@@ -382,7 +449,7 @@ with gr.Blocks(title="DC Hub — Power Index",
             interconnection_queue, [q_i], qout)
     with gr.Tab("💸 Hyperscaler deals"):
         d_l = gr.Number(label="Limit", value=10,
-                        info="Most recent hyperscaler / AI-capex deals from the 1,400+ tracker.")
+                        info=f"Most recent hyperscaler / AI-capex deals from the {DEALS} tracker.")
         dout = gr.Code(language="json", label="deals")
         gr.Button("Recent AI-capex deals", variant="primary").click(
             hyperscaler_deals, [d_l], dout)

@@ -1289,10 +1289,29 @@ def _facility_floor_violations(paths):
     legal — the same carve-out tests/test_canon_placeholders_resolved.py makes.
     """
     floor = _floor_int(CANON_FACILITIES)
+    # ★2026-09-02: DOCSTRINGS are skipped too. This carve-out named three comment
+    # PREFIXES and missed the fourth home of historical prose entirely, so the
+    # guard fired on the repo's own changelog: walking canon to 20,100+ reddened
+    # routes/mcp_tool_catalog.py:67, a docstring line narrating the bug fixed
+    # that same day ("...therefore served 18,500+ facilities x3 next to the
+    # request-time-resolved 20,100+"). Rewriting that sentence would destroy the
+    # record; waiving the file in _FACILITY_FLOOR_PENDING would blind the fence
+    # to a surface agents read. _docstring_line_span() already exists for exactly
+    # this and says so in its own docstring — it was simply never wired here.
+    docspans = {}
     for rel, i, line in _iter_surface_lines(paths):
         stripped = line.lstrip()
         if stripped.startswith("#") or stripped.startswith("//") or stripped.startswith("*"):
             continue
+        if rel.endswith(".py"):
+            if rel not in docspans:
+                try:
+                    docspans[rel] = _docstring_line_span(
+                        ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8", errors="ignore")))
+                except (SyntaxError, OSError):
+                    docspans[rel] = set()
+            if i in docspans[rel]:
+                continue
         if "facilit" not in line.lower():
             continue
         for m in _FACILITY_FIGURE_RE.finditer(line):
@@ -2909,9 +2928,15 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     flask = pytest.importorskip("flask")
     from routes import agent_capabilities_feed as feed
 
+    # ★2026-09-02: the injected pair moved with the canon walk (18,603/1,892 ->
+    # 20,203/2,069). These are SYNTHETIC — the test's point is that the feed
+    # reads facilities_verified rather than the raw COUNT(*) pile — but they must
+    # stay ABOVE the canon floor, because the feed correctly OMITS a count below
+    # it (test_capabilities_omits_rather_than_publishing_below_canon_floor), and
+    # an omitted field makes the assertion below fail for the wrong reason.
     live_like = {
-        "facilities_verified": 18603, "markets": 300,
-        "deals": 1892, "countries_verified": 178,
+        "facilities_verified": 20203, "markets": 300,
+        "deals": 2069, "countries_verified": 178,
     }
     app = flask.Flask(__name__)
     app.register_blueprint(feed.agent_capabilities_bp)
@@ -2928,7 +2953,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     doc = json.loads(body)
     counts, quotable = doc.get("counts", {}), doc.get("agent_quotable")
 
-    assert counts.get("facilities") == 18603, (
+    assert counts.get("facilities") == 20203, (
         f"counts.facilities is {counts.get('facilities')!r}, not the injected "
         "verified count — the feed is not reading facilities_verified. This is "
         "the assertion that would have failed on the raw COUNT(*) basis."
@@ -2937,8 +2962,8 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
         "agent_quotable absent although every count resolved — the fence below "
         "would pass vacuously."
     )
-    for field, value in (("facilities", 18603), ("markets_scored", 300),
-                         ("deals_tracked", 1892), ("countries", 178)):
+    for field, value in (("facilities", 20203), ("markets_scored", 300),
+                         ("deals_tracked", 2069), ("countries", 178)):
         assert counts.get(field) == value, f"counts.{field} != injected {value}"
         assert f"{value:,}" in quotable or str(value) in quotable, (
             f"agent_quotable omits counts.{field}={value}. The sentence and the "
@@ -3309,17 +3334,28 @@ KNOWN_STALE_COUNT_DEBT = {
     'ai_outreach_agent.py': {'tool_count_literal'},
     'canonical_stats.py': {'facilities_bare_int'},
     'content_publisher.py': {'deals_stale_floor'},
-    'dchub-mcp-v2.1/apply_worker_patch.py': {'deals_stale_floor', 'facilities_stale_floor'},
+    # ★2026-09-02: deals_stale_floor DROPPED — this file carries '2,000+ ... deals',
+    # which the canon walk made the CURRENT floor. The debt was not paid, it
+    # stopped being debt. facilities_stale_floor stands.
+    'dchub-mcp-v2.1/apply_worker_patch.py': {'facilities_stale_floor'},
     'dchub_daily_automation.py': {'facilities_bare_int'},
     'dchub_mcp_server.py': {'facilities_stale_floor', 'tool_count_literal'},
     'dchub_self_heal.py': {'markets_232'},
     'fix_neon_tables.py': {'tool_count_literal'},
     'google_meta_integration.py': {'facilities_bare_int'},
     'inject_meta_tags.py': {'deals_stale_floor'},
-    'integrations/huggingface-space/app.py': {'facilities_stale_floor', 'tool_count_literal'},
+    # ★2026-09-02: facilities_stale_floor DROPPED — the Space no longer bakes
+    # 21,900+ (a retired PRE-DEDUP over-claim it was serving LIVE); it fetches
+    # /api/v1/canon/phrases at import and degrades COUNT-FREE. tool_count_literal
+    # STAYS and is a scanner false positive of the honest kind: the Space really
+    # does expose 7 tools of its own, a different quantity from DC Hub's 83.
+    'integrations/huggingface-space/app.py': {'tool_count_literal'},
     'intelligence_index.py': {'facilities_bare_int'},
     'main.py': {'facilities_bare_int'},
-    'mcp_bug_fixes_and_new_tools.py': {'deals_stale_floor', 'facilities_stale_floor'},
+    # ★2026-09-02: deals_stale_floor DROPPED — this file carries '2,000+ ... deals',
+    # which the canon walk made the CURRENT floor. The debt was not paid, it
+    # stopped being debt. facilities_stale_floor stands.
+    'mcp_bug_fixes_and_new_tools.py': {'facilities_stale_floor'},
     'mcp_gateway.py': {'facilities_stale_floor'},
     'mcp_qa_fixes_v7.py': {'tool_count_literal'},
     'mcp_server_patch.py': {'tool_count_literal'},
@@ -3737,4 +3773,173 @@ def test_a_value_is_banned_again_once_canon_moves_past_it():
     )
     assert later._scan_bare_int_twins("feed.py", '{"facilities": 20100}'), (
         "the bare-int exemption is frozen too"
+    )
+
+
+# ── ★2026-09-02 — THE COUNT TWIN OF THE VERSION SELF-DENYLIST GUARD ──────────
+#
+# tests/test_wellknown_manifest_version_derived.py has carried this since
+# 2026-08-16, for `version` only:
+#
+#     assert PINNED["version"] not in PINNED["stale_markers"]
+#     """THE PIN: a canon that lists its own current version as stale turns every
+#     honest surface into a high-severity false positive (and hides the real
+#     one)."""
+#
+# Nothing said the same about the COUNT phrases, and the counts are the half
+# that moves every fortnight. Measured 2026-09-02: resolve_canon() was publishing
+# deals "2,000+" while PINNED["stale_markers"] listed "2,000+ M&A", "2,000+
+# tracked deals", "2,000+ deals", "2,000+ tracked M&A" and "2,000+ tracked
+# transactions" — retired in the ROW-COUNT era, when 2,000+ over-stated ~1,420
+# distinct deals. ai_surface_sentinel scans LIVE served bodies for these
+# (ai_surface_sentinel.py:156, plain substring), so it was raising six drift
+# alerts on four agent surfaces, all false, all pointed at surfaces that were
+# rendering canon correctly.
+#
+# A retired LITERAL is safe to hardcode forever. A retired FLOOR is not: the
+# fleet walks into it. util/canon_floor.py's docstring records the same lesson
+# from a third site — scripts/accuracy_fence.py's `[2-9],\d{3} deals` "froze
+# dchub-frontend for 19 deploys the hour deals_tracked passed 2,000".
+
+def test_canon_floors_are_not_on_their_own_denylist():
+    """No PINNED['public'] floor may appear as a stale_marker.
+
+    ★ Boundary-aware on purpose. The naive `floor in marker` check reports
+    "2,000+" as present in "22,000+" — the exact substring trap BANNED_STALE's
+    own (?<![\\d,]) lookbehind exists to defeat, and a guard that fires on it
+    would be un-satisfiable. Match the number with a left boundary instead.
+    """
+    markers = PINNED.get("stale_markers") or []
+    public = PINNED.get("public") or {}
+    assert markers and public, "HARNESS ERROR: canon unreadable — guard would pass vacuously"
+
+    hits = []
+    for dimension, phrase in sorted(public.items()):
+        num = _first_int(phrase)
+        if num is None:
+            continue
+        # the floor as it is written, with a left boundary so 2,000+ does not
+        # match inside 22,000+
+        pat = re.compile(rf"(?<![\d,]){re.escape(f'{num:,}')}\+")
+        for m in markers:
+            if pat.search(m):
+                hits.append(f"  public.{dimension} = {phrase!r} is denylisted by stale_marker {m!r}")
+    assert not hits, (
+        "The canon lists its own current floor as stale. ai_surface_sentinel "
+        "scans LIVE served bodies for stale_markers, so every surface rendering "
+        "canon correctly is reported as high/medium drift — which buries the "
+        "real drift. Retire the OUTGOING floor, never the incoming one "
+        f"({FIXWAVE}):\n" + "\n".join(hits)
+    )
+
+
+def test_the_retired_deal_row_counts_are_still_denylisted():
+    """Removing the 2,000+ family must not have taken the 4,000+ family with it.
+
+    4,000+ floored duplicate ROWS against ~1,420 distinct deals. It is ~1.9x the
+    current deduped count, so unlike 2,000+ it cannot become true by growth for
+    a long time, and it stays retired. Without this, "fix the false positive" is
+    indistinguishable from "delete the deals denylist".
+    """
+    markers = PINNED.get("stale_markers") or []
+    for m in ("4,000+ deals", "4,000+ tracked deals", "4,000+ M&A"):
+        assert m in markers, f"{m!r} must stay retired — it floors duplicate rows"
+
+
+# ── ★2026-09-02 — THE HUGGING FACE SPACE (integrations/huggingface-space) ────
+#
+# It shipped FOUR wrong numbers at once and was LIVE-SERVING all four (probed
+# https://dchubcloud-dchub.hf.space, 2026-09-02):
+#
+#   "21,900+ facilities"    canon 20,100+  OVER-claim, and a retired PRE-DEDUP
+#                                          floor sitting on stale_markers
+#   "4,900+ verified"       no canon source at all
+#   "1,400+ tracked deals"  canon 2,000+   stale under-claim
+#   "79 tools"              canon 83       stale under-claim
+#   "311 markets"           canon 300+     311 counts score ROWS, not markets
+#
+# ★ WHY IT ROTTED AND NOTHING SAW IT. The Space deploys from the Hugging Face
+#   git remote, NOT with this repo — there is no workflow under .github/ that
+#   pushes it — so a literal baked here goes public on its own cadence and stays
+#   until someone re-reads the file. That is the same "deploys separately" trap
+#   as the CF zone worker, and it is why the fix is derivation, not new literals:
+#   app.py fetches /api/v1/canon/phrases at import and degrades COUNT-FREE.
+_HF_APP = os.path.join("integrations", "huggingface-space", "app.py")
+_HF_README = os.path.join("integrations", "huggingface-space", "README.md")
+
+
+def _hf_src() -> str:
+    path = REPO_ROOT / _HF_APP
+    assert path.is_file(), f"{_HF_APP} is gone — update or delete this guard ({FIXWAVE})"
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def test_hf_space_fetches_canon_rather_than_baking_it():
+    """★ WIRING, not presence. The revert that matters is one line — binding a
+    published constant to a literal while leaving the fetch helper in place —
+    and a "is _fetch_canon in the file" check stays green straight through it.
+    So walk the AST and require the fetch RESULT to reach every published name.
+    """
+    tree = ast.parse(_hf_src())
+    fetch = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                  and n.name == "_fetch_canon"), None)
+    assert fetch is not None, "the Space no longer fetches canon at all"
+    assert any(isinstance(n, ast.Try) for n in ast.walk(fetch)), (
+        "_fetch_canon is not fail-soft — a Space that cannot boot because canon "
+        "is unreachable is worse than one that says less"
+    )
+    # the name _fetch_canon()'s result is bound to
+    holder = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
+              for t in n.targets if isinstance(t, ast.Name)
+              for sub in ast.walk(n.value)
+              if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+              and sub.func.id == "_fetch_canon"}
+    assert holder, "_fetch_canon() is defined but never called"
+
+    published = {"FACILITIES", "DEALS", "MARKETS", "COUNTRIES", "TOOLS"}
+    wired = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        names = {t.id for t in node.targets if isinstance(t, ast.Name)} & published
+        if not names:
+            continue
+        for sub in ast.walk(node.value):
+            if isinstance(sub, ast.Name) and sub.id in holder:
+                wired |= names
+    missing = sorted(published - wired)
+    assert not missing, (
+        f"{missing} no longer read the fetched canon — they are baked again. "
+        f"This Space deploys separately from the repo, so a baked count goes "
+        f"public and stays there ({FIXWAVE})."
+    )
+
+
+def test_hf_space_bakes_no_population_count():
+    """No comma-grouped magnitude in code or in the README.
+
+    Comments are exempt — the file documents the four retired values on purpose,
+    the same carve-out every other scan in this module makes. Docstrings are NOT
+    exempt here and that is deliberate: a docstring in this file IS the MCP tool
+    schema, it cannot interpolate, and "79 tools across 21,900+ facilities" sat
+    in the module docstring for exactly that reason.
+    """
+    for label, text in ((_HF_APP, _hf_src()),
+                        (_HF_README, (REPO_ROOT / _HF_README).read_text(encoding="utf-8"))):
+        hits = []
+        for i, line in enumerate(text.split("\n"), 1):
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            for m in re.finditer(r"(?<![\d,])\d{1,3}(?:,\d{3})+\+?", line):
+                hits.append(f"  {label}:{i}: {m.group(0)!r} -> {line.strip()[:80]!r}")
+        assert not hits, (
+            "the Hugging Face Space states a population count again. It deploys "
+            "on its own cadence, so the literal goes public and stays; fetch it "
+            f"from /api/v1/canon/phrases or say less ({FIXWAVE}):\n" + "\n".join(hits)
+        )
+    readme = (REPO_ROOT / _HF_README).read_text(encoding="utf-8")
+    assert "canon/phrases" in readme, (
+        "the README states no counts AND links no canonical source — a reader "
+        "now has nowhere to get them"
     )

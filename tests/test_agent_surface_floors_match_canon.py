@@ -149,10 +149,20 @@ def test_every_surface_states_the_facility_floor_the_same_way():
 def test_canon_values_are_what_this_guard_thinks_they_are():
     """If PINNED moves, this file must be re-read rather than silently pinning
     a stale expectation — the failure mode it was written to catch."""
-    assert CANON_FACILITIES == "18,500+", (
+    # ★2026-09-02: 18,500+ -> 20,100+ and 1,900+ -> 2,000+, following PINNED
+    # ['public'] onto the live resolver reading (/api/v1/stats facilities =
+    # 20,198, deals = 2,069). These stay LITERALS on purpose: this is the one
+    # assertion in the file that must NOT derive from ai_surface_canon, because
+    # its whole job is to notice that PINNED moved. Deriving it would make it
+    # pass forever and the guard would go silent exactly when it is needed.
+    # ★ The RETIRED_* lists were re-checked and NOT touched: neither new canon
+    # value collides with them (test_retired_lists_do_not_contain_the_current
+    # _canon), and 18,500+/1,900+ were canon until today, not the live-wrong
+    # floors of 2026-08-31 that those lists exist to ban.
+    assert CANON_FACILITIES == "20,100+", (
         f"PINNED facilities moved to {CANON_FACILITIES}. Update the surfaces "
         f"in SURFACES and the RETIRED_* lists, then this assertion.")
-    assert CANON_DEALS == "1,900+", (
+    assert CANON_DEALS == "2,000+", (
         f"PINNED deals moved to {CANON_DEALS}. Same drill.")
 
 

@@ -714,8 +714,8 @@ def _canon_public() -> dict:
     import ai_surface_canon as _c
     pub = dict(_c.PINNED.get("public") or {})
     return {
-        "facilities": pub.get("facilities", "18,500+"),
-        "deals":      pub.get("deals", "1,900+"),
+        "facilities": pub.get("facilities", "20,100+"),
+        "deals":      pub.get("deals", "2,000+"),
         "markets":    pub.get("markets", "300+"),
     }
 
