@@ -23,7 +23,10 @@ import pytest
 from relay_specificity import tag_relay_specificity
 
 
-@pytest.mark.parametrize("spec", ["quantified", "generic"])
+@pytest.mark.parametrize("spec", [
+    "treatment", "control", "ineligible",   # randomized arms (r-arms)
+    "quantified", "generic",                # pre-randomization, shape-assigned
+])
 def test_known_variant_is_appended_and_prefix_survives(spec):
     out = tag_relay_specificity("trial_preview", spec)
     assert out == "trial_preview:" + spec
@@ -52,3 +55,28 @@ def test_result_is_capped_so_a_long_message_cannot_overflow_the_column():
     long_msg = "x" * 2000
     out = tag_relay_specificity(long_msg, "quantified", _max=2000)
     assert len(out) == 2000
+
+
+def test_every_arm_the_gate_emits_is_recorded():
+    """★ REGRESSION. This nearly failed silently and completely.
+
+    dchub-mcp-server#318 renamed the arms to treatment/control/ineligible when
+    assignment became randomized, and for a moment only the READER knew the new
+    vocabulary. This function is the WRITER: an unrecognised label is discarded
+    and the row is written as a bare `trial_preview`, so the arm would never
+    have been recorded at all — the reader perfectly correct, with nothing to
+    read, and no error anywhere.
+
+    The list below is the contract. A label the gate emits and this function
+    does not know is data loss, not a mismatch.
+    """
+    for arm in ("treatment", "control", "ineligible"):
+        assert tag_relay_specificity("trial_preview", arm) == "trial_preview:" + arm
+
+
+def test_an_arm_that_does_not_exist_is_still_refused():
+    # Widening the vocabulary must not turn this into a pass-through: an
+    # invented label in the column is indistinguishable from a measured one.
+    for junk in ("treatmentt", "arm", "true", "control ", "  "):
+        got = tag_relay_specificity("trial_preview", junk)
+        assert got in ("trial_preview", "trial_preview:control"), got

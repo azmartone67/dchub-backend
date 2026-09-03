@@ -22,7 +22,27 @@ the DB, so logic left inside the route handler would be untested by default —
 the failure mode this repo has written down more than once.
 """
 
-_RELAY_SPECIFICITY_VALUES = ("quantified", "generic")
+# ★ THE WRITER MUST KNOW EVERY LABEL THE GATE EMITS, or it drops them.
+#
+# This nearly failed silently and completely. dchub-mcp-server#318 renamed the
+# arms to treatment/control/ineligible when assignment became randomized, and
+# for a moment only the READER was taught the new vocabulary. This function is
+# the WRITER: an unrecognised label is discarded and the row is written as a
+# bare `trial_preview`, so the arm would never have been recorded at all. The
+# reader would have been perfectly correct with nothing to read — the whole
+# experiment logging zero, with no error anywhere.
+#
+# The rule that follows: a label vocabulary spans a WRITER and a READER in
+# different repos, and both halves ship together or neither does.
+#
+# The pre-randomization labels stay accepted. They cost nothing, they keep the
+# rollout window from dropping rows while the gate redeploys, and the reader
+# buckets them separately as `legacy_shape_assigned` precisely because they were
+# assigned by payload shape rather than at random.
+_RELAY_SPECIFICITY_VALUES = (
+    "treatment", "control", "ineligible",     # randomized arms (r-arms)
+    "quantified", "generic",                  # pre-randomization, shape-assigned
+)
 
 
 def tag_relay_specificity(message_shown, relay_specificity, _max=2000):
