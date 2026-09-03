@@ -931,7 +931,7 @@ def why_dchub():
         "ISOs + UK + EU + Taiwan + Japan + South Korea + Brazil + Australia) + 43 US balancing authorities, read the "
         "proprietary daily DC Hub Power Index and its gas sibling the DCGI, and "
         "cite any answer via CC-BY-4.0 datasets with stable URLs and "
-        "JSON-LD. It covers {canon_facilities} facilities and offers a free "
+        "JSON-LD. It covers {canon_facilities} distinct facilities and offers a free "
         "self-serve tier — so an agent can start in seconds, with no "
         "scraping, no PDFs, and no login wall.")
     )

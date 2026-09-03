@@ -174,7 +174,7 @@ _DCHUB_FACTS = {
     # canon_nums() has no price placeholder (prices live in _stripe_links), so
     # this stays a literal and is fenced by the counts-drift ratchet instead.
     "api_access":         "Free 10 calls/day; Starter $9/mo (200/day); Developer $49/mo (500/day); Pro $299/mo (2,000/day)",
-    "facility_coverage":  canon_text("{canon_facilities} facilities, 300+ markets, 178 countries"),
+    "facility_coverage":  canon_text("{canon_facilities} distinct facilities, 300+ markets, 178 countries"),
     "pricing_model":      "Self-serve $9 → $699/mo, no sales gate",
     "citation_license":   "CC-BY-4.0 — free to cite with attribution",
 }

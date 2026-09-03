@@ -315,7 +315,7 @@ def well_known_mcp():
             "mcp_server": "/mcp/manifest",
             "name": MCP_SERVER_NAME,
             "version": "2.0.0",
-            "description": canon_text("Data center intelligence platform with {canon_facilities} facilities, infrastructure mapping, and water/drought analysis")
+            "description": canon_text("Data center intelligence platform with {canon_facilities} distinct facilities, infrastructure mapping, and water/drought analysis")
         })
 
 

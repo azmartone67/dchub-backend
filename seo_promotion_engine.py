@@ -286,7 +286,7 @@ class SEOPromotionEngine:
             "name": "DC Hub",
             "url": self.site_url,
             "logo": urljoin(self.site_url, "/static/logo.png"),
-            "description": canon_text("Comprehensive data center intelligence platform tracking {canon_facilities} facilities worldwide"),
+            "description": canon_text("Comprehensive data center intelligence platform tracking {canon_facilities} distinct facilities worldwide"),
             "sameAs": [
                 "https://twitter.com/dchubcloud",
                 "https://www.linkedin.com/company/dchub"

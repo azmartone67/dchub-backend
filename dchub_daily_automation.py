@@ -132,7 +132,7 @@ def post_to_linkedin(text, article_url=None):
             "article": {
                 "source": article_url,
                 "title": "DC Hub - Data Center Intelligence",
-                "description": canon_text("Real-time data center market intelligence covering {canon_facilities} facilities across 170+ countries.")
+                "description": canon_text("Real-time data center market intelligence covering {canon_facilities} distinct facilities across 170+ countries.")
             }
         }
 

@@ -758,10 +758,10 @@ def ai_llms_txt():
     content = """# DC Hub - Data Center Intelligence Platform
 # https://dchub.cloud
 
-> DC Hub is the definitive data center intelligence platform tracking {canon_facilities} facilities worldwide.
+> DC Hub is the definitive data center intelligence platform tracking {canon_facilities} distinct facilities worldwide.
 
 ## What We Offer
-- Real-time tracking of {canon_facilities} data center facilities across {canon_countries} countries
+- Real-time tracking of {canon_facilities} distinct data center facilities across {canon_countries} countries
 - M&A transaction database with {canon_deals} tracked deals
 - Live grid data from 7 US ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE)
 - Infrastructure mapping: fiber routes, substations, FCC broadband

@@ -122,7 +122,7 @@ FIXWAVE = "canonical-counts drift (fixes #1689/#1690/#74/#75, 2026-07-20)"
 #    three weeks). A guard that hands out a literal as the fix is a guard that
 #    re-seeds the drift it exists to catch. ──────────────────────────────────
 CANON_FACILITIES = (PINNED.get("public") or {}).get("facilities") or ""
-CANON_FACILITIES_PHRASE = f"{CANON_FACILITIES} facilities"
+CANON_FACILITIES_PHRASE = f"{CANON_FACILITIES} distinct facilities"
 
 
 def _floor_int(phrase: str) -> int:

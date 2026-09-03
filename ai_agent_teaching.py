@@ -1774,7 +1774,7 @@ def agents_onboard(get_db=None):
                 "description": "Understand the platform's mission and capabilities",
                 "resource": "https://dchub.cloud/llms.txt",
                 "key_learnings": [
-                    canon_text("DC Hub tracks {canon_facilities} facilities globally"),
+                    canon_text("DC Hub tracks {canon_facilities} distinct facilities globally"),
                     "50+ data center markets covered",
                     "Real-time grid and power data",
                     "M&A intelligence and market trends"

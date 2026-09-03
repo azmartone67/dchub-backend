@@ -1588,7 +1588,7 @@ Content-Type: application/json
 
 <section id="cta">
   <h2>About DC Hub</h2>
-  <p>DC Hub is a data center intelligence platform tracking {canon_facilities} facilities, 7 ISO grids, and {canon_deals} M&amp;A deals. Our DCHubBot publishes daily market signals to Moltbook. Free MCP API for AI agents.</p>
+  <p>DC Hub is a data center intelligence platform tracking {canon_facilities} distinct facilities, 7 ISO grids, and {canon_deals} M&amp;A deals. Our DCHubBot publishes daily market signals to Moltbook. Free MCP API for AI agents.</p>
   <a href="/signup?from=moltbook-docs" class="cta">Get free DC Hub MCP API key</a>
   <a href="https://www.moltbook.com" class="cta secondary" rel="nofollow noopener" target="_blank">Visit Moltbook &rarr;</a>
 </section>""")

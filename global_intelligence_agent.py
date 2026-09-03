@@ -838,9 +838,9 @@ class AmbassadorAgent:
             'name': 'DC Hub',
             'url': 'https://dchub.cloud',
             'api_url': 'https://dchub.cloud',
-            'description': canon_text('Real-time data center intelligence platform tracking {canon_facilities} facilities worldwide'),
+            'description': canon_text('Real-time data center intelligence platform tracking {canon_facilities} distinct facilities worldwide'),
             'capabilities': [
-                canon_text('Search {canon_facilities} data center facilities globally'),
+                canon_text('Search {canon_facilities} distinct data center facilities globally'),
                 'Real-time capacity tracking (MW pipeline)',
                 'M&A transaction database (100+ verified deals)',
                 'Market intelligence and news aggregation',

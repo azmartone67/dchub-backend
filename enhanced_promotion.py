@@ -31,7 +31,7 @@ class EnhancedPromotionEngine:
         self.db_path = db_path
         self.site_url = 'https://dchub.cloud'
         self.site_name = 'DC Hub'
-        self.site_description = canon_text('Real-time data center intelligence platform tracking {canon_facilities} facilities worldwide with fiber routes, power infrastructure, and market analytics.')
+        self.site_description = canon_text('Real-time data center intelligence platform tracking {canon_facilities} distinct facilities worldwide with fiber routes, power infrastructure, and market analytics.')
         
         # Directory submission targets
         self.directories = [
@@ -104,7 +104,7 @@ class EnhancedPromotionEngine:
         self.post_templates = {
             'linkedin': [
                 "🏢 {headline}\n\n{body}\n\n🔗 Explore the data: {url}\n\n#DataCenter #Infrastructure #Technology #RealEstate #CloudComputing",
-                canon_text("📊 Market Update: {headline}\n\n{body}\n\nTrack {canon_facilities} facilities at {url}\n\n#DataCenterIndustry #TechNews #MarketIntelligence"),
+                canon_text("📊 Market Update: {headline}\n\n{body}\n\nTrack {canon_facilities} distinct facilities at {url}\n\n#DataCenterIndustry #TechNews #MarketIntelligence"),
                 "⚡ {headline}\n\n{body}\n\n🌐 Real-time insights: {url}\n\n#DCHub #DataCenters #FiberRoutes #PowerInfrastructure",
             ],
             'twitter': [

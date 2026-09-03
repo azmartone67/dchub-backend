@@ -1012,7 +1012,7 @@ class ProtocolAdapter:
                 return related
         return [
             {"endpoint": "/api/news", "description": "Latest industry news"},
-            {"endpoint": "/api/facilities", "description": canon_text("Search {canon_facilities} facilities")},
+            {"endpoint": "/api/facilities", "description": canon_text("Search {canon_facilities} distinct facilities")},
         ]
 
     def _build_suggested_response(self, data: dict, endpoint: str) -> str:
@@ -1618,7 +1618,7 @@ class MCPGateway:
             ),
             "description": (
                 canon_text("Comprehensive data center intelligence platform — "
-                "{canon_facilities} facilities, 170+ countries, daily-updated M&A, "
+                "{canon_facilities} distinct facilities, 170+ countries, daily-updated M&A, "
                 "capacity pipeline, energy infrastructure.")
             ),
             "homepage": self.base_url,

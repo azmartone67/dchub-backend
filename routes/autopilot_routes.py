@@ -742,7 +742,7 @@ def social_test():
 
     test_message = custom_message or canon_text("""🚀 DC Hub is live!
 
-Track {canon_facilities} data centers across 170+ countries.
+Track {canon_facilities} distinct data centers across 170+ countries.
 Real-time market intelligence for hyperscale infrastructure.
 
 Explore now: https://dchub.cloud

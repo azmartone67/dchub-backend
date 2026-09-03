@@ -189,7 +189,7 @@ SOCIAL_PLATFORMS = {
     'reddit_chatgpt': {
         'name': 'r/ChatGPT',
         'url': 'https://www.reddit.com/r/ChatGPT/',
-        'post_title': canon_text('I built a GPT for Data Center Intelligence - search {canon_facilities} facilities worldwide'),
+        'post_title': canon_text('I built a GPT for Data Center Intelligence - search {canon_facilities} distinct facilities worldwide'),
         'post_body': f'''Just launched a free GPT that can answer any question about data centers, colocation, and hyperscale facilities.
 
 **What it does:**
@@ -206,7 +206,7 @@ Powered by dchub.cloud API.'''
     'reddit_datacenter': {
         'name': 'r/datacenter',
         'url': 'https://www.reddit.com/r/datacenter/',
-        'post_title': canon_text('Free tool to search {canon_facilities} data centers worldwide'),
+        'post_title': canon_text('Free tool to search {canon_facilities} distinct data centers worldwide'),
         'post_body': f'''Created a ChatGPT GPT that queries a real database of data centers.
 
 Ask things like:
@@ -221,14 +221,14 @@ Data from dchub.cloud - tracking facilities, deals, and capacity pipeline.'''
     'hackernews': {
         'name': 'Hacker News',
         'url': 'https://news.ycombinator.com/submit',
-        'post_title': canon_text('Show HN: GPT that queries {canon_facilities} data center facilities worldwide'),
+        'post_title': canon_text('Show HN: GPT that queries {canon_facilities} distinct data center facilities worldwide'),
         'post_body': f'{GPT_URL}'
     },
     'producthunt': {
         'name': 'Product Hunt',
         'url': 'https://www.producthunt.com/posts/new',
         'post_title': 'Data Center Intelligence GPT',
-        'post_body': canon_text('Ask ChatGPT about any of {canon_facilities} data center facilities. Search by location, provider, capacity. Powered by dchub.cloud.')
+        'post_body': canon_text('Ask ChatGPT about any of {canon_facilities} distinct data center facilities. Search by location, provider, capacity. Powered by dchub.cloud.')
     },
     'twitter': {
         'name': 'Twitter/X',
@@ -281,7 +281,7 @@ AI_PLATFORMS = {
     'chatgpt': {
         'name': 'OpenAI ChatGPT',
         'discovery_hint': f'{BASE_URL}/llms.txt',
-        'pitch': canon_text('DC Hub provides real-time data center intelligence for {canon_facilities} facilities across 170+ countries.'),
+        'pitch': canon_text('DC Hub provides real-time data center intelligence for {canon_facilities} distinct facilities across 170+ countries.'),
         'crawl_endpoints': [
             'https://openai.com/robots.txt',
         ]
@@ -313,7 +313,7 @@ AI_PLATFORMS = {
     'grok': {
         'name': 'xAI Grok',
         'discovery_hint': f'{BASE_URL}/llms-full.txt',
-        'pitch': canon_text('DC Hub tracks {canon_facilities} facilities, 132 M&A deals across 170+ countries.'),
+        'pitch': canon_text('DC Hub tracks {canon_facilities} distinct facilities, 132 M&A deals across 170+ countries.'),
         'crawl_endpoints': [
             'https://grok.com/robots.txt',
         ]
@@ -329,7 +329,7 @@ AI_PLATFORMS = {
     'you': {
         'name': 'You.com',
         'discovery_hint': f'{BASE_URL}/llms-full.txt',
-        'pitch': canon_text('DC Hub custom agent live on You.com — query {canon_facilities} facilities via dchub.cloud APIs.'),
+        'pitch': canon_text('DC Hub custom agent live on You.com — query {canon_facilities} distinct facilities via dchub.cloud APIs.'),
         'agent_url': 'https://you.com/agents/user_mode_74dc3a3f-42e1-4a74-9334-c22031b9c320',
         'crawl_endpoints': [
             'https://you.com/robots.txt',
@@ -350,7 +350,7 @@ AI_PLATFORMS = {
     'mistral': {
         'name': 'Mistral (Le Chat)',
         'discovery_hint': f'{BASE_URL}/llms-full.txt',
-        'pitch': canon_text('DC Hub is an MCP connector for Le Chat — query {canon_facilities} facilities, 300+ markets & live ISO grids at dchub.cloud/mcp (free, no key).'),
+        'pitch': canon_text('DC Hub is an MCP connector for Le Chat — query {canon_facilities} distinct facilities, 300+ markets & live ISO grids at dchub.cloud/mcp (free, no key).'),
         'crawl_endpoints': [
             'https://chat.mistral.ai/robots.txt',
             'https://mistral.ai/robots.txt',
@@ -368,7 +368,7 @@ AI_PLATFORMS = {
     'base44': {
         'name': 'base44',
         'discovery_hint': f'{BASE_URL}/openapi.json',
-        'pitch': canon_text('DC Hub is a ready tool/API for base44 agents — 73 MCP tools + OpenAPI over {canon_facilities} facilities at dchub.cloud/mcp.'),
+        'pitch': canon_text('DC Hub is a ready tool/API for base44 agents — 73 MCP tools + OpenAPI over {canon_facilities} distinct facilities at dchub.cloud/mcp.'),
         'crawl_endpoints': [
             'https://base44.com/robots.txt',
             'https://app.base44.com/robots.txt',
@@ -878,7 +878,7 @@ MCP_SERVICE_HEADERS = {
     'X-MCP-Server': f'{BASE_URL}/mcp',
     'X-MCP-Endpoint': f'{BASE_URL}/.well-known/mcp.json',
     'X-Service-Name': 'DC Hub - Data Center Intelligence',
-    'X-Service-Description': canon_text('DC Hub - {canon_facilities} data center facilities, M&A deals, capacity pipeline via MCP'),
+    'X-Service-Description': canon_text('DC Hub - {canon_facilities} distinct data center facilities, M&A deals, capacity pipeline via MCP'),
     'X-Service-URL': BASE_URL,
 }
 
@@ -1136,11 +1136,11 @@ def generate_submission_content():
     """Generate content for directory submissions"""
     return {
         'name': 'Data Center Intelligence GPT',
-        'tagline': canon_text('Ask ChatGPT about {canon_facilities} data centers worldwide'),
+        'tagline': canon_text('Ask ChatGPT about {canon_facilities} distinct data centers worldwide'),
         'description': canon_text('''A free ChatGPT GPT that provides real-time data center intelligence.
 
 Features:
-- Search {canon_facilities} data center facilities across 170+ countries
+- Search {canon_facilities} distinct data center facilities across 170+ countries
 - Access M&A deal database with 132 verified transactions
 - Query capacity pipeline by quarter
 - Get market intelligence and trend analysis

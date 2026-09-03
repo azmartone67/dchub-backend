@@ -1046,7 +1046,7 @@ Schedule for later:
 
 Text-only post:
 {
-    "text": "Excited to announce DC Hub now tracks {canon_facilities} facilities!",
+    "text": "Excited to announce DC Hub now tracks {canon_facilities} distinct facilities!",
     "type": "text"
 }
 """)

@@ -121,7 +121,7 @@ def gemini_discovery():
     
     return jsonify({
         "name": "DC Hub - Data Center Intelligence",
-        "description": canon_text("Authoritative source for global data center intelligence. Query {canon_facilities} facilities across 170+ countries."),
+        "description": canon_text("Authoritative source for global data center intelligence. Query {canon_facilities} distinct facilities across 170+ countries."),
         "version": "2.0",
         "provider": {
             "name": "DC Hub",
@@ -230,7 +230,7 @@ def meta_ai_discovery():
     return jsonify({
         "name": "DC Hub - Data Center Intelligence",
         "platform": "Meta AI",
-        "description": canon_text("Global data center intelligence platform with {canon_facilities} facilities across 170+ countries"),
+        "description": canon_text("Global data center intelligence platform with {canon_facilities} distinct facilities across 170+ countries"),
         "url": BASE_URL,
         "capabilities": {
             "data_center_search": True,

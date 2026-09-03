@@ -62,7 +62,7 @@ _DESC_LONG = (
     "renewable energy economics.")
 )
 _DESC_SHORT = (
-    canon_text("MCP server with 48 tools covering {canon_facilities} data-center facilities, "
+    canon_text("MCP server with 48 tools covering {canon_facilities} distinct data-center facilities, "
     "300+ power markets (DCPI), 4,000+ M&A deals, 369 GW pipeline, ISO grid "
     "data, fiber, energy pricing. Powering Claude and Cursor.")
 )
