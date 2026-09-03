@@ -1091,3 +1091,106 @@ def test_capabilities_feed_deepest_rung_is_the_PIN_not_None_or_blank(monkeypatch
         f"or empty version on a CC-BY-4.0 card and a hand-typed literal rots "
         f"unwatched (the old '2.1.10' sat eleven minors behind the pin)."
     )
+
+
+# ── (8) the DAY-LONG MEMO must not latch the cold-start pin ────────────────
+#
+# ★#3636 FIXED THE DERIVATION AND THE SURFACE STILL SERVED THE PIN. Measured
+# on its own deploy, 12 cache-busted requests to the live endpoint at
+# 01:31-01:34Z on 2026-09-03:
+#
+#     7 served  "version": "2.12.1"   computed_at 01:30:41.677362Z
+#     5 served  "version": "2.12.3"   computed_at 01:30:28.189231Z
+#
+# Two replicas, two process-local memos, computed 13 seconds apart — one
+# before the background refresh landed and one after — and BOTH latched until
+# data_version flips at 00:00 UTC. The same deploy fixed /AGENTS.md completely
+# (8/8 correct) because that surface renders per request and has no memo.
+#
+# ★WHY THE EXISTING RESPONSE-BODY TEST COULD NOT SEE IT: it clears _CAPS_CACHE
+# immediately before issuing the request, so the memo is always COLD and the
+# resolver's answer always flows through. That is the right test for the
+# derivation and it is blind to the latch by construction. The bug lives
+# entirely in the case that test resets away — a memo that is already warm and
+# already wrong.
+#
+# So this test does the opposite: it PRIMES the memo with a stale version, the
+# way a real replica does moments after boot, and asserts the response is
+# fresh anyway.
+
+def test_capabilities_json_memo_does_not_latch_a_stale_version():
+    """A WARM memo holding yesterday's answer must not outrank the resolver."""
+    import datetime
+    import json
+    import time
+
+    import flask
+
+    import ai_surface_canon as canon
+    from routes import agent_capabilities_feed as feed
+
+    stale = "0.0.1"          # what a cold resolver froze into the memo
+    fresh = "99.9.9"          # what the resolver says NOW
+    assert stale != canon.PINNED["version"] != fresh
+
+    app = flask.Flask(__name__)
+    app.register_blueprint(feed.agent_capabilities_bp)
+
+    today = int(datetime.date.today().strftime("%Y%m%d"))
+    saved = dict(canon._server_version_cache)
+    try:
+        with canon._server_version_lock:
+            canon._server_version_cache["val"] = fresh
+            canon._server_version_cache["at"] = time.time()
+        # ★Prime the memo the way a freshly-booted replica does: a complete
+        # payload for TODAY whose version is the cold-start answer. _gather()
+        # will NOT run again today, so nothing else can correct this.
+        feed._CAPS_CACHE.update({
+            "data_version": today,
+            "payload": {"name": "DC Hub", "version": stale, "data_version": today},
+            "computed_at": time.time(),
+        })
+        resp = app.test_client().get("/api/v1/agents/capabilities.json")
+        body = resp.get_data(as_text=True)
+        # The shared memo must not have been mutated in place — other readers
+        # (and the ETag/data_version contract) still hold it.
+        memo_after = dict(feed._CAPS_CACHE["payload"])
+    finally:
+        with canon._server_version_lock:
+            canon._server_version_cache.clear()
+            canon._server_version_cache.update(saved)
+        feed._CAPS_CACHE.update({"data_version": None, "payload": None,
+                                 "computed_at": 0.0})
+
+    assert resp.status_code == 200, f"capabilities feed returned {resp.status_code}"
+    got = json.loads(body).get("version")
+    assert got == fresh, (
+        f"/api/v1/agents/capabilities.json SERVED {got!r} from its day-long memo "
+        f"while the resolver said {fresh!r}. This is the LIVE 2026-09-03 defect: "
+        "the memo froze the cold-start pin for up to 24h on 7 of 12 requests. "
+        "The version must be re-read per request — the memo exists for the "
+        "COUNTS (a cold-DB hop), and the resolver is already in-memory."
+    )
+    assert memo_after["version"] == stale, (
+        "the overlay mutated the SHARED memo in place; it must shallow-copy")
+
+
+def test_capabilities_version_overlay_degrades_to_the_memo():
+    """If the resolver has nothing to say, keep serving the memo — never blank.
+
+    The overlay must not be able to turn a working feed into one publishing
+    null/"" for a field that is a citable claim on a CC-BY card."""
+    from routes import agent_capabilities_feed as feed
+
+    memo = {"name": "DC Hub", "version": "1.2.3"}
+    for answer in (None, ""):
+        # Drive the real helper with the resolver stubbed at the call site.
+        orig = feed._canon_version
+        try:
+            feed._canon_version = lambda: answer
+            out = feed._with_live_version(dict(memo))
+        finally:
+            feed._canon_version = orig
+        assert out["version"] == "1.2.3", (
+            f"resolver answered {answer!r} and the overlay dropped the memo's "
+            f"version; got {out.get('version')!r}")
