@@ -40,10 +40,19 @@ class TestBlockShape:
         import datetime
         p = _rank_markets_provenance("best_overall")
         assert p["as_of"] == datetime.datetime.now().strftime("%Y-%m-%d")
-        # and the SOURCE must not contain a literal date
-        assert not re.search(r"20\d\d-\d\d-\d\d", SRC.split(
-            "def _rank_markets_provenance")[1].split("except Exception")[0]
-            .replace('_runtime_as_of', '')), "a date is hardcoded in the helper"
+        # …and the ASSIGNMENT must be a call, not a literal.
+        #
+        # 2026-09-03: this originally scanned the whole function body for
+        # /20\d\d-\d\d-\d\d/, which cannot tell a hardcoded VALUE from a dated
+        # CODE COMMENT — and every change in this repo carries a dated marker,
+        # so the next comment added to this function broke it. Assert on the
+        # as_of line itself; that is the only place a literal would do harm.
+        m = re.search(r'"as_of":\s*([^,\n]+)', SRC)
+        assert m, "as_of assignment not found"
+        assert "_runtime_as_of()" in m.group(1), (
+            f"as_of must be stamped at call time, got: {m.group(1)!r}")
+        assert not re.search(r"20\d\d-\d\d-\d\d", m.group(1)), (
+            f"a literal date is assigned to as_of: {m.group(1)!r}")
 
     def test_basis_names_BOTH_filters_the_query_applies(self):
         p = _rank_markets_provenance("best_overall")
