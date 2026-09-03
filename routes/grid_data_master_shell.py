@@ -703,6 +703,338 @@ def _ercot_fuel_mix_detailed(entry: dict) -> dict:
                     "source_url": "%s/fuel-mix.json" % _ERCOT_DASH}}
 
 
+# ── NYISO / SPP / AESO / MISO direct — four datasets, four keyless feeds ─
+#
+# ★★★ 2026-09-03, the third repoint. Four more ISOs off the gridstatus budget,
+#   each from a public unauthenticated feed:
+#
+#     mis.nyiso.com  isolf CSV        "NYISO" column  -> nyiso_load_forecast
+#     portal.spp.org file-browser     OP-MTLF csv     -> spp_load_forecast
+#     ets.aeso.ca    CSD report csv   DCR row         -> aeso_reserves
+#     public-api.misoenergy.org       MediumTermLoadForecast -> miso_load_forecast
+#
+#   Probed and verified end to end 2026-09-03: NYISO 21,860 MW (14:00 EPT,
+#   zone sum reconciles to the total exactly) · SPP 51,550 MW MTLF (actual
+#   50,774) · AESO 530 MW DCR (490 gen + 40 other) · MISO 117,546 MW for HE14
+#   published 13:25 EST.
+#
+# ★ MISO WAS NOT BROKEN — IT MOVED. The old DataBroker endpoints
+#   (api.misoenergy.org/MISORTWDDataBroker/…asmx) were RETIRED 2025-12-12 and
+#   now answer 200 with {"error":"no data"} / {"data":["None, None, None"]} —
+#   a success-shaped body carrying nothing, which is why it read as an upstream
+#   outage. The live feed is public-api.misoenergy.org, keyless, JSON-only.
+#
+# ★ as_of FOLLOWS WHAT THE NUMBER IS, and the feed decides which rule applies:
+#     MISO  publishes an instant (RefId "… Interval 13:25 EST") -> the ERCOT
+#           rule: forecast stamped when PUBLISHED, target hour in `raw`.
+#     SPP   publishes no instant, but stamps every row in explicit GMT -> the
+#           CAISO rule: the newest ELAPSED interval, stamped at that interval.
+#     NYISO publishes no instant and no zone -> the CAISO rule, anchored on the
+#           ISO's own zone.
+#     AESO  DCR is an OBSERVATION, so it carries its own instant (Last Update).
+#   No row is ever stamped ahead of the clock.
+#
+# ★ TIMEZONES. SPP is the only one of the four that hands us an explicit offset
+#   (GMTIntervalEnd), and it is used verbatim. The other three carry no offset,
+#   so each is anchored on ITS OWN ISO's zone — never the server's, which is UTC
+#   in prod and UTC-7 on the dev laptop. MISO additionally REFUSES a RefId that
+#   is not marked EST: MISO publishes EST year-round, and a CDT marker would
+#   mean the convention changed under us rather than something to guess through.
+#
+# ★ AESO IS http:// ON PURPOSE. ets.aeso.ca offers no working TLS — it fails the
+#   handshake outright (sslv3 alert handshake failure) from both curl and
+#   Python. This is a public read-only report and no credential crosses the
+#   wire. Do not "fix" it to https; that silently breaks the feed.
+_NYISO_ISOLF = "https://mis.nyiso.com/public/csv/isolf"
+_NYISO_TZ = "America/New_York"
+_SPP_FB = "https://portal.spp.org/file-browser-api"
+_SPP_FS = "mtlf-vs-actual"
+_SPP_TZ = "America/Chicago"
+_AESO_CSD = ("http://ets.aeso.ca/ets_web/ip/Market/Reports"
+             "/CSDReportServlet?contentType=csv")
+_AESO_TZ = "America/Edmonton"
+_MISO_API = "https://public-api.misoenergy.org/api"
+
+
+def _http_text(url: str, timeout: int = 10) -> str:
+    """Fetch a body as text. '' on anything unexpected (fail-soft)."""
+    import urllib.request as _u
+    try:
+        req = _u.Request(url, headers={"User-Agent": "dchub-grid-shell/1.0"})
+        with _u.urlopen(req, timeout=timeout) as r:
+            return r.read(400_000).decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _zoned(naive, tz_name: str):
+    """A parsed NAIVE datetime read in `tz_name` -> aware UTC, or None.
+
+    The zone is the ISO's own, passed in explicitly by the caller. Reading these
+    in the server's zone is the bug class the CAISO repoint had to be careful
+    about: prod runs UTC and this laptop runs UTC-7, so the same string would
+    become two different instants.
+    """
+    from datetime import timezone as _tz
+    try:
+        from zoneinfo import ZoneInfo
+    except Exception:
+        return None
+    if naive is None:
+        return None
+    try:
+        return naive.replace(tzinfo=ZoneInfo(tz_name)).astimezone(_tz.utc)
+    except Exception:
+        return None
+
+
+def _strptime(txt: str, fmt: str):
+    from datetime import datetime
+    try:
+        return datetime.strptime(str(txt or "").strip(), fmt)
+    except Exception:
+        return None
+
+
+# ── NYISO ────────────────────────────────────────────────────────────────
+def _nyiso_ts(stamp):
+    """'09/03/2026 14:00' (Eastern Prevailing Time) -> aware UTC, or None.
+
+    NYISO's MIS files carry no offset; EPT is the published convention for
+    every one of them. On the fall-back DST day the 01:00 hour appears twice
+    and zoneinfo resolves the first occurrence — a one-hour ambiguity once a
+    year, which ON CONFLICT collapses into a single row rather than a wrong one.
+    """
+    return _zoned(_strptime(stamp, "%m/%d/%Y %H:%M"), _NYISO_TZ)
+
+
+def _nyiso_load_forecast(entry: dict) -> dict:
+    """NYISO forward load from the daily isolf CSV.
+
+    Primary is the `NYISO` column — the RTO-wide total the category is about;
+    the eleven zone columns ride in `raw` rather than being summed into it, so
+    the published number is NYISO's own and not our arithmetic.
+    """
+    from datetime import timedelta
+    try:
+        from zoneinfo import ZoneInfo
+    except Exception:
+        return {"ok": False, "error": "nyiso_no_zoneinfo"}
+    now = _utcnow()
+    now_ny = now.astimezone(ZoneInfo(_NYISO_TZ))
+    # The file is named for NYISO's OWN day and spans that day plus five more,
+    # so yesterday's file still covers now. Falling back to it keeps the feed
+    # alive in the minutes before the new file is posted after NY midnight.
+    rows, url = [], None
+    for back in (0, 1):
+        url = "%s/%sisolf.csv" % (
+            _NYISO_ISOLF, (now_ny - timedelta(days=back)).strftime("%Y%m%d"))
+        rows = _http_csv(url)
+        if rows:
+            break
+    if not rows:
+        return {"ok": False, "error": "nyiso_isolf_csv_unavailable"}
+    # The file is mostly FUTURE slots. Take the newest at or before now — the
+    # last row outright is a forecast up to five days out.
+    dated = [(r, _nyiso_ts(r.get("Time Stamp"))) for r in rows
+             if _num(r.get("NYISO")) is not None]
+    past = [(r, t) for r, t in dated if t is not None and t <= now]
+    if not past:
+        return {"ok": False, "error": "nyiso_isolf_no_slot_at_or_before_now"}
+    picked, as_of = max(past, key=lambda rt: rt[1])
+    zones = {k: _num(v) for k, v in picked.items()
+             if k not in ("Time Stamp", "NYISO") and _num(v) is not None}
+    return {"ok": True, "primary_value": _num(picked.get("NYISO")), "as_of": as_of,
+            "raw": {"time_ept": picked.get("Time Stamp"), "zone_mw": zones,
+                    "zone_sum_mw": round(sum(zones.values()), 1),
+                    "slots_in_file": len(dated), "source_url": url}}
+
+
+# ── SPP ──────────────────────────────────────────────────────────────────
+def _spp_gmt(stamp):
+    """'09/03/2026 18:00:00' from the GMTIntervalEnd column -> aware UTC.
+
+    The column NAMES its zone, so this is read, never inferred.
+    """
+    from datetime import timezone as _tz
+    d = _strptime(stamp, "%m/%d/%Y %H:%M:%S")
+    return d.replace(tzinfo=_tz.utc) if d is not None else None
+
+
+def _spp_newest_mtlf_file():
+    """(dir_path, filename) of the newest hourly MTLF drop, or (None, None)."""
+    from datetime import timedelta
+    import urllib.parse as _up
+    try:
+        from zoneinfo import ZoneInfo
+    except Exception:
+        return None, None
+    now_ct = _utcnow().astimezone(ZoneInfo(_SPP_TZ))
+    # Day folders are named in SPP's own zone, so a UTC date can name a folder
+    # that does not exist yet for the last few hours of the SPP day.
+    for back in (0, 1):
+        path = "/%s" % (now_ct - timedelta(days=back)).strftime("%Y/%m/%d")
+        q = _up.urlencode({"fsName": _SPP_FS, "name": _SPP_FS,
+                           "path": path, "type": "folder"})
+        items = _http_json("%s/?%s" % (_SPP_FB, q))
+        names = sorted(str(x.get("name") or "") for x in (items or [])
+                       if isinstance(x, dict)
+                       and str(x.get("name") or "").endswith(".csv"))
+        if names:
+            # OP-MTLF-YYYYMMDDHHMM.csv — lexical order IS time order.
+            return path, names[-1]
+    return None, None
+
+
+def _spp_load_forecast(entry: dict) -> dict:
+    """SPP mid-term load forecast (MTLF) from the hourly public drop.
+
+    Primary is the RTO-wide `SPP` balancing authority. The file also carries
+    `SWPW` (SPP's western BA) on its own rows; summing the two would report a
+    number SPP never publishes, so SWPW is filtered out, not added.
+    """
+    import urllib.parse as _up
+    path, name = _spp_newest_mtlf_file()
+    if not name:
+        return {"ok": False, "error": "spp_mtlf_no_file_listed"}
+    url = "%s/download/%s?%s" % (
+        _SPP_FB, _SPP_FS, _up.urlencode({"path": "%s/%s" % (path, name)}))
+    rows = [r for r in _http_csv(url) if (r.get("BAA") or "").strip() == "SPP"]
+    if not rows:
+        return {"ok": False, "error": "spp_mtlf_csv_unavailable"}
+    now = _utcnow()
+    dated = [(r, _spp_gmt(r.get("GMTIntervalEnd"))) for r in rows
+             if _num(r.get("MTLF")) is not None]
+    past = [(r, t) for r, t in dated if t is not None and t <= now]
+    if not past:
+        return {"ok": False, "error": "spp_mtlf_no_interval_at_or_before_now"}
+    picked, as_of = max(past, key=lambda rt: rt[1])
+    ahead = [(r, t) for r, t in dated if t is not None and t > now]
+    nxt, nxt_t = min(ahead, key=lambda rt: rt[1]) if ahead else (None, None)
+    # `Averaged Actual` on the newest interval can be a PARTIAL-hour average.
+    # It is reported as SPP gives it and is never the primary — the dataset is
+    # the forecast, and averaging the two would publish neither.
+    return {"ok": True, "primary_value": _num(picked.get("MTLF")), "as_of": as_of,
+            "raw": {"load_forecast_mw": _num(picked.get("MTLF")), "baa": "SPP",
+                    "interval_ct": picked.get("Interval"),
+                    "averaged_actual_mw": _num(picked.get("Averaged Actual")),
+                    "next_hour_mtlf_mw": _num(nxt.get("MTLF")) if nxt else None,
+                    "next_hour_utc": str(nxt_t) if nxt_t else None,
+                    "file": name, "source_url": url}}
+
+
+# ── AESO ─────────────────────────────────────────────────────────────────
+def _aeso_ts(stamp):
+    """'Sep 03, 2026 12:19' (Alberta) -> aware UTC, or None."""
+    return _zoned(_strptime(stamp, "%b %d, %Y %H:%M"), _AESO_TZ)
+
+
+def _aeso_reserves(entry: dict) -> dict:
+    """AESO dispatched contingency reserve from the public CSD report.
+
+    The report is a label/value CSV, not a table: every line is
+    "Label","Value". Primary is Dispatched Contingency Reserve (DCR) — the
+    total the registry declares — with the gen/other split and the REQUIRED
+    figure alongside it in `raw`, because dispatched-vs-required is the whole
+    point of a reserve number.
+    """
+    import csv as _csv
+    import io as _io
+    body = _http_text(_AESO_CSD)
+    if not body:
+        return {"ok": False, "error": "aeso_csd_report_unavailable"}
+    pairs, stamp = {}, None
+    for row in _csv.reader(_io.StringIO(body)):
+        if not row:
+            continue
+        label = (row[0] or "").strip()
+        if label.startswith("Last Update") and ":" in label:
+            stamp = _aeso_ts(label.split(":", 1)[1].strip())
+        if len(row) >= 2:
+            pairs[label] = (row[1] or "").strip()
+    dcr = _num(pairs.get("Dispatched Contingency Reserve (DCR)"))
+    if dcr is None:
+        return {"ok": False, "error": "aeso_csd_no_dcr_row"}
+    if stamp is None:
+        return {"ok": False, "error": "aeso_csd_unparseable_last_update"}
+    return {"ok": True, "primary_value": dcr, "as_of": stamp,
+            "raw": {"dispatched_contingency_reserve_total_mw": dcr,
+                    "dcr_gen_mw": _num(pairs.get("Dispatched Contingency Reserve -Gen")),
+                    "dcr_other_mw": _num(pairs.get("Dispatched Contingency Reserve -Other")),
+                    "contingency_reserve_required_mw":
+                        _num(pairs.get("Contingency Reserve Required")),
+                    "alberta_internal_load_mw":
+                        _num(pairs.get("Alberta Internal Load (AIL)")),
+                    "total_net_generation_mw":
+                        _num(pairs.get("Alberta Total Net Generation")),
+                    "source_url": _AESO_CSD}}
+
+
+# ── MISO ─────────────────────────────────────────────────────────────────
+def _miso_refid(ref):
+    """'03-Sep-2026 - Interval 13:25 EST' -> (operating_day, published_utc).
+
+    (None, None) for anything that is not EST-marked. MISO publishes in EST
+    year-round; a CDT marker would mean the convention moved under us, and
+    guessing through it would put every summer row an hour off.
+    """
+    import re as _re
+    from datetime import datetime, timedelta, timezone as _tz
+    m = _re.match(r"^(\d{2}-[A-Za-z]{3}-\d{4})\s*-\s*Interval\s+(\d{1,2}):(\d{2})\s*EST$",
+                  str(ref or "").strip())
+    if not m:
+        return (None, None)
+    try:
+        day = datetime.strptime(m.group(1), "%d-%b-%Y").date()
+    except Exception:
+        return (None, None)
+    hh, mm = int(m.group(2)), int(m.group(3))
+    if hh > 23 or mm > 59:
+        return (None, None)
+    est = _tz(timedelta(hours=-5))
+    pub = datetime.combine(day, datetime.min.time(), est) + timedelta(hours=hh, minutes=mm)
+    return day, pub.astimezone(_tz.utc)
+
+
+def _miso_load_forecast(entry: dict) -> dict:
+    """MISO mid-term load forecast from the keyless public API.
+
+    ★ The old api.misoenergy.org/MISORTWDDataBroker/…asmx endpoints were retired
+      2025-12-12 and still answer 200 with an EMPTY success-shaped body, which
+      is why this read as an upstream outage rather than a moved endpoint.
+    """
+    from datetime import datetime, timedelta, timezone as _tz
+    d = _http_json("%s/RealTimeTotalLoad" % _MISO_API)
+    info = (d or {}).get("LoadInfo") or {}
+    day, pub = _miso_refid(info.get("RefId"))
+    if day is None or pub is None:
+        return {"ok": False, "error": "miso_refid_not_est_dated"}
+    est = _tz(timedelta(hours=-5))
+    midnight = datetime.combine(day, datetime.min.time(), est)
+    dated = []
+    for item in info.get("MediumTermLoadForecast") or []:
+        f = (item or {}).get("Forecast") or {}
+        he, mw = _num(f.get("HourEnding")), _num(f.get("LoadForecast"))
+        if he is None or mw is None or not (1 <= he <= 24):
+            continue
+        # HourEnding N is the hour ENDING at N o'clock EST; HE24 is next-day
+        # midnight, which is why this adds hours rather than setting one.
+        dated.append((int(he), mw, (midnight + timedelta(hours=he)).astimezone(_tz.utc)))
+    now = _utcnow()
+    ahead = [x for x in dated if x[2] >= now]
+    picked = (min(ahead, key=lambda x: x[2]) if ahead
+              else (max(dated, key=lambda x: x[2]) if dated else None))
+    if picked is None:
+        return {"ok": False, "error": "miso_mtlf_no_forecast_hour"}
+    he, mw, target = picked
+    return {"ok": True, "primary_value": mw, "as_of": pub,
+            "raw": {"load_forecast_mw": mw, "hour_ending_est": he,
+                    "for_hour_utc": str(target), "published_utc": str(pub),
+                    "ref_id": info.get("RefId"), "operating_day_est": str(day),
+                    "hours_in_file": len(dated),
+                    "source_url": "%s/RealTimeTotalLoad" % _MISO_API}}
+
+
 # dataset_id -> (source_label, fetcher). A dataset listed here is NO LONGER
 # parked: parked_datasets() subtracts it, so the standing finding shrinks by
 # arithmetic as repoints land rather than by anyone remembering to edit it.
@@ -714,6 +1046,10 @@ _DIRECT_SOURCES = {
     "ercot_capacity_committed":          ("ercot_dashboard", _ercot_capacity_committed),
     "ercot_real_time_adders_and_reserves": ("ercot_dashboard", _ercot_reserves),
     "ercot_fuel_mix_detailed":           ("ercot_dashboard", _ercot_fuel_mix_detailed),
+    "nyiso_load_forecast": ("nyiso_mis_isolf",      _nyiso_load_forecast),
+    "spp_load_forecast":   ("spp_portal_mtlf",      _spp_load_forecast),
+    "aeso_reserves":       ("aeso_ets_csd",         _aeso_reserves),
+    "miso_load_forecast":  ("miso_public_api",      _miso_load_forecast),
 }
 
 
@@ -842,32 +1178,76 @@ def parked_datasets() -> list:
             if t["id"] not in _GS_ALLOWLIST and t["id"] not in _DIRECT_SOURCES]
 
 
+# Why each STILL-PARKED dataset is parked, probed 2026-09-03.
+#
+# ★★★ THE BLANKET CLAIM THIS REPLACES WAS GOING STALE. The finding used to say
+#   every parked dataset "has a free direct source we already hold credentials
+#   for, and each needs its adapter repointed there". That was true of the 18
+#   parked in July. It is FALSE of the seven left: four need credentials nobody
+#   here holds, one upstream is down, and one has no source at the granularity
+#   its own id claims. A reader acting on the old sentence would go hunting for
+#   a repoint that cannot be written — a frozen claim aimed at the wrong work.
+#
+# Consulted ONLY for ids that are actually parked, so an entry goes quiet the
+# moment its dataset is repointed. An id missing from here reports as
+# UNCLASSIFIED rather than inheriting someone else's reason — a new registry row
+# shows up as "needs a probe", which is the honest default.
+_PARK_REASON = {
+    "pjm_dispatched_reserves_verified":
+        "credential — services.pjm.com/PJMDataminerApi 401, needs a Data Miner 2 key",
+    "pjm_marginal_emission_rates_5_min":
+        "credential — api.pjm.com/api/v1 401, needs a Data Miner 2 key",
+    "isone_lmp_real_time_5_min":
+        "credential — webservices.iso-ne.com 401, needs an ISO-NE web-services account",
+    "isone_load_forecast":
+        "credential — webservices.iso-ne.com 401, needs an ISO-NE web-services account",
+    "eia_co2_emissions":
+        "upstream outage — EIA-930 region_data/latest 500, nothing published since "
+        "2026-09-02T07:00Z",
+    "eia_henry_hub_natural_gas_spot_prices_daily":
+        "needs EIA_API_KEY at ingest time (api.eia.gov/v2 403 API_KEY_MISSING without "
+        "one; prod HAS a working key, so this is repointable and merely unverified)",
+    "miso_multiday_operating_margin":
+        "no keyless MULTIDAY source — MISO's CsatSupplyDemand covers one operating day, "
+        "so pointing a 'multiday' id at it would restate what the number means",
+}
+
+
 def _parked_finding() -> tuple | None:
-    """(issue, detail) for the parked registry rows, or None when none are."""
+    """(issue, detail) for the parked registry rows, or None when none are.
+
+    Counts stay DERIVED — registry, allowlist and direct sources are read live,
+    so the finding shrinks by arithmetic and clears itself at zero. What is NOT
+    derivable is why each remaining one is stuck, so that comes from
+    _PARK_REASON and defaults to 'unclassified' rather than to a guess.
+    """
     parked = parked_datasets()
     if not parked:
         return None
-    by_iso: dict = {}
-    for t in parked:
-        by_iso.setdefault(t["iso"], []).append(t["id"])
-    shown = ", ".join(
-        "%s×%d (%s)" % (iso, len(ids), ids[0])
-        for iso, ids in sorted(by_iso.items(), key=lambda kv: -len(kv[1]))[:6])
+    shown = "; ".join(
+        "%s [%s] %s" % (t["id"], t["iso"],
+                        _PARK_REASON.get(t["id"], "UNCLASSIFIED — needs a probe"))
+        for t in sorted(parked, key=lambda t: t["id"]))
+    unclassified = [t["id"] for t in parked if t["id"] not in _PARK_REASON]
     return (
         "grid_datasets_parked_pending_repoint",
         ("%d of %d registry datasets cannot be ingested: they are outside "
          "GRIDSTATUS_DATASET_ALLOWLIST (currently %s), which was narrowed to "
          "PJM-only on 2026-07-26 because the gridstatus free tier is 250 "
-         "req/month and July burned 375. Each one has a free direct source we "
-         "already hold credentials for, and each needs its adapter repointed "
-         "there — that repoint is the work. Until it happens this shell can "
-         "only cycle %d dataset(s), so 'widening coverage' is inert. "
-         "%d already repointed to a free direct source (%s). Parked: %s."
+         "req/month and July burned 375. %d already repointed to a free direct "
+         "source (%s), so the shell can cycle %d dataset(s). Widening the "
+         "allowlist is NOT the fix — the budget is already over. Each remaining "
+         "one is blocked for its own reason, and %d of the %d need something "
+         "obtained (a credential, an upstream recovery, a coverage decision) "
+         "before any adapter can be written: %s.%s"
          % (len(parked), len(TARGET_DATASETS),
             ",".join(sorted(_GS_ALLOWLIST)) or "(empty)",
-            len(TARGET_DATASETS) - len(parked),
             len(_DIRECT_SOURCES),
-            ",".join(sorted(_DIRECT_SOURCES)) or "none yet", shown)))
+            ",".join(sorted(_DIRECT_SOURCES)) or "none yet",
+            len(TARGET_DATASETS) - len(parked),
+            len([t for t in parked if t["id"] in _PARK_REASON]), len(parked), shown,
+            (" UNCLASSIFIED (probe these): %s." % ",".join(sorted(unclassified)))
+            if unclassified else "")))
 
 
 def _file_gap_findings() -> int:
