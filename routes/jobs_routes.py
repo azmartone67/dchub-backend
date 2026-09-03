@@ -313,6 +313,49 @@ def _reg_update(key):
 # =============================================================================
 
 
+
+def _fiber_status_from(fiber_raw):
+    """(status, error) for the fiber leg — a pure function so a test can reach it.
+
+    ★ EXTRACTED SO IT CAN BE GUARDED. Until 2026-09-03 this lived inline in the
+    handler, and the only thing a test could do about it was grep the source.
+    #3659 recorded the same lesson for the triage rollup: a decision that no
+    test can call is a decision whose guard is a substring match.
+
+    'no_source' is the state that had no name. The loader reported 'success'
+    whenever no row WRITE failed, and `errors` counts exactly that — so a
+    discovery source returning nothing for 73 days could never move it.
+    """
+    if not isinstance(fiber_raw, dict):
+        return "ok", None
+    st = fiber_raw.get("status")
+    if st == "error":
+        return "error", str(fiber_raw.get("message", "loader reported status=error"))[:200]
+    if st == "no_source":
+        return "no_source", str(fiber_raw.get("message", "no working discovery source"))[:200]
+    return "ok", None
+
+
+def _fiber_write_attempts(fiber_res):
+    """How many writes this run legitimately expected to grow the table by.
+
+    ★ THE HARDCODED SEED IS EXCLUDED. `seeded` counts a fixed list re-upserted
+    every run — measured 2026-09-03, exactly 20 fiber_routes rows carry
+    updated_at=today and 0 carry created_at=today, every single day. Counting
+    it made `rows_persisted == 0 and attempts > 0` fire forever and blame the
+    WRITE PATH, which was never broken. The loader publishes
+    `seed_is_hardcoded` so this does not need to know which list that is; a
+    loader that does NOT publish it is still counted, because silence must not
+    quietly zero the check.
+    """
+    if not isinstance(fiber_res, dict):
+        return 0
+    n = int(fiber_res.get("discovered") or 0)
+    if not fiber_res.get("seed_is_hardcoded"):
+        n += int(fiber_res.get("seeded") or 0)
+    return n
+
+
 @jobs_bp.route('/api/jobs/db-health-snapshot', methods=['POST'])
 def job_db_health_snapshot():
     """Cron (6-hourly): capture a whole-DB health snapshot into
@@ -1154,9 +1197,11 @@ def job_infrastructure_sync():
         fiber_raw = run_fiber_discovery() or {}
         if not isinstance(fiber_raw, dict):
             fiber_raw = {}
-        if fiber_raw.get('status') == 'error':
-            fiber_status = 'error'
-            fiber_error = str(fiber_raw.get('message', 'loader reported status=error'))[:200]
+        # ★ A LANE WITH NO WORKING SOURCE FAILS HERE, LOUDLY. Until 2026-09-03
+        # the loader returned 'success' whenever no row WRITE failed — so 73
+        # days of a discovery source returning nothing (PeeringDB's /api/ix
+        # carries no coordinates; measured, not inferred) read as healthy.
+        fiber_status, fiber_error = _fiber_status_from(fiber_raw)
     except Exception as e:
         fiber_status, fiber_error = 'error', str(e)[:200]
     if fiber_error:
@@ -1169,6 +1214,10 @@ def job_infrastructure_sync():
         'discovered': fiber_raw.get('discovered'),
         'errors': fiber_raw.get('errors'),
         'total': fiber_raw.get('total'),
+        # Per-source diagnosis, so "why did this lane write nothing" is
+        # answerable from the response instead of from a log line nobody reads.
+        'peeringdb': fiber_raw.get('peeringdb'),
+        'seed_is_hardcoded': fiber_raw.get('seed_is_hardcoded'),
     }
 
     # ★ The permits leg is GONE, not broken. It read
@@ -1200,16 +1249,14 @@ def job_infrastructure_sync():
         else rows_after - rows_before)
 
     fiber_res = results.get('fiber') or {}
-    attempts = 0
-    if isinstance(fiber_res, dict):
-        attempts = int(fiber_res.get('seeded') or 0) + int(fiber_res.get('discovered') or 0)
+    attempts = _fiber_write_attempts(fiber_res)
 
     if results['rows_persisted'] == 0 and attempts > 0:
         results['counter_unreliable'] = (
-            "loader reported %d write attempt(s) (seeded+discovered) but "
-            "fiber_routes did not change (%s rows). seeded counts a hardcoded "
-            "route list re-upserted every run, so these attempts conflict and "
-            "insert nothing." % (attempts, rows_after))
+            "loader reported %d DISCOVERED write attempt(s) but fiber_routes "
+            "did not change (%s rows). The hardcoded seed list is excluded "
+            "from this count, so these were real discovery writes that "
+            "persisted nothing." % (attempts, rows_after))
         errors.append(
             'fiber: %d write attempts persisted 0 rows' % attempts)
 
