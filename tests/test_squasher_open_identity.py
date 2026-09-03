@@ -140,10 +140,14 @@ def _wire(monkeypatch, cur):
     return conn
 
 
-def _open_row(id_, key, status, ts, seen=1, action_url=None, last_seen=None):
+def _open_row(id_, key, status, ts, seen=1, action_url=None, last_seen=None,
+              title=""):
     # the collapse SELECT's shape: id, finding_key, status, requested_at,
-    # seen_count, last_seen-or-requested_at, action_url-or-finding_key
-    return (id_, key, status, ts, seen, last_seen or ts, action_url or key)
+    # seen_count, last_seen-or-requested_at, action_url-or-finding_key,
+    # action_url (raw, '' when unclassified), title  — the last two added
+    # 2026-09-03 for fleet-family grouping.
+    return (id_, key, status, ts, seen, last_seen or ts, action_url or key,
+            action_url or "", title)
 
 
 def _collapse_cur(rows, **kw):
@@ -314,7 +318,9 @@ def test_collapse_keeps_the_oldest_open_row_per_finding_and_supersedes_the_rest(
     assert out["index_ready"] is True and cur.find(sq._OPEN_INDEX), (
         "the v2 index must be attempted once the way is clear")
     assert out["detail"] == [{"key": FR_KEY, "keep": 241, "keep_status": "awaiting_ops",
-                              "supersede": [256]}]
+                              "fleet": False, "supersede": [256]}], (
+        "a per-country dedup finding is NOT a fleet family: each country is "
+        "its own operator call, so fleet must be False here")
 
 
 def test_collapse_is_idempotent_on_a_clean_queue():
