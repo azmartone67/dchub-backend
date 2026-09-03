@@ -109,6 +109,7 @@ def latest():
     return jsonify(iso="BPA", metrics=latest_for_iso("BPA")), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 @iso_bpa_bp.route("/health", methods=["GET"])
 def health():
     return jsonify(health_for_iso("BPA", SOURCE_ID)), 200

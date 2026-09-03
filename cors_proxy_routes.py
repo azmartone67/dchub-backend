@@ -99,6 +99,7 @@ def is_allowed_domain(url):
         return False
 
 
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 @cors_proxy_bp.route('/health', methods=['GET'])
 def proxy_health():
     """Health check endpoint"""
