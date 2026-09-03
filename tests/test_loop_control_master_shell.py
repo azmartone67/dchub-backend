@@ -98,32 +98,80 @@ def test_lane4_never_compares_public_copy_to_a_raw_record_key():
     assert "no_overclaim" in lane and "floors_current" in lane
 
 
-def test_lane7_does_not_count_itself():
-    """SELF-COUNT: the file contains the needle, so it always matched itself
-    and inflated 'independent implementations' by one, forever."""
-    src = _src("routes", "loop_control_master_shell.py")
-    lane = src[src.index("def _lane_counter_canon"):src.index("# ── lane 8")]
-    assert "_SELF = os.path.basename(__file__)" in lane
-    assert "fn == _SELF" in lane, "lane 7 still counts itself"
+# ── lane 7 · counter canon ────────────────────────────────────────────
+# ★2026-09-03: these four tests pinned lane 7's GREP-SCAN implementation by
+# reading its source text — a grep-shaped test of a grep-shaped check. The
+# lane now measures VALUES (it runs the canonical query and compares the
+# retired bases), so the old assertions describe code that is gone. Their
+# INTENT survives and is re-expressed here by driving the lane.
+
+
+class _L7Cur:
+    def __init__(self, o): self.o = o
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def execute(self, sql, params=None): self.o.last = " ".join(sql.split())
+    def fetchone(self):
+        if "information_schema.tables" in self.o.last or "to_regclass" in self.o.last:
+            return (True,)
+        if "COUNT(DISTINCT agent_id)" in self.o.last:
+            return self.o.counts
+        return (1,)
+    def fetchall(self):
+        if "information_schema.columns" in self.o.last:
+            return [("created_at",), ("agent_id",), ("ip_address",),
+                    ("session_id",), ("is_public_ip",), ("is_real_external",)]
+        return []
+
+
+class _L7Conn:
+    def __init__(self, counts=(44, 83, 210)): self.counts, self.last = counts, ""
+    def cursor(self, *a, **k): return _L7Cur(self)
+    def close(self): pass
+
+
+def _lane7(counts=(44, 83, 210)):
+    from routes.loop_control_master_shell import _lane_counter_canon
+    return {c["id"]: c for c in _lane_counter_canon(_L7Conn(counts))}
+
+
+def test_lane7_does_not_derive_its_verdict_from_scanning_files():
+    """WAS: 'does not count itself' — the lane scanned the repo and its own
+    file contained the needle, inflating the count by one forever. Self-count
+    is now structurally impossible because there is no scan: the verdict comes
+    from the canonical QUERY. Pin the absence of the scan, not the workaround."""
+    ids = _lane7()
+    assert "agent_count_sites" not in ids, "the repo-scan check is back"
+    assert "canon_value" in ids
 
 
 def test_lane7_does_not_claim_drift_from_grep_hits():
-    """OVERCLAIM: a grep hit is not a distinct counter, and not all hits are
-    the same measurement."""
-    src = _src("routes", "loop_control_master_shell.py")
-    lane = src[src.index("def _lane_counter_canon"):src.index("# ── lane 8")]
-    assert "independent implementation" not in lane, \
-        "lane 7 still calls grep hits 'independent implementations'"
-    assert "candidates only" in lane
+    """OVERCLAIM: a grep hit is not a distinct counter. Many modules legitimately
+    query agent_id; that must not by itself redden the lane."""
+    ids = _lane7()
+    assert ids["canon_value"]["pass"] is True
+    assert ids["canon_emitters"]["pass"] is True
+    assert "44 distinct agents" in ids["canon_value"]["detail"]
 
 
-def test_lane7_io_failure_is_indeterminate_not_a_fact():
-    """DEAD BRANCH: an os.listdir failure used to render the confident
-    'no COUNT(DISTINCT agent_id) site found'."""
-    src = _src("routes", "loop_control_master_shell.py")
-    lane = src[src.index("def _lane_counter_canon"):src.index("# ── lane 8")]
-    assert "could not scan the repo" in lane
-    assert "no COUNT(DISTINCT agent_id) site found" not in lane
+def test_lane7_unreadable_input_is_indeterminate_not_a_fact():
+    """The original intent, unchanged: an input the lane could not read must
+    render UNKNOWN, never a confident statement about the repo or the DB."""
+    from routes.loop_control_master_shell import _lane_counter_canon
+    got = _lane_counter_canon(None)
+    assert got[0]["pass"] is None
+    assert "never a zero and never a pass" in got[0]["detail"]
+
+
+def test_lane7_can_actually_fire_in_both_directions(monkeypatch):
+    """★ THE SURVIVING LESSON, verbatim from the original: 'A gate that CANNOT
+    fire is not a gate.' The first version could never match; the second could
+    never pass. Drive both directions."""
+    import routes.loop_control_master_shell as m
+    import os as _os
+    assert _lane7()["canon_emitters"]["pass"] is True          # green direction
+    monkeypatch.setattr(m, "_read", lambda p: "x = 1  # no call here\n")
+    assert _lane7()["canon_emitters"]["pass"] is False         # red direction
 
 
 def test_lane3_is_not_red_by_construction():
@@ -136,21 +184,12 @@ def test_lane3_is_not_red_by_construction():
         "lane 3 still scores DB-count vs in-process memory"
 
 
-def test_lane7_match_is_case_insensitive_and_can_actually_fire():
-    """Originally a lowercase needle compared against body.upper(): it could
-    never match, so the lane rendered a permanent '?'. A gate that CANNOT fire
-    is not a gate. Now a regex — pin that it is case-insensitive AND that it
-    matches the real-world spellings."""
-    from routes.loop_control_master_shell import _lane_counter_canon  # noqa: F401
-    src = _src("routes", "loop_control_master_shell.py")
-    lane = src[src.index("def _lane_counter_canon"):src.index("# ── lane 8")]
-    m = re.search(r're\.compile\(r"([^"]+)",\s*re\.I\)', lane)
-    assert m, "lane 7 no longer uses a case-insensitive regex"
-    pat = re.compile(m.group(1), re.I)
-    for spelling in ("COUNT(DISTINCT agent_id)", "count(distinct agent_id)",
-                     "SELECT DISTINCT agent_id", "COUNT(DISTINCT i.agent_id)"):
-        assert pat.search(spelling), f"regex misses {spelling!r}"
-
+# ★ test_lane7_match_is_case_insensitive_and_can_actually_fire was RETIRED
+# 2026-09-03. It pinned the case-insensitive regex of lane 7's repo scan, and
+# that scan no longer exists — the lane measures the canonical VALUE instead.
+# Its lesson ("a gate that CANNOT fire is not a gate") is preserved above in
+# test_lane7_can_actually_fire_in_both_directions, which drives the lane green
+# AND red rather than inspecting a pattern in its source.
 
 def test_lane8_does_not_score_probe_rows_as_humans():
     """relay_opens holds only our own probe traffic (human-simulated /
