@@ -251,6 +251,26 @@ def _findings_in_line(line):
     return out
 
 
+def _scan_blob(path, blob, blocking, known):
+    """Sort one file's bytes into the blocking/known buckets, in place."""
+    if b"\0" in blob[:8192]:  # binary
+        return
+    text = blob.decode("utf-8", errors="replace")
+    for lineno, line in enumerate(text.splitlines(), 1):
+        # One value can trip two rules — a `dch_live_…` literal matches
+        # both the named-secret and the vendor-prefix rule. Report the
+        # LINE once per distinct value, or the ledger's line count
+        # double-counts and reads as more exposure than there is.
+        seen_here = set()
+        for what, value in _findings_in_line(line):
+            digest = _sha256(value) if value is not None else None
+            if digest in seen_here:
+                continue
+            seen_here.add(digest)
+            row = (path, lineno, what, digest)
+            (known if digest in KNOWN_EXPOSURES else blocking).append(row)
+
+
 def scan(paths):
     """Return (blocking, known) findings as (path, lineno, message, sha)."""
     blocking, known = [], []
@@ -262,22 +282,32 @@ def scan(paths):
                 blob = f.read()
         except OSError:
             continue
-        if b"\0" in blob[:8192]:  # binary
+        _scan_blob(path, blob, blocking, known)
+    return blocking, known
+
+
+def scan_staged():
+    """Scan STAGED CONTENT — what this commit would actually record.
+
+    Reads each blob from the INDEX, not the worktree. `git add`ing a
+    credential and then editing it back out of the working copy must not
+    produce a green hook while the commit still carries the value.
+
+    Deliberately does NOT run the stale-KNOWN_EXPOSURES check that main()
+    performs. That invariant is only meaningful across the full tracked set
+    (see _paths); against the handful of files in one commit every ledger
+    entry would look stale and the hook would block every commit — a guard
+    that cries wolf gets uninstalled, which is worse than not shipping it.
+    """
+    blocking, known = [], []
+    for path in _git("diff", "--cached", "--name-only", "-z",
+                     "--diff-filter=ACM"):
+        if path == SELF:
             continue
-        text = blob.decode("utf-8", errors="replace")
-        for lineno, line in enumerate(text.splitlines(), 1):
-            # One value can trip two rules — a `dch_live_…` literal matches
-            # both the named-secret and the vendor-prefix rule. Report the
-            # LINE once per distinct value, or the ledger's line count
-            # double-counts and reads as more exposure than there is.
-            seen_here = set()
-            for what, value in _findings_in_line(line):
-                digest = _sha256(value) if value is not None else None
-                if digest in seen_here:
-                    continue
-                seen_here.add(digest)
-                row = (path, lineno, what, digest)
-                (known if digest in KNOWN_EXPOSURES else blocking).append(row)
+        out = subprocess.run(["git", "show", f":{path}"], capture_output=True)
+        if out.returncode != 0:
+            continue
+        _scan_blob(path, out.stdout, blocking, known)
     return blocking, known
 
 
@@ -392,9 +422,39 @@ def self_test():
     return 0
 
 
+def _staged_main():
+    """Local pre-commit path — refuse the commit before the value can be pushed.
+
+    Known exposures are REPORTED but do not block: they are already public,
+    and blocking on them would stop every commit that touches those files
+    until rotation lands, which is how a guard gets uninstalled.
+    """
+    blocking, known = scan_staged()
+    for path, lineno, what, digest in known:
+        print(f"  {path}:{lineno}: known exposure (already public) — "
+              f"{KNOWN_EXPOSURES[digest]}", file=sys.stderr)
+    for path, lineno, what, _ in blocking:
+        print(f"  {path}:{lineno}: {what}", file=sys.stderr)
+    if not blocking:
+        return 0
+    print(f"\npre-commit blocked: {len(blocking)} credential-shaped string(s) "
+          f"in staged content.\n"
+          f"  This repo is PUBLIC. Pushing the branch publishes the value, and\n"
+          f"  CI's syntax-check does not run until after that push.\n"
+          f"  Rotate anything real FIRST (old SHAs stay public forever), then\n"
+          f"  remove it. Genuine placeholder? Use a password PLACEHOLDER_PW\n"
+          f"  already accepts (pw, pass, secret, xxx…) rather than reaching for\n"
+          f"  '{PRAGMA}', which switches that line off for EVERY rule.\n"
+          f"  Bypass (only if you are sure): git commit --no-verify",
+          file=sys.stderr)
+    return 1
+
+
 def main(argv):
     if "--self-test" in argv:
         return self_test()
+    if "--staged" in argv:
+        return _staged_main()
     include_untracked = "--untracked" in argv
     paths = _paths(include_untracked)
     blocking, known = scan(paths)
