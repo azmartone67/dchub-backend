@@ -43,7 +43,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 __all__ = ["parse_kml_bytes", "parse_kmz_bytes", "parse_bytes", "route_uid",
-           "haversine_miles", "OWNER_KEYS", "TYPE_KEYS"]
+           "haversine_miles", "storage_keys", "OWNER_KEYS", "TYPE_KEYS"]
 
 # ExtendedData keys that name the carrier, in priority order. Lowercased on
 # comparison; the first one present wins.
@@ -246,3 +246,42 @@ def parse_bytes(raw, **kw):
     if raw[:2] == b"PK":
         return parse_kmz_bytes(raw, **kw)
     return parse_kml_bytes(raw, **kw)
+
+
+# fiber_routes column caps, and the room the fingerprint needs inside them.
+NAME_MAX, SOURCE_ID_MAX = 200, 255
+_UID_SHORT = 8
+
+
+def storage_keys(name, uid, origin):
+    """Compose the (name, source_id) this route is STORED under.
+
+    ★ fiber_routes arbitrates on five unique indexes (measured on production
+    2026-09-03), and `ON CONFLICT (source, upstream_uid)` covers only one:
+
+        fiber_routes_name_provider_key      UNIQUE (name, provider)
+        fiber_routes_name_provider_unique   UNIQUE (name, provider)  -- a twin
+        fiber_routes_source_id_key          UNIQUE (source_id)       -- bare!
+        idx_fiber_routes_source_id          UNIQUE (source, source_id)
+        fiber_routes_upstream_uid_uniq      UNIQUE (source, upstream_uid)
+
+    So every key the table arbitrates on has to carry the per-route
+    fingerprint. Stamping source_id with the file's basename meant only ONE row
+    per file could ever insert; using the placemark's raw name collapsed every
+    unnamed placemark in a Google Earth export onto its "Temporary Places"
+    folder label. Both fired on the first production write.
+
+    The uid is placed where no length cap can reach it and the HUMAN part is
+    what gets trimmed — clipping the composed string would silently drop the
+    suffix on long names and reintroduce the collision.
+
+    `origin` (the file it arrived in) is a readability prefix only, never
+    identity: the same route re-exported under a new filename still dedups on
+    (source, upstream_uid).
+    """
+    short = (uid or "")[:_UID_SHORT]
+    room = NAME_MAX - len(short) - 2                      # " #" + short
+    stored_name = "%s #%s" % ((name or "")[:room], short)
+    tail = SOURCE_ID_MAX - len("kmz:") - len(uid or "") - 1
+    source_id = "kmz:%s:%s" % (uid, (origin or "")[:max(0, tail)])
+    return stored_name, source_id
