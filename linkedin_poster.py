@@ -759,7 +759,7 @@ def generate_deals_post():
         from canonical_stats import deals_phrase as _dp
         _deals = _dp()
     except Exception:
-        _deals = "1,900+"          # PINNED floor; floors DOWN, never over-claims
+        _deals = "2,000+"          # PINNED floor; floors DOWN, never over-claims
     post_text = f"""Latest data center M&A activity tracked by DC Hub:
 
 {chr(10).join(deal_lines)}

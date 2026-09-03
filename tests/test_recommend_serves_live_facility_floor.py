@@ -42,11 +42,30 @@ import ai_surface_canon                                              # noqa: E40
 from ai_surface_canon import resolve_public_floors_cached            # noqa: E402
 
 
+# ★2026-09-02 canon walk (facilities 18,500+ -> 20,100+, deals 1,900+ -> 2,000+).
+# Every number this module used to type was a COPY of the pin of the day, so the
+# walk broke four tests at once and turned the "risen live floor" scenario into a
+# DEGRADED one (19,300+ now sits BELOW the pin, where the overlay is right to
+# refuse it — the test would have proved the opposite of what it claims). The
+# three helpers below derive from PINNED['public'] instead, so the relationships
+# each test asserts — live-above-pin RAISES, live-below-pin is REFUSED, the cold
+# path serves the pin — hold by construction at the next walk too.
 def _pub(**over):
-    base = {"facilities": "18,500+", "deals": "1,900+",
-            "markets": "300+", "countries": "170+"}
+    """A resolve_canon() payload that, un-overridden, matches the pin exactly."""
+    base = {k: ai_surface_canon.PINNED["public"][k]
+            for k in ("facilities", "deals", "markets", "countries")}
     base.update(over)
     return {"public": base}
+
+
+def _pin(key: str = "facilities") -> str:
+    """The pinned floor — what every fallback path below has to serve."""
+    return ai_surface_canon.PINNED["public"][key]
+
+
+def _risen(key: str = "facilities") -> str:
+    """A live value unambiguously ABOVE the pinned floor."""
+    return f"{ai_surface_canon._floor_int(_pin(key)) + 1000:,}+"
 
 
 def _reset_cache():
@@ -60,10 +79,13 @@ def _reset_cache():
 
 def test_a_risen_live_floor_survives_the_cache(monkeypatch):
     _reset_cache()
+    risen = _risen()                                   # ★2026-09-02: was the literal "19,300+"
+    assert ai_surface_canon._floor_int(risen) > ai_surface_canon._floor_int(_pin()), (
+        "the risen scenario no longer rises — it is testing the refusal path instead")
     monkeypatch.setattr(ai_surface_canon, "resolve_canon",
-                        lambda: _pub(facilities="19,300+"))
+                        lambda: _pub(facilities=risen))
     ai_surface_canon._refresh_public_floors()          # synchronous, no thread
-    assert resolve_public_floors_cached()["facilities"] == "19,300+"
+    assert resolve_public_floors_cached()["facilities"] == risen
 
 
 def test_a_degraded_live_floor_is_still_refused_through_the_cache(monkeypatch):
@@ -73,7 +95,7 @@ def test_a_degraded_live_floor_is_still_refused_through_the_cache(monkeypatch):
                         lambda: _pub(facilities="400+"))
     ai_surface_canon._refresh_public_floors()
     out = resolve_public_floors_cached()
-    assert out["facilities"] == "18,500+"
+    assert out["facilities"] == _pin()
     assert any(r.startswith("facilities=") for r in out["_rejected"])
 
 
@@ -83,7 +105,7 @@ def test_a_raising_resolver_that_explodes_leaves_the_pin_standing(monkeypatch):
         raise RuntimeError("stats down")
     monkeypatch.setattr(ai_surface_canon, "resolve_canon", _boom)
     ai_surface_canon._refresh_public_floors()
-    assert resolve_public_floors_cached()["facilities"] == "18,500+"
+    assert resolve_public_floors_cached()["facilities"] == _pin()
 
 
 # ── it never blocks the request path ──────────────────────────────────
@@ -96,7 +118,7 @@ def test_the_cold_call_answers_immediately_with_the_pin(monkeypatch):
     out = resolve_public_floors_cached()
     elapsed = time.time() - t0
     assert elapsed < 0.5, f"cold call BLOCKED for {elapsed:.2f}s — the 503 trade is back"
-    assert out["facilities"] == "18,500+"
+    assert out["facilities"] == _pin()
     assert out.get("_cold") is True
 
 

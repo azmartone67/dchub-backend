@@ -9,7 +9,7 @@ def _deals_floor() -> str:
         from canonical_stats import deals_phrase
         return deals_phrase()
     except Exception:
-        return "1,900+"
+        return "2,000+"
 
 @app.route('/api/marketing/stats', methods=['GET'])
 def get_marketing_stats():

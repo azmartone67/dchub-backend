@@ -26,6 +26,7 @@ ZERO-FALSE-POSITIVE CONTRACT — "any page whose DC Hub copy matches the
 canon produces []" — which makes [] a meaningful assertion rather than a
 tautology.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -33,20 +34,44 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from ai_surface_canon import PINNED as _CANON           # noqa: E402
 from routes import mcp_presence_crawler as mpc          # noqa: E402
 from routes.white_glove_propagation import detect_number_drift  # noqa: E402
 
+
+def _floor(phrase) -> int:
+    """'20,100+' -> 20100. Parsed HERE rather than imported from the builder,
+    so a broken _canon_floor cannot quietly agree with itself."""
+    return int(re.sub(r"[^\d]", "", str(phrase)))
+
+
 # A canon whose LIVE values have moved past the pinned floors — exactly the
 # situation on 2026-08-23 (pinned deals "1,800+", live "1,900+").
+#
+# ★2026-09-02: the live side was the literals facilities "18,500+" / deals
+# "1,900+" — the published canon on the day this file was written. The canon
+# walk (18,500+ -> 20,100+, 1,900+ -> 2,000+) INVERTED the scenario rather
+# than merely dating it: _resolve_canon_public() rejects a live value BELOW
+# ai_surface_canon.PINNED['public'] as a degraded resolver, so "live has run
+# ahead of the stale floors" silently became "the resolver is broken", and
+# four tests here went red while the builder did exactly the right thing
+# (the captured log says so: "live facilities='18,500+' is BELOW the pinned
+# floor '20,100+' — keeping the floor"). The live side is DERIVED from
+# PINNED['public'] now, which is what it already equalled: it is the current
+# published canon, it can never fall under the floor the degraded-resolver
+# check compares against, and it stays ahead of the deliberately-stale
+# PINNED_NUMBERS bridge below — the contrast every assertion here rests on.
 LIVE_PUBLIC = {
-    "facilities": "18,500+",
-    "markets": "300+",
-    "deals": "1,900+",
-    "countries": "170+",
+    "facilities": _CANON["public"]["facilities"],
+    "markets": _CANON["public"]["markets"],
+    "deals": _CANON["public"]["deals"],
+    "countries": _CANON["public"]["countries"],
 }
 LIVE_CANON = {
     "tools": 82, "tools_live": 82,
-    "deals_floor": 1900, "facilities_floor": 18500, "markets_floor": 300,
+    "deals_floor": _floor(LIVE_PUBLIC["deals"]),
+    "facilities_floor": _floor(LIVE_PUBLIC["facilities"]),
+    "markets_floor": _floor(LIVE_PUBLIC["markets"]),
     "stale_markers": [], "stale_markers_regex": [],
 }
 
@@ -84,9 +109,15 @@ def test_the_builder_reads_the_live_canon_not_the_pinned_floor(live_canon):
     assert mpc._resolve_canon_public() == LIVE_PUBLIC
     desc = mpc._build_canonical_description("glama")
     # every headline number must come from the LIVE side...
-    assert "1,900+ tracked deals" in desc
-    assert "18,500+ discovered facilities" in desc
-    assert "300+ DCPI markets" in desc
+    # ★2026-09-02: read off LIVE_PUBLIC instead of retyping it. These were
+    # the literals "1,900+"/"18,500+"/"300+", i.e. a fourth typed home for a
+    # number that moves — the exact thing the 08-23 note below warns about.
+    # The guard is unchanged in force: the two origins still differ (the
+    # PINNED_NUMBERS bridge renders 17,000+/250+/1,800+), so a builder that
+    # falls back to the pinned side still fails here.
+    assert f"{LIVE_PUBLIC['deals']} tracked deals" in desc
+    assert f"{LIVE_PUBLIC['facilities']} discovered facilities" in desc
+    assert f"{LIVE_PUBLIC['markets']} DCPI markets" in desc
     # ...and none of the stale floors may survive into operator copy.
     for stale in ("1,800+", "17,000", "250 DCPI"):
         assert stale not in desc, f"pinned floor {stale!r} leaked into copy"
@@ -121,8 +152,11 @@ def test_floors_are_rendered_as_floors_not_exact_counts(live_canon):
     """"18,500 discovered facilities" states a count we do not have; the
     canon phrase is a FLOOR and the trailing + must survive into copy."""
     desc = mpc._build_canonical_description("glama")
-    assert "18,500+ discovered facilities" in desc
-    assert "18,500 discovered facilities" not in desc
+    # ★2026-09-02: derived from LIVE_PUBLIC (was the literal "18,500+"); the
+    # property under test is the trailing +, not the digits in front of it.
+    facs = LIVE_PUBLIC["facilities"]                       # e.g. "20,100+"
+    assert f"{facs} discovered facilities" in desc
+    assert f"{facs.rstrip('+')} discovered facilities" not in desc
 
 
 def test_fallback_to_pinned_floors_when_resolve_canon_is_down(monkeypatch):
@@ -237,9 +271,17 @@ def test_the_last_resort_deals_fallback_is_not_a_known_stale_claim(monkeypatch):
     monkeypatch.setattr(ai_surface_canon, "resolve_canon",
                         lambda: {"public": {}}, raising=False)
     monkeypatch.setattr(mpc, "_our_actual_tool_count", lambda: 82)
+    # ★2026-09-02: facilities/markets were the literals 18500/300, chosen to
+    # sit exactly ON LIVE_CANON's floors so that only `deals` is under test
+    # here. LIVE_CANON's floors follow the canon now, so these follow them —
+    # otherwise the walk turns this into a facilities-drift test by accident.
+    # `deals` stays a literal 1800, deliberately BEHIND the canon, because
+    # the drift call below overrides deals_floor to match it.
     monkeypatch.setattr(mpc, "_canonical_numbers",
-                        lambda: {"tools": 82, "facilities": 18500,
-                                 "markets": 300, "deals": 1800})  # no phrase
+                        lambda: {"tools": 82,
+                                 "facilities": LIVE_CANON["facilities_floor"],
+                                 "markets": LIVE_CANON["markets_floor"],
+                                 "deals": 1800})  # no phrase
     desc = mpc._build_canonical_description("glama")
     assert "1,400+" not in desc, "last-resort fallback emits a stale_marker"
     assert "1,800+ tracked deals" in desc
@@ -268,7 +310,13 @@ def test_a_non_numeric_live_phrase_is_skipped_not_crashed(monkeypatch):
     assert pub.get("markets") == "300+"
     desc = mpc._build_canonical_description("glama")
     assert "coming soon" not in desc
-    assert "18,500+ discovered facilities" in desc
+    # ★2026-09-02: `_canonical_numbers()` is deliberately NOT patched in this
+    # test, so the fallback comes from the real mcp_honest_numbers bridge ->
+    # ai_surface_canon.PINNED['public']. Read it from there (was the literal
+    # "18,500+", which the 20,100+ walk falsified) — the assertion still
+    # pins the BEHAVIOUR: the junk phrase is dropped and the pinned floor,
+    # rendered as a floor, takes its place.
+    assert f"{_CANON['public']['facilities']} discovered facilities" in desc
 
 
 # ── The fingerprint must cover the canon the remedy is built from ────

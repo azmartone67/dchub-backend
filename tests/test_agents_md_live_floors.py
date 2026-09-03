@@ -32,27 +32,73 @@ from routes.agents_md_fallback import _render_agents_md       # noqa: E402
 
 
 def _pub(**over):
-    base = {"facilities": "18,500+", "deals": "1,900+",
-            "markets": "300+", "countries": "170+"}
+    """A resolve_canon() payload whose baseline is 'live AGREES with the pin'.
+
+    ★2026-09-02: this base used to be a hand-copy of PINNED['public'] as it
+    stood on 2026-08-28 ({"facilities": "18,500+", "deals": "1,900+", ...}).
+    The canon walk to facilities 20,100+ / deals 2,000+ left the copy BELOW the
+    floor, so every scenario that did not override a key silently changed
+    meaning from "live agrees" to "live is degraded" — a baseline that drifts
+    into the reject path is worse than no baseline. Derived from the canon now,
+    so the next walk carries it along instead of stranding it.
+    """
+    base = dict(PINNED["public"])
     base.update(over)
     return {"public": base}
+
+
+def _as_int(phrase) -> int:
+    """Parse a floor phrase WITHOUT ai_surface_canon._floor_int, deliberately:
+    these tests must not build and check their inputs with the same parser
+    they are exercising, or a broken parser would make them pass vacuously."""
+    return int(str(phrase).replace(",", "").replace("+", "").strip())
+
+
+# A live facility count that has RISEN ABOVE the pin — the input to the two
+# "overlay raises" tests. Kept a LITERAL on purpose: it is the independent half
+# of the floor comparison, and deriving it from PINNED would have the raise
+# path testing the canon against itself.
+# ★2026-09-02: 19,300+ -> 20,900+, because PINNED['public']['facilities'] was
+# walked 18,500+ -> 20,100+ (live /api/v1/stats facilities = 20,198). 19,300+
+# now sits BELOW the floor, so those two tests would have exercised the REJECT
+# path while claiming to prove the overlay RAISES — the exact inversion this
+# module exists to prevent. Re-based above the new pin; the guard test below
+# fails loudly the next time a walk overtakes it.
+RISEN_FACILITIES = "20,900+"
 
 
 # ── the overlay raises ───────────────────────────────────────────────
 
 def test_a_risen_live_floor_is_taken(monkeypatch):
     monkeypatch.setattr(ai_surface_canon, "resolve_canon",
-                        lambda: _pub(facilities="19,300+"))
-    assert resolve_public_floors()["facilities"] == "19,300+"
+                        lambda: _pub(facilities=RISEN_FACILITIES))
+    assert resolve_public_floors()["facilities"] == RISEN_FACILITIES
 
 
 def test_agents_md_renders_the_risen_floor(monkeypatch):
     """The actual #1872-class symptom: the page, not just the helper."""
     monkeypatch.setattr(ai_surface_canon, "resolve_canon",
-                        lambda: _pub(facilities="19,300+"))
+                        lambda: _pub(facilities=RISEN_FACILITIES))
     page = _render_agents_md()
-    assert "19,300+ facilities" in page
-    assert "18,500+ facilities" not in page
+    assert f"{RISEN_FACILITIES} facilities" in page
+    # ★2026-09-02: was the hardcoded old pin "18,500+ facilities". The claim is
+    # "the page stopped serving THE PIN once live rose above it", so it reads
+    # the pin from canon and cannot be left asserting a retired value.
+    assert f"{PINNED['public']['facilities']} facilities" not in page
+
+
+def test_the_risen_scenario_still_rises_above_the_pin():
+    """★2026-09-02 GUARDS THE TWO TESTS ABOVE. They only mean "the overlay
+    RAISES" while RISEN_FACILITIES sits above PINNED['public']['facilities'].
+    The pin has been hand-walked seven times and will be again; when a walk
+    overtakes this literal, fail HERE with an instruction, instead of letting
+    those two tests quietly become reject-path tests that assert the opposite
+    of their names."""
+    assert _as_int(RISEN_FACILITIES) > _as_int(PINNED["public"]["facilities"]), (
+        f"RISEN_FACILITIES {RISEN_FACILITIES} no longer rises above the pinned "
+        f"floor {PINNED['public']['facilities']} — RE-BASE it above the pin. "
+        "Do not delete this assertion and do not lower the pin to suit it."
+    )
 
 
 # ── the overlay never lowers ─────────────────────────────────────────
@@ -65,7 +111,11 @@ def test_the_degraded_resolver_cannot_lower_a_floor(monkeypatch):
     out = resolve_public_floors()
     assert out["facilities"] == PINNED["public"]["facilities"]
     assert out["deals"] == PINNED["public"]["deals"]
-    assert "facilities=400<18500" in out["_rejected"]
+    # ★2026-09-02: was the literal "facilities=400<18500". 400 stays a literal
+    # (it is the measured DB-down degrade), but the floor half is read from
+    # canon — the pin walked to 20,100+ and a hand-typed pin here only re-breaks
+    # at the next walk.
+    assert f"facilities=400<{_as_int(PINNED['public']['facilities'])}" in out["_rejected"]
 
 
 def test_agents_md_never_publishes_the_degraded_floor(monkeypatch):

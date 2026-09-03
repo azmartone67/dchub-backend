@@ -141,6 +141,49 @@ def pinned_canon(monkeypatch):
     return dict(LIVE)
 
 
+# ★2026-09-02 — A SECOND ERA, deliberately NOT folded into LIVE above.
+# ai_surface_canon.PINNED['public'] was walked forward to the live resolver
+# (facilities "18,500+" -> "20,100+", deals "1,900+" -> "2,000+") against a
+# measured 20,198 distinct buildings and 2,069 distinct deals — the reading
+# recorded on the canon lines themselves. LIVE stays frozen at 2026-08-23:
+# replaying the failing day is the point of the composer half above, and both
+# counts there are load-bearing (26,388 rows vs 18,656 buildings is the 1.4x
+# the fence is about).
+#
+# The two served-HTML surfaces at the bottom of this file are the one place the
+# eras collide. They bind ai_surface_canon at IMPORT time — onboarding_recover
+# and seo_pages both call canon_text() at module scope — so no fixture can pin
+# what they state: they always carry TODAY'S canon. Gating today's canon against
+# the 2026-08-23 ceiling measures ten days of growth as an over-claim, which is
+# era drift, not a defect in the copy.
+#
+# The ceiling is a MEASURED literal and is deliberately NOT read back off
+# ai_surface_canon: a canon checked against a ceiling derived from itself is
+# self-certifying, and "the canon publishes the row pile" is precisely what this
+# fence exists to catch. It keeps its teeth at the new value — the 26,388-row
+# pile is still ~1.3x over it, and all three published strings above are still
+# refused. `facilities` (the raw pile) is carried over from the 08-23 reading
+# unmeasured: the gate reads it only for claims explicitly qualified as source
+# records, and neither of these surfaces makes one.
+CANON_ERA_DISTINCT, CANON_ERA_DEALS = 20198, 2069
+CANON_ERA = dict(LIVE, facilities_verified=CANON_ERA_DISTINCT,
+                 deals=CANON_ERA_DEALS)
+
+
+@pytest.fixture
+def pinned_canon_today(monkeypatch):
+    """Pin the 2026-09-02 reading — the era the canon-bound surfaces publish.
+
+    Same single patch point as `pinned_canon`, for the same reason; only the
+    reading differs. See the CANON_ERA note above for why the two eras are kept
+    apart rather than reconciled by editing LIVE.
+    """
+    def _fake(force: bool = False) -> dict:
+        return dict(CANON_ERA)
+    monkeypatch.setattr(canonical_stats, "get_canonical_stats", _fake)
+    return dict(CANON_ERA)
+
+
 def _over(text: str):
     """The REAL rows_ne_buildings gate's verdict on `text`."""
     return _guard.check_facility_count_claims(text or "").get("over") or []
@@ -295,6 +338,30 @@ _DRIFT = _load_drift_fence()
 DEALS_STALE_RE = dict((tid, pat) for tid, pat, *_ in _DRIFT.BANNED_STALE)["deals_stale_floor"]
 
 
+def _stale_deal_floor(text: str):
+    """deals_stale_floor as the fence that OWNS it now EVALUATES it — the matched
+    token, or None.
+
+    ★2026-09-02: the raw pattern bans "2,000+ deals" outright, and 2,000+ is now
+    the canon (PINNED['public']['deals'] walked 1,900+ -> 2,000+ against a live
+    2,069 distinct). test_canonical_counts_drift closed exactly that hole the
+    same day: _banned_stale_hits() exempts a token whose value IS the entry's own
+    canonical_phrase — "a token whose value IS the canon value is not stale, by
+    definition" — so RENDERED copy is judged through its evaluator rather than by
+    re-matching its regex here, which would re-open the hole the owning fence just
+    shut and make the honest number unpublishable.
+
+    It is EQUALITY, not a floor: 4,000+ / 3,000+ / 2,200+ are still refused, and
+    2,000+ is banned again the moment the canon floor moves past it, with no edit
+    here. The SOURCE census below deliberately keeps using the raw pattern — a
+    literal typed into shipped copy is a finding even when it is right today.
+    """
+    for tok_id, token, *_ in _DRIFT._banned_stale_hits(text or ""):
+        if tok_id == "deals_stale_floor":
+            return token
+    return None
+
+
 def test_borrowed_deals_pattern_is_not_vacuous():
     """It must fire on the literal that shipped and stay clean on the canon
     phrase — a borrowed regex that matches nothing is a silent green."""
@@ -305,6 +372,21 @@ def test_borrowed_deals_pattern_is_not_vacuous():
         "served-footer form")
     assert not DEALS_STALE_RE.search("1,900+ tracked deals"), (
         "deals_stale_floor false-positives on the canonical floor")
+
+
+def test_canon_aware_deal_check_still_refuses_the_retired_floor():
+    """Anti-vacuity for _stale_deal_floor: the canon exemption must be EQUALITY,
+    not an amnesty. If the canon-aware path stopped refusing "4,000+ tracked
+    deals", the served-HTML test below would be proving nothing."""
+    assert _stale_deal_floor("4,000+ tracked deals") == "4,000+ tracked deals", (
+        "the canon-aware deals check no longer refuses the literal that shipped")
+    assert _stale_deal_floor("M&amp;A across 4,000+ tracked deals"), (
+        "the canon-aware deals check lost the HTML-ESCAPED served-footer form")
+    canon_deals = (_canon_public_phrases() or ("", ""))[1]
+    assert canon_deals, "ai_surface_canon publishes no deal phrase to exempt"
+    assert _stale_deal_floor(f"{canon_deals} tracked deals") is None, (
+        "the canon-aware check refuses the deal floor the canon itself publishes "
+        "(%r) — that is the fence banning the number it advises" % canon_deals)
 
 
 @pytest.mark.parametrize("story_type", STORY_TYPES)
@@ -572,12 +654,22 @@ def test_competitive_comparison_self_metrics_are_canonical(pinned_canon, monkeyp
         % (m.get("deals"), DEALS_DISTINCT))
 
 
-def test_welcome_email_and_seo_footer_clear_the_gate(pinned_canon):
+def test_welcome_email_and_seo_footer_clear_the_gate(pinned_canon_today):
     """Served HTML: the SEO footer and the new-payer welcome email both typed
     "4,000+ M&A deals". These render from ai_surface_canon's {canon_*}
     placeholders, so this also catches the worse failure — a placeholder that
     stops being passed through canon_text() and serves the literal
-    "{canon_deals}" to a reader."""
+    "{canon_deals}" to a reader.
+
+    ★2026-09-02: this is the ONE test in the file pinned to the canon era rather
+    than to the 2026-08-23 replay, because it is the one whose surfaces bind
+    ai_surface_canon at import time — see the CANON_ERA note at the top. The
+    canon walk (facilities "18,500+" -> "20,100+", deals "1,900+" -> "2,000+")
+    left it gating today's canon against last month's 18,656-building ceiling,
+    where honest growth read as an over-claim; and the borrowed deals regex bans
+    "2,000+ deals", which is now the canon itself, so the rendered halves go
+    through the owning fence's canon-aware evaluator.
+    """
     orec = pytest.importorskip("routes.onboarding_recover", reason="needs Flask")
     seo = pytest.importorskip("routes.seo_pages", reason="needs Flask")
     email = orec._welcome_html("Jordan Lee", "Starter", "jordan@example.com")
@@ -588,9 +680,8 @@ def test_welcome_email_and_seo_footer_clear_the_gate(pinned_canon):
         over = _over(blob)
         assert not over, ("%s states a facility count above the citeable ceiling: %s"
                           % (label, [c.get("raw") for c in over]))
-        stale = DEALS_STALE_RE.search(blob)
-        assert not stale, ("%s states a retired deal floor: %r"
-                           % (label, stale.group(0)))
+        stale = _stale_deal_floor(blob)
+        assert not stale, ("%s states a retired deal floor: %r" % (label, stale))
         assert "{canon_" not in blob, (
             "%s is serving an UNRESOLVED canon placeholder — worse than the stale "
             "number it replaced. Wrap the string in ai_surface_canon.canon_text()."
@@ -602,6 +693,18 @@ def test_welcome_email_and_seo_footer_clear_the_gate(pinned_canon):
         "correct one" % (fac, deals))
     assert fac in footer and deals in footer, (
         "the SEO footer no longer states both canonical phrases")
+    # ★2026-09-02 — the DEALS magnitude gate, which until now the value-pinned
+    # denylist stood in for. _stale_deal_floor exempts a token whose value IS the
+    # canon, so the canon must itself be measured against the live deduped count,
+    # or a canon walked back onto the deal ROW pile would exempt itself here —
+    # and "4,000+" was exactly that (rows, ~2.9x distinct). The facilities half
+    # has had this all along, in check_facility_count_claims' ceiling.
+    deals_floor = int(re.sub(r"\D", "", deals.split("+")[0]) or 0)
+    assert 0 < deals_floor <= pinned_canon_today["deals"], (
+        "ai_surface_canon publishes a deal floor of %r against %s live DEDUPED "
+        "deals — a floor rounds DOWN and never above the resolver, and a floor "
+        "over the row pile is how '4,000+ tracked deals' shipped"
+        % (deals, format(pinned_canon_today["deals"], ",")))
 
 
 def _canon_public_phrases():
