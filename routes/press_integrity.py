@@ -171,9 +171,27 @@ def analyst_review(release: dict) -> dict:
         add("future_dated", f"dated {d} (> today {today})", True)
 
     # 5 · entity-scope slips (the NESO "35% of US" class) — SOFT, needs a human
+    # ★2026-09-03: THE SCAN USED TO BE `f"{title}\n{body}"` AND THAT IS HOW THE
+    # FALSE CLAIM SURVIVED ITS OWN CORRECTION. Measured live on
+    # /api/press-releases/2026-07-17-neso-interconnection-queue-609-gw:
+    #
+    #   title            "... Great Britain's Backlog in a Single Operator"  CORRECTED
+    #   body             "NESO (National Energy System Operator, UK) ..."     CORRECTED
+    #   meta_description "NESO's 609 GW interconnection queue equals 35% of
+    #                     all US queued load ..."                            STILL FALSE
+    #
+    # meta_description is the field Google, Bing, LinkedIn, Slack unfurls and
+    # every AI crawler render — the most SYNDICATED text on the page, and the
+    # one field nobody was checking. A checker that reads only the two fields a
+    # human happens to be looking at will keep certifying releases clean while
+    # the claim travels. Every published string gets scanned.
+    scanned = "\n".join(x for x in (
+        title, str(release.get("subheadline") or "").strip(),
+        _strip_html(str(release.get("meta_description") or "")).strip(),
+        body) if x)
     try:
         from routes.media_claim_verify import check_entity_scope
-        scope = check_entity_scope(f"{title}\n{body}") or []
+        scope = check_entity_scope(scanned) or []
         if scope:
             add("entity_scope", "; ".join(str(s)[:80] for s in scope[:3]), False)
     except Exception as e:  # noqa: BLE001
@@ -392,12 +410,24 @@ def _no_store(resp):
 @press_integrity_bp.route("/api/v1/admin/press-integrity/correct",
                           methods=["POST"])
 def correct_endpoint():
-    """Apply an editorial CORRECTION to a published release — title and/or
-    body — through a governed lane instead of a DB reach-in (2026-08-08; the
-    NESO '35% of US' corrections motivated this). The corrected content must
-    itself pass analyst_review (a correction may never make a release worse),
-    and an editor's note is appended so the change is visible, the way a real
-    newsroom corrects. Admin-gated; audit-logged via the deadman beat."""
+    """Apply an editorial CORRECTION to a published release — title, body,
+    subheadline and/or meta_description — through a governed lane instead of a
+    DB reach-in (2026-08-08; the NESO '35% of US' corrections motivated this).
+    The corrected content must itself pass analyst_review (a correction may
+    never make a release worse), and an editor's note is appended so the change
+    is visible, the way a real newsroom corrects. Admin-gated; audit-logged via
+    the deadman beat.
+
+    ★2026-09-03: subheadline and meta_description were added because THIS LANE
+    COULD NOT FIX THE THING IT WAS BUILT FOR. It shipped writing title and body
+    only, so the operator who corrected the NESO release corrected the two
+    fields the lane could reach — and
+    /api/press-releases/2026-07-17-neso-interconnection-queue-609-gw has been
+    serving `meta_description: "NESO's 609 GW interconnection queue equals 35%
+    of all US queued load"` ever since, to every search engine and social
+    unfurl. A correction lane that cannot write a published field guarantees
+    exactly this outcome, and the post-correction review could not see it
+    either (analyst_review scanned title+body only, now fixed above)."""
     if _disabled():
         return _no_store(jsonify(ok=False, error="PRESS_INTEGRITY_DISABLE=1")), 503
     if not _admin_ok():
@@ -406,16 +436,22 @@ def correct_endpoint():
     slug = str(p.get("slug") or "").strip()
     new_title = p.get("title")
     new_body = p.get("body")
+    new_sub = p.get("subheadline")
+    new_meta = p.get("meta_description")
     note = str(p.get("editors_note") or "").strip()
-    if not slug or (new_title is None and new_body is None):
-        return _no_store(jsonify(ok=False,
-                                 error="slug and title and/or body required")), 400
+    if not slug or (new_title is None and new_body is None
+                    and new_sub is None and new_meta is None):
+        return _no_store(jsonify(
+            ok=False,
+            error="slug and at least one of title / body / subheadline / "
+                  "meta_description required")), 400
     c = _conn()
     if c is None:
         return _no_store(jsonify(ok=False, error="no_db")), 503
     try:
         with c.cursor() as cur:
-            cur.execute("SELECT title, body, date FROM press_releases "
+            cur.execute("SELECT title, body, date, subheadline, "
+                        "meta_description FROM press_releases "
                         "WHERE slug=%s AND published=TRUE", (slug,))
             row = cur.fetchone()
             if not row:
@@ -424,16 +460,24 @@ def correct_endpoint():
                                                "that slug")), 404
             title = new_title if new_title is not None else row[0]
             body = new_body if new_body is not None else row[1]
+            sub = new_sub if new_sub is not None else row[3]
+            meta = new_meta if new_meta is not None else row[4]
             if note:
                 body = "%s\n\n---\n*Editor's note: %s*" % (body, note[:300])
+            # ★ The re-review sees EVERY field being written. Reviewing a
+            # subset of what you are about to publish is how the last one got
+            # through.
             rev = analyst_review({"slug": slug, "title": title, "body": body,
+                                  "subheadline": sub, "meta_description": meta,
                                   "date": row[2]})
             if rev["hard"]:
                 return _no_store(jsonify(
                     ok=False, error="correction fails the analyst pre-flight",
                     issues=rev["issues"])), 422
-            cur.execute("UPDATE press_releases SET title=%s, body=%s "
-                        "WHERE slug=%s AND published=TRUE", (title, body, slug))
+            cur.execute("UPDATE press_releases SET title=%s, body=%s, "
+                        "subheadline=%s, meta_description=%s "
+                        "WHERE slug=%s AND published=TRUE",
+                        (title, body, sub, meta, slug))
             updated = cur.rowcount
         _beat("correction applied: %s (%d row)" % (slug, updated))
         return _no_store(jsonify(ok=True, slug=slug, updated=updated,

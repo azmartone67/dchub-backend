@@ -116,11 +116,72 @@ SCOPE_REGION_LABEL = {
     "CA": "Canada",
 }
 
-# "<Operator>'s interconnection queue" / "<Operator> interconnection queue"
-# possessive-subject pattern — the operator the queue claim is ABOUT.
-_QUEUE_SUBJECT_RE = re.compile(
-    r"\b([A-Za-z][A-Za-z-]{2,})(?:'s|’s)?\s+(?:interconnection|transmission)\s+queue",
-    re.IGNORECASE)
+# ── finding the operator a queue claim is ABOUT ─────────────────────────
+# ★2026-09-03: THE DETECTOR BUILT FOR THE NESO CLASS COULD NOT MATCH THE NESO
+# SENTENCE. The old pattern required the operator to sit IMMEDIATELY beside
+# the noun phrase:
+#
+#     \b([A-Za-z][A-Za-z-]{2,})(?:'s)?\s+(?:interconnection|transmission)\s+queue
+#
+# Every test used that adjacent shape ("NESO's interconnection queue"). What
+# was actually published, and still live on
+# /api/press-releases/2026-07-17-neso-interconnection-queue-609-gw:
+#
+#     "NESO's 609 GW interconnection queue equals 35% of all US queued load"
+#
+# Two words — a measurement — between the possessive and the noun, and the
+# regex captured nothing at all. ("GW" is two characters and cannot even
+# satisfy the {2,} operator-name quantifier.) So a release naming a GB
+# operator as the subject of a share-of-US-queue claim passed the check whose
+# entire reason for existing is that class, and the manual correction that
+# followed fixed the title and the body while the checker reported clean.
+#
+# ★ WHY THIS IS NOT ONE MORE REGEX. Widening the single pattern in place would
+# have made it WORSE: regex finds the leftmost match, so on "the UK operator
+# NESO's 609 GW interconnection queue" a widened pattern captures "operator",
+# consumes through "queue", and NESO is never even considered — a miss that
+# looks like a pass. Instead, anchor on the noun phrase and look BACKWARD over
+# a bounded window at every candidate token, which is what the check actually
+# means.
+_QUEUE_NOUN_RE = re.compile(r"(?:interconnection|transmission)\s+queue",
+                            re.IGNORECASE)
+# Tokens are letters/digits/%/hyphen only — never punctuation — so the window
+# physically cannot reach across a sentence boundary and borrow a subject from
+# the previous sentence.
+# ★ The apostrophe is INSIDE the token class on purpose. Without it "NESO's"
+# tokenises as two tokens ("NESO", "s"), the possessive silently consumes a
+# look-back slot, and "NESO's record 609 GW interconnection queue" pushes the
+# operator out of the window — a miss caused by the very punctuation that
+# marks it as the subject.
+_SUBJECT_TOKEN_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9%’'\-]*|\d[A-Za-z0-9%\-]*")
+_POSSESSIVE_RE = re.compile(r"(?:'s|’s)$", re.IGNORECASE)
+# How many tokens back from "<...> queue" a subject may sit. 4 covers the
+# published "NESO's 609 GW interconnection queue" with room for one more
+# modifier; unbounded look-back is how a subject gets misattributed.
+_SUBJECT_LOOKBACK_TOKENS = 4
+
+
+def _queue_subjects(text: str) -> list[str]:
+    """Every plausible SUBJECT of a queue claim in `text`, lower-cased.
+
+    For each "<interconnection|transmission> queue", walk back over the last
+    _SUBJECT_LOOKBACK_TOKENS word-tokens of the SAME sentence and return them
+    all as candidates. Returning several is deliberate: the caller only acts on
+    tokens that are known operators, so a spurious candidate costs nothing
+    while a missed one is the bug this replaces."""
+    out: list[str] = []
+    for m in _QUEUE_NOUN_RE.finditer(text or ""):
+        head = text[:m.start()]
+        # Never cross a sentence boundary. An abbreviation like "U.S." makes
+        # this window SMALLER, which is the safe direction: it can cause a
+        # miss, never a misattribution.
+        cut = max(head.rfind("."), head.rfind("!"), head.rfind("?"),
+                  head.rfind("\n"), head.rfind(";"))
+        toks = _SUBJECT_TOKEN_RE.findall(head[cut + 1:])
+        for t in toks[-_SUBJECT_LOOKBACK_TOKENS:]:
+            out.append(_POSSESSIVE_RE.sub("", t).lower())
+    return out
 
 # A US-scope share claim ("35% of all US queued load/capacity").
 _US_SHARE_CLAIM_RE = re.compile(
@@ -140,12 +201,13 @@ def check_entity_scope(text: str) -> list[str]:
         t = text or ""
         if not _US_SHARE_CLAIM_RE.search(t):
             return out
-        for m in _QUEUE_SUBJECT_RE.finditer(t):
-            op = (m.group(1) or "").strip().lower()
+        seen = set()
+        for op in _queue_subjects(t):
             scope = OPERATOR_SCOPE.get(op)
-            if scope and scope != "US":
+            if scope and scope != "US" and op not in seen:
+                seen.add(op)
                 out.append(
-                    f"operator {m.group(1)} is the {scope} grid operator but "
+                    f"operator {op.upper()} is the {scope} grid operator but "
                     "the sentence claims a share of all US queued load")
     except Exception as e:
         logger.warning("[claim_verify] check_entity_scope failed: %s", str(e)[:160])
