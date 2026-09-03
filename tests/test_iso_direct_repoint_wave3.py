@@ -508,19 +508,25 @@ def test_load_forecast_is_now_reachable_for_six_of_the_seven_us_isos():
     assert direct == {"CAISO", "ERCOT", "MISO", "NYISO", "SPP"}
 
 
-def test_the_parked_set_shrank_to_exactly_the_seven_that_are_blocked():
-    """★ Named because each of the seven is blocked for a REASON that is not
+def test_the_parked_set_shrank_to_exactly_the_six_that_are_blocked():
+    """★ Named because each of the six is blocked for a REASON that is not
     'nobody got to it': PJM ×2 and ISONE ×2 need owner-obtained credentials
-    (services.pjm.com and webservices.iso-ne.com both answer 401), EIA ×2 are
-    mid-outage upstream, and MISO's margin has no multiday keyless source."""
+    (services.pjm.com and webservices.iso-ne.com both answer 401), EIA-930 is
+    mid-outage upstream, and MISO's margin has no multiday keyless source.
+
+    ★ HENRY HUB LEFT THIS SET on 2026-09-03. It was never the EIA-930 outage —
+      that is the hourly ELECTRIC grid monitor, a different product from the
+      natural-gas v2 series, which never stopped publishing. It needed the key
+      prod already held. See tests/test_eia_henry_hub_direct_repoint.py.
+    """
     assert {t["id"] for t in g.parked_datasets()} == {
         "pjm_dispatched_reserves_verified", "pjm_marginal_emission_rates_5_min",
         "isone_lmp_real_time_5_min", "isone_load_forecast",
-        "eia_co2_emissions", "eia_henry_hub_natural_gas_spot_prices_daily",
+        "eia_co2_emissions",
         "miso_multiday_operating_margin",
     }
-    assert len(g._DIRECT_SOURCES) == 11
-    assert len(g.TARGET_DATASETS) - len(g.parked_datasets()) == 14
+    assert len(g._DIRECT_SOURCES) == 12
+    assert len(g.TARGET_DATASETS) - len(g.parked_datasets()) == 15
 
 
 def test_the_finding_still_shrinks_by_arithmetic_and_names_the_new_four():
@@ -528,7 +534,7 @@ def test_the_finding_still_shrinks_by_arithmetic_and_names_the_new_four():
     for did in ("nyiso_load_forecast", "spp_load_forecast",
                 "aeso_reserves", "miso_load_forecast"):
         assert did in detail
-    assert "7 of 21 registry datasets" in detail
+    assert "6 of 21 registry datasets" in detail
 
 
 def test_every_park_reason_names_a_real_registry_dataset():
@@ -550,22 +556,24 @@ def test_a_parked_dataset_with_no_reason_reports_UNCLASSIFIED(monkeypatch):
     _issue, detail = g._parked_finding()
     assert "zz_new_dataset_nobody_probed_yet [PJM] UNCLASSIFIED — needs a probe" in detail
     assert "UNCLASSIFIED (probe these): zz_new_dataset_nobody_probed_yet." in detail
-    # ★ and it must not be COUNTED as explained — 7 of 8, never 8 of 8
-    assert "7 of the 8 need something obtained" in detail, detail[:400]
+    # ★ and it must not be COUNTED as explained — 6 of 7, never 7 of 7
+    assert "6 of the 7 need something obtained" in detail, detail[:400]
 
 
-def test_the_finding_states_a_blocker_for_each_of_the_seven_that_remain():
+def test_the_finding_states_a_blocker_for_each_of_the_six_that_remain():
     """Not 'they need repointing' — WHAT each one is waiting on, so a reader
     does not go hunting for an adapter that cannot be written."""
     _issue, detail = g._parked_finding()
-    assert "7 of the 7 need something obtained" in detail
+    assert "6 of the 6 need something obtained" in detail
     for did, needle in (
             ("pjm_dispatched_reserves_verified", "Data Miner 2 key"),
             ("isone_load_forecast", "ISO-NE web-services account"),
             ("eia_co2_emissions", "EIA-930"),
-            ("eia_henry_hub_natural_gas_spot_prices_daily", "EIA_API_KEY"),
             ("miso_multiday_operating_margin", "one operating day")):
         assert did in detail and needle in detail, did
+    # ★ the repointed one must be GONE from the blocked list, not merely quieter
+    assert "eia_henry_hub_natural_gas_spot_prices_daily" not in detail.split(
+        "need something obtained")[1]
     assert "Widening the allowlist is NOT the fix" in detail
     # ★ the claim that went stale must be GONE, not merely joined by better text
     assert "free direct source we already hold credentials for" not in detail
