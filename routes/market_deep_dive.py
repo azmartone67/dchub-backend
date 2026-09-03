@@ -27,6 +27,8 @@ import os
 import re
 import datetime
 from flask import Blueprint, Response, jsonify, request, abort, redirect
+
+from util.market_entity import SITE as ENTITY_SITE, market_entity
 from utils.anthropic_helper import anthropic_messages_url
 from routes.brain_llm_spend import instrumented_post as _llm_post
 
@@ -921,6 +923,49 @@ def _markets_404_response():
             "<a href=\"/facilities\">Browse all facilities</a> \u00b7 "
             "<a href=\"/\">DC Hub home</a></p></body></html>")
     return _Resp(body, status=404, mimetype="text/html")
+
+
+# ── r-entity-json (2026-09-03) — the machine-readable twin ───────────────────
+# An agent that crawls /markets/<slug> had no way to get the same facts AS DATA.
+# There was no .json twin, no content negotiation, and the API path is a
+# different shape it cannot guess from the page URL it already holds.
+#
+# /markets/<slug>.json did not 404 — it 301'd, which is worse, because it looks
+# like it works. market_short_html normalises with slug_norm.replace(".", ""),
+# so the request landed on /markets/<slug>json and redirected away.
+#
+# Werkzeug ranks this rule above "/markets/<slug>" because it carries more
+# static text, so the suffix binds here and never reaches that normaliser.
+# Pinned by a test — if the ordering ever flips, the twin silently becomes a
+# redirect again.
+@market_deep_dive_bp.route("/markets/<slug>.json", methods=["GET"])
+def market_entity_json(slug):
+    """The market as schema.org Dataset JSON-LD — no auth, no key, plain GET.
+
+    Same builder as the page's embedded block, so the two cannot drift into
+    different answers for one market.
+    """
+    r = read_deep_dive(slug)
+    if not r:
+        return jsonify(
+            error="unknown_market", slug=slug,
+            hint=("No market by that slug. GET /api/v1/markets for the list, or "
+                  "call rank_markets — both publish resolvable slugs.")), 404
+    _canon = MARKETS_CANONICAL_REDIRECT.get(slug, slug)
+    body = market_entity(
+        slug, r.get("market_name") or slug, r.get("key_stats") or {},
+        canonical_slug=_canon,
+        as_of=(r["generated_at"].isoformat() if r.get("generated_at") else None))
+    resp = jsonify(body)
+    # application/ld+json is the honest type for this payload; agents and
+    # validators both accept it, and it tells a crawler the body is structured
+    # data rather than an arbitrary API response.
+    resp.headers["Content-Type"] = "application/ld+json"
+    resp.headers["Cache-Control"] = "public, max-age=900"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    # Point at the HTML twin so a crawler can reconcile the two representations.
+    resp.headers["Link"] = f'<{ENTITY_SITE}/markets/{_canon}>; rel="canonical"'
+    return resp, 200
 
 
 @market_deep_dive_bp.route("/api/v1/markets/<slug>/deep-dive", methods=["GET"])
