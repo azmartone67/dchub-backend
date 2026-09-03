@@ -3479,6 +3479,124 @@ def check_discovery_stalled() -> list[dict]:
     return findings
 
 
+# ★★★ 2026-09-03 — THE DETECTOR WAS INVENTING THE FILENAME.
+#
+# check_iso_metric_dropped built its remediation hint by STRING SURGERY on the
+# ISO code: f"iso_{iso.lower().replace('-','')}.py". For EU_CZ that produces
+# "iso_eu_cz.py", which has never existed in this repo. Europe is served by
+# ONE module — routes/iso_eu_entsoe.py — reading ONE ENTSOE_API_Token for all
+# 33 bidding zones.
+#
+# It did not stay a cosmetic string. Measured on the squasher board
+# 2026-09-03 00:52Z: three awaiting_decision rows, each carrying an ~48s
+# investigation, each instructing a human to "open the iso_eu_cz.py fetch/write
+# path" / "the iso_eu_sk.py module logs" / "iso_eu_se_1.py". The investigator
+# was not hallucinating — it was faithfully repeating what the detector handed
+# it, at confidence 0.32-0.35, and 31 EU zones each got their own copy.
+#
+# ★ THE RULE: name a file only if it EXISTS. This is the invented-numbers-in-
+#   failure-fallbacks shape one field over — a plausible constructed value
+#   served where a real lookup belongs, indistinguishable downstream from a
+#   verified one. A hint that cannot be verified must say what it does not
+#   know and point at the registry that does, not guess and sound certain.
+_ISO_FANOUT_MODULES = (
+    # ISO-code prefix -> the ONE module that ingests every code under it.
+    # Fan-out feeds: iso_orchestrator.py registers these by their AGGREGATE
+    # code (("iso_eu_entsoe", "ENTSOE")), so a per-zone code like EU_CZ never
+    # appears there and cannot be resolved from that list alone.
+    ("EU_", "routes/iso_eu_entsoe.py"),
+    ("ENTSOE", "routes/iso_eu_entsoe.py"),
+)
+
+
+def _repo_path(rel: str) -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        rel)
+
+
+def iso_module_hint(iso: str) -> Optional[str]:
+    """The ingest module for an ISO code — VERIFIED to exist, or None.
+
+    Never constructs a path it has not checked. Returns None rather than a
+    plausible guess, and callers must render that as "not resolved", never as
+    a filename. Guarded by tests/test_radar_no_invented_paths.py, which walks
+    every finding this detector can emit and fails on any .py path absent from
+    the repo.
+    """
+    code = str(iso or "").strip()
+    if not code:
+        return None
+    for prefix, path in _ISO_FANOUT_MODULES:
+        if code.upper().startswith(prefix) and os.path.exists(_repo_path(path)):
+            return path
+    # ★ THE REGISTRY BEATS THE FILENAME GUESS, and the order is load-bearing.
+    #   iso_orchestrator.extract_all() lists what is actually WIRED; the naming
+    #   convention only says what a file is called. For AESO the two disagree:
+    #   routes/iso_aeso.py exists on disk and is dead code — the orchestrator's
+    #   own comment records that main.py never imports it and that the live
+    #   module is iso_aeso_intl. Guessing first would send an operator to read
+    #   a file that has never run.
+    mod = _orchestrator_module_for(code)
+    if mod and os.path.exists(_repo_path(mod)):
+        return mod
+    # Only then the per-ISO convention, checked rather than assumed.
+    for cand in ("routes/iso_%s.py" % code.lower().replace("-", "_").replace(" ", ""),
+                 "routes/iso_%s.py" % code.lower().replace("-", "").replace("_", "")):
+        if os.path.exists(_repo_path(cand)):
+            return cand
+    return None
+
+
+_ORCH_CACHE: Optional[dict] = None
+
+
+def _orchestrator_module_for(code: str) -> Optional[str]:
+    """ISO code -> module path, read from iso_orchestrator's own extractor list.
+
+    That list is a LOCAL in extract_all(), so it is read by AST rather than
+    imported: parsing is read-only and cannot perturb the extractor, where
+    hoisting it to a module constant would edit a hot production path for a
+    detector hint. AST, not a line regex — the shape is the contract, and a
+    text match would just as happily read a filename out of a comment
+    (the guard-writing trap this repo has hit twice).
+
+    Fail-soft in every direction: any parse problem yields None, and None
+    renders as the honest "not resolved" clause, never as a guess.
+    """
+    global _ORCH_CACHE
+    if _ORCH_CACHE is None:
+        pairs: dict = {}
+        try:
+            import ast as _ast
+            src = open(_repo_path("routes/iso_orchestrator.py"),
+                       encoding="utf-8").read()
+            for node in _ast.walk(_ast.parse(src)):
+                if not isinstance(node, (_ast.List, _ast.Tuple)):
+                    continue
+                for elt in node.elts:
+                    if (isinstance(elt, _ast.Tuple) and len(elt.elts) == 2
+                            and all(isinstance(e, _ast.Constant)
+                                    and isinstance(e.value, str)
+                                    for e in elt.elts)):
+                        mod, iso = elt.elts[0].value, elt.elts[1].value
+                        if mod.startswith("iso_") and iso:
+                            pairs.setdefault(iso.upper(), "routes/%s.py" % mod)
+        except Exception:  # noqa: BLE001
+            pairs = {}
+        _ORCH_CACHE = pairs
+    return _ORCH_CACHE.get(str(code or "").upper()) or None
+
+
+def _iso_module_clause(iso: str) -> str:
+    """The remediation sentence — a real module, or an honest miss."""
+    mod = iso_module_hint(iso)
+    if mod:
+        return "Check the matching workflow + %s." % mod
+    return ("The ingest module for this ISO is NOT resolvable from its code "
+            "(fan-out feeds register under an aggregate code) — look it up in "
+            "routes/iso_orchestrator.py rather than guessing a filename.")
+
+
 def check_iso_metric_dropped() -> list[dict]:
     """Flag when an ISO listed in by_iso has metric_count=0 — meaning
     the loop registered but the latest ingest wrote nothing. Caught
@@ -3515,9 +3633,8 @@ def check_iso_metric_dropped() -> list[dict]:
                     "count":  0,
                     "detail": (f"ISO {iso} has prior history in grid_data "
                                f"but ZERO writes in the last 24h. The "
-                               f"loop has stopped. Check the matching "
-                               f"workflow + iso_{iso.lower().replace('-','')}.py "
-                               f"module."),
+                               f"loop has stopped. "
+                               + _iso_module_clause(iso)),
                 })
             elif recent[0] < 3:
                 findings.append({
