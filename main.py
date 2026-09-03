@@ -14567,6 +14567,37 @@ MARKET_ALIASES = {
     'indianapolis': ['Indianapolis'],
 }
 
+# ── r-markets-basis (2026-09-03) ─────────────────────────────────────────────
+# /api/v1/markets(/list) was the LAST market surface counting on a raw COUNT(*)
+# / SUM(power_mw): no de-duplication and no lifecycle filter. Every other market
+# surface was moved off that basis and this one was missed —
+# routes/mcp_tier1_tools.rank_markets applies both, routes/dcpi got all three of
+# its market reads deduped on 2026-08-08 (r-list-dedup #2386, r-sat-dedup #2403),
+# and /api/v1/stats/canonical publishes a distinct basis.
+#
+# Live consequence 2026-09-03: /api/v1/markets published Northern Virginia at
+# 12,438 MW / 768 facilities. The same registry through rank_markets' basis is a
+# fraction of that. The DCPI dedup measured the direction of this error
+# directly — "boardman read 51 facilities against 5 real", "manchester rendered
+# 50 rows holding 28 distinct names" — and it is always the same direction: the
+# undeduped number counts the same building more than once. An agent comparing
+# our 12,438 MW against a published operator inventory discards OUR number.
+#
+# ★ WHY THE FLAG IS SAFE HERE, given it has not always been. is_duplicate is a
+# VISIBILITY flag; before 2026-07-28 the dedup pipeline set it without electing
+# a keeper, so 311 canonical_slug groups had NO is_duplicate=0 row and vanished
+# from any flag-filtered count. repair_dedup_keeper_election.py closed that
+# (311 keeperless → 0, live pages 14,952 → 15,263) and the leak was fixed
+# upstream in discovery_auto_approve.py. The main.py comment near the canonical
+# facility count still cites the PRE-repair 2026-07-27 figure ("9,318 of 14,686
+# … have NO is_duplicate=0 row"); it is one day stale and must not be read as a
+# reason to leave this endpoint undeduped.
+#
+# ★ This is a LIST endpoint. It is not read by any scoring path, so this is not
+# the "dedup on an aggregate is a product-wide rescore" case that governs
+# routes/dcpi — nothing here feeds a verdict.
+_MKT_DEDUP = "COALESCE(is_duplicate, 0) = 0"
+
 RAILWAY_EXCLUSION = """
     AND provider NOT ILIKE '%%Railway%%'
     AND provider NOT ILIKE '%%Railroad%%'
@@ -19115,6 +19146,27 @@ def list_markets():
         _use_cache = bool(_mkc and (_tmk.time() - _mkc[0]) < 1800)
         markets = [dict(m) for m in _mkc[1]] if _use_cache else []
 
+        # r-markets-basis: same lifecycle vocabulary rank_markets uses, so the two
+        # surfaces cannot disagree about what "operational" spells. Imported here
+        # rather than at module scope to match the existing local-import style in
+        # this file (see /api/v1/markets/compare).
+        from util.status_taxonomy import operational_sql as _mkt_op_sql
+        _mkt_operational = _mkt_op_sql()
+
+        # r-markets-basis: which curated markets are strict SUBSETS of another —
+        # 'ashburn' (Ashburn, Loudoun) sits entirely inside 'northern virginia'.
+        # Both are published as top-level markets, so a consumer summing the list
+        # counts those facilities twice. Publishing the containment is the honest
+        # fix; REMOVING the row is not, because /api/v1/markets/<market> gates on
+        # `market_lower not in MARKET_ALIASES` and smoke_test.py pins
+        # /api/v1/markets/ashburn at 200.
+        _mkt_sets = {k: {str(x).lower() for x in v} for k, v in MARKET_ALIASES.items()}
+        _mkt_contained = {
+            k: sorted(o for o, ov in _mkt_sets.items()
+                      if o != k and _mkt_sets[k] < ov)
+            for k in _mkt_sets
+        }
+
         # ── 1. Curated markets from MARKET_ALIASES ─────────────────
         for market_key, cities in (() if _use_cache else MARKET_ALIASES.items()):
             if len(market_key) <= 2 or market_key in ['la', 'sf', 'nj', 'nyc', 'dfw', 'nova']:
@@ -19131,6 +19183,7 @@ def list_markets():
                 SELECT COUNT(*) as count, COALESCE(SUM(power_mw), 0) as total_power
                 FROM discovered_facilities
                 WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
+                  AND {_MKT_DEDUP} AND {_mkt_operational}
             """, params)
             row = c.fetchone()
             if row and row[0] > 0:
@@ -19139,6 +19192,7 @@ def list_markets():
                     SELECT COALESCE(SUM(power_mw), 0)
                     FROM discovered_facilities
                     WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
+                    AND {_MKT_DEDUP}
                     AND status IN ('construction','planned','permitting','Under Construction','Planned')
                 """, params)
                 pipeline_mw = round((c.fetchone() or [0])[0], 1)
@@ -19168,6 +19222,10 @@ def list_markets():
                     'total_power_mw': round(row[1] or 0, 1),
                     'pipeline_mw_total': pipeline_mw,
                     'avg_kwh_price_usd': avg_kwh,
+                    # r-markets-basis: non-empty ⇒ every facility in this market is
+                    # ALSO counted under the named market(s). Do not sum across a
+                    # containment pair.
+                    'contained_in': _mkt_contained.get(market_key, []),
                 })
 
         # ── 2. US auto-discovered (require valid state, threshold 3) ──
@@ -19177,18 +19235,23 @@ def list_markets():
                 if isinstance(city, str) and len(city) > 2:
                     existing.add(city.lower())
         try:
-            c.execute("""
-                SELECT LOWER(city), city, state, COUNT(*) AS n,
-                       COALESCE(SUM(power_mw), 0) AS total_mw,
+            # r-markets-basis: f-string so the shared dedup/lifecycle predicates
+            # interpolate. NOTE the doubled braces in the state regex — `{2}`
+            # would be read as a format field and raise.
+            c.execute(f"""
+                SELECT LOWER(city), city, state,
+                       COUNT(*) FILTER (WHERE {_mkt_operational}) AS n,
+                       COALESCE(SUM(power_mw) FILTER (WHERE {_mkt_operational}), 0) AS total_mw,
                        COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
                 FROM discovered_facilities
                 WHERE city IS NOT NULL AND city != ''
                   AND state IS NOT NULL AND state != ''
-                  AND LENGTH(state) = 2 AND state ~ '^[A-Z]{2}$'
+                  AND LENGTH(state) = 2 AND state ~ '^[A-Z]{{2}}$'
                   AND (country = 'US' OR country = 'USA')
+                  AND {_MKT_DEDUP}
                   AND LOWER(city) NOT IN %s
                 GROUP BY LOWER(city), city, state
-                HAVING COUNT(*) >= 3
+                HAVING COUNT(*) FILTER (WHERE {_mkt_operational}) >= 3
                 ORDER BY n DESC LIMIT 60;
             """, (tuple(existing) if existing else ('__none__',),))
             for row in (() if _use_cache else c.fetchall()):
@@ -19333,6 +19396,36 @@ def list_markets():
             'upsell': upsell_text,
             'upgrade_url': upsell_url,
             'signup_url': 'https://dchub.cloud/signup' if tier == 'anonymous' else None,
+            # ── r-markets-basis (2026-09-03): a number an agent cannot ATTRIBUTE
+            # is a number it will not quote. This endpoint published bare
+            # integers with no statement of what they count, no as-of and no
+            # citation line — so an agent holding both this and a named operator
+            # inventory (CBRE/JLL) has no way to reconcile them and drops ours as
+            # the unsourced one. The MCP tools have carried a `provenance` block
+            # for exactly this reason; the public REST twin never got one.
+            # Deliberately mirrors those keys (source/method/as_of/cite_as/
+            # license/cite_url_template) so one parser reads both surfaces.
+            'provenance': {
+                'source': 'DC Hub facility registry (discovered_facilities)',
+                'method': ('total_power_mw and facility_count count OPERATIONAL '
+                           'facilities only, per util/status_taxonomy, '
+                           'de-duplicated on COALESCE(is_duplicate,0)=0 — the '
+                           'same basis routes/mcp_tier1_tools.rank_markets and '
+                           'the DCPI market reads use. pipeline_mw_total is '
+                           'de-duplicated but NOT lifecycle-filtered: it is the '
+                           'construction/planned/permitting sum by definition.'),
+                'basis': 'operational_deduped',
+                'as_of': datetime.now(timezone.utc).isoformat(),
+                'cite_as': 'DC Hub, dchub.cloud',
+                'license': 'CC-BY-4.0',
+                'cite_url_template': 'https://dchub.cloud/markets/{id}',
+                # The one thing a consumer must not do with this list.
+                'summing_note': ('Markets may OVERLAP. Any row with a non-empty '
+                                 '`contained_in` is a strict subset of the '
+                                 'market(s) it names — e.g. ashburn sits inside '
+                                 'northern virginia. Do not add their MW '
+                                 'together.'),
+            },
             'data': markets_visible,
         })
     finally:
