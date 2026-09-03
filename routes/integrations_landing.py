@@ -315,6 +315,7 @@ Footer: the sources that actually contributed, e.g.
     <a href="https://dchub.cloud/integrations/bedrock">Amazon Bedrock AgentCore</a> ·
     <a href="https://dchub.cloud/integrations/copilot-studio">Copilot Studio</a> ·
     <a href="https://dchub.cloud/integrations/cloudflare">Cloudflare MCP Server Portal</a>
+    (<a href="https://dash.cloudflare.com/" target="_blank" rel="noopener">open Zero Trust &rarr; Access controls &rarr; AI controls</a>)
   </p>
   <p><b>SDKs:</b> <code>pip install dchub</code> &nbsp;·&nbsp; <code>npm i dchub</code></p>
   <h3 style="margin-top:18px;font-size:1rem">Paste this into any AI chat</h3>
@@ -1356,11 +1357,13 @@ CLOUDFLARE_PORTAL_RECIPE_HTML = _recipe_page(
   a DC Hub API key from <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.</p>
   <p><b>Get the key first.</b> The free-tier pane further down this page says an agent can mint its
   own durable key mid-conversation by calling <code>claim_free_key</code>. That is true everywhere
-  <i>except</i> behind a portal: the upstream credential is set by an administrator in the Cloudflare
-  dashboard, and a running agent cannot rewrite portal configuration. Register with no key and the
+  <i>except</i> behind a portal: the upstream credential is set by an administrator in the
+  <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener">Cloudflare dashboard</a>,
+  and a running agent cannot rewrite portal configuration. Register with no key and the
   portal stays anonymous until an administrator changes it.</p>
   <ol>
-    <li>In the Cloudflare dashboard open <b>Zero Trust &rarr; Access controls &rarr; AI controls</b>,
+    <li>In the <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener">Cloudflare dashboard</a> open
+    <b>Zero Trust &rarr; Access controls &rarr; AI controls</b>,
     pick the <b>MCP servers</b> tab, and choose <b>Add a server</b>.</li>
     <li><b>Name</b> &mdash; anything your team will recognise, e.g. <code>DC Hub Intelligence</code>.
     <b>Description</b> &mdash; free text.</li>
@@ -1380,6 +1383,11 @@ CLOUDFLARE_PORTAL_RECIPE_HTML = _recipe_page(
   <p>The dashboard labels and the API values differ: the form&rsquo;s <b>OAuth</b>,
   <b>Custom headers</b> and <b>None</b> are <code>oauth</code>, <code>bearer</code> and
   <code>unauthenticated</code> respectively in the API.</p>
+  <p>Cloudflare&rsquo;s own reference for this feature is
+  <a href="https://developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/mcp-portals/" target="_blank" rel="noopener">MCP server portals</a> in the Cloudflare One docs; the
+  dashboard link above is the plain console entry point Cloudflare itself links, because Zero Trust
+  moved to <code>dash.cloudflare.com/one/</code> and the old <code>one.dash.cloudflare.com</code>
+  deep links drop their <code>?to=</code> target on redirect.</p>
   <p style="color:var(--dch-text-mute);font-size:.85rem">DC Hub is not affiliated with, sponsored by or endorsed
   by Cloudflare. This page documents a configuration verified against the live product on
   2026-09-02.</p>""",
