@@ -1351,7 +1351,7 @@ def _persist_recommendations(payload: dict, week_of: _dt.date,
                             evidence_keys, status, strategy_payload
                           ) VALUES (
                             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                          ) RETURNING id""",
+                          ) ON CONFLICT DO NOTHING RETURNING id""",
                         (run_id, week_of, kind, title, spec,
                          json.dumps(scaffold), dollar, conf_num,
                          json.dumps(evid), "new", json.dumps(item)))
@@ -1380,7 +1380,7 @@ def _persist_recommendations(payload: dict, week_of: _dt.date,
                         evidence_keys, status, strategy_payload
                       ) VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                      )""",
+                      ) ON CONFLICT DO NOTHING""",
                     (run_id, week_of, "wildcard_bet",
                      wc.get("title", "")[:200],
                      (wc.get("spec") or "")[:6000],
@@ -1403,7 +1403,7 @@ def _persist_recommendations(payload: dict, week_of: _dt.date,
                     evidence_keys, status, strategy_payload
                   ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                  )""",
+                  ) ON CONFLICT DO NOTHING""",
                 (run_id, week_of, "synthesis_meta",
                  (payload.get("summary") or "Weekly synthesis")[:200],
                  (payload.get("summary") or "")[:6000],

@@ -350,6 +350,7 @@ def process_pending():
     return jsonify(out), 200 if out["failed"] == 0 else 207
 
 
+# AUTO-REPAIR: duplicate route '/status' also in ai_agent.py:357 — review and remove one
 @outreach_cron_bp.route("/status", methods=["GET"])
 def status():
     out = {
