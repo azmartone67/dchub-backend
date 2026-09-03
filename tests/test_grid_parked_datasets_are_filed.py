@@ -45,9 +45,16 @@ import pytest
 from routes import grid_data_master_shell as g
 
 
-def test_the_parked_set_is_the_registry_minus_the_allowlist():
+def test_the_parked_set_is_the_registry_minus_what_can_be_reached():
+    """Parked = registry MINUS the budget allowlist MINUS anything already
+    repointed to a free direct source.
+
+    ★ The direct-source term was added when the first repoint (CAISO) landed.
+      Without it a repointed dataset would keep counting as parked and the
+      finding could never shrink — which is the whole mechanism by which
+      progress here is arithmetic rather than intent."""
     ids = {t["id"] for t in g.TARGET_DATASETS}
-    expected = sorted(ids - set(g._GS_ALLOWLIST))
+    expected = sorted(ids - set(g._GS_ALLOWLIST) - set(g._DIRECT_SOURCES))
     assert sorted(t["id"] for t in g.parked_datasets()) == expected
 
 
