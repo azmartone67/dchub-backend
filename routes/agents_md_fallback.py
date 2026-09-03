@@ -166,7 +166,7 @@ def serve_agents_md():
     return Response(
         _render_agents_md(),
         status=200,
-        mimetype="text/markdown; charset=utf-8",
+        content_type="text/markdown; charset=utf-8",
         headers={
             "Cache-Control": "public, max-age=3600",
             "Access-Control-Allow-Origin": "*",
