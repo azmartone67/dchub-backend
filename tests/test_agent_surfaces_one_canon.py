@@ -216,14 +216,26 @@ def test_surface_truth_pre_edge_lane_fetches_the_origin_host(shell, monkeypatch)
 
 def test_surface_truth_edge_clean_origin_stale_is_visible(shell, monkeypatch):
     """The 2026-09-02 shape: edge serves canon, origin serves a retired floor."""
+    # ★2026-09-02 canon walk: the CLEAN half of this scenario was the literal
+    # "18,500+ facilities" — canon when this was written, and below the accept
+    # band the moment PINNED public.facilities moved to 20,100+. The edge then
+    # failed "carries canon floor", served_manifests went FAIL, and the test
+    # asserted the opposite of the shape it names. Read the floor the shell
+    # itself compares against instead of retyping it, so the next walk cannot
+    # rot it again. The STALE half stays the literal "12,650+": it is pinned in
+    # util/canon_floor.RETIRED_LITERALS as permanently-wrong, so it is a
+    # retired floor at every canon — that is why it is safe to hardcode here.
+    from ai_surface_canon import PINNED
+    clean = '{"d": "%s facilities"}' % PINNED["public"]["facilities"]
+
     def fake_fetch(path, base=None):
         # valid JSON either way — the manifest lane also runs a (non-critical)
         # "parses" check, and any False check fails a lane.
         return ('{"d": "12,650+ facilities"}' if base == shell.PRE_EDGE_ORIGIN
-                else '{"d": "18,500+ facilities"}'), None
+                else clean), None
 
     monkeypatch.setattr(shell, "_fetch", fake_fetch)
-    monkeypatch.setattr(shell, "_read_repo", lambda rel: '{"d": "18,500+ facilities"}')
+    monkeypatch.setattr(shell, "_read_repo", lambda rel: clean)
     monkeypatch.setattr(shell, "_beat_ledger", lambda *a, **k: None)
     out = shell._run_tick()
     by = {ln["id"]: ln["verdict"] for ln in out["lanes"]}

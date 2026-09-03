@@ -17,11 +17,13 @@ CI-SAFETY: the unit-tests job installs ONLY pytest. The shell imports flask
 tested directly and the wiring is checked as source text.
 """
 import os
-import re
+import sys
 
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:            # for the canon-derived scan in section 4
+    sys.path.insert(0, ROOT)
 SHELL = os.path.join(ROOT, "routes", "surface_truth_master_shell.py")
 MAIN = os.path.join(ROOT, "main.py")
 CRON = os.path.join(ROOT, "routes", "cron_heartbeat.py")
@@ -141,12 +143,56 @@ def test_unreachable_url_does_not_pass_the_parity_lane(shell, monkeypatch):
 
 
 # ── 4 · emitter sources + wiring ──────────────────────────────────────
+# ★ 2026-09-02 — THE TWO REPO SCANS BELOW BANNED A RANGE, AND CANON WALKED
+# INTO IT. Both used r"\b(?:19|20|21|22|23),\d{3}\+", written when canon sat in
+# the teens of thousands, so every floor 19,000-23,999 was necessarily an
+# over-claim. The 09-02 walk moved PINNED['public']['facilities'] 18,500+ ->
+# 20,100+ (live /api/v1/stats facilities = 20,198), which put CANON ITSELF
+# inside the ban: mcp.json, correctly carrying 20,100+, was reported as
+# "retired floors still served".
+#
+# Same rot, one level up, as the shell's OWN ban on 2026-08-31 (see the ★ note
+# on test_many_distinct_over_claims_are_caught_not_just_one) and as
+# accuracy_fence's `[2-9],\d{3} deals`, which froze dchub-frontend for 19
+# deploys the hour deals_tracked passed 2,000: a retired LITERAL stays wrong
+# forever and is safe to hardcode, a retired RANGE is not — the fleet grows
+# into it. So the band is no longer typed here. It is DERIVED from canon
+# through util.canon_floor, the one rule the shell already delegates to, and it
+# re-pins itself at the next walk instead of having to be walked by hand.
+#
+# SCOPE IS UNCHANGED, deliberately. These two scans have only ever asked one
+# question: does a served copy carry an OVER-CLAIM above canon. retired_floors()
+# answers a second one as well — RETIRED_LITERALS — and that half is excluded
+# here because dchub-frontend/llms-full.txt still serves 12,650+ in two places
+# (line 154 "search_facilities — Search 12,650+ data center facilities" and line
+# 180 "tracking 12,650+ facilities across 140+ countries"). The old regex never
+# caught that either — 12,650 sits BELOW the banned range — so it is a real,
+# pre-existing served-copy defect, not something this walk introduced, and it
+# wants a copy fix rather than a test edit. Named here so it is not lost.
+from util.canon_floor import RETIRED_LITERALS, retired_floors  # noqa: E402
+
+
+def _canon_facilities():
+    """PINNED facility floor, READ not re-typed — the source the shell uses."""
+    from ai_surface_canon import PINNED
+    return (PINNED.get("public") or {}).get("facilities")
+
+
+def _over_claims(text):
+    """Floors in `text` that over-claim above canon's accept ceiling.
+
+    An unreadable canon is INDETERMINATE, never clean: [] here would certify
+    these files green, the fail-open direction this shell exists to end."""
+    stale = retired_floors(text, _canon_facilities())
+    assert stale is not None, "canon unresolvable — scan cannot certify clean"
+    return [f for f in stale if f not in RETIRED_LITERALS]
+
 
 def test_emitter_sources_are_clean_on_this_branch():
     """ai_discovery_routes.py BUILDS /llms.txt inline — it is the real serving
     path, and it carried 21,000+ in ten places until 2026-07-25."""
     src = _read(os.path.join(ROOT, "ai_discovery_routes.py"))
-    stale = sorted(set(re.findall(r"\b(?:19|20|21|22|23),\d{3}\+", src)))
+    stale = _over_claims(src)
     assert not stale, "ai_discovery_routes.py emits retired floor(s): %s" % stale
 
 
@@ -160,11 +206,23 @@ def test_served_copies_are_clean_on_this_branch():
         path = os.path.join(ROOT, rel)
         if not os.path.exists(path):
             continue
-        stale = sorted(set(re.findall(r"\b(?:19|20|21|22|23),\d{3}\+",
-                                      _read(path))))
+        stale = _over_claims(_read(path))
         if stale:
             offenders[rel] = stale
     assert not offenders, "retired floors still served: %s" % offenders
+
+
+def test_shell_reads_the_pin_it_audits_against(shell):
+    """★2026-09-02: every lane is judged against _canon_floor(), so a FROZEN
+    literal there cannot go red on its own — it silently re-certifies surfaces
+    against a floor canon has already left behind. That is not hypothetical
+    this week: the same 09-02 sweep found the backend tool catalog serving
+    18,500+/1,400+ from a cold-start pin frozen at import while the edge served
+    the walked numbers. Derived on both sides on purpose — the day either side
+    becomes a literal is the day this stops guarding anything."""
+    canon = _canon_facilities()
+    assert canon, "canon unreadable — this check would be vacuous"
+    assert shell._canon_floor() == canon
 
 
 def test_shell_is_registered_and_killable():

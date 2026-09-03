@@ -2513,7 +2513,7 @@ def _build_canonical_description(registry_name: str) -> str:
     # human_gated 3 unchanged.
     # Prefer the live phrase; fall back to the pinned floor. Floors round
     # DOWN, so the fallback can only ever under-claim.
-    facs_p  = live.get("facilities") or _floor_phrase(n.get("facilities"), "18,500+")
+    facs_p  = live.get("facilities") or _floor_phrase(n.get("facilities"), "20,100+")
     mkts_p  = live.get("markets") or _floor_phrase(n.get("markets"), "300+")
     # ★ the old literal default here was "1,400+ tracked deals" — which the
     # drift detector itself flags as a stale_marker. A fallback must never be

@@ -235,7 +235,20 @@ PINNED = {
         #  canonical_stats._FALLBACK: that seed is 400, citation-safe but a ~47x
         #  under-claim as published copy. Bump it if you like — nothing breaks
         #  either way now, which is the entire point.
-        "facilities": "18,500+",
+        # ★2026-09-02: 18,500+ -> 20,100+, and the 08-25 note above is CONFIRMED
+        #  by measurement, not taken on trust. Probed live, cache-busted, all six
+        #  agent surfaces in one sweep — /llms.txt, /llms-full.txt, /AGENTS.md,
+        #  /.well-known/mcp.json, /api/v1/ai-agents.json and /agent ALL already
+        #  served "20,100+" while this literal said 18,500+. So there was no
+        #  seventh hand-walk to do: the derivation really did land, the surfaces
+        #  really do track the resolver, and this value really is a cold-start
+        #  floor only. It is bumped anyway because a cold start (fresh process,
+        #  DB down) should not answer 1,700 facilities light, and because the
+        #  repo's own fence scans the static artifacts against it. Floor rounds
+        #  DOWN and never exceeds the resolver: /api/v1/canon/phrases facilities
+        #  = "20,100+" (source=resolve_canon live), /api/v1/stats facilities =
+        #  20,198. 20,100 == resolver, < 20,198.
+        "facilities": "20,100+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
@@ -252,7 +265,18 @@ PINNED = {
         # ★2026-08-01: 1,500+ -> 1,600+ (live deals_tracked = 1,662). Same
         # PINNED-vs-resolve_canon() split as `facilities` above: /agent served
         # "1,500+" while /api/v1/canon/phrases already served "1,600+".
-        "deals": "1,900+",   # ★2026-08-23: 1,800+ -> 1,900+ — and this bump is the FIRST one the ledger asked for instead of a hand-walk. Claim 100974 (canon:public.deals, expected "== 1,800+", measured against the live resolve_canon() override) was judged **refuted** at 05:51Z; 100976 carries the same frozen expectation to its 24h horizon. Probed live at 06:57Z: /api/v1/canon/phrases deals = "1,900+", /api/v1/stats deals = 1,931. Floor rounds DOWN and never above the resolver: 1,900 < 1,931. ★The literal ALSO had a second home (mcp_gateway.py data_coverage.deals_tracked fell back to a hardcoded "1,800+" while its siblings called canon_text) — that copy now reads {canon_deals}, so this line is the only place the floor is typed. ★2026-08-16: 1,700+ -> 1,800+, same PINNED-vs-resolve_canon lag as `facilities` above, one cycle later — /api/v1/canon/phrases already served 1,800+ while this floor fed the stale figure into /.well-known/mcp.json. Probed live: /api/v1/stats deals = 1,849. Floor rounds DOWN: 1,800 < 1,849. ★2026-08-08 canon-surface audit: 1,600+ -> 1,700+ (resolve_canon live = 1,700+, deals_tracked = 1,745; same PINNED-vs-resolve_canon lag as `facilities`). ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
+        # ★2026-09-02: 1,900+ -> 2,000+. Probed live, cache-busted:
+        #  /api/v1/canon/phrases deals = "2,000+" (source=resolve_canon live),
+        #  /api/v1/stats deals = 2,069. Floor rounds DOWN and never above the
+        #  resolver: 2,000 < 2,069.
+        #  ★★★ THIS BUMP IS WHY THE stale_markers EDIT BELOW WAS UNAVOIDABLE.
+        #  "2,000+ tracked deals", "2,000+ deals", "2,000+ M&A", "2,000+ tracked
+        #  M&A" and "2,000+ tracked transactions" were ALL on our own
+        #  stale_markers denylist while resolve_canon() already published 2,000+
+        #  — so the canon denylisted the exact phrase it resolves to. Measured
+        #  2026-09-02, live bodies, six hits on four agent surfaces. See the
+        #  denylist note for the full reading.
+        "deals": "2,000+",   # ★2026-08-23: 1,800+ -> 1,900+ — and this bump is the FIRST one the ledger asked for instead of a hand-walk. Claim 100974 (canon:public.deals, expected "== 1,800+", measured against the live resolve_canon() override) was judged **refuted** at 05:51Z; 100976 carries the same frozen expectation to its 24h horizon. Probed live at 06:57Z: /api/v1/canon/phrases deals = "1,900+", /api/v1/stats deals = 1,931. Floor rounds DOWN and never above the resolver: 1,900 < 1,931. ★The literal ALSO had a second home (mcp_gateway.py data_coverage.deals_tracked fell back to a hardcoded "1,800+" while its siblings called canon_text) — that copy now reads {canon_deals}, so this line is the only place the floor is typed. ★2026-08-16: 1,700+ -> 1,800+, same PINNED-vs-resolve_canon lag as `facilities` above, one cycle later — /api/v1/canon/phrases already served 1,800+ while this floor fed the stale figure into /.well-known/mcp.json. Probed live: /api/v1/stats deals = 1,849. Floor rounds DOWN: 1,800 < 1,849. ★2026-08-08 canon-surface audit: 1,600+ -> 1,700+ (resolve_canon live = 1,700+, deals_tracked = 1,745; same PINNED-vs-resolve_canon lag as `facilities`). ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
         # ★2026-08-01 NEW KEY. The mapped-asset total was the one headline
         # figure with NO pinned home, so it drifted unchecked: worker.js's
         # why_dchub blurb and the /faq page both still claim "500,000+" while
@@ -292,8 +316,40 @@ PINNED = {
                       "12,650+",
                       "10,706", "10706", "50,000+", "50000", "317 ", "332 ",
                       "232 ", "100 calls/day", "3,000+ M&A",
-                      "2,000+ M&A", "2,000+ tracked deals", "2,000+ deals",
-                      "2,000+ tracked M&A", "2,000+ tracked transactions",
+                      # ★★★2026-09-02 — THE FIVE "2,000+ ..." MARKERS ARE GONE,
+                      # because the deduped count grew into them and they were
+                      # denylisting THE CANON'S OWN ANSWER. They were retired in
+                      # the 4,000+/2,000+ ROW-COUNT era, when 2,000+ over-stated
+                      # ~1,420 distinct deals. Distinct is now 2,069, so
+                      # "2,000+ tracked deals" is simply TRUE, and resolve_canon()
+                      # has been publishing it for weeks.
+                      #
+                      # MEASURED 2026-09-02, live bodies, one cache-busted sweep.
+                      # ai_surface_sentinel scans served bodies for these markers
+                      # (ai_surface_sentinel.py:156, plain substring) and raised
+                      # SIX drift alerts on FOUR agent surfaces, every one of them
+                      # false:
+                      #   /llms.txt              '2,000+ tracked M&A'
+                      #   /AGENTS.md             '2,000+ M&A', '2,000+ tracked M&A'
+                      #   /.well-known/mcp.json  '2,000+ tracked deals',
+                      #                          '2,000+ tracked M&A'
+                      #   /api/v1/ai-agents.json '2,000+ tracked M&A'
+                      #
+                      # This is the exact disease _adopt_live_version() refuses
+                      # for `version` ("a canon that resolved to its own retired
+                      # value"), and the exact disease the count fence hit on the
+                      # same day (tests/test_canonical_counts_drift.py, PR #3638).
+                      # util/canon_floor.py's docstring already recorded the
+                      # third instance: scripts/accuracy_fence.py's
+                      # `[2-9],\d{3} deals` "froze dchub-frontend for 19 deploys
+                      # the hour deals_tracked passed 2,000". A retired LITERAL is
+                      # safe to hardcode forever; a retired FLOOR is not, because
+                      # the fleet walks into it. That is the whole rule.
+                      #
+                      # ★ The 4,000+ family STAYS: 4,000 is 1.9x the deduped
+                      # count and cannot become true by growth any time soon.
+                      # test_canon_floors_are_not_on_their_own_denylist now fails
+                      # the moment any pinned floor re-enters this list.
                       "4,000+ M&A", "4,000+ tracked deals", "4,000+ deals",
                       "4,000+ tracked M&A", "4,000+ tracked transactions",
                       # ★2026-08-01: the mapped-asset OVER-claim. "50,000+" was
