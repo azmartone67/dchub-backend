@@ -108,8 +108,13 @@ LANE_TRIAGE: dict[tuple[str, str], tuple[str, str]] = {
 
     # ── context_integrity ────────────────────────────────────────────
     ("context_integrity", "envelope"): ("build",
-        "counts bare-{} internal fetchers still to migrate in routes/ — a "
-        "code migration with a finite end"),
+        "★RE-MEASURED 2026-09-03 01:57Z — the reason below replaces 'counts "
+        "bare-{} internal fetchers still to migrate in routes/', which is "
+        "DONE: that check now reads '15 migrated, none remaining' and PASSES. "
+        "The lane fails on a different check — 'every L14 context probe "
+        "answered' (critical), 1/11 unmeasurable: expansion ReadTimeout "
+        "against 127.0.0.1:8080 at an 8s read timeout. A loopback probe that "
+        "cannot answer inside 8s is the defect, not the migration"),
     ("context_integrity", "lessons"): ("build",
         "lesson composition and blindness-share mechanics"),
     ("context_integrity", "retire"): ("build",
@@ -176,10 +181,18 @@ LANE_TRIAGE: dict[tuple[str, str], tuple[str, str]] = {
         "asserts owed doors carry REAL agent calls — distribution demand"),
     ("loop_flywheel", "inventory"): ("build",
         "report-only counts plus discovery-queue accrual"),
-    ("loop_flywheel", "cron"): ("instrument",
-        "asserts 'dead-man board clear', i.e. it reads the AGGREGATE board. "
-        "It is red whenever any shell is red, including itself, so it cannot "
-        "clear until everything else already has. Circular by construction"),
+    ("loop_flywheel", "cron"): ("build",
+        "★RE-MEASURED 2026-09-03 01:45Z — the reason below replaces 'asserts "
+        "dead-man board clear ... circular by construction', which D2 "
+        "(2026-09-02) had ALREADY fixed the same day this table was written: "
+        "that check now fails on LATE only, reads '202 feeds, 0 overdue' and "
+        "PASSES. The lane fails on its OTHER check, cron_dupes — the WAVE 4 "
+        "work order to retire ~314 overlapping scheduled jobs. That is an "
+        "engineer's job, not a broken measurement, hence build not "
+        "instrument. ★AND cron_dupes is a hardcoded False, not a "
+        "measurement: it takes no reading, so it will stay red after the "
+        "duplicates are retired and can never record its own completion. "
+        "Bonded by tests/test_triage_reasons_match_the_failing_check.py"),
 
     # ── relay_closure ────────────────────────────────────────────────
     ("relay_closure", "A/redeem_declared_vs_writer"): ("build",
