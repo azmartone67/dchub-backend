@@ -2676,6 +2676,12 @@ def track_tool_call():
     return jsonify({"ok": True}), 200
 
 
+# r-continuation (2026-09-03): the human-line variant, recorded so the claim
+# behind it can be settled. Lives in its own import-free module because
+# tests/ deliberately never imports Flask or the DB — see its docstring.
+from relay_specificity import tag_relay_specificity
+
+
 # ── POST /api/v1/mcp/signal-paywall — record a paywall/preview signal ────
 #
 # 2026-06-06 (MCP-C): restore tool_requested write from the MCP server's
@@ -2730,6 +2736,7 @@ def mcp_signal_paywall():
     api_key    = body.get('api_key')  # optional — lifted from headers if missing
     user_email = body.get('user_email')
     message_shown = (body.get('message_shown') or '')[:2000] or None
+    message_shown = tag_relay_specificity(message_shown, body.get('relay_specificity'))
     tier_current = body.get('tier_current') or 'free'
     tier_required = body.get('tier_required') or 'paid'
 
