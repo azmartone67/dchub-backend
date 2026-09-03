@@ -238,6 +238,19 @@ def rank_markets():
         _metro_slug = (_slug.rsplit("-", 1)[0]
                        if "-" in _slug and len(_slug.rsplit("-", 1)[1]) == 2
                        else _slug)
+        # r-url-no-redirect (2026-09-03): the URL we hand an agent 301'd. We
+        # published the city-state slug ('ashburn-va'), which redirects to the
+        # metro slug, which for ten markets redirects AGAIN to a canonical page.
+        # Measured live:
+        #     /markets/ashburn-va  301 -> 301 -> 200  (2 hops, lands on
+        #                                              /markets/northern-virginia)
+        #     /markets/dallas-tx   301 -> 200         (1 hop)
+        #     /markets/dallas      200                (0 hops)
+        # Every redirect is a chance for a crawler to drop the fetch, and the
+        # page it finally lands on is titled differently from the slug we sent —
+        # which reads as a third identity for the same market. Resolve both hops
+        # here so the published URL is the one that serves.
+        _page_slug = _market_page_slug(_metro_slug)
         results.append({
             "rank":             i + 1,
             "market":           r["slug"],
@@ -250,7 +263,7 @@ def rank_markets():
             "facility_count":   r["facility_count"],
             "total_mw":         float(r["total_mw"]),
             "operator_count":   r["operator_count"],
-            "url":              f"https://dchub.cloud/markets/{r['slug']}",
+            "url":              f"https://dchub.cloud/markets/{_page_slug}",
         })
 
     return jsonify({
@@ -293,6 +306,28 @@ def rank_markets():
     }), 200
 
 
+def _market_page_slug(metro_slug: str) -> str:
+    """The slug whose /markets/<slug> page serves 200 with no redirect.
+
+    routes/market_deep_dive.MARKETS_CANONICAL_REDIRECT is the WEB's canon and
+    is what decides where a page URL lands, so it is the right authority for a
+    URL. Note it points the OPPOSITE way from util/market_aliases —
+    DCPI_METRO_ALIASES maps 'northern-virginia' -> 'ashburn' while the web 301s
+    'ashburn' -> 'northern-virginia'. Both are internally consistent; they
+    answer different questions (which SCORE row, vs which PAGE). Do not
+    "reconcile" them by pointing this at the DCPI map — that reintroduces the
+    redirect this function exists to remove.
+
+    Fail-soft: an unresolvable slug is returned unchanged, so the worst case is
+    today's behaviour rather than a broken link.
+    """
+    try:
+        from routes.market_deep_dive import MARKETS_CANONICAL_REDIRECT
+        return MARKETS_CANONICAL_REDIRECT.get(metro_slug, metro_slug)
+    except Exception:   # pragma: no cover - a URL must never 500 the tool
+        return metro_slug
+
+
 def _rank_markets_provenance(criteria: str) -> dict:
     """Citation block for rank_markets. Shape mirrors the other tier-1 tools so
     one agent-side parser reads them all; values come from routes.error_envelope
@@ -307,7 +342,7 @@ def _rank_markets_provenance(criteria: str) -> dict:
         from routes.error_envelope import (
             CITE_AS, LICENSE, PROVENANCE_SOURCE, _runtime_as_of,
         )
-        return {
+        out = {
             "source": PROVENANCE_SOURCE,
             "as_of": _runtime_as_of(),
             "license": LICENSE,
@@ -320,6 +355,24 @@ def _rank_markets_provenance(criteria: str) -> dict:
                        f"{criteria}."),
             "cite_url_template": "https://dchub.cloud/markets/{market}",
         }
+        # r-markets-basis wiring (2026-09-03): the MW figure travels with the
+        # axes that produced it. The same market reads 5,793 here, 11,052 on its
+        # page and 12,438 on /api/v1/markets — all correct, all different
+        # populations and aggregations. Publishing the basis is what turns that
+        # from a contradiction into a reconciliation.
+        #
+        # ★ Its OWN try, deliberately. capacity_basis lands in a separate PR; if
+        # this import shared the block's try, an older util/ would take the
+        # ENTIRE citation down to the two-key fallback — an optional enrichment
+        # must never be able to strip the thing it enriches. Absent util → the
+        # key is simply omitted, and it lights up on its own once that lands.
+        try:
+            from util.facility_count_basis import capacity_basis
+            out["capacity_basis"] = capacity_basis(
+                "operational", "sum_rows", "city_state")
+        except Exception:
+            pass
+        return out
     except Exception:  # pragma: no cover - provenance must never 500 the tool
         return {"cite_as": "DC Hub, dchub.cloud", "license": "CC-BY-4.0"}
 
