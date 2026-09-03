@@ -36,6 +36,8 @@ import psycopg2
 from flask import Blueprint, jsonify, request
 
 from util.deals import DEALS_OK
+from util.dominant_source import (MASK_LAG_DAYS, dominant_source_lag,
+                                  tables_with_a_source_column)
 
 infra_growth_bp = Blueprint("infra_growth", __name__)
 
@@ -426,6 +428,12 @@ def _days_since_change(hist):
 def _summary(cur):
     cur.execute("SELECT MAX(snapshot_date) FROM infra_growth_snapshot")
     today = (cur.fetchone() or [None])[0]
+    # One probe for all 16 layer tables instead of one per layer: measured
+    # 1,691ms -> 79ms against the production replica, and this endpoint sits
+    # behind the edge's 15s admin timeout. None means the probe itself failed,
+    # which falls back to per-table probing inside the helper — never to
+    # "no table has a source column", which would disable the check in silence.
+    has_src = tables_with_a_source_column(cur, [t for _, t, _, _ in _LAYERS])
     out, flatlines = [], []
     for label, tbl, cat, stale in _LAYERS:
         # _HISTORY_FROM drops snapshots taken while this layer pointed at a
@@ -457,6 +465,24 @@ def _summary(cur):
                 d7 = int(cur_count) - int(wk_c)
         dsc = _days_since_change(hist)
         last_ingest, ingest_age = _freshness(cur, tbl, label)
+        # ★★★ THE FRESHNESS READ ABOVE IS A BARE MAX() OVER THE WHOLE TABLE, so
+        # on a table fed by several independent lanes it answers "is ANY lane
+        # alive" — the weakest question available — and is pinned green by the
+        # most trivial writer. Measured 2026-09-03: `substations` reported
+        # ingest_age 0d against a 10d threshold AND status "growing", while
+        # HIFLD (79,788 rows, 63% of the table) had not written since 08-14 and
+        # its loader was 500ing nightly. The 708-row `auto_discovery` lane —
+        # 0.56% of the table — carried the entire signal.
+        #
+        # ★ RUNS FOR EVERY LAYER, not the ones we suspect. A checker that scans
+        # a subset of what it publishes certifies the rest clean by never
+        # looking. On the four healthy multi-source layers it measures a lag of
+        # 0 and stays silent, so this cannot manufacture a red for slow federal
+        # data — the measure is relative to the table's OWN newest row, never to
+        # a clock.
+        mask_lag, mask_src, mask_rows = dominant_source_lag(
+            cur, tbl, _FRESH_COL.get(label),
+            has_source=(None if has_src is None else tbl in has_src))
         # ★ A flat COUNT(*) is NOT evidence of a dead layer — full-reload
         # loaders rewrite every row and leave the count unchanged. If the table
         # was re-ingested inside its own staleness window, it is alive, so the
@@ -464,6 +490,15 @@ def _summary(cur):
         flat = bool(stale is not None and dsc is not None and dsc > stale)
         if flat and ingest_age is not None and ingest_age <= stale:
             flat = False
+        # ★ THIS SUPPRESSION HAS THE SAME SHAPE AS THE DEFECT ABOVE — it lets a
+        # freshness read excuse a flat count, and a MASKED freshness read would
+        # excuse it falsely. It is left alone on purpose: it bites only when a
+        # layer is flat AND masked at once, and measured 2026-09-03 against the
+        # live snapshot history, NO layer is in that state (the flat ones are
+        # subsea_landings 20d/10d and gas_pipelines 23d/130d, neither masked;
+        # substations, the one masked layer, changes daily and is never flat).
+        # Changing what flatline means needs its own evidence and its own diff,
+        # so this records a measured-zero gap rather than fixing it blind.
         # Best-available rolling window: current vs the OLDEST snapshot still
         # within 7d. Lets the public feed show a real delta even while the
         # tracker is younger than 7 days (then window_days < 7, labelled so).
@@ -475,6 +510,18 @@ def _summary(cur):
                 break
         status, status_reason = _layer_status(
             dwin, wdays, ingest_age, stale, _EXPECTED_CADENCE.get(label))
+        # ★ APPENDED TO EVERY STATUS, including "growing" — which is the one
+        # substations actually reads. A layer gaining 1-8 rows a day from a
+        # 0.56% lane while its canonical loader is dead is BOTH growing and
+        # broken, and the second half is the part nobody could see. The status
+        # itself is left alone: it is derived from measured signals and each
+        # branch is still true as far as it goes.
+        if mask_lag is not None and mask_lag >= MASK_LAG_DAYS:
+            status_reason = (status_reason or "") + (
+                f" [⚠ freshness is NOT coming from the main source: "
+                f"'{mask_src}' holds {mask_rows:,} rows and is {mask_lag}d "
+                f"behind this table's newest row — the {_FRESH_COL.get(label)} "
+                f"read above is being satisfied by a smaller lane]")
         known = _KNOWN_ISSUE.get(label)
         rec = {"layer": label, "category": cat, "count": int(cur_count),
                "delta_1d": d1, "delta_7d": d7, "delta_window": dwin, "window_days": wdays,
@@ -497,6 +544,13 @@ def _summary(cur):
                "ingest_age_days": ingest_age,
                "freshness_measurable": last_ingest is not None,
                "freshness_column": _FRESH_COL.get(label),
+               # Which lane actually supplies this table's rows, and how far it
+               # sits behind the table's newest row. None = the table has no
+               # `source` column or only one source, so this check has nothing
+               # to say — that is not the same as a clean bill of health.
+               "dominant_source": mask_src,
+               "dominant_source_rows": mask_rows,
+               "dominant_source_lag_days": mask_lag,
                "expected_cadence": _EXPECTED_CADENCE.get(label)}
         out.append(rec)
         if flat:
