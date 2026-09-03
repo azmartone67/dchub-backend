@@ -19,7 +19,10 @@
     "test_anchor_card_clickable.py": {
       "pglob": 640
     },
-    "test_asset_ingest_secret_guards_are_loud.py": {"pglob": 140}, "test_audit_closure_shell.py": {
+    "test_asset_ingest_secret_guards_are_loud.py": {
+      "pglob": 140
+    },
+    "test_audit_closure_shell.py": {
       "glob": 640
     },
     "test_authkit_one_origin.py": {
@@ -60,6 +63,9 @@
     },
     "test_capacity_tracking_dead_lane.py": {
       "walk": 120
+    },
+    "test_continuation_compliance.py": {
+      "pglob": 6
     },
     "test_contract_healer.py": {
       "walk": 120
