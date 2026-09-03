@@ -8934,8 +8934,41 @@ _LLMS_TXT_URLS = (
     "https://dchub.cloud/llms.txt",
     "https://dchub.cloud/llms-full.txt",
 )
-_LLMS_PROBE_CAP = 15         # max advertised URLs probed per sweep
-_LLMS_TIME_BUDGET_S = 45.0   # hard wall-clock budget for the whole detector
+# ★★★ 2026-09-03 — THIS CAP MADE THE DETECTOR REPORT CLEAN WHILE THE CONTRACT
+#   WAS BROKEN IN FOUR PLACES. Measured that day by probing every advertised
+#   URL by hand: the docs advertise 59, the cap probes 15, and ALL FOUR dead
+#   links sat outside the window —
+#
+#       idx 17  404  /dcpi/va
+#       idx 25  404  /api/v1/facilities/export?format=csv
+#       idx 28  404  /[page                    (a markdown artifact, see below)
+#       idx 57  404  /providers
+#       dead inside the probed first 15: ZERO
+#
+#   Document order puts the free-API block first and the page/asset links last,
+#   so a head-of-list cap systematically protects exactly the tail where rot
+#   accumulates. The detector returned 0 findings, forever — a vacuous pass,
+#   not a passing contract.
+#
+#   The cap stays (it is a real runtime bound: 59 sequential probes is ~25s
+#   against a 15s slow-detector threshold, and this detector already runs
+#   inside a _SCAN_BUDGET_S=25 pool). What changes is that the window now
+#   ROTATES, so the cap bounds each sweep's cost without bounding what the
+#   detector can ever see. Full coverage takes ceil(59/15) = 4 sweeps.
+_LLMS_PROBE_CAP = 15         # max advertised URLs probed per sweep (ROTATING)
+# ★ 2026-09-03 — A BUDGET LARGER THAN THE WHOLE SCAN'S IS NOT A BUDGET.
+#   This was 45.0 while the scan that runs it is bounded at _SCAN_BUDGET_S = 25
+#   (line ~12056, 8 workers over ~100 detectors) — 1.8x the entire sweep, so it
+#   could never bind, and the ceiling was really 51s because the budget is
+#   tested BEFORE each probe and a probe may then take its full 6s timeout.
+#   Lowered under the scan budget so it is an actual bound.
+#
+#   ★ AND THE ROTATION IS WHAT MAKES LOWERING IT SAFE. Under the old fixed
+#     head-of-list window, breaking early meant those URLs were never seen at
+#     all. With a rotating window an early break just defers the rest of that
+#     sweep's slice to the next one, so the budget can now do its job without
+#     creating the blind spot it used to create.
+_LLMS_TIME_BUDGET_S = 20.0   # < _SCAN_BUDGET_S (25) so it can actually bind
 # Statuses that mean "alive but gated/wrong-method" — an agent following the
 # doc gets a real answerable response, not a dead end. Only genuinely-dead
 # statuses (404/410/5xx…) file a finding.
@@ -8953,7 +8986,15 @@ def check_llms_txt_contract() -> list[dict]:
     Fetches the live llms files, extracts every advertised dchub.cloud URL,
     GETs each (cache-busted) and files `llms_txt_dead_link:<path>` for any
     that return 404/410/5xx. Gated statuses (401/403/402/405/429) count as
-    alive. Capped + time-budgeted. FAIL-CLOSED: [] on any error.
+    alive. Time-budgeted, and capped per sweep with a ROTATING window — see
+    _LLMS_PROBE_CAP. A fixed cap made this detector report clean for months
+    while four advertised URLs 404'd, all of them outside the window.
+    FAIL-CLOSED: [] on any error.
+
+    ★ SILENCE FROM THIS DETECTOR IS NOT "the contract is whole" — it is "the
+      URLs in THIS sweep's window are alive". Every finding it does file names
+      the coverage it had, so a reader is never left inferring completeness the
+      detector never claimed.
     """
     import time as _time
     findings: list[dict] = []
@@ -8973,7 +9014,11 @@ def check_llms_txt_contract() -> list[dict]:
             for m in re.finditer(r"https://dchub\.cloud[^\s\)\]\"'`<>]*", body):
                 u = m.group(0).rstrip(".,;:")
                 # skip templated examples the doc shows with placeholders
-                if any(ch in u for ch in ("{", "<", "…")):
+                # "[" and "]" join the placeholder set 2026-09-03: the docs
+                # contain markdown link syntax, and the bare regex captured
+                # "https://dchub.cloud/[page" out of "[page](...)" — filed as a
+                # dead link when it is a doc formatting artifact, not a route.
+                if any(ch in u for ch in ("{", "<", "…", "[", "]")):
                     continue
                 if u in seen:
                     continue
@@ -8981,7 +9026,17 @@ def check_llms_txt_contract() -> list[dict]:
                 urls.append(u)
         if not urls:
             return []  # couldn't read the docs at all — fail closed
-        for u in urls[:_LLMS_PROBE_CAP]:
+        # ★ ROTATE, do not truncate. A fixed head-of-list window can never see
+        #   the tail; an offset that advances every hour covers the whole
+        #   advertised set across ceil(len/cap) sweeps while each sweep costs
+        #   the same. Derived from the clock rather than stored state so there
+        #   is nothing to migrate, nothing to reset, and no ordering coupling
+        #   to how often the scan happens to run.
+        _n = len(urls)
+        _win = min(_LLMS_PROBE_CAP, _n)
+        _off = (int(started // 3600) * _win) % _n
+        _window = [urls[(_off + i) % _n] for i in range(_win)]
+        for u in _window:
             if _time.time() - started > _LLMS_TIME_BUDGET_S:
                 break
             sep = "&" if "?" in u else "?"
@@ -9007,7 +9062,11 @@ def check_llms_txt_contract() -> list[dict]:
                                f"HTTP {status}. Agents follow these docs verbatim — a dead "
                                f"advertised rail costs citations AND credibility. Fix the "
                                f"route (backend), the edge routing (_routes.json / "
-                               f"PHASE_282_PREFIXES in _worker.js), or the doc itself."),
+                               f"PHASE_282_PREFIXES in _worker.js), or the doc itself. "
+                               f"[coverage: this sweep probed {_win} of {_n} "
+                               f"advertised URLs, window offset {_off}; the "
+                               f"window rotates hourly so the whole doc is "
+                               f"covered across {-(-_n // _win)} sweeps]"),
                 })
     except Exception:  # noqa: BLE001 — FAIL-CLOSED
         return []
