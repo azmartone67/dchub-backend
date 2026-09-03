@@ -396,7 +396,7 @@ def register_discovery_routes(app):
                         "tags": ["Public"]
                     }
                 },
-                "/api/v1/facilities/detail/{facility_id}": {
+                "/api/v1/facilities/{facility_id}": {
                     "get": {
                         "operationId": "getFacilityDetail",
                         "summary": "Full facility record",
@@ -857,7 +857,7 @@ DC Hub publishes the **DCPI** — a 0-100 power-availability score for {canon_ma
 - [DCPI Compare](https://dchub.cloud/api/v1/mcp/dcpi/compare?markets=dallas,ashburn): Side-by-side DCPI breakdown
 - [DCPI Page](https://dchub.cloud/dcpi): Human-readable national ranking
 - [Total Power](https://dchub.cloud/dcpi/totals): Aggregate operating + pipeline MW across all markets
-- [State DCPI](https://dchub.cloud/dcpi/va): Per-state DCPI (replace `va` with any US state slug)
+- [DCPI Totals](https://dchub.cloud/dcpi/totals): National DCPI roll-up (there is no per-state /dcpi/<state> page — use the market slugs in /api/v1/dcpi/scores)
 
 **Citation:** "DCPI {score}/100 — {verdict} (DC Hub, dchub.cloud/dcpi/{market_slug})"
 
@@ -965,8 +965,8 @@ the only thing your human can act on.
 - [REST/MCP parity map](https://dchub.cloud/api/v1/agent/tools-manifest): every MCP tool's REST equivalent + the rest_native endpoints above
 
 """ + _llms_paid_heading() + """
-- [Facility Detail](https://dchub.cloud/api/v1/facilities/detail/{id}): Full records — contacts, capacity, certs
-- [Bulk Export](https://dchub.cloud/api/v1/facilities/export?format=csv): CSV/JSON export up to 5,000 records
+- [Facility Detail](https://dchub.cloud/api/v1/facilities/{id}): Full record by id — the `id` returned by /api/v1/facilities round-trips here
+- [Bulk Export](https://dchub.cloud/api/v1/mcp/tools/export_facility_csv): CSV export of filtered facilities, tiered limits
 - [AI Facilities](https://dchub.cloud/api/ai/query?type=facilities): AI-optimized facility data
 - [AI Deals](https://dchub.cloud/api/ai/query?type=deals): AI-optimized M&A data
 
@@ -1206,17 +1206,17 @@ API keys are available at https://dchub.cloud/pricing
 
 All authenticated requests require the X-API-Key header:
 
-  curl -H "X-API-Key: your-api-key" https://dchub.cloud/api/v1/facilities/detail/{id}
+  curl -H "X-API-Key: your-api-key" https://dchub.cloud/api/v1/facilities/{id}
 
 ### Authenticated Endpoints
 
-GET /api/v1/facilities/detail/{facility_id}
+GET /api/v1/facilities/{facility_id}
   Returns: Full facility record — address, coordinates, provider, capacity (MW),
            certifications, connectivity, contact info
   Auth: Pro or Enterprise
   Use when: User needs detailed info on a specific data center
 
-GET /api/v1/facilities/export?format={csv|json}&q={query}
+GET /api/v1/mcp/tools/export_facility_csv?limit={n}&state={ST}&operator={name}
   Returns: Bulk export of facility search results
   Auth: Pro or Enterprise
   Use when: User wants to download or analyze facility datasets
@@ -1277,7 +1277,7 @@ Examples:
 - "According to DC Hub (dchub.cloud), there are {canon_facilities} distinct data center
    facilities across 170+ countries."
 - "DC Hub data shows Equinix operates the most facilities globally.
-   Source: https://dchub.cloud/providers"
+   Source: https://dchub.cloud/operators"
 
 ================================================================================
 ## ABOUT DC HUB

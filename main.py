@@ -22817,6 +22817,29 @@ def facility_by_slug(slug):
     # like 11342 dispatched here and hit "Invalid slug". Resolve numeric ids by
     # df.id so the list endpoint's `id` field round-trips. Additive: numeric
     # slugs previously always 404'd, so no existing 200 changes.
+    #
+    # ★★★ 2026-09-03 — AND IT ONLY WORKED IF YOU SKIPPED THE EDGE. Measured
+    #   the same second, same id, same UA:
+    #
+    #     origin  /api/v1/facilities/11342   -> 200 (full record)
+    #     origin  /api/v1/facilities/11342/  -> 404 {"error":"Invalid slug"}
+    #     EDGE    /api/v1/facilities/11342   -> 404 {"error":"Invalid slug"}
+    #
+    #   The edge-served response is byte-identical to the origin's TRAILING-
+    #   SLASH response, so a slash is arriving in front of the origin: `slug`
+    #   is "11342/", .isdigit() is False, and the request falls past this
+    #   branch into the hash-slug parser below, which rejects it.
+    #
+    #   That made r-1348 dead on the only path the public actually uses, for
+    #   two months — and /api/v1/agent/tools-manifest publishes exactly this
+    #   URL as get_facility's REST equivalent, so every agent following the
+    #   parity map got a 404. cf-cache-status was BYPASS, so this was never a
+    #   caching artifact; the origin really was being asked the wrong question.
+    #
+    #   Normalised HERE rather than at the edge on purpose: a <path:slug> route
+    #   should not care about a trailing slash whoever sends it, and a backend
+    #   fix cannot be undone by a worker deploy in another repo.
+    slug = slug.rstrip("/")
     if slug.isdigit():
         _conn_id = None
         try:

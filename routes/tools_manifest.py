@@ -70,7 +70,12 @@ _TOOL_REST = {
     "get_agent_registry":     ("/api/v1/ai-platforms/status", "GET"),
     "get_backup_status":      ("/api/health/data-freshness", "GET"),
     "why_dchub":              ("/api/v1/competitive/why-dchub", "GET"),
-    "export_dataset":         ("/api/v1/facilities/export", "GET"),
+    # ★ 2026-09-03 — /api/v1/facilities/export has never been registered
+    #   (no route definition anywhere in the repo) and answered 404 live.
+    #   This map is what agents follow to find a tool's REST equivalent,
+    #   so it was handing every one of them a dead rail. The real bulk
+    #   export is the tier2 CSV route, verified 200 text/csv.
+    "export_dataset":         ("/api/v1/mcp/tools/export_facility_csv", "GET"),
     # MCP-only (no open REST route): session/key + write/subscribe + alerts.
     # agentic wave (2026-07-18) — MCP tools shipped in dchub-mcp-server 6ba8510
     "get_permitting_intel":   ("/api/v1/permitting/intel", "GET"),
