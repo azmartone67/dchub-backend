@@ -2248,7 +2248,14 @@ def agentic_loop_tick():
         # feed overdue on /api/v1/ops/deadman, and this shell stays red while its
         # lanes are red — which, being BORN RED, is the honest state.
         beat_status = _beat_status(ok, bool(out.get("tick_failed")))
-        note = (f"PASS {s.get('PASS')} FAIL {s.get('FAIL')} ? {s.get('?')} | "
+        # ★ NAME the failing lanes. "PASS 2 FAIL 2 ? 0" said how many broke
+        # and never which, so /ops/deadman could not triage this shell. The
+        # counts are kept beside the names, not replaced by them.
+        from routes.lane_triage import format_lane_verdicts
+        _named = format_lane_verdicts(
+            (ln.get("name"), ln.get("verdict")) for ln in (out.get("lanes") or []))
+        note = (f"{_named} | PASS {s.get('PASS')} FAIL {s.get('FAIL')} "
+                f"? {s.get('?')} | "
                 f"filed {((out.get('graduation_filing') or {}).get('filed'))} | "
                 f"rate {((out.get('metrics') or {}).get('recurrence_rate'))}")
     except Exception as e:  # noqa: BLE001

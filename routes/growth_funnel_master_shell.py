@@ -468,7 +468,11 @@ def _run_tick(beat: bool = False) -> dict:
     lanes = []
     for name, fn in _LANES:
         checks = _safe_lane(fn)
-        lanes.append({"name": name, "verdict": _lane_verdict(checks),
+        # ★ `name` is a display label ("1 \u00b7 attribution"); the lane's
+        # stable ID is its function's, and that is what the board is keyed on.
+        lanes.append({"name": name,
+                      "id": fn.__name__[len("_lane_"):],
+                      "verdict": _lane_verdict(checks),
                       "checks": checks})
     fails = sum(1 for ln in lanes if ln["verdict"] == "FAIL")
     unknown = sum(1 for ln in lanes if ln["verdict"] == "?")
@@ -482,8 +486,14 @@ def _run_tick(beat: bool = False) -> dict:
         "verdict": ("FAIL" if fails else ("?" if unknown else "PASS")),
     }
     if beat:
-        _beat_ledger(f"{fails} failing / {unknown} unknown of {len(lanes)} lanes",
-                     failing=bool(fails))
+        # ★ NAME the failing lanes, do not merely count them. The old note
+        # ("3 failing / 1 unknown of 4 lanes") left the board unable to say
+        # WHICH lane, so nobody could triage this shell from /ops/deadman.
+        from routes.lane_triage import format_lane_verdicts
+        _beat_ledger(
+            format_lane_verdicts((ln["id"], ln["verdict"]) for ln in lanes)
+            + f" | {fails} failing / {unknown} unknown of {len(lanes)}",
+            failing=bool(fails))
     return out
 
 
