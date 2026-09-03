@@ -126,8 +126,8 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
 </div>
 
 <div class="pane">
-  <h2>60-second quickstarts — the six biggest agent platforms</h2>
-  <p style="color:var(--dch-text-mute);font-size:.9rem;margin:0 0 6px">These six platforms drive most external DC Hub traffic. Pick yours, paste, ask.</p>
+  <h2>60-second quickstarts</h2>
+  <p style="color:var(--dch-text-mute);font-size:.9rem;margin:0 0 6px">The six platforms that drive most external DC Hub traffic, plus the Cloudflare Zero Trust path for teams that must front MCP with their own Access policies. Pick yours, paste, ask.</p>
   <div class="qs">
     <div class="qs-card">
       <h3>Claude (claude.ai &amp; Desktop)</h3>
@@ -173,6 +173,16 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
       <code>https://dchub.cloud/mcp</code>, auth blank (or a Bearer key for full depth).
       <pre>Try: "Via the DC Hub connector, which ISO has the most queued GW?"</pre>
       <a href="https://dchub.cloud/integrations/perplexity">Perplexity guide →</a>
+    </div>
+    <div class="qs-card">
+      <h3>Cloudflare Zero Trust</h3>
+      Run DC Hub as an upstream server inside your own <b>MCP Server Portal</b> — your portal URL,
+      your Access policies, your audit trail. Zero&nbsp;Trust → Access controls → AI controls →
+      <b>MCP servers</b> → <b>Add a server</b>.
+      <pre>URL:  https://dchub.cloud/mcp
+Auth: OAuth → Automatic (DC Hub supports DCR)</pre>
+      <a href="https://dchub.cloud/integrations/cloudflare">Cloudflare portal guide →</a> &nbsp;·&nbsp;
+      <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener">open Zero Trust →</a>
     </div>
   </div>
 </div>
