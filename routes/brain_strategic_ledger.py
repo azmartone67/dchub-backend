@@ -306,7 +306,7 @@ def record_baseline(cur, *, rec_id: Optional[int], run_id: str,
                     rec_id, run_id, week_of, kind, title,
                     target_metric, metric_source, verifiable,
                     baseline_value, baseline_at, outcome
-                  ) VALUES (%s,%s,%s,%s,%s,%s,%s,TRUE,%s,NOW(),'pending')
+                  ) VALUES (%s,%s,%s,%s,%s,%s,%s,TRUE,%s,NOW() ON CONFLICT DO NOTHING,'pending')
                   ON CONFLICT (rec_id) WHERE rec_id IS NOT NULL DO NOTHING""",
                 (rec_id, run_id, week_of, kind, title[:200],
                  spec["metric"], spec["source"], baseline))
