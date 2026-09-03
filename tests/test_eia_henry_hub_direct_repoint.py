@@ -70,8 +70,17 @@ def _row(period, value, series="RNGWHHD"):
             "value": value, "units": "$/MMBTU"}
 
 
-def _payload(rows):
-    return {"response": {"total": 7452, "dateFormat": "YYYY-MM-DD",
+def _payload(rows, echo_key=KEY):
+    """★ THE REAL BODY ECHOES THE REQUEST BACK — api_key INCLUDED. Confirmed
+    against the live API 2026-09-03: the response carries request.params.api_key
+    right next to the data. Every fixture carries that echo, so the "key is
+    never stored" test is asserting about a body that ACTUALLY contains the key
+    rather than passing because the fixture happened to be clean."""
+    return {"warnings": [], "apiVersion": "2.1.9", "ExcelAddInVersion": "2.1.0",
+            "request": {"command": "/v2/natural-gas/pri/fut/data/",
+                        "params": {"api_key": echo_key, "frequency": "daily",
+                                   "data": ["value"], "length": "10"}},
+            "response": {"total": 7452, "dateFormat": "YYYY-MM-DD",
                          "frequency": "daily", "data": rows}}
 
 
@@ -237,14 +246,31 @@ def test_the_key_is_read_at_call_time_not_frozen_at_import(monkeypatch, entry):
 
 def test_the_key_is_sent_upstream_but_never_stored(hh, entry):
     """★ `raw` lands in grid_ext_metrics as JSON. A keyed source_url would
-    persist a live credential into a table many readers can select."""
+    persist a live credential into a table many readers can select.
+
+    The fixture body CONTAINS the key (EIA echoes it in request.params), so
+    this fails if the adapter ever widens `raw` to carry the upstream body.
+    """
     out = g._eia_henry_hub(entry)
+    assert KEY in json.dumps(_payload(list(LIVE_ROWS))), "fixture must carry the echo"
     assert "api_key=%s" % KEY in hh.seen["url"], "the key must reach upstream"
     blob = json.dumps(out["raw"])
     assert KEY not in blob
     assert "api_key" not in blob
     assert out["raw"]["source_url"] == g._EIA_HH_URL
     assert "api_key" not in g._EIA_HH_URL
+
+
+def test_the_echoed_request_block_is_never_copied_into_raw(hh, entry):
+    """★ THE REAL LEAK PATH. api.eia.gov returns request.params.api_key next to
+    the data. An adapter that stashed the upstream body in `raw` "for
+    provenance" would write a live credential into grid_ext_metrics on every
+    tick. `raw` is built field by field from response.data only."""
+    out = g._eia_henry_hub(entry)
+    blob = json.dumps(out["raw"])
+    assert KEY not in blob
+    for leaked in ("request", "params", "apiVersion", "ExcelAddInVersion"):
+        assert leaked not in blob, leaked
 
 
 def test_no_error_string_can_carry_the_key(hh, entry):
