@@ -25,9 +25,16 @@ Or as a decorator on a main entry function:
 
 Best-effort: never crashes the caller. Network errors get swallowed and
 logged but the extractor continues.
+
+★ 2026-09-03 — that "logged" claim used to be FALSE: this module had no logger
+at all, and every failure (including a 401 from a credential-less process)
+returned False in silence. A P1 source read `dead` for 5+ days while a live
+process was heartbeating into a 401 nobody could see. Failures are now logged
+for real; see _warn_once_no_credential below.
 """
 
 import json
+import logging
 import os
 import time
 import urllib.request
@@ -62,6 +69,63 @@ HEARTBEAT_SECRET = (
 )
 HEARTBEAT_TIMEOUT = 5  # seconds — short, never blocks an extractor
 
+_log = logging.getLogger(__name__)
+
+
+def _safe_warn(fmt, *args):
+    """Log a warning that can never propagate.
+
+    This module's contract is "never crashes the caller" — its heartbeats fire
+    from atexit hooks, where a raised exception turns a successful extractor
+    run into a non-zero exit. A logging handler CAN raise (bad handler, closed
+    stream, %-format mismatch), so every warning here goes through this.
+    """
+    try:
+        _log.warning(fmt, *args)
+    except Exception:
+        pass
+
+# ★ The silent-401 trap this guard closes (measured 2026-09-03).
+# HEARTBEAT_SECRET resolves at IMPORT. In any process where none of the three
+# admin envs is set it becomes "", and the client still POSTed
+# `Authorization: Bearer ` — which routes/sources.py::_check_auth treats as NO
+# credential and answers 401, byte-identical to a wrong key. heartbeat() then
+# swallowed that 401 and returned False without a word, so:
+#   • the operator saw a source go `dead` with no error anywhere, and
+#   • the registry's last_run_at froze at the last CREDENTIALED report.
+# Live evidence: backend-news-facility-extractor (tier p1, 24h cadence) read
+# `dead` since 2026-08-28 while a heartbeat for it 401'd at 2026-09-03T01:23Z.
+# Introduced 2026-07-31 by #2049 (a correct security fix that removed a
+# hardcoded literal); the silence is why it survived 34 days.
+#
+# Two deliberate choices:
+#  1. SKIP the POST rather than send one that provably cannot be accepted. A
+#     credential-less heartbeat is not a degraded heartbeat, it is a guaranteed
+#     401 — sending it only adds edge traffic and a misleading access-log row.
+#  2. Do NOT invent a credential (e.g. reading a bare ADMIN_KEY that some CI
+#     runners bind). A heartbeat fired from a context that merely IMPORTED an
+#     extractor would then write a FALSE success into the source registry —
+#     trading an under-report for an over-report, which is strictly worse for a
+#     freshness signal. Give the operator the diagnosis and let them decide
+#     which contexts are supposed to report.
+_MISSING_CREDENTIAL_LOGGED = False
+
+
+def _warn_once_no_credential(source_id):
+    """Say — once per process — that this process can never heartbeat."""
+    global _MISSING_CREDENTIAL_LOGGED
+    if not _MISSING_CREDENTIAL_LOGGED:
+        _MISSING_CREDENTIAL_LOGGED = True
+        _safe_warn(
+            "heartbeat %s SKIPPED (no credential): none of DCHUB_ADMIN_KEY, "
+            "DCHUB_INTERNAL_KEY, DCHUB_ADMIN_SECRET is set in this process, so "
+            "the source-registry gate would reject every POST from here with "
+            "401. No heartbeat from this process can land; the registry will "
+            "show this source going stale even though it ran. Set one of those "
+            "envs in whatever launches this process, or stop it heartbeating.",
+            source_id,
+        )
+
 
 def heartbeat(source_id, status="success", rows_affected=None,
               duration_ms=None, error=None, metadata=None):
@@ -79,6 +143,10 @@ def heartbeat(source_id, status="success", rows_affected=None,
     if metadata:
         body["metadata"] = metadata
 
+    if not HEARTBEAT_SECRET:
+        _warn_once_no_credential(source_id)
+        return False
+
     url = f"{HEARTBEAT_BASE}/{source_id}/heartbeat"
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
@@ -92,8 +160,29 @@ def heartbeat(source_id, status="success", rows_affected=None,
     try:
         with urllib.request.urlopen(req, timeout=HEARTBEAT_TIMEOUT) as resp:
             return 200 <= resp.status < 300
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
-        return False  # silent fail by design
+    except urllib.error.HTTPError as e:
+        # An HTTP status the server chose — the operator needs to see it. A 401
+        # here means a credential WAS sent and rejected (a wrong/stale key),
+        # which is a different fault from the no-credential skip above.
+        _safe_warn("heartbeat %s failed: HTTP %s from %s", source_id,
+                   getattr(e, "code", "?"), url)
+        return False
+    except (urllib.error.URLError, OSError) as e:
+        # Transport-level: unreachable, DNS, timeout. Best-effort by design, but
+        # no longer invisible.
+        _safe_warn("heartbeat %s failed: %s: %s", source_id,
+                   type(e).__name__, e)
+        return False
+    except Exception as e:
+        # ★ PRE-EXISTING GAP, surfaced by test_heartbeat_never_raises_when_the
+        # _transport_explodes: the old handler caught only URLError/HTTPError/
+        # OSError, so ANY other exception out of urlopen (a RuntimeError from a
+        # patched opener, an ssl error subclass, a bad Request) propagated into
+        # an extractor's atexit hook and could fail an otherwise-good run. The
+        # docstring has always promised this never happens; now it is true.
+        _safe_warn("heartbeat %s failed: unexpected %s: %s", source_id,
+                   type(e).__name__, e)
+        return False
 
 
 @contextmanager
