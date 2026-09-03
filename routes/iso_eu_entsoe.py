@@ -114,7 +114,7 @@ _ZONE_REGISTRY = [
     ("DE_LU",   "10Y1001A1001A82H", "Germany–Luxembourg",  "Frankfurt",       "#60 2026-06-02; live"),
     ("FR",      "10YFR-RTE------C", "France",              "Paris",           "#60 2026-06-02; live"),
     ("NL",      "10YNL----------L", "Netherlands",         "Amsterdam",       "#60 2026-06-02; live"),
-    ("IE_SEM",  "10Y1001A1001A59C", "Ireland (SEM)",       "Dublin",          "#60 2026-06-02; live"),
+    ("IE_SEM",  "10Y1001A1001A59C", "Ireland (SEM)",       "Dublin",          "#60 2026-06-02; live; INTERMITTENT (2026-09-03: A75 returns Acknowledgement, not GL_MarketDocument)"),
     ("ES",      "10YES-REE------0", "Spain",               "Madrid",          "#60 2026-06-02; live"),
     ("BE",      "10YBE----------2", "Belgium",             "Brussels",        "#60 2026-06-02; live"),
     ("PL",      "10YPL-AREA-----S", "Poland",              "Warsaw",          "#60 2026-06-02; live"),
@@ -122,7 +122,7 @@ _ZONE_REGISTRY = [
     ("SE_3",    "10Y1001A1001A46L", "Sweden (SE3)",        "Stockholm",       "#60 2026-06-02; live"),
     ("NO_1",    "10YNO-1--------2", "Norway (NO1)",        "Oslo",            "#60 2026-06-02; live"),
     ("FI",      "10YFI-1--------U", "Finland",             "Helsinki",        "#60 2026-06-02; live"),
-    ("DK_1",    "10YDK-1--------W", "Denmark (DK1)",       "Copenhagen",      "#60 2026-06-02; live"),
+    ("DK_1",    "10YDK-1--------W", "Denmark (DK1)",       "Copenhagen",      "#60 2026-06-02; live; INTERMITTENT (2026-09-03: A75 returns Acknowledgement, not GL_MarketDocument)"),
     # r-eu-expand (2026-06-25): +13 zones, EICs verified against the entsoe-py
     # canonical mapping. DC-growth zones first.
     ("IT_NORD", "10Y1001A1001A73I", "Italy North",         "Milan",           "r-eu-expand 2026-06-25; live"),
@@ -131,8 +131,8 @@ _ZONE_REGISTRY = [
     ("CZ",      "10YCZ-CEPS-----N", "Czech Republic",      "Prague",          "r-eu-expand 2026-06-25; live"),
     ("SE_4",    "10Y1001A1001A47J", "Sweden (SE4)",        "Malmo",           "r-eu-expand 2026-06-25; live"),
     ("NO_2",    "10YNO-2--------T", "Norway (NO2)",        "Stavanger",       "r-eu-expand 2026-06-25; live"),
-    ("DK_2",    "10YDK-2--------M", "Denmark (DK2)",       "Copenhagen E",    "r-eu-expand 2026-06-25; live"),
-    ("GR",      "10YGR-HTSO-----Y", "Greece",              "Athens",          "r-eu-expand 2026-06-25; live"),
+    ("DK_2",    "10YDK-2--------M", "Denmark (DK2)",       "Copenhagen E",    "r-eu-expand 2026-06-25; live; INTERMITTENT (2026-09-03: A75 returns Acknowledgement, not GL_MarketDocument)"),
+    ("GR",      "10YGR-HTSO-----Y", "Greece",              "Athens",          "r-eu-expand 2026-06-25; live; INTERMITTENT (2026-09-03: A75 returns Acknowledgement, not GL_MarketDocument)"),
     ("RO",      "10YRO-TEL------P", "Romania",             "Bucharest",       "r-eu-expand 2026-06-25; live"),
     ("HU",      "10YHU-MAVIR----U", "Hungary",             "Budapest",        "r-eu-expand 2026-06-25; live"),
     ("SK",      "10YSK-SEPS-----K", "Slovakia",            "Bratislava",      "r-eu-expand 2026-06-25; live"),

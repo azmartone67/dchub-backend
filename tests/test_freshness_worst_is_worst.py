@@ -152,13 +152,44 @@ def test_all_streams_intermittent_still_yields_a_verdict():
     assert out["age_hours"] == 8.6
 
 
-def test_eu_bg_is_the_only_intermittent_entry_and_is_sourced():
-    """Guard against this becoming a dumping ground for inconvenient feeds."""
+def test_every_intermittent_entry_is_annotated_at_its_own_source_registry():
+    """Guard against this becoming a dumping ground for inconvenient feeds.
+
+    ★ 2026-09-03 — this used to assert `entries == {"EU_BG"}`. That pinned the
+      COUNT when the rule it exists to enforce is the SENTENCE beside it:
+      "every entry must be annotated INTERMITTENT at its own source registry".
+      A hardcoded set cannot tell an entry that earned its place from one
+      somebody dropped in — it just fails on both, and gets edited to whatever
+      the new set is, which is a fence that teaches you to move it.
+
+      So it now enforces the actual invariant, BOTH directions, against
+      routes/iso_eu_entsoe._ZONE_REGISTRY — the source registry the sentence
+      names. A new entry is impossible to add without documenting it where the
+      zone is defined, and a zone annotated there but missing from the leash is
+      caught too (the half-registration that silently does nothing).
+
+      EU_DK_1 / EU_DK_2 / EU_GR / EU_IE_SEM joined on 2026-09-03, each probed
+      live: all four answer HTTP 200 with an Acknowledgement_MarketDocument
+      (ENTSO-E for "nothing published"), against EU_BE returning a
+      GL_MarketDocument with real fuel data as the control."""
     import routes.freshness_public as fp
-    entries = {s for v in fp._INTERMITTENT_STREAMS.values() for s in v}
-    assert entries == {"EU_BG"}, (
-        f"intermittent list drifted to {entries} — every entry must be "
-        f"annotated INTERMITTENT at its own source registry")
+    from routes.iso_eu_entsoe import _ZONE_REGISTRY
+
+    leashed = {s for v in fp._INTERMITTENT_STREAMS.values() for s in v}
+    annotated = {"EU_" + row[0] for row in _ZONE_REGISTRY
+                 if "INTERMITTENT" in str(row[-1]).upper()}
+
+    undocumented = leashed - annotated
+    assert not undocumented, (
+        f"{undocumented} got a longer leash without being annotated "
+        f"INTERMITTENT in routes/iso_eu_entsoe._ZONE_REGISTRY — document the "
+        f"evidence at the zone, or take it off the leash")
+    orphaned = annotated - leashed
+    assert not orphaned, (
+        f"{orphaned} are annotated INTERMITTENT at the registry but are NOT in "
+        f"_INTERMITTENT_STREAMS, so the annotation does nothing — a half-"
+        f"registration reads as handled and is not")
+    assert "EU_BG" in leashed, "the original entry must survive"
 
 
 def test_intermittent_streams_reach_the_domain_payload():

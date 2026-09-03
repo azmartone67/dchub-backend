@@ -3597,6 +3597,28 @@ def _iso_module_clause(iso: str) -> str:
             "routes/iso_orchestrator.py rather than guessing a filename.")
 
 
+
+def _intermittent_grid_streams() -> tuple[frozenset, float]:
+    """The upstream-intermittent grid streams and their leash, READ from the
+    module that owns them.
+
+    routes/freshness_public._INTERMITTENT_STREAMS is the single source of truth
+    (it already defers these streams from the freshness WORST). Importing it
+    rather than restating it is the whole point: two lists of the same fact
+    drift, and the half that drifts is always the one nobody is looking at.
+
+    Fail-soft to an EMPTY set — which files findings as before. The failure
+    direction matters: an unreadable list must never silence a detector.
+    """
+    try:
+        from routes.freshness_public import (_INTERMITTENT_STREAMS,
+                                             _INTERMITTENT_MAX_H)
+        return (frozenset(_INTERMITTENT_STREAMS.get("grid_data") or ()),
+                float(_INTERMITTENT_MAX_H))
+    except Exception:  # noqa: BLE001
+        return frozenset(), 0.0
+
+
 def check_iso_metric_dropped() -> list[dict]:
     """Flag when an ISO listed in by_iso has metric_count=0 — meaning
     the loop registered but the latest ingest wrote nothing. Caught
@@ -3621,20 +3643,54 @@ def check_iso_metric_dropped() -> list[dict]:
             """)
             recent_rows = {r[0]: (int(r[1] or 0), r[2]) for r in cur.fetchall()}
 
-            cur.execute("SELECT DISTINCT iso FROM grid_data")
-            all_isos = {r[0] for r in cur.fetchall() if r[0]}
+            # ONE query, not two: the same GROUP BY gives the distinct ISO
+            # list AND each stream's true last-write time, which the 24h window
+            # above cannot report for the streams that matter here — the ones
+            # with nothing in it.
+            cur.execute("""
+                SELECT iso,
+                       EXTRACT(EPOCH FROM (NOW() - MAX(timestamp))) / 3600.0
+                  FROM grid_data
+                 GROUP BY iso
+            """)
+            all_ages = {r[0]: (float(r[1]) if r[1] is not None else None)
+                        for r in cur.fetchall() if r[0]}
+            all_isos = set(all_ages)
 
+        intermittent, leash_h = _intermittent_grid_streams()
         for iso in all_isos:
             recent = recent_rows.get(iso)
             if recent is None:
+                # ★ A LONGER LEASH, NEVER IMMUNITY (2026-09-03). Four ENTSO-E
+                #   zones answer HTTP 200 with an Acknowledgement_MarketDocument
+                #   — "nothing published for this query" — because they do not
+                #   publish A75 at all. Nothing is broken and nothing is
+                #   fixable, but at a 24h threshold each one regenerated this
+                #   finding every single day, forever: a detector outliving its
+                #   own cause, which is how the squasher board reached 60 open
+                #   rows with a 313.9h oldest.
+                #   The leash is READ FROM freshness_public, never copied here.
+                #   A second list of the same fact is the drift this repo keeps
+                #   paying for; and past the leash they are judged like any
+                #   other stream, so a zone that truly dies is still caught.
+                age_h = all_ages.get(iso)
+                if iso in intermittent and age_h is not None and age_h < leash_h:
+                    continue
+                _leash_note = ""
+                if iso in intermittent:
+                    _leash_note = (f" This stream is registered as upstream-"
+                                   f"INTERMITTENT and is past its {leash_h:.0f}h "
+                                   f"leash, so it is now judged like any other.")
                 findings.append({
                     "issue":  "iso_metric_count_zero_24h",
                     "url":    f"grid_data: iso={iso}",
                     "count":  0,
                     "detail": (f"ISO {iso} has prior history in grid_data "
-                               f"but ZERO writes in the last 24h. The "
-                               f"loop has stopped. "
-                               + _iso_module_clause(iso)),
+                               f"but ZERO writes in the last 24h"
+                               + (f" (last write {age_h:.1f}h ago)"
+                                  if age_h is not None else "")
+                               + f". The loop has stopped. "
+                               + _iso_module_clause(iso) + _leash_note),
                 })
             elif recent[0] < 3:
                 findings.append({
