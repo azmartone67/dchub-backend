@@ -1420,10 +1420,23 @@ def check_report_content_drift() -> list[dict]:
     # staleness), so we keep that one and lose only the quarterly-only
     # hyperscaler_deals=[] check — an acceptable trade vs hammering the
     # single replica every scan.
-    for window, url in [
-        ("monthly",          "http://localhost:8080/api/v1/reports/monthly"),
+    # (window, LOOPBACK PROBE url, ACTIONABLE url).
+    # ★ 2026-09-03 — ONE NAME, TWO ROLES. This loop bound the transport address
+    #   and the actionable address to a single `url`, so every finding it filed
+    #   recorded "http://localhost:8080/api/v1/reports/monthly" as the thing an
+    #   operator should open — a loopback address no operator and no external
+    #   tool can reach. Squasher row 305 sat in awaiting_ops for a day pointing
+    #   at it.
+    #   The PROBE stays on loopback deliberately: it is fast and skips the
+    #   Cloudflare edge. (_http_get's auth branch matches "dchub.cloud" too, so
+    #   loopback is a latency/edge choice here, not an auth one — do not
+    #   re-justify it as a rate-limit fix.) Only the RECORDED url changes, to
+    #   the site-relative path every other detector in this file already files.
+    for window, probe_url, url in [
+        ("monthly",          "http://localhost:8080/api/v1/reports/monthly",
+                             "/api/v1/reports/monthly"),
     ]:
-        body, _ = _http_get(url, timeout=8)
+        body, _ = _http_get(probe_url, timeout=8)
         if not body:
             findings.append({
                 "issue":  f"report_unreachable:{window}",
@@ -5045,6 +5058,32 @@ _NON_OPERATOR_PROVIDERS = {
 }
 
 
+def _operator_slug(name: str) -> str:
+    """Mint the SAME slug /operators/<slug> actually routes on.
+
+    ★ 2026-09-03 — TWO SLUG RULES FOR ONE URL SPACE. This detector hand-rolled
+      `name.lower().replace(" ", "-")`, which only handles spaces and preserves
+      punctuation, so the provider "Equinix, Inc." was filed on the board as
+      /operators/equinix,-inc. — a permanent 404. The route resolves through
+      routes.operators._slugify, which collapses every non-alphanumeric run to
+      a hyphen and yields /operators/equinix-inc (live, 200).
+
+      The detector was written to POINT AT a page whose URL is minted by a rule
+      it never called, so it published a synthesized string rather than the
+      row's real address — the slug-is-not-the-row trap. Call the router's rule
+      and there is only one.
+
+    routes.operators does not import this module, so this is cycle-free; the
+    import is function-local to leave detector import order untouched, and the
+    fallback mirrors _slugify rather than the old broken rule.
+    """
+    try:
+        from routes.operators import _slugify
+        return _slugify(name)
+    except Exception:  # noqa: BLE001
+        return re.sub(r"[^a-z0-9]+", "-", (name or "").lower().strip()).strip("-")[:80]
+
+
 def check_operator_profile_gap() -> list[dict]:
     """Surface top operators by facility count that lack rich
     metadata (missing markets, missing power_mw on most facilities).
@@ -5096,7 +5135,7 @@ def check_operator_profile_gap() -> list[dict]:
     for (name, total, mw_pct, mkt_pct) in gaps[:3]:
         findings.append({
             "issue":  f"operator_profile_gap:{name[:50]}",
-            "url":    f"/operators/{name.lower().replace(' ', '-')}",
+            "url":    f"/operators/{_operator_slug(name)}",
             "count":  total,
             "detail": (f"Operator '{name}' has {total} facilities tracked "
                        f"but {mw_pct:.0f}% missing power_mw and "
@@ -10904,11 +10943,24 @@ def check_cf_account_health() -> list[dict]:
         findings.append({
             "issue":  "cf_cache_rate_low",
             "url":    f"cache_rate:{cr}%",
-            "count":  int(d.get("total_requests", 0)),
+            # ★ 2026-09-03 — THE SENTENCE CONTRADICTED ITSELF. This printed
+            #   `cached_requests`, a key routes/cf_analytics.py has never
+            #   emitted in any code path, so the numerator was a hardcoded 0
+            #   forever; and it divided by `total_requests`, the ACCOUNT-scope
+            #   httpRequestsAdaptiveGroups count truncated at limit:100 (live
+            #   673). But `cr` comes from _gather_zone_cache() — ZONE scope,
+            #   denominator zone_requests_7d (live 1,803,470). The board read
+            #   "23.83% over last 7d (0 cached / 673 total)": 0/673 is 0%,
+            #   contradicting the 23.83% in its own sentence, with a
+            #   denominator ~2,680x under the real traffic.
+            #   The rate and the counts that claim to explain it must come from
+            #   the SAME query. The cached count is derived from the rate and
+            #   marked "~" because it is derived, never measured.
+            "count":  int(d.get("zone_requests_7d") or 0),
             "detail": (
-                f"CF account cache rate is {cr}% over last 7d "
-                f"({d.get('cached_requests',0):,} cached / "
-                f"{d.get('total_requests',0):,} total). Target ≥25%. "
+                f"CF ZONE cache rate is {cr}% over last 7d "
+                f"(~{int(round((cr / 100.0) * (d.get('zone_requests_7d') or 0))):,} cached / "
+                f"{(d.get('zone_requests_7d') or 0):,} zone requests). Target ≥25%. "
                 f"Every uncached request hits Railway, costs egress, and "
                 f"adds latency. Top remediation: add `Cache-Control: "
                 f"public, max-age=N` headers to high-traffic GETs that "
