@@ -512,12 +512,45 @@ def _cached_gather():
         return fresh
 
 
+def _with_live_version(data):
+    """Overlay the CURRENT resolver answer onto the day-long memo.
+
+    ★2026-09-03 — #3636 FIXED THE DERIVATION AND THE MEMO STILL PUBLISHED THE
+    PIN. _cached_gather() freezes the whole payload per UTC day, so
+    _canon_version() runs ONCE per process per day. On a fresh deploy that one
+    call lands moments after boot, while resolve_server_version_cached() is
+    still cold — and cold, BY CONTRACT, it returns PINNED. The pin is then
+    frozen into the payload until data_version flips at 00:00 UTC.
+
+    Measured on #3636's own deploy, 12 cache-busted requests at 01:31-01:34Z:
+        7 served 2.12.1  computed_at 01:30:41.677362Z
+        5 served 2.12.3  computed_at 01:30:28.189231Z
+    Two replicas, two memos, computed 13s apart — one before the background
+    refresh landed and one after. Both latched for the rest of the day. The
+    same deploy fixed /AGENTS.md completely (8/8 correct) because that surface
+    renders per request and has no memo.
+
+    ★So the ONE thing the memo must not cache is the field the memo was never
+    for. The memo exists to skip a cold-DB hop for the COUNTS (~5-20s);
+    resolve_server_version_cached() answers from process memory and refreshes
+    in a background thread, so re-reading it per request costs nothing.
+    """
+    ver = _canon_version()
+    # No answer (canon unimportable) or already right → serve the memo as-is.
+    if not ver or data.get("version") == ver:
+        return data
+    out = dict(data)      # shallow copy — NEVER mutate the shared memo in place
+    out["version"] = ver
+    return out
+
+
+
 @agent_capabilities_bp.route("/api/v1/agents/capabilities.json",
                               methods=["GET"], strict_slashes=False)
 @agent_capabilities_bp.route("/api/v1/agents/capabilities",
                               methods=["GET"], strict_slashes=False)
 def capabilities():
-    data = _cached_gather()
+    data = _with_live_version(_cached_gather())
     return jsonify(data), 200, {
         # r47.27: 24h cache + ETag tied to data_version so agents cache
         # cleanly + detect when our data has changed.
