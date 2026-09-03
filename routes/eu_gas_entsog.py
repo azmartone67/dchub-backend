@@ -224,6 +224,7 @@ _DISCLAIMER = ("EU gas TRANSMISSION-ACTIVITY context (physical throughput + net 
                "for siting gas-fired DCs). EU data centers are grid-powered.")
 
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_br_ons.py:264 — review and remove one
 @eu_gas_entsog_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
     snap = _live_snapshot()
@@ -246,6 +247,7 @@ def http_operators():
                     "countries": sorted(_TARGET),
                     "operators": tsos}), 200
 
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 
 @eu_gas_entsog_bp.route("/health", methods=["GET"])
 def http_health():

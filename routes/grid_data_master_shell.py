@@ -712,7 +712,7 @@ def _persist(m: dict, levers: dict, score: float, action: dict, findings: int) -
                 INSERT INTO grid_data_snapshots
                   (grid_data_score, breadth_tapped, breadth_target, weakest_lever,
                    action_taken, lever_scores, findings_filed, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 score, m.get("breadth_tapped"), m.get("breadth_target"),
                 levers.get("weakest"), (action or {}).get("action"),
