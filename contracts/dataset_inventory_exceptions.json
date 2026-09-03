@@ -1,0 +1,4 @@
+{
+  "_readme": "Hand-maintained. One entry per dataset deliberately exempted from the tier-1 registry-coverage fence, each with a reason a reviewer can judge. Keep this file SMALL — its sibling contracts/api_response_exceptions.json holds three entries after months of use. If this list is growing, the predicate is wrong, not the datasets.",
+  "allowed_unwatched": {}
+}

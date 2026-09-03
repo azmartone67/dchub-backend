@@ -1,0 +1,41 @@
+# The dataset inventory fence (W1 PR2, 2026-09-02).
+#
+# Four datasets froze within four days in March 2026 and none was restarted for
+# five months, because nothing could say a dataset had stopped being written
+# while the product kept publishing it as current.
+#
+# This checks a DERIVED inventory against a committed baseline. It fences only
+# tier-1 — a table a public surface claims is current whose rows come from
+# OUTSIDE this system — and it fails only on MOVEMENT, so additive change is
+# never blocked and day one demands zero classifications.
+#
+# Exit 0 PASS · 1 FAIL · 2 UNMEASURED. ★ UNMEASURED IS A FAILURE, never a pass:
+# a guard that cannot measure must not report the same colour as a clean run.
+name: dataset-inventory
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Check the dataset inventory against its baseline
+        run: |
+          set -uo pipefail
+          python3 scripts/dataset_inventory.py check
+          rc=$?
+          if [ "$rc" = "2" ]; then
+            echo "::error::dataset inventory UNMEASURED — the guard could not"\
+                 "measure. That is a failure, not a pass. Regenerate with"\
+                 "'python3 scripts/dataset_inventory.py baseline' if the shape changed."
+            exit 1
+          fi
+          exit $rc
