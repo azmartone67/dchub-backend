@@ -272,8 +272,56 @@ def rank_markets():
         "data_source":    ("DC Hub facility database — operational lifecycle per "
                            "util/status_taxonomy, deduped on the #1539 fleet "
                            "filter COALESCE(is_duplicate,0)=0"),
+        # ── r-rank-provenance (2026-09-03) ──────────────────────────────────
+        # rank_markets was the ONLY tier-1 tool shipping no provenance block.
+        # Measured live 2026-09-03 on anonymous calls:
+        #     rank_markets          provenance=NO
+        #     get_market_dcpi_rank  provenance=YES  cite_as="DC Hub, dchub.cloud"
+        #     search_facilities     provenance=YES
+        #     get_grid_scoreboard   provenance=YES
+        # It is the tool an agent reaches for on "rank the largest markets" —
+        # the exact question that otherwise gets answered from a named operator
+        # inventory (CBRE/JLL). A number with no cite_as and no as_of loses that
+        # comparison on attribution alone, whatever its quality.
+        #
+        # Constants come from routes.error_envelope so the citation line has ONE
+        # origin across the error and success paths; as_of is stamped per call
+        # by _runtime_as_of (never hardcoded — the contract requires the true
+        # runtime date).
+        "provenance":     _rank_markets_provenance(criteria),
         "tier":           "developer",  # required tier for full results
     }), 200
+
+
+def _rank_markets_provenance(criteria: str) -> dict:
+    """Citation block for rank_markets. Shape mirrors the other tier-1 tools so
+    one agent-side parser reads them all; values come from routes.error_envelope
+    so the citation line has a single origin.
+
+    `basis` names the two filters the query actually applies — an agent
+    comparing this MW against a published operator inventory needs to know it is
+    de-duplicated and operational-only, not a raw registry sum. Fail-soft: a
+    provenance block that raises must never take the answer down with it.
+    """
+    try:
+        from routes.error_envelope import (
+            CITE_AS, LICENSE, PROVENANCE_SOURCE, _runtime_as_of,
+        )
+        return {
+            "source": PROVENANCE_SOURCE,
+            "as_of": _runtime_as_of(),
+            "license": LICENSE,
+            "cite_as": CITE_AS,
+            "basis": "operational_deduped",
+            "method": ("Ranked over DC Hub's facility registry. total_mw, "
+                       "facility_count and operator_count count OPERATIONAL "
+                       "facilities only (util/status_taxonomy), de-duplicated "
+                       "on COALESCE(is_duplicate,0)=0. Ranking criteria: "
+                       f"{criteria}."),
+            "cite_url_template": "https://dchub.cloud/markets/{market}",
+        }
+    except Exception:  # pragma: no cover - provenance must never 500 the tool
+        return {"cite_as": "DC Hub, dchub.cloud", "license": "CC-BY-4.0"}
 
 
 def _rank_markets_ai_ready(region: str, limit: int, min_cap: float):
