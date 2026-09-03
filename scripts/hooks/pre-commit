@@ -1,0 +1,68 @@
+#!/bin/sh
+# pre-commit — repo-canonical commit-boundary guards. Canonical source;
+# installed into the shared hooks directory by scripts/install-git-hooks.sh.
+#
+#   (1) scripts/precommit-no-conflict-markers.sh — unresolved merge markers.
+#   (2) scripts/check_no_leaked_credentials.py --staged — credentials.
+#
+# WHY A COMMIT-BOUNDARY CREDENTIAL GATE, when syntax-check already blocks main
+# -----------------------------------------------------------------------------
+# Because on a PUBLIC repo, CI is too late. `syntax-check` is a required check
+# with enforce_admins:true, so a credential cannot reach main — that half works.
+# But the check runs after the push, and pushing a branch to a public repo
+# publishes the object the moment it lands. The gate protects `main`; it does
+# not protect `public`. By the time CI annotates the line, rotation is already
+# mandatory.
+#
+# The ten credentials ledgered in KNOWN_EXPOSURES all predate the scanner
+# (retrofitted 2026-08-07, #2347), and eight of them blame to the repo's
+# grafted root commit — meaning they were in the tree before this history
+# begins. This hook is the half that was missing: catch the ELEVENTH before it
+# ever leaves the machine.
+#
+# Both checks read STAGED content, not the worktree, so `git add`ing a secret
+# and then editing the working copy clean does not buy a green hook.
+#
+# FAIL-OPEN on missing tooling (no python3, no scripts/ — e.g. a worktree
+# parked on a pre-guard branch), but LOUDLY: a guard that vanishes silently is
+# the failure this repo keeps re-learning. Never fail-open on a finding.
+#
+# Bypass: git commit --no-verify
+set -u
+
+# Break any accidental self-chain. If this hook ever ends up installed over one
+# of the scripts it calls — `cp` through a symlink does exactly that — the
+# recursion is unbounded and every commit hangs with no output. Costs nothing;
+# turns a hang into a no-op.
+[ -n "${DCHUB_PRECOMMIT_RUNNING:-}" ] && exit 0
+DCHUB_PRECOMMIT_RUNNING=1
+export DCHUB_PRECOMMIT_RUNNING
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)"
+[ -z "$top" ] && exit 0
+
+# (1) conflict markers — resolved from the worktree so ordinary edits to it
+#     take effect without reinstalling hooks (same rule as pre-push-throttle).
+#     Run it under its OWN shebang (bash): it uses a herestring, which is a
+#     syntax error under a POSIX /bin/sh such as dash — that would fail the
+#     hook closed and block every commit on a Linux checkout.
+markers="$top/scripts/precommit-no-conflict-markers.sh"
+if [ -f "$markers" ]; then
+  if [ -x "$markers" ]; then "$markers" "$@" || exit $?
+  else bash "$markers" "$@" || exit $?
+  fi
+fi
+
+# (2) credentials
+scanner="$top/scripts/check_no_leaked_credentials.py"
+if [ ! -f "$scanner" ]; then
+  echo "pre-commit: WARNING — $scanner missing; credential scan SKIPPED" >&2
+  exit 0
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "pre-commit: WARNING — no python3; credential scan SKIPPED" >&2
+  exit 0
+fi
+python3 "$scanner" --staged || exit $?
+
+exit 0
