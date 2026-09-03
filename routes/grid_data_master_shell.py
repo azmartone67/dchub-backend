@@ -1035,6 +1035,96 @@ def _miso_load_forecast(entry: dict) -> dict:
                     "source_url": "%s/RealTimeTotalLoad" % _MISO_API}}
 
 
+# ── EIA v2 — Henry Hub natural gas spot ──────────────────────────────────
+# ★ NOT the EIA-930 outage. The parked reason used to read as if this were
+#   waiting on the same upstream as eia_co2_emissions. It is not: EIA-930 is the
+#   hourly ELECTRIC grid monitor, and Henry Hub spot is a natural-gas series on
+#   a different v2 route that has been publishing normally throughout. What this
+#   actually needed was the key prod already holds.
+#
+# ★ THE KEY NEVER REACHES `raw`. _EIA_HH_URL is keyless and is what gets stored;
+#   the api_key is appended at call time only. `raw` is written into
+#   grid_ext_metrics as JSON, so a keyed source_url would persist a live
+#   credential into a table that plenty of readers can select.
+#
+# ★ THE ROUTE ALSO CARRIES THE FUTURES STRIP (RNGC1..RNGC4, the NYMEX contracts)
+#   on the same product/process pair. The facet asks for spot, but the row-level
+#   series check below refuses to publish anything else AS spot — a dropped or
+#   ignored facet upstream would otherwise silently stamp a contract price into
+#   a column the registry calls the Henry Hub spot price.
+_EIA_HH_SERIES = "RNGWHHD"
+_EIA_HH_URL = (
+    "https://api.eia.gov/v2/natural-gas/pri/fut/data/"
+    "?frequency=daily&data[0]=value&facets[series][]=%s"
+    "&sort[0][column]=period&sort[0][direction]=desc&length=10" % _EIA_HH_SERIES)
+
+
+def _eia_hh_day(period):
+    """'2026-09-01' -> midnight UTC on that trading day. None for anything else.
+
+    EIA publishes this series as a DATE with no time — it is a daily settled
+    observation, not an instant — so the day is anchored at its own start. That
+    is the only choice that cannot land ahead of the clock on the day it is
+    published, and it keeps the (dataset_id, as_of) upsert idempotent.
+    """
+    from datetime import datetime, timezone as _tz
+    try:
+        d = datetime.strptime(str(period or "").strip(), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+    return datetime(d.year, d.month, d.day, tzinfo=_tz.utc)
+
+
+def _eia_henry_hub(entry: dict) -> dict:
+    """Henry Hub natural-gas spot price ($/MMBtu) from the EIA v2 API.
+
+    An OBSERVATION, so as_of is the trading day the price belongs to — never
+    now, and never a day that has not started.
+    """
+    import os as _os
+    from urllib.parse import quote as _quote
+    key = (_os.environ.get("EIA_API_KEY") or "").strip()
+    if not key:
+        # api.eia.gov answers 403 API_KEY_MISSING, which _http_json would turn
+        # into an indistinguishable None. Say which of the two it was.
+        return {"ok": False, "error": "eia_api_key_absent"}
+    d = _http_json("%s&api_key=%s" % (_EIA_HH_URL, _quote(key, safe="")), timeout=15)
+    # every level is isinstance-checked: a JSON body that parses but is not the
+    # shape we expect (a bare string, a list, a null `response`) must be a
+    # refusal, and `.get` on a str raises rather than returning None.
+    resp = d.get("response") if isinstance(d, dict) else None
+    rows = resp.get("data") if isinstance(resp, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return {"ok": False, "error": "eia_henry_hub_no_rows"}
+    now = _utcnow()
+    usable = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("series") or "").strip() != _EIA_HH_SERIES:
+            continue
+        day = _eia_hh_day(r.get("period"))
+        # EIA sends value as a STRING ("2.9"), so this coercion is load-bearing
+        # and not defensive dressing.
+        price = _num(r.get("value"))
+        if day is None or price is None or day > now:
+            continue
+        usable.append((day, price, r))
+    if not usable:
+        return {"ok": False, "error": "eia_henry_hub_no_usable_observation"}
+    # newest ELAPSED trading day — the upstream sort is asked for but not
+    # trusted, the same way every other adapter here picks rather than indexes.
+    day, price, row = max(usable, key=lambda x: x[0])
+    return {"ok": True, "primary_value": price, "as_of": day,
+            "raw": {"price_usd_per_mmbtu": price,
+                    "trading_day": str(day.date()),
+                    "series": row.get("series"),
+                    "series_description": row.get("series-description"),
+                    "units_upstream": row.get("units"),
+                    "observations_considered": len(usable),
+                    "source_url": _EIA_HH_URL}}
+
+
 # dataset_id -> (source_label, fetcher). A dataset listed here is NO LONGER
 # parked: parked_datasets() subtracts it, so the standing finding shrinks by
 # arithmetic as repoints land rather than by anyone remembering to edit it.
@@ -1050,6 +1140,8 @@ _DIRECT_SOURCES = {
     "spp_load_forecast":   ("spp_portal_mtlf",      _spp_load_forecast),
     "aeso_reserves":       ("aeso_ets_csd",         _aeso_reserves),
     "miso_load_forecast":  ("miso_public_api",      _miso_load_forecast),
+    "eia_henry_hub_natural_gas_spot_prices_daily":
+                           ("eia_v2_natural_gas",   _eia_henry_hub),
 }
 
 
@@ -1204,9 +1296,6 @@ _PARK_REASON = {
     "eia_co2_emissions":
         "upstream outage — EIA-930 region_data/latest 500, nothing published since "
         "2026-09-02T07:00Z",
-    "eia_henry_hub_natural_gas_spot_prices_daily":
-        "needs EIA_API_KEY at ingest time (api.eia.gov/v2 403 API_KEY_MISSING without "
-        "one; prod HAS a working key, so this is repointable and merely unverified)",
     "miso_multiday_operating_margin":
         "no keyless MULTIDAY source — MISO's CsatSupplyDemand covers one operating day, "
         "so pointing a 'multiday' id at it would restate what the number means",
