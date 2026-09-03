@@ -20,8 +20,8 @@ That reframes the question from "did a human open a link" (n=1 over 5,704, and
 therefore useless) to "did the agent do the thing we asked", which happens
 thousands of times a week and is fully observed.
 
-★ IT SPLITS BY ARM. `message_shown` carries `:quantified` or `:generic` since
-r-continuation, so the same query answers the copy experiment: does a line that
+★ IT SPLITS BY ARM. `message_shown` carries the randomized arm (`:treatment` /
+`:control` / `:ineligible`) since r-arms, so the same query answers the copy experiment: does a line that
 names what was withheld get acted on more often than one that does not? If the
 two rates are indistinguishable, the wording is not the variable and nobody
 should spend another cycle on copy.
@@ -43,7 +43,18 @@ be untested by default. Same lesson as relay_specificity.py.
 # compliance, which reads as agents ignoring us.
 CONTINUATION_TOOLS = ("unlock_more_data", "claim_free_key", "bind_email")
 
-_ARMS = ("quantified", "generic")
+# The randomized arms. `treatment` carries the quantified line; `control` is an
+# eligible response that deliberately got the generic one; `ineligible` is a gate
+# that measured nothing and could not have been quantified either way.
+_ARMS = ("treatment", "control", "ineligible")
+
+# ★ The PRE-RANDOMIZATION labels. The first cut assigned `quantified`/`generic`
+# by PAYLOAD SHAPE, not at random, so those rows are a different experiment —
+# array-returning tools in one arm, scalar-returning in the other. They are
+# bucketed here and EXCLUDED from the comparison. Pooling them into the arms
+# whose names they resemble is exactly the contamination the rename avoided;
+# doing it in the reader instead of the writer would be no better.
+_LEGACY_ARMS = ("quantified", "generic")
 
 
 def parse_arm(message_shown):
@@ -57,7 +68,13 @@ def parse_arm(message_shown):
         return "untagged"
     _, sep, tail = message_shown.partition(":")
     tail = tail.strip().lower()
-    return tail if (sep and tail in _ARMS) else "untagged"
+    if not sep:
+        return "untagged"
+    if tail in _ARMS:
+        return tail
+    if tail in _LEGACY_ARMS:
+        return "legacy_shape_assigned"
+    return "untagged"
 
 
 def summarize_compliance(rows):
@@ -80,7 +97,7 @@ def summarize_compliance(rows):
         b["acted_sessions"] += acted
 
     arms = {}
-    for arm in _ARMS + ("untagged",):
+    for arm in _ARMS + ("legacy_shape_assigned", "untagged"):
         b = buckets.get(arm, {"gated_sessions": 0, "acted_sessions": 0})
         arms[arm] = _finish(b)
 
@@ -88,7 +105,7 @@ def summarize_compliance(rows):
              "acted_sessions": sum(b["acted_sessions"] for b in buckets.values())}
     out = {"arms": arms, "totals": _finish(total),
            "continuation_tools": list(CONTINUATION_TOOLS)}
-    out["comparison"] = _compare(arms["quantified"], arms["generic"])
+    out["comparison"] = _compare(arms["treatment"], arms["control"])
     return out
 
 
@@ -105,14 +122,19 @@ def _finish(b):
 
 
 def _compare(q, g):
-    """The experiment's verdict, or an honest refusal to give one."""
+    """The experiment's verdict, or an honest refusal to give one.
+
+    Compares ONLY the randomized arms. `ineligible` and `legacy_shape_assigned`
+    are excluded by construction: the first could not have been quantified, and
+    the second was assigned by payload shape rather than at random.
+    """
     if q["state"] != "MEASURED" or g["state"] != "MEASURED":
         return {"state": "UNMEASURED",
-                "why": "both arms need a non-zero denominator before they can "
-                       "be compared"}
+                "why": "both randomized arms need a non-zero denominator before "
+                       "they can be compared"}
     return {"state": "MEASURED",
-            "quantified_rate": q["acted_rate"],
-            "generic_rate": g["acted_rate"],
+            "treatment_rate": q["acted_rate"],
+            "control_rate": g["acted_rate"],
             "difference": round(q["acted_rate"] - g["acted_rate"], 4),
             "note": "A difference near zero says the WORDING is not the "
                     "variable — stop optimizing copy and question whether the "
