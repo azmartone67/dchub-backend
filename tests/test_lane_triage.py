@@ -161,11 +161,33 @@ def test_split_lanes_handles_empty_input():
     assert got == {"code_actionable": [], "not_code": [], "unclassified": []}
 
 
-def test_the_two_circular_or_miscalibrated_lanes_are_named():
-    """These are the two reds no system fix can clear because the CHECK is
-    wrong; if either is reclassified, that should be a deliberate edit."""
-    assert classify("loop_flywheel", "cron")[0] == "instrument"
-    assert "itself" in classify("loop_flywheel", "cron")[1]
+def test_the_miscalibrated_lane_is_still_named():
+    """A red whose CHECK is wrong, not whose system is broken. Reclassifying
+    one of these must be a deliberate edit — which is why this assertion
+    exists and why the 2026-09-03 correction had to come here first.
+
+    ★ loop_control/counter_canon KEEPS this classification: measured live
+    2026-09-03 01:45Z it still fails on a grep ("28 file(s) query DISTINCT
+    agent_id across 1233 scanned") while its own detail concedes "a grep hit
+    is not proof two counters DISAGREE". The check measures the wrong thing.
+
+    ★ loop_flywheel/cron LOST it, deliberately. Its stated reason was that
+    "dead-man board clear" reads the aggregate board and so is red whenever
+    any shell is red, including itself. D2 (2026-09-02) had already fixed
+    exactly that the same day this table was written: measured live
+    2026-09-03 01:45Z the check reads "202 feeds, 0 overdue" and PASSES. The
+    lane fails on its OTHER check, cron_dupes — the WAVE 4 order to retire
+    ~314 overlapping jobs, which is an engineer's work, not a broken meter.
+    Bonded by tests/test_triage_reasons_match_the_failing_check.py.
+    """
+    assert classify("loop_control", "counter_canon")[0] == "instrument"
+    assert "grep" in classify("loop_control", "counter_canon")[1]
+
+    klass, why = classify("loop_flywheel", "cron")
+    assert klass == "build"
+    assert "itself" not in why.split("replaces", 1)[0], (
+        "the circularity claim was retired on 2026-09-03 — it must not come "
+        "back without a fresh live measurement")
 
 
 # ── reading the board's free-text notes ───────────────────────────────
