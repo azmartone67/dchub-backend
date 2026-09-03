@@ -2137,6 +2137,24 @@ def _tick(act: bool) -> dict:
 
 # ── dead-man beat — ONE writer, status success|error, never warn ──────────
 
+def _beat_note(out: dict) -> str:
+    """The ledger note for one tick — NAMED lanes plus the counters.
+
+    ★ EXTRACTED 2026-09-03. This was inline in the Flask route, so no test
+    could reach it and the only guard was a substring match on this file's
+    source; an adversarial review showed the shell could revert to a bespoke
+    note format and stay green. Pure in / pure out, so the real string is
+    now assertable."""
+    from routes.lane_triage import format_lane_verdicts
+    s = out.get("summary") or {}
+    named = format_lane_verdicts(
+        (ln.get("name"), ln.get("verdict")) for ln in (out.get("lanes") or []))
+    return (f"{named} | PASS {s.get('PASS')} FAIL {s.get('FAIL')} "
+            f"? {s.get('?')} | "
+            f"filed {((out.get('graduation_filing') or {}).get('filed'))} | "
+            f"rate {((out.get('metrics') or {}).get('recurrence_rate'))}")
+
+
 def _beat_status(ok: bool, tick_failed: bool) -> str:
     """The ledger status word for this tick. Pure, so it can be tested directly.
 
@@ -2251,13 +2269,7 @@ def agentic_loop_tick():
         # ★ NAME the failing lanes. "PASS 2 FAIL 2 ? 0" said how many broke
         # and never which, so /ops/deadman could not triage this shell. The
         # counts are kept beside the names, not replaced by them.
-        from routes.lane_triage import format_lane_verdicts
-        _named = format_lane_verdicts(
-            (ln.get("name"), ln.get("verdict")) for ln in (out.get("lanes") or []))
-        note = (f"{_named} | PASS {s.get('PASS')} FAIL {s.get('FAIL')} "
-                f"? {s.get('?')} | "
-                f"filed {((out.get('graduation_filing') or {}).get('filed'))} | "
-                f"rate {((out.get('metrics') or {}).get('recurrence_rate'))}")
+        note = _beat_note(out)
     except Exception as e:  # noqa: BLE001
         out = {"ok": False, "shell": "agentic_loop", "number": SHELL_NUMBER,
                "error": f"{type(e).__name__}: {str(e)[:160]}", "tick_failed": True}
