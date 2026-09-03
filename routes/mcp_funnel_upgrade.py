@@ -51,17 +51,56 @@ mcp_funnel_upgrade_bp = Blueprint("mcp_funnel_upgrade", __name__)
 
 # Manifest: per-tool preview metadata
 # Each gated tool gets a "what you'd unlock" + "live sample" description
+# ★ NOTHING CALLS .format() ON `sample_answer_template`. The key is a misnomer
+#   kept for compatibility with the reader below; every value here must be a
+#   FINISHED sentence. A `{placeholder}` in one of these strings is served
+#   verbatim to the caller — tests/test_mcp_preview_copy.py fences that.
 _TOOL_PREVIEWS = {
+    # Added 2026-09-03: the board's plead_product_gap named this tool and the
+    # preview endpoint answered 404, so the one surface meant to show an
+    # anonymous agent what it would unlock did not exist. Every figure below is
+    # from /api/v1/interconnection-queue/snapshot, read live that day.
+    "get_interconnection_queue": {
+        "category": "ISO Interconnection Queue",
+        "you_unlock": ("Queued generation and load per ISO from each "
+                        "operator's own published queue: total queued GW, "
+                        "the data-center share of it, and the source "
+                        "register each figure came from."),
+        "sample_question": "How much data-center load is queued in ERCOT?",
+        "sample_answer_template": (
+            "Per-ISO queued load with the data-center share broken out — "
+            "e.g. NESO's TEC register showed 600.1 GW queued, 53.1 GW of it "
+            "data-center (8.8%). Every row carries its source register and "
+            "an as-of date. 10 ISO queues at dchub.cloud/grid."
+        ),
+    },
     "get_grid_intelligence": {
         "category": "Live ISO Grid",
         "you_unlock": ("Real-time MW load + reserve margin + congestion "
                         "from 10 ISOs (PJM, ERCOT, CAISO, MISO, SPP, "
                         "NYISO, ISO-NE, BPA, plus 3 international)."),
         "sample_question": "What's PJM's reserve margin right now?",
+        # ★ 2026-09-03 — THIS SERVED ITS OWN PLACEHOLDERS FOR 101 DAYS.
+        #   Nothing in this file ever calls .format() on these values (see the
+        #   note on _TOOL_PREVIEWS above), so anonymous agents were handed the
+        #   literal string "{load_mw} MW load, {reserve_pct}% reserve" —
+        #   verified live on the public preview endpoint. Four of the five
+        #   entries happened to be fully literal, so the missing substitution
+        #   was invisible until one entry used a placeholder.
+        #   Two further reasons this could never have worked as written:
+        #   `load_mw` and `reserve_pct` are not fields _live_preview_for()
+        #   selects, and the hardcoded "2026-05-25" contradicted the "updated
+        #   every 90s" in its own sentence.
+        #   Rewritten literal, and — per the provenance-honesty rule on
+        #   get_fiber_intel below — claiming ONLY what live_sample actually
+        #   carries: market_name, verdict, excess_power_score,
+        #   reserve_margin_pct. No MW load, so no MW load is promised.
         "sample_answer_template": (
-            "PJM (2026-05-25): {load_mw} MW load, {reserve_pct}% reserve, "
-            "{verdict} verdict. Updated every 90s. "
-            "Full ISO breakdown for 9 more grids at dchub.cloud/grid."
+            "Live reserve margin and the BUILD/CAUTION/AVOID verdict that "
+            "follows from it, refreshed every 90s. The live_sample field "
+            "beside this answer is a real current row — market, verdict, "
+            "excess-power score, reserve margin. Full ISO breakdown for 9 "
+            "more grids at dchub.cloud/grid."
         ),
     },
     "get_fiber_intel": {
