@@ -947,6 +947,22 @@ get_facility_risk_delta (temporal market-risk change from daily DCPI snapshots) 
 - [For Gemini](https://dchub.cloud/for/gemini): water objectives, custom MCP data store
 - [For ChatGPT](https://dchub.cloud/for/chatgpt): deep-research search/fetch contract
 - [For Perplexity](https://dchub.cloud/for/perplexity): citation format + quotable narratives
+
+## Setup Recipes — paste-ready config for a specific host
+Platform Guides above say how to USE the data; these say how to CONNECT. Every
+page carries a working config block for one host. Measured 2026-09-03: this
+family was absent from llms.txt entirely, so an agent reading this file could
+learn the tools existed but not how to install them anywhere.
+- [Integrations index](https://dchub.cloud/integrations/mcp): all recipes + the generic Streamable HTTP config
+- [Data Center MCP Server](https://dchub.cloud/integrations/mcp/data-center-mcp-server): what the server is, tool-by-tool
+- [Cloudflare](https://dchub.cloud/integrations/cloudflare): Zero Trust MCP Server Portal — DC Hub as an upstream
+- [AWS Bedrock](https://dchub.cloud/integrations/bedrock): Bedrock Agents action-group setup
+- [Microsoft Copilot Studio](https://dchub.cloud/integrations/copilot-studio): custom connector + operator prompt
+- [Meta](https://dchub.cloud/integrations/meta): Llama / Meta agent wiring
+- [Grok](https://dchub.cloud/integrations/grok): xAI Grok connector setup
+- [Gemini](https://dchub.cloud/integrations/gemini): Gemini custom MCP data store
+- [Mistral](https://dchub.cloud/integrations/mistral): Mistral agent connector setup
+- [Perplexity](https://dchub.cloud/integrations/perplexity): Perplexity connector setup
 """)
         # P2-1 (2026-08-28): Product 2's labelled sponsor block. Appended AFTER
         # canon_text() so sponsor copy is never scanned for {canon_*}
