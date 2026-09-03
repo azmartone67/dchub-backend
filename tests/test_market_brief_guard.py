@@ -19,6 +19,7 @@ house rule: tests NEVER import main).
 """
 
 import ast
+import json
 import logging
 import builtins
 import datetime
@@ -40,7 +41,12 @@ DEEPDIVE = REPO_ROOT / "routes" / "market_deep_dive.py"
 
 WANT = {"_brief_guard_reason", "_render_neutral_market_page",
         "_render_deep_dive_body", "generate_for_market",
-        "_market_name_candidates"}
+        "_market_name_candidates",
+        # r-crawl-citable (2026-09-03): _render_deep_dive_body now emits the
+        # Dataset/variableMeasured JSON-LD through this helper. EXTRACTED, not
+        # _PROVIDED — it is pure (no DB, no network), so the render tests below
+        # exercise the real structured data instead of a stub that could drift.
+        "_market_dataset_ld"}
 
 _BUILTINS = set(dir(builtins))
 
@@ -95,7 +101,12 @@ _PROVIDED = ("Response", "read_deep_dive", "_conn", "_ensure_schema",
              # module, whose failure branch logs. market_deep_dive.py had no
              # module logger before that change; it has one now, so the
              # extracted namespace has to carry it or the branch NameErrors.
-             "logger")
+             "logger",
+             # r-crawl-citable (2026-09-03): _market_dataset_ld serialises the
+             # Dataset JSON-LD with json.dumps, so the extracted namespace needs
+             # the module or that branch NameErrors into its own except and
+             # ships "{}" silently — the exact failure this guard exists to catch.
+             "json")
 
 
 @functools.lru_cache(maxsize=1)
@@ -144,6 +155,7 @@ def _ns(**overrides):
     src, tree, body = _module()
     ns = {"Response": _Resp, "datetime": datetime,
           "logger": logging.getLogger("test_market_brief_guard"),
+          "json": json,
           "read_deep_dive": lambda slug: None,
           "_conn": lambda: None,
           "_ensure_schema": lambda c: None,
