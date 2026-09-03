@@ -41,6 +41,34 @@ asset, never from the crawl or the filename that carried it.
 Requires the partial unique index from that migration to be present for
 ON CONFLICT to arbitrate; --write refuses to run if it is missing rather than
 inserting duplicates.
+
+★ THE FINGERPRINT IS FOLDED INTO `name` AND `source_id`, NOT JUST upstream_uid.
+fiber_routes carries FIVE unique indexes, measured on production 2026-09-03:
+
+    fiber_routes_name_provider_key      UNIQUE (name, provider)
+    fiber_routes_name_provider_unique   UNIQUE (name, provider)   -- a twin
+    fiber_routes_source_id_key          UNIQUE (source_id)        -- bare!
+    idx_fiber_routes_source_id          UNIQUE (source, source_id)
+    fiber_routes_upstream_uid_uniq      UNIQUE (source, upstream_uid) WHERE NOT NULL
+
+`ON CONFLICT (source, upstream_uid)` arbitrates ONLY the last one; a collision
+on any of the others RAISES. The first version of this tool stamped source_id =
+the file's basename and used the placemark's raw name, so:
+
+  - `UNIQUE (source_id)` alone meant only ONE row per file could ever insert;
+  - KML placemarks routinely share a name — Google Earth's "Temporary Places"
+    folder is the fallback label for every unnamed placemark in an export — so
+    (name, provider) collapsed too.
+
+Both fired against production on the first --write:
+`duplicate key value violates unique constraint "fiber_routes_name_provider_key"
+DETAIL: Key (name, provider)=(Temporary Places, C3NTRO) already exists.`
+
+This is the SAME defect migrations/2026-08-12 documents in _save_route, which
+synthesized `name` from owner/voltage/market and so held ~154 rows against 55k
+of real data. The fix there and here is identical: fold the per-route
+fingerprint into every key the table arbitrates on, so distinct physical
+segments keep distinct keys.
 """
 from __future__ import annotations
 
@@ -53,7 +81,7 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from routes.fiber_kmz import parse_bytes  # noqa: E402
+from routes.fiber_kmz import parse_bytes, storage_keys  # noqa: E402
 
 DB_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
 
@@ -154,9 +182,17 @@ def main():
             print(f"  !! {os.path.basename(f)}: {type(e).__name__}: {e}", file=sys.stderr)
             continue
         routes = [r for r in routes if r["vertices"] >= args.min_vertices]
-        sid = args.source_id or os.path.basename(f)
+        origin = args.source_id or os.path.basename(f)
         for r in routes:
-            r["source_id"] = sid
+            # Keys the table arbitrates on must carry the per-route
+            # fingerprint (see the module docstring). `origin` — the file this
+            # arrived in — is kept only as a human-readable prefix; it is NOT
+            # the identity, so re-exporting the same route under a different
+            # filename still dedups on (source, upstream_uid).
+            r["display_name"] = r["name"]
+            r["name"], r["source_id"] = storage_keys(
+                r["name"], r["upstream_uid"], origin)
+            r["origin_file"] = origin
         per_file.append((f, routes))
         all_routes.extend(routes)
 

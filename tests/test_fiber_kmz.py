@@ -20,8 +20,9 @@ import zipfile
 
 import pytest
 
-from routes.fiber_kmz import (haversine_miles, parse_bytes, parse_kml_bytes,
-                              parse_kmz_bytes, route_uid)
+from routes.fiber_kmz import (NAME_MAX, SOURCE_ID_MAX, haversine_miles,
+                              parse_bytes, parse_kml_bytes, parse_kmz_bytes,
+                              route_uid, storage_keys)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -294,3 +295,66 @@ def test_ingester_defaults_to_dry_run():
     src = (ROOT / "tools" / "ingest_fiber_kmz.py").read_text()
     assert '"--write", action="store_true"' in src
     assert "DRY RUN" in src
+
+
+# ─── storage keys: every unique index the table arbitrates on ────────────
+
+UID = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+UID2 = "ffffffffffffffffffffffffffffffff"
+
+
+def test_two_placemarks_sharing_a_name_get_distinct_storage_names():
+    """★ THE PRODUCTION FAILURE. fiber_routes carries UNIQUE(name, provider)
+    (twice). Google Earth labels every unnamed placemark with its enclosing
+    folder, so a single export yields hundreds of routes called
+    'Temporary Places'. The first --write against production died on:
+
+        duplicate key value violates unique constraint
+        "fiber_routes_name_provider_key"
+        DETAIL: Key (name, provider)=(Temporary Places, C3NTRO) already exists.
+    """
+    a, _ = storage_keys("Temporary Places", UID, "f.kmz")
+    b, _ = storage_keys("Temporary Places", UID2, "f.kmz")
+    assert a != b
+
+
+def test_two_routes_in_one_file_get_distinct_source_ids():
+    """★ UNIQUE(source_id) is BARE — not (source, source_id). Stamping the
+    file's basename meant only ONE row per file could ever insert."""
+    _, a = storage_keys("A", UID, "same-file.kmz")
+    _, b = storage_keys("B", UID2, "same-file.kmz")
+    assert a != b
+
+
+def test_the_same_route_composes_the_same_keys_every_time():
+    """Idempotency depends on this: re-running a file must reproduce the keys
+    already stored, so ON CONFLICT can recognise them."""
+    assert storage_keys("Ring", UID, "f.kmz") == storage_keys("Ring", UID, "f.kmz")
+
+
+def test_the_origin_file_is_not_part_of_identity():
+    """Identity is the asset's, not the crawl's. The same route re-exported
+    under a new filename must still dedup — so the NAME (which pairs with
+    provider in the unique index) must not vary with the filename."""
+    a, _ = storage_keys("Ring", UID, "export-january.kmz")
+    b, _ = storage_keys("Ring", UID, "export-june.kmz")
+    assert a == b
+
+
+@pytest.mark.parametrize("name,origin", [
+    ("X" * 400, "Y" * 400),
+    ("", ""),
+    ("Ring", "Z" * 5000),
+    ("N" * 199, "f.kmz"),
+])
+def test_long_values_never_truncate_away_the_fingerprint(name, origin):
+    """★ Clipping the COMPOSED string would silently drop the suffix on long
+    names and reintroduce the collision. The human part is what gets trimmed."""
+    n, sid = storage_keys(name, UID, origin)
+    assert len(n) <= NAME_MAX
+    assert len(sid) <= SOURCE_ID_MAX
+    assert n.endswith("#" + UID[:8]), n
+    assert UID in sid, sid
+    # and two different routes still differ at these lengths
+    n2, sid2 = storage_keys(name, UID2, origin)
+    assert n != n2 and sid != sid2
