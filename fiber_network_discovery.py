@@ -216,12 +216,41 @@ MAJOR_ROUTES = [
 # ============================================================
 
 def _discover_peeringdb_fiber():
-    """
-    Discover fiber routes from PeeringDB Internet Exchange data.
-    Each IX represents a fiber interconnection point — we create
-    routes between IXes in the same region as proxy fiber paths.
+    """Discover fiber routes from PeeringDB IX data.
+
+    Returns (routes, diag). ★★★ THE DIAG IS THE POINT. Every failure here used
+    to become `return discovered` — an empty list indistinguishable from "the
+    source is healthy and had nothing new" — and run_fiber_discovery then
+    reported status 'success'. Measured 2026-09-03: this lane had written
+    nothing for 73 days (last peeringdb row 2026-06-22) and every single run
+    reported ok.
+
+    ★ WHAT ACTUALLY BROKE, measured live 2026-09-03 — not throttling, not
+    egress. `GET /api/ix?country=US&status=ok` returns HTTP 200 with 212 US
+    exchanges, and PeeringDB's ix objects carry NO latitude/longitude field at
+    all (the full key set is aka, city, country, created, fac_count, id, ...,
+    website — no coordinate of any kind). So `if lat and lng` drops all 212,
+    the pair loop never runs, and this returns []. Coordinates live on the
+    `fac` (facility) objects: /api/fac?country=US&status=ok returns 1,376
+    facilities, 1,353 of them with usable lat/lng.
+
+    ★ ALSO MEASURED: anonymous callers are throttled after ~4 requests
+    ("Request was throttled. Expected available in 58 minutes. Authenticate for
+    less restrictions."). The daily job makes one call so it does not normally
+    trip, but an unauthenticated lane is one retry away from a silent 429 —
+    which is exactly the shape that hid this for 73 days. Setting
+    PEERINGDB_API_KEY is a separate, still-open action.
+
+    THE COORDINATE REPAIR IS DELIBERATELY NOT DONE HERE. Restoring it would
+    mint thousands of straight-line segments between exchange pairs, with
+    `fiber_count` set to the exchange's PEER COUNT — two unrelated quantities —
+    into the same table that holds surveyed Zayo/NTIA carrier routes. That is a
+    product decision about whether DC Hub manufactures synthetic route volume,
+    not a bug fix, and it belongs to the owner. This change makes the lane
+    report its own death; it does not resurrect it by fabricating.
     """
     discovered = []
+    diag = {"status": "unknown", "fetched": 0, "usable": 0, "detail": None}
     try:
         # Get US Internet Exchanges from PeeringDB
         # Phase ZZZZZ-round5-peeringdb (2026-05-23): root cause of the
@@ -237,10 +266,13 @@ def _discover_peeringdb_fiber():
         )
         if resp.status_code != 200:
             logger.warning(f"PeeringDB returned {resp.status_code}")
-            return discovered
+            diag["status"] = "http_%d" % resp.status_code
+            diag["detail"] = (resp.text or "")[:200]
+            return discovered, diag
 
         data = resp.json().get("data", [])
         logger.info(f"PeeringDB: found {len(data)} US Internet Exchanges")
+        diag["fetched"] = len(data)
 
         # Filter IXes with coordinates
         ixes = []
@@ -291,13 +323,30 @@ def _discover_peeringdb_fiber():
                     })
 
         logger.info(f"PeeringDB: generated {len(discovered)} fiber route proxies from IX data")
+        diag["usable"] = len(ixes)
+        if diag["fetched"] and not ixes:
+            # ★ FETCH SUCCEEDED, PARSE YIELDED NOTHING. This is a DIFFERENT
+            # failure from a dead endpoint and must not read as one: the
+            # source answered, and every record it returned was unusable to
+            # us. That is a contract change on their side or a wrong
+            # assumption on ours, and it is the state this lane has actually
+            # been in since 2026-06-22.
+            diag["status"] = "no_usable_records"
+            diag["detail"] = (
+                "fetched %d IX records and NONE carried usable coordinates; "
+                "PeeringDB's ix objects have no latitude/longitude field "
+                "(coordinates live on /api/fac)" % diag["fetched"])
+        else:
+            diag["status"] = "ok"
 
     except requests.exceptions.Timeout:
         logger.warning("PeeringDB: timeout")
+        diag["status"], diag["detail"] = "timeout", "request exceeded 15s"
     except Exception as e:
         logger.error(f"PeeringDB discovery failed: {e}")
+        diag["status"], diag["detail"] = "error", str(e)[:200]
 
-    return discovered
+    return discovered, diag
 
 
 # ============================================================
@@ -319,6 +368,19 @@ def run_fiber_discovery():
         'discovered': 0,
         'errors': 0,
         'total': 0,
+        # ★ `seeded` counts a HARDCODED list re-upserted every run. It is not
+        # discovery and it is not evidence of a live source: measured
+        # 2026-09-03, exactly 20 fiber_routes rows carry updated_at=today and
+        # 0 carry created_at=today, every day. Published alongside it so no
+        # caller has to know that by reading this file — the infrastructure-
+        # sync job uses it to keep a hardcoded re-stamp out of its work count.
+        'seed_is_hardcoded': True,
+        'seed_row_count': len(MAJOR_ROUTES),
+        # Set by step 2. Stays at 'not_reached' when the seed step raises
+        # before discovery runs, which is a different state from a source
+        # that answered and gave nothing.
+        'peeringdb': {'status': 'not_reached', 'fetched': 0,
+                      'usable': 0, 'detail': None},
     }
 
     # Ensure table exists
@@ -344,7 +406,8 @@ def run_fiber_discovery():
 
         # Step 2: Discover from PeeringDB
         try:
-            pdb_routes = _discover_peeringdb_fiber()
+            pdb_routes, pdb_diag = _discover_peeringdb_fiber()
+            results['peeringdb'] = pdb_diag
             for route in pdb_routes:
                 if _upsert_fiber_route(conn, route):
                     results['discovered'] += 1
@@ -354,6 +417,8 @@ def run_fiber_discovery():
             logger.info(f"PeeringDB fiber: {results['discovered']} routes discovered")
         except Exception as e:
             logger.warning(f"PeeringDB discovery failed (non-fatal): {e}")
+            results['peeringdb'] = {"status": "error", "fetched": 0,
+                                    "usable": 0, "detail": str(e)[:200]}
 
         # Get total count
         cur = conn.cursor()
@@ -371,7 +436,24 @@ def run_fiber_discovery():
             pass
 
     results['duration_seconds'] = round(time.time() - start, 2)
-    results['status'] = 'success' if results['errors'] == 0 else 'partial'
+    # ★★★ A LANE WITH NO WORKING SOURCE IS NOT A SUCCESS. `errors` counts
+    # failed row WRITES, so it stayed 0 while the only discovery source
+    # returned nothing for 73 days and this reported 'success' every run —
+    # the exact "a lane died and every signal stayed green" failure this
+    # program exists to end. The seed step cannot rescue it: re-stamping 20
+    # hardcoded rows is not a source.
+    _pdb = (results.get('peeringdb') or {}).get('status')
+    if results['errors']:
+        results['status'] = 'partial'
+    elif _pdb != 'ok':
+        results['status'] = 'no_source'
+        results['message'] = (
+            'no working discovery source: peeringdb=%s (%s). The seed step '
+            're-upserts %d hardcoded routes and is not a source.'
+            % (_pdb, (results.get('peeringdb') or {}).get('detail'),
+               len(MAJOR_ROUTES)))
+    else:
+        results['status'] = 'success'
     logger.info(f"Fiber discovery complete: {results}")
     return results
 
