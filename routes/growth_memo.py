@@ -393,5 +393,5 @@ def growth_memo():
         except Exception:
             pass
     if (request.args.get("format") or "").lower() in ("md", "markdown"):
-        return Response(_to_md(memo), mimetype="text/markdown; charset=utf-8")
+        return Response(_to_md(memo), content_type="text/markdown; charset=utf-8")
     return jsonify(memo)

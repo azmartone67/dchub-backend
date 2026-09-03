@@ -499,7 +499,7 @@ tr:last-child td{{border-bottom:0}}
 LBNL <a href="https://emp.lbl.gov/queues">Queued Up</a>
 </p>
 </body></html>"""
-    return Response(html, mimetype="text/html; charset=utf-8",
+    return Response(html, content_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=3600, s-maxage=3600",
                              "X-DC-Phase": "ZZZZZ-round47"})
 

@@ -2694,7 +2694,7 @@ def site_value_page():
         1,
     )
 
-    resp = Response(body, mimetype="text/html; charset=utf-8")
+    resp = Response(body, content_type="text/html; charset=utf-8")
     # Vary on tier-determining headers so CF doesn't serve a free
     # visitor's banner to a PRO user (and vice versa).
     resp.headers["Cache-Control"] = "private, no-store, max-age=0"

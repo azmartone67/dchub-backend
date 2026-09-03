@@ -91,7 +91,7 @@ def _stream_csv(dataset_name, query, header_row, row_transform=None):
         except Exception as e:
             yield f"# ERROR: {str(e)[:200]}\n"
 
-    resp = Response(generate(), mimetype="text/csv; charset=utf-8")
+    resp = Response(generate(), content_type="text/csv; charset=utf-8")
     resp.headers["Content-Disposition"] = (
         f'attachment; filename="{dataset_name.lower().replace(" ", "-")}-{year}.csv"')
     resp.headers["Cache-Control"] = "public, max-age=3600, s-maxage=3600"

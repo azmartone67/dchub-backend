@@ -1234,7 +1234,7 @@ def pockets_rss():
         pockets=rows,
         build_date=_rfc822(datetime.datetime.utcnow().isoformat() + "Z"),
     )
-    resp = Response(xml, mimetype="application/rss+xml; charset=utf-8")
+    resp = Response(xml, content_type="application/rss+xml; charset=utf-8")
     resp.headers["Cache-Control"] = "public, max-age=900"
     return resp
 

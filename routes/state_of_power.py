@@ -351,7 +351,7 @@ def state_of_power_json():
                          methods=["GET"], strict_slashes=False)
 def state_of_power_md():
     return Response(_render_md(_gather()),
-                    mimetype="text/markdown; charset=utf-8",
+                    content_type="text/markdown; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=900",
                              "Link": _CC_LINK_HEADER,
                              "Access-Control-Allow-Origin": "*"})

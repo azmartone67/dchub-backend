@@ -122,7 +122,7 @@ def onboarding_page(code):
                 "<h1>That link is invalid or expired</h1>"
                 "<p>Redeem links work once and expire after 24h.</p>"
                 "<p><a href='/signup'>Get a new dev key →</a></p></body></html>",
-                status=404, mimetype="text/html; charset=utf-8")
+                status=404, content_type="text/html; charset=utf-8")
         api_key, email = row
     except Exception as e:
         return jsonify({"error": "lookup_failed", "detail": str(e)}), 500
@@ -140,7 +140,7 @@ def onboarding_page(code):
         pass
 
     page = HTML.replace("__API_KEY__", _html.escape(api_key))
-    return Response(page, mimetype="text/html; charset=utf-8",
+    return Response(page, content_type="text/html; charset=utf-8",
                     headers={"Cache-Control": "private, no-store",
                              "X-DC-Phase": "ZZZZZ-round40-onboarding"})
 

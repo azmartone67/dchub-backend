@@ -157,6 +157,9 @@
     "test_resend_webhook_single_registration.py": {
       "walk": 120
     },
+    "test_response_content_type_charset.py": {
+      "pglob": 3060
+    },
     "test_route_auth_criticals.py": {
       "pglob": 640
     },

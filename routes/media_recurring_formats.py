@@ -835,11 +835,11 @@ def movers_rss():
 
     if not _enabled():
         return Response(head + tail,
-                        mimetype="application/rss+xml; charset=utf-8")
+                        content_type="application/rss+xml; charset=utf-8")
     conn = _db_conn()
     if conn is None:
         return Response(head + tail,
-                        mimetype="application/rss+xml; charset=utf-8")
+                        content_type="application/rss+xml; charset=utf-8")
     items_xml = []
     try:
         with conn, conn.cursor() as cur:
@@ -873,6 +873,6 @@ def movers_rss():
         except Exception:
             pass
     return Response(head + "".join(items_xml) + tail,
-                    mimetype="application/rss+xml; charset=utf-8",
+                    content_type="application/rss+xml; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=900",
                              "X-DC-Feature": "media-recurring-formats"})

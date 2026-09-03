@@ -1273,7 +1273,7 @@ def state_of_2026_page():
     hero = _fetch_hero_numbers_persisted()
     return Response(
         _render_state_page(hero),
-        mimetype="text/html; charset=utf-8",
+        content_type="text/html; charset=utf-8",
         headers={
             "Cache-Control": "public, max-age=120",  # CF edge for 2min
             "X-Robots-Tag": "index, follow",
