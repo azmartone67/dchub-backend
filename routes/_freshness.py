@@ -30,11 +30,21 @@ def _age(conn, sql):
 QUERIES = {
     "iso_ingest_age_seconds":   "SELECT MAX(retrieved_at) FROM eia_electricity_rates",
     # r-newsdead (2026-08-13): was MAX(published_date) FROM `news` — a table
-    # NOTHING writes any more. Its only writer is news_aggregator.py, invoked
-    # from no workflow or cron; the live loader (/api/jobs/news-refresh ->
-    # auto_sync.sync_news) writes `news_articles`. So this probe measured an
-    # abandoned table and reported the news feed stale while it was fetching
-    # every few hours. That false alarm cost brain investigation #100046 and
+    # NOTHING writes any more. Its only writer is news_aggregator.py; the live
+    # loader (/api/jobs/news-refresh -> auto_sync.sync_news) writes
+    # `news_articles`. So this probe measured a secondary table and reported the
+    # news feed stale while it was fetching every few hours.
+    #
+    # ★ CORRECTION 2026-09-03: "invoked from no workflow or cron" was too strong
+    # and is now removed. crawler_scheduler.py:1366 DOES run news_aggregator
+    # ("Run news sync once. Uses news_aggregator (proven working path)"), and
+    # `news` was last written 06:33Z on 2026-09-03 — 3,561 rows against
+    # news_articles' 13,032. So `news` is a SMALLER, LIVE, secondary pipeline,
+    # not an abandoned table. The probe's move to news_articles + fetched_at
+    # remains right; the reason recorded for it was not. This matters because
+    # routes/data_freshness_radar.py::_DOMAINS still watches `news`, and anyone
+    # reading the old wording would "fix" that by repointing a live domain at a
+    # different pipeline on the strength of a claim that is not true. That false alarm cost brain investigation #100046 and
     # three earlier "heartbeat_surfaces_stale" fixes, all aimed at a working
     # pipeline.
     #
