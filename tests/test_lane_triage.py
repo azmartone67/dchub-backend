@@ -284,3 +284,84 @@ def test_the_board_routes_red_feeds_through_triage_and_publishes_a_rollup():
     assert 'rec["triage"] = triage_feed(' in src
     assert "red_triage=red_triage" in src
     assert "red_lanes_unnamed" in src
+
+
+# ── the three shells that counted failures without naming them ────────
+# Until 2026-09-02 these wrote "PASS 2 FAIL 2", "3 failing / 1 unknown of 4
+# lanes" and "lanes 2/4 pass". All three say HOW MANY broke and none says
+# WHICH, so /ops/deadman could not triage them at all — published as
+# red_lanes_unnamed=3. Each now writes through format_lane_verdicts, which
+# lives beside parse_failing_lanes so a writer cannot drift from its reader.
+
+def _shell_lane_ids(stem):
+    """The lane ids each shell will actually emit — read from the live
+    _LANES, not from a regex of the source."""
+    mod = __import__(f"routes.{stem}_master_shell", fromlist=["_LANES"])
+    lanes = mod._LANES
+    if stem == "growth_funnel":      # ("1 · attribution", fn)
+        return [fn.__name__[len("_lane_"):] for _label, fn in lanes]
+    if stem == "webmcp":             # (key, label, fn, actuator)
+        return [t[0] for t in lanes]
+    if stem == "agentic_loop":       # (key, name, headline, fn)
+        return [t[1] for t in lanes]
+    raise AssertionError(stem)
+
+
+@pytest.mark.parametrize("stem", ["growth_funnel", "webmcp", "agentic_loop"])
+def test_every_lane_these_shells_emit_is_classified(stem):
+    """★ THE COUPLING. If a lane is renamed in its shell the board starts
+    emitting an id the registry has never seen, and the triage silently
+    degrades to `unclassified` instead of failing loudly. Catch it here."""
+    from routes.lane_triage import classify
+    ids = _shell_lane_ids(stem)
+    assert ids, f"{stem} exposed no lane ids"
+    unknown = [i for i in ids if classify(stem, i) is None]
+    assert not unknown, f"{stem} emits unclassified lane ids: {unknown}"
+
+
+@pytest.mark.parametrize("stem", ["growth_funnel", "webmcp", "agentic_loop"])
+def test_the_note_each_shell_writes_round_trips_back_to_named_lanes(stem):
+    """★ END TO END, both directions. Format the shell's real lane ids, then
+    read them back the way the board does."""
+    from routes.lane_triage import format_lane_verdicts, parse_failing_lanes
+    ids = _shell_lane_ids(stem)
+    note = format_lane_verdicts([(i, "FAIL") for i in ids])
+    lanes, named = parse_failing_lanes(note)
+    assert named is True
+    assert lanes == ids
+    assert len(note) <= 280, f"{stem} note is {len(note)} chars, cap is 280"
+
+
+def test_the_formatter_emits_fail_as_fail():
+    """★ THE GREEN DIRECTION. A formatter that wrote everything as PASS would
+    satisfy the round-trip test above by returning an empty failure list."""
+    from routes.lane_triage import format_lane_verdicts, parse_failing_lanes
+    note = format_lane_verdicts([("a", "PASS"), ("b", "FAIL")])
+    assert note == "lanes: a=PASS b=FAIL"
+    assert parse_failing_lanes(note) == (["b"], True)
+
+
+def test_an_unmeasured_lane_is_never_written_as_a_failure():
+    """`?` is not FAIL. Writing an unmeasured lane as failed would invent a
+    defect; writing it as PASS would hide one."""
+    from routes.lane_triage import format_lane_verdicts, parse_failing_lanes
+    note = format_lane_verdicts([("a", "?"), ("b", None), ("c", "weird")])
+    assert note == "lanes: a=? b=? c=?"
+    assert parse_failing_lanes(note) == ([], True)
+
+
+def test_the_formatter_is_empty_for_no_lanes():
+    from routes.lane_triage import format_lane_verdicts
+    assert format_lane_verdicts([]) == ""
+    assert format_lane_verdicts(None) == ""
+
+
+@pytest.mark.parametrize("stem", ["growth_funnel", "webmcp", "agentic_loop"])
+def test_each_shell_beats_through_the_shared_formatter(stem):
+    """STRUCTURAL: these beat paths need a live DB and a tick, so the
+    coupling asserted is that the shared writer is the one being called —
+    a fourth bespoke note format is exactly what regressed here."""
+    src = io.open(os.path.join(ROUTES, f"{stem}_master_shell.py"),
+                  encoding="utf-8").read()
+    assert "from routes.lane_triage import format_lane_verdicts" in src, stem
+    assert "format_lane_verdicts(" in src, stem

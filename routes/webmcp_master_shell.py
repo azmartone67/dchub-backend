@@ -449,8 +449,15 @@ def _run_tick(beat: bool = True) -> dict:
     }
     payload["findings_filed"] = _file_findings(payload)
     if beat:
-        _beat_ledger(f"lanes {payload['lanes_pass']}/{payload['lanes_total']} pass",
-                     failing=payload["lanes_pass"] < payload["lanes_total"])
+        # ★ NAME the lanes. `lanes 2/4 pass` counted the failures without
+        # saying which, so the board could not triage this shell at all —
+        # and the ids were right here in _LANES the whole time.
+        from routes.lane_triage import format_lane_verdicts
+        _beat_ledger(
+            format_lane_verdicts((l["lane"], "PASS" if l["pass"] else "FAIL")
+                                 for l in lanes)
+            + f" | {payload['lanes_pass']}/{payload['lanes_total']} pass",
+            failing=payload["lanes_pass"] < payload["lanes_total"])
     return payload
 
 

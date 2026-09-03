@@ -267,7 +267,11 @@ def split_lanes(lanes):
 # lanes". A count is not a name, and an unparseable note is not an empty one.
 import re as _re
 
-_FAIL_TOKEN = _re.compile(r"([A-Za-z0-9_]+)=FAIL")
+_FAIL_TOKEN = _re.compile(r"([A-Za-z0-9_/]+)=FAIL")
+# Any verdict token at all means the note NAMED its lanes — including a
+# note whose lanes are every one unknown. Detecting "named" from =PASS
+# alone read an all-`?` note as unreadable; caught by the guard.
+_VERDICT_TOKEN = _re.compile(r"[A-Za-z0-9_/]+=(?:PASS|FAIL|\?)")
 _REDS_LIST = _re.compile(r"reds:\s*([^|]+)")
 _FEED_SUFFIX = "-shell-daily"
 
@@ -297,8 +301,9 @@ def parse_failing_lanes(note: str) -> tuple[list[str], bool]:
         if body.lower() in ("none", "-", ""):
             return [], True
         return [x.strip() for x in body.split(",") if x.strip()], True
-    # The note may legitimately name lanes with none failing (all PASS).
-    if "=PASS" in note or "=pass" in note:
+    # The note may legitimately name lanes with none FAILing — all PASS, all
+    # unknown, or a mix. Any verdict token proves the lanes were named.
+    if _VERDICT_TOKEN.search(note):
         return [], True
     return [], False
 
@@ -346,3 +351,25 @@ def triage_feed(feed: str, note: str) -> dict:
         else:
             out["not_code_count"] += 1
     return out
+
+
+def format_lane_verdicts(pairs) -> str:
+    """The canonical `lanes: a=PASS b=FAIL` string the board can parse back.
+
+    ★ Lives BESIDE parse_failing_lanes on purpose. Three shells
+    (agentic_loop, growth_funnel, webmcp) each invented their own note format
+    — "PASS 2 FAIL 2", "3 failing / 1 unknown of 4 lanes", "lanes 2/4 pass" —
+    all of which COUNT failures without NAMING them, so nothing could triage
+    them from the board. A writer that lives next to its reader cannot drift
+    from it; a fourth format invented in a fourth file would.
+
+    `pairs` is (lane_id, verdict); verdict is normalised to PASS / FAIL / ?
+    so an unmeasured lane is never written as a failure. Output is bounded to
+    stay inside record_beat's 280-char note cap."""
+    out = []
+    for lane, verdict in pairs or ():
+        v = str(verdict or "?").upper()
+        if v not in ("PASS", "FAIL"):
+            v = "?"
+        out.append(f"{lane}={v}")
+    return ("lanes: " + " ".join(out)) if out else ""
