@@ -364,6 +364,411 @@ def _ingest_gridstatus_dataset(entry: dict) -> dict:
         except Exception: pass
 
 
+# ── DIRECT SOURCES — the repoint the 07-26 budget cut asked for ─────────
+#
+# ★★★ 2026-09-03. The allowlist cut was right (gridstatus free tier = 250
+#   req/MONTH, July burned 375) and its note said the parked datasets each
+#   "[have] a free direct source we already hold creds for". This is the first
+#   of those repoints, and it costs ZERO new upstream calls: CAISO's Today's
+#   Outlook CSVs are public, unauthenticated, and iso_grid_adapters.fetch_caiso
+#   ALREADY downloads both of them every ISO pull.
+#
+#     demand.csv      Time, Day ahead forecast, Hour ahead forecast,
+#                     Current demand, Demand response      -> caiso_load_forecast
+#     fuelsource.csv  Time + 13 fuel columns               -> caiso_fuel_mix
+#
+#   Verified live 2026-09-03: day-ahead 26,792 MW / hour-ahead 26,355 MW, and a
+#   13-column fuel row. Nothing here needs a key, a budget or a new integration
+#   — the data was already on the wire and being thrown away.
+#
+# ★ PROVENANCE IS NOT COSMETIC. Rows land with source='caiso_todays_outlook',
+#   never the table's 'gridstatus' default. A row that names the wrong upstream
+#   is how a feed gets "repointed" on paper and audited as still-gridstatus.
+_CAISO_BASE = "https://www.caiso.com/outlook/current"
+_CAISO_TZ = "America/Los_Angeles"
+
+
+def _http_csv(url: str, timeout: int = 8):
+    """Fetch a CSV as a list of dicts. [] on anything unexpected (fail-soft)."""
+    import csv as _csv
+    import io as _io
+    import urllib.request as _u
+    try:
+        req = _u.Request(url, headers={"User-Agent": "dchub-grid-shell/1.0"})
+        with _u.urlopen(req, timeout=timeout) as r:
+            body = r.read(400_000).decode("utf-8", "replace")
+        return list(_csv.DictReader(_io.StringIO(body)))
+    except Exception:
+        return []
+
+
+def _caiso_asof(hhmm: str, now=None):
+    """A CAISO 'HH:MM' Pacific slot -> an aware UTC datetime, or None.
+
+    The CSVs carry a time with NO DATE, so the date has to come from the clock.
+    Anchoring on Pacific (not the server's zone) is load-bearing: this repo runs
+    UTC in prod and UTC-7 locally, and a naive read would place every row up to
+    seven hours off and silently write a row that dedups against the wrong slot.
+
+    The date is simply TODAY in Pacific, with no adjustment. These are the
+    "Today's Outlook" CSVs: one Pacific day per file, 00:00-23:55, reset at
+    local midnight — so a row is never yesterday's.
+
+    ★ An earlier draft subtracted a day from any slot more than 6h ahead,
+      reading a future slot as a midnight rollover. That is wrong for THIS
+      file: it legitimately carries forecast rows up to ~22h ahead, so the rule
+      moved every afternoon slot back a day. The tests caught it. Future slots
+      are handled where they belong — the load-forecast picker takes the newest
+      slot at or before now, so a forecast for 14:00 is simply not chosen at
+      02:05.
+    """
+    try:
+        from datetime import datetime, timezone as _tz
+        from zoneinfo import ZoneInfo
+    except Exception:
+        return None
+    try:
+        h, m = (int(x) for x in str(hhmm).strip().split(":")[:2])
+    except Exception:
+        return None
+    try:
+        pt = ZoneInfo(_CAISO_TZ)
+        now_pt = (now or datetime.now(_tz.utc)).astimezone(pt)
+        stamp = now_pt.replace(hour=h, minute=m, second=0, microsecond=0)
+        return stamp.astimezone(_tz.utc)
+    except Exception:
+        return None
+
+
+def _caiso_rows(name: str) -> list:
+    return [r for r in _http_csv("%s/%s" % (_CAISO_BASE, name))
+            if (r.get("Time") or "").strip()]
+
+
+def _caiso_load_forecast(entry: dict) -> dict:
+    """CAISO load forecast from the demand CSV we already pull.
+
+    Primary is the DAY-AHEAD figure — the canonical 'load forecast' and the one
+    that exists for every slot; the hour-ahead value rides in `raw` rather than
+    being averaged into it, because two forecasts are two facts.
+    """
+    rows = _caiso_rows("demand.csv")
+    if not rows:
+        return {"ok": False, "error": "caiso_demand_csv_unavailable"}
+    # The file spans a whole Pacific day, so its later rows are FUTURE slots
+    # that already carry a forecast. Take the newest slot at or before now —
+    # picking the last row outright would stamp a row hours ahead of the clock
+    # and dedup against a slot that has not happened.
+    now = _utcnow()
+    dated = [(r, _caiso_asof(r.get("Time"))) for r in rows
+             if _num(r.get("Day ahead forecast")) is not None]
+    past = [(r, t) for r, t in dated if t is not None and t <= now]
+    if not past:
+        return {"ok": False, "error": "caiso_demand_csv_no_forecast_at_or_before_now"}
+    picked, _ = max(past, key=lambda rt: rt[1])
+    da = _num(picked.get("Day ahead forecast"))
+    ha = _num(picked.get("Hour ahead forecast"))
+    as_of = _caiso_asof(picked.get("Time"))
+    if da is None or as_of is None:
+        return {"ok": False, "error": "caiso_demand_row_unparseable"}
+    return {"ok": True, "primary_value": da, "as_of": as_of,
+            "raw": {"time_pt": picked.get("Time"),
+                    "day_ahead_forecast_mw": da,
+                    "hour_ahead_forecast_mw": ha,
+                    "current_demand_mw": _num(picked.get("Current demand")),
+                    "source_url": "%s/demand.csv" % _CAISO_BASE}}
+
+
+def _caiso_fuel_mix(entry: dict) -> dict:
+    """CAISO fuel mix from the fuelsource CSV we already pull.
+
+    Primary is TOTAL generation across fuels — the one number the category is
+    about; the per-fuel breakdown rides in `raw`. Negative values are kept as
+    reported (solar goes negative at night on this feed) rather than clamped:
+    a clamp would quietly inflate the total.
+    """
+    rows = _caiso_rows("fuelsource.csv")
+    if not rows:
+        return {"ok": False, "error": "caiso_fuelsource_csv_unavailable"}
+    picked = None
+    for r in rows:
+        if any(_num(v) is not None for k, v in r.items() if k != "Time"):
+            picked = r
+    if picked is None:
+        return {"ok": False, "error": "caiso_fuelsource_csv_no_numeric_row"}
+    mix, total = {}, 0.0
+    for k, v in picked.items():
+        if k == "Time":
+            continue
+        n = _num(v)
+        if n is not None:
+            mix[k] = n
+            total += n
+    as_of = _caiso_asof(picked.get("Time"))
+    if not mix or as_of is None:
+        return {"ok": False, "error": "caiso_fuelsource_row_unparseable"}
+    return {"ok": True, "primary_value": round(total, 1), "as_of": as_of,
+            "raw": {"time_pt": picked.get("Time"), "fuel_mw": mix,
+                    "total_generation_mw": round(total, 1),
+                    "source_url": "%s/fuelsource.csv" % _CAISO_BASE}}
+
+
+# ── ERCOT direct — five datasets from three KEYLESS dashboards ──────────
+#
+# ★★★ 2026-09-03, the second repoint. ERCOT's authenticated Azure-APIM feed
+#   (iso_grid_adapters.fetch_ercot, OAuth + Ocp-Apim-Subscription-Key) stays
+#   exactly as it is — it serves the real-time gen/load record and is untouched
+#   here. These five parked datasets need none of it: ERCOT publishes them on
+#   public, unauthenticated dashboard JSON.
+#
+#     supply-demand.json   forecast[].forecastedDemand  -> ercot_load_forecast
+#                          forecast[].availCapGen       -> ercot_capacity_forecast
+#                          data[] where forecast==0     -> ercot_capacity_committed
+#     daily-prc.json       data[].prc                   -> ercot_real_time_adders…
+#     fuel-mix.json        data[date][ts][fuel].gen     -> ercot_fuel_mix_detailed
+#
+#   Probed live 2026-09-03: 200 / 84KB, 191KB, 107KB respectively.
+#   (todays-outlook.json is 403 to non-browser agents — not used.)
+#
+# ★ NO TIMEZONE INFERENCE HERE, unlike CAISO. Every ERCOT timestamp carries an
+#   explicit offset ("2026-09-03 04:47:14-0500"), so the instant is read, never
+#   reconstructed from the server clock. That removed the whole class of bug
+#   the CAISO repoint had to be careful about.
+#
+# ★ as_of FOLLOWS WHAT THE NUMBER IS. An observation carries its OWN interval;
+#   a forecast carries its PUBLICATION time (lastUpdated), never the future
+#   hour it describes. Stamping a forecast at its target hour would write rows
+#   ahead of the clock and make every freshness reader argue with itself.
+_ERCOT_DASH = "https://www.ercot.com/api/1/services/read/dashboards"
+
+
+def _http_json(url: str, timeout: int = 10):
+    """Fetch JSON. None on anything unexpected (fail-soft)."""
+    import urllib.request as _u
+    try:
+        req = _u.Request(url, headers={"User-Agent": "dchub-grid-shell/1.0"})
+        with _u.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read(4_000_000).decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _ercot_ts(s):
+    """'2026-09-03 04:47:14-0500' -> aware UTC datetime, or None."""
+    from datetime import datetime, timezone as _tz
+    txt = str(s or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S%z", "%Y-%m-%d %H:%M%z", "%Y-%m-%d %H:%M:%S"):
+        try:
+            d = datetime.strptime(txt, fmt)
+        except Exception:
+            continue
+        if d.tzinfo is None:
+            return None          # a bare local string is NOT an instant
+        return d.astimezone(_tz.utc)
+    return None
+
+
+def _ercot_dash_json(name: str):
+    return _http_json("%s/%s" % (_ERCOT_DASH, name))
+
+
+def _ercot_next_forecast_row(d):
+    """The soonest forecast hour at-or-after now, from supply-demand.forecast[]."""
+    rows = (d or {}).get("forecast") or []
+    now = _utcnow()
+    dated = [(r, _ercot_ts(r.get("timestamp"))) for r in rows if isinstance(r, dict)]
+    ahead = [(r, t) for r, t in dated if t is not None and t >= now]
+    if ahead:
+        return min(ahead, key=lambda rt: rt[1])
+    past = [(r, t) for r, t in dated if t is not None]
+    return max(past, key=lambda rt: rt[1]) if past else (None, None)
+
+
+def _ercot_load_forecast(entry: dict) -> dict:
+    d = _ercot_dash_json("supply-demand.json")
+    if not d:
+        return {"ok": False, "error": "ercot_supply_demand_unavailable"}
+    row, target = _ercot_next_forecast_row(d)
+    pub = _ercot_ts(d.get("lastUpdated"))
+    if row is None or pub is None:
+        return {"ok": False, "error": "ercot_supply_demand_no_forecast_row"}
+    mw = _num(row.get("forecastedDemand"))
+    if mw is None:
+        return {"ok": False, "error": "ercot_forecast_row_missing_demand"}
+    return {"ok": True, "primary_value": mw, "as_of": pub,
+            "raw": {"forecasted_demand_mw": mw,
+                    "avail_cap_gen_mw": _num(row.get("availCapGen")),
+                    "for_hour_utc": str(target), "hour_ending": row.get("hourEnding"),
+                    "published_utc": str(pub),
+                    "source_url": "%s/supply-demand.json" % _ERCOT_DASH}}
+
+
+def _ercot_capacity_forecast(entry: dict) -> dict:
+    d = _ercot_dash_json("supply-demand.json")
+    if not d:
+        return {"ok": False, "error": "ercot_supply_demand_unavailable"}
+    row, target = _ercot_next_forecast_row(d)
+    pub = _ercot_ts(d.get("lastUpdated"))
+    if row is None or pub is None:
+        return {"ok": False, "error": "ercot_supply_demand_no_forecast_row"}
+    mw = _num(row.get("availCapGen"))
+    if mw is None:
+        return {"ok": False, "error": "ercot_forecast_row_missing_capacity"}
+    return {"ok": True, "primary_value": mw, "as_of": pub,
+            "raw": {"avail_cap_gen_mw": mw,
+                    "forecasted_demand_mw": _num(row.get("forecastedDemand")),
+                    "for_hour_utc": str(target), "hour_ending": row.get("hourEnding"),
+                    "published_utc": str(pub),
+                    "source_url": "%s/supply-demand.json" % _ERCOT_DASH}}
+
+
+def _ercot_capacity_committed(entry: dict) -> dict:
+    """Committed capacity — the newest ACTUAL row, never a forecast row.
+
+    supply-demand.data[] carries `forecast` as a 0/1 FLAG, not a value; rows
+    with forecast==1 are tomorrow's projection and would otherwise be read as
+    today's committed capacity.
+    """
+    d = _ercot_dash_json("supply-demand.json")
+    if not d:
+        return {"ok": False, "error": "ercot_supply_demand_unavailable"}
+    rows = [r for r in (d.get("data") or [])
+            if isinstance(r, dict) and not _num(r.get("forecast"))]
+    dated = [(r, _ercot_ts(r.get("timestamp"))) for r in rows]
+    live = [(r, t) for r, t in dated if t is not None and _num(r.get("capacity")) is not None]
+    if not live:
+        return {"ok": False, "error": "ercot_supply_demand_no_actual_row"}
+    row, ts = max(live, key=lambda rt: rt[1])
+    return {"ok": True, "primary_value": _num(row.get("capacity")), "as_of": ts,
+            "raw": {"capacity_mw": _num(row.get("capacity")),
+                    "demand_mw": _num(row.get("demand")),
+                    "hour_ending": row.get("hourEnding"), "is_forecast_row": False,
+                    "source_url": "%s/supply-demand.json" % _ERCOT_DASH}}
+
+
+def _ercot_reserves(entry: dict) -> dict:
+    """Physical Responsive Capability — ERCOT's operating-reserve signal.
+
+    The registry declares value_col 'prc' for this dataset and the dashboard
+    field is literally `prc`, so the two already agree.
+    """
+    d = _ercot_dash_json("daily-prc.json")
+    if not d:
+        return {"ok": False, "error": "ercot_daily_prc_unavailable"}
+    dated = [(r, _ercot_ts(r.get("timestamp"))) for r in (d.get("data") or [])
+             if isinstance(r, dict) and _num(r.get("prc")) is not None]
+    live = [(r, t) for r, t in dated if t is not None]
+    if not live:
+        return {"ok": False, "error": "ercot_daily_prc_no_row"}
+    row, ts = max(live, key=lambda rt: rt[1])
+    cond = d.get("current_condition") or {}
+    return {"ok": True, "primary_value": _num(row.get("prc")), "as_of": ts,
+            "raw": {"prc_mw": _num(row.get("prc")), "interval": row.get("interval"),
+                    "eea_level": cond.get("eea_level"), "state": cond.get("state"),
+                    "source_url": "%s/daily-prc.json" % _ERCOT_DASH}}
+
+
+def _ercot_fuel_mix_detailed(entry: dict) -> dict:
+    """Per-fuel generation at the newest published interval.
+
+    data is {date: {timestamp: {fuel: {"gen": MW}}}}. Power Storage goes
+    negative while charging — kept as reported, because clamping it would
+    inflate the total exactly the way it would for CAISO's night-time solar.
+    """
+    d = _ercot_dash_json("fuel-mix.json")
+    if not d or not isinstance(d.get("data"), dict):
+        return {"ok": False, "error": "ercot_fuel_mix_unavailable"}
+    best_ts, best_slot = None, None
+    for _day, slots in (d.get("data") or {}).items():
+        if not isinstance(slots, dict):
+            continue
+        for stamp, fuels in slots.items():
+            t = _ercot_ts(stamp)
+            if t is None or not isinstance(fuels, dict):
+                continue
+            if best_ts is None or t > best_ts:
+                best_ts, best_slot = t, fuels
+    if best_slot is None:
+        return {"ok": False, "error": "ercot_fuel_mix_no_parseable_interval"}
+    mix, total = {}, 0.0
+    for fuel, v in best_slot.items():
+        n = _num(v.get("gen")) if isinstance(v, dict) else _num(v)
+        if n is not None:
+            mix[fuel] = round(n, 2)
+            total += n
+    if not mix:
+        return {"ok": False, "error": "ercot_fuel_mix_interval_empty"}
+    return {"ok": True, "primary_value": round(total, 1), "as_of": best_ts,
+            "raw": {"fuel_mw": mix, "total_generation_mw": round(total, 1),
+                    "source_url": "%s/fuel-mix.json" % _ERCOT_DASH}}
+
+
+# dataset_id -> (source_label, fetcher). A dataset listed here is NO LONGER
+# parked: parked_datasets() subtracts it, so the standing finding shrinks by
+# arithmetic as repoints land rather than by anyone remembering to edit it.
+_DIRECT_SOURCES = {
+    "caiso_load_forecast": ("caiso_todays_outlook", _caiso_load_forecast),
+    "caiso_fuel_mix":      ("caiso_todays_outlook", _caiso_fuel_mix),
+    "ercot_load_forecast":               ("ercot_dashboard", _ercot_load_forecast),
+    "ercot_capacity_forecast":           ("ercot_dashboard", _ercot_capacity_forecast),
+    "ercot_capacity_committed":          ("ercot_dashboard", _ercot_capacity_committed),
+    "ercot_real_time_adders_and_reserves": ("ercot_dashboard", _ercot_reserves),
+    "ercot_fuel_mix_detailed":           ("ercot_dashboard", _ercot_fuel_mix_detailed),
+}
+
+
+def _utcnow():
+    from datetime import datetime, timezone as _tz
+    return datetime.now(_tz.utc)
+
+
+def _ingest_direct(entry: dict) -> dict:
+    """Ingest one dataset from its free direct source into grid_ext_metrics."""
+    label, fetch = _DIRECT_SOURCES[entry["id"]]
+    try:
+        got = fetch(entry)
+    except Exception as e:  # a bad fetcher must never break the tick
+        return {"ok": False, "dataset": entry["id"],
+                "error": "direct_fetch_raised:%s" % type(e).__name__}
+    if not got.get("ok"):
+        return {"ok": False, "dataset": entry["id"],
+                "error": got.get("error") or "direct_fetch_failed"}
+    c = _conn()
+    if c is None:
+        return {"ok": False, "dataset": entry["id"], "error": "db_unavailable"}
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                INSERT INTO grid_ext_metrics
+                  (source, dataset_id, iso, category, primary_value, unit, as_of, raw)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (dataset_id, as_of) DO UPDATE
+                  SET primary_value = EXCLUDED.primary_value,
+                      source = EXCLUDED.source,
+                      raw = EXCLUDED.raw, ingested_at = NOW()
+            """, (label, entry["id"], entry.get("iso"), entry.get("cat"),
+                  got["primary_value"], entry.get("unit"), got["as_of"],
+                  json.dumps(got.get("raw") or {})))
+        return {"ok": True, "dataset": entry["id"], "iso": entry.get("iso"),
+                "category": entry.get("cat"), "source": label,
+                "primary_value": got["primary_value"], "as_of": str(got["as_of"])}
+    except Exception as e:
+        return {"ok": False, "dataset": entry["id"],
+                "error": "%s: %s" % (type(e).__name__, str(e)[:120])}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _ingest_dataset(entry: dict) -> dict:
+    """Route a dataset to its free direct source when one exists, else to the
+    budget-gated gridstatus path. Direct first, always — the whole point of the
+    repoint is to stop spending the 250/month on data we can fetch free."""
+    if entry["id"] in _DIRECT_SOURCES:
+        return _ingest_direct(entry)
+    return _ingest_gridstatus_dataset(entry)
+
+
 # ── brain hand-off — file the code-shaped gaps for autonomous closure ──
 # Standing structural gaps that need real new adapters (not a single-file edit,
 # so these seed the brain's strategic/spec pipeline rather than the L5 code queue).
@@ -433,7 +838,8 @@ def parked_datasets() -> list:
       live allowlist, so it is right on the day someone widens either one, and
       it reports NOTHING once the allowlist covers the registry.
     """
-    return [t for t in TARGET_DATASETS if t["id"] not in _GS_ALLOWLIST]
+    return [t for t in TARGET_DATASETS
+            if t["id"] not in _GS_ALLOWLIST and t["id"] not in _DIRECT_SOURCES]
 
 
 def _parked_finding() -> tuple | None:
@@ -455,10 +861,13 @@ def _parked_finding() -> tuple | None:
          "req/month and July burned 375. Each one has a free direct source we "
          "already hold credentials for, and each needs its adapter repointed "
          "there — that repoint is the work. Until it happens this shell can "
-         "only cycle %d dataset(s), so 'widening coverage' is inert. Parked: %s."
+         "only cycle %d dataset(s), so 'widening coverage' is inert. "
+         "%d already repointed to a free direct source (%s). Parked: %s."
          % (len(parked), len(TARGET_DATASETS),
             ",".join(sorted(_GS_ALLOWLIST)) or "(empty)",
-            len(TARGET_DATASETS) - len(parked), shown)))
+            len(TARGET_DATASETS) - len(parked),
+            len(_DIRECT_SOURCES),
+            ",".join(sorted(_DIRECT_SOURCES)) or "none yet", shown)))
 
 
 def _file_gap_findings() -> int:
@@ -680,7 +1089,7 @@ def tier3_act(m: dict, levers: dict) -> dict:
         mode = "absorb_new_source"
     if target is None:
         return {"action": "none", "reason": "no target datasets"}
-    res = _ingest_gridstatus_dataset(target)
+    res = _ingest_dataset(target)
     if not res.get("ok") and mode == "absorb_new_source":
         # a permanently-failing registry id must not pin the lane — keep the
         # stalest tapped dataset fresh in the same bounded tick instead
@@ -689,7 +1098,7 @@ def tier3_act(m: dict, levers: dict) -> dict:
             return {"action": "ingest_gridstatus", "mode": "maintain_freshness_fallback",
                     "lever": lever, "dataset": fb["id"],
                     "failed_absorb": {"dataset": target["id"], "error": res.get("error")},
-                    "result": _ingest_gridstatus_dataset(fb)}
+                    "result": _ingest_dataset(fb)}
     return {"action": "ingest_gridstatus", "mode": mode, "lever": lever,
             "dataset": target["id"], "result": res}
 

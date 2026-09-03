@@ -74,13 +74,38 @@ def test_failing_absorb_falls_back_to_stalest(monkeypatch):
             return {"ok": False, "dataset": entry["id"], "error": "http_404"}
         return {"ok": True, "dataset": entry["id"]}
 
+    # ★ 2026-09-03 — BOTH ARMS OF THE DISPATCHER MUST BE STUBBED.
+    #   tier3_act now calls _ingest_dataset, which routes a repointed dataset
+    #   to its free direct source instead of gridstatus. Stubbing only the
+    #   gridstatus arm let the FALLBACK leg escape the stub — it recorded no
+    #   attempt and, worse, would have made a live HTTP call from a unit test
+    #   whenever the stalest dataset happened to be a repointed one.
     monkeypatch.setattr(gds, "_ingest_gridstatus_dataset", _fake_ingest)
+    monkeypatch.setattr(gds, "_ingest_direct", _fake_ingest)
     m = {"core": {"iso_zone_count": 1, "lmp_locations": 1, "queue_isos": 1},
          "_ingested": ingested}
     out = gds.tier3_act(m, {"weakest": "breadth", "scores": {}})
     assert out["mode"] == "maintain_freshness_fallback"
     assert out["failed_absorb"]["dataset"] == untapped
     assert len(attempts) == 2 and attempts[0] == untapped
+
+
+def test_no_ingest_path_can_escape_a_stubbed_dispatcher(monkeypatch):
+    """★ The guard for the trap above: _ingest_dataset has exactly two arms,
+    and a test that stubs one and not the other reaches the network."""
+    import inspect
+    src = inspect.getsource(gds._ingest_dataset)
+    assert "_ingest_direct(entry)" in src and "_ingest_gridstatus_dataset(entry)" in src
+
+    called = []
+    monkeypatch.setattr(gds, "_ingest_direct", lambda e: called.append("direct") or {"ok": True})
+    monkeypatch.setattr(gds, "_ingest_gridstatus_dataset",
+                        lambda e: called.append("gridstatus") or {"ok": True})
+    for t in gds.TARGET_DATASETS:
+        gds._ingest_dataset(t)
+    assert len(called) == len(gds.TARGET_DATASETS), "a dataset reached neither arm"
+    assert called.count("direct") == len(
+        [t for t in gds.TARGET_DATASETS if t["id"] in gds._DIRECT_SOURCES])
 
 
 def test_stalest_tapped_ranks_by_ingested_at():
