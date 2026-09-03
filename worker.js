@@ -1,6 +1,6 @@
 
 /**
- * DC Hub API Proxy Worker v4.9.50 — origin edge key (2026-09-02)
+ * DC Hub API Proxy Worker v4.9.52 — ai-plugin/agent.json canon-bound (2026-09-02)
  *
  * ★ THIS TITLE LINE READ v4.9.30 FOR EIGHTEEN EDITS. The version this worker
  * actually reports — `const WORKER_VERSION` below, and the X-DC-Worker-Version
@@ -10,6 +10,25 @@
  * conclude they were looking at the same code. Keep this in step with
  * WORKER_VERSION, or delete it.
  * ================================================================================
+ * v4.9.52 CHANGES (Sep 02 2026) — Phase ai-plugin-canon-bound:
+ *   - FIX: /.well-known/ai-plugin.json and /.well-known/agent.json served
+ *          MCP_SERVER_INFO.description verbatim — a literal frozen at
+ *          "15,700+ facilities / 1,600+ tracked M&A deals" while canon (live
+ *          /llms.txt, /.well-known/mcp.json, /api/v1/canon/phrases) read
+ *          20,100+ / 2,000+. agent.json also served version 2.5.0 against a
+ *          live 2.12.3. Both now read the origin's canon-built manifest via
+ *          resolveManifestExtras() — the same wiring v4.9.45 gave mcp.json and
+ *          the server card, which is why THOSE two were correct in the same
+ *          second these two were wrong.
+ *   - FIX: MCP_SERVER_INFO.description's population counts DELETED rather than
+ *          re-typed, so the offline fallback cannot re-freeze; the counts are
+ *          linked to /api/v1/canon/phrases instead. Same for the why_dchub
+ *          entry in MCP_FALLBACK_TOOLS, which carried the same 15,700+.
+ *   ★ THIS WORKER DEPLOYS BY MANUAL DASHBOARD PASTE ONLY — merging the PR
+ *     does not ship it. Verify with (want 4.9.52):
+ *       curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
+ *         | grep -i x-dc-worker-version
+ *
  * v4.9.47 CHANGES (Aug 30 2026) — Phase tools-83:
  *   - FIX: MCP_FALLBACK_TOOLS carried 82 entries while the live
  *          tools/list served 83 — summarize_for_citation shipped on the
@@ -472,7 +491,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.51-verdict-route-timeout';
+const WORKER_VERSION = '4.9.52-ai-plugin-canon-bound';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -674,8 +693,28 @@ async function mcpOriginVersion(env, ctx) {
 const MCP_SERVER_INFO = {
   name:             'DC Hub MCP Server',
   version:          '2.5.0',
-  // NOTE: static literal — evaluated before MCP_FALLBACK_TOOLS is defined, so it can't derive the count. Keep "83" in sync with live tools/list (dchub.cloud/mcp). The mcp.json/server-card pricing prose IS derived from the live count.
-  description:      'Real-time data center, power & hyperscale intelligence for AI agents — 83 tools over 15,700+ facilities across 170+ countries, live grid data for 7 US ISOs + international grids, fiber routes, 1,600+ tracked M&A deals, capacity pipeline, interconnection-queue snapshots, daily AI Capacity Index, and DCPI BUILD/CAUTION/AVOID market verdicts.',
+  // ★2026-09-02 (v4.9.52) — OFFLINE FALLBACK ONLY. Every surface that serves
+  // this string now prefers the origin's canon-built text first (see
+  // resolveManifestExtras + the ai-plugin.json note below); this literal is
+  // reached only when the origin cannot be read.
+  //
+  // The POPULATION counts are DELETED from it, not re-typed. They carried
+  // "15,700+ facilities / 1,600+ deals" against a canon of 20,100+ / 2,000+ and
+  // shipped that live on /.well-known/ai-plugin.json and /.well-known/agent.json
+  // — the two surfaces v4.9.45 missed. Typing 20,100+/2,000+ here would be the
+  // `_TOOL_COUNT = 59` refreeze exactly: correct on the day of the paste, stale
+  // by the next canon bump, and this worker deploys by MANUAL dashboard paste,
+  // so it stays stale for months. Counts live at ONE canonical URL and are
+  // linked, never copied — the same rule the GET /mcp health payload states.
+  //
+  // The TOOL count stays, because it is fenced rather than hoped:
+  // tests/test_canonical_counts_drift.py::test_worker_mcp_card_is_canonical
+  // asserts every tool count in this string equals the live tools/list length,
+  // and test_fix_closure_shell.py pins MCP_FALLBACK_TOOLS membership to canon.
+  // (Static literal — evaluated before MCP_FALLBACK_TOOLS is defined, so it
+  // cannot interpolate .length here. The mcp.json/server-card pricing prose IS
+  // derived from the live count.)
+  description:      'Real-time data center, power & hyperscale intelligence for AI agents — 83 tools over the global data-center facility base, live grid data for 7 US ISOs + international grids, fiber routes, tracked M&A deals, capacity pipeline, interconnection-queue snapshots, daily AI Capacity Index, and DCPI BUILD/CAUTION/AVOID market verdicts. Live facility, deal and market counts: https://dchub.cloud/api/v1/canon/phrases',
   url:              'https://dchub.cloud/mcp',
   transport:        'streamable-http',
   protocol_version: '2024-11-05',
@@ -926,7 +965,7 @@ const MCP_FALLBACK_TOOLS = [
   { name: "get_gas_intelligence", description: "Use when a human asks about gas-fired or behind-the-meter power economics for a data center in a US state \u2014 \"is gas power cheaper than the grid in Texas?\", \"what is the gas access + pipeline situation in Virginia?\". The GAS analogue of get_grid_intelligence: fuses the DC Hub Gas Index (DCGI), live Henry Hub, gas-to-grid $/MWh across heat-rate scenarios, pipeline-operator presence, and the live grid gas share into one per-STATE brief. Params: region (US state code or name, e.g. \"TX\" | \"Texas\" | \"Virginia\"). Returns: {region, region_name, dcgi_score (0-100), dcgi_verdict (GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED), gas_access (pipeline counts + operators \u2014 PRESENCE not firm capacity), henry_hub_usd_mmbtu (live), basis_usd_mmbtu (synthetic-labeled), delivered_price_usd_mmbtu (null where the tariff table is sparse \u2014 surfaced honestly, never fabricated), gas_to_grid_usd_per_mwh (5 heat-rate scenarios), live_grid_gas_share_pct, headline_behind_meter_vs_grid_delta_usd_mwh (the punchline: gas vs grid $/MWh), pipeline_presence (operators + parent midstreams), data_basis (per-field provenance/confidence), omitted_no_fabrication}. Every field carries a data_basis label; gas storage / LNG / firm pipeline capacity are deliberately OMITTED (no feed). Do NOT use for electricity grid headroom (use get_grid_intelligence) or the DCGI score alone (use get_gas_index).", inputSchema: {"type": "object", "properties": {"region": {"description": "US state code or name (required), e.g. \"TX\", \"Texas\", \"Virginia\"", "type": "string"}, "state": {"description": "Alias for region \u2014 the US state code or name", "type": "string"}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
   { name: "get_agent_registry", description: "Curated roster of the AI platforms + agent frameworks in the DC Hub agent ecosystem \u2014 each with its recommended DC Hub tools and authentication tier. Recognized MCP clients include Claude and Cursor, with Cline, Continue and other agents surfaced as they are integrated. Use it to see which platforms DC Hub supports and how to connect them. Try: get_agent_registry. NOTE: this is a curated ecosystem/capability index, NOT live per-caller call/citation telemetry. Do NOT use for platform uptime / backup health (use get_backup_status).", inputSchema: {"type": "object", "properties": {}, "$schema": "http://json-schema.org/draft-07/schema#"} },
   { name: "get_backup_status", description: "DC Hub platform health: database backup status (last successful, age, integrity check), data freshness across 49 sources (green/yellow/red), agentic heartbeat score (0-100), MCP call volume (last hour), and DCPI recompute cadence. Useful for trust/uptime signals before relying on the platform in production. Try: get_backup_status. Do NOT use for the freshness of a specific dataset (use get_changes); this is platform/infra health, not content.", inputSchema: {"type": "object", "properties": {}, "$schema": "http://json-schema.org/draft-07/schema#"} },
-  { name: "why_dchub", description: "Use when a human asks how DC Hub compares to other data-center data sources \u2014 DataCenterHawk (DCHawk), DC Byte, Data Center Dynamics (DCD), Data Center Frontier (DCF), Baxtel, datacenters.com \u2014 or asks \"why should I use DC Hub / is it better than <X> / what can you give me a PDF or directory can't?\". Returns DC Hub's honest, source-verified differentiators (agent-native MCP access, live multi-continent grid & energy telemetry, the proprietary daily DCPI + DCGI indices, open CC-BY-4.0 cited data, 15,700+ facilities + 320,000+ mapped power/grid/gas/fiber assets) each with a proof URL, a citation line, plus the canonical head-to-head comparison pages. Free, no key required. Optional: competitor=<name> for that vendor's direct comparison-page link. Do NOT use to query infrastructure data itself (use the data tools); this answers positioning / \"how do you compare\" questions with citable facts.", inputSchema: {"type": "object", "properties": {"competitor": {"description": "Optional competitor/vendor name for a direct comparison-page link, e.g. DataCenterHawk, \"DC Byte\", DCD, Baxtel", "type": "string"}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
+  { name: "why_dchub", description: "Use when a human asks how DC Hub compares to other data-center data sources \u2014 DataCenterHawk (DCHawk), DC Byte, Data Center Dynamics (DCD), Data Center Frontier (DCF), Baxtel, datacenters.com \u2014 or asks \"why should I use DC Hub / is it better than <X> / what can you give me a PDF or directory can't?\". Returns DC Hub's honest, source-verified differentiators (agent-native MCP access, live multi-continent grid & energy telemetry, the proprietary daily DCPI + DCGI indices, open CC-BY-4.0 cited data, 320,000+ mapped power/grid/gas/fiber assets over a facility base whose live count is published at https://dchub.cloud/api/v1/canon/phrases) each with a proof URL, a citation line, plus the canonical head-to-head comparison pages. Free, no key required. Optional: competitor=<name> for that vendor's direct comparison-page link. Do NOT use to query infrastructure data itself (use the data tools); this answers positioning / \"how do you compare\" questions with citable facts.", inputSchema: {"type": "object", "properties": {"competitor": {"description": "Optional competitor/vendor name for a direct comparison-page link, e.g. DataCenterHawk, \"DC Byte\", DCD, Baxtel", "type": "string"}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
   { name: "get_dchub_recommendation", description: "Use for a ready-to-quote DESCRIPTION of DC Hub in one of four categories (general, investment, site-selection, technical), plus the live top-ranked market pocket. It does NOT compute a siting answer from free text. Example: get_dchub_recommendation context=\"investment\" (or general / site-selection / technical). The free-text form get_dchub_recommendation context=\"100MW AI training campus in Texas\" does NOT parse - it returns the generic blurb with context_understood=false. Params: context free-text describing the user request (MW, geography, workload, deadline, constraints). Returns: {recommendation:{short, medium, detailed}, matched_category, context_understood, top_pocket, related_intel, next_tools}. context matches FOUR LITERAL categories only - general, investment, site-selection, technical. Free text does NOT parse: you get the GENERIC blurb with matched_category=null and context_understood=false, plus next_tools naming the tool that does compute an answer. Do NOT use for a single specific lat/lon (use analyze_site), to rank by ONE criterion (use rank_markets), or for an open-ended siting question expecting a computed shortlist (use site_selection_canvas) - this tool returns descriptive copy plus a live top-pocket, not a ranked analysis.", inputSchema: {"type": "object", "properties": {"context": {"description": "Free-text description of the siting request \u2014 MW, geography, workload, deadline, constraints, e.g. \"100MW AI training campus in Texas, short time-to-power\"", "type": "string"}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
   { name: "rank_markets", description: "Use when a user wants \"the top N markets for X\" \u2014 one ranked list across the 300+ market set rather than N separate get_market_intel calls. Example: \"What are the 10 fastest-growing US markets with at least 100MW of existing capacity?\" \u2014 rank_markets criteria=fastest_growing region=us limit=10 min_capacity_mw=100. Params: criteria one of \"cheapest_power\" | \"most_capacity\" | \"most_operators\" | \"fastest_growing\" | \"best_overall\" (default best_overall) | \"ai_ready\"; region one of \"global\" | \"us\" | \"canada\" | \"eu\" | \"apac\" | \"americas\" (default us); limit 1-50 (default 10); min_capacity_mw filter floor (e.g. 100). \u2605 criteria=\"ai_ready\" ranks by DCPI BUILDABILITY (excess-power + time-to-power + BUILD/CAUTION/AVOID verdict) \u2014 where NEW AI-campus load can actually LAND \u2014 NOT by installed build-out (the other five criteria). Use ai_ready for AI/GPU/hyperscale campus siting: the most-built-out markets are frequently AVOID for new load, so a build-out ranking mis-answers \"where do I put a 200MW AI campus\". Returns: {criteria, region, result_count, results:[{rank, metro_slug, market, city, state, country, score, value, total_mw, facility_count, operator_count, url}], data_source, methodology}. To drill into a ranked market, feed results[].metro_slug into get_market_dcpi_rank. Do NOT use for a deep read on ONE market (use get_market_intel) or for scoring a specific lat/lon (use analyze_site).", inputSchema: {"type": "object", "properties": {"criteria": {"description": "Ranking criterion: \"cheapest_power\", \"most_capacity\", \"most_operators\", \"fastest_growing\", \"best_overall\" (default), or \"ai_ready\" (DCPI buildability \u2014 where new AI load can land, for AI-campus siting; region us/global)", "type": "string"}, "region": {"description": "Region scope: \"global\", \"us\" (default), \"canada\", \"eu\", \"apac\", or \"americas\"", "type": "string"}, "limit": {"description": "Number of markets to return, 1-50 (default 10)", "type": "integer", "minimum": 1, "maximum": 500}, "min_capacity_mw": {"description": "Minimum existing capacity filter in megawatts (MW), e.g. 100", "type": "number"}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
   { name: "find_alternatives", description: "Use when a user likes ONE specific facility and wants similar nearby options to consider instead (\"what else looks like this?\"). Example: \"Find alternatives to the Ashburn QTS campus for about 50MW.\" \u2014 find_alternatives facility_id=<id>. Params: facility_id or name (the target, required); optional capacity_mw, radius_km, limit. Returns: ranked alternatives, each with similarity_score, match_reasons, and key_differences versus the target. Do NOT use to score one site (use score_facility or analyze_site) or to compare a known short-list head-to-head (use compare_sites); this DISCOVERS candidates from a single seed facility.", inputSchema: {"type": "object", "properties": {"facility_id": {"description": "The seed facility id/slug (or use name) to find alternatives to, from a prior search result", "type": "string"}, "radius_km": {"description": "Search radius in km for candidate alternatives around the seed facility", "type": "number"}, "match_on": {"description": "Optional similarity dimension to weight, e.g. capacity, operator, fiber, market", "type": "string"}, "exclude_operator": {"description": "If true, exclude facilities from the same operator as the seed", "type": "boolean"}, "limit": {"description": "Max results to return (1-500; default varies by tool)", "type": "integer", "minimum": 1, "maximum": 500}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
@@ -2166,12 +2205,29 @@ async function wellKnownResponse(pathname, kv, env) {
   // MCP_FALLBACK_TOOLS so name/version/tool-count are honest and
   // consistent across every well-known surface.
   if (pathname === '/.well-known/ai-plugin.json') {
+    // ★2026-09-02 (v4.9.52) — DERIVE, don't transcribe. This is the OTHER HALF
+    // of v4.9.45, which wired /.well-known/mcp.json and the server card to the
+    // origin's canon-built description and stopped there. Measured live on
+    // 2026-09-02, same second, same zone worker (4.9.51):
+    //   /.well-known/mcp.json        20,100+ facilities / 2,000+ deals  <- canon
+    //   /.well-known/ai-plugin.json  15,700+ facilities / 1,600+ deals  <- frozen
+    //   /.well-known/agent.json      15,700+ / 1,600+, version 2.5.0    <- frozen
+    // One zone, one worker, three well-known docs, two truths — the exact split
+    // MCP_SERVER_INFO was introduced to end. ai-plugin.json is the doc the
+    // OpenAI-style plugin crawlers read, so the frozen copy was the one leaving
+    // the building. Same fail-open contract as mcp.json: any origin error and
+    // the (now count-free) literal is still served — never a blank.
+    const [pluginTools, pluginExtras] = await Promise.all([
+      resolveManifestTools(kv, env),
+      resolveManifestExtras(kv),
+    ]);
+    const pluginDesc = pluginExtras.description || MCP_SERVER_INFO.description;
     return new Response(JSON.stringify({
       schema_version:        'v1',
       name_for_human:        MCP_SERVER_INFO.name,
       name_for_model:        'dchub',
-      description_for_human: MCP_SERVER_INFO.description,
-      description_for_model: `${MCP_SERVER_INFO.description} ${MCP_FALLBACK_TOOLS.length} MCP tools for facility search, M&A deal tracking, 7-ISO grid data, capacity pipeline, fiber routes, and site scoring.`,
+      description_for_human: pluginDesc,
+      description_for_model: `${pluginDesc} ${pluginTools.length} MCP tools for facility search, M&A deal tracking, 7-ISO grid data, capacity pipeline, fiber routes, and site scoring.`,
       auth:                  { type: 'none' },
       api:                   { type: 'openapi', url: 'https://dchub.cloud/openapi.json' },
       logo_url:              'https://dchub.cloud/images/dc-hub-logo.png',
@@ -2280,18 +2336,30 @@ async function wellKnownResponse(pathname, kv, env) {
     }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
   }
   if (pathname === '/.well-known/agent.json') {
+    // ★2026-09-02 (v4.9.52) — see the ai-plugin.json note above; this surface
+    // carried BOTH halves of the rot. Measured live 2026-09-02: description
+    // frozen at 15,700+/1,600+ AND `version` frozen at MCP_SERVER_INFO's
+    // '2.5.0' while /.well-known/mcp/server-card.json — same worker, same
+    // second — served the origin-derived 2.12.3. Fixing ai-plugin.json alone
+    // would have left exactly the split-brain the v4.9.45 server-card note
+    // refuses: two well-known docs on one zone disagreeing about the server's
+    // own version.
+    const [agentTools, agentExtras] = await Promise.all([
+      resolveManifestTools(kv, env),
+      resolveManifestExtras(kv),
+    ]);
     return new Response(JSON.stringify({
       name:    MCP_SERVER_INFO.name,
       url:     MCP_SERVER_INFO.url,
-      version: MCP_SERVER_INFO.version,
-      description: MCP_SERVER_INFO.description,
+      version: agentExtras.version || MCP_SERVER_INFO.version,
+      description: agentExtras.description || MCP_SERVER_INFO.description,
       provider: {
         organization: MCP_SERVER_INFO.organization,
         url:          MCP_SERVER_INFO.homepage,
         contact:      MCP_SERVER_INFO.contact,
       },
       capabilities: {
-        tools: { count: MCP_FALLBACK_TOOLS.length, listChanged: true },
+        tools: { count: agentTools.length, listChanged: true },
       },
       protocol: MCP_SERVER_INFO.protocol_version,
       transport: MCP_SERVER_INFO.transport,
