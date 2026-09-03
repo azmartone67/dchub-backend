@@ -3344,7 +3344,12 @@ KNOWN_STALE_COUNT_DEBT = {
     'fix_neon_tables.py': {'tool_count_literal'},
     'google_meta_integration.py': {'facilities_bare_int'},
     'inject_meta_tags.py': {'deals_stale_floor'},
-    'integrations/huggingface-space/app.py': {'facilities_stale_floor', 'tool_count_literal'},
+    # ★2026-09-02: facilities_stale_floor DROPPED — the Space no longer bakes
+    # 21,900+ (a retired PRE-DEDUP over-claim it was serving LIVE); it fetches
+    # /api/v1/canon/phrases at import and degrades COUNT-FREE. tool_count_literal
+    # STAYS and is a scanner false positive of the honest kind: the Space really
+    # does expose 7 tools of its own, a different quantity from DC Hub's 83.
+    'integrations/huggingface-space/app.py': {'tool_count_literal'},
     'intelligence_index.py': {'facilities_bare_int'},
     'main.py': {'facilities_bare_int'},
     # ★2026-09-02: deals_stale_floor DROPPED — this file carries '2,000+ ... deals',
@@ -3839,3 +3844,102 @@ def test_the_retired_deal_row_counts_are_still_denylisted():
     markers = PINNED.get("stale_markers") or []
     for m in ("4,000+ deals", "4,000+ tracked deals", "4,000+ M&A"):
         assert m in markers, f"{m!r} must stay retired — it floors duplicate rows"
+
+
+# ── ★2026-09-02 — THE HUGGING FACE SPACE (integrations/huggingface-space) ────
+#
+# It shipped FOUR wrong numbers at once and was LIVE-SERVING all four (probed
+# https://dchubcloud-dchub.hf.space, 2026-09-02):
+#
+#   "21,900+ facilities"    canon 20,100+  OVER-claim, and a retired PRE-DEDUP
+#                                          floor sitting on stale_markers
+#   "4,900+ verified"       no canon source at all
+#   "1,400+ tracked deals"  canon 2,000+   stale under-claim
+#   "79 tools"              canon 83       stale under-claim
+#   "311 markets"           canon 300+     311 counts score ROWS, not markets
+#
+# ★ WHY IT ROTTED AND NOTHING SAW IT. The Space deploys from the Hugging Face
+#   git remote, NOT with this repo — there is no workflow under .github/ that
+#   pushes it — so a literal baked here goes public on its own cadence and stays
+#   until someone re-reads the file. That is the same "deploys separately" trap
+#   as the CF zone worker, and it is why the fix is derivation, not new literals:
+#   app.py fetches /api/v1/canon/phrases at import and degrades COUNT-FREE.
+_HF_APP = os.path.join("integrations", "huggingface-space", "app.py")
+_HF_README = os.path.join("integrations", "huggingface-space", "README.md")
+
+
+def _hf_src() -> str:
+    path = REPO_ROOT / _HF_APP
+    assert path.is_file(), f"{_HF_APP} is gone — update or delete this guard ({FIXWAVE})"
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def test_hf_space_fetches_canon_rather_than_baking_it():
+    """★ WIRING, not presence. The revert that matters is one line — binding a
+    published constant to a literal while leaving the fetch helper in place —
+    and a "is _fetch_canon in the file" check stays green straight through it.
+    So walk the AST and require the fetch RESULT to reach every published name.
+    """
+    tree = ast.parse(_hf_src())
+    fetch = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                  and n.name == "_fetch_canon"), None)
+    assert fetch is not None, "the Space no longer fetches canon at all"
+    assert any(isinstance(n, ast.Try) for n in ast.walk(fetch)), (
+        "_fetch_canon is not fail-soft — a Space that cannot boot because canon "
+        "is unreachable is worse than one that says less"
+    )
+    # the name _fetch_canon()'s result is bound to
+    holder = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
+              for t in n.targets if isinstance(t, ast.Name)
+              for sub in ast.walk(n.value)
+              if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+              and sub.func.id == "_fetch_canon"}
+    assert holder, "_fetch_canon() is defined but never called"
+
+    published = {"FACILITIES", "DEALS", "MARKETS", "COUNTRIES", "TOOLS"}
+    wired = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        names = {t.id for t in node.targets if isinstance(t, ast.Name)} & published
+        if not names:
+            continue
+        for sub in ast.walk(node.value):
+            if isinstance(sub, ast.Name) and sub.id in holder:
+                wired |= names
+    missing = sorted(published - wired)
+    assert not missing, (
+        f"{missing} no longer read the fetched canon — they are baked again. "
+        f"This Space deploys separately from the repo, so a baked count goes "
+        f"public and stays there ({FIXWAVE})."
+    )
+
+
+def test_hf_space_bakes_no_population_count():
+    """No comma-grouped magnitude in code or in the README.
+
+    Comments are exempt — the file documents the four retired values on purpose,
+    the same carve-out every other scan in this module makes. Docstrings are NOT
+    exempt here and that is deliberate: a docstring in this file IS the MCP tool
+    schema, it cannot interpolate, and "79 tools across 21,900+ facilities" sat
+    in the module docstring for exactly that reason.
+    """
+    for label, text in ((_HF_APP, _hf_src()),
+                        (_HF_README, (REPO_ROOT / _HF_README).read_text(encoding="utf-8"))):
+        hits = []
+        for i, line in enumerate(text.split("\n"), 1):
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            for m in re.finditer(r"(?<![\d,])\d{1,3}(?:,\d{3})+\+?", line):
+                hits.append(f"  {label}:{i}: {m.group(0)!r} -> {line.strip()[:80]!r}")
+        assert not hits, (
+            "the Hugging Face Space states a population count again. It deploys "
+            "on its own cadence, so the literal goes public and stays; fetch it "
+            f"from /api/v1/canon/phrases or say less ({FIXWAVE}):\n" + "\n".join(hits)
+        )
+    readme = (REPO_ROOT / _HF_README).read_text(encoding="utf-8")
+    assert "canon/phrases" in readme, (
+        "the README states no counts AND links no canonical source — a reader "
+        "now has nowhere to get them"
+    )

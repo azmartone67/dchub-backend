@@ -160,16 +160,18 @@ def test_unreachable_url_does_not_pass_the_parity_lane(shell, monkeypatch):
 # through util.canon_floor, the one rule the shell already delegates to, and it
 # re-pins itself at the next walk instead of having to be walked by hand.
 #
-# SCOPE IS UNCHANGED, deliberately. These two scans have only ever asked one
-# question: does a served copy carry an OVER-CLAIM above canon. retired_floors()
-# answers a second one as well — RETIRED_LITERALS — and that half is excluded
-# here because dchub-frontend/llms-full.txt still serves 12,650+ in two places
-# (line 154 "search_facilities — Search 12,650+ data center facilities" and line
-# 180 "tracking 12,650+ facilities across 140+ countries"). The old regex never
-# caught that either — 12,650 sits BELOW the banned range — so it is a real,
-# pre-existing served-copy defect, not something this walk introduced, and it
-# wants a copy fix rather than a test edit. Named here so it is not lost.
-from util.canon_floor import RETIRED_LITERALS, retired_floors  # noqa: E402
+# ★2026-09-02 (second pass) — THE RETIRED_LITERALS HALF IS NOW ON. It was
+# excluded when this note was first written, because dchub-frontend/llms-full.txt
+# still served 12,650+ in two places (line 154 "search_facilities — Search
+# 12,650+ data center facilities" and line 180 "tracking 12,650+ facilities
+# across 140+ countries") — a real, pre-existing served-copy defect that the old
+# hardcoded band never caught either, because 12,650 sits BELOW the banned range.
+# It was named here rather than waived so it could not be lost, and it was not:
+# the copy is fixed, so the exclusion is gone and BOTH questions this helper can
+# answer are now asked. 12,650+ was canon itself from 2026-07-24 to 07-28 and can
+# never be right again — a retired LITERAL, safe to fence forever, unlike the
+# range this file stopped typing one note above.
+from util.canon_floor import retired_floors  # noqa: E402
 
 
 def _canon_facilities():
@@ -185,7 +187,7 @@ def _over_claims(text):
     these files green, the fail-open direction this shell exists to end."""
     stale = retired_floors(text, _canon_facilities())
     assert stale is not None, "canon unresolvable — scan cannot certify clean"
-    return [f for f in stale if f not in RETIRED_LITERALS]
+    return stale
 
 
 def test_emitter_sources_are_clean_on_this_branch():
