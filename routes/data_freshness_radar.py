@@ -39,6 +39,8 @@ from functools import wraps
 
 from flask import Blueprint, jsonify, request
 
+from util.dominant_source import MASK_LAG_DAYS, dominant_source_lag
+
 data_freshness_radar_bp = Blueprint("data_freshness_radar", __name__)
 
 ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
@@ -194,86 +196,17 @@ def _declaration_audit(cur, tables):
     return missing
 
 
-# ★★★ MASK THRESHOLD, 2026-09-03. Every one of the nine watched tables whose
-# freshness is NOT carried by a side lane measured a lag of exactly 0 days; the
-# two that are measured 19 and 74. 7 days sits in the empty middle of that gap,
-# so this fires on the failure and not on the noise. Deliberately NOT
-# env-overridable — land_power_crawler.py already records why: "a guard with an
-# env escape hatch is a guard that gets flipped at 3am to make a red dashboard
-# go green."
-_MASK_LAG_DAYS = 7
+# Aliased so the two boards cannot drift apart on the number; the evidence
+# from BOTH of them, and why it is not env-overridable, is in the util module.
+_MASK_LAG_DAYS = MASK_LAG_DAYS
 
 
-def _dominant_source_lag(cur, table, ts_col):
-    """How far the table's LARGEST source lags the table's own newest row.
-
-    ★★★ MAX(ts) OVER A MULTI-SOURCE TABLE ANSWERS THE WEAKEST QUESTION THERE IS.
-    It reports "is ANY lane alive", so it is pinned green by the most trivial
-    writer on the table and says nothing about the lane that supplies the rows.
-    Measured against production 2026-09-03:
-
-      · substations   127,271 rows. The canonical HIFLD lane is 63% of them and
-        last wrote 2026-08-14 (it fetches 75,328 and upserts 0, 500ing nightly).
-        `auto_discovery` — 708 rows, 0.56% of the table — writes 1-8 rows EVERY
-        DAY and has not missed one in 21 days, so MAX(updated_at) is always a
-        few hours old. Neither registry's threshold could ever fire: not
-        infra_growth's 10 days, not this module's 60.
-
-      · fiber_routes   64,836 rows. Every real carrier source last moved
-        2026-06-20 — 74 days. The 20 hardcoded routes in jobs_api.MAJOR_ROUTES
-        are re-upserted daily, and this radar's published last_record_at was
-        byte-identical to that write: 2026-09-03T01:20:50.603151.
-
-    Both lanes were already known to be broken. Both read `fresh`. That is the
-    same failure this module exists to catch, happening to this module.
-
-    ★ THE MEASURE IS RELATIVE, WHICH IS WHY IT NEEDS NO CADENCE MODEL. It
-    compares the dominant source against THIS TABLE'S OWN newest row, never
-    against a clock. A genuinely quiet table whose sources are all equally quiet
-    has a lag of 0 and is left entirely to the existing SLA — so this cannot
-    manufacture a red for slow federal data. A large lag means one specific
-    thing: something other than the main source is carrying the freshness
-    signal.
-
-    Returns (lag_days, dominant_source, dominant_rows). A table with no `source`
-    column returns (None, None, None) — not a failure, just a table this check
-    has nothing to say about. Never raises: it runs inside the scan and must not
-    be able to break it.
-    """
-    if not table or not ts_col:
-        return None, None, None
-    if not _IDENT_RE.match(table) or not _IDENT_RE.match(ts_col):
-        return None, None, None
-    try:
-        cur.execute(
-            """SELECT 1 FROM information_schema.columns
-               WHERE table_schema='public' AND table_name=%s
-                 AND column_name='source' LIMIT 1""", (table,))
-        if not cur.fetchone():
-            return None, None, None
-    except Exception:
-        return None, None, None
-
-    try:
-        cur.execute(
-            f"""SELECT COALESCE(NULLIF(source,''),'(blank)') AS s,
-                       COUNT(*) AS n,
-                       MAX({ts_col}::timestamptz) AS mx
-                FROM {table} GROUP BY 1""")
-        rows = [r for r in (cur.fetchall() or []) if r and r[2] is not None]
-    except Exception:
-        return None, None, None
-
-    # One source cannot mask itself, and with nothing to compare against the
-    # existing SLA is already the whole truth.
-    if len(rows) < 2:
-        return None, None, None
-
-    global_max = max(r[2] for r in rows)
-    dom = max(rows, key=lambda r: r[1])
-    dom_src, dom_rows, dom_max = dom[0], int(dom[1]), dom[2]
-    lag_days = int((global_max - dom_max).total_seconds() // 86400)
-    return lag_days, dom_src, dom_rows
+# ★ ONE IMPLEMENTATION, TWO BOARDS. Moved to util/dominant_source.py 2026-09-03:
+# routes/infra_growth.py computes freshness the same bare MAX(ts) way over the
+# same multi-source tables and is masked by the same lanes, so it consumes this
+# helper too. The alias keeps the name this module's 14 tests already call — a
+# rename would have been an unrelated diff riding along with a real fix.
+_dominant_source_lag = dominant_source_lag
 
 
 def _max_ts_and_count(cur, table, ts_cols):
