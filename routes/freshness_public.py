@@ -369,7 +369,29 @@ _DOMAIN_AGE_TTL = 300  # 5 min
 # genuinely dead feed, which is the failure mode the worst-stream rule exists to
 # prevent. Their ages are always reported, never dropped.
 _INTERMITTENT_STREAMS: dict = {
-    "grid_data": frozenset({"EU_BG"}),
+    # ★ 2026-09-03 — FOUR MORE, EACH MEASURED, NOT ASSUMED. The squasher board
+    #   carried one `iso_metric_count_zero_24h` row per EU zone for weeks. When
+    #   the ENTSO-E outage cleared, 27 of the 31 zones resumed and their rows
+    #   became ghosts — but EU_DK_1, EU_DK_2, EU_GR and EU_IE_SEM did not, and
+    #   they are not broken either. Probed live via /api/v1/iso/eu/debug:
+    #
+    #     zone       http  document                       parsed
+    #     EU_DK_1    200   Acknowledgement_MarketDocument None
+    #     EU_DK_2    200   Acknowledgement_MarketDocument None
+    #     EU_GR      200   Acknowledgement_MarketDocument None
+    #     EU_IE_SEM  200   Acknowledgement_MarketDocument None
+    #     EU_BE      200   GL_MarketDocument              {fuels: {...}}   <- control
+    #
+    #   An Acknowledgement is ENTSO-E saying "nothing published for this query",
+    #   which is exactly the EU_BG shape this list was created for: the EIC codes
+    #   are correct and the fetch works: these four zones do not publish A75
+    #   Actual-Generation-per-Production-Type. Nothing here is broken, so nothing
+    #   here is fixable by us — but at 24h they regenerated a finding every day
+    #   forever, which is a detector that outlives its cause.
+    #
+    #   Still a leash and not immunity: past _INTERMITTENT_MAX_H they are judged
+    #   like any other stream, so a zone that genuinely dies is still caught.
+    "grid_data": frozenset({"EU_BG", "EU_DK_1", "EU_DK_2", "EU_GR", "EU_IE_SEM"}),
 }
 _INTERMITTENT_MAX_H = 168.0   # 7 days — past this, even "irregular" means dead
 
