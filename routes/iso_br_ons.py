@@ -256,10 +256,12 @@ def run_extraction():
     return summary
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:831 — review and remove one
 @iso_br_ons_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_lmp_ingest.py:707 — review and remove one
 
 @iso_br_ons_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -278,6 +280,7 @@ def http_snapshot():
                             "wind+solar+hydro (scoreboard-comparable)."),
         "source": "ONS Balanço de Energia (live, minute-level)",
     }, 200)
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7949 — review and remove one
 
 
 @iso_br_ons_bp.route("/health", methods=["GET"])
