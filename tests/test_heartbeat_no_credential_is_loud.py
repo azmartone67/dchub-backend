@@ -71,6 +71,11 @@ def _reload_heartbeat(monkeypatch, **env):
     """
     for k in _ADMIN_ENVS + ("RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID"):
         monkeypatch.delenv(k, raising=False)
+    # These tests exercise the REAL code path, so they must opt out of the
+    # test-context suppression they would otherwise trip (see
+    # _test_context_reason). Tests that assert the suppression itself do NOT
+    # set this — see test_a_test_run_never_writes_to_the_registry below.
+    monkeypatch.setenv("DCHUB_HEARTBEAT_ALLOW_IN_TESTS", "1")
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     sys.modules.pop("dchub_heartbeat", None)
@@ -187,3 +192,69 @@ def test_heartbeat_never_raises_when_the_transport_explodes(monkeypatch):
             assert hb.heartbeat("backend-subsea-cable") is False
         except Exception as e:                              # pragma: no cover
             pytest.fail(f"heartbeat raised into the caller: {type(e).__name__}: {e}")
+
+
+# ── a test run must never write to the production source registry ────────────
+# MEASURED 2026-09-03: a full local `pytest tests/` emitted a real POST to
+# https://dchub.cloud/api/v1/sources/... at process exit, because ~28 extractor
+# modules register atexit hooks that pytest's imports bring to life. On a
+# machine holding a real admin key that writes a genuine "success" for an
+# extractor that never ran — the OVER-REPORT direction, which nothing
+# downstream can detect.
+
+def _reload_without_optout(monkeypatch, **env):
+    """Reload WITHOUT DCHUB_HEARTBEAT_ALLOW_IN_TESTS, i.e. as a normal test."""
+    for k in _ADMIN_ENVS + ("RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("DCHUB_HEARTBEAT_ALLOW_IN_TESTS", raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    sys.modules.pop("dchub_heartbeat", None)
+    return importlib.import_module("dchub_heartbeat")
+
+
+def test_a_test_run_never_writes_to_the_registry(monkeypatch, caplog):
+    """Even WITH a valid credential, a pytest process must send nothing."""
+    hb = _reload_without_optout(monkeypatch, DCHUB_ADMIN_KEY="a-real-looking-key")
+    assert hb.HEARTBEAT_SECRET == "a-real-looking-key", "precondition: key IS set"
+
+    with mock.patch.object(hb.urllib.request, "urlopen") as urlopen:
+        with caplog.at_level(logging.WARNING, logger="dchub_heartbeat"):
+            assert hb.heartbeat("backend-subsea-cable") is False
+
+    assert urlopen.call_count == 0, (
+        "a test process POSTed to the source registry — with a real key this "
+        "records a fresh run for an extractor that never ran"
+    )
+    assert caplog.records, "suppression happened silently"
+    assert "SUPPRESSED" in caplog.records[0].getMessage()
+
+
+def test_suppression_is_detected_via_sys_modules_not_the_env_var(monkeypatch):
+    """atexit fires AFTER pytest tears PYTEST_CURRENT_TEST down, so the
+    detection must not depend on it — the module object is what survives."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    hb = _reload_without_optout(monkeypatch, DCHUB_ADMIN_KEY="k")
+    assert "pytest" in sys.modules
+    assert hb._test_context_reason() is not None, (
+        "with PYTEST_CURRENT_TEST unset the guard stopped detecting pytest — "
+        "that is exactly the atexit case this protects"
+    )
+
+
+def test_the_optout_restores_the_real_path(monkeypatch):
+    hb = _reload_heartbeat(monkeypatch, DCHUB_ADMIN_KEY="k")
+    assert hb._test_context_reason() is None
+    with mock.patch.object(hb.urllib.request, "urlopen") as urlopen:
+        urlopen.return_value.__enter__.return_value.status = 200
+        assert hb.heartbeat("backend-subsea-cable") is True
+    assert urlopen.call_count == 1
+
+
+def test_suppression_warns_once_not_per_call(monkeypatch, caplog):
+    hb = _reload_without_optout(monkeypatch, DCHUB_ADMIN_KEY="k")
+    with mock.patch.object(hb.urllib.request, "urlopen"):
+        with caplog.at_level(logging.WARNING, logger="dchub_heartbeat"):
+            for _ in range(4):
+                hb.heartbeat("backend-subsea-cable")
+    assert len(caplog.records) == 1

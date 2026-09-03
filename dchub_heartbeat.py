@@ -36,6 +36,7 @@ for real; see _warn_once_no_credential below.
 import json
 import logging
 import os
+import sys
 import time
 import urllib.request
 import urllib.error
@@ -108,6 +109,51 @@ def _safe_warn(fmt, *args):
 #     trading an under-report for an over-report, which is strictly worse for a
 #     freshness signal. Give the operator the diagnosis and let them decide
 #     which contexts are supposed to report.
+# ★ A TEST RUN MUST NOT WRITE TO THE PRODUCTION SOURCE REGISTRY.
+# ~28 extractor modules register atexit hooks that call heartbeat() when their
+# PROCESS exits. `pytest tests/` imports many of them, so the hooks register and
+# fire when pytest exits — on a developer machine (or any runner) that happens to
+# hold a real admin key, that POSTs a genuine "success" into the live registry
+# for an extractor that never ran. Measured 2026-09-03: a full local suite run
+# emitted a real POST to https://dchub.cloud/api/v1/sources/... at exit.
+#
+# That is the OVER-REPORT direction, and it is the dangerous one: a source that
+# looks stale gets investigated, a source that falsely looks fresh does not.
+# `last_success_at` would track "someone ran the test suite", not "the extractor
+# ran" — and nothing downstream could tell the difference.
+#
+# Detection is `pytest in sys.modules` rather than PYTEST_CURRENT_TEST, because
+# the atexit hooks fire AFTER pytest has torn that variable down; the module
+# object is still loaded. Escape hatch for tests that need the real code path:
+# DCHUB_HEARTBEAT_ALLOW_IN_TESTS=1.
+_ALLOW_IN_TESTS = os.environ.get("DCHUB_HEARTBEAT_ALLOW_IN_TESTS") == "1"
+_TEST_CONTEXT_LOGGED = False
+
+
+def _test_context_reason():
+    """Name the reason this process must not write to the registry, else None."""
+    if _ALLOW_IN_TESTS:
+        return None
+    if "pytest" in sys.modules:
+        return "pytest is loaded in this process"
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return "PYTEST_CURRENT_TEST is set"
+    return None
+
+
+def _warn_once_test_context(source_id, reason):
+    global _TEST_CONTEXT_LOGGED
+    if not _TEST_CONTEXT_LOGGED:
+        _TEST_CONTEXT_LOGGED = True
+        _safe_warn(
+            "heartbeat %s SUPPRESSED (test context: %s). A test run must not "
+            "write to the production source registry — an extractor that never "
+            "ran would be recorded as fresh. Set "
+            "DCHUB_HEARTBEAT_ALLOW_IN_TESTS=1 to exercise the real path.",
+            source_id, reason,
+        )
+
+
 _MISSING_CREDENTIAL_LOGGED = False
 
 
@@ -142,6 +188,11 @@ def heartbeat(source_id, status="success", rows_affected=None,
         body["error"] = str(error)[:500]
     if metadata:
         body["metadata"] = metadata
+
+    _test_reason = _test_context_reason()
+    if _test_reason:
+        _warn_once_test_context(source_id, _test_reason)
+        return False
 
     if not HEARTBEAT_SECRET:
         _warn_once_no_credential(source_id)
