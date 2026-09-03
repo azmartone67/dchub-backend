@@ -428,6 +428,28 @@ jobs:
             echo "::error::the compliance SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── The live-proof PLATFORM query, against the same Postgres ─────────
+      # It decides the homepage line naming which platforms call MCP tools.
+      # Until 2026-09-03 it counted raw mcp_tool_calls with neither the
+      # is_real_external filter nor the self-traffic exclusion, so the operator's
+      # own agent client sat inside the headline (Claude 1,071 vs 492 on its own
+      # card). The query is read out of the route by ast and run for real here.
+      - name: Live-proof platform SQL against a real Postgres
+        env:
+          LIVE_PROOF_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_live_proof_platform_basis_sql.py -v --tb=short
+
+      - name: Prove the live-proof SQL test actually RAN
+        env:
+          LIVE_PROOF_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_live_proof_platform_basis_sql.py \
+            -q -rs --tb=no > lp.txt 2>&1 || { cat lp.txt; exit 1; }
+          cat lp.txt
+          if grep -qi "skipped" lp.txt; then
+            echo "::error::the live-proof SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -437,14 +459,14 @@ jobs:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # out.txt and cc.txt are written by the two prove-it-RAN steps above,
-          # each of which already fails the job on a skip. N sums the SAME files
-          # those checks read, so the count and the skip checks cannot disagree
-          # — a lane that ran but is not counted here reports fewer tests than
-          # the job actually proved.
+          # out.txt, cc.txt and lp.txt are written by the three prove-it-RAN
+          # steps above, each of which already fails the job on a skip. N sums
+          # the SAME files those checks read, so the count and the skip checks
+          # cannot disagree — a lane that ran but is not counted here reports
+          # fewer tests than the job actually proved.
           # Same empty-vs-zero rule as unit-tests: present-but-unparseable => 0.
-          if [ -f out.txt ] || [ -f cc.txt ]; then
-            N=$(cat out.txt cc.txt 2>/dev/null \
+          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ]; then
+            N=$(cat out.txt cc.txt lp.txt 2>/dev/null \
                 | grep -oE '[0-9]+ (passed|failed)' \
                 | awk '{t+=$1} END{if(NR)print t; else print 0}')
           else

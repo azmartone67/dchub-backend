@@ -4080,20 +4080,32 @@ def mcp_funnel():
 
             # r42x (2026-05-26): lifetime aggregate so press releases can
             # cite "N total tool calls since launch" as a moat metric.
-            # Uses pg_class.reltuples for instant approximation (no full
-            # scan); falls back to COUNT(*) if reltuples is unavailable.
+            #
+            # ★ 2026-09-03: this read pg_class.reltuples FIRST — a PLANNER
+            # STATISTIC, updated by VACUUM / ANALYZE / CREATE INDEX and never
+            # by INSERT. Between autovacuum runs it does not move at all, no
+            # matter how many calls arrive. Measured that day: two snapshots
+            # eight hours apart both published exactly 260,147 while the 7d
+            # rolling window over the SAME events moved — roughly nine calls
+            # an hour that the "all-time" figure denied had happened.
+            #
+            # The guards were `== 0` and `< tool_calls_7d`. Those catch a
+            # never-analyzed table and an absurdly low estimate. Staleness
+            # trips NEITHER — a stale total is neither zero nor small — so the
+            # approximation published as an exact number, to the unit, in the
+            # one field whose own comment invites press to quote it.
+            #
+            # mcp_tool_calls is ~260k rows and this cursor already runs several
+            # COUNT(*)s over it. Count it. A read that fails reports that it
+            # failed; it does not hand back an estimate and let the reader
+            # believe the number was counted.
             try:
-                cur.execute(
-                    "SELECT reltuples::bigint FROM pg_class WHERE relname = 'mcp_tool_calls'"
-                )
-                _approx = (cur.fetchone() or [0])[0]
-                out["tool_calls_total"] = int(_approx) if _approx else 0
-                # If pg_class is stale (0 or way off), correct with COUNT
-                if out["tool_calls_total"] == 0 or out["tool_calls_total"] < out["tool_calls_7d"]:
-                    cur.execute("SELECT COUNT(*) FROM mcp_tool_calls")
-                    out["tool_calls_total"] = int((cur.fetchone() or [0])[0])
+                cur.execute("SELECT COUNT(*) FROM mcp_tool_calls")
+                out["tool_calls_total"] = int((cur.fetchone() or [0])[0] or 0)
+                out["tool_calls_total_basis"] = "COUNT(*) mcp_tool_calls — exact"
             except Exception:
                 out["tool_calls_total"] = None
+                out["tool_calls_total_basis"] = "unavailable — the count failed"
 
             # 30-day window — useful for monthly press cadence
             try:
@@ -6296,7 +6308,8 @@ def stats_live_proof():
         "distinct_ips_7d": 0,
         "distinct_platforms": 0,
         "approved_testimonials_count": 0,
-        "platforms_30d": [],              # [{platform, calls}] recognized external only
+        "platforms_30d": [],              # [{platform, calls, calls_including_self_traffic}]
+        "platforms_30d_excluded": {},     # what the self-traffic filter removed
         "flags": {
             "tool_calls_available": False,
             "callers_available": False,
@@ -6309,13 +6322,15 @@ def stats_live_proof():
             "tool_calls_30d":              "COUNT(*) mcp_tool_calls WHERE created_at >= NOW()-30d",
             "distinct_callers_7d":         "COUNT(DISTINCT agent_id) mcp_calls_identity (7d) WHERE is_public_ip AND is_real_external — canonical identity view; NEVER session_id (it rotates per MCP connection)",
             "distinct_ips_7d":             "COUNT(DISTINCT client_ip) mcp_calls_identity (7d) WHERE is_public_ip — all traffic incl. probes, secondary signal",
-            "distinct_platforms":          "COUNT(DISTINCT recognized platform) mcp_tool_calls (30d, allowlist only)",
+            "distinct_platforms":          "COUNT(DISTINCT recognized vendor) mcp_calls_identity (30d) WHERE is_public_ip AND is_real_external, minus declared operator self-traffic — was raw mcp_tool_calls with neither filter until 2026-09-03",
             "approved_testimonials_count": "COUNT(*) ai_testimonials WHERE approved = TRUE",
         },
-        "note": ("All counts are live reads from mcp_tool_calls + "
-                 "ai_testimonials. A value of 0 with its *_available flag "
-                 "false means no data / table unavailable — never a "
-                 "placeholder."),
+        "note": ("All counts are live reads from mcp_tool_calls, "
+                 "mcp_calls_identity + ai_testimonials. A value of 0 with its "
+                 "*_available flag false means no data / table unavailable — "
+                 "never a placeholder. platforms_30d counts EXTERNAL calls "
+                 "only; each row carries its unfiltered sibling and "
+                 "platforms_30d_excluded says what was removed."),
     }
 
     # 1) Tool-call volume (7d / 30d) — created_at is the verified ts column.
@@ -6359,27 +6374,63 @@ def stats_live_proof():
 
     # 3) Distinct EXTERNAL platforms (30d) — exclude our own infra / probes /
     #    generic transport buckets so the "N platforms" headline is honest.
+    # ★ 2026-09-03: this counted RAW mcp_tool_calls — no is_real_external, no
+    # self-traffic exclusion — while /api/ai/tracking's cards counted the same
+    # 30 days through mcp_calls_identity with both filters applied. Same vendor
+    # collapsing on both sides, so the gap was never a double-count: it was
+    # OUR OWN traffic. Measured that day, Claude read 1,071 here against 492 on
+    # its card, and the 579-call gap grew ~81 in eight hours.
+    #
+    # The operator's agent client writes mcp_client 'claude' / user_agent
+    # 'node', byte-identical to a prospect's — which is exactly why the funnel
+    # on the same page carries DEFINITION v4 and excludes it from "Human
+    # acted". That lesson was never applied to the headline that names which
+    # platforms integrate. It is applied here now, through the SAME declared
+    # vocabulary rather than a second copy of it.
     try:
+        try:
+            from mcp_calls_deloop import (external_session_predicate,
+                                          self_traffic_session_prefixes)
+            _not_self = external_session_predicate("session_id")
+            _prefixes = list(self_traffic_session_prefixes())
+        except Exception as _pe:
+            # Fail OPEN, never silently: nothing is removed and the payload
+            # says so, so a reader can tell "no exclusion applied" from
+            # "applied, found nothing". Same contract as ai_tracking's envelope.
+            _not_self, _prefixes = "TRUE", []
+            out["flags"]["platforms_self_traffic_filter"] = (
+                "unavailable, nothing excluded: %s" % str(_pe)[:80])
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
                 # 30d window (was 7d): platforms = BREADTH of who integrates, so a
                 # longer lookback is the honest, representative figure — 7d undersold
                 # at 3 because Claude/Anthropic dominate recent traffic. (Callers/IPs
                 # stay 7d: those measure recent activity, not breadth.)
-                "SELECT LOWER(COALESCE(platform, '')) AS p, COUNT(*) AS n "
-                "FROM mcp_tool_calls "
-                "WHERE created_at >= NOW() - INTERVAL '30 days' "
+                "SELECT LOWER(COALESCE(platform, '')) AS p, "
+                "       COUNT(*) FILTER (WHERE " + _not_self + ") AS n, "
+                "       COUNT(*) AS n_gross "
+                "FROM mcp_calls_identity "
+                "WHERE is_public_ip AND is_real_external "
+                "  AND created_at >= NOW() - INTERVAL '30 days' "
                 "GROUP BY p ORDER BY n DESC"
             )
             rows = cur.fetchall() or []
-        externals = [
-            {"platform": p, "calls": int(n or 0)}
-            for (p, n) in rows
+        recognized = [
+            (p, n, g)
+            for (p, n, g) in rows
             # Allowlist: recognized AI platform AND not internal/probe traffic.
             if _lp_is_recognized(p) and not _lp_is_internal(p)
             # drop UUID-shaped session leakage that escaped normalization
             and not _UUID_RE_MOD.match(p)
         ]
+        # ★ The rule that a platform whose every call was OURS is not a
+        # platform lives in its own import-free module. A judgement inline in a
+        # route is a judgement nobody can test: written here first, it survived
+        # every source-text guard aimed at this endpoint — a mutation that put
+        # those rows back into the headline passed all of them.
+        from live_proof_platforms import shape_platforms
+        externals, out["platforms_30d_excluded"] = shape_platforms(
+            recognized, _prefixes)
         out["platforms_30d"] = externals
         # ★★2026-07-27: was len(externals) — the count of distinct raw platform
         # STRINGS that passed the allowlist. That still multiple-counts a single
