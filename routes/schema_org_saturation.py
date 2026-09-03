@@ -87,6 +87,16 @@ def _ensure_schema(c):
 _JSONLD_RE = re.compile(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
                         re.IGNORECASE | re.DOTALL)
 _TYPE_RE   = re.compile(r'"@type"\s*:\s*"([^"]+)"', re.IGNORECASE)
+# ★ 2026-09-03 — schema.org allows "@type" to be a string OR an array of
+#   strings: "@type": ["CollectionPage", "ItemList"]. _TYPE_RE demands a quote
+#   immediately after the colon, so it skipped the array form entirely and
+#   reported only whatever nested scalar types happened to exist. /vs declares
+#   CollectionPage + ItemList in array form and was therefore filed as
+#   wrong_type on the strength of its nested ListItem/Organization — a page
+#   with correct markup counted against coverage. A parser that cannot read
+#   half the spec reports a defect that is its own.
+_TYPE_ARR_RE = re.compile(r'"@type"\s*:\s*\[([^\]]*)\]', re.IGNORECASE)
+_TYPE_STR_RE = re.compile(r'"([^"]+)"')
 
 
 def _audit_page(path: str) -> dict:
@@ -109,6 +119,8 @@ def _audit_page(path: str) -> dict:
         for b in blocks:
             for m in _TYPE_RE.finditer(b):
                 types.append(m.group(1))
+            for m in _TYPE_ARR_RE.finditer(b):
+                types.extend(_TYPE_STR_RE.findall(m.group(1)))
         out["found_types"] = list(set(types))
     except Exception as e:
         out["error"] = f"{type(e).__name__}:{str(e)[:80]}"
