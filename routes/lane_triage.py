@@ -86,9 +86,18 @@ LANE_TRIAGE: dict[tuple[str, str], tuple[str, str]] = {
         "gated preview must carry a live challenge, the offer must need no "
         "magic flag, pre-wall/under-cap offers must reach granted calls — "
         "all plumbing"),
-    ("agent_pay", "pricing"): ("build",
-        "the $0.10 flagship list price is unsettleable under Stripe's $0.50 "
-        "floor; a real coherence defect"),
+    ("agent_pay", "pricing"): ("judgment",
+        "★ RECLASSIFIED 2026-09-03 from `build`, whose reason was factually "
+        "wrong. Nothing mints a $0.10 FIAT charge — mpp-hook.mjs:95-103 "
+        "prices every covered tool, flagships included, at $0.50; the $0.10 "
+        "is the x402/USDC rail, which has no fiat floor. The build-shaped "
+        "check `pr_floor` (advertised price clears the $0.50 SPT floor, "
+        "critical) therefore PASSES and structurally cannot fail. The only "
+        "reachable red is `pr_flagship` (0.50 <= 0.10), and the lane's own "
+        "docstring calls it 'an open commercial decision, not a bug; "
+        "acknowledge it with MPP_FLAGSHIP_PREMIUM_ACK=1'. Its test is named "
+        "test_pricing_lane_passes_only_when_the_premium_is_acknowledged — the "
+        "suite's own definition of green is that a human decided"),
     ("agent_pay", "rail_health"): ("build",
         "the lane exists to separate settle FAILURES (bug) from abandonment "
         "(demand); its failing check is the bug half"),
@@ -160,9 +169,18 @@ LANE_TRIAGE: dict[tuple[str, str], tuple[str, str]] = {
         "and human-openable"),
 
     # ── loop_flywheel ────────────────────────────────────────────────
-    ("loop_flywheel", "infra"): ("owner-flag",
-        "Neon migration schedule, read-replica provisioning, role split — "
-        "infra configuration, not a commit"),
+    ("loop_flywheel", "infra"): ("instrument",
+        "★ RECLASSIFIED 2026-09-03 from `owner-flag`. Both owner-shaped "
+        "checks are already GREEN in prod (NEON_REPLICA_URL set, "
+        "DCHUB_ROLE=web). The only check that can go red is a HARDCODED "
+        "COUNTDOWN — `_NEON_MIGRATION_DUE = date(2026,10,5)` at "
+        "loop_flywheel_master_shell.py:66 — which observes nothing about the "
+        "system. The migration it counts down to COMPLETED 2026-07-13 (Azure "
+        "deleted 08-05; the live DB is AWS Oregon), and the constant was "
+        "added 11 days AFTER that cutover. It goes FAIL on 2026-09-13 and "
+        "OVERDUE from 10-06, permanently, and no owner action clears it — "
+        "only an engineer deleting the countdown or asserting the live host. "
+        "★ That deletion is real pending work, not just a reclassification"),
     ("loop_flywheel", "edge"): ("build",
         "admin prefixes must document a no-cache policy and admin responses "
         "must declare no-store; CF Rule #3 caches /api/v1/* with "
@@ -197,9 +215,14 @@ LANE_TRIAGE: dict[tuple[str, str], tuple[str, str]] = {
     # ── relay_closure ────────────────────────────────────────────────
     ("relay_closure", "A/redeem_declared_vs_writer"): ("build",
         "declared redeem basis vs writer liveness — a consistency check"),
-    ("relay_closure", "B/relay_demand_verdict"): ("commercial",
-        "counts REAL external relay opens. Demand, and the shell states its "
-        "own actuators are 'NONE — read-only'"),
+    ("relay_closure", "B/relay_demand_verdict"): ("judgment",
+        "★ RECLASSIFIED 2026-09-03 from `commercial`, whose reason was "
+        "inverted with respect to which state is RED. relay_closure_master_"
+        "shell.py:676-678 builds `reds` from status in "
+        "(FAIL, ESCALATE, NEEDS_ATTRIBUTION); STOP_ENVELOPE_WORK — the "
+        "genuinely demand-shaped verdict — is NOT in that set and never "
+        "reddens the board. The states that DO redden it are ones asking a "
+        "human to decide what the reading means"),
     ("relay_closure", "C/mint_attributability"): ("diagnose",
         "whether minted claims can be attributed to a platform at all; the "
         "shell deliberately does NOT fire this lane's actuator"),
@@ -331,11 +354,23 @@ def triage_feed(feed: str, note: str) -> dict:
     out = {
         "shell": shell,
         "lanes_named": bool(named and shell),
+        # ★ A feed that is not a master shell HAS no lanes, so "its lanes are
+        # unnamed" is not a fact about it. Measured live 2026-09-03: the first
+        # deploy reported red_lanes_unnamed=4 where 3 was correct, because
+        # `iso-intl` — an ISO data feed, not a shell — was folded in beside
+        # the three shells that really do hide their lane names. An inflated
+        # blind-spot count is the same defect as a deflated one: the number
+        # stops meaning what it says.
+        "not_a_shell": shell is None,
         "failing_lanes": [],
         "code_actionable_count": 0,
         "not_code_count": 0,
         "unclassified_count": 0,
     }
+    if shell is None:
+        out["note"] = ("not a master shell — this feed has no lanes, so it is "
+                       "neither triaged nor counted as an unnamed-lane gap")
+        return out
     if shell in UNCLASSIFIED_SHELLS:
         # ★ Empty `failing_lanes` here means NOT TRIAGED, not "nothing
         # failed" — audit_closure names its lanes perfectly well, we simply
@@ -377,8 +412,15 @@ def format_lane_verdicts(pairs) -> str:
     from it; a fourth format invented in a fourth file would.
 
     `pairs` is (lane_id, verdict); verdict is normalised to PASS / FAIL / ?
-    so an unmeasured lane is never written as a failure. Output is bounded to
-    stay inside record_beat's 280-char note cap."""
+    so an unmeasured lane is never written as a failure.
+
+    ★ CONTRACT: this applies NO length bound. An earlier version of this docstring
+    claimed one "to stay inside record_beat's 280-char note cap". Both halves
+    were false: record_beat truncates nothing — the 280-char cap lives in the
+    HTTP beat() handler (ingest_runs.py:163), which the in-process shells do
+    not go through. Real notes today are 58-75 chars so nothing truncates, but
+    a shell growing past ~30 lanes would need a bound ADDED here, not assumed.
+    Guarded by test_the_formatter_applies_no_bound_and_does_not_claim_one."""
     out = []
     for lane, verdict in pairs or ():
         v = str(verdict or "?").upper()
@@ -386,3 +428,47 @@ def format_lane_verdicts(pairs) -> str:
             v = "?"
         out.append(f"{lane}={v}")
     return ("lanes: " + " ".join(out)) if out else ""
+
+
+def rollup_triage(triage_dicts):
+    """Aggregate per-feed triage blocks into the board's `red_triage`.
+
+    ★ EXTRACTED 2026-09-03. This arithmetic used to live inline in
+    deadman(), which needs a live DB, so the only thing any test could reach
+    was a substring of the handler's source. An adversarial review showed the
+    consequence: swapping `code_actionable` and `not_code` in the rollup
+    passed the entire suite. A sum nothing can execute is a sum nothing
+    guards."""
+    tri = [t for t in (triage_dicts or ()) if isinstance(t, dict)]
+    return {
+        "code_actionable": sum(t.get("code_actionable_count", 0) for t in tri),
+        "not_code": sum(t.get("not_code_count", 0) for t in tri),
+        "unclassified": sum(t.get("unclassified_count", 0) for t in tri),
+        # Only MASTER SHELLS have lanes. A non-shell feed (iso-intl and
+        # friends) is not a hidden-lane gap and must not inflate the count.
+        "red_lanes_unnamed": sum(1 for t in tri
+                                 if not t.get("lanes_named")
+                                 and not t.get("triage_skipped")
+                                 and not t.get("not_a_shell")),
+        "basis": ("failing lanes parsed from each red shell's own beat note "
+                  "and classified by routes/lane_triage.LANE_TRIAGE, which "
+                  "keys on WHO CLOSES IT. code_actionable = build|instrument "
+                  "(an engineer). not_code = commercial|owner-flag|judgment|"
+                  "diagnose — correct reds that no PR clears. "
+                  "red_lanes_unnamed = shells whose note counts failures "
+                  "without naming them; that is a blind spot, NOT a zero. "
+                  "Non-shell feeds are excluded from that count."),
+    }
+
+
+# Lanes whose board-facing id does not derive from their function name.
+# relay_closure emits display names ("B/relay_demand_verdict") while its
+# functions are _lane_b_demand etc. Spelled out rather than guessed, so the
+# anti-rot guard can resolve a real callable instead of matching source text.
+LANE_FN_ALIASES: dict[tuple[str, str], str] = {
+    ("relay_closure", "A/redeem_declared_vs_writer"): "_lane_a_redeem",
+    ("relay_closure", "B/relay_demand_verdict"): "_lane_b_demand",
+    ("relay_closure", "C/mint_attributability"): "_lane_c_attributability",
+    ("relay_closure", "D/typed_params_window"): "_lane_d_typed_params",
+    ("relay_closure", "E/schema_selection_asks"): "_lane_e_asks",
+}

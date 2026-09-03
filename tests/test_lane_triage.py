@@ -90,19 +90,6 @@ def test_deferred_classes_are_a_subset_of_the_vocabulary():
 
 
 # ── the bond to the shells themselves ─────────────────────────────────
-def test_every_classified_lane_still_exists_in_its_shell():
-    """★ ANTI-ROT. A renamed or deleted lane must FAIL here, not linger as an
-    entry describing something that is gone. Accepts either convention the
-    shells use: a lane id string, or a `_lane_<id>` function."""
-    missing = []
-    for shell, lane in LANE_TRIAGE:
-        src = _shell_source(shell)
-        by_id = f'"{lane}"' in src
-        by_fn = re.search(rf"def _lane_{re.escape(lane)}\b", src) is not None
-        if not (by_id or by_fn):
-            missing.append(f"{shell}/{lane}")
-    assert not missing, f"classified lanes absent from their shell: {missing}"
-
 
 def test_the_shell_scan_actually_found_lanes():
     """Guards the guard: if _shell_source started returning '' every
@@ -130,8 +117,8 @@ def test_a_known_signal_lane_is_not_code_actionable():
 def test_a_known_defect_lane_is_code_actionable():
     """★ THE GREEN DIRECTION. Without this, classifying EVERYTHING as
     not-actionable would satisfy the rest of this file."""
-    assert classify("agent_pay", "pricing")[0] == "build"
-    assert is_code_actionable("agent_pay", "pricing") is True
+    assert classify("loop_control", "surface_canon")[0] == "build"
+    assert is_code_actionable("loop_control", "surface_canon") is True
 
 
 def test_a_miscalibrated_check_is_code_actionable_but_not_a_system_defect():
@@ -148,10 +135,10 @@ def test_an_unclassified_lane_is_none_never_false():
 
 
 def test_split_lanes_partitions_all_three_ways():
-    got = split_lanes([("agent_pay", "pricing"),
+    got = split_lanes([("loop_control", "surface_canon"),
                        ("loop_control", "agent_identity"),
                        ("loop_control", "no_such_lane")])
-    assert [x[1] for x in got["code_actionable"]] == ["pricing"]
+    assert [x[1] for x in got["code_actionable"]] == ["surface_canon"]
     assert [x[1] for x in got["not_code"]] == ["agent_identity"]
     assert [x[1] for x in got["unclassified"]] == ["no_such_lane"]
 
@@ -269,8 +256,16 @@ def test_triage_feed_classifies_a_real_board_row():
     assert t["shell"] == "loop_control" and t["lanes_named"] is True
     got = {x["lane"]: x["class"] for x in t["failing_lanes"]}
     assert got == {"agent_identity": "commercial", "counter_canon": "instrument"}
-    assert t["code_actionable_count"] == 1   # counter_canon (fix the CHECK)
-    assert t["not_code_count"] == 1          # agent_identity (fix demand)
+    # ★ ASYMMETRIC ON PURPOSE. This fixture used to make both counts 1, so
+    # swapping code_actionable and not_code was undetectable — an adversarial
+    # review confirmed the swap passed the whole suite. Three failing lanes,
+    # two classes, unequal counts.
+    t3 = triage_feed("agent_pay-shell-daily",
+                     "lanes: demand=FAIL reachability=FAIL rail_health=FAIL")
+    assert t3["code_actionable_count"] == 2   # reachability, rail_health (build)
+    assert t3["not_code_count"] == 1          # demand (commercial)
+    assert t["code_actionable_count"] == 1    # counter_canon
+    assert t["not_code_count"] == 1
 
 
 def test_triage_feed_reports_an_unnamed_shell_as_a_gap_not_a_zero():
@@ -297,23 +292,6 @@ def test_triage_feed_never_raises_on_junk():
 
 
 # ── the wiring ────────────────────────────────────────────────────────
-def test_the_board_routes_red_feeds_through_triage_and_publishes_a_rollup():
-    """STRUCTURAL. deadman() opens a live psycopg2 connection, so driving it
-    here would test a stub. The coupling asserted is exactly the wiring: red
-    feeds get a triage block and the response carries the rollup."""
-    src = io.open(os.path.join(ROUTES, "ingest_runs.py"), encoding="utf-8").read()
-    assert "from routes.lane_triage import triage_feed" in src
-    assert 'rec["triage"] = triage_feed(' in src
-    assert "red_triage=red_triage" in src
-    assert "red_lanes_unnamed" in src
-
-
-# ── the three shells that counted failures without naming them ────────
-# Until 2026-09-02 these wrote "PASS 2 FAIL 2", "3 failing / 1 unknown of 4
-# lanes" and "lanes 2/4 pass". All three say HOW MANY broke and none says
-# WHICH, so /ops/deadman could not triage them at all — published as
-# red_lanes_unnamed=3. Each now writes through format_lane_verdicts, which
-# lives beside parse_failing_lanes so a writer cannot drift from its reader.
 
 def _shell_lane_ids(stem):
     """The lane ids each shell will actually emit — read from the live
@@ -378,12 +356,291 @@ def test_the_formatter_is_empty_for_no_lanes():
     assert format_lane_verdicts(None) == ""
 
 
-@pytest.mark.parametrize("stem", ["growth_funnel", "webmcp", "agentic_loop"])
-def test_each_shell_beats_through_the_shared_formatter(stem):
-    """STRUCTURAL: these beat paths need a live DB and a tick, so the
-    coupling asserted is that the shared writer is the one being called —
-    a fourth bespoke note format is exactly what regressed here."""
-    src = io.open(os.path.join(ROUTES, f"{stem}_master_shell.py"),
-                  encoding="utf-8").read()
-    assert "from routes.lane_triage import format_lane_verdicts" in src, stem
-    assert "format_lane_verdicts(" in src, stem
+
+def test_a_non_shell_feed_is_flagged_and_not_a_lane_gap():
+    from routes.lane_triage import triage_feed
+    t = triage_feed("iso-intl", ISO_INTL_NOTE)
+    assert t["not_a_shell"] is True
+    assert t["shell"] is None
+    assert t["lanes_named"] is False          # it has no lanes to name
+    assert "no lanes" in t["note"]
+
+
+def test_a_real_shell_is_not_flagged_as_non_shell():
+    """★ THE GREEN DIRECTION. Marking everything not_a_shell would empty the
+    gap count entirely and hide the three shells that really do hide names."""
+    from routes.lane_triage import triage_feed
+    t = triage_feed("webmcp-shell-daily", "lanes 2/4 pass")
+    assert t["not_a_shell"] is False
+    assert t["lanes_named"] is False          # this one IS a real gap
+    assert "not WHICH" in t["note"]
+
+
+def test_the_rollup_excludes_non_shell_feeds_from_the_gap_count():
+    """The live payload's own shape: three shells hiding names + one ISO feed.
+    The gap count must be 3."""
+    from routes.lane_triage import triage_feed
+    rows = [("agentic-loop-shell-daily", "PASS 2 FAIL 2 ? 0"),
+            ("growth-funnel-shell-daily", "3 failing / 1 unknown of 4 lanes"),
+            ("webmcp-shell-daily", "lanes 2/4 pass"),
+            ("iso-intl", ISO_INTL_NOTE)]
+    tri = [triage_feed(f, n) for f, n in rows]
+    gap = sum(1 for t in tri
+              if not t.get("lanes_named")
+              and not t.get("triage_skipped")
+              and not t.get("not_a_shell"))
+    assert gap == 3, f"expected 3 real gaps, got {gap}"
+
+
+ISO_INTL_NOTE = ("failed: OCCTO (mix: hokkaido:month_not_published_yet:202609 "
+                 "(day 3 JST; monthly file absent upstream, URL template "
+                 "unchanged; raw=http_404))")
+
+
+# ══ BEHAVIOURAL REPLACEMENTS FOR THE SUBSTRING GUARDS ══════════════════
+# ★ An adversarial review (2026-09-03) demonstrated that the four guards this
+# block replaces were substring matches on source text, and that with all of
+# them in place the ENTIRE triage wiring could be switched off with 42/42
+# passing. Every assertion below executes the real code path instead.
+
+def _spy_beat(monkeypatch, stem):
+    """Run a shell's real tick and capture the note it actually beats."""
+    m = __import__(f"routes.{stem}_master_shell", fromlist=["x"])
+    box = {}
+    monkeypatch.setattr(m, "_beat_ledger",
+                        lambda *a, **k: box.setdefault("note", a[0]))
+    m._run_tick(beat=True)
+    return box.get("note"), m
+
+
+@pytest.mark.parametrize("stem", ["growth_funnel", "webmcp"])
+def test_the_shell_actually_beats_a_parseable_named_note(monkeypatch, stem):
+    """★ REAL PATH. Drives _run_tick(beat=True) with no DB — every lane comes
+    back unmeasured or failing, which is exactly the hostile case — and reads
+    the note the shell really hands the ledger."""
+    from routes.lane_triage import parse_failing_lanes
+    note, _ = _spy_beat(monkeypatch, stem)
+    assert note, f"{stem} beat no note"
+    assert note.startswith("lanes: "), f"{stem} beat a bespoke format: {note!r}"
+    _lanes, named = parse_failing_lanes(note)
+    assert named is True, f"the board cannot read {stem}'s note: {note!r}"
+    for lane_id in _shell_lane_ids(stem):
+        assert f"{lane_id}=" in note, f"{stem} omitted lane {lane_id}: {note!r}"
+
+
+def test_agentic_loop_beat_note_is_named_and_parseable():
+    """agentic_loop builds its note in a Flask route, so _beat_note() was
+    extracted to make the real string reachable."""
+    from routes.agentic_loop_master_shell import _beat_note
+    from routes.lane_triage import parse_failing_lanes
+    out = {"summary": {"PASS": 2, "FAIL": 2, "?": 0},
+           "lanes": [{"name": "graduation", "verdict": "PASS"},
+                     {"name": "human_queues", "verdict": "FAIL"},
+                     {"name": "learn", "verdict": "FAIL"},
+                     {"name": "detectors_with_fix", "verdict": "PASS"}]}
+    note = _beat_note(out)
+    assert note.startswith("lanes: ")
+    assert parse_failing_lanes(note) == (["human_queues", "learn"], True)
+
+
+def test_webmcp_writes_a_crashed_lane_as_question_mark_not_fail(monkeypatch):
+    """★ THE PRODUCTION BUG THIS REPLACES A SUBSTRING GUARD FOR.
+
+    webmcp's `pass` is a BOOLEAN and cannot say "unmeasured": with every check
+    undecided, `lane_pass` is False — the same value as a real failure. The
+    beat wrote that as `=FAIL`, so the board triaged a crashed probe as a
+    code-actionable `build` defect on a tick that measured nothing.
+
+    Driven through the shell's OWN crash path: force one lane to raise, which
+    is exactly the `except` branch that emits pass=None."""
+    import routes.webmcp_master_shell as m
+    from routes.lane_triage import parse_failing_lanes, classify
+
+    def boom(_c):
+        raise RuntimeError("probe timed out")
+    monkeypatch.setattr(m, "_lane_headers", boom)
+    monkeypatch.setattr(m, "_LANES",
+                        [(k, l, (boom if k == "headers" else f), a)
+                         for k, l, f, a in m._LANES])
+    note, _ = _spy_beat(monkeypatch, "webmcp")
+    assert "headers=?" in note, (
+        f"a crashed lane must be unmeasured, not failed; note was {note!r}")
+    failing, named = parse_failing_lanes(note)
+    assert named is True
+    assert "headers" not in failing, (
+        "the crashed lane reached the board as a failure, and "
+        f"classify() would call it {classify('webmcp', 'headers')[0]}")
+
+
+# ── the rollup, now that it is a reachable function ───────────────────
+def _tri(**kw):
+    base = {"lanes_named": True, "code_actionable_count": 0,
+            "not_code_count": 0, "unclassified_count": 0}
+    base.update(kw)
+    return base
+
+
+def test_the_rollup_sums_are_not_interchangeable():
+    """★ Asymmetric by construction: swapping code_actionable and not_code in
+    rollup_triage must fail. An adversarial review showed the swap passed
+    while the arithmetic was inline in deadman() and unreachable."""
+    from routes.lane_triage import rollup_triage
+    r = rollup_triage([_tri(code_actionable_count=5, not_code_count=2,
+                            unclassified_count=1)])
+    assert r["code_actionable"] == 5
+    assert r["not_code"] == 2
+    assert r["unclassified"] == 1
+
+
+def test_the_rollup_excludes_non_shells_but_counts_real_gaps():
+    """★ THE FIX UNDER REVIEW, driven rather than grepped. Three shells hiding
+    their lane names plus one ISO data feed must roll up to 3, not 4."""
+    from routes.lane_triage import rollup_triage, triage_feed
+    rows = [triage_feed("agentic-loop-shell-daily", "PASS 2 FAIL 2 ? 0"),
+            triage_feed("growth-funnel-shell-daily", "3 failing of 4 lanes"),
+            triage_feed("webmcp-shell-daily", "lanes 2/4 pass"),
+            triage_feed("iso-intl", "failed: OCCTO (mix: hokkaido:...)"),
+            triage_feed("audit-closure-shell-daily", "p0_incidents=FAIL")]
+    assert rollup_triage(rows)["red_lanes_unnamed"] == 3
+
+
+def test_the_rollup_survives_junk_without_inventing_numbers():
+    from routes.lane_triage import rollup_triage
+    assert rollup_triage([])["code_actionable"] == 0
+    assert rollup_triage(None)["red_lanes_unnamed"] == 0
+    assert rollup_triage([None, "x", 7])["not_code"] == 0
+
+
+def test_the_formatter_applies_no_bound_and_does_not_claim_one():
+    """★ The docstring used to promise a 280-char bound it never applied, and
+    attributed the cap to record_beat, which has none (it lives in the HTTP
+    beat() handler). Pin the honest contract: no bound, and no claim of one."""
+    from routes.lane_triage import format_lane_verdicts
+    import routes.lane_triage as _lt
+    note = format_lane_verdicts([(f"lane_{i:03d}", "FAIL") for i in range(40)])
+    assert len(note) > 280, "if a bound is ever added, update this guard"
+    doc = format_lane_verdicts.__doc__ or ""
+    assert "CONTRACT: this applies NO length bound" in doc, (
+        "the docstring must state the honest contract; it previously promised "
+        "a 280-char bound it never applied, attributed to a record_beat cap "
+        "that does not exist")
+
+
+# ── anti-rot, by import rather than by substring ──────────────────────
+_LANES_SHELLS = {"growth_funnel", "webmcp", "agentic_loop"}
+
+
+def test_every_classified_lane_resolves_in_its_live_shell():
+    """★ REPLACES a source-substring check. For the three shells that expose
+    _LANES, assert MEMBERSHIP in the live tuple — that catches a lane retired
+    from _LANES with its function left behind, which the substring version
+    could not. For the rest, resolve a live `_lane_<id>` callable, which still
+    catches a deleted or renamed lane. Residual gap, stated rather than
+    implied: a non-_LANES shell that stops CALLING a lane it still defines
+    would pass."""
+    unresolved = []
+    for shell, lane in LANE_TRIAGE:
+        if shell in _LANES_SHELLS:
+            if lane not in _shell_lane_ids(shell):
+                unresolved.append(f"{shell}/{lane} (not in live _LANES)")
+            continue
+        mod = __import__(f"routes.{shell}_master_shell", fromlist=["x"])
+        from routes.lane_triage import LANE_FN_ALIASES
+        cands = [LANE_FN_ALIASES.get((shell, lane)), f"_lane_{lane}"]
+        if not any(c and callable(getattr(mod, c, None)) for c in cands):
+            unresolved.append(f"{shell}/{lane} (no live _lane_* callable)")
+    assert not unresolved, f"classified lanes that no longer resolve: {unresolved}"
+
+
+# ══ END TO END: the board endpoint itself ══════════════════════════════
+# ★ An adversarial review's headline finding was that the ENTIRE triage
+# wiring could be switched off with the whole suite green, because the only
+# guard on it was a substring match against deadman()'s source. deadman()
+# opens a psycopg2 connection, which is why the substring shortcut was taken
+# — but the connection is reachable through the module's own attributes, so
+# the real handler CAN be driven. This is that test.
+
+def _drive_deadman(monkeypatch, rows):
+    """Call the real deadman() handler over a stubbed ledger."""
+    import types
+    import routes.ingest_runs as ir
+    from flask import Flask
+
+    class _Cur:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a, **k): pass
+        def fetchall(self): return rows
+
+    class _Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def cursor(self, *a, **k): return _Cur()
+        def commit(self): pass
+
+    monkeypatch.setattr(ir, "_dsn", lambda: "postgres://stub")
+    monkeypatch.setattr(ir, "_ensure", lambda cur: None)
+    monkeypatch.setattr(ir, "psycopg2",
+                        types.SimpleNamespace(connect=lambda *a, **k: _Conn()))
+    app = Flask(__name__)
+    with app.test_request_context("/api/v1/ops/deadman"):
+        import json as _json
+        return _json.loads(ir.deadman().get_data(as_text=True))
+
+
+def _rows():
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return [
+        # a real shell with one commercial and one instrument lane failing
+        ("loop-control-shell-daily", now, "lanes_failing", 1, None, 24.0, 0,
+         "lanes: agent_identity=FAIL counter_canon=FAIL"),
+        # a shell that hides which lanes failed
+        ("webmcp-shell-daily", now, "lanes_failing", 1, None, 24.0, 0,
+         "lanes 2/4 pass"),
+        # NOT a shell — must not count as a hidden-lane gap
+        ("iso-intl", now, "degraded", 321, None, 1.0, 0,
+         "failed: OCCTO (mix: hokkaido:month_not_published_yet:202609)"),
+        # a healthy feed — must get no triage block at all
+        ("newsroom-auto", now, "success", 5, None, 4.5, 0, "fine"),
+    ]
+
+
+def test_the_board_publishes_triage_for_red_feeds_only(monkeypatch):
+    d = _drive_deadman(monkeypatch, _rows())
+    by = {f["feed"]: f for f in d["feeds"]}
+    assert "triage" in by["loop-control-shell-daily"]
+    assert "triage" not in by["newsroom-auto"], "a healthy feed was triaged"
+
+
+def test_the_board_classifies_each_failing_lane_end_to_end(monkeypatch):
+    """★ THE WIRING GUARD. Switching triage off in deadman() must fail HERE,
+    not merely change a substring that nothing executes."""
+    d = _drive_deadman(monkeypatch, _rows())
+    lanes = {x["lane"]: x for x in
+             next(f for f in d["feeds"]
+                  if f["feed"] == "loop-control-shell-daily")["triage"]["failing_lanes"]}
+    assert lanes["agent_identity"]["class"] == "commercial"
+    assert lanes["agent_identity"]["code_actionable"] is False
+    assert lanes["counter_canon"]["code_actionable"] is True
+
+
+def test_the_board_rollup_is_asymmetric_and_excludes_non_shells(monkeypatch):
+    """One code-actionable lane, one not, one shell hiding names, one ISO feed
+    that is not a shell. Every number distinct, so a swap cannot hide."""
+    rt = _drive_deadman(monkeypatch, _rows())["red_triage"]
+    assert rt["code_actionable"] == 1     # counter_canon
+    assert rt["not_code"] == 1            # agent_identity
+    assert rt["unclassified"] == 0
+    assert rt["red_lanes_unnamed"] == 1   # webmcp only — NOT iso-intl
+
+
+def test_the_board_never_5xxs_when_triage_raises(monkeypatch):
+    """Fail-soft must stay soft: a broken triage may not take the board down."""
+    import routes.lane_triage as lt
+    def boom(*a, **k):
+        raise RuntimeError("triage exploded")
+    monkeypatch.setattr(lt, "triage_feed", boom)
+    d = _drive_deadman(monkeypatch, _rows())
+    assert d["ok"] is True
+    assert d["red_count"] >= 1

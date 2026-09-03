@@ -428,7 +428,18 @@ def _run_tick(beat: bool = True) -> dict:
             checks = [_check(f"{key}_error", "lane crashed", None, str(e)[:200])]
         decided = [ch for ch in checks if ch["pass"] is not None]
         lane_pass = bool(decided) and all(ch["pass"] for ch in decided)
+        # ★ `pass` is a BOOLEAN and cannot say "unmeasured": with every check
+        # undecided (a probe error, or the lane-crashed branch above, which
+        # emits pass=None) `decided` is empty and lane_pass is False — the
+        # same value as a real failure. Beating that as `=FAIL` reported a
+        # header-serving defect on a tick that never read a header, and made
+        # format_lane_verdicts' "?" branch unreachable from this shell while
+        # its docstring promised an unmeasured lane is never written as one.
+        # `verdict` is the three-state the board needs; `pass` is unchanged
+        # for every existing reader of this payload.
+        lane_verdict = "PASS" if lane_pass else ("FAIL" if decided else "?")
         lanes.append({"lane": key, "label": label, "pass": lane_pass,
+                      "verdict": lane_verdict,
                       "actuator": actuator, "checks": checks,
                       "progress": f"{sum(1 for ch in decided if ch['pass'])}/{len(checks)}"})
     if c is not None:
@@ -454,8 +465,7 @@ def _run_tick(beat: bool = True) -> dict:
         # and the ids were right here in _LANES the whole time.
         from routes.lane_triage import format_lane_verdicts
         _beat_ledger(
-            format_lane_verdicts((l["lane"], "PASS" if l["pass"] else "FAIL")
-                                 for l in lanes)
+            format_lane_verdicts((l["lane"], l["verdict"]) for l in lanes)
             + f" | {payload['lanes_pass']}/{payload['lanes_total']} pass",
             failing=payload["lanes_pass"] < payload["lanes_total"])
     return payload

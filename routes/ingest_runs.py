@@ -441,22 +441,12 @@ def deadman():
     # report HOW MANY lanes failed but not WHICH — those cannot be triaged
     # from the board at all, and that gap is published rather than counted
     # as zero.
-    tri = [r["triage"] for r in feeds if isinstance(r.get("triage"), dict)]
-    red_triage = {
-        "code_actionable": sum(t.get("code_actionable_count", 0) for t in tri),
-        "not_code": sum(t.get("not_code_count", 0) for t in tri),
-        "unclassified": sum(t.get("unclassified_count", 0) for t in tri),
-        "red_lanes_unnamed": sum(1 for t in tri
-                                 if not t.get("lanes_named")
-                                 and not t.get("triage_skipped")),
-        "basis": ("failing lanes parsed from each red shell's own beat note "
-                  "and classified by routes/lane_triage.LANE_TRIAGE, which "
-                  "keys on WHO CLOSES IT. code_actionable = build|instrument "
-                  "(an engineer). not_code = commercial|owner-flag|judgment|"
-                  "diagnose — correct reds that no PR clears. "
-                  "red_lanes_unnamed = shells whose note counts failures "
-                  "without naming them; that is a blind spot, NOT a zero."),
-    }
+    # Rolled up by routes.lane_triage.rollup_triage — a pure function, so
+    # the sums are reachable by a test. They were inline here, and an
+    # adversarial review showed swapping two of them passed the suite.
+    from routes.lane_triage import rollup_triage
+    red_triage = rollup_triage(
+        [r["triage"] for r in feeds if isinstance(r.get("triage"), dict)])
     resp = jsonify(
         ok=True,
         generated_at=now.isoformat(),
