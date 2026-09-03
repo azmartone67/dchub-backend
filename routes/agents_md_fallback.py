@@ -29,7 +29,7 @@ from util.gas_index import resolve_gas_copy
 
 from ai_surface_canon import (
     PINNED,
-    resolve_public_floors,
+    resolve_public_floors_cached,
     resolve_server_version_cached,
 )
 
@@ -44,7 +44,38 @@ def _render_agents_md() -> str:
     c = PINNED
     # Floors self-heal upward; everything else below stays on the pin, which
     # is where it is asserted (tools_advertised == len(tool_manifest)).
-    floors = resolve_public_floors()
+    #
+    # ★2026-09-02: THE FLOORS ARE ANSWERED FROM CACHE, NOT PROBED PER REQUEST.
+    # resolve_public_floors() makes live HTTP calls on EVERY request —
+    # /api/v1/stats via _BASE plus a tools/list against _MCP_BASE through
+    # Cloudflare. Measured on this handler, this machine, outside the fleet:
+    #
+    #     resolve_public_floors()         cold 15,400.5ms  8,003.5  8,160.9
+    #     resolve_public_floors_cached()  cold      0.3ms      0.0      0.0
+    #
+    # (rendered body byte-identical across the swap, sha 9985a6a045b8…)
+    #
+    # The edge ROUTE_TIMEOUTS DEFAULT is 15s, so the cold render was ALREADY
+    # over the limit, not approaching it. /AGENTS.md is the primary
+    # agent-discovery surface and a timeout there fails discovery SILENTLY —
+    # a 503 tells a registry scraper nothing at all. Nothing would have paged:
+    # ai_surface_sentinel audits this surface as kind "text" (_SURFACES), so
+    # its JSON checks never run on it, and it asserts no latency budget.
+    #
+    # ★ SAME FUNCTION, SAME SHAPE — the swap is not a change of source. Once
+    # warm, resolve_public_floors_cached() returns resolve_public_floors()'
+    # own result verbatim (same keys, same _source/_rejected); on a cold cache
+    # it returns PINNED with _source all "pinned", plus _cold. The three keys
+    # read below exist on both paths.
+    #
+    # ★ AND THE COLD ANSWER IS SAFE IN THE DIRECTION THAT MATTERS. Floors only
+    # ever RAISE, so a cold process under-states for a few seconds and then
+    # self-heals — it can never publish a number ABOVE the truth. That is
+    # exactly the property resolve_canon() lacks and why the docstring above
+    # refuses it: resolve_canon() hands back "400+" against a pinned "18,500+"
+    # without raising, a 46x UNDER-claim that canon_is_live() reads as healthy.
+    # Cold-pinned is the number this file already served before #2851.
+    floors = resolve_public_floors_cached()
     fac = floors["facilities"]
     deals = floors["deals"]
     countries = floors["countries"]
@@ -69,8 +100,8 @@ def _render_agents_md() -> str:
     # byte-identical to what c["version"] produced here before.
     #
     # ★ EVERY OTHER NUMBER ON THIS PAGE IS UNTOUCHED. `c = PINNED` stands, and
-    # the floors still come from resolve_public_floors(), which applies live
-    # values ONLY where they RAISE a floor.
+    # the floors still come from resolve_public_floors() — reached through its
+    # _cached() wrapper as of 2026-09-02, same overlay, same raise-only rule.
     try:
         ver = resolve_server_version_cached() or c["version"]
     except Exception:  # noqa: BLE001
