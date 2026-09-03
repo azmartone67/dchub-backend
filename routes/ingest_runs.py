@@ -44,6 +44,32 @@ _NO_NEW_DATA = {"no_new_data", "no-new-data"}
 _LATE_KINDS = frozenset({"never_ran", "stale_age"})
 _RED_KINDS = frozenset({"run_failed", "zero_rows", "future_content_date"})
 
+# ★2026-09-03: WAITING ON AN UPSTREAM PERIOD THAT DOES NOT EXIST YET.
+#
+# The board's third word, and the only one that is neither an alarm nor a
+# clean bill of health. It exists because `iso-intl` sat red while NINE of ten
+# Japanese areas wrote fresh 30-minute fuel mix on the same tick: HEPCO had
+# not posted the September monthly file, `degraded` is not in _OK_STATUS, and
+# so the feed was indistinguishable from one that had actually broken.
+#
+# ★ IT IS NOT AN OK STATUS AND MUST NOT BE ADDED TO _OK_STATUS. A feed here is
+# published in its own list with its own count and its own line in `basis`;
+# the whole point is that a reader SEES the wait. Folding it into green would
+# make the board say "fine" about a feed with a hole in its coverage, which is
+# the failure this whole ledger was built to stop.
+#
+# ★ THE TEETH ARE UPSTREAM OF HERE, and they have to be, because this module
+# cannot know any feed's publication calendar. The producer may only beat this
+# status while the wait is bounded and unexpired — see
+# routes/iso_jp_denkiyoho._UPSTREAM_MONTH_GRACE_DAYS. Past the window the
+# producer beats the raw failure again and this feed is red by the ordinary
+# rule, with no change here. So this is a state a feed can only OCCUPY
+# briefly, never settle into. Guarded by tests/test_awaiting_upstream_state.py.
+#
+# The off-worker watcher (tools/deadman/watch.py) folds `unhealthy`, which is
+# still late-or-red — so a wait does not page anyone, and an expired wait does.
+_AWAITING_UPSTREAM = {"awaiting_upstream", "awaiting-upstream"}
+
 
 def _dsn():
     return (
@@ -277,6 +303,12 @@ def deadman():
     OVERDUE (late) — the loop did not run when it should have:
       • never ran,
       • last beat older than 2x its cadence (the classic dead-man).
+    AWAITING_UPSTREAM (2026-09-03) — ran fine; the PERIOD does not exist yet:
+      • the producer beat `awaiting_upstream`, meaning the only thing missing
+        is a file the upstream has not published to anybody. Neither red nor
+        green: published in its own list, with the producer's note naming the
+        period and the grace window after which the same absence is a fault.
+        See _AWAITING_UPSTREAM for why this is not an OK status.
     RED (ran, but reported a fault) — the loop fired on time and said so:
       • last_status is not a known-OK status (failure / lanes_failing / anomaly),
       • >=3 consecutive zero-row runs (loop fires but inserts nothing),
@@ -310,7 +342,7 @@ def deadman():
         log.warning("ingest_runs deadman read failed: %s", e)
         return jsonify(ok=False, error=str(e)[:200]), 500
 
-    feeds, overdue, red = [], [], []
+    feeds, overdue, red, awaiting = [], [], [], []
     for feed, lr, st, ri, mcd, cad, cz, note in rows:
         cad_h = float(cad) if cad is not None else _DEFAULT_CADENCE_H
         # ★2026-08-25: `overdue` was ONE boolean carrying FIVE different faults,
@@ -330,7 +362,14 @@ def deadman():
             if age_h > 2 * cad_h:
                 reasons.append(f"last success {age_h:.0f}h ago (>2x cadence {cad_h:.0f}h)")
                 kinds.append("stale_age")
-        if st and st.lower() not in _OK_STATUS:
+        # ★ Three outcomes, not two. `awaiting_upstream` is NOT in _OK_STATUS
+        # — it is carved out here explicitly so the carve-out is visible at
+        # the point of judgement rather than hidden in a set literal.
+        is_awaiting = bool(st) and st.lower() in _AWAITING_UPSTREAM
+        if is_awaiting:
+            reasons.append(f"status={st}")
+            kinds.append("awaiting_upstream")
+        elif st and st.lower() not in _OK_STATUS:
             reasons.append(f"status={st}")
             kinds.append("run_failed")
         # A feed whose LATEST beat affirms no_new_data is healthy even if the
@@ -343,6 +382,9 @@ def deadman():
             kinds.append("future_content_date")
         is_late = any(k in _LATE_KINDS for k in kinds)
         is_red = any(k in _RED_KINDS for k in kinds)
+        # A wait never suppresses a red: a feed that is BOTH waiting on one
+        # source and faulted on another is red, and says both.
+        is_awaiting = is_awaiting and not is_red
         rec = {
             "feed": feed,
             "last_run": lr.isoformat() if lr else None,
@@ -355,6 +397,9 @@ def deadman():
             # Ran on time (or not) but the last beat carried a fault
             # (run_failed | zero_rows | future_content_date).
             "red": is_red,
+            # Waiting on an upstream period nobody has published yet. Neither
+            # an alarm nor a clean bill of health — published, never folded.
+            "awaiting_upstream": is_awaiting,
             "unhealthy": is_late or is_red,
             # Machine-readable companion to `reasons`, same rules in the same
             # order, one token each: never_ran | stale_age | run_failed |
@@ -387,6 +432,8 @@ def deadman():
             overdue.append(rec)
         if is_red:
             red.append(rec)
+        if is_awaiting:
+            awaiting.append(rec)
 
     feeds.sort(key=lambda r: (not r["overdue"], not r["red"], r["feed"]))
     unhealthy_count = sum(1 for r in feeds if r["unhealthy"])
@@ -420,12 +467,25 @@ def deadman():
         any_red=bool(red),
         red_count=len(red),
         red=[r["feed"] for r in red],
+        # Published as its own list so it can never be mistaken for green.
+        # Each entry carries the producer's own note, which names the period
+        # being waited on and the grace window after which it becomes a fault.
+        awaiting_upstream_count=len(awaiting),
+        awaiting_upstream=[{"feed": r["feed"], "note": r.get("note"),
+                            "status": r.get("status")} for r in awaiting],
         unhealthy_count=unhealthy_count,
         red_triage=red_triage,
         basis=("overdue = LATE (never ran, or last beat >2x cadence). red = ran "
                "but the last beat carried a fault (non-OK status, >=3 zero-row "
                "runs, future content date). unhealthy = either. A shell that "
-               "beat lanes_failing six minutes ago is red, not overdue."),
+               "beat lanes_failing six minutes ago is red, not overdue. "
+               "awaiting_upstream = ran fine and is waiting on a period the "
+               "UPSTREAM has not published to anyone yet — not green (coverage "
+               "really is short, and the feed is listed with the period it is "
+               "waiting on) and not red (nobody can act on it). The producer "
+               "may only claim it inside a bounded grace window it declares "
+               "itself; past that window it beats the raw failure and the feed "
+               "is red here by the ordinary rule."),
         feeds=feeds,
     )
     resp.headers["Cache-Control"] = "public, max-age=60"

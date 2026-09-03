@@ -26,9 +26,30 @@ from routes._iso_common import scrub_secrets, coerce_observed_at
 # board accepts (routes/ingest_runs._OK_STATUS).
 _NO_NEW_DATA = ("no_new_data", "no-new-data")
 
+# ── "the upstream period does not exist yet" (2026-09-03) ────────────────
+# ★ THE DISTINCTION THIS DRAWS. `degraded` says WE are missing data we should
+# have. It is a call to action. It is not the right word for a period the
+# upstream has not published to anybody — nobody on earth has that data, and
+# no engineer, owner or customer can act on it.
+#
+# Measured on the live board 2026-09-03 01:16Z, iso-intl read:
+#   status=degraded
+#   note: failed: OCCTO (mix: hokkaido:month_not_published_yet:202609 ...)
+# — while nine of ten Japanese areas had written fresh 30-minute fuel mix that
+# same tick. One area waiting on a file HEPCO had not posted turned a working
+# feed red.
+#
+# ★ THIS IS NOT A SOFTER `degraded`, AND IT MUST NOT BECOME ONE. The producer
+# may only claim it while the wait is BOUNDED and unexpired — see
+# iso_jp_denkiyoho._UPSTREAM_MONTH_GRACE_DAYS, past which the same absence is
+# reported verbatim and the feed is red again. And a family carrying even ONE
+# genuinely failed member is still `degraded`, never this: waiting is only the
+# verdict when waiting is the ONLY thing wrong.
+AWAITING_UPSTREAM = "awaiting_upstream"
+
 
 def classify_result(r):
-    """(verdict, reason) for one extractor summary: 'ok' | 'no_new_data' | 'failed'.
+    """(verdict, reason): 'ok' | 'no_new_data' | 'awaiting_upstream' | 'failed'.
 
     D1 (2026-09-02). `failed = status not in ("ok",)` counted EIGHT healthy
     LIVE-only modules — NGESO/AEMO/ENTSOE/TAIPOWER/OCCTO/EMA/ONS/KEPCO-KR, none
@@ -37,11 +58,17 @@ def classify_result(r):
     the ONE real failure (ENTSO-E answering 503 for 50h) was indistinguishable
     from seven healthy feeds in a `::notice` that never named anyone. A
     status-less summary is judged on errors[]; an earned zero is not a failure.
+
+    2026-09-03: nor is a period upstream has not published yet. That claim is
+    read from the extractor's STRUCTURED `awaiting_upstream` list, never from
+    the prose in errors[] — and errors[] still wins, so an extractor that is
+    both waiting on one source and broken on another is `failed`.
     """
     if not isinstance(r, dict):
         return "failed", "non-dict result"
     st = str(r.get("status") or "").strip().lower()
     errs = [str(e) for e in (r.get("errors") or []) if e]
+    waiting = [str(w) for w in (r.get("awaiting_upstream") or ()) if w]
     if st == "ok":
         return "ok", None
     if st in _NO_NEW_DATA:
@@ -49,7 +76,11 @@ def classify_result(r):
     if st:
         return "failed", (r.get("error") or (errs[0] if errs else st))
     if errs:
+        # ★ ORDER IS THE GUARD. A real error outranks a wait, so an extractor
+        # cannot launder a genuine failure by also waiting on something.
         return "failed", errs[0]
+    if waiting:
+        return AWAITING_UPSTREAM, "; ".join(waiting)
     return "ok", None
 
 
@@ -84,6 +115,14 @@ def summarize_families(by_iso, results, families=_FAMILIES):
                    (iso, timestamp, metric_name) now that persist_metrics
                    writes the observation time), so the board's zero-row
                    counter resets instead of climbing on a healthy feed
+      awaiting_upstream
+                   no member FAILED, but at least one is waiting on an
+                   upstream period that has not been published to anyone yet
+                   (named in `note`). ★ Distinct from `degraded` because
+                   nobody can act on it and it expires by itself; distinct
+                   from `success` because coverage really is short and the
+                   board must keep saying so. One genuinely failed member
+                   outranks it.
       degraded     some members failed (named in `note`)
       failed       every member failed, or none reported at all
     `rows_inserted` is the SUM the members reported (a measured number).
@@ -108,11 +147,20 @@ def summarize_families(by_iso, results, families=_FAMILIES):
                          "note": "no member extractor reported a result"}
             continue
         failed = sorted(m for m, v in present.items() if v.get("verdict") == "failed")
+        waiting = sorted(m for m, v in present.items()
+                         if v.get("verdict") == AWAITING_UPSTREAM)
         rows = sum(int(v.get("rows_inserted") or 0) for v in present.values())
         if len(failed) == len(present):
             status = "failed"
         elif failed:
+            # ★ A real failure anywhere in the family outranks any wait. This
+            # branch is checked BEFORE `waiting` on purpose: if the two ever
+            # swap, a family with a broken member starts publishing itself as
+            # merely waiting, which is the exact laundering this state must
+            # not enable.
             status = "degraded"
+        elif waiting:
+            status = AWAITING_UPSTREAM
         elif rows == 0:
             status = "no_new_data"
         else:
@@ -122,6 +170,14 @@ def summarize_families(by_iso, results, families=_FAMILIES):
         if failed:
             note = "failed: " + "; ".join(
                 "%s (%s)" % (m, (present[m].get("reason") or "?")[:80]) for m in failed)
+        elif waiting:
+            # Name the members that DID report, so the note can never be read
+            # as "the whole family is waiting".
+            note = ("awaiting upstream: " + "; ".join(
+                "%s (%s)" % (m, (present[m].get("reason") or "?")[:80])
+                for m in waiting)
+                + " — %d of %d member(s) reported, %d rows"
+                % (len(present) - len(waiting), len(present), rows))
         elif status == "no_new_data":
             note = "ran; every member reported ok with 0 new rows (readings already stored)"
         else:

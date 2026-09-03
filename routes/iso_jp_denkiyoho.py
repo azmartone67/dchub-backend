@@ -435,16 +435,56 @@ def _parse_eria_jukyu(text):
 # Guarded by tests/test_jp_month_rollover_note.py.
 _MONTH_ROLLOVER_GRACE_DAYS = 2
 
+# ── the DEADLINE on "not published yet" (2026-09-03) ──────────────────
+# ★ WITHOUT THIS CONSTANT THE MARKER IS A PERMANENT EXCUSE. #3627 named an
+# absent current-month file `month_not_published_yet:` with no expiry, so a
+# monthly URL that upstream had genuinely abandoned would carry the same
+# reassuring wording on the 30th as on the 1st. A waiting state that can
+# never lapse is a silenced check wearing a better label.
+#
+# Measured 2026-09-03 ~10:20 JST, the nine monthly eria files:
+#   hokkaido 404  ← the only absentee
+#   tepco 200 (0.8h fresh)   chubu 200 (1.3h)   hokuriku 200 (1.3h)
+#   kansai 200 (1.3h)        chugoku 200 (0.8h) shikoku 200 (0.8h)
+#   kyushu 200               okinawa 200 (1.3h)
+# So eight of nine peers had posted September by day 3 — an absent file is
+# already unusual, not routine.
+#
+# The window is a BOUND, not an observed first-publication date: HEPCO's own
+# recorded behaviour is "monthly file lags ~1wk" (_MIX_STALE_AFTER_H) and its
+# finalisation stamps are 202607 -> 2026-08-03 and 202606 -> 2026-07-06, i.e.
+# the first days of the FOLLOWING month. Ten days is the generous end of that
+# range. ★ It should SHORTEN the first time a first-publication date is
+# actually observed — a bound picked to be safe is not a measurement, and
+# leaving it un-narrowed once the real number is known would be the same
+# excuse in slower motion.
+#
+# Past the window an absent file is reported verbatim (`http_404`) and the
+# feed is red again, which is the whole point: the waiting state exists to
+# describe a wait that ENDS.
+_UPSTREAM_MONTH_GRACE_DAYS = 10
+
+# The stable machine-readable prefix the orchestrator keys on. It is a
+# CONSTANT rather than a literal repeated in two modules because the ledger's
+# "not a fault yet" verdict now depends on matching it exactly — a typo would
+# fail silently in the safe direction (still red) but a rename would fail
+# silently in the UNSAFE one.
+AWAITING_UPSTREAM_PREFIX = "month_not_published_yet:"
+
 
 def _month_gap_note(now_jst, last_note):
     """Name an unpublished current-month file as exactly that.
 
-    Only reached when THIS month's monthly CSV 404'd. Keeps the raw status in
-    the string so the underlying fact is never hidden, and carries the month
-    so a reader can re-run the one curl that settles it."""
+    Only reached when THIS month's monthly CSV 404'd, and only INSIDE
+    _UPSTREAM_MONTH_GRACE_DAYS — past that the caller keeps the raw status,
+    because an upstream that has not published by then is not "yet", it is
+    broken. Keeps the raw status in the string so the underlying fact is never
+    hidden, and carries the month so a reader can re-run the one curl that
+    settles it."""
     ym = now_jst.strftime("%Y%m")
-    return (f"month_not_published_yet:{ym} (day {now_jst.day} JST; "
+    return (f"{AWAITING_UPSTREAM_PREFIX}{ym} (day {now_jst.day} JST; "
             f"monthly file absent upstream, URL template unchanged; "
+            f"grace {_UPSTREAM_MONTH_GRACE_DAYS}d then this is a fault; "
             f"raw={last_note})")
 
 
@@ -500,7 +540,11 @@ def _fetch_eria(code):
             return parsed, "ok"
         except Exception as e:
             last_note = f"{type(e).__name__}"
-    if this_month_404:
+    # ★ The wait must be able to LAPSE. Inside the grace window an absent
+    # current-month file is named as a publication lag; past it the raw status
+    # stands and the feed goes red, because an upstream that still has not
+    # posted by then is not "yet".
+    if this_month_404 and now_jst.day <= _UPSTREAM_MONTH_GRACE_DAYS:
         return None, _month_gap_note(now_jst, last_note)
     return None, last_note
 
@@ -658,10 +702,36 @@ def run_extraction():
                 "; ".join(f"{c}:{n}" for c, n in sorted(failed.items()))
                 + " — wrote nothing for these areas (no modeled fallback)")
         mix_failed = {c: n for c, n in mix_notes.items() if n != "ok"}
-        if mix_failed:
+        # ★ SPLIT THE CHANNEL (2026-09-03). `errors[]` is the FATAL channel:
+        # routes/iso_orchestrator.classify_result reads a status-less summary
+        # as failed the moment errors[] is non-empty, so one area waiting on an
+        # upstream file that does not exist yet made the whole OCCTO extractor
+        # "failed", the iso-intl family "degraded", and the dead-man board red
+        # — while nine areas wrote fresh rows.
+        #
+        # An upstream period that has not been PUBLISHED yet is not a fault of
+        # this extractor and there is no action anyone can take on it. It gets
+        # its own STRUCTURED key so the orchestrator matches on data, never on
+        # a substring of a prose error string.
+        #
+        # ★ NARROW ON PURPOSE. Only the bounded, self-expiring
+        # AWAITING_UPSTREAM_PREFIX marker moves. A stale file, a 500, a
+        # timeout, an undecodable body, an unrecognised format — and the SAME
+        # 404 once _UPSTREAM_MONTH_GRACE_DAYS has lapsed — all stay in
+        # errors[] and still turn the feed red. Widening this is the failure
+        # mode; tests/test_awaiting_upstream_state.py fails if it widens.
+        awaiting = {c: n for c, n in mix_failed.items()
+                    if n.startswith(AWAITING_UPSTREAM_PREFIX)}
+        real_failed = {c: n for c, n in mix_failed.items() if c not in awaiting}
+        if real_failed:
             summary["errors"].append(
-                "mix: " + "; ".join(f"{c}:{n}" for c, n in sorted(mix_failed.items()))
+                "mix: " + "; ".join(f"{c}:{n}" for c, n in sorted(real_failed.items()))
                 + " — no fuel mix written for these areas")
+        if awaiting:
+            # Still "no fuel mix written for these areas" — the coverage list
+            # below is unchanged and mix_areas_reporting still omits them.
+            summary["awaiting_upstream"] = [
+                f"{c}:{n}" for c, n in sorted(awaiting.items())]
         mix_agg = _aggregate_mix(mix)
         if results or mix:
             summary["metrics_extracted"] = (
