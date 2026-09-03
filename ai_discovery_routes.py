@@ -1030,6 +1030,7 @@ GET /api/news?limit={n}
 
 GET /api/v1/transactions?limit={n}&deal_type={type}
   Returns: Recent M&A transactions, investments, and deals in the data center sector
+           ({canon_deals} tracked M&A deals)
   Parameters:
     limit     — Max results (default 20)
     deal_type — Filter: acquisition, investment, joint_venture, lease, development
