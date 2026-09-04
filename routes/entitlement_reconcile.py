@@ -170,7 +170,7 @@ def _provision_mcp(cur, email: str, plan: str) -> str:
     key = "dch_live_" + _sec.token_hex(16)
     cur.execute(
         """INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, status, metadata)
-           VALUES (%s, %s, %s, %s, 'active', %s::jsonb)""",
+           VALUES (%s, %s, %s, %s, 'active', %s::jsonb) ON CONFLICT DO NOTHING""",
         (key, "dev_" + _sec.token_hex(8), email, tier,
          json.dumps({"source": "entitlement_reconcile",
                      "reason": "paid but never provisioned on the MCP surface"})))
