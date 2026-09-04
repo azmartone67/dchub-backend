@@ -332,6 +332,25 @@ PINNED = {
                       "12,650+",
                       "10,706", "10706", "50,000+", "50000", "317 ", "332 ",
                       "232 ", "100 calls/day", "3,000+ M&A",
+                      # ★2026-09-04 r-us-market-count. The retired market
+                      # count that got away. Its siblings above were listed
+                      # here and the sentinel caught them on served bodies;
+                      # this one never was, so it survived on six agent-facing
+                      # surfaces — the manifest, the citation tool, explainDCPI
+                      # and three post generators — long after main.py's
+                      # testimonial query started filtering it out of
+                      # DISPLAYED quotes as "retired inflation" (2026-06-04).
+                      # Suppressing where users read it while still publishing
+                      # it is why a denylist entry, not just a fix, is needed.
+                      #
+                      # ★ NOT a bare "285 ": these are plain substring checks
+                      #   (ai_surface_sentinel.py:156) and a bare number would
+                      #   collide with any 285 MW / 2,285 / $285 on a served
+                      #   body — the exact hazard that retired the "2,000+"
+                      #   markers when the canon grew into its own denylist.
+                      #   Both shapes below are CLAIM shapes; nothing legitimate
+                      #   says "285 markets" or "285 US".
+                      "285 market", "285 US",
                       # ★★★2026-09-02 — THE FIVE "2,000+ ..." MARKERS ARE GONE,
                       # because the deduped count grew into them and they were
                       # denylisting THE CANON'S OWN ANSWER. They were retired in

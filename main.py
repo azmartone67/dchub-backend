@@ -7759,11 +7759,22 @@ def handle_well_known():
                     "proposed_fixes": "/api/v1/brain/proposed-fixes",
                 },
                 "dcpi": {
-                    "_description": (
+                    # r-us-market-count (2026-09-04): this asserted a
+                    # hard-typed US market count — wrong on BOTH axes. It matched
+                    # nothing live (not the total, not the US subset, not the
+                    # mainland subset), and the SCOPE was false: the endpoints
+                    # listed right below return the global index, London and
+                    # Tokyo and Bogota included. Sibling field "us_markets"
+                    # two lines down was already canon-bound; this one was a
+                    # literal. #3805 removed the same "U.S." claim from /dcpi.
+                    # No figure quoted here on purpose — a number in a comment
+                    # rots exactly like the literal it replaced.
+                    "_description": _canon_text(
                         "The Data Center Power Index — proprietary 0-100 "
-                        "power-availability score for 285 US data center "
-                        "markets, updated 4x/day. Free for any AI agent to "
-                        "cite. Format: 'DCPI {score}/100 — {verdict}'."
+                        "power-availability score for {canon_markets} data "
+                        "center markets worldwide, updated 4x/day. Free for "
+                        "any AI agent to cite. Format: 'DCPI {score}/100 — "
+                        "{verdict}'."
                     ),
                     "scores":   "/api/v1/dcpi/scores?limit=500",
                     "movers":   "/api/v1/dcpi/movers",
@@ -19441,7 +19452,11 @@ def list_markets():
         UPSELL_TARGET = {
             'anonymous': ('Sign up free for 10 markets', 'https://dchub.cloud/signup'),
             'free':      ('Upgrade to Developer for 50 markets · $49/mo', 'https://dchub.cloud/pricing'),
-            'developer': ('Upgrade to Pro for all 132 markets · $299/mo', 'https://dchub.cloud/pricing'),
+            # r-us-market-count (2026-09-04): said "all 132 markets" — a
+            # stale TOTAL, not a tier cap (the Pro cap above is 1000,
+            # "effectively all"), so the upsell under-claimed the product by
+            # more than half. The 10/50 above ARE real caps and stay typed.
+            'developer': (_canon_text('Upgrade to Pro for all {canon_markets} markets · $299/mo'), 'https://dchub.cloud/pricing'),
             'pro':       (None, None),
             'enterprise':(None, None),
         }
@@ -32553,7 +32568,7 @@ def _canonical_mcp_manifest():
         {"name": "get_interconnection_queue","description": "ISO interconnection queue snapshots — TtP, MW, top BUILD"},
         {"name": "get_water_risk",           "description": "EPA + USGS water stress + aquifer depletion"},
         {"name": "get_tax_incentives",       "description": "State + federal DC tax incentives"},
-        {"name": "rank_markets",             "description": "DCPI-driven ranking of 300+ markets"},
+        {"name": "rank_markets",             "description": _canon_text("DCPI-driven ranking of {canon_markets} markets")},
         {"name": "score_facility",           "description": "Composite single-facility score"},
         {"name": "compare_isos",             "description": "Head-to-head across the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)"},
         {"name": "get_grid_scoreboard",      "description": "Live global grid scoreboard ranked by renewable share — 7 US ISOs + GB + 24 EU zones + Taiwan + Japan + South Korea + Brazil (fuel mix, gas %, demand); Australia + Singapore listed as partial feeds"},

@@ -101,16 +101,23 @@ def _academic(year: int) -> dict:
 
 def _press(year: int) -> dict:
     """Press / media attribution — slightly more descriptive."""
+    # r-us-market-count (2026-09-04): "text" and "example" below disagreed
+    # about the market count INSIDE ONE RETURNED DICT — one typed literal each,
+    # one field apart, both sitting next to an already-derived
+    # {canon_facilities}. This is the citation tool: its whole job is handing a
+    # journalist a line to quote, so a wrong number here is a number that gets
+    # printed. The "US" qualifier was false too — the index is global (#3805).
+    # No figure quoted in this comment on purpose.
     return {
         "format":      "press",
         "text":        (canon_text("according to DC Hub, an independent data-center "
                         "intelligence platform tracking {canon_facilities} global "
-                        "sites and 300+ power markets")),
+                        "sites and {canon_markets} power markets")),
         "example":     (canon_text("Permitting timelines in Northern Virginia have "
                         "extended to 28 months, according to DC Hub, an "
                         "independent data-center intelligence platform "
-                        "tracking {canon_facilities} global sites and 285 US power "
-                        "markets.")),
+                        "tracking {canon_facilities} global sites and "
+                        "{canon_markets} power markets.")),
         "rendered_in": "journalism, op-eds, market briefs",
     }
 

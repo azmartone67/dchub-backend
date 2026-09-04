@@ -64,6 +64,26 @@ def _canon_media_phrases() -> tuple[str, str]:
         return "", ""
 
 
+def _canon_markets() -> str:
+    """Canon-bound DCPI market count, or "" when it cannot be resolved.
+
+    r-us-market-count (2026-09-04). The posts below hard-typed a market count
+    and called those markets US-only. Both were wrong: the number was retired
+    inflation (main.py's testimonial query has filtered it out of DISPLAYED
+    quotes since 2026-06-04 while the post generators kept publishing it), and
+    the index is global — #3805 removed the same "U.S." claim from /dcpi.
+
+    Fail-open to "" like _canon_media_phrases: callers must render a
+    count-free sentence rather than a frozen literal. These posts go out
+    unattended, so a wrong number here is published with nobody reading it.
+    """
+    try:
+        from canonical_stats import markets_phrase
+        return markets_phrase() or ""
+    except Exception:
+        return ""
+
+
 # r61-c (2026-05-25) — Narrative arc threading.
 # linkedin_quad fires 4 disjoint posts/day. Without an arc reference,
 # each post stands alone and the week's messaging lacks continuity.
@@ -388,14 +408,18 @@ def _format_post_base(slot, payload):
     topic, style, landing = slot["topic"], slot["style"], LANDING_URL_MAP[slot["topic"]]
 
     if topic == "dcpi_mover" and payload:
+        # Count-free when canon is unreadable ("ranks markets daily"), never a
+        # frozen literal. See _canon_markets.
+        _mk = _canon_markets()
+        _mk_clause = f"{_mk} markets" if _mk else "markets"
         return (
             f"🚀 {payload.get('market','?')} just hit {payload.get('score','?')}/100 "
             f"on the DC Power Index ({payload.get('verdict','?')})\n\n"
-            f"The DC Power Index ranks 285 US markets daily. This kind of move "
+            f"The DC Power Index ranks {_mk_clause} daily. This kind of move "
             f"signals where AI capex is actually flowing — not where the headlines say it is.\n\n"
             f"Top BUILD markets right now span 3 ISOs (WECC, SPP, ERCOT). Grid fundamentals "
             f"now outweigh proximity to legacy colocation hubs.\n\n"
-            f"Track all 285: {landing}\n\n"
+            f"Track them all: {landing}\n\n"
             f"#DCHub #DCPI #DataCenter #AIInfrastructure"
         )
     if topic == "hyperscaler_deal" and payload:
@@ -450,11 +474,15 @@ def _format_post_base(slot, payload):
         # points at the LIVE DCPI ranking + open methodology instead of inventing
         # numbers. (Path A / marketing_engine carries the real per-market DCPI
         # posts now that the quality scorer recognizes DCPI scores — r80.2.)
+        # Count-free when canon is unreadable ("ranks markets on live grid
+        # headroom"), never a frozen literal. See _canon_markets.
+        _mk = _canon_markets()
+        _mk_all = f"all {_mk} markets" if _mk else "markets"
         return (
             f"⚡ The data-center map shifts faster than the headlines.\n\n"
             f"Primary metros like Northern Virginia and Silicon Valley sit behind "
             f"multi-year interconnection queues while capex rotates toward emerging, "
-            f"power-rich markets. DC Hub's DCPI ranks all 285 markets on live grid "
+            f"power-rich markets. DC Hub's DCPI ranks {_mk_all} on live grid "
             f"headroom — see who's actually moving, methodology open:\n\n"
             f"Live ranking: {landing}\n"
             f"Methodology: https://dchub.cloud/dcpi#methodology\n\n"

@@ -4,9 +4,15 @@ mcp_explain_dcpi.py — Phase r36 (2026-05-25). explainDCPI MCP tool.
 Purpose
 -------
 DCPI (DC Hub Power Index) is our proprietary 0–100 dual-score that
-captures grid CONSTRAINT and EXCESS-POWER for 285 US data-center
-markets. It's the moat. Other directories list facilities; we score
+captures grid CONSTRAINT and EXCESS-POWER for data-center markets
+worldwide. It's the moat. Other directories list facilities; we score
 markets.
+
+(r-us-market-count 2026-09-04: this stated a hard-typed US market count.
+The count was retired inflation and the scope was wrong — the index is
+global. No
+figure is stated here: a docstring cannot self-heal, so it names no count
+at all rather than a stale one. Live counts come from canonical_stats.)
 
 But the score is opaque without methodology. When an LLM quotes
 "Phoenix excess_power_score = 72" it has no way to explain why.
@@ -34,6 +40,21 @@ from typing import Any
 import psycopg2
 import psycopg2.extras
 from flask import Blueprint, jsonify, request
+
+
+def _canon(text: str) -> str:
+    """Substitute {canon_*} placeholders, failing open to a count-free string.
+
+    Mirrors main.py's _canon_text contract: if canon cannot be imported the
+    placeholder resolves to "" and the sentence loses its number rather than
+    carrying a wrong one. A missing count is visible; a stale one is not.
+    """
+    try:
+        from ai_surface_canon import canon_text
+        return canon_text(text)
+    except Exception:
+        import re as _re
+        return _re.sub(r"\{canon_[a-z_]+\}", "", text).replace("  ", " ")
 
 
 mcp_explain_dcpi_bp = Blueprint("mcp_explain_dcpi", __name__)
@@ -168,8 +189,13 @@ def explain_dcpi() -> Any:
             "tool": "explainDCPI",
             "error": "market not found",
             "market": slug,
-            "hint": ("Check spelling. Try /api/v1/dcpi/markets for the "
-                     "full list of 285 US market slugs."),
+            # r-us-market-count (2026-09-04): this hint was wrong TWICE —
+            # it quoted a retired market count, and it pointed at
+            # /api/v1/dcpi/markets, which 404s. A hint is what an LLM
+            # follows after a miss, so a dead path here turns one bad slug
+            # into two failed calls. /scores is the endpoint that exists.
+            "hint": (_canon("Check spelling. Try /api/v1/dcpi/scores for the "
+                            "full list of {canon_markets} market slugs.")),
         }), 404
 
     if row.get("computed_at"):
