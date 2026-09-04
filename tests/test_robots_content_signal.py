@@ -155,14 +155,13 @@ def test_ai_input_stays_enabled():
     reason="live-edge probe; set DCHUB_LIVE_EDGE=1 to run",
 )
 def test_edge_serves_our_robots_not_a_managed_one():
-    import urllib.request
+    import requests
 
-    req = urllib.request.Request(
+    served = requests.get(
         "https://dchub.cloud/robots.txt",
         headers={"User-Agent": "dchub-guard/1.0", "Cache-Control": "no-cache"},
-    )
-    with urllib.request.urlopen(req, timeout=20) as r:
-        served = r.read().decode("utf-8", "replace")
+        timeout=20,
+    ).text
 
     groups = _parse_groups(served)
     assert groups, "edge served a robots.txt with no parsable group"
