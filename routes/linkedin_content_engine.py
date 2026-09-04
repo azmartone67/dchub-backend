@@ -19,7 +19,7 @@ this engine rotates through 6 story types:
   shipped_this_week     — What we built last 7 days (from
                           auto_press_releases + brain_proposed_fixes)
   hyperscaler_drama     — Real recent news + our DCPI contrarian angle
-  market_anomaly        — Biggest WoW score change among 300+ markets
+  market_anomaly        — Biggest WoW score change across the scored markets
 
 Each pulls real DB data, then asks Claude Sonnet to compose a
 280-char hook + 2-3 insight beats + CTA + hashtags in DC Hub's voice.
@@ -136,8 +136,15 @@ _STORY_TYPE_TO_TOPIC = {
 
 # Known MCP tool catalog — used by capability_spotlight to pick a
 # tool + describe an example call. Hand-curated from server-card.
+#
+# r-us-market-count (2026-09-04): the rank_markets "ask" carried a hard-typed
+# market count and called the markets US-only; both were wrong (the index is
+# global — #3805). NOT canon-bound: this list is module-level, so resolving
+# canon here would put a DB query in the import path. An example ask does not
+# need a count to be a good example, so it states none — the only form that
+# cannot go stale in data evaluated at import.
 _MCP_TOOL_HOOKS = [
-    {"tool": "rank_markets",      "ask": "rank 285 US data-center markets by excess power for AI training"},
+    {"tool": "rank_markets",      "ask": "rank data-center markets by excess power for AI training"},
     {"tool": "explain_dcpi",      "ask": "explain why Phoenix is AVOID and Cheyenne is BUILD on the DCPI"},
     {"tool": "get_grid_data",     "ask": "pull live ERCOT load + reserve margin in JSON"},
     {"tool": "score_facility",    "ask": "score a candidate Northern Virginia site against 11 factors"},
@@ -882,6 +889,21 @@ def _canon_media_phrases() -> tuple[str, str]:
         return "", ""
 
 
+def _canon_markets_phrase() -> str:
+    """Canon-bound DCPI market count, or "" when unresolvable.
+
+    _build_user_prompt already derives this for the LLM path (a hardcoded
+    "300+ markets" once tripped the editor's internal-consistency check against
+    canon). The static fallback did not, so the two paths could publish
+    different counts for the same product.
+    """
+    try:
+        from canonical_stats import markets_phrase
+        return markets_phrase() or ""
+    except Exception:
+        return ""
+
+
 def _build_user_prompt(story_type: str, data: dict, landing: str) -> str:
     """Per-story-type user prompt with the real data."""
     # r-qa (2026-06-27): pull the standing totals from canonical_stats so the
@@ -1092,8 +1114,18 @@ End with the source line + CTA: {landing}. Hashtags: #DataCenter #AIInfrastructu
 
     if story_type == "market_anomaly":
         a = data.get("anomaly") or {}
+        # r-us-market-count (2026-09-04): a hard-typed US market count here
+        # went straight into an LLM prompt, so the model repeated it as fact in
+        # a published post. Count-free when canon is unreadable — an LLM given
+        # no number cannot quote a wrong one.
+        try:
+            from canonical_stats import markets_phrase as _mp
+            _mk = _mp() or ""
+        except Exception:
+            _mk = ""
+        _scope = f"the {_mk} markets DC Hub scores" if _mk else "the markets DC Hub scores"
         return f"""Compose a LinkedIn post about a DCPI anomaly: the
-biggest week-over-week score change among 285 US markets.
+biggest week-over-week score change among {_scope}.
 
 REAL DATA: {json.dumps(a, default=str)[:400]}
 
@@ -1113,8 +1145,15 @@ def _static_fallback(story_type: str, data: dict, landing: str) -> str:
     lists but still ground-truth real."""
     _fac, _ = _canon_media_phrases()
     # "N facilities, " or nothing — never a frozen literal (this branch carried
-    # "21,401 facilities, 285 DCPI-scored markets" until 2026-08-23).
+    # a hard-typed facilities+markets pair until 2026-08-23).
     _fac_p = f"{_fac} facilities, " if _fac else ""
+    # r-us-market-count (2026-09-04): the 2026-08-23 pass derived the FACILITIES
+    # half of that pair and left the MARKETS half typed, so two literals below
+    # kept publishing a frozen count on the fallback path — the path that runs
+    # precisely when the LLM is unavailable and nobody is reviewing the copy.
+    # Same fail-open direction: count-free, never frozen.
+    _mkt = _canon_markets_phrase()
+    _mkt_p = f"{_mkt} markets" if _mkt else "markets"
     if story_type == "capability_spotlight":
         tool = data.get("tool") or {}
         return (
@@ -1151,7 +1190,7 @@ def _static_fallback(story_type: str, data: dict, landing: str) -> str:
             f"Constraint: {scoop.get('constraint_score','?')}. Time-to-power: "
             f"{scoop.get('time_to_power_months','?')} months.\n\n"
             f"You won't read this on the front page — that's exactly why "
-            f"DC Hub built the Power Index. 300+ markets, weekly, "
+            f"DC Hub built the Power Index. {_mkt_p}, weekly, "
             f"data-driven.\n\n"
             f"See the full list: {landing}\n\n"
             f"#DCPI #DataCenter #AIInfrastructure"
@@ -1187,14 +1226,18 @@ def _static_fallback(story_type: str, data: dict, landing: str) -> str:
         delta = a.get("delta", 0)
         sign = "+" if (delta or 0) > 0 else ""
         return (
-            f"DCPI anomaly of the week: {a.get('market_name','a US market')} "
+            # r-us-market-count (2026-09-04): the DEFAULT here was "a US
+            # market". A missing name is exactly when the scope is unknown, so
+            # the fallback asserted the one thing it could not know — and the
+            # index is global, so it is wrong for every non-US mover.
+            f"DCPI anomaly of the week: {a.get('market_name','a scored market')} "
             f"moved {sign}{delta} on Excess Power score.\n\n"
             f"Current: {a.get('now_e','?')} ({a.get('now_v','?')}). "
             f"7d ago: {a.get('prev_e','?')}.\n\n"
             f"Movements this large signal real underlying change — "
             f"new gen additions, queue movement, or demand shifts. AI "
             f"infra teams should investigate.\n\n"
-            f"All 300+ markets: {landing}\n\n"
+            f"All {_mkt_p}: {landing}\n\n"
             f"#DCPI #DataCenter #AIInfrastructure"
         )
     return f"DC Hub Media · See {landing}\n\n#DCHub #DataCenter"
