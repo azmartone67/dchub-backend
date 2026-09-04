@@ -58,6 +58,7 @@ admin-gated endpoints, not anything new here). Best-effort: a missing table yiel
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -646,6 +647,48 @@ def _should_file_spec_pr(pr_attempt) -> bool:
     return not pr_attempt.get("acted")
 
 
+def _read_directive(body: dict) -> str:
+    """The operator's instruction, from `directive_b64` first, plain
+    `directive` second.
+
+    ★ WHY BASE64 (2026-09-04). The brain writes a "decision for human" that
+    QUOTES the shell command to run — inv #100502 reads: Run
+    `curl -i https://dchub.cloud/js/dchub-nav.js` and, if it returns 404,
+    restore that asset/route first — and the approve button posts that text
+    straight back as `directive`. Cloudflare's managed WAF reads a
+    backtick-wrapped command carrying a URL as command injection and answers
+    **403 with an HTML block page, before Railway**. So the request never
+    reached this function: no brain_approvals row, no log line, nothing for
+    redrive_approved_without_pr to find, and the page's `r.json()` threw, so
+    the operator's whole diagnosis was the bare word `error`.
+
+    ★ MEASURED on the live edge, 2026-09-04, same body both hosts:
+        dchub.cloud                         -> 403 "Attention Required! | Cloudflare"
+        dchub-backend-production.up...      -> 400 (the app's own reply)
+        base64 of the identical text, edge  -> 400 (the app's own reply)
+      and the trigger bisects to the backticks: `curl <url>` 403s,
+      curl <url> without them does not. 2 of the 45 items carrying a
+      decision-for-human were un-approvable — 2 of the only 4 with a button.
+
+    So the transport carries base64 and the WAF has nothing to match. Plain
+    `directive` is still honoured: a cached page, a script, or any caller
+    whose text does not quote a command works unchanged.
+    """
+    raw = body.get("directive_b64")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return base64.b64decode(raw.strip(), validate=True).decode(
+                "utf-8", "replace").strip()
+        except Exception as e:
+            # Never fall back to `directive` here: a caller that sent b64 and
+            # got it wrong must not silently approve on an EMPTY directive
+            # (that is the "approving a menu" bug of 2026-09-01 again).
+            logger.warning(
+                "brain_innovation_dashboard: directive_b64 undecodable: %s", e)
+            return ""
+    return str(body.get("directive") or "").strip()
+
+
 @brain_innovation_dashboard_bp.route("/api/v1/brain/innovation/approve", methods=["POST"])
 def innovation_approve():
     """RECORD the operator GREENLIGHTING the brain's guidance for one item.
@@ -670,8 +713,8 @@ def innovation_approve():
     open_pr = bool(body.get("open_pr"))
     # The operator's instruction for THIS item, when the item's own
     # "decision for human" is a menu rather than a directive. See
-    # _resolve_directive.
-    operator_directive = str(body.get("directive") or "").strip()
+    # _resolve_directive and _read_directive.
+    operator_directive = _read_directive(body)
     conn = _conn()
     if conn is None:
         return jsonify(ok=False, error="database unavailable"), 503
@@ -994,6 +1037,17 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
   function authq(url){ return KEY ? (url + (url.indexOf('?')<0?'?':'&') + 'admin_key=' + encodeURIComponent(KEY)) : url; }
   function authh(){ var h={'Content-Type':'application/json'}; if(KEY){h['X-Admin-Key']=KEY;} return h; }
   function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  // btoa() is latin1-only and throws on the — and → these directives carry.
+  function utf8ToB64(s){ return btoa(String.fromCharCode.apply(null, new TextEncoder().encode(String(s==null?'':s)))); }
+  // A reply with no JSON `error` used to print the literal word 'error', which
+  // is what an edge block, a 502 and a bad gateway all looked like. Say who
+  // answered: only the app speaks JSON here, so a non-JSON body is upstream.
+  function approveErr(res){
+    if(res.j && res.j.error) return res.j.error;
+    if(res.jsonOk) return 'HTTP '+res.status+' with no error field';
+    if(res.status===403) return 'HTTP 403 from the edge (HTML, not JSON) — the request never reached the app; a WAF rule matched the request body';
+    return 'HTTP '+res.status+' — non-JSON reply, so this came from the edge, not the app';
+  }
 
   function confBadge(c){
     if(c==null) return '<span class="badge conf-md">conf —</span>';
@@ -1117,8 +1171,12 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
     if(directive === null) return;            // cancelled: record nothing
     directive = (directive || '').trim();
     btn.disabled = true; btn.textContent = '⏳ drafting…';
-    fetch(authq('/api/v1/brain/innovation/approve'), {method:'POST', headers:authh(), body:JSON.stringify({kind:kind, id:Number(id), decision:'approved', open_pr:true, directive:directive})})
-      .then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {ok:r.ok, j:j}; }); })
+    // b64 the directive: the raw text quotes shell commands ("Run `curl -i
+    // https://…`") and Cloudflare's WAF 403s that body with an HTML block page
+    // before it ever reaches Railway. See _read_directive. utf8ToB64 because
+    // btoa() throws on the em dashes and arrows these directives carry.
+    fetch(authq('/api/v1/brain/innovation/approve'), {method:'POST', headers:authh(), body:JSON.stringify({kind:kind, id:Number(id), decision:'approved', open_pr:true, directive_b64:utf8ToB64(directive)})})
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, jsonOk:true, j:j}; }).catch(function(){ return {ok:r.ok, status:r.status, jsonOk:false, j:{}}; }); })
       .then(function(res){
         if(res.ok && res.j && res.j.ok!==false){
           APPROVED[kind+':'+id] = 'approved';
@@ -1147,7 +1205,7 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
           btn.parentNode.replaceChild(pill, btn);
         } else {
           btn.disabled = false; btn.textContent = '✓ approve + open PR';
-          toast('Approve failed: '+((res.j&&res.j.error)||'error'), false);
+          toast('Approve failed: '+approveErr(res), false);
         }
       })
       .catch(function(e){
