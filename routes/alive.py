@@ -32,6 +32,8 @@ from flask import Blueprint, jsonify, Response
 import psycopg2
 import psycopg2.extras
 
+from util.dcpi_score_row import PUBLISHED_ONLY
+
 
 alive_bp = Blueprint("alive", __name__)
 
@@ -173,9 +175,10 @@ def _build_vitals() -> dict:
             try:
                 cur.execute("SELECT to_regclass('public.market_power_scores')")
                 if (cur.fetchone() or [None])[0]:
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT COUNT(DISTINCT market_slug), MAX(computed_at)
                           FROM market_power_scores
+                         WHERE {PUBLISHED_ONLY}
                     """)
                     r = cur.fetchone()
                     if r:
@@ -192,12 +195,13 @@ def _build_vitals() -> dict:
 
             # ── International coverage ──
             try:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                       COUNT(*) FILTER (WHERE state IN
                         ('GB','IE','DE','NL','FR','SG','JP','IN','AU','BR','AE','ZA'))
                       AS intl
                       FROM market_power_scores
+                     WHERE {PUBLISHED_ONLY}
                 """)
                 r = cur.fetchone()
                 if r:
