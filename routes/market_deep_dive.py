@@ -151,6 +151,79 @@ def _collision_slugs() -> set:
     return out
 
 
+_FAC_UNION_SQL = """
+        WITH fac_all AS (
+          SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')) AS k,
+                 COALESCE(power_mw,0) AS mw, provider
+            FROM facilities
+           WHERE LOWER(COALESCE(city,'')) = ANY(%(names)s)
+             AND (NOT %(qualify)s
+                  OR UPPER(TRIM(COALESCE(state,''))) = %(state)s)
+          UNION ALL
+          SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')),
+                 COALESCE(power_mw,0), provider
+            FROM discovered_facilities
+           WHERE (LOWER(COALESCE(market,'')) = ANY(%(names)s)
+               OR LOWER(COALESCE(city,''))   = ANY(%(names)s))
+             AND COALESCE(is_duplicate, 0) = 0
+             AND (NOT %(qualify)s
+                  OR UPPER(TRIM(COALESCE(state,''))) = %(state)s)
+        ), fac AS (
+          SELECT k, MAX(mw) AS mw, MIN(provider) AS provider
+            FROM fac_all GROUP BY k
+        )
+    """
+
+
+def _has_metric(v):
+    """True when a metric slot holds a real reading rather than a placeholder
+    dash. Module-level so the shell's tiles and the fleet backfill below agree
+    on what "missing" means."""
+    return v not in (None, '', '—', '-', '?')
+
+
+def measured_market_facts(cur, name: str, *, slug: str = "",
+                          state: str = "") -> dict | None:
+    """{'facility_count': N, 'total_mw': X} for a market, read straight from
+    the fleet tables — NO market_power_scores row required.
+
+    r-latam-twin (2026-09-03): /markets/<slug>.json sourced its stats from
+    market_deep_dives, i.e. from the NARRATIVE. A market with real inventory
+    but no brief therefore had no data twin at all: bogota, mexico-city,
+    santiago and sao-paulo were 200 as HTML and 404 as .json, while carrying
+    40 / 31 / 102 / 55 tracked facilities. The narrative is a publication
+    decision; the measurement is not, and the twin is the measurement.
+
+    Same union as _gather_market_facts (one SQL string, hoisted) so the twin
+    and the brief can never count a market two ways.
+
+    Returns None when nothing matches, and OMITS a zero rather than reporting
+    one: `market_entity` publishes only measures it holds, and a fabricated
+    "0 facilities" for a market we merely failed to key on is the #1546 /
+    r-nova-zero shape that once published "avoid entering Northern Virginia".
+    """
+    _names = [c.lower() for c in _market_name_candidates(name)]
+    _state = (state or "").strip().upper()
+    _args = {
+        "names":   _names,
+        "qualify": bool(_state) and (slug or "") in _collision_slugs(),
+        "state":   _state,
+    }
+    try:
+        cur.execute(_FAC_UNION_SQL +
+                    "SELECT COUNT(*), COALESCE(SUM(mw),0) FROM fac", _args)
+        row = cur.fetchone()
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    out = {"facility_count": int(row[0])}
+    _mw = float(row[1] or 0)
+    if _mw > 0:
+        out["total_mw"] = _mw
+    return out
+
+
 def _gather_market_facts(cur, slug: str) -> dict | None:
     """Pull live facts for the market from market_power_scores +
     discovered_facilities + deals."""
@@ -245,28 +318,7 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
     # 'OHIO' rather than 'OH', so a strict equality would silently delete real
     # Amazon New Albany / AWS CMH facilities from that brief.
     # Kept as ONE sql string so both call sites below can never diverge.
-    _fac_union = """
-        WITH fac_all AS (
-          SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')) AS k,
-                 COALESCE(power_mw,0) AS mw, provider
-            FROM facilities
-           WHERE LOWER(COALESCE(city,'')) = ANY(%(names)s)
-             AND (NOT %(qualify)s
-                  OR UPPER(TRIM(COALESCE(state,''))) = %(state)s)
-          UNION ALL
-          SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')),
-                 COALESCE(power_mw,0), provider
-            FROM discovered_facilities
-           WHERE (LOWER(COALESCE(market,'')) = ANY(%(names)s)
-               OR LOWER(COALESCE(city,''))   = ANY(%(names)s))
-             AND COALESCE(is_duplicate, 0) = 0
-             AND (NOT %(qualify)s
-                  OR UPPER(TRIM(COALESCE(state,''))) = %(state)s)
-        ), fac AS (
-          SELECT k, MAX(mw) AS mw, MIN(provider) AS provider
-            FROM fac_all GROUP BY k
-        )
-    """
+    _fac_union = _FAC_UNION_SQL
     _names = [c.lower() for c in _market_name_candidates(out["name"])]
     # Qualify by state ONLY for the two sides of a known city-name collision.
     # A blank/unknown mps state disables it (fail OPEN to today's behaviour —
@@ -940,6 +992,36 @@ def _markets_404_response():
 # static text, so the suffix binds here and never reaches that normaliser.
 # Pinned by a test — if the ordering ever flips, the twin silently becomes a
 # redirect again.
+def _twin_facts_without_a_brief(slug: str):
+    """(display_name, stats) for a market with no deep-dive row.
+
+    stats is None ONLY for a slug that is not a market at all — that stays a
+    404, so this cannot re-open the soft-404 hole r-soft404 closed. A curated,
+    sitemapped metro resolves even when the fleet join finds nothing: its page
+    serves 200, and a twin that 404s for a page that 200s is the drift the
+    entity work exists to remove. It then carries an EMPTY variableMeasured
+    rather than an invented number.
+    """
+    name = _slug_title(slug)
+    facts = None
+    try:
+        c = _conn()
+        if c is not None:
+            try:
+                with c.cursor() as cur:
+                    facts = measured_market_facts(cur, name, slug=slug)
+            finally:
+                try: c.close()
+                except Exception: pass
+    except Exception:
+        facts = None
+    if facts:
+        return name, facts
+    if slug in CURATED_MARKET_SLUGS:
+        return name, {}
+    return name, None
+
+
 @market_deep_dive_bp.route("/markets/<slug>.json", methods=["GET"])
 def market_entity_json(slug):
     """The market as schema.org Dataset JSON-LD — no auth, no key, plain GET.
@@ -947,17 +1029,35 @@ def market_entity_json(slug):
     Same builder as the page's embedded block, so the two cannot drift into
     different answers for one market.
     """
-    r = read_deep_dive(slug)
-    if not r:
-        return jsonify(
-            error="unknown_market", slug=slug,
-            hint=("No market by that slug. GET /api/v1/markets for the list, or "
-                  "call rank_markets — both publish resolvable slugs.")), 404
-    _canon = MARKETS_CANONICAL_REDIRECT.get(slug, slug)
+    _slug = (slug or "").lower().strip()
+    _canon = MARKETS_CANONICAL_REDIRECT.get(_slug, _slug)
+    r = read_deep_dive(_slug)
+    if r:
+        _name  = r.get("market_name") or _slug
+        _stats = r.get("key_stats") or {}
+        _as_of = (r["generated_at"].isoformat()
+                  if r.get("generated_at") else None)
+    else:
+        # r-latam-twin (2026-09-03): a missing NARRATIVE is not a missing
+        # market. This 404'd for every sitemapped market whose brief had not
+        # been generated — measured live: bogota / mexico-city / santiago /
+        # sao-paulo were HTML 200 + .json 404, all four carrying real tracked
+        # inventory. They are unreachable by cron_rotate (it targets
+        # market_power_scores rows and they have none), so "wait for the
+        # nightly" is not a fix; the twin must answer from the measurement.
+        # `as_of` stays None on this path ON PURPOSE — market_entity omits
+        # dateModified rather than stamping today onto an undated reading.
+        _name, _stats = _twin_facts_without_a_brief(_canon)
+        _as_of = None
+        if _stats is None:
+            return jsonify(
+                error="unknown_market", slug=slug,
+                hint=("No market by that slug. GET /api/v1/markets for the list, or "
+                      "call rank_markets — both publish resolvable slugs.")), 404
     body = market_entity(
-        slug, r.get("market_name") or slug, r.get("key_stats") or {},
+        _slug, _name, _stats,
         canonical_slug=_canon,
-        as_of=(r["generated_at"].isoformat() if r.get("generated_at") else None))
+        as_of=_as_of)
     resp = jsonify(body)
     # application/ld+json is the honest type for this payload; agents and
     # validators both accept it, and it tells a crawler the body is structured
@@ -1759,6 +1859,34 @@ def market_short_html(slug):
         except Exception:
             pass
 
+        # r-latam-twin (2026-09-03): the backfill above is US-ONLY — it needs a
+        # main.MARKET_ALIASES entry AND filters country IN ('US','USA',NULL,''),
+        # so every non-US market fell through with num_facilities '—' while the
+        # note below told the reader "facility counts and capacity above are
+        # live from our infrastructure database". Measured live 2026-09-03:
+        # /markets/bogota, /mexico-city, /santiago and /sao-paulo each rendered
+        # a single bare em dash over 40 / 31 / 102 / 55 tracked facilities.
+        # Counts via the SAME union the brief and the .json twin use, so the
+        # three surfaces cannot disagree about one market.
+        if not _has_metric(md.get('num_facilities')):
+            try:
+                _c3 = _conn()
+                if _c3 is not None:
+                    _mf = None
+                    try:
+                        with _c3.cursor() as _cur3:
+                            _mf = measured_market_facts(_cur3, name,
+                                                        slug=slug_norm)
+                    finally:
+                        try: _c3.close()
+                        except Exception: pass
+                    if _mf:
+                        md['num_facilities'] = _mf['facility_count']
+                        if _mf.get('total_mw'):
+                            md['inventory_mw'] = round(_mf['total_mw'])
+            except Exception:
+                pass
+
     highlights_html = ""
     hl = md.get("highlights") or []
     if hl:
@@ -1780,8 +1908,7 @@ def market_short_html(slug):
     # we don't track for smaller markets made the page look broken (the
     # repeated "Reno is white/no data" reports). Now we show the metrics we
     # have (clean), and a one-line note for the research metrics we don't.
-    def _has(v):
-        return v not in (None, '', '—', '-', '?')
+    _has = _has_metric
     _metric_defs = [
         ('Inventory',     md.get('inventory_mw'),         '', ' MW'),
         ('Facilities',    md.get('num_facilities'),       '', ''),
@@ -1794,11 +1921,35 @@ def market_short_html(slug):
               for lab, val, pre, suf in _metric_defs if _has(val)]
     _missing = [lab for lab, val, pre, suf in _metric_defs if not _has(val)]
     stats_html = "\n".join(_tiles) or '<div class="stat">Facilities<b>—</b></div>'
+    # r-latam-twin (2026-09-03): this note VOUCHED for numbers the page was not
+    # showing. It fired on any missing metric — including the facility count it
+    # claims is "above" — so a shell whose only tile was a bare em dash still
+    # asserted "facility counts and capacity above are live from our
+    # infrastructure database". Only claim the fleet clause when a fleet tile
+    # actually rendered; the research clause stands on its own.
+    _RESEARCH_LABELS = ('Vacancy', 'Asking Rate', 'YoY Price')
+    # r-note-precision (2026-09-04): the clause must name the tiles that
+    # ACTUALLY rendered. Saying "facility counts and capacity above" on a page
+    # showing only a count is the same overclaim, one notch smaller —
+    # /markets/bogota shipped exactly that (Facilities 53, no Inventory tile,
+    # capacity vouched for anyway) because the gate accepted ANY fleet tile.
+    _shown = {lab for lab, val, pre, suf in _metric_defs if _has(val)}
+    _has_ct, _has_mw = 'Facilities' in _shown, 'Inventory' in _shown
+    if _has_ct and _has_mw:
+        _fleet_clause = (' — facility counts and capacity above are live from '
+                         'our infrastructure database.')
+    elif _has_ct:
+        _fleet_clause = (' — the facility count above is live from our '
+                         'infrastructure database.')
+    elif _has_mw:
+        _fleet_clause = (' — the capacity above is live from our '
+                         'infrastructure database.')
+    else:
+        _fleet_clause = '.'
     note_html = ""
-    if _missing:
+    if [lab for lab in _missing if lab in _RESEARCH_LABELS]:
         note_html = (f'<p class="note">Pricing, vacancy & YoY for {name} aren\'t in our '
-                     f'CBRE/JLL research coverage yet — facility counts and capacity above '
-                     f'are live from our infrastructure database.</p>')
+                     f'CBRE/JLL research coverage yet' + _fleet_clause + '</p>')
 
     # seo: enrich the market JSON-LD with the load-bearing numbers (total MW,
     # facility count, under-construction MW) as schema.org PropertyValues so AI

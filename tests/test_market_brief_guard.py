@@ -342,8 +342,23 @@ def _gather_sql():
     removed predicate would re-arm this scanner (the backfill_facility_status
     lesson, inverted). Comments aren't in the AST; string constants are.
     """
-    return "\n".join(n.value for n in ast.walk(_gather_fn())
-                     if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    # r-latam-twin (2026-09-03): the fleet union moved out of this function
+    # into the module constant _FAC_UNION_SQL when the .json twin became a
+    # second call site. _gather_market_facts still EXECUTES it (`_fac_union =
+    # _FAC_UNION_SQL`), so the predicates below are still its live SQL — read
+    # the constant too, or this scanner silently stops seeing the query it
+    # exists to police.
+    import re as _re
+    _const = _re.search(r'_FAC_UNION_SQL = """(.*?)"""', _module()[0], _re.S)
+    assert _const, "_FAC_UNION_SQL literal not found"
+    _fn_strings = "\n".join(
+        n.value for n in ast.walk(_gather_fn())
+        if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    # only count the constant when this function actually references it
+    _fn_src = ast.get_source_segment(_module()[0], _gather_fn()) or ""
+    if "_FAC_UNION_SQL" in _fn_src:
+        return _fn_strings + "\n" + _const.group(1)
+    return _fn_strings
 
 
 def test_gather_uses_fleet_filter_not_pending_queue():

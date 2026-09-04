@@ -43,9 +43,13 @@ def _func(tree, name):
 
 
 def _fac_union_sql():
-    m = re.search(r'_fac_union = """(.*?)"""',
+    # r-latam-twin (2026-09-03): the literal moved from a local inside
+    # _gather_market_facts to the module constant _FAC_UNION_SQL when the
+    # .json twin became a second call site. Read it where it lives — the
+    # invariants below are about the SQL, not about which scope holds it.
+    m = re.search(r'_FAC_UNION_SQL = """(.*?)"""',
                   _src("routes/market_deep_dive.py"), re.S)
-    assert m, "_fac_union SQL literal not found"
+    assert m, "_FAC_UNION_SQL literal not found"
     return m.group(1)
 
 
@@ -63,10 +67,18 @@ def test_both_union_arms_carry_the_gated_state_predicate():
 def test_the_union_is_one_string_shared_by_every_call_site():
     """Two divergent copies is how one call site silently keeps the bleed."""
     src = _src("routes/market_deep_dive.py")
-    assert src.count('_fac_union = """') == 1
-    # every execute() of the union passes the same param bundle
-    assert src.count("_fac_union +") == src.count("_fac_args)"), (
-        "a _fac_union call site does not pass _fac_args — it will raise on "
+    # Exactly ONE literal, and it is the module constant every call site
+    # names. A second `= """..."""` union anywhere in this file is a copy.
+    assert src.count('_FAC_UNION_SQL = """') == 1
+    assert src.count('_fac_union = """') == 0, (
+        "the union was re-inlined as a local — two copies is how one call "
+        "site silently keeps the bleed"
+    )
+    # every execute() of the union passes a qualify/state-bearing bundle
+    _sites = src.count("_fac_union +") + src.count("_FAC_UNION_SQL +")
+    _bundles = src.count("_fac_args)") + src.count("_args)")
+    assert _sites <= _bundles, (
+        "a union call site does not pass its param bundle — it will raise on "
         "the missing %(qualify)s/%(state)s keys or silently skip qualifying"
     )
 
