@@ -1629,9 +1629,20 @@ def high_intent_stats():
             # predicate (bare table → no prefix, like the step-drop base queries).
             # claim_to_paid below is left as-is: it JOINs on claim_email, which a
             # script never has, so it is already real-only.
+            # r-rows-are-not-sessions (2026-09-03): these two were the ONLY
+            # survivors of the 06-25 "count real sessions, not rows" fix that
+            # already converted claims_used/claims_redeemed below — and they are
+            # the funnel's headline numerator and denominator. The table is keyed
+            # per (session_id, tool), so one session crossing the threshold on N
+            # tools contributed N rows to a field NAMED *_sessions_30d. Live
+            # 09-03: 1725 rows vs 393 distinct sessions on the same table+window
+            # (/api/v1/mcp/handoff-funnel, which has always counted DISTINCT) —
+            # a 4.4x inflation, published on a PUBLIC route that press and
+            # dashboard surfaces re-ingest. claim_minted_rate_30d_pct divided one
+            # by the other, so it was a rows/rows ratio labelled a session rate.
             try:
                 cur.execute(
-                    """SELECT COUNT(*) FROM mcp_high_intent_sessions
+                    """SELECT COUNT(DISTINCT mcp_session_id) FROM mcp_high_intent_sessions
                         WHERE last_hit_at >= NOW() - INTERVAL '30 days'
                           AND paid_call_count_24h >= %s"""
                     + " AND " + _hi_real_sql(),
@@ -1641,7 +1652,7 @@ def high_intent_stats():
             except Exception: pass
             try:
                 cur.execute(
-                    """SELECT COUNT(*) FROM mcp_high_intent_sessions
+                    """SELECT COUNT(DISTINCT mcp_session_id) FROM mcp_high_intent_sessions
                         WHERE claim_minted_at IS NOT NULL
                           AND claim_minted_at >= NOW() - INTERVAL '30 days'"""
                     + " AND " + _hi_real_sql(),

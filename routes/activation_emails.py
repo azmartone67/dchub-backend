@@ -146,12 +146,27 @@ def claim(cur, customer_id: str, step: str, email: str) -> bool:
     return int(getattr(cur, "rowcount", 0) or 0) == 1
 
 
-def record_outcome(cur, customer_id: str, step: str, ok: bool, info: str) -> None:
+def record_outcome(cur, customer_id: str, step: str, ok: bool, info: str,
+                   now=None) -> None:
+    """Stamp the send outcome. `now` is the sweep's clock, NOT wall time.
+
+    r-clock-injection (2026-09-04): this stamped sent_at with
+    _dt.datetime.now() while run_sweep threaded an injected `now` through
+    everything else and its docstring promised "Pure with respect to time
+    (now)". The ledger therefore recorded a DIFFERENT instant than the sweep
+    that wrote it, and read_stats' window is computed from the caller's clock —
+    so a window query could count a send that the same clock says is outside
+    it. test_stats_publish_the_process_view_and_window_sends encoded the
+    correct behaviour and passed only while wall time happened to sit inside
+    the window: its fixed NOW (2026-09-02 06:00Z) put the boundary at
+    2026-09-04 04:00Z, and the suite went red at exactly that instant and
+    stayed red. A time bomb, not a flake.
+    """
     cur.execute(
         "UPDATE activation_email_ledger SET status = %s, sent_at = %s, "
         "delivery_info = %s WHERE customer_id = %s AND step = %s",
         ("sent" if ok else "failed",
-         _dt.datetime.now(_dt.timezone.utc) if ok else None,
+         (now or _dt.datetime.now(_dt.timezone.utc)) if ok else None,
          (info or "")[:200], str(customer_id), step))
 
 
@@ -337,7 +352,8 @@ def run_sweep(conn, sender=None, now=None, armed: bool | None = None,
                         continue
                     subject, html = render(step, c)
                     ok, info = sender(c["email"], subject, html)
-                    record_outcome(cur, c["customer_id"], step, ok, info)
+                    record_outcome(cur, c["customer_id"], step, ok, info,
+                                   now=now)
                     if ok:
                         out["sent"] += 1
                         out["sends"].append({"customer_id": c["customer_id"],
