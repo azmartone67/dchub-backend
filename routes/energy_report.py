@@ -136,10 +136,37 @@ def _gather_energy_uncached(window: str) -> dict:
     leaderboard = []
     verdict_results = {}
 
+    # ★ r-report-scores (2026-09-03): AUTHENTICATE THIS SELF-CALL. It went out
+    # with NO credential, so /api/v1/dcpi/leaderboard answered with the FREE
+    # tier view — market names and verdicts, every score masked to null — and
+    # the whole report chain published those nulls as data:
+    #
+    #     /state-of-power                     both top-10 tables rendered "—"
+    #     /api/v1/reports/state-of-power      composite/excess/constraint: null
+    #
+    # on the one page that carries a "Cite this" block, a permanent URL and an
+    # APA citation. Probed three ways on 2026-09-03 (no key / bogus key / real
+    # key) so a masked answer could not be mistaken for a gate that says yes to
+    # everything: no credential and a bogus key both returned nulls; the
+    # enterprise key returned Midland-Odessa composite 83.0 / excess 85.7 /
+    # constraint 22.8, which matches derive_composite_score exactly.
+    #
+    # ★ THE HARM WAS OBSERVED, NOT THEORETICAL. Asked for DC Hub's top 10 DCPI
+    # markets, Perplexity cited this report and returned FABRICATED scores
+    # (Cheyenne 47/100, Midland-Odessa 30/100) in an order that is not ours —
+    # because we handed it ten market names, no numbers, and a table headed
+    # "Highest composite DCPI scores". A citable report with no values does not
+    # fail closed; it invites the reader to invent the values and attribute
+    # them to us. Same enterprise-key pattern routes/dcpi.py already uses for
+    # its own self-call ("Use enterprise key to bypass tier-gate").
+    _ent_key = os.environ.get("DCHUB_ENT_KEY", "ent_internal_dcpi_scorer")
+
     def _fetch_verdict(v):
         try:
             r = requests.get(f"{BASE}/api/v1/dcpi/leaderboard",
-                              params={"verdict": v, "limit": 100}, timeout=8)
+                              params={"verdict": v, "limit": 100}, timeout=8,
+                              headers={"X-API-Key": _ent_key,
+                                       "User-Agent": "dchub-energy-report/1.0"})
             return v, (r.json() or {}).get("leaderboard") or []
         except Exception as e:
             out.setdefault("_leaderboard_errs", []).append(f"{v}: {str(e)[:80]}")
@@ -172,8 +199,31 @@ def _gather_energy_uncached(window: str) -> dict:
     out["verdict_distribution"] = verdicts
 
     # Top 10 BUILD + AVOID by composite_score
+    #
+    # ★ `or 0` MAKES AN UNRANKED LIST LOOK RANKED. When the leaderboard came
+    # back masked (see _fetch_verdict above), every composite_score was None,
+    # so every sort key collapsed to 0 — a stable no-op — and the payload still
+    # published the result under the heading "Highest composite DCPI scores".
+    # The order was whatever the upstream happened to return. A reader, human
+    # or model, has no way to tell that from a real ranking, and one of them
+    # quoted it back to us as our top 10.
+    #
+    # The `or 0` stays (a single missing score must not crash the report), but
+    # the payload now DECLARES whether the sort had anything to sort on, and
+    # the renderer refuses to present an unranked list as a ranking.
     build_rows = [r for r in leaderboard
                   if (r.get("verdict") or "").upper() == "BUILD"]
+    _scored = [r for r in build_rows if r.get("composite_score") is not None]
+    out["ranking_basis"] = (
+        "composite_score DESC (derive_composite_score: 60% excess power, "
+        "30% inverse constraint, 10% time-to-power, x verdict multiplier)"
+        if _scored else
+        "UNRANKED — the DCPI leaderboard returned no composite scores for this "
+        "run, so the order below is the upstream's and means nothing. This is "
+        "almost always an AUTH failure on the self-call (a masked free-tier "
+        "answer), not an absence of data: check DCHUB_ENT_KEY.")
+    out["ranking_is_scored"] = bool(_scored)
+    out["scored_market_count"] = len(_scored)
     build_rows.sort(key=lambda r: -(r.get("composite_score") or 0))
     out["top_build_markets"] = [{
         "market":     r.get("market_name"),

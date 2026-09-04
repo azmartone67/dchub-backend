@@ -258,6 +258,16 @@ def _gather():
         "verdict_distribution": e.get("verdict_distribution") or {},
         "build_markets": e.get("top_build_markets") or [],
         "avoid_markets": e.get("top_avoid_markets") or [],
+        # ★ r-report-scores (2026-09-03): whether the "top 10" below is
+        # actually ranked. It was not, silently, for as long as the self-call
+        # to /api/v1/dcpi/leaderboard went out unauthenticated: every
+        # composite came back masked to null, `-(x or 0)` collapsed every sort
+        # key to 0, and the upstream's order got published under the heading
+        # "Highest composite DCPI scores". Carried from energy_report so the
+        # HTML, the JSON and the .md all answer the question the same way.
+        "ranking_basis": e.get("ranking_basis"),
+        "ranking_is_scored": e.get("ranking_is_scored"),
+        "scored_market_count": e.get("scored_market_count"),
         "iso_rollup": e.get("iso_rollup") or [],
         # — ISO roster (verified) —
         "live_grids": {
@@ -522,6 +532,25 @@ def _render_html(d: dict) -> str:
     build = d.get("build_markets") or []
     avoid = d.get("avoid_markets") or []
 
+    # ★ r-report-scores (2026-09-03): say which of the two tables this is.
+    # A ranked top-10 and an arbitrary ten rows with "—" in every numeric
+    # column look identical under the same heading, and an AI reading the
+    # second one filled the blanks in with invented scores and attributed
+    # them to DC Hub. If the numbers are not there, the caption says so
+    # instead of promising a ranking the table cannot deliver.
+    if d.get("ranking_is_scored"):
+        build_caption = (
+            'Highest composite DCPI scores — most buildable headroom, lowest '
+            f'grid constraint. <a href="{METHODOLOGY_URL}">How this is scored '
+            '&rarr;</a>')
+    else:
+        build_caption = (
+            '<strong>Scores unavailable for this run.</strong> These ten '
+            'markets carry the BUILD verdict, but the composite scores did '
+            'not load, so <em>this list is not ranked</em> and the order below '
+            'means nothing. Per-market scores are live on each market page. '
+            f'<a href="{METHODOLOGY_URL}">How this is scored &rarr;</a>')
+
     build_rows = "\n".join(
         f'<tr><td><a href="{_html.escape(m.get("page",""))}"><strong>'
         f'{_html.escape(str(m.get("market","?")))}</strong></a></td>'
@@ -651,7 +680,7 @@ def _render_html(d: dict) -> str:
   {('<div class="narr">' + narr_html + '</div>') if narr_html else ''}
 
   <h2>Where to BUILD</h2>
-  <p style="color:var(--mut);margin:0 0 6px">Highest composite DCPI scores — most buildable headroom, lowest grid constraint. <a href="{METHODOLOGY_URL}">How this is scored →</a></p>
+  <p style="color:var(--mut);margin:0 0 6px">{build_caption}</p>
   <table>
     <thead><tr><th>Market</th><th>ISO</th><th style="text-align:right">Composite</th><th style="text-align:right">Excess Power</th><th style="text-align:right">Constraint</th></tr></thead>
     <tbody>{build_rows}</tbody>
