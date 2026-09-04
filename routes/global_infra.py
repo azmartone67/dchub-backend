@@ -728,6 +728,13 @@ def _build_osm_transmission(min_lat, min_lng, max_lat, max_lng, min_kv):
                 "circuits": _osm_first_int(tags.get("circuits")),
                 "frequency": tags.get("frequency") or "",
                 "source": "OpenStreetMap",
+                # HIFLD-shaped aliases. The map's LayerRenderer.renderTransmissionLines
+                # already reads GeoJSON, but keys off HIFLD's field names (VOLTAGE in
+                # kV, OWNER) for colour and weight. Emitting both means the existing
+                # renderer draws OSM lines with correct voltage styling and no new
+                # frontend rendering path to keep in sync with the HIFLD one.
+                "VOLTAGE": kv,
+                "OWNER": tags.get("operator") or "",
             },
         })
 

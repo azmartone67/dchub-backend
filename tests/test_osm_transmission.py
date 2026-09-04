@@ -231,3 +231,17 @@ def test_cache_key_rounds_so_panning_reuses_one_fetch(client, monkeypatch):
     client.get("/api/v1/infrastructure/osm-transmission?bbox=9.101,50.201,9.601,50.551")
     client.get("/api/v1/infrastructure/osm-transmission?bbox=9.104,50.204,9.604,50.554")
     assert len(keys) == 2 and keys[0] == keys[1], f"near-identical bboxes minted {keys}"
+
+
+# ── renderer compatibility ────────────────────────────────────────────
+
+def test_features_carry_hifld_shaped_aliases(monkeypatch):
+    """LayerRenderer.renderTransmissionLines keys colour/weight off HIFLD's
+    VOLTAGE (kV) and OWNER. Emitting those aliases lets the EXISTING renderer
+    draw OSM lines — no second rendering path to drift out of sync."""
+    d = _build(monkeypatch)
+    for f in d["features"]:
+        p = f["properties"]
+        assert p["VOLTAGE"] == p["voltage_kv"], "VOLTAGE alias must be kV, not volts"
+        assert p["OWNER"] == p["operator"]
+    assert d["features"][0]["properties"]["VOLTAGE"] == 380.0
