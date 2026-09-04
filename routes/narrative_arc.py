@@ -50,6 +50,20 @@ import os
 from flask import Blueprint, jsonify, request
 
 
+def _canon_markets() -> str:
+    """The scored market span as a citation-safe phrase, lazily.
+
+    Lazy + fail-open to "": this module's fallback arc is what publishes when
+    every other source is unavailable, so it must never raise, and a
+    count-free thesis beats a retired one.
+    """
+    try:
+        from canonical_stats import markets_phrase
+        return markets_phrase() or ""
+    except Exception:
+        return ""
+
+
 narrative_arc_bp = Blueprint("narrative_arc", __name__)
 
 
@@ -117,7 +131,12 @@ def _detect_dominant_arc() -> dict:
     if not arc:
         arc = {
             "arc":    "DC Hub continues building the open data center intelligence platform",
-            "thesis": "Real-time DCPI for 230+ markets, MCP-accessible to any AI agent.",
+            # ★2026-09-04: the LAST-RESORT arc is exactly the copy that ships
+            # when everything else failed, so a retired count here is the one
+            # most likely to go out unreviewed.
+            "thesis": (f"Real-time DCPI for {_m} markets, MCP-accessible to any AI agent."
+                       if (_m := _canon_markets())
+                       else "Real-time DCPI, MCP-accessible to any AI agent."),
             "anchor_url": "https://dchub.cloud",
             "tags":   ["dchub", "platform"],
             "source": "fallback",

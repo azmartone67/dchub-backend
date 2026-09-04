@@ -170,7 +170,11 @@ _PARTNERS = {
                        "citation engine that fixes that."),
         "value_bullets": [
             f"{_CANON_FAC} global facilities, daily-refreshed — every facility cited with attribution",
-            "DCPI (Data Center Power Index) — 230+ markets, US + international",
+            # ★2026-09-04: this bullet hardcoded its count while _CANON_MKTS
+            # sat defined at the top of this same file and its two neighbouring
+            # bullets resolved theirs. The literal had drifted well under the
+            # live span; the derived constant it should have used never moved.
+            f"DCPI (Data Center Power Index) — {_CANON_MKTS} markets, US + international",
             f"{_CANON_DEALS} tracked M&A deals — every deal sourced and linked",
             "369 GW construction pipeline — verifiable, citable, free",
         ],
@@ -723,7 +727,7 @@ def _render_partner_page(slug: str, p: dict) -> str:
       <span class="ls-item"><span class="ls-live">●</span> live</span>
       <span class="ls-item"><b id="ls-calls">—</b> MCP calls · 7d</span>
       <span class="ls-item"><b id="ls-fac">{_CANON_FAC}</b> facilities</span>
-      <span class="ls-item"><b id="ls-mkt">233</b> markets · 10 ISOs</span>
+      <span class="ls-item"><b id="ls-mkt">{_CANON_MKTS}</b> markets · 10 ISOs</span>
       <span class="ls-item"><b id="ls-build">live DCPI</b></span>
     </div>
 

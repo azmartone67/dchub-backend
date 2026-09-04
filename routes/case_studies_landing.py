@@ -26,6 +26,9 @@ _CANON_FAC = canon_text("{canon_facilities}")
 # published the DISTINCT count canonical_stats.deals_phrase() derives.
 _CANON_DEALS = canon_text("{canon_deals}")
 _CANON_CTRY = canon_text("{canon_countries}")
+# ★2026-09-04: the DCPI tile was the last hand-typed one in the same grid, and
+# carried a retired count.
+_CANON_MKTS = canon_text("{canon_markets}")
 
 try:
     import psycopg2 as _pg
@@ -153,7 +156,7 @@ daily from DCPI data, the $1B+ hyperscaler deal tracker, and the platform metric
 back every claim.</p>
 
 <div class="stat-grid">
-  <div class="stat"><div class="stat-num">285</div><div class="stat-label">DCPI markets</div></div>
+  <div class="stat"><div class="stat-num">{_CANON_MKTS}</div><div class="stat-label">DCPI markets</div></div>
   <div class="stat"><div class="stat-num">{_CANON_FAC}</div><div class="stat-label">Facilities</div></div>
   <div class="stat"><div class="stat-num">{_CANON_CTRY}</div><div class="stat-label">Countries</div></div>
   <div class="stat"><div class="stat-num">96+</div><div class="stat-label">AI platforms</div></div>
