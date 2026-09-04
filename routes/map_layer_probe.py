@@ -71,11 +71,10 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from typing import Callable
 
+import requests
 from flask import Blueprint, jsonify, request
 
 map_layer_probe_bp = Blueprint("map_layer_probe", __name__)
@@ -198,25 +197,32 @@ _READ_CAP = 32 * 1024 * 1024
 
 
 def _fetch(path: str, timeout: float = 20.0) -> tuple[int, str]:
-    """(status, body). status 0 means the request never completed."""
+    """(status, body). status 0 means the request never completed.
+
+    `requests`, not urllib — scripts/regression_lint.py enforces that on Railway
+    (rule: urllib-request-on-railway). Streamed so _READ_CAP is a real bound on
+    memory rather than a slice applied after the whole body is already resident.
+    """
     url = _BASE + path
-    req = urllib.request.Request(url, method="GET")
     # UA must not look internal: this probe audits what the map's own browser
     # session sees, and an internal-looking UA can bypass the tier gate — the
     # false-positive trap documented in brain_security_detectors._probe.
-    req.add_header("User-Agent", "dc-map-layer-probe/1.0")
-    req.add_header("Accept", "application/json")
-    req.add_header("Referer", "https://dchub.cloud/land-power-map")
-    req.add_header("Origin", "https://dchub.cloud")
+    headers = {
+        "User-Agent": "dc-map-layer-probe/1.0",
+        "Accept": "application/json",
+        "Referer": "https://dchub.cloud/land-power-map",
+        "Origin": "https://dchub.cloud",
+    }
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read(_READ_CAP).decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        try:
-            body = e.read(20_000).decode("utf-8", "replace")
-        except Exception:
-            body = ""
-        return e.code, body
+        with requests.get(url, headers=headers, timeout=timeout,
+                          stream=True, allow_redirects=False) as r:
+            buf = bytearray()
+            for chunk in r.iter_content(65536):
+                if chunk:
+                    buf.extend(chunk)
+                if len(buf) >= _READ_CAP:
+                    break
+            return r.status_code, bytes(buf[:_READ_CAP]).decode("utf-8", "replace")
     except Exception as e:
         return 0, f"{type(e).__name__}: {str(e)[:200]}"
 

@@ -207,13 +207,14 @@ def inspect_source() -> str:
 # hand _check_one a body directly and never exercise the read.
 
 class _FakeResp:
-    """Minimal urlopen context manager. read(n) honours n, like the real one —
-    so a too-small cap in _fetch truncates here exactly as it did in production."""
+    """Minimal `requests` response. iter_content chunks like the real one, so a
+    too-small _READ_CAP truncates here exactly as it did in production."""
     def __init__(self, status, payload):
-        self.status = status
+        self.status_code = status
         self._payload = payload
-    def read(self, n=-1):
-        return self._payload[:n] if n and n > 0 else self._payload
+    def iter_content(self, n=65536):
+        for i in range(0, len(self._payload), n):
+            yield self._payload[i:i + n]
     def __enter__(self):
         return self
     def __exit__(self, *a):
@@ -224,18 +225,40 @@ def test_fetch_does_not_truncate_a_hazard_sized_payload(monkeypatch):
     """THE REGRESSION, driven through the real _fetch and its read cap.
 
     Stubbing _fetch (as every test above does) cannot catch this: the bug was
-    the read cap INSIDE _fetch. Here urlopen is stubbed instead, so the cap is
-    exercised for real. With the old 200_000 cap this body comes back sliced
+    the read cap INSIDE _fetch. Here requests.get is stubbed instead, so the cap
+    is exercised for real. With the old 200_000 cap this body comes back sliced
     mid-JSON and the probe reports a healthy endpoint as malformed."""
     big = json.dumps({"features": [{"i": i, "pad": "x" * 200} for i in range(10_000)]})
     assert len(big) > 2_000_000, "fixture is not representative of the real payload"
-    monkeypatch.setattr(mlp.urllib.request, "urlopen",
-                        lambda req, timeout=None: _FakeResp(200, big.encode()))
+    monkeypatch.setattr(mlp.requests, "get",
+                        lambda url, **kw: _FakeResp(200, big.encode()))
     status, body = mlp._fetch("/whatever")
     assert status == 200
     assert len(body) == len(big), (
         f"_fetch truncated {len(big)} bytes down to {len(body)} — the read cap regressed")
     assert json.loads(body)["features"], "truncated body would not parse"
+
+
+def test_fetch_reports_a_redirect_rather_than_following_it(monkeypatch):
+    """allow_redirects=False on purpose: a layer endpoint that starts redirecting
+    is a finding. Following it silently is how the predecessor's substations
+    probe reported 200 for a route that had moved."""
+    seen = {}
+    def fake_get(url, **kw):
+        seen.update(kw)
+        return _FakeResp(308, b"")
+    monkeypatch.setattr(mlp.requests, "get", fake_get)
+    status, _ = mlp._fetch("/moved")
+    assert status == 308
+    assert seen.get("allow_redirects") is False
+
+
+def test_fetch_turns_a_transport_error_into_status_zero(monkeypatch):
+    def boom(url, **kw):
+        raise mlp.requests.exceptions.ConnectionError("refused")
+    monkeypatch.setattr(mlp.requests, "get", boom)
+    status, body = mlp._fetch("/dead")
+    assert status == 0 and "ConnectionError" in body
 
 
 def test_check_one_is_clean_on_a_hazard_sized_payload(monkeypatch):
