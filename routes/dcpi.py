@@ -911,7 +911,14 @@ _MARKETS_HARDCODED = [
     ("indianapolis",        "Indianapolis",           "IN", "MISO",  39.77,  -86.16),
     ("little-rock",         "Little Rock",            "AR", "MISO",  34.75,  -92.29),
     ("jackson-ms",          "Jackson",                "MS", "MISO",  32.30,  -90.18),
-    ("anchorage",           "Anchorage",              "AK", "WECC",  61.22, -149.90),
+    # r-failopen-operators (2026-09-04): was "WECC", which _normalize_us_isos
+    # already rewrote to "AK" on every build — it is in the startup log:
+    # 'anchorage(AK) WECC->AK'. The tuple and the resolver disagreed and the
+    # resolver won, so the curated row asserted the Western Interconnection
+    # for a grid that is islanded and ~500 miles from it. Same class as the
+    # kansas-city SPP/MISO drift r-iso-taxonomy was built for; pinned to what
+    # actually ships so the two sources agree.
+    ("anchorage",           "Anchorage",              "AK", "AK",    61.22, -149.90),
 
     # ── US territories + DC (Tier 2 Coverage) ────────────────────────────
     # DC has its own grid (Pepco/PJM), the Caribbean/Pacific territories
@@ -1034,7 +1041,20 @@ _MARKETS_HARDCODED = [
     # Hardcoded rows beat the orphan re-adopter in _build_markets_list, so
     # the recompute now rewrites the corrected fields daily instead of the
     # corrupted ones. Pinned by tests/test_dcpi_orphan_geography.py.
-    ("johannesburg",        "Johannesburg",           "GP", "",       -26.20,  28.05),
+    # ★r-failopen-operators (2026-09-04) SUPERSEDES the empty label below.
+    # The midrand convention ("no invented operator") was the right fix for
+    # r-orphan-geography's defect — ISO normalization had stamped SOCO, a US
+    # operator, on a South African market — but empty was never free. An
+    # unregistered label fails the `bool(iso) and iso in iso_defaults` test in
+    # gather_metrics_for_market, so johannesburg has been publishing WECC's
+    # curtailment_pct 7.5 and reserve_margin_pct 20.0 ever since (measured live
+    # 2026-09-04). The convention avoided a WRONG label by accepting WRONG
+    # NUMBERS. ESKOM is not an invented label — it is the operator — so it
+    # satisfies the original guard and closes the fail-open at the same time.
+    # ★The SOCO regression this replaced is still fenced: ESKOM is not in
+    # _US_DCPI_ISOS, so _normalize_us_isos skips the row entirely instead of
+    # re-resolving it. tests/test_dcpi_orphan_geography.py pins that.
+    ("johannesburg",        "Johannesburg",           "GP", "ESKOM",  -26.20,  28.05),
     ("markham",             "Markham",                "ON", "IESO",    43.86, -79.34),
 
     # ── r-latam-coverage (2026-09-03): four curated /markets metros DCPI
@@ -1072,6 +1092,33 @@ _MARKETS_HARDCODED = [
     # WECC default. Verified live 2026-09-03 — barueri's own FAQ answers
     # "Barueri is in the UNK ISO/RTO grid region". Giving them ONS is a
     # separate change: they arrive from the dynamic loader, not from this list.
+    # ── r-failopen-operators (2026-09-04): four ALREADY-SCORED markets whose
+    # only source of truth was their own corrupted score row ──────────────
+    # None of these arrives from _load_markets_dynamic (it filters
+    # country='US'). They survive only through _load_scored_orphans, which
+    # feeds each market_power_scores row's own (state, iso, lat, lon) back in
+    # every recompute — so an unregistered ISO rewrites itself forever. That is
+    # exactly the r-orphan-geography mechanism, and the fix is the same one:
+    # a hardcoded tuple, which beats the orphan re-adopter in _build_markets_list.
+    #
+    # All four published the 'UNK' sentinel and therefore WECC's Western-US
+    # constants (measured live 2026-09-04: curtailment_pct 7.5,
+    # reserve_margin_pct 20.0 on every one).
+    #   - barueri / osasco: Greater São Paulo. ONS, the operator the
+    #     r-str-coverage note named for them in 2026-08-07 and deferred as "a
+    #     separate change" — this is that change. state 'SP' -> 'BR' to match
+    #     sao-paulo and the country-code convention.
+    #   - bologna: Italy, same operator as milan and rome. ★state was 'BO',
+    #     the Bologna PROVINCE code — and 'BO' is the ISO-3166 alpha-2 for
+    #     BOLIVIA. Precisely the johannesburg 'GP'/Guadeloupe trap, one row
+    #     over: a subdivision code that is also a real country code. 'IT'
+    #     matches milan/rome and removes the ambiguity.
+    #   - midrand: Gauteng, johannesburg's sibling city. ESKOM.
+    ("barueri",             "Barueri",                "BR", "ONS",    -23.51,  -46.88),
+    ("osasco",              "Osasco",                 "BR", "ONS",    -23.53,  -46.79),
+    ("bologna",             "Bologna",                "IT", "ENTSOE-IT", 44.49,  11.34),
+    ("midrand",             "Midrand",                "GP", "ESKOM",  -25.99,   28.13),
+
     ("mexico-city",         "Mexico City",            "MX", "CENACE",  19.43,  -99.13),
     ("bogota",              "Bogotá",                 "CO", "XM",       4.71,  -74.07),
     ("santiago",            "Santiago",               "CL", "CEN",    -33.45,  -70.67),
@@ -1343,6 +1390,17 @@ def _state_to_iso(state: str) -> str:
 _US_DCPI_ISOS = frozenset({
     "CAISO", "ERCOT", "NYISO", "ISONE", "PJM", "MISO", "SPP", "WECC",
     "TVA", "SOCO", "SERC", "FRCC", "PREPA", "GPA", "WAPA",
+    # r-failopen-operators (2026-09-04): the two non-contiguous US grids.
+    # STATE_ISO has mapped AK->'AK' and HI->'HECO' since r-iso-taxonomy, but
+    # neither label was ever declared US here, so _is_intl_market fell through
+    # to its last rung and answered on the STATE code. It got the right answer
+    # by luck — 'AK' and 'HI' are USPS codes — which is the same accident that
+    # made 'CO' resolve Bogota to Colorado. Declaring them puts the decision on
+    # the OPERATOR rung, where a two-letter collision cannot reach it.
+    # ★These are US and NOT the Western Interconnection. Both facts hold at
+    # once: membership here says US, and their own iso_defaults rows say the
+    # Railbelt and the Hawaiian islands are not WECC.
+    "AK", "HECO",
 })
 
 # r-namesake (2026-08-07): the 50 states + DC (from util/iso_taxonomy.STATE_ISO,
@@ -1459,6 +1517,16 @@ _INTL_ISO_LABELS = frozenset((
                       # registration directly against the tuples, never through
                       # _is_intl_market.
                       "XM", "CEN", "ONS",
+                      # r-failopen-operators (2026-09-04): South Africa's
+                      # operator. johannesburg and midrand previously carried
+                      # no label at all, which made them intl via the
+                      # state-code rung ('GP' is not a US state). ESKOM keeps
+                      # that answer while giving them real anchors, and moves
+                      # the decision onto the OPERATOR rung where it belongs.
+                      # ★AK and HECO are deliberately NOT here — Alaska and
+                      # Hawaii are US markets. They are outside the Western
+                      # Interconnection, which is a different claim.
+                      "ESKOM",
                       # r71: Canada extras
                       "AESO", "MH",
                       # r71: US territories (NOT in dynamic loader b/c
@@ -1520,6 +1588,11 @@ _ISO_LABEL_COUNTRY = {
     # _INTL_ISO_LABELS above. tests/test_dcpi_jsonld_country.py sweeps every
     # hardcoded row and fails on one that resolves to nothing.
     "XM": "CO", "CEN": "CL", "ONS": "BR",
+    # r-failopen-operators (2026-09-04): with ESKOM registered, the OPERATOR
+    # settles South Africa and _MARKET_COUNTRY_BY_SLUG's johannesburg entry
+    # becomes a belt-and-braces fallback rather than the only answer. Keep it:
+    # it still covers any future market that arrives with no operator label.
+    "ESKOM": "ZA",
     "ENTSOE-AT": "AT", "ENTSOE-BE": "BE", "ENTSOE-CH": "CH",
     "ENTSOE-CZ": "CZ", "ENTSOE-DE": "DE", "ENTSOE-ES": "ES",
     "ENTSOE-FR": "FR", "ENTSOE-GR": "GR", "ENTSOE-IT": "IT",
@@ -2613,6 +2686,11 @@ _ISO_MODELED_REFERENCE = {
     "XM": "XM (Colombia)",
     "CEN": "Coordinador Electrico Nacional (Chile)",
     "ONS": "ONS (Brazil)",
+    # Africa
+    "ESKOM": "Eskom (South Africa)",
+    # US non-contiguous — islanded grids, not the Western Interconnection
+    "AK": "the Alaska Railbelt utilities",
+    "HECO": "Hawaiian Electric",
     # US territories
     "PREPA": "PREPA (Puerto Rico)", "GPA": "Guam Power Authority",
     "WAPA": None,    # ambiguous: Western Area Power Administration vs V.I. WAPA
@@ -3023,6 +3101,111 @@ def gather_metrics_for_market(market: tuple) -> dict:
                      "queue_approval_rate_pct": 35, "btm_headroom_mw": 20},
         "WAPA":     {"queue_wait_months": 36, "reserve_margin_pct": 10.0, "curtailment_pct": 1.0,
                      "queue_approval_rate_pct": 25, "btm_headroom_mw": 15},
+        # ── r-failopen-operators (2026-09-04): the last three operators that
+        # could reach a PUBLISHED market with no row here ──────────────────
+        # MEASURED against the live scored universe (326 of 330 slugs read
+        # from /api/v1/dcpi/scores, 2026-09-04): EIGHT published markets
+        # carried `data_basis_source` = "...no ISO-specific calibration
+        # matched this market", and every one of them published WECC's
+        # curtailment_pct 7.5 and reserve_margin_pct 20.0 verbatim:
+        #
+        #   anchorage            AK     Alaska Railbelt — isolated grid
+        #   honolulu, kapolei    HECO   Hawaiian Electric — island grids
+        #   johannesburg         ''     South Africa
+        #   midrand              UNK    South Africa
+        #   barueri, osasco      UNK    Brazil  (-> ONS, added 2026-09-03)
+        #   bologna              UNK    Italy   (-> ENTSOE-IT, already here)
+        #
+        # ★AK and HECO are the ones worth staring at: they are US markets,
+        # and they reached the fail-open through _normalize_us_isos. The
+        # r-iso-taxonomy resolver rewrites anchorage WECC->AK and Hawaii
+        # ->HECO off STATE_ISO, which is CORRECT — Alaska and Hawaii are not
+        # in the Western Interconnection — but it moved them onto labels this
+        # dict has no row for, so a fix for one defect handed them another.
+        # A resolver that mints a label and a dict that anchors labels have to
+        # agree on the same set; tests/test_dcpi_latam_coverage.py now sweeps
+        # STATE_ISO's whole range, which is the check that was missing.
+        #
+        # AK — the Alaska Railbelt. ~600 miles Fairbanks–Anchorage–Kenai,
+        # Alaska's ONLY interconnected grid, ~79% of state load, and
+        # islanded: no neighbouring grid to lean on. ~2,000 MW installed
+        # against a ~750 MW peak and ~600 MW average load.
+        #   reserve  18.0 The nameplate ratio is ~165% and scoring it would be
+        #            a fiction: the fleet is 73% Cook Inlet gas / 15% coal /
+        #            12% hydro, and the binding constraint is FUEL. The Cook
+        #            Inlet shortfall is projected to begin ~2027, Hilcorp has
+        #            declined to renew binding utility supply contracts, and
+        #            Homer Electric is already on interruptible gas — with
+        #            public rolling-blackout warnings for urban Alaska. Scored
+        #            as a system with real headroom today and a dated cliff.
+        #   wait  30 No RTO queue; interconnection is bilateral with the
+        #            Railbelt cooperatives under the new Railbelt Reliability
+        #            Council. Faster than an RTO, bounded by a 600-mile radial.
+        #   curtail 1.0 Gas/coal/hydro with negligible VRE — nothing to spill.
+        #   approval 60 Vertically integrated cooperatives, bilateral study,
+        #            little speculative attrition (cf. SOCO/TVA 65).
+        #   btm   35 ★ABSOLUTE MW, not a ratio. The whole Railbelt peaks near
+        #            750 MW; publishing hundreds of MW of behind-the-meter room
+        #            for it would be the WECC-500 error in a new place. Sits
+        #            between GPA's 20 and PREPA's 30, on system size.
+        "AK":       {"queue_wait_months": 30, "reserve_margin_pct": 18.0, "curtailment_pct": 1.0,
+                     "queue_approval_rate_pct": 60, "btm_headroom_mw": 35},
+        # HECO — Hawaiian Electric. FIVE island grids with NO inter-island
+        # interconnection, so each island must serve its own peak alone.
+        #   curtail 10.0 Oahu curtailment is estimated at 10% or greater of a
+        #            generator's output potential, on a system where ~49% of
+        #            single-family homes carry rooftop solar (120,570 systems)
+        #            and the RPS reached 37% in 2025. ★This is a FLOOR, not a
+        #            measurement — it lands exactly on this dict's 10.0 ceiling,
+        #            so the term clips at 100 whether the true figure is 10 or
+        #            25. Recorded as the conservative end deliberately.
+        #   reserve 14.0 No neighbour to import from, the AES coal plant
+        #            retired in 2022, and 2025 load grew 2.5% — the fastest in
+        #            twenty years. Tighter than any mainland US row here.
+        #   wait  36 Each island is its own interconnection study, and HECO's
+        #            PV queues have historically backlogged badly (the 2015
+        #            Oahu backlog ran to 2,749 pending applications).
+        #   approval 50 · btm 60 Oahu peaks near 1,200 MW; behind-the-meter is
+        #            real and already heavily built out, but island-scale in
+        #            absolute megawatts. Comparable to CLP's 60.
+        "HECO":     {"queue_wait_months": 36, "reserve_margin_pct": 14.0, "curtailment_pct": 10.0,
+                     "queue_approval_rate_pct": 50, "btm_headroom_mw": 60},
+        # ESKOM — South Africa. ★The row most likely to be written from a
+        # STALE MENTAL MODEL, so read the dates. Eskom is NOT in the
+        # load-shedding crisis it is remembered for: it ran 224 consecutive
+        # days without loadshedding through 2025, with only 26 hours recorded
+        # between 1 April and 28 August, and the Energy Availability Factor
+        # recovered to 69.14% in December 2025 from 56.57% a year earlier.
+        # Anchoring this on the 2022-23 blackouts would have been the same
+        # class of error as anchoring Bogota on nameplate capacity.
+        #   reserve 18.0 Eskom's own outlooks put a 19,545 MW evening peak
+        #            against 23,894 MW available (~22%), and 22,637 MW against
+        #            27,500 MW (~21%). Scored BELOW that operational margin
+        #            because an EAF near 69% means roughly a third of the fleet
+        #            is unavailable at any moment and the recovery is recent.
+        #   wait  36 Grid capacity is the named main constraint on new
+        #            connections. South Africa publishes available capacity per
+        #            transmission substation in the GCCA rather than running an
+        #            RTO-style queue, so the wait is a build, not a study.
+        #   curtail 4.0 Curtailment here is being deliberately ADOPTED as a
+        #            tool: NERSA confirmed regulatory support in December 2023
+        #            and the GCCA 2025 addendum released additional Cape wind
+        #            capacity *under curtailment*, precisely to free connection
+        #            headroom. Rising, but nowhere near Chile's 18.
+        #   approval 45 The GCCA publishes real per-substation capacity, so a
+        #            project sited where capacity exists connects; the failures
+        #            are concentrated in the Cape provinces, not Gauteng.
+        #   btm  400 ★The best-sourced number in this block, and it is about
+        #            THIS market: the GCCA 2025 puts Gauteng — the province
+        #            johannesburg and midrand sit in — at 4,680 MW of remaining
+        #            transmission capacity, with ~12 GW across the northern
+        #            regions. South Africa also removed the private-generation
+        #            licensing threshold entirely, which is what drove the
+        #            behind-the-meter build. 400 is a deliberate fraction of
+        #            published headroom, and deliberately under the 500
+        #            threshold that fabricated the BTM opportunity string.
+        "ESKOM":    {"queue_wait_months": 36, "reserve_margin_pct": 18.0, "curtailment_pct": 4.0,
+                     "queue_approval_rate_pct": 45, "btm_headroom_mw": 400},
     }
     # r-ws3-signal-tier (2026-07-28): record WHETHER this .get() fell through to
     # the WECC default. Behaviour is byte-identical (same dict, same fallback

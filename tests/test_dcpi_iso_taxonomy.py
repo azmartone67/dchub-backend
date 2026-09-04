@@ -321,7 +321,23 @@ def test_dcpi_state_to_iso_delegates_rather_than_redefining():
 #: whose planning numbers do not resemble WECC either, but neither has a
 #: scored market today, so closing them would be writing fiction with no
 #: reader. Add the row when a market lands there.
-_KNOWN_ISO_DEFAULTS_GAP = {"AK", "HECO"}
+# r-failopen-operators (2026-09-04): EMPTIED, which is what the guard below
+# asks for — "closing one of the known gaps should come with deleting it from
+# this set (and re-scoring those markets)".
+#
+# The two gaps were AK (the Alaska Railbelt) and HECO (Hawaiian Electric), and
+# they were not theoretical. Measured live 2026-09-04, anchorage / honolulu /
+# kapolei were each publishing WECC's curtailment_pct 7.5 and
+# reserve_margin_pct 20.0 with data_basis_source "(no ISO-specific calibration
+# matched this market)". Both now have their own rows, and the markets were
+# re-scored.
+#
+# ★Keep this EMPTY. The way this defect returns is not a new uncovered label —
+# the assertion below catches that — it is someone resolving that failure by
+# ADDING the label here instead of adding anchors, which converts a red build
+# into a documented silence. tests/test_dcpi_failopen_operators.py asserts
+# this set stays empty for exactly that reason.
+_KNOWN_ISO_DEFAULTS_GAP = frozenset()
 
 
 def _iso_defaults_keys():
