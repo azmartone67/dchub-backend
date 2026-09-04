@@ -1805,6 +1805,77 @@ def claim_key():
         except Exception:
             pass
 
+    # ── r-unused-key-cap (2026-09-04): CAP UNUSED KEYS PER IP ──────────────
+    # This endpoint PUBLISHES, in its own `rate_limit_note`, that it is
+    # "rate-limited to 1 key per IP per 24h". It was not. Reuse is keyed on
+    # (client_name, ip) — deliberately, so multi-agent deployments on one host
+    # get a key each — and `client_name` is caller-supplied and unvalidated.
+    # Incrementing a string therefore minted unlimited keys from one address.
+    #
+    # ★ SOMEBODY CHECKED. On 2026-09-01, 4.43.13.119 minted twelve keys in
+    # twenty-five minutes as client_name `pentest`, `pentest2` … `pentest12`,
+    # and used NONE of them. That is a rate-limit probe, it succeeded, and the
+    # published contract said it could not happen.
+    #
+    # The multi-agent feature is real and must survive: in the same 30 days
+    # 152.55.177.123 minted 11 keys and used 11, 152.55.176.168 minted 10 and
+    # used 10, 152.55.176.25 minted 8 and used 8. A flat per-IP key cap would
+    # break exactly the users the feature exists for.
+    #
+    # So cap the UNUSED ones. A legitimate deployment mints a key and calls
+    # with it; across every repeat claimer in the window, the ones that used
+    # their keys carried at most ONE unused key at a time. An identity sitting
+    # on _UNUSED_KEY_CAP untouched keys does not need a fresh one — it needs
+    # the one it already has, so we hand back the newest instead of minting.
+    # Nothing is revoked and no legitimate caller is refused; the enumeration
+    # just stops being free. Binding an email (free) lifts it, which keeps the
+    # cheapest path the one that also identifies the user.
+    #
+    # FAIL-OPEN, like the dedup check above: a failed count claims through.
+    # Better to issue an extra key than to break a real agent.
+    _UNUSED_KEY_CAP = max(1, int(os.environ.get("DCHUB_CLAIM_UNUSED_CAP", "3")))
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT api_key, tier, COUNT(*) OVER () AS unused_n
+                     FROM mcp_dev_keys
+                    WHERE metadata->>'source' = 'claim_api'
+                      AND metadata->>'ip' = %s
+                      AND (email IS NULL OR email = '')
+                      AND status = 'active'
+                      AND last_used_at IS NULL
+                      AND created_at > NOW() - make_interval(hours => %s)
+                    ORDER BY created_at DESC""",
+                (ip, _reuse_hours),
+            )
+            _unused = cur.fetchall()
+        if _unused and len(_unused) >= _UNUSED_KEY_CAP:
+            _u_key, _u_tier = _unused[0][0], (_unused[0][1] or "free")
+            _restamp_claim_session(_u_key)
+            return jsonify(
+                ok=True,
+                api_key=_u_key,
+                tier=_u_tier,
+                reused=True,
+                gate="unused_key_cap",
+                unused_keys=len(_unused),
+                unused_key_cap=_UNUSED_KEY_CAP,
+                bind_endpoint="https://dchub.cloud/api/v1/keys/identify",
+                note=(f"This IP already holds {len(_unused)} claimed keys that "
+                      f"have never been used, so re-claiming returns the newest "
+                      f"one instead of minting another. Use this key — it works "
+                      f"and has the full free-tier quota. If you genuinely need "
+                      f"separate keys for separate agents, bind an email to this "
+                      f"one (free, POST /api/v1/keys/identify) and the cap "
+                      f"lifts."),
+            ), 200
+    except Exception as e:
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("claim_key unused-cap check failed: %s", e)
+        except Exception:
+            pass
+
     # ── 2026-07-10 (leak #1, part 2): CARRY THE COUNTER FORWARD. Even when no
     # live gated key exists to hand back (different client_name pre-gate, a
     # gated dch_trial_ from the auto-mint door, or an expired/older key), the
@@ -1952,11 +2023,21 @@ def claim_key():
             # — the cap grows for keys that come back on distinct days.
             "return_streak": _streak_ladder_text(),
         }),
+        # ★ SAY WHAT IS ENFORCED. This read "rate-limited to 1 key per IP
+        # per 24h", which was false for as long as reuse was keyed on
+        # (client_name, ip): a caller incrementing client_name minted keys
+        # without limit, and one did — twelve in twenty-five minutes on
+        # 2026-09-01. A published limit nobody enforces is worse than no
+        # limit published, because it is the sentence an auditor checks.
         rate_limit_note=(
             ("Email captured — thanks. " if email else
              "This key was claimed without an email. ") +
-            "The /api/v1/keys/claim endpoint is rate-limited to 1 key per IP "
-            "per 24h."
+            "Claims are idempotent per (client_name, IP) within the reuse "
+            "window: re-claiming with the same client_name returns the SAME "
+            "key, and a different client_name mints a separate key so several "
+            "agents can share one host. Unbound keys that are never USED are "
+            "capped per IP — past that, claiming returns the newest unused key "
+            "instead of a new one. Binding an email lifts the cap."
         ),
         # Phase FF+7 (2026-05-19): point at /upgrade entry-point instead
         # of bare /pricing. /upgrade mints a pair-code on demand and 302s
