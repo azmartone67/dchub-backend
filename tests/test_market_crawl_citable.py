@@ -73,16 +73,29 @@ class TestDatasetJsonLd:
 
     def test_every_measure_carries_its_BASIS(self):
         d = json.loads(_market_dataset_ld("ashburn", "Northern Virginia", STATS, "2026-09-03"))
+        # EVERY measure must say how it was measured — no bare numbers.
         for v in d["variableMeasured"]:
             assert v.get("measurementTechnique"), f"{v['name']} has no measurementTechnique"
-            assert "population=" in v.get("description", ""), f"{v['name']} does not state its population"
+        # r-one-builder (2026-09-03): `population=` is the vocabulary of
+        # util/facility_count_basis, which describes COUNTS and CAPACITIES. A
+        # DCPI score is neither, so demanding a population of it was wrong — it
+        # states its method instead. Assert the population axis only where the
+        # vocabulary actually applies, so this cannot pass vacuously.
+        by = {v["name"]: v for v in d["variableMeasured"]}
+        for nm in ("Total Capacity", "Facilities"):
+            assert "population=" in by[nm].get("description", ""), \
+                f"{nm} does not state its population"
+        assert "0-100" in by["DCPI Score"]["measurementTechnique"]
 
     def test_it_is_attributable(self):
         d = json.loads(_market_dataset_ld("ashburn", "Northern Virginia", STATS, "2026-09-03"))
         assert "creativecommons.org/licenses/by/4.0" in d["license"]
         assert d["citation"] == "DC Hub, dchub.cloud"
         assert d["creator"]["name"] == "DC Hub"
-        assert d["url"] == "https://dchub.cloud/markets/ashburn"
+        # r-one-builder: the URL now resolves to the page that SERVES. 'ashburn'
+        # 301s to 'northern-virginia', so emitting the raw slug shipped a
+        # redirect in our own structured data.
+        assert d["url"] == "https://dchub.cloud/markets/northern-virginia"
 
     def test_a_missing_measure_is_OMITTED_never_zero_filled(self):
         d = json.loads(_market_dataset_ld("x", "X", {"facility_count": 5}, "2026-09-03"))

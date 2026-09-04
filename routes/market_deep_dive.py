@@ -1318,52 +1318,24 @@ joins.</p>
 # page figure and an API caller that takes the tool figure must both be able to
 # see WHY they differ, or the difference reads as us contradicting ourselves.
 def _market_dataset_ld(slug: str, name: str, stats: dict, gen_at) -> str:
-    """The citable half of the deep-dive page's structured data. Fail-soft:
-    returns an empty JSON object rather than breaking the page render."""
+    """The citable half of the deep-dive page's structured data.
+
+    r-one-builder (2026-09-03): this used to build its own Dataset node. That
+    made TWO market builders — this one and util.market_entity, which serves
+    /markets/<slug>.json — and they drifted immediately: the page attached a
+    count basis to `Facilities` while the twin published a bare integer, and the
+    twin carried a DCPI measure the page did not. Two structured-data answers
+    for one market is the defect, not a detail. #3757 claimed one builder; this
+    makes it true.
+
+    Fail-soft: an empty JSON object rather than a broken page render.
+    """
     try:
-        from util.facility_count_basis import capacity_basis, basis as _count_basis
-        _mw = stats.get("total_mw")
-        _fac = stats.get("facility_count")
-        # The deep-dive facts come from _gather_market_facts: no lifecycle
-        # filter (tracked), MAX(mw) per identity then summed (sum_sites),
-        # matched on market-or-city (market_slug).
-        _cap = capacity_basis("tracked", "sum_sites", "market_slug")
-        _cnt = _count_basis("tracked", "distinct_site", "market_slug")
-        measured = []
-        if _mw is not None:
-            measured.append({
-                "@type": "PropertyValue", "name": "Total Capacity",
-                "value": round(float(_mw), 1), "unitCode": "MAW", "unitText": "MW",
-                "measurementTechnique": _cap["aggregation_means"],
-                "description": ("population=" + _cap["population"] + "; aggregation="
-                                + _cap["aggregation"] + "; grouping=" + _cap["grouping"]
-                                + " — " + _cap["compare_note"]),
-            })
-        if _fac is not None:
-            measured.append({
-                "@type": "PropertyValue", "name": "Facilities",
-                "value": int(_fac),
-                "measurementTechnique": _cnt["unit_means"],
-                "description": ("population=" + _cnt["population"] + "; unit="
-                                + _cnt["unit"] + "; grouping=" + _cnt["grouping"]),
-            })
-        return json.dumps({
-            "@context": "https://schema.org",
-            "@type": "Dataset",
-            "name": name + " Data Center Market — DC Hub",
-            "description": ("Live data-center market measurements for " + name
-                            + ", published by DC Hub with the basis of each figure."),
-            "url": "https://dchub.cloud/markets/" + slug,
-            "license": "https://creativecommons.org/licenses/by/4.0/",
-            "creator": {"@type": "Organization", "name": "DC Hub",
-                        "url": "https://dchub.cloud"},
-            "isAccessibleForFree": True,
-            "dateModified": str(gen_at or ""),
-            "temporalCoverage": str(gen_at or ""),
-            "spatialCoverage": {"@type": "Place", "name": name},
-            "variableMeasured": measured,
-            "citation": "DC Hub, dchub.cloud",
-        }, ensure_ascii=False)
+        _canon = MARKETS_CANONICAL_REDIRECT.get(slug, slug)
+        return json.dumps(
+            market_entity(slug, name, stats, canonical_slug=_canon,
+                          as_of=str(gen_at or "") or None),
+            ensure_ascii=False)
     except Exception:   # pragma: no cover - structured data never breaks a page
         return "{}"
 
