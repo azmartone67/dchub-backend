@@ -9345,28 +9345,37 @@ def og_card_index():
     """National INDEX social card (no slug). Fixes the broken og:image on /dcpi."""
     _ensure_tables()
     markets = 0
-    top_name = top_score = None
     builds = 0
+    top_name = "—"
+    top_score = None
     try:
-        with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                WITH latest AS (
-                  SELECT DISTINCT ON (market_slug) market_name, excess_power_score, verdict
-                    FROM market_power_scores
-                   ORDER BY market_slug, computed_at DESC)
-                SELECT COUNT(*) n,
-                       COUNT(*) FILTER (WHERE verdict='BUILD') builds,
-                       (SELECT market_name FROM latest ORDER BY excess_power_score DESC NULLS LAST LIMIT 1) top_name,
-                       (SELECT MAX(excess_power_score) FROM latest) top_score
-                  FROM latest
-            """)
-            r = cur.fetchone() or {}
-            markets = int(r.get("n") or 0)
-            builds = int(r.get("builds") or 0)
-            top_name = r.get("top_name") or "—"
-            top_score = int(r.get("top_score") or 0)
+        # r-one-dcpi-universe (2026-09-04): read the SAME published rows the
+        # /dcpi page and /api/v1/dcpi/scores serve. This card used to run its
+        # own `SELECT COUNT(*) FROM (SELECT DISTINCT ON (market_slug) ...)`
+        # against market_power_scores with no `published` predicate, so it
+        # counted the alias-twin rows r-twin-unpublish retires (published set
+        # false, row KEPT so direct links still resolve — the flag is a
+        # VISIBILITY bit, not a delete) as if they were live markets. Two
+        # competing definitions of "a scored market", and this is the surface
+        # social platforms and AI crawlers scrape, so the one that disagreed
+        # with the page was the more widely quoted. There is now ONE definition
+        # — _fetch_scores_rows' published universe — and no second COUNT to
+        # drift from it. Memoized, so this costs no extra query per render.
+        rows = _scores_rows_cached()
+        markets = len(rows)
+        builds = sum(1 for r in rows if (r.get("verdict") or "") == "BUILD")
+        _top = max(rows,
+                   key=lambda r: (r.get("excess_power_score") is not None,
+                                  r.get("excess_power_score") or 0),
+                   default=None)
+        if _top is not None and _top.get("excess_power_score") is not None:
+            top_name = _top.get("market_name") or "—"
+            # r-one-dcpi-card: round rather than truncate, and never draw a
+            # confident number for an absent score — an image carries no caveat.
+            top_score = round(float(_top["excess_power_score"]))
     except Exception:
-        top_name = top_name or "—"; top_score = top_score or 0
+        pass
+    _top_txt = top_name if top_score is None else f"{top_name} · {top_score}"
     svg = f"""<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <defs>
@@ -9388,7 +9397,7 @@ def og_card_index():
   <text x="60" y="430" font-family="-apple-system, sans-serif" font-size="18" font-weight="600"
         fill="#9ca3af" letter-spacing="2">TOP MARKET FOR EXCESS POWER</text>
   <text x="60" y="510" font-family="-apple-system, sans-serif" font-size="64" font-weight="800"
-        fill="#10b981" letter-spacing="-1">{top_name} · {top_score}</text>
+        fill="#10b981" letter-spacing="-1">{_top_txt}</text>
   <text x="1140" y="600" font-family="-apple-system, sans-serif" font-size="18"
         fill="#6b7280" text-anchor="end">dchub.cloud/dcpi</text>
 </svg>"""
