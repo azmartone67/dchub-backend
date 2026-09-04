@@ -52,6 +52,15 @@ CORRECTED_SOURCES = (
     "routes/mcp_explain_dcpi.py",
     "routes/linkedin_quad_daily.py",
     "routes/linkedin_content_engine.py",
+    # ★2026-09-04, added after #3816 shipped: the SERVED tool catalog.
+    # #3816 derived the count in main._canonical_mcp_manifest() — which is NOT
+    # the responder for /.well-known/mcp.json. A before_request hook intercepts
+    # that route first (main.py, see the note near the free-tier gate), and the
+    # descriptions it returns are built HERE. So the PR fixed a shadowed path
+    # and left the served one typed. Verified at the Railway origin, not at
+    # dchub.cloud: the edge additionally shadows that path with an off-repo
+    # zone worker, so the edge cannot answer "which handler won".
+    "routes/mcp_tool_catalog.py",
 )
 
 #: The claim SHAPES a hard-typed market count takes. Matched against source with
@@ -63,12 +72,14 @@ CORRECTED_SOURCES = (
 #:   with any MW value or thousands separator on a served body (/ai carries a
 #:   4-digit number containing the retired count as a substring today). A claim
 #:   shape cannot collide with a quantity that is not a market count.
-#: ★ [ \t] and NOT \s: \s crosses newlines, and an unrelated numeric fallback
+#: ★ [- \t] and NOT \s: \s crosses newlines, and an unrelated numeric fallback
 #:   on one line followed by a variable named `markets` on the next then reads
-#:   as a claim. The first draft of this fence failed on exactly that.
+#:   as a claim. The first draft of this fence failed on exactly that. The
+#:   hyphen is in the class because the tool catalog writes the claim as
+#:   "300+-market set" — a form the space-only version walked straight past.
 _HARDCODED_MARKET_CLAIM = re.compile(
-    r"\b\d{3}\+?[ \t]+(?:US[ \t]+|U\.S\.[ \t]+)?"
-    r"(?:data[- ]cent(?:er|re)[ \t]+)?markets?\b",
+    r"\b\d{3}\+?[- \t]+(?:US[- \t]+|U\.S\.[- \t]+)?"
+    r"(?:data[- ]cent(?:er|re)[- \t]+)?markets?\b",
     re.IGNORECASE,
 )
 

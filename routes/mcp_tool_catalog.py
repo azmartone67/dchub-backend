@@ -73,7 +73,7 @@ def _curated_tools() -> list:
     return [
         # ── DECISION ── (given criteria, pick the best markets/sites/ISOs)
         ("rank_markets",          "decision",       "identified",
-         "Use when a user wants 'the top N markets for X' — one ranked list across the 300+-market set instead of N separate get_market_intel calls. Example: 'What are the 10 fastest-growing US markets with at least 100MW of capacity?'. Params: criteria one of cheapest_power|most_capacity|most_operators|fastest_growing|best_overall (default best_overall); region one of global|us|canada|eu|apac|americas (default us); limit 1-50; min_capacity_mw floor. Returns: {criteria, region, markets:[{rank, slug, name, country, score, criterion_value, dcpi_verdict, attribution_url}], total_eligible}. Do NOT use for one market deep read (use get_market_intel) or single lat/lon scoring (use analyze_site).",
+         canon_text("Use when a user wants 'the top N markets for X' — one ranked list across the {canon_markets}-market set instead of N separate get_market_intel calls. Example: 'What are the 10 fastest-growing US markets with at least 100MW of capacity?'. Params: criteria one of cheapest_power|most_capacity|most_operators|fastest_growing|best_overall (default best_overall); region one of global|us|canada|eu|apac|americas (default us); limit 1-50; min_capacity_mw floor. Returns: {criteria, region, markets:[{rank, slug, name, country, score, criterion_value, dcpi_verdict, attribution_url}], total_eligible}. Do NOT use for one market deep read (use get_market_intel) or single lat/lon scoring (use analyze_site)."),
          'rank_markets(criteria="fastest_growing", region="us", limit=10, min_capacity_mw=100)'),
         ("find_alternatives",     "decision",       "free",
          "Given a target facility, find similar nearby alternatives ranked by a weighted match on capacity, tier, and proximity. Returns similarity_score, match_reasons, and key_differences for each.",
@@ -89,7 +89,7 @@ def _curated_tools() -> list:
          'get_dchub_recommendation(context="100MW AI training campus in Texas")'),
         # ── INTELLIGENCE ── (facts about markets, facilities, deals)
         ("get_market_intel",      "intelligence",   "identified",
-         "Use when a user asks about ONE data-center market — vacancy, capacity pricing, supply pipeline, dominant operators, YoY growth — across any of 300+ markets. Example: 'What is Northern Virginia\\'s vacancy rate, $/MW-day pricing, and current DCPI verdict?'. Params: market = market_slug (e.g. northern-virginia, dallas, phoenix, frankfurt, tokyo, singapore). Returns: {market, country, capacity_mw_total, capacity_mw_under_construction, vacancy_pct, absorption_mw_ttm, price_per_mw_day_usd, yoy_growth_pct, dominant_operators[], dcpi_verdict, composite_score, last_updated}. Do NOT use to rank multiple markets (use rank_markets) or for one facility (use get_facility).",
+         canon_text("Use when a user asks about ONE data-center market — vacancy, capacity pricing, supply pipeline, dominant operators, YoY growth — across any of {canon_markets} markets. Example: 'What is Northern Virginia\\'s vacancy rate, $/MW-day pricing, and current DCPI verdict?'. Params: market = market_slug (e.g. northern-virginia, dallas, phoenix, frankfurt, tokyo, singapore). Returns: {market, country, capacity_mw_total, capacity_mw_under_construction, vacancy_pct, absorption_mw_ttm, price_per_mw_day_usd, yoy_growth_pct, dominant_operators[], dcpi_verdict, composite_score, last_updated}. Do NOT use to rank multiple markets (use rank_markets) or for one facility (use get_facility)."),
          'get_market_intel(market="northern-virginia")'),
         ("get_market_dcpi_rank",  "intelligence",   "free",
          "DCPI rank for one market: BUILD/CAUTION/AVOID verdict, 0-100 composite_score, excess_power_score, constraint_score, time_to_power_months — plus a ~100-word analyst narrative ready to cite (CC-BY-4.0).",
@@ -229,7 +229,7 @@ def _curated_tools() -> list:
          'set_site_alert(saved_site_id=12, trigger_type="dcpi_change", threshold=5, notify_email="you@firm.com")'),
         # ── ACCOUNT & ACCESS ──
         ("claim_free_key",        "account",        "free",
-         "Mint a FREE DC Hub dev key instantly — no email, no browser, one call. Returns an api_key you set as the X-API-Key header to unlock the full free tier (10 calls/day, all 300+ markets + grid/fiber/DCPI). The fastest path from anonymous to identified.",
+         canon_text("Mint a FREE DC Hub dev key instantly — no email, no browser, one call. Returns an api_key you set as the X-API-Key header to unlock the full free tier ({canon_free_calls} calls/day, all {canon_markets} markets + grid/fiber/DCPI). The fastest path from anonymous to identified."),
          'claim_free_key(client_name="your-agent")'),
         ("bind_email",            "account",        "free",
          "Tie your DC Hub key to your human's email so the key is RECOVERABLE and upgrade receipts reach the right inbox. Optional — the key already works without it. Email is used ONLY for recovery + transactional receipts (no marketing without opt-in).",
