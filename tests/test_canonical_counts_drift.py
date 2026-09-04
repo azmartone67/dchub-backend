@@ -3320,6 +3320,16 @@ def _scan_repo_stale_counts():
 # monthly_trend was fixed in the same pass but was never ledgered.
 # tests/test_tool_count_not_hardcoded.py is the forward guard.
 KNOWN_STALE_COUNT_DEBT = {
+    # ★2026-09-04 — two entries DROPPED, both paid outright:
+    # routes/case_studies_landing.py loses 'deals_stale_floor' and
+    # routes/mcp_outreach_drafts.py loses BOTH its tokens. The deals literal
+    # they shared floored duplicate INGEST ROWS — the AUTO id embeds the ingest
+    # date, so re-ingesting one deal never conflicts and accrues a row per day —
+    # and it sat one <div> (case_studies) or one clause (mcp_outreach) from an
+    # already-resolved {canon_facilities} sibling. Two of the three call sites
+    # were ALREADY inside canon_text() and had simply kept the literal beside a
+    # placeholder. All now derive. ★This test failing is how the payment got
+    # recorded, per the note below.
     # ★2026-09-04 — routes/partner_landing.py loses 'facilities_stale_floor',
     # its last count debt but for the ISO/tool tokens. Its /partners/gemini
     # hero was the one un-canonised string in the module: a hardcoded
@@ -3383,7 +3393,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/brain_investigator.py': {'markets_232'},
     'routes/bs_translator.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/campaign_halfprice_annual.py': {'tool_count_literal'},
-    'routes/case_studies_landing.py': {'deals_stale_floor'},
     'routes/competitive_intel.py': {'isos_non_canonical'},
     'routes/content_enqueue.py': {'deals_stale_floor', 'facilities_bare_int', 'tool_count_literal'},
     'routes/demo.py': {'isos_non_canonical', 'tool_count_literal'},
@@ -3400,7 +3409,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/market_deep_dive.py': {'facilities_stale_floor'},
     'routes/marketing_engine.py': {'deals_stale_floor', 'facilities_stale_floor'},
     'routes/mcp_funnel_upgrade.py': {'isos_non_canonical'},
-    'routes/mcp_outreach_drafts.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/mcp_presence_crawler.py': {'tool_count_literal'},
     'routes/mcp_quality_badge.py': {'tool_count_literal'},
     'routes/mcp_usage_self.py': {'tool_count_literal'},
@@ -3625,7 +3633,11 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # 36 countries), so ONE row held two wrong answers. Both counts now resolve
     # through canonical_stats at seed time. Lowered in the SAME commit that
     # drains it, exactly as this assertion's message asks.
-    assert len(outside) >= 82, (
+    # ★2026-09-04: 82 -> 80. case_studies_landing and mcp_outreach_drafts drained
+    # their deals floor (and mcp_outreach its tool count too) — all of it now
+    # resolves through canon_text at import/render. Lowered in the SAME commit
+    # that drains it, exactly as this assertion's message asks.
+    assert len(outside) >= 80, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."

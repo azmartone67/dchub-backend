@@ -35,6 +35,10 @@ from typing import Any
 from flask import Blueprint, current_app, jsonify, request
 from ai_surface_canon import canon_text
 
+# ★2026-09-04: the "Stats (live)" block below promises live figures and hand-typed
+# the country count between two genuinely live siblings.
+_CANON_COUNTRIES = canon_text("{canon_countries}")
+
 
 mcp_outreach_drafts_bp = Blueprint("mcp_outreach_drafts", __name__)
 
@@ -51,9 +55,9 @@ _GITHUB_HANDLE = "azmartone67"
 # 1-paragraph + 1-line variants for forms that ask for either.
 _DESC_LONG = (
     canon_text("DC Hub is the leading MCP server for data-center intelligence. "
-    "It exposes 48 tools that cover {canon_facilities} global data-center "
-    "facilities across 178 countries, 300+ power markets scored by "
-    "our proprietary DC Hub Power Index (DCPI), 4,000+ deals in tracked "
+    "It exposes {canon_tools} tools that cover {canon_facilities} global data-center "
+    "facilities across {canon_countries} countries, 300+ power markets scored by "
+    "our proprietary DC Hub Power Index (DCPI), {canon_deals} tracked "
     "M&A deals, 369 GW of construction pipeline, ISO grid telemetry "
     "(PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy "
     "pricing. Used by Claude and Cursor "
@@ -62,13 +66,15 @@ _DESC_LONG = (
     "renewable energy economics.")
 )
 _DESC_SHORT = (
-    canon_text("MCP server with 48 tools covering {canon_facilities} distinct data-center facilities, "
-    "300+ power markets (DCPI), 4,000+ M&A deals, 369 GW pipeline, ISO grid "
+    canon_text("MCP server with {canon_tools} tools covering {canon_facilities} distinct data-center facilities, "
+    "300+ power markets (DCPI), {canon_deals} M&A deals, 369 GW pipeline, ISO grid "
     "data, fiber, energy pricing. Powering Claude and Cursor.")
 )
+# ★2026-09-04: the only one of the three blurbs never passed through the
+# resolver, which is precisely why its counts could drift from its siblings'.
 _DESC_TWEET = (
-    "@dchub_cloud — data-center intelligence MCP. 48 tools, 21K "
-    "facilities, 300+ markets scored, Claude and Cursor. dchub.cloud/mcp"
+    canon_text("@dchub_cloud — data-center intelligence MCP. {canon_tools} tools, "
+    "{canon_facilities} facilities, 300+ markets scored, Claude and Cursor. dchub.cloud/mcp")
 )
 
 _CATEGORIES = ["data", "research", "finance", "energy", "infrastructure"]
@@ -162,7 +168,7 @@ def _draft_for_target(t: dict, tool_n: int, fac_n: int) -> dict:
 - Tools: {tool_n}+
 - Facilities tracked: {fac_n:,}+
 - Power markets scored (DCPI): 285
-- Countries covered: 178
+- Countries covered: {_CANON_COUNTRIES}
 - Active AI platforms: 96+
 
 ### License
