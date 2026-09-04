@@ -1,0 +1,22 @@
+CORRECTION (2026-09-04): this commit's title and body are STALE — GitHub's
+auto-merge captured them when auto-merge was enabled, before the branch was
+rebuilt, and overrode the branch's own commit message.
+
+What the message describes is largely #3816's work. #3816 landed the same
+defect class while this PR's CI ran; this PR was then reset to origin/main and
+reduced to the surfaces #3816 did not reach.
+
+The branch commit's real title was:
+  canon: five more surfaces kept publishing a retired DCPI market count
+
+WHAT THIS COMMIT ACTUALLY CHANGED (5 surfaces + one fence):
+  routes/case_studies_landing.py   served HTML stat tile
+  routes/mcp_outreach_drafts.py    the 'Stats (live)' block + three blurbs
+  routes/dcpi_auto_press.py        every auto-published press-release body
+  routes/narrative_arc.py          the last-resort fallback arc
+  routes/partner_landing.py        a value bullet and the served live-strip
+  tests/test_dcpi_market_count_derived.py
+
+It did NOT touch main.py, routes/mcp_citation.py, routes/mcp_explain_dcpi.py
+or either LinkedIn generator — the message names them, but #3816 fixed those.
+Read the PR body at #3817, which was rewritten and is accurate.
