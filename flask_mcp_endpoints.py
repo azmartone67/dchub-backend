@@ -327,6 +327,49 @@ def _require_internal(fn):
     return wrapper
 
 
+def _high_intent_basis(threshold):
+    """Render the published high_intent basis FROM a threshold value.
+
+    Pure so the guard can assert the real renderer at each setting instead of
+    re-implementing the sentence (a test that mirrors the string stays green
+    through the exact regression it exists to catch)."""
+    return (
+        "COUNT(DISTINCT mcp_session_id) FROM mcp_high_intent_sessions WHERE "
+        "first_hit_at is in the window. Entry requires paid_call_count_24h >= "
+        + (str(threshold) if threshold is not None else "the configured threshold")
+        + " in a rolling 24h. "
+        # ★ Three cases, not two: an UNREADABLE threshold must assert neither
+        # shape. Claiming repeat-use (or its opposite) off a value we could not
+        # read is the same defect as hardcoding it.
+        + ("The entry threshold could not be read in this process, so this "
+           "stage's shape is undeclared here."
+           if threshold is None else
+           "At this setting a single gated call DOES enter the table — the "
+           "stage is paid-tool use, NOT repeat use."
+           if threshold <= 1 else
+           "The stage is REPEAT paid-tool use, not a second pageview — a "
+           "session that makes fewer gated calls than that never enters this "
+           "table."))
+
+
+def _live_high_intent_threshold():
+    """The RUNNING process's high-intent entry threshold, or None.
+
+    r-threshold-drift (2026-09-03): the published high_intent basis asserted
+    "a session that makes exactly one gated call never enters this table".
+    HIGH_INTENT_THRESHOLD is read from DCHUB_HIGH_INTENT_THRESHOLD at MODULE
+    IMPORT, prod overrides the code default of 2, and prod was live on 1 — so
+    the published sentence was false and could only be fixed by a redeploy it
+    never described. Interpolate the live value the way `basis` already
+    interpolates the human_acted version number: a definition that states a
+    config value must READ it, never restate it."""
+    try:
+        from routes.mcp_high_intent_claim import HIGH_INTENT_THRESHOLD as _t
+        return int(_t)
+    except Exception:
+        return None
+
+
 # ── GET /api/v1/mcp/handoff-funnel ──────────────────────────────────────────
 # r-handoff (2026-06-21): the agent→human conversion funnel, end to end, on
 # DISTINCT sessions — surfaces WHERE the handoff leaks. paywall-hit → high-intent
@@ -444,6 +487,10 @@ def handoff_funnel():
         paid_tp = one("select count(distinct mcp_session_id) from mcp_topups "
                       "where mcp_session_id is not null and created_at > now() - interval '%s'" % iv)
         paid = (paid_su or 0) + (paid_tp or 0)
+        # Bound ONCE per window, beside the block that publishes it, so the
+        # basis sentence and the stage it describes cannot disagree.
+        _hi_threshold = _live_high_intent_threshold()
+
         def pct(n, d):
             return round(100.0 * n / d, 2) if (n is not None and d) else None
         steps = {"paywall_hit": paywall, "high_intent": high, "relay_minted": minted,
@@ -489,10 +536,14 @@ def handoff_funnel():
             # A reader given `paywall 24 -> high_intent 2 (8.33%)` against a 7d
             # rate of 55.22% has to reverse-engineer both stages from source to
             # know whether that is a broken instrument or a real change. It was
-            # a real change, and the reason is IN the definition: high_intent
-            # requires REPEAT paid-tool use, so single-call traffic cannot
-            # convert by construction. Publishing the basis is what makes the
-            # number readable without a code dive.
+            # a real change, and the reason is IN the definition. ★2026-09-03:
+            # that reason was stated as "high_intent requires REPEAT paid-tool
+            # use, so single-call traffic cannot convert by construction" — true
+            # only at threshold >= 2, and prod runs on 1. The basis now READS
+            # the live threshold instead of asserting it, and declares the
+            # paywall_hit filter boundary beside it. Publishing the basis is
+            # what makes the number readable without a code dive; publishing a
+            # basis that restates config is what makes it readable and WRONG.
             "definitions": {"human_acted": _human_acted_definition(),
                             "redeemed": _redeem_stage_basis(),
                             "paywall_hit": {
@@ -505,12 +556,20 @@ def handoff_funnel():
                                 "is_funnel_progress": True,
                             },
                             "high_intent": {
-                                "basis": (
-                                    "COUNT(DISTINCT mcp_session_id) FROM "
-                                    "mcp_high_intent_sessions WHERE first_hit_at is in the "
-                                    "window. The stage is REPEAT paid-tool use, not a second "
-                                    "pageview — a session that makes exactly one gated call "
-                                    "never enters this table."),
+                                "basis": _high_intent_basis(_hi_threshold),
+                                # ★ The drop from paywall_hit is NOT all conversion loss.
+                                # The two stages are drawn from differently-filtered
+                                # populations, and differencing them measures the filter
+                                # as if it were a leak — the misread this block exists
+                                # to prevent.
+                                "population_vs_paywall_hit": (
+                                    "paywall_hit is written by signalPaywall() with NO bot "
+                                    "filter. Entry HERE is refused at write time for "
+                                    "internal/CI/probe clients and raw scripting UAs "
+                                    "(routes.mcp_high_intent_claim._is_non_human_client), "
+                                    "which returns HTTP 200 with skipped=<reason> and "
+                                    "records nothing. Part of this drop is therefore a "
+                                    "filter boundary, not a lost prospect."),
                                 "is_funnel_progress": True,
                                 "subset_of": "paywall_hit",
                                 "measured_2026_08_25": (

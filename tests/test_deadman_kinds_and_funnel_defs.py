@@ -31,9 +31,10 @@ THE CONTRACT being guarded
 - `overdue` keeps its meaning — bool(reasons). The off-worker watcher alarms
   on it; narrowing it would silently stop the alarm. A guard that let `overdue`
   drift to `stale_age`-only would be guarding the wrong thing.
-- `paywall_hit` and `high_intent` both carry a `basis`, and high_intent's says
-  it is REPEAT use and a subset of paywall_hit — that sentence is the reason
-  the rate is readable at all.
+- `paywall_hit` and `high_intent` both carry a `basis`, and high_intent's is
+  DERIVED from the live entry threshold (★2026-09-03: it used to assert REPEAT
+  use unconditionally, which is false at threshold 1 — and prod ran on 1) and
+  names its superset — that sentence is the reason the rate is readable at all.
 
 NO NETWORK, NO DB. Rules are re-derived from the module's own constants; the
 funnel definitions are read as source text.
@@ -193,13 +194,31 @@ def test_stage_publishes_a_basis(stage):
     assert '"basis"' in seg[:1200], f"{stage} ships without a basis"
 
 
-def test_high_intent_basis_says_repeat_and_names_its_superset():
-    """The one sentence that makes the conversion rate readable."""
+def test_high_intent_basis_is_derived_and_names_its_superset():
+    """The one sentence that makes the conversion rate readable.
+
+    ★2026-09-03 (r-threshold-drift): this used to assert the literal word
+    REPEAT in the definitions SOURCE region. That is exactly how the sentence
+    went false — "requires REPEAT use" is true only at threshold >= 2, the
+    threshold is an env var read at module import, and prod ran on 1. The
+    contract is now DERIVATION: the region must delegate to
+    _high_intent_basis(), and that renderer must still say REPEAT when the
+    threshold actually makes it repeat-use. Asserting the literal here would
+    re-freeze the bug this guard is supposed to catch.
+    """
     region = _defs_region()
     seg = region[region.index('"high_intent"'):]
-    assert "REPEAT" in seg[:1600], (
-        "high_intent no longer states that it requires REPEAT use — without "
-        "that, a rate drop driven by one-shot traffic reads as a defect"
+    assert "_high_intent_basis(" in seg[:1600], (
+        "high_intent's basis is no longer derived from the live threshold — a "
+        "hardcoded sentence goes false the moment prod overrides the default"
+    )
+    import flask_mcp_endpoints as _f
+    assert "REPEAT" in _f._high_intent_basis(2), (
+        "at a repeat-use threshold the basis must still say so — without that, "
+        "a rate drop driven by one-shot traffic reads as a defect"
+    )
+    assert "REPEAT" not in _f._high_intent_basis(1), (
+        "at threshold 1 the basis must NOT claim repeat use"
     )
     assert '"subset_of": "paywall_hit"' in seg[:1600], (
         "high_intent no longer declares it is a subset of paywall_hit, which "
