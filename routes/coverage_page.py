@@ -29,8 +29,11 @@ def _get_db():
 
 
 def _compute_coverage() -> dict:
-    """Per-country counts + per-region totals. Best-effort across both
-    facilities and discovered_facilities tables."""
+    """Per-country counts + per-region totals, all from discovered_facilities.
+
+    ★ Single table by design. This used to straddle `facilities` (legacy) and
+    `discovered_facilities` (canonical), which is how the page came to publish
+    a total from one and a country list from the other."""
     out = {
         "as_of": datetime.datetime.utcnow().isoformat() + "Z",
         "by_country": [],
@@ -42,13 +45,39 @@ def _compute_coverage() -> dict:
     if c is None: return out
     try:
         with c.cursor() as cur:
-            # Per-country breakdown — union of both tables, dedup'd by
-            # name+country
+            # ★2026-09-04 — THIS PAGE PUBLISHED THREE WRONG NUMBERS IN ITS OWN
+            # <title>: "DC Hub · Coverage — 28,251 facilities · 25 countries",
+            # against a canon of 20,352 facilities and 178 countries.
+            #
+            #   28,251  was COUNT(*) FROM discovered_facilities — SOURCE
+            #           RECORDS, ~1.4x the buildings, because the March 2026
+            #           backfill wrote several rows per site. The canonical
+            #           endpoint's own provenance names facilities_distinct as
+            #           "the field to cite"; this published the row pile.
+            #
+            #   25      was len(by_country) — and by_country carries LIMIT 25
+            #           for the display table below. The DISPLAY LIMIT was
+            #           being published as the total. It would have read "25"
+            #           at 25 countries and at 25,000.
+            #
+            #   by_country itself came from the LEGACY `facilities` table while
+            #           the total came from `discovered_facilities` — two
+            #           tables, one page, no relationship between the numbers.
+            #
+            # All three now read from discovered_facilities, and the total
+            # MIRRORS public_endpoints.py's citable query exactly rather than
+            # inventing a fourth reading of "how many facilities".
+            #
+            # Per-country counts are COUNT(DISTINCT canonical_slug) for the
+            # same reason the total is: buildings, not rows. Fail-open — any
+            # step that raises leaves its key at the zero seeded above.
             cur.execute("""
-                SELECT UPPER(COALESCE(country, '?')) AS cc, COUNT(*) AS n
-                  FROM facilities
-                 WHERE COALESCE(country, '') != ''
-                 GROUP BY UPPER(COALESCE(country, '?'))
+                SELECT UPPER(btrim(country)) AS cc,
+                       COUNT(DISTINCT canonical_slug) AS n
+                  FROM discovered_facilities
+                 WHERE btrim(COALESCE(country, '')) <> ''
+                   AND canonical_slug IS NOT NULL
+                 GROUP BY UPPER(btrim(country))
                  ORDER BY n DESC
                  LIMIT 25
             """)
@@ -56,9 +85,18 @@ def _compute_coverage() -> dict:
                 {"country": r[0], "facilities": int(r[1])}
                 for r in cur.fetchall() if r[0] != '?'
             ]
-            cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+            # Mirrors public_endpoints.py:143 — the citable facilities_distinct.
+            cur.execute("SELECT COUNT(DISTINCT canonical_slug) "
+                        "FROM discovered_facilities "
+                        "WHERE canonical_slug IS NOT NULL")
             out["total_facilities"] = int((cur.fetchone() or [0])[0] or 0)
-            out["countries_tracked"] = len(out["by_country"])
+            # A real total, not the length of a LIMIT-ed display list.
+            cur.execute("""
+                SELECT COUNT(DISTINCT UPPER(btrim(country)))
+                  FROM discovered_facilities
+                 WHERE btrim(COALESCE(country, '')) <> ''
+            """)
+            out["countries_tracked"] = int((cur.fetchone() or [0])[0] or 0)
 
             # 7-day add count from discovered_facilities + manual ingest
             try:
@@ -74,9 +112,13 @@ def _compute_coverage() -> dict:
             # Source breakdown — gives a "we're not just buying data,
             # we're building it" story
             try:
+                # ★ discovered_facilities, not the legacy `facilities` table:
+                # a source breakdown of a DIFFERENT population than the total
+                # above cannot add up, and the bar widths below divide these
+                # counts BY that total.
                 cur.execute("""
                     SELECT COALESCE(source, 'unknown') AS s, COUNT(*) AS n
-                      FROM facilities
+                      FROM discovered_facilities
                      GROUP BY source
                      ORDER BY n DESC LIMIT 8
                 """)

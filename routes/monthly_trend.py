@@ -316,8 +316,26 @@ def _compute_report(year: int | None = None,
             # site_stats uses). The "added this month" delta still reads
             # discovered_facilities.discovered_at since that's where the
             # timestamp lives.
+            # ★2026-09-04 — was COUNT(*), which is SOURCE RECORDS (~1.4x the
+            # buildings: the March 2026 backfill wrote several rows per site).
+            # This one value is published as "facilities" on SIX surfaces —
+            # /reports/monthly's <title> and meta description, its press-kit
+            # quote below, and /sample, /sample/agent, /sample/journalist and
+            # /sample/pe, all of which read headline.facilities_total from this
+            # report. Every one of them claimed 28,251 against a canon of
+            # 20,352. Mirrors public_endpoints.py's citable facilities_distinct
+            # query exactly rather than inventing another reading.
+            #
+            # ★ Deltas are UNAFFECTED: facilities_mom_pct / facilities_yoy_pct
+            # are computed from facilities_added_* below, which are their own
+            # windowed counts and do not derive from this total.
+            #
+            # (The comment above this is stale in one detail — it says the
+            # totals were switched TO `facilities`, but the query has read
+            # discovered_facilities since r7. Left as history.)
             facilities_now = int(_safe_scalar(cur,
-                "SELECT COUNT(*) FROM discovered_facilities") or 0)
+                "SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
+                "WHERE canonical_slug IS NOT NULL") or 0)
             total_mw_now = float(_safe_scalar(cur, """
                 SELECT COALESCE(SUM(power_mw), 0) FROM facilities
                  WHERE power_mw IS NOT NULL

@@ -211,8 +211,16 @@ _PARTNERS = {
     "gemini": {
         "name":     "Google DeepMind / Gemini · Vertex AI",
         "tagline":  "LIVE — 8 data-center intelligence tools, one-click Vertex AI Extension import. Native Gemini SDK function-calling ready.",
-        "hero":     ("DC Hub is now a Vertex AI Extension. Eight tools covering "
-                       "DCPI market verdicts, 21,405+ facility lookups, live 21-ISO "
+        # ★2026-09-04 — this hero was the ONE un-canonised string in the file.
+        # It served "21,405+ facility lookups" while its own value_bullets line
+        # below rendered {_CANON_FAC} = "20,300+": the page contradicted itself,
+        # and 21,405 is the exact over-claim this module's header comment
+        # already names. It was invisible to
+        # tests/test_canon_placeholders_resolved.py because that guard walks the
+        # AST for {canon_*} PLACEHOLDERS that escaped canon_text() — a bare
+        # numeric literal has no placeholder to find. Wrapped now.
+        "hero":     canon_text("DC Hub is now a Vertex AI Extension. Eight tools covering "
+                       "DCPI market verdicts, {canon_facilities} facility lookups, live 21-ISO "
                        "grid scoreboard, water risk, and the 3-scenario site valuation "
                        "engine — all importable into Vertex AI Console with one URL "
                        "or wired into the Gemini SDK via raw functionDeclarations. "

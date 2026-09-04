@@ -3320,6 +3320,14 @@ def _scan_repo_stale_counts():
 # monthly_trend was fixed in the same pass but was never ledgered.
 # tests/test_tool_count_not_hardcoded.py is the forward guard.
 KNOWN_STALE_COUNT_DEBT = {
+    # ★2026-09-04 — routes/partner_landing.py loses 'facilities_stale_floor',
+    # its last count debt but for the ISO/tool tokens. Its /partners/gemini
+    # hero was the one un-canonised string in the module: a hardcoded
+    # "21,405+ facility lookups" beside its OWN value_bullets line rendering
+    # {_CANON_FAC} = "20,300+", so the page contradicted itself. Now inside
+    # canon_text(). This test failing is how the payment got recorded — the
+    # ledger cannot tell a paid debt from a blind scanner unless someone drops
+    # the token, which is the point of the rot check.
     # ★2026-08-30 — two more paid: routes/ai_lab_outreach.py is clean
     # outright, and routes/partner_landing.py lost its 'deals_stale_floor'
     # token (the other three remain). Same good direction as below.
@@ -3408,7 +3416,7 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/operator_brief.py': {'deals_stale_floor'},
     'routes/operators.py': {'facilities_stale_floor'},
     'routes/outreach_cron.py': {'tool_count_literal'},
-    'routes/partner_landing.py': {'facilities_stale_floor', 'isos_non_canonical', 'tool_count_literal'},
+    'routes/partner_landing.py': {'isos_non_canonical', 'tool_count_literal'},
     'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
     'routes/press_outreach.py': {'deals_stale_floor'},
     'routes/quarterly_report.py': {'deals_stale_floor', 'facilities_bare_int'},
