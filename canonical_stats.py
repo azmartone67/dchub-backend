@@ -47,6 +47,15 @@ _FALLBACK = {
     # (fabricated example.com seeds + misparsed headline fragments).
     # deals_phrase() floors DOWN to "1,400+" so we never over-claim.
     "deals": 1400,
+    # ★2026-09-03 r-dcpi-regions. The COUNTRY span of the DCPI scoring
+    # universe — the number the hardcoded region list in main.py's
+    # /.well-known/ai-agents.json description was standing in for.
+    # Measured live 2026-09-04 against /api/v1/dcpi/scores; the span grows,
+    # which is why no figure is repeated here
+    # (/api/v1/dcpi/scores, verified at the Railway origin AND the edge).
+    # Floors to "30+" via _countries_floor. Floors round DOWN; re-floor
+    # downward only if the scored span ever shrinks below 30.
+    "dcpi_countries": 30,
     "isos": 7,               # 7 live US ISOs (ERCOT, CAISO, NYISO, MISO, PJM, SPP, ISO-NE)
     "grid_operators": 10,    # 10 North-American grid operators w/ live data (7 US ISOs + TVA + BPA + IESO)
     "utility_bas": 43,       # 43 US utility balancing authorities (live EIA-930)
@@ -125,6 +134,106 @@ def _conn():
         return psycopg2.connect(db, sslmode="require", connect_timeout=6)
     except Exception:
         return None
+
+
+# ── ISO-3166 alpha-2 → display name, for the derived DCPI phrases ─────────
+# r-dcpi-regions (2026-09-03). THIS MODULE DECLARES NO COUNTRY MAP. The
+# operator→country resolution lives in ONE place — routes/dcpi.py's
+# _market_country, exposed as market_country — and _query_live() binds to it.
+# A second operator map here would be the exact defect util/iso_taxonomy.py's
+# docstring opens with ("FOUR divergent copies of a state→ISO map"), one column
+# over; the first draft of this change wrote one and it had to be deleted.
+#
+# What IS this module's business is PRESENTATION: an alpha-2 code is what
+# schema.org wants and "South Korea" is what a sentence wants. Two different
+# questions, so two different maps — and only this one is here.
+#
+# ★ The US TERRITORIES fold into the United States. _market_country returns
+#   PR/GU/VI deliberately ("more precisely themselves than US", and
+#   schema.org accepts either) — correct for a Place, wrong for a COUNTRY
+#   count, where it would publish Puerto Rico as a nation and put the span
+#   3 above reality. Floors round DOWN; this one does too.
+_COUNTRY_NAME = {
+    "US": "United States", "PR": "United States", "GU": "United States",
+    "VI": "United States", "AS": "United States", "MP": "United States",
+    "CA": "Canada", "MX": "Mexico",
+    "BR": "Brazil", "CO": "Colombia", "CL": "Chile",
+    "GB": "United Kingdom", "IE": "Ireland", "DE": "Germany",
+    "NL": "Netherlands", "FR": "France", "ES": "Spain", "IT": "Italy",
+    "PL": "Poland", "AT": "Austria", "BE": "Belgium", "PT": "Portugal",
+    "CH": "Switzerland", "GR": "Greece", "CZ": "Czechia", "SE": "Sweden",
+    "DK": "Denmark", "FI": "Finland", "NO": "Norway",
+    "JP": "Japan", "KR": "South Korea", "TW": "Taiwan", "HK": "Hong Kong",
+    "SG": "Singapore", "IN": "India", "MY": "Malaysia", "ID": "Indonesia",
+    "TH": "Thailand", "PH": "Philippines", "VN": "Vietnam",
+    "AU": "Australia", "NZ": "New Zealand",
+    "ZA": "South Africa",
+}
+
+
+# ── Country → continental region, for the derived DCPI region phrase ──────
+# r-dcpi-regions (2026-09-03). The phrase names REGIONS, not countries, on
+# purpose: an enumeration of dozens of countries does not belong in a
+# manifest description, and a
+# top-N-by-market-count list would churn every recompute. Regions are the
+# coarsest true statement, so the sentence stays short AND stops going stale.
+# The exact country list is published as STRUCTURE instead —
+# live_dcpi_international_markets() below feeds the ai-agents.json
+# dcpi_coverage.international_markets block, which is where an agent that
+# actually wants the enumeration should read it.
+#
+# Every country in util.iso_taxonomy.ISO_COUNTRY must appear here;
+# tests/test_dcpi_region_derivation.py asserts it, so adding an operator
+# without a region cannot silently drop its region from the phrase.
+_COUNTRY_REGION = {
+    "United States": "North America", "Canada": "North America",
+    "Mexico": "North America",
+    # ★ Colombia and Chile were added here BEFORE their markets existed, as
+    #   forward entries for the LatAm branch; that branch has since merged and
+    #   bogota/santiago are live behind the XM/CEN operators. A country with no
+    #   scored market contributes no region — the span is counted from live
+    #   ROWS, never from these maps — so a forward entry is free, and it stops
+    #   a market landing with no region. Keep doing it that way.
+    "Brazil": "Latin America", "Colombia": "Latin America",
+    "Chile": "Latin America",
+    "United Kingdom": "Europe", "Ireland": "Europe", "Germany": "Europe",
+    "Netherlands": "Europe", "France": "Europe", "Spain": "Europe",
+    "Italy": "Europe", "Poland": "Europe", "Austria": "Europe",
+    "Belgium": "Europe", "Portugal": "Europe", "Switzerland": "Europe",
+    "Greece": "Europe", "Czechia": "Europe", "Sweden": "Europe",
+    "Denmark": "Europe", "Finland": "Europe", "Norway": "Europe",
+    "South Africa": "Africa",
+    "Japan": "Asia-Pacific", "South Korea": "Asia-Pacific",
+    "Taiwan": "Asia-Pacific", "Hong Kong": "Asia-Pacific",
+    "Singapore": "Asia-Pacific", "India": "Asia-Pacific",
+    "Malaysia": "Asia-Pacific", "Indonesia": "Asia-Pacific",
+    "Thailand": "Asia-Pacific", "Philippines": "Asia-Pacific",
+    "Vietnam": "Asia-Pacific", "Australia": "Asia-Pacific",
+    "New Zealand": "Asia-Pacific",
+}
+
+#: Reading order for the phrase. A region absent from the live set is simply
+#: not named — the Middle East is listed here so it publishes ITSELF on the
+#: recompute after the first Gulf market is scored, with no edit.
+_REGION_ORDER = ("North America", "Latin America", "Europe",
+                 "the Middle East", "Africa", "Asia-Pacific")
+
+
+def _regions_for(countries) -> tuple:
+    """Continental regions actually represented in `countries`, in reading
+    order. Unknown countries contribute no region rather than a wrong one."""
+    seen = {_COUNTRY_REGION.get(c) for c in countries}
+    return tuple(r for r in _REGION_ORDER if r in seen)
+
+
+def _join_series(items) -> str:
+    """'A, B and C' — the Oxford-free serial join the surfaces already use."""
+    items = [i for i in items if i]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
 
 
 def _query_live() -> dict:
@@ -228,6 +337,64 @@ def _query_live() -> dict:
             if n > 0:
                 out["markets"] = n
                 _live_keys.add("markets")
+        except Exception:
+            pass
+        # ── The COUNTRY span of that same scoring universe ────────────
+        # r-dcpi-regions (2026-09-03). main.py's /.well-known/ai-agents.json
+        # described DCPI as covering "300+ markets across the U.S., UK, EU,
+        # Japan, Australia, Singapore, and Canada" — a HAND-TYPED region list
+        # beside a canon-derived count, in the same sentence. The count floored
+        # safely; the list did not, and by 2026-09-03 it omitted Mexico, India,
+        # Brazil, South Africa, Malaysia, Indonesia, Taiwan, South Korea, Hong
+        # Kong, Thailand, Vietnam, the Philippines, New Zealand, thirteen more
+        # European countries and the US territories — many times the seven it
+        # named. Same defect class as the DCPI-scored-markets literal in
+        # the very next field of the same payload: one document, two answers,
+        # and the hardcoded one under-claims.
+        #
+        # ★ SAME universe predicate as the markets query above, deliberately:
+        #   two counts of the same set must not be able to disagree about what
+        #   the set IS.
+        # ★ Country resolves from the OPERATOR label, never from `state` —
+        #   see util.iso_taxonomy.country_of_market for the live two-letter
+        #   collisions (IN=India/Indiana, DE=Germany/Delaware, ID=Indonesia/
+        #   Idaho, WA=Western Australia/Washington).
+        # ★ An UNRESOLVED label is EXCLUDED and RECORDED, never absorbed into
+        #   the US bucket. That default is what let main.py's grid-telemetry
+        #   map class Brazil and Korea as American until a test caught it;
+        #   excluding under-claims by one country and says so, which a guard
+        #   can see. dcpi_unmapped is the tell.
+        try:
+            from routes.dcpi import market_country as _cm
+            cur.execute("SELECT iso, state, market_slug, market_name "
+                        "FROM market_power_scores "
+                        "WHERE COALESCE(published, true) = true "
+                        "AND market_slug NOT IN "
+                        "('pacific-nw-rural','rural-spp','upper-michigan')")
+            rows = cur.fetchall() or []
+            by_country = {}
+            unmapped = []
+            for _iso, _state, _slug, _name in rows:
+                # NB argument order is (state, iso, slug) — routes/dcpi.py's
+                # signature, not this module's read order.
+                ctry = _COUNTRY_NAME.get(_cm(_state, _iso, _slug) or "")
+                if not ctry:
+                    unmapped.append((_iso or "", _slug or ""))
+                    continue
+                ent = by_country.setdefault(ctry, {"isos": set(), "markets": set()})
+                if (_iso or "").strip() and (_iso or "").upper().strip() != "UNK":
+                    ent["isos"].add(_iso.strip())
+                ent["markets"].add(_name or _slug or "")
+            if by_country:
+                out["dcpi_countries"] = len(by_country)
+                out["dcpi_regions"] = _regions_for(by_country)
+                out["dcpi_intl"] = tuple(
+                    (c, "/".join(sorted(v["isos"])),
+                     tuple(sorted(m for m in v["markets"] if m)))
+                    for c, v in sorted(by_country.items())
+                    if c != "United States")
+                out["dcpi_unmapped"] = tuple(sorted(set(unmapped)))
+                _live_keys.add("dcpi_countries")
         except Exception:
             pass
         # DISTINCT tracked deals. ★DO NOT use a bare COUNT(*) FROM deals here:
@@ -369,6 +536,67 @@ def deals_phrase() -> str:
     return _deals_floor(get_canonical_stats().get("deals", _FALLBACK["deals"]))
 
 
+def dcpi_countries_phrase() -> str:
+    """Country span of the DCPI scoring universe, e.g. '30+'.
+
+    Floors to 10 like countries_phrase() — citation-safe, never above reality.
+    Measured against the live scored universe; no figure is repeated here
+    because this docstring would rot exactly as the literal it replaced did."""
+    return _countries_floor(
+        get_canonical_stats().get("dcpi_countries", _FALLBACK["dcpi_countries"]))
+
+
+def dcpi_regions_phrase() -> str:
+    """Derived region span, e.g. 'North America, Latin America, Europe, Africa
+    and Asia-Pacific'.
+
+    ★THE POINT. This replaces the hand-typed "the U.S., UK, EU, Japan,
+    Australia, Singapore, and Canada" that main.py's /.well-known/ai-agents.json
+    description carried beside a canon-derived market count. That list named 7
+    regions against a live country span many times larger, and had been stale
+    since at least the
+    2026-08-07 Mexico addition — the same shape as the "233 DCPI-scored markets"
+    literal in the very next field of the same payload.
+
+    Fail-open to "" (a region-free sentence) exactly like canon_text(): a
+    missing clause is visible, a stale one is not.
+    """
+    regions = get_canonical_stats().get("dcpi_regions") or ()
+    return _join_series(list(regions))
+
+
+def live_dcpi_regions_phrase() -> str:
+    """dcpi_regions_phrase() under the live_public_floors() PEEK-ONLY contract.
+
+    Never triggers a query, so a manifest render can never block on the DB;
+    returns "" when no real query has measured the span, and the caller's
+    pinned literal stands. Same contract, same reason — see live_public_floors.
+    """
+    snap = peek_canonical_stats()
+    if snap is None or not stat_is_live("dcpi_countries"):
+        return ""
+    return _join_series(list(snap.get("dcpi_regions") or ()))
+
+
+def live_dcpi_international_markets() -> list:
+    """The non-US half of the scoring universe as STRUCTURE, peek-only.
+
+    Shape is preserved from the hand-written list this replaces in
+    /.well-known/ai-agents.json — [{"country","iso","markets":[...]}] — so an
+    agent already parsing that block does not break. What changes is that the
+    rows are now measured: the hand-written version froze at the 2026-05-25
+    launch set (10 countries, 16 markets — the PIN itself, exact by
+    construction) and never grew, while the live universe grew past it.
+
+    Returns [] when unmeasured, so the caller's pinned list stands.
+    """
+    snap = peek_canonical_stats()
+    if snap is None or not stat_is_live("dcpi_countries"):
+        return []
+    return [{"country": c, "iso": iso, "markets": list(names)}
+            for (c, iso, names) in (snap.get("dcpi_intl") or ())]
+
+
 def grid_coverage_phrase(style: str = "full") -> str:
     """Canonical, drift-proof description of live grid coverage. Every surface
     (pages, feeds, registries, prompts) should call THIS instead of hardcoding
@@ -432,6 +660,13 @@ _PUBLIC_FLOOR_SPECS = {
     # infrastructure-scale floors; an exact count in prose invites a diff every
     # ingest, which is how 126,427 became something nobody dared touch.
     "substations": ("substations",        lambda n: _floor_phrase(n, step=1000)),
+    # ★2026-09-03: the DCPI country span. Added for the same reason
+    # `substations` was — a surface that needs a number and has no
+    # {canon_*} placeholder to reach it HAS to hardcode, and main.py's
+    # ai-agents.json description proved it by hardcoding a region list
+    # instead. _countries_floor matches countries_phrase(), so the two
+    # country spans on the same page can never round differently.
+    "dcpi_countries": ("dcpi_countries",  _countries_floor),
 }
 
 

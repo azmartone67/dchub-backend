@@ -612,6 +612,11 @@ def _canon_nums():
         '{canon_deals}':      _pub.get('deals') or '',
         '{canon_markets}':    _pub.get('markets') or '',
         '{canon_countries}':  _pub.get('countries') or '',
+        # r-dcpi-regions (2026-09-03): the DEGRADED twin of canon_nums(). It
+        # serves the pinned cold-start floor only — no live derivation — which
+        # is why the pin is a citation-safe SUBSET of the live region set.
+        '{canon_dcpi_countries}': _pub.get('dcpi_countries') or '',
+        '{canon_dcpi_regions}':   _pub.get('dcpi_regions') or '',
         '{canon_isos}':       str(_cf.get('isos') or ''),
         '{canon_free_calls}': str(_p.get('free_tier_calls_per_day') or ''),
         '{canon_identified_calls}': str(_p.get('identified_calls_per_day') or ''),
@@ -630,6 +635,23 @@ def _canon_text(s):
         if _ph in s:
             s = s.replace(_ph, _val)
     return s
+
+
+def _live_intl_markets():
+    """The non-US DCPI countries and their markets, or [] when unmeasured.
+
+    r-dcpi-regions (2026-09-03). Peek-only by contract — see
+    canonical_stats.live_dcpi_international_markets(): it reads the resolver's
+    last-known-good cache and NEVER triggers a query, so /.well-known/ai-agents.json
+    (the surface agents hit first) cannot be made to block on the DB by
+    rendering it. [] on any failure, so the caller's pinned launch set stands.
+    """
+    try:
+        from canonical_stats import live_dcpi_international_markets as _m
+        got = _m()
+        return got if isinstance(got, list) else []
+    except Exception:
+        return []
 
 
 def _canon_int(placeholder, floor):
@@ -7484,15 +7506,39 @@ def handle_well_known():
             "$schema": "https://dchub.cloud/.well-known/ai-agents.schema.json",
             "schema_version": "ai-agents/v2",
             "name": "DC Hub",
+            # ★2026-09-03: "170+ countries" was a literal sitting beside
+            # {canon_facilities}, and {canon_countries} already resolves it —
+            # identically today (170+), self-healing tomorrow. Two spans in one
+            # sentence, one derived and one typed, is precisely how the DCPI
+            # region list below came to be a seven-region list against a live
+            # country span many times larger.
             "tagline": _canon_text(
                 "Data center intelligence platform — {canon_facilities} distinct facilities, "
-                "170+ countries, real-time grid & infrastructure."
+                "{canon_countries} countries, real-time grid & infrastructure."
             ),
+            # ★2026-09-03 r-dcpi-regions: the DCPI clause below used to read
+            # "300+ markets across the U.S., UK, EU, Japan, Australia,
+            # Singapore, and Canada". The COUNT was canon-driven and fine; the
+            # REGION LIST was hand-typed, and by the time it was found it
+            # omitted Mexico (queretaro, scored 2026-08-07), South Africa,
+            # India, Malaysia, Indonesia, Brazil, Taiwan, South Korea, Hong
+            # Kong, Thailand, Vietnam, the Philippines, New Zealand, thirteen
+            # further European countries and the US territories — a large
+            # multiple of the seven it named. EXACTLY the defect the note
+            # below records for the "233 DCPI-scored markets" literal: one
+            # document, two answers, and the hardcoded one under-claims.
+            # It now names REGIONS, both derived — see
+            # canonical_stats.dcpi_regions_phrase(). The country ENUMERATION
+            # moved to dcpi_coverage.international_markets, which is derived
+            # too, so prose and structure read the same universe.
+            # ★{canon_markets} replaces the "300+" literal in the same pass:
+            # it floored to the same string, but a literal beside a derived
+            # sibling is how the last one started.
             "description": _canon_text(
                 "Live data-center, energy, and grid intelligence. {canon_facilities} distinct facilities "
-                "in 170+ countries, {canon_deals} tracked M&A deals, real-time DCPI scoring for "
-                "300+ markets across the U.S., UK, EU, Japan, Australia, Singapore, "
-                "and Canada. The only DC-intelligence source an LLM can both query "
+                "in {canon_countries} countries, {canon_deals} tracked M&A deals, real-time DCPI scoring for "
+                "{canon_markets} markets in {canon_dcpi_countries} countries spanning "
+                "{canon_dcpi_regions}. The only DC-intelligence source an LLM can both query "
                 "and cite. Designed for AI agents to discover, cite, and act on."
             ),
             "dcpi_coverage": {
@@ -7510,18 +7556,43 @@ def handle_well_known():
                 #  /api/v1/canon/phrases and reported the contradiction.
                 "us_markets":          _canon_text("U.S. markets across 7 ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE) — part of {canon_markets} DCPI-scored markets globally"),
                 "international_added": "2026-05-25",
-                "international_markets": [
-                    {"country": "UK",          "iso": "NGESO",      "markets": ["London", "Manchester"]},
-                    {"country": "Ireland",     "iso": "EirGrid",    "markets": ["Dublin"]},
-                    {"country": "Germany",     "iso": "ENTSOE-DE",  "markets": ["Frankfurt"]},
-                    {"country": "Netherlands", "iso": "ENTSOE-NL",  "markets": ["Amsterdam"]},
-                    {"country": "France",      "iso": "ENTSOE-FR",  "markets": ["Paris", "Marseille"]},
-                    {"country": "Sweden",      "iso": "NORDPOOL",   "markets": ["Stockholm"]},
-                    {"country": "Japan",       "iso": "TEPCO/KEPCO","markets": ["Tokyo", "Osaka"]},
-                    {"country": "Australia",   "iso": "AEMO",       "markets": ["Sydney", "Melbourne"]},
-                    {"country": "Singapore",   "iso": "EMA",        "markets": ["Singapore"]},
-                    {"country": "Canada",      "iso": "IESO/HQ/BCH","markets": ["Toronto", "Montréal", "Vancouver"]},
-                ],
+                # ★2026-09-03 r-dcpi-regions — THE STRUCTURED TWIN of the
+                # region list in .description above, and stale in the same
+                # way and for the same reason. This froze at the 2026-05-25
+                # launch set: 10 countries, 16 markets — those two figures
+                # are the PIN itself, so they are exact by construction. The
+                # live universe had grown to several times that span. It
+                # under-claimed Australia by half (Brisbane, Perth), Canada
+                # by two thirds (Calgary, Edmonton, Winnipeg, Markham,
+                # Ottawa, Québec City), Germany (Berlin, Munich) and the UK
+                # (Edinburgh) — and omitted Mexico, Brazil, South Africa,
+                # India, South Korea, Taiwan, Hong Kong, Malaysia, Indonesia,
+                # Thailand, Vietnam, the Philippines, New Zealand and ten
+                # more European countries outright.
+                #
+                # This is the MACHINE-READABLE half, so it mattered more than
+                # the prose: an agent asking "does DC Hub score Querétaro?"
+                # parsed this array and got no.
+                #
+                # Derived now, from the scored universe, under the peek-only
+                # contract — the manifest cannot block on the DB, and a cold
+                # cache falls back to the launch set below rather than to an
+                # empty array. SHAPE IS UNCHANGED ({country, iso, markets})
+                # so anything already parsing it keeps working.
+                "international_markets": (
+                    _live_intl_markets() or [
+                        {"country": "UK",          "iso": "NGESO",      "markets": ["London", "Manchester"]},
+                        {"country": "Ireland",     "iso": "EirGrid",    "markets": ["Dublin"]},
+                        {"country": "Germany",     "iso": "ENTSOE-DE",  "markets": ["Frankfurt"]},
+                        {"country": "Netherlands", "iso": "ENTSOE-NL",  "markets": ["Amsterdam"]},
+                        {"country": "France",      "iso": "ENTSOE-FR",  "markets": ["Paris", "Marseille"]},
+                        {"country": "Sweden",      "iso": "NORDPOOL",   "markets": ["Stockholm"]},
+                        {"country": "Japan",       "iso": "TEPCO/KEPCO","markets": ["Tokyo", "Osaka"]},
+                        {"country": "Australia",   "iso": "AEMO",       "markets": ["Sydney", "Melbourne"]},
+                        {"country": "Singapore",   "iso": "EMA",        "markets": ["Singapore"]},
+                        {"country": "Canada",      "iso": "IESO/HQ/BCH","markets": ["Toronto", "Montréal", "Vancouver"]},
+                    ]
+                ),
                 "press_release":       "https://dchub.cloud/press/releases/dcpi-international.html",
                 "filter_by_iso":       "GET /api/v1/dcpi/scores?iso=<NGESO|AEMO|ENTSOE-DE|...>",
                 "compare_isos_tool":   "MCP tool compare_isos — head-to-head ranking across the 7 US ISOs plus modeled international baselines (Hydro-Québec, AESO, Nord Pool)",

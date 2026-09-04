@@ -3348,7 +3348,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'dchub-mcp-v2.1/apply_worker_patch.py': {'facilities_stale_floor'},
     'dchub_daily_automation.py': {'facilities_bare_int'},
     'dchub_mcp_server.py': {'facilities_stale_floor', 'tool_count_literal'},
-    'dchub_self_heal.py': {'markets_232'},
     'fix_neon_tables.py': {'tool_count_literal'},
     'google_meta_integration.py': {'facilities_bare_int'},
     'inject_meta_tags.py': {'deals_stale_floor'},
@@ -3620,7 +3619,13 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # marketing_stats_route, moltbook_integration — all carried the
     # retired "4,000+ deals" row-count floor). Lowered here in the SAME
     # commit that drains it, exactly as this assertion's message asks.
-    assert len(outside) >= 83, (
+    # ★2026-09-03: 83 -> 82. dchub_self_heal.py drained its markets_232 — the
+    # seeded dcpi-v2-launch press release said "232 Markets" in its title while
+    # its own body said "300+ markets across 12 countries" (live: 323 markets,
+    # 36 countries), so ONE row held two wrong answers. Both counts now resolve
+    # through canonical_stats at seed time. Lowered in the SAME commit that
+    # drains it, exactly as this assertion's message asks.
+    assert len(outside) >= 82, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
