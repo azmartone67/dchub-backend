@@ -208,3 +208,62 @@ class TestTheROUTEActuallyServesIt:
         assert body["dateModified"].startswith("2026-09-01")
         assert {v["name"] for v in body["variableMeasured"]} == {
             "Total Capacity", "Facilities", "DCPI Score"}
+
+
+class TestTheNoteNamesOnlyWhatItShows:
+    """r-note-precision (2026-09-04). Measured live after the first fix:
+
+        /markets/bogota   tiles=[Facilities 53]   (no Inventory tile)
+        note: "...facility counts AND CAPACITY above are live..."
+
+    The count was real; the capacity was not on the page at all. Vouching for
+    an absent number is the same defect the first pass removed, one notch
+    smaller — the gate accepted ANY fleet tile.
+
+    Drives the REAL renderer. Every case passes a truthy MARKET_DATA row so the
+    request reaches the shell rather than the soft-404 branch — a 404 body has
+    no note at all, and asserting "no false claim" against an empty string is
+    vacuous.
+    """
+
+    def _note(self, monkeypatch, md):
+        import sys, types, re, flask
+        # the route imports main unconditionally for MARKET_ALIASES; the real
+        # module is a 31k-line import that opens DB connections.
+        stub = types.ModuleType("main")
+        stub.MARKET_ALIASES = {}
+        stub.RAILWAY_EXCLUSION = ""
+        monkeypatch.setitem(sys.modules, "main", stub)
+        monkeypatch.setattr(M, "_render_deep_dive_body", lambda s: None)
+        monkeypatch.setattr(M, "_conn", lambda: None)
+        import market_intelligence_api as MI
+        monkeypatch.setattr(MI, "MARKET_DATA", {"Bogota": dict(md)}, raising=False)
+        app = flask.Flask(__name__)
+        app.register_blueprint(M.market_deep_dive_bp)
+        r = app.test_client().get("/markets/bogota")
+        assert r.status_code == 200, f"expected the shell, got {r.status_code}"
+        html = r.get_data(as_text=True)
+        m = re.search(r'<p class="note">(.*?)</p>', html, re.S)
+        assert m, "no note rendered — nothing to assert about"
+        return re.sub(r"\s+", " ", m.group(1))
+
+    def test_a_count_with_no_capacity_does_not_claim_capacity(self, monkeypatch):
+        n = self._note(monkeypatch, {"region": "LATAM", "num_facilities": 53})
+        assert "facility count above is live" in n
+        assert "capacity" not in n, f"vouched for capacity it never showed: {n}"
+
+    def test_both_present_claims_both(self, monkeypatch):
+        n = self._note(monkeypatch,
+                       {"region": "LATAM", "num_facilities": 53, "inventory_mw": 92})
+        assert "facility counts and capacity above are live" in n
+
+    def test_capacity_alone_does_not_claim_a_count(self, monkeypatch):
+        n = self._note(monkeypatch, {"region": "LATAM", "inventory_mw": 92})
+        assert "capacity above is live" in n
+        assert "facility count" not in n
+
+    def test_neither_present_vouches_for_nothing(self, monkeypatch):
+        n = self._note(monkeypatch, {"region": "LATAM"})
+        assert "research coverage yet" in n, "the note itself must still render"
+        assert "live from our infrastructure database" not in n, (
+            f"claimed live fleet data with no fleet tile rendered: {n}")

@@ -1928,15 +1928,28 @@ def market_short_html(slug):
     # infrastructure database". Only claim the fleet clause when a fleet tile
     # actually rendered; the research clause stands on its own.
     _RESEARCH_LABELS = ('Vacancy', 'Asking Rate', 'YoY Price')
-    _have_fleet = any(lab not in _RESEARCH_LABELS
-                      for lab, val, pre, suf in _metric_defs if _has(val))
+    # r-note-precision (2026-09-04): the clause must name the tiles that
+    # ACTUALLY rendered. Saying "facility counts and capacity above" on a page
+    # showing only a count is the same overclaim, one notch smaller —
+    # /markets/bogota shipped exactly that (Facilities 53, no Inventory tile,
+    # capacity vouched for anyway) because the gate accepted ANY fleet tile.
+    _shown = {lab for lab, val, pre, suf in _metric_defs if _has(val)}
+    _has_ct, _has_mw = 'Facilities' in _shown, 'Inventory' in _shown
+    if _has_ct and _has_mw:
+        _fleet_clause = (' — facility counts and capacity above are live from '
+                         'our infrastructure database.')
+    elif _has_ct:
+        _fleet_clause = (' — the facility count above is live from our '
+                         'infrastructure database.')
+    elif _has_mw:
+        _fleet_clause = (' — the capacity above is live from our '
+                         'infrastructure database.')
+    else:
+        _fleet_clause = '.'
     note_html = ""
     if [lab for lab in _missing if lab in _RESEARCH_LABELS]:
         note_html = (f'<p class="note">Pricing, vacancy & YoY for {name} aren\'t in our '
-                     f'CBRE/JLL research coverage yet'
-                     + (' — facility counts and capacity above are live from '
-                        'our infrastructure database.' if _have_fleet else '.')
-                     + '</p>')
+                     f'CBRE/JLL research coverage yet' + _fleet_clause + '</p>')
 
     # seo: enrich the market JSON-LD with the load-bearing numbers (total MW,
     # facility count, under-construction MW) as schema.org PropertyValues so AI
