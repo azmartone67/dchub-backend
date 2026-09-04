@@ -3072,10 +3072,21 @@ def _editor_review(content_text: str):
     # editor those figures are verified ground truth (pulled live so they track
     # honest-numbers / canonical_stats).
     try:
-        from canonical_stats import get_canonical_stats as _gcs
+        from canonical_stats import get_canonical_stats as _gcs, deals_phrase as _dp
         _cs = _gcs() or {}
+        _deals = _dp()
     except Exception:
         _cs = {}
+        _deals = ""
+    # ★2026-09-04: the deal count was the one figure in this ground-truth block
+    # typed by hand, three lines below its derived siblings — and it floored
+    # ingest ROWS, since the AUTO id embeds the ingest date and a re-ingest of
+    # the same deal accrues a row per day. That inverted this gate: it authorised
+    # the inflated figure as verified AND left the honest one off the list of
+    # numbers it will not reject, so the editor could bounce accurate copy.
+    # Degrades COUNT-FREE, never clause-free — dropping the clause would revive
+    # the r-qa dark-hold this block exists to prevent.
+    _deals_clause = f"{_deals} tracked M&A deals" if _deals else "tracked M&A deals"
     try:
         import datetime as _dt
         _today = _dt.datetime.utcnow().strftime("%B %d, %Y")
@@ -3092,8 +3103,8 @@ def _editor_review(content_text: str):
         "fictional'. Canonical (rounded): "
         f"~{int(_cs.get('facilities', 21000)):,}+ tracked facilities, "
         f"{int(_cs.get('countries', 178))}+ countries, "
-        f"{int(_cs.get('markets', 230))}+ markets (DCPI), 4,000+ tracked "
-        "M&A deals, 7 live US ISOs. A post citing these (or consistent figures) is "
+        f"{int(_cs.get('markets', 230))}+ markets (DCPI), {_deals_clause}, "
+        "7 live US ISOs. A post citing these (or consistent figures) is "
         "accurate, not fabricated.\n"
         "DC Hub Media ALSO ships and announces PLATFORM / CAPABILITY UPDATES, not "
         "only market-movement insight — new MCP tools, a provenance/citation "

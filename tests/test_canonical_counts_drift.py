@@ -3320,6 +3320,14 @@ def _scan_repo_stale_counts():
 # monthly_trend was fixed in the same pass but was never ledgered.
 # tests/test_tool_count_not_hardcoded.py is the forward guard.
 KNOWN_STALE_COUNT_DEBT = {
+    # ★2026-09-04 — content_publisher.py DROPPED, its only token paid. The
+    # figure was not merely displayed: it sat in the CONTEXT block that tells
+    # the LinkedIn editor-gate LLM which of DC Hub's own numbers are verified
+    # ground truth. A hand-typed value there is inverted debt — it authorises
+    # the inflated claim as checked AND leaves the derived one off the list the
+    # editor will not reject, so the gate could bounce accurate copy for
+    # disagreeing with it. It now reads canonical_stats.deals_phrase(), the same
+    # source its three neighbouring counts already used.
     # ★2026-09-04 — two entries DROPPED, both paid outright:
     # routes/case_studies_landing.py loses 'deals_stale_floor' and
     # routes/mcp_outreach_drafts.py loses BOTH its tokens. The deals literal
@@ -3351,7 +3359,6 @@ KNOWN_STALE_COUNT_DEBT = {
     # ledger names debt that no longer exists, which is the good direction.
     'ai_outreach_agent.py': {'tool_count_literal'},
     'canonical_stats.py': {'facilities_bare_int'},
-    'content_publisher.py': {'deals_stale_floor'},
     # ★2026-09-02: deals_stale_floor DROPPED — this file carries '2,000+ ... deals',
     # which the canon walk made the CURRENT floor. The debt was not paid, it
     # stopped being debt. facilities_stale_floor stands.
@@ -3637,7 +3644,11 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # their deals floor (and mcp_outreach its tool count too) — all of it now
     # resolves through canon_text at import/render. Lowered in the SAME commit
     # that drains it, exactly as this assertion's message asks.
-    assert len(outside) >= 80, (
+    # ★2026-09-04: 80 -> 79. content_publisher.py drained its deals floor — the
+    # editor-gate's ground-truth block now reads canonical_stats.deals_phrase()
+    # like its three neighbouring counts. Lowered in the SAME commit that drains
+    # it, exactly as this assertion's message asks.
+    assert len(outside) >= 79, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
