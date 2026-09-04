@@ -432,12 +432,57 @@ def global_ixps():
 # So it is singular `eventtype` with a COMMA-separated list. The six codes are
 # exactly the ones the client's HAZ icon map renders (EQ/TC/FL/VO/DR/WF); asking
 # for more would return events the map cannot label.
-_GDACS = ("https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP"
-          "?eventtype=EQ,TC,FL,DR,WF,VO")
+#
+# ★ 2026-09-04 — GDACS TIGHTENED AGAIN, AND THE COMMA LIST IS NOW REJECTED.
+# The layer had been dark on the live map (503 at the edge, "Backend unreachable
+# and no cached data available"). Measured 2026-09-04 against gdacs.org:
+#
+#   geteventlist/MAP?eventtype=EQ,TC,FL,DR,WF,VO  → 400 "Please specify only 1 eventtype."
+#   geteventlist/MAP?eventtype=EQ                 → 200 FeatureCollection ✓
+#
+# Every single code still answers 200 on its own, so the parameter did not go
+# away — it stopped accepting a list. One call per code, merged here, is the
+# only shape that survives both the 2026-08-17 rule (eventtype is required) and
+# this one (exactly one per call).
+#
+# PARTIAL IS PUBLISHED, NOT HIDDEN. A per-code fan-out can lose one code while
+# five answer. Dropping wildfires silently for the 24h TTL would be the failure
+# this file's `_require_feature_collection` docstring exists to prevent, so the
+# merged body carries `eventtypes_ok` / `eventtypes_failed` and callers can see
+# which hazard classes the payload actually covers. Only a TOTAL failure raises
+# — that is the case where `_cached` should keep serving the last good payload
+# rather than cache a hazard map that covers nothing.
+_GDACS_EVENTTYPES = ("EQ", "TC", "FL", "DR", "WF", "VO")
+_GDACS_ONE = ("https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP"
+              "?eventtype={}")
 
 
 def _build_gdacs():
-    return _require_feature_collection(_fetch_text(_GDACS), "gdacs")
+    features, ok, failed = [], [], {}
+    for code in _GDACS_EVENTTYPES:
+        try:
+            body = _require_feature_collection(
+                _fetch_text(_GDACS_ONE.format(code)), f"gdacs:{code}")
+            features.extend(json.loads(body).get("features") or [])
+            ok.append(code)
+        except Exception as e:
+            failed[code] = f"{type(e).__name__}: {str(e)[:120]}"
+
+    if not ok:
+        # Nothing answered — let `_cached` fall back to the last good payload
+        # instead of caching an empty hazard map for a day.
+        raise ValueError(
+            "gdacs: no eventtype answered ("
+            + "; ".join(f"{k} {v}" for k, v in failed.items())[:400] + ")")
+
+    return json.dumps({
+        "type": "FeatureCollection",
+        "features": features,
+        "count": len(features),
+        "source": "GDACS",
+        "eventtypes_ok": ok,
+        "eventtypes_failed": failed,
+    })
 
 
 @global_infra_bp.route("/api/v1/infrastructure/global-hazards", methods=["GET"])
