@@ -29,6 +29,8 @@ from routes.url_registry import build_public_url
 from ai_surface_canon import PINNED as _CANON
 import logging
 from flask import Blueprint, request, Response, jsonify
+
+from util.facility_entity import facility_entity, facility_measures
 import datetime as _dt
 
 logger = logging.getLogger(__name__)
@@ -1206,6 +1208,13 @@ def _render_profile(fac: dict, slug: str) -> str:
         "license": "https://creativecommons.org/licenses/by/4.0/",
         "isAccessibleForFree": True,
         "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+        "citation": "DC Hub, dchub.cloud",
+        # r-facility-entity (2026-09-03): this Dataset node carried a CC-BY
+        # "you may cite this" envelope around numbers that existed only in
+        # PROSE — variableMeasured was absent on all 20,300+ facility pages.
+        # An agent cannot quote a measurement it cannot find as data.
+        # Same builder as the .json twin so the two cannot drift.
+        "variableMeasured": facility_measures(fac),
         "spatialCoverage": {"@id": canonical + "#place"},
         # r-page-onramp (2026-07-04): crawl->tool crossover. Point the Dataset
         # at the LIVE query surfaces so an agent that lands on the crawled page
@@ -1730,6 +1739,31 @@ def _twin_redirect_target(fac, slug):
     if not _same_physical_site(fac, keeper):
         return None                      # different building: hint, not hop
     return kslug
+
+
+# ── r-facility-entity (2026-09-03) — the machine-readable twin ───────────────
+# Markets got a .json twin; facilities are 20,300+ pages against 249 and had
+# none (/facilities/<slug>.json returned 404). Werkzeug ranks this rule above
+# "/facilities/<path:slug>" on static-text length even though that one uses the
+# greedier path converter — verified against a real routing Map in the tests,
+# because if the ordering ever flips this silently becomes the HTML page.
+@facility_profile_bp.route("/facilities/<path:slug>.json", methods=["GET"])
+def facility_entity_json(slug):
+    """The facility as schema.org Dataset JSON-LD — no auth, no key, plain GET."""
+    fac = _fetch_facility_by_slug(slug)
+    if not fac:
+        return jsonify(
+            error="unknown_facility", slug=slug,
+            hint=("No facility by that slug. Call search_facilities, or GET "
+                  "/api/v1/search?q=<name> — both publish resolvable slugs.")), 404
+    _disp = (fac.get("name") or slug)
+    _canon = f"https://dchub.cloud/facilities/{slug}"
+    resp = jsonify(facility_entity(fac, canonical_url=_canon, display_name=_disp))
+    resp.headers["Content-Type"] = "application/ld+json"
+    resp.headers["Cache-Control"] = "public, max-age=900"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Link"] = f'<{_canon}>; rel="canonical"'
+    return resp, 200
 
 
 @facility_profile_bp.route("/facilities/<path:slug>", methods=["GET"])
