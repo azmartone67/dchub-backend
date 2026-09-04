@@ -27,6 +27,8 @@ import random
 import threading
 import time
 import urllib.request
+
+import requests
 import zlib
 
 from flask import Blueprint, Response, jsonify, request
@@ -577,6 +579,216 @@ _WARMABLE.update({
     "ixps": _build_ixps,
     "wri": _build_wri,
 })
+
+
+# ── OSM transmission lines (the non-US grid the map could not draw) ───
+#
+# ★ 2026-09-04 — WHY THIS EXISTS
+#
+# Every transmission layer on the Land & Power map was US-only, and silently so.
+# Measured that day against the HIFLD ArcGIS service the map itself calls
+# (Electric_Power_Transmission_Lines/FeatureServer/0), returnCountOnly:
+#
+#   bbox -77.8,38.7,-77.1,39.3   (N. Virginia)  -> count 177
+#   bbox  8.5,49.8,10.1,50.9     (Hesse, DE)    -> count 0
+#   bbox  5.8,47.2,15.1,55.1     (all Germany, no voltage filter) -> count 0
+#
+# So a user evaluating a German site saw an empty map under a badge reading
+# "300k". The dataset has no European coverage at all; nothing in our own DB
+# could fix that, because transmission_lines_geocoded_snapshot IS HIFLD.
+#
+# OpenStreetMap does have it, and densely. Measured the same day via Overpass:
+#
+#   way["power"="line"]["voltage"] over Germany  -> 65,460 ways
+#   way["power"="line"] near Birstein            -> a 380 kV TenneT TSO line,
+#                                                   6 cables, 111 geometry points
+#
+# 65k voltage-tagged ways for Germany alone is the same order as the entire US
+# HIFLD set (~95k), so this is a real layer, not a token gesture.
+#
+# ★ LICENCE — ODbL, AND IT PROPAGATES
+# OSM is ODbL-licensed. Every response carries the attribution and licence in
+# `_licence` / `attribution`, and the map must render it. ODbL is share-alike:
+# a Derivative Database has to be offered under ODbL too. That is a product/
+# legal decision, not a code one — this endpoint keeps the obligation VISIBLE in
+# the payload rather than laundering it into an unattributed layer.
+#
+# ★ WHY A SERVER-SIDE PROXY AND NOT A BROWSER CALL
+# The frontend's own OSM/Overpass loaders were stubbed out on 2026-06-12 for
+# "Overpass 429 spam" (see the note at js/land-power-app.js ~7603) and never
+# replaced. Calling Overpass per-pan from every visitor's browser is what earned
+# those 429s. Going through `_cached` means one upstream fetch per bbox per TTL
+# across all users, single-flighted, with serve-stale on top — the same
+# machinery the GDACS and PeeringDB proxies above use.
+_OSM_MIRRORS = (
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+)
+# Overpass bills by area. A whole-continent bbox times out upstream and returns
+# a 429/504 rather than data, so the request is refused HERE with an actionable
+# message instead of being turned into a slow failure.
+_OSM_MAX_AREA_DEG2 = 6.0
+_OSM_TIMEOUT = 120
+
+
+def _osm_query(min_lat, min_lng, max_lat, max_lng, min_kv):
+    # voltage is tagged in VOLTS in OSM (380 kV -> "380000").
+    return (
+        f"[out:json][timeout:{_OSM_TIMEOUT}];"
+        f'way["power"="line"]["voltage"]'
+        f"({min_lat},{min_lng},{max_lat},{max_lng});"
+        f"out geom;"
+    )
+
+
+def _osm_ints(raw):
+    """Every integer in a free-text OSM value, in order.
+
+    OSM voltage/cables/circuits are strings, and a tower carrying two circuits
+    at different voltages is tagged with a SEMICOLON list: '380000;110000'.
+    Requiring digits-only in the Overpass filter silently dropped exactly those
+    — measured 2026-09-04: 63,793 digits-only vs 65,460 with any voltage tag
+    over Germany, i.e. 1,667 lines missing, and they are the multi-circuit
+    towers rather than a random sample."""
+    if raw is None:
+        return []
+    out, digits = [], ""
+    for ch in str(raw):
+        if ch.isdigit():
+            digits += ch
+        else:
+            # A space inside a number ('380 000') is a thousands separator, not
+            # a separator between two values; only a real delimiter ends one.
+            if digits and ch not in " \u00a0":
+                out.append(int(digits)); digits = ""
+            elif digits and ch in " \u00a0":
+                continue
+    if digits:
+        out.append(int(digits))
+    return out
+
+
+def _osm_max_volts(raw):
+    """Highest voltage on the way — what the line is rated at."""
+    vals = _osm_ints(raw)
+    return max(vals) if vals else None
+
+
+def _osm_first_int(raw):
+    """First integer (cables / circuits are single-valued in practice)."""
+    vals = _osm_ints(raw)
+    return vals[0] if vals else None
+
+
+def _build_osm_transmission(min_lat, min_lng, max_lat, max_lng, min_kv):
+    body, last_err = None, None
+    for url in _OSM_MIRRORS:
+        try:
+            r = requests.post(
+                url,
+                data={"data": _osm_query(min_lat, min_lng, max_lat, max_lng, min_kv)},
+                headers={"User-Agent": "dchub-map/1.0 (+https://dchub.cloud)"},
+                timeout=_OSM_TIMEOUT + 20,
+            )
+            if r.status_code == 200:
+                body = r.text
+                break
+            last_err = f"{url.split('/')[2]} HTTP {r.status_code}"
+        except Exception as e:
+            last_err = f"{url.split('/')[2]} {type(e).__name__}"
+    if body is None:
+        raise ValueError(f"overpass unavailable ({last_err})")
+
+    doc = json.loads(body)
+    feats = []
+    for el in doc.get("elements") or []:
+        if el.get("type") != "way":
+            continue
+        geom = el.get("geometry") or []
+        if len(geom) < 2:
+            continue
+        tags = el.get("tags") or {}
+        volts = _osm_max_volts(tags.get("voltage"))
+        if volts is None:
+            continue
+        kv = round(volts / 1000.0, 1)
+        if min_kv and kv < min_kv:
+            continue
+        feats.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[p["lon"], p["lat"]] for p in geom],
+            },
+            "properties": {
+                "osm_id": el.get("id"),
+                "voltage_kv": kv,
+                "operator": tags.get("operator") or "",
+                "cables": _osm_first_int(tags.get("cables")),
+                "circuits": _osm_first_int(tags.get("circuits")),
+                "frequency": tags.get("frequency") or "",
+                "source": "OpenStreetMap",
+            },
+        })
+
+    feats.sort(key=lambda f: f["properties"]["voltage_kv"], reverse=True)
+    return json.dumps({
+        "type": "FeatureCollection",
+        "features": feats,
+        "count": len(feats),
+        "source": "OpenStreetMap (Overpass)",
+        # ODbL requires attribution to travel WITH the data.
+        "attribution": "© OpenStreetMap contributors",
+        "_licence": "ODbL 1.0 — https://opendatacommons.org/licenses/odbl/",
+    })
+
+
+@global_infra_bp.route("/api/v1/infrastructure/osm-transmission", methods=["GET"])
+def osm_transmission():
+    """Transmission lines from OpenStreetMap for a viewport bbox.
+
+    Complements the HIFLD layers rather than replacing them: HIFLD is the
+    authority inside the US, OSM is the only open source with real geometry
+    outside it.
+
+    Query: bbox=minLng,minLat,maxLng,maxLat  (GeoJSON axis order)
+           min_kv=<float, default 110>
+    """
+    raw = (request.args.get("bbox") or "").strip()
+    parts = raw.split(",")
+    if len(parts) != 4:
+        return jsonify({"ok": False,
+                        "error": "bbox=minLng,minLat,maxLng,maxLat required"}), 400
+    try:
+        min_lng, min_lat, max_lng, max_lat = (float(p) for p in parts)
+    except ValueError:
+        return jsonify({"ok": False, "error": "bbox values must be numbers"}), 400
+
+    if not (-180 <= min_lng < max_lng <= 180 and -90 <= min_lat < max_lat <= 90):
+        return jsonify({"ok": False,
+                        "error": "bbox out of range or corners transposed"}), 400
+
+    area = (max_lng - min_lng) * (max_lat - min_lat)
+    if area > _OSM_MAX_AREA_DEG2:
+        # Refuse loudly rather than hand Overpass a query it will 429/504 on.
+        return jsonify({
+            "ok": False,
+            "error": (f"bbox area {area:.1f} deg² exceeds the "
+                      f"{_OSM_MAX_AREA_DEG2} deg² cap — zoom in"),
+            "max_area_deg2": _OSM_MAX_AREA_DEG2,
+        }), 400
+
+    try:
+        min_kv = float(request.args.get("min_kv", 110))
+    except ValueError:
+        min_kv = 110.0
+
+    # Round the bbox into the cache key so ordinary panning reuses one upstream
+    # fetch instead of minting a key per pixel of movement.
+    k = (f"osm_tx:{min_lat:.1f},{min_lng:.1f},{max_lat:.1f},{max_lng:.1f}"
+         f":{min_kv:g}")
+    return _cached(k, lambda: _build_osm_transmission(
+        min_lat, min_lng, max_lat, max_lng, min_kv))
 
 
 def register_global_infra(app):
