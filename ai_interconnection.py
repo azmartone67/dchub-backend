@@ -28,6 +28,8 @@ from db_utils import get_db, get_read_db
 # following PINNED cannot go stale. Same precedent as routes/agent_concierge.py.
 from ai_surface_canon import PINNED as _CANON, TOOL_RETURNS as _TOOL_RETURNS
 from ai_surface_canon import canon_text
+from util.dcpi_score_row import PUBLISHED_ONLY
+from util.market_aliases import canonical_slug
 _CANON_FAC = canon_text("{canon_facilities}")
 
 ai_interconnect_bp = Blueprint('ai_interconnect', __name__)
@@ -1430,26 +1432,62 @@ def handle_poe_query(data):
             if any(w in query_lower for w in ['dcpi', 'build', 'buildable', 'should i',
                     'good market', 'power avail', 'time to power', 'time-to-power',
                     'constraint', 'verdict', 'best market', 'where can i', 'site select']):
+                # r-poe-canon (2026-09-04): match the NAME across the whole
+                # table, then answer from the CANONICAL published row.
+                #
+                # This lookup used to select and answer straight from whatever
+                # row the name matched, with no `published` predicate. The
+                # retired alias-twins r-twin-unpublish keeps for link
+                # resolution carry the LONGER names — so `ORDER BY
+                # LENGTH(market_name) DESC` did not merely fail to exclude
+                # them, it actively PREFERRED them, and the endpoint answered
+                # out of rows frozen at the retirement while calling the figures
+                # a daily-recomputed breakdown. Two of the verdicts it served
+                # that way disagreed with the live market.
+                #
+                # Matching wide and then resolving is deliberate: narrowing the
+                # match to published rows would simply stop recognising the
+                # names people actually use ("northern virginia" is not a
+                # substring of "Ashburn"), turning a wrong answer into no
+                # answer. The alias table already says these are one market,
+                # and /dcpi/<twin-slug> already resolves the same way.
                 cursor.execute('''
-                    SELECT market_name, iso, verdict, excess_power_score, constraint_score,
-                           time_to_power_months, market_slug
+                    SELECT market_name, market_slug
                       FROM market_power_scores
                      WHERE LOWER(%s) LIKE '%%' || LOWER(market_name) || '%%'
                        AND market_name IS NOT NULL AND LENGTH(market_name) >= 4
                      ORDER BY LENGTH(market_name) DESC LIMIT 1
                 ''', (query,))
-                mrow = cursor.fetchone()
+                _matched = cursor.fetchone()
+                mrow = None
+                _asked_as = None
+                if _matched:
+                    _canon = canonical_slug(_matched['market_slug']) or _matched['market_slug']
+                    cursor.execute(f'''
+                        SELECT market_name, iso, verdict, excess_power_score,
+                               constraint_score, time_to_power_months, market_slug
+                          FROM market_power_scores
+                         WHERE market_slug = %s AND {PUBLISHED_ONLY}
+                    ''', (_canon,))
+                    mrow = cursor.fetchone()
+                    # Only worth saying when the answer arrives under another
+                    # name; silently swapping the market is its own small lie.
+                    if mrow and _canon != _matched['market_slug']:
+                        _asked_as = _matched['market_name']
                 if mrow:
                     response = (f"**DC Hub Power Index (DCPI) — {mrow['market_name']}"
                                 + (f" · {mrow['iso']}" if mrow['iso'] else "") + "**\n\n"
+                                + (f"*{_asked_as} is tracked as {mrow['market_name']}.*\n\n"
+                                   if _asked_as else "")
                                 + f"• Verdict: **{mrow['verdict']}**\n"
                                 + f"• Excess-Power score: **{mrow['excess_power_score']}/100**\n"
                                 + f"• Grid-Constraint score: **{mrow['constraint_score']}/100**\n"
                                 + f"• Est. time-to-power: **~{mrow['time_to_power_months']} months**\n\n"
                                 + f"Full daily-recomputed breakdown: https://dchub.cloud/dcpi/{mrow['market_slug']}")
                 else:
-                    cursor.execute('''SELECT market_name, verdict, excess_power_score
-                        FROM market_power_scores WHERE verdict = 'BUILD'
+                    cursor.execute(f'''SELECT market_name, verdict, excess_power_score
+                        FROM market_power_scores
+                        WHERE verdict = 'BUILD' AND {PUBLISHED_ONLY}
                         ORDER BY excess_power_score DESC NULLS LAST LIMIT 6''')
                     tops = cursor.fetchall()
                     response = "**Top BUILD-verdict data center markets (DC Hub Power Index):**\n\n"
