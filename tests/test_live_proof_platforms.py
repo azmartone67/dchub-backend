@@ -32,8 +32,19 @@ def test_a_platform_whose_every_call_was_ours_is_not_a_platform():
 
 def test_a_platform_with_real_calls_survives_with_both_figures():
     rows, excluded = shape_platforms([("claude", 492, 1071)])
-    assert rows == [{"platform": "claude", "calls": 492,
-                     "calls_including_self_traffic": 1071}]
+    # ★ 2026-09-04: this compared the WHOLE dict with ==, so it failed the
+    # moment r-burst-vs-adoption added active_days / last_call / recurring —
+    # additive fields that break nothing. The test's own name says what it is
+    # for: both figures survive. Pin that, and pin the absent-column contract
+    # separately, so a new field is welcome and a REMOVED one still fails.
+    assert len(rows) == 1
+    got = rows[0]
+    for k, v in (("platform", "claude"), ("calls", 492),
+                 ("calls_including_self_traffic", 1071)):
+        assert got[k] == v, "%s changed: %r" % (k, got.get(k))
+    # A 3-column row measures no recency, and unmeasured must never read as
+    # "this platform called on a single day".
+    assert got["active_days"] is None and got["recurring"] is None
     assert excluded["calls_removed"] == 579
 
 
