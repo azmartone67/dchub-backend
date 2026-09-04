@@ -658,6 +658,24 @@ REGISTRY: list[ErrorClass] = [
         notes="Directly feeds the layer-badge honesty work: the badge needs to distinguish 'zero' from 'not covered'.",
     ),
     ErrorClass(
+        id="layer_scope_contradiction",
+        pattern=r"layer_scope_contradiction|served as GLOBAL but its rows are",
+        fix_template="widen_ingest_or_correct_declared_scope",
+        description=(
+            "A data layer the product serves GLOBALLY has rows concentrated in "
+            "one region — measured as coordinate spread across a 10-degree "
+            "grid, not asserted. This is invisible to infra_growth, which "
+            "tracks row COUNT over time: a US-only table that keeps growing "
+            "reads as one of the healthiest loaders on the board. That is "
+            "exactly how the Land & Power map went months with ZERO "
+            "transmission outside the US while the loop reported green. FIX: "
+            "either widen ingest to the scope claimed, or correct the declared "
+            "scope in routes/infra_coverage._SCOPE to what the data covers."
+        ),
+        confidence=0.9,
+        notes="Measured daily by infra_coverage via cron_heartbeat _DISPATCH. Volume monitoring cannot see a missing continent.",
+    ),
+    ErrorClass(
         id="land_power_endpoint_unreachable",
         pattern=r"land_power_endpoint_unreachable|unreachable from inside the container",
         fix_template="investigate_worker_pool_or_missing_route",

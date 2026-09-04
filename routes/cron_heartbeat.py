@@ -1658,6 +1658,18 @@ _DISPATCH = [
      f"{BASE}/api/v1/jobs/map-layer-probe",
      "POST",
      lambda now: now.minute < 6),
+    # ── Geographic coverage board (2026-09-04) ───────────────────────
+    # infra_growth measures row COUNT per table. A US-only layer that keeps
+    # growing reads as healthy forever, which is how the map went months with
+    # zero transmission outside the US while the loop reported green. This
+    # measures the SHAPE of each layer's coordinates and fires when a layer
+    # served as global turns out to be single-region.
+    # Daily 04:xx UTC; wide minute window because GitHub cron drops fires.
+    # Kill: INFRA_COVERAGE_DISABLE=1 (handler reports skipped, NOT ok).
+    ("infra_coverage",
+     f"{BASE}/api/v1/jobs/infra-coverage",
+     "POST",
+     lambda now: now.hour == 4 and now.minute < 10),
 ]
 
 # r-poolfix (2026-07-04): the DB/LLM-heavy ticks. When a herd of these comes
