@@ -3320,6 +3320,18 @@ def _scan_repo_stale_counts():
 # monthly_trend was fixed in the same pass but was never ledgered.
 # tests/test_tool_count_not_hardcoded.py is the forward guard.
 KNOWN_STALE_COUNT_DEBT = {
+    # ★2026-09-04 (b) — the retired deal floor loses its last three homes.
+    # content_publisher.py and inject_meta_tags.py leave the ledger outright;
+    # seo_meta_tags.py drops the deals token and stays for its facilities one.
+    # The publisher copy was the one that mattered: it sat under a header
+    # telling the editor LLM to treat the block as ground truth and never to
+    # call it fictional, three lines below siblings that already derived from
+    # canonical_stats — so the over-claim was being laundered into generated
+    # posts with the model instructed not to question it. That site is an
+    # f-string, where a {canon_*} placeholder would have been parsed as an
+    # expression, so it interpolates deals_phrase() instead of resolving a
+    # placeholder. The two meta-tag titles now render through canon_text().
+    # No figure is repeated in this note: it would rot exactly as the literal did.
     # ★2026-09-04 — two entries DROPPED, both paid outright:
     # routes/case_studies_landing.py loses 'deals_stale_floor' and
     # routes/mcp_outreach_drafts.py loses BOTH its tokens. The deals literal
@@ -3351,7 +3363,6 @@ KNOWN_STALE_COUNT_DEBT = {
     # ledger names debt that no longer exists, which is the good direction.
     'ai_outreach_agent.py': {'tool_count_literal'},
     'canonical_stats.py': {'facilities_bare_int'},
-    'content_publisher.py': {'deals_stale_floor'},
     # ★2026-09-02: deals_stale_floor DROPPED — this file carries '2,000+ ... deals',
     # which the canon walk made the CURRENT floor. The debt was not paid, it
     # stopped being debt. facilities_stale_floor stands.
@@ -3360,7 +3371,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'dchub_mcp_server.py': {'facilities_stale_floor', 'tool_count_literal'},
     'fix_neon_tables.py': {'tool_count_literal'},
     'google_meta_integration.py': {'facilities_bare_int'},
-    'inject_meta_tags.py': {'deals_stale_floor'},
     # ★2026-09-02: facilities_stale_floor DROPPED — the Space no longer bakes
     # 21,900+ (a retired PRE-DEDUP over-claim it was serving LIVE); it fetches
     # /api/v1/canon/phrases at import and degrades COUNT-FREE. tool_count_literal
@@ -3437,7 +3447,7 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/upgrade_outreach.py': {'markets_232'},
     'routes/vertex_integration.py': {'facilities_stale_floor', 'markets_232'},
     'routes/white_glove_loop_master_shell.py': {'tool_count_literal'},
-    'seo_meta_tags.py': {'deals_stale_floor', 'facilities_stale_floor'},
+    'seo_meta_tags.py': {'facilities_stale_floor'},
     'tax_incentives_routes.py': {'facilities_stale_floor'},
     'tools/email_blast_developer_launch.py': {'facilities_stale_floor'},
     'utils/paywall_response.py': {'tool_count_literal'},
@@ -3636,8 +3646,16 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # ★2026-09-04: 82 -> 80. case_studies_landing and mcp_outreach_drafts drained
     # their deals floor (and mcp_outreach its tool count too) — all of it now
     # resolves through canon_text at import/render. Lowered in the SAME commit
+    # ★2026-09-04 (b): 80 -> 78. Rebased onto #3821, which had ALREADY taken
+    # this floor 82 -> 80 for its own two files; these are two further files,
+    # so the drains compose rather than restate. TWO drained, not the three
+    # edited here — content_publisher.py and inject_meta_tags.py each carried
+    # the retired deal floor as their ONLY token and leave the ledger, while
+    # seo_meta_tags.py drops that token and stays for its facilities debt. This
+    # floor counts FILES outside the allow list, so a token dropped from a file
+    # that keeps another token moves nothing. Lowered in the SAME commit
     # that drains it, exactly as this assertion's message asks.
-    assert len(outside) >= 80, (
+    assert len(outside) >= 78, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
