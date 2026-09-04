@@ -224,6 +224,71 @@ def measured_market_facts(cur, name: str, *, slug: str = "",
     return out
 
 
+def _unscored_market_facts(cur, slug: str) -> dict | None:
+    """Facts for a market the site PUBLISHES but the DCPI does not score.
+
+    r-latam-rotation (2026-09-04): `market_not_found` was the generator's
+    answer for bogota, mexico-city, santiago and sao-paulo — four curated,
+    sitemapped metros carrying 40 / 31 / 102 / 55 tracked facilities. It is a
+    false answer: those markets exist, they are simply absent from
+    routes/dcpi.py's `_MARKETS_HARDCODED`, so no market_power_scores row is
+    ever written for them and the mps lookup above finds nothing.
+
+    Two consequences, both closed here. `generate_for_market` returned an
+    error that reads as "no such market", and — because it writes NOTHING on
+    that error — widening cron_rotate to reach these slugs would have pinned
+    them at the head of `generated_at NULLS FIRST` forever (r-cron-starvation).
+    Resolving them to real, measured facts gives the rotation a market it can
+    reach and a definite outcome to record.
+
+    Scoped to CURATED_MARKET_SLUGS, which is exactly the part of the sitemap
+    emitted WITHOUT an mps row. The sitemap's other /markets arm
+    (US_CITY_MARKET_SQL) INNER JOINs market_power_scores, so a US city slug
+    reaching this function has no row and therefore was not sitemapped either
+    — `market_not_found` is the honest answer for it. A junk slug likewise
+    resolves to None, so r-soft404 does not re-open through the generator.
+
+    `unscored` is the load-bearing key: it is what lets `_brief_guard_reason`
+    tell "the DCPI does not cover this market" apart from "dcpi_score is None
+    because a join broke". Both used to read `score_none`, and the neutral
+    copy seeded for that reason asserts the market has no tracked facilities —
+    false for all four of these, and the reason the placeholder text below is
+    chosen from the reason rather than being one string.
+
+    NO score is invented. constraint / excess / verdict stay None: a market
+    with no DCPI row has no DCPI verdict, and minting one is the shape
+    derive_composite_score's `or 0` coercion is guarded against upstream.
+    """
+    slug = (slug or "").lower().strip()
+    if slug not in set(CURATED_MARKET_SLUGS):
+        return None
+    name = _slug_title(slug)
+    out = {
+        "slug":       slug, "name": name,
+        "state":      None,
+        "unscored":   True,
+        "dcpi_score": None,
+        "constraint": None,
+        "excess":     None,
+        "verdict":    None,
+        "computed":   None,
+        "top_operators": [],
+        "recent_deals":  [],
+    }
+    # Same union as the scored path and as the .json twin — one measurement,
+    # never a second count of the same market. OMITS a zero rather than
+    # reporting one (r-nova-zero): a fabricated "0 facilities" is what once
+    # published "avoid entering Northern Virginia".
+    measured = None
+    try:
+        measured = measured_market_facts(cur, name, slug=slug)
+    except Exception:
+        measured = None
+    if measured:
+        out.update(measured)
+    return out
+
+
 def _gather_market_facts(cur, slug: str) -> dict | None:
     """Pull live facts for the market from market_power_scores +
     discovered_facilities + deals."""
@@ -256,9 +321,12 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
         """, (slug, slug, slug))
         r = cur.fetchone()
     except Exception:
+        # A failed QUERY is not an unscored market — fall through to the
+        # unscored resolver here and a transient outage would be recorded as
+        # a DCPI coverage state. `market_not_found` stays the honest answer.
         return None
     if not r:
-        return None
+        return _unscored_market_facts(cur, slug)
     out = {
         "slug":       r[0], "name": r[1],
         "state":      r[7],
@@ -513,11 +581,58 @@ def _brief_guard_reason(stats: dict) -> str | None:
     confident verdict built on a zero.
     """
     stats = stats or {}
+    # r-latam-rotation (2026-09-04): "the DCPI does not score this market" and
+    # "dcpi_score is None because a join broke" are different facts and used to
+    # be one reason. Both still refuse the LLM — a brief must never be written
+    # over a null score — but only one of them is a DATA BUG, and the neutral
+    # copy seeded downstream is chosen from this string. Reported separately so
+    # a coverage gap cannot be read as a defect, or a defect as coverage.
+    if stats.get("unscored"):
+        return "market_unscored"
     if stats.get("dcpi_score") is None:
         return "score_none"
     if not stats.get("facility_count"):
         return "zero_facilities"
     return None
+
+
+def _guard_placeholder_text(reason: str, facts: dict) -> str:
+    """The neutral narrative seeded for a market the guard refuses.
+
+    r-latam-rotation (2026-09-04): there used to be ONE string, and it opens
+    "DC Hub does not currently track operational data-center facilities for
+    {name}". That is a claim about the fleet, and the guard fires for reasons
+    that have nothing to do with the fleet — a market DCPI does not score
+    still has its facilities. Seeded for bogota (40 tracked facilities),
+    santiago (102), sao-paulo (55) or mexico-city (31) it is simply false, and
+    a placeholder is still published copy.
+
+    So the sentence is chosen from the reason, and the zero-facilities claim
+    is made ONLY where a zero was actually measured. Every branch stays
+    verdict-free and score-free: the guard's whole point is that nothing here
+    may read as analysis.
+    """
+    name = (facts or {}).get("name") or "this market"
+    n = (facts or {}).get("facility_count") or 0
+    if n:
+        fleet = (f"DC Hub tracks {n:,} data-center "
+                 f"{'facility' if n == 1 else 'facilities'} in {name}.")
+    else:
+        fleet = (f"DC Hub does not currently track operational data-center "
+                 f"facilities for {name}.")
+    if reason == "market_unscored":
+        # TRUE for the LatAm four and for any future published market the
+        # DCPI universe has not adopted: the fleet reading is real, the score
+        # is absent, and the brief waits on the score rather than on the fleet.
+        return (f"{fleet} The DC Hub Power Index does not yet score {name}, "
+                f"and a market brief is published here only once DCPI "
+                f"scoring covers the market — no verdict is written without "
+                f"one. Facility-level data for {name} remains available "
+                f"across DC Hub's market surfaces.")
+    return (f"{fleet} A full market brief is published here only once "
+            f"verified facility and power data for the market clears our "
+            f"quality checks. Live DCPI scoring and grid data for {name} "
+            f"remain available across DC Hub's market surfaces.")
 
 
 def generate_for_market(slug: str) -> dict:
@@ -554,30 +669,42 @@ def generate_for_market(slug: str) -> dict:
                 # market with NO deep-dive row sits at the head of
                 # cron_rotate's `generated_at NULLS FIRST` ordering FOREVER —
                 # ~10 genuinely-empty markets ate every daily slot and the
-                # rotation generated nothing. Seed a neutral placeholder via
-                # INSERT ... ON CONFLICT DO NOTHING: insert-only, so a
-                # transient outage that reads as facility_count=0 can never
-                # overwrite a real narrative, but the row's generated_at
-                # takes the market out of the starvation slot. The render
-                # guard keeps serving the neutral PAGE off the guard-shaped
-                # key_stats; when facilities appear, the market ages back to
-                # stalest and the normal upsert replaces the placeholder.
+                # rotation generated nothing. Seed a neutral placeholder so
+                # the row's generated_at takes the market out of the
+                # starvation slot; when facilities (or a score) appear, the
+                # market ages back to stalest and the normal upsert replaces
+                # the placeholder with a real narrative.
+                #
+                # r-latam-rotation (2026-09-04): DO NOTHING only DEFERRED the
+                # starvation it was written to fix. It sets generated_at once,
+                # at first seed, and never again — so a permanently-guarded
+                # market's row simply ages, and once it is older than every
+                # market the rotation has since refreshed it returns to the
+                # head of this same ordering and stays there. Bump the
+                # placeholder's generated_at instead, so a market that cannot
+                # change goes to the BACK of the queue and comes round on the
+                # ordinary monthly cadence, costing a guard check and no
+                # tokens.
+                #
+                # The DO UPDATE is gated on model_used = 'guard-neutral', which
+                # keeps the whole of the original guarantee: a row carrying a
+                # real narrative is never touched here, so a transient outage
+                # that reads as facility_count=0 still cannot overwrite one.
                 try:
                     import json as _j
-                    neutral = (
-                        f"DC Hub does not currently track operational "
-                        f"data-center facilities for {facts['name']}. A full "
-                        f"market brief is published here only once verified "
-                        f"facility and power data for the market clears our "
-                        f"quality checks. Live DCPI scoring and grid data "
-                        f"for {facts['name']} remain available across DC "
-                        f"Hub's market surfaces.")
+                    neutral = _guard_placeholder_text(_guard, facts)
                     cur.execute("""
                         INSERT INTO market_deep_dives
                           (market_slug, market_name, narrative_md, key_stats,
                            word_count, model_used)
                         VALUES (%s, %s, %s, %s::jsonb, %s, %s)
-                        ON CONFLICT (market_slug) DO NOTHING
+                        ON CONFLICT (market_slug) DO UPDATE
+                          SET market_name  = EXCLUDED.market_name,
+                              narrative_md = EXCLUDED.narrative_md,
+                              key_stats    = EXCLUDED.key_stats,
+                              word_count   = EXCLUDED.word_count,
+                              generated_at = NOW()
+                        WHERE market_deep_dives.model_used = 'guard-neutral'
                     """, (page_slug, facts["name"], neutral,
                           _j.dumps(facts), len(neutral.split()),
                           "guard-neutral"))
@@ -810,6 +937,50 @@ def listable_market_slug(slug, seen):
 
 def _slug_title(slug):
     return _SLUG_TO_MARKET_NAME.get(slug) or slug.replace('-', ' ').title()
+
+
+def sitemapped_market_slugs(conn=None) -> list:
+    """Every /markets/<slug> slug sitemap-markets.xml publishes.
+
+    ★ THE INVARIANT (r-latam-rotation, 2026-09-04): this set must be a SUBSET
+    of what cron_rotate can target. It was not. The sitemap emits
+    CURATED_MARKET_SLUGS unconditionally, the rotation selects from
+    market_power_scores, and four curated metros — bogota, mexico-city,
+    santiago, sao-paulo — have no mps row at all (measured 2026-09-03:
+    /dcpi/<slug> 404 for all four, 200 for every other curated metro). They
+    could never enter the rotation, so their brief could never be written, on
+    any cadence, forever. This is the *checker reads a subset of what it
+    publishes* class, pointed the other way: the GENERATOR reached a subset of
+    what the sitemap published.
+
+    Built from the same three pieces the sitemap and the /markets hub are
+    built from — CURATED_MARKET_SLUGS, us_city_market_rows, and
+    listable_market_slug — so it cannot drift into a different answer than the
+    page inventory. The US arm is fail-soft on its own: a DB blip degrades to
+    the curated list rather than emptying the rotation's floor.
+
+    Deliberately NOT the pockets section. /pockets/<slug> is a different page
+    family with a different backing route (routes/pockets.py); the invariant is
+    about the deep-dive generator and the pages IT backs.
+    """
+    seen = set(CURATED_MARKET_SLUGS)
+    out = list(CURATED_MARKET_SLUGS)
+    _own = conn is None
+    try:
+        c = conn if conn is not None else _conn()
+        if c is not None:
+            try:
+                for slug, _lm in us_city_market_rows(c):
+                    s = listable_market_slug(slug, seen)
+                    if s:
+                        out.append(s)
+            finally:
+                if _own:
+                    try: c.close()
+                    except Exception: pass
+    except Exception as e:
+        logger.warning("sitemapped market slugs: US city arm unavailable: %s", e)
+    return out
 
 
 def markets_hub_inventory():
@@ -1148,18 +1319,53 @@ def cron_rotate():
                 # CASE with zero WHEN arms is invalid SQL — plain join key.
                 _canon_case = "mps.market_slug"
                 _canon_params = ()
+            # 3. THE ROTATION'S FLOOR IS WHAT THE SITEMAP PUBLISHES
+            #    (r-latam-rotation, 2026-09-04). Every arm above still selects
+            #    from market_power_scores, so a page the sitemap publishes
+            #    whose market has NO mps row was unreachable by this query on
+            #    every cadence — not stale, unreachable. Measured 2026-09-03:
+            #    bogota, mexico-city, santiago and sao-paulo, all four curated
+            #    and sitemapped, all four carrying real tracked inventory (40 /
+            #    31 / 102 / 55 facilities), none with a DCPI row. The
+            #    published=true arm is also narrower than the sitemap's own US
+            #    city query, which joins mps WITHOUT a published predicate — so
+            #    an unpublished-but-sitemapped city market had the same hole.
+            #    UNION the sitemap's slug list in, deduped against the scored
+            #    arm so a slug that has an mps row keeps its excess_power_score
+            #    for the tie-break and is never selected twice.
+            #
+            #    Widening this is only SAFE because generate_for_market now
+            #    resolves these markets (_unscored_market_facts) instead of
+            #    failing `market_not_found` and writing nothing — that failure
+            #    mode is what pins a target at the head of `generated_at NULLS
+            #    FIRST` forever, and it is why this widening was deliberately
+            #    NOT done when the .json twin was fixed.
+            _sitemapped = sitemapped_market_slugs(c)
             cur.execute(f"""
+                WITH scored AS (
+                    SELECT DISTINCT ON (market_slug)
+                           market_slug, excess_power_score, computed_at
+                      FROM market_power_scores
+                     WHERE published = true
+                        OR market_slug = ANY(%s)
+                     ORDER BY market_slug, computed_at DESC
+                ), mps AS (
+                    SELECT market_slug,
+                           excess_power_score::double precision AS excess_power_score
+                      FROM scored
+                    UNION ALL
+                    SELECT s, NULL::double precision
+                      FROM UNNEST(%s::text[]) AS s
+                     WHERE s NOT IN (SELECT market_slug FROM scored)
+                )
                 SELECT mps.market_slug
-                  FROM (SELECT DISTINCT ON (market_slug) market_slug, excess_power_score, computed_at
-                          FROM market_power_scores
-                         WHERE published = true
-                            OR market_slug = ANY(%s)
-                         ORDER BY market_slug, computed_at DESC) mps
+                  FROM mps
                   LEFT JOIN market_deep_dives mdd
                     ON mdd.market_slug = {_canon_case}
                  ORDER BY mdd.generated_at NULLS FIRST, mps.excess_power_score DESC NULLS LAST
                  LIMIT %s
-            """, (list(_CRON_FLAGSHIP_METRO_SLUGS),) + _canon_params + (n,))
+            """, (list(_CRON_FLAGSHIP_METRO_SLUGS), _sitemapped)
+                 + _canon_params + (n,))
             targets = [r[0] for r in cur.fetchall()]
     finally:
         try: c.close()
@@ -1454,7 +1660,26 @@ def _render_deep_dive_body(slug):
     # published "DCPI score None/100" sitewide and "avoid entering Northern
     # Virginia" off a dead join. Serve neutral copy instead; the page heals
     # to a full brief when a post-guard regeneration lands.
-    if _brief_guard_reason(r.get("key_stats") or {}):
+    _guard = _brief_guard_reason(r.get("key_stats") or {})
+    if _guard:
+        # r-latam-rotation (2026-09-04): the neutral page carries NO measured
+        # facts — that is the point of it, for a market whose numbers are
+        # suspect. But a guard-neutral PLACEHOLDER is not a suspect brief; it
+        # is the marker that no brief was written, and this route runs BEFORE
+        # market_short_html's shell (which r-latam-twin just taught to render
+        # the fleet reading). Serving the neutral page off a placeholder would
+        # therefore have replaced bogota / mexico-city / santiago / sao-paulo's
+        # measured facility counts with a blank page the moment the rotation
+        # first reached them — a regression caused by fixing the rotation.
+        #
+        # Curated slugs only: market_short_html is guaranteed to render one
+        # (that is what _known_curated gates), so this hands off to a page that
+        # exists. For anything else the neutral 200 stays the answer, because
+        # the shell path can end in a 404 and a market real enough to hold a
+        # stored brief must keep its 200.
+        if (r.get("model_used") == "guard-neutral"
+                and slug in set(CURATED_MARKET_SLUGS)):
+            return None
         return _render_neutral_market_page(slug, r["market_name"])
     try:
         from routes.surface_brain import auto_log
