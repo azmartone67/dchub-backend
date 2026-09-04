@@ -3286,9 +3286,12 @@ def _run_operator_brief_warm():
         )
     except Exception as e:
         logger.error("🏢 operator_brief_warm prewarm error: %s", e)
+        # ★2026-09-04: core-scientific dropped here too — this fallback is
+        # what the pre-warm cron uses when the import fails, and warming a URL
+        # that 404s spends a request to cache a 404. Mirrors SEED_OPERATORS.
         SEED_OPERATORS = ("aligned", "qts", "digital-realty", "equinix",
                           "vantage", "cyrusone", "cologix",
-                          "core-scientific", "airtrunk", "iron-mountain")
+                          "airtrunk", "iron-mountain")
     # CF edge-cache prime (best-effort).
     try:
         import requests as _rq
@@ -3330,9 +3333,12 @@ def _run_hyperscaler_brief_warm():
         )
     except Exception as e:
         logger.error("🛰️ hyperscaler_brief_warm prewarm error: %s", e)
+        # ★2026-09-04: softbank dropped — removed from SEED_HYPERSCALERS on
+        # 2026-06-06 ("an INVESTOR, not an operator"); this fallback copy kept
+        # it for three months, so a failed import warmed a 404.
         SEED_HYPERSCALERS = ("aws", "azure", "google-cloud", "meta",
                              "apple", "oracle", "tiktok-bytedance",
-                             "tencent", "alibaba", "softbank")
+                             "tencent", "alibaba")
     # CF edge-cache prime (best-effort).
     try:
         import requests as _rq
