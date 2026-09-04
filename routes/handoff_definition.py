@@ -335,15 +335,57 @@ def redeem_stage_basis() -> dict:
 # ★ The ladder walks stages in funnel ORDER and returns the FIRST transition
 # that loses more than half. Order is load-bearing: reporting a later leak
 # while an earlier one is worse sends the reader downstream of the real break.
+#
+# ★ A RUNG IS NOT AUTOMATICALLY A CONVERSION RATE (r-filter-boundary,
+# 2026-09-04). Two stages divide cleanly only when they are drawn from the
+# SAME population. paywall_hit and relay_minted are not:
+#
+#   paywall_hit    mcp_upgrade_signals, written by server.mjs signalPaywall()
+#                  — posts UNCONDITIONALLY, no bot gate at all
+#   relay_minted   mcp_high_intent_sessions, written by trackPaidHit() — gated
+#                  TWICE: isBotOrInternalCtx() client-side AND
+#                  _is_non_human_client() server-side, and the server-side
+#                  drop answers HTTP 200 with {"skipped": ...} while the
+#                  caller only logs on !resp.ok, so it leaves no trace
+#
+# Both gates deliberately drop internal tags, QA harnesses and scripting UAs
+# (curl/, python-httpx, urllib, wget…), for a good reason: of 123 claims
+# minted in a 30-day audit, ~93 were raw scripts with no human to click.
+# So most of that rung's "loss" is traffic correctly excluded from the second
+# stage while still counted in the first. It is a FILTER BOUNDARY, and the
+# percentage across it is not a conversion rate.
+#
+# The rung is still REPORTED — suppressing the largest arithmetic drop would
+# hide a real number — but it now carries `same_population: false` and the
+# reason, so "91.6% lost" cannot be read as 91.6% of prospects giving up. The
+# public /ai card printed exactly that as "Biggest leak" and it is the line a
+# partner quotes back.
+#
+# The last three rungs all sit INSIDE mcp_high_intent_sessions (or its relay
+# join), so they compare like with like and their percentages are real.
+_SAME_POP = None
+_PAYWALL_BOUNDARY = (
+    "NOT a conversion rate — these two stages are drawn from different "
+    "populations. paywall_hit is written by signalPaywall() with no bot gate; "
+    "relay_minted comes from mcp_high_intent_sessions, whose writer "
+    "trackPaidHit() is gated twice (isBotOrInternalCtx client-side, "
+    "_is_non_human_client server-side, the latter answering HTTP 200 with "
+    "`skipped` so the drop leaves no trace). Both gates deliberately exclude "
+    "internal tags, QA harnesses and raw scripting UAs, which a 30-day audit "
+    "measured at ~93 of 123 minted claims. Most of the drop across this rung "
+    "is that exclusion, not prospects giving up. Read it as a filter "
+    "boundary; the rungs below it compare like with like."
+)
 LEAK_LADDER = (
-    ("paywall_hit", "relay_minted", "paywall→relay_mint"),
-    ("relay_minted", "human_acted", "relay_mint→human_acted"),
-    ("human_acted", "identified", "human_acted→identified"),
-    ("identified", "paid_attributed", "identified→paid"),
+    ("paywall_hit", "relay_minted", "paywall→relay_mint", _PAYWALL_BOUNDARY),
+    ("relay_minted", "human_acted", "relay_mint→human_acted", _SAME_POP),
+    ("human_acted", "identified", "human_acted→identified", _SAME_POP),
+    ("identified", "paid_attributed", "identified→paid", _SAME_POP),
 )
 
 
-def _leak_detail(src: str, dst: str, label: str, steps: dict) -> dict:
+def _leak_detail(src: str, dst: str, label: str, steps: dict,
+                 boundary: str | None = None) -> dict:
     """One rung of LEAK_LADDER, with the numbers it was decided on.
 
     `lost_pct` is None when the upstream stage is absent or zero — you cannot
@@ -360,6 +402,11 @@ def _leak_detail(src: str, dst: str, label: str, steps: dict) -> dict:
         "lost_pct": (round((up - down) / up * 100.0, 1)
                      if known and up else None),
         "measured": bool(known),
+        # ★ Whether the two stages are even comparable. False means lost_pct
+        # is an arithmetic difference between two differently-filtered
+        # populations, not a conversion rate — see the LEAK_LADDER comment.
+        "same_population": boundary is None,
+        "population_basis": boundary,
     }
 
 
@@ -382,13 +429,13 @@ def biggest_leak_detail(steps: dict) -> dict:
       because the payload was not renderable. This makes it renderable, so
       there is nothing left to re-derive.
     """
-    for src, dst, label in LEAK_LADDER:
+    for src, dst, label, boundary in LEAK_LADDER:
         upstream = steps.get(src) or 0
         downstream = steps.get(dst) or 0
         if upstream and downstream < upstream * 0.5:
-            return _leak_detail(src, dst, label, steps)
-    src, dst, label = LEAK_LADDER[-1]
-    return _leak_detail(src, dst, label, steps)
+            return _leak_detail(src, dst, label, steps, boundary)
+    src, dst, label, boundary = LEAK_LADDER[-1]
+    return _leak_detail(src, dst, label, steps, boundary)
 
 
 def biggest_leak(steps: dict) -> str:

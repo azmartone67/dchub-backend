@@ -53,8 +53,11 @@ def shell():
 # ── the redeem stage is a diagnostic, not funnel progress ───────────────────
 
 def test_redeemed_is_not_on_the_leak_ladder(hd):
-    labels = " ".join(lbl for _s, _d, lbl in hd.LEAK_LADDER)
-    stages = {s for s, _d, _l in hd.LEAK_LADDER} | {d for _s, d, _l in hd.LEAK_LADDER}
+    # r-filter-boundary (2026-09-04): rungs gained a 4th slot declaring
+    # whether the two stages share a population. Unpack by slice so the
+    # next slot does not break this guard either.
+    labels = " ".join(r[2] for r in hd.LEAK_LADDER)
+    stages = {r[0] for r in hd.LEAK_LADDER} | {r[1] for r in hd.LEAK_LADDER}
     assert "redeem" not in labels.lower(), (
         "a stage whose writer was deliberately switched off cannot be ranked "
         "as the funnel's biggest leak: %s" % labels)
@@ -354,8 +357,8 @@ def test_detail_agrees_with_the_label_on_every_rung(hd):
         d = hd.biggest_leak_detail(steps)
         assert d["label"] == hd.biggest_leak(steps), (steps, d)
         assert (d["from_key"], d["to_key"]) in {
-            (a, b) for a, b, _ in hd.LEAK_LADDER}, d
-        assert d["label"] == {(a, b): lb for a, b, lb in hd.LEAK_LADDER}[
+            (r[0], r[1]) for r in hd.LEAK_LADDER}, d
+        assert d["label"] == {(r[0], r[1]): r[2] for r in hd.LEAK_LADDER}[
             (d["from_key"], d["to_key"])], (
             f"label {d['label']!r} does not name the rung it reports "
             f"({d['from_key']}→{d['to_key']}) — a renderer using the keys and a "
