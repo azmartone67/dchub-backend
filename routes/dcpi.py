@@ -699,6 +699,14 @@ def _reserve_margin_with_live(modeled_anchor: Optional[float],
 # guarded by pg_try_advisory_lock so even with multiple gunicorn workers
 # (or transient 2-replica states) only one runs at a time. The backfill
 # is idempotent: it no-ops if dcpi_daily_snapshots already has rows.
+# ★ r-citable-top10 (2026-09-03): how many top-ranked rows keep their NUMBERS
+# for an unpaid caller on /dcpi. Module-level so the guard test reads the same
+# value the renderer does instead of restating a literal. See the long note at
+# the mask site for the measurement that set it: 0/20 citations on unbranded
+# category questions against 17/20 on branded ones, with Perplexity reporting
+# that this page "does not expose the numeric composite scores".
+_FREE_SCORED_ROWS = 10
+
 _DCPI_SNAPSHOT_LOCK_ID = 268052901  # arbitrary stable int for advisory lock
 _DCPI_BACKFILL_LOCK_ID = 268052902
 
@@ -6585,9 +6593,9 @@ footer a:hover { color: var(--acc-light); }
     <div style="flex:1;min-width:280px">
       <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#a855f7;margin-bottom:6px">Showing {{ count }} of {{ total_rows }} markets</div>
       {% if tier_state == 'free' %}
-      <div style="font-size:15px;line-height:1.5;color:#e5e7eb">You're on the <strong>free tier</strong> — viewing the top {{ count }} ranked markets. Upgrade to Pro to unlock all <strong>{{ total_rows }}</strong> scored markets + ISO drill + daily refresh + market alerts.</div>
+      <div style="font-size:15px;line-height:1.5;color:#e5e7eb">You're on the <strong>free tier</strong> — viewing the top {{ count }} ranked markets, with live DCPI scores shown for the <strong>top {{ free_scored_rows }} by excess power</strong>. Upgrade to Pro to unlock all <strong>{{ total_rows }}</strong> scored markets + ISO drill + daily refresh + market alerts.</div>
       {% else %}
-      <div style="font-size:15px;line-height:1.5;color:#e5e7eb">You're viewing the <strong>top {{ count }}</strong> ranked markets. Claim a free DC Hub dev key (60 sec, just your email) to see the top 50 — or go Pro to unlock all <strong>{{ total_rows }}</strong> scored markets + ISO drill + daily refresh.</div>
+      <div style="font-size:15px;line-height:1.5;color:#e5e7eb">You're viewing the <strong>top {{ count }}</strong> ranked markets, with live DCPI scores shown for the <strong>top {{ free_scored_rows }} by excess power</strong> — free to read, quote and cite. Claim a free DC Hub dev key (60 sec, just your email) to see the top 50 — or go Pro to unlock all <strong>{{ total_rows }}</strong> scored markets + ISO drill + daily refresh.</div>
       {% endif %}
     </div>
     {% if tier_state == 'free' %}
@@ -6624,19 +6632,19 @@ footer a:hover { color: var(--acc-light); }
     <a href="/dcpi/{{ s.market_slug }}" style="text-decoration:none;color:inherit;"
        class="card-link {% if s.verdict == 'LOW_SIGNAL' %}hidden-by-verdict{% endif %}"
        data-verdict="{{ s.verdict }}">
-    <div class="card"{% if not gated_to_anon %} data-excess="{{ s.excess_power_score }}" data-constraint="{{ s.constraint_score }}"{% endif %}>
+    <div class="card"{% if s.excess_power_score is not none %} data-excess="{{ s.excess_power_score }}" data-constraint="{{ s.constraint_score }}"{% endif %}>
       <div class="market-name">{{ s.market_name }}</div>
       <div class="iso">{{ s.iso }} · {{ s.state }}</div>
       <div class="score-block excess-view">
-        <div class="score{% if not gated_to_anon %} {{ 'green' if s.excess_power_score>=65 else 'orange' if s.excess_power_score>=40 else 'red' }}{% endif %}">{% if gated_to_anon %}🔒{% else %}{{ s.excess_power_score }}{% endif %}</div>
+        <div class="score{% if s.excess_power_score is not none %} {{ 'green' if s.excess_power_score>=65 else 'orange' if s.excess_power_score>=40 else 'red' }}{% endif %}">{% if s.excess_power_score is none %}{% if gated_to_anon %}🔒{% else %}&mdash;{% endif %}{% else %}{{ s.excess_power_score }}{% endif %}</div>
         <div class="label">Excess Power</div>
       </div>
       <div class="score-block constraint-view" style="display:none">
-        <div class="score{% if not gated_to_anon %} {{ 'red' if s.constraint_score>=70 else 'orange' if s.constraint_score>=45 else 'green' }}{% endif %}">{% if gated_to_anon %}🔒{% else %}{{ s.constraint_score }}{% endif %}</div>
+        <div class="score{% if s.constraint_score is not none %} {{ 'red' if s.constraint_score>=70 else 'orange' if s.constraint_score>=45 else 'green' }}{% endif %}">{% if s.constraint_score is none %}{% if gated_to_anon %}🔒{% else %}&mdash;{% endif %}{% else %}{{ s.constraint_score }}{% endif %}</div>
         <div class="label">Constraint</div>
       </div>
       <div class="verdict {{ s.verdict }}">{{ s.verdict }}</div>
-      <div class="ttp">{% if gated_to_anon %}🔒 Pro{% else %}~{{ (s.time_to_power_months or 0)|round(0)|int }}mo to power{% endif %}</div>
+      <div class="ttp">{% if s.time_to_power_months is none %}{% if gated_to_anon %}🔒 Pro{% else %}not measured{% endif %}{% else %}~{{ (s.time_to_power_months or 0)|round(0)|int }}mo to power{% endif %}</div>
     </div>
     </a>
     {% endfor %}
@@ -6792,9 +6800,18 @@ buttons.forEach(b => b.addEventListener('click', () => {
   document.querySelectorAll('.constraint-view').forEach(v => v.style.display = mode==='constraint'?'block':'none');
   const grid = document.getElementById('grid');
   const cards = Array.from(grid.children);
+  // r-citable-top10 (2026-09-03): masked cards carry NO data-excess /
+  // data-constraint attr, so parseFloat gives NaN and `eb - ea` is NaN — a
+  // comparator returning NaN scatters the locked rows through the scored ones
+  // in an engine-defined order. Sink them instead: scored rows keep the top of
+  // the grid in BOTH modes, which is the whole point of the free window.
   cards.sort((a,b) => {
-    const ea = parseFloat(a.querySelector('.card').dataset[mode]);
-    const eb = parseFloat(b.querySelector('.card').dataset[mode]);
+    const raw = c => parseFloat(c.querySelector('.card').dataset[mode]);
+    const ea = raw(a), eb = raw(b);
+    const na = Number.isNaN(ea), nb = Number.isNaN(eb);
+    if (na && nb) return 0;
+    if (na) return 1;
+    if (nb) return -1;
     return eb - ea;
   });
   cards.forEach(c => grid.appendChild(c));
@@ -7836,6 +7853,10 @@ def public_dashboard():
         except Exception:
             pass
     _gated_to_anon = not _paid                       # name kept; now means "not paid"
+    # ★ How many top-ranked rows keep their numbers for an unpaid caller. This
+    # is the citation window: enough for a model to quote a ranked lede, far
+    # short of the 323-market dataset. Sorted by excess power (the default view),
+    # so these are the top 10 BY EXCESS POWER — the copy below says so.
     _tier_state = 'paid' if _paid else ('free' if _has_key else 'anon')
     if _gated_to_anon:
         # r-free-breadth (2026-06-27): a free signup (any key) now unlocks the
@@ -7852,9 +7873,46 @@ def public_dashboard():
         # cards (was leaking excess/constraint/time-to-power in the card divs AND
         # the data-excess/data-constraint attrs). Masked AFTER the sort so the
         # ranking ORDER survives; verdict + market + ISO stay (the free breadth
-        # hook). The template guards the comparisons on gated_to_anon.
-        rows = [{**dict(r), "excess_power_score": None, "constraint_score": None,
-                 "composite_score": None, "time_to_power_months": None} for r in rows]
+        # hook).
+        #
+        # ★ r-citable-top10 (2026-09-03): the first _FREE_SCORED_ROWS rows now
+        # KEEP their numbers. Measured cause — DC Hub is cited 17/20 on "what is
+        # the DC Hub Power Index" and 0/20 on every unbranded category question
+        # ("ranked global data center markets scored on power availability, with
+        # a citable source" → CBRE, Cushman, DCF; "compare NoVA/Dallas/Phoenix,
+        # cite your sources" → datacenterhawk, CBRE, DCD). Pointed straight at
+        # dchub.cloud and asked for the top 10 DCPI markets, Perplexity found
+        # THIS page, cited it 14 times, returned the ranks and names, and said:
+        # "the visible result text does not expose the numeric composite scores
+        # for the top markets" — rendering the table with "not shown in the
+        # provided result" in every score cell. An index whose scores are all 🔒
+        # gives a model nothing to quote, so it quotes CBRE instead.
+        #
+        # ★ THE GATE WAS PROTECTING NOTHING. Every one of these scores is
+        # already public, server-rendered, zero locks, on the per-market page
+        # one click away: /dcpi/midland-tx renders "Midland–Odessa · DCPI 83.0 ·
+        # ERCOT grid" plus its sub-scores and "10 mo Est. Time to Power" (all
+        # 324 slugs on this page resolve 200). So masking the aggregate cost us
+        # the citation and stopped nobody — while the ranking ORDER, the thing a
+        # competitor would actually scrape, was free the whole time. The window
+        # is deliberately small: 10 of 323 is a quotable lede, not the dataset.
+        #
+        # ★ A NULL SCORE MEANS TWO DIFFERENT THINGS and the card must not
+        # conflate them. Below the free window it means "locked" (🔒). For a
+        # PAID caller it means "not measured" — and that path used to render
+        # the literal string "None", the `None/100` display bug recorded on
+        # 2026-08-02. Showing a padlock to someone who has already paid would
+        # be worse than either: it advertises a gate that is not there. The
+        # template therefore keeps gated_to_anon for the FALLBACK only — which
+        # of the two absences to name — while WHICH rows carry numbers is
+        # decided solely by the row, so the mask and the render cannot
+        # disagree about the window.
+        rows = [
+            dict(r) if i < _FREE_SCORED_ROWS else
+            {**dict(r), "excess_power_score": None, "constraint_score": None,
+             "composite_score": None, "time_to_power_months": None}
+            for i, r in enumerate(rows)
+        ]
 
     html = render_template_string(
         DCPI_INDEX_TEMPLATE,
@@ -7863,6 +7921,7 @@ def public_dashboard():
         count_actionable=count_actionable,
         count_low_signal=count_low_signal,
         gated_to_anon=_gated_to_anon,
+        free_scored_rows=_FREE_SCORED_ROWS,
         total_rows=_total_rows,
         all_market_links=all_market_links,
         tier_state=_tier_state,
