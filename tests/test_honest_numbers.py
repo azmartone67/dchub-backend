@@ -504,9 +504,20 @@ def _strip_narration(src: str) -> str:
 def _pending_queue_counts() -> dict:
     counts = {}
     for dirpath, dirnames, filenames in os.walk(ROOT):
+        # ★2026-09-04: ".claude" added. Claude Code puts its worktrees at
+        # ~/dchub-backend/.claude/worktrees/<name>/, so this walk was scanning
+        # the repo PLUS one full copy per live worktree. Five of them made this
+        # ratchet report every duplicated file as a NEW offender — the fence
+        # failed for everyone, naming only paths under .claude/worktrees, and
+        # stayed red until the worktrees were pruned. It also inflated this
+        # file's pinned coverage floor to 340 walked directories against a real
+        # 125, so the floor tracked how many worktrees happened to exist.
+        # _EXCLUDE_DIRS at the top of this module already excludes "/.claude/"
+        # for the same reason (see the note at the scan above it); this walk
+        # was the one that never got it.
         dirnames[:] = [d for d in dirnames
-                       if d not in {".git", "node_modules", "venv", ".venv",
-                                    "__pycache__", "dchub-frontend"}]
+                       if d not in {".git", ".claude", "node_modules", "venv",
+                                    ".venv", "__pycache__", "dchub-frontend"}]
         for fn in filenames:
             if not fn.endswith(".py"):
                 continue

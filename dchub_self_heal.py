@@ -689,10 +689,39 @@ def fix_backfill_press_releases():
             if n > 0:
                 return True, f"already has {n} press releases"
 
+            # Canon-bound counts for the seed copy below. Fail-open to the
+            # citation-safe floors, never to a hand-typed number: a DR seed
+            # that cannot reach the canon should under-claim, not invent.
+            try:
+                from canonical_stats import markets_phrase, dcpi_countries_phrase
+                _mk, _ct = markets_phrase(), dcpi_countries_phrase()
+            except Exception:
+                _mk, _ct = "300+", "30+"
+
             prs = [
+                # ★2026-09-03 r-dcpi-regions — VERIFIED AGAINST THE LIVE
+                # SCORED UNIVERSE (/api/v1/dcpi/scores, origin and edge), not
+                # against the literal. This record contradicted itself inside a
+                # SINGLE row: its title and its own body gave different market
+                # counts, and its country count was a large under-claim of the
+                # measured coverage. Same defect as the region list in main.py's
+                # ai-agents.json description: one document, two answers, and the
+                # hardcoded one under-claims. No figure is quoted here on
+                # purpose — a number in a comment rots the way the literal did.
+                #
+                # ★ It is DORMANT, not live: this whole seed is skipped unless
+                #   press_releases is EMPTY (`if n > 0: return` above), and the
+                #   row actually served at /news/dcpi-v2-launch is a different
+                #   record with different text. That makes it a restore-path
+                #   landmine rather than a served lie — a DR seed is exactly
+                #   when nobody is checking the copy.
+                # ★ Bound to canon so the counts cannot go stale again. The
+                #   phrases are resolved at SEED time, which is honest here:
+                #   this is disaster-recovery filler that states current
+                #   coverage, not an archival copy of a dated release.
                 ("dcpi-v2-launch",
-                 "DC Hub Launches DCPI v2: Data Center Power Index Now Covering 232 Markets",
-                 "DC Hub today released version 2 of the Data Center Power Index (DCPI), expanding coverage from 30 to 300+ markets across 12 countries. The methodology — peer-reviewable at /dcpi/methodology — combines four weighted components (Grid Headroom 40%, Pipeline Velocity 25%, Energy Cost Efficiency 20%, Facility Density 15%) into a single 0-100 score per market. Industry analysts at JLL, CBRE, Data Center Dynamics and Data Center Frontier have been invited to evaluate the index as a citable standard.",
+                 f"DC Hub Launches DCPI v2: Data Center Power Index Now Covering {_mk} Markets",
+                 f"DC Hub today released version 2 of the Data Center Power Index (DCPI), expanding coverage to {_mk} markets across {_ct} countries. The methodology — peer-reviewable at /dcpi/methodology — combines four weighted components (Grid Headroom 40%, Pipeline Velocity 25%, Energy Cost Efficiency 20%, Facility Density 15%) into a single 0-100 score per market. Industry analysts at JLL, CBRE, Data Center Dynamics and Data Center Frontier have been invited to evaluate the index as a citable standard.",
                  "/news/dcpi-v2-launch/"),
                 ("dcpi-methodology-published",
                  "DC Hub Publishes DCPI Methodology for Peer Review",

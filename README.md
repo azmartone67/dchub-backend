@@ -4,7 +4,20 @@
 
 > 🔍 **Looking for the MCP server?** This repo is the Flask backend. The standalone MCP server is at [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server) (live at `https://dchub.cloud/mcp`).
 
-[![Tools](https://img.shields.io/badge/MCP%20tools-79-blue)](https://dchub.cloud/.well-known/mcp.json) [![Markets](https://img.shields.io/badge/DCPI%20markets-311-purple)](https://dchub.cloud/dcpi) [![Facilities](https://img.shields.io/badge/facilities-22%2C000%2B-green)](https://dchub.cloud) [![Countries](https://img.shields.io/badge/countries-170%2B-orange)](https://dchub.cloud) [![License](https://img.shields.io/badge/data-CC--BY--4.0-lightgrey)](https://dchub.cloud/cited-by)
+<!-- ★2026-09-04: these four badges are DERIVED, not typed. They read
+     https://dchub.cloud/api/v1/canon/phrases — the same resolve_canon() every
+     other surface reads — so they heal instead of rotting.
+     Until today they were hand-typed, and every one of them had drifted: the
+     tool count trailed the live server, the market count trailed the index,
+     and the facility count sat ABOVE canon — an over-claim, on the
+     registry-facing surface GitMCP and the MCP directories mirror.
+     ★ Do NOT write the numbers back in as literals, and do not quote a stale
+       figure here either: this file is scanned as an agent-facing SURFACE, so
+       a number in this comment is a number on the surface (that is how the
+       first draft of this note failed the stale-marker fence).
+     If a badge renders an error the canon endpoint is down — a visibly missing
+     number is the intended failure mode; a confidently wrong one is not. -->
+[![MCP tools](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdchub.cloud%2Fapi%2Fv1%2Fcanon%2Fphrases&query=%24.tools&label=MCP%20tools&color=blue)](https://dchub.cloud/.well-known/mcp.json) [![DCPI markets](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdchub.cloud%2Fapi%2Fv1%2Fcanon%2Fphrases&query=%24.markets&label=DCPI%20markets&color=purple)](https://dchub.cloud/dcpi) [![facilities](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdchub.cloud%2Fapi%2Fv1%2Fcanon%2Fphrases&query=%24.facilities&label=facilities&color=green)](https://dchub.cloud) [![countries](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdchub.cloud%2Fapi%2Fv1%2Fcanon%2Fphrases&query=%24.countries&label=countries&color=orange)](https://dchub.cloud) [![License](https://img.shields.io/badge/data-CC--BY--4.0-lightgrey)](https://dchub.cloud/cited-by)
 
 ---
 

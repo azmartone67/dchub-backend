@@ -1672,6 +1672,13 @@ def _market_country(state, iso, slug=None):
     return None
 
 
+#: PUBLIC alias of _market_country. canonical_stats' DCPI country/region
+#: derivation binds to THIS rather than declaring a second operator->country
+#: map — the defect util/iso_taxonomy.py exists to prevent, one column over.
+#: (r-dcpi-regions, 2026-09-03.)
+market_country = _market_country
+
+
 def _is_intl_market(row) -> bool:
     """True when a (slug, name, state, iso, lat, lon) tuple describes a market
     OUTSIDE the United States.
@@ -6479,9 +6486,9 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>DCPI · Data Center Power Index | datacenterpowerindex.com | DC Hub</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="DCPI (Data Center Power Index) tracks power availability across {{ total_rows }}+ U.S. data center markets in real time. The Excess Power Score surfaces stranded capacity nobody else publishes. Also at datacenterpowerindex.com.">
+<meta name="description" content="DCPI (Data Center Power Index) tracks power availability across {{ total_rows }}+ data center markets{% if total_countries %} in {{ total_countries }} countries{% endif %} in real time. The Excess Power Score surfaces stranded capacity nobody else publishes. Also at datacenterpowerindex.com.">
 <meta property="og:title" content="DCPI — The Data Center Power Index | datacenterpowerindex.com">
-<meta property="og:description" content="Real-time power availability across {{ total_rows }}+ U.S. markets. Find the excess capacity hidden in plain sight. The industry-standard power index.">
+<meta property="og:description" content="Real-time power availability across {{ total_rows }}+ markets{% if total_countries %} in {{ total_countries }} countries{% endif %}. Find the excess capacity hidden in plain sight. The industry-standard power index.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
 <meta property="og:url" content="https://dchub.cloud/dcpi">
 <meta name="twitter:card" content="summary_large_image">
@@ -6502,7 +6509,7 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
   "@type": "Dataset",
   "name": "Data Center Power Index (DCPI)",
   "alternateName": "DCPI",
-  "description": "Real-time power-availability scoring across {{ total_rows }} U.S. data center markets. Combines ISO grid constraint signals, retail electricity prices, and interconnection-queue pressure into a 0–100 Excess Power Score with an actionable BUILD / CAUTION / AVOID / LOW_SIGNAL verdict per market. Recomputed continuously.",
+  "description": "Real-time power-availability scoring across {{ total_rows }} data center markets{% if total_countries %} in {{ total_countries }} countries{% endif %}. Combines ISO grid constraint signals, retail electricity prices, and interconnection-queue pressure into a 0–100 Excess Power Score with an actionable BUILD / CAUTION / AVOID / LOW_SIGNAL verdict per market. Recomputed continuously.",
   "url": "https://dchub.cloud/dcpi",
   "sameAs": "https://dchub.cloud/dcpi",
   "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
@@ -6940,7 +6947,7 @@ footer a:hover { color: var(--acc-light); }
 <div class="wrap">
   <section class="hero">
     <h1>The <span class="accent">Data Center Power Index</span></h1>
-    <p class="lede">Real-time power availability across {{ total_rows }} U.S. data center markets. Two scores per market: <strong>Excess Power</strong> (where buyers don't know to look) and <strong>Constraint</strong> (where the queue is dead). The contrarian metric the incumbents won't publish.</p>
+    <p class="lede">Real-time power availability across {{ total_rows }} data center markets{% if total_countries %} in {{ total_countries }} countries{% endif %}. Two scores per market: <strong>Excess Power</strong> (where buyers don't know to look) and <strong>Constraint</strong> (where the queue is dead). The contrarian metric the incumbents won't publish.</p>
   </section>
 
   <a href="/dcgi" style="display:block;text-decoration:none;background:linear-gradient(135deg,#10b981 0%,#0ea5e9 100%);border-radius:14px;padding:1.6rem 2rem;margin:0 0 2rem;position:relative;overflow:hidden;">
@@ -8036,6 +8043,46 @@ def _dcpi_index_coverage(rows) -> dict:
     }
 
 
+def dcpi_index_country_count(spatial_coverage):
+    """PURE. How many COUNTRIES the index spans, or None when unmeasurable.
+
+    r-dcpi-regions (2026-09-03). Four strings on this page called the whole
+    index "U.S. markets" — the description meta, the og:description, the
+    JSON-LD Dataset description and the page lede — each one beside a DERIVED
+    {{ total_rows }}. Most scored markets are US; the rest span dozens of other
+    countries, so the sentence rendered a live count inside a false geography.
+    Same shape as the region list in main.py's ai-agents.json: a hardcoded
+    geography wired to a live count, and the geography is the half that rots.
+    No figure is quoted here on purpose — a number in a comment is a second
+    answer that rots exactly as the string it replaced did.
+
+    ★ Derived from the Places dcpi_index_spatial_coverage() ALREADY resolved,
+      not from a second pass over the rows. One resolution, so the prose and
+      the JSON-LD on this page cannot disagree about how many countries there
+      are — and this function inherits that helper's pre-tier-slice input for
+      free (see the r-index-coverage-precap note at the call site: a tier-
+      capped teaser must never shrink a coverage claim).
+
+    ★ It is a FLOOR in two ways, both deliberate. A market whose country will
+      not resolve contributes no Place, so it is not counted rather than
+      guessed at. And the US TERRITORIES fold into the United States: PR/GU/VI
+      are more precisely themselves in a Place and are NOT nations in a count,
+      so leaving them apart would publish Puerto Rico as a country and put the
+      span 3 above reality.
+
+    None (never 0) when nothing resolves — an unmeasured figure must read as
+    unknown on the page, which is why /dcpi-v2 was retired.
+    """
+    if not spatial_coverage:
+        return None
+    countries = set()
+    for place in spatial_coverage:
+        c = (place or {}).get("addressCountry")
+        if c:
+            countries.add("US" if c in _US_TERRITORY_CODES else c)
+    return len(countries) or None
+
+
 # 10-minute in-process cache: these move on the daily 06:00 UTC recompute, and
 # /dcpi is a hot public page — one COUNT(DISTINCT) pair per 10 min per process.
 _DCPI_FOOTPRINT_TTL_S = 600
@@ -8306,6 +8353,11 @@ def public_dashboard():
         # keeping the claim — never 0, never a frozen literal.
         cov_markets=_index_cov["markets"],
         cov_grid_regions=_index_cov["grid_regions"],
+        # r-dcpi-regions (2026-09-03): None when unresolvable, and every
+        # template site is {% if %}-guarded, so the claim degrades to a
+        # country-free sentence rather than to "0 countries" or to a frozen
+        # literal. Same rule as the cov_* figures above.
+        total_countries=dcpi_index_country_count(_spatial_cov),
         cov_countries=_footprint_cov["countries"],
         cov_facilities=_footprint_cov["facilities_distinct"],
         # r-index-coverage (2026-08-08): the real country list, derived from the
@@ -9332,7 +9384,7 @@ def og_card_index():
   <text x="60" y="230" font-family="-apple-system, sans-serif" font-size="84" font-weight="800"
         fill="white" letter-spacing="-2">Where the power is.</text>
   <text x="60" y="300" font-family="-apple-system, sans-serif" font-size="26"
-        fill="#9ca3af">{markets} U.S. markets scored daily · {builds} rated BUILD</text>
+        fill="#9ca3af">{markets} markets scored daily · {builds} rated BUILD</text>
   <text x="60" y="430" font-family="-apple-system, sans-serif" font-size="18" font-weight="600"
         fill="#9ca3af" letter-spacing="2">TOP MARKET FOR EXCESS POWER</text>
   <text x="60" y="510" font-family="-apple-system, sans-serif" font-size="64" font-weight="800"
@@ -9361,7 +9413,7 @@ code{background:#f3f3f3;padding:0.1rem 0.4rem;border-radius:3px;font-size:0.9em}
 </style></head><body>
 <h1>DCPI Press Kit</h1>
 <p>The Data Center Power Index (DCPI) is a daily-updated indicator of power
-availability across U.S. data center markets. Free for the press to cite.</p>
+availability across global data center markets. Free for the press to cite.</p>
 <h2>What is DCPI?</h2>
 <p>Two scores per market: <strong>Excess Power Score</strong> (0–100, high = opportunity) and
 <strong>Constraint Score</strong> (0–100, high = avoid). Excess Power surfaces stranded capacity,

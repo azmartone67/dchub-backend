@@ -235,9 +235,15 @@ def test_no_second_state_to_iso_map_in_the_tree():
 
     scanned, offenders = 0, {}
     for dirpath, dirnames, filenames in os.walk(ROOT):
+        # ★2026-09-04: ".claude" added. Claude Code worktrees live at
+        # .claude/worktrees/<name>/, so this walk read one full copy of the
+        # repo per worktree and reported util/iso_taxonomy.py's OWN STATE_ISO —
+        # the single source of truth this fence exists to protect — as a
+        # duplicate map, once per worktree. A guard that fails on correct code
+        # gets muted, which is the worse outcome.
         dirnames[:] = [d for d in dirnames
-                       if d not in {".git", "node_modules", "__pycache__",
-                                    "venv", ".venv", "tests"}]
+                       if d not in {".git", ".claude", "node_modules",
+                                    "__pycache__", "venv", ".venv", "tests"}]
         for fn in filenames:
             if not fn.endswith(".py"):
                 continue

@@ -291,6 +291,22 @@ PINNED = {
         # because a floor above reality is the defect this block's own history
         # records three times.
         "substations": "127,000+",
+        # ── DCPI scoring-universe span (r-dcpi-regions, 2026-09-03) ──
+        # Cold-start floors ONLY; canonical_stats' derivation publishes.
+        # ★ Verified against
+        #   /api/v1/dcpi/scores at the Railway origin AND the edge,
+        #   2026-09-03). "30+" floors to 10 like `countries` above.
+        "dcpi_countries": "30+",
+        # ★ A FLOOR ON A SET IS A SUBSET. These three regions have held
+        #   since the 2026-05-25 international launch and cannot plausibly
+        #   go false; Latin America (Brazil, Mexico) and Africa (South
+        #   Africa) are DELIBERATELY omitted here so the pin under-claims
+        #   the way a numeric floor does. The live derivation adds them
+        #   back — dcpi_regions_phrase() resolves all five today.
+        #   Do NOT hand-walk this toward the live value: that is exactly
+        #   the six-cycle `facilities` walk documented above, and the whole
+        #   reason the derivation exists.
+        "dcpi_regions": "North America, Europe and Asia-Pacific",
         "countries": "170+",  # ★2026-07-30 VERIFIED correct: the deduped fleet spans 178 distinct codes (incl. territories) → floor "170+". NOT "180+": /api/v1/stats served countries=186 off the legacy `facilities` table, which double-counts 9 full-name/ISO-code pairs ("USA"+"US"). resolve_canon() now overrides this live (countries_verified_phrase).
     },
     # Values known to be STALE/WRONG on some surface — the sentinel flags these.
@@ -770,6 +786,20 @@ def _live_public_floors() -> dict:
         return {}
 
 
+def _live_dcpi_regions() -> str:
+    """The measured DCPI region span, or "" when nothing has measured it.
+
+    Same PEEK-ONLY contract and same fail-soft asymmetry as
+    _live_public_floors(): no render can block on the DB, and an unmeasured
+    span leaves the pinned SUBSET in place rather than an empty clause."""
+    try:
+        from canonical_stats import live_dcpi_regions_phrase as _r
+        got = _r()
+        return got if isinstance(got, str) else ""
+    except Exception:
+        return ""
+
+
 def canon_nums() -> dict:
     """The canonical agent-facing headline numbers, as ready-to-paste strings.
 
@@ -820,6 +850,14 @@ def canon_nums() -> dict:
         '{canon_deals}':      _live.get('deals')      or _pub.get('deals') or '',
         '{canon_markets}':    _live.get('markets')    or _pub.get('markets') or '',
         '{canon_countries}':  _live.get('countries')  or _pub.get('countries') or '',
+        # ★2026-09-03 r-dcpi-regions. /.well-known/ai-agents.json described
+        # DCPI as "300+ markets across the U.S., UK, EU, Japan, Australia,
+        # Singapore, and Canada" — a canon-derived count wired to a HAND-TYPED
+        # region list, in one sentence. The count floored safely; the list went
+        # stale and named 7 regions against a far larger live span. A surface with
+        # no placeholder to reach a value has to hardcode — so it gets one.
+        '{canon_dcpi_countries}': _live.get('dcpi_countries') or _pub.get('dcpi_countries') or '',
+        '{canon_dcpi_regions}':   _live_dcpi_regions() or _pub.get('dcpi_regions') or '',
         '{canon_isos}':       str(_cf.get('isos') or ''),
         '{canon_free_calls}': str(_p.get('free_tier_calls_per_day') or ''),
         '{canon_identified_calls}': str(_p.get('identified_calls_per_day') or ''),
