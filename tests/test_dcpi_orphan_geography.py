@@ -33,8 +33,27 @@ def _hardcoded(slug):
 def test_johannesburg_is_gauteng_not_georgia():
     slug, name, state, iso, lat, lon = _hardcoded("johannesburg")
     assert state == "GP", "Gauteng — never 'GA' (US Georgia collision)"
-    assert iso == "", "midrand convention: no registered grid-operator label"
     assert lat < 0 and 27.0 < lon < 29.0, "southern hemisphere ZA, not Mojave"
+    # ★r-failopen-operators (2026-09-04). This line used to read
+    #     assert iso == "", "midrand convention: no registered ... label"
+    # and it was CHANGED DELIBERATELY, not relaxed. What this file exists to
+    # prevent is a US operator being stamped on a South African market — the
+    # measured defect was iso=SOCO. The empty string was one way to satisfy
+    # that, and it carried a cost nobody priced: an unregistered label fails
+    # `bool(iso) and iso in iso_defaults`, so johannesburg published WECC's
+    # curtailment_pct 7.5 and reserve_margin_pct 20.0 for five weeks
+    # (measured live 2026-09-04 alongside seven sibling markets).
+    #
+    # ESKOM is the real operator, so it satisfies the original guard AND
+    # closes the fail-open. The assertion below is the invariant that was
+    # always the point; `== ""` was an implementation detail standing in for it.
+    assert iso not in dcpi._US_DCPI_ISOS, (
+        "a US grid label on a South African market is the r-orphan-geography "
+        "defect itself (it was SOCO)")
+    assert iso == "ESKOM", (
+        "johannesburg must carry its real operator — an unregistered label "
+        "silently reinstates WECC's Western-US anchors via the "
+        "iso_defaults.get(iso, iso_defaults['WECC']) fail-open")
 
 
 def test_markham_is_ontario_not_new_york():
@@ -54,7 +73,11 @@ def test_state_codes_stay_out_of_the_us_state_map():
     # mechanism that produced johannesburg=SOCO.
     assert "GP" not in STATE_ISO
     assert "ON" not in STATE_ISO
+    # default= is what the caller would pass; GP is absent from STATE_ISO so
+    # the resolver must hand the caller's own value straight back rather than
+    # inventing a US label from the state code.
     assert resolve_iso("johannesburg", "GP", default="") == ""
+    assert resolve_iso("johannesburg", "GP", default="ESKOM") == "ESKOM"
     assert resolve_iso("markham", "ON", default="IESO") == "IESO"
 
 
