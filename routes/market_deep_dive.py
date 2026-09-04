@@ -30,6 +30,7 @@ import datetime
 from flask import Blueprint, Response, jsonify, request, abort, redirect
 
 from util.market_entity import SITE as ENTITY_SITE, market_entity
+from util.slug_suffix import normalize_periods
 from utils.anthropic_helper import anthropic_messages_url
 from routes.brain_llm_spend import instrumented_post as _llm_post
 
@@ -1575,7 +1576,28 @@ def market_short_html(slug):
     # canonical market slug, so strip it and 301 to the '-'-normalized slug,
     # consolidating the duplicate onto the real page. Aligns with the
     # _CANONICAL_REDIRECT canonical-unify pattern just below.
-    _norm_slug = slug_norm.replace(".", "")
+    #
+    # r-suffix-301 (2026-09-03): split a file extension off FIRST. The blanket
+    # replace(".", "") also ate the period in '<slug>.JSON' / '<slug>.xml' and
+    # 301'd to '<slug>json' / '<slug>xml', which 404. A redirect into a 404 is
+    # worse than a 404 — it reads as "this moved, follow me". The lowercase
+    # '.json' is bound by the market_entity_json twin above and never gets
+    # here; every other case does. Rebuild the target WITH the suffix so a
+    # '.JSON' request lands on the twin that serves it.
+    _norm_slug, _suffix = normalize_periods(slug_norm)
+    if _norm_slug and _suffix:
+        # Compare against the RAW path, not the lower-cased slug: '.JSON' is
+        # exactly the case that escaped the twin's rule (Werkzeug matches its
+        # static text case-sensitively), so it must be sent on to the
+        # lowercase URL that does serve it rather than answered in place.
+        _target = (f"/markets/{_norm_slug}.json" if _suffix == "json"
+                   else f"/markets/{_norm_slug}")
+        if _target != f"/markets/{slug}":
+            return redirect(_target, code=301)
+        # Only reachable if Werkzeug ever ranks "/markets/<slug>" above
+        # "/markets/<slug>.json". Serve the twin rather than render HTML under
+        # a .json URL — the failure the twin's own comment warns of.
+        return market_entity_json(_norm_slug)
     if _norm_slug and _norm_slug != slug_norm:
         return redirect(f"/markets/{_norm_slug}", code=301)
 
