@@ -75,6 +75,12 @@ jobs:
         with:
           python-version: '3.13'
 
+      # sync-tools-manifest.mjs imports node builtins only (plus a local
+      # scripts/dxt-bundle.mjs), so the heal below needs Node and NOT npm ci.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
       - name: Install what the exporter imports
         run: pip install --quiet requests psycopg2-binary
 
@@ -118,22 +124,73 @@ jobs:
       # dchub-mcp-server/main is unprotected, so this push lands; the backend's
       # main requires 6 status checks, so a `[skip ci]` bot push to it CANNOT.
       # Critical target first, known-fragile target second.
+      # ★2026-09-04 — THE 8h24m DAILY RED WINDOW, and why the heal moved HERE.
+      # This step used to commit canonical/mcp_facts.json ALONE and rely on
+      # dchub-mcp-server's daily-manifest-sync to heal the derived surfaces from
+      # it. That companion cron is at 13:41 UTC and this job is at 05:17, so for
+      # 8 hours 24 minutes every day the facts file disagreed with the prose it
+      # is checked against:
+      #
+      #     server.mjs: "64k fiber routes" — stale fiber-route count (canonical 66k)
+      #
+      # sync-tools-manifest.mjs exits 1 on that, and MCP smoke tests' Unit gate
+      # runs smithery-canon-guard, so BOTH checks go red — on main AND on every
+      # open PR in the repo, none of which have anything to do with the number.
+      # Measured 2026-09-04: cda25fd landed 05:25:46Z and dchub-mcp-server #333,
+      # a test-only change, inherited two red checks from it within the hour.
+      # The old design was not wrong about the healer existing; it was wrong
+      # that an 8-hour gap between a number changing and its prose following is
+      # a detail. Facts and everything derived from them move in ONE commit now.
+      - name: Heal the derived surfaces from the facts just written
+        working-directory: dchub-mcp-server
+        run: |
+          set -euo pipefail
+          node scripts/sync-tools-manifest.mjs --fix
+
+      # ★ Prove the tree is SELF-CONSISTENT before pushing it. This is the exact
+      # command dchub-mcp-server's manifest-consistency check runs, so a non-zero
+      # exit here is a red main caught BEFORE it happens rather than after. No
+      # `|| true`: a heal that cannot satisfy the guard must fail this job, not
+      # ship and hand the failure to the next unrelated PR.
+      - name: The tree about to be pushed must satisfy the drift guard
+        working-directory: dchub-mcp-server
+        run: |
+          set -euo pipefail
+          node scripts/sync-tools-manifest.mjs
+
       - name: Commit + push into dchub-mcp-server
         working-directory: dchub-mcp-server
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- canonical/mcp_facts.json; then
+          if git diff --quiet; then
             # Legitimate: the numbers are floors that round DOWN and move slowly.
             echo "facts unchanged since the last run — nothing to push"
             exit 0
           fi
-          git --no-pager diff --stat -- canonical/mcp_facts.json
-          git add canonical/mcp_facts.json
-          git commit -m "chore(facts): regenerate from dchub-backend canonical_stats [skip ci]"
+          git --no-pager diff --stat
+          # ★ `-u` stages every MODIFIED TRACKED file and no untracked one. The
+          # heal rewrites existing surfaces and creates none, so this covers it
+          # exactly. Deliberately NOT a hand-written file list: daily-manifest-
+          # sync.yml carries two long comments (2026-07-30 and 2026-08-05) about
+          # its OWNED list drifting from what --fix actually writes, which twice
+          # produced a green log for a heal that was discarded unstaged. One
+          # derived list beats two hand-kept ones.
+          git add -u
+          # ★ NO CI-SKIP MARKER — that was the root cause. The old commit
+          # carried one, so the guard that exists to catch exactly this
+          # divergence never ran on the only commit that could create it, and
+          # the drift stayed invisible until an unrelated PR tripped over it
+          # hours later. Now that facts and surfaces land together the tree is
+          # self-consistent, so letting CI run is both affordable and the whole
+          # point. Do not reintroduce the marker here or in a commit message:
+          # dchub-mcp-server squash-merges, which concatenates commit bodies, so
+          # the literal token would ride into main's head commit and skip CI
+          # there too.
+          git commit -m "chore(facts): regenerate from canonical_stats + heal the derived surfaces"
           git push
-          echo "✓ pushed to dchub-mcp-server — its daily-manifest-sync will heal the 30 registry surfaces from this"
+          echo "✓ pushed facts AND every surface derived from them, in ONE commit"
 
       # ★2026-08-30 — THE "WEAKER CLAIM" COMMENT WAS TRUE WHEN WRITTEN AND
       # FALSE TEN DAYS LATER. It read "NOTHING SERVES IT ... returned 404 when
