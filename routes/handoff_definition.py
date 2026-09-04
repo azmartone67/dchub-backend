@@ -56,7 +56,7 @@ from mcp_calls_deloop import (
 # ── the published definition ────────────────────────────────────────────────
 # Bump BOTH together. The guard in tests/test_handoff_truth_shell.py asserts
 # every version 1..N carries an entry, so a bump with no explanation fails.
-HUMAN_ACTED_DEFINITION_VERSION = 4
+HUMAN_ACTED_DEFINITION_VERSION = 5
 
 HUMAN_ACTED_DEFINITION_CHANGELOG = {
     1: (
@@ -105,6 +105,29 @@ HUMAN_ACTED_DEFINITION_CHANGELOG = {
         '(env-extensible); what was removed is published under '
         '`excluded`, and v3 is kept alongside as '
         'human_acted_v3_including_self_traffic.'
+    ),
+    5: (
+        "v4 with the operator's ROTATED session excluded too. v4 named one "
+        'session (88e20dac) and the operator\'s client minted a new id on '
+        '2026-08-20 — 8c8e1d0d, first call 10.1s after 88e20dac\'s last, '
+        'same platform/user_agent/tier — which then opened a relay link for '
+        'analyze_site, the same tool as the declared 08-17 operator open. '
+        'That single open was publishing human_acted = 1 over 30d: the '
+        'first non-zero this stage has ever shown, and v4 existed precisely '
+        'to stop that being us. ★ UNLIKE v4 THIS IS AN INFERENCE, NOT A '
+        'NAMED FACT — asked whether the 08-20 click was theirs the operator '
+        'said they had no idea, so it rests on the 10-second session '
+        'rotation and nothing stronger. Recorded as an inference rather '
+        'than promoted to a fact. v4 is kept alongside as '
+        'human_acted_v4_before_rotation and the removal is published under '
+        '`excluded`, so a reader who disagrees can add it back. Declared, '
+        'like every other exclusion, in '
+        'mcp_calls_deloop.self_traffic_session_prefixes (env-extensible). '
+        '★ The seed '
+        'is a hand-curated list of session-id prefixes and it went stale '
+        'once already; relay_opens records no platform or IP, so nothing '
+        'structural catches the next rotation. Treat a 0 on this stage as '
+        '"none of the sessions we have named", not as "verified external".'
     ),
 }
 

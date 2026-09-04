@@ -134,6 +134,22 @@ def _log_open(info: dict | None, token: str, valid: bool) -> None:
                      (info or {}).get("tier"),
                      (info or {}).get("ts") or 0, valid,
                      (request.headers.get("User-Agent") or "")[:300],
+                     # ★★★ `referer` IS NOT PROVENANCE — DO NOT FILTER ON IT.
+                     # The Cloudflare worker injects `Referer: https://dchub.cloud`
+                     # on every proxied request (see the same warning on
+                     # main.py's _fiber_full_access: trusting it is what leaked
+                     # the 645KB dataset to anonymous curl). 148 of the 150
+                     # relay_opens rows in the 30d to 2026-09-03 carry that
+                     # exact value, and the other 2 are empty — so the column
+                     # looks like "every open came from our own site" and means
+                     # nothing of the kind. PROVEN 2026-09-03: a curl to
+                     # /upgrade/h/<bogus> sending NO Referer header landed row
+                     # id=152 with referer='https://dchub.cloud'. A self-traffic
+                     # rule keyed on this would have excluded every real human
+                     # open the moment one arrived. The column is kept because
+                     # it is free and a future edge change could make it real;
+                     # tests/test_relay_open_provenance.py fails if any read
+                     # path starts treating it as a signal.
                      (request.headers.get("Referer") or "")[:300]))
             conn.commit()
         finally:

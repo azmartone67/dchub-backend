@@ -536,7 +536,47 @@ _SCRIPT_INTERNAL_UA = (
 #
 # Seeded with the operator's own Claude Code session. Extend via the env var
 # rather than editing this tuple when the operator's client rotates.
-_SELF_TRAFFIC_SESSION_SEED = ("88e20dac",)
+#
+# ★ THE ROTATION IS NOT HYPOTHETICAL — IT ALREADY PRODUCED A FALSE CONVERSION
+# (2026-09-03). The sentence above says "when the operator's client rotates",
+# and it rotated on 2026-08-20 without anyone noticing. The result was that
+# human_acted — a stage that has never fired for a real human — published a 1
+# on the live dashboard, which is precisely the misread v4 was built to
+# prevent. The stale seed did not fail loudly; it failed by going quiet.
+#
+#     88e20dac  last  mcp_call_log timestamp  2026-08-20 05:22:15.343Z
+#     8c8e1d0d  first mcp_call_log timestamp  2026-08-20 05:22:25.488Z
+#                                             ^ 10.1 seconds later
+#
+# Both rows: platform 'claude', user_agent 'node', tier 'free'. 8c8e1d0d then
+# opened a relay link on 2026-08-20 21:48:45Z for analyze_site — the SAME tool
+# 88e20dac's declared operator open used on 08-17. One client restarting and
+# minting a new session id, not two different people.
+#
+# ★ THIS ONE IS AN INFERENCE, AND IT IS LABELLED AS ONE. Every other entry here
+# is a named fact ("we watched ourselves make it"). Asked directly whether the
+# 08-20 click was theirs, the operator said they had no idea — so this rests on
+# the 10-second rotation above and nothing stronger. It is recorded that way in
+# the v5 changelog rather than being laundered into a fact by sitting in the
+# same tuple. The alternative was to keep publishing a first-ever conversion
+# that is probably us, which is the worse error: a false non-zero on this stage
+# gets quoted back by every partner who reads the dashboard.
+#
+# ★ AND THE MECHANISM IS STILL FRAGILE. A hand-curated tuple of session-id
+# prefixes cannot track a client that mints a fresh uuid every few days; this
+# entry is a patch, not a fix. relay_opens carries no platform, client_name or
+# IP column — only session_id and user_agent — so there is nothing structural
+# to key on at read time. The durable fix is to record provenance AT WRITE TIME
+# on relay_opens (the platform tag the caller already sends elsewhere), and
+# until that ships this list will go stale again. Do not read a 0 here as
+# "verified none of ours"; read it as "none of the ones we have thought to
+# name". See tests/test_relay_open_provenance.py for what IS structural.
+# The v4-era seed is kept under its own name so the funnel can publish the
+# pre-rotation figure (human_acted_v4_before_rotation) by DERIVING it, instead
+# of restating the literal '88e20dac' at the call site — the restatement defect
+# routes/handoff_definition.py exists to stop.
+SELF_TRAFFIC_SESSION_SEED_V4 = ("88e20dac",)
+_SELF_TRAFFIC_SESSION_SEED = SELF_TRAFFIC_SESSION_SEED_V4 + ("8c8e1d0d",)
 
 
 def self_traffic_session_prefixes():
@@ -552,7 +592,7 @@ def self_traffic_session_prefixes():
                         | {s for s in extra if len(s) >= 4 and s.isalnum()}))
 
 
-def external_session_predicate(col: str = "mcp_session_id") -> str:
+def external_session_predicate(col: str = "mcp_session_id", prefixes=None) -> str:
     """TRUE when the session is NOT known operator self-traffic.
 
     ★ REGEX, NOT LIKE — AND THAT IS LOAD-BEARING (2026-08-17, same day, hours
@@ -574,8 +614,12 @@ def external_session_predicate(col: str = "mcp_session_id") -> str:
     alnum-validated in self_traffic_session_prefixes(), so no character in them
     can be a regex metacharacter and there is nothing to escape.
 
+    `prefixes` overrides the live list — it exists so a caller can render an
+    EARLIER definition's predicate (the funnel publishes v4 alongside v5) by
+    passing a named seed tuple rather than retyping a session id.
+
     A NULL/empty session is KEPT — it is not knowably ours."""
-    prefixes = self_traffic_session_prefixes()
+    prefixes = self_traffic_session_prefixes() if prefixes is None else tuple(prefixes)
     if not prefixes:
         return "TRUE"
     return "(COALESCE(%s,'') !~* '^(%s)')" % (col, "|".join(prefixes))
