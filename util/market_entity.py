@@ -37,6 +37,23 @@ def _capacity_basis_or_none(population: str, aggregation: str, grouping: str):
         return None
 
 
+def _count_basis_or_none(population: str, unit: str, grouping: str):
+    """The COUNT basis. Same own-try discipline as the capacity one.
+
+    r-one-builder (2026-09-03): this was missing, and its absence is how the two
+    market builders drifted — the page's embedded block attached a count basis
+    while the .json twin published a bare `Facilities` integer. Northern
+    Virginia reads 469 here, 768 as /api/v1/markets 'Northern Virginia' and 328
+    as 'Ashburn'; all defensible, none of them interchangeable, and an unlabelled
+    one is exactly the contradiction this work exists to remove.
+    """
+    try:
+        from util.facility_count_basis import basis
+        return basis(population, unit, grouping)
+    except Exception:
+        return None
+
+
 def market_entity(slug: str, name: str, stats: dict | None, *,
                   canonical_slug: str | None = None,
                   as_of: str | None = None) -> dict:
@@ -67,15 +84,28 @@ def market_entity(slug: str, name: str, stats: dict | None, *,
 
     fac = stats.get("facility_count")
     if fac is not None:
-        measured.append({
-            "@type": "PropertyValue", "name": "Facilities", "value": int(fac),
-        })
+        f = {"@type": "PropertyValue", "name": "Facilities", "value": int(fac)}
+        cb = _count_basis_or_none("tracked", "distinct_site", "market_slug")
+        if cb:
+            f["measurementTechnique"] = cb["unit_means"]
+            f["description"] = (
+                f"population={cb['population']}; unit={cb['unit']}; "
+                f"grouping={cb['grouping']} — {cb['compare_note']}")
+        measured.append(f)
 
     dcpi = stats.get("dcpi_score")
     if dcpi is not None:
         measured.append({
             "@type": "PropertyValue", "name": "DCPI Score",
             "value": dcpi, "maxValue": 100,
+            # A score is neither a count nor a capacity, so facility_count_basis
+            # has no vocabulary for it — its METHOD is its basis, and it must be
+            # stated or this is a bare number like the ones above used to be.
+            "measurementTechnique": (
+                "DC Hub Power Index — buildability composite scored 0-100 "
+                "(excess-power headroom, grid constraint, time-to-power), "
+                "verdict-gated. Comparable only against other DCPI scores; not "
+                "a capacity, a ranking position, or a percentage."),
             "description": "DC Hub Power Index — buildability composite, 0-100.",
         })
 

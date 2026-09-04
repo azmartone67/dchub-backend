@@ -21,6 +21,8 @@ house rule: tests NEVER import main).
 import ast
 import json
 import logging
+
+from util.market_entity import market_entity
 import builtins
 import datetime
 import functools
@@ -106,7 +108,13 @@ _PROVIDED = ("Response", "read_deep_dive", "_conn", "_ensure_schema",
              # Dataset JSON-LD with json.dumps, so the extracted namespace needs
              # the module or that branch NameErrors into its own except and
              # ships "{}" silently — the exact failure this guard exists to catch.
-             "json")
+             "json",
+             # r-one-builder (2026-09-03): _market_dataset_ld now DELEGATES to
+             # util.market_entity instead of building a second Dataset node, and
+             # resolves the page slug through the canonical-redirect map. Both
+             # are real module objects below — never stubs — so a drift between
+             # the extracted namespace and the code under test cannot hide.
+             "market_entity", "MARKETS_CANONICAL_REDIRECT")
 
 
 @functools.lru_cache(maxsize=1)
@@ -151,6 +159,21 @@ def _page_canon():
     raise AssertionError("MARKETS_DEEP_DIVE_PAGE_CANON literal not found")
 
 
+def _canonical_redirect():
+    """The real MARKETS_CANONICAL_REDIRECT literal from the module under test.
+
+    Sourced from the AST, not hand-copied — a drift twin here would green-light
+    a page URL that 301s.
+    """
+    _, tree, _ = _module()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == "MARKETS_CANONICAL_REDIRECT":
+                    return ast.literal_eval(node.value)
+    raise AssertionError("MARKETS_CANONICAL_REDIRECT literal not found")
+
+
 def _ns(**overrides):
     src, tree, body = _module()
     ns = {"Response": _Resp, "datetime": datetime,
@@ -161,6 +184,8 @@ def _ns(**overrides):
           "_ensure_schema": lambda c: None,
           "_gather_market_facts": lambda cur, slug: None,
           "MARKETS_DEEP_DIVE_PAGE_CANON": _page_canon(),
+          "market_entity": market_entity,
+          "MARKETS_CANONICAL_REDIRECT": _canonical_redirect(),
           "_ask_claude_to_write": lambda facts: (None, "unexpected_llm_call")}
     ns.update(overrides)
     code = compile(ast.Module(body=body, type_ignores=[]), str(DEEPDIVE), "exec")
