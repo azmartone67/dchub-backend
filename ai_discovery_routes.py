@@ -1583,6 +1583,39 @@ Allow: /sites/$
 Disallow: /cdn-cgi/
 Allow: /
 
+# ── PetalBot (Huawei / Petal Search) ────────────────────────────────────────
+# ★ 2026-09-04. Cloudflare AI Crawl Control, same window as the 95.38k total:
+#   PetalBot 11.73k allowed requests, 0 referrals. Third-largest crawler on the
+#   domain and the only one in the top ten that has never returned a visitor.
+#   Every other named UA here earns its budget through an assistant or a SERP
+#   we can point at; this one has produced nothing measurable.
+#
+# ★ PACED, NOT BLOCKED, and the distinction is the point. Petal Search is a
+#   real index and reach we cannot yet measure is not the same as reach that
+#   does not exist, so this sets a CEILING rather than closing the door — one
+#   line to delete if referrals ever appear.
+#
+# ★ HONEST LIMIT ON THIS NUMBER: the API token available when this was written
+#   lacks `analytics.read`, so the 11.73k could not be resolved to a per-day
+#   rate and Crawl-delay may not bind at all at the current pace. It is a cap,
+#   not a measured reduction. To check whether it ever binds, compare PetalBot
+#   request volume in AI Crawl Control across this deploy date.
+#
+# ★ Hygiene repeated per RFC 9309 — a named group inherits NOTHING from
+#   `User-agent: *`, the same rule this file's other groups record learning the
+#   hard way. Content-Signal repeated for the same reason.
+User-agent: PetalBot
+Content-Signal: search=yes, ai-input=yes, ai-train=no
+Crawl-delay: 10
+Disallow: /*?
+Allow: /sitemap.xml
+Disallow: /api/
+Disallow: /admin
+Disallow: /sites/
+Allow: /sites/$
+Disallow: /cdn-cgi/
+Allow: /
+
 # Discovery files
 # llms.txt: https://dchub.cloud/llms.txt
 # llms-full.txt: https://dchub.cloud/llms-full.txt

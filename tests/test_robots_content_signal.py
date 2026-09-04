@@ -22,6 +22,7 @@ Two guards, both added 2026-09-02 for defects measured live:
    `content_type=` sets the header verbatim and is the correct parameter.
 """
 import ast
+import os
 import re
 import pathlib
 
@@ -128,3 +129,51 @@ def test_ai_input_stays_enabled():
 # (28 -> 0 call sites). That fence scans ALL production sources via AST, so it
 # strictly covers the two files checked here before -- verified by mutation, not
 # by assumption. Removing the narrow copy therefore loses no coverage.
+
+
+# ── The blind spot the guards above cannot see ──────────────────────────────
+#
+# ★ EVERY assertion in this file reads `ai_discovery_routes.py` FROM DISK via
+#   `_robots_body()`. That is the origin's INTENT, not what a crawler is served.
+#   Cloudflare's "Managed robots.txt" (AI Crawl Control → Overview) replaces the
+#   file AT THE EDGE when enabled: the origin source is untouched, every test
+#   here still passes, and the served file loses this group structure and the
+#   `ai-input=yes` signal that `test_ai_input_stays_enabled` exists to protect.
+#   The guard would be green while the business decision it names was reversed
+#   by a dashboard toggle nobody committed.
+#
+# ★ Verified OFF on 2026-09-04 by fetching the live file: 172 comment lines and
+#   `Content-Signal` repeated in all three groups — i.e. the origin-authored
+#   file, not a Cloudflare-generated one. This test is what keeps that true.
+#
+# ★ NETWORK, SO OPT-IN. No other test in this suite touches the network and CI
+#   must not start; run it deliberately:
+#       DCHUB_LIVE_EDGE=1 pytest tests/test_robots_content_signal.py -k edge
+#   Skipped is NOT passed — an unrun probe has never been evidence here.
+@pytest.mark.skipif(
+    not os.environ.get("DCHUB_LIVE_EDGE"),
+    reason="live-edge probe; set DCHUB_LIVE_EDGE=1 to run",
+)
+def test_edge_serves_our_robots_not_a_managed_one():
+    import requests
+
+    served = requests.get(
+        "https://dchub.cloud/robots.txt",
+        headers={"User-Agent": "dchub-guard/1.0", "Cache-Control": "no-cache"},
+        timeout=20,
+    ).text
+
+    groups = _parse_groups(served)
+    assert groups, "edge served a robots.txt with no parsable group"
+
+    signals = [v for _, rules in groups for k, v in rules if k == "content-signal"]
+    assert signals, (
+        "edge robots.txt carries NO Content-Signal line. The origin emits one per "
+        "group, so this is a different file -- check whether Cloudflare Managed "
+        "robots.txt was enabled (AI Crawl Control -> Overview)."
+    )
+    for value in signals:
+        assert "ai-input=yes" in value, (
+            f"edge robots.txt disclaims ai-input ({value!r}) -- the acquisition "
+            "channel. Managed robots.txt signals content should not be used for AI."
+        )
