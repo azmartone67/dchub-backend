@@ -270,7 +270,24 @@ def classify_article(article):
     body_hits = sum(1 for kw in BODY_KEYWORDS if kw in text)
 
     has_mw = bool(re.search(r'\d+\s*(?:MW|GW|megawatt|gigawatt)', text, re.IGNORECASE))
-    has_operator = any(op.lower() in text for op in KNOWN_OPERATORS[:100])
+    # ★2026-09-04 — WAS KNOWN_OPERATORS[:100]. The list holds 192 names, so 92
+    # of them could never contribute to relevance: Telehouse, Keppel Data
+    # Centres, ST Telemedia, EdgeCore Digital Infrastructure, Yondr Group,
+    # CloudHQ, Vantage Data Centers, Zayo, Crown Castle, CoreWeave, Lambda and
+    # Cerebras all sit past index 100. An article naming only one of those
+    # scored has_operator=False and lost a signal it had earned.
+    #
+    # The slice carried no comment and no measurement. Measured: scanning all
+    # 192 instead of 100 costs 1,092ms per 1,000 articles against 556ms — half
+    # a millisecond per article — so it was not bought with anything.
+    #
+    # ★ THIS IS NOT WHY /operators/core-scientific IS EMPTY. Core Scientific is
+    # at index 81, inside the old slice, so the gate always covered it. Its
+    # absence is a genuine ingest gap and stays open: peers in the same class
+    # DO ingest (Riot Platforms 3 facilities, Applied Digital 7, Crusoe Energy
+    # 8, via /api/v1/operators/<slug>), while core-scientific returns no name
+    # and no count at all. Diagnosing further needs DB or ingest-log access.
+    has_operator = any(op.lower() in text for op in KNOWN_OPERATORS)
 
     signal_count = 0
     if headline_hits >= 1:
