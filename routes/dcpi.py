@@ -1036,6 +1036,46 @@ _MARKETS_HARDCODED = [
     # corrupted ones. Pinned by tests/test_dcpi_orphan_geography.py.
     ("johannesburg",        "Johannesburg",           "GP", "",       -26.20,  28.05),
     ("markham",             "Markham",                "ON", "IESO",    43.86, -79.34),
+
+    # ── r-latam-coverage (2026-09-03): four curated /markets metros DCPI
+    # could not score ────────────────────────────────────────────────────
+    # Verified live 2026-09-03: all four served 200 at /markets/<slug> and 404
+    # at /dcpi/<slug>, carrying 31 / 40 / 102 / 55 tracked facilities. They had
+    # no market_power_scores row for one reason — they were ABSENT FROM THIS
+    # LIST. Not a policy exclusion of LatAm: queretaro and johannesburg have
+    # been here since r-str-coverage / r-orphan-geography and both serve 200.
+    # None can arrive any other way. _load_markets_dynamic's WHERE is
+    # `country='US' OR country='USA'`, and the other two lite scorers
+    # (scripts/bulk_dcpi_score.py and lite_recompute) are hard-scoped the same
+    # way behind a 2-letter USPS state regex, so a non-US market is unreachable
+    # to all three. This list is the ONLY route in.
+    #   - mexico-city: CENACE, which already anchors queretaro — no new
+    #     operator key, so this row could have landed alone.
+    #   - bogota: XM. ★state 'CO' is ALSO COLORADO. This row is safe ONLY
+    #     because 'XM' is in _INTL_ISO_LABELS, which makes _is_intl_market
+    #     decide on the OPERATOR LABEL before it reaches the state-code rung.
+    #     Drop that entry and this market reads Colorado's interconnection
+    #     queue and planned generators straight into its score — the Pune
+    #     'IN'->Indiana defect, arriving through a new market instead of a
+    #     refactor. The label guard alone is NOT the protection here (that was
+    #     r-country-code-collision's whole lesson); the DATA PATH is. Verified
+    #     by deleting the entry and re-measuring — see the ★MEASURED note on
+    #     _INTL_ISO_LABELS, and tests/test_dcpi_latam_coverage.py.
+    #   - santiago: CEN, the Coordinador Electrico Nacional. Distinct operator
+    #     from CENACE despite the shared prefix.
+    #   - sao-paulo: ONS. Coexists with barueri and osasco, separate
+    #     Greater-Sao-Paulo municipalities already scored — the
+    #     ashburn/sterling and johannesburg/midrand convention, not a twin, so
+    #     _dedup_market_twins correctly leaves all three standing.
+    # ★Related and still unfixed, exactly as the r-str-coverage note predicted:
+    # barueri and osasco publish iso='' and therefore STILL fall through to the
+    # WECC default. Verified live 2026-09-03 — barueri's own FAQ answers
+    # "Barueri is in the UNK ISO/RTO grid region". Giving them ONS is a
+    # separate change: they arrive from the dynamic loader, not from this list.
+    ("mexico-city",         "Mexico City",            "MX", "CENACE",  19.43,  -99.13),
+    ("bogota",              "Bogotá",                 "CO", "XM",       4.71,  -74.07),
+    ("santiago",            "Santiago",               "CL", "CEN",    -33.45,  -70.67),
+    ("sao-paulo",           "São Paulo",              "BR", "ONS",    -23.55,  -46.63),
 ]
 
 # r-portland-canon (2026-08-02): (cleaned city slug, state) → (slug, name)
@@ -1388,6 +1428,37 @@ _INTL_ISO_LABELS = frozenset((
                       # recompute universe at all. Adding a tuple above
                       # without adding its ISO here is a no-op.
                       "PLN-BATAM", "CENACE",
+                      # r-latam-coverage (2026-09-03): the three South American
+                      # operators. ★For bogota this entry is a SAFETY INTERLOCK,
+                      # not bookkeeping. Colombia's country code is 'CO', which
+                      # is ALSO COLORADO, so _is_intl_market's last rung
+                      # (`state not in _US_STATE_CODES`) answers FALSE for it.
+                      # Membership here is what makes the OPERATOR-LABEL rung
+                      # fire first and keeps _live_state_reads_allowed from
+                      # feeding Colorado's interconnection queue and planned
+                      # generators into Bogota's score — the Pune 'IN'->Indiana
+                      # defect of r-country-code-collision, re-armed by a new
+                      # market rather than by a refactor.
+                      #
+                      # ★MEASURED, not asserted. Removing "XM" from this line
+                      # and re-running the suite on 2026-09-03 gave:
+                      #     _is_intl_market(bogota)          -> False
+                      #     _live_state_reads_allowed(CO,XM) -> True
+                      #     _market_country(CO,XM,'bogota')  -> 'US'
+                      # i.e. Bogota silently becomes a Colorado market AND
+                      # asserts the United States in its JSON-LD — and ALL 45
+                      # tests in the four nearest guard files still PASSED.
+                      # test_dcpi_jsonld_country's sweep cannot catch it: it
+                      # asks `country == "US" and _is_intl_market(...)`, and
+                      # the mutation makes that second term False too, so the
+                      # guard consults the very predicate that broke. The
+                      # collision test's CASES list is hand-written, so a newly
+                      # added market is simply not in it.
+                      # tests/test_dcpi_latam_coverage.py is the guard that
+                      # DOES fail on that mutation — it checks label
+                      # registration directly against the tuples, never through
+                      # _is_intl_market.
+                      "XM", "CEN", "ONS",
                       # r71: Canada extras
                       "AESO", "MH",
                       # r71: US territories (NOT in dynamic loader b/c
@@ -1443,6 +1514,12 @@ _ISO_LABEL_COUNTRY = {
     "AEMO": "AU", "TPM": "NZ",
     "AESO": "CA", "BCH": "CA", "HQ": "CA", "IESO": "CA", "MH": "CA",
     "CENACE": "MX", "CLP": "HK", "EGAT": "TH", "EMA": "SG",
+    # r-latam-coverage (2026-09-03): South America. These are consulted only
+    # AFTER _is_intl_market says the market is foreign, so they are the second
+    # half of a two-part registration — the operator label must ALSO be in
+    # _INTL_ISO_LABELS above. tests/test_dcpi_jsonld_country.py sweeps every
+    # hardcoded row and fails on one that resolves to nothing.
+    "XM": "CO", "CEN": "CL", "ONS": "BR",
     "ENTSOE-AT": "AT", "ENTSOE-BE": "BE", "ENTSOE-CH": "CH",
     "ENTSOE-CZ": "CZ", "ENTSOE-DE": "DE", "ENTSOE-ES": "ES",
     "ENTSOE-FR": "FR", "ENTSOE-GR": "GR", "ENTSOE-IT": "IT",
@@ -2533,6 +2610,9 @@ _ISO_MODELED_REFERENCE = {
     "AESO": "AESO (Alberta)", "MH": "Manitoba Hydro",
     # Latin America
     "CENACE": "CENACE (Mexico)",
+    "XM": "XM (Colombia)",
+    "CEN": "Coordinador Electrico Nacional (Chile)",
+    "ONS": "ONS (Brazil)",
     # US territories
     "PREPA": "PREPA (Puerto Rico)", "GPA": "Guam Power Authority",
     "WAPA": None,    # ambiguous: Western Area Power Administration vs V.I. WAPA
@@ -2814,6 +2894,119 @@ def gather_metrics_for_market(market: tuple) -> dict:
         # which is where most Querétaro capacity has actually come from.
         "CENACE":   {"queue_wait_months": 54, "reserve_margin_pct": 8.0, "curtailment_pct": 3.0,
                      "queue_approval_rate_pct": 30, "btm_headroom_mw": 150},
+        # ── r-latam-coverage (2026-09-03): South America ───────────────────
+        # Three operators this dict had NO key for, so bogota / santiago /
+        # sao-paulo would each have fallen through
+        # `iso_defaults.get(iso, iso_defaults["WECC"])` and been scored on
+        # WESTERN-US grid constants — the r-iso-defaults-southeast defect
+        # above, re-run on another continent. Same standing as every other row
+        # here: MODELED planning anchors, published as modeled_estimate and
+        # attributed through _ISO_MODELED_REFERENCE. Each number below names
+        # the published disclosure it is calibrated from; none is measured
+        # per-market, and the live saturation terms still move them.
+        #
+        # XM — Colombia's market and system operator (CND). The Colombian
+        # constraint is ENERGY ADEQUACY and evacuation, not installed capacity.
+        #   reserve  7.5 The nominal margin is a hydrology illusion: 20,721 MW
+        #            installed (XM, Sept 2025) against a 12,475 MW peak reads
+        #            as ~66% headroom, but the fleet is hydro-led and the
+        #            binding metric is FIRM energy. XM reports ENFICC
+        #            firm-energy obligations already SHORT of projected demand
+        #            — a ~1.6% gap widening to ~3.5% by 2027, with deficits of
+        #            4,863 GWh/yr (Dec-2025–Nov-2026) and 7,207 GWh/yr
+        #            (2026–27) — and issued 165 load-disconnection instructions
+        #            Apr–Jun 2026 as preventive rationing. Below CENACE's 8.0,
+        #            above PREPA's 6.0. ★Scoring the raw capacity ratio here
+        #            would tell an analyst Colombia has enormous headroom while
+        #            its own operator is warning about rationing.
+        #   wait  60 XM puts the AVERAGE DELAY on transmission projects at 55
+        #            months; the Colectora 500 kV line evacuating La Guajira
+        #            slipped from 2022 to 2026. That is delay on top of build
+        #            time, not total duration — hence 60, the NGESO/EirGrid band.
+        #   curtail 2.0 Deliberately LOW, and the reason is the point: the VRE
+        #            fleet is small (~2 GW PV in 2025) and hydro leads, so
+        #            little is spilled. Colombia's waste is capacity never
+        #            BUILT, which belongs in the approval term below — not here.
+        #   approval 20 1.1 GW of wind awarded in the 2019 auction; under 32 MW
+        #            operating, 20+ projects stalled and major developers have
+        #            exited Colombian wind. Matches EirGrid's 20, above
+        #            ENTSOE-NL's 15.
+        #   btm  120 AGGE large-scale self-generation is a real route and solar
+        #            is >98% of new installed capacity, but CREG requires a
+        #            backup contract with the network operator, and Bogota is a
+        #            load centre without the northern resource.
+        "XM":       {"queue_wait_months": 60, "reserve_margin_pct": 7.5, "curtailment_pct": 2.0,
+                     "queue_approval_rate_pct": 20, "btm_headroom_mw": 120},
+        # CEN — Chile's Coordinador Electrico Nacional. ★NOT an abbreviation of
+        # CENACE (Mexico): different country, different grid, three characters
+        # apart. Never fold one key into the other. Chile is Colombia's mirror
+        # image — capacity is abundant, DELIVERY is the constraint, and the
+        # waste is measured rather than inferred.
+        #   curtail 18.0 The firmest number in this block. CEN put 2024
+        #            curtailment at ~18.1% of variable renewable output
+        #            (5.6–5.9 TWh); 2025 landed near 6 TWh (~8% higher), with
+        #            ~11,900 GWh cumulative Jan-2022–May-2025 and ~US$562M of
+        #            lost revenue. Solar sits in the Atacama while load sits
+        #            1,000+ km south around Santiago, so transmission
+        #            congestion spills it. Far above this dict's 10.0 ceiling —
+        #            it clips, which is honest rather than lossy.
+        #   reserve 28.0 38,820.7 MW installed on the SEN (Oct 2025) against a
+        #            record 12,398 MW peak. NOT scored at that raw ratio: much
+        #            of the fleet is non-firm solar, and the 18% it spills is
+        #            the proof. 28.0 places Chile in the long-but-not-limitless
+        #            band with EGAT/MH instead of claiming triple headroom.
+        #   wait  42 Chile has no US-style interconnection queue; the gate is
+        #            transmission plus permitting. The Coordinador's 2025
+        #            expansion proposal is 31 works / US$708M and CNE's
+        #            preliminary 2025 plan 23 works / US$320M, and such builds
+        #            need planning, environmental assessment and approval —
+        #            SEIA review alone runs 24–36 months for major projects.
+        #   approval 45 Chile does approve and build; what fails is DELIVERING
+        #            the energy, which the curtailment term already prices.
+        #            Above Brazil/Colombia, below the vertically-integrated US
+        #            band — double-counting the same failure would be wrong.
+        #   btm  350 The PMGD distributed-generation regime gives an accepted
+        #            project the right to interconnect within 9 months
+        #            (renewable for 9 more for solar/wind), and mining
+        #            self-supply is long established. Under the 500 threshold
+        #            that fabricated the BTM opportunity string above.
+        "CEN":      {"queue_wait_months": 42, "reserve_margin_pct": 28.0, "curtailment_pct": 18.0,
+                     "queue_approval_rate_pct": 45, "btm_headroom_mw": 350},
+        # ONS — Brazil's Operador Nacional do Sistema Eletrico. ★This label is
+        # ALREADY canonical here: main.py's _ISO_COUNTRY maps "ONS"->BR and the
+        # live subsystem feeds arrive as BR_NORTE/NORDESTE/SECO/SUL and roll up
+        # under it (SH52-130). Reusing the token keeps ONE spelling of Brazil.
+        # ★It does NOT make sao-paulo live: the reserve override reads
+        # grid_telemetry gated on _TELEMETRY_ISO_CODES, which is the seven US
+        # ISOs only, so these anchors stay modeled and must say so.
+        #   curtail 18.0 ONS reports 16.5% of wind and 20.6% of solar
+        #            generation curtailed, and ~20% of combined solar+wind
+        #            output was spilled across 2025 — averaging 4,021 MW and
+        #            ~BRL 6.5bn. 18.0 is the conservative midpoint of ONS's own
+        #            two figures; it clips at the 10.0 ceiling either way.
+        #   reserve 26.0 Brazil is structurally long — the oversupply IS why it
+        #            curtails. Record peak 105 GW (Feb 2025) against a far
+        #            larger installed fleet, and ONS projects 269 GW installed
+        #            against a 129 GW peak by 2030. Scored well below the raw
+        #            ratio because the fleet is hydro-led and seasonally
+        #            energy-limited, so nameplate overstates firm adequacy.
+        #   wait  54 ANEEL reports regions with NO connection capacity
+        #            available for periods exceeding four years and bottlenecks
+        #            running to 2030, with 26% of transmission works late (198
+        #            of 762) and 37.5% of reinforcements. 54 sits between that
+        #            published 48-month floor and the 2030 horizon.
+        #   approval 25 A four-year "gold rush" authorised ~150 GW the
+        #            transmission system could not absorb, and ANEEL then
+        #            CLEARED the queue of projects that could not proceed. An
+        #            outorga that gets purged is not a build. Near PJM's 30.
+        #   btm  400 Autoproducao is the route Brazilian data centres actually
+        #            use (Scala's self-production partnership), and Law
+        #            15,269/2025 reformed self-production, storage and
+        #            curtailment compensation — while also tightening the
+        #            self-producer definition. Real, bounded, and deliberately
+        #            under the 500 BTM-opportunity threshold.
+        "ONS":      {"queue_wait_months": 54, "reserve_margin_pct": 26.0, "curtailment_pct": 18.0,
+                     "queue_approval_rate_pct": 25, "btm_headroom_mw": 400},
         # r71: Canada provincial. AESO (Alberta — fastest queue in Canada,
         # market-based, lots of gas-fired headroom), Manitoba Hydro.
         "AESO":     {"queue_wait_months": 18, "reserve_margin_pct": 23.0, "curtailment_pct": 4.0,
