@@ -338,3 +338,94 @@ def test_register_helper_wires_routes_onto_a_real_app(monkeypatch):
     # NOTE: no /brain/innovation alias — that path is owned by routes/brain_innovation.py
     # (a different surface) and /brain/* subpaths hit CF Error-1000; the dashboard is
     # served under /api/ which the CF worker passes through unconditionally.
+
+
+# ── 2026-09-04: the edge WAF ate the greenlight ────────────────────────────
+# The approve button posted the item's own "decision for human" as plain text.
+# When that text quoted a shell command with a URL — `curl -i https://…`, which
+# is exactly how the brain writes these — Cloudflare answered 403 with an HTML
+# block page BEFORE Railway: no approval row, no log, nothing to redrive, and
+# the page's r.json() threw so the operator's whole diagnosis was the word
+# "error". MEASURED live, same body to both hosts: edge 403, origin 400,
+# base64-of-the-same-text at the edge 400.
+
+_BLOCKED_DIRECTIVE = (
+    "Run `curl -i https://dchub.cloud/js/dchub-nav.js` and, if it returns 404, "
+    "restore that asset/route first."
+)
+
+
+def _b64(s):
+    import base64
+    return base64.b64encode(s.encode("utf-8")).decode("ascii")
+
+
+def test_approve_reads_directive_from_b64(client, monkeypatch):
+    """directive_b64 must arrive at the drafter as the ORIGINAL text — that is
+    the whole point of the encoding, so a wrong decode is a silent downgrade to
+    'approved a menu'."""
+    monkeypatch.setattr(dash, "_admin_ok", lambda: True)
+    monkeypatch.setattr(dash, "_conn", lambda: _FakeConn())
+    seen = {}
+
+    def _spy(kind, item_id, operator_directive=""):
+        seen["directive"] = operator_directive
+        return {"ok": True, "acted": False, "note": "spy"}
+    monkeypatch.setattr(dash, "_attempt_pr", _spy)
+    monkeypatch.setattr(dash, "_record_pr_attempt", lambda *a, **k: True)
+
+    resp = client.post("/api/v1/brain/innovation/approve",
+                       json={"kind": "inv", "id": 100502, "open_pr": True,
+                             "directive_b64": _b64(_BLOCKED_DIRECTIVE)})
+    assert resp.status_code == 200
+    assert seen["directive"] == _BLOCKED_DIRECTIVE
+
+
+def test_approve_still_reads_plain_directive(client, monkeypatch):
+    """A cached page (or any script) that posts plain `directive` keeps
+    working — the b64 field is additive, not a break."""
+    monkeypatch.setattr(dash, "_admin_ok", lambda: True)
+    monkeypatch.setattr(dash, "_conn", lambda: _FakeConn())
+    seen = {}
+    monkeypatch.setattr(dash, "_attempt_pr",
+                        lambda k, i, operator_directive="": (
+                            seen.update(d=operator_directive) or
+                            {"ok": True, "acted": False}))
+    monkeypatch.setattr(dash, "_record_pr_attempt", lambda *a, **k: True)
+    client.post("/api/v1/brain/innovation/approve",
+                json={"kind": "inv", "id": 1, "open_pr": True,
+                      "directive": "do the thing"})
+    assert seen["d"] == "do the thing"
+
+
+def test_approve_b64_garbage_does_not_fall_back_to_empty_approval(monkeypatch):
+    """An undecodable b64 must yield '' — NOT the plain field, and never a
+    silent approval on a menu. _read_directive is the unit under test."""
+    assert dash._read_directive({"directive_b64": "!!!not base64!!!",
+                                 "directive": "should not be used"}) == ""
+    assert dash._read_directive({"directive_b64": _b64("ok — with an em dash")
+                                 }) == "ok — with an em dash"
+
+
+def test_page_posts_directive_b64_and_never_the_plain_field(client, monkeypatch):
+    """THE REGRESSION GUARD. The approve fetch must send directive_b64 and must
+    NOT put the operator's text in a plain `directive` field, or the WAF eats
+    every command-quoting item again."""
+    monkeypatch.setattr(dash, "_admin_ok", lambda: True)
+    body = client.get("/api/v1/brain/innovation/dashboard").get_data(as_text=True)
+    post = [ln for ln in body.splitlines()
+            if "/api/v1/brain/innovation/approve'" in ln and "fetch(" in ln]
+    assert len(post) == 1, f"expected exactly one approve fetch, got {len(post)}"
+    assert "directive_b64:utf8ToB64(" in post[0]
+    assert "directive:" not in post[0]
+
+
+def test_page_names_a_non_json_failure_instead_of_saying_error(client, monkeypatch):
+    """'Approve failed: error' was indistinguishable from an edge block, a 502
+    and a bad gateway. The failure branch must report the STATUS."""
+    monkeypatch.setattr(dash, "_admin_ok", lambda: True)
+    body = client.get("/api/v1/brain/innovation/dashboard").get_data(as_text=True)
+    assert "function approveErr(res)" in body
+    assert "never reached the app" in body
+    # the old bare-word fallback must be gone from the approve path
+    assert "toast('Approve failed: '+approveErr(res), false)" in body

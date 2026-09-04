@@ -3259,6 +3259,105 @@ def check_llm_error_body_discarded() -> list[dict]:
     return findings
 
 
+# A backtick-quoted segment that carries BOTH a command word and a URL. This
+# is the signature MEASURED against the live edge on 2026-09-04, not a guess at
+# Cloudflare's ruleset: `curl https://…` and `curl -i https://…` were 403; the
+# same text without the backticks, `curl -i` with no URL, `gh workflow run
+# press-rss.yml`, and a bare backticked URL were all 400 (the app's own reply).
+_WAF_CMD_WORDS = r"curl|wget|gh|git|ssh|scp|bash|sh|eval|nc|python3?|node|npm|npx"
+_WAF_BACKTICK_CMD = re.compile(
+    r"`[^`]*\b(?:" + _WAF_CMD_WORDS + r")\b[^`]*https?://[^`]*`")
+
+
+def check_approve_directive_waf_blocked() -> list[dict]:
+    """An operator greenlight the edge refuses to carry — silently.
+
+    ★ WHY (2026-09-04). The innovation dashboard's approve button POSTs the
+    item's "decision for human" back as the drafting directive. The brain
+    writes those decisions with the shell command quoted in backticks — inv
+    #100502: Run `curl -i https://dchub.cloud/js/dchub-nav.js` and, if it
+    returns 404, restore that asset/route first — and Cloudflare's managed WAF
+    reads backticks + URL as command injection and answers 403 with an HTML
+    block page BEFORE Railway. Nothing is recorded: no brain_approvals row, no
+    log line, nothing for redrive_approved_without_pr to pick up. The operator
+    saw `Approve failed: error` (the page's fallback string, because the HTML
+    body has no JSON `error`) and the board looked healthy from every angle
+    the brain can see. 2 of the 45 items carrying a decision-for-human were
+    un-approvable — 2 of the only 4 that had a button.
+
+    TWO invariants, because fixing one without the other leaves the hole:
+      1. TRANSPORT — the approve POST must not put operator text where a WAF
+         can match it (it now sends `directive_b64`). A regression here breaks
+         every command-quoting item at once.
+      2. CONTENT — no item currently on the board may carry a directive whose
+         text matches the blocked signature over the PLAIN field, because a
+         cached page still posts that way.
+
+    UNMEASURED — a source file that will not open, a digest that will not
+    build — is skipped and never counted as clean.
+    """
+    findings: list[dict] = []
+
+    # 1. transport
+    try:
+        _dash = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "brain_innovation_dashboard.py")
+        with open(_dash, "rb") as fh:
+            _src = fh.read().decode("utf-8", "ignore")
+    except Exception:
+        _src = ""                                   # UNMEASURED
+    if _src and "directive_b64:utf8ToB64(" not in _src:
+        findings.append({
+            "issue": "approve_directive_sent_in_the_clear",
+            "url": "/api/v1/brain/innovation/approve",
+            "count": 1,
+            "detail": (
+                "The approve button POSTs the operator's directive as plain "
+                "text. Any item whose 'decision for human' quotes a shell "
+                "command with a URL is then 403'd by the edge WAF before "
+                "Railway sees it — no approval row, no log, no redrive, and "
+                "the page prints the bare word 'error'. Send directive_b64 "
+                "(see _read_directive)."),
+        })
+
+    # 2. content
+    try:
+        from routes.brain_innovation_dashboard import build_digest
+        _digest = build_digest(limit=15)
+    except Exception:
+        _digest = None                              # UNMEASURED
+    if isinstance(_digest, dict):
+        hits: list[str] = []
+        for _kind in ("agenda", "investigations", "proposals"):
+            for _it in (_digest.get(_kind) or []):
+                if not isinstance(_it, dict):
+                    continue
+                _dec = ""
+                for _k in ("decision", "decision_for_human", "human_decision"):
+                    _v = _it.get(_k)
+                    if isinstance(_v, str) and _v.strip():
+                        _dec = _v
+                        break
+                if _dec and _WAF_BACKTICK_CMD.search(_dec):
+                    hits.append(f"{_kind}:{_it.get('id')}")
+        if hits:
+            findings.append({
+                "issue": "approve_directive_waf_blocked",
+                "url": "/api/v1/brain/innovation/dashboard",
+                "count": len(hits),
+                "detail": (
+                    f"{len(hits)} board item(s) carry a decision-for-human "
+                    f"that quotes a command with a URL in backticks. Posted "
+                    f"as plain `directive` (a cached page) the edge answers "
+                    f"403 and the greenlight is lost with no trace: "
+                    f"{', '.join(hits[:8])}. Either reload the dashboard so "
+                    f"it posts directive_b64, or drop the backticks before "
+                    f"approving."),
+                "sites": hits[:40],
+            })
+    return findings
+
+
 def check_csp_drift() -> list[dict]:
     """Phase TT-2 (2026-05-15) — detect CSP source-of-truth drift.
 
@@ -11656,6 +11755,14 @@ def scan_all() -> list[dict]:
                # invariant: an Anthropic caller that builds an error from
                # e.code must also read the body that explains it.
                check_llm_error_body_discarded,
+               # 2026-09-04 — the approve button posted the item's own
+               # "decision for human" as plain text, and Cloudflare's WAF
+               # 403'd every directive that quoted a shell command with a
+               # URL, before Railway. No row, no log, no redrive — the
+               # operator got the literal word "error". Watches both halves:
+               # the transport must not carry operator text in the clear,
+               # and no live item may match the measured blocked signature.
+               check_approve_directive_waf_blocked,
                # Phase FF+7 (2026-05-19) — catches the bug L14 helped
                # find: jobs with `if: github.event.schedule == 'X'` where
                # 'X' isn't in on.schedule (stale check after cron move)
