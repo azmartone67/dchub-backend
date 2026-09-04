@@ -116,6 +116,7 @@ dcpi_bp = Blueprint("dcpi", __name__)
 # a hand-copied second table is the bug class fixed in util/iso_taxonomy
 # the same day. routes/site_valuation_engine.py imports this name too.
 from util.market_aliases import DCPI_METRO_ALIASES  # noqa: E402,F401
+from util.slug_suffix import normalize_periods  # noqa: E402
 
 # r-status-taxonomy (2026-07-29): the operational/pipeline vocabulary lives in
 # ONE module for the same reason DCPI_METRO_ALIASES does — every hand-copied
@@ -8024,17 +8025,28 @@ def _cite_as_header(slug: str) -> str:
 
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
 def public_market_page(slug):
-    _ensure_tables()
     # r-period-slug (2026-07-06): strip periods and 301 to the '-'-normalized
     # slug BEFORE the candidate lookup below. A malformed period slug like
     # 'st.-louis' has its OWN published market_power_scores row, so the
     # candidate loop would match it first (cand == slug → no redirect) and
     # serve a soft-404 duplicate of the canonical /dcpi/st-louis. A period is
     # never valid in a canonical slug — consolidate to the normalized page.
-    _pnorm = (slug or "").replace(".", "")
-    if _pnorm and _pnorm != slug:
+    #
+    # r-suffix-301 (2026-09-03): split a file extension off FIRST. The blanket
+    # replace(".", "") also ate the period in '<slug>.json', 301'ing an agent
+    # that asked for data to '/dcpi/<slug>json' — a URL that 404s. Measured
+    # 2026-09-03: 60/60 sampled /dcpi/<slug>.json ended in 404 after the
+    # redirect, against 200 for the same slugs bare. /dcpi has no .json twin
+    # (unlike /markets, #3758), so drop the suffix and consolidate onto the
+    # page, which is what /dcpi/<slug>.html already does at the edge.
+    # This decision is pure routing, so it now runs BEFORE _ensure_tables():
+    # answering "that URL is spelled wrong" never needed the DB, and putting a
+    # table check in front of it made the redirect untestable without one.
+    _pnorm, _suffix = normalize_periods(slug or "")
+    if _pnorm and (_pnorm != slug or _suffix):
         from flask import redirect
         return redirect(f"/dcpi/{_pnorm}", code=301)
+    _ensure_tables()
     # Phase JJ (2026-05-14): slug aliasing. The market_power_scores table
     # uses bare slugs (e.g. 'allen' not 'allen-tx'), but external links
     # often append state suffix because that's the natural-language
