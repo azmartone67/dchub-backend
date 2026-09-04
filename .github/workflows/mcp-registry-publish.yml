@@ -59,7 +59,7 @@ jobs:
           V=""; SRC="none"
           for u in "$CANON_LIVE" "$CANON_RAW"; do
             curl -s --max-time 20 "$u" -o server.json || continue
-            V=$(python3 -c "import json;d=json.load(open('server.json'));assert d.get('name')=='cloud.dchub/mcp-server';v=d.get('version') or '';assert v;print(v)" 2>/dev/null)
+            V=$(python3 -c "import json;d=json.load(open('server.json'));assert d.get('name') in ('cloud.dchub/mcp-server','cloud.dchub/datacenter-power-grid-fiber');v=d.get('version') or '';assert v;print(v)" 2>/dev/null)
             if [ -n "$V" ]; then SRC="$u"; break; fi
           done
           if [ -z "$V" ]; then
@@ -74,7 +74,7 @@ jobs:
         run: |
           # ACTUAL latest published = isLatest entry (fallback newest publishedAt),
           # NOT vs[-1] (lexicographic array order returns e.g. 2.9.3 over 2.11.1).
-          LIVE=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; d=json.load(sys.stdin).get('servers',[]); c=[x for x in d if x['server'].get('name')=='cloud.dchub/mcp-server']; m=lambda x:x.get('_meta',{}).get('io.modelcontextprotocol.registry/official',{}); l=[x for x in c if m(x).get('isLatest')]; c.sort(key=lambda x:m(x).get('publishedAt','')); print(l[0]['server']['version'] if l else (c[-1]['server']['version'] if c else 'none'))")
+          LIVE=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; d=json.load(sys.stdin).get('servers',[]); c=[x for x in d if x['server'].get('name')=='cloud.dchub/datacenter-power-grid-fiber'] or [x for x in d if x['server'].get('name')=='cloud.dchub/mcp-server']; m=lambda x:x.get('_meta',{}).get('io.modelcontextprotocol.registry/official',{}); l=[x for x in c if m(x).get('isLatest')]; c.sort(key=lambda x:m(x).get('publishedAt','')); print(l[0]['server']['version'] if l else (c[-1]['server']['version'] if c else 'none'))")
           echo "live=$LIVE" >> "$GITHUB_OUTPUT"
           echo "Live registry version: $LIVE"
 
@@ -106,4 +106,4 @@ jobs:
         if: steps.canon.outputs.canon != steps.live.outputs.live
         run: |
           sleep 5
-          curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; data=json.load(sys.stdin).get('servers',[]); m=[x['server'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']; print('Published versions:', [s['version'] for s in m]); assert any(s['version']=='${{ steps.canon.outputs.canon }}' for s in m), 'new version not visible yet'; print('OK: v${{ steps.canon.outputs.canon }} is live')"
+          curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; data=json.load(sys.stdin).get('servers',[]); m=[x['server'] for x in data if x['server'].get('name')=='cloud.dchub/datacenter-power-grid-fiber'] or [x['server'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']; print('Published versions:', [s['version'] for s in m]); assert any(s['version']=='${{ steps.canon.outputs.canon }}' for s in m), 'new version not visible yet'; print('OK: v${{ steps.canon.outputs.canon }} is live')"

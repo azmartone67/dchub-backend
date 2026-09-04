@@ -77,7 +77,7 @@ jobs:
           CANON_OK=0; CANON_VER="(all sources failed)"; CANON_SRC="none"
           for u in "$CANON_LIVE" "$CANON_RAW"; do
             curl -s --max-time 20 "$u" -o canonical-server.json || continue
-            V=$(python3 -c "import json;d=json.load(open('canonical-server.json'));assert d.get('name')=='cloud.dchub/mcp-server';v=d.get('version') or '';assert v;print(v)" 2>/dev/null)
+            V=$(python3 -c "import json;d=json.load(open('canonical-server.json'));assert d.get('name') in ('cloud.dchub/mcp-server','cloud.dchub/datacenter-power-grid-fiber');v=d.get('version') or '';assert v;print(v)" 2>/dev/null)
             if [ -n "$V" ]; then CANON_OK=1; CANON_VER="$V"; CANON_SRC="$u"; break; fi
           done
 
@@ -85,7 +85,7 @@ jobs:
           # newest by publishedAt). NOT vs[-1] — the API array is lexicographically
           # ordered, so vs[-1] returns e.g. 2.9.3 over 2.11.1. That old bug made the
           # decision + coverage report claim "registry behind" every day.
-          REG_VER=$(curl -s --max-time 20 "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; d=json.load(sys.stdin).get('servers',[]); c=[x for x in d if x['server'].get('name')=='cloud.dchub/mcp-server']; m=lambda x:x.get('_meta',{}).get('io.modelcontextprotocol.registry/official',{}); l=[x for x in c if m(x).get('isLatest')]; c.sort(key=lambda x:m(x).get('publishedAt','')); print(l[0]['server']['version'] if l else (c[-1]['server']['version'] if c else 'none'))" 2>/dev/null)
+          REG_VER=$(curl -s --max-time 20 "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; d=json.load(sys.stdin).get('servers',[]); c=[x for x in d if x['server'].get('name')=='cloud.dchub/datacenter-power-grid-fiber'] or [x for x in d if x['server'].get('name')=='cloud.dchub/mcp-server']; m=lambda x:x.get('_meta',{}).get('io.modelcontextprotocol.registry/official',{}); l=[x for x in c if m(x).get('isLatest')]; c.sort(key=lambda x:m(x).get('publishedAt','')); print(l[0]['server']['version'] if l else (c[-1]['server']['version'] if c else 'none'))" 2>/dev/null)
           SMITHERY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "https://smithery.ai/servers/azmartone67/dchub")
 
           # Failover fires ONLY when we have a valid canonical AND the registry is
@@ -117,7 +117,7 @@ jobs:
           # Belt-and-suspenders: refuse to publish unless it is still the canonical
           # entry at the exact version we decided on (guards a fetch that changed
           # or a mid-run edit — no divergent/regressive publish is possible).
-          python3 -c "import json,os;d=json.load(open('server.json'));assert d.get('name')=='cloud.dchub/mcp-server','wrong name';assert d.get('version')==os.environ['EXPECT_VER'],'version moved mid-run';print('canonical server.json validated: v'+d['version'])" \
+          python3 -c "import json,os;d=json.load(open('server.json'));assert d.get('name') in ('cloud.dchub/mcp-server','cloud.dchub/datacenter-power-grid-fiber'),'wrong name';assert d.get('version')==os.environ['EXPECT_VER'],'version moved mid-run';print('canonical server.json validated: v'+d['version'])" \
             || { echo "::error::canonical server.json failed re-validation — NOT publishing"; exit 1; }
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
           ./mcp-publisher login dns --domain dchub.cloud --private-key "$MCP_KEY"
