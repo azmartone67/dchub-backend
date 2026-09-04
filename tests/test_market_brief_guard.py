@@ -48,7 +48,13 @@ WANT = {"_brief_guard_reason", "_render_neutral_market_page",
         # Dataset/variableMeasured JSON-LD through this helper. EXTRACTED, not
         # _PROVIDED — it is pure (no DB, no network), so the render tests below
         # exercise the real structured data instead of a stub that could drift.
-        "_market_dataset_ld"}
+        "_market_dataset_ld",
+        # r-latam-rotation (2026-09-04): the refusal's neutral copy is no
+        # longer one string — it is chosen from the guard reason, so the
+        # placeholder for a market with 40 tracked facilities stops asserting
+        # it has none. EXTRACTED, not stubbed: a stub would let the real
+        # sentence drift straight past the assertions below.
+        "_guard_placeholder_text"}
 
 _BUILTINS = set(dir(builtins))
 
@@ -114,7 +120,12 @@ _PROVIDED = ("Response", "read_deep_dive", "_conn", "_ensure_schema",
              # resolves the page slug through the canonical-redirect map. Both
              # are real module objects below — never stubs — so a drift between
              # the extracted namespace and the code under test cannot hide.
-             "market_entity", "MARKETS_CANONICAL_REDIRECT")
+             "market_entity", "MARKETS_CANONICAL_REDIRECT",
+             # r-latam-rotation (2026-09-04): _render_deep_dive_body now asks
+             # whether a guard-shaped row is a self-identifying placeholder on
+             # a CURATED page before serving the neutral copy. Real module
+             # literal below, never a hand copy.
+             "CURATED_MARKET_SLUGS")
 
 
 @functools.lru_cache(maxsize=1)
@@ -174,6 +185,17 @@ def _canonical_redirect():
     raise AssertionError("MARKETS_CANONICAL_REDIRECT literal not found")
 
 
+def _curated_slugs():
+    """The real CURATED_MARKET_SLUGS literal from the module under test."""
+    _, tree, _ = _module()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == "CURATED_MARKET_SLUGS":
+                    return ast.literal_eval(node.value)
+    raise AssertionError("CURATED_MARKET_SLUGS literal not found")
+
+
 def _ns(**overrides):
     src, tree, body = _module()
     ns = {"Response": _Resp, "datetime": datetime,
@@ -186,6 +208,7 @@ def _ns(**overrides):
           "MARKETS_DEEP_DIVE_PAGE_CANON": _page_canon(),
           "market_entity": market_entity,
           "MARKETS_CANONICAL_REDIRECT": _canonical_redirect(),
+          "CURATED_MARKET_SLUGS": _curated_slugs(),
           "_ask_claude_to_write": lambda facts: (None, "unexpected_llm_call")}
     ns.update(overrides)
     code = compile(ast.Module(body=body, type_ignores=[]), str(DEEPDIVE), "exec")
@@ -299,15 +322,24 @@ def test_generate_refuses_guarded_facts_before_llm():
     assert out["error"].startswith("brief_guard_")
     assert out.get("guard") is True
     assert llm_calls == []                       # no token spend on bad facts
-    # r-cron-starvation: the ONLY write a refusal may make is the insert-only
-    # neutral placeholder — DO NOTHING, never DO UPDATE, so a transient
-    # outage that reads as facility_count=0 can't overwrite a real narrative,
-    # while generated_at leaves the cron's NULLS FIRST starvation slot.
+    # r-cron-starvation: the ONLY write a refusal may make is the neutral
+    # placeholder, and it must not be able to overwrite a real narrative — a
+    # transient outage reads as facility_count=0, and persisting a brief off
+    # that is the incident this whole file exists for.
+    #
+    # r-latam-rotation (2026-09-04): the mechanism changed from DO NOTHING to a
+    # GATED DO UPDATE and the protection did not. DO NOTHING froze
+    # generated_at at the first seed, so a permanently-guarded market simply
+    # aged back to the head of `generated_at NULLS FIRST` and ate the slot
+    # again — starvation deferred, not fixed. The update refreshes the
+    # placeholder's timestamp; the WHERE keeps it away from every row that
+    # carries a real brief. Assert the GATE, not the absence of DO UPDATE.
     inserts = [(q, p) for q, p in zip(cur.executed, cur.params)
                if "INSERT" in q.upper()]
     assert len(inserts) == 1
-    assert "ON CONFLICT (market_slug) DO NOTHING" in inserts[0][0]
-    assert "DO UPDATE" not in inserts[0][0]
+    assert "ON CONFLICT (market_slug) DO UPDATE" in inserts[0][0]
+    assert ("WHERE market_deep_dives.model_used = 'guard-neutral'"
+            in inserts[0][0]), "the conflict update is UNGATED"
     neutral_text = inserts[0][1][2]              # narrative_md parameter
     assert "Northern Virginia" in neutral_text
     assert "avoid" not in neutral_text.lower()   # neutral means NO verdicts
