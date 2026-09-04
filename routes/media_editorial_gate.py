@@ -123,7 +123,7 @@ def _record_review(slug: str, category: str, verdict: str, score, reasons, model
             cur.execute("""
                 INSERT INTO media_editorial_reviews
                     (press_slug, category, verdict, score, reasons, model, title)
-                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s) ON CONFLICT DO NOTHING
             """, (slug[:200], (category or "")[:80], verdict, score,
                   json.dumps(list(reasons or [])[:8]), model,
                   (title or "")[:300] or None))
