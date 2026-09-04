@@ -67,7 +67,20 @@ SEED_OPERATORS = (
     "vantage",
     "cyrusone",
     "cologix",
-    "core-scientific",
+    # ★2026-09-04 — core-scientific REMOVED. /operators/core-scientific/brief
+    # was 404 in the published sitemap while the other 9 seeds were 200:
+    # _build_brief returns operator_not_found because the operator data has no
+    # rows for it. Checked against /api/v1/operators top-200 by facility count —
+    # CoreSite, CoreWeave, EdgeCore Digital Infrastructure and OPCORE are all
+    # there; Core Scientific is not.
+    #
+    # ★ THIS IS AN INGEST GAP, NOT A DECISION THAT THEY ARE OUT OF SCOPE.
+    # Core Scientific is a real operator (bitcoin mining converted to AI
+    # hosting). A "seed" slug is documented above as "hand-QA'd + pre-warmed",
+    # which cannot be true of a page that 404s, so it does not belong in this
+    # tuple today. Put it back the moment discovered_facilities carries the
+    # provider — the sitemap and the pre-warm cron both read this tuple now, so
+    # re-adding it here is the only edit needed.
     "airtrunk",
     "iron-mountain",
 )

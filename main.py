@@ -31573,13 +31573,42 @@ def _build_sitemap_sections():
     for _sb_slug in ('texas', 'california', 'virginia', 'georgia',
                      'ohio', 'oregon', 'illinois', 'arizona'):
         static_pages.append((f'/states/{_sb_slug}/brief', '0.9', 'daily'))
-    for _ob_slug in ('aligned', 'qts', 'digital-realty', 'equinix', 'vantage',
-                     'cyrusone', 'cologix', 'core-scientific', 'airtrunk',
-                     'iron-mountain'):
+    # ★2026-09-04 — "kept in lock-step" (the note above) WAS BY HAND, AND IT
+    # DRIFTED. /hyperscalers/softbank/brief and /operators/core-scientific/brief
+    # were both 404 in this sitemap; the other 41 brief URLs were 200.
+    #
+    #   softbank        — REMOVED from hyperscaler_brief.SEED_HYPERSCALERS on
+    #                     2026-06-06 as "an INVESTOR in hyperscalers, not an
+    #                     operator" (a correct editorial call). The route stopped
+    #                     serving it the same day; this list kept advertising it
+    #                     to Google for three months.
+    #   core-scientific — still in SEED_OPERATORS, but the operator data has
+    #                     ZERO rows for it (checked against the top 200 by
+    #                     facility count: CoreSite, CoreWeave, EdgeCore and
+    #                     OPCORE are there, Core Scientific is not), so
+    #                     _build_brief returns operator_not_found. Removed from
+    #                     the seed tuple at source, with the ingest gap named
+    #                     there rather than silently dropped here.
+    #
+    # These now IMPORT the route modules' own tuples, so the sitemap cannot
+    # advertise a brief the router will not serve. Fail-open to the previous
+    # literals on ImportError — a sitemap that loses 20 URLs because a module
+    # moved is worse than one carrying a stale slug.
+    try:
+        from routes.operator_brief import SEED_OPERATORS as _ob_slugs
+    except Exception as _ob_e:
+        logger.warning("sitemap: operator seed import failed (%s) — literal fallback", _ob_e)
+        _ob_slugs = ('aligned', 'qts', 'digital-realty', 'equinix', 'vantage',
+                     'cyrusone', 'cologix', 'airtrunk', 'iron-mountain')
+    for _ob_slug in _ob_slugs:
         static_pages.append((f'/operators/{_ob_slug}/brief', '0.9', 'daily'))
-    for _hs_slug in ('aws', 'azure', 'google-cloud', 'meta', 'apple',
-                     'oracle', 'tiktok-bytedance', 'tencent', 'alibaba',
-                     'softbank'):
+    try:
+        from routes.hyperscaler_brief import SEED_HYPERSCALERS as _hs_slugs
+    except Exception as _hs_e:
+        logger.warning("sitemap: hyperscaler seed import failed (%s) — literal fallback", _hs_e)
+        _hs_slugs = ('aws', 'azure', 'google-cloud', 'meta', 'apple',
+                     'oracle', 'tiktok-bytedance', 'tencent', 'alibaba')
+    for _hs_slug in _hs_slugs:
         static_pages.append((f'/hyperscalers/{_hs_slug}/brief', '0.9', 'daily'))
     for path, pri, freq in static_pages:
         sections['static'].append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')
