@@ -60,6 +60,10 @@ from routes.evidence_status import (  # noqa: E402
     stamp as _ev_stamp,
     vocabulary_block as _ev_vocabulary,
 )
+from routes.handoff_definition import (
+    high_intent_basis as _high_intent_basis,
+    live_high_intent_threshold as _live_high_intent_threshold,
+)
 from mcp_calls_deloop import (
     PLATFORM_CASE as _DELOOP_PLATFORM_CASE,
     PROBE_PLATFORMS as _DELOOP_PROBE_PLATFORMS,
@@ -325,49 +329,6 @@ def _require_internal(fn):
             return jsonify({'error': 'forbidden'}), 403
         return fn(*args, **kwargs)
     return wrapper
-
-
-def _high_intent_basis(threshold):
-    """Render the published high_intent basis FROM a threshold value.
-
-    Pure so the guard can assert the real renderer at each setting instead of
-    re-implementing the sentence (a test that mirrors the string stays green
-    through the exact regression it exists to catch)."""
-    return (
-        "COUNT(DISTINCT mcp_session_id) FROM mcp_high_intent_sessions WHERE "
-        "first_hit_at is in the window. Entry requires paid_call_count_24h >= "
-        + (str(threshold) if threshold is not None else "the configured threshold")
-        + " in a rolling 24h. "
-        # ★ Three cases, not two: an UNREADABLE threshold must assert neither
-        # shape. Claiming repeat-use (or its opposite) off a value we could not
-        # read is the same defect as hardcoding it.
-        + ("The entry threshold could not be read in this process, so this "
-           "stage's shape is undeclared here."
-           if threshold is None else
-           "At this setting a single gated call DOES enter the table — the "
-           "stage is paid-tool use, NOT repeat use."
-           if threshold <= 1 else
-           "The stage is REPEAT paid-tool use, not a second pageview — a "
-           "session that makes fewer gated calls than that never enters this "
-           "table."))
-
-
-def _live_high_intent_threshold():
-    """The RUNNING process's high-intent entry threshold, or None.
-
-    r-threshold-drift (2026-09-03): the published high_intent basis asserted
-    "a session that makes exactly one gated call never enters this table".
-    HIGH_INTENT_THRESHOLD is read from DCHUB_HIGH_INTENT_THRESHOLD at MODULE
-    IMPORT, prod overrides the code default of 2, and prod was live on 1 — so
-    the published sentence was false and could only be fixed by a redeploy it
-    never described. Interpolate the live value the way `basis` already
-    interpolates the human_acted version number: a definition that states a
-    config value must READ it, never restate it."""
-    try:
-        from routes.mcp_high_intent_claim import HIGH_INTENT_THRESHOLD as _t
-        return int(_t)
-    except Exception:
-        return None
 
 
 # ── GET /api/v1/mcp/handoff-funnel ──────────────────────────────────────────

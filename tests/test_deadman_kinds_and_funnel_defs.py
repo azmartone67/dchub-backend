@@ -212,12 +212,12 @@ def test_high_intent_basis_is_derived_and_names_its_superset():
         "high_intent's basis is no longer derived from the live threshold — a "
         "hardcoded sentence goes false the moment prod overrides the default"
     )
-    import flask_mcp_endpoints as _f
-    assert "REPEAT" in _f._high_intent_basis(2), (
+    from routes import handoff_definition as _f
+    assert "REPEAT" in _f.high_intent_basis(2), (
         "at a repeat-use threshold the basis must still say so — without that, "
         "a rate drop driven by one-shot traffic reads as a defect"
     )
-    assert "REPEAT" not in _f._high_intent_basis(1), (
+    assert "REPEAT" not in _f.high_intent_basis(1), (
         "at threshold 1 the basis must NOT claim repeat use"
     )
     assert '"subset_of": "paywall_hit"' in seg[:1600], (

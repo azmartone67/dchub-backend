@@ -21,13 +21,9 @@ to a substring of the whole file — a module-wide `in src` check passes on a
 comment that merely mentions the string.
 """
 import ast
-import os
 import pathlib
 
-import pytest
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-os.environ.setdefault("DATABASE_URL", "postgresql://u:p@127.0.0.1:5432/none")
 
 
 def _func_src(path, name):
@@ -52,8 +48,12 @@ def test_high_intent_stats_counts_distinct_sessions_not_rows():
 
 # ── 2. the basis READS the threshold, never restates it ─────────────────────
 def _basis():
-    import flask_mcp_endpoints as f
-    return f._high_intent_basis
+    # routes.handoff_definition is the ONE WRITER for funnel definitions AND
+    # imports without a DATABASE_URL — which CI does not set. Importing
+    # flask_mcp_endpoints here raised at collection and took all four basis
+    # tests with it; skipping instead would have been a silent green.
+    from routes.handoff_definition import high_intent_basis
+    return high_intent_basis
 
 
 def test_basis_states_the_actual_threshold():
