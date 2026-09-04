@@ -34,6 +34,8 @@ BLOCKED_AT_THE_EDGE = [
     "`curl https://dchub.cloud/js/dchub-nav.js`",
     "In the dchub-frontend repo run `gh workflow run press-rss.yml`, wait for "
     "it to complete, then `curl -i https://dchub.cloud/press-release/x`",
+    # the XSS half — 403 in the clear AND under base64, four alignments
+    'add `<script src="/js/dchub-nav.js" defer></script>` before </body>',
 ]
 
 REACHED_THE_APP = [

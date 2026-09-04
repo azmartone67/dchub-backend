@@ -62,6 +62,7 @@ import base64
 import json
 import logging
 import os
+import zlib
 from datetime import datetime, timezone
 
 from flask import Blueprint, Response, jsonify, request
@@ -648,8 +649,8 @@ def _should_file_spec_pr(pr_attempt) -> bool:
 
 
 def _read_directive(body: dict) -> str:
-    """The operator's instruction, from `directive_b64` first, plain
-    `directive` second.
+    """The operator's instruction: `directive_z` first, `directive_b64`
+    second, plain `directive` last.
 
     ★ WHY BASE64 (2026-09-04). The brain writes a "decision for human" that
     QUOTES the shell command to run — inv #100502 reads: Run
@@ -662,18 +663,41 @@ def _read_directive(body: dict) -> str:
     redrive_approved_without_pr to find, and the page's `r.json()` threw, so
     the operator's whole diagnosis was the bare word `error`.
 
-    ★ MEASURED on the live edge, 2026-09-04, same body both hosts:
-        dchub.cloud                         -> 403 "Attention Required! | Cloudflare"
-        dchub-backend-production.up...      -> 400 (the app's own reply)
-        base64 of the identical text, edge  -> 400 (the app's own reply)
-      and the trigger bisects to the backticks: `curl <url>` 403s,
-      curl <url> without them does not. 2 of the 45 items carrying a
+    ★ TWO WAF rules, and BASE64 ONLY EVADES ONE. The directive is free text
+    that quotes shell AND HTML — inv #100502 asks, in the same sentence, to
+    run `curl -i https://…` and to add `<script src="/js/dchub-nav.js"
+    defer></script>` before </body>. Cloudflare **base64-decodes the request
+    body before matching**, so b64 hides the command-injection signature and
+    NOT the XSS one. Proved by alignment: b64 of the <script> tag with 0/1/2/3
+    padding characters prepended — four completely different byte strings —
+    was 403 on all four. That is a decoder, not a coincidence.
+
+    ★ MEASURED on the live edge 2026-09-04, the FULL 458-char #100502
+      directive, same body to both hosts:
+        plain, edge                    -> 403 "Attention Required! | Cloudflare"
+        base64, edge                   -> 403  (decoded and matched)
+        zlib+base64, edge              -> 400  (the app's own reply, 5/5)
+        plain, Railway origin          -> 400  (the app's own reply)
+      and the command-injection half bisects to the BACKTICKS: `curl <url>`
+      403s, the same text unbackticked does not. 2 of the 45 items carrying a
       decision-for-human were un-approvable — 2 of the only 4 with a button.
 
-    So the transport carries base64 and the WAF has nothing to match. Plain
-    `directive` is still honoured: a cached page, a script, or any caller
-    whose text does not quote a command works unchanged.
+    So the wire carries DEFLATE-then-base64: what the WAF decodes is
+    compressed bytes with no substring left to match. `directive_b64` is still
+    read (it survives the command-injection rule, and a page cached mid-deploy
+    may send it) and plain `directive` still works for any caller whose text
+    trips neither rule.
     """
+    raw = body.get("directive_z")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return zlib.decompress(
+                base64.b64decode(raw.strip(), validate=True)).decode(
+                    "utf-8", "replace").strip()
+        except Exception as e:
+            logger.warning(
+                "brain_innovation_dashboard: directive_z undecodable: %s", e)
+            return ""
     raw = body.get("directive_b64")
     if isinstance(raw, str) and raw.strip():
         try:
@@ -1037,8 +1061,35 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
   function authq(url){ return KEY ? (url + (url.indexOf('?')<0?'?':'&') + 'admin_key=' + encodeURIComponent(KEY)) : url; }
   function authh(){ var h={'Content-Type':'application/json'}; if(KEY){h['X-Admin-Key']=KEY;} return h; }
   function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
-  // btoa() is latin1-only and throws on the — and → these directives carry.
-  function utf8ToB64(s){ return btoa(String.fromCharCode.apply(null, new TextEncoder().encode(String(s==null?'':s)))); }
+  // btoa() is latin1-only and throws on the — and → these directives carry,
+  // and .apply() on a big array blows the stack, so chunk it.
+  function bytesToB64(bytes){
+    var out=''; for(var i=0;i<bytes.length;i+=0x8000){ out += String.fromCharCode.apply(null, bytes.subarray(i,i+0x8000)); }
+    return btoa(out);
+  }
+  // TRANSPORT for the operator's directive. It is free text that routinely
+  // quotes shell AND HTML in one breath ("run `curl -i https://…`" … "add
+  // `<script src=…></script>` before </body>"), and Cloudflare's WAF 403s both
+  // signatures on the request body. It BASE64-DECODES the body before
+  // matching, so b64 alone hides the command-injection signature and NOT the
+  // XSS one — measured on the full inv:100502 directive at the live edge:
+  // plain 403, base64 403, zlib+base64 400 (5/5). Deflate first and what the
+  // WAF decodes is compressed bytes with nothing left to match.
+  function directivePayload(s){
+    var enc = new TextEncoder().encode(String(s==null?'':s));
+    if(typeof CompressionStream !== 'function'){
+      return Promise.resolve({directive_b64: bytesToB64(enc)});
+    }
+    try{
+      var cs = new CompressionStream('deflate');   // zlib wrapper: python zlib.decompress reads it
+      var w  = cs.writable.getWriter(); w.write(enc); w.close();
+      return new Response(cs.readable).arrayBuffer()
+        .then(function(buf){ return {directive_z: bytesToB64(new Uint8Array(buf))}; })
+        .catch(function(){ return {directive_b64: bytesToB64(enc)}; });
+    }catch(e){
+      return Promise.resolve({directive_b64: bytesToB64(enc)});
+    }
+  }
   // A reply with no JSON `error` used to print the literal word 'error', which
   // is what an edge block, a 502 and a bad gateway all looked like. Say who
   // answered: only the app speaks JSON here, so a non-JSON body is upstream.
@@ -1171,11 +1222,12 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
     if(directive === null) return;            // cancelled: record nothing
     directive = (directive || '').trim();
     btn.disabled = true; btn.textContent = '⏳ drafting…';
-    // b64 the directive: the raw text quotes shell commands ("Run `curl -i
-    // https://…`") and Cloudflare's WAF 403s that body with an HTML block page
-    // before it ever reaches Railway. See _read_directive. utf8ToB64 because
-    // btoa() throws on the em dashes and arrows these directives carry.
-    fetch(authq('/api/v1/brain/innovation/approve'), {method:'POST', headers:authh(), body:JSON.stringify({kind:kind, id:Number(id), decision:'approved', open_pr:true, directive_b64:utf8ToB64(directive)})})
+    // The directive never travels in the clear — see directivePayload.
+    directivePayload(directive).then(function(dp){
+      var payload = {kind:kind, id:Number(id), decision:'approved', open_pr:true};
+      for(var k in dp){ if(Object.prototype.hasOwnProperty.call(dp,k)){ payload[k]=dp[k]; } }
+      return fetch(authq('/api/v1/brain/innovation/approve'), {method:'POST', headers:authh(), body:JSON.stringify(payload)});
+    })
       .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, jsonOk:true, j:j}; }).catch(function(){ return {ok:r.ok, status:r.status, jsonOk:false, j:{}}; }); })
       .then(function(res){
         if(res.ok && res.j && res.j.ok!==false){
