@@ -52,6 +52,16 @@ CORRECTED_SOURCES = (
     "routes/mcp_explain_dcpi.py",
     "routes/linkedin_quad_daily.py",
     "routes/linkedin_content_engine.py",
+    # ★2026-09-04. THE SURFACE THE FIRST PASS MISSED, and the one that matters
+    # most: /.well-known/mcp.json is what MCP clients, registries and LLMs read
+    # first. It is NOT served by main.py's _canonical_mcp_manifest() — a
+    # before_request hook intercepts the route ahead of it (see the r68.1 note
+    # at main.py) and builds the tool descriptions from THIS module via
+    # tools_for_well_known(). So #3816 derived the count in a function that does
+    # not serve, while three typed counts kept shipping from one that does;
+    # verified by fetching the manifest from the Railway origin and finding all
+    # three literals verbatim in the served body.
+    "routes/mcp_tool_catalog.py",
 )
 
 #: The claim SHAPES a hard-typed market count takes. Matched against source with
@@ -63,12 +73,26 @@ CORRECTED_SOURCES = (
 #:   with any MW value or thousands separator on a served body (/ai carries a
 #:   4-digit number containing the retired count as a substring today). A claim
 #:   shape cannot collide with a quantity that is not a market count.
-#: ★ [ \t] and NOT \s: \s crosses newlines, and an unrelated numeric fallback
+#: ★ [ \t-] and NOT \s: \s crosses newlines, and an unrelated numeric fallback
 #:   on one line followed by a variable named `markets` on the next then reads
-#:   as a claim. The first draft of this fence failed on exactly that.
+#:   as a claim. The first draft of this fence failed on exactly that. The
+#:   HYPHEN is safe on that axis for the same reason a space is — it cannot
+#:   cross a line — and it is load-bearing: the separator class is what decides
+#:   whether the fence can see a claim at all.
+#:
+#: ★2026-09-04 — WHY THE HYPHEN WAS ADDED. This fence shipped matching only the
+#:   spaced form, and mcp_tool_catalog's rank_markets summary typed the count as
+#:   a COMPOUND ADJECTIVE — "<count>-market set" rather than "<count> markets".
+#:   Same claim, same surface, one character of separator different, and the
+#:   fence was blind to it: two of that module's three typed counts matched the
+#:   spaced shape and the third, hyphenated, did not.
+#:   Adding a file to CORRECTED_SOURCES under the spaced-only shape would have
+#:   produced a green test beside a live literal, which is the exact failure
+#:   this suite exists to prevent. A count that rots does not care which
+#:   separator precedes the noun.
 _HARDCODED_MARKET_CLAIM = re.compile(
-    r"\b\d{3}\+?[ \t]+(?:US[ \t]+|U\.S\.[ \t]+)?"
-    r"(?:data[- ]cent(?:er|re)[ \t]+)?markets?\b",
+    r"\b\d{3}\+?[ \t-]+(?:US[ \t-]+|U\.S\.[ \t-]+)?"
+    r"(?:data[- ]cent(?:er|re)[ \t-]+)?markets?\b",
     re.IGNORECASE,
 )
 
@@ -281,3 +305,158 @@ def test_every_corrected_source_still_parses_and_binds_its_names():
                         f"in the same function — a NameError on the path that "
                         f"actually publishes."
                     )
+
+
+#: A SYNTHETIC three-digit stand-in for the shape tests below.
+#:
+#: Deliberately not the live count, for the reason this module's docstring
+#: gives: a real figure written into a fixture is a second answer with no fence
+#: on it, and it reads as a claim to anyone grepping this file for the number.
+#: The fence matches a SHAPE, so any three digits exercise it identically — and
+#: a number that was never real cannot rot into one that merely looks stale.
+_SHAPE_DIGITS = "987"
+
+
+def test_the_fence_catches_the_compound_adjective_shape():
+    """★ A GUARD ON THE GUARD, and the reason this fence was widened.
+
+    "<count> markets" and "<count>-market set" are the same claim on the same
+    surface. The fence matched the first and not the second, so mcp_tool_catalog
+    could have been added to CORRECTED_SOURCES and gone green with a typed
+    literal still shipping on /.well-known/mcp.json.
+
+    Mutating the separator class back to [ \\t] must fail here. Without this
+    test that mutation is invisible: every other assertion in this file passes
+    under it, because every other corrected source used the spaced form.
+    """
+    spaced = f"one ranked list across the {_SHAPE_DIGITS}+ market set"
+    hyphen = f"one ranked list across the {_SHAPE_DIGITS}+-market set"
+    assert _HARDCODED_MARKET_CLAIM.search(spaced), "the spaced shape regressed"
+    assert _HARDCODED_MARKET_CLAIM.search(hyphen), (
+        "the fence does not see a market count written as a compound adjective "
+        "as a compound adjective. That is the shape rank_markets used, and a "
+        "fence blind to it is a green test beside a live literal."
+    )
+
+
+def test_the_separator_class_still_cannot_cross_a_newline():
+    """The hyphen widened the class; it must not have widened it to \\s.
+
+    The original comment records a real first-draft failure: \\s let an
+    unrelated numeric fallback on one line join a variable named `markets` on
+    the next and read as a claim. A hyphen cannot cross a line; \\s can.
+    """
+    across_a_newline = f"timeout = {_SHAPE_DIGITS}\nmarkets = load()"
+    assert not _HARDCODED_MARKET_CLAIM.search(across_a_newline), (
+        "the separator class crosses newlines again — an unrelated number "
+        "above a `markets` identifier now reads as a published claim"
+    )
+
+
+def test_a_hyphen_does_not_make_a_quantity_read_as_a_market_count():
+    """Widening a claim shape must not make it collide with a non-claim.
+
+    Same lesson as the bare-number denylist above: a shape that fires on
+    a hyphenated MW value or an ISO date would arm this fence against
+    legitimate content, and a fence that cries wolf gets deleted.
+    """
+    for benign in (f"a {_SHAPE_DIGITS}-MW market entry",
+                   "as_of 2026-09-04 markets loaded",
+                   f"{_SHAPE_DIGITS}-day market average"):
+        assert not _HARDCODED_MARKET_CLAIM.search(benign), (
+            f"{benign!r} is not a market-count claim but the fence fires on it"
+        )
+
+
+def test_the_served_catalog_resolves_every_count_from_canon():
+    """★ The catalog that actually answers /.well-known/mcp.json.
+
+    main.py's before_request hook intercepts the route ahead of
+    _canonical_mcp_manifest() and builds tool descriptions from this module, so
+    this is the string an MCP client reads. Two failures are possible and both
+    must be caught: a typed literal (what this change removed) and an
+    unresolved placeholder shipped to an agent, which is strictly worse.
+    """
+    from routes.mcp_tool_catalog import _curated_tools
+    summaries = {t[0]: t[3] for t in _curated_tools()}
+    for name in ("rank_markets", "get_market_intel", "claim_free_key"):
+        s = summaries[name]
+        assert "{canon" not in s, (
+            f"{name} ships an unresolved placeholder to agents: {s!r}"
+        )
+        assert re.search(r"\d", s), (
+            f"{name} resolved to a count-free string while canon is readable "
+            f"here — the placeholder is not reaching a value: {s!r}"
+        )
+
+
+def test_the_curated_catalog_is_built_per_call_not_at_import():
+    """★ WHY canon is safe in THIS module and not in _MCP_TOOL_HOOKS.
+
+    The inverse of test_the_module_level_tool_catalog_stays_query_free. Binding
+    canon to module-level data puts a DB query in the import path and freezes
+    the cold-start value for the life of the process — which is exactly what
+    happened here on 2026-09-02, when this catalog WAS a module-level list and
+    served a frozen facilities floor beside a request-time-resolved sibling.
+
+    A refactor back to a module-level constant would silently reintroduce that,
+    so the per-call shape is pinned rather than left to a docstring.
+    """
+    import inspect
+    import routes.mcp_tool_catalog as M
+    assert inspect.isfunction(M._curated_tools), (
+        "_curated_tools is no longer a function. If the catalog becomes "
+        "module-level data again, its canon_text() calls run ONCE at import — "
+        "a database query in the import path, and a value frozen at cold start."
+    )
+    a, b = M._curated_tools(), M._curated_tools()
+    assert a is not b, "the catalog is memoised; canon can no longer heal"
+
+
+def _tool_entry(rel: str, tool: str) -> str:
+    """The source of ONE catalog tuple, keyed on its tool name.
+
+    The catalog is a list of (name, category, tier, summary, example) tuples and
+    tool names also appear inside each OTHER tool's prose as cross-references,
+    so only a structural lookup reliably finds the entry rather than a mention.
+    """
+    tree = ast.parse(_strip_prose(os.path.join(REPO, rel)))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Tuple) and node.elts
+                and isinstance(node.elts[0], ast.Constant)
+                and node.elts[0].value == tool):
+            return ast.unparse(node)
+    raise AssertionError(f"{tool!r} is no longer a catalog entry in {rel}")
+
+
+def test_the_free_key_pitch_derives_both_of_its_numbers():
+    """★ The SIBLING literal, fenced at the source because no shape can see it.
+
+    claim_free_key's summary carried two typed numbers in one parenthesis: the
+    market count and a per-day call quota. Only the first has a claim shape this
+    file's regex can match — a bare call quota is indistinguishable from any
+    other small integer in prose — so a revert of the second would be invisible
+    to every other assertion here. It gets a source-level fence instead.
+
+    The quota itself is not asserted, deliberately: a figure written here is a
+    second answer with no fence on it. ai_surface_canon owns it, and pins it
+    only because every enforcement lane agrees (tier_registry rate_limit and
+    mcp_daily, and the edge MCP_TIERS). A tier whose lanes disagree gets no
+    placeholder, which is why there is no {canon_developer_calls} to reach for.
+
+    ★ Anchored on the AST node, not on a substring search. The first textual
+    occurrence of "claim_free_key" in this module is a CROSS-REFERENCE inside
+    save_site's summary ("call claim_free_key if you don't have one"), so a
+    naive .index() slices the wrong tool's prose and the fence reads a string
+    it was never pointed at. The first draft of this test did exactly that and
+    failed against correct code.
+    """
+    pitch = _tool_entry("routes/mcp_tool_catalog.py", "claim_free_key")
+    assert "{canon_free_calls}" in pitch, (
+        "claim_free_key types its own call quota again. Bind it to "
+        "{canon_free_calls} — the free tier is the one number every "
+        "enforcement lane agrees on, so canon can serve it honestly."
+    )
+    assert "{canon_markets}" in pitch, (
+        "claim_free_key types the market count again"
+    )
