@@ -89,7 +89,17 @@ def test_env_rejects_prefixes_short_enough_to_match_real_sessions(monkeypatch):
     got = self_traffic_session_prefixes()
     for bad in ("a", "bc", "../x"):
         assert bad not in got
-    assert got == ("88e20dac",)
+    # ★ Pin the INVARIANT, not the seed's contents. This read
+    # `assert got == ("88e20dac",)` and broke on 2026-09-03 when a second
+    # operator session was legitimately added (v5, the 08-20 client
+    # rotation) — a value-pinned guard failing for the one change it should
+    # welcome, the same shape as the three found on 2026-08-17. What must
+    # hold is that a malformed env cannot ADD junk or REMOVE a seeded entry.
+    from mcp_calls_deloop import _SELF_TRAFFIC_SESSION_SEED
+    assert got == tuple(sorted(_SELF_TRAFFIC_SESSION_SEED)), (
+        "a malformed env value changed the effective prefix list; it must "
+        "extend the seed and never replace or reduce it")
+    assert all(len(p_) >= 4 and p_.isalnum() for p_ in got)
 
 
 def test_predicate_carries_no_literal_percent():

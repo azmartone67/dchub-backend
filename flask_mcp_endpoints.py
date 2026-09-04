@@ -72,6 +72,7 @@ from mcp_calls_deloop import (
     external_platform_predicate as _deloop_external_platform_predicate,
     external_session_predicate as _deloop_external_session_predicate,
     self_traffic_session_prefixes as _deloop_self_traffic_prefixes,
+    SELF_TRAFFIC_SESSION_SEED_V4 as _DELOOP_SELF_SEED_V4,
     normalize_write_platform as _normalize_write_platform,
     canonical_external_activity_sql as _canonical_activity_sql,
     CANONICAL_AGENTS_BASIS as _CANONICAL_AGENTS_BASIS,
@@ -427,6 +428,17 @@ def handoff_funnel():
         opened = one(("select count(distinct s.mcp_session_id) "
                       + _v3_body + " and " + _not_self) % iv)
         opened_v3 = one(("select count(distinct s.mcp_session_id) " + _v3_body) % iv)
+        # r-seed-rotation (2026-09-03) — human_acted DEFINITION v5. v4 named
+        # ONE operator session and the operator's client rotated its id on
+        # 2026-08-20 (8c8e1d0d, first call 10.1s after 88e20dac's last, same
+        # platform/UA/tier). That session opened a relay link and this stage
+        # published 1 over 30d — the first non-zero in its life, and v4 exists
+        # to stop that being us. v4's own figure is kept alongside, DERIVED
+        # from the named v4-era seed so no session id is retyped here.
+        _not_self_v4 = _deloop_external_session_predicate(
+            "s.mcp_session_id", _DELOOP_SELF_SEED_V4)
+        opened_v4 = one(("select count(distinct s.mcp_session_id) "
+                         + _v3_body + " and " + _not_self_v4) % iv)
         opened_v2 = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                         "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         opened_legacy = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
@@ -452,6 +464,55 @@ def handoff_funnel():
         # basis sentence and the stage it describes cannot disagree.
         _hi_threshold = _live_high_intent_threshold()
 
+        # ── r-relay-provenance (2026-09-03) ──────────────────────────────
+        # WHY: `relay_opens` held 150 rows over 30d and the funnel published
+        # human_acted off it while saying nothing about what those rows ARE.
+        # Measured decomposition on 2026-09-03 (30d, 150 rows), using the
+        # SAME predicates the queries below apply — not a hand count, which
+        # is how a published basis drifts from the query it describes:
+        #
+        #     123  probe_ua        fails real_ua_predicate. Bulk is our own
+        #                          dchub-qa-superuser sweep (~6/day, one
+        #                          fabricated session id per open); the rest
+        #                          are curl / Go-http-client / urllib.
+        #      25  no_session_id   real UA, blank token sid — scanners
+        #                          hitting /upgrade/h/<junk>, joinable to
+        #                          nothing.
+        #       2  countable       real UA AND a joinable sid. TWO. Both are
+        #                          the operator's own sessions (88e20dac and
+        #                          its 08-20 rotation 8c8e1d0d).
+        #
+        # So over thirty days exactly two rows were even ELIGIBLE for this
+        # stage, and both are ours: no relay link has yet been opened by
+        # anyone who received it from an agent. A reader seeing
+        # "150 opens" and a 0-or-1 stage cannot tell whether the instrument
+        # is broken or the demand is absent; publishing the split answers
+        # that without a code dive. The three buckets are MUTUALLY EXCLUSIVE
+        # and exhaust the window, so they sum to `total`.
+        _ro_win = "from relay_opens ro where ro.ts > now() - interval '%s'"
+        _sid_ok = "coalesce(ro.session_id,'') <> ''"
+        prov_total = one(("select count(*) " + _ro_win) % iv)
+        prov_probe = one(("select count(*) " + _ro_win
+                          + " and not " + _ro_real) % iv)
+        prov_nosid = one(("select count(*) " + _ro_win
+                          + " and " + _ro_real + " and not " + _sid_ok) % iv)
+        prov_real = one(("select count(*) " + _ro_win
+                         + " and " + _ro_real + " and " + _sid_ok) % iv)
+        prov_real_sids = one(("select count(distinct ro.session_id) " + _ro_win
+                              + " and " + _ro_real + " and " + _sid_ok) % iv)
+        # ── the stage's DENOMINATOR GAP ──────────────────────────────────
+        # human_acted counts FROM mcp_high_intent_sessions and only then asks
+        # whether a relay row exists. Relay links are minted on paths that
+        # never write that table (the auto-trial envelope among them), so an
+        # open on such a session is not a zero — it is UNCOUNTABLE, and the
+        # two are indistinguishable downstream. Measured 30d on 2026-09-03:
+        # 148 of 163 joinable opens sat on sessions absent from the table.
+        # Published so the stage's blind spot is declared, never implied.
+        gap_sids = one(("select count(distinct ro.session_id) " + _ro_win
+                        + " and " + _ro_real + " and " + _sid_ok
+                        + " and not exists (select 1 from"
+                        " mcp_high_intent_sessions h where"
+                        " h.mcp_session_id = ro.session_id)") % iv)
         def pct(n, d):
             return round(100.0 * n / d, 2) if (n is not None and d) else None
         steps = {"paywall_hit": paywall, "high_intent": high, "relay_minted": minted,
@@ -463,6 +524,47 @@ def handoff_funnel():
             "human_acted_legacy_claim_page": opened_legacy,
             "human_acted_v2_all_view_opens": opened_v2,
             "human_acted_v3_including_self_traffic": opened_v3,
+            "human_acted_v4_before_rotation": opened_v4,
+            # ★ What the source table actually contains. Buckets are mutually
+            # exclusive and sum to `total`; see the r-relay-provenance block.
+            "relay_open_provenance": {
+                "total": prov_total,
+                "probe_ua": prov_probe,
+                "no_session_id": prov_nosid,
+                "countable_opens": prov_real,
+                "countable_sessions": prov_real_sids,
+                "basis": (
+                    "relay_opens rows in the window, split by whether the row "
+                    "can reach human_acted at all. probe_ua = fails "
+                    "mcp_calls_deloop.real_ua_predicate (our own qa-superuser "
+                    "sweep is the bulk of it, one fabricated session id per "
+                    "open). no_session_id = a blank/NULL token sid, which "
+                    "cannot join to any session (scanners on /upgrade/h/). "
+                    "countable_opens = real UA and a joinable sid — the ONLY "
+                    "rows this stage can ever see. Measured 2026-09-03 over "
+                    "30d: 150 total = 123 probe_ua + 25 no_session_id + 2 "
+                    "countable, and BOTH countable rows are the operator's "
+                    "own sessions. Read a 0 on human_acted against "
+                    "countable_opens, not against total: the stage has had "
+                    "two eligible rows in a month, so its zero is a "
+                    "statement about delivery, not about human appetite."),
+            },
+            # ★ The stage cannot see most of what it is supposed to measure.
+            "human_acted_denominator_gap": {
+                "countable_sessions": prov_real_sids,
+                "sessions_not_in_high_intent_table": gap_sids,
+                "basis": (
+                    "human_acted counts FROM mcp_high_intent_sessions and only "
+                    "then asks whether a relay_opens row exists, so an open on "
+                    "a session that never entered that table is UNCOUNTABLE "
+                    "rather than zero — and the two are indistinguishable in "
+                    "the published number. Relay links ARE minted on paths "
+                    "that never write the table (the auto-trial envelope among "
+                    "them). Measured 2026-09-03 over 30d: 1 of the 2 "
+                    "countable sessions sat outside the table; across ALL "
+                    "relay_opens rows regardless of UA it is 148 of 163. "
+                    "This field is the size of the blind spot, not a leak."),
+            },
             # ★ The exclusion is DECLARED, never silent. A stage that has fired
             # once in its life cannot afford a reader who does not know the one
             # was us.
@@ -476,12 +578,20 @@ def handoff_funnel():
                 # bump would have left it describing the wrong stage in the
                 # same envelope that publishes the right one.
                 "basis": "human_acted (v%d) subtracts sessions declared as operator "
-                         "self-traffic in mcp_calls_deloop. These are NOT inferred from "
-                         "the row — the operator's own agent client writes an "
-                         "mcp_client/user_agent byte-identical to a prospect's, so the "
-                         "exclusion is a named fact and is published here so it can be "
-                         "audited or added back. human_acted_v3_including_self_traffic "
-                         "is the unfiltered figure." % _HUMAN_ACTED_VERSION,
+                         "self-traffic in mcp_calls_deloop. The operator's own agent "
+                         "client writes an mcp_client/user_agent byte-identical to a "
+                         "prospect's, so nothing in the row itself gives it away and "
+                         "every removal is published here to be audited or added back. "
+                         "★ MIXED BASIS since v5: 88e20dac is a NAMED FACT (we watched "
+                         "ourselves make it); 8c8e1d0d is an INFERENCE from a 10.1-second "
+                         "session rotation off that same client on 2026-08-20, which the "
+                         "operator could neither confirm nor deny. It is excluded because "
+                         "it was publishing this stage's first-ever non-zero and a false "
+                         "conversion here gets quoted back by every partner who reads the "
+                         "dashboard — but it is an inference and is labelled as one. "
+                         "human_acted_v4_before_rotation is the figure without it; "
+                         "human_acted_v3_including_self_traffic is unfiltered."
+                         % _HUMAN_ACTED_VERSION,
             },
             # ONE WRITER (r-definition-one-writer, 2026-08-18). This block was
             # a dict literal here, and three other surfaces RESTATED it in
