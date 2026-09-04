@@ -92,6 +92,28 @@ def _slugify(s: str) -> str:
 # slug ('virginia') → (code, name); built once from _US_STATES.
 _US_STATE_BY_SLUG = {_slugify(v): (k, v) for k, v in _US_STATES.items()}
 
+# slug ('germany', 'united-states') → ISO code; built once from _COUNTRY_NAMES.
+#
+# ★ WHY: /facilities/in/<code> is canonical and the code-only route 404s every
+#   other form. Measured 2026-09-04 through the edge, as Googlebot:
+#     /facilities/in/germany 404   /facilities/in/de 200
+#     /facilities/in/france  404   /facilities/in/fr 200
+#     /facilities/in/japan   404   /facilities/in/jp 200
+#     /facilities/in/united-states 404  /facilities/in/us 200
+#   The human-readable name is exactly what an assistant guesses when it cites
+#   a country hub, so the guess lands on a 404 and the citation dies. Note the
+#   US-state route above already canonicalises the OTHER way (code 301s to the
+#   name slug), so a guessed name works for states and fails for countries.
+#
+# ★ DELIBERATELY AN ALLOWLIST, NOT A WILDCARD. The 404 in the country branch is
+#   load-bearing: the comment there records that all 676 two-letter codes once
+#   answered 200 with near-identical shells, 498 of them empty. Inverting a
+#   finite 46-entry display map adds 46 redirect targets and reopens none of
+#   that unbounded space — /facilities/in/qz still 404s. The invariant is
+#   "any country whose name we DISPLAY, we also accept as a URL", so adding a
+#   country to _COUNTRY_NAMES keeps the two in step automatically.
+_COUNTRY_BY_SLUG = {_slugify(v): k.lower() for k, v in _COUNTRY_NAMES.items()}
+
 
 def us_state_slug(value):
     """Canonical state-page slug for a raw `state` column value, or None.
@@ -474,6 +496,14 @@ def facilities_index():
 def facilities_in_country(country, page=1):
     country = (country or "").strip().lower()
     page = max(1, int(page or 1))
+
+    # Country-name slug → 301 to the canonical code ('germany' → 'de'). Runs
+    # before the cache read so an alias never occupies a cache key of its own.
+    alias = _COUNTRY_BY_SLUG.get(country)
+    if alias and alias != country:
+        suffix = f"/page/{page}" if page > 1 else ""
+        return redirect(f"/facilities/in/{alias}{suffix}", code=301)
+
     ck = f"/facilities/in/{country}/page/{page}"
     cached = _cached(ck)
     if cached:
