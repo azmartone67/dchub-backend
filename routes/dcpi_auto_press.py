@@ -9,9 +9,13 @@ Once landed, the existing press-scan-daily cron picks it up and
 ships it to LinkedIn / X / Bluesky / press feed at the 13:00 UTC
 tick — no human intervention.
 
-Constant content drumbeat: 285+ US markets + 14 international, each
-recomputed every 4 hours, means ~5-10 ≥15pt moves per week. Each
+Constant content drumbeat: the scored universe, US and international,
+recomputed every 4 hours, means a steady stream of ≥15pt moves. Each
 gives us a free press release with real news in it.
+
+★ The two counts that used to sit in this sentence are gone on purpose:
+both had gone stale, and the international one badly so.
+canonical_stats.markets_phrase() is the live span.
 
 Endpoints:
   POST /api/v1/dcpi/auto-press/scan
@@ -197,6 +201,18 @@ def _draft_press_release(shift: dict) -> dict:
                        "approved new loads consuming reserve margin, new "
                        "queue applications, or grid-emergency events")
 
+    # ★2026-09-04: the body below carried a retired market count in EVERY
+    # auto-published release — the furthest-drifted one in this sweep, and it
+    # ships to LinkedIn / X / Bluesky and the press feed unreviewed. Bound as a
+    # VALUE: the body is an f-string, where a {canon_...} token is parsed as an
+    # expression and raises NameError. Fail-open leaves the sentence
+    # count-free rather than wrong.
+    try:
+        from canonical_stats import markets_phrase as _mp
+        _mkts = f"{_mp()} " if _mp() else ""
+    except Exception:
+        _mkts = ""
+
     title = headline
     subhead = (f"Week-over-week DCPI score change of {abs(delta):.1f} "
                  f"points (ExcessPower {ex_was:.1f} → {ex_now:.1f}) puts "
@@ -206,7 +222,7 @@ def _draft_press_release(shift: dict) -> dict:
 
 <p>The shift reflects {angle}.</p>
 
-<p>DCPI scores 230+ data center markets on two axes — ExcessPower (higher = more buildable headroom) and Constraint (higher = more friction to new builds). Markets are recomputed every 4 hours from interconnection-queue, capacity-pipeline, and grid-emergency data across the major U.S. ISOs (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE) plus live international grids via ENTSO-E (Europe), NESO (Great Britain), Taipower (Taiwan), OCCTO (Japan), KPX (South Korea), ONS (Brazil), and AEMO (Australia).</p>
+<p>DCPI scores {_mkts}data center markets on two axes — ExcessPower (higher = more buildable headroom) and Constraint (higher = more friction to new builds). Markets are recomputed every 4 hours from interconnection-queue, capacity-pipeline, and grid-emergency data across the major U.S. ISOs (PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE) plus live international grids via ENTSO-E (Europe), NESO (Great Britain), Taipower (Taiwan), OCCTO (Japan), KPX (South Korea), ONS (Brazil), and AEMO (Australia).</p>
 
 <p><strong>Live page for this market:</strong> <a href="https://dchub.cloud/dcpi/{shift['slug']}">dchub.cloud/dcpi/{shift['slug']}</a></p>
 
