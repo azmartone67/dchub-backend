@@ -3259,14 +3259,21 @@ def check_llm_error_body_discarded() -> list[dict]:
     return findings
 
 
-# A backtick-quoted segment that carries BOTH a command word and a URL. This
-# is the signature MEASURED against the live edge on 2026-09-04, not a guess at
-# Cloudflare's ruleset: `curl https://…` and `curl -i https://…` were 403; the
-# same text without the backticks, `curl -i` with no URL, `gh workflow run
-# press-rss.yml`, and a bare backticked URL were all 400 (the app's own reply).
+# The two signatures MEASURED against the live edge on 2026-09-04, not a guess
+# at Cloudflare's ruleset.
+#   command injection — a backtick-quoted segment carrying BOTH a command word
+#     and a URL: `curl https://…` and `curl -i https://…` were 403; the same
+#     text without the backticks, `curl -i` with no URL, `gh workflow run
+#     press-rss.yml`, and a bare backticked URL were all 400 (the app replying).
+#   XSS — a <script> tag: 403 in the clear, and STILL 403 under base64 with
+#     0/1/2/3 padding chars prepended (four different byte strings), which is
+#     how we know Cloudflare decodes base64 before matching.
 _WAF_CMD_WORDS = r"curl|wget|gh|git|ssh|scp|bash|sh|eval|nc|python3?|node|npm|npx"
 _WAF_BACKTICK_CMD = re.compile(
-    r"`[^`]*\b(?:" + _WAF_CMD_WORDS + r")\b[^`]*https?://[^`]*`")
+    r"(?:`[^`]*\b(?:" + _WAF_CMD_WORDS + r")\b[^`]*https?://[^`]*`)"
+    # …and the XSS half. `<script …>` was 403 in the clear AND under base64
+    # (Cloudflare decodes it), which is why the transport deflates first.
+    r"|(?:<\s*script\b)|(?:<\s*/\s*script\s*>)")
 
 
 def check_approve_directive_waf_blocked() -> list[dict]:
@@ -3306,18 +3313,21 @@ def check_approve_directive_waf_blocked() -> list[dict]:
             _src = fh.read().decode("utf-8", "ignore")
     except Exception:
         _src = ""                                   # UNMEASURED
-    if _src and "directive_b64:utf8ToB64(" not in _src:
+    if _src and ("directivePayload(directive)" not in _src
+                 or "directive:directive" in _src):
         findings.append({
             "issue": "approve_directive_sent_in_the_clear",
             "url": "/api/v1/brain/innovation/approve",
             "count": 1,
             "detail": (
-                "The approve button POSTs the operator's directive as plain "
-                "text. Any item whose 'decision for human' quotes a shell "
-                "command with a URL is then 403'd by the edge WAF before "
-                "Railway sees it — no approval row, no log, no redrive, and "
-                "the page prints the bare word 'error'. Send directive_b64 "
-                "(see _read_directive)."),
+                "The approve button does not route the operator's directive "
+                "through directivePayload(). Any item whose 'decision for "
+                "human' quotes a shell command with a URL, or an HTML tag, is "
+                "then 403'd by the edge WAF before Railway sees it — no "
+                "approval row, no log, no redrive, and the page prints the "
+                "bare word 'error'. NB base64 alone is NOT enough: Cloudflare "
+                "decodes it and still matches the XSS rule. Deflate first "
+                "(see _read_directive / directivePayload)."),
         })
 
     # 2. content

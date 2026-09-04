@@ -354,10 +354,51 @@ _BLOCKED_DIRECTIVE = (
     "restore that asset/route first."
 )
 
+# inv #100502 verbatim — it trips BOTH edge rules in one sentence, which is why
+# base64 alone was not enough: Cloudflare decodes base64 and still matches the
+# <script> tag. Measured at the edge: plain 403, base64 403, deflate+b64 400.
+_FULL_100502 = (
+    "Run `curl -i https://dchub.cloud/js/dchub-nav.js` and, if it returns 404, "
+    "restore that asset/route first; concurrently open the live-serving "
+    "/markets template to add `<script src=\"/js/dchub-nav.js\" defer>"
+    "</script>` before </body>."
+)
+
 
 def _b64(s):
     import base64
     return base64.b64encode(s.encode("utf-8")).decode("ascii")
+
+
+def _z64(s):
+    import base64, zlib
+    return base64.b64encode(zlib.compress(s.encode("utf-8"))).decode("ascii")
+
+
+def test_approve_reads_directive_from_z(client, monkeypatch):
+    """directive_z (deflate+b64) is the shipped transport — it is the only one
+    that survives BOTH edge rules, because Cloudflare base64-decodes the body
+    and still matches <script> on the decoded text."""
+    monkeypatch.setattr(dash, "_admin_ok", lambda: True)
+    monkeypatch.setattr(dash, "_conn", lambda: _FakeConn())
+    seen = {}
+    monkeypatch.setattr(dash, "_attempt_pr",
+                        lambda k, i, operator_directive="": (
+                            seen.update(d=operator_directive) or
+                            {"ok": True, "acted": False}))
+    monkeypatch.setattr(dash, "_record_pr_attempt", lambda *a, **k: True)
+    resp = client.post("/api/v1/brain/innovation/approve",
+                       json={"kind": "inv", "id": 100502, "open_pr": True,
+                             "directive_z": _z64(_FULL_100502)})
+    assert resp.status_code == 200
+    assert seen["d"] == _FULL_100502
+
+
+def test_approve_z_garbage_yields_empty_not_a_fallback():
+    assert dash._read_directive({"directive_z": "!!!not b64!!!",
+                                 "directive": "should not be used"}) == ""
+    assert dash._read_directive(
+        {"directive_z": _z64("ok — with an em dash")}) == "ok — with an em dash"
 
 
 def test_approve_reads_directive_from_b64(client, monkeypatch):
@@ -407,7 +448,7 @@ def test_approve_b64_garbage_does_not_fall_back_to_empty_approval(monkeypatch):
                                  }) == "ok — with an em dash"
 
 
-def test_page_posts_directive_b64_and_never_the_plain_field(client, monkeypatch):
+def test_page_never_puts_the_directive_on_the_wire_in_the_clear(client, monkeypatch):
     """THE REGRESSION GUARD. The approve fetch must send directive_b64 and must
     NOT put the operator's text in a plain `directive` field, or the WAF eats
     every command-quoting item again."""
@@ -416,8 +457,12 @@ def test_page_posts_directive_b64_and_never_the_plain_field(client, monkeypatch)
     post = [ln for ln in body.splitlines()
             if "/api/v1/brain/innovation/approve'" in ln and "fetch(" in ln]
     assert len(post) == 1, f"expected exactly one approve fetch, got {len(post)}"
-    assert "directive_b64:utf8ToB64(" in post[0]
-    assert "directive:" not in post[0]
+    assert "directive" not in post[0], (
+        "the approve fetch must carry no directive field of its own — the "
+        "payload comes from directivePayload(), which deflates first")
+    assert "directivePayload(directive)" in body
+    assert "directive:directive" not in body
+    assert "new CompressionStream('deflate')" in body
 
 
 def test_page_names_a_non_json_failure_instead_of_saying_error(client, monkeypatch):
