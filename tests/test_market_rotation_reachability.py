@@ -378,6 +378,26 @@ def test_no_tokens_are_spent_on_an_unscored_market():
     assert calls == []
 
 
+def test_the_four_resolve_to_the_city_key_their_facilities_are_stored_under():
+    """sao-paulo is the one that can break silently.
+
+    _SLUG_TO_MARKET_NAME spells it 'São Paulo'; the fleet rows key on ASCII
+    'Sao Paulo'. The accent fold in _market_name_candidates is the only thing
+    bridging them — lose it and this market resolves, guards, seeds a
+    placeholder and reads ZERO facilities, with no error raised anywhere.
+    """
+    ns = _ns()
+    for slug, city_key in (("bogota", "bogota"),
+                           ("mexico-city", "mexico city"),
+                           ("santiago", "santiago"),
+                           ("sao-paulo", "sao paulo")):
+        cands = [c.lower() for c in
+                 ns["_market_name_candidates"](ns["_slug_title"](slug))]
+        assert city_key in cands, (
+            f"{slug}: the fleet union would never match the stored city key "
+            f"{city_key!r} — candidates were {cands}")
+
+
 def test_an_unscored_market_invents_no_score():
     cur = _Cur(mps_row=None, fleet=(102, 640.5))
     ns = _ns()
