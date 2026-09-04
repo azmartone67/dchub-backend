@@ -328,3 +328,26 @@ def test_probe_reads_unknown_never_red_when_the_surface_is_absent():
     p = _probe()
     assert p.evaluate("ACTIVATION_EMAILS_ENABLED", "0", None)["state"] == p.UNKNOWN
     assert p.evaluate("ACTIVATION_EMAILS_ENABLED", "0", {})["state"] == p.UNKNOWN
+
+
+# ── 5 · the ledger's clock IS the sweep's clock ─────────────────────────────
+def test_sent_at_is_the_injected_clock_not_wall_time(monkeypatch):
+    """r-clock-injection (2026-09-04). record_outcome stamped sent_at with
+    _dt.datetime.now() while run_sweep threaded `now` through everything else,
+    so the ledger recorded a different instant than the sweep that wrote it.
+
+    test_stats_publish_the_process_view_and_window_sends already encoded the
+    right behaviour, but only FAILED once wall time crossed NOW + 2 days — it
+    went red at 2026-09-04 04:00:00Z, two days after the constant it is
+    pinned to, and blocked every PR in the repo. This asserts the invariant
+    directly, so the same defect fails on the commit that introduces it.
+    """
+    db = FakeDB([_cand(2, 30)])
+    ae.run_sweep(db, sender=FakeSender(), now=NOW, armed=True)
+    stamped = [r["sent_at"] for r in db.ledger.values() if r["status"] == "sent"]
+    assert stamped, "sweep recorded no sends"
+    for ts in stamped:
+        assert ts == NOW, (
+            "sent_at is wall time, not the sweep's `now` — read_stats' window "
+            "is computed from the caller's clock, so the two disagree"
+        )
