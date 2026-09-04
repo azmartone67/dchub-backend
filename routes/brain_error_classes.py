@@ -577,6 +577,86 @@ REGISTRY: list[ErrorClass] = [
         shipped_proof="round22",
         notes="Triggered when a new map endpoint is added but not added to _MAP_BYPASS_PATHS. The fix is one line.",
     ),
+
+    # ── map_layer_probe classes (2026-09-04) ──────────────────────────
+    # Registered so these findings land in an ACTIONABLE bucket. An
+    # unregistered issue string still persists and still emails, but
+    # _finding_type_of() buckets it "unknown" and triage drops it from
+    # actionable_now — live, 49 of 50 rows were "unknown". Registration is
+    # the difference between a finding that is stored and one that is worked.
+    ErrorClass(
+        id="map_layer_bad_status",
+        pattern=r"map_layer_bad_status|Map layer .* returned HTTP \d+; allowed",
+        fix_template="restart_or_fix_upstream",
+        description=(
+            "A Land & Power map layer endpoint returned a status outside its "
+            "allow-set, inside its declared coverage. Users see an empty layer. "
+            "This fires for ANY unexpected status — 404 (route deleted or "
+            "renamed), 402 (a public layer newly paywalled), 3xx (redirect "
+            "loop), 5xx (upstream down) — because the probe asserts what is "
+            "GOOD rather than enumerating known failures. FIX: read the body "
+            "sample in the finding; it names the endpoint and the status."
+        ),
+        confidence=0.95,
+        notes="Probed by map_layer_probe via cron_heartbeat _DISPATCH, ~2x/hour, at Ashburn VA and Frankfurt DE.",
+    ),
+    ErrorClass(
+        id="map_layer_empty_in_coverage",
+        pattern=r"map_layer_empty_in_coverage|ZERO rows at the .* canary",
+        fix_template="investigate_upstream_or_ingest",
+        description=(
+            "A map layer answered 200 but returned ZERO rows at a canary INSIDE "
+            "its declared coverage. A 200 is not a working layer: this is the "
+            "exact user-visible symptom that went unnoticed for the 2026-09-04 "
+            "outage — an empty map under a badge still advertising data. FIX: "
+            "check the upstream feed and the ingest job for that dataset."
+        ),
+        confidence=0.9,
+        notes="Status-only monitoring cannot catch this class; the row assertion is the point.",
+    ),
+    ErrorClass(
+        id="map_layer_bad_shape",
+        pattern=r"map_layer_bad_shape|not the expected shape|body is not JSON",
+        fix_template="fix_upstream_response_contract",
+        description=(
+            "A map layer returned 200 with a body that is not the expected "
+            "shape — the row field is missing or is not a list. This is how a "
+            "200 carrying an upgrade-gate envelope or an error document reads "
+            "as success to any status-only check. FIX: compare the body sample "
+            "against the endpoint's documented contract."
+        ),
+        confidence=0.9,
+        notes="Catches the paywall-envelope-at-200 case.",
+    ),
+    ErrorClass(
+        id="map_layer_unreachable",
+        pattern=r"map_layer_unreachable|did not complete from inside the container",
+        fix_template="investigate_worker_pool_or_missing_route",
+        description=(
+            "A map layer probe never completed from inside the container — "
+            "connection refused, DNS failure or timeout. Gunicorn worker "
+            "exhaustion or a route that no longer exists."
+        ),
+        confidence=0.9,
+        notes="status==0 from map_layer_probe.",
+    ),
+    ErrorClass(
+        id="map_layer_outside_coverage_error",
+        pattern=r"map_layer_outside_coverage_error|at the non-US canary",
+        fix_template="degrade_gracefully_outside_coverage",
+        description=(
+            "A US-only map layer ERRORED at the non-US canary instead of "
+            "answering 200 with an empty result. Zero rows abroad is correct; "
+            "an error is not — it makes a coverage gap indistinguishable from "
+            "an outage, both to users and to this probe. Measured 2026-09-04: "
+            "/api/v1/energy/power-plants/nearby returns 400 'Could not "
+            "determine state from coordinates' at Frankfurt. FIX: return an "
+            "empty result plus an explicit out-of-coverage flag the map can "
+            "render as 'no data here' rather than '0'."
+        ),
+        confidence=0.85,
+        notes="Directly feeds the layer-badge honesty work: the badge needs to distinguish 'zero' from 'not covered'.",
+    ),
     ErrorClass(
         id="land_power_endpoint_unreachable",
         pattern=r"land_power_endpoint_unreachable|unreachable from inside the container",
@@ -802,6 +882,12 @@ _INFRA_TYPES = {
     "cf_worker_version_drift", "slow_request_ratio", "slow_route_p95",
     "site_sentinel_unhealthy", "land_power_endpoint_5xx",
     "land_power_endpoint_unreachable", "neon_replication_paging",
+    # map_layer_probe (2026-09-04): upstream/route health, not a code PR.
+    # map_layer_outside_coverage_error is deliberately NOT here — a US-only
+    # endpoint erroring abroad instead of returning an empty result IS a code
+    # bug, so it stays in the code_bug bucket where a fix can be proposed.
+    "map_layer_bad_status", "map_layer_empty_in_coverage",
+    "map_layer_bad_shape", "map_layer_unreachable",
 }
 
 
