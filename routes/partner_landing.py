@@ -50,6 +50,11 @@ from ai_surface_canon import canon_text
 _CANON_FAC = canon_text("{canon_facilities}")
 _CANON_DEALS = canon_text("{canon_deals}")
 _CANON_MKTS = canon_text("{canon_markets}")
+# ★2026-09-04: the live-strip said "10 ISOs". 10 is the GRID OPERATOR
+# count (the US ISOs plus TVA, BPA and Ontario's IESO) — a different
+# metric wearing the ISO label, so the strip over-claimed the thing it
+# actually named. canonical_stats keeps the two apart; so does this.
+_CANON_ISOS = canon_text("{canon_isos}")
 
 
 partner_landing_bp = Blueprint("partner_landing", __name__)
@@ -305,7 +310,13 @@ _PARTNERS = {
                        "your DGX Cloud + Inception partners actually need."),
         "value_bullets": [
             "DCPI verdicts at every CSP region — North America, Europe, Asia-Pacific",
-            "Interconnection-queue data across 10 ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE, WECC, SERC, TVA)",
+            # ★2026-09-04: this said "10 ISOs" and then listed its own
+            # counter-evidence — seven ISOs followed by WECC and SERC (NERC
+            # regions) and TVA (a federal utility). The ENTITY count was
+            # honest; the noun covering them was not. Membership is unchanged
+            # here, only the label, and the ISO half now derives.
+            f"Interconnection-queue data across the {_CANON_ISOS} US ISOs "
+            "(ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE) plus WECC, SERC and TVA",
             "Time-to-power estimates so customers know if a market is 90-day or 90-month buildable",
             "Free API tier covers most partner DevRel use cases — Pro tier for grid_intelligence + analyze_site",
         ],
@@ -727,7 +738,7 @@ def _render_partner_page(slug: str, p: dict) -> str:
       <span class="ls-item"><span class="ls-live">●</span> live</span>
       <span class="ls-item"><b id="ls-calls">—</b> MCP calls · 7d</span>
       <span class="ls-item"><b id="ls-fac">{_CANON_FAC}</b> facilities</span>
-      <span class="ls-item"><b id="ls-mkt">{_CANON_MKTS}</b> markets · 10 ISOs</span>
+      <span class="ls-item"><b id="ls-mkt">{_CANON_MKTS}</b> markets · {_CANON_ISOS} ISOs</span>
       <span class="ls-item"><b id="ls-build">live DCPI</b></span>
     </div>
 

@@ -3423,7 +3423,7 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/operator_brief.py': {'deals_stale_floor'},
     'routes/operators.py': {'facilities_stale_floor'},
     'routes/outreach_cron.py': {'tool_count_literal'},
-    'routes/partner_landing.py': {'isos_non_canonical', 'tool_count_literal'},
+    'routes/partner_landing.py': {'tool_count_literal'},
     'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
     'routes/press_outreach.py': {'deals_stale_floor'},
     'routes/quarterly_report.py': {'deals_stale_floor', 'facilities_bare_int'},
