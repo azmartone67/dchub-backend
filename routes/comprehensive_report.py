@@ -72,9 +72,17 @@ def _gather(quarter_window=False):
             # don't cascade.
 
             # ─── EXECUTIVE SUMMARY ──────────────────────────────────
+            # ★2026-09-04 — was COUNT(*) = SOURCE RECORDS (~1.4x the buildings),
+            # published as "facilities tracked" in /reports/quarterly-deep's
+            # <title> and meta description: 28,251 against a canon of 20,352.
+            # Mirrors public_endpoints.py's citable facilities_distinct query.
+            # `facilities_added` below stays a row count over a created_at
+            # window — that is a flow, not this stock, and is labelled as such.
             try:
                 with c.cursor() as cur:
-                    cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                    cur.execute("SELECT COUNT(DISTINCT canonical_slug) "
+                                "FROM discovered_facilities "
+                                "WHERE canonical_slug IS NOT NULL")
                     out["total_facilities"] = cur.fetchone()[0]
             except Exception:
                 out["total_facilities"] = 0

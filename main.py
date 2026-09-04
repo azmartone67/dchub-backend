@@ -30420,7 +30420,16 @@ def ai_facts():
         with pg_connection() as pg_conn:
             pg_cur = pg_conn.cursor()
 
-            pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+            # ★2026-09-04 — was COUNT(*) = SOURCE RECORDS (~1.4x the buildings).
+            # This endpoint's own docstring says it is "optimized for AI
+            # platform citation", so of every surface carrying this defect it
+            # is the one whose wrong number would be quoted back by assistants
+            # as fact. Currently 404 at the edge, so nothing has cited it — a
+            # latent landmine, fixed before it is ever routed. Mirrors
+            # public_endpoints.py's citable facilities_distinct query.
+            pg_cur.execute("SELECT COUNT(DISTINCT canonical_slug) "
+                           "FROM discovered_facilities "
+                           "WHERE canonical_slug IS NOT NULL")
             total_facilities = pg_cur.fetchone()[0]
             pg_cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities")
             total_countries = pg_cur.fetchone()[0]
@@ -31416,6 +31425,15 @@ def _build_sitemap_sections():
         # admin /brain is 403 → excluded). /fiber excluded (301 redirect).
         ('/brain-live',     '0.6', 'daily'),
         ('/by-the-numbers', '0.8', 'daily'),
+        # r-wiki (2026-09-04): /wiki is the HUMAN site index — every page we
+        # serve, in one grouped list, generated from this very sitemap by
+        # dchub-frontend/scripts/build-search-index.py. It shipped with a
+        # homepage footer link (so Googlebot had a crawl path) but was absent
+        # here, which also meant the generator could never index the index:
+        # it reads this file, so a page missing from it is invisible to /wiki
+        # and to the site search that shares its corpus. Same shallow-crawl
+        # argument as /facilities/directory above.
+        ('/wiki',           '0.7', 'weekly'),
         ('/gdci',           '0.7', 'weekly'),
         ('/tax-incentives', '0.7', 'weekly'),
         ('/ai',             '0.7', 'weekly'),
@@ -32018,7 +32036,36 @@ def _build_sitemap_sections():
         logger.warning(f"sitemap: hub_sitemap_lastmod failed ({_hub_lm_e}) — "
                        "hub pages carry the pinned static date")
     import math as _math
-    for _hc in sorted(_hub_countries | set(_hub_counts)):
+    # ★2026-09-04 — THIS UNION PUBLISHED 9 DEAD URLs. Measured live:
+    #
+    #   /facilities/in/germany  404      /facilities/in/de  200
+    #   /facilities/in/usa      404      /facilities/in/us  200
+    #   ... canada finland india norway singapore spain sweden — all 404
+    #
+    # `_hub_countries` is built from fac_rows, and fac_rows UNIONS THE LEGACY
+    # `facilities` table (see the union above). Some legacy rows store the
+    # country as a full name rather than ISO-2, so the sitemap emitted a URL
+    # for "germany" while facilities_hub.facilities_in_country() matches
+    # `LOWER(btrim(country)) = %s` against discovered_facilities, finds nothing,
+    # and returns its honest 404. Google was being fed 9 dead URLs.
+    #
+    # `_hub_counts` comes from facilities_hub.hub_sitemap_counts(), which
+    # applies the SAME three filters the page serves — so its keys are exactly
+    # the countries whose hub renders. Measured against the live /facilities
+    # index: 178 countries, all two-letter; the sitemap emitted 187, and the 9
+    # extras were precisely the full-name ones.
+    #
+    # This is the same defect the comment above already documents for COUNTS
+    # ("fac_rows unions the legacy table, which these pages do not") — fixed
+    # there, missed here, one line up.
+    #
+    # Fail-open is PRESERVED: if hub_sitemap_counts() failed, _hub_counts is
+    # empty and we fall back to the legacy-derived set — but filtered to
+    # two-letter codes, because that is the only shape the route can serve.
+    _hub_emit = set(_hub_counts) if _hub_counts else {
+        _c for _c in _hub_countries if len(_c) == 2
+    }
+    for _hc in sorted(_hub_emit):
         _hlm = _hub_lm.get(_hc) or _STATIC_LASTMOD
         sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/{_hc}</loc><lastmod>{_hlm}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
         for _pn in range(2, _math.ceil(_hub_counts.get(_hc, 0) / _hub_psize) + 1):
