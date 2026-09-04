@@ -108,7 +108,6 @@ _SWEPT = [
     "routes/architecture_landing.py",
     "routes/autopilot_routes.py",
     "routes/brain_answer_cache.py",
-    "routes/case_studies_landing.py",
     "routes/competitive_intel.py",
     "routes/competitive_seo.py",
     "routes/competitive_vs.py",

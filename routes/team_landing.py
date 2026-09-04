@@ -3,6 +3,17 @@ team_landing.py — public /team page.
 
 Phase ZZZZZ-round47.7 (2026-05-25). Founder-only placeholder until
 real bios are filled in. Nav and SEO referenced /team but it 404'd.
+
+2026-09-04: the footer's "Case studies" link was removed with the
+retirement of routes/case_studies_landing.py. This footer held the ONLY
+live inbound link to that page anywhere on the site, and the page it
+pointed at had never been reachable at the edge (absent from
+dchub-frontend/_routes.json include, so Pages never invoked the worker).
+Note the footer's /changelog link is a SEPARATE instance of the same
+defect and is deliberately left alone: routes/changelog_landing.py
+answers 200 at the origin, so that one wants routing, not retirement.
+Keep this note in Python — an HTML comment here would re-publish the
+retired path into the served body of a live page.
 """
 import datetime
 from flask import Blueprint
@@ -95,7 +106,7 @@ infrastructure and the AI agents that need to act on it.</p>
 
 <p class="footer">
 <a href="/">Home</a> · <a href="/architecture">Architecture</a> · <a href="/dcpi">DCPI</a>
-· <a href="/case-studies">Case studies</a> · <a href="/changelog">Changelog</a>
+· <a href="/changelog">Changelog</a>
 · Updated __DATE__
 </p>
 </body></html>"""
