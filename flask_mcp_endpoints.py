@@ -6519,7 +6519,8 @@ def stats_live_proof():
         "distinct_ips_7d": 0,
         "distinct_platforms": 0,
         "approved_testimonials_count": 0,
-        "platforms_30d": [],              # [{platform, calls, calls_including_self_traffic}]
+        "platforms_30d": [],              # [{platform, calls, calls_including_self_traffic,
+                                          #   active_days, last_call, recurring}]
         "platforms_30d_excluded": {},     # what the self-traffic filter removed
         "flags": {
             "tool_calls_available": False,
@@ -6617,9 +6618,20 @@ def stats_live_proof():
                 # longer lookback is the honest, representative figure — 7d undersold
                 # at 3 because Claude/Anthropic dominate recent traffic. (Callers/IPs
                 # stay 7d: those measure recent activity, not breadth.)
+                # r-burst-vs-adoption (2026-09-04): active_days + last_call
+                # ride along so shape_platforms can tell a platform that
+                # INTEGRATED from one that ran a single test. Both are
+                # computed over the SAME filtered population as `n` — a
+                # day counted here must be a day that survived the
+                # self-traffic filter, or "10 active days" could be nine of
+                # ours plus one real.
                 "SELECT LOWER(COALESCE(platform, '')) AS p, "
                 "       COUNT(*) FILTER (WHERE " + _not_self + ") AS n, "
-                "       COUNT(*) AS n_gross "
+                "       COUNT(*) AS n_gross, "
+                "       COUNT(DISTINCT created_at::date) "
+                "         FILTER (WHERE " + _not_self + ") AS active_days, "
+                "       MAX(created_at) FILTER (WHERE " + _not_self + ")"
+                "         ::date AS last_call "
                 "FROM mcp_calls_identity "
                 "WHERE is_public_ip AND is_real_external "
                 "  AND created_at >= NOW() - INTERVAL '30 days' "
@@ -6627,8 +6639,8 @@ def stats_live_proof():
             )
             rows = cur.fetchall() or []
         recognized = [
-            (p, n, g)
-            for (p, n, g) in rows
+            (p, n, g, ad, lc)
+            for (p, n, g, ad, lc) in rows
             # Allowlist: recognized AI platform AND not internal/probe traffic.
             if _lp_is_recognized(p) and not _lp_is_internal(p)
             # drop UUID-shaped session leakage that escaped normalization

@@ -68,14 +68,28 @@ def counts():
 
     now = dt.datetime.utcnow()
     recent, old = now - dt.timedelta(days=2), now - dt.timedelta(days=40)
+    # ── r-burst-vs-adoption (2026-09-04) ────────────────────────────────────
+    # The query gained active_days + last_call, which decide whether a platform
+    # is named as INTEGRATING or disclosed as a one-day trial. Both must be
+    # filtered by the SAME self-traffic predicate as `n` — unfiltered, our own
+    # calls manufacture the recurrence we are trying to measure.
+    #
+    # The dates below are chosen so an unfiltered column CANNOT pass:
+    #   ours is the MOST RECENT row  -> unfiltered last_call would be ours
+    #   ours falls on its OWN day    -> unfiltered active_days would be 3, not 2
+    ours_day = now - dt.timedelta(days=1)      # newest, and ours
+    day_a    = recent                          # now-2d, a prospect
+    day_b    = now - dt.timedelta(days=5)      # a SECOND prospect day
     rows = [
-        ("claude", "prospect-0001", True,  True,  recent),   # real external
-        ("claude", mine,            True,  True,  recent),   # ours
+        ("claude", "prospect-0001", True,  True,  day_a),    # real external
+        ("claude", "prospect-0005", True,  True,  day_b),    # real, ANOTHER day
+        ("claude", mine,            True,  True,  ours_day), # ours, and newest
         ("claude", "prospect-0002", True,  False, recent),   # not real-external
         ("claude", "prospect-0003", False, True,  recent),   # not a public IP
         ("grok",   mine,            True,  True,  recent),   # ONLY ever ours
         ("claude", "prospect-0004", True,  True,  old),      # outside 30d
     ]
+    expected_last_call = day_a.date()
     conn = psycopg2.connect(DSN)
     conn.autocommit = True
     try:
@@ -86,40 +100,65 @@ def counts():
                 "(platform, session_id, is_public_ip, is_real_external, created_at)"
                 " VALUES (%s,%s,%s,%s,%s)", rows)
             cur.execute(sql)
-            out = {p: (int(n), int(g)) for (p, n, g) in cur.fetchall()}
+            out = {r[0]: {"n": int(r[1]), "gross": int(r[2]),
+                          "active_days": int(r[3]), "last_call": r[4]}
+                   for r in cur.fetchall()}
     finally:
         conn.close()
+    out["_expected_last_call"] = expected_last_call
     return out
 
 
 def test_the_query_runs_and_returns_platform_filtered_and_gross(counts):
     assert counts, "the query returned nothing — fixture or window is wrong"
-    assert set(counts) == {"claude", "grok"}, counts
+    assert set(counts) - {"_expected_last_call"} == {"claude", "grok"}, counts
 
 
 def test_declared_self_traffic_is_out_of_the_headline_figure(counts):
     """★ THE CONTROL. Two Claude rows survive the WHERE; one of them is ours.
     The headline figure must count ONE. Losing the FILTER makes it two — which
     is the defect, in miniature."""
-    n, gross = counts["claude"]
-    assert n == 1, f"self-traffic leaked into the headline count: {counts}"
-    assert gross == 2, f"the gross sibling should still see ours: {counts}"
+    n, gross = counts["claude"]["n"], counts["claude"]["gross"]
+    assert n == 2, f"self-traffic leaked into the headline count: {counts}"
+    assert gross == 3, f"the gross sibling should still see ours: {counts}"
 
 
 def test_a_platform_that_is_only_ever_us_scores_zero(counts):
     """It must not be nameable as an integrating platform. The route drops
     rows with calls == 0 and lists them under platforms_removed_entirely."""
-    n, gross = counts["grok"]
-    assert (n, gross) == (0, 1), counts
+    assert (counts["grok"]["n"], counts["grok"]["gross"]) == (0, 1), counts
 
 
 def test_non_external_and_private_ip_rows_are_out_of_BOTH_figures(counts):
-    # claude has four in-window rows; only two pass is_public_ip AND
-    # is_real_external, so even the gross sibling must read 2, never 4.
-    assert counts["claude"][1] == 2, counts
+    # claude has five in-window rows; only three pass is_public_ip AND
+    # is_real_external, so even the gross sibling must read 3, never 5.
+    assert counts["claude"]["gross"] == 3, counts
 
 
 def test_the_thirty_day_window_still_binds(counts):
-    # The 40-day row is claude's fifth; if the window were dropped, gross
-    # would read 3.
-    assert counts["claude"][1] == 2, counts
+    # The 40-day row is claude's sixth; if the window were dropped, gross
+    # would read 4.
+    assert counts["claude"]["gross"] == 3, counts
+
+
+def test_active_days_is_filtered_by_the_same_self_traffic_predicate(counts):
+    """★ THE NEW CONTROL. claude has THREE qualifying rows on three distinct
+    days, one of which is ours. active_days must read 2. Losing the FILTER on
+    this column makes it 3 — we would manufacture the recurrence the hero
+    sentence rests on, out of our own traffic."""
+    assert counts["claude"]["active_days"] == 2, (
+        "active_days counts our own calls as the platform's activity: %r" % counts)
+
+
+def test_last_call_is_filtered_too(counts):
+    """Ours is the NEWEST claude row. An unfiltered MAX would report our own
+    call as the platform's last contact — the freshness half of the same lie."""
+    assert counts["claude"]["last_call"] == counts["_expected_last_call"], (
+        "last_call reports our own traffic as the platform's: %r" % counts)
+
+
+def test_a_platform_that_is_only_ever_us_reports_no_activity(counts):
+    """grok's single row is ours, so it has zero real calls AND zero real
+    active days — it must not be able to claim a day it never had."""
+    assert counts["grok"]["active_days"] == 0, counts
+    assert counts["grok"]["last_call"] is None, counts

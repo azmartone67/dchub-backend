@@ -27,6 +27,14 @@ relay_specificity.py and continuation_compliance.py.
 """
 
 
+# ★ The line between "integrated" and "tried it once". TWO active days is the
+# weakest claim that still means the platform came BACK — which is the whole
+# difference the hero sentence rests on. Deliberately not a call-count
+# threshold: chatgpt's 33 calls and grok's 41 both landed inside one day, so
+# volume cannot separate them from claude-ai's 742 across ten.
+_RECURRING_MIN_DAYS = 2
+
+
 def shape_platforms(recognized_rows, self_traffic_prefixes=()):
     """rows of (platform, calls, calls_including_self_traffic) -> (list, excluded).
 
@@ -49,6 +57,27 @@ def shape_platforms(recognized_rows, self_traffic_prefixes=()):
             platform = row[0]
             calls = int(row[1] or 0)
             gross = int(row[2] or 0)
+            # ── r-burst-vs-adoption (2026-09-04) ──────────────────────────
+            # A 30-day CALL COUNT cannot tell a platform that integrated from
+            # one that ran a single test. Measured the day this shipped:
+            #
+            #   claude-ai  742 calls over 10 active days, last call today
+            #   claude     213 calls over 24 active days, last call yesterday
+            #   grok        41 calls over  1 active day,  2026-08-30
+            #   chatgpt     33 calls over  1 active day,  2026-08-13
+            #
+            # The hero sentence named all of them identically — "Claude.
+            # ChatGPT. Grok. They don't guess … they call DC Hub's MCP tools"
+            # — so two single-day bursts carried the same weight as a platform
+            # calling every week. And chatgpt's burst was 8 days from rolling
+            # out of the window, at which point the sentence would have
+            # corrected itself by DELETION, having been wrong the whole time.
+            #
+            # active_days and last_call are OPTIONAL trailing columns: rows
+            # from an older query shape still work and simply carry None,
+            # which downstream renders as unknown rather than as "one day".
+            active_days = int(row[3]) if len(row) > 3 and row[3] is not None else None
+            last_call = row[4] if len(row) > 4 else None
         except (TypeError, ValueError, IndexError):
             # A malformed row is a wiring fault, not a platform. It is not
             # guessed at and not silently counted as zero real calls, which
@@ -64,8 +93,17 @@ def shape_platforms(recognized_rows, self_traffic_prefixes=()):
         gross = max(gross, calls)
         removed_calls += gross - calls
         if calls > 0:
+            # `recurring` is the claim the hero sentence actually needs, and it
+            # is UNKNOWN (None) rather than False when active_days is absent —
+            # a missing measurement must not read as "this platform came once".
+            recurring = None if active_days is None else active_days >= _RECURRING_MIN_DAYS
             clean.append({"platform": platform, "calls": calls,
-                          "calls_including_self_traffic": gross})
+                          "calls_including_self_traffic": gross,
+                          "active_days": active_days,
+                          "last_call": (last_call.isoformat()
+                                        if hasattr(last_call, "isoformat")
+                                        else (str(last_call) if last_call else None)),
+                          "recurring": recurring})
         elif gross > 0:
             dropped.append(platform)
 
@@ -85,5 +123,10 @@ def shape_platforms(recognized_rows, self_traffic_prefixes=()):
             "population with our sessions added back — not an unfiltered "
             "total. A platform whose every call was ours is dropped from "
             "platforms_30d and named in platforms_removed_entirely: it is not "
-            "an integrating platform, and naming it as one was the defect."),
+            "an integrating platform, and naming it as one was the defect. "
+            "Each row also carries active_days, last_call and recurring "
+            "(active_days >= %d): a 30-day call COUNT cannot tell a platform "
+            "that integrated from one that ran a single test, and naming both "
+            "the same way was the second defect. recurring is null, not false, "
+            "when active_days was not measured." % _RECURRING_MIN_DAYS),
     }
