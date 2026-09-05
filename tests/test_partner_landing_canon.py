@@ -31,11 +31,46 @@ def test_no_hardcoded_entity_counts_in_value_bullets():
 
 
 def test_every_entity_claim_is_canon_derived():
+    """Entity claims come from canon — checked by BEHAVIOUR, not by source text.
+
+    ★2026-09-05: this test used to assert the literal source lines
+        _CANON_DEALS = canon_text("{canon_deals}")
+        _CANON_MKTS  = canon_text("{canon_markets}")
+    were present. That pinned the wrong thing. A module-scope canon_text()
+    call resolves ONCE, at import, so those lines are an import-time LATCH:
+    the page served whatever the canon said at boot, and diverged from
+    /api/v1/canon/phrases in the same process (measured live, same second).
+    dchub-backend #3831 named the mechanism while retiring a page over it.
+
+    Pinning the source line meant this guard REQUIRED the defect and would
+    have failed the fix. It now asserts what it always meant: the claims are
+    canon-derived at render time. The structural sibling below still catches
+    typed counts, and tests/test_canon_resolved_per_request.py fences the
+    latch itself.
+    """
+    import re as _re
+    import routes.partner_landing as pl
+
+    # the copy carries canon TOKENS, not baked-in values
     code = _code_only()
-    assert '_CANON_DEALS = canon_text("{canon_deals}")' in code
-    assert '_CANON_MKTS = canon_text("{canon_markets}")' in code
-    assert "{_CANON_DEALS} tracked M&A deals" in code
-    assert "{_CANON_FAC} global facilities" in code
+    assert "@@CANON_DEALS@@ tracked M&A deals" in code
+    assert "@@CANON_FAC@@ global facilities" in code
+
+    # and the rendered page carries resolved canon values
+    html = pl._render_partner_page("perplexity", pl._PARTNERS["perplexity"])
+    assert "@@CANON" not in html, "an unresolved canon token reached the page"
+    assert "{canon_" not in html
+
+    # ...which FOLLOW the canon rather than a boot-time snapshot
+    real = pl.canon_text
+    pl.canon_text = lambda t: _re.sub(r"\{canon_[a-z_]+\}", "CANON_MOVED", t) if t else t
+    try:
+        moved = pl._render_partner_page("perplexity", pl._PARTNERS["perplexity"])
+    finally:
+        pl.canon_text = real
+    assert "CANON_MOVED" in moved, (
+        "the page ignored a canon change — the claims are latched at import"
+    )
 
 
 def test_no_bare_thousands_figure_next_to_a_fenced_noun():

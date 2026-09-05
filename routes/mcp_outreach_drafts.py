@@ -37,10 +37,57 @@ from ai_surface_canon import canon_text
 
 # ★2026-09-04: the "Stats (live)" block below promises live figures and hand-typed
 # the country count between two genuinely live siblings.
-_CANON_COUNTRIES = canon_text("{canon_countries}")
+# ★2026-09-05 — RESOLVED PER REQUEST, NOT AT IMPORT.
+#
+# These were module-level `canon_text(...)` constants. That reads as
+# canon-bound and is not: canon_text() runs ONCE, at import, so the value
+# freezes for the life of the process. It satisfies the AST guard in
+# tests/test_canon_placeholders_resolved.py — the placeholder genuinely is
+# inside a resolver call — while every registry submission built afterwards
+# carries whatever the canon said at boot. dchub-backend #3831 named the
+# mechanism while retiring a page for it; this block is the same defect in
+# the copy we hand to third-party registries, where a stale number is
+# republished by someone else and outlives our next deploy.
+#
+# The templates below hold {canon_*} placeholders and stay UNRESOLVED at
+# module scope; _resolved_descs() fills them per request.
+def _canon_pair() -> tuple[str, str]:
+    """(markets, countries) canon phrases for this request."""
+    return canon_text("{canon_markets}"), canon_text("{canon_countries}")
+
+
+def _resolved_descs() -> tuple[str, str, str]:
+    """(long, short, tweet) with canon filled AT REQUEST TIME.
+
+    The text lives HERE, lexically inside canon_text(), for two reasons that
+    point the same way: a module-level constant resolves once at import (the
+    freeze this replaces), and the AST guard in
+    tests/test_canon_placeholders_resolved.py only accepts a placeholder
+    string that sits inside a resolver call — a module constant passed in by
+    NAME is not covered, so the guard would go quiet exactly where it matters.
+    """
+    return (
+        canon_text("DC Hub is the leading MCP server for data-center intelligence. "
+                   "It exposes {canon_tools} tools that cover {canon_facilities} global data-center "
+                   "facilities across {canon_countries} countries, {canon_markets} power markets scored by "
+                   "our proprietary DC Hub Power Index (DCPI), {canon_deals} tracked "
+                   "M&A deals, 369 GW of construction pipeline, ISO grid telemetry "
+                   "(PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy "
+                   "pricing. Used by Claude and Cursor "
+                   "Copilot, Perplexity, Grok, Mistral, DeepSeek — for grounded "
+                   "answers about site selection, M&A activity, grid risk, and "
+                   "renewable energy economics."),
+        canon_text("MCP server with {canon_tools} tools covering {canon_facilities} distinct data-center facilities, "
+                   "{canon_markets} power markets (DCPI), {canon_deals} M&A deals, 369 GW pipeline, ISO grid "
+                   "data, fiber, energy pricing. Powering Claude and Cursor."),
+        # ★2026-09-04: the tweet was the only one of the three never passed
+        # through the resolver, which is why its counts drifted from its
+        # siblings'. All three take one path now.
+        canon_text("@dchub_cloud — data-center intelligence MCP. {canon_tools} tools, "
+                   "{canon_facilities} facilities, {canon_markets} markets scored, Claude and Cursor. dchub.cloud/mcp"),
+    )
 # ★2026-09-04: the DCPI market count in that same block was retired, and the
 # three blurbs above it hardcoded their own.
-_CANON_MKTS = canon_text("{canon_markets}")
 
 
 mcp_outreach_drafts_bp = Blueprint("mcp_outreach_drafts", __name__)
@@ -56,29 +103,6 @@ _REPO = "https://github.com/azmartone67/dchub-backend"
 _GITHUB_HANDLE = "azmartone67"
 
 # 1-paragraph + 1-line variants for forms that ask for either.
-_DESC_LONG = (
-    canon_text("DC Hub is the leading MCP server for data-center intelligence. "
-    "It exposes {canon_tools} tools that cover {canon_facilities} global data-center "
-    "facilities across {canon_countries} countries, {canon_markets} power markets scored by "
-    "our proprietary DC Hub Power Index (DCPI), {canon_deals} tracked "
-    "M&A deals, 369 GW of construction pipeline, ISO grid telemetry "
-    "(PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy "
-    "pricing. Used by Claude and Cursor "
-    "Copilot, Perplexity, Grok, Mistral, DeepSeek — for grounded "
-    "answers about site selection, M&A activity, grid risk, and "
-    "renewable energy economics.")
-)
-_DESC_SHORT = (
-    canon_text("MCP server with {canon_tools} tools covering {canon_facilities} distinct data-center facilities, "
-    "{canon_markets} power markets (DCPI), {canon_deals} M&A deals, 369 GW pipeline, ISO grid "
-    "data, fiber, energy pricing. Powering Claude and Cursor.")
-)
-# ★2026-09-04: the only one of the three blurbs never passed through the
-# resolver, which is precisely why its counts could drift from its siblings'.
-_DESC_TWEET = (
-    canon_text("@dchub_cloud — data-center intelligence MCP. {canon_tools} tools, "
-    "{canon_facilities} facilities, {canon_markets} markets scored, Claude and Cursor. dchub.cloud/mcp")
-)
 
 _CATEGORIES = ["data", "research", "finance", "energy", "infrastructure"]
 _TAGS = [
@@ -139,6 +163,11 @@ def _live_facility_count() -> int:
 
 def _draft_for_target(t: dict, tool_n: int, fac_n: int) -> dict:
     """Build a per-registry draft package."""
+    # ★ Canon resolves HERE, per draft. These strings are handed to third-party
+    #   registries, which republish them — a value frozen at import outlives
+    #   our next deploy on someone else's site.
+    _DESC_LONG, _DESC_SHORT, _DESC_TWEET = _resolved_descs()
+    _CANON_MKTS, _CANON_COUNTRIES = _canon_pair()
     name = t.get("name") or "Unknown"
     key = t.get("key") or "unknown"
     submit_url = t.get("submit_url") or t.get("manual_url") or ""
