@@ -40448,6 +40448,17 @@ except Exception as _r2e_e:
 # wear a process-local memo (600s TTL, keyed by quantized query-params) so
 # the heavy 13K-row power_plants / 94K-row transmission_lines scans only
 # hit the DB once per area per worker per 10 min.
+# r-botpush (2026-09-05): ops_artifacts moves the machine-written JSON that
+# live dashboards fetch OFF dchub-frontend's `main`. Those files are the last
+# reason `main` still takes direct bot pushes, which is the reason a required
+# status check cannot be enabled there. See routes/ops_artifacts.py.
+try:
+    from routes.ops_artifacts import register_ops_artifacts
+    register_ops_artifacts(app, get_pg_connection)
+    print("[main] ops_artifacts registered: /api/v1/ops/artifact/<name>, /api/v1/ops/artifacts", flush=True)
+except Exception as _oa_e:
+    print(f"[main] ops_artifacts register failed: {_oa_e}", flush=True)
+
 try:
     from routes.infrastructure_data_routes import register_infra_data_routes
     register_infra_data_routes(app, get_pg_connection)
