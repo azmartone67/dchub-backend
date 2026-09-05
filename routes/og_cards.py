@@ -27,27 +27,50 @@ W, H = 1200, 630
 
 # DC Hub brand palette — synced to dchub-brand.css (2026-06-05 visual rebuild).
 # Was: orange-on-navy. Now: deep navy + brand purple + cyan accents + green/red/amber verdicts.
-# Reasoning: the purple/cyan combo matches the site (/sites/value, /premium, /dcpi) and
+# 2026-09-05: the note below claimed the purple/cyan combo 'matches the site'. It did
+# not — measured against the live stylesheet, not one token agreed. Superseded.
+# Reasoning (historical): the purple/cyan combo matches the site (/sites/value, /premium, /dcpi) and
 # tests dramatically better on LinkedIn/X feeds than the previous orange treatment, which
 # competed visually with every other ad/post and read as "alert," not "premium."
-BG          = (15, 23, 42)       # slate-900 — primary canvas
-BG_DEEP     = (8, 14, 28)        # deeper navy for gradient bottoms
-PANEL       = (30, 41, 59)       # slate-800 — raised panels / chips
-PANEL_HI    = (51, 65, 85)       # slate-700 — hovered/highlighted panels
-PURPLE      = (124, 58, 237)     # brand primary
-PURPLE_LT   = (167, 139, 250)    # brand lighter — for badges + accent text
-CYAN        = (56, 189, 248)     # accent for kickers, dates, links
-GREEN       = (16, 185, 129)     # BUILD verdict
-RED         = (239, 68, 68)      # AVOID verdict
-AMBER       = (245, 158, 11)     # CAUTION verdict
+# ── dchub.cloud's PUBLISHED tokens (2026-09-05) ────────────────────────────
+# Until today this file ran on default Tailwind slate + sky while the website
+# ran on a near-black ground with an indigo->violet accent. Not one token
+# matched, which is why every card read as off-brand no matter how it was
+# tweaked. These values are the site's own custom properties, verbatim:
+#
+#   --bg #0a0a0f  --surface #131319  --surface-2 #1a1a22
+#   --text #f5f5f7  --text-dim #a1a1aa  --text-faint #71717a
+#   --indigo #6366f1  --violet #a855f7
+#   accent  linear-gradient(135deg, #6366f1 0%, #a855f7 100%)
+#
+# Change these ONLY to follow the site. tests/test_card_brand_tokens.py pins
+# them against the published values.
+BG          = (10, 10, 15)       # --bg        #0a0a0f
+BG_DEEP     = (6, 6, 10)         # deeper ground for gradient bottoms
+PANEL       = (19, 19, 25)       # --surface   #131319
+PANEL_HI    = (26, 26, 34)       # --surface-2 #1a1a22
+INDIGO      = (99, 102, 241)     # --indigo    #6366f1  (accent start)
+VIOLET      = (168, 85, 247)     # --violet    #a855f7  (accent end)
 WHITE       = (255, 255, 255)
-TEXT        = (241, 245, 249)    # near-white text
-MUTED       = (148, 163, 184)    # slate-400 — secondary text
-DIM         = (100, 116, 139)    # slate-500 — captions
+TEXT        = (245, 245, 247)    # --text       #f5f5f7
+MUTED       = (161, 161, 170)    # --text-dim   #a1a1aa
+DIM         = (113, 113, 122)    # --text-faint #71717a
 
-# Back-compat aliases — older code references ACCENT / ACCENT2
-ACCENT  = PURPLE
-ACCENT2 = PURPLE_LT
+# Verdict colours are SEMANTIC, not brand accent — they encode BUILD/CAUTION/
+# AVOID and are deliberately outside the indigo->violet ramp so the accent
+# never reads as a verdict.
+GREEN       = (16, 185, 129)     # BUILD
+RED         = (239, 68, 68)      # AVOID
+AMBER       = (245, 158, 11)     # CAUTION
+
+# Back-compat aliases. The old names are used in ~90 call sites; repointing
+# them is what moves the whole fleet onto the brand in one change. CYAN in
+# particular no longer means cyan — the site has no cyan.
+PURPLE     = INDIGO
+PURPLE_LT  = VIOLET
+CYAN       = INDIGO
+ACCENT     = INDIGO
+ACCENT2    = VIOLET
 
 
 # Fonts are BUNDLED in the repo (routes/fonts/) and loaded first. This is the
@@ -62,11 +85,20 @@ _FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts')
 _FONT_FELL_BACK = False   # flips True (and logs once) if we ever hit load_default
 
 
-def _font(size, bold=True):
-    """Bundled DejaVu (repo) first, then system fonts, then a LOUD default."""
+def _font(size, bold=True, weight=None):
+    """The BRAND face first (Instrument Sans — what dchub.cloud serves), then
+    the bundled DejaVu fallback, then system fonts, then a LOUD default.
+
+    `weight` optionally picks a specific Instrument Sans cut ('Bold',
+    'SemiBold', 'Medium', 'Regular'); omitted, `bold` selects Bold/Regular.
+    DejaVu has no matching cuts, so the fallback collapses to bold/regular —
+    which is the point: it is a fallback, not a design."""
     from PIL import ImageFont
     global _FONT_FELL_BACK
+    cut = weight or ('Bold' if bold else 'Regular')
     candidates = [
+        os.path.join(_FONT_DIR, f'InstrumentSans-{cut}.ttf'),
+        os.path.join(_FONT_DIR, 'InstrumentSans-Bold.ttf' if bold else 'InstrumentSans-Regular.ttf'),
         os.path.join(_FONT_DIR, 'DejaVuSans-Bold.ttf' if bold else 'DejaVuSans.ttf'),
         '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if bold
             else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
@@ -85,9 +117,11 @@ def _font(size, bold=True):
 
 
 def _mono(size):
-    """Monospace font for terminal/data-brutalist style (bundled first)."""
+    """JetBrains Mono — the site's --mono face. Labels, eyebrows and
+    figures only; it must never set a headline again."""
     from PIL import ImageFont
     for path in [
+        os.path.join(_FONT_DIR, 'JetBrainsMono-Bold.ttf'),
         os.path.join(_FONT_DIR, 'DejaVuSansMono-Bold.ttf'),
         '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf',
         '/System/Library/Fonts/Menlo.ttc',
@@ -350,6 +384,41 @@ def _subtle_gradient(img, top_color, bottom_color, falloff=1.0):
         d.line([(0, i), (W, i)], fill=(r, g, b))
 
 
+def _brand_gradient(size):
+    """linear-gradient(135deg, #6366f1, #a855f7) — the site's accent, as an
+    image. Pure PIL, no numpy."""
+    from PIL import Image
+    w, h = size
+    g = Image.new('RGB', (w, h))
+    px = g.load()
+    for y in range(h):
+        for x in range(w):
+            t = ((x / max(w - 1, 1)) + (y / max(h - 1, 1))) / 2
+            px[x, y] = (
+                round(INDIGO[0] + (VIOLET[0] - INDIGO[0]) * t),
+                round(INDIGO[1] + (VIOLET[1] - INDIGO[1]) * t),
+                round(INDIGO[2] + (VIOLET[2] - INDIGO[2]) * t),
+            )
+    return g
+
+
+def _grad_text(img, xy, text, font):
+    """Fill glyphs with the brand gradient — PIL's equivalent of the site's
+    `.grad` class (background-clip:text). Renders the text to an alpha mask and
+    pastes the gradient through it, so the letterforms are identical to a
+    normal draw; only the fill changes."""
+    from PIL import Image, ImageDraw
+    if not text:
+        return
+    m = ImageDraw.Draw(Image.new('L', (1, 1)))
+    w = int(m.textlength(text, font=font)) + 8
+    asc, desc = font.getmetrics()
+    h = asc + desc + 8
+    mask = Image.new('L', (w, h), 0)
+    ImageDraw.Draw(mask).text((0, 0), text, font=font, fill=255)
+    img.paste(_brand_gradient((w, h)), (int(xy[0]), int(xy[1])), mask)
+
+
 def _draw_brand_strip(d, y_top=0, y_bot=8):
     """Thin purple accent strip — typically across the very top of the
     canvas. Visual signature that ties all 4 styles together. Replaces
@@ -357,14 +426,20 @@ def _draw_brand_strip(d, y_top=0, y_bot=8):
     d.rectangle([(0, y_top), (W, y_bot)], fill=PURPLE)
 
 
-def _draw_brand_footer(d, y, mark='dchub.cloud', date_str=None, kicker='DC HUB MEDIA'):
+def _draw_brand_footer(d, y, mark='dchub.cloud', date_str=None, kicker='DC HUB MEDIA',
+                       chip=True):
     """Standardized footer block. Brand monogram on the LEFT, kicker text
     aligned, URL on the RIGHT. Replaces the inconsistent 'dchub.cloud · DC Hub Daily Index'
     / '→ dchub.cloud/news' / 'dchub.cloud · DC Hub Media · Daily Power Index' strings
     that varied across styles in v1."""
-    _brand_chip(d, 60, y - 10, size=52)
-    d.text((130, y - 4),     kicker, font=_font(20),               fill=PURPLE_LT)
-    d.text((130, y + 20),    mark,   font=_mono(18),                fill=MUTED)
+    # chip=False when the header already carries the mark — the card had TWO
+    # DC HUB logos, one at each corner, which is a template tell not branding.
+    _x = 130 if chip else 64
+    if chip:
+        _brand_chip(d, 60, y - 10, size=52)
+    if kicker:
+        d.text((_x, y - 4),  kicker, font=_font(20),                fill=VIOLET)
+    d.text((_x, y + 20),     mark,   font=_mono(18),                fill=MUTED)
     if date_str:
         try:
             bbox = d.textbbox((0, 0), date_str, font=_mono(20))
@@ -547,8 +622,15 @@ def _draw_editorial(pr):
     # Kicker row — brand chip + DC HUB + date (chip beats the tiny diamond
     # glyph, which rendered as a barely-visible speck at 22pt)
     _brand_chip(d, 64, 44, size=40)
-    date_full = _safe_date_str(pr.get('date'), '%b %d, %Y').upper()
-    d.text((120, 52), f'DC HUB  ·  {date_full}', font=_font(24), fill=CYAN)
+    # 2026-09-05: the date is stamped only on DATED editorial (a press release).
+    # /og/dynamic.png cards are evergreen marketing copy — a date there ages the
+    # card the moment it is posted AND changes the bytes daily, which defeats
+    # the 7-day edge cache the card is now served under.
+    _evergreen = str(pr.get('slug') or '').startswith('dyn-')
+    _kick = 'DC HUB'
+    if not _evergreen:
+        _kick += '  ·  ' + _safe_date_str(pr.get('date'), '%b %d, %Y').upper()
+    d.text((120, 52), _kick, font=_font(24), fill=INDIGO)
 
     # Verdict pill — top-right, if signals carry one
     signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
@@ -562,8 +644,17 @@ def _draw_editorial(pr):
     hfont = _font(72)
     lines = _wrap_px(title, hfont, W - 128, max_lines=3)
     y = 136
-    for line in lines:
-        d.text((64, y), line, font=hfont, fill=WHITE)
+    # The site's hero sets one line white and the next in the indigo->violet
+    # gradient (`.grad`). Mirror it: the LAST line carries the gradient, so the
+    # card is recognisably ours before the headline is even read. A one-line
+    # headline stays white — a lone gradient line reads as an error, not a
+    # treatment.
+    _grad_line = len(lines) - 1 if len(lines) > 1 else -1
+    for i, line in enumerate(lines):
+        if i == _grad_line:
+            _grad_text(img, (64, y), line, hfont)
+        else:
+            d.text((64, y), line, font=hfont, fill=WHITE)
         y += 90
 
     # Purple rule + stat strip — the supporting number deserves editorial
@@ -571,7 +662,7 @@ def _draw_editorial(pr):
     sub = pr.get('subheadline', '')
     if sub:
         sep_y = min(max(y + 26, 400), 470)
-        d.rectangle([(64, sep_y), (144, sep_y + 5)], fill=PURPLE_LT)
+        img.paste(_brand_gradient((80, 5)), (64, sep_y))
         sfont = _font(32)
         # 3-line headline leaves room for only one stat line above the footer
         _max_sub = 1 if len(lines) >= 3 else 2
@@ -581,18 +672,16 @@ def _draw_editorial(pr):
             d.text((64, sy), s, font=sfont, fill=TEXT)
             sy += 44
 
-    # Bar-chart motif — three ascending rounded bars bottom-right; quiet
-    # data-viz signature so the card never reads as an empty slab
-    bx, bw, bgap = W - 218, 34, 14
-    for i, bh in enumerate((64, 104, 150)):
-        _rounded_rect(d, [(bx + i * (bw + bgap), H - 130 - bh),
-                          (bx + i * (bw + bgap) + bw, H - 130)],
-                      radius=8,
-                      fill=((60, 66, 105), (91, 79, 176), PURPLE)[i])
+    # 2026-09-05: the three ascending bars that used to sit bottom-right were
+    # removed. They encoded NOTHING — a decorative chart on a card from a
+    # company whose product is data reads as clip-art, and it collided with the
+    # photo. If a card wants a chart it should plot something true; see the
+    # grid-inventory style.
 
-    # Footer
+    # Footer — no second chip (the header already carries the mark) and no
+    # repeated 'DC HUB' kicker.
     _draw_brand_footer(d, y=H - 64, mark='dchub.cloud/news',
-                       kicker='DC HUB  ·  MARKET INTELLIGENCE')
+                       kicker=None, chip=False)
 
     return img
 
@@ -1027,9 +1116,13 @@ def _compose_photo_hero(bg, pr):
 
     # Brand chip + DC HUB MEDIA label (top-left, like every other style)
     _brand_chip(d, 60, 56, size=52)
-    d.text((130, 56),  'DC HUB MEDIA', font=_font(20), fill=PURPLE_LT)
+    # Over a PHOTO the label is near-white, not violet. The brand accent is a
+    # saturated mid-tone: it reads fine on the #0a0a0f ground but loses contrast
+    # against a bright sky, and only a thin top scrim protects this row. The
+    # indigo chip beside it already carries the brand colour.
+    d.text((130, 56),  'DC HUB MEDIA', font=_font(20), fill=TEXT)
     d.text((130, 84),  _safe_date_str(pr.get('date'), '%b %d, %Y').upper(),
-           font=_mono(16), fill=CYAN)
+           font=_mono(16), fill=MUTED)
 
     # Verdict pill — top-right ONLY for real market verdicts (2026-07-16: never on
     # capability/platform cards — that was the nonsense "BUILD" pill the operator
