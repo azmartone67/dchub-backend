@@ -290,11 +290,23 @@ def test_repo_worker_is_canon_clean_and_current():
     # "facilit" and `2,000\+ ... deals` outright — both patterns retired the
     # PREVIOUS floors and now match the CURRENT canon, so the honest literal
     # fails the drift fence. Only derivation lands.
+    #
+    # 4.9.52 -> 4.9.53-og-asset-cache-tier (2026-09-05): `/api/v1/og/` had NO
+    # entry in ROUTE_CACHE_MAP, so getRouteTier fell through to the `warm`
+    # default built for volatile API data (browserMaxAge 180, edgeTtl 300).
+    # edgeTtl is handed to CF as `cf.cacheTtl`, which OVERRIDES origin headers,
+    # so the edge re-fetched and the origin re-ran a ~1.4s PIL render every 5
+    # minutes — forever. Measured same-minute: origin served
+    # `public, max-age=604800, immutable`, the client saw `max-age=180`; cold
+    # 1.72s vs warm 0.09s. Adds an `asset` tier (604800/604800, KV TTLs 0 so PNG
+    # bytes stay out of the JSON text lane) and registers the prefix. Also adds
+    # cacheControlFor(), so the anonymous-GET rewrite no longer SHORTENS what
+    # the origin asked for — it previously discarded `immutable` outright.
     # ★ PASTE OUTSTANDING — merging does not ship this.
-    # Verify with (want 4.9.52):
+    # Verify with (want 4.9.53):
     #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.52-ai-plugin-canon-bound'" in src
+    assert "WORKER_VERSION = '4.9.53-og-asset-cache-tier'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

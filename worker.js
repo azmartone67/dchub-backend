@@ -491,7 +491,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.52-ai-plugin-canon-bound';
+const WORKER_VERSION = '4.9.53-og-asset-cache-tier';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -1034,9 +1034,17 @@ const CACHE_TIERS = {
   cold:      { kvFreshTtl: 900,  kvStaleTtl: 86400, browserMaxAge: 600,  edgeTtl: 900  },
   emergency: { kvFreshTtl: 0,    kvStaleTtl: 86400, browserMaxAge: 0,    edgeTtl: 0    },
   none:      { kvFreshTtl: 0,    kvStaleTtl: 0,     browserMaxAge: 0,    edgeTtl: 0    },
+  // 2026-09-05: deterministic BINARY assets keyed entirely by their query
+  // string — the OG/social cards. They are not API data and must not inherit
+  // the `warm` fallback (180s/300s), which made every LinkedIn unfurl and every
+  // cold PoP pay a fresh 1.4s PIL render. kvStaleTtl:0 keeps them out of the KV
+  // lane on purpose: kvCacheStore JSON.stringify's `await resp.text()`, which is
+  // not safe for PNG bytes, and this worker has no isTextualContentType guard.
+  asset:     { kvFreshTtl: 0,    kvStaleTtl: 0,     browserMaxAge: 604800, edgeTtl: 604800 },
 };
 
 const ROUTE_CACHE_MAP = [
+  { prefix: '/api/v1/og/', tier: 'asset' },
   { prefix: '/api/auth/', tier: 'none' },
   { prefix: '/api/stripe/', tier: 'none' },
   { prefix: '/api/admin/', tier: 'none' },
@@ -1081,6 +1089,29 @@ function getRouteTier(pathname) {
     if (pathname.startsWith(route.prefix)) return CACHE_TIERS[route.tier];
   }
   return CACHE_TIERS.warm;
+}
+
+// 2026-09-05: NEVER SHORTEN WHAT THE ORIGIN ASKED FOR.
+//
+// This worker rewrote Cache-Control to the tier default on every anonymous GET,
+// unconditionally. The origin served /api/v1/og/*.png as
+// `public, max-age=604800, immutable` and the client saw `max-age=180` — the
+// origin's explicit, strongest possible "this never changes" was discarded.
+// (The sibling Pages worker has a guard, but it only tests for no-store, so it
+// honours "cache me LESS" and ignores "cache me MORE". Same bug, one direction.)
+//
+// Returns the Cache-Control value to SET, or null to leave the origin's header
+// alone. Pure: no I/O, no clock — so it is directly testable.
+function cacheControlFor(originCacheControl, tierMaxAge) {
+  if (!(tierMaxAge > 0)) return null;            // tier opted out of rewriting
+  const cc = String(originCacheControl || '').toLowerCase();
+  // The origin asked for something we must not weaken into a public cache.
+  if (/no-store|no-cache|private/.test(cc)) return null;
+  const m = cc.match(/max-age\s*=\s*(\d+)/);
+  const originMaxAge = m ? parseInt(m[1], 10) : null;
+  // The origin asked for LONGER than the tier default — it knows better.
+  if (originMaxAge !== null && originMaxAge > tierMaxAge) return null;
+  return `public, max-age=${tierMaxAge}, stale-while-revalidate=${tierMaxAge * 2}`;
 }
 
 // ============================================================
@@ -3815,7 +3846,10 @@ export default {
       result.headers.set('X-DC-Worker-Version', WORKER_VERSION);
       result.headers.set('X-DC-Response-Time', `${Date.now() - startTime}ms`);
       result.headers.set('X-DC-Attempts', String(attempts));
-      if (isGet && !hasApiKey && tier.browserMaxAge > 0) result.headers.set('Cache-Control', `public, max-age=${tier.browserMaxAge}, stale-while-revalidate=${tier.browserMaxAge * 2}`);
+      if (isGet && !hasApiKey) {
+        const _cc = cacheControlFor(resp.headers.get('Cache-Control'), tier.browserMaxAge);
+        if (_cc) result.headers.set('Cache-Control', _cc);
+      }
       if (cacheClone) ctx.waitUntil((async () => { const body = await cacheClone.text(); await kvCacheStore(env.DCHUB_CACHE, kvCacheKey(url.toString()), body, cacheClone.headers.get('content-type') || 'application/json', tier.kvStaleTtl); })());
       return result;
     }
