@@ -10,8 +10,9 @@ iso_queue_snapshots. The fetch URLs / parse patterns (PJM public key,
 ISO-NE cookie jar, ERCOT GIS listing scrape, CAISO row-4 header, etc.) are
 reused from that proven module.
 
-Run it from inside /Users/jonathanmartone/dchub-backend so the prod
-DATABASE_URL is injected and egress runs from this Mac's network:
+Run it from inside your dchub-backend checkout (the directory linked to the
+Railway project) so `railway run` injects the prod DATABASE_URL; egress then
+comes from your workstation's network rather than Railway's:
 
     railway run python3 load_interconnect_queue_live.py            # all ISOs
     railway run python3 load_interconnect_queue_live.py NYISO CAISO # subset

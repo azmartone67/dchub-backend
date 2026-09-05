@@ -23,7 +23,7 @@ WHAT IT IS
       sidesteps).
   (b) An idempotent seed (ON CONFLICT DO UPDATE) from a CURATED, hand-verified
       capability list — every item checked against the live gateway source
-      (/Users/jonathanmartone/dchub-mcp-server/server.mjs, line refs in the
+      (the dchub-mcp-server repo's server.mjs, line refs in the
       `loc` field). Status is HONEST: LIVE = on the default code path / a
       registered tool; FLAG-GATED = behind an env toggle (default recorded);
       INERT = present but OFF/not enforced (so the brain doesn't "discover" it
@@ -102,7 +102,7 @@ def _conn():
 
 # ── The CURATED, HONEST capability list ──────────────────────────────
 # Verified item-by-item against the LIVE gateway source
-# (/Users/jonathanmartone/dchub-mcp-server/server.mjs). Each tuple is
+# (the dchub-mcp-server repo's server.mjs). Each tuple is
 # (name, location, status, note). status ∈ {LIVE, FLAG-GATED, INERT}.
 #   LIVE       = on the default code path / a registered tool (treat as BUILT).
 #   FLAG-GATED = behind an env toggle; default recorded in the note.
