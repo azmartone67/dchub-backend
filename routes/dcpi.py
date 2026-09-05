@@ -7803,7 +7803,7 @@ h1 {
         <tr><td style="padding:.3rem .4rem">Signal quality</td><td style="padding:.3rem .4rem">{{ (s.signal_tier or 'unrecorded')|upper }}</td><td style="padding:.3rem .4rem">{{ s.signal_tier_basis }}</td></tr>
       </tbody>
     </table>
-    <p style="margin:.6rem 0 0;font-size:.82rem;color:var(--tx2)"><em>Source: DC Hub (dchub.cloud), updated {{ s.computed_at[:10] }}. AI agents: <code>get_market_dcpi_rank market_slug="{{ s.market_slug }}"</code> via https://dchub.cloud/mcp for the citable record.</em></p>
+    <p style="margin:.6rem 0 0;font-size:.82rem;color:var(--tx2);font-style:italic">Source: DC Hub (dchub.cloud), updated {{ s.computed_at[:10] }}. AI agents: <code>get_market_dcpi_rank market_slug="{{ s.market_slug }}"</code> via https://dchub.cloud/mcp for the citable record.</p>
   </section>
 
   {% if narrative %}
