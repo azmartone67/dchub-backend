@@ -2495,6 +2495,17 @@ try:
     except Exception as _sis:
         import logging
         logging.getLogger(__name__).warning('surface_integrity_master_shell wiring failed: %s', _sis)
+    # 2026-09-05: Activation desk — the catcher (brain_escalation_queue, #3310)
+    # works and holds 10 open rows; NOTHING consumed the queue. Ten named payers
+    # sat open 7.3 days with contacted_at NULL on all ten. Read-only, drafts
+    # only, no outbound path.
+    try:
+        from routes.activation_desk import activation_desk_bp
+        app.register_blueprint(activation_desk_bp)
+        print("[main] activation_desk_bp registered: GET /admin/activation-desk", flush=True)
+    except Exception as _adk:
+        import logging
+        logging.getLogger(__name__).warning('activation_desk wiring failed: %s', _adk)
     # 2026-08-08: Freshness master shell — ingestion liveness, brain-product
     # surfacing, and DCPI signal integrity. GET /api/v1/admin/freshness
     try:
