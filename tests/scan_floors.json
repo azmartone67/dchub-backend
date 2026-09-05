@@ -7,6 +7,9 @@
     "test_admin_gate_fail_closed.py": {
       "pglob": 660
     },
+    "test_agent_tool_identifier_survives_markdown.py": {
+      "pglob": 660
+    },
     "test_agentic_loop_inspect.py": {
       "glob": 660
     },
