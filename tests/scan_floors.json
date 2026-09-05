@@ -166,6 +166,9 @@
     "test_parametrize_ids_are_checkout_independent.py": {
       "glob": 640
     },
+    "test_private_helpers_resolve.py": {
+      "pglob": 660
+    },
     "test_qa_smoke_ua_exclusion.py": {
       "pglob": 6
     },
