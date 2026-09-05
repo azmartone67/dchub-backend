@@ -20314,8 +20314,13 @@ def get_marketing_stats():
         conn = get_db()
         c = conn.cursor()
 
-        # Live facility count
-        c.execute("SELECT COUNT(*) FROM discovered_facilities")
+        # Live facility count — DISTINCT buildings, not source rows.
+        # COUNT(*) over discovered_facilities is ~1.38x the building count
+        # (the same row arrives from several providers); publishing it as
+        # "facilities" overstates the estate by a third. Mirrors
+        # public_endpoints.py:143, the citable facilities_distinct.
+        c.execute("SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
+                  "WHERE canonical_slug IS NOT NULL")
         facilities = c.fetchone()[0] or 0
 
         # Live pipeline from facilities table (all non-active statuses)
@@ -27150,8 +27155,12 @@ def api_facilities_stats():
     try:
         c = conn.cursor()
 
-        # Total facilities
-        c.execute("SELECT COUNT(*) FROM discovered_facilities")
+        # Total facilities — DISTINCT buildings. This one is published as
+        # 'total_facilities', a name the stock guard already knew; it was
+        # missed because the VARIABLE is `total`, so the assignment carried no
+        # stock name and only the dict field did.
+        c.execute("SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
+                  "WHERE canonical_slug IS NOT NULL")
         total = c.fetchone()[0]
 
         # By status

@@ -124,16 +124,46 @@ def _normalize(text):
 # facilities_records means. A guard that cries wolf on the canonical endpoint
 # is a guard people learn to skip.
 ASSIGN_LOOKAHEAD = 3  # lines from an execute() to the fetch that consumes it
+PUBLISH_SPAN = 60     # lines from that fetch to where the value is published
+
+# ★ WIDENED 2026-09-05, after /reports/quarterly published 28,345 against canon
+# 20,523 (1.38x) and this guard stayed green through it. Two gaps, both in what
+# the guard would RECOGNISE as a stock — never in what it scans (it already
+# walked routes/quarterly_report.py end to end):
+#
+#   1. The key was the bare word. `s["facilities"] = int(n)` is as much a stock
+#      claim as `facilities_total`; the alternation just did not list it. A
+#      record count belongs under facilities_records, which THE RULE above
+#      already says — so the bare key is a stock name by that rule's own logic.
+#   2. The claim was a DICT LITERAL, not an assignment.
+#      `out["headline"] = {"facilities": _n_fac}` sat five lines below its
+#      execute(), past ASSIGN_LOOKAHEAD, and matched no `<name> =` shape at all.
+#
+# `facilities` is added ONLY as a dict key / literal field, never as a bare
+# variable: a local named `facilities` holding a row list is ordinary and
+# flagging it would be the cry-wolf failure the note above warns about.
+_STOCK = (r"total_facilities|facilities_total|facilities_now"
+          r"|facility_total|facilities_count")
 ASSIGN = re.compile(
     r"""(?:^|\W)(?:                      # a stock-named assignment target
-            (?P<bare>total_facilities|facilities_total|facilities_now
-                     |facility_total|facilities_count)
-          | \[\s*["'](?P<key>total_facilities|facilities_total|facilities_now
-                              |facility_total|facilities_count)["']\s*\]
+            (?P<bare>""" + _STOCK + r""")
+          | \[\s*["'](?P<key>""" + _STOCK + r"""|facilities)["']\s*\]
         )\s*=""",
     re.X,
 )
+# A stock published as a field of a dict literal, e.g. {"facilities": n}. Its
+# distance from the query is unbounded, so it is matched on the WHOLE file
+# rather than the line window — see test_facility_stock_never_uses_raw_row_count.
+DICT_FIELD = re.compile(
+    r"""["'](?P<field>""" + _STOCK + r"""|facilities)["']\s*:\s*(?P<src>[A-Za-z_]\w*)""",
+    re.X,
+)
 FETCH = re.compile(r"fetchone|fetchall|_safe_scalar|safe_query|scalar")
+# `<var> = ...fetchone()...` — the variable a raw count flows INTO, so the
+# dict-literal shape can be followed from the query to where it is published.
+VAR_FROM_FETCH = re.compile(
+    r"(?:^|\W)(?P<var>[A-Za-z_]\w*)\s*=[^=].*?(?:fetchone|fetchall|_safe_scalar"
+    r"|safe_query|scalar)")
 
 
 def test_facility_stock_never_uses_raw_row_count():
@@ -170,6 +200,30 @@ def test_facility_stock_never_uses_raw_row_count():
                         break
                     if RAW_COUNT.search(nxt) or DISTINCT_COUNT.search(nxt):
                         break  # a new query owns the lines below
+            # (3) execute(...) here, the value bound to a variable just below,
+            #     and that variable published as a stock FIELD nearby.
+            #
+            # ★ THE WINDOW IS THE WHOLE RULE. The first cut searched the field
+            # FILE-WIDE, and in a 30k-line main.py that is not a chain, it is a
+            # coincidence: a generic `total = cur.fetchone()[0]` matched a
+            # `"facilities": total` written 12,000 lines away in an unrelated
+            # handler. Two false positives, both on correct code. PUBLISH_SPAN
+            # keeps it to the same stretch of function — /reports/quarterly put
+            # its dict literal five lines below the query, and the widest TRUE
+            # case found here is 48.
+            if not hit:
+                for j in range(i + 1, min(len(lines), i + 1 + ASSIGN_LOOKAHEAD)):
+                    if RAW_COUNT.search(lines[j]) or DISTINCT_COUNT.search(lines[j]):
+                        break
+                    vm = VAR_FROM_FETCH.search(lines[j])
+                    if not vm:
+                        continue
+                    var = vm.group("var")
+                    window = "\n".join(lines[j:j + PUBLISH_SPAN])
+                    if any(fm.group("src") == var
+                           for fm in DICT_FIELD.finditer(window)):
+                        hit = True
+                    break
             if hit:
                 violations.append(
                     f"{os.path.relpath(path, REPO)}:{i + 1} — a facility STOCK is "
