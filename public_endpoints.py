@@ -216,6 +216,7 @@ def founding_members_status():
         claimed = st['claimed']
         remaining = st['remaining']
         program_active = st['program_active']
+        retired = bool(st.get('retired'))
     except Exception:
         # Legacy inline fallback so this endpoint never 500s if the import
         # breaks. Same shape, module-constant total.
@@ -241,7 +242,13 @@ def founding_members_status():
                     pass
         total = FOUNDING_TOTAL
         remaining = max(0, total - claimed)
-        program_active = remaining > 0
+        # r-price-collapse: the fallback fails toward RETIRED, not active. If
+        # the canonical import is broken we cannot know the seat state, and the
+        # safe render for a retired programme is nothing at all — publishing a
+        # live scarcity countdown from a fallback path is the failure that
+        # actually costs something.
+        program_active = False
+        retired = True
     # r-price-collapse (2026-09-05): the founding PROGRAM is retired — $99 is
     # simply the Pro list price now, so there is no longer a higher price to
     # strike through and no scarcity to count. `regular_price` used to be 299;
@@ -257,8 +264,10 @@ def founding_members_status():
         'remaining': remaining,
         'price': _canon_price('pro'),
         'regular_price': None,
-        'program_active': False,
-        'retired': True,
+        # Both read from routes.founding_customers.founding_status() — never
+        # restated here. See that function for why.
+        'program_active': program_active,
+        'retired': retired,
         'note': 'Founding is retired — $99/mo is the Pro list price.',
     })
 

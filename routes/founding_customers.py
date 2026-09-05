@@ -270,7 +270,17 @@ def founding_status() -> dict:
         "claimed": claimed,
         "cap": FOUNDING_CAP,
         "remaining": remaining,
-        "program_active": remaining > 0,
+        # ★ r-price-collapse (2026-09-05): the founding PROGRAMME is retired.
+        #   $99 is simply the Pro list price now, so there is no scarcity to
+        #   publish and nothing to be short of. Set HERE, at the one source
+        #   both public surfaces read, and not on either endpoint — patching
+        #   one of them is how /api/v1/founding-customers/count and
+        #   /api/founding-members came to contradict each other before, which
+        #   is the whole reason this function exists (see the docstring).
+        #   claimed/cap/remaining stay truthfully computed so no consumer
+        #   KeyErrors and the cohort stays countable internally.
+        "program_active": False,
+        "retired": True,
     }
 
 

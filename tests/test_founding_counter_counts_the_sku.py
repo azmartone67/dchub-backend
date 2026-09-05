@@ -151,8 +151,13 @@ def test_the_counter_publishes_founding_licences_not_paid_customers(fc):
     st = fc.founding_status()
     assert st["claimed"] == SKU_HOLDERS, (
         "counter must publish founding-SKU holders, not every paid row")
+    # r-price-collapse (2026-09-05): the cohort is still counted truthfully —
+    # that is what this test is about — but the PROGRAMME is retired, so
+    # program_active is False and `retired` is now part of the shape. The
+    # exact-dict assertion is kept (it is what catches a stray key) and
+    # updated, rather than loosened to a subset check.
     assert st == {"claimed": 7, "cap": 25, "remaining": 18,
-                  "program_active": True}
+                  "program_active": False, "retired": True}
 
 
 @pytest.mark.parametrize("plan", ["starter", "developer", "pro",

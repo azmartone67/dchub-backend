@@ -172,16 +172,45 @@ def test_metric_harness_module_real():
 
 
 def test_annual_options_additive_and_consistent():
+    """r-price-collapse (2026-09-05): PRO ANNUAL IS WITHDRAWN.
+
+    This used to pin $1,188/yr and the $1,794 "50% off" promo. Both were
+    priced against a $299/mo list. Against the $99 list they are arithmetic
+    nonsense — 1188 IS 12 x 99 (a 0% discount) and 1794 is 51% MORE than
+    paying monthly — so offering either would punish the buyer for taking it.
+
+    The guard therefore inverts: pro must carry NO annual option. And it adds
+    the invariant that outlives any particular price — an annual option that
+    exists must beat twelve monthly payments, which is the property that
+    silently broke when the monthly price moved and nothing rechecked it.
+    """
     from tier_registry import (ANNUAL_OPTIONS, TIER_PRICE_USD_MONTH,
                                as_public_dict)
-    assert ANNUAL_OPTIONS["pro"]["annual_usd_year"] == 1188
-    assert ANNUAL_OPTIONS["pro"]["annual_promo_usd_year"] == 1794
+    assert "pro" not in ANNUAL_OPTIONS, (
+        "Pro annual is withdrawn — see the note in tier_registry.ANNUAL_OPTIONS. "
+        "To restore it, mint a link that actually beats 12x the monthly price.")
     # ADDITIVE: no annual key leaked into the monthly price map (access/rank
     # surfaces key off that map; test_tier_consistency guards the rest)
     assert not any("annual" in k for k in TIER_PRICE_USD_MONTH)
     d = as_public_dict()
-    assert d["tiers"]["pro"]["annual"]["annual_usd_year"] == 1188
     assert d["annual_options"] is not None
+    assert d["tiers"]["pro"].get("annual") in (None, {}), (
+        "pro is publishing an annual option that ANNUAL_OPTIONS does not define")
+
+    # ★ The durable invariant: ANY annual option offered must cost LESS than
+    #   twelve months at that tier's monthly price. This is what nobody
+    #   rechecked when Pro moved 299 -> 99, and it is priced in dollars, not
+    #   pinned to a literal, so it survives the next reprice too.
+    for tier, opt in ANNUAL_OPTIONS.items():
+        monthly = TIER_PRICE_USD_MONTH.get(tier)
+        for key in ("annual_usd_year", "annual_promo_usd_year"):
+            annual = opt.get(key)
+            if annual is None or not monthly:
+                continue          # custom/contact pricing has nothing to check
+            assert annual < monthly * 12, (
+                f"{tier}.{key} is ${annual}/yr against ${monthly}/mo "
+                f"(= ${monthly * 12}/yr) — the annual costs MORE than paying "
+                f"monthly, so it is a penalty, not an offer")
 
 
 # ── cron hygiene: the expired one-shots stay deleted ──────────────────
