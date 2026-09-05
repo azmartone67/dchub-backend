@@ -236,8 +236,17 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
         import psycopg2.extras
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             try:
-                cur.execute("SELECT to_regclass('public.saved_lp_alerts')")
-                if not (cur.fetchone() or [None])[0]:
+                # ★ 2026-09-05 — KEY, NOT POSITION. This cursor is a
+                # RealDictCursor, so a row is dict-like: `(row or [None])[0]`
+                # never took the [None] fallback (a non-empty dict is TRUTHY)
+                # and [0] was a key lookup -> KeyError(0). The except below
+                # recorded "schema_probe_failed" and RETURNED, so this cron has
+                # never fired an alert — while reporting a missing table that
+                # exists. The wrong reason is the worse half: it sends whoever
+                # reads the output hunting for a schema problem.
+                cur.execute("SELECT to_regclass('public.saved_lp_alerts') AS reg")
+                _probe = cur.fetchone()
+                if not (_probe and _probe.get("reg")):
                     out["errors"].append("saved_lp_alerts_table_missing")
                     return out
             except Exception:

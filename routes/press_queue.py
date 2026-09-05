@@ -137,7 +137,10 @@ Cite as: DC Hub Power Index, {m['market_name']}, {datetime.date.today().isoforma
                     (slug, title, sub, body,
                      json.dumps({"market": m["market_slug"], "delta_e": de, "delta_c": dc, "magnitude": magnitude}),
                      status))
-                rid = cur.fetchone()[0]
+                # RealDictCursor: RETURNING id comes back keyed by name.
+                # [0] raised KeyError(0), which escaped as a 500 AND skipped the
+                # commit below, so the INSERT rolled back.
+                rid = cur.fetchone()["id"]
                 rec = {"id": rid, "slug": slug, "title": title, "magnitude": magnitude}
                 if will_auto_publish:
                     auto_published.append(rec)

@@ -79,7 +79,11 @@ def verify_pending() -> dict:
                     out['undetermined'] += 1
                     out['verified'] += 1
                     continue
-                current_value = float(latest[0])
+                # _latest_obs returns a RealDictRow from the cursor opened
+                # above; SELECT value, observed_at -> key "value". latest[0]
+                # raised KeyError(0), and verify_pending's try has only a
+                # `finally`, so it propagated to an unhandled Flask 500.
+                current_value = float(latest["value"])
                 baseline = float(t['baseline_value']) if t['baseline_value'] is not None else None
                 target_delta = float(t['target_delta']) if t['target_delta'] is not None else 0.0
                 direction_up = _METRIC_DIRECTION.get(metric_key, True)

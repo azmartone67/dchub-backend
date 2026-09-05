@@ -260,7 +260,14 @@ def run_sweep():
                     json.dumps(lead['top_tools']), score,
                     draft['subject'], draft['body']
                 ))
-                new_id = int(cur.fetchone()[0])
+                # ★ RealDictCursor (opened at the top of this try): RETURNING id
+                # comes back keyed by name, so [0] raised KeyError(0) and the
+                # handler below rendered it as HTTP 500 {"error": "0"} — the
+                # same signature as /api/v1/admin/enterprise/inquiries.
+                # NOTE the two `(cur.fetchone() or [0])[0]` reads further down
+                # are NOT this bug: they sit under the PLAIN cursor opened later
+                # in the diagnostic branch, where positional access is correct.
+                new_id = int(cur.fetchone()["id"])
                 drafted.append({
                     "id":            new_id,
                     "email":         lead['email'],

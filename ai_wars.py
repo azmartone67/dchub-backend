@@ -189,13 +189,18 @@ def _init_tables():
     conn.commit()
 
     # Seed platform stats if empty
-    c.execute("SELECT COUNT(*) FROM wars_platform_stats")
-    if c.fetchone()[0] == 0:
+    # ★ RealDictCursor (opened above): COUNT(*) comes back keyed by name, so
+    # [0] raised KeyError(0) on every call. _tables_initialized is set only
+    # AFTER this function returns, so it re-raised on every request and
+    # _seed_data below never ran.
+    c.execute("SELECT COUNT(*) AS n FROM wars_platform_stats")
+    if c.fetchone()["n"] == 0:
         _seed_data(conn)
 
     # Seed wars_platforms from PLATFORMS dict if empty
-    c.execute("SELECT COUNT(*) FROM wars_platforms")
-    if c.fetchone()[0] == 0:
+    # Same defect; it was merely unreachable while the one above raised first.
+    c.execute("SELECT COUNT(*) AS n FROM wars_platforms")
+    if c.fetchone()["n"] == 0:
         for key, info in PLATFORMS.items():
             c.execute("""
                 INSERT INTO wars_platforms (platform, name, color, provider, auto_registered)
