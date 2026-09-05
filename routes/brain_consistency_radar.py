@@ -10666,6 +10666,127 @@ def check_auto_trial_signal_mint_mismatch() -> list[dict]:
 # Detection is essentially free — the existing /api/v1/observability/
 # route-audit endpoint already reports shadowed_routes + sets healthy:
 # False when any exist. This detector just consumes that signal.
+
+# ★★ 2026-09-05 — THE AUDITOR PROBED THE URL TEMPLATE, NOT A URL.
+#   Railway HTTP logs, dchub-backend:
+#       404  /markets/<slug>   ua=dchub-brain-route-audit/1.0
+#   /api/v1/observability/route-audit reports Flask RULES, so a
+#   parameterised path arrives as the literal string `/markets/<slug>`.
+#   The detector concatenated that onto the edge origin and probed it
+#   verbatim. `<slug>` is not a slug, so the request could only ever 404
+#   — and 404 is exactly the condition this detector reads as "BROKEN for
+#   real users", so it filed a shadowed_route finding against the market
+#   page on every scan while never once exercising a market page. Both
+#   halves are wrong: the pass is unearned and the fail is manufactured.
+#   Same class as the /api/v1/facility/<slug> pattern-vs-URL note above —
+#   a checker whose target is a PATTERN rather than a real address.
+#
+#   Fix: substitute a real, PUBLISHED value before probing, resolved from
+#   the same canon the page inventory is built from (market_deep_dive.
+#   sitemapped_market_slugs — the one source shared by sitemap-markets.xml
+#   and the /markets hub), never a hardcoded slug that rots when a market
+#   is retired. A rule whose placeholder has no resolver is reported as
+#   UNPROBED, never probed-and-blamed.
+_PLACEHOLDER_RE = re.compile(r"<[^<>]*>")
+
+
+def _real_market_slug() -> str | None:
+    """A slug `/markets/<slug>` actually publishes, or None.
+
+    Reads the SAME canon the pages do rather than pinning a literal: retire
+    a market and this follows, instead of quietly starting to probe a 404.
+    Fail-soft on its own (the curated metro tuple is a module constant), so
+    a cold DB degrades to a real slug rather than to the placeholder.
+    """
+    try:
+        from routes.market_deep_dive import sitemapped_market_slugs
+        for s in (sitemapped_market_slugs() or []):
+            s = (s or "").strip()
+            if s and not _PLACEHOLDER_RE.search(s):
+                return s
+    except Exception:      # noqa: BLE001 — resolver is best-effort
+        pass
+    return None
+
+
+# Placeholder resolvers by rule prefix. Longest prefix wins. Add a family
+# here (with its canonical source) the day one of its rules turns up
+# shadowed — until then that rule is reported unprobed, not guessed at.
+_PROBE_VALUE_RESOLVERS: tuple = (
+    ("/markets/", _real_market_slug),
+)
+
+
+def _resolve_probe_path(path: str) -> str | None:
+    """Concrete URL path for a Flask rule, or None when it cannot be made
+    concrete. A rule with no placeholder is already a URL and passes
+    through unchanged."""
+    p = path or ""
+    if not _PLACEHOLDER_RE.search(p):
+        return p or None
+    resolver = None
+    for prefix, fn in sorted(_PROBE_VALUE_RESOLVERS, key=lambda kv: -len(kv[0])):
+        if p.startswith(prefix):
+            resolver = fn
+            break
+    if resolver is None:
+        return None
+    value = resolver()
+    if not value:
+        return None
+    out = _PLACEHOLDER_RE.sub(str(value), p)
+    # Belt and braces: a resolver that returned something placeholder-shaped
+    # must not smuggle it back in.
+    return None if _PLACEHOLDER_RE.search(out) else out
+
+
+def _shadow_probe_targets(entries) -> list[dict]:
+    """[{path, probe, skip}] — the audit target list, deduped and resolved.
+
+    Pure: no network, no DB of its own. `probe` is the concrete path to
+    request, or None when the rule could not be made concrete (`skip`
+    says why). Split out of the detector so the placeholder invariant can
+    be asserted over the whole list without a live route-audit.
+    """
+    targets: list[dict] = []
+    seen: set = set()
+    for entry in (entries or []):
+        path = (entry or {}).get("path", "?")
+        if path in seen:          # route-audit can list the same path twice
+            continue
+        seen.add(path)
+        skip = None
+        # Never probe mutating paths (recompute/delete/etc.).
+        if any(w in path.lower()
+               for w in ("recompute", "delete", "send", "reset", "purge", "wipe")):
+            skip = "mutating"
+            probe = None
+        else:
+            probe = _resolve_probe_path(path)
+            if probe is None:
+                skip = "unresolved_placeholder"
+        targets.append({
+            "path":      path,
+            "probe":     probe,
+            "skip":      skip,
+            "methods":   (entry or {}).get("methods", []),
+            "endpoints": (entry or {}).get("endpoints", []),
+        })
+    return targets
+
+
+def unsubstituted_placeholder_targets(targets) -> list[str]:
+    """THE INVARIANT: every URL this auditor probes is a real address.
+
+    Returns the probe paths that still carry a `<...>` placeholder — empty
+    is the only healthy answer. Asserting it over the whole target list is
+    two lines and catches the entire class, whereas eyeballing one rule
+    catches one rule. Callers must not probe what this returns.
+    """
+    return [t["probe"] for t in (targets or [])
+            if t.get("probe") and _PLACEHOLDER_RE.search(t["probe"])]
+
+
 def check_shadowed_routes() -> list[dict]:
     """Probe /api/v1/observability/route-audit and flag any path that
     has multiple handlers. The dup is almost always a code merge issue:
@@ -10703,30 +10824,69 @@ def check_shadowed_routes() -> list[dict]:
     # /state-of-the-data-center + /research cases). This stops the brain crying wolf.
     _FALLBACK = ("redirects_404_killer", "redir_", "_fallback", "_404", "killer")
     _EDGE = "https://dchub.cloud"
-    _seen: set = set()
-    for entry in (data.get("shadowed_routes") or []):
-        path = entry.get("path", "?")
-        if path in _seen:          # route-audit can list the same path twice
-            continue
-        _seen.add(path)
-        methods = entry.get("methods", [])
-        endpoints = entry.get("endpoints", [])
 
-        # Never probe mutating paths (recompute/delete/etc.); skip them entirely.
-        if any(w in path.lower()
-               for w in ("recompute", "delete", "send", "reset", "purge", "wipe")):
+    # Resolve the whole target list up front, then ASSERT the invariant over it
+    # before a single request goes out: no probe URL may still carry a `<...>`
+    # placeholder. Two lines, whole class — see the 2026-09-05 note above.
+    targets = _shadow_probe_targets(data.get("shadowed_routes") or [])
+    _still_templated = unsubstituted_placeholder_targets(targets)
+    if _still_templated:
+        findings.append({
+            "issue":  "route_audit_probes_a_template",
+            "url":    "routes/brain_consistency_radar.py:check_shadowed_routes",
+            "count_kind": "item_count",
+            "count":  len(_still_templated),
+            "detail": (
+                f"Route auditor built {len(_still_templated)} probe URL(s) that are "
+                f"still URL TEMPLATES, not addresses ({', '.join(_still_templated[:4])}). "
+                f"Such a request can only 404, and this detector reads 404 as "
+                f"'broken for real users' — so it would file a manufactured finding "
+                f"while never exercising the page. Not probed. Fix "
+                f"_PROBE_VALUE_RESOLVERS so the placeholder resolves from that page "
+                f"family's canonical slug source."
+            ),
+        })
+        _bad = set(_still_templated)
+        targets = [t for t in targets if t.get("probe") not in _bad]
+
+    # A shadowed rule whose placeholder has no resolver is UNPROBED, not
+    # probed-and-blamed. Report the blind spot once, grouped, rather than
+    # letting it vanish silently (or, worse, become a fabricated 404).
+    _unresolved = [t["path"] for t in targets
+                   if t.get("skip") == "unresolved_placeholder"]
+    if _unresolved:
+        findings.append({
+            "issue":  "shadowed_route_unprobeable",
+            "url":    "routes/brain_consistency_radar.py:_PROBE_VALUE_RESOLVERS",
+            "count_kind": "item_count",
+            "count":  len(_unresolved),
+            "detail": (
+                f"{len(_unresolved)} shadowed rule(s) carry a placeholder with no "
+                f"registered resolver ({', '.join(_unresolved[:5])}), so this scan "
+                f"could NOT determine whether they serve users. Add the family's "
+                f"canonical slug source to _PROBE_VALUE_RESOLVERS "
+                f"(/markets/ resolves via market_deep_dive.sitemapped_market_slugs)."
+            ),
+        })
+
+    for target in targets:
+        probe_path = target.get("probe")
+        if not probe_path:            # mutating, or unresolved (reported above)
             continue
+        path = target["path"]
+        methods = target.get("methods", [])
+        endpoints = target.get("endpoints", [])
 
         # PROBE FIRST, then decide (order matters — a route can have a "fine"-looking
         # handler list yet still be 403/404 for real users, e.g. /research). Probe the
         # live EDGE: 405 = HEAD not allowed (route exists) → confirm with a 1-byte GET.
         live = None
         try:
-            hr = _req.head(_EDGE + path, timeout=3, allow_redirects=False,
+            hr = _req.head(_EDGE + probe_path, timeout=3, allow_redirects=False,
                            headers={"User-Agent": "dchub-brain-route-audit/1.0"})
             live = hr.status_code
             if live == 405:
-                live = _req.get(_EDGE + path, timeout=3, allow_redirects=False,
+                live = _req.get(_EDGE + probe_path, timeout=3, allow_redirects=False,
                                 headers={"User-Agent": "dchub-brain-route-audit/1.0",
                                          "Range": "bytes=0-0"}).status_code
         except Exception:
@@ -10765,8 +10925,9 @@ def check_shadowed_routes() -> list[dict]:
             "count":  len(real_eps),
             "detail": (
                 f"Path `{path}` ({','.join(methods)}) has {len(real_eps)} real handlers "
-                f"({', '.join(real_eps)}) AND returns live edge status {live} (BROKEN). "
-                + recommendation
+                f"({', '.join(real_eps)}) AND returns live edge status {live} (BROKEN)"
+                + (f" — probed as {probe_path}" if probe_path != path else "")
+                + ". " + recommendation
             ),
         })
     return findings
