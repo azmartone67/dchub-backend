@@ -1,7 +1,32 @@
 # DC Hub — Config Snapshot (recoverable)
 
-**Captured 2026-06-13 from the live Railway `dchub-backend` service** (`resourceful-essence`). 
-Non-secret values are recorded verbatim; secret values are NOT stored — only their NAMES, so you know what must be set for a clean restore. Regenerate with `railway run printenv`.
+**Captured 2026-06-13 from the live Railway `dchub-backend` service** (`resourceful-essence`).
+Non-secret values are recorded verbatim; secret values are NOT stored — only their NAMES, so you know what must be set for a clean restore.
+
+> ### ★ Regenerate with `railway variables list -s dchub-backend`, NOT `railway run printenv`
+>
+> `railway run printenv` runs printenv **on your machine** with Railway's vars
+> merged into your shell, so it dumps your local environment too. The
+> 2026-06-13 capture did exactly that: 31 entries below were never Railway
+> config at all — they were the operator's macOS shell (`HOME`, `PATH`, `PWD`,
+> `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `SSH_AUTH_SOCK`, `XPC_*`) and the
+> Claude Code desktop client that ran the command (`CLAUDE_CODE_*`,
+> `CLAUDECODE`, `BAGGAGE`, `AI_AGENT`). They were removed on 2026-09-05.
+>
+> That is not a cosmetic problem in a PUBLIC repo: those entries published a
+> username, a home-directory layout, an absolute path to the operator's Claude
+> install, a client session id, and a Sentry trace — none of which describe the
+> production service this file exists to restore. `railway variables list`
+> returns the service's own variables and nothing else.
+>
+> The rule from the 2026-08-07 credential incident still applies and is the
+> same rule: **filter by a KEY-NAME allowlist; never paste an environment dump
+> wholesale.** A var can hold something private regardless of whether its name
+> looks sensitive.
+>
+> The 59 entries below are what remained after the machine-local ones were
+> removed. They have NOT been re-verified against the live service since
+> 2026-06-13 — regenerate before trusting this for a restore.
 
 
 ## Brain / autonomy / publishing config (the settings that define behavior)
@@ -25,33 +50,18 @@ Non-secret values are recorded verbatim; secret values are NOT stored — only t
 - **`DCHUB_TRIAL_TOOL_DAILY_FULL=8`** — per-tool daily full-data cap for trial keys (upgrade-pressure dial; 0/unset = off).
 - **`DCHUB_BRAIN_L5_CONF_MIN=0.75`** — Layer-5 proposal confidence floor.
 
-## All other non-secret config (90 vars)
+## All other non-secret config (59 vars)
 
 - `ADMIN_INBOX_EMAIL` = `jonathan@dchub.cloud`
-- `AI_AGENT` = `claude-code_2-1-170_agent`
 - `API_TIMEOUT_MS` = `900000`
 - `AUTOPOST_ENABLED` = `0`
 - `AUTOPOST_SIZE` = `square`
 - `AUTOPOST_THEME` = `rotate`
-- `BAGGAGE` = `sentry-environment=production,sentry-release=Claude%401.12603.1,sentry-public_key=2f98127cbffe4740b1f767a2de77d23b,sentry-trace_id=8b96aed64d2c4fa591013d741b2d6798,sentry-org_id=1158394`
 - `CF_ACCOUNT_ID` = `4bb33ec40ef02f9f4b41dc97668d5a52`
-- `CLAUDECODE` = `1`
-- `CLAUDE_AGENT_SDK_VERSION` = `0.3.170`
-- `CLAUDE_CODE_DISABLE_CRON` = ``
-- `CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES` = `false`
-- `CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL` = `true`
-- `CLAUDE_CODE_ENTRYPOINT` = `claude-desktop`
-- `CLAUDE_CODE_EXECPATH` = `/Users/jonathanmartone/Library/Application Support/Claude/claude-code/2.1.170/claude.app/Contents/MacOS/claude`
-- `CLAUDE_CODE_OAUTH_SCOPES` = `user:inference user:file_upload user:profile user:sessions:claude_code`
-- `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH` = `1`
-- `CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH` = `1`
-- `CLAUDE_CODE_SESSION_ID` = `8c6f1bb4-e568-4128-80d9-94f981bdafc2`
-- `CLAUDE_EFFORT` = `max`
 - `CLOUDFLARE_ACCOUNT_ID` = `4bb33ec40ef02f9f4b41dc97668d5a52`
 - `CLOUDFLARE_KV_NAMESPACE` = `88f7d45862894495967d5f2e438b29c3`
 - `CLOUDFLARE_PROJECT_NAME` = `dchub`
 - `CLOUDFLARE_ZONE_ID` = `1cb22dda8d50546d6edf0c09a8be5128`
-- `COMMAND_MODE` = `unix2003`
 - `CONTENT_QUALITY_MIN` = `.7`
 - `COREPACK_ENABLE_AUTO_PIN` = `0`
 - `CRAWLER_SCHEDULE` = `once`
@@ -67,17 +77,13 @@ Non-secret values are recorded verbatim; secret values are NOT stored — only t
 - `DCHUB_MEDIA_AI_IMAGES` = `1`
 - `DCHUB_OUTREACH_FROM_EMAIL` = `jonathan@dchub.cloud`
 - `DCM_CRAWL_ENABLED` = `true`
-- `DISABLE_AUTOUPDATER` = `1`
-- `DISABLE_MICROCOMPACT` = `1`
 - `DRY_RUN` = `1`
 - `EPA_AQS_API_EMAIL` = `jonathan@dchub.cloud`
 - `ERCOT_CLIENT_ID` = `fec253ea-0d06-4272-a5e6-b478baeecd70`
 - `ERCOT_USERNAME` = `jonathan@dchub.cloud`
 - `FCC_BDC_USERNAME` = `jonathan@dchub.cloud`
 - `FOUNDING_CUSTOMERS_CAP` = `25`
-- `GIT_EDITOR` = `true`
 - `GOOGLE_CLIENT_ID` = `779226954476-a5j35ni6q07n86pj0dio9h7di8mdrg8k.apps.googleusercontent.com`
-- `HOME` = `/Users/jonathanmartone`
 - `INTERNAL_AUTH_LEGACY_OK` = `0`
 - `LINKEDIN_ATTACH_IMAGES` = `1`
 - `LINKEDIN_CLIENT_ID` = `866i0gxj2ka74u`
@@ -85,38 +91,26 @@ Non-secret values are recorded verbatim; secret values are NOT stored — only t
 - `LINKEDIN_ORG_ID` = `110894959`
 - `LINKEDIN_PERSON_URN` = `Wy51ad4WPd`
 - `LINKEDIN_REDIRECT_URI` = `https://dchub.cloud/api/linkedin/callback`
-- `LOGNAME` = `jonathanmartone`
-- `MCP_CONNECTION_NONBLOCKING` = `true`
 - `NEWS_NER_LLM` = `true`
 - `NEWS_VIA_CRON` = `1`
 - `NODE_USE_SYSTEM_CA` = `1`
-- `OLDPWD` = `/Users/jonathanmartone/dchub-backend`
 - `OPENAI_BASE_URL` = `https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/openai`
 - `OUTREACH_FROM_EMAIL` = `api@dchub.cloud`
 - `OUTREACH_INTERVAL_MINUTES` = `720`
-- `PATH` = `/Library/Frameworks/Python.framework/Versions/3.14/bin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pkg/env/active/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/Users/jonathanmartone/.nvm/versions/node/v24.12.0/bin:/Users/jonathanmartone/Library/Application Support/Claude/local-agent-mode-sessions/1fc4d2ac-5038-44ef-9063-b5a8bddefdcd/262942fb-0002-4b2b-a2e3-f26174b9dd1b/rpm/plugin_01VTbvGZYaCVU2CNSvhDCnkg/bin:/Users/jonathanmartone/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/262942fb-0002-4b2b-a2e3-f26174b9dd1b/1fc4d2ac-5038-44ef-9063-b5a8bddefdcd/bin`
 - `PJM_USERNAME` = `AZMARTONE `
-- `PWD` = `/Users/jonathanmartone/dchub-backend`
 - `R2_ACCOUNT_ID` = `4bb33ec40ef02f9f4b41dc97668d5a52`
 - `R2_BUCKET` = `dchub-daily`
 - `R2_BUCKET_NAME` = `dchub-backups`
 - `R2_ENDPOINT_URL` = `https://4bb33ec40ef02f9f4b41dc97668d5a52.r2.cloudflarestorage.com`
 - `R2_PUBLIC_BASE` = `https://daily.dchub.cloud`
-- `SHELL` = `/bin/zsh`
-- `SHLVL` = `1`
 - `SMTP_FROM_EMAIL` = `jonathan@dchub.cloud`
 - `SMTP_FROM_NAME` = `DC Hub`
 - `SMTP_HOST` = `smtpout.secureserver.net`
 - `SMTP_PORT` = `587`
 - `SMTP_USERNAME` = `jonathan@dchub.cloud`
-- `SSH_AUTH_SOCK` = `/var/run/com.apple.launchd.zDBxUe3CU7/Listeners`
-- `TMPDIR` = `/var/folders/ms/stns1mns35vd5w16q5vlmhqc0000gn/T/`
-- `USER` = `jonathanmartone`
 - `USE_LOCAL_OAUTH` = ``
 - `USE_STAGING_OAUTH` = ``
 - `VAPID_EMAIL` = `mailto:azmartone@gmail.com`
-- `XPC_FLAGS` = `0x0`
-- `XPC_SERVICE_NAME` = `0`
 
 ## Secret vars that MUST be set for a clean restore (88 — values NOT stored here)
 
