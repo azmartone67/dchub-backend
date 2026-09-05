@@ -4207,12 +4207,19 @@ def _run_answer_probe():
         logger.info("🎯 answer_probe: disabled (ANSWER_PROBER_ENABLED off)")
         return
     try:
-        from routes.answer_prober import run_answer_probe
+        from routes.answer_prober import run_answer_probe, write_findings
         out = run_answer_probe()
         summary = out.get("summary") or {}
         verdict = out.get("verdict")
-        line = ("🎯 answer_probe: verdict=%s canon=%s summary=%s",
-                verdict, out.get("canon"), summary)
+        # Findings BEFORE the log lines: a log nobody reads is the "wired but
+        # inert" shape this codebase keeps rediscovering, and the findings row
+        # is the half that actually reaches the operator. Deduped on
+        # (issue, url), informational only, never raises. An inconclusive run
+        # writes nothing — see write_findings.
+        findings = write_findings(out)
+        line = ("🎯 answer_probe: verdict=%s canon=%s summary=%s findings=%s",
+                verdict, out.get("canon"), summary,
+                findings.get("written") if "written" in findings else findings)
         if verdict == "drift":
             logger.warning(*line)
             for c in out.get("comparisons", []):

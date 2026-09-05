@@ -270,3 +270,153 @@ def test_warming_does_not_mask_a_real_disagreement(monkeypatch):
     assert out["comparisons"][0]["verdict"] == "disagrees", (
         "a warming replica served a WRONG count and the probe excused it")
     assert out["ok"] is False
+
+
+# ── brain findings: what becomes an alarm, and what deliberately does not ────
+
+class _FakeCur:
+    def __init__(self): self.calls = []
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+class _FakeConn:
+    def __init__(self, cur): self._cur = cur; self.committed = False
+    def cursor(self): return self._cur
+    def commit(self): self.committed = True
+
+
+def _install_writer(monkeypatch, cur=None, raiser=None):
+    """Stub the two imports write_findings pulls, so nothing touches a DB."""
+    import sys
+    import types
+    cur = cur or _FakeCur()
+    main_stub = types.ModuleType("main")
+    main_stub.get_pg_connection = lambda: _FakeConn(cur)
+    main_stub.return_pg_connection = lambda c: None
+    w = types.ModuleType("routes.brain_findings_writer")
+
+    def upsert(c, issue=None, url=None, detail=None, detector=None, **kw):
+        if raiser:
+            raise raiser
+        c.calls.append({"issue": issue, "url": url, "detail": detail,
+                        "detector": detector})
+    w.upsert_brain_finding = upsert
+    monkeypatch.setitem(sys.modules, "main", main_stub)
+    monkeypatch.setitem(sys.modules, "routes.brain_findings_writer", w)
+    return cur
+
+
+def test_a_wrong_answer_becomes_one_deduplicable_finding(monkeypatch):
+    cur = _install_writer(monkeypatch)
+    out = {"verdict": "drift", "comparisons": [
+        {"surface": "og_card", "field": "markets", "observed": 334,
+         "expected": 327, "verdict": "disagrees"}]}
+    res = ap.write_findings(out)
+    assert res["written"] == 1
+    c = cur.calls[0]
+    assert c["issue"] == "answer_drift:og_card:markets"
+    assert c["url"] == "https://dchub.cloud/dcpi/og.svg", (
+        "the finding needs a stable url — it is half the (issue, url) dedup key")
+    assert c["detector"] == "answer_prober"
+    assert "334" in c["detail"] and "327" in c["detail"]
+
+
+def test_a_warming_replica_does_not_raise_an_alarm(monkeypatch):
+    """The whole reason `warming` is its own verdict. A finding per deploy
+    would be the alarm-fatigue failure, now written to a table."""
+    cur = _install_writer(monkeypatch)
+    out = {"verdict": "warming", "comparisons": [
+        {"surface": "alive", "field": "markets", "observed": None,
+         "expected": 327, "verdict": "warming"}]}
+    assert ap.write_findings(out)["written"] == 0
+    assert cur.calls == []
+
+
+def test_agreement_and_skips_write_nothing(monkeypatch):
+    cur = _install_writer(monkeypatch)
+    out = {"verdict": "clean", "comparisons": [
+        {"surface": "alive", "field": "markets", "observed": 327,
+         "expected": 327, "verdict": "agrees"},
+        {"surface": "open_data_markets", "field": "rows", "observed": None,
+         "expected": 327, "verdict": "skipped"}]}
+    assert ap.write_findings(out)["written"] == 0
+    assert cur.calls == []
+
+
+def test_a_surface_that_is_merely_DOWN_is_not_an_answer_finding(monkeypatch):
+    """Liveness is another monitor's job. Findings here would fire on every
+    deploy blip and dilute the ones that mean 'we served a wrong answer'."""
+    cur = _install_writer(monkeypatch)
+    out = {"verdict": "degraded", "comparisons": [
+        {"surface": "alive", "field": "markets", "observed": None,
+         "expected": None, "verdict": "unreachable"}]}
+    assert ap.write_findings(out)["written"] == 0
+
+
+def test_an_inconclusive_run_writes_nothing(monkeypatch):
+    """★ If canon could not be read, every comparison is ABSENT rather than
+    false. Minting findings from that manufactures alarms out of an outage in
+    the baseline — the exact class of lie this module exists to catch."""
+    cur = _install_writer(monkeypatch)
+    res = ap.write_findings({"verdict": "inconclusive", "comparisons": []})
+    assert res["written"] == 0 and "inconclusive" in res.get("skipped", "")
+    assert cur.calls == []
+
+
+def test_a_failing_writer_never_raises(monkeypatch):
+    """The probe must survive its own bookkeeping."""
+    _install_writer(monkeypatch, raiser=RuntimeError("table gone"))
+    out = {"verdict": "drift", "comparisons": [
+        {"surface": "og_card", "field": "markets", "observed": 334,
+         "expected": 327, "verdict": "disagrees"}]}
+    res = ap.write_findings(out)          # must not raise
+    assert res["written"] == 0
+
+
+def test_every_probed_surface_has_a_finding_url():
+    """A finding whose url falls back to the bare domain dedups against every
+    other surface's — one row, overwritten, for unrelated failures."""
+    missing = sorted(set(ap._PROBES) - set(ap._SURFACE_URLS))
+    assert not missing, f"no finding url for probe(s) {missing}"
+
+
+def test_one_bad_upsert_does_not_lose_the_others(monkeypatch):
+    """★ Found by mutation: swapping the per-row `except: pass` for `raise`
+    killed no test, because the OUTER try still stops the function raising.
+
+    What it silently changes is partial-failure tolerance. With `pass`, a row
+    that cannot be written costs that row. With `raise`, the FIRST bad row
+    aborts the loop and every later drift is lost — and the caller still sees a
+    tidy `{"written": 0}` rather than an error, so a surface serving a wrong
+    answer would go unreported because an unrelated one failed to serialise.
+    Same shape as the coverage-summary rule: one failure must not zero the rest.
+    """
+    import sys
+    import types
+    calls = []
+    cur = _FakeCur()
+    main_stub = types.ModuleType("main")
+    main_stub.get_pg_connection = lambda: _FakeConn(cur)
+    main_stub.return_pg_connection = lambda c: None
+    w = types.ModuleType("routes.brain_findings_writer")
+
+    def upsert(c, issue=None, url=None, detail=None, detector=None, **kw):
+        calls.append(issue)
+        if issue.endswith(":markets"):        # the first one fails
+            raise RuntimeError("serialisation failure")
+    w.upsert_brain_finding = upsert
+    monkeypatch.setitem(sys.modules, "main", main_stub)
+    monkeypatch.setitem(sys.modules, "routes.brain_findings_writer", w)
+
+    out = {"verdict": "drift", "comparisons": [
+        {"surface": "og_card", "field": "markets", "observed": 334,
+         "expected": 327, "verdict": "disagrees"},
+        {"surface": "og_card", "field": "build", "observed": 25,
+         "expected": 24, "verdict": "disagrees"}]}
+    res = ap.write_findings(out)
+    assert len(calls) == 2, (
+        f"the loop stopped after the first failure (attempted {calls}) — every "
+        f"later drift would go unreported")
+    assert res["written"] == 1, (
+        "the surviving finding must still be counted and committed")
