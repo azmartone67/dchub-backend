@@ -26,7 +26,7 @@
       "glob": 640
     },
     "test_authkit_one_origin.py": {
-      "pglob": 8050
+      "pglob": 6100
     },
     "test_backfill_status_scanner.py": {
       "walk": 70
@@ -83,7 +83,7 @@
       "glob": 130
     },
     "test_daily_service_origin.py": {
-      "pglob": 7890
+      "pglob": 6140
     },
     "test_date_window_half_open_range.py": {
       "walk": 120
