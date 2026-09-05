@@ -62,6 +62,16 @@ jobs:
         run: python3 scripts/check_ddl_through_pool.py --self-test
       - name: No DDL through the pooled cursor
         run: python3 scripts/check_ddl_through_pool.py
+      # ★2026-09-04 — "PR, never push" is now a check rather than three
+      # hand-written warnings. mcp-facts-export.yml records SEVENTEEN DAYS of
+      # daily red from a `git push` to a protected main (GH006), ignored the
+      # whole time because the remediation text called it cosmetic;
+      # brain-pr-post-merge-guard.yml and weekly-shadow-audit.yml each carry
+      # their own postmortem of the same push.
+      - name: Push-to-protected-main must-fail control
+        run: python3 scripts/check_no_push_to_protected_main.py --self-test
+      - name: No workflow pushes directly to a protected main
+        run: python3 scripts/check_no_push_to_protected_main.py
       # CONFIG_SNAPSHOT.md carried a live Redis password + Render deploy-hook
       # key in this PUBLIC repo from 2026-06-13 to 2026-08-07 (flagged 07-24
       # "rotate then redact", never redacted). Old SHAs stay reachable forever,
