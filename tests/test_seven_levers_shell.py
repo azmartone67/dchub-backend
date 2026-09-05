@@ -306,7 +306,25 @@ def test_repo_worker_is_canon_clean_and_current():
     # Verify with (want 4.9.53):
     #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.53-og-asset-cache-tier'" in src
+    # 4.9.53 -> 4.9.54-glama-claim-ownership: /.well-known/glama.json published
+    # the DEPRECATED maintainers[{email}] ownership form, which verifies ANY
+    # connector submitted against this origin — that is how a second DC Hub
+    # connector auto-verified as ours and then sat public and Unhealthy from
+    # 2026-09-01, advertising "33 tools" beside the real card's 83. It also
+    # published an email address in cleartext, which Glama's own claim
+    # documentation says never to do. The handler now serves an opaque
+    # account-bound `claim` token when GLAMA_CLAIM_TOKEN is set, and the legacy
+    # form byte-identically while it is empty, so this bump changes nothing
+    # served until the token is pasted in.
+    # ★ THE FRONTEND HAS A TWIN of this handler (dchub-frontend/_worker.js) and
+    # it is a DECOY: the zone worker returns first, so a correct edit there
+    # deploys green and changes nothing. Measured 2026-09-05 — the live response
+    # carried x-dc-worker-version 4.9.52 (zone) while Pages was at 4.88.0.
+    # ★ PASTE OUTSTANDING — merging does not ship this.
+    # Verify with (want 4.9.54):
+    #   curl -sI "https://dchub.cloud/.well-known/glama.json?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.54-glama-claim-ownership'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
