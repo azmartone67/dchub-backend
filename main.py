@@ -37155,14 +37155,26 @@ def api_agents_recommend():
                 # — a different formula, unbounded, and negative for some
                 # markets whose DCPI composite is positive. Name it, and say
                 # what it is not, in the payload itself.
+                #
+                # ★ ADDITIVE. The first attempt RENAMED `score`, and the
+                # response-contract guard failed the PR: this is
+                # GET /api/agents/recommend, so its consumers are third-party
+                # agents, and "not referenced in dchub-frontend" says nothing
+                # about them. `score` stays, carrying the same value, and the
+                # naming arrives beside it. Deprecated: read
+                # pocket_rank_score.
+                "score":              top.get("rank_score"),
                 "pocket_rank_score":  top.get("rank_score"),
                 "pocket_rank_label":  POCKET_RANK_LABEL,
                 "pocket_rank_basis":  POCKET_RANK_BASIS + top.get("market_slug", ""),
                 "verdict":    top.get("verdict"),
                 "delta_7d":   top.get("delta_7d"),
                 "why":        top["why"],
-                "dcpi_url":   f"https://dchub.cloud/dcpi/{top.get('market_slug')}",
-                "url":        f"https://dchub.cloud/pockets/{top.get('market_slug')}",
+                # Same reasoning: `url` keeps pointing where it always did.
+                # The pocket's own page is added, not substituted.
+                "url":         f"https://dchub.cloud/dcpi/{top.get('market_slug')}",
+                "dcpi_url":    f"https://dchub.cloud/dcpi/{top.get('market_slug')}",
+                "pockets_url": f"https://dchub.cloud/pockets/{top.get('market_slug')}",
                 "all_pockets_url": "https://dchub.cloud/pockets",
             }
     except Exception as _e_pock:

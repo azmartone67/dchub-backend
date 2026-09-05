@@ -327,14 +327,44 @@ def _live_pocket_keys():
 
 
 def test_the_recommendation_payload_names_the_score_it_publishes():
+    """ADDITIVE, not a rename.
+
+    The first attempt renamed `score` -> `pocket_rank_score` and the
+    response-contract CI guard failed the PR: GET /api/agents/recommend is
+    consumed by third-party agents, so "not referenced in dchub-frontend"
+    proves nothing about who reads it. The fix a public payload can actually
+    ship is the naming ARRIVING beside the old key, not replacing it — so
+    this asserts the named key and the basis exist, and deliberately does NOT
+    assert that `score` is gone.
+    """
     keys = _live_pocket_keys()
     bound = [k for k, v in keys.items() if "rank_score" in v]
     assert bound, f"live_pocket no longer carries rank_score: {sorted(keys)}"
-    for k in bound:
-        assert "pocket_rank" in k, (
-            f"live_pocket publishes rank_score under {k!r}. It sits beside a "
-            f"dchub.cloud/dcpi/<slug> URL, so a bare 'score' reads as that "
-            f"page's DCPI composite — a different, 0-100 number.")
+    named = [k for k in bound if "pocket_rank" in k]
+    assert named, (
+        f"live_pocket publishes rank_score only as {bound!r}. It sits beside "
+        f"a dchub.cloud/dcpi/<slug> URL, so a bare 'score' reads as that "
+        f"page's DCPI composite — a different, 0-100 number. Add a "
+        f"pocket_rank_* key; keep the old one as an alias.")
     assert "pocket_rank_basis" in keys, (
         "the payload states the number but not what it is; an agent quoting "
         "it has nothing to disclose")
+    assert "pocket_rank_label" in keys, sorted(keys)
+
+
+def test_the_recommendation_payload_keeps_its_public_keys():
+    """The compat half, pinned so a later tidy-up cannot quietly drop it.
+
+    `score` and `url` are in the published response-key baseline
+    (contracts/), and removing either is a contract break the CI guard fails
+    the PR on — which is how this test exists.
+    """
+    keys = _live_pocket_keys()
+    for k in ("score", "url"):
+        assert k in keys, (
+            f"live_pocket dropped the public key {k!r} from "
+            f"GET /api/agents/recommend. Third-party agents read this "
+            f"payload; keep it as an alias alongside the pocket_rank_* keys.")
+    assert keys["score"] == keys["pocket_rank_score"], (
+        "the alias and the named key must carry the SAME value, or the "
+        "payload publishes two different numbers for one score")
