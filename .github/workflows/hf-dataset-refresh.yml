@@ -82,6 +82,13 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -euo pipefail
+          # ★ The remote is spelled out at BOTH the clone and the push, never
+          #   carried by a bare `origin`. Inside a workflow that cloned a
+          #   third-party repo, `origin` means whatever that clone set — so
+          #   "git push origin main" reads exactly like a push to THIS repo's
+          #   main, to a reviewer and to tests/test_push_guard_is_installed_by_setup.py
+          #   alike. Naming the host at the push site removes the ambiguity for
+          #   both. The token is a masked Actions secret.
           git clone --depth 1 \
             "https://user:${HF_TOKEN}@huggingface.co/datasets/dchubcloud/dcpi-market-verdicts" hf-repo
           cp hf-out/data/dcpi-market-verdicts.csv hf-repo/data/dcpi-market-verdicts.csv
@@ -98,5 +105,5 @@ jobs:
           git -c user.name="dchub-bot" -c user.email="bot@dchub.cloud" \
               commit -q -m "refresh: ${ROWS} markets as of ${AS_OF}" \
               -m "Automated weekly snapshot (.github/workflows/hf-dataset-refresh.yml). Free-tier columns only; the generator refuses to publish a truncated universe or a populated Pro field."
-          git push origin main
+          git push "https://user:${HF_TOKEN}@huggingface.co/datasets/dchubcloud/dcpi-market-verdicts" main
           echo "published ${ROWS} markets as of ${AS_OF}"
