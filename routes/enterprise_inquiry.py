@@ -49,34 +49,20 @@ def _conn():
     finally: c.close()
 
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS enterprise_inquiries (
-    id              BIGSERIAL PRIMARY KEY,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    tier_requested  TEXT,                -- starter | pro | strategic | unspecified
-    name            TEXT,
-    email           TEXT,
-    firm            TEXT,
-    use_case        TEXT,
-    notes           TEXT,
-    source          TEXT,                -- enterprise_page | sweep_outreach | direct
-    ip_hash         TEXT,
-    status          TEXT NOT NULL DEFAULT 'new',
-    contacted_at    TIMESTAMPTZ,
-    notes_admin     TEXT
-);
-CREATE INDEX IF NOT EXISTS enterprise_inquiries_status_idx
-  ON enterprise_inquiries (status, created_at DESC);
-CREATE INDEX IF NOT EXISTS enterprise_inquiries_email_idx
-  ON enterprise_inquiries (email);
-"""
+# r-inquiry-schema-fork (2026-09-05): the DDL moved to
+# util/enterprise_inquiries_schema.py, which is the UNION of this module's
+# definition and routes/enterprise.py's incompatible one. They were two
+# `CREATE TABLE IF NOT EXISTS enterprise_inquiries` for the same table with
+# disjoint columns; IF NOT EXISTS meant the loser silently no-op'd and its
+# INSERT named columns that did not exist. See that module for the full note.
 
 
 def _ensure_schema():
     if not (_pg and _dsn()): return
     try:
+        from util.enterprise_inquiries_schema import ensure_enterprise_inquiries
         with _conn() as c, c.cursor() as cur:
-            cur.execute(_SCHEMA)
+            ensure_enterprise_inquiries(cur)
     except Exception as e:
         logger.warning(f"[enterprise_inquiry] schema init failed: {e}")
 
@@ -164,6 +150,7 @@ def submit_inquiry():
     }
 
     new_id = None
+    _store_err = None
     if _pg and _dsn():
         try:
             with _conn() as c, c.cursor() as cur:
@@ -177,18 +164,47 @@ def submit_inquiry():
                 """, inquiry)
                 new_id = int(cur.fetchone()[0])
         except Exception as e:
+            _store_err = str(e)[:200]
             logger.error(f"[enterprise_inquiry] insert failed: {e}")
 
     # Fire admin email asynchronously — don't block the response
+    _notified = False
     try:
         _notify_admin(inquiry)
-    except Exception:
-        pass
+        _notified = True
+    except Exception as e:
+        logger.error(f"[enterprise_inquiry] admin notify failed: {e}")
+
+    # r-inquiry-schema-fork (2026-09-05): this returned {"ok": true, ...} 201
+    # and "We'll be in touch within 24h" even when the INSERT raised AND the
+    # admin email raised — the submitter was told they had been heard while
+    # the lead went nowhere, and the only trace was a log line nobody reads.
+    # That is the same failure shape as the PDF report silently dropping a
+    # market: not a missing answer, a WRONG one. The schema fork above is
+    # exactly the bug that made the INSERT raise, so this endpoint has been
+    # capable of losing a live enterprise lead in silence.
+    #
+    # A lead is captured if EITHER path worked: the row is the durable copy,
+    # the admin email is the one a human actually acts on. Only when both
+    # fail is the submission genuinely lost, and then the caller must be told
+    # so they can use another channel rather than wait for a reply.
+    if new_id is None and not _notified:
+        return jsonify({
+            "ok":      False,
+            "error":   "storage_failed",
+            "detail":  _store_err or "no storage path available",
+            "message": ("We could not record your inquiry. Please email "
+                        "hello@dchub.cloud directly — sorry about that."),
+        }), 503
 
     return jsonify({
-        "ok":      True,
-        "id":      new_id,
-        "message": "We'll be in touch within 24h.",
+        "ok":       True,
+        "id":       new_id,
+        # Honest per-path result: a monitor can see a half-captured lead
+        # instead of reading 201 as "both worked".
+        "stored":   new_id is not None,
+        "notified": _notified,
+        "message":  "We'll be in touch within 24h.",
     }), 201
 
 
