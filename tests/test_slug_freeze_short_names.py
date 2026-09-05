@@ -130,13 +130,25 @@ def test_pending_counter_reads_the_same_rows_the_worker_selects():
     """★ The checker must not read a strict subset of the population it
     publishes a verdict on. Both statements live in the same function; compare
     them as source rather than trusting the comment above them."""
-    src = open(os.path.join(ROOT, "routes", "facility_slug_freeze.py"),
-               encoding="utf-8").read()
-    i = src.index("def _freeze_table(") if "def _freeze_table(" in src else 0
-    body = src[i:]
-    body = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
-    j = body.index("SELECT COUNT(*) FROM {table}")
-    counter = body[j:j + 260]
+    # ★ The SQL STRING, bound by the AST — not `body[j:j + 260]`.
+    # A fixed slice measures the length of what it reads, not its content: on
+    # 2026-09-05 a sibling guard went red because a string it checks GREW past
+    # its window while staying entirely correct. Widening the number only moves
+    # the next failure out. Here the subject is a f-string built by implicit
+    # concatenation, so take the whole JoinedStr/Constant and there is no window
+    # to outgrow — and no need to strip comments, because a comment can never
+    # be part of a string literal in the first place.
+    import ast as _ast
+    _p = os.path.join(ROOT, "routes", "facility_slug_freeze.py")
+    _src_txt = open(_p, encoding="utf-8").read()
+    counter = ""
+    for _n in _ast.walk(_ast.parse(_src_txt)):
+        if isinstance(_n, (_ast.JoinedStr, _ast.Constant)):
+            _seg = _ast.get_source_segment(_src_txt, _n) or ""
+            if "SELECT COUNT(*) FROM {table}" in _seg:
+                counter = _seg
+                break
+    assert counter, "the pending-counter SQL literal was not found"
     assert "canonical_slug = ''" in counter, (
         "the pending counter still ignores the '' sentinel — a row the worker "
         "re-selects every run would be reported as pending=0 forever, which is "
