@@ -25,6 +25,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from flask import Blueprint, request, jsonify
+from utc_clock import utc_now
 
 cross_post_email_bp = Blueprint("cross_post_email", __name__)
 
@@ -71,7 +72,7 @@ def _send_email(to_email, subject, html, text):
 def _already_sent_today():
     """Use a small file as idempotency marker — avoids DB schema add.
     Resets daily by date check."""
-    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    today = utc_now().strftime("%Y-%m-%d")
     marker_path = "/tmp/cross_post_email_sent_{}.flag".format(today)
     if os.path.exists(marker_path):
         return True
@@ -107,7 +108,7 @@ def email_best():
     style        = best.get("style", "—")
     posted_at    = best.get("posted_at", "—")[:16].replace("T", " ")
     char_count   = best.get("char_count", 0)
-    today_label  = datetime.datetime.utcnow().strftime("%A, %B %d")
+    today_label  = utc_now().strftime("%A, %B %d")
 
     subject = f"DC Hub daily brief — share today's best post ({topic} · {style})"
 

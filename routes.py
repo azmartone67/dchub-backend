@@ -19,6 +19,7 @@ from flask import Blueprint, jsonify, request
 from .eia_860m import EIA860MIngester
 from .nccs_featureserver import NCCSFeatureServerClient
 from .matcher import PlantMatcher
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ def trigger_enrichment():
     sources = params.get("sources", ["eia_860m", "nccs"])
     dry_run = params.get("dry_run", True)
 
-    job_id = f"enrich_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+    job_id = f"enrich_{utc_now().strftime('%Y%m%d_%H%M%S')}"
     _jobs[job_id] = {
         "status": "running",
         "started_at": datetime.utcnow().isoformat(),

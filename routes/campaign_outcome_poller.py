@@ -38,6 +38,7 @@ import datetime
 import logging
 
 from flask import Blueprint, jsonify, request
+from utc_clock import utc_now
 
 
 campaign_outcomes_bp = Blueprint("campaign_outcomes", __name__)
@@ -164,7 +165,7 @@ def _query_stripe_sessions(emails: list[str]) -> dict:
 
 
 def _build_summary_html(outcomes: list[dict], stripe_sessions: dict) -> str:
-    today    = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    today    = utc_now().strftime("%Y-%m-%d %H:%M UTC")
     converted = [o for o in outcomes if o.get("status") == "CONVERTED"]
     pending   = [o for o in outcomes if o.get("status") != "CONVERTED"]
     days_since = (datetime.date.today() - _CAMPAIGN_FIRE_DATE).days
@@ -237,7 +238,7 @@ def _send_summary_email(html_body: str, subject: str | None = None):
     if not _OPERATOR_EMAIL:
         return False, "no_operator_email", ""
     import requests as _r
-    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    today = utc_now().strftime("%Y-%m-%d")
     subj = subject or f"DC Hub: Half-price annual outcomes — {today}"
     try:
         r = _r.post(

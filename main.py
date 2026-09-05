@@ -5,7 +5,7 @@
 import http_ua_default  # noqa: F401,E402
 from routes.press_queue import press_queue_bp
 from routes.digest import digest_bp
-from utc_clock import utc_iso_z
+from utc_clock import utc_iso_z, utc_now
 # Phase GG (2026-05-14): per-site capacity, ISO snapshot, pocket listings
 try:
     from routes.sites_capacity import sites_capacity_bp
@@ -6981,7 +6981,7 @@ def api_v1_map():
                     _ip = (request.headers.get('CF-Connecting-IP')
                            or (request.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
                            or request.remote_addr or 'unknown')
-                    _day = datetime.utcnow().strftime('%Y%m%d')
+                    _day = utc_now().strftime('%Y%m%d')
                     _rk = f"mapbulk:{_day}:{_ip}"
                     _n = None
                     try:
@@ -23161,7 +23161,7 @@ def facilities_state_status_counts():
             # `unit` is no longer one word — op/uc-facilities are BUILDINGS and
             # ann/uc-pipeline are PROJECTS. Consumers must read `basis`.
             'unit': 'mixed',
-            'as_of': datetime.utcnow().strftime('%Y-%m-%d'),
+            'as_of': utc_now().strftime('%Y-%m-%d'),
             'source': 'DC Hub live facilities DB + curated capacity pipeline',
             'states': out,
             'totals': {'op': sum(r['op'] for r in out),
@@ -25969,7 +25969,7 @@ def add_testimonial_legacy():
                 testimonials_data = json.load(f)
 
             new_testimonial = {
-                'id': f"user-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                'id': f"user-{utc_now().strftime('%Y%m%d%H%M%S')}",
                 'source': data.get('source'),
                 'source_type': data.get('source_type', 'customer'),
                 'quote': data.get('quote'),
@@ -25979,7 +25979,7 @@ def add_testimonial_legacy():
                 'featured': False,
                 'verified': False,
                 'rating': data.get('rating', 5),
-                'date': datetime.utcnow().strftime('%Y-%m-%d')
+                'date': utc_now().strftime('%Y-%m-%d')
             }
 
             testimonials_data['testimonials'].append(new_testimonial)
@@ -26763,7 +26763,7 @@ def daily_cron():
             # above) and wins drafting (below) still run unconditionally; only the
             # LinkedIn POST is gated off. Set DCHUB_DAILY_DIGEST_LINKEDIN=1 to restore.
             _digest_li_on = os.environ.get("DCHUB_DAILY_DIGEST_LINKEDIN", "").strip().lower() in ("1", "true", "yes", "on")
-            _today_key = _dt.utcnow().strftime('%Y-%m-%d')
+            _today_key = utc_now().strftime('%Y-%m-%d')
             _digest_done_today = getattr(daily_cron, '_last_digest_date', None) == _today_key
             token = None if (_digest_done_today or not _digest_li_on) else get_valid_token()
             if not _digest_li_on:

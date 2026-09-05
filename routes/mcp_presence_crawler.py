@@ -66,6 +66,7 @@ import requests
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
 from util.json_column import json_for_column
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -1345,7 +1346,7 @@ def _status_snapshot() -> dict:
     Includes a 'next_action' hint per row so the operator (or the brain)
     can act without re-deriving logic. Never raises."""
     out = {
-        "as_of":           _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "as_of":           utc_now().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "public":          True,
         "leaks_secrets":   False,
         "total_listings":  0,

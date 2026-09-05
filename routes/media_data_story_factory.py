@@ -68,6 +68,7 @@ from datetime import datetime
 
 from flask import Blueprint, request, jsonify
 from routes._swallowed_writes import note_swallowed_write
+from utc_clock import utc_now
 
 logger = logging.getLogger("media_data_story_factory")
 
@@ -437,7 +438,7 @@ def _verified_payload(shift: dict, canon: dict) -> str:
         "shift": shift.get("detail"),
         "platform_context": {k: v for k, v in canon.items() if v is not None},
         "source": "DC Hub (dchub.cloud) — DC Hub Power Index (DCPI)",
-        "as_of": datetime.utcnow().strftime("%Y-%m-%d"),
+        "as_of": utc_now().strftime("%Y-%m-%d"),
     }, default=str)
 
 

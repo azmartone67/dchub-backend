@@ -22,6 +22,7 @@ import time
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from utc_clock import utc_now
 
 try:
     import requests
@@ -247,7 +248,7 @@ def print_summary(results: list):
     else:
         print(f"\n✅  All {len(results)} sources reachable!")
 
-    print(f"\n✅  Validated at {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    print(f"\n✅  Validated at {utc_now().strftime('%Y-%m-%d %H:%M UTC')}")
 
 
 def main():

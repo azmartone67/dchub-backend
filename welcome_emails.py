@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timedelta
 from email_fallback import send_email_resilient
 from ai_surface_canon import canon_text
+from utc_clock import utc_now
 
 logger = logging.getLogger('welcome_emails')
 
@@ -397,7 +398,7 @@ def send_welcome_email(conn, user_email, user_name='there'):
     html = _render(
         template['html'],
         name=name,
-        signup_date=datetime.utcnow().strftime('%B %d, %Y')
+        signup_date=utc_now().strftime('%B %d, %Y')
     )
 
     if _send_email(user_email, subject, html):

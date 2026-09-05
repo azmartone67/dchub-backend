@@ -39,6 +39,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 from ai_surface_canon import canon_text
+from utc_clock import utc_now
 
 
 mcp_citation_bp = Blueprint("mcp_citation", __name__)
@@ -63,7 +64,7 @@ def _year() -> int:
 
 
 def _today_iso() -> str:
-    return _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    return utc_now().strftime("%Y-%m-%d")
 
 
 def _inline(year: int) -> dict:

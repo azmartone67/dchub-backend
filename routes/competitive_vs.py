@@ -22,6 +22,7 @@ import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, Response
 from ai_surface_canon import canon_text
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 competitive_vs_bp = Blueprint("competitive_vs", __name__)
@@ -315,7 +316,7 @@ td.comp{{color:#cbd5e1}}
 <div class="wrap">
 <div class="pill">FACTS ONLY · NO MARKETING FLUFF</div>
 <h1>DC Hub <span class="vs">vs</span> {data['competitor']}</h1>
-<p class="sub">{data['category']}. Last updated {_dt.datetime.utcnow().strftime('%Y-%m-%d')}.
+<p class="sub">{data['category']}. Last updated {utc_now().strftime('%Y-%m-%d')}.
 JSON: <a href="/api/v1/competitive/vs/{data['slug']}" style="color:#a855f7">/api/v1/competitive/vs/{data['slug']}</a></p>
 
 <div class="strengths">

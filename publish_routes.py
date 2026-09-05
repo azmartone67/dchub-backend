@@ -14,6 +14,7 @@ Requires:
 """
 
 from __future__ import annotations
+from utc_clock import utc_now
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
 def _phase30c_landing_url(d=None):
@@ -70,7 +71,7 @@ def _require_auth(authorization: str) -> None:
 
 def _linkedin_version_header() -> str:
     # LinkedIn Marketing API requires YYYYMM of the current month
-    return datetime.utcnow().strftime("%Y%m")
+    return utc_now().strftime("%Y%m")
 
 
 async def _post_to_linkedin(text: str) -> tuple[bool, Optional[str], Optional[str]]:

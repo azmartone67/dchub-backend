@@ -18,6 +18,7 @@ to crawlers (would break the link preview entirely on LinkedIn).
 """
 from flask import Blueprint, Response
 import io, datetime, json, os
+from utc_clock import utc_now
 
 og_cards_bp = Blueprint('og_cards', __name__)
 
@@ -262,7 +263,7 @@ def _safe_date_str(pr_date, fmt='%Y-%m-%d'):
     if missing/null so cards never show an empty timestamp line."""
     if pr_date and hasattr(pr_date, 'strftime'):
         return pr_date.strftime(fmt)
-    return datetime.datetime.utcnow().strftime(fmt)
+    return utc_now().strftime(fmt)
 
 
 def _verdict_color(verdict: str):
@@ -857,7 +858,7 @@ def _generate_workers_ai_image(prompt: str, slug: str, variant: int = 0):
     """Hit Cloudflare Workers AI SDXL endpoint. Returns PNG bytes or None
     if creds missing / API errored. Cached per (slug, day, variant) so the
     review-retry loop can request a genuinely different image for variant>0."""
-    cache_key = (slug, datetime.datetime.utcnow().strftime('%Y%m%d'), variant)
+    cache_key = (slug, utc_now().strftime('%Y%m%d'), variant)
     if cache_key in _AI_IMAGE_CACHE:
         return _AI_IMAGE_CACHE[cache_key]
 
@@ -1706,7 +1707,7 @@ def smart_style():
         return todays_style()
 
     # Deterministic-per-day RNG so the card is stable within a UTC day.
-    day = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+    day = utc_now().strftime('%Y-%m-%d')
     rng = _random.Random('og-smart-' + day)
     all_styles = list(STYLE_MAP.keys())
 

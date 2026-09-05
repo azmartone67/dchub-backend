@@ -38,6 +38,7 @@ import re
 import subprocess
 
 from flask import Blueprint, jsonify, request
+from utc_clock import utc_now
 
 
 brain_l22_pr_writer_bp = Blueprint("brain_l22_pr_writer", __name__)
@@ -121,7 +122,7 @@ def open_route_alias_pr(src_path: str, dst_path: str,
 
     # Working dir for this run
     slug = src_path.strip("/").replace("/", "-").replace("<", "_").replace(">", "_")
-    branch = f"auto-l22-route-alias-{slug[:40]}-{datetime.datetime.utcnow().strftime('%Y%m%d%H%M')}"
+    branch = f"auto-l22-route-alias-{slug[:40]}-{utc_now().strftime('%Y%m%d%H%M')}"
     work_dir = f"/tmp/l22-pr-{slug}-{int(datetime.datetime.utcnow().timestamp())}"
 
     # 1. Clone the fork (use token in URL for auth)

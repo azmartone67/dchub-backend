@@ -56,7 +56,7 @@ import datetime
 import hashlib
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
-from utc_clock import utc_iso_z
+from utc_clock import utc_iso_z, utc_now
 
 logger = logging.getLogger(__name__)
 news_ner_bp = Blueprint("news_ner", __name__)
@@ -1127,7 +1127,7 @@ def _promote_candidates(min_mentions: int = None,
                     "source": "news_ner",
                     "source_url": url,
                     "confidence_score": 0.62,
-                    "discovered_at": datetime.datetime.utcnow().strftime("%Y-%m-%d"),
+                    "discovered_at": utc_now().strftime("%Y-%m-%d"),
                     "notes": f"Promoted from news NER candidate "
                              f"({cand['mentions']} mentions): {headline[:160]}",
                     "investment_usd": None, "acreage": None,

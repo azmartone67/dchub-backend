@@ -14,6 +14,7 @@ import datetime
 import os
 from contextlib import contextmanager
 from flask import Blueprint
+from utc_clock import utc_now
 
 try:
     import psycopg2 as _pg
@@ -95,7 +96,7 @@ def _render(releases):
 def changelog():
     releases = _fetch_releases(60)
     sections_html = _render(releases)
-    today = datetime.datetime.utcnow().strftime("%B %d, %Y")
+    today = utc_now().strftime("%B %d, %Y")
     count = len(releases)
 
     html = f"""<!DOCTYPE html>

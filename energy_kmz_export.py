@@ -20,6 +20,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from flask import request, send_file, jsonify
+from utc_clock import utc_now
 
 try:
     from db_utils import get_db
@@ -122,7 +123,7 @@ def generate_power_plants_kml(market=None, state=None, fuel_type=None, min_capac
     if market:
         title += f" ({market})"
 
-    kml = _build_kml_header(title, f"Power plants from DC Hub Energy Discovery. Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}. Total: {len(plants)} plants.")
+    kml = _build_kml_header(title, f"Power plants from DC Hub Energy Discovery. Generated {utc_now().strftime('%Y-%m-%d %H:%M UTC')}. Total: {len(plants)} plants.")
 
     # Create style for each fuel type
     styles_added = set()
@@ -213,7 +214,7 @@ def generate_pipelines_kml(state=None):
     if state:
         title += f" ({state})"
 
-    kml = _build_kml_header(title, f"Interstate gas pipelines. Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}. Total: {len(pipelines)} pipelines.")
+    kml = _build_kml_header(title, f"Interstate gas pipelines. Generated {utc_now().strftime('%Y-%m-%d %H:%M UTC')}. Total: {len(pipelines)} pipelines.")
 
     kml += f"""  <Style id="pipeline-style">
     <IconStyle>
@@ -281,7 +282,7 @@ def generate_transmission_kml(market=None, min_voltage=None):
     if market:
         title += f" ({market})"
 
-    kml = _build_kml_header(title, f"Transmission lines. Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}. Total: {len(lines)} lines. Note: Point markers only (line geometry not stored).")
+    kml = _build_kml_header(title, f"Transmission lines. Generated {utc_now().strftime('%Y-%m-%d %H:%M UTC')}. Total: {len(lines)} lines. Note: Point markers only (line geometry not stored).")
 
     kml += f"""  <Style id="tx-style">
     <IconStyle>
@@ -359,7 +360,7 @@ def generate_all_kml(market=None):
     if market:
         title += f" ({market})"
 
-    desc = f"Complete energy infrastructure from DC Hub. Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}."
+    desc = f"Complete energy infrastructure from DC Hub. Generated {utc_now().strftime('%Y-%m-%d %H:%M UTC')}."
     desc += f" {len(plants):,} power plants ({total_mw:,.0f} MW), {len(pipelines)} pipelines, {len(tx_lines):,} transmission lines."
 
     kml = _build_kml_header(title, desc)

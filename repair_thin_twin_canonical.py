@@ -140,6 +140,7 @@ import datetime
 import json
 import os
 import sys
+from utc_clock import utc_now
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ★ EVERY query below carries COALESCE(is_duplicate,0)=0 ON BOTH SIDES. A
@@ -384,7 +385,7 @@ def main() -> int:
                       f"change. Re-run with --apply to write.")
                 return 0
 
-            stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            stamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
             rb = os.path.expanduser(
                 f"~/Downloads/thin_twin_canonical_rollback_{stamp}.json")
             json.dump({"generated_at_utc": stamp,

@@ -26,6 +26,7 @@ from functools import wraps
 from datetime import datetime, timedelta
 from flask import Blueprint, jsonify, request
 from db_utils import get_db
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -456,7 +457,7 @@ def save_snapshot(result):
                     result['grid']['data_source']
                 ))
 
-                today = datetime.utcnow().strftime('%Y-%m-%d')
+                today = utc_now().strftime('%Y-%m-%d')
                 c.execute("""
                     INSERT INTO headroom_trend_daily (market, date, avg_spare_mw, peak_demand_mw, min_spare_pct, avg_readiness_score)
                     VALUES (%s, %s, %s, %s, %s, %s)

@@ -7,6 +7,7 @@ from flask import Blueprint, request, Response, send_file
 import io, datetime, requests
 
 from routes.grid_public_routes import _demand_capacity_headroom
+from utc_clock import utc_now
 
 grid_card_bp = Blueprint('grid_card', __name__)
 
@@ -68,7 +69,7 @@ def card(iso):
     # Header bar
     draw.rectangle([(0, 0), (W, 60)], fill=(255, 107, 53))
     draw.text((40, 14), 'DC HUB · GRID INTELLIGENCE', font=font(24), fill=(10, 14, 26))
-    today = datetime.datetime.utcnow().strftime('%b %d, %Y')
+    today = utc_now().strftime('%b %d, %Y')
     draw.text((W - 220, 14), today, font=font(24), fill=(10, 14, 26))
 
     # ISO badge

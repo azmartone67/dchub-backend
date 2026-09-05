@@ -22,6 +22,7 @@ import datetime as _dt
 from flask import Blueprint, request, jsonify
 from utils.anthropic_helper import anthropic_messages_url
 from routes.brain_llm_spend import instrumented_post as _llm_post
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 brain_narrative_bp = Blueprint("brain_narrative", __name__)
@@ -68,7 +69,7 @@ _DAILY_COUNTER = {"date": None, "count": 0}
 
 
 def _utc_today() -> str:
-    return _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    return utc_now().strftime("%Y-%m-%d")
 
 
 def _today_count() -> int:

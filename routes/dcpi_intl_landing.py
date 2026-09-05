@@ -23,6 +23,7 @@ import urllib.request
 import json
 from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint
+from utc_clock import utc_now
 
 dcpi_intl_bp = Blueprint("dcpi_intl_landing", __name__)
 
@@ -78,7 +79,7 @@ def _format_mix(mix):
 
 def _build_page():
     items = _gather_snapshots()
-    today = datetime.datetime.utcnow().strftime("%B %d, %Y")
+    today = utc_now().strftime("%B %d, %Y")
     rows = []
     for (name, region, _path), snap in items:
         if snap:

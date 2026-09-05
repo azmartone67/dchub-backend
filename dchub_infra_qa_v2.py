@@ -25,6 +25,7 @@ import sys
 import os
 import ssl
 from datetime import datetime
+from utc_clock import utc_now
 
 try:
     import requests
@@ -419,7 +420,7 @@ def main():
     print()
     print("=" * 70)
     print("  DC Hub Infrastructure QA v2 — Provider Diversity Validation")
-    print(f"  {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(f"  {utc_now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
     if RUNNING_ON_REPLIT:
         print("  ⓘ  Running from Replit — Replit self-tests via Worker proxy")
     print("=" * 70)

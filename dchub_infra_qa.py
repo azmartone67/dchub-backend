@@ -17,6 +17,7 @@ import json
 import time
 import sys
 from datetime import datetime
+from utc_clock import utc_now
 
 try:
     import requests
@@ -456,7 +457,7 @@ def main():
     print()
     print("=" * 70)
     print("  DC Hub Infrastructure QA — Provider Diversity Validation")
-    print(f"  Run at: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(f"  Run at: {utc_now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print("=" * 70)
     
     print("\n📡 LAYER 1: Cloudflare (Frontend + Worker)")

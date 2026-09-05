@@ -8,13 +8,14 @@ present.
 """
 import datetime
 from flask import Blueprint
+from utc_clock import utc_now
 
 security_bp = Blueprint("security_landing", __name__)
 
 
 @security_bp.route("/security", methods=["GET"], strict_slashes=False)
 def security():
-    today = datetime.datetime.utcnow().strftime("%B %d, %Y")
+    today = utc_now().strftime("%B %d, %Y")
     html = f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

@@ -18,6 +18,7 @@ from flask import Blueprint, request, jsonify, make_response
 
 from util.dcpi_score_row import PUBLISHED_ONLY
 from util.deals import DEALS_OK
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 industry_pulse_bp = Blueprint("industry_pulse", __name__)
@@ -80,7 +81,7 @@ def _compute_pulse_metrics() -> dict:
     """The actual DB work. Returns just the `metrics` dict. Designed to be
     called from a background thread so request handler never blocks on it.
     Per-query 3s timeout; whole compute capped at ~30s wall time."""
-    week_of = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    week_of = utc_now().strftime("%Y-%m-%d")
     metrics: dict = {}
     try:
         conn = _conn()
@@ -246,7 +247,7 @@ def _unmeasured_metrics() -> dict:
     `metrics.dcpi_verdicts.markets_scored` gets null, not a KeyError, and null
     is the honest answer to "how many did you measure?" before anything ran.
     """
-    week_of = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    week_of = utc_now().strftime("%Y-%m-%d")
     return {
         "facilities_total":  {"value": None, "source": _UNMEASURED, "as_of": None},
         "operators_tracked": {"value": None, "source": _UNMEASURED, "as_of": None},
@@ -283,7 +284,7 @@ def _is_measured(metrics: dict) -> bool:
 
 
 def _build_response(metrics: dict, source_tag: str) -> dict:
-    week_of = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    week_of = utc_now().strftime("%Y-%m-%d")
     out = {
         "ok": True,
         "publisher": {
@@ -407,7 +408,7 @@ def industry_pulse():
     # ASCII only: HTTP headers must be latin-1; the original em-dash here
     # made gunicorn reject EVERY response from this endpoint at write time
     # ("Invalid HTTP Header") — the API surface has 502'd since launch.
-    resp.headers["X-Cite-As"] = f"DC Hub Industry Pulse - {_dt.datetime.utcnow().strftime('%Y-%m-%d')}"
+    resp.headers["X-Cite-As"] = f"DC Hub Industry Pulse - {utc_now().strftime('%Y-%m-%d')}"
     resp.headers["X-Pulse-Cache"] = source_tag
     return resp, 200
 
@@ -451,7 +452,7 @@ def industry_pulse_page():
         try: return int(v)
         except Exception: return d
 
-    week = data.get("week_of", _dt.datetime.utcnow().strftime("%Y-%m-%d"))
+    week = data.get("week_of", utc_now().strftime("%Y-%m-%d"))
     m = data.get("metrics", {})
     fac = _int(m.get("facilities_total", {}).get("value"), 21374)
     countries = _int(m.get("countries_covered", {}).get("value"), 178)

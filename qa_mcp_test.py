@@ -17,6 +17,7 @@ All calls use the JSON-RPC 2.0 protocol.
 
 import os, sys, json, time, argparse, urllib.request, urllib.error
 from datetime import datetime
+from utc_clock import utc_now
 
 TARGETS = {
     "railway": "https://dchub-backend-production.up.railway.app/mcp",
@@ -245,7 +246,7 @@ def run(env_name, url, args):
     print(f"\n{BOLD}{'='*60}{RESET}")
     print(f"{BOLD}  DC Hub MCP QA — {env_name.upper()}{RESET}")
     print(f"  Endpoint: {url}")
-    print(f"  Time    : {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"  Time    : {utc_now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
     print(f"{BOLD}{'='*60}{RESET}")
 
     test_initialize(url)

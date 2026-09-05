@@ -59,6 +59,7 @@ import os
 import logging
 from datetime import datetime
 from flask import Blueprint, jsonify, make_response
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +220,7 @@ def publisher_status():
         deadman = None
 
     payload = {
-        "as_of":     datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+        "as_of":     utc_now().strftime('%Y-%m-%dT%H:%M:%SZ'),
         "public":    True,
         "leaks_secrets": False,
         "loops":     loops,
