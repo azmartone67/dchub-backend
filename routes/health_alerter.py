@@ -241,7 +241,18 @@ def _check_restart_loop():
 #     authentication_error, i.e. the gateway forwarded to Anthropic.
 # Sending the REAL key here would cost money on every probe and prove less.
 _GW_DISABLED       = str(os.environ.get("GATEWAY_SPEND_MONITOR_DISABLE", "")).lower() in ("1", "true", "yes")
-_GW_CHECK_EVERY_S  = int(os.environ.get("GATEWAY_SPEND_CHECK_S", "600"))      # 10 min; a spend block persists
+# ★ CADENCE IS AN OBSERVABILITY BUDGET, not just a detection knob. Measured
+# 2026-09-05 on the live gateway: this probe was ~100% of every error row in
+# the AI Gateway dashboard (593 of 593 sampled — one user agent, one model,
+# 0 tokens in, 0 out, $0), driving a 26.6% error rate. A permanently-red
+# error metric is a metric nobody can read: the owner saw 588 errors, assumed
+# an outage, and it cost a multi-turn investigation to establish that the
+# smoke detector was the smoke. 1800s keeps detection far inside the
+# multi-HOUR outage this watches for (2026-09-01 ran for an unknown number of
+# hours, and _GW_RENOTIFY_S below nags only once a day anyway) while cutting
+# the probe's share of gateway errors by 3x. Lower it and the dashboard goes
+# back to being unreadable; tests/test_gateway_spend_alarm.py pins the floor.
+_GW_CHECK_EVERY_S  = int(os.environ.get("GATEWAY_SPEND_CHECK_S", "1800"))     # 30 min; a spend block persists
 _GW_RENOTIFY_S     = int(os.environ.get("GATEWAY_SPEND_RENOTIFY_S", "86400")) # nag once a day while still blocked
 _GW_PROBE_MODEL    = os.environ.get("GATEWAY_SPEND_PROBE_MODEL", "claude-haiku-4-5")
 # ONE fleet, not every process. main.py starts health_alerter wherever it is
