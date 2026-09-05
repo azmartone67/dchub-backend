@@ -12581,6 +12581,7 @@ def scan_all() -> list[dict]:
     _deadline = _scan_time.time() + _SCAN_BUDGET_S
     _completed = 0
     _abandoned = 0
+    _completed_fns: list = []      # detectors that actually REPORTED this sweep
     with _cf.ThreadPoolExecutor(max_workers=8,
                                  thread_name_prefix="brain-scan") as ex:
         futs = {ex.submit(_run_one, fn): fn for fn in detectors}
@@ -12591,6 +12592,15 @@ def scan_all() -> list[dict]:
                     status, name, result = fut.result(timeout=5)
                     _completed += 1
                     if status == "ok":
+                        # ★ Stamp provenance. The resolve-on-absence sweep may
+                        #   only close findings whose producing detector RAN —
+                        #   see _persist_findings_to_db. Without this the sweep
+                        #   cannot tell "detector ran, issue gone" (a real fix)
+                        #   from "detector was abandoned" (no information).
+                        for _f in result:
+                            if isinstance(_f, dict):
+                                _f["_detector_fn"] = name
+                        _completed_fns.append(name)
                         out.extend(result)
                     else:
                         out.append({
@@ -12636,6 +12646,12 @@ def scan_all() -> list[dict]:
                            f"likely HTTP self-call probes. Abandoned: "
                            + ", ".join(not_done[:8])),
             })
+        # ★ Record WHAT THIS SWEEP ACTUALLY COVERED, for resolve-on-absence.
+        #   Set inside the `with` (before shutdown) so it describes the same
+        #   moment `not_done` was measured.
+        _LAST_SWEEP["completed_fns"] = list(_completed_fns)
+        _LAST_SWEEP["abandoned_fns"] = list(not_done)
+        _LAST_SWEEP["at"] = _scan_time.time()
     return out
 
 
@@ -12890,6 +12906,14 @@ def _persist_release_sp(cur, name: str) -> None:
         pass
 
 
+# ★★ 2026-09-05 — WHAT THE LAST SWEEP ACTUALLY COVERED.
+#   scan_all() abandons every detector still running at its 25s budget, and
+#   which ones varies run to run (measured: 15, 16, 42, 42, 53 of ~140).
+#   resolve-on-absence must therefore never read "absent" as "fixed" for a
+#   detector that did not report — see the guard in _persist_findings_to_db.
+_LAST_SWEEP: dict = {"completed_fns": [], "abandoned_fns": [], "at": 0.0}
+
+
 def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> int:
     """Write findings to brain_findings. UPSERT on (issue, url) so the
     same finding rolling across scans increments seen_count + bumps
@@ -12950,6 +12974,14 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                             "ALTER TABLE brain_findings "
                             "ADD COLUMN IF NOT EXISTS status "
                             "TEXT NOT NULL DEFAULT 'open'")
+                        # Per-row provenance: WHICH check function produced
+                        # this finding. Nullable — legacy rows carry NULL and
+                        # are simply never closed by the scoped 2-min arm
+                        # below (they still resolve on the 24h arm), so the
+                        # migration cannot itself close anything.
+                        cur.execute(
+                            "ALTER TABLE brain_findings "
+                            "ADD COLUMN IF NOT EXISTS detector_fn TEXT")
                         _persist_release_sp(cur, "bf_alter_durable")
                     except Exception:
                         _persist_rollback_sp(cur, "bf_alter_durable")
@@ -12961,7 +12993,23 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                 # upserts constraint-agnostically (the live table has NO
                 # UNIQUE(issue,url) — verified via information_schema —
                 # so ON CONFLICT cannot be used here).
-                from routes.brain_findings_writer import upsert_brain_finding
+                from routes.brain_findings_writer import (
+                    upsert_brain_finding, _ensure_schema as _bfw_ensure_schema)
+                # The writer caches the live column set per process. After the
+                # ALTER above, a process that introspected earlier would still
+                # believe detector_fn is absent and silently never write it —
+                # so force one re-read. Cheap (once per persist) and it is the
+                # difference between the scoping working and failing closed.
+                try:
+                    _bfw_ensure_schema(cur, force=True)
+                except Exception:
+                    pass
+                _fn_col_live = False
+                try:
+                    from routes.brain_findings_writer import _schema as _bfw_schema
+                    _fn_col_live = "detector_fn" in (_bfw_schema.get("cols") or set())
+                except Exception:
+                    _fn_col_live = False
                 current_keys = set()
                 inserted = 0
                 for f in findings:
@@ -12978,7 +13026,8 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                         # type instead of guessing from the issue string.
                         count_kind=f.get("count_kind") or "",
                         detail=(f.get("detail") or "")[:2000],
-                        detector="consistency_radar")
+                        detector="consistency_radar",
+                        detector_fn=f.get("_detector_fn") or "")
                     if res == "inserted":
                         inserted += 1
                     if res in ("inserted", "updated"):
@@ -13021,17 +13070,63 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                 # rows keep the per-sweep window; foreign/NULL-detector rows
                 # only resolve after 24h of silence (detector had many
                 # chances to re-emit and didn't → the incident really ended).
+                #
+                # ★★ 2026-09-05 — SCOPED TO THE DETECTORS THAT ACTUALLY RAN.
+                #   The call site passes full_sweep=True and its comment calls
+                #   this "the canonical scan_all() over ALL detectors, so
+                #   resolve-on-absence is valid here". It is not: scan_all
+                #   abandons everything still running at its 25s budget, and
+                #   the abandoned set VARIES per run (measured 2026-09-05:
+                #   15, 16, 42, 42, 53 of ~140, membership shifting each time).
+                #   So a finding whose detector never reported was being read
+                #   as "gone" and closed, then reopened on a later sweep where
+                #   that detector did run — and the writer books a reopen as a
+                #   NEW EPISODE. Measured churn on live rows over 4h, each +1
+                #   episode AND +1 seen_count (the new-episode branch; an
+                #   ongoing finding freezes seen_count):
+                #     gated_endpoint_missing_coaching      1099 -> 1100
+                #     facility_country_mislabeled           106 -> 107
+                #     customer_activation_systemic_failure   88 -> 89
+                #   1,100 episodes in 67 days is ~16 fabricated closures a day
+                #   for one continuously-present issue — and the open/resolved
+                #   trajectory is exactly the signal this table exists to
+                #   measure. Controls that sweep (detectors that completed):
+                #   consistency_radar_scan_partial and env_drift_backend_vs_worker,
+                #   both +0.
+                #
+                #   ABSENCE ONLY MEANS SOMETHING FOR A DETECTOR THAT RAN. The
+                #   2-min arm is now restricted to rows whose producing
+                #   function reported this sweep; everything else is left open
+                #   (the 24h arm still catches genuinely dead rows). Fails
+                #   CLOSED in every degraded case — no completed set, no
+                #   detector_fn column, or an empty list all resolve NOTHING,
+                #   because leaving a fixed finding open is a visible nuisance
+                #   while closing a live one is a silent lie.
+                _completed_fns = [str(x) for x in (_LAST_SWEEP.get("completed_fns") or [])]
+                _scope_ok = bool(_completed_fns) and _fn_col_live
                 if full_sweep and _persist_savepoint(cur, "bf_resolve_absent"):
                     try:
-                        cur.execute("""
-                            UPDATE brain_findings
-                               SET status = 'resolved',
-                                   resolved_at = NOW()
-                             WHERE status = 'open'
-                               AND ((detector = 'consistency_radar'
-                                     AND last_seen < NOW() - INTERVAL '2 minutes')
-                                    OR last_seen < NOW() - INTERVAL '24 hours')
-                        """)
+                        if _scope_ok:
+                            cur.execute("""
+                                UPDATE brain_findings
+                                   SET status = 'resolved',
+                                       resolved_at = NOW()
+                                 WHERE status = 'open'
+                                   AND ((detector = 'consistency_radar'
+                                         AND last_seen < NOW() - INTERVAL '2 minutes'
+                                         AND detector_fn = ANY(%s))
+                                        OR last_seen < NOW() - INTERVAL '24 hours')
+                            """, (_completed_fns,))
+                        else:
+                            # Cannot tell "ran and found nothing" from "never
+                            # ran" → close nothing on the per-sweep arm.
+                            cur.execute("""
+                                UPDATE brain_findings
+                                   SET status = 'resolved',
+                                       resolved_at = NOW()
+                                 WHERE status = 'open'
+                                   AND last_seen < NOW() - INTERVAL '24 hours'
+                            """)
                         resolved_now = cur.rowcount or 0
                         _persist_release_sp(cur, "bf_resolve_absent")
                     except Exception:
@@ -13142,8 +13237,12 @@ def scan_summary() -> dict:
         # across Railway workers and has caused autopilot silence
         # for hours). Defensive — never fails the scan.
         try:
-            # full_sweep=True: this is the canonical scan_all() over ALL
-            # detectors, so resolve-on-absence is valid here (only place it runs).
+            # full_sweep=True marks this as the canonical radar sweep — the
+            # only caller allowed to run resolve-on-absence at all.
+            # It does NOT assert the sweep was complete: it never is (the 25s
+            # budget abandons 15-53 of ~140 detectors, varying per run). The
+            # flag gates WHICH caller may resolve; _LAST_SWEEP gates WHICH
+            # ROWS, scoped to the detectors that actually reported.
             _persist_findings_to_db(findings or [], full_sweep=True)
         except Exception as _e:
             try:

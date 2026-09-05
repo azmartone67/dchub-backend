@@ -312,7 +312,8 @@ def _maybe_quarantine_runaway(cur, issue: str, url: str,
 
 def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
                          detail: str = "", detector: str = None,
-                         status: str = "open", count_kind: str = "") -> str:
+                         status: str = "open", count_kind: str = "",
+                         detector_fn: str = "") -> str:
     """Constraint-agnostic upsert into brain_findings.
 
     Returns "updated" | "inserted" | "skipped". Never raises — every DB
@@ -350,6 +351,14 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
     # write must never overwrite a type a detector previously declared —
     # that would silently re-open the exact hole this column closes.
     write_kind = bool(count_kind) and "count_kind" in cols
+    # ★ PROVENANCE (2026-09-05). `detector` names the MODULE that wrote the
+    #   row; `detector_fn` names the specific check function inside it. The
+    #   radar's resolve-on-absence sweep needs the finer grain: it may only
+    #   close a row whose producing FUNCTION actually ran this sweep. Written
+    #   only when the caller declares one AND the column exists, so every
+    #   other writer and every older schema is untouched.
+    detector_fn = (detector_fn or "")[:120]
+    write_fn = bool(detector_fn) and "detector_fn" in cols
 
     # ── 1. UPDATE existing row (recurrence) ──
     if _savepoint(cur, "bfw_upd"):
@@ -360,6 +369,9 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
         if write_kind:
             set_parts.append("count_kind = %s")
             params.append(count_kind)
+        if write_fn:
+            set_parts.append("detector_fn = %s")
+            params.append(detector_fn)
         if "last_seen" in cols:
             set_parts.append("last_seen = NOW()")
         if has_ep and not resolved_like:
@@ -462,6 +474,8 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
         vals = {"issue": issue, "url": url, "count": count, "detail": detail}
         if write_kind:
             vals["count_kind"] = count_kind
+        if write_fn:
+            vals["detector_fn"] = detector_fn
         if "detector" in cols and detector is not None:
             vals["detector"] = detector
         if "status" in cols:
