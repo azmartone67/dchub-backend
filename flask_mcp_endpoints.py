@@ -6483,14 +6483,19 @@ def _lp_is_internal(p):
 # Allowlist of recognized external AI platforms (substring match). distinct_platforms
 # counts ONLY these — a denylist can't keep up with the audit/test long tail
 # (Scraper-Block-Verify, Leakaudit4, single-char noise, ...). Conservative: a new
-# platform not yet listed is undercounted, never noise-inflated. Mirrors
-# agent_network_effect._KNOWN_AI_TOKENS.
-_LP_KNOWN_AI_TOKENS = (
-    "claude", "anthropic", "chatgpt", "openai", "gpt", "gemini", "bard",
-    "copilot", "perplexity", "grok", "deepseek", "cursor", "cline",
-    "windsurf", "mistral", "cohere", "llama", "meta", "nvidia", "groq",
-    "huggingface", "phind", "you.com", "poe", "replit", "opencode",
-)
+# platform not yet listed is undercounted, never noise-inflated.
+#
+# ★2026-09-05 — NOW IMPORTED, NOT COPIED. ai_platform_canon's docstring has said
+# "those now import from here" since 2026-07-27; it was not true. This module and
+# agent_network_effect each kept a byte-identical literal tuple, so the canon was
+# the single source of truth for the COUNT (`count_platforms`, used by
+# distinct_platforms below) and not for the LIST (`platforms_30d`, filtered by
+# _lp_is_recognized right here). Adding 'codex' to the canon therefore made one
+# payload contradict itself: the platform was counted in distinct_platforms and
+# absent from platforms_30d in the same response. Re-sourced so the three can
+# never diverge again; tests/test_platform_canon_single_source.py fails if a
+# fourth copy appears.
+from ai_platform_canon import KNOWN_AI_TOKENS as _LP_KNOWN_AI_TOKENS
 def _lp_is_recognized(p):
     if not p:
         return False
