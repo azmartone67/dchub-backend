@@ -39,6 +39,7 @@ So this file asserts on the verdict, not on the shape of the expression.
 from __future__ import annotations
 
 import ast
+import sys
 import glob
 import json
 import os
@@ -226,6 +227,14 @@ def test_every_dispatched_shell_beats_the_ledger():
             label = el.elts[0]
             if isinstance(label, ast.Constant) and "shell" in str(label.value):
                 scheduled.append(str(label.value))
+
+    # ★2026-09-04: a shell may declare its own job in its own module rather than
+    # in _DISPATCH. Without this, such a shell drops out of the coverage check
+    # SILENTLY — the assert below passes while nothing watches it, which is a
+    # worse failure than the one this test exists to catch.
+    sys.path.insert(0, _ROOT)
+    from routes.cron_declarations import declared_labels
+    scheduled += [l for l in declared_labels(_ROOT) if "shell" in l]
 
     beating_src = " ".join(os.path.basename(p) for p in _beating_shells())
     unwatched = []
