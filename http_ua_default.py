@@ -59,21 +59,51 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+# ★ PATCH ONCE. Importing this module a second time in one process — which
+# importlib.reload() does, and which tests/test_http_ua_default_covers_all_stacks.py
+# does twice to exercise the DCHUB_ROLE variants — used to re-run every patch
+# below against the ALREADY-PATCHED function.
+#
+# For requests that was fatal, not untidy. `_orig_default_headers` was a module
+# GLOBAL and the wrapper resolved it at CALL time, so a reload rebound it to the
+# wrapper installed by the first run — and both runs' functions share one
+# __globals__ dict, so run 1's body ended up calling run 1's body:
+#
+#     RecursionError: maximum recursion depth exceeded  (http_ua_default.py:72)
+#
+# It surfaced in tests/test_nrel_breaker_and_log_scrub.py, which is innocent —
+# it is simply the next test that touches requests after the reload.
+#
+# For httpx it was silent and still wrong: `_orig_init` is a closure variable so
+# it chained instead of recursing, one wrapper per import (measured depth 2 after
+# one import, 5 after four). A long-lived process that re-imports this leaks a
+# frame per import on every client it builds.
+#
+# So each patch now marks what it installs and refuses to wrap it twice. `_UA`
+# is still read from module globals at call time, so a reload with a new
+# DCHUB_ROLE updates the header the installed patches emit — which is exactly
+# what the reload tests assert.
+_PATCHED = "_dchub_ua_shim"
+
+
 # ── requests: force the default session User-Agent (explicit per-call UAs win)
 try:
     import requests.utils as _ru
     import requests.sessions as _rs
 
+    # Plain assignment, not a wrapper — re-running this is already idempotent.
     _ru.default_user_agent = lambda name="python-requests": _UA  # type: ignore
 
-    _orig_default_headers = _rs.default_headers
+    if not getattr(_rs.default_headers, _PATCHED, False):
+        # Bound as a default argument, so the original travels WITH the function
+        # instead of being looked up in module globals a reload can rebind.
+        def _default_headers_with_ua(_orig=_rs.default_headers):
+            h = _orig()
+            h["User-Agent"] = _UA
+            return h
 
-    def _default_headers_with_ua():
-        h = _orig_default_headers()
-        h["User-Agent"] = _UA
-        return h
-
-    _rs.default_headers = _default_headers_with_ua  # type: ignore
+        setattr(_default_headers_with_ua, _PATCHED, True)
+        _rs.default_headers = _default_headers_with_ua  # type: ignore
 except Exception:  # pragma: no cover
     pass
 
@@ -88,6 +118,8 @@ try:
 
     def _patch_httpx(cls):
         _orig_init = cls.__init__
+        if getattr(_orig_init, _PATCHED, False):
+            return                      # already wrapped — see _PATCHED above
 
         def __init__(self, *a, **kw):
             try:
@@ -103,6 +135,7 @@ try:
                 pass          # identity is never worth breaking a client
             return _orig_init(self, *a, **kw)
 
+        setattr(__init__, _PATCHED, True)
         cls.__init__ = __init__
 
     _patch_httpx(_hx.Client)
