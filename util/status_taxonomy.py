@@ -177,3 +177,39 @@ def basis(scope: str = "") -> dict:
     if scope:
         out["scope"] = scope
     return out
+
+
+#: What a NULL / blank status is called once it reaches a JSON key.
+UNKNOWN_STATUS_KEY = "unknown"
+
+
+def status_histogram(rows):
+    """`{status: count}` from GROUP BY status rows, safe to serialize.
+
+    r-status-null-key (2026-09-05). discovered_facilities.status is nullable,
+    and callers built this histogram as `{r[0]: r[1] for r in rows}` — which
+    puts a literal None among the KEYS. flask.jsonify sorts keys, so a single
+    NULL row turned the whole 200 into
+
+        TypeError: '<' not supported between instances of 'NoneType' and 'str'
+
+    a 500 the CF worker renders to the caller as "503 Backend unreachable".
+    Live 2026-09-05, /api/v1/markets/<id>: northern virginia, london-gb and
+    singapore-sg all 503'd on this while ashburn, phoenix and tokyo-jp were
+    fine — the split is exactly which markets contain a NULL-status facility,
+    so the fault appears as ingest lands one and heals when it is backfilled.
+
+    Lives here, pure, so a test can EXECUTE it against flask.jsonify and
+    watch the real failure. A source-level guard for this is worthless: the
+    broken and the fixed line differ by a conditional, and nothing about the
+    text of either says whether Flask can sort the result.
+
+    ACCUMULATES rather than assigns: NULL and '' are distinct GROUP BY
+    buckets that both land on UNKNOWN_STATUS_KEY, so a plain assignment lets
+    the second silently overwrite the first and the histogram under-reports.
+    """
+    out = {}
+    for r in (rows or ()):
+        key = str(r[0]) if r[0] else UNKNOWN_STATUS_KEY
+        out[key] = out.get(key, 0) + (r[1] or 0)
+    return out

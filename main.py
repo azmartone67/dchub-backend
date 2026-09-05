@@ -19708,7 +19708,20 @@ def get_market_stats(market):
         """, params)
 
         by_status_rows = c.fetchall()
-        by_status = {r[0]: r[1] for r in by_status_rows}
+        # r-status-null-key (2026-09-05): these are dict KEYS built straight
+        # from discovered_facilities.status, and that column is nullable. One
+        # NULL row makes this {None: 3, 'Operational': 812, ...}, and
+        # jsonify sorts keys — so the whole 200 became
+        #     TypeError: '<' not supported between instances of 'NoneType' and 'str'
+        # a 500 that the CF worker renders to the caller as
+        # "503 Backend unreachable". Live 2026-09-05: /api/v1/markets/
+        # {northern virginia, london-gb, singapore-sg} all 503'd on this while
+        # ashburn, phoenix and tokyo-jp were fine — the split is exactly which
+        # markets happen to contain a NULL-status facility, so it fires as
+        # ingest lands one and heals when the row is backfilled. A market's
+        # status histogram must not be able to take the endpoint down.
+        from util.status_taxonomy import status_histogram
+        by_status = status_histogram(by_status_rows)
 
         # Recent facilities
         c.execute(f"""
