@@ -41,7 +41,13 @@ SPEC_EMITTERS = [
     "ai_discovery_routes.py",          # -> /openapi.json          (the one agents fetch)
     "routes/openapi_autogen.py",       # -> /api/v1/openapi.json
     "routes/openapi_dynamic.py",       # -> /openapi-live.json
-    "dchub-frontend/openapi.json",     # stale-decoy copy, but public-readable
+    # dchub-frontend/openapi.json dropped 2026-09-05 with the vendored frontend
+    # mirror. It was labelled "stale-decoy copy, but public-readable" — and the
+    # decoy half was right while the public half was not: dchub.cloud/openapi
+    # .json is served by CF Pages from the dchub-frontend REPO's copy, never
+    # from a file in here. Verified live that day: the served spec carries
+    # CANON_LICENCE_NAME and byte-matches the frontend repo's copy, so nothing
+    # regressed at the surface. Coverage did: see the test below.
 ]
 
 # The retired strings. Any reappearance is drift, not a new decision.
@@ -107,11 +113,26 @@ def test_spec_emitter_has_no_retired_licence_string(rel):
         assert f'{{"name": "{dead}"' not in body, f"{rel} still emits {dead!r}"
 
 
-def test_the_json_spec_copy_still_parses():
-    """Editing a minified JSON spec by string replacement can corrupt it, and a
-    broken spec is worse than a wrong licence — agents fail to parse it at all."""
-    d = json.loads(_read("dchub-frontend/openapi.json"))
-    assert d["info"]["license"]["name"] == CANON_LICENCE_NAME
+def test_the_public_json_spec_is_fenced_in_the_repo_that_owns_it():
+    """★ AN EXCLUSION WITHOUT A LIVE ALTERNATIVE IS A HOLE, so this names the
+    hole instead of quietly leaving one.
+
+    The old test here parsed dchub-frontend/openapi.json out of the vendored
+    mirror and asserted its licence. That file is gone; the copy CF Pages
+    actually serves at /openapi.json lives in the dchub-frontend repo, and as
+    of 2026-09-05 NO guard in that repo asserts its licence string — checked:
+    nothing under its scripts/ or .github/workflows/ references CC-BY-4.0 or
+    DATA-LICENSE for the spec.
+
+    So the three emitters above still cover every spec THIS repo produces, and
+    the served JSON copy is covered by dchub-frontend#1368. This test fails if
+    a copy reappears here, which would mean two answers again."""
+    stray = [p for p in ROOT.rglob("openapi.json")
+             if "dchub-frontend" in p.parts or "frontend_snapshot" in p.parts]
+    assert not stray, (
+        f"an OpenAPI spec copy is back under a vendored frontend path: "
+        f"{[str(p) for p in stray]}. The public /openapi.json is served from "
+        f"the dchub-frontend repo; a second copy here can only drift.")
 
 
 # ─── the attribution surface ─────────────────────────────────────────────

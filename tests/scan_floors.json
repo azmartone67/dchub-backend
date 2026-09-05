@@ -32,7 +32,7 @@
       "walk": 70
     },
     "test_brain_consistency_radar.py": {
-      "walk": 110
+      "walk": 80
     },
     "test_brain_draft_pr_writer.py": {
       "glob": 640
@@ -44,7 +44,7 @@
       "glob": 90
     },
     "test_brain_model_routing.py": {
-      "walk": 120
+      "walk": 80
     },
     "test_canon_resolved_per_request.py": {
       "pglob": 1900
@@ -62,16 +62,16 @@
       "walk": 1
     },
     "test_capacity_pipeline_writer_shape.py": {
-      "walk": 120
+      "walk": 90
     },
     "test_capacity_tracking_dead_lane.py": {
-      "walk": 120
+      "walk": 90
     },
     "test_continuation_compliance.py": {
       "pglob": 6
     },
     "test_contract_healer.py": {
-      "walk": 120
+      "walk": 90
     },
     "test_cron_decentralized_dispatch.py": {
       "glob": 640
@@ -86,28 +86,28 @@
       "pglob": 6140
     },
     "test_date_window_half_open_range.py": {
-      "walk": 120
+      "walk": 90
     },
     "test_dcpi_iso_taxonomy.py": {
-      "walk": 120
+      "walk": 90
     },
     "test_dcpi_provenance_stamp.py": {
-      "walk": 110
+      "walk": 90
     },
     "test_dcpi_publish_gate.py": {
-      "walk": 110
+      "walk": 90
     },
     "test_dcpi_str_coverage_markets.py": {
       "pglob": 640
     },
     "test_dcpi_verdict_bands.py": {
-      "walk": 110
+      "walk": 90
     },
     "test_ddl_through_pool.py": {
-      "walk": 110
+      "walk": 90
     },
     "test_dead_key_queries.py": {
-      "walk": 100
+      "walk": 70
     },
     "test_deals_guard.py": {
       "walk": 1
@@ -119,10 +119,10 @@
       "pglob": 640
     },
     "test_extractor_capacity_quarantine_stamp.py": {
-      "walk": 120
+      "walk": 90
     },
     "test_feed_fetch_bounded.py": {
-      "walk": 110
+      "walk": 90
     },
     "test_freshness_sources_are_real.py": {
       "pglob": 640
@@ -143,7 +143,7 @@
       "glob": 20
     },
     "test_json_column_binding.py": {
-      "walk": 90
+      "walk": 70
     },
     "test_kmz_routes_identity_conflict.py": {
       "pglob": 640
@@ -170,7 +170,7 @@
       "walk": 4
     },
     "test_resend_webhook_single_registration.py": {
-      "walk": 120
+      "walk": 90
     },
     "test_response_content_type_charset.py": {
       "pglob": 1840
@@ -200,7 +200,7 @@
       "pglob": 1760
     },
     "test_sqlite_time_functions_on_postgres.py": {
-      "walk": 110
+      "walk": 90
     },
     "test_stripe_route_auth.py": {
       "pglob": 1760
@@ -209,7 +209,7 @@
       "pglob": 640
     },
     "test_testimonials_quote_capture.py": {
-      "walk": 110
+      "walk": 70
     },
     "test_thin_content_lanes.py": {
       "pglob": 640
