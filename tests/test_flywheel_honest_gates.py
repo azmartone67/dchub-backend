@@ -96,10 +96,26 @@ def test_dedupe_actually_applies_through_the_delegation():
 
 
 def test_short_name_contract_survives_delegation():
-    """The 301/sitemap guards rely on None for un-sluggable names."""
+    """The 301/sitemap guards rely on None for UN-SLUGGABLE names — and a
+    one- or two-character name is not un-sluggable.
+
+    ★ 2026-09-05: this asserted `("X","ab") is None`. The rejection it pinned
+    was `len(name_slug) < 3` in build_canonical_slug, which measured the NAME
+    FRAGMENT while the slug it returns always carries a provider prefix and an
+    8-char hash. It stranded 28 Operational facilities (RZ, Oi, B4, 1A, SC, L7)
+    with no URL from March to September.
+
+    The 301 guard is the reason to widen it, not a reason to keep it: the one
+    caller (routes/seo_pages.py ~491) does `if _canon_slug: redirect(..., 301)`,
+    so None means "this legacy /facility/<id> has NO canonical target". Those 28
+    rows had none. Now they do.
+
+    A MISSING name still returns None, and that is the contract this test
+    actually protects."""
     from routes.seo_pages import _canonical_facility_slug
-    assert _canonical_facility_slug("X", "ab") is None
+    assert _canonical_facility_slug("X", "ab") == "x-ab-c343e6d0"
     assert _canonical_facility_slug("X", "") is None
+    assert _canonical_facility_slug("X", "!!!") is None
 
 
 def test_sitemap_fallback_uses_the_freeze_builder():
