@@ -40117,15 +40117,20 @@ try:
 except Exception as _di_e:
     print(f"[main] dcpi_intl_bp register failed: {_di_e}", flush=True)
 
-# Phase ZZZZZ-round47.2 (2026-05-25): public /architecture landing — was
-# referenced by nav_config_routes, site_sentinel, brain_consistency_radar
-# as a canonical page but never built. SEO + pitch surface.
-try:
-    from routes.architecture_landing import architecture_bp
-    app.register_blueprint(architecture_bp)
-    print("[main] architecture_bp registered: /architecture", flush=True)
-except Exception as _arc_e:
-    print(f"[main] architecture_bp register failed: {_arc_e}", flush=True)
+# Phase ZZZZZ-round47.2 (2026-05-25): public /architecture landing — RETIRED
+# 2026-09-04. It never ran. /architecture is absent from dchub-frontend's
+# _routes.json include, so CF Pages never invoked the worker and served the
+# static architecture.html instead — 200, but with NO x-dc-worker-version.
+# The two were DIFFERENT documents (static <h1>Built for …, 41,673 b live;
+# this handler <h1>How DC Hub Works, 10,495 b), and the static one is
+# authoritative: 54 of 56 distinctive lines of the live page come from it,
+# 2 from this handler. Routing it instead would have swapped a richer live
+# page for a thinner one, so it was retired rather than routed (unlike
+# /changelog, which had no static twin — dchub-frontend PR #1347).
+# The /architecture links in nav_config_routes, site_sentinel,
+# brain_consistency_radar and the page footers are LEFT IN PLACE: they resolve
+# to the static page, and both monitors probe the edge (_SITE_BASE =
+# https://dchub.cloud), not this origin.
 
 # Phase ZZZZZ-round47.3 (2026-05-25): public /changelog auto-built from
 # press_releases — turns the daily press cadence into a velocity signal.
