@@ -35,10 +35,15 @@ jobs:
       # subject that no longer exists.
       #
       # The frontend checkout went with it: this job used it for nothing else.
-      # It had also been FAILING since 2026-08-19 (DCHUB_FRONTEND_RO_TOKEN lost
-      # access), and the guard added then — say "could not check", never "in
-      # sync" — is what kept that honest. Retiring the check retires its
-      # dependency rather than leaving a token nobody rotates.
+      # A note in the original retirement said the checkout "had also been
+      # FAILING since 2026-08-19 (DCHUB_FRONTEND_RO_TOKEN lost access)". That
+      # was quoted from a stale comment, not measured: the secret was rotated
+      # 2026-09-02 and works — see bug-squash-nightly.yml for the evidence.
+      # The retirement stands on its own reason (there is no second copy left
+      # to diverge from); the token was never part of it. The guard added on
+      # 2026-08-19 — say "could not check", never "in sync" — is what kept the
+      # failing period honest, and that lesson is why the surviving cross-repo
+      # jobs still gate on the checkout rather than trusting it.
       #
       # Divergence between the two repos is now structurally impossible for
       # the files it watched, and tests/test_no_vendored_frontend_mirror.py

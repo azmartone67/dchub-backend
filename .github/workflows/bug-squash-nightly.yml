@@ -43,10 +43,21 @@ jobs:
       # detector filed ZERO findings for three weeks while the workflow file
       # itself looked perfectly healthy.
       #
-      # ★ DCHUB_FRONTEND_RO_TOKEN no longer grants access either — verified
-      # 2026-08-19: deploy-integrity.yml hits the identical "Not Found" on the
-      # same secret and is green ONLY because it sets continue-on-error. The
-      # secret needs rotating; that is a credential action for the owner.
+      # ★ CORRECTED 2026-09-05 — DCHUB_FRONTEND_RO_TOKEN WORKS. This block
+      # said it "no longer grants access", verified 2026-08-19. That was true
+      # then and stopped being true when the secret was rotated on 2026-09-02
+      # (its updated_at, via the secrets API); nobody came back for the
+      # comments, so three files went on telling readers to rotate a working
+      # credential. Measured on this workflow's own run 33947009711:
+      #   "Check out frontend (private sibling — optional)"  -> success
+      #   "Flag degraded frontend coverage"                  -> SKIPPED
+      # That second step only runs when the checkout failed. Same result in
+      # check-route-tables run 33954259437, where steps 2 and 3 executed
+      # rather than skipping — they are gated on the tables being present.
+      # The degraded-path handling below stays exactly as it is: it is correct
+      # for the day the token expires again, and its "rotate the token"
+      # remediation is right AT THAT MOMENT. What was wrong was asserting the
+      # failure as the current state.
       #
       # Until it is rotated: do NOT let a missing frontend throw away the
       # backend findings too. Degrade instead of dying — and bug_squash.py
