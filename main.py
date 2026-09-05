@@ -31077,6 +31077,55 @@ _SITEMAP_XML_CACHE = {'sections': None, 'ts': 0.0}
 _SITEMAP_FACILITIES_PER_SHARD = 10000
 _SITEMAP_FIXED_SECTIONS = ('static', 'markets', 'dcpi', 'press')
 
+# ── r-ai-sitemap (2026-09-05): a SECOND facility sitemap, for retrieval crawlers
+#
+# The capacity gate above (_SITEMAP_PROVEN_*, `AND COALESCE(power_mw,0) > 0`)
+# was tuned for GOOGLE AND BING CRAWL BUDGET, and for them it is still right:
+# Bing has reported "limited crawl capacity" since June, thin pages get crawled
+# and rejected, and the 08-14 measurement showed widening the sitemap added
+# thin pages without moving the indexed count. Nothing here changes that.
+#
+# It is the WRONG trade for an AI retrieval crawler, and the difference is not
+# a matter of degree. Google ranks our page against competitors, so a page it
+# cannot rank is budget burned. Perplexity and GPTBot are building an ENTITY
+# INDEX — a facility with no capacity figure is still a unique record that can
+# ground "is there a data centre in X", and they are demonstrably not
+# budget-constrained on us. Measured over the 7d to 2026-09-05, ai_requests:
+#
+#     chatgpt     12,001 distinct /facilities/ URLs · 17,039 hits
+#     perplexity   7,563 distinct                   ·  7,736 hits
+#     claude       1,520 · you 728        ALL 27,163 hits returned HTTP 200
+#
+# GPTBot found 12,001 distinct facility URLs against the 6,266 the sitemap
+# publishes — it is already reaching roughly double what we advertise, by
+# following links. The publishable universe is 20,488 (discovered_facilities,
+# non-duplicate, canonical_slug present), so ~14,200 live 200-serving pages are
+# in no sitemap at all, during the largest content crawl this site has had.
+#
+# So: keep ONE gated sitemap for the engines that rank, and publish a SECOND
+# ungated one for the crawlers that retrieve. This is deliberately NOT added to
+# _sitemap_shard_files() — /sitemap.xml is the artefact submitted to GSC/Bing
+# Webmaster and adding it there would defeat the gate it exists beside. It is
+# advertised in llms.txt only.
+#
+# ★ SNAPSHOT-ONLY BY DESIGN, unlike every other shard. The others fall back to
+#   a live _sitemap_sections() build on a snapshot miss; these must not. The
+#   ungated build is the ~20k-row union that saturated the Neon primary pool in
+#   the 07-20 stampede, and this family is fetched by crawlers that sweep
+#   thousands of URLs an hour. A miss returns 503 with a Retry-After — an
+#   honest "not built yet" that a crawler will come back from — never a live
+#   rebuild per request. See _snapshot_get() and the 07-20 note above.
+_SITEMAP_AI_INDEX_KEY = 'ai'
+_SITEMAP_AI_SHARD_PREFIX = 'ai-facilities'
+
+
+def _ai_shard_keys(n_urls):
+    """Snapshot keys for the AI facility shards, ordered."""
+    import math
+    n = max(1, math.ceil(n_urls / _SITEMAP_FACILITIES_PER_SHARD))
+    return [f'{_SITEMAP_AI_SHARD_PREFIX}-{i}' for i in range(1, n + 1)]
+
+
 
 # r-thin-sitemap (2026-08-14): floor below which the capacity gate is assumed
 # broken rather than merely selective. Live-fired 2026-08-14, the gate emits
@@ -32622,6 +32671,47 @@ def _rebuild_sitemap_snapshot():
         chunk = fac[lo:lo + _SITEMAP_FACILITIES_PER_SHARD]
         rows.append((f'facilities-{i}', _render_shard_xml(chunk), len(chunk)))
     rows.append(('index', _render_index_xml(shard_files, today), len(shard_files)))
+
+    # r-ai-sitemap (2026-09-05): the ungated family, for retrieval crawlers.
+    # This is a SECOND full _build_sitemap_sections() pass (the gate lives in
+    # the SQL, so the ungated set cannot be derived from the gated one in
+    # memory). That doubles the cost of a job that runs 4-hourly and OFF the
+    # request path, which is the whole reason it is done here and not lazily.
+    #
+    # Wrapped: a failure here must degrade to "no AI shards in this generation"
+    # (the routes then 503 until the next rebuild), never take the gated
+    # sitemap down with it. The gated artefact is the one GSC and Bing read.
+    ai_shard_keys = []
+    try:
+        ai_fac = _build_sitemap_facilities_ungated() or []
+        if len(ai_fac) < len(fac):
+            # The ungated set is a strict superset of the gated one by
+            # construction — same query minus one AND clause. Smaller means the
+            # build is wrong, and publishing it would RETIRE URLs from the AI
+            # crawlers rather than add any. Refuse rather than shrink.
+            logger.error(
+                "sitemap: ungated AI build returned %d URLs, FEWER than the "
+                "gated %d — refusing to publish a superset that shrank. AI "
+                "shards omitted from this generation.", len(ai_fac), len(fac))
+        else:
+            ai_shard_keys = _ai_shard_keys(len(ai_fac))
+            for i, key in enumerate(ai_shard_keys, start=1):
+                lo = (i - 1) * _SITEMAP_FACILITIES_PER_SHARD
+                chunk = ai_fac[lo:lo + _SITEMAP_FACILITIES_PER_SHARD]
+                rows.append((key, _render_shard_xml(chunk), len(chunk)))
+            rows.append((_SITEMAP_AI_INDEX_KEY,
+                         _render_index_xml([f'sitemap-{k}.xml' for k in ai_shard_keys],
+                                           today),
+                         len(ai_shard_keys)))
+            logger.info("sitemap: AI (ungated) family = %d URLs across %d shards "
+                        "(gated facilities = %d)",
+                        len(ai_fac), len(ai_shard_keys), len(fac))
+    except Exception as _ai_e:
+        logger.error("sitemap: ungated AI build FAILED (%s) — AI shards omitted "
+                     "from this generation; /sitemap-ai.xml will 503 until the "
+                     "next rebuild succeeds. The gated sitemap is unaffected.",
+                     _ai_e)
+
     conn = None
     err = False
     try:
@@ -32695,6 +32785,28 @@ def serve_sitemap_shard(section):
         _r.headers['X-Sitemap-Source'] = 'snapshot'
         return _r
     import re as _re
+
+    # r-ai-sitemap (2026-09-05): the ungated AI family is SNAPSHOT-ONLY. Every
+    # other section falls through to a live _sitemap_sections() build below;
+    # these must not. The ungated build is the ~20k-row union that saturated
+    # the Neon primary in the 07-20 stampede, and this family is fetched by
+    # crawlers that sweep thousands of URLs an hour — one cold cache would
+    # rebuild it per request.
+    #
+    # 503 + Retry-After, NOT 404: a 404 tells a crawler the URL does not exist
+    # and it may stop asking, which would silently retire the whole surface the
+    # moment a rebuild failed. 503 is the honest "built on a schedule, not
+    # yet" and crawlers come back from it.
+    if (section == _SITEMAP_AI_INDEX_KEY
+            or _re.match(r'^' + _SITEMAP_AI_SHARD_PREFIX + r'-\d{1,3}$', section)):
+        _r503 = make_response(
+            'Not built yet. This sitemap is generated on a schedule and served '
+            'only from the snapshot; it is never built per request.\n', 503)
+        _r503.headers['Retry-After'] = '3600'
+        _r503.headers['X-Sitemap-Source'] = 'snapshot-miss'
+        _r503.headers['Cache-Control'] = 'no-store'
+        return _r503
+
     sections, hit = _sitemap_sections()
     if section in _SITEMAP_FIXED_SECTIONS:
         entries = sections.get(section) or []
