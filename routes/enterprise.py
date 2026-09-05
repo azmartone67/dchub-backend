@@ -82,6 +82,64 @@ def _ensure_table():
         logger.warning(f"[enterprise] schema init failed: {e}")
 
 
+# ── r-restore-helpers (2026-09-05) ────────────────────────────────────────
+# RESTORED VERBATIM from 6ca3aaef6. #3894 replaced _ensure_table by splicing
+# out everything between `def _ensure_table():` and the route decorator that
+# follows it — and these two helpers lived in that gap. Nothing referenced
+# them at import time, so the module imported clean, every test passed, and
+# the endpoint 500'd with `name '_rate_limited' is not defined` the first
+# time a VALID submission got past validation. Measured live at the origin:
+#     valid POST -> 500 {"error":"name '_rate_limited' is not defined"}
+# That is worse than the bug #3894 fixed: a 503 naming the sales address
+# became an internal error naming nothing.
+def _rate_limited(ip: str) -> bool:
+    now = time.time()
+    window = _RATE_BUCKET.setdefault(ip, [])
+    # drop old entries
+    window[:] = [t for t in window if now - t < _RATE_WINDOW_S]
+    if len(window) >= _RATE_MAX:
+        return True
+    window.append(now)
+    return False
+
+
+def _relay_to_webhook(payload: dict) -> str:
+    """Optional Slack-compatible webhook relay. Returns a short status."""
+    if not SALES_WEBHOOK:
+        return "no_webhook_configured"
+    try:
+        # r-restore-helpers (2026-09-05): was urllib.request.urlopen. Restoring
+        # it verbatim reintroduced it as a NEW line, and regression_lint's
+        # urllib-request-on-railway rule blocked the merge — correctly. Python's
+        # default urllib User-Agent is what Cloudflare answers with error 1010
+        # (see reference_dchub_urllib_ua_block_0810), so an outbound call from
+        # here can be refused before it reaches the webhook. `requests` is
+        # already a dependency and is what every other outbound call uses.
+        # Behaviour preserved exactly: same JSON body, same 5s timeout, same
+        # two return strings.
+        import requests
+        body = json.dumps({
+            "text": f"New DC Hub enterprise inquiry from *{payload['org_name']}* <{payload['email']}>",
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "New enterprise inquiry"}},
+                {"type": "section", "fields": [
+                    {"type": "mrkdwn", "text": f"*Org:* {payload['org_name']}"},
+                    {"type": "mrkdwn", "text": f"*Email:* {payload['email']}"},
+                    {"type": "mrkdwn", "text": f"*Volume:* {payload['expected_volume']}/mo"},
+                    {"type": "mrkdwn", "text": f"*IP:* {payload.get('source_ip','?')}"},
+                ]},
+                {"type": "section", "text": {"type": "mrkdwn",
+                  "text": f"*Use case:*\n{payload['use_case']}"}},
+            ],
+        }).encode("utf-8")
+        requests.post(SALES_WEBHOOK, data=body,
+                      headers={"Content-Type": "application/json"},
+                      timeout=5)
+        return "webhook_ok"
+    except Exception as e:
+        return f"webhook_failed: {str(e)[:80]}"
+
+
 @enterprise_bp.route("/api/v1/enterprise/contact", methods=["POST"])
 def api_enterprise_contact():
     """Accept an enterprise inquiry. JSON body or form-encoded.
