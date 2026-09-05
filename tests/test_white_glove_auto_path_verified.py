@@ -62,33 +62,29 @@ def test_the_two_sets_are_disjoint():
     (422, True),
 ])
 def test_status_ladder(monkeypatch, code, expected):
-    import urllib.request, urllib.error
-    def fake(req, timeout=0):
-        raise urllib.error.HTTPError(req.full_url, code, "x", None, None)
-    if code < 400:
-        class R:
-            status = code
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-        fake = lambda req, timeout=0: R()
-    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    import requests
+
+    class R:
+        status_code = code
+    monkeypatch.setattr(requests, "post", lambda *a, **k: R())
     assert wg.probe_submit_endpoint("https://example.test/s")["reachable"] is expected
 
 
 def test_upstream_5xx_is_inconclusive_not_a_demotion(monkeypatch):
     """Their outage must not silently move a working path to human-gated."""
-    import urllib.request, urllib.error
-    monkeypatch.setattr(urllib.request, "urlopen",
-                        lambda req, timeout=0: (_ for _ in ()).throw(
-                            urllib.error.HTTPError(req.full_url, 503, "x", None, None)))
-    r = wg.probe_submit_endpoint("https://example.test/s")
-    assert r["reachable"] is None, r
+    import requests
+
+    class R:
+        status_code = 503
+    monkeypatch.setattr(requests, "post", lambda *a, **k: R())
+    assert wg.probe_submit_endpoint("https://example.test/s")["reachable"] is None
 
 
 def test_transport_error_is_inconclusive(monkeypatch):
-    import urllib.request
-    monkeypatch.setattr(urllib.request, "urlopen",
-                        lambda req, timeout=0: (_ for _ in ()).throw(OSError("boom")))
+    import requests
+    def boom(*a, **k):
+        raise OSError("boom")
+    monkeypatch.setattr(requests, "post", boom)
     assert wg.probe_submit_endpoint("https://example.test/s")["reachable"] is None
 
 

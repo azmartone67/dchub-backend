@@ -190,17 +190,16 @@ _DEMOTING_STATUSES = {403, 404, 405, 410, 429}
 
 def probe_submit_endpoint(url: str, timeout: int = 12) -> dict:
     """POST a harmless probe body. Never raises."""
-    import urllib.request
-    import urllib.error
-    req = urllib.request.Request(
-        url, method="POST", data=b'{"probe":true}',
-        headers={"Content-Type": "application/json",
-                 "User-Agent": "dchub-white-glove-endpoint-probe/1.0"})
+    # requests, not urllib — scripts/regression_lint.py enforces
+    # [urllib-request-on-railway]. allow_redirects=False so a submit endpoint
+    # that starts redirecting reports 3xx rather than being silently followed
+    # to something that answers 200.
+    import requests
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            code = r.status
-    except urllib.error.HTTPError as e:
-        code = e.code
+        r = requests.post(
+            url, json={"probe": True}, timeout=timeout, allow_redirects=False,
+            headers={"User-Agent": "dchub-white-glove-endpoint-probe/1.0"})
+        code = r.status_code
     except Exception as e:
         return {"reachable": None, "status": None, "note": f"transport: {e}"[:90]}
     if code in _DEMOTING_STATUSES:
