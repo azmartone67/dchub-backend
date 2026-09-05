@@ -85,3 +85,154 @@ REDUNDANT_TWIN_SLUGS = frozenset({
 def canonical_slug(slug: str | None) -> str:
     """Canonical market slug for an alias, or '' if the slug is already one."""
     return DCPI_METRO_ALIASES.get((slug or "").lower().strip(), "")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# IDENTIFIER RESOLUTION — r-markets-api-ident (2026-09-05)
+# ═══════════════════════════════════════════════════════════════════════
+# /api/v1/markets/<id> resolved against main.MARKET_ALIASES — a curated,
+# hand-written, US-only dict of 34 keys — while /api/v1/markets PUBLISHES
+# 132 markets built from three sources (curated + US auto-discovered +
+# international auto-discovered). The detail route served a strict SUBSET
+# of what its own list route advertises, so following the list's
+# `cite_url_template` produced 404s. Measured live through the edge,
+# cache-busted 2026-09-05, on the five ids the anonymous tier shows:
+#
+#     listed id `northern virginia`  -> /api/v1/markets/... 200
+#     listed id `london-gb`          -> 404
+#     listed id `singapore-sg`       -> 404
+#     listed id `tokyo-jp`           -> 404
+#     listed id `amsterdam-nl`       -> 404
+#
+# Four of the five ids we publish 404 on our own detail route, and the
+# 404 body's remediation text ("Call rank_markets (or GET /api/v1/markets)
+# for the full list") hands the agent exactly those ids. A closed loop of
+# bad advice.
+#
+# ★ THE REPORTED SYMPTOM NAMED THE WRONG AXIS. The defect arrived as
+# "multi-word markets 404, single-word ones work" (Santa Clara / Ludwigshafen
+# Am Rhein failing, Ashburn passing). Word count is not the discriminator —
+# measured live the same day:
+#     /api/v1/markets/San Antonio       200   multi-word, works
+#     /api/v1/markets/Northern Virginia 200   multi-word, works
+#     /api/v1/markets/Salt Lake City    200   multi-word, works
+#     /api/v1/markets/Frankfurt         404   SINGLE-word, fails
+#     /api/v1/markets/Tucson            404   SINGLE-word, fails
+#     /api/v1/markets/Boardman          404   SINGLE-word, fails
+# The real discriminator is membership in the curated dict. `.lower()
+# .replace('-', ' ')` already handled case and hyphens, so every curated
+# market answered in BOTH spellings and every non-curated one 404'd in both.
+# The sample happened to pair multi-word markets with non-curated ones.
+#
+# The three sources spell their ids three different ways, which is why a
+# single normalisation is needed rather than a per-source special case:
+#     curated             'northern virginia'          (spaces)
+#     US auto-discovered  'santa-clara'                (hyphens)
+#     international       'ludwigshafen-am-rhein-de'   (hyphens + country)
+# An agent writing the place name by hand produces none of those three. It
+# writes `Ludwigshafen Am Rhein` — which is exactly the market's published
+# `name`, so NAME is indexed alongside `id` rather than trying to guess the
+# country suffix off a bare city.
+
+import re as _re
+import unicodedata as _ud
+
+#: Anything a human or a slug generator uses to join words. Collapsing them
+#: all to one space is what makes 'Santa Clara', 'santa-clara' and
+#: 'santa_clara' one key rather than three.
+_IDENT_SEPARATORS = _re.compile(r"[\s\-_,./]+")
+
+
+def normalize_market_key(raw: str | None) -> str:
+    """Fold any spelling of a market identifier onto one comparison key.
+
+    Case, separator style and accents are all spellings of the same market,
+    never distinctions between markets. Accent folding matters because the
+    international slug builder lowercases the DB's city verbatim
+    ('sao-paulo-br' from 'São Paulo'), while an agent types the unaccented
+    form — without folding, one of the two spellings 404s.
+    """
+    s = _ud.normalize("NFKD", str(raw or ""))
+    s = "".join(ch for ch in s if not _ud.combining(ch))
+    return _IDENT_SEPARATORS.sub(" ", s.lower()).strip()
+
+
+def build_identifier_index(markets) -> dict:
+    """Map every published spelling of every market onto its record.
+
+    Both `id` and `name` are indexed: the id is what our own links and
+    `cite_url_template` emit, the name is what an agent writes by hand.
+
+    CURATED WINS. A curated market and an auto-discovered one can normalise
+    to the same key (both a curated 'columbus' and a discovered 'Columbus,
+    OH' fold to `columbus`), and the curated row carries the hand-checked
+    multi-city definition. `auto_discovered` is falsey on curated rows, so
+    sorting on it puts them first, and first-writer-wins keeps them.
+
+    Cities are deliberately NOT indexed. 'Aurora' belongs to both `chicago`
+    and `denver`, so a city key would resolve to whichever market happened
+    to sort first — an arbitrary answer is worse than an honest 404.
+    """
+    index: dict = {}
+    for m in sorted(markets or (), key=lambda r: bool(r.get("auto_discovered"))):
+        for raw in (m.get("id"), m.get("name")):
+            key = normalize_market_key(raw)
+            if key and key not in index:
+                index[key] = m
+    return index
+
+
+def resolve_market_identifier(raw: str | None, markets):
+    """Published market for any spelling of `raw`, or None.
+
+    Accepts slug, display name and any casing. Returns the market record
+    from `markets` itself, so a caller can never resolve to a market the
+    list route does not publish.
+    """
+    key = normalize_market_key(raw)
+    if not key:
+        return None
+    index = build_identifier_index(markets)
+    hit = index.get(key)
+    if hit is not None:
+        return hit
+    # FALLBACK ONLY — never ahead of a direct hit. DCPI_METRO_ALIASES maps
+    # 'northern-virginia' -> 'ashburn', but `northern virginia` is ALSO a
+    # curated market in its own right with a wider city set (Ashburn,
+    # Loudoun, Sterling, Reston, Herndon, Manassas, Prince William,
+    # Leesburg) than 'ashburn' (Ashburn, Loudoun). Consulting the alias map
+    # first would silently re-point a market that already resolves and shrink
+    # its published facility count. It runs only once a direct match fails,
+    # which is where it earns its keep: 'bay-area', 'sv', 'south-bay' and the
+    # retired twins ('columbus-oh', 'the-dalles-or') have no record of their
+    # own and would otherwise 404.
+    alias = canonical_slug(key.replace(" ", "-"))
+    if alias:
+        return index.get(normalize_market_key(alias))
+    return None
+
+
+def market_scope_sql(country, state):
+    """Country/state guard for a resolved market's facility queries.
+
+    Lives here rather than in main.py so it can be EXECUTED by a test —
+    tests/ must not import main (the green-main convention), and a guard
+    that can only read this predicate out of the AST cannot catch a wrong
+    predicate, only a missing one.
+
+    The guard used to be a hardcoded US literal, which was correct only
+    because the only markets that resolved were the 34 curated US ones. Now
+    that international markets resolve, a US-only guard would return zero
+    facilities for every one of them — a 200 reading 0 MW, which is worse
+    than the 404 it replaced. State narrows a US auto-discovered market to
+    the (city, state) group the list route actually published, so
+    `/api/v1/markets/<city>` cannot silently sum two same-named cities in
+    different states.
+    """
+    if country and str(country).upper() not in ('US', 'USA'):
+        return "AND country = %s", [country]
+    guard = ("AND (country = 'US' OR country = 'USA' "
+             "OR country IS NULL OR country = '')")
+    if state:
+        return guard + " AND UPPER(state) = %s", [str(state).upper()]
+    return guard, []

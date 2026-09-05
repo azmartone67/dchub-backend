@@ -22,12 +22,43 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 MAIN = io.open(REPO / "main.py", encoding="utf-8").read()
 
 
-def _list_markets_body() -> str:
-    """The body of the list_markets view, source-sliced."""
-    i = MAIN.index("def list_markets():")
+def _slice(defn: str) -> str:
+    """Source of one top-level function, up to the next route decorator."""
+    i = MAIN.index(defn)
     j = MAIN.index("\n@app.route", i)
-    body = MAIN[i:j]
-    assert len(body) > 2000, "slice looks wrong — did list_markets move?"
+    return MAIN[i:j]
+
+
+def _list_markets_body() -> str:
+    """The source that BUILDS the published market list.
+
+    r-markets-api-ident (2026-09-05): the build moved out of the
+    list_markets view into build_market_universe, so /api/v1/markets/<id>
+    could resolve against the same rows the list publishes. This slice used
+    to read list_markets ALONE, and when the build left, every assertion
+    below went looking in a function that no longer contained the queries.
+
+    ★ The old `len(body) > 2000` floor did NOT catch it. list_markets is
+    still well over 2000 characters — tier gating, redaction and the
+    response envelope all stayed — so the slice looked healthy while the
+    thing it exists to inspect had gone. A size floor measures that we read
+    SOMETHING, not that we read the right thing; the marker assertion below
+    is what actually pins it.
+
+    Both functions are concatenated so this guard keeps working whichever
+    side of the split the queries live on.
+    """
+    body = _slice("def build_market_universe(c):") + _slice("def list_markets():")
+    assert len(body) > 2000, "slice looks wrong — did the market build move?"
+    # ★ Read the RIGHT thing, not merely something. Each marker is a query
+    # this file asserts about; if a refactor moves one out of reach, this
+    # fails loudly instead of every test below passing on an empty search.
+    for marker in ("SELECT COUNT(*) as count",
+                   "SELECT LOWER(city), city, state,",
+                   "_mkt_contained"):
+        assert marker in body, (
+            f"{marker!r} is no longer in the sliced source — this guard has "
+            "gone blind; re-point _slice() at whatever function holds it now")
     return body
 
 
