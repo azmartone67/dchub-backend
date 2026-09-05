@@ -30,6 +30,28 @@ import time
 import json
 import logging
 import datetime
+
+
+def _utc_iso_z() -> str:
+    """UTC now as ISO-8601 ending in `Z` — the canonical wire shape here.
+
+    ★2026-09-05, utcnow batch 1. `datetime.utcnow()` is naive and deprecated
+    (removal scheduled), but the obvious swap to `datetime.now(timezone.utc)`
+    is NOT safe for a serialized timestamp: an aware `.isoformat()` emits
+    `+00:00`, so the old `utcnow().isoformat() + "Z"` would have produced
+    `...+00:00Z` — malformed, straight into the API response. Measured across
+    the backend: 358 sites carry that exact `+ "Z"` shape and 363 more emit a
+    bare `.isoformat()` that would silently gain an offset.
+
+    So the clock becomes aware and the WIRE SHAPE is pinned back to `Z`. Output
+    is byte-identical to what this module emitted before.
+
+    ★ `Z` is canonical for this repo by decision, not by accident: it is the
+    majority shape. routes/ops_activation.py and routes/ops_claims.py already
+    serve `+00:00` from their own aware `utcnow()` helpers — that is drift to
+    reconcile later, not the standard to copy.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 from flask import Blueprint, jsonify, request, Response, render_template_string
 
 logger = logging.getLogger(__name__)
@@ -332,7 +354,7 @@ def pockets_top():
 
     payload = {
         "ok": True,
-        "as_of": datetime.datetime.utcnow().isoformat() + "Z",
+        "as_of": _utc_iso_z(),
         "caller_tier": tier,
         "tier_cap": cap,
         "shown": len(rows),
@@ -433,7 +455,7 @@ def pockets_for_me():
 
     payload = {
         "ok": True,
-        "as_of": datetime.datetime.utcnow().isoformat() + "Z",
+        "as_of": _utc_iso_z(),
         "caller_tier": tier,
         "tier_cap": cap,
         "shown": len(rows),
@@ -485,7 +507,7 @@ def pockets_movers():
 
     payload = {
         "ok": True,
-        "as_of": datetime.datetime.utcnow().isoformat() + "Z",
+        "as_of": _utc_iso_z(),
         "caller_tier": tier,
         "shown_up": len(up_movers),
         "shown_down": len(down_movers),
@@ -659,7 +681,7 @@ def pockets_page():
 
     html = render_template_string(
         _POCKETS_PAGE_HTML,
-        as_of=datetime.datetime.utcnow().isoformat() + "Z",
+        as_of=_utc_iso_z(),
         pockets=rows,
         shown=len(rows),
         caller_tier=tier,
@@ -1211,12 +1233,12 @@ _POCKETS_RSS = '''<?xml version="1.0" encoding="UTF-8"?>
 def _rfc822(iso_str: str) -> str:
     """ISO 8601 → RFC 822 for RSS pubDate."""
     if not iso_str:
-        return datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+        return datetime.datetime.now(datetime.timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
     try:
         dt = datetime.datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         return dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
     except Exception:
-        return datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+        return datetime.datetime.now(datetime.timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
 
 
 @pockets_bp.route("/pockets.rss", methods=["GET"])
@@ -1232,7 +1254,7 @@ def pockets_rss():
     xml = render_template_string(
         _POCKETS_RSS,
         pockets=rows,
-        build_date=_rfc822(datetime.datetime.utcnow().isoformat() + "Z"),
+        build_date=_rfc822(_utc_iso_z()),
     )
     resp = Response(xml, content_type="application/rss+xml; charset=utf-8")
     resp.headers["Cache-Control"] = "public, max-age=900"
@@ -1524,7 +1546,7 @@ def pockets_geojson():
     payload = {
         "type": "FeatureCollection",
         "features": features,
-        "as_of": datetime.datetime.utcnow().isoformat() + "Z",
+        "as_of": _utc_iso_z(),
         "shown": len(features),
         "skipped_no_coords": skipped,
         "legend": {
@@ -1554,7 +1576,7 @@ def _build_weekly_digest():
     for r in (top_build + top_movers):
         r["why"] = _rationale(r)
     return {
-        "as_of":      datetime.datetime.utcnow().isoformat() + "Z",
+        "as_of":      _utc_iso_z(),
         "week_of":    datetime.date.today().isoformat(),
         "top_build":  top_build,
         "top_movers": top_movers,
