@@ -263,6 +263,16 @@ def test_the_gate_blocks():
                  "3 — ratchet — fail on any NEW uncovered route"):
         assert steps[name]["if"] == "steps.tables.outputs.available == 'true'", name
 
+    # The must-fail control must be able to RUN: its first CI run reported
+    # selftest=fail on a green gate because the runner had no pytest. It is
+    # gated on its own dep install so "could not run" stays reportable as
+    # `absent` rather than masquerading as a failing control.
+    assert steps["Must-fail control for this gate"]["if"] == (
+        "always() && steps.selftest_deps.outcome == 'success'"
+    )
+    assert any((s.get("uses") or "").startswith("actions/setup-python")
+               for s in job["steps"]), "no python pinned; the control cannot run"
+
 
 def test_the_frontend_checkout_is_not_scanned_for_backend_routes(tmp_path, mod, monkeypatch):
     """CI checks the frontend out INSIDE the backend workspace. That repo holds

@@ -60,6 +60,9 @@ jobs:
     # collapse into the same green.
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
 
       # ★ 2026-09-05 — READ THE ROUTING TABLES THAT ARE ACTUALLY DEPLOYED.
       # _routes.json and _worker.js belong to the dchub-frontend repo. Until
@@ -151,9 +154,21 @@ jobs:
       # toward the two parsers that made it report 385-of-496 and asserts the
       # checker notices. Running it HERE — not only in the unit-test job — means
       # the answer on this gate's own board is measured rather than assumed.
+      # ★ The control's OWN dependencies, installed here. The first run of this
+      # step reported selftest=fail on a green gate — not because the control
+      # failed but because the runner had no pytest ("No module named pytest").
+      # "Could not run" and "ran and failed" are different states and
+      # gate_beat.sh has a word for each; conflating them is the same class of
+      # error as letting a missing checkout read as `coherent`.
+      - name: Install the must-fail control's deps
+        id: selftest_deps
+        if: always()
+        continue-on-error: true
+        run: python3 -m pip install --quiet pytest pyyaml
+
       - name: Must-fail control for this gate
         id: selftest
-        if: always()
+        if: always() && steps.selftest_deps.outcome == 'success'
         continue-on-error: true
         run: python3 -m pytest tests/test_route_table_coherence.py -q
 
@@ -184,10 +199,13 @@ jobs:
           # ★ The 4th argument is SELFTEST (pass|fail|absent), not blocking —
           # a closed vocabulary that routes/gate_runs.py enforces. Anything else
           # is not a value this board can represent.
+          # ★ `absent` covers BOTH "skipped" and the empty string a step that
+          # never ran emits — the deps step is gated, so an install failure
+          # leaves this unset. Only a real pytest exit code maps to fail.
           case "$SELFTEST_OUTCOME" in
             success) ST=pass ;;
             failure) ST=fail ;;
-            *)       ST=absent ;;   # skipped / never ran
+            *)       ST=absent ;;   # skipped, or its deps never installed
           esac
           bash scripts/gate_beat.sh "check-route-tables:check" "$V" "$N" "$ST" \
             "ratchet on scripts/route_table_baseline.json — BLOCKING, so job.status is the PR verdict"

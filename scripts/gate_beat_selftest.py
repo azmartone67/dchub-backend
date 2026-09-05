@@ -206,6 +206,16 @@ expect("★ check-route-tables: the must-fail control is REPORTED, not assumed",
                  "/tmp/crt.log": "OK — 356 Flask HTML routes covered by both tables "
                                  "or baselined (130 known, 0 new).\n"}),
        "verdict=pass checked=[356] selftest=fail")
+# ★ "could not run" is NOT "ran and failed". The first CI run of the control
+# step reported selftest=fail on a green gate because the runner had no pytest.
+# An unset outcome — the step gated off because its deps did not install — must
+# read `absent`, the word gate_beat.sh has for exactly that.
+expect("★ check-route-tables: a control that COULD NOT RUN reads absent, not fail",
+       run_beat(crt, {"JOB_STATUS": "success", "SELFTEST_OUTCOME": ""},
+                {"/tmp/crt1.log": "discovered 356 Flask HTML routes\n",
+                 "/tmp/crt.log": "OK — 356 Flask HTML routes covered by both tables "
+                                 "or baselined (130 known, 0 new).\n"}),
+       "verdict=pass checked=[356] selftest=absent")
 
 # ── ★ every job that beats must be able to REACH the beat script ────────────
 # scripts/gate_beat.sh only exists after a checkout. pre-merge:smoke-probe and
