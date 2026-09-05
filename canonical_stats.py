@@ -27,6 +27,7 @@ import time
 import threading
 
 from util.deals import DEALS_OK
+from util.dcpi_score_row import PUBLISHED_ONLY
 
 # Conservative floors — used as fallback AND as the rounding basis for the
 # "*_phrase()" helpers. Never set these above the true live numbers.
@@ -330,8 +331,20 @@ def _query_live() -> dict:
         # Markets genuinely grew 232->300 via international expansion — no cap,
         # this is the real live count.
         try:
-            cur.execute("SELECT COUNT(DISTINCT market_name) FROM market_power_scores "
-                        "WHERE COALESCE(published, true) = true "
+            # r-published-not-coalesced (2026-09-05): `published = true`, not
+            # COALESCE(published, true) = true.
+            #
+            # The column is NULLABLE and its schema DEFAULT is false. Coalescing
+            # a NULL to true therefore inverts the table's own stated default:
+            # it asks "is this row live?" and answers yes for a row nobody ever
+            # released. Canon is the number every other surface is measured
+            # against, so it is the worst place to lean permissive.
+            #
+            # No-op today — there are zero NULLs, and canon reads the same
+            # either way — which is exactly why it is worth fixing now rather
+            # than after the first NULL arrives.
+            cur.execute(f"SELECT COUNT(DISTINCT market_name) FROM market_power_scores "
+                        f"WHERE {PUBLISHED_ONLY} "
                         "AND market_slug NOT IN ('pacific-nw-rural','rural-spp','upper-michigan')")
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
@@ -366,9 +379,9 @@ def _query_live() -> dict:
         #   can see. dcpi_unmapped is the tell.
         try:
             from routes.dcpi import market_country as _cm
-            cur.execute("SELECT iso, state, market_slug, market_name "
+            cur.execute(f"SELECT iso, state, market_slug, market_name "
                         "FROM market_power_scores "
-                        "WHERE COALESCE(published, true) = true "
+                        f"WHERE {PUBLISHED_ONLY} "
                         "AND market_slug NOT IN "
                         "('pacific-nw-rural','rural-spp','upper-michigan')")
             rows = cur.fetchall() or []
