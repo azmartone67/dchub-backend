@@ -118,10 +118,33 @@ SEED_REGISTRIES: list[dict] = [
     },
     {
         "registry_name": "glama",
-        # 2026-07-09: point at the HEALTHY connector listing (verified tested + graded
-        # A) — the old /mcp/servers/dchub redirects to a search, and the /cloud.dchub/
-        # mcp-server connector is a Glama-flagged deprecated DUPLICATE.
-        "listing_url":   "https://glama.ai/mcp/connectors/cloud.dchub/dc-hub-data-center-intelligence-mcp-server",
+        # ★★★2026-09-05 — THE TWO CONNECTORS WERE INVERTED HERE, and this seed
+        # has been maintaining copy on the wrong card since 2026-07-09.
+        #
+        # The note this replaces read: "point at the HEALTHY connector listing
+        # … the /cloud.dchub/mcp-server connector is a Glama-flagged deprecated
+        # DUPLICATE." Measured live 2026-09-05, both statements are backwards:
+        #
+        #   cloud.dchub/mcp-server            Healthy, tested 17:24, 83 tools,
+        #                                     ownership verified, MIRRORED FROM
+        #                                     THE OFFICIAL REGISTRY.  KEEPER.
+        #   cloud.dchub/dc-hub-data-center-…  Unhealthy since 2026-09-01, "33
+        #                                     tools", Glama-NATIVE (absent from
+        #                                     the official registry: ?search=
+        #                                     cloud.dchub returns ONE name),
+        #                                     mcpServerId null.  THE DUPLICATE —
+        #                                     deprecated by the owner 2026-09-05.
+        #
+        # The test that tells them apart is the official registry, not the badge
+        # on the day you looked: a Glama-native card can be green and still not
+        # be the listing every aggregator mirrors.
+        #
+        # ★ CONSEQUENCE: white_glove_propagation reads THIS seed, so the only
+        # Glama surface it has ever kept honest is the duplicate — and the
+        # keeper, the card installers actually land on, was never watched. The
+        # health badge, tool count and duplicate itself are all outside this
+        # crawler's remit anyway; routes/glama_listing_probe.py covers those.
+        "listing_url":   "https://glama.ai/mcp/connectors/cloud.dchub/mcp-server",
         "submit_url":    "https://glama.ai/mcp/servers/new",
     },
     {

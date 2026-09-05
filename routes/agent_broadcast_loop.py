@@ -95,8 +95,12 @@ _TARGETS = [
     # auto-scraped duplicate — don't ping it, it keeps the wrong copy warm.
     ("mcp.so",
      "https://mcp.so/servers/dchub-mcp-server", "GET", "registry"),
+    # ★2026-09-05: /mcp/servers/dchub 301s to /mcp/servers?query=author%3Adchub
+    # — a SEARCH page, not our listing, so this probe has been reading a generic
+    # result set as though it were presence. mcp_presence_crawler documented that
+    # redirect on 2026-07-18 and this list was never updated with it.
     ("glama.ai",
-     "https://glama.ai/mcp/servers/dchub", "GET", "registry"),
+     "https://glama.ai/mcp/connectors/cloud.dchub/mcp-server", "GET", "registry"),
     ("pulsemcp",
      "https://pulsemcp.com/servers/dchub", "GET", "registry"),
     # 2026-07-18 (kimi-interconnect): ModelScope MCP marketplace — the
