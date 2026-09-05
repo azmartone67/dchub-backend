@@ -223,88 +223,52 @@ def test_an_unassessed_site_never_renders_green():
     assert '"N/A"' in block, "N/A must be mapped explicitly, not left to the default"
 
 
-# ── the limit this predicate does NOT solve ───────────────────────────
+# ── the limit that USED to exist, now closed ──────────────────────────
+#
+# ★ These two were `strict=True` xfails: Toronto sat inside New York's bounding
+# box and Tijuana inside California's, so both scored as US sites. The xfail was
+# strict on purpose — "if someone DOES fix it, this test fails and the limit
+# gets deleted rather than quietly outliving its truth." Someone did, so it is
+# deleted, and they are ordinary passing cases now.
+#
+# The fix was not a better box. util/state_polygons carries the Census
+# cartographic boundaries in-repo, and its own docstring names
+# "Toronto, Ontario -> 'NY'" as the bbox result it exists to remove. The union
+# of the states IS the border, so a polygon state lookup is a country lookup.
 
-@pytest.mark.xfail(strict=True, reason=(
-    "KNOWN LIMIT: Toronto sits inside New York's bounding box and Tijuana "
-    "inside California's, so both still score as US sites. Drawing that border "
-    "needs a country polygon lookup, not more bounding boxes — hand-drawn "
-    "exclusions were tried and blinded Buffalo, Detroit, San Diego and "
-    "Minneapolis. strict=True so that if someone DOES fix it, this test fails "
-    "and the limit gets deleted rather than quietly outliving its truth."))
 @pytest.mark.parametrize("lat,lon,name", [
     (43.6532, -79.3832, "Toronto CA"),
     (32.5149, -117.0382, "Tijuana MX"),
+    (49.2827, -123.1207, "Vancouver CA"),
+    (25.6866, -100.3161, "Monterrey MX"),
 ])
-def test_known_border_limit_us_canada_mexico(lat, lon, name):
-    assert _coverage()(lat, lon) is False, f"{name} is still scored as US"
+def test_the_land_border_cases_are_now_correct(lat, lon, name):
+    assert _coverage()(lat, lon) is False, (
+        f"{name} is scored as a US site — the polygon lookup regressed to boxes")
 
 
-# ── the SCORER must actually call the guard ───────────────────────────
-#
-# ★ Mutation testing caught this file being a mirror. The tests above prove
-# _ap_in_us_coverage and _ap_out_of_coverage behave correctly IN ISOLATION —
-# which is not the same as _ap_score_site USING them. Deleting the guard from
-# the scorer (`if False and not _ap_in_us_coverage(...)`) left every one of them
-# green, i.e. the original bug reinstated with a full green suite.
-#
-# This drives the real _ap_score_site with every DOWNSTREAM helper replaced by a
-# tripwire. Out of coverage, the guard must short-circuit before any of them is
-# touched; in coverage, they must be reached.
-
-def _score_site_with_tripwires():
-    """(_ap_score_site, touched) — the real function, downstream helpers armed."""
-    import ast
-    from air_permitting_extras import STATE_BOXES, STATE_CONTEXT
-    src = open(os.path.join(_ROOT, "main.py"), encoding="utf-8").read()
-    tree = ast.parse(src)
-    touched = []
-
-    def tripwire(name, ret):
-        def f(*a, **k):
-            touched.append(name)
-            return ret
-        return f
-
-    ns = {
-        "_AP_STATE_BOXES": STATE_BOXES,
-        "_AP_STATE_CONTEXT": STATE_CONTEXT,
-        "_ap_na_factor": tripwire("_ap_na_factor", (100, None)),
-        "_ap_monitor_factor": tripwire("_ap_monitor_factor", (33, [])),
-        "_ap_class1_factor": tripwire("_ap_class1_factor", (100, [])),
-        "_ap_nei_factor": tripwire("_ap_nei_factor", (100, [])),
-        "_ap_pathway": tripwire("_ap_pathway", "PSD (GHG BACT)"),
-        "_ap_offset_usd": tripwire("_ap_offset_usd", "BACT $0.5M-$1.5M"),
-        "_ap_pollutant_statuses": tripwire("_ap_pollutant_statuses", {}),
-    }
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-                getattr(t, "id", "") == "_AP_US_BOXES" for t in node.targets):
-            exec(compile(ast.Module([node], []), "<x>", "exec"), ns, ns)
-        if isinstance(node, ast.FunctionDef) and node.name in (
-                "_ap_in_us_coverage", "_ap_in_bounds", "_ap_resolve_state",
-                "_ap_out_of_coverage", "_ap_score_site"):
-            exec(compile(ast.Module([node], []), "<x>", "exec"), ns, ns)
-    assert "_ap_score_site" in ns, "_ap_score_site not found in main.py"
-    return ns["_ap_score_site"], touched
+def test_the_gate_uses_polygons_not_boxes():
+    """The boxes may remain ONLY as the geometry-unavailable fallback. If the
+    polygon call disappears, Toronto silently becomes American again."""
+    import inspect, ast as _ast, os as _os
+    src = open(_os.path.join(_ROOT, "main.py"), encoding="utf-8").read()
+    tree = _ast.parse(src)
+    fn = next(n for n in tree.body
+              if isinstance(n, _ast.FunctionDef) and n.name == "_ap_in_us_coverage")
+    body = _ast.get_source_segment(src, fn) or ""
+    assert "state_containing" in body, "the gate no longer consults the polygons"
+    assert "load_error" in body, (
+        "the gate must check load_error — geometry that failed to load returns "
+        "'' for EVERY point, which would blank the score for the whole US")
 
 
-def test_the_scorer_short_circuits_before_any_us_lookup():
-    """★ THE WIRING. Out of coverage, not one US dataset helper may be called —
-    reaching them is what produced Acadia National Park at 5,608 km."""
-    score_site, touched = _score_site_with_tripwires()
-    out = score_site(*HESSE, 100.0)
-    assert out["available"] is False, "the guard did not fire in _ap_score_site"
-    assert out["score"] is None
-    assert touched == [], (
-        f"US-only lookups ran for a German parcel: {touched} — the guard is "
-        "not wired into the scorer")
-
-
-def test_the_scorer_still_scores_inside_coverage():
-    """And the guard must not blind the scorer where it is valid."""
-    score_site, touched = _score_site_with_tripwires()
-    out = score_site(39.0438, -77.4874, 100.0)      # Ashburn VA
-    assert out.get("available") is not False, "a US site was refused a score"
-    assert isinstance(out.get("score"), int)
-    assert touched, "no US lookup ran for a US site — the guard is too greedy"
+def test_a_failed_geometry_load_does_not_blank_the_united_states(monkeypatch):
+    """★ The dangerous failure direction. state_containing returns '' for every
+    point when the file cannot load, so a naive gate would report the entire US
+    as out of coverage — the opposite bug, and a worse one."""
+    import util.state_polygons as sp
+    monkeypatch.setattr(sp, "load_error", lambda: "simulated load failure")
+    monkeypatch.setattr(sp, "state_containing", lambda lat, lng: "")
+    cov = _coverage()
+    assert cov(39.0438, -77.4874) is True, "Ashburn lost its score on a load error"
+    assert cov(50.363083, 9.307306) is False, "the fallback still rejects Hesse"
