@@ -169,6 +169,9 @@
     "test_parametrize_ids_are_checkout_independent.py": {
       "glob": 770
     },
+    "test_platform_canon_single_source.py": {
+      "pglob": 1930
+    },
     "test_private_helpers_resolve.py": {
       "pglob": 660
     },
