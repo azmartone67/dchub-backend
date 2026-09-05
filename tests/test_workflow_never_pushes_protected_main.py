@@ -24,9 +24,17 @@ UNDER-claims.
 ★ WHAT THIS FENCE ASSERTS, and why it is on the executable body. It reads the
 parsed `run:` script of every workflow step — never a comment, never the file
 text — so it cannot be satisfied by prose that merely explains the rule. A step
-that pushes from the BACKEND working directory must first create a branch; the
-PR is what runs the required checks. Pushes from a sibling checkout (the
-dchub-mcp-server repo, whose main is unprotected) are explicitly out of scope.
+that pushes from a PROTECTED repo's working directory must first create a
+branch; the PR is what runs the required checks.
+
+★2026-09-04 — THE SIBLING IS NO LONGER OUT OF SCOPE. This fence used to exempt
+pushes from the dchub-mcp-server checkout with the reason "whose main is
+unprotected". That premise was true when written and is being retired: that
+repo's two bot producers (its own daily-manifest-sync.yml and this repo's
+mcp-facts-export.yml) are converting to PRs precisely so required checks can be
+turned on there. An exemption whose stated reason has expired is worse than no
+exemption — it reads as considered when it is merely stale — so the sibling is
+now covered by the same rule.
 """
 import os
 import re
@@ -45,14 +53,21 @@ _MAKES_BRANCH = re.compile(r"git\s+(?:checkout\s+-b|switch\s+-c)\b")
 _EXPLICIT_NON_MAIN = re.compile(r"git\s+push\b[^\n]*\s(?!main\b)[^\s]+:[^\s]+")
 
 
-def _is_backend_dir(wd: str) -> bool:
-    """The backend is the repo root, or an explicit dchub-backend checkout dir.
+# Repos whose main requires status checks, so a bare push can only ever be
+# rejected. Add a repo here when its main becomes protected — NOT after the
+# resulting red runs get explained away as cosmetic, which is what cost 17 days.
+_PROTECTED_CHECKOUTS = ("dchub-backend", "dchub-mcp-server")
 
-    A step running in a SIBLING repo's directory is pushing to that repo, whose
-    branch protection is its own business.
+
+def _is_protected_repo_dir(wd: str) -> bool:
+    """True for the repo root, or a checkout dir of any repo with a protected main.
+
+    The repo root is the backend itself. A sibling checkout is only exempt if
+    its main accepts direct pushes — see the docstring for why dchub-mcp-server
+    stopped qualifying.
     """
     wd = (wd or "").strip().rstrip("/")
-    return wd in ("", ".") or wd.endswith("dchub-backend")
+    return wd in ("", ".") or any(wd.endswith(r) for r in _PROTECTED_CHECKOUTS)
 
 
 def _steps():
@@ -80,19 +95,19 @@ def _steps():
                     step.get("working-directory") or job_wd, run
 
 
-def test_no_workflow_pushes_the_backends_protected_main():
+def test_no_workflow_pushes_a_protected_main():
     offenders = []
     for fn, job, name, wd, run in _steps():
         if not _BARE_PUSH.search(run):
             continue
-        if not _is_backend_dir(wd):
-            continue               # sibling repo — out of scope, see docstring
+        if not _is_protected_repo_dir(wd):
+            continue               # unprotected sibling — its own business
         if _MAKES_BRANCH.search(run) or _EXPLICIT_NON_MAIN.search(run):
             continue               # lands on a branch, so a PR can run the checks
         offenders.append(f"  {fn} :: job {job} :: step {name!r} "
                          f"(working-directory={wd or 'repo root'})")
     assert not offenders, (
-        "A bare `git push` from the backend working directory targets a "
+        "A bare `git push` from a protected repo's working directory targets a "
         "protected main and is rejected with GH006 on every run — the step is "
         "dead code that reports red forever. Create a branch and open a PR so "
         "the 6 required checks can actually run:\n" + "\n".join(offenders))
