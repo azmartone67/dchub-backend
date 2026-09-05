@@ -68,6 +68,16 @@ jobs:
             exit 1
           fi
 
+      # ★ requests is NOT stdlib, and this step is why that matters. The
+      #   generator originally used urllib and needed no install; it moved to
+      #   requests because scripts/regression_lint.py blocks urllib (a
+      #   "Python-urllib" UA is 403'd pre-worker by Cloudflare). The lint fix
+      #   landed without this step, so the first real run died on
+      #   ModuleNotFoundError — the dependency changed and the environment that
+      #   has to satisfy it did not. Matches every sibling workflow.
+      - name: Install dependencies
+        run: pip install --quiet requests
+
       - name: Generate the snapshot from live
         env:
           DCHUB_API_KEY: ${{ secrets.DCHUB_API_KEY }}

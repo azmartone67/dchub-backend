@@ -135,3 +135,54 @@ def test_the_workflow_publishes_only_on_a_real_change():
         "the publish step must short-circuit when the CSV is unchanged"
     )
     assert "workflow_dispatch" in src, "the refresh must be runnable on demand"
+
+
+def test_the_workflow_installs_every_third_party_import_the_script_needs():
+    """★ THE FIRST REAL RUN DIED HERE, on ModuleNotFoundError: requests.
+
+    The generator originally used urllib and needed no install step. It moved to
+    requests because scripts/regression_lint.py blocks urllib outright (a
+    "Python-urllib" User-Agent is 403'd pre-worker by Cloudflare). That lint fix
+    was correct and passed every gate — the lint, the unit tests, the guards
+    here — because none of them run the workflow. The dependency changed and the
+    environment that has to satisfy it did not.
+
+    So this pins the pair rather than either half: every third-party module the
+    script imports must be named in the workflow's install step. Comparing an
+    import list to an install list is the only check that spans both files.
+    """
+    import ast as _ast
+
+    wf = os.path.join(REPO, ".github", "workflows", "hf-dataset-refresh.yml")
+
+    # ★ MATCH THE INSTALL COMMAND, NOT THE FILE TEXT. The first draft of this
+    #   test did `mod in workflow` and passed with the install step DELETED —
+    #   because the comment above that step explains why requests replaced
+    #   urllib, and the word "requests" in that prose satisfied the check. A
+    #   fence a comment can satisfy is a fence that fails open. Comments are
+    #   stripped and only real `pip install` lines are considered.
+    installs = " ".join(
+        l.strip() for l in open(wf, encoding="utf-8").read().splitlines()
+        if not l.lstrip().startswith("#") and "pip install" in l
+    )
+
+    tree = _ast.parse(open(SCRIPT, encoding="utf-8").read())
+    imported = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Import):
+            imported |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, _ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+
+    # Anything in the standard library needs no install; only third-party does.
+    import sys as _sys
+    stdlib = getattr(_sys, "stdlib_module_names", set())
+    third_party = {m for m in imported if m not in stdlib and not m.startswith("_")}
+
+    for mod in sorted(third_party):
+        assert mod in installs, (
+            f"scripts/refresh_hf_dcpi_dataset.py imports {mod!r}, which is not "
+            f"stdlib and is not installed by hf-dataset-refresh.yml. The run "
+            f"will die on ModuleNotFoundError — as it did for 'requests'. Add "
+            f"it to the 'Install dependencies' step."
+        )
