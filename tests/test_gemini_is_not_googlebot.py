@@ -86,9 +86,13 @@ def test_the_discontinuity_is_published_not_silent():
     """gemini's forward reach drops to ~0 while its history keeps the old
     basis. Unstated, that reads as Gemini abandoning us — this repo has
     already shipped a correction that got reported as a collapse."""
-    src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
-    i = src.index('"reach_definition"')
-    block = src[i:i + 3400]
+    # ★ AST, not a fixed slice. The sibling guard in
+    # tests/test_reach_self_refresh_split.py used src[i:i+1800] and THIS commit
+    # broke it — the text below added ~900 chars and pushed the pointer it
+    # checks for past the window, failing a guard whose subject was still
+    # correct. Same defect, so the same fix, in both places.
+    from tests.test_reach_self_refresh_split import _reach_definition_text
+    block = _reach_definition_text()
     assert "DISCONTINUITY" in block.upper(), (
         "reach_definition does not warn that gemini's drop is an attribution "
         "change")
