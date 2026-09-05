@@ -39577,9 +39577,111 @@ def _ap_pollutant_statuses(lat, lon, ozone_na, pm25_na, pm10_na, capacity_mw):
     return statuses
 
 
+# ★ 2026-09-05 — EVERY INPUT TO THIS SCORE IS A US DATASET.
+# EPA Green Book nonattainment, AQS monitors, NPS Federal Land Manager Class I
+# areas and the NEI stop at the US border, and so do the PROGRAMS the output
+# names: PSD and BACT are Clean Air Act instruments. Germany permits under
+# BImSchG / TA Luft, and the EU under the Industrial Emissions Directive with
+# BAT conclusions. None of this transfers.
+#
+# Scoring a foreign parcel anyway did not produce a thin answer, it produced a
+# CONFIDENTLY WRONG one, because every factor reads ABSENCE AS CLEAN. Measured
+# 2026-09-05 at 50.363083, 9.307306 (Hesse, DE) — a live customer site:
+#
+#   class1   = 100   nearest "Federal Class I area" was ACADIA NATIONAL PARK,
+#                    5,608 km away, across the Atlantic
+#   monitors =  33   characterised by AQS-23-003-0014 at 47.355,-68.321 —
+#                    Aroostook County, MAINE, 5,423 km away
+#   ozone/pm10/pm25: in_na = null (no US designation exists for Germany)
+#                    and null was SCORED 100
+#   state    =  75   the default, for a site in no US state
+#   -> 89/100, "Clean air-permitting profile", pathway "PSD (GHG BACT)",
+#      "BACT analysis cost $0.5M-$1.5M"
+#
+# A high, confident number is worse than a blank: it survives into a client
+# deliverable and nobody checks a green score. So outside coverage this returns
+# NO SCORE AT ALL — `available: false` and `score: None` — rather than a number
+# with a caveat somewhere else on the page.
+_AP_US_BOXES = (
+    (24.0, 49.5, -125.0, -66.0),    # contiguous 48
+    (51.0, 72.0, -170.0, -130.0),   # Alaska
+    (18.0, 23.0, -161.0, -154.0),   # Hawaii
+)
+
+# ★ THE BORDER IS THE HARD PART, AND A BBOX CANNOT DRAW IT.
+# Measured 2026-09-05, both directions:
+#
+#   the national box alone      -> admits Ottawa, Toronto, Montreal, Vancouver
+#   the state boxes alone       -> hand Toronto to NY and Tijuana to CA
+#   hand-drawn exclusion boxes  -> blind Buffalo, Detroit, San Diego and
+#                                  Minneapolis, all genuinely in coverage
+#
+# So the predicate requires BOTH: inside the national box AND resolving to a US
+# state. That is principled rather than arbitrary — every dataset feeding this
+# score is state-indexed, so "no state" IS "no data", and it costs nothing at
+# the metros that matter (all ten US sites in the test file still resolve).
+#
+# ★ KNOWN LIMIT, STATED RATHER THAN HIDDEN: Toronto and Tijuana sit inside a
+# US state's bounding box and are still scored as if American. Drawing that
+# border needs a country polygon lookup, not more boxes — the attempt is
+# recorded above because the next person will otherwise try it too. The tests
+# pin these two as xfail so the limit is visible and cannot be forgotten.
+def _ap_in_us_coverage(lat, lon):
+    """Inside the coverage of the US datasets this score is built from.
+
+    Bbox geography, deliberately: the question is "does the EPA dataset family
+    reach here", not "which country is this". Non-numeric input answers False —
+    it must never be possible to score a parcel we could not place.
+    """
+    try:
+        lat = float(lat); lon = float(lon)
+    except (TypeError, ValueError):
+        return False
+    if lat != lat or lon != lon:            # NaN
+        return False
+    if not any(a <= lat <= b and c <= lon <= d for a, b, c, d in _AP_US_BOXES):
+        return False
+    # Every dataset here is state-indexed, so no resolvable state means no data.
+    return _ap_resolve_state(lat, lon) is not None
+
+
+def _ap_out_of_coverage(lat, lon, capacity_mw, genset_mw):
+    """The honest answer for a parcel outside EPA coverage: no score."""
+    return {
+        "available": False,
+        "score": None,
+        "coverage": "us_only",
+        "verdict_short": "N/A — outside US air-permitting data coverage.",
+        "reason": (
+            "This score is built entirely from US datasets (EPA Green Book "
+            "nonattainment, AQS monitors, NPS Federal Land Manager Class I "
+            "areas, NEI) and reports US Clean Air Act pathways (PSD / NNSR / "
+            "BACT). None of them cover this location, so no score is produced. "
+            "An absent US designation is not evidence of clean air."),
+        "applicable_regime_note": (
+            "Local permitting applies instead — in the EU the Industrial "
+            "Emissions Directive with BAT conclusions, and in Germany "
+            "BImSchG / TA Luft. DC Hub does not model these; treat air "
+            "permitting as UNASSESSED here rather than favourable."),
+        "pathway": None,
+        "offset_estimate_usd": None,
+        "pollutants": {},
+        "class1": [],
+        "nei": [],
+        "nearest_monitors": [],
+        "state": None,
+        "state_context": "",
+        "factors": {},
+        "inputs": {"lat": lat, "lon": lon,
+                   "capacity_mw": capacity_mw, "genset_mw": genset_mw},
+    }
+
+
 def _ap_score_site(lat, lon, capacity_mw, genset_mw=None):
     if genset_mw is None:
         genset_mw = capacity_mw * 0.6
+    if not _ap_in_us_coverage(lat, lon):
+        return _ap_out_of_coverage(lat, lon, capacity_mw, genset_mw)
     ozone_score, ozone_na = _ap_na_factor("ozone", lat, lon)
     pm25_score,  pm25_na  = _ap_na_factor("pm25",  lat, lon)
     pm10_score,  pm10_na  = _ap_na_factor("pm10",  lat, lon)
