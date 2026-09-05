@@ -5,6 +5,7 @@
 import http_ua_default  # noqa: F401,E402
 from routes.press_queue import press_queue_bp
 from routes.digest import digest_bp
+from utc_clock import utc_iso_z
 # Phase GG (2026-05-14): per-site capacity, ISO snapshot, pocket listings
 try:
     from routes.sites_capacity import sites_capacity_bp
@@ -3914,6 +3915,16 @@ try:
         from ai_surface_sentinel import ai_surface_sentinel_bp
         app.register_blueprint(ai_surface_sentinel_bp)
         print("[main] ai_surface_sentinel_bp registered: /api/v1/admin/ai-surface/{audit,canon,refresh}", flush=True)
+
+        # The ANSWER prober sits beside the surface sentinel deliberately: the
+        # sentinel audits CLAIM surfaces (llms.txt, AGENTS.md, the manifests)
+        # for stale text; this one asks whether the DATA surfaces still return
+        # the same answer canon does. Neither subsumes the other — see the
+        # module docstring for the six surfaces that were wrong while the
+        # sentinel was green.
+        from routes.answer_prober import answer_prober_bp
+        app.register_blueprint(answer_prober_bp)
+        print("[main] answer_prober_bp registered: /api/v1/admin/answer-probe", flush=True)
     except Exception as _ass:
         import logging
         logging.getLogger(__name__).warning('ai_surface_sentinel wiring failed: %s', _ass)
@@ -5758,7 +5769,7 @@ def phase14c_health_aggregate():
     user_acquisition, and database connectivity. Single ping target.
     """
     import datetime as _dt
-    out = {'status': 'green', 'checks': {}, 'as_of': _dt.datetime.utcnow().isoformat()}
+    out = {'status': 'green', 'checks': {}, 'as_of': utc_iso_z()}
     conn = None
     try:
         conn = get_read_db()
@@ -13526,7 +13537,7 @@ def admin_key_audit():
         'total_active_keys': total_active,
         'total_issues': len(issues),
         'issues': issues,
-        'checked_at': datetime.utcnow().isoformat()
+        'checked_at': utc_iso_z()
     })
 
 @app.route('/api/admin/discovered-platforms', methods=['GET'])
@@ -14797,7 +14808,7 @@ def subscribe_lead():
             else:
                 # Re-subscribe
                 c.execute("UPDATE leads SET subscribed = 1, last_activity = %s WHERE email = %s",
-                         (datetime.utcnow().isoformat(), email))
+                         (utc_iso_z(), email))
                 conn.commit()
                 return jsonify({'success': True, 'message': 'Re-subscribed successfully', 'new': False})
 
@@ -14816,15 +14827,15 @@ def subscribe_lead():
             data.get('source', 'newsletter'),
             data.get('source_detail', ''),
             verify_token,
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat()
+            utc_iso_z(),
+            utc_iso_z()
         ))
 
         # Log activity
         c.execute("""
             INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
             VALUES (%s, 'subscribed', %s, %s)
-        """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), datetime.utcnow().isoformat()))
+        """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), utc_iso_z()))
 
         conn.commit()
 
@@ -14879,7 +14890,7 @@ def capture_lead():
                     last_activity = %s,
                     source_detail = COALESCE(source_detail, '') || ',' || %s
                 WHERE email = %s
-            """, (new_score, datetime.utcnow().isoformat(), source, email))
+            """, (new_score, utc_iso_z(), source, email))
         else:
             lead_id = secrets.token_hex(8)
             verify_token = secrets.token_urlsafe(32)
@@ -14896,15 +14907,15 @@ def capture_lead():
                 source,
                 verify_token,
                 score_delta,
-                datetime.utcnow().isoformat(),
-                datetime.utcnow().isoformat()
+                utc_iso_z(),
+                utc_iso_z()
             ))
 
         # Log activity
         c.execute("""
             INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
             VALUES (%s, 'content_access', %s, %s)
-        """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), datetime.utcnow().isoformat()))
+        """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), utc_iso_z()))
 
         conn.commit()
 
@@ -14934,7 +14945,7 @@ def verify_lead(token):
 
         c.execute("""
             UPDATE leads SET verified = 1, verified_at = %s, verify_token = NULL WHERE id = %s
-        """, (datetime.utcnow().isoformat(), lead[0]))
+        """, (utc_iso_z(), lead[0]))
 
         conn.commit()
 
@@ -15035,7 +15046,7 @@ def submit_partner_inquiry():
             company,
             partner_type,
             message,
-            datetime.utcnow().isoformat()
+            utc_iso_z()
         ))
 
         # Also add to leads if not exists
@@ -15048,7 +15059,7 @@ def submit_partner_inquiry():
                 VALUES (%s, %s, %s, %s, 'partner_inquiry', %s, %s, 30, %s, %s)
             """, (
                 lead_id, email, name, company, partner_type, verify_token,
-                datetime.utcnow().isoformat(), datetime.utcnow().isoformat()
+                utc_iso_z(), utc_iso_z()
             ))
         else:
             # Update existing lead score
@@ -15056,7 +15067,7 @@ def submit_partner_inquiry():
                 UPDATE leads SET lead_score = lead_score + 30, last_activity = %s, 
                 source_detail = COALESCE(source_detail, '') || ',partner_inquiry'
                 WHERE email = %s
-            """, (datetime.utcnow().isoformat(), email))
+            """, (utc_iso_z(), email))
 
         conn.commit()
 
@@ -15089,7 +15100,7 @@ def submit_partner_inquiry():
                 <p>{message}</p>
                 <hr>
                 <p>Inquiry ID: {inquiry_id}</p>
-                <p>Submitted: {datetime.utcnow().isoformat()}</p>
+                <p>Submitted: {utc_iso_z()}</p>
                 <p><a href="https://dchub.cloud/admin.html">View all inquiries</a></p>
                 """
 
@@ -15102,8 +15113,8 @@ def submit_partner_inquiry():
                     'partner_inquiry',
                     f'🤝 New Partner Inquiry: {company or name} ({partner_type})',
                     email_body,
-                    datetime.utcnow().isoformat(),
-                    datetime.utcnow().isoformat()
+                    utc_iso_z(),
+                    utc_iso_z()
                 ))
                 conn2.commit()
                 conn2.close()
@@ -15292,7 +15303,7 @@ def create_alert():
             }), 403
 
         # Insert alert
-        now = datetime.utcnow().isoformat()
+        now = utc_iso_z()
         c.execute("""
             INSERT INTO user_alerts (user_id, market, alert_type, enabled, email_notify, created_at)
             VALUES (%s, %s, %s, 1, 1, %s)
@@ -18016,7 +18027,7 @@ def handle_checkout_completed(session):
         if rows_updated == 0 and sqlite_rows == 0 and customer_email:
             import secrets as sec
             new_user_id = f"stripe_{sec.token_hex(8)}"
-            now = datetime.utcnow().isoformat()
+            now = utc_iso_z()
             display_name = customer_name or customer_email.split('@')[0]
             temp_password = sec.token_urlsafe(16)
             hashed_pw = hash_password(temp_password)
@@ -18089,7 +18100,7 @@ def handle_checkout_completed(session):
                 print(f"🔍 Looked up user_id for {customer_email}: {resolved_user_id}")
 
             if resolved_user_id:
-                now = datetime.utcnow().isoformat()
+                now = utc_iso_z()
                 _pg_execute("UPDATE api_keys SET rate_limit_tier = %s, plan = %s, last_used_at = %s WHERE user_id = %s", (api_tier, api_tier, now, resolved_user_id))
                 print(f"🔑 Updated API key(s) to tier: {api_tier}")
 
@@ -18534,7 +18545,7 @@ def handle_subscription_updated(subscription):
     """Handle subscription changes - writes to PostgreSQL first, then SQLite"""
     customer_id = subscription.get('customer', '')
     status = subscription.get('status', '')
-    now = datetime.utcnow().isoformat()
+    now = utc_iso_z()
 
     if status in ['active', 'trialing']:
         _pg_execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s", (status, customer_id))
@@ -18580,7 +18591,7 @@ def handle_subscription_updated(subscription):
 def handle_subscription_deleted(subscription):
     """Handle subscription cancellation - writes to PostgreSQL first, then SQLite"""
     customer_id = subscription.get('customer', '')
-    now = datetime.utcnow().isoformat()
+    now = utc_iso_z()
 
     _, pg_rows = _pg_execute("SELECT id FROM users WHERE stripe_customer_id = %s", (customer_id,), fetch=True)
     _pg_execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = 'canceled' WHERE stripe_customer_id = %s",
@@ -18747,7 +18758,7 @@ def handle_payment_failed(invoice):
     if not customer_id:
         return
     attempt_count = invoice.get('attempt_count') or 1
-    now_iso = datetime.utcnow().isoformat()
+    now_iso = utc_iso_z()
 
     # Postgres canonical bump — use RETURNING to get current counters
     # in one round-trip.
@@ -19097,7 +19108,7 @@ def reconcile_mcp_tiers():
             'stranded_found': len(stranded),
             'updated': updated,
             'accounts': stranded,
-            'checked_at': datetime.utcnow().isoformat(),
+            'checked_at': utc_iso_z(),
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)[:300]}), 500
@@ -19987,7 +19998,7 @@ def compare_markets():
         return jsonify({
             'success': True,
             'comparison': comparison,
-            'generated_at': datetime.utcnow().isoformat()
+            'generated_at': utc_iso_z()
         })
     except Exception as e:
         logger.error(f"Markets compare error: {e}")
@@ -20037,10 +20048,10 @@ def generate_report():
                 c.execute("""
                     INSERT INTO leads (id, email, source, source_detail, lead_score, created_at, last_activity)
                     VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s)
-                """, (lead_id, email, json.dumps(markets), datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+                """, (lead_id, email, json.dumps(markets), utc_iso_z(), utc_iso_z()))
             else:
                 c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
-                         (datetime.utcnow().isoformat(), email))
+                         (utc_iso_z(), email))
             conn.commit()
             conn.close()
         except:
@@ -20065,8 +20076,8 @@ def generate_report():
             email or (request.user['email'] if request.user else None),
             report_type,
             json.dumps(markets),
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat()
+            utc_iso_z(),
+            utc_iso_z()
         ))
         conn.commit()
 
@@ -22157,7 +22168,7 @@ def get_stats():
                 'success': True,
                 'booting': True,
                 'facilities': 0, 'markets': 0, 'deals': 0,
-                'generated_at': datetime.utcnow().isoformat(),
+                'generated_at': utc_iso_z(),
                 '_cache': {'served_from': 'boot-stub'},
             }
         _bresp = jsonify(_boot_payload)
@@ -22747,7 +22758,7 @@ def get_stats():
         result = {
             'success': True,
             'data': stats,
-            'generated_at': datetime.utcnow().isoformat(),
+            'generated_at': utc_iso_z(),
             'version': 'v92',
             'build': '93',
             'facilities': stats.get('total_facilities', 0),
@@ -23178,7 +23189,7 @@ def facilities_state_status_counts():
             'source_table': _SRC,
             'derived_recovered': derived_recovered,
             'derived_scanned': derived_scanned,
-            'generated_at': datetime.utcnow().isoformat(),
+            'generated_at': utc_iso_z(),
         }
         cache_for_degradation('v1_state_status_counts', result)
         return jsonify(result)
@@ -24413,7 +24424,7 @@ def agents_health():
         "status": "healthy",
         "agents": ["sales", "enrichment", "social"],
         "anthropic_configured": bool(os.environ.get('ANTHROPIC_API_KEY')),
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": utc_iso_z()
     })
 
 @app.route('/api/agents/enrichment/submit', methods=['POST'])
@@ -24434,7 +24445,7 @@ def enrichment_submit():
             INSERT INTO submissions (id, api_key, submission_type, data, status, submitted_at)
             VALUES (%s, 'crowdsource', 'enrichment', %s, 'pending', %s)
             ON CONFLICT DO NOTHING
-        """, (submission_id, json.dumps(data), datetime.utcnow().isoformat()))
+        """, (submission_id, json.dumps(data), utc_iso_z()))
 
         conn.commit()
 
@@ -24471,7 +24482,7 @@ def partner_inquiry():
             INSERT INTO partner_inquiries (id, name, email, company, platform_type, use_case, submitted_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (inquiry_id, data['name'], data['email'], data['company'],
-              data['platform_type'], data['use_case'], datetime.utcnow().isoformat()))
+              data['platform_type'], data['use_case'], utc_iso_z()))
 
         conn.commit()
 
@@ -26018,13 +26029,13 @@ def api_signup():
         c.execute("""
             INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, created_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (email, key_hash, key_prefix, company, '["read"]', 'free', datetime.utcnow().isoformat()))
+        """, (email, key_hash, key_prefix, company, '["read"]', 'free', utc_iso_z()))
 
         c.execute("""
             INSERT INTO signups (email, company, use_case, created_at, source)
             VALUES (%s, %s, %s, %s, 'api_signup')
             ON CONFLICT DO NOTHING
-        """, (email, company, usecase, datetime.utcnow().isoformat()))
+        """, (email, company, usecase, utc_iso_z()))
 
         conn.commit()
 
@@ -26163,7 +26174,7 @@ def mcp_relay_funnel():
     and relay a `utm_source=mcp` signup link to the human; humans who sign up
     via it land in signups.utm_source. Before r43-I this read 0 because the
     origin was never captured — not because nobody converted."""
-    out = {"as_of": datetime.utcnow().isoformat()}
+    out = {"as_of": utc_iso_z()}
     conn = None
     try:
         conn = get_db()
@@ -27166,7 +27177,7 @@ def api_facilities_stats():
             'total_power_mw': round(total_power, 1),
             'by_status': by_status,
             'by_region': by_region,
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': utc_iso_z()
         })
     finally:
         try: conn.close()
@@ -27402,7 +27413,7 @@ except Exception as e:
 def trigger_sync():
     """Manually trigger news/deals sync - safe lazy loading"""
     sync_type = request.args.get('type', 'news')
-    results = {"success": True, "type": sync_type, "synced": 0, "timestamp": datetime.utcnow().isoformat()}
+    results = {"success": True, "type": sync_type, "synced": 0, "timestamp": utc_iso_z()}
 
     try:
         if sync_type == 'news':
@@ -28596,7 +28607,7 @@ def _register_scheduler(name, interval_seconds, description=''):
         'interval_seconds': interval_seconds,
         'interval_human': f"{interval_seconds // 3600}h" if interval_seconds >= 3600 else f"{interval_seconds // 60}m",
         'description': description,
-        'started_at': datetime.utcnow().isoformat(),
+        'started_at': utc_iso_z(),
         'last_run': None,
         'last_success': None,
         'last_error': None,
@@ -28653,8 +28664,8 @@ def _evolution_scheduler_loop():
         try:
             if EVOLUTION_AVAILABLE:
                 result = run_evolution_cycle()
-                _scheduler_registry.get('evolution_engine', {})['last_run'] = datetime.utcnow().isoformat()
-                _scheduler_registry.get('evolution_engine', {})['last_success'] = datetime.utcnow().isoformat()
+                _scheduler_registry.get('evolution_engine', {})['last_run'] = utc_iso_z()
+                _scheduler_registry.get('evolution_engine', {})['last_success'] = utc_iso_z()
                 _scheduler_registry.get('evolution_engine', {})['total_runs'] = _scheduler_registry.get('evolution_engine', {}).get('total_runs', 0) + 1
                 logger.info(f"🧬 Evolution cycle completed: {result}")
         except Exception as e:
@@ -28820,7 +28831,7 @@ def audit_schedulers():
         'count': len(audit),
         'total_threads': threading.active_count(),
         'thread_names': [t.name for t in threading.enumerate()],
-        'generated_at': datetime.utcnow().isoformat()
+        'generated_at': utc_iso_z()
     })
 
 def _sane_content_ts(value, now=None):
@@ -29056,8 +29067,8 @@ def refresh_news():
             from auto_sync import sync_news
             saved = sync_news()
             if 'news_sync' in _scheduler_registry:
-                _scheduler_registry['news_sync']['last_run'] = datetime.utcnow().isoformat()
-                _scheduler_registry['news_sync']['last_success'] = datetime.utcnow().isoformat()
+                _scheduler_registry['news_sync']['last_run'] = utc_iso_z()
+                _scheduler_registry['news_sync']['last_success'] = utc_iso_z()
                 _scheduler_registry['news_sync']['items_last_cycle'] = saved if isinstance(saved, int) else 0
                 _scheduler_registry['news_sync']['total_runs'] += 1
         except Exception as e:
@@ -29070,7 +29081,7 @@ def refresh_news():
     threading.Thread(target=_bg, daemon=True, name='news-refresh').start()
     return jsonify({'success': True, 'started': True,
                     'message': 'News refresh started in background',
-                    'started_at': datetime.utcnow().isoformat()}), 202
+                    'started_at': utc_iso_z()}), 202
 
 @app.route('/api/transactions/refresh', methods=['POST'])
 def refresh_transactions():
@@ -29083,14 +29094,14 @@ def refresh_transactions():
         c.execute(f"SELECT MAX(date) FROM deals WHERE {_DEALS_OK}")
         newest = c.fetchone()[0]
         if 'autopilot' in _scheduler_registry:
-            _scheduler_registry['autopilot']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['autopilot']['last_run'] = utc_iso_z()
             _scheduler_registry['autopilot']['total_runs'] += 1
         return jsonify({
             'success': True,
             'message': f'Transactions data verified: {total} deals in database',
             'total_deals': total,
             'newest_deal': newest,
-            'refreshed_at': datetime.utcnow().isoformat()
+            'refreshed_at': utc_iso_z()
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -29173,7 +29184,7 @@ def admin_list_bugs():
         'success': True,
         'bugs': bugs,
         'count': len(bugs),
-        'scanned_at': datetime.utcnow().isoformat(),
+        'scanned_at': utc_iso_z(),
         'note': 'Live scan from Neon error_log table'
     })
 
@@ -29220,7 +29231,7 @@ def admin_bugs_summary():
                     break
                 except Exception:
                     continue
-        return jsonify({'success': True, 'summary': summary, 'scanned_at': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'summary': summary, 'scanned_at': utc_iso_z()})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -29331,8 +29342,8 @@ def refresh_facilities():
                 errors.append(f"{source_name}: {str(e)}")
 
         if 'facility_discovery' in _scheduler_registry:
-            _scheduler_registry['facility_discovery']['last_run'] = datetime.utcnow().isoformat()
-            _scheduler_registry['facility_discovery']['last_success'] = datetime.utcnow().isoformat()
+            _scheduler_registry['facility_discovery']['last_run'] = utc_iso_z()
+            _scheduler_registry['facility_discovery']['last_success'] = utc_iso_z()
             _scheduler_registry['facility_discovery']['items_last_cycle'] = total_added
             _scheduler_registry['facility_discovery']['total_runs'] += 1
 
@@ -29342,7 +29353,7 @@ def refresh_facilities():
             'added': total_added,
             'found': total_found,
             'errors': errors if errors else None,
-            'refreshed_at': datetime.utcnow().isoformat()
+            'refreshed_at': utc_iso_z()
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -29584,15 +29595,15 @@ def job_fiber_sync():
     try:
         if 'infrastructure_sync' in _scheduler_registry:
             reg = _scheduler_registry['infrastructure_sync']
-            reg['last_run'] = datetime.utcnow().isoformat()
+            reg['last_run'] = utc_iso_z()
             if results['total_new'] > 0:
-                reg['last_success'] = datetime.utcnow().isoformat()
+                reg['last_success'] = utc_iso_z()
             reg['items_last_cycle'] = results['total_new']
             reg['total_runs'] = reg.get('total_runs', 0) + 1
     except:
         pass
 
-    results['timestamp'] = datetime.utcnow().isoformat()
+    results['timestamp'] = utc_iso_z()
 
     # The measured truth, published next to the loaders' self-reported
     # total_new. When these two disagree, total_new is the one that is wrong.
@@ -30084,7 +30095,7 @@ try:
         _t.sleep(_delay)
         try:
             _ns = _NewsSyncer(interval_seconds=300)
-            _news_last_sync = datetime.utcnow().isoformat()
+            _news_last_sync = utc_iso_z()
             try:
                 from health_watchdog import watchdog_instance as _wi
                 if _wi:
@@ -31067,6 +31078,55 @@ _SITEMAP_XML_CACHE = {'sections': None, 'ts': 0.0}
 _SITEMAP_FACILITIES_PER_SHARD = 10000
 _SITEMAP_FIXED_SECTIONS = ('static', 'markets', 'dcpi', 'press')
 
+# ── r-ai-sitemap (2026-09-05): a SECOND facility sitemap, for retrieval crawlers
+#
+# The capacity gate above (_SITEMAP_PROVEN_*, `AND COALESCE(power_mw,0) > 0`)
+# was tuned for GOOGLE AND BING CRAWL BUDGET, and for them it is still right:
+# Bing has reported "limited crawl capacity" since June, thin pages get crawled
+# and rejected, and the 08-14 measurement showed widening the sitemap added
+# thin pages without moving the indexed count. Nothing here changes that.
+#
+# It is the WRONG trade for an AI retrieval crawler, and the difference is not
+# a matter of degree. Google ranks our page against competitors, so a page it
+# cannot rank is budget burned. Perplexity and GPTBot are building an ENTITY
+# INDEX — a facility with no capacity figure is still a unique record that can
+# ground "is there a data centre in X", and they are demonstrably not
+# budget-constrained on us. Measured over the 7d to 2026-09-05, ai_requests:
+#
+#     chatgpt     12,001 distinct /facilities/ URLs · 17,039 hits
+#     perplexity   7,563 distinct                   ·  7,736 hits
+#     claude       1,520 · you 728        ALL 27,163 hits returned HTTP 200
+#
+# GPTBot found 12,001 distinct facility URLs against the 6,266 the sitemap
+# publishes — it is already reaching roughly double what we advertise, by
+# following links. The publishable universe is 20,488 (discovered_facilities,
+# non-duplicate, canonical_slug present), so ~14,200 live 200-serving pages are
+# in no sitemap at all, during the largest content crawl this site has had.
+#
+# So: keep ONE gated sitemap for the engines that rank, and publish a SECOND
+# ungated one for the crawlers that retrieve. This is deliberately NOT added to
+# _sitemap_shard_files() — /sitemap.xml is the artefact submitted to GSC/Bing
+# Webmaster and adding it there would defeat the gate it exists beside. It is
+# advertised in llms.txt only.
+#
+# ★ SNAPSHOT-ONLY BY DESIGN, unlike every other shard. The others fall back to
+#   a live _sitemap_sections() build on a snapshot miss; these must not. The
+#   ungated build is the ~20k-row union that saturated the Neon primary pool in
+#   the 07-20 stampede, and this family is fetched by crawlers that sweep
+#   thousands of URLs an hour. A miss returns 503 with a Retry-After — an
+#   honest "not built yet" that a crawler will come back from — never a live
+#   rebuild per request. See _snapshot_get() and the 07-20 note above.
+_SITEMAP_AI_INDEX_KEY = 'ai'
+_SITEMAP_AI_SHARD_PREFIX = 'ai-facilities'
+
+
+def _ai_shard_keys(n_urls):
+    """Snapshot keys for the AI facility shards, ordered."""
+    import math
+    n = max(1, math.ceil(n_urls / _SITEMAP_FACILITIES_PER_SHARD))
+    return [f'{_SITEMAP_AI_SHARD_PREFIX}-{i}' for i in range(1, n + 1)]
+
+
 
 # r-thin-sitemap (2026-08-14): floor below which the capacity gate is assumed
 # broken rather than merely selective. Live-fired 2026-08-14, the gate emits
@@ -31170,7 +31230,7 @@ def _build_sitemap_sections():
     # ONLY when you actually edit the static_pages / markets / locations lists.
     # DB-driven shards below carry their REAL per-row timestamps: dcpi →
     # computed_at, city-state markets → MAX(first_seen), facilities → first_seen.
-    _STATIC_LASTMOD = '2026-09-05'  # bumped: +18 nav/footer-linked pages that were unlisted
+    _STATIC_LASTMOD = '2026-09-05'  # bumped: +18, then +17 more nav-linked pages
 
     def slugify(text):
         """Convert facility name to URL slug."""
@@ -31905,6 +31965,38 @@ def _build_sitemap_sections():
         ('/map',                         '0.8', 'weekly'),
         ('/press',                       '0.7', 'weekly'),
         ('/rankings',                    '0.7', 'weekly'),
+        # r-linked-not-listed round 2 (2026-09-05): the remaining pages the
+        # global nav links to that no sitemap shard listed. Round 1 took the 18
+        # reachable from the OLD nav snapshot; these came from the CURRENT nav
+        # (66 links, not 36) once dchub-frontend's build-search-index.py began
+        # reporting nav-vs-index coverage on every build. All 17 measured live
+        # 2026-09-05: HTTP 200, ZERO redirects, no robots meta, real titles and
+        # bodies (5KB-105KB, no loading-shell stubs).
+        ('/brief',                       '0.8', 'daily'),
+        ('/connect-mcp',                 '0.8', 'monthly'),
+        ('/daily',                       '0.8', 'daily'),
+        ('/dc-hub-media/',               '0.7', 'daily'),
+        ('/dcgi',                        '0.9', 'daily'),
+        ('/hyperscalers',                '0.8', 'weekly'),
+        ('/listings',                    '0.7', 'weekly'),
+        ('/mcp-standing',                '0.7', 'weekly'),
+        ('/partners/feedback',           '0.5', 'monthly'),
+        ('/premium',                     '0.7', 'monthly'),
+        ('/product',                     '0.7', 'monthly'),
+        ('/radar',                       '0.8', 'daily'),
+        ('/receipts',                    '0.7', 'weekly'),
+        ('/reports/quarterly',           '0.8', 'monthly'),
+        ('/state-of-2026',               '0.8', 'weekly'),
+        ('/system-status',               '0.6', 'daily'),
+        ('/what-ais-say',                '0.7', 'weekly'),
+        # ── /sites/ and /sites/value are DELIBERATELY ABSENT ──────────────
+        # Both are live 200s the nav links to, and both are inside
+        # `Disallow: /sites/` in robots.txt. A sitemap entry for a
+        # robots-blocked URL is a contradiction, not a discovery hint: Search
+        # Console reports it as "Submitted URL blocked by robots.txt" and it
+        # counts against the whole sitemap. Whether those pages SHOULD be
+        # crawlable is a product decision, not a sitemap one — until robots.txt
+        # changes, listing them would publish a claim the site itself refuses.
     ]
     # r-sitemap-shard (2026-07-03): the seed brief landings ported from the
     # retired routes/seo_pages.py sitemap-landings.xml (which was UNREACHABLE
@@ -32580,6 +32672,47 @@ def _rebuild_sitemap_snapshot():
         chunk = fac[lo:lo + _SITEMAP_FACILITIES_PER_SHARD]
         rows.append((f'facilities-{i}', _render_shard_xml(chunk), len(chunk)))
     rows.append(('index', _render_index_xml(shard_files, today), len(shard_files)))
+
+    # r-ai-sitemap (2026-09-05): the ungated family, for retrieval crawlers.
+    # This is a SECOND full _build_sitemap_sections() pass (the gate lives in
+    # the SQL, so the ungated set cannot be derived from the gated one in
+    # memory). That doubles the cost of a job that runs 4-hourly and OFF the
+    # request path, which is the whole reason it is done here and not lazily.
+    #
+    # Wrapped: a failure here must degrade to "no AI shards in this generation"
+    # (the routes then 503 until the next rebuild), never take the gated
+    # sitemap down with it. The gated artefact is the one GSC and Bing read.
+    ai_shard_keys = []
+    try:
+        ai_fac = _build_sitemap_facilities_ungated() or []
+        if len(ai_fac) < len(fac):
+            # The ungated set is a strict superset of the gated one by
+            # construction — same query minus one AND clause. Smaller means the
+            # build is wrong, and publishing it would RETIRE URLs from the AI
+            # crawlers rather than add any. Refuse rather than shrink.
+            logger.error(
+                "sitemap: ungated AI build returned %d URLs, FEWER than the "
+                "gated %d — refusing to publish a superset that shrank. AI "
+                "shards omitted from this generation.", len(ai_fac), len(fac))
+        else:
+            ai_shard_keys = _ai_shard_keys(len(ai_fac))
+            for i, key in enumerate(ai_shard_keys, start=1):
+                lo = (i - 1) * _SITEMAP_FACILITIES_PER_SHARD
+                chunk = ai_fac[lo:lo + _SITEMAP_FACILITIES_PER_SHARD]
+                rows.append((key, _render_shard_xml(chunk), len(chunk)))
+            rows.append((_SITEMAP_AI_INDEX_KEY,
+                         _render_index_xml([f'sitemap-{k}.xml' for k in ai_shard_keys],
+                                           today),
+                         len(ai_shard_keys)))
+            logger.info("sitemap: AI (ungated) family = %d URLs across %d shards "
+                        "(gated facilities = %d)",
+                        len(ai_fac), len(ai_shard_keys), len(fac))
+    except Exception as _ai_e:
+        logger.error("sitemap: ungated AI build FAILED (%s) — AI shards omitted "
+                     "from this generation; /sitemap-ai.xml will 503 until the "
+                     "next rebuild succeeds. The gated sitemap is unaffected.",
+                     _ai_e)
+
     conn = None
     err = False
     try:
@@ -32653,6 +32786,28 @@ def serve_sitemap_shard(section):
         _r.headers['X-Sitemap-Source'] = 'snapshot'
         return _r
     import re as _re
+
+    # r-ai-sitemap (2026-09-05): the ungated AI family is SNAPSHOT-ONLY. Every
+    # other section falls through to a live _sitemap_sections() build below;
+    # these must not. The ungated build is the ~20k-row union that saturated
+    # the Neon primary in the 07-20 stampede, and this family is fetched by
+    # crawlers that sweep thousands of URLs an hour — one cold cache would
+    # rebuild it per request.
+    #
+    # 503 + Retry-After, NOT 404: a 404 tells a crawler the URL does not exist
+    # and it may stop asking, which would silently retire the whole surface the
+    # moment a rebuild failed. 503 is the honest "built on a schedule, not
+    # yet" and crawlers come back from it.
+    if (section == _SITEMAP_AI_INDEX_KEY
+            or _re.match(r'^' + _SITEMAP_AI_SHARD_PREFIX + r'-\d{1,3}$', section)):
+        _r503 = make_response(
+            'Not built yet. This sitemap is generated on a schedule and served '
+            'only from the snapshot; it is never built per request.\n', 503)
+        _r503.headers['Retry-After'] = '3600'
+        _r503.headers['X-Sitemap-Source'] = 'snapshot-miss'
+        _r503.headers['Cache-Control'] = 'no-store'
+        return _r503
+
     sections, hit = _sitemap_sections()
     if section in _SITEMAP_FIXED_SECTIONS:
         entries = sections.get(section) or []
@@ -34629,7 +34784,7 @@ def phase12c_admin_load_all():
     out['success'] = not failed
     out['ran_ok'] = ran_ok
     out['failed'] = failed
-    out['ran_at'] = datetime.utcnow().isoformat()
+    out['ran_at'] = utc_iso_z()
     return jsonify(out)
 # --- end phase 12c ----------------------------------------------------------
 
@@ -34662,7 +34817,7 @@ def phase12f_run_all_loaders():
     # disagree, and let four modules stay registered under names that do not
     # exist while the response still read {"success": true}.
     loaders = list(_STANDALONE_LOADERS.keys())
-    out = {'ran_at': datetime.utcnow().isoformat(), 'loaders': {}}
+    out = {'ran_at': utc_iso_z(), 'loaders': {}}
     for mod_name in loaders:
         out['loaders'][mod_name] = _run_standalone_loader(mod_name)
     ran_ok = [m for m, r in out['loaders'].items() if r.get('ok')]
@@ -34689,7 +34844,7 @@ def phase12g_loader_async(mod_name, fn_candidates, status_key):
         return {'started': False, 'reason': 'already running', 'status_key': status_key}
 
     def _runner():
-        rec = {'running': True, 'started_at': datetime.utcnow().isoformat()}
+        rec = {'running': True, 'started_at': utc_iso_z()}
         state[status_key] = rec
         try:
             mod = __import__(mod_name)
@@ -34712,7 +34867,7 @@ def phase12g_loader_async(mod_name, fn_candidates, status_key):
             rec['traceback'] = traceback.format_exc()[:1500]
         finally:
             rec['running'] = False
-            rec['finished_at'] = datetime.utcnow().isoformat()
+            rec['finished_at'] = utc_iso_z()
 
     t = threading.Thread(target=_runner, daemon=True)
     t.start()
@@ -34842,7 +34997,7 @@ def phase12i_probe_network():
             rec['error'] = type(e).__name__ + ': ' + str(e)[:200]
             rec['ms'] = int((_t.time() - t0) * 1000)
         out[name] = rec
-    return jsonify({'success': True, 'targets': out, 'ran_at': datetime.utcnow().isoformat()})
+    return jsonify({'success': True, 'targets': out, 'ran_at': utc_iso_z()})
 # --- end phase 12i ----------------------------------------------------------
 
 
@@ -34871,7 +35026,7 @@ def phase12j_load_energy_discovery_live():
         return jsonify({'started': False, 'reason': 'already running'})
 
     def _runner():
-        rec = {'running': True, 'started_at': datetime.utcnow().isoformat()}
+        rec = {'running': True, 'started_at': utc_iso_z()}
         state['energy_discovery'] = rec
         try:
             from db_utils import get_db
@@ -34892,7 +35047,7 @@ def phase12j_load_energy_discovery_live():
             rec['traceback'] = traceback.format_exc()[:1500]
         finally:
             rec['running'] = False
-            rec['finished_at'] = datetime.utcnow().isoformat()
+            rec['finished_at'] = utc_iso_z()
 
     t = threading.Thread(target=_runner, daemon=True)
     t.start()
@@ -34991,7 +35146,7 @@ def _phase13_osm_async(loader_name, status_key):
         return {'started': False, 'reason': 'already running'}
 
     def _run():
-        rec = {'running': True, 'started_at': datetime.utcnow().isoformat()}
+        rec = {'running': True, 'started_at': utc_iso_z()}
         state[status_key] = rec
         try:
             from osm_overpass_loader import (
@@ -35018,7 +35173,7 @@ def _phase13_osm_async(loader_name, status_key):
             rec['traceback'] = traceback.format_exc()[:1500]
         finally:
             rec['running'] = False
-            rec['finished_at'] = datetime.utcnow().isoformat()
+            rec['finished_at'] = utc_iso_z()
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
@@ -36770,7 +36925,7 @@ def api_agents_intelligence_index():
     _ii_payload = {
         'dc_hub_intelligence_index': {
             'global_pulse_score': pulse,
-            'generated_at': datetime.utcnow().isoformat()+'+00:00',
+            'generated_at': utc_iso_z()+'+00:00',
             'data_summary': {
                 'facilities': facility_count,
                 # A number without a stated basis is not publishable — an agent
@@ -45739,7 +45894,7 @@ def _compute_heal_findings():
         "actionable_frontend_issues": actionable,
         "actionable_backend_issues": actionable_backend,
         "cache_needs_purge": "STALE" in str(findings.get("cdn_cache_staleness", {}).get("details", "")),
-        "computed_at": datetime.utcnow().isoformat(),
+        "computed_at": utc_iso_z(),
     }
 
 

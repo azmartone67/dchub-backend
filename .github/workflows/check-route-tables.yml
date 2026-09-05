@@ -5,8 +5,40 @@
 # AND dchub-frontend/_worker.js's PHASE_282 tables. Two pages today, four
 # before that — same root cause every time.
 #
-# This check diff-greps Flask HTML routes against both tables and fails
-# the PR when one half is missing. Lints, doesn't deploy — safe.
+# ★ 2026-09-05 — THIS IS NOW A RATCHET AND IT BLOCKS.
+#
+# It shipped advisory with a note saying "flip to required once warnings are
+# clean for a week". They never got clean: it reported 385 of 496 routes (78%)
+# as missing on every PR, so it was a constant-red non-signal nobody could act
+# on and nobody could turn on. Two things were wrong with that number and both
+# are fixed in this change:
+#
+#   1. The route extractor was a line regex that recorded the DECORATOR path,
+#      not the SERVED path — it never resolved blueprint url_prefix. A route
+#      declared @redeem_tracking_bp.route("/click") under
+#      url_prefix="/api/v1/redeem" read as an uncovered HTML route "/click".
+#      It also matched ".route(" inside strings and comments. Now an AST walk.
+#   2. The worker-table parser used `\[([^\]]+)\]`, which stops at the first
+#      `]` in the source — one that happens to sit inside a trailing comment
+#      twelve lines into the array. It read 6 of 36 PHASE_282_PREFIXES, and
+#      pulled multi-line comment blobs into the exact-path Set via apostrophes
+#      in words like "didn't". /team, /upgrade, /markets and 23 more real
+#      entries were invisible to it.
+#
+# The honest number is 130, not 385. Those 130 are enumerated in
+# scripts/route_table_baseline.json and anything NEW fails the PR. Same shape
+# as dchub-frontend/scripts/check-edge-caps.mjs and
+# tests/test_canonical_counts_drift.py's KNOWN_STALE_COUNT_DEBT: shrink, never
+# grow.
+#
+# All the logic lives in scripts/check_route_table_coherence.py rather than in
+# heredocs here, so the ratchet can be RUN — and mutation-tested — locally:
+#
+#     python3 scripts/check_route_table_coherence.py flask-routes
+#     python3 scripts/check_route_table_coherence.py route-tables
+#     python3 scripts/check_route_table_coherence.py diff
+#
+# Lints, doesn't deploy — safe.
 name: route-tables coherence
 
 on:
@@ -19,24 +51,33 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # ADVISORY until the exclusion rules are fully tuned — the goal is to
-    # CATCH the /pockets-style routing-footgun class without firing on
-    # static-file-backed pages, admin paths, manifests, or dynamic catch-
-    # alls. Make it non-blocking; flip to required-check once warnings
-    # are clean for a week.
-    continue-on-error: true
+    # ★ NO job-level continue-on-error any more. It was here because the
+    # untuned check fired on every PR, including the brain's mechanical
+    # autofixes, which never touch routes. With the baseline in place the job
+    # only goes red when a PR ADDS mis-registration, so it is safe to block on.
+    # The frontend-checkout step below keeps ITS OWN continue-on-error — that
+    # one is deliberate and stays: "could not check" and "coherent" must not
+    # collapse into the same green.
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
 
       # ★ 2026-09-05 — READ THE ROUTING TABLES THAT ARE ACTUALLY DEPLOYED.
-      # _routes.json and _worker.js belong to the dchub-frontend repo. This job
-      # used to read them out of a vendored mirror committed into THIS repo,
-      # which was last touched 2026-09-02 and is now deleted. So the coherence
-      # check — whose entire job is catching the /pockets 404 class — was
-      # diffing live Flask routes against a SNAPSHOT of the routing tables. A
-      # route added to the real _routes.json read as missing; one removed from
-      # it read as present. Wrong in both directions, quietly.
+      # _routes.json and _worker.js belong to the dchub-frontend repo. Until
+      # #3871 this job read them out of a vendored mirror committed into THIS
+      # repo, last touched 2026-09-02. That mirror was not merely stale — its
+      # _routes.json was a different GENERATION of the file (83 exact-path
+      # includes and zero excludes, against the real 82 wildcard includes and 15
+      # excludes, with almost no overlap). So the coherence check — whose entire
+      # job is catching the /pockets 404 class — was diffing live Flask routes
+      # against a fiction. A route added to the real _routes.json read as
+      # missing; one removed from it read as present. Wrong in both directions,
+      # quietly. ★ Every reading of this gate before 2026-09-05 is therefore
+      # UNMEASURED, including the "385 of 496 missing" that kept it advisory.
       - name: Check out the canonical frontend (routing tables live there)
+        id: frontend
         continue-on-error: true
         uses: actions/checkout@v5
         with:
@@ -47,241 +88,124 @@ jobs:
       # ★ AND SAY SO WHEN THEY ARE NOT THERE. The checkout above is
       # continue-on-error, and DCHUB_FRONTEND_RO_TOKEN has been failing since
       # 2026-08-19 (deploy-integrity.yml records the same "Not Found"). Without
-      # this gate, a missing checkout means _routes.json is absent, the include
-      # set is empty, and step 3 reports every Flask route as uncovered — or,
-      # worse under different tuning, reports nothing and looks clean. Neither
-      # is a measurement. Steps 2 and 3 are skipped instead, and the ledger
-      # step below records `unmeasured` because neither of its verdict lines
-      # ever prints. Not-run is a state this board can already represent.
+      # this gate, absent tables mean an empty include set and every Flask route
+      # reads as uncovered — or, under this ratchet, every route reads as
+      # already-baselined and the job goes GREEN on no measurement at all. That
+      # is the dangerous direction, so this step checks the checkout's OWN
+      # OUTCOME as well as file presence: a leftover directory must never be
+      # mistaken for a fresh clone. Steps 1-3 are skipped instead and the ledger
+      # below records `unmeasured`, because neither verdict line ever prints.
+      # Not-run is a state this board can already represent.
       - name: 0 — are the canonical routing tables present?
         id: tables
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.frontend.outcome }}
         run: |
-          if [ -f dchub-frontend/_routes.json ] && [ -f dchub-frontend/_worker.js ]; then
+          if [ "$CHECKOUT_OUTCOME" = "success" ] \
+             && [ -f dchub-frontend/_routes.json ] \
+             && [ -f dchub-frontend/_worker.js ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
             echo "✅ canonical routing tables checked out"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Route-table coherence NOT checked::dchub-frontend was not checked out (private repo — rotate DCHUB_FRONTEND_RO_TOKEN). Flask routes were NOT diffed against _routes.json / _worker.js this run. This is 'could not check', NOT 'coherent'."
+            echo "::warning title=Route-table coherence NOT checked::dchub-frontend was not checked out (checkout outcome: ${CHECKOUT_OUTCOME}; private repo — rotate DCHUB_FRONTEND_RO_TOKEN). Flask routes were NOT diffed against _routes.json / _worker.js this run. This is 'could not check', NOT 'coherent'."
           fi
 
       - name: 1 — extract Flask HTML routes
+        if: steps.tables.outputs.available == 'true'
         # tee'd: this step — not step 3 — prints "discovered N Flask HTML
         # routes", which is the POPULATION the ledger beat reports. The first
         # version tee'd only step 3 and sent checked=empty, so G4 could never
         # fire for this gate. The live board is what surfaced that.
+        env:
+          ROUTE_COHERENCE_FRONTEND: dchub-frontend
         run: |
           set -o pipefail
-          exec > >(tee /tmp/crt1.log) 2>&1
-          # Pick out HTML routes (paths that don't start with /api or /static).
-          # Pattern: @app.route('/foo')  or  @any_bp.route('/foo')
-          python3 <<'PY'
-          import re, os, sys, json
-
-          ROUTE_RE = re.compile(r"@\w+\.route\(\s*['\"]([^'\"]+)['\"]")
-          # Collect existing static files in dchub-frontend so we can
-          # skip routes that have a corresponding static asset. e.g.
-          # /ai-hub.html is a real file → CF serves it; no need for
-          # the Worker to proxy.
-          static_files = set()
-          static_basenames = set()
-          for root, _, files in os.walk('dchub-frontend'):
-              for f in files:
-                  if f.endswith(('.html', '.json', '.txt', '.md', '.xml')):
-                      rel = os.path.relpath(os.path.join(root, f), 'dchub-frontend')
-                      static_files.add('/' + rel)
-                      # also the clean-URL form (no .html): /ai-hub.html → /ai-hub
-                      if rel.endswith('.html'):
-                          static_files.add('/' + rel[:-5])
-                          static_basenames.add(rel[:-5])
-          print(f"  {len(static_files)} static-backed paths in dchub-frontend/")
-
-          # Routes we explicitly DON'T expect to proxy through the worker:
-          #  - dynamic catch-alls `/<string:foo>` — these handle un-routed
-          #    paths inside Railway, not user-facing dashboards.
-          #  - admin paths — intentionally not surfaced via CF.
-          #  - .well-known, manifests, well-known sitemap/robots/favicon.
-          SKIP_PATTERNS = (
-              '/<',                   # catch-all dynamic patterns
-              '/admin/',              # admin surfaces
-              '/.well-known/',        # manifests
-          )
-          SKIP_LITERAL = {
-              '/',
-              '/health', '/robots.txt', '/sitemap.xml', '/favicon.ico',
-              '/ai.txt', '/ai-plugin.json', '/llms.txt', '/manifest.json',
-              '/.well-known/mcp.json', '/agents.md', '/AGENTS.md',
-          }
-
-          html_routes = set()
-          for root, _, files in os.walk('.'):
-              if any(x in root for x in ('.git', 'node_modules', '.claude', 'dchub-frontend')):
-                  continue
-              for f in files:
-                  if not f.endswith('.py'): continue
-                  p = os.path.join(root, f)
-                  try:
-                      with open(p, 'r', encoding='utf-8') as fh:
-                          for line in fh:
-                              m = ROUTE_RE.search(line)
-                              if not m: continue
-                              path = m.group(1)
-                              # Only care about HTML-serving paths.
-                              if path.startswith('/api') or path.startswith('/static'):
-                                  continue
-                              if path in SKIP_LITERAL:
-                                  continue
-                              if any(path.startswith(s) for s in SKIP_PATTERNS):
-                                  continue
-                              # If a static file already serves this path, skip.
-                              if path in static_files:
-                                  continue
-                              html_routes.add(path)
-                  except Exception:
-                      pass
-
-          with open('/tmp/flask_html_routes.json','w') as fh:
-              json.dump(sorted(html_routes), fh, indent=2)
-          print(f"discovered {len(html_routes)} Flask HTML routes")
-          PY
-          jq length /tmp/flask_html_routes.json || true
+          python3 scripts/check_route_table_coherence.py flask-routes 2>&1 | tee /tmp/crt1.log
 
       - name: 2 — extract _routes.json include + _worker.js PHASE_282 tables
         if: steps.tables.outputs.available == 'true'
-        run: |
-          python3 <<'PY'
-          import json, re, sys
-          with open('dchub-frontend/_routes.json') as f:
-              routes_json = set(json.load(f).get('include', []))
-          src = open('dchub-frontend/_worker.js').read()
-          # PHASE_282_RAILWAY_PATHS = new Set([ ... ])
-          m = re.search(r"PHASE_282_RAILWAY_PATHS\s*=\s*new\s+Set\(\[([^\]]+)\]\)", src, re.DOTALL)
-          worker_paths = set()
-          if m:
-              worker_paths = set(re.findall(r"'([^']+)'", m.group(1)))
-          # PHASE_282_PREFIXES = [ ... ]
-          m2 = re.search(r"PHASE_282_PREFIXES\s*=\s*\[([^\]]+)\]", src, re.DOTALL)
-          worker_prefixes = set()
-          if m2:
-              worker_prefixes = set(re.findall(r"'([^']+)'", m2.group(1)))
-          with open('/tmp/route_tables.json','w') as f:
-              json.dump({
-                  'routes_json_include':   sorted(routes_json),
-                  'worker_paths':          sorted(worker_paths),
-                  'worker_prefixes':       sorted(worker_prefixes),
-              }, f, indent=2)
-          print(f"_routes.json include: {len(routes_json)} entries")
-          print(f"worker PHASE_282_RAILWAY_PATHS: {len(worker_paths)} entries")
-          print(f"worker PHASE_282_PREFIXES: {len(worker_prefixes)} entries")
-          PY
+        env:
+          ROUTE_COHERENCE_FRONTEND: dchub-frontend
+        run: python3 scripts/check_route_table_coherence.py route-tables
 
-      - name: 3 — diff Flask routes vs the two tables, fail on mismatch
+      - name: 3 — ratchet — fail on any NEW uncovered route
         if: steps.tables.outputs.available == 'true'
         # Piped through tee (not exec+process-substitution) so the log is fully
-        # flushed when the step ends: the ledger beat reads it in the NEXT step,
-        # and this job's continue-on-error means its output is the only place
-        # the real outcome survives. pipefail keeps python's exit code.
+        # flushed when the step ends: the ledger beat reads it in the NEXT step.
+        # pipefail keeps python's exit code, which is now what fails the job.
+        env:
+          ROUTE_COHERENCE_FRONTEND: dchub-frontend
         run: |
           set -o pipefail
-          python3 <<'PY' 2>&1 | tee /tmp/crt.log
-          import json, sys
-
-          with open('/tmp/flask_html_routes.json') as f:
-              flask = set(json.load(f))
-          with open('/tmp/route_tables.json') as f:
-              tables = json.load(f)
-          routes_json = set(tables['routes_json_include'])
-          worker_paths = set(tables['worker_paths'])
-          worker_prefixes = tuple(tables['worker_prefixes'])
-
-          # A Flask route is "covered" if either:
-          #  - it's literally in _routes.json include (or one of its /* matches)
-          #  - it's in PHASE_282_RAILWAY_PATHS or matches a PHASE_282_PREFIX
-          def covered_by_routes_json(path):
-              if path in routes_json: return True
-              for inc in routes_json:
-                  if inc.endswith('/*') and path.startswith(inc[:-1]):
-                      return True
-              return False
-
-          def covered_by_worker(path):
-              if path in worker_paths: return True
-              return any(path.startswith(p) for p in worker_prefixes)
-
-          missing_routes_json = []
-          missing_worker = []
-          for r in flask:
-              # static-like dynamic Flask paths e.g. '/markets/<slug>' — strip converter
-              # for the routes-json check use the prefix '/markets/'
-              if '<' in r:
-                  prefix = r.split('<')[0]
-                  if not (covered_by_routes_json(prefix) or covered_by_routes_json(prefix.rstrip('/'))):
-                      missing_routes_json.append(r)
-                  if not covered_by_worker(prefix):
-                      missing_worker.append(r)
-              else:
-                  if not covered_by_routes_json(r):
-                      missing_routes_json.append(r)
-                  if not covered_by_worker(r):
-                      missing_worker.append(r)
-
-          ok = True
-          if missing_routes_json:
-              ok = False
-              print("::warning::Flask HTML routes missing from dchub-frontend/_routes.json `include`:")
-              for r in sorted(missing_routes_json)[:30]:
-                  print(f"  - {r}")
-              if len(missing_routes_json) > 30:
-                  print(f"  …and {len(missing_routes_json)-30} more")
-          if missing_worker:
-              ok = False
-              print("::warning::Flask HTML routes missing from dchub-frontend/_worker.js PHASE_282 tables:")
-              for r in sorted(missing_worker)[:30]:
-                  print(f"  - {r}")
-              if len(missing_worker) > 30:
-                  print(f"  …and {len(missing_worker)-30} more")
-
-          if not ok:
-              # ADVISORY (per this workflow's header intent): the exclusion rules
-              # are not fully tuned, so ~300 PRE-EXISTING routes show as "missing"
-              # on EVERY PR — a constant-red non-signal that wrongly blocks
-              # unrelated PRs, including the brain's mechanical autofixes (which
-              # never touch routes). Log the drift as a NOTICE and PASS, rather
-              # than fail the build on pre-existing drift the PR did not introduce.
-              # TODO(delta-mode): fail ONLY when a PR ADDS a route missing from the
-              # tables (git-diff the changed routes vs these tables), so genuine NEW
-              # mis-registration is still caught without blocking on legacy drift.
-              n = len(set(missing_routes_json) | set(missing_worker))
-              print(f"::notice::route-table coherence ADVISORY — {n} Flask route(s) "
-                    f"not in the CF tables (pre-existing drift; NOT blocking). "
-                    f"Missing _routes.json → SPA-404; missing _worker.js → 403. "
-                    f"Fix the tables or convert this check to delta-mode.")
-              sys.exit(0)
-
-          print(f"OK — {len(flask)} Flask HTML routes covered by both tables.")
-          PY
+          python3 scripts/check_route_table_coherence.py diff 2>&1 | tee /tmp/crt.log
 
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
+      #
+      # ★ The three strings grepped below are PRINTED BY
+      # scripts/check_route_table_coherence.py. Change the wording there and
+      # this records `unmeasured` forever, silently. Both files, one commit.
+      # ★ THE MUST-FAIL CONTROL, RUN IN THE GATE ITSELF. gate_beat.sh's 4th
+      # argument asks "did this gate's must-fail control run and pass?" and this
+      # gate answered `absent` for its whole life, because it had none. It now
+      # has one: tests/test_route_table_coherence.py mutates the extractor back
+      # toward the two parsers that made it report 385-of-496 and asserts the
+      # checker notices. Running it HERE — not only in the unit-test job — means
+      # the answer on this gate's own board is measured rather than assumed.
+      # ★ The control's OWN dependencies, installed here. The first run of this
+      # step reported selftest=fail on a green gate — not because the control
+      # failed but because the runner had no pytest ("No module named pytest").
+      # "Could not run" and "ran and failed" are different states and
+      # gate_beat.sh has a word for each; conflating them is the same class of
+      # error as letting a missing checkout read as `coherent`.
+      - name: Install the must-fail control's deps
+        id: selftest_deps
+        if: always()
+        continue-on-error: true
+        run: python3 -m pip install --quiet pytest pyyaml
+
+      - name: Must-fail control for this gate
+        id: selftest
+        if: always() && steps.selftest_deps.outcome == 'success'
+        continue-on-error: true
+        run: python3 -m pytest tests/test_route_table_coherence.py -q
+
       - name: Beat the gate liveness ledger
         if: always()
         env:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
+          SELFTEST_OUTCOME: ${{ steps.selftest.outcome }}
         run: |
-          # This job carries job-level continue-on-error, so job.status is
-          # success no matter what it found — the board records blocking=false
-          # and takes the verdict from the step's own output instead.
           # Population comes from step 1's log, verdict from step 3's — they are
           # printed by different steps and there is no single file with both.
           N=$(grep -hoE 'discovered [0-9]+ Flask HTML routes' /tmp/crt1.log /tmp/crt.log 2>/dev/null \
               | grep -oE '[0-9]+' | head -1)
+          # ★ The two strings are MUTUALLY EXCLUSIVE by construction: the
+          # checker returns 1 immediately after printing ADVISORY, so the
+          # 'covered by both tables' line is unreachable on a failing run, and
+          # ADVISORY is printed ONLY for NEW entries — never for baselined
+          # drift. Before the ratchet, ADVISORY printed on every run and this
+          # branch would have recorded `fail` forever.
           if grep -q 'route-table coherence ADVISORY' /tmp/crt.log 2>/dev/null; then
-            V=fail            # it found uncovered routes — the gate did its job
+            V=fail            # a PR added mis-registration — the gate did its job
           elif grep -q 'covered by both tables' /tmp/crt.log 2>/dev/null; then
             V=pass
           else
             V=unmeasured      # neither line printed: the step did not conclude
           fi
-          bash scripts/gate_beat.sh "check-route-tables:check" "$V" "$N" absent \
-            "advisory job (continue-on-error) — verdict from step output, not job.status"
+          # ★ The 4th argument is SELFTEST (pass|fail|absent), not blocking —
+          # a closed vocabulary that routes/gate_runs.py enforces. Anything else
+          # is not a value this board can represent.
+          # ★ `absent` covers BOTH "skipped" and the empty string a step that
+          # never ran emits — the deps step is gated, so an install failure
+          # leaves this unset. Only a real pytest exit code maps to fail.
+          case "$SELFTEST_OUTCOME" in
+            success) ST=pass ;;
+            failure) ST=fail ;;
+            *)       ST=absent ;;   # skipped, or its deps never installed
+          esac
+          bash scripts/gate_beat.sh "check-route-tables:check" "$V" "$N" "$ST" \
+            "ratchet on scripts/route_table_baseline.json — BLOCKING, so job.status is the PR verdict"

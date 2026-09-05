@@ -9,9 +9,12 @@ we publish. These tests keep the failure modes that would destroy that:
      families and the regex form kept serving the old verdict).
   2. A published population that DESCRIBES filters instead of BEING them
      (#2253), so an edit to the query silently stops matching the disclosure.
-  3. A bucket rendering 0 where nothing was measured. For organic_content that
-     would be an outright false claim: no collector on this channel can record
-     a content-page crawl at all.
+  3. A bucket rendering 0 where nothing was measured — and, since 2026-09-05,
+     the inverse: a bucket withholding a real count. organic_content HAS been
+     instrumented since 2026-08-29 (the edge beacon), and this endpoint went on
+     publishing "no collector can record this" over a 28,706-row count for a
+     week, because the withholding tuple was hand-listed in this repo while the
+     collector shipped in another. Both directions are tested.
   4. The Cloudflare worker's tracking filter changing under us. It is
      JavaScript and cannot be imported, so the declared copy is pinned against
      the worker source here — a change there fails loudly instead of silently
@@ -318,20 +321,113 @@ def test_roster_allowlist_is_strictly_stronger_than_the_platform_predicate():
 
 # ── 3. no bucket ever renders a flattering zero ─────────────────────────────
 
-def test_uninstrumented_bucket_is_null_with_a_reason_never_zero():
-    """organic_content cannot be observed by either collector. Publishing 0
-    would state "we measured content crawling and found none", which is false:
-    we have never counted it."""
+def test_organic_content_reports_its_count_now_that_a_collector_exists():
+    """★ REGRESSION GUARD for the 2026-09-05 defect.
+
+    organic_content was hand-listed in _NOT_INSTRUMENTED, and _bucket_result()
+    returns on that tuple BEFORE reading `counts`. So the endpoint computed the
+    bucket correctly and then threw it away, publishing "no collector on this
+    channel can record a content-page crawl" over a real 28,706-row count —
+    during the largest content crawl the site has ever received.
+
+    The edge beacon (dchub-frontend #1274, 2026-08-29) is the collector. This
+    test fails if anything ever puts organic_content back behind the tuple.
+    """
+    from routes.crawler_split import _bucket_result, _NOT_INSTRUMENTED
+
+    assert "organic_content" not in _NOT_INSTRUMENTED, (
+        "organic_content has had a collector since 2026-08-29 — withholding it "
+        "publishes a false reason over a real count")
+
+    res = _bucket_result({"organic_content": 28706, "instructed_metadata": 1114},
+                         "organic_content", 34167, window_days=7,
+                         today=__import__("datetime").date(2026, 11, 1))
+    assert res["requests"] == 28706, (
+        "a bucket with a live collector and rows must publish its count")
+    assert res["reason"] is None
+
+
+def test_withholding_mechanism_still_works_for_a_genuinely_blind_bucket():
+    """_NOT_INSTRUMENTED is empty, not deleted. The mechanism must still be
+    able to withhold, or the next unobservable bucket renders a confident 0 and
+    nothing catches it. Exercised against a bucket forced into the tuple."""
+    import routes.crawler_split as cs
+
+    prev = cs._NOT_INSTRUMENTED
+    cs._NOT_INSTRUMENTED = ("ambiguous_data_api",)
+    try:
+        res = cs._bucket_result({"ambiguous_data_api": 999}, "ambiguous_data_api",
+                                999, window_days=7)
+        assert res["requests"] is None, (
+            "the withholding mechanism no longer withholds — an unobservable "
+            "bucket would publish a number it cannot defend")
+        assert "not instrumented" in res["reason"]
+    finally:
+        cs._NOT_INSTRUMENTED = prev
+
+
+def test_zero_over_a_window_predating_the_collector_reads_as_unknown():
+    """A 0 for organic_content is ambiguous in a way other buckets' zeros are
+    not: ?days=90 reaches back before the beacon existed. The reason must say
+    so, or a 90-day read gets quoted as "no content crawling"."""
     from routes.crawler_split import _bucket_result
 
-    # Even handed a populated count map, the uninstrumented bucket refuses.
-    res = _bucket_result({"organic_content": 0, "instructed_metadata": 900},
-                         "organic_content", 900)
-    assert res["requests"] is None, (
-        "an uninstrumented bucket must be null, never 0")
-    assert "not instrumented" in res["reason"], (
-        "the reason must say WHY it is null — 'not measured' and 'measured "
-        "zero' are different claims")
+    res = _bucket_result({"instructed_metadata": 900}, "organic_content", 900,
+                         window_days=90)
+    assert res["requests"] is None
+    assert "2026-08-29" in res["reason"], (
+        "an empty organic bucket must name the collector's start date — "
+        "otherwise unknown is indistinguishable from none")
+
+
+def test_a_count_over_a_window_predating_the_collector_is_labelled_a_floor():
+    """?days=90 DOES return organic rows (the instrumented tail of the window).
+    That number is a floor for the window, not a measurement of it, and it is
+    not comparable to buckets that were instrumented throughout."""
+    from routes.crawler_split import _bucket_result
+
+    import datetime as dt
+    # PINNED, never date.today(): a caveat that fires on "7 days ago" is true in
+    # September 2026 and false in October, and a test asserting either would
+    # start failing on a date nobody chose. See feedback on wall-clock in tests.
+    pinned = dt.date(2026, 11, 1)
+
+    res = _bucket_result({"organic_content": 28706}, "organic_content", 34167,
+                         window_days=90, today=pinned)
+    assert res["requests"] == 28706
+    assert "partial_window" in res, (
+        "a window opening before the collector must be labelled, or the count "
+        "reads as covering the whole window")
+    assert "FLOOR" in res["partial_window"]
+
+    short = _bucket_result({"organic_content": 28706}, "organic_content", 34167,
+                           window_days=7, today=pinned)
+    assert "partial_window" not in short, (
+        "a fully-instrumented window must NOT carry the caveat, or the label "
+        "is noise and gets ignored where it matters")
+
+
+def test_buckets_reconcile_names_a_dropped_bucket():
+    """★ The durable guard. The buckets PARTITION the classified population
+    (path_bucket_case ends in ELSE 'unclassified'), so buckets_sum must equal
+    rows_classified. When organic_content was withheld the two differed by
+    28,706 and NOTHING in the payload said so — a reader could only find it by
+    summing the buckets by hand. This is what makes the next one loud."""
+    from routes.crawler_split import _buckets_reconcile
+
+    balanced = _buckets_reconcile(
+        {"organic_content": 28706, "ambiguous_data_api": 2372,
+         "instructed_metadata": 1114, "unclassified": 1975}, 34167)
+    assert balanced["delta"] == 0, (
+        "the four buckets partition the population — a non-zero delta on a "
+        "complete count map means the reconciliation itself is wrong")
+    assert balanced["buckets_sum"] == 34167
+
+    leaking = _buckets_reconcile(
+        {"ambiguous_data_api": 2372, "instructed_metadata": 1114,
+         "unclassified": 1975}, 34167)
+    assert leaking["delta"] == -28706, (
+        "a bucket missing from the payload must surface as a non-zero delta")
 
 
 def test_empty_bucket_is_null_not_zero():
@@ -549,12 +645,14 @@ def test_historical_numbers_are_not_revised():
 
 
 # ── the null must not quietly become a zero (2026-08-29) ──────────────────
-def test_coverage_names_the_edge_beacon_without_claiming_a_measurement():
+def test_coverage_names_the_beacon_and_the_missing_baseline():
     """dchub-frontend #1274 added the first collector that can see a
-    content-page crawl. The bucket is STILL null — no row has arrived — and
-    the two claims must stay separate: a collector existing is not an
-    observation. This test fails if the module ever says organic content is
-    measured, or drops the beacon and reverts to "nothing can see this".
+    content-page crawl, and it is now recording. The claim that must survive is
+    the one that outlives the fix: there is NO pre-2026-08-29 baseline, so any
+    comparison spanning that date measures the instrument, not the crawler.
+
+    This test fails if the module drops the beacon and reverts to "nothing can
+    see this", or if it starts presenting the cross-2026-08-29 jump as growth.
     """
     from crawler_externality import collector_coverage
     cov = collector_coverage()
@@ -562,10 +660,15 @@ def test_coverage_names_the_edge_beacon_without_claiming_a_measurement():
         "the third collector is undocumented — a reader would conclude "
         "organic crawling is still structurally impossible")
     consequence = cov["consequence"]
-    assert "not yet" in consequence.lower(), (
-        "the consequence must still say the bucket has observed nothing")
-    assert "never 0" in consequence, (
-        "null must never be presented as a measured zero")
+    assert "2026-08-29" in consequence, (
+        "the consequence must name the date the instrument was born — it is "
+        "the boundary every comparison has to respect")
+    assert "BASELINE" in consequence.upper(), (
+        "the missing baseline is the durable finding; without it the WoW step "
+        "gets read as demand growth")
+    assert "unknown, not none" in consequence.lower(), (
+        "a zero over a window predating the collector is still not a measured "
+        "zero, and the coverage declaration is where a reader learns that")
 
 
 def test_worker_source_is_labelled_as_a_declared_copy():

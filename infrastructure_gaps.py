@@ -31,6 +31,7 @@ import urllib.parse
 import urllib.error
 from datetime import datetime
 from flask import Blueprint, request, jsonify
+from utc_clock import utc_iso_z
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +233,7 @@ def gas_pipeline_geojson():
             'type': 'FeatureCollection',
             'features': features,
         },
-        'queried_at': datetime.utcnow().isoformat(),
+        'queried_at': utc_iso_z(),
     }
 
     _set_cached(cache_key, result)
@@ -295,7 +296,7 @@ def phmsa_pipeline_data():
         'query': {'lat': lat, 'lng': lng},
         'regions': regions,
         'note': 'Detailed pipeline GIS data requires NPMS account (gov/operator only). Public viewer: https://pvnpms.phmsa.dot.gov/PublicViewer/',
-        'queried_at': datetime.utcnow().isoformat(),
+        'queried_at': utc_iso_z(),
     }
 
     _set_cached(cache_key, result)
@@ -524,7 +525,7 @@ def interconnection_projects_nearby():
         'by_technology': tech_summary,
         'projects': projects[:100],
         'data_center_note': 'Planned generation near a site indicates grid capacity growth — positive for power availability',
-        'queried_at': datetime.utcnow().isoformat(),
+        'queried_at': utc_iso_z(),
     }
 
     _set_cached(cache_key, result)
@@ -660,7 +661,7 @@ def fiber_routes_geojson():
             'features': features,
         },
         'note': 'Approximate corridor routes for major US long-haul fiber backbones. For lit-building level data see /api/fiber/providers',
-        'queried_at': datetime.utcnow().isoformat(),
+        'queried_at': utc_iso_z(),
     }
 
     if lat is not None:
@@ -801,7 +802,7 @@ def renewable_projects_nearby():
         },
         'projects': projects[:100],
         'data_center_note': 'Nearby renewable capacity supports green PPA procurement and sustainability goals',
-        'queried_at': datetime.utcnow().isoformat(),
+        'queried_at': utc_iso_z(),
     }
 
     _set_cached(cache_key, result)
@@ -870,7 +871,7 @@ def infrastructure_gaps_summary():
             'fiber_corridors': 'Long-haul fiber proximity determines connectivity options and latency',
             'renewable_projects': 'Nearby renewables support green PPA procurement and ESG compliance',
         },
-        'queried_at': datetime.utcnow().isoformat(),
+        'queried_at': utc_iso_z(),
     })
 
 

@@ -42,6 +42,7 @@ from functools import wraps
 from collections import defaultdict
 from flask import Blueprint, request, jsonify, g
 from db_utils import get_db, safe_db
+from utc_clock import utc_iso_z
 
 # =============================================================================
 # CONFIGURATION
@@ -331,7 +332,7 @@ def update_key_usage(key_id):
                 UPDATE api_keys
                 SET last_used_at = %s, usage_count = usage_count + 1
                 WHERE id = %s
-            """, (datetime.utcnow().isoformat(), key_id))
+            """, (utc_iso_z(), key_id))
             conn.commit()
         finally:  # r72: never leak the conn on a DB error
             try:
@@ -598,7 +599,7 @@ def _ensure_user_row(jwt_payload):
         claim_plan = jwt_payload.get('plan') or 'free'
         if claim_plan not in RATE_LIMITS:
             claim_plan = 'free'
-        now = datetime.utcnow().isoformat()
+        now = utc_iso_z()
         with safe_db() as conn:
             c = conn.cursor()
             # Only insert if missing. Existing rows keep their stored plan — DB is truth.
@@ -835,7 +836,7 @@ def get_current_plan():
             c.execute("""
                 INSERT INTO user_plans (user_id, plan, updated_at)
                 VALUES (%s, %s, %s)
-            """, (user_id, plan, datetime.utcnow().isoformat()))
+            """, (user_id, plan, utc_iso_z()))
             conn.commit()
         
             plan_info = {'plan': plan, 'usage_this_cycle': 0}
@@ -972,7 +973,7 @@ def create_api_key():
         key_hash = hash_api_key(api_key)
         key_prefix = get_key_prefix(api_key)
     
-        now = datetime.utcnow().isoformat()
+        now = utc_iso_z()
     
         c.execute("""
             INSERT INTO api_keys (user_id, key_hash, key_prefix, name, rate_limit_tier, plan, is_active, created_at)
@@ -1067,7 +1068,7 @@ def regenerate_api_key(key_id):
         api_key = generate_api_key()
         key_hash = hash_api_key(api_key)
         key_prefix = get_key_prefix(api_key)
-        now = datetime.utcnow().isoformat()
+        now = utc_iso_z()
     
         # Update with new key
         c.execute("""

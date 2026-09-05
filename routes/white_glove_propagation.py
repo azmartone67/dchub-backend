@@ -371,6 +371,82 @@ def _official_registry_latest_only(body: str) -> str:
     return body
 
 
+# ── REACHABILITY GATE (2026-09-05) ───────────────────────────────────────────
+#
+# ★ THE BUG THIS CLOSES. The probe loop called `body, status = _polite_get(url)`
+#   and then NEVER READ `status`. A registry behind a bot wall answers with a
+#   real body — cursor.directory returns HTTP 429 and a 29KB "Vercel Security
+#   Checkpoint" page — so `body` is truthy, the fetch_failed branch is skipped,
+#   and that challenge page goes to detect_number_drift. A challenge page has no
+#   numbers in it, so the detector correctly returns [], and the loop files the
+#   registry under summary["clean"].
+#
+#   The detector was never wrong. Its zero-false-positive contract was being
+#   satisfied by a page that is not the listing. "No drift found" and "I never
+#   saw the listing" produced the identical result, and only one of them is good
+#   news.
+#
+# ★ MEASURED 2026-09-05, probing all 15 SEED_REGISTRIES hosts as the loop does:
+#       cursor.directory   HTTP 429 + Vercel checkpoint   (29,405 bytes)
+#       pulsemcp.com       HTTP 403 + challenge
+#       hub.continue.dev   connection error
+#       dxt.so             connection error
+#       www.klavis.ai      HTTP 404
+#       smith.land         HTTP 200 with a ZERO-BYTE body
+#   Five of fifteen unreadable, six counting the empty 200 — every one of them
+#   silently reporting "clean" for as long as this lane has run. The
+#   cursor.directory drift (33 tools against a canon of 83) is simply the one a
+#   human happened to open.
+#
+# ★ EMPTY-BUT-200 IS THE WORST CASE and is why this gate does not merely check
+#   the status code: smith.land answers 200 with nothing, which reads as a clean
+#   listing under any status-only rule.
+#
+# An unreachable listing is exactly a HUMAN-GATED case — someone has to open it
+# in a browser — so it routes to lane (d), the consolidated issue that already
+# carries paste-ready copy. It is NOT counted as drift and NOT counted as clean.
+_CHALLENGE_MARKERS = (
+    "vercel security checkpoint",
+    "just a moment",                 # Cloudflare
+    "attention required",            # Cloudflare block page
+    "checking your browser",
+    "cf-browser-verification",
+    "enable javascript and cookies to continue",
+    "verifying you are human",
+)
+# A listing page below this is not a listing page. The real ones measured
+# 11KB-1.3MB; the smallest genuine listing (mcphive) was 11,189 bytes.
+MIN_LISTING_BYTES = 500
+
+
+def classify_reachability(body, status) -> str | None:
+    """None when the page can be judged; otherwise a short reason string.
+
+    Deliberately ordered cheapest-first, and deliberately does NOT trust the
+    status code alone — see the note above about a 200 with an empty body."""
+    if body is None:
+        return "no response"
+    if not str(body).strip():
+        return "empty body"
+    if status is not None:
+        try:
+            code = int(status)
+        except (TypeError, ValueError):
+            code = None
+        if code is not None and code != 200:
+            low = str(body).lower()
+            if any(mk in low for mk in _CHALLENGE_MARKERS):
+                return f"HTTP {code} + bot challenge"
+            return f"HTTP {code}"
+    low = str(body).lower()
+    if any(mk in low for mk in _CHALLENGE_MARKERS):
+        # A challenge served AT 200 is the same blindness, without the tell.
+        return "bot challenge page"
+    if len(str(body)) < MIN_LISTING_BYTES:
+        return f"body too small ({len(str(body))}b)"
+    return None
+
+
 def detect_number_drift(page_text: str, canon: dict,
                         scope_to_dchub: bool = True) -> list[dict]:
     """Pure detector. Returns [{kind, found, expected, context}, …].
@@ -664,17 +740,31 @@ def _paste_ready_block(registry_name: str, listing: dict, canon: dict,
     except Exception as _cbe:
         logger.info("[white-glove] claim-breaker unavailable (%s) — keeping copy",
                     _cbe)
+    # ★ An UNREACHABLE listing must not be reported as measured drift. We did
+    #   not read it, so we know nothing about its copy — saying "shows X for
+    #   unreachable" would be the same false confidence this gate exists to
+    #   remove. Split the two so a human reading the issue can tell "this is
+    #   wrong" from "nobody could look".
+    _unreach = [d for d in drifts if d.get("kind") == "unreachable"]
+    _real = [d for d in drifts if d.get("kind") != "unreachable"]
     wrong = "; ".join(
         f"shows **{d['found']}** for {d['kind']} (canon: {d['expected']})"
-        for d in drifts[:6])
+        for d in _real[:6])
     lines = [
         f"### {registry_name}",
         f"- Listing: {listing.get('listing_url')}",
     ]
+    if _unreach:
+        lines.append(
+            "- ⚠️ **COULD NOT READ THIS LISTING** (%s) — its copy is UNVERIFIED, "
+            "neither known-clean nor known-drifted. Open it in a real browser "
+            "and compare against the block below." %
+            "; ".join(str(d.get("found")) for d in _unreach[:3]))
     if listing.get("submit_url"):
         lines.append(f"- Edit / submit: {listing.get('submit_url')}")
+    if wrong:
+        lines.append(f"- Drift: {wrong}")
     lines += [
-        f"- Drift: {wrong}",
         "",
         "**Paste-ready corrected description:**",
         "```",
@@ -955,6 +1045,8 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
 
     listings_by_name = {r["registry_name"]: r for r in SEED_REGISTRIES}
     drifts_by_registry: dict[str, list] = {}
+    unreachable_by_registry: dict[str, str] = {}
+    summary.setdefault("unreachable", [])
 
     for reg in SEED_REGISTRIES[:MAX_LISTING_FETCHES]:
         name = reg["registry_name"]
@@ -967,8 +1059,17 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
         except Exception as e:
             body, status = None, None
             logger.info("[white-glove] fetch %s failed: %s", name, e)
-        if not body:
+        # ★ REACHABILITY GATE — must run BEFORE the detector. `status` was
+        #   fetched and discarded here, so a 429 challenge page counted as a
+        #   clean listing. See classify_reachability() for the measurement.
+        unreachable = classify_reachability(body, status)
+        if unreachable:
             summary["fetch_failed"] += 1
+            unreachable_by_registry[name] = unreachable
+            summary["unreachable"].append({"registry": name, "url": url,
+                                           "reason": unreachable})
+            logger.info("[white-glove] %s UNREACHABLE (%s) — not clean",
+                        name, unreachable)
             continue
         if name == "mcp_official_registry":
             body = _official_registry_latest_only(body)
@@ -1028,6 +1129,20 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
     # ── (d) human-gated: ONE finding + ONE issue ─────────────────────
     human_drifted = {n: d for n, d in drifts_by_registry.items()
                      if n not in AUTO_PATH_REGISTRIES or n in escalated}
+    # ★ An unreachable listing is a HUMAN case by definition — no automated
+    #   path can read it, so it joins lane (d) rather than vanishing into a
+    #   counter. Synthesised as a finding so the existing issue + brain-finding
+    #   machinery carries it, including the paste-ready copy a human will need
+    #   once they open the page by hand. AUTO_PATH membership is irrelevant
+    #   here: an auto-submitter cannot fix a page we cannot even read.
+    for _n, _why in unreachable_by_registry.items():
+        human_drifted.setdefault(_n, []).append({
+            "kind": "unreachable",
+            "found": _why,
+            "expected": "a readable listing page",
+            "context": "the loop could not read this listing, so its copy is "
+                       "UNVERIFIED — it is neither known-clean nor known-drifted",
+        })
     summary["human_gated"] = sorted(human_drifted.keys())
     issue_result = {}
     if human_drifted:

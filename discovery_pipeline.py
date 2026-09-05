@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from db_utils import get_db
 from routes._swallowed_writes import note_swallowed_write
+from utc_clock import utc_iso_z
 
 DB_PATH = 'dc_nexus.db'
 
@@ -739,8 +740,8 @@ def auto_create_facility(extracted):
             'news_pipeline',
             extracted.get('source_url'),
             fac_id,
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat(),
+            utc_iso_z(),
+            utc_iso_z(),
         ))
 
         c.execute("""
@@ -978,8 +979,8 @@ def approve_pending(pending_id):
             'news_pipeline',
             pending.get('source_url'),
             fac_id,
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat(),
+            utc_iso_z(),
+            utc_iso_z(),
         ))
 
         c.execute("""
@@ -987,7 +988,7 @@ def approve_pending(pending_id):
             SET reviewed = true, review_action = 'approved', reviewed_at = %s,
                 matched_facility_id = %s
             WHERE id = %s
-        """, (datetime.utcnow().isoformat(), fac_id, pending_id))
+        """, (utc_iso_z(), fac_id, pending_id))
 
         c.execute("""
             UPDATE facility_sources SET facility_id = %s
@@ -1009,7 +1010,7 @@ def reject_pending(pending_id, notes=None):
         UPDATE pending_facilities
         SET reviewed = true, review_action = 'rejected', reviewed_at = %s, notes = %s
         WHERE id = %s
-    """, (datetime.utcnow().isoformat(), notes, pending_id))
+    """, (utc_iso_z(), notes, pending_id))
     conn.commit()
     conn.close()
     return {'success': True}
@@ -1051,7 +1052,7 @@ def merge_pending(pending_id, facility_id):
 
     if updates:
         updates.append("last_updated = %s")
-        params.append(datetime.utcnow().isoformat())
+        params.append(utc_iso_z())
         params.append(facility_id)
         c.execute(f"UPDATE facilities SET {', '.join(updates)} WHERE id = %s", params)
 
@@ -1060,7 +1061,7 @@ def merge_pending(pending_id, facility_id):
         SET reviewed = true, review_action = 'merged', reviewed_at = %s,
             matched_facility_id = %s
         WHERE id = %s
-    """, (datetime.utcnow().isoformat(), facility_id, pending_id))
+    """, (utc_iso_z(), facility_id, pending_id))
 
     c.execute("""
         UPDATE facility_sources SET facility_id = %s

@@ -308,14 +308,17 @@ def collector_coverage() -> dict:
             "/api/ai/track-request, which does not apply is_ai_endpoint(). "
             "This is the first collector that can see a content-page crawl"),
         "consequence": (
-            "organic content crawling was NOT INSTRUMENTED until 2026-08-29 "
-            "and has not yet recorded its first row. The organic bucket still "
-            "reads null / not_instrumented, never 0 — but the reason changed: "
-            "it is now 'a collector exists and has not yet observed one', not "
-            "'nothing can ever see this'. A collector is not a measurement; "
-            "the bucket becomes a number when a real crawler next reads a "
-            "content page. Until then, treat the crawler channel as a "
-            "metadata-and-API measurement."),
+            "organic content crawling was NOT INSTRUMENTED until 2026-08-29, "
+            "and the bucket IS NOW A NUMBER: the edge beacon has recorded "
+            "content-page crawls continuously since. ★ Two consequences that "
+            "outlive the fix. (1) There is NO PRE-2026-08-29 BASELINE for this "
+            "bucket — any comparison spanning that date measures the instrument "
+            "turning on, not the crawler. The published reach series showed "
+            "+1,419.8% WoW on the first full week (34,189 vs 2,250) and that "
+            "number is an artefact, not growth. (2) A ZERO over a window "
+            "reaching back before 2026-08-29 still means unknown, not none; "
+            "the route publishes collector_started / partial_window on the "
+            "bucket so a ?days=90 read cannot be mistaken for a ?days=7 one."),
     }
 
 

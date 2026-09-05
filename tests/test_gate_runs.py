@@ -104,7 +104,10 @@ def test_registry_is_job_granular_and_declares_blocking():
     assert len(pm) >= 5
     assert pm["pre-merge:smoke-probe"][2] is False
     assert pm["pre-merge:unit-tests"][2] is True
-    assert GATE_REGISTRY["check-route-tables:check"][2] is False
+    # ★ 2026-09-05: flipped to blocking when the gate became a ratchet. It was
+    # False because job-level continue-on-error made it unable to fail a PR —
+    # the registry recorded that honestly. The continue-on-error is gone.
+    assert GATE_REGISTRY["check-route-tables:check"][2] is True
 
 
 def test_verdict_and_selftest_vocabularies_are_closed():

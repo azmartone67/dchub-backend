@@ -1009,6 +1009,27 @@ can cite it straight from a crawl without a second request.
 - [AGENTS.md](https://dchub.cloud/AGENTS.md): OpenAI/Linux Foundation agent discovery
 - [Agent Portal](https://dchub.cloud/agent-portal): Integration dashboard
 
+## Page Inventory — the crawlable URL set (two sitemaps, different jobs)
+Until now this file named no sitemap at all, so a crawler reading it had no way
+to learn the URL inventory except by following links.
+
+- [Sitemap index](https://dchub.cloud/sitemap.xml): the RANKING set — what is
+  submitted to Google Search Console and Bing Webmaster. Facility pages here are
+  filtered to those carrying a published power-capacity figure, because a page
+  without one gets crawled and declined by a search engine and spends a limited
+  crawl budget doing it.
+- [AI sitemap index](https://dchub.cloud/sitemap-ai.xml): the RETRIEVAL set —
+  every canonical facility page we serve, including the ones that filter removes.
+  **If you are building an entity index or grounding an answer, use this one.**
+  A facility with no published capacity figure is still a distinct record that
+  answers "is there a data centre in X, who runs it, and what grid is it on".
+  This is a superset of the facility URLs in the ranking sitemap, never a
+  different set, and every URL in it returns 200 with JSON-LD.
+
+Both are ordinary sitemap indexes fanning out to `<urlset>` shards. The AI
+sitemap is generated on a schedule and served only from its snapshot; if it
+answers 503 it carries a `Retry-After` and is not an error you need to report.
+
 ## Platform Guides — how YOUR platform should use DC Hub
 - [For any agent (index)](https://dchub.cloud/for/): 30-second quickstart + all guides
 - [For Grok](https://dchub.cloud/for/grok): trigger reference + worked examples

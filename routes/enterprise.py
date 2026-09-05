@@ -38,10 +38,13 @@ from __future__ import annotations
 import os
 import re
 import json
+import logging
 import time
 from datetime import datetime, timezone
 from html import escape as _h
 from flask import Blueprint, Response, request, jsonify
+
+logger = logging.getLogger(__name__)
 
 enterprise_bp = Blueprint("enterprise", __name__)
 
@@ -62,68 +65,21 @@ def _conn():
 
 
 def _ensure_table():
+    # r-inquiry-schema-fork (2026-09-05): this used to carry its OWN
+    # `CREATE TABLE IF NOT EXISTS enterprise_inquiries` with org_name/
+    # expected_volume NOT NULL and no `status` column — incompatible with
+    # routes/enterprise_inquiry.py's definition of the same table. IF NOT
+    # EXISTS made the loser a silent no-op, so one of the two lead-capture
+    # endpoints has been failing to store since 2026-06-30 and which one
+    # depended on June traffic order. Both now build the same union table.
     try:
+        from util.enterprise_inquiries_schema import ensure_enterprise_inquiries
         with _conn() as c, c.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS enterprise_inquiries (
-                    id BIGSERIAL PRIMARY KEY,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    org_name TEXT NOT NULL,
-                    email TEXT NOT NULL,
-                    use_case TEXT NOT NULL,
-                    expected_volume TEXT NOT NULL,
-                    source_ip TEXT,
-                    user_agent TEXT,
-                    relay_status TEXT
-                )
-            """)
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS enterprise_inquiries_created_idx
-                ON enterprise_inquiries (created_at DESC)
-            """)
+            ensure_enterprise_inquiries(cur)
             c.commit()
     except Exception as e:
         # surfaced by /api/v1/enterprise/contact's catch-all
-        raise RuntimeError(f"enterprise_inquiries table init failed: {e}")
-
-
-def _rate_limited(ip: str) -> bool:
-    now = time.time()
-    window = _RATE_BUCKET.setdefault(ip, [])
-    # drop old entries
-    window[:] = [t for t in window if now - t < _RATE_WINDOW_S]
-    if len(window) >= _RATE_MAX:
-        return True
-    window.append(now)
-    return False
-
-
-def _relay_to_webhook(payload: dict) -> str:
-    """Optional Slack-compatible webhook relay. Returns a short status."""
-    if not SALES_WEBHOOK:
-        return "no_webhook_configured"
-    try:
-        import urllib.request
-        body = json.dumps({
-            "text": f"New DC Hub enterprise inquiry from *{payload['org_name']}* <{payload['email']}>",
-            "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": "New enterprise inquiry"}},
-                {"type": "section", "fields": [
-                    {"type": "mrkdwn", "text": f"*Org:* {payload['org_name']}"},
-                    {"type": "mrkdwn", "text": f"*Email:* {payload['email']}"},
-                    {"type": "mrkdwn", "text": f"*Volume:* {payload['expected_volume']}/mo"},
-                    {"type": "mrkdwn", "text": f"*IP:* {payload.get('source_ip','?')}"},
-                ]},
-                {"type": "section", "text": {"type": "mrkdwn",
-                  "text": f"*Use case:*\n{payload['use_case']}"}},
-            ],
-        }).encode("utf-8")
-        req = urllib.request.Request(SALES_WEBHOOK, data=body,
-                                     headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=5).read()
-        return "webhook_ok"
-    except Exception as e:
-        return f"webhook_failed: {str(e)[:80]}"
+        logger.warning(f"[enterprise] schema init failed: {e}")
 
 
 @enterprise_bp.route("/api/v1/enterprise/contact", methods=["POST"])
