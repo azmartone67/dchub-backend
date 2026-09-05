@@ -167,8 +167,16 @@ def test_glama_seed_points_at_a_real_listing_not_the_search_redirect():
     'real' measurement."""
     src = _read(os.path.join("routes", "mcp_presence_crawler.py"))
     i = src.index('"registry_name": "glama"')
-    block = src[i:i + 500]
-    url = re.search(r'"listing_url":\s*"([^"]+)"', block).group(1)
+    # Bounded by the NEXT seed entry, not by a character count. A fixed window
+    # (this was 500) silently stops finding the URL the moment the entry's
+    # comment grows, and then fails with an AttributeError that says nothing
+    # about the thing under test — which is what happened when the 2026-09-05
+    # correction documented why the two connectors had been inverted.
+    nxt = src.find('"registry_name":', i + 1)
+    block = src[i:nxt if nxt != -1 else len(src)]
+    m = re.search(r'"listing_url":\s*"([^"]+)"', block)
+    assert m, "the glama seed entry carries no listing_url"
+    url = m.group(1)
     assert url.rstrip("/") != "https://glama.ai/mcp/servers/dchub"
     assert "dchub" in url.lower() or "dc-hub" in url.lower()
 
