@@ -1641,6 +1641,23 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 23 and now.minute < 8
                  and os.environ.get("SLUG_FREEZE_CRON_DISABLE") != "1"),
+
+    # ── Land & Power map layer probe (2026-09-04) ─────────────────────
+    # The map is the flagship surface and it went dark without the loop
+    # noticing: global-hazards served 503 worldwide while the predecessor
+    # detector (check_land_power_map_health) sat excluded from the sweep with
+    # NO caller, NO persistence, and a status ladder that read 404 as healthy.
+    # This entry is the scheduling half of the fix — see routes/map_layer_probe.py.
+    #
+    # Window is minutes 0-5, i.e. ~2 fires/hour given ~451 heartbeats/day. It is
+    # deliberately WIDE rather than a single minute: GitHub cron drops most of
+    # its fires under load (measured 2026-08-02: one fire in a whole hour), so a
+    # narrow window is how a job silently stops running.
+    # Kill: MAP_LAYER_PROBE_DISABLE=1 (the handler then reports skipped, NOT ok).
+    ("map_layer_probe",
+     f"{BASE}/api/v1/jobs/map-layer-probe",
+     "POST",
+     lambda now: now.minute < 6),
 ]
 
 # r-poolfix (2026-07-04): the DB/LLM-heavy ticks. When a herd of these comes

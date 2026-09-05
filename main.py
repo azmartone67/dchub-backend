@@ -40370,6 +40370,18 @@ try:
 except Exception as _ch_e:
     print(f"[main] cron_heartbeat_bp register failed: {_ch_e}", flush=True)
 
+# 2026-09-04: Land & Power map layer probe. The predecessor detector
+# (brain_security_detectors.check_land_power_map_health) was excluded from the
+# sweep, had no caller, never persisted, and its status ladder let 404/402/3xx
+# through as healthy — so the map's hazard layer served 503 worldwide and the
+# loop said nothing. See routes/map_layer_probe.py for the full post-mortem.
+try:
+    from routes.map_layer_probe import map_layer_probe_bp
+    app.register_blueprint(map_layer_probe_bp)
+    print("[main] map_layer_probe_bp registered: /api/v1/jobs/map-layer-probe", flush=True)
+except Exception as _mlp_e:
+    print(f"[main] map_layer_probe_bp register failed: {_mlp_e}", flush=True)
+
 # 2026-06-08: proactive Railway-failover cache warmer. Re-fetches the must-survive
 # endpoints through the CF edge worker every ~20 min so DCHUB_CACHE always holds
 # fresh last-known-good copies for the read-failover (vs only what organic traffic
