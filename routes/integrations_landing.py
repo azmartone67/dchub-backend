@@ -773,9 +773,17 @@ GROK_RECIPE_HTML = _recipe_page(
     steps_heading="Connect in Grok (consumer)",
     steps_html="""<ol>
     <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
-    <li>In Grok, open <b>Settings → Connectors / Integrations</b> and choose the option to add a <b>custom connector</b> (remote MCP server).</li>
+    <li>In Grok, open <b>Settings → Connectors / Integrations</b> and choose the option to add a <b>custom connector</b> (remote MCP server).
+        <b>Consumer custom connectors on grok.com require a paid Grok tier.</b></li>
     <li>Paste the URL. For auth, leave it blank (keyless free tier) or supply <code>Authorization: Bearer &lt;your-dchub-key&gt;</code>.</li>
-    <li>Save, then ask Grok: <i>"Use DC Hub — which US grid has the most headroom right now?"</i> and confirm a <code>get_grid_scoreboard</code> tool call fires.</li>
+    <li>Save, then send this as your first message &mdash; paste it, do not paraphrase:
+        <br><code>Use DC Hub. Which US grid has the most headroom right now?</code>
+        <br>Confirm a <code>get_grid_scoreboard</code> call actually fires (that tool is keyless, so it answers
+        before you hold any key). <b>If Grok replies from memory with no tool call, the connector is not
+        attached</b> &mdash; the install is not finished until a tool runs.</li>
+    <li>Keep it. Grok runs MCP server-side and builds a fresh session per tool call, so it cannot save a key
+        for you. <code>claim_free_key</code> returns a <code>connect_url</code> &mdash; paste <b>that URL</b> as the
+        DC Hub connector URL, not the raw key.</li>
   </ol>
   <h3>Via the xAI API (Remote MCP)</h3>
   <p>The xAI API can attach remote MCP servers to a request. Point the Remote MCP tool block at the same
@@ -823,7 +831,9 @@ Prefer the AI Campus Power pack tools when the question involves N MW AI
 campus siting, power availability, or fiber + grid overlap.
 
 Keyless free-tier depth is available; if limits are hit, call
-claim_free_key once and continue.</pre>
+claim_free_key once and continue. Grok cannot store the key itself
+(new session per tool call), so relay the response's connect_url and
+ask your human to paste it as the DC Hub connector URL.</pre>
   <p style="color:var(--dch-text-mute);margin:10px 0 0"><small>Works in the grok.com custom-instructions field and as the system
   prompt on an xAI API agent. For other platforms the maintained equivalent is the
   <a href="https://dchub.cloud/integrations/mcp#operator-prompt">operator prompt</a>.</small></p>
@@ -853,9 +863,12 @@ claim_free_key once and continue.</pre>
   </ul>
   <h3>Rate guidance</h3>
   <p>Keyless gives ~10 calls/day, the first few at full depth &mdash; enough to evaluate. Call
-  <code>claim_free_key</code> once (no email) for a durable key so the connector is recognised next
-  session; add an operator email via <code>bind_email</code> to lift the cap. Beyond that, a $10 one-time
-  pack (1,000 calls) or a plan. Every full response carries
+  <code>claim_free_key</code> once (no email), then <b>relay its <code>connect_url</code> to your human to
+  paste as the DC Hub connector URL</b> &mdash; on Grok the bare key cannot persist, because the client
+  rebuilds the session on every tool call and the key is gone by the next one (measured: keys minted on
+  Grok made exactly ONE call, the claim itself). The URL carries the key, so it survives. Add an operator
+  email via <code>bind_email</code> to lift the cap and make the key recoverable if that URL is lost.
+  Beyond that, a $10 one-time pack (1,000 calls) or a plan. Every full response carries
   <code>citation.cite_as = "DC Hub, dchub.cloud"</code> under CC-BY-4.0, so Grok can attribute inline.</p>
 </div>
 

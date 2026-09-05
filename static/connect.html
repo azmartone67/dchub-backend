@@ -270,7 +270,7 @@
                 </a>
                 <a class="picker-card" href="#grok">
                     <span class="picker-name">Grok</span>
-                    <span class="picker-how">Paste one URL at grok.com/connectors &rarr; New &rarr; Custom</span>
+                    <span class="picker-how">Paste one URL at grok.com/connectors &rarr; New &rarr; Custom (paid Grok tier)</span>
                     <span class="picker-badge">~1 min</span>
                 </a>
                 <a class="picker-card" href="#copilot-studio">
@@ -615,12 +615,16 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
 
         <div class="platform-card">
             <h3>Grok (xAI)</h3>
-            <p style="color: #8899aa; margin-bottom: 12px;">Connect Grok to DC Hub's live tools via MCP &mdash; no code, about 30 seconds. Grok has no pre-built share link, so you add DC Hub once as a custom connector:</p>
+            <p style="color: #8899aa; margin-bottom: 12px;">Grok has no pre-built share link &mdash; you add DC Hub once as a custom connector. <strong style="color: #cdd6e2;">Consumer custom connectors on grok.com require a paid Grok tier.</strong> The install is not done when the URL is pasted; it is done when a tool call fires, so step&nbsp;3 is the test.</p>
             <p style="color: #cdd6e2; margin: 0 0 6px;"><strong>1.</strong> Copy the DC Hub MCP endpoint:</p>
             <pre><code>https://dchub.cloud/mcp</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
-            <p style="color: #cdd6e2; margin: 12px 0 6px;"><strong>2.</strong> Open Grok Connectors, click <strong>New Connector &rarr; Custom</strong>, name it <code>DC Hub</code>, and paste the URL:</p>
+            <p style="color: #cdd6e2; margin: 12px 0 6px;"><strong>2.</strong> Open Grok Connectors, click <strong>New Connector &rarr; Custom</strong>, name it <code>DC Hub</code>, paste the URL, and leave auth <strong>blank</strong> (keyless free tier) or set <code>Authorization: Bearer &lt;your-dchub-key&gt;</code>.</p>
             <p style="margin: 8px 0 14px;"><a href="https://grok.com/connectors" target="_blank" rel="noopener" style="color: #00d4ff; font-weight: 700; text-decoration: none;">&rarr; Open Grok Connectors &#8599;</a></p>
-            <p style="margin: 12px 0 0; color: #8899aa; font-size: 0.9rem;">Then ask Grok anything about data-center power, grids, fiber, land &amp; power, markets or M&amp;A &mdash; it queries DC Hub live and cites dchub.cloud. Prefer code? <a href="/integrations/grok/dchub-grok-integration.py" style="color: #00d4ff; text-decoration: none;">Download the Python integration script</a>.</p>
+            <p style="color: #cdd6e2; margin: 12px 0 6px;"><strong>3.</strong> Send this as your first message &mdash; paste it, do not paraphrase:</p>
+            <pre><code>Use DC Hub. Which US grid has the most headroom right now?</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+            <p style="margin: 0; color: #8899aa; font-size: 0.9rem;">Confirm a <code>get_grid_scoreboard</code> call actually fires &mdash; that tool is keyless, so it answers before you hold any key. <strong style="color: #cdd6e2;">If Grok replies from memory with no tool call, the connector is not attached</strong> &mdash; go back to step&nbsp;2.</p>
+            <p style="color: #cdd6e2; margin: 14px 0 6px;"><strong>4.</strong> Stay connected. Grok runs MCP server-side and builds a fresh session for every tool call, so it cannot save a key for you &mdash; measured on Grok, minted keys made exactly <em>one</em> call (the claim) and were never presented again. <code>claim_free_key</code> returns a <code>connect_url</code>; paste <strong>that URL</strong> as the DC Hub connector URL, not the raw key. Without it you restart anonymous every session.</p>
+            <p style="margin: 12px 0 0; color: #8899aa; font-size: 0.9rem;">Then ask about power, grids, fiber, land &amp; power, markets or M&amp;A &mdash; Grok queries DC Hub live and cites dchub.cloud. Deeper: <a href="/install/grok" style="color: #00d4ff; text-decoration: none;">/install/grok</a> mints the keyed connector URL for you; <a href="/integrations/grok" style="color: #00d4ff; text-decoration: none;">/integrations/grok</a> covers the xAI API Remote MCP block and a starter toolkit. Prefer code? <a href="/integrations/grok/dchub-grok-integration.py" style="color: #00d4ff; text-decoration: none;">Download the Python integration script</a>.</p>
         </div>
 
         <h2>GitHub</h2>
