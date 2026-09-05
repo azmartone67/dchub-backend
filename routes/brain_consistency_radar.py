@@ -11986,15 +11986,8 @@ def scan_all() -> list[dict]:
 
     Phase RRR-brain-parallel (2026-05-18): parallelized via ThreadPool
     after observability showed scan was taking 76.9s serial. Detectors
-    are collected first, then run concurrently.
-
-    ★ 2026-09-05 — this docstring used to promise a "per-detector 20s
-      timeout". There has never been one. `_run_one` calls `fn()` with no
-      bound, and `fut.result(timeout=5)` caps only the COLLECTION of an
-      already-finished future, never the detector's own execution. A
-      detector that hangs hangs forever. Two comments describing a cap
-      that does not exist is worse than no comment: it is the reason the
-      real wall-time overrun went unexamined for months."""
+    are collected first, then run concurrently with per-detector 20s
+    timeout — wall time becomes max(detector) instead of sum(detector)."""
     out: list[dict] = []
     detectors: list = []
     for fn in (# r-preempt (2026-06-16): anti-fabrication PRE-EMPTION detectors —
@@ -12583,29 +12576,14 @@ def scan_all() -> list[dict]:
     # watchdog. Better to return PARTIAL findings in 25s than complete
     # findings in 103s. Detectors still running at the deadline are
     # abandoned (their thread finishes in the background, result
-    # discarded).
-    #
-    # ★★ 2026-09-05 — THE BUDGET BOUNDED NOTHING. Exiting this `with` block
-    #   calls ThreadPoolExecutor.__exit__ -> shutdown(wait=True,
-    #   cancel_futures=False), so every QUEUED detector still ran to
-    #   completion after the deadline and only its RESULT was thrown away.
-    #   With ~140 detectors and 8 workers most are queued, so the scan paid
-    #   for all of them and published a fraction. Measured wall times against
-    #   a "HARD 25s budget": 36.0s, 40.1s, 44.1s, 54.5s, 59.8s, 62.8s — every
-    #   one past it, while a gunicorn worker was held the whole time.
-    #   Now: cancel what has not started and stop waiting on what has, which
-    #   is what the comment above always claimed happened. The idiom is
-    #   already used elsewhere in this file (_slug_probe, ~line 2922).
-    #   NOTE the honest limit — a RUNNING detector cannot be preempted in
-    #   Python, so up to max_workers of them still finish in the background.
-    #   The budget now bounds when scan_all RETURNS, not when work stops.
+    # discarded). Each detector also keeps its own 20s per-future cap.
     _SCAN_BUDGET_S = 25
     _deadline = _scan_time.time() + _SCAN_BUDGET_S
     _completed = 0
     _abandoned = 0
     _completed_fns: list = []      # detectors that actually REPORTED this sweep
-    ex = _cf.ThreadPoolExecutor(max_workers=8, thread_name_prefix="brain-scan")
-    try:
+    with _cf.ThreadPoolExecutor(max_workers=8,
+                                 thread_name_prefix="brain-scan") as ex:
         futs = {ex.submit(_run_one, fn): fn for fn in detectors}
         try:
             for fut in _cf.as_completed(futs, timeout=_SCAN_BUDGET_S):
@@ -12655,14 +12633,7 @@ def scan_all() -> list[dict]:
         # Tally abandoned detectors (deadline hit mid-iteration or budget
         # raised). Surface as a single finding so the operator knows the
         # scan was partial — never a silent truncation.
-        # Measure BEFORE cancelling — a cancelled future reports done().
         not_done = [futs[f].__name__ for f in futs if not f.done()]
-        # Cancel what never started. Future.cancel() returns True only for a
-        # future still queued, so this also SPLITS the abandoned set into the
-        # two cases, which the old single "still running" count conflated.
-        cancelled = [futs[f].__name__ for f in futs if f.cancel()]
-        _cset = set(cancelled)
-        still_running = [n for n in not_done if n not in _cset]
         if not_done:
             out.append({
                 "issue":  "consistency_radar_scan_partial",
@@ -12670,12 +12641,10 @@ def scan_all() -> list[dict]:
                 "count_kind": "item_count",  # magnitude, not a recurrence tally
                 "count":  len(not_done),
                 "detail": (f"Scan hit {_SCAN_BUDGET_S}s budget with "
-                           f"{len(not_done)} detectors unreported "
-                           f"(completed {_completed}): {len(cancelled)} "
-                           f"cancelled before starting, {len(still_running)} "
-                           f"still running and left to finish in the "
-                           f"background. Slowest are likely HTTP self-call "
-                           f"probes. Abandoned: " + ", ".join(not_done[:8])),
+                           f"{len(not_done)} detectors still running "
+                           f"(completed {_completed}). Slowest are "
+                           f"likely HTTP self-call probes. Abandoned: "
+                           + ", ".join(not_done[:8])),
             })
         # ★ Record WHAT THIS SWEEP ACTUALLY COVERED, for resolve-on-absence.
         #   Set inside the `with` (before shutdown) so it describes the same
@@ -12683,11 +12652,6 @@ def scan_all() -> list[dict]:
         _LAST_SWEEP["completed_fns"] = list(_completed_fns)
         _LAST_SWEEP["abandoned_fns"] = list(not_done)
         _LAST_SWEEP["at"] = _scan_time.time()
-    finally:
-        # wait=False: return at the budget instead of blocking on the
-        # detectors still in flight. cancel_futures=True: everything still
-        # queued is dropped rather than run-then-discarded.
-        ex.shutdown(wait=False, cancel_futures=True)
     return out
 
 
