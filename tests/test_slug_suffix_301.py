@@ -136,11 +136,36 @@ class TestPeriodConsolidationStillWorks:
         assert r.status_code == 301
         assert r.headers["Location"].endswith(f"{prefix}/st-louis")
 
-    # The two surfaces canonicalise in OPPOSITE directions — /markets folds
-    # ashburn into northern-virginia, /dcpi folds northern-virginia into
-    # ashburn — so each is checked with its own canonical slug.
-    @pytest.mark.parametrize("path", ["/markets/northern-virginia",
-                                      "/dcpi/ashburn"])
+    # r-market-canon-split (2026-09-05): the two surfaces used to canonicalise
+    # in OPPOSITE directions — /markets folded ashburn into northern-virginia
+    # while /dcpi folded northern-virginia into ashburn — and this test was
+    # written to accommodate that by giving each surface "its own canonical
+    # slug". There is one canon now (util.market_aliases, per PR #3841), so
+    # both surfaces are checked with the same slug, and the pair is checked
+    # BOTH ways round: the alias must 301 on both, the canonical on neither.
+    @pytest.mark.parametrize("path", ["/markets/ashburn", "/dcpi/ashburn"])
     def test_a_canonical_slug_is_not_redirected(self, client, path):
         r = client.get(path)
         assert r.status_code != 301, "a canonical slug must render, not redirect"
+
+    @pytest.mark.parametrize("alias,canon", [("northern-virginia", "ashburn"),
+                                             ("silicon-valley", "santa-clara"),
+                                             ("portland", "portland-or")])
+    def test_the_alias_side_of_each_split_pair_redirects(self, client,
+                                                         alias, canon):
+        """The half the old parametrisation could not express.
+
+        /markets only. The /dcpi arm of this fixture cannot answer it: with no
+        DATABASE_URL, routes/dcpi falls back to a 200 shell before it reaches
+        any canonicalisation (measured in-process 2026-09-05:
+        /dcpi/northern-virginia -> 200, no Location), so a redirect assertion
+        there would be testing the fallback. /dcpi's direction is covered by
+        the canon-agreement guard in
+        tests/test_market_canonical_identity_across_surfaces.py, which drives
+        the resolver rather than the route.
+        """
+        r = client.get(f"/markets/{alias}")
+        assert r.status_code == 301, (
+            f"/markets/{alias} serves its own page — that is a second "
+            f"identity for the market at /markets/{canon}")
+        assert r.headers["Location"].endswith(f"/markets/{canon}")

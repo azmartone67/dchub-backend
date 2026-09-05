@@ -28,6 +28,8 @@ builds MARKETS at import time, which needs a DB — house rule).
 """
 
 import ast
+
+from tests import _market_canon_consts as _canon_consts
 import pathlib
 import re
 
@@ -121,8 +123,9 @@ def test_aurora_pages_do_not_301():
     """Both markets get their own indexable /markets URL. A redirect here
     would collapse two distinct metros (Chicago-metro and Denver-metro) onto
     one page — the exact conflation this fix removes."""
-    redirects = _assigned_literal(_tree("routes/market_deep_dive.py"),
-                                  "MARKETS_CANONICAL_REDIRECT")
+    # r-market-canon-split (2026-09-05): MARKETS_CANONICAL_REDIRECT is derived
+    # from util.market_aliases now, so there is no literal to eval.
+    redirects = _canon_consts.canonical_redirect()
     assert "aurora" not in redirects
     assert "aurora-co" not in redirects
 

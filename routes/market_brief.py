@@ -43,6 +43,9 @@ from flask import (Blueprint, Response, jsonify, render_template, request,
 from utils.cache import BoundedCache
 from routes._swallowed_writes import note_swallowed_write
 
+from util.market_aliases import DCPI_METRO_ALIASES, canonical_slug
+from util.dcpi_score_row import PUBLISHED_ONLY
+
 logger = logging.getLogger(__name__)
 
 market_brief_bp = Blueprint("market_brief", __name__)
@@ -81,7 +84,14 @@ _BRIEF_CACHE = BoundedCache(max_size=512, ttl=600)
 #   charlotte            → market_slug=charlotte (NC)
 #   denver               → market_slug=denver (CO)
 #   madison              → market_slug=madison (WI)
-SEED_MARKETS = (
+#
+# ★ r-market-canon-split (2026-09-05): canonicalised through
+# util.market_aliases. Three seeds were alias slugs — northern-virginia,
+# silicon-valley and portland — and the brief surface canonicalised the OTHER
+# WAY from /dcpi, so /markets/ashburn/brief 301'd to
+# /markets/northern-virginia/brief while /dcpi/northern-virginia 301'd to
+# /dcpi/ashburn.
+_SEED_MARKETS_RAW = (
     # Wave 1 (2026-06-06)
     "northern-virginia",
     "dallas",
@@ -101,25 +111,30 @@ SEED_MARKETS = (
     "madison",
 )
 
-# Alias map: alternate slug → canonical slug. Mirrors the spec's "canonicalize
-# to city slug" rule (and prevents the 6.6k/day 404 incident from
-# /markets vs /dcpi slug drift — per the market-slugs memory). The canonical
-# form for the Market Brief is the metro slug used by /markets/<slug>, so
-# `ashburn` resolves to `northern-virginia`, and `san-jose`/`santa-clara`
-# resolve to `silicon-valley`.
-_CANONICAL_SLUG: dict[str, str] = {
-    "ashburn": "northern-virginia",
-    "nova": "northern-virginia",
-    "dfw": "dallas",
-    "dallas-fort-worth": "dallas",
+SEED_MARKETS = tuple(dict.fromkeys(
+    canonical_slug(_s) or _s for _s in _SEED_MARKETS_RAW))
+
+# Alias map: alternate slug → canonical slug. Prevents the 6.6k/day 404
+# incident from /markets vs /dcpi slug drift (per the market-slugs memory).
+#
+# ★ THE CANONICAL FORM IS NOW THE DCPI SLUG, NOT THE METRO SLUG
+# (r-market-canon-split, 2026-09-05). This map used to canonicalise
+# `ashburn` → `northern-virginia` and `santa-clara` → `silicon-valley`, i.e.
+# the exact OPPOSITE of util.market_aliases, which /dcpi/<slug>,
+# /api/v1/dcpi/scores/<slug> and PR #3841's handle_poe_query all resolve
+# through. Two surfaces, two canons, and each told a crawler the other did not
+# exist.
+#
+# The twin pairs are therefore no longer listed here at all — they come from
+# DCPI_METRO_ALIASES, which is the one place that decides them. What stays is
+# what that map does not cover: this surface's own short-hand (phx, slc, msn
+# …). Their targets are canonicalised too, so `pdx` cannot resolve to a slug
+# that redirects.
+_BRIEF_SHORTHAND: dict[str, str] = {
     "phx": "phoenix",
     "atl": "atlanta",
     "chi": "chicago",
-    # Wave 2 aliases — metro form is the canonical Market Brief URL,
-    # DCPI city slug routes via MARKET_ALIAS below.
     "san-jose": "silicon-valley",
-    "santa-clara": "silicon-valley",
-    "sv": "silicon-valley",
     "nyc": "new-york",
     "new-york-city": "new-york",
     "ny": "new-york",
@@ -128,6 +143,11 @@ _CANONICAL_SLUG: dict[str, str] = {
     "clt": "charlotte",
     "den": "denver",
     "msn": "madison",
+}
+
+_CANONICAL_SLUG: dict[str, str] = {
+    **{_k: (canonical_slug(_v) or _v) for _k, _v in _BRIEF_SHORTHAND.items()},
+    **DCPI_METRO_ALIASES,
 }
 
 # Reverse map: canonical METRO slug → CITY slug used by market_power_scores
@@ -144,17 +164,21 @@ _CANONICAL_SLUG: dict[str, str] = {
 # 2026-06-06 against the live leaderboard's 190 published markets —
 # these were the only 2 broken by _norm_slug (the rest had no
 # non-alphanumeric punctuation in their DB slug).
+# ★ r-market-canon-split (2026-09-05): the three metro↔city TWIN entries
+# (northern-virginia→ashburn, silicon-valley→santa-clara,
+# portland→portland-or) are GONE from this map. Not because they were wrong —
+# they named the right DCPI rows — but because _canonical() now resolves those
+# slugs before anything reaches here, so keeping them made this a second copy
+# of DCPI_METRO_ALIASES. The copy was live-dangerous rather than merely
+# redundant: two call sites invert this dict (`city_to_metro = {v: k for k, v
+# in MARKET_ALIAS.items()}`) to relabel a DCPI city slug back into a metro
+# slug, which would have re-minted `northern-virginia` and `silicon-valley` as
+# brief slugs downstream of the very canonicalisation that retired them.
+#
+# What is left is the ONE job DCPI_METRO_ALIASES does not do: repairing
+# _norm_slug()'s punctuation mangling. Those are not aliases between markets,
+# they are two spellings of one slug, and inverting them is harmless.
 MARKET_ALIAS: dict[str, str] = {
-    "northern-virginia": "ashburn",
-    # silicon-valley → DCPI stores as `santa-clara` (verified live
-    # 2026-06-06: GET /api/v1/dcpi/scores/silicon-valley returns
-    # _canonical_slug=santa-clara, market_slug=santa-clara).
-    "silicon-valley": "santa-clara",
-    # portland → DCPI stores Oregon as `portland-or`; the bare 'portland'
-    # row was Portland, ME (name-twin, renamed portland-me 2026-08-02,
-    # r-portland-canon). Without this the hero name-match could resolve
-    # the Maine row for the Oregon brief page.
-    "portland": "portland-or",
     # Punctuation-mangling repairs (2026-06-06 dormant-market audit):
     # both URLs work via the punctuation-stripped form, the alias steers
     # the DB lookup at the real (punctuation-bearing) DCPI slug.
@@ -466,7 +490,14 @@ def _section_hero(cur, slug: str) -> dict | None:
     # non-existent, so the query kept throwing into the bare except → None →
     # "not in coverage" for every market. Use only writer-guaranteed columns;
     # composite_score stays None (hero shows verdict + excess + constraint).
-    # MARKET_ALIAS handles the metro↔city slug trap (northern-virginia↔ashburn).
+    # r-market-canon-split (2026-09-05): the metro↔city twin trap is handled
+    # UPSTREAM by _canonical(), so `slug` is already the DCPI slug here;
+    # MARKET_ALIAS now only repairs punctuation. PUBLISHED_ONLY is what stops
+    # the four-way OR from landing on a retired twin's frozen row — the first
+    # clause matches `northern-virginia` exactly, and that row still exists
+    # (r-twin-unpublish unpublished the twins, it did not delete them).
+    # The OR group is PARENTHESISED: AND binds tighter than OR, so appending
+    # the predicate bare would have filtered only the last clause.
     # r-fix-4 (2026-06-06) — fourth match clause: punctuation-stripped
     # slug equality. _norm_slug() strips apostrophes/periods/etc. to dashes
     # before this point, but the DB slug preserves them (e.g. DCPI stores
@@ -482,13 +513,15 @@ def _section_hero(cur, slug: str) -> dict | None:
                    excess_power_score, constraint_score, computed_at, iso,
                    state, latitude, longitude
               FROM market_power_scores
-             WHERE LOWER(market_slug) = LOWER(%s)
+             WHERE (LOWER(market_slug) = LOWER(%s)
                 OR LOWER(REPLACE(market_name, ' ', '-')) = LOWER(%s)
                 OR LOWER(market_slug) = LOWER(%s)
                 OR LOWER(REGEXP_REPLACE(market_slug, '[^a-z0-9]+', '-', 'gi')) =
-                   LOWER(REGEXP_REPLACE(%s,          '[^a-z0-9]+', '-', 'gi'))
+                   LOWER(REGEXP_REPLACE(%s,          '[^a-z0-9]+', '-', 'gi')))
+               AND {published_only}
              ORDER BY computed_at DESC LIMIT 1
-        """, (slug, slug, MARKET_ALIAS.get(slug, slug), slug))
+        """.replace("{published_only}", PUBLISHED_ONLY),
+            (slug, slug, MARKET_ALIAS.get(slug, slug), slug))
         r = cur.fetchone()
     except Exception:
         return None

@@ -52,7 +52,10 @@ def _utc_iso_z() -> str:
     reconcile later, not the standard to copy.
     """
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-from flask import Blueprint, jsonify, request, Response, render_template_string
+from flask import (Blueprint, jsonify, request, Response,
+                   render_template_string, redirect)
+from util.market_aliases import canonical_slug
+from util.dcpi_score_row import PUBLISHED_ONLY
 
 logger = logging.getLogger(__name__)
 pockets_bp = Blueprint("pockets", __name__)
@@ -228,12 +231,24 @@ def _fetch_pockets(limit_hint: int = 100) -> list[dict]:
         return rows
     try:
         cur = conn.cursor()
-        cur.execute("""
+        # r-market-canon-split (2026-09-05): PUBLISHED_ONLY. This query had no
+        # publish predicate at all, so every retired alias-twin
+        # (r-twin-unpublish) was ranked here, linked from /pockets, and — via
+        # markets_hub_inventory — emitted into sitemap-markets.xml. Measured
+        # live 2026-09-05, both halves of all three split pairs were indexed
+        # as separate pockets: /pockets/ashburn AND /pockets/northern-virginia,
+        # /pockets/santa-clara AND /pockets/silicon-valley, each 200 and each
+        # self-canonical. This is exactly the read-side hole PUBLISHED_ONLY's
+        # own docstring describes: "the retired alias-twins r-twin-unpublish
+        # had correctly unpublished went on being counted, listed and averaged
+        # by every surface that queried this table without asking".
+        cur.execute(f"""
             SELECT DISTINCT ON (market_slug)
                    market_slug, market_name, iso, state, verdict,
                    excess_power_score, constraint_score,
                    time_to_power_months, computed_at
               FROM market_power_scores
+             WHERE {PUBLISHED_ONLY}
              ORDER BY market_slug, computed_at DESC
         """)
         raw = cur.fetchall()
@@ -891,12 +906,19 @@ def _fetch_pocket_detail(slug: str) -> dict | None:
     try:
         cur = conn.cursor()
         # Latest snapshot
-        cur.execute("""
+        # r-market-canon-split (2026-09-05): resolve the alias, then read only
+        # the published row — the same two lines PR #3841 put into
+        # handle_poe_query, for the same reason. Asking for the literal URL
+        # slug found the retired twin's frozen row, and this page published the
+        # result as a DCPI score: /pockets/northern-virginia read -109.6 while
+        # /pockets/ashburn — one market, one row apart — read -4.3.
+        slug = canonical_slug(slug) or slug
+        cur.execute(f"""
             SELECT market_slug, market_name, iso, state, verdict,
                    excess_power_score, constraint_score,
                    time_to_power_months, computed_at
               FROM market_power_scores
-             WHERE market_slug = %s
+             WHERE market_slug = %s AND {PUBLISHED_ONLY}
              ORDER BY computed_at DESC
              LIMIT 1
         """, (slug,))
@@ -973,13 +995,18 @@ def _fetch_pocket_detail(slug: str) -> dict | None:
         # Comparable markets — same ISO if available, ranked by closest score
         try:
             iso = out["iso"] or ""
-            cur.execute("""
+            # PUBLISHED_ONLY (r-market-canon-split): without it this offered
+            # the retired twin of the market you are already reading as its
+            # own nearest comparable — `northern-virginia` sitting one row
+            # from `ashburn`, linked as a separate market.
+            cur.execute(f"""
                 SELECT DISTINCT ON (market_slug)
                        market_slug, market_name, iso, state, verdict,
                        excess_power_score
                   FROM market_power_scores
                  WHERE market_slug != %s
                    AND (%s = '' OR iso = %s)
+                   AND {PUBLISHED_ONLY}
                  ORDER BY market_slug, computed_at DESC
             """, (slug, iso, iso))
             candidates = []
@@ -1184,7 +1211,18 @@ Methodology: composite of EIA retail rates, ISO grid headroom, DCPI verdict, tim
 def pocket_detail_page(slug):
     """Per-market HTML detail page — SEO-friendly, schema.org Article
     markup, share buttons, embedded 30d sparkline."""
-    detail = _fetch_pocket_detail(slug.strip())
+    # r-market-canon-split (2026-09-05): one indexable URL per market, the
+    # same one /dcpi and /markets use. _fetch_pocket_detail resolves the alias
+    # on its own, so without this the page would still render — correctly —
+    # under the alias URL, and the template's <link rel=canonical> is built
+    # from d.market_slug, so the alias URL would have self-declared as
+    # canonical-elsewhere while still returning 200 and sitting in the
+    # sitemap. A 301 is what actually retires the duplicate.
+    _slug = slug.strip().lower()
+    _canon = canonical_slug(_slug)
+    if _canon and _canon != _slug:
+        return redirect(f"/pockets/{_canon}", code=301)
+    detail = _fetch_pocket_detail(_slug)
     if not detail:
         # Soft 404 — render a back-to-/pockets prompt rather than the
         # ugly Flask default. 404 status code preserved.

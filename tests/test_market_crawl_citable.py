@@ -92,10 +92,11 @@ class TestDatasetJsonLd:
         assert "creativecommons.org/licenses/by/4.0" in d["license"]
         assert d["citation"] == "DC Hub, dchub.cloud"
         assert d["creator"]["name"] == "DC Hub"
-        # r-one-builder: the URL now resolves to the page that SERVES. 'ashburn'
-        # 301s to 'northern-virginia', so emitting the raw slug shipped a
-        # redirect in our own structured data.
-        assert d["url"] == "https://dchub.cloud/markets/northern-virginia"
+        # r-one-builder: the URL resolves to the page that SERVES, so our own
+        # structured data never ships a redirect.
+        # r-market-canon-split (2026-09-05): that page is /markets/ashburn now
+        # — the pair used to 301 the other way on this surface only.
+        assert d["url"] == "https://dchub.cloud/markets/ashburn"
 
     def test_a_missing_measure_is_OMITTED_never_zero_filled(self):
         d = json.loads(_market_dataset_ld("x", "X", {"facility_count": 5}, "2026-09-03"))

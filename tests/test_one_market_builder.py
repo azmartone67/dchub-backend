@@ -29,7 +29,7 @@ class TestOneBuilder:
         page = json.loads(_market_dataset_ld("ashburn", "Northern Virginia",
                                              STATS, "2026-09-03"))
         twin = market_entity("ashburn", "Northern Virginia", STATS,
-                             canonical_slug="northern-virginia",
+                             canonical_slug="ashburn",
                              as_of="2026-09-03")
         assert page == twin
 
@@ -45,9 +45,12 @@ class TestOneBuilder:
         assert "creativecommons" not in body
 
     def test_the_page_url_avoids_the_redirect(self):
+        # r-market-canon-split (2026-09-05): 'ashburn' IS the page now — the
+        # /markets surface used to 301 it to 'northern-virginia', which is the
+        # direction /dcpi and every sitemap disagreed with.
         page = json.loads(_market_dataset_ld("ashburn", "Northern Virginia",
                                              STATS, "2026-09-03"))
-        assert page["url"] == "https://dchub.cloud/markets/northern-virginia"
+        assert page["url"] == "https://dchub.cloud/markets/ashburn"
 
 
 class TestEveryMeasureStatesItsBasis:
