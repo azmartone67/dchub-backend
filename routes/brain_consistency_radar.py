@@ -11980,6 +11980,156 @@ def check_approved_without_pr_stale() -> list[dict]:
     }]
 
 
+# ── The scan's wall-clock budget ────────────────────────────────────────
+# r33-Q+radar-budget (2026-05-22). _run_detectors' `finally` is what
+# actually enforces it; the deadline alone never did.
+_SCAN_BUDGET_S = 25
+
+
+def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]:
+    """Run `detectors` concurrently and return their findings, abandoning
+    whatever has not reported by `budget_s` seconds (default _SCAN_BUDGET_S).
+
+    Split out of scan_all() on 2026-09-05 so the budget can be exercised
+    directly. scan_all() is COLLECT-then-RUN and only the run half has a
+    clock; a test that wants to prove the clock binds should not have to
+    stand up 140 real detectors, each of which makes HTTP and DB calls.
+
+    Returns the findings of the detectors that finished in time, plus one
+    `consistency_radar_scan_partial` finding naming those that did not.
+    """
+    out: list[dict] = []
+    # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
+    # serial because several detectors make HTTP calls (frontend probes
+    # 23 URLs, dead-link probes 30 URLs, backend pool probe 1 URL, route
+    # audit 1 URL, competitor sitemaps 6 URLs). At ~3-8s each that
+    # serializes to 60-90s. Parallelize via ThreadPoolExecutor — wall
+    # time becomes max(detector_time) ≈ 10-15s instead of sum.
+    # Per-detector 20s timeout prevents any single slow probe from
+    # holding up the whole scan.
+    import concurrent.futures as _cf, time as _scan_time
+    def _run_one(fn):
+        t0 = _scan_time.time()
+        try:
+            result = fn() or []
+            _DETECTOR_TIMINGS[fn.__name__] = {
+                "last_ms":  int((_scan_time.time() - t0) * 1000),
+                "last_run": _scan_time.time(),
+                "ok":       True,
+            }
+            return ("ok", fn.__name__, result)
+        except Exception as e:
+            _DETECTOR_TIMINGS[fn.__name__] = {
+                "last_ms":  int((_scan_time.time() - t0) * 1000),
+                "last_run": _scan_time.time(),
+                "ok":       False,
+                "err":      f"{type(e).__name__}: {str(e)[:120]}",
+            }
+            return ("err", fn.__name__,
+                    f"{type(e).__name__}: {str(e)[:200]}")
+
+    # r33-Q+radar-budget (2026-05-22): HARD 25s wall-clock budget on the
+    # whole scan. Previously `as_completed(timeout=60)` let the scan run
+    # 100s+ (observed: "SLOW REQUEST GET /api/v1/brain/consistency-radar
+    # took 103.1s"). With ~100 detectors making 4-8s HTTP self-calls in
+    # 8 worker threads, deadlocked self-calls compounded into 13 batches
+    # × per-call timeouts. A radar scan that takes 103s is worse than
+    # useless: it holds a gunicorn worker hostage and trips L20 + the
+    # watchdog. Better to return PARTIAL findings in 25s than complete
+    # findings in 103s. Detectors still running at the deadline are
+    # abandoned (their thread finishes in the background, result
+    # discarded). Each detector also keeps its own 20s per-future cap.
+    _budget = float(budget_s) if budget_s is not None else _SCAN_BUDGET_S
+    _deadline = _scan_time.time() + _budget
+    _completed = 0
+    _abandoned = 0
+    _completed_fns: list = []      # detectors that actually REPORTED this sweep
+    ex = _cf.ThreadPoolExecutor(max_workers=8,
+                                thread_name_prefix="brain-scan")
+    try:
+        futs = {ex.submit(_run_one, fn): fn for fn in detectors}
+        try:
+            for fut in _cf.as_completed(futs, timeout=_budget):
+                fn = futs[fut]
+                try:
+                    status, name, result = fut.result(timeout=5)
+                    _completed += 1
+                    if status == "ok":
+                        # ★ Stamp provenance. The resolve-on-absence sweep may
+                        #   only close findings whose producing detector RAN —
+                        #   see _persist_findings_to_db. Without this the sweep
+                        #   cannot tell "detector ran, issue gone" (a real fix)
+                        #   from "detector was abandoned" (no information).
+                        for _f in result:
+                            if isinstance(_f, dict):
+                                _f["_detector_fn"] = name
+                        _completed_fns.append(name)
+                        out.extend(result)
+                    else:
+                        out.append({
+                            "issue":  f"consistency_radar_detector_crashed:{name}",
+                            "url":    name,
+                            "count":  1,
+                            "detail": result,
+                        })
+                except _cf.TimeoutError:
+                    out.append({
+                        "issue":  f"consistency_radar_detector_timeout:{fn.__name__}",
+                        "url":    fn.__name__,
+                        "count":  1,
+                        "detail": "Detector exceeded per-future 5s collection cap.",
+                    })
+                except Exception as e:
+                    out.append({
+                        "issue":  f"consistency_radar_detector_crashed:{fn.__name__}",
+                        "url":    fn.__name__,
+                        "count":  1,
+                        "detail": f"{type(e).__name__}: {str(e)[:200]}",
+                    })
+                if _scan_time.time() >= _deadline:
+                    break
+        except _cf.TimeoutError:
+            # Overall scan budget exceeded — abandon the rest. Count how
+            # many detectors never reported so the scan is honest about
+            # being partial rather than silently dropping them.
+            _abandoned = sum(1 for f in futs if not f.done())
+        # Tally abandoned detectors (deadline hit mid-iteration or budget
+        # raised). Surface as a single finding so the operator knows the
+        # scan was partial — never a silent truncation.
+        not_done = [futs[f].__name__ for f in futs if not f.done()]
+        if not_done:
+            out.append({
+                "issue":  "consistency_radar_scan_partial",
+                "url":    "/api/v1/brain/consistency-radar",
+                "count_kind": "item_count",  # magnitude, not a recurrence tally
+                "count":  len(not_done),
+                "detail": (f"Scan hit {_budget:g}s budget with "
+                           f"{len(not_done)} detectors still running "
+                           f"(completed {_completed}). Slowest are "
+                           f"likely HTTP self-call probes. Abandoned: "
+                           + ", ".join(not_done[:8])),
+            })
+        # ★ Record WHAT THIS SWEEP ACTUALLY COVERED, for resolve-on-absence.
+        #   Set before shutdown so it describes the same moment
+        #   `not_done` was measured.
+        _LAST_SWEEP["completed_fns"] = list(_completed_fns)
+        _LAST_SWEEP["abandoned_fns"] = list(not_done)
+        _LAST_SWEEP["at"] = _scan_time.time()
+    finally:
+        # ★ THE BUDGET IS THIS LINE. `with ThreadPoolExecutor(...)` exits via
+        #   shutdown(wait=True, cancel_futures=False), so every detector still
+        #   QUEUED at the deadline ran to completion anyway and only its RESULT
+        #   was discarded. The deadline above bounded what we READ, never what
+        #   we DID: measured wall times for a scan documented as capped at 25s
+        #   were 36.0, 40.1, 44.1, 54.5, 59.8 and 62.8s — with a gunicorn worker
+        #   holding the request open for all of it, which is the whole reason
+        #   this budget exists (a 103s scan tripped L20 + the watchdog).
+        #   cancel_futures drops the QUEUE; wait=False stops joining the ≤8
+        #   threads already running, whose results are discarded either way.
+        ex.shutdown(wait=False, cancel_futures=True)
+    return out
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues.
@@ -11988,7 +12138,6 @@ def scan_all() -> list[dict]:
     after observability showed scan was taking 76.9s serial. Detectors
     are collected first, then run concurrently with per-detector 20s
     timeout — wall time becomes max(detector) instead of sum(detector)."""
-    out: list[dict] = []
     detectors: list = []
     for fn in (# r-preempt (2026-06-16): anti-fabrication PRE-EMPTION detectors —
                # catch over-claim floors + parallel-stale metric surfaces (the
@@ -12537,122 +12686,7 @@ def scan_all() -> list[dict]:
             print(f"[radar] brain_security_detectors import skipped: {_e_sec}",
                   file=_sys.stderr)
 
-    # Phase RRR-brain-parallel (2026-05-18) — scan was taking 76.9s
-    # serial because several detectors make HTTP calls (frontend probes
-    # 23 URLs, dead-link probes 30 URLs, backend pool probe 1 URL, route
-    # audit 1 URL, competitor sitemaps 6 URLs). At ~3-8s each that
-    # serializes to 60-90s. Parallelize via ThreadPoolExecutor — wall
-    # time becomes max(detector_time) ≈ 10-15s instead of sum.
-    # Per-detector 20s timeout prevents any single slow probe from
-    # holding up the whole scan.
-    import concurrent.futures as _cf, time as _scan_time
-    def _run_one(fn):
-        t0 = _scan_time.time()
-        try:
-            result = fn() or []
-            _DETECTOR_TIMINGS[fn.__name__] = {
-                "last_ms":  int((_scan_time.time() - t0) * 1000),
-                "last_run": _scan_time.time(),
-                "ok":       True,
-            }
-            return ("ok", fn.__name__, result)
-        except Exception as e:
-            _DETECTOR_TIMINGS[fn.__name__] = {
-                "last_ms":  int((_scan_time.time() - t0) * 1000),
-                "last_run": _scan_time.time(),
-                "ok":       False,
-                "err":      f"{type(e).__name__}: {str(e)[:120]}",
-            }
-            return ("err", fn.__name__,
-                    f"{type(e).__name__}: {str(e)[:200]}")
-
-    # r33-Q+radar-budget (2026-05-22): HARD 25s wall-clock budget on the
-    # whole scan. Previously `as_completed(timeout=60)` let the scan run
-    # 100s+ (observed: "SLOW REQUEST GET /api/v1/brain/consistency-radar
-    # took 103.1s"). With ~100 detectors making 4-8s HTTP self-calls in
-    # 8 worker threads, deadlocked self-calls compounded into 13 batches
-    # × per-call timeouts. A radar scan that takes 103s is worse than
-    # useless: it holds a gunicorn worker hostage and trips L20 + the
-    # watchdog. Better to return PARTIAL findings in 25s than complete
-    # findings in 103s. Detectors still running at the deadline are
-    # abandoned (their thread finishes in the background, result
-    # discarded). Each detector also keeps its own 20s per-future cap.
-    _SCAN_BUDGET_S = 25
-    _deadline = _scan_time.time() + _SCAN_BUDGET_S
-    _completed = 0
-    _abandoned = 0
-    _completed_fns: list = []      # detectors that actually REPORTED this sweep
-    with _cf.ThreadPoolExecutor(max_workers=8,
-                                 thread_name_prefix="brain-scan") as ex:
-        futs = {ex.submit(_run_one, fn): fn for fn in detectors}
-        try:
-            for fut in _cf.as_completed(futs, timeout=_SCAN_BUDGET_S):
-                fn = futs[fut]
-                try:
-                    status, name, result = fut.result(timeout=5)
-                    _completed += 1
-                    if status == "ok":
-                        # ★ Stamp provenance. The resolve-on-absence sweep may
-                        #   only close findings whose producing detector RAN —
-                        #   see _persist_findings_to_db. Without this the sweep
-                        #   cannot tell "detector ran, issue gone" (a real fix)
-                        #   from "detector was abandoned" (no information).
-                        for _f in result:
-                            if isinstance(_f, dict):
-                                _f["_detector_fn"] = name
-                        _completed_fns.append(name)
-                        out.extend(result)
-                    else:
-                        out.append({
-                            "issue":  f"consistency_radar_detector_crashed:{name}",
-                            "url":    name,
-                            "count":  1,
-                            "detail": result,
-                        })
-                except _cf.TimeoutError:
-                    out.append({
-                        "issue":  f"consistency_radar_detector_timeout:{fn.__name__}",
-                        "url":    fn.__name__,
-                        "count":  1,
-                        "detail": "Detector exceeded per-future 5s collection cap.",
-                    })
-                except Exception as e:
-                    out.append({
-                        "issue":  f"consistency_radar_detector_crashed:{fn.__name__}",
-                        "url":    fn.__name__,
-                        "count":  1,
-                        "detail": f"{type(e).__name__}: {str(e)[:200]}",
-                    })
-                if _scan_time.time() >= _deadline:
-                    break
-        except _cf.TimeoutError:
-            # Overall scan budget exceeded — abandon the rest. Count how
-            # many detectors never reported so the scan is honest about
-            # being partial rather than silently dropping them.
-            _abandoned = sum(1 for f in futs if not f.done())
-        # Tally abandoned detectors (deadline hit mid-iteration or budget
-        # raised). Surface as a single finding so the operator knows the
-        # scan was partial — never a silent truncation.
-        not_done = [futs[f].__name__ for f in futs if not f.done()]
-        if not_done:
-            out.append({
-                "issue":  "consistency_radar_scan_partial",
-                "url":    "/api/v1/brain/consistency-radar",
-                "count_kind": "item_count",  # magnitude, not a recurrence tally
-                "count":  len(not_done),
-                "detail": (f"Scan hit {_SCAN_BUDGET_S}s budget with "
-                           f"{len(not_done)} detectors still running "
-                           f"(completed {_completed}). Slowest are "
-                           f"likely HTTP self-call probes. Abandoned: "
-                           + ", ".join(not_done[:8])),
-            })
-        # ★ Record WHAT THIS SWEEP ACTUALLY COVERED, for resolve-on-absence.
-        #   Set inside the `with` (before shutdown) so it describes the same
-        #   moment `not_done` was measured.
-        _LAST_SWEEP["completed_fns"] = list(_completed_fns)
-        _LAST_SWEEP["abandoned_fns"] = list(not_done)
-        _LAST_SWEEP["at"] = _scan_time.time()
-    return out
+    return _run_detectors(detectors)
 
 
 # Phase RR: Flask is optional so the radar module is importable in

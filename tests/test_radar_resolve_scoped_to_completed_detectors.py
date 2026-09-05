@@ -133,15 +133,36 @@ def test_completed_detectors_are_passed_as_the_scope(monkeypatch):
 
 # ── the pieces that feed the gate ──────────────────────────────────────
 
-def test_scan_all_stamps_each_finding_with_its_detector():
-    import inspect
-    from routes import brain_consistency_radar as r
-    src = inspect.getsource(r.scan_all)
-    assert '_f["_detector_fn"] = name' in src, (
-        "findings are not stamped with their producing detector, so the "
-        "resolve scope can never be built")
-    assert "_completed_fns.append(name)" in src, "completed detectors not recorded"
-    assert '_LAST_SWEEP["completed_fns"]' in src, "completed set never published"
+def test_the_sweep_stamps_each_finding_and_publishes_who_reported():
+    """★ Behavioural, not a source grep. Until 2026-09-05 this asserted three
+    substrings against inspect.getsource(scan_all). When the sweep moved into
+    _run_detectors (so the 25s budget could be exercised) all three strings
+    left scan_all with it — and a substring test cannot tell "the code moved"
+    from "the stamping was deleted". Run the real sweep over two fake
+    detectors and read what comes back instead.
+    """
+    r = _radar()
+
+    def check_alpha():
+        return [{"issue": "i_alpha", "url": "/a", "count": 1}]
+
+    def check_beta():
+        return [{"issue": "i_beta", "url": "/b", "count": 1}]
+
+    timings, sweep = dict(r._DETECTOR_TIMINGS), dict(r._LAST_SWEEP)
+    try:
+        out = r._run_detectors([check_alpha, check_beta], budget_s=10.0)
+        stamped = {f["issue"]: f.get("_detector_fn") for f in out}
+        published = sorted(r._LAST_SWEEP.get("completed_fns") or [])
+    finally:
+        r._DETECTOR_TIMINGS.clear(); r._DETECTOR_TIMINGS.update(timings)
+        r._LAST_SWEEP.clear(); r._LAST_SWEEP.update(sweep)
+
+    assert stamped == {"i_alpha": "check_alpha", "i_beta": "check_beta"}, (
+        f"findings are not stamped with their producing detector, so the "
+        f"resolve scope can never be built: {stamped}")
+    assert published == ["check_alpha", "check_beta"], (
+        f"the completed set was never published to _LAST_SWEEP: {published}")
 
 
 def test_last_sweep_starts_empty_so_a_cold_process_cannot_resolve():
