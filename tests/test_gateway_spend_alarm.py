@@ -228,3 +228,58 @@ def test_only_the_background_role_probes(monkeypatch, role, probes):
             exec(compile(ast.Module([node], []), str(_SRC), "exec"), ns)  # noqa: S102
     assert "_GW_ROLE_PROBES" in ns, "the role gate vanished from the source"
     assert ns["_GW_ROLE_PROBES"] is probes, f"role={role!r}"
+
+
+# ── the probe's cadence is an observability budget (2026-09-05) ──────────────
+# The probe fails ON PURPOSE, so every run lands as an error row on the AI
+# Gateway dashboard. Measured live 2026-09-05: it was ~100% of every error row
+# (593 of 593 sampled) and drove a 26.6% error rate, which the owner read as an
+# outage. Detection latency and dashboard legibility are the two sides of this
+# one constant, so both are pinned here.
+_CADENCE_KNOBS = ("GATEWAY_SPEND_CHECK_S", "GATEWAY_SPEND_RENOTIFY_S")
+
+
+def _shipped_const(name, monkeypatch, env=None):
+    """Run the SHIPPED module-level assignment for `name` under a chosen env.
+
+    The statement is sliced out of health_alerter.py with `ast` and executed
+    as-is — not re-implemented here — so renaming the env var or editing the
+    default is visible to these tests instead of silently passing.
+    """
+    for knob in _CADENCE_KNOBS:
+        monkeypatch.delenv(knob, raising=False)
+    for k, v in (env or {}).items():
+        monkeypatch.setenv(k, v)
+    src = _SRC.read_text()
+    node = next(n for n in ast.parse(src).body
+                if isinstance(n, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == name
+                        for t in n.targets))
+    ns = {"os": __import__("os")}
+    exec(compile(ast.Module([node], []), str(_SRC), "exec"), ns)  # noqa: S102
+    return ns[name]
+
+
+def test_probe_cadence_keeps_the_error_dashboard_readable(monkeypatch):
+    """At most 2 deliberate error rows per hour per probing process."""
+    every = _shipped_const("_GW_CHECK_EVERY_S", monkeypatch)
+    assert every >= 1800, (
+        "probe every %ss = %.1f deliberate error rows/hour/process; at that "
+        "rate the AI Gateway error metric is unreadable and a real failure "
+        "hides inside it (measured 2026-09-05)" % (every, 3600.0 / every))
+
+
+def test_operator_can_still_tighten_the_cadence(monkeypatch):
+    """Positive control: without a live knob, the floor above would be
+    asserting a constant nobody can act on."""
+    assert _shipped_const("_GW_CHECK_EVERY_S", monkeypatch,
+                          {"GATEWAY_SPEND_CHECK_S": "120"}) == 120
+
+
+def test_probe_runs_more_often_than_it_nags(monkeypatch):
+    """A probe slower than its own re-notify window could report a block for
+    the first time only after the daily nag had already come due."""
+    every = _shipped_const("_GW_CHECK_EVERY_S", monkeypatch)
+    renotify = _shipped_const("_GW_RENOTIFY_S", monkeypatch)
+    assert every < renotify, (
+        "probe every %ss vs re-notify every %ss" % (every, renotify))
