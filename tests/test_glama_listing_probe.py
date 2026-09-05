@@ -23,6 +23,10 @@ The load-bearing cases are the ones that keep the probe QUIET:
     fire one of their own — a daily red that no commit can clear is how a
     monitor gets ignored.
 """
+import ast
+import os
+import re
+
 import pytest
 
 glp = pytest.importorskip("routes.glama_listing_probe")
@@ -111,14 +115,14 @@ def _row(key, disposition, badge_page=True, **kw):
 
 
 def test_the_duplicate_connector_fires_while_it_exists():
-    out = glp.findings([_row("dupe", glp.DELETE, status="Unhealthy",
+    out = glp.findings([_row("dupe", glp.DEPRECATE, status="Unhealthy",
                              tools_badge=None, retired_phrases=["33 tools"])],
                        canon_tools=83)
     assert [f["issue"] for f in out] == ["glama_duplicate_connector_listed"]
     detail = out[0]["detail"]
     # The finding has to carry BOTH halves of the fix. Deleting the card
     # without replacing the email-form ownership file lets it come back.
-    assert "delete this connector" in detail
+    assert "DEPRECATE this connector" in detail
     assert "glama_claim_" in detail
     assert "33 tools" in detail  # the stale copy rides along, informationally
 
@@ -205,7 +209,130 @@ def test_probe_survives_a_fetcher_that_returns_nothing():
     assert glp.findings(rows, canon_tools=83) == []
 
 
-def test_exactly_one_listing_is_marked_for_deletion():
+def test_exactly_one_listing_is_marked_for_deprecation():
     dispositions = [d for _, _, d, _ in glp.GLAMA_LISTINGS]
-    assert dispositions.count(glp.DELETE) == 1
+    assert dispositions.count(glp.DEPRECATE) == 1
     assert dispositions.count(glp.KEEP) == 2
+
+
+def test_the_remediation_names_the_action_glama_actually_offers():
+    """Glama's owner UI offers DEPRECATION for a claimed connector, not
+    deletion. A finding that tells a human to click a button that is not there
+    reads as a broken monitor, and the real action never gets taken."""
+    out = glp.findings([_row("dupe", glp.DEPRECATE, status="Unhealthy")],
+                       canon_tools=83)
+    detail = out[0]["detail"]
+    assert "DEPRECATE" in detail
+    assert "delete this connector" not in detail
+
+
+# ── the origin half: a deprecation only sticks if this is closed ────────────
+
+def test_the_email_ownership_form_fires():
+    out = glp.ownership_finding(
+        fetch=lambda u: '{"maintainers":[{"email":"x@y.z"}]}')
+    assert [f["issue"] for f in out] == ["glama_origin_publishes_email_ownership"]
+    assert "GLAMA_CLAIM_TOKEN" in out[0]["detail"]
+
+
+def test_a_valid_claim_token_is_silent():
+    tok = "glama_claim_" + "a" * 32
+    assert glp.ownership_finding(fetch=lambda u: '{"claim":"%s"}' % tok) == []
+
+
+def test_a_malformed_claim_still_fires_and_says_so():
+    """A typo'd claim is not a claim — and it is the failure that looks fixed."""
+    out = glp.ownership_finding(fetch=lambda u: '{"claim":"glama_claim_short"}')
+    assert [f["issue"] for f in out] == ["glama_origin_publishes_email_ownership"]
+    assert "does not match Glama's pattern" in out[0]["detail"]
+
+
+def test_our_endpoint_being_down_is_silent_not_a_finding():
+    assert glp.ownership_finding(fetch=lambda u: None) == []
+
+
+def test_unparseable_ownership_doc_fires_rather_than_passing():
+    out = glp.ownership_finding(fetch=lambda u: "<html>not json</html>")
+    assert [f["issue"] for f in out] == ["glama_ownership_doc_unparseable"]
+
+
+# ── the price of the stale-count skip ───────────────────────────────────────
+#
+# routes/glama_listing_probe.py is in STALE_SCAN_SKIP_FILES
+# (tests/test_canonical_counts_drift.py) for the same reason as
+# ai_surface_canon.py and canon_floor.py: it IS a denylist, and scanning a
+# denylist for the values it lists would demand the ban list stop naming what
+# it bans.
+#
+# ★ A file skip is the fail-open direction, so — following the canon_floor.py
+# precedent exactly — the skip does not rest on that argument alone. This test
+# is STRICTER than the scan it replaces: the repo scan matches a fixed set of
+# retired tokens, while this walks the module and asserts that EVERY
+# count-shaped literal in it, retired or not, sits in a docstring or in
+# RETIRED_COUNT_PHRASES. Nothing carrying a count can reach an emitted string.
+
+_COUNT_SHAPE = re.compile(
+    r"(?<!\{)\b\d{1,3},\d{3}\+?|\b\d{1,4}\s+tools?\b|\b232\b")
+
+
+def _docstring_line_ranges(tree) -> list[range]:
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef,
+                                 ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        body = getattr(node, "body", None) or []
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            d = body[0]
+            out.append(range(d.lineno, (d.end_lineno or d.lineno) + 1))
+    return out
+
+
+def _retired_phrase_line_range(tree) -> range:
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == "RETIRED_COUNT_PHRASES":
+                return range(node.lineno, (node.end_lineno or node.lineno) + 1)
+    raise AssertionError("RETIRED_COUNT_PHRASES assignment not found — the "
+                         "stale-count skip for this module is unjustified")
+
+
+def test_no_count_literal_escapes_the_docstrings_or_the_phrase_list():
+    src_path = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "routes", "glama_listing_probe.py")
+    with open(src_path, encoding="utf-8") as f:
+        src = f.read()
+    tree = ast.parse(src)
+    allowed = _docstring_line_ranges(tree) + [_retired_phrase_line_range(tree)]
+
+    escaped = []
+    for i, line in enumerate(src.splitlines(), start=1):
+        if line.lstrip().startswith("#"):
+            continue  # comments explain; they are not emitted
+        for m in _COUNT_SHAPE.finditer(line):
+            if not any(i in r for r in allowed):
+                escaped.append(f"  line {i}: {m.group(0)!r} in {line.strip()[:90]!r}")
+    assert not escaped, (
+        "count-shaped literal(s) outside a docstring and outside "
+        "RETIRED_COUNT_PHRASES. This module is skipped by the repo-wide "
+        "stale-count scan on the grounds that it only NAMES retired values as "
+        "detection data — a count reaching an emitted string breaks that "
+        "argument and the skip with it:\n" + "\n".join(escaped))
+
+
+def test_that_guard_can_actually_see_a_count():
+    """A scanner that matches nothing passes vacuously. Assert the shape
+    recognises the forms this module traffics in."""
+    for sample in ("21,000+", "33 tools", "1 tool", "232"):
+        assert _COUNT_SHAPE.search(sample), sample
+    # ...and does NOT read a regex quantifier as a count. Without this the
+    # guard flagged its own `.{0,400}?` anchors, which is the kind of noise
+    # that gets a guard deleted rather than fixed.
+    assert not _COUNT_SHAPE.search("re.compile(r\"x.{0,400}?y\")")

@@ -9507,6 +9507,7 @@ def check_glama_listing_health() -> list[dict]:
     without network."""
     try:
         from routes.glama_listing_probe import findings as _glama_findings
+        from routes.glama_listing_probe import ownership_finding as _glama_own
         from routes.glama_listing_probe import probe as _glama_probe
     except Exception:
         return []
@@ -9517,7 +9518,8 @@ def check_glama_listing_health() -> list[dict]:
             canon_tools = int(_PINNED.get("tools_advertised") or 0) or None
         except Exception:
             canon_tools = None
-        return _glama_findings(_glama_probe(), canon_tools=canon_tools)
+        return (_glama_findings(_glama_probe(), canon_tools=canon_tools)
+                + _glama_own())
     except Exception:
         # A registry probe must never be able to take the radar down with it.
         return []
