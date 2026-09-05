@@ -19174,6 +19174,200 @@ def reconcile_paid_counts():
 # /api/v1/markets, not /api/v1/markets/list). Used to 404. Now aliases to
 # the list_markets handler via Flask's view_functions dict so both URLs
 # return identical JSON. Eliminates a real footgun the QA scan identified.
+
+# ═══════════════════════════════════════════════════════════════════════
+# THE PUBLISHED MARKET UNIVERSE — r-markets-api-ident (2026-09-05)
+# ═══════════════════════════════════════════════════════════════════════
+def build_market_universe(c):
+    """Every market /api/v1/markets publishes: curated + US + international.
+
+    Lifted OUT of list_markets so /api/v1/markets/<id> resolves against the
+    same rows the list route publishes, and cannot drift back into serving a
+    subset of them. That subset is the bug this extraction exists to close:
+    the detail route matched on main.MARKET_ALIASES (34 curated US keys)
+    while this build publishes 132 markets, so four of the five ids the
+    anonymous tier lists 404'd on the detail route that lists them.
+
+    `c` is a cursor; the caller owns the connection. Returns copies, so a
+    caller mutating a row cannot poison the shared cache.
+    """
+    # r34 perf: 30-min memoize of the expensive ~120-query market build.
+    # /api/v1/markets(/list) was a consistent 7-8s N+1 (per-market ILIKE
+    # scans). Callers compute tier/limit AFTER the build, so the cache holds
+    # the FULL universe and per-caller redaction still runs on the copy.
+    # Cache now lives on this function rather than on list_markets, and a hit
+    # returns early instead of no-oping each build loop in turn.
+    import time as _tmk
+    _mkc = getattr(build_market_universe, '_mk_cache', None)
+    if _mkc and (_tmk.time() - _mkc[0]) < 1800:
+        return [dict(m) for m in _mkc[1]]
+
+    markets = []
+
+    # r-markets-basis: same lifecycle vocabulary rank_markets uses, so the two
+    # surfaces cannot disagree about what "operational" spells. Imported here
+    # rather than at module scope to match the existing local-import style in
+    # this file (see /api/v1/markets/compare).
+    from util.status_taxonomy import operational_sql as _mkt_op_sql
+    _mkt_operational = _mkt_op_sql()
+
+    # r-markets-basis: which curated markets are strict SUBSETS of another —
+    # 'ashburn' (Ashburn, Loudoun) sits entirely inside 'northern virginia'.
+    # Both are published as top-level markets, so a consumer summing the list
+    # counts those facilities twice. Publishing the containment is the honest
+    # fix; REMOVING the row is not, because smoke_test.py pins
+    # /api/v1/markets/ashburn at 200.
+    # r-markets-api-ident (2026-09-05): this note used to add "because
+    # /api/v1/markets/<market> gates on `market_lower not in MARKET_ALIASES`".
+    # That gate is gone — the detail route now resolves against the universe
+    # this function returns, so dropping a curated row would remove it from
+    # BOTH surfaces at once rather than only from the list.
+    _mkt_sets = {k: {str(x).lower() for x in v} for k, v in MARKET_ALIASES.items()}
+    _mkt_contained = {
+        k: sorted(o for o, ov in _mkt_sets.items()
+                  if o != k and _mkt_sets[k] < ov)
+        for k in _mkt_sets
+    }
+
+    # ── 1. Curated markets from MARKET_ALIASES ─────────────────
+    for market_key, cities in MARKET_ALIASES.items():
+        if len(market_key) <= 2 or market_key in ['la', 'sf', 'nj', 'nyc', 'dfw', 'nova']:
+            continue
+        conditions, params = [], []
+        for city in cities:
+            if len(city) == 2 and city.isupper():
+                conditions.append('state = %s'); params.append(city)
+            else:
+                conditions.append('city ILIKE %s'); params.append(f'%{city}%')
+        where_clause = ' OR '.join(conditions)
+        country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
+        c.execute(f"""
+            SELECT COUNT(*) as count, COALESCE(SUM(power_mw), 0) as total_power
+            FROM discovered_facilities
+            WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
+              AND {_MKT_DEDUP} AND {_mkt_operational}
+        """, params)
+        row = c.fetchone()
+        if row and row[0] > 0:
+            # Pipeline MW
+            c.execute(f"""
+                SELECT COALESCE(SUM(power_mw), 0)
+                FROM discovered_facilities
+                WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
+                AND {_MKT_DEDUP}
+                AND status IN ('construction','planned','permitting','Under Construction','Planned')
+            """, params)
+            pipeline_mw = round((c.fetchone() or [0])[0], 1)
+            # $/kWh from dominant state
+            avg_kwh = None
+            try:
+                c.execute(f"""
+                    SELECT state, COUNT(*) AS cnt FROM discovered_facilities
+                    WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
+                    AND state IS NOT NULL AND state != ''
+                    GROUP BY state ORDER BY cnt DESC LIMIT 1
+                """, params)
+                top = c.fetchone()
+                if top and top[0]:
+                    c.execute("""
+                        SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates
+                        WHERE state=%s AND sector='ALL' AND retrieved_at > NOW() - INTERVAL '365 days'
+                    """, (top[0],))
+                    kr = c.fetchone()
+                    if kr and kr[0] is not None: avg_kwh = round(float(kr[0]), 4)
+            except: pass
+            markets.append({
+                'id': market_key,
+                'name': market_key.replace('_', ' ').title(),
+                'cities': cities[:5],
+                'facility_count': row[0],
+                'total_power_mw': round(row[1] or 0, 1),
+                'pipeline_mw_total': pipeline_mw,
+                'avg_kwh_price_usd': avg_kwh,
+                # r-markets-basis: non-empty ⇒ every facility in this market is
+                # ALSO counted under the named market(s). Do not sum across a
+                # containment pair.
+                'contained_in': _mkt_contained.get(market_key, []),
+            })
+
+    # ── 2. US auto-discovered (require valid state, threshold 3) ──
+    existing = set()
+    for v in MARKET_ALIASES.values():
+        for city in v:
+            if isinstance(city, str) and len(city) > 2:
+                existing.add(city.lower())
+    try:
+        # r-markets-basis: f-string so the shared dedup/lifecycle predicates
+        # interpolate. NOTE the doubled braces in the state regex — `{2}`
+        # would be read as a format field and raise.
+        c.execute(f"""
+            SELECT LOWER(city), city, state,
+                   COUNT(*) FILTER (WHERE {_mkt_operational}) AS n,
+                   COALESCE(SUM(power_mw) FILTER (WHERE {_mkt_operational}), 0) AS total_mw,
+                   COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
+            FROM discovered_facilities
+            WHERE city IS NOT NULL AND city != ''
+              AND state IS NOT NULL AND state != ''
+              AND LENGTH(state) = 2 AND state ~ '^[A-Z]{{2}}$'
+              AND (country = 'US' OR country = 'USA')
+              AND {_MKT_DEDUP}
+              AND LOWER(city) NOT IN %s
+            GROUP BY LOWER(city), city, state
+            HAVING COUNT(*) FILTER (WHERE {_mkt_operational}) >= 3
+            ORDER BY n DESC LIMIT 60;
+        """, (tuple(existing) if existing else ('__none__',),))
+        for row in c.fetchall():
+            city_l, city, state, n, op_mw, pipe_mw = row
+            slug = city_l.replace(' ', '-').replace('/', '-').replace(',', '')
+            kwh = None
+            try:
+                c.execute("SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates WHERE state=%s AND sector='ALL' AND retrieved_at > NOW() - INTERVAL '365 days'", (state,))
+                kr = c.fetchone()
+                if kr and kr[0] is not None: kwh = round(float(kr[0]), 4)
+            except: pass
+            markets.append({
+                'id': slug, 'name': city.title(), 'cities': [city],
+                'facility_count': n,
+                'total_power_mw': round(float(op_mw or 0), 1),
+                'pipeline_mw_total': round(float(pipe_mw or 0), 1),
+                'avg_kwh_price_usd': kwh,
+                'auto_discovered': True, 'state': state, 'country': 'US',
+            })
+    except Exception as _e:
+        import logging as _l; _l.getLogger('markets').warning(f'us auto err: {_e}')
+
+    # ── 3. International auto-discovered ──
+    try:
+        c.execute("""
+            SELECT LOWER(city), city, country, COUNT(*) AS n,
+                   COALESCE(SUM(power_mw), 0) AS total_mw,
+                   COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
+            FROM discovered_facilities
+            WHERE city IS NOT NULL AND city != ''
+              AND country IS NOT NULL AND country NOT IN ('US', 'USA', '')
+            GROUP BY LOWER(city), city, country
+            HAVING COUNT(*) >= 3
+            ORDER BY n DESC LIMIT 40;
+        """)
+        for row in c.fetchall():
+            city_l, city, country, n, op_mw, pipe_mw = row
+            slug = (city_l + '-' + (country or '').lower()).replace(' ', '-').replace('/', '-').replace(',', '')
+            markets.append({
+                'id': slug, 'name': city.title(), 'cities': [city],
+                'facility_count': n,
+                'total_power_mw': round(float(op_mw or 0), 1),
+                'pipeline_mw_total': round(float(pipe_mw or 0), 1),
+                'avg_kwh_price_usd': None,
+                'auto_discovered': True, 'international': True, 'country': country,
+            })
+    except Exception as _e:
+        import logging as _l; _l.getLogger('markets').warning(f'intl auto err: {_e}')
+
+    markets.sort(key=lambda x: x['facility_count'], reverse=True)
+
+    build_market_universe._mk_cache = (_tmk.time(), [dict(m) for m in markets])
+    return [dict(m) for m in markets]
+
 @app.route('/api/v1/markets', methods=['GET'], endpoint='list_markets_alias')
 def list_markets_alias_v1():
     """Alias for /api/v1/markets/list. Eliminates the URL guessing footgun
@@ -19218,180 +19412,14 @@ def list_markets():
     conn = get_read_db()
     try:
         c = conn.cursor()
-        # r34 perf: 30-min memoize of the expensive ~120-query market build.
-        # /api/v1/markets(/list) was a consistent 7-8s N+1 (per-market ILIKE
-        # scans). tier/limit are computed AFTER the build, so seed `markets`
-        # from cache and no-op each build loop on a hit; per-caller tier
-        # redaction below still runs. Cache stored just before tier compute.
-        import time as _tmk
-        _mkc = getattr(list_markets, '_mk_cache', None)
-        _use_cache = bool(_mkc and (_tmk.time() - _mkc[0]) < 1800)
-        markets = [dict(m) for m in _mkc[1]] if _use_cache else []
-
-        # r-markets-basis: same lifecycle vocabulary rank_markets uses, so the two
-        # surfaces cannot disagree about what "operational" spells. Imported here
-        # rather than at module scope to match the existing local-import style in
-        # this file (see /api/v1/markets/compare).
-        from util.status_taxonomy import operational_sql as _mkt_op_sql
-        _mkt_operational = _mkt_op_sql()
-
-        # r-markets-basis: which curated markets are strict SUBSETS of another —
-        # 'ashburn' (Ashburn, Loudoun) sits entirely inside 'northern virginia'.
-        # Both are published as top-level markets, so a consumer summing the list
-        # counts those facilities twice. Publishing the containment is the honest
-        # fix; REMOVING the row is not, because /api/v1/markets/<market> gates on
-        # `market_lower not in MARKET_ALIASES` and smoke_test.py pins
-        # /api/v1/markets/ashburn at 200.
-        _mkt_sets = {k: {str(x).lower() for x in v} for k, v in MARKET_ALIASES.items()}
-        _mkt_contained = {
-            k: sorted(o for o, ov in _mkt_sets.items()
-                      if o != k and _mkt_sets[k] < ov)
-            for k in _mkt_sets
-        }
-
-        # ── 1. Curated markets from MARKET_ALIASES ─────────────────
-        for market_key, cities in (() if _use_cache else MARKET_ALIASES.items()):
-            if len(market_key) <= 2 or market_key in ['la', 'sf', 'nj', 'nyc', 'dfw', 'nova']:
-                continue
-            conditions, params = [], []
-            for city in cities:
-                if len(city) == 2 and city.isupper():
-                    conditions.append('state = %s'); params.append(city)
-                else:
-                    conditions.append('city ILIKE %s'); params.append(f'%{city}%')
-            where_clause = ' OR '.join(conditions)
-            country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
-            c.execute(f"""
-                SELECT COUNT(*) as count, COALESCE(SUM(power_mw), 0) as total_power
-                FROM discovered_facilities
-                WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
-                  AND {_MKT_DEDUP} AND {_mkt_operational}
-            """, params)
-            row = c.fetchone()
-            if row and row[0] > 0:
-                # Pipeline MW
-                c.execute(f"""
-                    SELECT COALESCE(SUM(power_mw), 0)
-                    FROM discovered_facilities
-                    WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
-                    AND {_MKT_DEDUP}
-                    AND status IN ('construction','planned','permitting','Under Construction','Planned')
-                """, params)
-                pipeline_mw = round((c.fetchone() or [0])[0], 1)
-                # $/kWh from dominant state
-                avg_kwh = None
-                try:
-                    c.execute(f"""
-                        SELECT state, COUNT(*) AS cnt FROM discovered_facilities
-                        WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
-                        AND state IS NOT NULL AND state != ''
-                        GROUP BY state ORDER BY cnt DESC LIMIT 1
-                    """, params)
-                    top = c.fetchone()
-                    if top and top[0]:
-                        c.execute("""
-                            SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates
-                            WHERE state=%s AND sector='ALL' AND retrieved_at > NOW() - INTERVAL '365 days'
-                        """, (top[0],))
-                        kr = c.fetchone()
-                        if kr and kr[0] is not None: avg_kwh = round(float(kr[0]), 4)
-                except: pass
-                markets.append({
-                    'id': market_key,
-                    'name': market_key.replace('_', ' ').title(),
-                    'cities': cities[:5],
-                    'facility_count': row[0],
-                    'total_power_mw': round(row[1] or 0, 1),
-                    'pipeline_mw_total': pipeline_mw,
-                    'avg_kwh_price_usd': avg_kwh,
-                    # r-markets-basis: non-empty ⇒ every facility in this market is
-                    # ALSO counted under the named market(s). Do not sum across a
-                    # containment pair.
-                    'contained_in': _mkt_contained.get(market_key, []),
-                })
-
-        # ── 2. US auto-discovered (require valid state, threshold 3) ──
-        existing = set()
-        for v in MARKET_ALIASES.values():
-            for city in v:
-                if isinstance(city, str) and len(city) > 2:
-                    existing.add(city.lower())
-        try:
-            # r-markets-basis: f-string so the shared dedup/lifecycle predicates
-            # interpolate. NOTE the doubled braces in the state regex — `{2}`
-            # would be read as a format field and raise.
-            c.execute(f"""
-                SELECT LOWER(city), city, state,
-                       COUNT(*) FILTER (WHERE {_mkt_operational}) AS n,
-                       COALESCE(SUM(power_mw) FILTER (WHERE {_mkt_operational}), 0) AS total_mw,
-                       COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
-                FROM discovered_facilities
-                WHERE city IS NOT NULL AND city != ''
-                  AND state IS NOT NULL AND state != ''
-                  AND LENGTH(state) = 2 AND state ~ '^[A-Z]{{2}}$'
-                  AND (country = 'US' OR country = 'USA')
-                  AND {_MKT_DEDUP}
-                  AND LOWER(city) NOT IN %s
-                GROUP BY LOWER(city), city, state
-                HAVING COUNT(*) FILTER (WHERE {_mkt_operational}) >= 3
-                ORDER BY n DESC LIMIT 60;
-            """, (tuple(existing) if existing else ('__none__',),))
-            for row in (() if _use_cache else c.fetchall()):
-                city_l, city, state, n, op_mw, pipe_mw = row
-                slug = city_l.replace(' ', '-').replace('/', '-').replace(',', '')
-                kwh = None
-                try:
-                    c.execute("SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates WHERE state=%s AND sector='ALL' AND retrieved_at > NOW() - INTERVAL '365 days'", (state,))
-                    kr = c.fetchone()
-                    if kr and kr[0] is not None: kwh = round(float(kr[0]), 4)
-                except: pass
-                markets.append({
-                    'id': slug, 'name': city.title(), 'cities': [city],
-                    'facility_count': n,
-                    'total_power_mw': round(float(op_mw or 0), 1),
-                    'pipeline_mw_total': round(float(pipe_mw or 0), 1),
-                    'avg_kwh_price_usd': kwh,
-                    'auto_discovered': True, 'state': state, 'country': 'US',
-                })
-        except Exception as _e:
-            import logging as _l; _l.getLogger('markets').warning(f'us auto err: {_e}')
-
-        # ── 3. International auto-discovered ──
-        try:
-            c.execute("""
-                SELECT LOWER(city), city, country, COUNT(*) AS n,
-                       COALESCE(SUM(power_mw), 0) AS total_mw,
-                       COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
-                FROM discovered_facilities
-                WHERE city IS NOT NULL AND city != ''
-                  AND country IS NOT NULL AND country NOT IN ('US', 'USA', '')
-                GROUP BY LOWER(city), city, country
-                HAVING COUNT(*) >= 3
-                ORDER BY n DESC LIMIT 40;
-            """)
-            for row in (() if _use_cache else c.fetchall()):
-                city_l, city, country, n, op_mw, pipe_mw = row
-                slug = (city_l + '-' + (country or '').lower()).replace(' ', '-').replace('/', '-').replace(',', '')
-                markets.append({
-                    'id': slug, 'name': city.title(), 'cities': [city],
-                    'facility_count': n,
-                    'total_power_mw': round(float(op_mw or 0), 1),
-                    'pipeline_mw_total': round(float(pipe_mw or 0), 1),
-                    'avg_kwh_price_usd': None,
-                    'auto_discovered': True, 'international': True, 'country': country,
-                })
-        except Exception as _e:
-            import logging as _l; _l.getLogger('markets').warning(f'intl auto err: {_e}')
-
-        markets.sort(key=lambda x: x['facility_count'], reverse=True)
+        markets = build_market_universe(c)
 
         # === Phase 211: tier-gating (correct + better funnel) ===
         from flask import request as _req
         api_key = _req.headers.get('X-API-Key') or _req.headers.get('Authorization', '').replace('Bearer ', '')
 
         # Determine tier without circular import — use the existing helper if defined
-        if not _use_cache:
-            list_markets._mk_cache = (_tmk.time(), [dict(m) for m in markets])
+        # (the 30-min build cache moved into build_market_universe with the build)
         tier = 'anonymous'
         if api_key:
             tier = 'free'  # default for any valid-looking key, refine below
@@ -19541,31 +19569,76 @@ def get_market_stats(market):
     it returns success=true + a populated `stats.total_power_mw`, so
     any future regression that re-gates it gets caught immediately.
     """
+    # r-markets-api-ident (2026-09-05): resolve the identifier against the
+    # markets we PUBLISH, not against the curated dict. See the block comment
+    # in util/market_aliases.py for the live measurement — four of the five
+    # ids /api/v1/markets shows an anonymous caller 404'd here, and the 404's
+    # own remediation text pointed the agent back at that same list.
+    #
+    # ★ FAST PATH UNCHANGED, deliberately. A curated hit still answers without
+    # touching build_market_universe, whose cold build is ~120 queries / 6-8s.
+    # This endpoint backs the public market pages (market-page.js), so moving
+    # every request onto the universe build would have put a cold 6-8s in
+    # front of a hot SEO path to fix markets that were 404ing anyway. Only an
+    # identifier that 404s TODAY pays for the build.
     market_lower = market.lower().replace('-', ' ')
+    market_country = market_state = None
 
-    if market_lower not in MARKET_ALIASES:
-        # r-error-legibility (2026-07-02): self-correcting 404 so an agent can
-        # recover instead of guessing (Gemini feedback). List a sample of valid
-        # market slugs + point at the tool that enumerates them all.
-        _valid = sorted(k.replace(' ', '-') for k in MARKET_ALIASES)
-        return jsonify({
-            'error': f"Market '{market}' not found",
-            'code': 'NOT_FOUND',
-            'detail': ("Use a valid market slug. Call rank_markets (or GET "
-                       "/api/v1/markets) for the full list; DCPI market pages "
-                       "live at /dcpi/<slug>."),
-            'valid_markets_sample': _valid[:20],
-            'valid_markets_count': len(_valid),
-        }), 404
-
-    cities = MARKET_ALIASES[market_lower]
+    # Local import mirrors the local-import style used throughout this file's
+    # market routes (see the status_taxonomy import in build_market_universe);
+    # util.market_aliases is deliberately side-effect-free so this stays cheap.
+    from util.market_aliases import (
+        market_scope_sql, resolve_market_identifier)
 
     conn = get_read_db()
     try:
         c = conn.cursor()
 
-        # Build city conditions — MARKET_ALIASES are all US markets,
-        # so add country='US' guard to prevent ISO code collisions (e.g. AZ=Azerbaijan)
+        if market_lower in MARKET_ALIASES:
+            cities = MARKET_ALIASES[market_lower]
+            market_id = market_lower
+            market_name = market_lower.replace('_', ' ').title()
+        else:
+            try:
+                _universe = build_market_universe(c)
+            except Exception as _uerr:
+                # A resolver that cannot read the universe must not turn a
+                # known market into a 500 — fall back to curated-only, which
+                # is exactly the behaviour that shipped before this change.
+                logger.warning(f"get_market_stats universe build failed: {_uerr}")
+                _universe = []
+            _resolved = resolve_market_identifier(market, _universe)
+            if _resolved is None or not (_resolved.get('cities') or []):
+                # r-error-legibility (2026-07-02): self-correcting 404 so an agent
+                # can recover instead of guessing (Gemini feedback). List a sample
+                # of valid market slugs + point at the tool that enumerates them.
+                # r-markets-api-ident: sample the ids we actually PUBLISH. It used
+                # to sample MARKET_ALIASES, so an agent that followed the
+                # remediation advice got 34 curated keys while the list route it
+                # was pointed at returned 132 different ids.
+                _valid = sorted(
+                    str(m.get('id')) for m in (_universe or []) if m.get('id')
+                ) or sorted(k.replace(' ', '-') for k in MARKET_ALIASES)
+                return jsonify({
+                    'error': f"Market '{market}' not found",
+                    'code': 'NOT_FOUND',
+                    'detail': ("Use a valid market id. Slug, display name and "
+                               "any casing all resolve. Call rank_markets (or "
+                               "GET /api/v1/markets) for the full list; DCPI "
+                               "market pages live at /dcpi/<slug>."),
+                    'valid_markets_sample': _valid[:20],
+                    'valid_markets_count': len(_valid),
+                }), 404
+            cities = list(_resolved.get('cities') or [])
+            market_id = str(_resolved.get('id') or market_lower)
+            market_name = str(_resolved.get('name')
+                              or market_id.replace('_', ' ').title())
+            market_country = _resolved.get('country')
+            market_state = _resolved.get('state')
+
+        # Build city conditions — the country/state guard prevents ISO code
+        # collisions (e.g. AZ=Azerbaijan) and scopes an international market
+        # to its own country.
         conditions = []
         params = []
         for city in cities:
@@ -19586,7 +19659,12 @@ def get_market_stats(market):
                 params.append(f'{city},%')
 
         where_clause = ' OR '.join(conditions)
-        country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
+        # r-markets-api-ident: the guard carries params now. Every query below
+        # places it immediately after ({where_clause}), and RAILWAY_EXCLUSION
+        # escapes its own literals as %%, so appending to `params` keeps the
+        # placeholder order correct for all four executes without touching them.
+        country_guard, _scope_params = market_scope_sql(market_country, market_state)
+        params += _scope_params
 
         # Get overall stats
         c.execute(f"""
@@ -19670,14 +19748,19 @@ def get_market_stats(market):
         _rel = []
         if request.args.get('rag'):
             _rel = _rag_related_intel(
-                f"{market_lower} data center market power capacity",
+                f"{market_name} data center market power capacity",
                 corpus=["market_narratives", "news_articles", "deals"], k=4,
             )
         resp = jsonify({
             'success': True,
             'market': {
-                'id': market_lower,
-                'name': market_lower.replace('_', ' ').title(),
+                # r-markets-api-ident: echo the CANONICAL id, not the caller's
+                # spelling. An agent that reached this row by typing
+                # 'Ludwigshafen Am Rhein' gets back id 'ludwigshafen-am-rhein-de'
+                # — the spelling our own links and cite_url_template use — so
+                # the next hop is the canonical URL rather than the guess.
+                'id': market_id,
+                'name': market_name,
                 'cities': cities
             },
             'stats': {
@@ -19724,33 +19807,71 @@ def compare_markets():
     if not markets_param:
         return jsonify({'error': 'markets parameter required (comma-separated)', 'code': 'VALIDATION_ERROR'}), 400
 
-    market_list = [m.strip().lower().replace('-', ' ') for m in markets_param.split(',')]
+    # r-markets-api-ident (2026-09-05): keep the caller's raw spelling — the
+    # resolver folds case and separators itself, and the old eager
+    # `.lower().replace('-', ' ')` destroyed the hyphenated ids the list route
+    # publishes ('london-gb' arrived as 'london gb').
+    market_list = [m.strip() for m in markets_param.split(',')]
 
     if len(market_list) < 2 or len(market_list) > 4:
         return jsonify({'error': 'Please provide 2-4 markets to compare', 'code': 'VALIDATION_ERROR'}), 400
-
-    # Validate markets
-    invalid = [m for m in market_list if m not in MARKET_ALIASES]
-    if invalid:
-        return jsonify({
-            'error': f'Unknown markets: {invalid}',
-            'code': 'NOT_FOUND',
-            'available_markets': list(MARKET_ALIASES.keys())[:20]
-        }), 404
 
     conn = None
     # r-status-canon (2026-07-31): bound once, outside the per-market loop —
     # these are constant predicate strings, not per-row work.
     from util.status_taxonomy import operational_sql as _osql, pipeline_sql as _psql
+    from util.market_aliases import market_scope_sql, resolve_market_identifier
     _op_sql, _pipe_sql = _osql(), _psql()
     try:
-        conn = get_db()
+        # r-markets-api-ident: read replica, matching /api/v1/markets/list
+        # (r-poolhold) and get_market_stats. The universe build below is the
+        # same ~120-query aggregate that was named the #1 primary-pool holder,
+        # and this endpoint is SELECT-only and staleness-tolerant.
+        conn = get_read_db()
         c = conn.cursor()
+
+        # Resolve every identifier the way /api/v1/markets/<id> does. Curated
+        # markets keep a no-DB fast path, which also preserves the two curated
+        # keys the universe build deliberately drops ('dfw', 'nova') — they
+        # still resolve, via canonical_slug, if they ever reach the slow path.
+        _universe = None
+        resolved, invalid = [], []
+        for _raw in market_list:
+            _key = _raw.lower().replace('-', ' ')
+            if _key in MARKET_ALIASES:
+                resolved.append({'id': _key,
+                                 'name': _key.replace('_', ' ').title(),
+                                 'cities': MARKET_ALIASES[_key]})
+                continue
+            if _universe is None:
+                try:
+                    _universe = build_market_universe(c)
+                except Exception as _uerr:
+                    logger.warning(f"compare_markets universe build failed: {_uerr}")
+                    _universe = []
+            _hit = resolve_market_identifier(_raw, _universe)
+            if _hit is None or not (_hit.get('cities') or []):
+                invalid.append(_raw)
+            else:
+                resolved.append(_hit)
+
+        if invalid:
+            _valid = sorted(str(m.get('id')) for m in (_universe or [])
+                            if m.get('id')) or list(MARKET_ALIASES.keys())
+            return jsonify({
+                'error': f'Unknown markets: {invalid}',
+                'code': 'NOT_FOUND',
+                'detail': ('Slug, display name and any casing all resolve. '
+                           'GET /api/v1/markets lists every valid id.'),
+                'available_markets': _valid[:20],
+                'available_markets_count': len(_valid),
+            }), 404
 
         comparison = []
 
-        for market in market_list:
-            cities = MARKET_ALIASES[market]
+        for _mkt in resolved:
+            market = _mkt['id']
+            cities = _mkt['cities']
 
             conditions = []
             params = []
@@ -19759,10 +19880,27 @@ def compare_markets():
                     conditions.append('state = %s')
                     params.append(city)
                 else:
-                    conditions.append('city ILIKE %s')
-                    params.append(f'%{city}%')
+                    # r-markets-api-ident (2026-09-05): was `city ILIKE
+                    # '%city%'` with NO country guard at all — the substring
+                    # bleed r43-H fixed in get_market_stats on 2026-05-27 was
+                    # never fixed here. Measured live 2026-09-05:
+                    #     /api/v1/markets/compare?markets=reno,...  reno = 43
+                    #     /api/v1/markets/reno                      reno = 22
+                    # Nearly double, from 'reno' matching Grenoble and friends
+                    # across every country. Fixing only this endpoint's
+                    # RESOLUTION would have spread that bleed to every
+                    # international market it can now reach, so the predicate
+                    # moves to the detail route's exact match in the same
+                    # change. Compare's published counts DROP as a result;
+                    # they were inflated.
+                    conditions.append('(LOWER(city) = LOWER(%s) OR city ILIKE %s)')
+                    params.append(city)
+                    params.append(f'{city},%')
 
             where_clause = ' OR '.join(conditions)
+            _scope_sql, _scope_params = market_scope_sql(
+                _mkt.get('country'), _mkt.get('state'))
+            params += _scope_params
 
             # Get comprehensive stats
             c.execute(f"""
@@ -19786,6 +19924,7 @@ def compare_markets():
                     SUM(CASE WHEN {_pipe_sql} THEN 1 ELSE 0 END) as pipeline
                 FROM discovered_facilities
                 WHERE ({where_clause})
+                {_scope_sql}
                 {RAILWAY_EXCLUSION}
             """, params)
 
@@ -19805,6 +19944,7 @@ def compare_markets():
                 SELECT provider, COUNT(*) as count
                 FROM discovered_facilities 
                 WHERE ({where_clause}) AND provider != ''
+                {_scope_sql}
                 {RAILWAY_EXCLUSION}
                 GROUP BY provider
                 ORDER BY count DESC
@@ -19815,7 +19955,10 @@ def compare_markets():
 
             comparison.append({
                 'market': market,
-                'display_name': market.replace('_', ' ').title(),
+                # r-markets-api-ident: the market's published NAME, so a caller
+                # that reached it by typing 'Ludwigshafen Am Rhein' sees the
+                # canonical label rather than a re-titled guess.
+                'display_name': _mkt.get('name') or market.replace('_', ' ').title(),
                 'metrics': {
                     'facilities': stats['facility_count'],
                     'total_power_mw': round(stats['total_power'], 1),
