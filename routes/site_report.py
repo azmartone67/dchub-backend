@@ -459,9 +459,70 @@ def _gather_gas(lat, lon, state):
     return out
 
 
+# ★ 2026-09-05 — THE THIRD STATE NOBODY ENUMERATED.
+# _usdm_point_level carefully distinguished TWO outcomes — "no drought" ('None')
+# and "source unreachable" (None) — and folded a third into the first: OUTSIDE
+# THE DATASET. The US Drought Monitor covers the US and its territories, so a
+# German parcel returns zero intersecting features, and zero features was read
+# as "no drought".
+#
+# Measured at 50.363083, 9.307306 (Hesse, DE) before this fix: 99/100,
+# "No Drought", "Excellent Water Availability", "Low water stress region" —
+# sourced from a dataset with no German coverage. That catchment had genuine
+# drought stress in 2018 and 2022.
+#
+# Same shape as the air-permitting 89 fixed the same day: absence read as clean.
+# The coverage predicate is deliberately the SAME one the air scorer uses rather
+# than a second copy — both answer "does the US federal dataset family reach
+# here", and two definitions of that would drift apart.
+_USDM_OUT_OF_COVERAGE = "OUT_OF_COVERAGE"
+
+
+_USDM_US_BOXES = (
+    (24.0, 49.5, -125.0, -66.0),    # contiguous 48
+    (51.0, 72.0, -170.0, -130.0),   # Alaska
+    (18.0, 23.0, -161.0, -154.0),   # Hawaii
+)
+
+
+def _usdm_in_coverage(lat, lon):
+    """True when USDM plausibly covers this point.
+
+    Same two-part test the air scorer uses — inside the national box AND
+    resolving to a US state — because a national box alone admits Ottawa,
+    Montreal and Vancouver. The state boxes are imported from
+    air_permitting_extras, a plain data module, rather than from main: reaching
+    through main would boot the whole app, and a failed import would silently
+    degrade this to the weaker box-only test exactly when it matters.
+    """
+    try:
+        lat = float(lat); lon = float(lon)
+    except (TypeError, ValueError):
+        return False
+    if lat != lat or lon != lon:            # NaN
+        return False
+    if not any(a <= lat <= b and c <= lon <= d for a, b, c, d in _USDM_US_BOXES):
+        return False
+    try:
+        from air_permitting_extras import STATE_BOXES
+    except Exception:
+        return True     # box says yes and we cannot refine; assess rather than blank
+    for box in STATE_BOXES.values():
+        (mn_lat, mn_lon), (mx_lat, mx_lon) = box
+        if mn_lat <= lat <= mx_lat and mn_lon <= lon <= mx_lon:
+            return True
+    return False
+
+
 def _usdm_point_level(lat, lon):
-    """Worst USDM drought class intersecting the point. Returns 'None'..'D4',
-    or None if the source is unreachable (distinct from 'None' = no drought)."""
+    """Worst USDM drought class intersecting the point.
+
+    THREE outcomes, not two: 'None'..'D4' (measured), None (source unreachable),
+    or _USDM_OUT_OF_COVERAGE (the dataset does not reach here — NOT 'no
+    drought'). Collapsing the third into 'None' is what scored a German site
+    99/100 for water."""
+    if not _usdm_in_coverage(lat, lon):
+        return _USDM_OUT_OF_COVERAGE
     try:
         import requests
         url = ("https://services5.arcgis.com/0OTVzJS4K09zlixn/arcgis/rest/services/"
@@ -524,10 +585,40 @@ def _usdm_state_stats(state):
         return None
 
 
+# A water score is only a NUMBER when it was measured. Both the em-dash
+# (source unreachable) and "N/A" (outside coverage) must render bare — appending
+# "/100" to either produces "N/A/100", which reads as a broken number rather
+# than an honest absence.
+_WATER_NO_SCORE = ("—", "N/A")
+
+
+def _water_has_number(w):
+    return (w or {}).get("score") not in _WATER_NO_SCORE
+
+
 def _gather_water(lat, lon, state):
     out = {"_score": None}
-    point = _usdm_point_level(lat, lon)            # 'None'..'D4' or None
+    point = _usdm_point_level(lat, lon)            # 'None'..'D4', None, or OUT_OF_COVERAGE
     stats = _usdm_state_stats(state)               # dict or None
+
+    # ★ Out of coverage is NOT "no drought". Falling through would set lvl to
+    # "None", deduct nothing, and print ~99/100 "Excellent Water Availability"
+    # for a site the dataset has never seen.
+    if point == _USDM_OUT_OF_COVERAGE:
+        out["score"] = "N/A"
+        out["label"] = "Not assessed — outside data coverage"
+        out["drought"] = "N/A"
+        out["drought_note"] = ("The U.S. Drought Monitor does not cover this "
+                               "location, so no drought class was measured.")
+        out["assessed_at"] = _coords_str(lat, lon)
+        out["source"] = "USDM · USGS hydrology (US-only — no coverage here)"
+        out["assessment"] = (
+            "Water and drought risk are UNASSESSED at this site. Every input "
+            "here is a US dataset (U.S. Drought Monitor, USGS hydrology) and "
+            "none of them reach this location. An absent drought polygon is "
+            "not evidence of water availability — treat local hydrology and "
+            "abstraction permitting as an open question, not a cleared one.")
+        return out
 
     if point is None and stats is None:
         out["score"] = "—"
@@ -1087,7 +1178,7 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
     sc = []
     # Water
     sc.append(card("Water Availability",
-                   water.get("score", "—"), "/100" if water.get("score") != "—" else "",
+                   water.get("score", "—"), "/100" if _water_has_number(water) else "",
                    water.get("label", "—").replace(" Water Availability", ""),
                    _score_color(water.get("_score"))))
     # Power / Transmission
@@ -1127,7 +1218,8 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
         return {"label": label, "value": value, "note": note, "color": color}
 
     summary_grid = [
-        gcell("Water", f"{water.get('score','—')}/100" if water.get("score") != "—" else "—",
+        gcell("Water", f"{water.get('score','—')}/100" if _water_has_number(water)
+              else water.get("score", "—"),
               water.get("label", "—").replace(" Water Availability", "") or "—",
               _score_color(water.get("_score"))),
         gcell("Gas", (_fmt_mi(gas["_dist"]) or "—") if gas.get("_dist") is not None else "—",
