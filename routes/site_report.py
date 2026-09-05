@@ -599,6 +599,26 @@ def _gather_air(lat, lon, capacity_mw):
         out["sources"] = "EPA Green Book · AQS · NPS FLM · NEI"
         return out
 
+    # ★ 2026-09-05 — OUT OF COVERAGE IS NOT "LOW RISK".
+    # The scorer returns available:false with no score outside the US, because
+    # every input (EPA Green Book, AQS, NPS FLM, NEI) and every output (PSD /
+    # NNSR / BACT) is a US Clean Air Act construct. Falling through to the
+    # ladder below would read the EMPTY pollutant set as zero reds and zero
+    # yellows and print "Low" — the same false reassurance the scorer was fixed
+    # to stop emitting, reappearing on the page a client actually reads.
+    if r.get("available") is False:
+        out["risk"] = "N/A"
+        out["risk_note"] = (r.get("reason") or
+                            "Outside US air-permitting data coverage.")
+        out["pathway"] = "N/A (non-US site)"
+        out["assessed_at"] = _coords_str(lat, lon)
+        out["pollutants"] = []
+        out["offset"] = "N/A"
+        out["context"] = r.get("applicable_regime_note", "")
+        out["context_label"] = "Applicable regime"
+        out["sources"] = "EPA Green Book · AQS · NPS FLM · NEI (US-only — no coverage here)"
+        return out
+
     pollutants = r.get("pollutants") or {}
     reds = sum(1 for p in pollutants.values() if p.get("s") == "red")
     yellows = sum(1 for p in pollutants.values() if p.get("s") == "yellow")
@@ -1085,7 +1105,9 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
         gas_val, gas_sub = "—", "no pipeline <25 mi"
     sc.append(card("Gas Pipeline", gas_val, "", gas_sub, _score_color(gas.get("_score"))))
     # Air
-    air_color = {"High": "red", "Moderate": "amb", "Elevated": "amb", "Low": "grn"}.get(air.get("risk"), "amb")
+    # N/A is neutral, never green: an unassessed site must not read as a clean one.
+    air_color = {"High": "red", "Moderate": "amb", "Elevated": "amb",
+                 "Low": "grn", "N/A": "amb"}.get(air.get("risk"), "amb")
     sc.append(card("Air Permitting", air.get("risk", "—"), " risk" if air.get("risk") != "—" else "",
                    air.get("pathway", "—"), air_color))
     # Fiber
