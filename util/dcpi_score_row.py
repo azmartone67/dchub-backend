@@ -404,6 +404,22 @@ MAY_PUBLISH = """(
                AND COALESCE(canon.published, true) = true
         )
 )""".replace("{stale_after}", PUBLISH_STALE_AFTER)
+# ★ That COALESCE is deliberate, and it is NOT the inversion fixed in
+# canonical_stats.py on 2026-09-05. Do not "make it consistent" with
+# PUBLISHED_ONLY — the two ask opposite questions.
+#
+# PUBLISHED_ONLY asks "may I show this row?", so assuming an unknown flag means
+# yes would publish something nobody released. Permissive is wrong there.
+#
+# Here the predicate sits inside a NOT EXISTS that BLOCKS a twin from
+# publishing while its canonical is live. Assuming an unknown canonical is live
+# therefore BLOCKS the twin — which is the conservative answer, because the
+# failure it prevents is both rows being published as separate markets at once.
+# Rewriting this to `canon.published = true` would let a twin publish beside a
+# canonical whose state is unknown: the exact duplication r-twin-unpublish
+# exists to end.
+#
+# Same words, opposite direction, because this one is read under a negation.
 
 
 def may_publish_params():
