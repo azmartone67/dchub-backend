@@ -31180,7 +31180,7 @@ def _build_sitemap_sections():
     # ONLY when you actually edit the static_pages / markets / locations lists.
     # DB-driven shards below carry their REAL per-row timestamps: dcpi →
     # computed_at, city-state markets → MAX(first_seen), facilities → first_seen.
-    _STATIC_LASTMOD = '2026-09-05'  # bumped: +18 nav/footer-linked pages that were unlisted
+    _STATIC_LASTMOD = '2026-09-05'  # bumped: +18, then +17 more nav-linked pages
 
     def slugify(text):
         """Convert facility name to URL slug."""
@@ -31915,6 +31915,38 @@ def _build_sitemap_sections():
         ('/map',                         '0.8', 'weekly'),
         ('/press',                       '0.7', 'weekly'),
         ('/rankings',                    '0.7', 'weekly'),
+        # r-linked-not-listed round 2 (2026-09-05): the remaining pages the
+        # global nav links to that no sitemap shard listed. Round 1 took the 18
+        # reachable from the OLD nav snapshot; these came from the CURRENT nav
+        # (66 links, not 36) once dchub-frontend's build-search-index.py began
+        # reporting nav-vs-index coverage on every build. All 17 measured live
+        # 2026-09-05: HTTP 200, ZERO redirects, no robots meta, real titles and
+        # bodies (5KB-105KB, no loading-shell stubs).
+        ('/brief',                       '0.8', 'daily'),
+        ('/connect-mcp',                 '0.8', 'monthly'),
+        ('/daily',                       '0.8', 'daily'),
+        ('/dc-hub-media/',               '0.7', 'daily'),
+        ('/dcgi',                        '0.9', 'daily'),
+        ('/hyperscalers',                '0.8', 'weekly'),
+        ('/listings',                    '0.7', 'weekly'),
+        ('/mcp-standing',                '0.7', 'weekly'),
+        ('/partners/feedback',           '0.5', 'monthly'),
+        ('/premium',                     '0.7', 'monthly'),
+        ('/product',                     '0.7', 'monthly'),
+        ('/radar',                       '0.8', 'daily'),
+        ('/receipts',                    '0.7', 'weekly'),
+        ('/reports/quarterly',           '0.8', 'monthly'),
+        ('/state-of-2026',               '0.8', 'weekly'),
+        ('/system-status',               '0.6', 'daily'),
+        ('/what-ais-say',                '0.7', 'weekly'),
+        # ── /sites/ and /sites/value are DELIBERATELY ABSENT ──────────────
+        # Both are live 200s the nav links to, and both are inside
+        # `Disallow: /sites/` in robots.txt. A sitemap entry for a
+        # robots-blocked URL is a contradiction, not a discovery hint: Search
+        # Console reports it as "Submitted URL blocked by robots.txt" and it
+        # counts against the whole sitemap. Whether those pages SHOULD be
+        # crawlable is a product decision, not a sitemap one — until robots.txt
+        # changes, listing them would publish a claim the site itself refuses.
     ]
     # r-sitemap-shard (2026-07-03): the seed brief landings ported from the
     # retired routes/seo_pages.py sitemap-landings.xml (which was UNREACHABLE
