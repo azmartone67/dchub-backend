@@ -60,6 +60,7 @@ import hashlib
 
 from flask import Blueprint, jsonify, request, Response
 from ai_surface_canon import canon_text
+from utc_clock import utc_iso_z
 
 
 agent_broadcast_bp = Blueprint("agent_broadcast", __name__)
@@ -218,7 +219,7 @@ def _track_poller():
     _RECENT_POLLERS[key] = {
         "ua":         ua,
         "agent_name": agent_name,
-        "last_seen":  datetime.datetime.utcnow().isoformat() + "Z",
+        "last_seen":  utc_iso_z(),
         "hits":       (_RECENT_POLLERS.get(key, {}).get("hits", 0) + 1),
     }
     # Durable write-through. `key` is already a salt-free sha256 of ip|ua;
@@ -333,7 +334,7 @@ def _restatement_item(restated: list, days: int) -> dict:
 
     return {
         "kind":    "dcpi_restatement",
-        "ts":      datetime.datetime.utcnow().isoformat() + "Z",
+        "ts":      utc_iso_z(),
         "title":   (f"{n} DCPI verdict{'s' if n != 1 else ''} restated, "
                     f"not moved"),
         "summary": (
@@ -764,7 +765,7 @@ def _fetch_why_dchub() -> list[dict]:
     the dated per-source comparison lives behind the linked endpoint.
     Uses only VERIFIED DC Hub facts (no contested grid count)."""
     try:
-        ts = datetime.datetime.utcnow().isoformat() + "Z"
+        ts = utc_iso_z()
     except Exception:
         ts = None
     return [{
@@ -815,7 +816,7 @@ def _fetch_data_growth(days: int) -> list[dict]:
                " — queried on demand by agents, not static training data.")
     return [{
         "kind":    "data_coverage",
-        "ts":      datetime.datetime.utcnow().isoformat() + "Z",
+        "ts":      utc_iso_z(),
         "title":   "DC Hub live data coverage",
         "summary": summary[:300],
         "url":     "https://dchub.cloud/ai",
@@ -903,7 +904,7 @@ def _build_broadcast(days: int, kinds: list[str] | None = None) -> dict:
     items.sort(key=lambda x: -int(x.get("weight") or 0))
 
     return {
-        "as_of":         datetime.datetime.utcnow().isoformat() + "Z",
+        "as_of":         utc_iso_z(),
         "window_days":   days,
         "item_count":    len(items),
         "items":         _cap_items(items),

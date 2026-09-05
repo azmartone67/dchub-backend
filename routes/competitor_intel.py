@@ -26,6 +26,7 @@ import re
 import datetime
 import hashlib
 from flask import Blueprint, jsonify, request
+from utc_clock import utc_iso_z
 
 
 # Phase XXXX (2026-05-16) — name 'competitor_intel' was already
@@ -129,7 +130,7 @@ def _fetch(url: str) -> dict:
 def scan_competitors() -> dict:
     """Run a daily snapshot pass. Idempotent per (competitor, url, date)."""
     out: dict = {"scanned": 0, "snapshots": [], "errors": [],
-                 "ran_at": datetime.datetime.utcnow().isoformat() + "Z"}
+                 "ran_at": utc_iso_z()}
     c = _conn()
     if c is None:
         out["errors"].append("no_database"); return out
@@ -402,7 +403,7 @@ def snapshots_endpoint():
 def diffs_endpoint():
     out = compute_diffs(min_byte_delta_pct=10.0)
     resp = jsonify(diffs=out, count=len(out),
-                   generated_at=datetime.datetime.utcnow().isoformat() + "Z")
+                   generated_at=utc_iso_z())
     resp.headers["Cache-Control"] = "public, max-age=600"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
@@ -568,7 +569,7 @@ def comparison_endpoint():
         dchub=self_metrics,
         competitors=competitors,
         leads=leads,
-        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+        generated_at=utc_iso_z(),
         positioning=(
             "DC Hub is the only data center intelligence platform that's "
             "agent-native (MCP), API-first (540+ routes), and live-data "
@@ -600,7 +601,7 @@ def sitemap_pulse_endpoint():
     out.sort(key=lambda c: -(c.get("url_count") or 0))
     resp = jsonify(
         competitors=out,
-        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+        generated_at=utc_iso_z(),
     )
     resp.headers["Cache-Control"] = "public, max-age=1800"
     resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -724,7 +725,7 @@ def ship_wins_endpoint():
                           "of these 3 hardcoded samples."),
                 win_count=len(sample_wins),
                 wins=sample_wins,
-                generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+                generated_at=utc_iso_z(),
             ), 200
         commits = r.json() or []
     except Exception as e:
@@ -783,7 +784,7 @@ def ship_wins_endpoint():
               "a recent commit message against the competitive-differentiator "
               "map. Wire these to /api/v1/marketing/publish-now to auto-post "
               "or hand-pick for the weekly digest."),
-        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+        generated_at=utc_iso_z(),
     )
     resp.headers["Cache-Control"] = "public, max-age=600"
     resp.headers["Access-Control-Allow-Origin"] = "*"

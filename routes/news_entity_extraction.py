@@ -56,6 +56,7 @@ import datetime
 import hashlib
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from utc_clock import utc_iso_z
 
 logger = logging.getLogger(__name__)
 news_ner_bp = Blueprint("news_ner", __name__)
@@ -824,7 +825,7 @@ def _scan(days: int, dry_run: bool) -> dict:
         "candidates_new":   0,
         "candidates_known": 0,
         "examples":         [],
-        "started_at":       datetime.datetime.utcnow().isoformat() + "Z",
+        "started_at":       utc_iso_z(),
     }
     _ensure_table()
     c = _get_db()
@@ -935,7 +936,7 @@ def _scan(days: int, dry_run: bool) -> dict:
     c = _get_db()
     if c is None:
         out["error"] = "no_db_persist"
-        out["finished_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+        out["finished_at"] = utc_iso_z()
         return out
     try:
         with c.cursor() as cur:
@@ -1000,7 +1001,7 @@ def _scan(days: int, dry_run: bool) -> dict:
         try: c.close()
         except Exception: pass
 
-    out["finished_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    out["finished_at"] = utc_iso_z()
     out["ok"] = True
     return out
 
@@ -1043,7 +1044,7 @@ def _promote_candidates(min_mentions: int = None,
         "skipped_no_url": 0,
         "errors": 0,
         "examples": [],
-        "started_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "started_at": utc_iso_z(),
     }
 
     try:
@@ -1266,7 +1267,7 @@ def _promote_candidates(min_mentions: int = None,
         try: c.close()
         except Exception: pass
 
-    out["finished_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    out["finished_at"] = utc_iso_z()
     return out
 
 

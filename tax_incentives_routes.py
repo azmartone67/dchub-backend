@@ -27,6 +27,7 @@ import json
 import csv
 import io
 from internal_auth import require_internal_or_admin
+from utc_clock import utc_iso_z
 
 tax_incentives_bp = Blueprint('tax_incentives', __name__)
 
@@ -184,7 +185,7 @@ def setup_tax_incentive_routes(app, db=None):
             'status':       'success',
             'count':        len(results),
             'data':         results,
-            'last_updated': datetime.utcnow().isoformat() + 'Z',
+            'last_updated': utc_iso_z(),
         }
         if _gated:
             out['_gated'] = True
@@ -225,7 +226,7 @@ def setup_tax_incentive_routes(app, db=None):
                     'limited': len([s for s in all_states if s.get('rating', 0) == 2]),
                     'none': len([s for s in all_states if s.get('rating', 0) <= 1]),
                 },
-                'last_updated': datetime.utcnow().isoformat() + 'Z'
+                'last_updated': utc_iso_z()
             }
         })
     
@@ -261,7 +262,7 @@ def setup_tax_incentive_routes(app, db=None):
         
         # Merge updates
         incentives_data[abbr].update(updates)
-        incentives_data[abbr]['last_modified'] = datetime.utcnow().isoformat() + 'Z'
+        incentives_data[abbr]['last_modified'] = utc_iso_z()
         
         # Persist to DB if available
         if db:
@@ -475,7 +476,7 @@ def _setup_v2_routes(app, incentives_data, db):
         results.sort(key=lambda s: s.get('name', ''))
 
         if fmt == 'json':
-            return jsonify({'status': 'success', 'count': len(results), 'data': results, 'exported_at': datetime.utcnow().isoformat() + 'Z'})
+            return jsonify({'status': 'success', 'count': len(results), 'data': results, 'exported_at': utc_iso_z()})
 
         output = io.StringIO()
         writer = csv.writer(output)
@@ -502,7 +503,7 @@ def _setup_v2_routes(app, incentives_data, db):
             if not coords:
                 continue
             features.append({'type': 'Feature', 'geometry': {'type': 'Point', 'coordinates': [coords[1], coords[0]]}, 'properties': {'abbr': abbr, 'name': s['name'], 'fips': s.get('fips'), 'has_incentive': s.get('has_incentive', False), 'rating': s.get('rating', 0), 'sales_tax': s.get('sales_tax', False), 'property_tax': s.get('property_tax', False), 'income_tax': s.get('income_tax', False), 'electricity_tax': s.get('electricity_tax', False), 'duration': s.get('duration', ''), 'min_investment': s.get('min_investment', ''), 'summary': s.get('summary', ''), 'detail_url': f'https://dchub.cloud/tax-incentives#{abbr}'}})
-        return jsonify({'type': 'FeatureCollection', 'features': features, 'metadata': {'source': 'DC Hub Tax Incentives', 'last_updated': datetime.utcnow().isoformat() + 'Z', 'total_features': len(features)}})
+        return jsonify({'type': 'FeatureCollection', 'features': features, 'metadata': {'source': 'DC Hub Tax Incentives', 'last_updated': utc_iso_z(), 'total_features': len(features)}})
 
     @app.route('/api/v1/tax-incentives/ratings', methods=['GET', 'OPTIONS'])
     def get_incentive_ratings():

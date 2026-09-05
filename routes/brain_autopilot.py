@@ -44,6 +44,7 @@ from flask import Blueprint, jsonify, request
 import psycopg2
 import psycopg2.extras
 import logging
+from utc_clock import utc_iso_z
 
 # 2026-06-16: logger was used at autopilot_verify() (logger.warning in an except
 # handler) but never defined → a NameError waiting in the verifier's error path,
@@ -2587,7 +2588,7 @@ def autopilot_run():
         try: c.close()
         except Exception: pass
 
-    summary["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    summary["completed_at"] = utc_iso_z()
     if summary_bridge_error:
         summary["radar_bridge_error"] = summary_bridge_error
     if _heal_fetch_error:
@@ -2779,7 +2780,7 @@ def _kick_heartbeat_refresh() -> bool:
         _HEARTBEAT_COMPUTING["in_progress"] = False
         _HEARTBEAT_COMPUTING["last_error"] = f"thread spawn failed: {str(_te)[:160]}"
         _HEARTBEAT_COMPUTING["last_error_at"] = (
-            datetime.datetime.utcnow().isoformat() + "Z")
+            utc_iso_z())
         return False
 
 
@@ -2851,7 +2852,7 @@ def brain_heartbeat():
     _kick_heartbeat_refresh()
     from flask import jsonify as _j2
     warming = {
-        "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "checked_at": utc_iso_z(),
         "verdict":    "warming",
         "verdict_detail": "Brain heartbeat cache is cold (15+ min since last fetch). Computing in background. Retry in ~30s for full status.",
         "_cache_age_seconds": None,
@@ -2890,7 +2891,7 @@ def _compute_heartbeat_async():
         # Don't write to cache on failure — next request retries
         _HEARTBEAT_COMPUTING["last_error"] = str(_e)[:300]
         _HEARTBEAT_COMPUTING["last_error_at"] = (
-            datetime.datetime.utcnow().isoformat() + "Z")
+            utc_iso_z())
         try:
             import sys as _s
             print(f"[brain_heartbeat] async compute crashed: {_e}",
@@ -2904,7 +2905,7 @@ def _compute_heartbeat_sync():
     """The original synchronous compute body. Refactored out of
     brain_heartbeat() so it can be called from the async refresh path."""
     out: dict = {
-        "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "checked_at": utc_iso_z(),
         "verdict":    "unknown",
     }
     c = _conn()
@@ -3446,7 +3447,7 @@ def autopilot_verify():
         try: c.close()
         except Exception: pass
 
-    summary["completed_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    summary["completed_at"] = utc_iso_z()
     return jsonify(ok=True, summary=summary), 200
 
 
