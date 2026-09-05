@@ -457,11 +457,31 @@ def tools_for_well_known() -> list[dict]:
     (handle_well_known in main.py). Same catalog as _merged_tools(), mapped to
     the manifest's UPPER-case tier labels, so the public discovery manifest
     derives from the one catalog and can't re-advertise phantom tools.
-    (The served manifest had drifted to 9 phantoms + 11 missing — r-fix.)"""
+    (The served manifest had drifted to 9 phantoms + 11 missing — r-fix.)
+
+    ★2026-09-05: `example` was computed and DISCARDED here.
+
+    Every one of the 83 catalog entries carries a fully-formed call with the
+    real parameter names — get_market_intel(market="northern-virginia") — and
+    the public discovery manifest, the document registries and crawlers scan,
+    threw all 83 away and published names + prose only. So the one surface an
+    agent can read WITHOUT opening an MCP session told it what each tool does
+    and never how to call it.
+
+    That gap is not theoretical. Measured live 2026-09-05:
+    get_market_intel(market_slug="dallas") returns no market data — the
+    undeclared argument is stripped and the tier gate answers with an upgrade
+    envelope — while get_market_intel(market="dallas") returns the full row.
+    The correct call was sitting in this tuple the whole time.
+
+    Publishing `_ex` costs ~5KB on a 130KB manifest and cannot drift: it is the
+    same catalog entry the name and description already come from.
+    """
     return [
         {"name": name,
          "tier": _WELL_KNOWN_TIER.get(tier, "IDENTIFIED"),
-         "description": summary}
+         "description": summary,
+         "example": _ex}
         for name, _cat, tier, summary, _ex in _merged_tools()
     ]
 
