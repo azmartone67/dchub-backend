@@ -236,18 +236,35 @@ def list_inquiries():
                 for k in ("created_at", "contacted_at"):
                     if r.get(k): r[k] = r[k].isoformat()
             # Pipeline counts by status
+            # ★ 2026-09-05 — KEYED BY NAME, NOT POSITION. This cursor is a
+            # RealDictCursor (see the `with` above), so a row is dict-like and
+            # r[0] raises KeyError(0). The bare `except` below stringified that
+            # to "0", so the endpoint answered
+            #
+            #     HTTP 500  {"error": "0"}
+            #
+            # on EVERY call regardless of data — the rows query on the line
+            # above had already succeeded. This is the only admin read surface
+            # for enterprise_inquiries, so inbound enterprise leads have not
+            # been viewable through the API at all, which is why the schema
+            # fork #3894 fixed went unnoticed for two months.
+            #
+            # COUNT(*) needs an alias too: without one the key is "count", but
+            # naming it makes the read independent of libpq's default labelling.
             cur.execute("""
-                SELECT status, COUNT(*) FROM enterprise_inquiries
+                SELECT status, COUNT(*) AS n FROM enterprise_inquiries
                  GROUP BY status
             """)
-            by_status = {r[0]: int(r[1]) for r in cur.fetchall()}
+            by_status = {r["status"]: int(r["n"]) for r in cur.fetchall()}
         return jsonify({
             "count":      len(rows),
             "by_status":  by_status,
             "inquiries":  rows,
         }), 200
     except Exception as e:
-        return jsonify({"error": str(e)[:200]}), 500
+        # Name the exception TYPE: `str(KeyError(0))` is "0", which read as a
+        # value rather than a fault and told nobody anything for two months.
+        return jsonify({"error": f"{type(e).__name__}: {str(e)[:200]}"}), 500
 
 
 @enterprise_inquiry_bp.route("/api/v1/admin/enterprise/inquiry/<int:inq_id>/status",
