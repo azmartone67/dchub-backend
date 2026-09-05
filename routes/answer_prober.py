@@ -385,6 +385,97 @@ def _probe_open_data_markets(canon):
     return [_result("open_data_markets", "rows", len(rows), canon["markets"])]
 
 
+#: Public path per surface. Used ONLY to give a finding a stable `url`, which
+#: is half of brain_findings' (issue, url) dedup key — so a surface that stays
+#: wrong updates one row instead of minting a new one every run.
+_SURFACE_URLS = {
+    "dcpi_page": "https://dchub.cloud/dcpi",
+    "og_card": "https://dchub.cloud/dcpi/og.svg",
+    "agent_index": "https://dchub.cloud/api/v1/agent/index?domain=dcpi",
+    "alive": "https://dchub.cloud/api/v1/alive",
+    "monthly_report": "https://dchub.cloud/api/v1/reports/monthly.json",
+    "industry_pulse": "https://dchub.cloud/api/v1/industry/pulse",
+    "poe_answer": "https://dchub.cloud/poe/query",
+    "open_data_markets": "https://dchub.cloud/api/v1/open-data/dcpi-markets.csv",
+}
+
+#: Verdicts that become a brain finding.
+#:
+#: `disagrees` — the surface answered, and the answer is wrong.
+#: `extractor-blind` — the probe could not find the value at all, which is
+#:   either a rewritten surface or a retired probe. Both need a human.
+#:
+#: Deliberately EXCLUDED:
+#:   `warming`  a replica that says it is not ready yet is not wrong;
+#:   `skipped`  an unrunnable probe is not a failing one;
+#:   `unreachable` a surface being DOWN is a liveness signal other monitors
+#:              already own. Writing findings for it would make this detector
+#:              fire on every deploy blip and dilute the ones that mean
+#:              "we are serving a wrong answer" — the only thing it exists to
+#:              say.
+_FINDING_VERDICTS = ("disagrees", "extractor-blind")
+
+
+def write_findings(out: dict) -> dict:
+    """Upsert each wrong answer into brain_findings, deduped on (issue, url).
+
+    Mirrors ai_surface_sentinel._write_findings — same canonical writer, which
+    handles the UNIQUE(issue, url) schema trap that makes a hand-rolled INSERT
+    fail silently.
+
+    ★ An INCONCLUSIVE run writes NOTHING. If canon could not be read, every
+    comparison is absent rather than false, and minting findings from that
+    would manufacture alarms out of an outage in the baseline — the same class
+    of lie this module exists to catch.
+
+    Informational only: no surface is written, nothing is auto-fixed. Never
+    raises.
+    """
+    if out.get("verdict") == "inconclusive":
+        return {"written": 0, "skipped": "inconclusive run — canon unreadable"}
+    try:
+        from main import get_pg_connection, return_pg_connection
+        from routes.brain_findings_writer import upsert_brain_finding
+    except Exception as e:
+        return {"written": 0, "error": f"import: {str(e)[:80]}"}
+    conn = None
+    written = 0
+    try:
+        conn = get_pg_connection()
+        with conn.cursor() as cur:
+            for c in out.get("comparisons", []):
+                if c.get("verdict") not in _FINDING_VERDICTS:
+                    continue
+                surface = c.get("surface")
+                issue = f"answer_drift:{surface}:{c.get('field')}"
+                detail = (f"{surface} {c.get('field')}: observed="
+                          f"{c.get('observed')!r} expected={c.get('expected')!r} "
+                          f"({c.get('verdict')})")
+                if c.get("note"):
+                    detail += f" — {c['note']}"
+                try:
+                    upsert_brain_finding(
+                        cur, issue=issue,
+                        url=_SURFACE_URLS.get(surface, "https://dchub.cloud/"),
+                        detail=detail, detector="answer_prober")
+                    written += 1
+                except Exception:
+                    pass
+        conn.commit()
+    except Exception as e:
+        return {"written": written, "error": str(e)[:120]}
+    finally:
+        if conn is not None:
+            try:
+                return_pg_connection(conn)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    return {"written": written}
+
+
 _PROBES = {
     "dcpi_page": _probe_dcpi_page,
     "og_card": _probe_og_card,
