@@ -11,6 +11,14 @@ facility_slug_freeze (the one composer) and prefer the row's STORED
 canonical_slug (probed via information_schema — live DDL can lag repo DDL),
 completing the sweep #2015 (crawler surfaces) and #2016 (API emitters) began.
 
+★ "THE LAST THREE" WAS WRONG. r-hubslug (2026-09-05) found a FOURTH copy —
+  facilities_hub._fac_slug, whose own docstring claimed it was "byte-identical
+  to the sitemap + live pages" and was neither: no dedupe, no ascii fold, and
+  PR #3911's `len(name_slug) < 3` bug. 15% of the German hub's links were 301s.
+  Its guard is tests/test_facilities_hub_stored_slug.py. A grep for the
+  f-string compose form missed it because it composed with `stable_hash8` under
+  a different local variable name — count copies by BEHAVIOUR, not by anchor.
+
 Two deliberate asymmetries this file pins:
   • d1_sync delegates via frozen_slug_for_row — the D1 mirror KEY must equal
     the row's LIVE canonical URL, which for pre-dedupe-frozen rows is the

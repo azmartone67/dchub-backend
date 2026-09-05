@@ -42,6 +42,7 @@ pytest.importorskip("flask")
 class _Cur:
     def __init__(self, rows): self._rows = rows
     def execute(self, *a, **k): pass
+    def fetchone(self): return (1,)          # canonical_slug DDL probe: present
     def fetchall(self): return self._rows
     def close(self): pass
 
@@ -49,6 +50,7 @@ class _Cur:
 class _Conn:
     def __init__(self, rows): self._rows = rows
     def cursor(self, *a, **k): return _Cur(self._rows)
+    def rollback(self): pass
     def close(self): pass
 
 
@@ -64,7 +66,9 @@ def _client(monkeypatch, rows):
     return app.test_client(), fh
 
 
-ONE_ROW = [("Equinix FR5", "Equinix", "Frankfurt", "Frankfurt", "HE", 12.0)]
+# (name, provider, grp, city, state, power_mw, canonical_slug)
+ONE_ROW = [("Equinix FR5", "Equinix", "Frankfurt", "Frankfurt", "HE", 12.0,
+            "equinix-equinix-fr5-1a2b3c4d")]
 
 
 def test_a_country_with_no_facilities_is_an_honest_404(monkeypatch):
