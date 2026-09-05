@@ -92,14 +92,21 @@ def test_no_tracked_doc_records_a_machine_identity_env_var():
 
 
 def test_the_detector_fires_on_the_lines_that_actually_shipped():
-    """Must-fail control, against the real text from the 2026-06-13 capture."""
+    """Must-fail control, in the exact SHAPE of the 2026-06-13 capture.
+
+    ★ The operator name here is synthetic, deliberately. Both patterns are
+    username-agnostic (`/Users/[^/`\\s]+/` matches any name), so pasting the
+    real one would add zero detection power while re-publishing in a PUBLIC
+    repo the very string this guard exists to remove — the guard would become
+    the leak. Shape is what is under test; identity is not.
+    """
     shipped = "\n".join((
-        "- `HOME` = `/Users/jonathanmartone`",
+        "- `HOME` = `/Users/exampleoperator`",
         "- `CLAUDE_CODE_SESSION_ID` = `8c6f1bb4-e568-4128-80d9-94f981bdafc2`",
-        "- `USER` = `jonathanmartone`",
+        "- `USER` = `exampleoperator`",
     ))
     assert len(_DUMP_LINE.findall(shipped)) == 3, "detector missed a real line"
-    assert _HOME_PATH_VALUE.search("- `PWD` = `/Users/jonathanmartone/dchub-backend`")
+    assert _HOME_PATH_VALUE.search("- `PWD` = `/Users/exampleoperator/dchub-backend`")
 
 
 def test_the_explainer_prose_does_not_trip_it():
