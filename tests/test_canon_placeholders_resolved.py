@@ -105,7 +105,6 @@ _SWEPT = [
     "routes/agent_broadcast.py",
     "routes/agent_self_register.py",
     "routes/ai_platform_tool_tuner.py",
-    "routes/architecture_landing.py",
     "routes/autopilot_routes.py",
     "routes/brain_answer_cache.py",
     "routes/case_studies_landing.py",

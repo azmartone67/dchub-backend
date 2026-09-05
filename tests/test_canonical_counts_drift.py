@@ -3393,7 +3393,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/agent_success_report.py': {'tool_count_literal'},
     'routes/ai_capacity_index.py': {'markets_232'},
     'routes/ai_citation_tracker.py': {'isos_non_canonical', 'tool_count_literal'},
-    'routes/architecture_landing.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/audit_closure_master_shell.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/brain_autopilot.py': {'tool_count_literal'},
     'routes/brain_capability_ledger.py': {'tool_count_literal'},
@@ -3655,7 +3654,16 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # floor counts FILES outside the allow list, so a token dropped from a file
     # that keeps another token moves nothing. Lowered in the SAME commit
     # that drains it, exactly as this assertion's message asks.
-    assert len(outside) >= 78, (
+    # ★2026-09-04 (c): 78 -> 77. routes/architecture_landing.py was DELETED,
+    # not drained. Its deals_stale_floor and tool_count_literal were never
+    # wrong in a way a visitor could see: the handler was unreachable in
+    # production for its whole life (/architecture is absent from
+    # dchub-frontend's _routes.json include, so CF Pages served the static
+    # architecture.html and never invoked the worker). Removing the file takes
+    # the debt with it, so this floor follows in the SAME commit, exactly as
+    # this assertion's message asks. This is the one drain here that a reader
+    # should NOT read as "the copy was fixed" — the copy was deleted.
+    assert len(outside) >= 77, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
