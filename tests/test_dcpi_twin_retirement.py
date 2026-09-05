@@ -93,8 +93,28 @@ def test_both_lookup_paths_promote_the_canonical_slug(route_marker):
     serving the stale twin while the other redirects."""
     src = _src("routes/dcpi.py")
     i = src.index(route_marker)
-    seg = src[i:i + 4000]
-    assert "_canonical_first(" in seg, (
+
+    # ★ 2026-09-05 — SCAN THE FUNCTION, NOT A FIXED CHARACTER WINDOW. This read
+    #   src[i:i+4000] and asserted the call appeared inside it. 4000 chars is a
+    #   proxy for "in this function", and the two drift apart the moment anyone
+    #   writes a long comment: adding ~20 lines of rationale to
+    #   public_market_page pushed the (still present, still called)
+    #   _canonical_first to offset 4861 and turned this red, reporting a
+    #   behavioural regression that had not happened.
+    #
+    #   A window that is too SHORT cries wolf; one too LONG is worse — it reads
+    #   into the NEXT function and passes because a sibling makes the call. So
+    #   widening the number was not the fix. Take the function's real extent:
+    #   from its `def` to the next line at column 0.
+    lines = src[i:].splitlines()
+    end = len(lines)
+    for n, line in enumerate(lines[1:], 1):
+        if line and not line[0].isspace() and not line.startswith(")"):
+            end = n
+            break
+    body = "\n".join(lines[:end])
+    assert len(body) > 200, f"could not delimit {route_marker} — guard is vacuous"
+    assert "_canonical_first(" in body, (
         f"{route_marker} does not promote the canonical slug — a leftover "
         "twin row will shadow the redirect on this surface"
     )

@@ -8529,10 +8529,29 @@ def public_market_page(slug):
     # This decision is pure routing, so it now runs BEFORE _ensure_tables():
     # answering "that URL is spelled wrong" never needed the DB, and putting a
     # table check in front of it made the redirect untestable without one.
-    _pnorm, _suffix = normalize_periods(slug or "")
+    #
+    # r-dcpi-case (2026-09-05): LOWERCASE FIRST, and fold case into this same
+    # 301. Measured live through the edge, 7 markets, every one of them:
+    #     /dcpi/ashburn 200   /dcpi/Ashburn 404
+    #     /dcpi/santa-clara 200   /dcpi/Santa-Clara 404
+    #     ...columbus, phoenix, dallas, atlanta, chicago — identical
+    # The sibling /markets/<slug> has tolerated case since it was written
+    # (`slug_norm = (slug or "").lower().strip()` in market_deep_dive), so the
+    # two routes disagreed about the same market name and only this one 404'd.
+    # Title case is exactly how an assistant writes a place name, and /dcpi is
+    # the free, citable surface — so the guess that kills the citation landed
+    # here rather than on the page that tolerates it.
+    # Found in origin HTTP logs: the one AI-crawler 4xx in an 850-request
+    # sample was `/api/v1/markets/Ludwigshafen Am Rhein` — the same defect
+    # class, a human-readable identifier where the route wants a canonical one.
+    # Normalising BEFORE normalize_periods keeps this to ONE redirect: a slug
+    # that is both mis-cased and period-laden resolves in a single hop instead
+    # of bouncing case -> periods.
+    _pnorm, _suffix = normalize_periods((slug or "").strip().lower())
     if _pnorm and (_pnorm != slug or _suffix):
         from flask import redirect
         return redirect(f"/dcpi/{_pnorm}", code=301)
+    slug = (slug or "").strip().lower()
     _ensure_tables()
     # Phase JJ (2026-05-14): slug aliasing. The market_power_scores table
     # uses bare slugs (e.g. 'allen' not 'allen-tx'), but external links
