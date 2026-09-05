@@ -251,7 +251,15 @@ def _coverage_summary(cur):
         ("facilities",            "facilities",              ""),
         ("discovered_facilities", "discovered_facilities",   ""),
         ("capacity_pipeline",     "pipeline_projects",       CP_OK),
-        ("market_power_scores",   "dcpi_scored_markets",     ""),
+        # r-one-dcpi-universe (2026-09-05): the retired alias-twins are
+        # still rows here (published=false, kept so direct links resolve),
+        # so an unguarded COUNT reports them to agents as live markets.
+        # Same shape as the two notes above: this inventory disagreed with
+        # the surface it is supposed to summarise. #3835 filtered every
+        # LITERAL query in this module and missed THIS one, because the
+        # SQL here is built from the table name at run time and never
+        # appears as a string to grep or parse.
+        ("market_power_scores",   "dcpi_scored_markets",     PUBLISHED_ONLY),
         ("news",                  "news_articles",           ""),
         ("deals",                 "ma_transactions",         DEALS_OK),
         ("exclusive_listings",    "pocket_listings",         ""),

@@ -166,3 +166,43 @@ def test_the_predicate_is_not_coalesced_to_true():
     assert normalized.endswith("published = true"), (
         f"{PREDICATE_NAME} is {value!r}, which is no longer the predicate "
         f"/dcpi and /api/v1/dcpi/scores use.")
+
+
+@pytest.mark.parametrize("path", GUARDED)
+def test_sql_built_from_the_table_NAME_is_predicated_too(path):
+    """★ The leg that the first version of this fence structurally could not have.
+
+    _sql_texts finds queries that exist as SQL — a string containing
+    `FROM market_power_scores`. routes/agent_index.py also builds a count from
+    the table NAME at run time:
+
+        for tbl, key, where in [("market_power_scores", "dcpi_scored_markets", ...)]:
+            sql = f"SELECT COUNT(*) FROM {tbl}" + (f" WHERE {where}" if where else "")
+
+    No literal ever contains `FROM market_power_scores`, so the AST scan sees
+    nothing, greps see nothing, and the surface published the unfiltered count
+    to AI agents through the whole of #3835 — which filtered every literal in
+    the same file and reported itself complete. Verified live after that
+    deploy: four surfaces read 327 and this one still read 334.
+
+    So: wherever a guarded module names the table as DATA, the statement that
+    does so must also carry the predicate.
+    """
+    tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
+    parent = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+    offenders = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and node.value == TABLE):
+            continue
+        stmt = node
+        while stmt in parent and not isinstance(stmt, ast.stmt):
+            stmt = parent[stmt]
+        if PREDICATE_NAME not in ast.unparse(stmt):
+            offenders.append(getattr(node, "lineno", 0))
+    assert not offenders, (
+        f"{path} line(s) {offenders}: the table is named as a STRING — SQL "
+        f"built from it at run time is invisible to every check that looks for "
+        f"`FROM {TABLE}`. The statement must carry {PREDICATE_NAME}.")
