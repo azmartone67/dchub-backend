@@ -1848,7 +1848,7 @@ def _verify_linkedin_render_drift(urn, sent_text, access_token=None):
                 _cur.execute("""
                     INSERT INTO linkedin_render_drift
                         (urn, sent_text, rendered_text, sent_len, rendered_len)
-                    VALUES (%s, %s, %s, %s, %s)""",
+                    VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
                     (urn, sent, rendered, len(sent), len(rendered)))
                 _c.commit()
             logger.info("[LinkedIn drift probe] drift row written for %s", urn)
@@ -1923,7 +1923,7 @@ def _persist_linkedin_urn(cur, post_id, urn, content_text, slug=None, article_ur
         cur.execute(
             """INSERT INTO linkedin_posts (post_urn, content, post_type, status,
                                             slug, posted_at)
-               VALUES (%s, %s, %s, %s, %s, NOW())""",
+               VALUES (%s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)""",
             (urn, (content_text or ''), post_type, 'success', slug),
         )
     except Exception as e:
@@ -3622,7 +3622,7 @@ def enqueue_custom():
         try:
             cur.execute("""
                 INSERT INTO social_media_posts (content, platform, status, created_at)
-                VALUES (%s, %s, 'approved', NOW())
+                VALUES (%s, %s, 'approved', NOW() ON CONFLICT DO NOTHING)
                 RETURNING id
             """, (content, platform))
             row = cur.fetchone()
