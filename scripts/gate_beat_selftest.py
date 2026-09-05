@@ -163,25 +163,49 @@ expect("spec-debt-tracker: unchecked boxes are counted",
                      "PR_BODY": "- [ ] a\n- [ ] b\n- [x] c\n"}, {}),
        "verdict=pass checked=[2]")
 
-# ── continue-on-error job takes its verdict from OUTPUT, not job.status ─────
+# ── the route-table RATCHET takes its verdict from OUTPUT ───────────────────
 # ★ The population and the verdict are printed by DIFFERENT steps, so these
 # fixtures use two files. The first version of this control put both lines in
 # one log — a log the real workflow never produces — so it passed while the
 # shipped beat sent checked=empty and G4 could never fire. A fixture that does
 # not match reality is a control that tests a workflow you did not write.
-expect("★ check-route-tables: advisory job still reports a real refusal",
-       run_beat(crt, {"JOB_STATUS": "success"},
-                {"/tmp/crt1.log": "discovered 140 Flask HTML routes\n",
-                 "/tmp/crt.log": "::notice::route-table coherence ADVISORY — 3 Flask route(s)\n"}),
-       "verdict=fail checked=[140]")
+#
+# ★ 2026-09-05 — the fixtures are re-cut from what the RATCHET actually prints.
+# The job dropped its continue-on-error, and the ADVISORY token moved from a
+# ::notice:: printed on EVERY run to an ::error:: printed ONLY when a PR adds a
+# new uncovered route. Verbatim strings from
+# scripts/check_route_table_coherence.py; a clean run with baselined debt now
+# prints "route-table coherence —" with NO "ADVISORY", and must read `pass`.
+expect("★ check-route-tables: a NEW uncovered route is a real refusal",
+       run_beat(crt, {"JOB_STATUS": "failure", "SELFTEST_OUTCOME": "success"},
+                {"/tmp/crt1.log": "discovered 356 Flask HTML routes\n",
+                 "/tmp/crt.log": "::error::route-table coherence ADVISORY — 1 NEW Flask route(s) "
+                                 "are not in the CF tables.\n"}),
+       "verdict=fail checked=[356]")
 expect("check-route-tables: clean run passes",
-       run_beat(crt, {"JOB_STATUS": "success"},
-                {"/tmp/crt1.log": "discovered 140 Flask HTML routes\n",
-                 "/tmp/crt.log": "OK — 140 Flask HTML routes covered by both tables.\n"}),
-       "verdict=pass checked=[140]")
+       run_beat(crt, {"JOB_STATUS": "success", "SELFTEST_OUTCOME": "success"},
+                {"/tmp/crt1.log": "discovered 356 Flask HTML routes\n",
+                 "/tmp/crt.log": "OK — 356 Flask HTML routes covered by both tables "
+                                 "or baselined (130 known, 0 new).\n"}),
+       "verdict=pass checked=[356]")
+expect("★ check-route-tables: BASELINED drift is not a refusal",
+       run_beat(crt, {"JOB_STATUS": "success", "SELFTEST_OUTCOME": "success"},
+                {"/tmp/crt1.log": "discovered 356 Flask HTML routes\n",
+                 "/tmp/crt.log": "::notice::route-table coherence — 130 Flask route(s) not in "
+                                 "the CF tables, ALL BASELINED pre-existing drift, none NEW.\n"
+                                 "OK — 356 Flask HTML routes covered by both tables "
+                                 "or baselined (130 known, 0 new).\n"}),
+       "verdict=pass checked=[356]")
 expect("check-route-tables: step did not conclude reads UNMEASURED",
-       run_beat(crt, {"JOB_STATUS": "success"}, {"/tmp/crt.log": "crashed\n"}),
+       run_beat(crt, {"JOB_STATUS": "success", "SELFTEST_OUTCOME": "success"},
+                {"/tmp/crt.log": "crashed\n"}),
        "verdict=unmeasured")
+expect("★ check-route-tables: the must-fail control is REPORTED, not assumed",
+       run_beat(crt, {"JOB_STATUS": "success", "SELFTEST_OUTCOME": "failure"},
+                {"/tmp/crt1.log": "discovered 356 Flask HTML routes\n",
+                 "/tmp/crt.log": "OK — 356 Flask HTML routes covered by both tables "
+                                 "or baselined (130 known, 0 new).\n"}),
+       "verdict=pass checked=[356] selftest=fail")
 
 # ── ★ every job that beats must be able to REACH the beat script ────────────
 # scripts/gate_beat.sh only exists after a checkout. pre-merge:smoke-probe and

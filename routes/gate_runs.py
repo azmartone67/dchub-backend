@@ -96,7 +96,12 @@ GATE_REGISTRY = {
     "pre-merge:db-parity":                     ("dchub-backend",  48,  True),
     "pre-merge:smoke-probe":                   ("dchub-backend",  48,  False),
     "regression-lint:lint":                    ("dchub-backend",  48,  True),
-    "check-route-tables:check":                ("dchub-backend",  48,  False),
+    # ★ 2026-09-05 False → True. It carried job-level continue-on-error since
+    # it shipped, so it could not fail a PR at all; the reason was that its
+    # extractor reported 78% of routes uncovered on every run. The extractor is
+    # fixed and the residue is baselined in scripts/route_table_baseline.json,
+    # so the job now blocks on NEW mis-registration only.
+    "check-route-tables:check":                ("dchub-backend",  48,  True),
     "brain-pr-substance-gate:substance-gate":  ("dchub-backend",  72,  True),
     "brain-pr-post-merge-guard:guard":         ("dchub-backend",  72,  True),
     "brain-spec-debt-tracker:file-spec-debt":  ("dchub-backend",  72,  True),
