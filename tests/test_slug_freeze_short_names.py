@@ -142,3 +142,25 @@ def test_pending_counter_reads_the_same_rows_the_worker_selects():
         "re-selects every run would be reported as pending=0 forever, which is "
         "exactly what happened between March and September 2026")
     assert "canonical_slug IS NULL" in counter
+
+
+def test_the_sitemap_emitter_lets_a_frozen_short_slug_through():
+    """★ The mechanism this whole fix depends on reaching the sitemap.
+
+    main.py carries a SECOND copy of the short-name rejection in the sitemap
+    emitter. It is harmless ONLY because it is guarded by `not _stored_first`
+    — once a row has a frozen canonical_slug the guard is skipped. If that
+    guard is ever tightened, the 28 rows get slugs from the freeze and are
+    still dropped from the sitemap, and nothing else would catch it.
+
+    (The same file's comment records the last time this bit: 210 live
+    facilities with CJK/Cyrillic names computed an empty name_slug and were
+    `continue`d out of the sitemap despite holding a good frozen URL.)
+    """
+    src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+    i = src.index("len(name_slug) < 3")
+    line = src[src.rindex("\n", 0, i) + 1:src.index("\n", i)]
+    assert "_stored_first" in line, (
+        "the sitemap emitter's short-name guard no longer checks for a stored "
+        "slug first (%r) — a frozen short slug would be dropped from the "
+        "sitemap even though the freeze assigned it" % line.strip())
