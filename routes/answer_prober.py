@@ -67,9 +67,8 @@ import json
 import os
 import random
 import re
-import urllib.error
-import urllib.request
 
+import requests
 from flask import Blueprint, jsonify, request
 
 answer_prober_bp = Blueprint("answer_prober", __name__)
@@ -109,25 +108,26 @@ def _fetch(path, method="GET", payload=None, headers=None, timeout=_TIMEOUT):
     The cache-buster is not decoration: a probe that reads an edge-cached body
     is measuring what Cloudflare remembered, not what the origin computed, and
     would have reported the pre-fix numbers as correct for the whole TTL.
+
+    `requests`, not urllib — required by regression_lint, and independently
+    right here. Cloudflare 1010s the bare urllib user-agent prefix before the
+    worker ever runs, and this module's whole job is fetching through that
+    edge. A probe that 403s on its own infrastructure would report every
+    surface `unreachable` and teach the operator to ignore it.
     """
     sep = "&" if "?" in path else "?"
     url = f"{_PUBLIC}{path}{sep}_ap={str(random.random())[2:9]}"
-    data = None
     req_headers = {"Cache-Control": "no-cache",
                    "User-Agent": "dchub-answer-prober/1"}
-    if payload is not None:
-        data = json.dumps(payload).encode()
-        req_headers["Content-Type"] = "application/json"
     for k, v in (headers or {}).items():
         req_headers[k] = v
-    req = urllib.request.Request(url, data=data, method=method)
-    for k, v in req_headers.items():
-        req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8", "replace")
+        r = requests.request(method, url, json=payload, headers=req_headers,
+                             timeout=timeout)
+        return r.status_code, r.text
+    except requests.RequestException as e:
+        # Surfaced as `unreachable` by the callers, never as agreement.
+        return 0, f"{type(e).__name__}: {str(e)[:120]}"
 
 
 # ── the canonical answer, read live ──────────────────────────────────────────
