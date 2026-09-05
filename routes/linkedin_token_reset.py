@@ -156,7 +156,7 @@ def reset_from_env():
             # (the silent-clobber bug that made auto-refresh un-armable).
             resolved_refresh = _resolve_refresh_write(existing_refresh, supplied_refresh)
             if _row is None:
-                cur.execute("""INSERT INTO linkedin_tokens (access_token, refresh_token, expires_at, member_urn, company_urn) VALUES (%s, %s, %s, %s, %s)""",
+                cur.execute("""INSERT INTO linkedin_tokens (access_token, refresh_token, expires_at, member_urn, company_urn) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
                             (env_token, resolved_refresh, expires, member_urn, company_urn))
             else:
                 cur.execute("""UPDATE linkedin_tokens SET access_token=%s, refresh_token=%s, expires_at=%s, updated_at=NOW() WHERE id=(SELECT MAX(id) FROM linkedin_tokens)""",
@@ -170,6 +170,7 @@ def reset_from_env():
 
     return jsonify(out), 200
 
+# AUTO-REPAIR: duplicate route '/status' also in ai_agent.py:357 — review and remove one
 @linkedin_token_reset_bp.route("/status", methods=["GET"])
 def status():
     out = {"env_var_set": bool(os.environ.get("LINKEDIN_ACCESS_TOKEN")),
