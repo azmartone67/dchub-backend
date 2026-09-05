@@ -168,6 +168,62 @@ def test_a_promoted_draft_starts_counting(tmp_path, monkeypatch):
     assert "notes.md" not in live, "a non-.py file was counted"
 
 
+# ── why this gate is advisory on PRs, and only on PRs (2026-09-04) ──────
+#
+# It stays the gate on main. On a PULL REQUEST it reports drift without failing,
+# because requiring every PR to COMMIT the regenerated map is what turns one
+# generated file into a repo-wide merge-conflict generator.
+#
+# The race is already documented, in .github/workflows/refresh-architecture-map.yml:
+#
+#     "IT IS A RACE, NOT CARELESSNESS. main's protection has strict:false, so a
+#      PR need not be up to date to merge. PR A regenerates the map against its
+#      own tree, PR B lands a new route module first, and A merges a map that
+#      was true when written and is stale by the time it arrives."
+#
+# That workflow heals MAIN after every merge and demonstrably works. What it
+# cannot heal is PR-vs-PR: two open PRs that each add a route module both commit
+# a different version of the SAME generated file and conflict with each other,
+# every time, by construction. Measured 2026-09-04: main takes ~47 commits/24h
+# and the unit suite runs 25 minutes, so every PR is open long enough for this
+# to be a certainty rather than bad luck. Three of four PRs open that evening
+# hit it; two needed a hand-resolved rebase whose entire content was "re-run the
+# generator".
+#
+# So the file no longer has to travel in the PR. Drift is reported on PRs and
+# healed on main by the workflow above. The assertion is UNCHANGED for push,
+# schedule and local runs — a developer still sees it, and main is still gated.
+#
+# ★ The skip is deliberately narrow: exactly GITHUB_EVENT_NAME == "pull_request".
+# test_the_pr_exemption_cannot_widen below pins that, because a guard that
+# learns to skip everywhere is the failure this file's own docstring is about.
+# The healer's own branch is the ONE pull request that must still be gated.
+# refresh-architecture-map.yml mints it at :110 as "chore/arch-map-<sha>" and
+# matches on that prefix at :104; tests/test_architecture_map_autoheal.py:73
+# already pins the string, so this reuses a constant rather than inventing one.
+_HEALER_BRANCH_PREFIX = "chore/arch-map-"
+
+
+def _is_pull_request() -> bool:
+    """True on a PR that may defer regeneration to the healer.
+
+    ★ The healer's OWN PR is excluded, and that carve-out is the whole point.
+    Its entire purpose is to make the committed map match the tree, so it is the
+    one PR that must not be allowed to merge a stale one. main's protection has
+    strict:false, so a healing PR is never required to be up to date: during its
+    ~25-minute check cycle more merges can land and move the count again, and
+    because the checkout is the MERGE ref its tree already contains those new
+    modules while its committed map does not. Exempting it would disarm the only
+    check that ever validated the healer's output — the healer would merge a map
+    that was already stale, and the next push would just open another one.
+    """
+    import os
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return False
+    head = os.environ.get("GITHUB_HEAD_REF") or ""
+    return not head.startswith(_HEALER_BRANCH_PREFIX)
+
+
 def test_the_in_repo_copy_is_current():
     """★THE ACTUAL CI GATE, and the reason an in-repo copy exists at all.
 
@@ -188,7 +244,123 @@ def test_the_in_repo_copy_is_current():
         cur = target / name
         if not cur.exists() or cur.read_text(encoding="utf-8").strip() != text.strip():
             stale.append(name)
+    if stale and _is_pull_request():
+        # Reported, not enforced — refresh-architecture-map.yml regenerates this
+        # on main after the merge. Failing here would force the PR to carry the
+        # file, which is the conflict generator described above.
+        import pytest as _pt
+        _pt.skip(
+            "architecture map drifted (%s) — NOT failing the PR: "
+            "refresh-architecture-map.yml regenerates it on main after merge. "
+            "Requiring every PR to commit this generated file is what makes two "
+            "PRs conflict on it. Run `python3 scripts/generate_vault_map.py` "
+            "locally if you want the diff in your branch." % ", ".join(stale))
     assert not stale, (
         "the committed architecture map no longer matches the tree: %s\n"
         "Re-run `python3 scripts/generate_vault_map.py` and commit "
         "docs/architecture/." % ", ".join(stale))
+
+
+def test_the_pr_exemption_cannot_widen(monkeypatch):
+    """The exemption must be EXACTLY pull_request. A guard that learns to skip
+    on push, schedule or a bare local run stops gating main — which is the only
+    thing this gate was ever for."""
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    for ev, expected in (("pull_request", True), ("push", False),
+                         ("schedule", False), ("workflow_dispatch", False),
+                         ("", False)):
+        monkeypatch.setenv("GITHUB_EVENT_NAME", ev)
+        assert _is_pull_request() is expected, f"event {ev!r} misclassified"
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    assert _is_pull_request() is False, "unset env (local run) must still enforce"
+
+
+def test_the_healers_own_pr_is_never_exempt(monkeypatch):
+    """The healer exists to make the committed map match the tree, so it is the
+    one PR that must not merge a stale one.
+
+    main's protection has strict:false, so a healing PR is never required to be
+    up to date. During its ~25-minute check cycle more merges land, and its
+    checkout is the MERGE ref — tree already updated, committed map not. Before
+    the PR exemption, this check failing there is exactly what blocked auto-merge
+    and forced a fresh regeneration. Exempting it would let the healer merge a
+    map that is already stale again."""
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    for branch, exempt in (
+        ("chore/arch-map-abc1234", False),   # the healer itself — MUST enforce
+        ("chore/arch-map-", False),
+        ("feat/some-feature", True),         # an ordinary PR — may defer
+        ("fix/whatever", True),
+        ("", True),
+    ):
+        monkeypatch.setenv("GITHUB_HEAD_REF", branch)
+        assert _is_pull_request() is exempt, (
+            f"branch {branch!r}: expected exempt={exempt}")
+
+
+def test_the_healer_branch_prefix_matches_the_workflow_that_mints_it():
+    """If the workflow renames its branch, the carve-out above silently stops
+    matching and the healer becomes exempt again — the failure this whole file
+    is about."""
+    wf = (_ROOT / ".github" / "workflows" / "refresh-architecture-map.yml"
+          ).read_text(encoding="utf-8")
+    assert _HEALER_BRANCH_PREFIX in wf, (
+        f"{_HEALER_BRANCH_PREFIX!r} no longer appears in "
+        "refresh-architecture-map.yml — the healer branch was renamed and the "
+        "carve-out in _is_pull_request() now matches nothing.")
+
+
+def test_the_push_side_backstop_still_runs_the_suite():
+    """★ THE NET THAT DOES NOT DEPEND ON THE HEALER.
+
+    Adversarial review of this exemption found that
+    test_the_healer_that_justifies_the_exemption_exists (below) is GREP, NOT
+    BEHAVIOUR: setting the repo variable ARCH_MAP_AUTOHEAL_DISABLE=1 turns the
+    healer into a no-op that still `exit 0`s as SUCCESS
+    (refresh-architecture-map.yml:73-75, 84-86), and every assertion in that
+    test still passes. A guard that cannot see its own kill switch is the exact
+    failure this file's docstring is about, so the exemption must not rest on it
+    alone.
+
+    It does not. pre-merge-gauntlet runs the FULL suite on `push: branches:
+    [main]` with no `concurrency:` block, so a stale main reds independently of
+    the healer — and this gate is not exempt there, because the event is `push`.
+    Measured by the review: main commits aa8693350 and 405224687 were genuinely
+    stale (routes/ count 793, committed map 792) and BOTH push runs failed
+    (33789265981, 33789288736) while the commits either side succeeded.
+
+    So: the healer makes staleness SHORT (~28 min); this makes it VISIBLE even
+    if the healer is off. Pin the second net, because it is the load-bearing one.
+    """
+    wf = (_ROOT / ".github" / "workflows" / "pre-merge.yml").read_text(encoding="utf-8")
+    import re as _re
+    on_block = wf.split("jobs:", 1)[0]
+    assert _re.search(r"push:\s*\n\s*branches:\s*\[\s*main\s*\]", on_block), (
+        "pre-merge-gauntlet no longer runs on push to main — that is the backstop "
+        "that catches a stale map when the healer is disabled. Without it the PR "
+        "exemption in test_the_in_repo_copy_is_current has no independent net.")
+    assert "pytest tests/" in wf, (
+        "pre-merge-gauntlet no longer runs the full suite, so it would not run "
+        "this gate on push to main.")
+    assert "\nconcurrency:" not in wf, (
+        "pre-merge-gauntlet gained a concurrency block — a push run cancelled by "
+        "the next merge would stop being a reliable backstop for stale main.")
+
+
+def test_the_healer_that_justifies_the_exemption_exists():
+    """The healer keeps main's staleness SHORT. It is wiring-level only.
+
+    ★ This asserts the workflow is present and wired — NOT that it heals. Setting
+    ARCH_MAP_AUTOHEAL_DISABLE=1 makes it a no-op that reports SUCCESS and every
+    assertion below still passes. That limit is why
+    test_the_push_side_backstop_still_runs_the_suite exists above; do not treat
+    this test as proof the healer works."""
+    import pathlib as _p
+    wf = _ROOT / ".github" / "workflows" / "refresh-architecture-map.yml"
+    assert wf.is_file(), (
+        "refresh-architecture-map.yml is gone — the PR exemption in "
+        "test_the_in_repo_copy_is_current assumes it heals main after merge. "
+        "Restore it, or make that assertion fail on PRs again.")
+    text = wf.read_text(encoding="utf-8")
+    assert "branches: [main]" in text, "the healer no longer runs on main pushes"
+    assert "generate_vault_map" in text, "the healer no longer runs the generator"
