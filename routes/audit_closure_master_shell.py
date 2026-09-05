@@ -349,6 +349,19 @@ def scan_beat_scheduler_gaps(root=None):
                  encoding="utf-8").read())
     except Exception as e:  # noqa: BLE001
         return ["routes/cron_heartbeat.py unreadable: %s" % e]
+    # ★2026-09-04: a module may declare its own job (module-level CRON_JOBS),
+    # so a route driven that way is scheduled even though it appears nowhere in
+    # cron_heartbeat.py. Read via AST — routes/cron_declarations extracts ONLY
+    # the CRON_JOBS node. Concatenating the module's SOURCE here instead would
+    # be vacuous: its own @bp.route(".../master-tick") decorator would satisfy
+    # the substring test below for every module, forever.
+    try:
+        from routes.cron_declarations import declared_paths as _declared_paths
+        declared = _declared_paths(root)
+    except Exception as e:  # noqa: BLE001
+        # Loud, not silent: losing this source must not quietly narrow the scan.
+        gaps.append("cron_declarations unreadable, declared jobs not counted: %s" % e)
+        declared = set()
     wf_scheduled = ""
     for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
         try:
@@ -373,9 +386,11 @@ def scan_beat_scheduler_gaps(root=None):
             gaps.append("%s declares _beat_ledger but has no master-tick "
                         "route and no written exemption" % rel)
             continue
-        if not any(t in heartbeat or t in wf_scheduled for t in ticks):
+        if not any(t in heartbeat or t in wf_scheduled or t in declared
+                   for t in ticks):
             gaps.append("%s: no scheduler drives %s (not in cron_heartbeat "
-                        "_DISPATCH, no cron'd workflow)" % (rel, ticks[0]))
+                        "_DISPATCH, no module CRON_JOBS declaration, no "
+                        "cron'd workflow)" % (rel, ticks[0]))
     return gaps
 
 

@@ -39,6 +39,7 @@ So this file asserts on the verdict, not on the shape of the expression.
 from __future__ import annotations
 
 import ast
+import sys
 import glob
 import json
 import os
@@ -50,10 +51,11 @@ from routes.ingest_runs import _OK_STATUS
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _beating_shells() -> list[str]:
+def _beating_shells(root: str = None) -> list[str]:
     """Every master shell that writes to the dead-man ledger."""
+    root = root or _ROOT
     out = []
-    for path in sorted(glob.glob(os.path.join(_ROOT, "routes", "*_master_shell.py"))):
+    for path in sorted(glob.glob(os.path.join(root, "routes", "*_master_shell.py"))):
         with open(path, encoding="utf-8") as fh:
             if "ingest-runs/beat" in fh.read():
                 out.append(path)
@@ -206,12 +208,17 @@ def test_no_shell_sends_rows_inserted_at_all():
 
 # ── every SCHEDULED shell must have a feed at all ────────────────────────
 
-def test_every_dispatched_shell_beats_the_ledger():
-    """webmcp_shell_daily is on the cron dispatcher and beats nothing, so it is
-    absent from /api/v1/ops/deadman entirely — if it stops, nothing notices.
-    A shell that is scheduled is a loop, and every loop needs a feed.
+def _scheduled_shell_labels(root: str = None) -> list[str]:
+    """Shell labels a scheduler actually drives.
+
+    TWO sources, and both must be read. The _DISPATCH literal is the original;
+    a module declaring its own CRON_JOBS is the decentralised one. Reading only
+    the literal is how a decentralised shell would drop out of the coverage
+    check below SILENTLY — the assert would keep passing while nothing watched
+    it, which is worse than the gap this test exists to catch.
     """
-    with open(os.path.join(_ROOT, "routes", "cron_heartbeat.py"), encoding="utf-8") as fh:
+    root = root or _ROOT
+    with open(os.path.join(root, "routes", "cron_heartbeat.py"), encoding="utf-8") as fh:
         tree = ast.parse(fh.read())
     dispatch = None
     for node in ast.walk(tree):
@@ -220,22 +227,39 @@ def test_every_dispatched_shell_beats_the_ledger():
             dispatch = node.value
     assert dispatch is not None, "_DISPATCH not found in routes/cron_heartbeat.py"
 
-    scheduled = []
+    labels = []
     for el in dispatch.elts:
         if isinstance(el, ast.Tuple) and el.elts:
             label = el.elts[0]
             if isinstance(label, ast.Constant) and "shell" in str(label.value):
-                scheduled.append(str(label.value))
+                labels.append(str(label.value))
 
-    beating_src = " ".join(os.path.basename(p) for p in _beating_shells())
+    sys.path.insert(0, _ROOT)
+    from routes.cron_declarations import declared_labels
+    labels += [l for l in declared_labels(root) if "shell" in l]
+    return labels
+
+
+def _unwatched_shells(root: str = None) -> list[str]:
+    """Scheduled shells with no dead-man feed — the gap this guard reports."""
+    root = root or _ROOT
+    beating_src = " ".join(os.path.basename(p) for p in _beating_shells(root))
     unwatched = []
-    for label in scheduled:
+    for label in _scheduled_shell_labels(root):
         stem = label.replace("_shell_daily", "").replace("_daily", "")
         # intel_expansion -> intelligence_expansion is the one alias in the table
         stem = {"intel_expansion": "intelligence_expansion"}.get(stem, stem)
         if f"{stem}_master_shell.py" not in beating_src:
             unwatched.append(label)
+    return unwatched
 
+
+def test_every_dispatched_shell_beats_the_ledger():
+    """webmcp_shell_daily is on the cron dispatcher and beats nothing, so it is
+    absent from /api/v1/ops/deadman entirely — if it stops, nothing notices.
+    A shell that is scheduled is a loop, and every loop needs a feed.
+    """
+    unwatched = _unwatched_shells()
     assert not unwatched, (
         f"{len(unwatched)} shell(s) run on the cron dispatcher but beat no "
         f"dead-man feed, so their death is invisible: {', '.join(unwatched)}")
