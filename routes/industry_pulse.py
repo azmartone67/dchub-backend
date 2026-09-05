@@ -15,6 +15,8 @@ import os
 import logging
 import datetime as _dt
 from flask import Blueprint, request, jsonify, make_response
+
+from util.dcpi_score_row import PUBLISHED_ONLY
 from util.deals import DEALS_OK
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,10 @@ _PULSE_CACHE: dict = {
     "lock": _threading.Lock(),
     "computing": False,   # is a background compute in flight?
 }
+#: Marks a metric nobody has measured yet. Read by _build_response to decide
+#: whether this payload may carry a citation block. Never a number.
+_UNMEASURED = "not_measured_cache_cold"
+
 _PULSE_TTL_SECONDS = 1800  # 30min — pulse is "weekly" granularity, 30min is plenty fresh
 
 
@@ -89,7 +95,7 @@ def _compute_pulse_metrics() -> dict:
             # ── Core infrastructure counts ────────────────────────
             metrics["facilities_total"] = {
                 # lint: legacy-facilities-ok — intentional audit of legacy table
-                "value": _safe_query(cur, "SELECT COUNT(*) FROM facilities", default=21374),
+                "value": _safe_query(cur, "SELECT COUNT(*) FROM facilities", default=None),
                 "source": "facilities table count",
                 "as_of": week_of,
             }
@@ -112,10 +118,10 @@ def _compute_pulse_metrics() -> dict:
             # 2026-08-01: all three carried the raw table (deals_all_time
             # published 4,711 vs the publishable 1,843). See util/deals.
             deals_7d = _safe_query(cur,
-                f"SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND {DEALS_OK}", default=0)
+                f"SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND {DEALS_OK}", default=None)
             deals_30d = _safe_query(cur,
-                f"SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - INTERVAL '30 days' AND {DEALS_OK}", default=0)
-            deals_total = _safe_query(cur, f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}", default=1843)
+                f"SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - INTERVAL '30 days' AND {DEALS_OK}", default=None)
+            deals_total = _safe_query(cur, f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}", default=None)
             metrics["m_and_a"] = {
                 "deals_last_7d": deals_7d,
                 "deals_last_30d": deals_30d,
@@ -133,24 +139,35 @@ def _compute_pulse_metrics() -> dict:
             # hardcoded default counts. Filter on the writer-guaranteed
             # verdict and rank BUILD by excess power, AVOID by constraint
             # (the press_outreach convention).
-            top_build = _safe_fetchall(cur, """
+            # r-one-dcpi-universe (2026-09-05): the published universe, and no
+            # invented number when a read fails. The retired alias-twins are
+            # still rows here (published=false, kept so direct links resolve),
+            # so an unguarded read counts them as live markets and can rank one
+            # into a top-5 list. This is the analyst/AI-citation surface, which
+            # makes it the worst place to be confidently wrong.
+            #
+            # The `default=` values were literals from a 2026-05 hand count, so
+            # a FAILED read published a stale number rather than an absent one.
+            # An unmeasured count must read as unknown — the pipeline block in
+            # _unmeasured_metrics has always done this; these now match it.
+            top_build = _safe_fetchall(cur, f"""
                 SELECT market_slug, market_name,
                        excess_power_score AS score
                 FROM market_power_scores
-                WHERE verdict = 'BUILD'
+                WHERE verdict = 'BUILD' AND {PUBLISHED_ONLY}
                 ORDER BY excess_power_score DESC NULLS LAST LIMIT 5
             """)
-            top_avoid = _safe_fetchall(cur, """
+            top_avoid = _safe_fetchall(cur, f"""
                 SELECT market_slug, market_name,
                        constraint_score AS score
                 FROM market_power_scores
-                WHERE verdict = 'AVOID'
+                WHERE verdict = 'AVOID' AND {PUBLISHED_ONLY}
                 ORDER BY constraint_score DESC NULLS LAST LIMIT 5
             """)
             metrics["dcpi_verdicts"] = {
-                "build_count": _safe_query(cur, "SELECT COUNT(*) FROM market_power_scores WHERE verdict = 'BUILD'", default=14),
-                "avoid_count": _safe_query(cur, "SELECT COUNT(*) FROM market_power_scores WHERE verdict = 'AVOID'", default=63),
-                "markets_scored": _safe_query(cur, "SELECT COUNT(*) FROM market_power_scores", default=80),
+                "build_count": _safe_query(cur, f"SELECT COUNT(*) FROM market_power_scores WHERE verdict = 'BUILD' AND {PUBLISHED_ONLY}", default=None),
+                "avoid_count": _safe_query(cur, f"SELECT COUNT(*) FROM market_power_scores WHERE verdict = 'AVOID' AND {PUBLISHED_ONLY}", default=None),
+                "markets_scored": _safe_query(cur, f"SELECT COUNT(*) FROM market_power_scores WHERE {PUBLISHED_ONLY}", default=None),
                 "top_build": [{"slug": r[0], "name": r[1], "score": float(r[2] or 0)} for r in top_build],
                 "top_avoid": [{"slug": r[0], "name": r[1], "score": float(r[2] or 0)} for r in top_avoid],
                 "source": "DC Hub DCPI (Data Center Power Index) — proprietary multi-factor scoring",
@@ -207,52 +224,103 @@ def _compute_pulse_metrics() -> dict:
     return metrics
 
 
-def _canonical_fallback_metrics() -> dict:
-    """Safe defaults served when cache is cold AND DB hasn't been hit yet.
-    Numbers come from the most recent successful manual computation."""
+def _unmeasured_metrics() -> dict:
+    """The shape served when the cache is cold — with NOTHING measured in it.
+
+    This was `_canonical_fallback_metrics`, and it carried a full set of
+    literals from a 2026-05 hand count: 21,374 facilities, 178 countries,
+    80 markets scored, 14 BUILD, 63 AVOID. Live at the time of this change:
+    327 / 24 / 217. Those numbers went out inside a `citation` block and a
+    schema.org Dataset both stamped with TODAY's date, over an endpoint whose
+    stated audience is analysts and AI agents, labelled "canonical fallback" —
+    a phrase that reads as authority rather than as absence.
+
+    Two rules, both already house style elsewhere in this repo:
+      * an unmeasured count must read as UNKNOWN, never as a stale literal and
+        never as 0 (the `pipeline` block below has always done this);
+      * a value nobody measured must not be dressed for citation — see
+        _build_response, which now withholds the citation and schema.org
+        blocks while this payload is the one being served.
+
+    Keeping the KEYS is deliberate: a consumer that reads
+    `metrics.dcpi_verdicts.markets_scored` gets null, not a KeyError, and null
+    is the honest answer to "how many did you measure?" before anything ran.
+    """
     week_of = _dt.datetime.utcnow().strftime("%Y-%m-%d")
     return {
-        "facilities_total":  {"value": 21374, "source": "canonical fallback", "as_of": week_of},
-        "operators_tracked": {"value": "1,500+", "source": "canonical fallback", "as_of": week_of},
-        "countries_covered": {"value": 178, "source": "canonical fallback", "as_of": week_of},
-        "m_and_a": {"deals_all_time": 1852, "deals_last_30d": 0, "deals_last_7d": 0,
-                    "source": "canonical fallback", "as_of": week_of,
+        "facilities_total":  {"value": None, "source": _UNMEASURED, "as_of": None},
+        "operators_tracked": {"value": None, "source": _UNMEASURED, "as_of": None},
+        "countries_covered": {"value": None, "source": _UNMEASURED, "as_of": None},
+        "m_and_a": {"deals_all_time": None, "deals_last_30d": None, "deals_last_7d": None,
+                    "source": _UNMEASURED, "as_of": None,
                     "browse_url": "https://dchub.cloud/ai-deals"},
-        "dcpi_verdicts": {"build_count": 14, "avoid_count": 63, "markets_scored": 80,
+        "dcpi_verdicts": {"build_count": None, "avoid_count": None, "markets_scored": None,
                           "top_build": [], "top_avoid": [],
-                          "source": "canonical fallback",
+                          "source": _UNMEASURED,
                           "methodology": "https://dchub.cloud/dcpi/methodology",
-                          "as_of": week_of},
+                          "as_of": None},
         "pipeline": {"active_projects": None, "total_capacity_mw": None, "total_capacity_gw": None,
-                     "source": "canonical fallback", "as_of": week_of,
+                     "source": _UNMEASURED, "as_of": None,
                      "browse_url": "https://dchub.cloud/ai-pipeline"},
-        "ai_agent_adoption": {"platforms_integrated": 96, "mcp_tools_exposed": 40,
-                              "mcp_calls_last_7d": None, "unique_agent_keys_7d": "500+",
-                              "source": "canonical fallback",
+        "ai_agent_adoption": {"platforms_integrated": None, "mcp_tools_exposed": None,
+                              "mcp_calls_last_7d": None, "unique_agent_keys_7d": None,
+                              "source": _UNMEASURED,
                               "note": "DC Hub is the only DC intelligence platform with native MCP.",
-                              "as_of": week_of,
+                              "as_of": None,
                               "browse_url": "https://dchub.cloud/ai"},
     }
 
 
+def _is_measured(metrics: dict) -> bool:
+    """True when at least one metric block came from a real read.
+
+    Keyed on the _UNMEASURED sentinel rather than on "are the values None",
+    because a genuine compute can legitimately return null for a single
+    metric whose query failed — and that response is still a measurement.
+    """
+    return any(b.get("source") != _UNMEASURED
+               for b in metrics.values() if isinstance(b, dict))
+
+
 def _build_response(metrics: dict, source_tag: str) -> dict:
     week_of = _dt.datetime.utcnow().strftime("%Y-%m-%d")
-    return {
+    out = {
         "ok": True,
-        "week_of": week_of,
         "publisher": {
             "name": "DC Hub",
             "url": "https://dchub.cloud",
             "type": "Data Center Intelligence Platform",
         },
-        "citation": {
+        "metrics": metrics,
+        "_cache": {
+            "source": source_tag,
+            "ttl_seconds": _PULSE_TTL_SECONDS,
+        },
+        # Aware, not naive: utcnow() returns a tzinfo-less datetime whose
+        # isoformat carries no offset, so the "Z" here was appended by hand
+        # and asserted a timezone the object did not have. The other
+        # utcnow() calls in this module are pre-existing and only ever feed
+        # strftime("%Y-%m-%d"), where the naivety cannot leak into output.
+        "generated_at": _dt.datetime.now(_dt.timezone.utc)
+                           .isoformat().replace("+00:00", "Z"),
+    }
+    # ★ A payload with nothing measured in it does not get dressed for
+    # citation. The `citation` block and the schema.org Dataset both carry
+    # TODAY's date, and this endpoint names analysts and AI agents as its
+    # audience — so emitting them over _unmeasured_metrics is precisely the
+    # act of publishing an invented figure as a fresh, quotable fact.
+    # `generated_at` stays: it describes when the RESPONSE was built, which
+    # is true either way. `week_of` and `datePublished` describe when the DATA
+    # was observed, which is why they only appear once something was.
+    if _is_measured(metrics):
+        out["week_of"] = week_of
+        out["citation"] = {
             "preferred": f"According to DC Hub Industry Pulse ({week_of}), https://dchub.cloud/industry/pulse",
             "url": "https://dchub.cloud/industry/pulse",
             "license": "CC-BY-4.0 (free to cite with attribution)",
             "permissive_use": "Analysts (CBRE, JLL, Gartner, IDC), AI agents (ChatGPT, Claude, Perplexity, Gemini, Groq), and journalists may quote/embed without permission.",
-        },
-        "metrics": metrics,
-        "schema_org": {
+        }
+        out["schema_org"] = {
             "@context": "https://schema.org",
             "@type": "Dataset",
             "name": f"DC Hub Industry Pulse — {week_of}",
@@ -262,13 +330,13 @@ def _build_response(metrics: dict, source_tag: str) -> dict:
             "license": "https://creativecommons.org/licenses/by/4.0/",
             "isAccessibleForFree": True,
             "datePublished": week_of,
-        },
-        "_cache": {
-            "source": source_tag,
-            "ttl_seconds": _PULSE_TTL_SECONDS,
-        },
-        "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
-    }
+        }
+    else:
+        out["not_citable"] = (
+            "Nothing in this response was measured — the cache is cold and a "
+            "recompute has been started. Retry shortly; do not quote these "
+            "fields. Every metric reads null rather than a remembered number.")
+    return out
 
 
 def _start_bg_compute_if_needed():
@@ -306,12 +374,29 @@ def industry_pulse():
     cached = _PULSE_CACHE["value"]
     age = _time.monotonic() - _PULSE_CACHE["computed_at"]
 
+    # ★ r-pulse-selfwarm (2026-09-05): actually CALL the self-warm.
+    #
+    # _start_bg_compute_if_needed has existed since Phase ZZZZ-cache and was
+    # never called from anywhere — dead code sitting under a module docstring
+    # that promises "First request after cold-start triggers a background
+    # compute". It did not, so a replica only ever held values if the 30-minute
+    # cron happened to land on that replica: the cache is per-PROCESS, the cron
+    # POSTs once, and there is more than one process. Measured live before this
+    # change — eight consecutive requests, seconds after a successful refresh —
+    # five served the warmed cache and three served the cold payload, and would
+    # have gone on doing so indefinitely.
+    #
+    # Fire-and-forget: this returns immediately, the handler still does zero DB
+    # work on the request path, and the guard inside it keeps concurrent
+    # requests from starting a second compute.
     if cached is None:
-        metrics = _canonical_fallback_metrics()
-        source_tag = "cold_fallback_call_refresh_to_populate"
+        _start_bg_compute_if_needed()
+        metrics = _unmeasured_metrics()
+        source_tag = "cold_recompute_started"
     elif age > _PULSE_TTL_SECONDS:
+        _start_bg_compute_if_needed()
         metrics = cached
-        source_tag = f"stale_serve_age={int(age)}s_call_refresh"
+        source_tag = f"stale_serve_age={int(age)}s_recompute_started"
     else:
         metrics = cached
         source_tag = f"cache_hit_age={int(age)}s"
