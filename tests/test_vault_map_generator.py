@@ -168,6 +168,40 @@ def test_a_promoted_draft_starts_counting(tmp_path, monkeypatch):
     assert "notes.md" not in live, "a non-.py file was counted"
 
 
+# ── why this gate is advisory on PRs, and only on PRs (2026-09-04) ──────
+#
+# It stays the gate on main. On a PULL REQUEST it reports drift without failing,
+# because requiring every PR to COMMIT the regenerated map is what turns one
+# generated file into a repo-wide merge-conflict generator.
+#
+# The race is already documented, in .github/workflows/refresh-architecture-map.yml:
+#
+#     "IT IS A RACE, NOT CARELESSNESS. main's protection has strict:false, so a
+#      PR need not be up to date to merge. PR A regenerates the map against its
+#      own tree, PR B lands a new route module first, and A merges a map that
+#      was true when written and is stale by the time it arrives."
+#
+# That workflow heals MAIN after every merge and demonstrably works. What it
+# cannot heal is PR-vs-PR: two open PRs that each add a route module both commit
+# a different version of the SAME generated file and conflict with each other,
+# every time, by construction. Measured 2026-09-04: main takes ~47 commits/24h
+# and the unit suite runs 25 minutes, so every PR is open long enough for this
+# to be a certainty rather than bad luck. Three of four PRs open that evening
+# hit it; two needed a hand-resolved rebase whose entire content was "re-run the
+# generator".
+#
+# So the file no longer has to travel in the PR. Drift is reported on PRs and
+# healed on main by the workflow above. The assertion is UNCHANGED for push,
+# schedule and local runs — a developer still sees it, and main is still gated.
+#
+# ★ The skip is deliberately narrow: exactly GITHUB_EVENT_NAME == "pull_request".
+# test_the_pr_exemption_cannot_widen below pins that, because a guard that
+# learns to skip everywhere is the failure this file's own docstring is about.
+def _is_pull_request() -> bool:
+    import os
+    return os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+
+
 def test_the_in_repo_copy_is_current():
     """★THE ACTUAL CI GATE, and the reason an in-repo copy exists at all.
 
@@ -188,7 +222,45 @@ def test_the_in_repo_copy_is_current():
         cur = target / name
         if not cur.exists() or cur.read_text(encoding="utf-8").strip() != text.strip():
             stale.append(name)
+    if stale and _is_pull_request():
+        # Reported, not enforced — refresh-architecture-map.yml regenerates this
+        # on main after the merge. Failing here would force the PR to carry the
+        # file, which is the conflict generator described above.
+        import pytest as _pt
+        _pt.skip(
+            "architecture map drifted (%s) — NOT failing the PR: "
+            "refresh-architecture-map.yml regenerates it on main after merge. "
+            "Requiring every PR to commit this generated file is what makes two "
+            "PRs conflict on it. Run `python3 scripts/generate_vault_map.py` "
+            "locally if you want the diff in your branch." % ", ".join(stale))
     assert not stale, (
         "the committed architecture map no longer matches the tree: %s\n"
         "Re-run `python3 scripts/generate_vault_map.py` and commit "
         "docs/architecture/." % ", ".join(stale))
+
+
+def test_the_pr_exemption_cannot_widen(monkeypatch):
+    """The exemption must be EXACTLY pull_request. A guard that learns to skip
+    on push, schedule or a bare local run stops gating main — which is the only
+    thing this gate was ever for."""
+    for ev, expected in (("pull_request", True), ("push", False),
+                         ("schedule", False), ("workflow_dispatch", False),
+                         ("", False)):
+        monkeypatch.setenv("GITHUB_EVENT_NAME", ev)
+        assert _is_pull_request() is expected, f"event {ev!r} misclassified"
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    assert _is_pull_request() is False, "unset env (local run) must still enforce"
+
+
+def test_the_healer_that_justifies_the_exemption_exists():
+    """The PR exemption is only safe because main is healed after merge. If that
+    workflow is ever deleted, drift would ship silently — so pin it."""
+    import pathlib as _p
+    wf = _ROOT / ".github" / "workflows" / "refresh-architecture-map.yml"
+    assert wf.is_file(), (
+        "refresh-architecture-map.yml is gone — the PR exemption in "
+        "test_the_in_repo_copy_is_current assumes it heals main after merge. "
+        "Restore it, or make that assertion fail on PRs again.")
+    text = wf.read_text(encoding="utf-8")
+    assert "branches: [main]" in text, "the healer no longer runs on main pushes"
+    assert "generate_vault_map" in text, "the healer no longer runs the generator"
