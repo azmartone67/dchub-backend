@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from flask import Blueprint, request, jsonify, make_response
 from routes._swallowed_writes import note_swallowed_write
+from utc_clock import utc_iso_z
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +322,7 @@ def register_user():
             pg_cur.execute("""
                 INSERT INTO users (id, email, password_hash, name, company, plan, role, created_at)
                 VALUES (%s, %s, %s, %s, %s, 'free', 'user', %s)
-            """, (user_id, email, password_hash, name, company, datetime.utcnow().isoformat()))
+            """, (user_id, email, password_hash, name, company, utc_iso_z()))
             pg_conn.commit()
             # Send free welcome email
             try:
@@ -406,7 +407,7 @@ def login_user():
                     with _pg_connection() as conn:
                         cur = conn.cursor()
                         cur.execute("UPDATE users SET last_login = %s WHERE id = %s",
-                                    (datetime.utcnow().isoformat(), uid))
+                                    (utc_iso_z(), uid))
                         conn.commit()
                 except:
                     note_swallowed_write("users", where="auth_routes._update_last_login_bg")
@@ -692,7 +693,7 @@ def google_auth_callback():
                 user_plan = existing[4] or 'free'
                 user_role = existing[5] or 'user'
                 pg_cur.execute("UPDATE users SET last_login = %s, google_id = %s WHERE id = %s",
-                               (datetime.utcnow().isoformat(), google_id, user_id))
+                               (utc_iso_z(), google_id, user_id))
             else:
                 user_id = secrets.token_hex(8)
                 user_plan = 'free'
@@ -701,7 +702,7 @@ def google_auth_callback():
                     INSERT INTO users (id, email, name, plan, role, google_id, created_at, last_login)
                     VALUES (%s, %s, %s, 'free', 'user', %s, %s, %s)
                 """, (user_id, email, name, google_id,
-                      datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+                      utc_iso_z(), utc_iso_z()))
 
             pg_conn.commit()
             # Send free welcome email — ONLY for a genuinely new account.
@@ -814,7 +815,7 @@ def google_auth():
                 user_name = existing[2] or name
                 user_company = existing[3] or ''
                 pg_cur.execute("UPDATE users SET last_login = %s, google_id = %s WHERE id = %s",
-                               (datetime.utcnow().isoformat(), google_id, user_id))
+                               (utc_iso_z(), google_id, user_id))
             else:
                 user_id = secrets.token_hex(8)
                 user_plan = 'free'
@@ -825,7 +826,7 @@ def google_auth():
                     INSERT INTO users (id, email, name, plan, role, google_id, created_at, last_login)
                     VALUES (%s, %s, %s, 'free', 'user', %s, %s, %s)
                 """, (user_id, email, name, google_id,
-                      datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+                      utc_iso_z(), utc_iso_z()))
 
             pg_conn.commit()
             # Send free welcome email — ONLY for a genuinely new account.

@@ -23,6 +23,7 @@ from functools import wraps
 from flask import Blueprint, request, jsonify, g
 from util.deals import DEALS_OK
 from util.admin_auth import accepted_admin_keys
+from utc_clock import utc_iso_z
 
 logger = logging.getLogger(__name__)
 
@@ -458,7 +459,7 @@ def job_news_refresh():
             _scheduler_registry['news_sync']['items_last_cycle'] = saved if isinstance(saved, int) else 0
             _scheduler_registry['news_sync']['total_runs'] += 1
         logger.info("JOB news-refresh: ✅ %s new articles", saved)
-        return jsonify({'success': True, 'job': 'news-refresh', 'new_articles': saved, 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'news-refresh', 'new_articles': saved, 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB news-refresh: ❌ %s", e)
         return jsonify({'success': False, 'job': 'news-refresh', 'error': str(e)}), 500
@@ -488,7 +489,7 @@ def job_discovery():
         return auth_err
     if not _discovery_running.acquire(blocking=False):
         return jsonify({'success': True, 'job': 'discovery', 'started': False,
-                        'note': 'discovery already running', 'ts': datetime.utcnow().isoformat()}), 202
+                        'note': 'discovery already running', 'ts': utc_iso_z()}), 202
 
     def _bg():
         try:
@@ -531,7 +532,7 @@ def job_discovery():
 
     _threading.Thread(target=_bg, daemon=True, name='job-discovery').start()
     return jsonify({'success': True, 'job': 'discovery', 'started': True,
-                    'note': 'discovery started in background', 'ts': datetime.utcnow().isoformat()}), 202
+                    'note': 'discovery started in background', 'ts': utc_iso_z()}), 202
 
 
 @jobs_bp.route('/api/jobs/auto-approve', methods=['POST'])
@@ -545,7 +546,7 @@ def job_auto_approve():
         result = run_auto_approval(max_records=100)
         _reg_update('auto_approval')
         logger.info("JOB auto-approve: ✅ %s", result)
-        return jsonify({'success': True, 'job': 'auto-approve', 'result': result, 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'auto-approve', 'result': result, 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB auto-approve: ❌ %s", e)
         return jsonify({'success': False, 'job': 'auto-approve', 'error': str(e)}), 500
@@ -562,9 +563,9 @@ def job_evolution():
         result = run_evolution_cycle()
         _reg_update('evolution')
         logger.info("JOB evolution: ✅")
-        return jsonify({'success': True, 'job': 'evolution', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'evolution', 'result': str(result)[:500] if result else 'ok', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'evolution', 'skipped': 'evolution_engine not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'evolution', 'skipped': 'evolution_engine not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB evolution: ❌ %s", e)
         return jsonify({'success': False, 'job': 'evolution', 'error': str(e)}), 500
@@ -589,9 +590,9 @@ def job_ai_wars():
         threading.Thread(target=run_master_tick, name='ai-wars-master-tick', daemon=True).start()
         _reg_update('ai_wars')
         logger.info("JOB ai-wars: ✅ master-tick spawned")
-        return jsonify({'success': True, 'job': 'ai-wars', 'result': 'master-tick started (async)', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'ai-wars', 'result': 'master-tick started (async)', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'ai-wars', 'skipped': 'ai_wars_automation not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'ai-wars', 'skipped': 'ai_wars_automation not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB ai-wars: ❌ %s", e)
         return jsonify({'success': False, 'job': 'ai-wars', 'error': str(e)}), 500
@@ -618,9 +619,9 @@ def job_site_baseline():
                          name='site-baseline-tick', daemon=True).start()
         _reg_update('site_baseline')
         logger.info("JOB site-baseline: ✅ tick spawned (n=%s)", n)
-        return jsonify({'success': True, 'job': 'site-baseline', 'result': f'baseline tick started (async, sample_n={n})', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'site-baseline', 'result': f'baseline tick started (async, sample_n={n})', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'site-baseline', 'skipped': 'site_baseline not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'site-baseline', 'skipped': 'site_baseline not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB site-baseline: ❌ %s", e)
         return jsonify({'success': False, 'job': 'site-baseline', 'error': str(e)}), 500
@@ -643,11 +644,11 @@ def job_eia_retirements():
         logger.info("JOB eia-retirements: ✅ ingest spawned")
         return jsonify({'success': True, 'job': 'eia-retirements',
                         'result': 'ingest started (async, ~1-3 min)',
-                        'ts': datetime.utcnow().isoformat()})
+                        'ts': utc_iso_z()})
     except ImportError:
         return jsonify({'success': True, 'job': 'eia-retirements',
                         'skipped': 'eia_retirements not available',
-                        'ts': datetime.utcnow().isoformat()})
+                        'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB eia-retirements: ❌ %s", e)
         return jsonify({'success': False, 'job': 'eia-retirements', 'error': str(e)}), 500
@@ -664,9 +665,9 @@ def job_ai_ecosystem():
         result = ecosystem_agent.run_cycle()
         _reg_update('ai_ecosystem')
         logger.info("JOB ai-ecosystem: ✅")
-        return jsonify({'success': True, 'job': 'ai-ecosystem', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'ai-ecosystem', 'result': str(result)[:500] if result else 'ok', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'ai-ecosystem', 'skipped': 'ai_ecosystem_agent not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'ai-ecosystem', 'skipped': 'ai_ecosystem_agent not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB ai-ecosystem: ❌ %s", e)
         return jsonify({'success': False, 'job': 'ai-ecosystem', 'error': str(e)}), 500
@@ -683,9 +684,9 @@ def job_ai_outreach():
         result = run_outreach_cycle()
         _reg_update('ai_outreach')
         logger.info("JOB ai-outreach: ✅")
-        return jsonify({'success': True, 'job': 'ai-outreach', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'ai-outreach', 'result': str(result)[:500] if result else 'ok', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'ai-outreach', 'skipped': 'ai_outreach_agent not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'ai-outreach', 'skipped': 'ai_outreach_agent not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB ai-outreach: ❌ %s", e)
         return jsonify({'success': False, 'job': 'ai-outreach', 'error': str(e)}), 500
@@ -703,9 +704,9 @@ def job_global_intelligence():
         result = {}; result["international"] = agent.discover_international_facilities()
         _reg_update('global_intelligence')
         logger.info("JOB global-intelligence: ✅")
-        return jsonify({'success': True, 'job': 'global-intelligence', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'global-intelligence', 'result': str(result)[:500] if result else 'ok', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'global-intelligence', 'skipped': 'global_intelligence_agent not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'global-intelligence', 'skipped': 'global_intelligence_agent not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB global-intelligence: ❌ %s", e)
         return jsonify({'success': False, 'job': 'global-intelligence', 'error': str(e)}), 500
@@ -732,7 +733,7 @@ def job_content_publish():
         results['social'] = {'error': str(e)[:200]}
     _reg_update('promotion_engine')
     logger.info("JOB content-publish: ✅ %s", results)
-    return jsonify({'success': True, 'job': 'content-publish', 'results': results, 'ts': datetime.utcnow().isoformat()})
+    return jsonify({'success': True, 'job': 'content-publish', 'results': results, 'ts': utc_iso_z()})
 
 
 @jobs_bp.route('/api/jobs/keep-alive', methods=['POST', 'GET'])
@@ -749,7 +750,7 @@ def job_keep_alive():
         cur.close()
         conn.close()
         _reg_update('keep_alive')
-        return jsonify({'success': True, 'job': 'keep-alive', 'status': 'healthy', 'version': APP_VERSION, 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'keep-alive', 'status': 'healthy', 'version': APP_VERSION, 'ts': utc_iso_z()})
     except Exception as e:
         return jsonify({'job': 'keep-alive', 'success': False, 'error': str(e)}), 500
 
@@ -782,7 +783,7 @@ def job_status():
         'backup': {'endpoint': '/api/jobs/backup', 'method': 'POST', 'registry': _scheduler_registry.get('db_backup', {})},
         'mcp-rate-cleanup': {'endpoint': '/api/jobs/mcp-rate-cleanup', 'method': 'POST', 'registry': _scheduler_registry.get('mcp_rate_cleanup', {})},
     }
-    return jsonify({'success': True, 'jobs': jobs, 'total': len(jobs), 'ts': datetime.utcnow().isoformat()})
+    return jsonify({'success': True, 'jobs': jobs, 'total': len(jobs), 'ts': utc_iso_z()})
 
 
 @jobs_bp.route('/api/jobs/last-run', methods=['GET'])
@@ -857,7 +858,7 @@ def job_last_run():
                 'handler, so it advances on dchub-worker for delegated jobs. '
                 'A relayed 202 short-circuits before the view and leaves no '
                 'trace here.',
-        'ts': datetime.utcnow().isoformat(),
+        'ts': utc_iso_z(),
     })
 
 
@@ -1008,7 +1009,7 @@ def job_autopilot():
         results = {'saved': saved, 'skipped': skipped, 'total_neon': total, 'status': 'ok'}
         _reg_update('autopilot')
         logger.info("JOB autopilot: ✅ saved=%d total=%d", saved, total)
-        return jsonify({'success': True, 'job': 'autopilot', 'results': results, 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'autopilot', 'results': results, 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB autopilot: ❌ %s", e)
         return jsonify({'success': False, 'job': 'autopilot', 'error': str(e)}), 500
@@ -1025,9 +1026,9 @@ def job_autonomous_brain():
         result = init_autonomous_brain()
         _reg_update('autonomous_brain')
         logger.info("JOB autonomous-brain: ✅")
-        return jsonify({'success': True, 'job': 'autonomous-brain', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'autonomous-brain', 'result': str(result)[:500] if result else 'ok', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'autonomous-brain', 'skipped': 'autonomous_brain not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'autonomous-brain', 'skipped': 'autonomous_brain not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB autonomous-brain: ❌ %s", e)
         return jsonify({'success': False, 'job': 'autonomous-brain', 'error': str(e)}), 500
@@ -1047,7 +1048,7 @@ def job_alert_emails():
         result = check_and_send_alert_emails()
         _reg_update('alert_email_checker')
         logger.info("JOB alert-emails: ✅ %s", result)
-        return jsonify({'success': True, 'job': 'alert-emails', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'alert-emails', 'result': str(result)[:500] if result else 'ok', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB alert-emails: ❌ %s", e)
         return jsonify({'success': False, 'job': 'alert-emails', 'error': str(e)}), 500
@@ -1064,9 +1065,9 @@ def job_simple_alerts():
         result = process_alerts()
         _reg_update('simple_alerts_processor')
         logger.info("JOB simple-alerts: ✅")
-        return jsonify({'success': True, 'job': 'simple-alerts', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'simple-alerts', 'result': str(result)[:500] if result else 'ok', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'simple-alerts', 'skipped': 'simple_alerts not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'simple-alerts', 'skipped': 'simple_alerts not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB simple-alerts: ❌ %s", e)
         return jsonify({'success': False, 'job': 'simple-alerts', 'error': str(e)}), 500
@@ -1097,7 +1098,7 @@ def job_market_report():
         conn.close()
 
         report = {
-            'generated_at': datetime.utcnow().isoformat(),
+            'generated_at': utc_iso_z(),
             'summary': {
                 'total_facilities': fac_count,
                 'total_providers': provider_count,
@@ -1115,7 +1116,7 @@ def job_market_report():
 
         _reg_update('daily_market_report')
         logger.info("JOB market-report: ✅ saved to %s", report_path)
-        return jsonify({'success': True, 'job': 'market-report', 'result': 'generated', 'report': report['summary'], 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'market-report', 'result': 'generated', 'report': report['summary'], 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB market-report: ❌ %s", e)
         return jsonify({'success': False, 'job': 'market-report', 'error': str(e)}), 500
@@ -1270,7 +1271,7 @@ def job_infrastructure_sync():
         'success': success,
         'job': 'infrastructure-sync',
         'results': results,
-        'ts': datetime.utcnow().isoformat(),
+        'ts': utc_iso_z(),
     }), (200 if success else 500)
 
 
@@ -1413,12 +1414,12 @@ def job_energy_discovery():
                             'error': 'every source fetch failed and nothing was written',
                             'source_error_count': result.get('source_error_count'),
                             'source_errors': _errs,
-                            'ts': datetime.utcnow().isoformat()}), 500
+                            'ts': utc_iso_z()}), 500
         _reg_update('energy_discovery')
         logger.info("JOB energy-discovery: ✅")
-        return jsonify({'success': True, 'job': 'energy-discovery', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'energy-discovery', 'result': str(result)[:500] if result else 'ok', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'energy-discovery', 'skipped': 'energy_auto_discovery not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'energy-discovery', 'skipped': 'energy_auto_discovery not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB energy-discovery: ❌ %s", e)
         return jsonify({'success': False, 'job': 'energy-discovery', 'error': str(e)}), 500
@@ -1435,9 +1436,9 @@ def job_capacity_headroom():
         result = refresh_all_headroom()
         _reg_update('capacity_headroom')
         logger.info("JOB capacity-headroom: ✅")
-        return jsonify({'success': True, 'job': 'capacity-headroom', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'capacity-headroom', 'result': str(result)[:500] if result else 'ok', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'capacity-headroom', 'skipped': 'capacity_headroom_api not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'capacity-headroom', 'skipped': 'capacity_headroom_api not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB capacity-headroom: ❌ %s", e)
         return jsonify({'success': False, 'job': 'capacity-headroom', 'error': str(e)}), 500
@@ -1454,9 +1455,9 @@ def job_ambassador():
         result = run_ambassador_cycle()
         _reg_update('ambassador')
         logger.info("JOB ambassador: ✅")
-        return jsonify({'success': True, 'job': 'ambassador', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'ambassador', 'result': str(result)[:500] if result else 'ok', 'ts': utc_iso_z()})
     except ImportError:
-        return jsonify({'success': True, 'job': 'ambassador', 'skipped': 'agentic_ambassador not available', 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'ambassador', 'skipped': 'agentic_ambassador not available', 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB ambassador: ❌ %s", e)
         return jsonify({'success': False, 'job': 'ambassador', 'error': str(e)}), 500
@@ -1523,7 +1524,7 @@ def job_backup():
             'total_rows': total_rows,
             'tables': snapshot,
             'active_connections': active_conns,
-            'ts': datetime.utcnow().isoformat(),
+            'ts': utc_iso_z(),
         })
     except Exception as e:
         logger.error("JOB backup: ❌ %s", e)
@@ -1578,7 +1579,7 @@ def job_mcp_rate_cleanup():
             'job': 'mcp-rate-cleanup',
             'cleaned': cleaned,
             'total_cleaned': total_cleaned,
-            'ts': datetime.utcnow().isoformat(),
+            'ts': utc_iso_z(),
         })
     except Exception as e:
         logger.error("JOB mcp-rate-cleanup: ❌ %s", e)
@@ -1598,7 +1599,7 @@ def job_db_backup():
         logger.info("JOB db-backup: ✅ %d tables, %d rows, %.1f MB",
                      result.get('tables_exported', 0), result.get('total_rows', 0),
                      result.get('compressed_size_mb', 0))
-        return jsonify({'success': True, 'job': 'db-backup', 'result': result, 'ts': datetime.utcnow().isoformat()})
+        return jsonify({'success': True, 'job': 'db-backup', 'result': result, 'ts': utc_iso_z()})
     except Exception as e:
         logger.error("JOB db-backup: ❌ %s", e)
         return jsonify({'success': False, 'job': 'db-backup', 'error': str(e)}), 500

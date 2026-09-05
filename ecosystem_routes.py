@@ -12,6 +12,7 @@ import hmac
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from db_utils import get_db
+from utc_clock import utc_iso_z
 
 ecosystem_bp = Blueprint('ecosystem', __name__)
 
@@ -356,7 +357,7 @@ def reject_company(company_id):
     if not is_admin_request():
         return _no_store({'error': 'Admin access required', 'success': False}, 403)
 
-    now = datetime.utcnow().isoformat()
+    now = utc_iso_z()
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
@@ -435,7 +436,7 @@ def submit_company():
         return jsonify({'error': 'Contact email is required', 'success': False}), 400
     
     company_id = generate_company_id(data['name'])
-    now = datetime.utcnow().isoformat()
+    now = utc_iso_z()
     
     conn = get_db()
     cursor = conn.cursor()
@@ -516,7 +517,7 @@ def approve_company(company_id):
     conn = get_db()
     cursor = conn.cursor()
     
-    now = datetime.utcnow().isoformat()
+    now = utc_iso_z()
     cursor.execute('''
         UPDATE ecosystem_companies 
         SET status = 'approved', approved_at = %s, updated_at = %s
@@ -766,7 +767,7 @@ def seed_ecosystem_data():
         }
     ]
     
-    now = datetime.utcnow().isoformat()
+    now = utc_iso_z()
     for company in companies:
         company_id = generate_company_id(company['name'])
         cursor.execute('''

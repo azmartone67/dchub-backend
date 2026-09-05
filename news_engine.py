@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from db_utils import get_db
 from routes._swallowed_writes import note_swallowed_write
+from utc_clock import utc_iso_z
 
 logger = logging.getLogger(__name__)
 
@@ -397,7 +398,7 @@ def update_feed_health(url, name, success, article_count=0, db_path=NEWS_DB_PATH
     try:
         conn = get_db(db_path)
         c = conn.cursor()
-        now = datetime.utcnow().isoformat()
+        now = utc_iso_z()
         if success:
             c.execute('''INSERT INTO feed_health (url,name,last_success,success_count,avg_articles_per_fetch)
                 VALUES (%s,%s,%s,1,%s) ON CONFLICT(url) DO UPDATE SET last_success=EXCLUDED.last_success,
@@ -597,7 +598,7 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
     conn = get_db(db_path)
     c = conn.cursor()
     saved = 0
-    now_ts = datetime.utcnow().isoformat()
+    now_ts = utc_iso_z()
     for a in articles:
         try:
             pub = _clamp_future_published_at(a.get('published_at'))
@@ -675,7 +676,7 @@ def _sync_articles_to_pg(articles):
         pg_conn = psycopg2.connect(db_url, connect_timeout=15)
         cur = pg_conn.cursor()
         
-        now_ts = datetime.utcnow().isoformat()
+        now_ts = utc_iso_z()
         # ★ Second news_articles writer. Same degrade-never-block contract as
         # the single-row one: publisher_url is attempted, and a chunk that
         # fails because the column is absent is retried WITHOUT it rather than
@@ -782,7 +783,7 @@ def sync_to_announcements(articles, db_path=MAIN_DB_PATH):
         pg_conn = psycopg2.connect(db_url, connect_timeout=15)
         cur = pg_conn.cursor()
         saved = 0
-        now = datetime.utcnow().isoformat()
+        now = utc_iso_z()
         
         insert_sql = '''INSERT INTO announcements
             (id,title,summary,source_url,source,published_date,discovered_at,category,url)
@@ -955,13 +956,13 @@ class NewsScheduler:
         self._sync_in_progress = True
         try:
             result = sync_all_news(self.news_db, self.main_db)
-            self.last_sync = datetime.utcnow().isoformat()
+            self.last_sync = utc_iso_z()
             self.last_result = result
             self.sync_count += 1
             logger.info(f"📰 Sync #{self.sync_count}: {result.get('new_saved',0)} new, {result.get('announcements_synced',0)} to announcements")
         except Exception as e:
             self.error_count += 1
-            self.last_sync = datetime.utcnow().isoformat()
+            self.last_sync = utc_iso_z()
             self.last_result = {'success': False, 'error': str(e)}
             logger.error(f"📰 Sync error #{self.error_count}: {e}")
             import traceback

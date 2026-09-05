@@ -29,6 +29,7 @@ import time
 from contextlib import contextmanager
 from db_utils import get_db
 from ai_surface_canon import canon_text
+from utc_clock import utc_iso_z
 
 
 @contextmanager
@@ -679,7 +680,7 @@ def start_welcome_series(user_id: str, email: str, name: str = "there"):
         c.execute("""
             INSERT INTO welcome_series (id, user_id, email, current_step, started_at, status)
             VALUES (%s, %s, %s, 0, %s, 'active')
-        """, (series_id, user_id, email, datetime.utcnow().isoformat()))
+        """, (series_id, user_id, email, utc_iso_z()))
 
         # Schedule all emails in the series
         now = datetime.utcnow()
@@ -714,7 +715,7 @@ def start_welcome_series(user_id: str, email: str, name: str = "there"):
                 scheduled_at.isoformat(),
                 series_id,
                 step,
-                datetime.utcnow().isoformat()
+                utc_iso_z()
             ))
 
         conn.commit()
@@ -734,7 +735,7 @@ def stop_welcome_series(email: str):
             c.execute("""
                 UPDATE welcome_series SET status = 'stopped', completed_at = %s
                 WHERE email = %s AND status = 'active'
-            """, (datetime.utcnow().isoformat(), email))
+            """, (utc_iso_z(), email))
             # Cancel pending emails
             c.execute("""
                 UPDATE email_queue SET status = 'cancelled'
@@ -764,7 +765,7 @@ def _process_email_queue(conn):
     c = conn.cursor()
     
     # Get emails that are due to be sent
-    now = datetime.utcnow().isoformat()
+    now = utc_iso_z()
     
     c.execute("""
         SELECT id, email, subject, body_html, body_text, retry_count, sequence_step
@@ -794,7 +795,7 @@ def _process_email_queue(conn):
         if result['success']:
             c.execute("""
                 UPDATE email_queue SET status = 'sent', sent_at = %s WHERE id = %s
-            """, (datetime.utcnow().isoformat(), email_id))
+            """, (utc_iso_z(), email_id))
             
             # Update welcome series progress
             if step:
@@ -802,7 +803,7 @@ def _process_email_queue(conn):
                     UPDATE welcome_series 
                     SET current_step = %s, last_email_sent = %s
                     WHERE email = %s
-                """, (step, datetime.utcnow().isoformat(), to_email))
+                """, (step, utc_iso_z(), to_email))
             
             results.append({'email_id': email_id, 'success': True})
         else:
@@ -978,7 +979,7 @@ def record_email_event(email_id: str, event_type: str, ip: str = None, user_agen
             event_type,
             ip,
             user_agent,
-            datetime.utcnow().isoformat()
+            utc_iso_z()
         ))
 
         conn.commit()

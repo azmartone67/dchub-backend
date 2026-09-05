@@ -23,6 +23,7 @@ import hashlib
 from datetime import datetime, timedelta
 from flask import jsonify, request
 from ai_surface_canon import canon_text
+from utc_clock import utc_iso_z
 
 # ============================================================
 # CONFIGURATION - Edit these to match your actual data
@@ -341,7 +342,7 @@ def setup_seo_routes(app):
                 "social_templates": len(SOCIAL_TEMPLATES),
                 "market_facts": sum(len(f) for f in MARKET_FACTS.values()),
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_iso_z()
         })
 
     @app.route('/api/seo/social/generate')
@@ -422,7 +423,7 @@ def setup_seo_routes(app):
                 "keyword_targets": page["hashtags"],
             },
             "post_number": _post_counter,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_iso_z()
         })
 
     @app.route('/api/seo/deep-links')
@@ -447,7 +448,7 @@ def setup_seo_routes(app):
             "deep_links": selected,
             "total_available": len(all_pages),
             "category_filter": category,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_iso_z()
         })
 
     @app.route('/api/seo/backlinks')
@@ -476,7 +477,7 @@ def setup_seo_routes(app):
                     "communities": len([t for t in BACKLINK_TARGETS if t["type"] == "community"]),
                 }
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_iso_z()
         })
 
     @app.route('/api/seo/outreach/generate', methods=['POST', 'GET'])
@@ -503,7 +504,7 @@ def setup_seo_routes(app):
                 "type": template_type,
                 "body": email_body,
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_iso_z()
         }
         
         if template.get("subject"):
@@ -603,7 +604,7 @@ def setup_seo_routes(app):
                     "Add Open Graph tags for social sharing previews",
                 ]
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": utc_iso_z()
         })
 
     print("[SEO Agents] Routes registered: /api/seo/status, /api/seo/social/generate, /api/seo/deep-links, /api/seo/backlinks, /api/seo/outreach/generate, /api/seo/meta-audit")
