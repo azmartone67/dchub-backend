@@ -1208,9 +1208,9 @@ function wellKnownResponse(pathname) {
   if (pathname === '/.well-known/mcp.json') {
     // Phase RRR (2026-05-16): brand positioning fields (tagline,
     // positioning, vs_competitors) inlined so AI agents discovering
-    // the manifest see the no-BS framing. The backend at
-    // /Users/jonathanmartone/dchub-backend/main.py:1956 has the full
-    // tiered manifest — clients that need it follow the discovery
+    // the manifest see the no-BS framing. The backend's
+    // _canonical_mcp_manifest() in main.py has the full tiered
+    // manifest — clients that need it follow the discovery
     // hint to the backend's mcp.json. This static copy is what CF
     // Pages serves at the edge for fast discovery.
     const mcpTools = MCP_FALLBACK_TOOLS.map(t => ({ name: t.name, description: t.description }));
