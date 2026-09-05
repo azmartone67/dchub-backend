@@ -104,3 +104,12 @@ dchub-frontend/index.legacy-2026-05-11.html.bak
 backups/*.json.gz
 backups/*.sql
 backups/*.dump
+
+# 2026-09-05 hygiene: never track a virtualenv (public repo).
+# docs/mcp-helper-pkg/.venv was committed before that package's own .gitignore
+# existed — 2000 files, 24.56 MB, 61 of them leaking /Users/<name>/ paths in
+# pip RECORD files and bin/ shebangs. .gitignore does not untrack what is
+# already in the index, which is why it survived. This rule is repo-wide so the
+# next venv never gets added in the first place.
+.venv/
+venv/
