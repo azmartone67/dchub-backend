@@ -110,6 +110,15 @@ jobs:
             echo "no change in the scored universe since the last snapshot — nothing to publish"
             exit 0
           fi
+          # ★ STAGE BEFORE COMMITTING. The first full run died right here:
+          #   `git commit` with nothing staged and no -a prints "no changes
+          #   added to commit" and exits 1, so a run that had ALREADY generated
+          #   a correct 327-row snapshot failed at the last step. The local
+          #   dry-run of this sequence worked only because it was staged by
+          #   hand. `git diff --quiet` above inspects the WORKING TREE, which is
+          #   why the change was visible to the check and still invisible to the
+          #   commit.
+          git add data/dcpi-market-verdicts.csv
           AS_OF="$(python3 -c "import csv,sys;r=list(csv.DictReader(open('data/dcpi-market-verdicts.csv')));print(sorted({x['as_of_date'] for x in r})[-1])")"
           ROWS="$(python3 -c "import csv;print(len(list(csv.DictReader(open('data/dcpi-market-verdicts.csv')))))")"
           git -c user.name="dchub-bot" -c user.email="bot@dchub.cloud" \
