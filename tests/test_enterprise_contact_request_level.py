@@ -45,6 +45,7 @@ import pytest
 pytest.importorskip("flask")
 from flask import Flask  # noqa: E402
 
+import routes.enterprise as ent  # noqa: E402
 from routes.enterprise import enterprise_bp  # noqa: E402
 
 VALID = {
@@ -87,6 +88,7 @@ def _post(client, body):
 # ---------------------------------------------------------------------------
 @pytest.fixture()
 def client_nodb():
+    ent._RATE_BUCKET.clear()
     c, prev = _client(None)
     yield c
     _restore(prev)
@@ -165,6 +167,26 @@ pg = pytest.mark.skipif(
     not DSN, reason="set DCHUB_PG_TEST_DSN to a throwaway Postgres to run")
 
 
+def _reset_process_state():
+    """Undo the two pieces of MODULE-LEVEL state the handler carries.
+
+    Both bit during development and neither is a product bug:
+
+      * util.enterprise_inquiries_schema._ENSURED latches the create-or-heal to
+        once per process (ALTER takes an ACCESS EXCLUSIVE lock, so re-running
+        it per request would put a lock in front of every lead). A fixture that
+        DROPs the table therefore gets no table back — the handler correctly
+        believes it already ensured one. Worth knowing in production too: a
+        table dropped after first use is not re-created until a restart.
+      * routes.enterprise._RATE_BUCKET is a real per-IP limiter, 5 per 600s.
+        Several POSTs from one test IP trip it and the handler answers 429 —
+        which is the restored _rate_limited doing its job.
+    """
+    import util.enterprise_inquiries_schema as sch
+    sch._ENSURED = False
+    ent._RATE_BUCKET.clear()
+
+
 @pytest.fixture()
 def client_pg():
     psycopg2 = pytest.importorskip("psycopg2")
@@ -173,6 +195,7 @@ def client_pg():
     with c.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS enterprise_inquiries CASCADE")
     c.close()
+    _reset_process_state()
     cl, prev = _client(DSN)
     yield cl
     _restore(prev)
@@ -226,3 +249,106 @@ def test_the_honeypot_stores_nothing(client_pg):
 def test_a_rejected_submission_stores_nothing(client_pg):
     _post(client_pg, {**VALID, "email": "nope"})
     assert _rows() == []
+
+
+# ---------------------------------------------------------------------------
+# r-contact-notify (2026-09-05) — a stored lead must reach a human.
+#
+# The form notified NOBODY: _relay_to_webhook returns "no_webhook_configured"
+# unless DCHUB_SALES_WEBHOOK is set, and it never has been. Meanwhile the
+# sibling /api/v1/enterprise/inquiry has emailed the admin on every inquiry
+# since June. These pin the email path and, just as importantly, pin that the
+# response SAYS which paths worked.
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def captured(monkeypatch):
+    """Capture the notify call instead of sending mail."""
+    calls = []
+    monkeypatch.setattr(ent, "_notify_sales", lambda p: (calls.append(p), True)[1])
+    return calls
+
+
+def test_a_stored_lead_triggers_a_notification(client_nodb, captured, monkeypatch):
+    """With no DB the handler 503s before notifying — so this uses the DB-free
+    client only to prove the NEGATIVE below. The positive case needs storage."""
+    _post(client_nodb, VALID)
+    assert captured == [], "notified on a submission that was never stored"
+
+
+@pg
+def test_a_stored_lead_is_notified_and_the_response_says_so(client_pg, captured):
+    r = _post(client_pg, VALID)
+    assert r.status_code == 200
+    body = r.get_json() or {}
+    assert body.get("stored") is True
+    assert body.get("notified") is True, (
+        "a lead stored but the response does not report it reached anyone")
+    assert len(captured) == 1, "the notifier was not called for a stored lead"
+    assert captured[0]["org_name"] == VALID["org_name"]
+
+
+@pg
+def test_a_failed_notification_is_reported_not_swallowed(client_pg, monkeypatch):
+    """notified:false is the signal that a lead is sitting unseen. If this
+    collapses to always-true, the field is decoration."""
+    monkeypatch.setattr(ent, "_notify_sales", lambda p: False)
+    r = _post(client_pg, VALID)
+    assert r.status_code == 200
+    assert (r.get_json() or {}).get("notified") is False
+
+
+def test_the_notifier_escapes_attacker_controlled_html():
+    """Every field is free text from a PUBLIC form, interpolated into HTML a
+    human opens in a mail client. Executed against the real body builder.
+
+    ★ THE PROPERTY IS "user input never OPENS A TAG", not "the string
+    'onerror=' is absent". `&lt;img src=x onerror=1&gt;` still contains
+    "onerror=" and is completely inert — angle brackets are what make markup.
+    The first version of this assertion banned that substring and failed on
+    correctly-escaped output, which would have pushed the fix the wrong way
+    had I believed it.
+
+    Calls _sales_email_html rather than _notify_sales so nothing has to import
+    main (green-main convention) or stub a network call."""
+    html = ent._sales_email_html({
+        "org_name": "<script>alert(1)</script>",
+        "email": "a@b.co",
+        "use_case": "<img src=x onerror=1>",
+        "expected_volume": "1k",
+        "source_ip": "1.2.3.4",
+    })
+    for opener in ("<script", "<img", "<iframe", "<svg"):
+        assert opener not in html, (
+            f"user input opened a {opener}> tag in the admin email: {html[:200]}")
+    assert "&lt;script&gt;" in html and "&lt;img" in html, (
+        "the payload is not in the body at all — this test proves nothing")
+
+
+def test_the_notifier_uses_the_sanctioned_transactional_sender():
+    """tests/test_marketing_chokepoint.py ratchets against NEW direct callers
+    of api.resend.com — the backend has ~45 hand-rolled senders and no way to
+    prove CAN-SPAM compliance across them. The first version of _notify_sales
+    was a direct POST and that guard caught it. Read from the AST so a mention
+    in a comment cannot satisfy it."""
+    import ast as _ast
+    import pathlib as _pl
+    src = (_pl.Path(ent.__file__)).read_text(encoding="utf-8")
+    fn = next(n for n in _ast.walk(_ast.parse(src))
+              if isinstance(n, _ast.FunctionDef) and n.name == "_notify_sales")
+    imported = {a.name for n in _ast.walk(fn)
+                if isinstance(n, _ast.ImportFrom) for a in n.names}
+    assert "_resend_email" in imported, (
+        "_notify_sales no longer routes through main._resend_email — a direct "
+        "Resend POST here is a new bypass of the marketing choke-point")
+    # ★ EXCLUDE THE DOCSTRING. The function's own docstring explains why it
+    # must not POST to api.resend.com, and a substring check over the source
+    # therefore fails on correct code — the rule tripped by the sentence
+    # describing it. Check STRING CONSTANTS the function would actually use.
+    body = fn.body[1:] if (fn.body and isinstance(fn.body[0], _ast.Expr)
+                           and isinstance(fn.body[0].value, _ast.Constant)
+                           and isinstance(fn.body[0].value.value, str)) else fn.body
+    literals = [n.value for b in body for n in _ast.walk(b)
+                if isinstance(n, _ast.Constant) and isinstance(n.value, str)]
+    assert not any("api.resend.com" in x for x in literals), (
+        "_notify_sales names the Resend endpoint in executable code — that is "
+        f"a direct bypass: {[x for x in literals if 'api.resend.com' in x]}")
