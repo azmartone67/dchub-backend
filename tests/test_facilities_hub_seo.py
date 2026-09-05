@@ -32,14 +32,30 @@ import routes.seo_pages as seo  # noqa: E402
 
 # ── fakes ────────────────────────────────────────────────────────────────
 class _Cur:
-    """Cursor whose execute() steps through a list of canned result sets."""
+    """Cursor whose execute() steps through a list of canned result sets.
 
-    def __init__(self, results):
+    The canonical_slug DDL probe (_canon_col) is answered out of band and does
+    NOT consume a canned set — `has_canon` decides whether the live column is
+    reported present, so both the frozen and the degraded path are testable.
+    """
+
+    def __init__(self, results, has_canon=True):
         self._results = results
+        self._has_canon = has_canon
         self._i = -1
+        self._probed = False
 
-    def execute(self, *_a, **_k):
+    def execute(self, sql, *_a, **_k):
+        if "information_schema.columns" in str(sql):
+            self._probed = True
+            return
         self._i += 1
+
+    def fetchone(self):
+        if self._probed:
+            self._probed = False
+            return (1,) if self._has_canon else None
+        return None
 
     def fetchall(self):
         return self._results[self._i] if 0 <= self._i < len(self._results) else []
@@ -49,29 +65,35 @@ class _Cur:
 
 
 class _Conn:
-    def __init__(self, results):
-        self._cur = _Cur(results)
+    def __init__(self, results, has_canon=True):
+        self._cur = _Cur(results, has_canon)
 
     def cursor(self, **_kw):
         return self._cur
+
+    def rollback(self):
+        pass
 
     def close(self):
         pass
 
 
-# rows shape: (name, provider, grp, city, state, power_mw), pre-sorted by grp
+# rows shape: (name, provider, grp, city, state, power_mw, canonical_slug),
+# pre-sorted by grp. The last column is the row's FROZEN, set-once URL.
 _US_ROWS = [
-    ("QTS Dallas DC1", "QTS", "Dallas-Fort Worth", "Dallas", "TX", 80),
-    ("Equinix DC11", "Equinix", "Northern Virginia", "Ashburn", "VA", 100),
-    ("Mystery Site", "SomeOp", "Unknownville", "Nowhere", "MT", None),
+    ("QTS Dallas DC1", "QTS", "Dallas-Fort Worth", "Dallas", "TX", 80,
+     "qts-qts-dallas-dc1-frozen01"),
+    ("Equinix DC11", "Equinix", "Northern Virginia", "Ashburn", "VA", 100,
+     "equinix-equinix-dc11-frozen02"),
+    ("Mystery Site", "SomeOp", "Unknownville", "Nowhere", "MT", None, None),
 ]
 
 _KNOWN = {"ashburn", "dallas", "dallas-fort-worth", "northern-virginia"}
 
 
-def _client(monkeypatch, rows, known=_KNOWN):
+def _client(monkeypatch, rows, known=_KNOWN, has_canon=True):
     monkeypatch.setattr(fh, "_CACHE", {})
-    monkeypatch.setattr(fh, "_conn", lambda: _Conn([rows]))
+    monkeypatch.setattr(fh, "_conn", lambda: _Conn([rows], has_canon))
     monkeypatch.setattr(seo, "_valid_market_slugs", lambda: known)
     app = Flask(__name__)
     app.register_blueprint(fh.facilities_hub_bp)
@@ -177,7 +199,7 @@ def test_us_country_page_browse_by_state(monkeypatch):
 
 
 def test_non_us_country_has_no_state_block(monkeypatch):
-    rows = [("Santiago DC1", "Op", "Santiago", "Santiago", "", 10)]
+    rows = [("Santiago DC1", "Op", "Santiago", "Santiago", "", 10, None)]
     c = _client(monkeypatch, rows, known={"santiago"})
     body = c.get("/facilities/in/cl").get_data(as_text=True)
     assert "Browse by state" not in body
@@ -186,7 +208,8 @@ def test_non_us_country_has_no_state_block(monkeypatch):
 
 # ── 5. numbered pagination ───────────────────────────────────────────────
 def test_numbered_pagination(monkeypatch):
-    rows = [(f"Facility Number {i:04d}", "Op", "Some Market", "City", "TX", 1)
+    rows = [(f"Facility Number {i:04d}", "Op", "Some Market", "City", "TX", 1,
+             None)
             for i in range(fh.PAGE_SIZE + 50)]
     c = _client(monkeypatch, rows, known=set())
     body = c.get("/facilities/in/us").get_data(as_text=True)

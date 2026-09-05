@@ -11,8 +11,9 @@ Geography hierarchy — path-based (robots.txt disallows ?params):
   /facilities/in/us/<state>            → US per-state pages (r-seo-0801)
   /facilities/in/us/<state>/page/<n>   → state pagination
 
-Links are built with the SAME canonical slug the sitemap + live facility pages
-use (discovered_facilities + slugify + stable_hash8) so every link resolves 200.
+Links are the row's STORED discovered_facilities.canonical_slug (the frozen,
+set-once URL the live page actually serves), falling back to the one composer
+— routes.facility_slug_freeze — only for rows the freeze has not reached yet.
 Cached in-process (1h) to spare the 1-replica backend from crawler hammering.
 
 r-seo-0801 (SEO diagnosis 2026-08-01): these pages get real Google clicks but
@@ -28,7 +29,7 @@ import re
 import html as _html
 from flask import Blueprint, Response, redirect, request
 
-from routes.facility_slug import stable_hash8
+from routes.facility_slug_freeze import frozen_slug_for_row
 
 facilities_hub_bp = Blueprint("facilities_hub", __name__)
 
@@ -127,19 +128,73 @@ def us_state_slug(value):
     return s if s in _US_STATE_BY_SLUG else None
 
 
-def _fac_slug(provider, name):
-    """Canonical facility slug — byte-identical to the sitemap + live pages."""
-    name_slug = _slugify(name)
-    if len(name_slug) < 3:
-        return None
-    provider_slug = _slugify(provider)
-    h = stable_hash8(provider, name)
-    return f"{provider_slug}-{name_slug}-{h}" if provider_slug else f"{name_slug}-{h}"
+def _fac_slug(provider, name, canonical_slug=None):
+    """The live /facilities/<slug> segment for a hub row, or None.
+
+    r-hubslug (2026-09-05) — this was one more hand-rolled copy of the slug
+    composer, the one the r-routeslug sweep (#2015/#2016) missed, and its own
+    docstring claimed it was "byte-identical to the sitemap + live pages".
+    Measured against the freeze on the live German hub: 9 of 60 sampled links
+    (15%) were 301s, in two classes, plus a silent third:
+
+      1. NO PROVIDER-PREFIX DEDUPE. It emitted the doubled pre-2026-07-28 form
+         unconditionally, so every row frozen AFTER the dedupe was linked at a
+         URL that only redirects: datacenter-one-datacenter-one-dus1-c2e36834
+         -> datacenter-one-dus1-c2e36834, dns-net-dns-net-ber1-…, colt-…-colt-….
+      2. NO ASCII FOLD. The local _slugify keeps the unicode word class, so
+         "DARZ Darmstädter Rechenzentrum" linked at …darmstädter… while the
+         page serves …darmstdter… (the freeze strips, it does not fold).
+      3. `if len(name_slug) < 3: return None` — the same bug PR #3911 fixed in
+         build_canonical_slug: it measured the NAME FRAGMENT, not the slug.
+         _rows_to_facs skips a None slug, so RZ (DE), Oi (BR), B4 (FR),
+         1A/1B/2/3/4 (CN/HK), SC, L7 were dropped from the hub listing AND
+         from the US state counts — while /facilities/oi-c40c6b79 serves 200.
+
+    ★★ DO NOT "SIMPLIFY" THIS TO build_canonical_slug(provider, name). That is
+       the trap. canonical_slug is set-once and FORWARD-ONLY: for rows frozen
+       BEFORE the dedupe the DOUBLED form IS the live URL — verified 2026-09-05,
+       /facilities/equinix-equinix-hk1-a3e2c448 serves 200 and the deduped
+       equinix-hk1-a3e2c448 301s TO it. facility_slug_freeze measured 45.7% of
+       5,064 frozen rows carrying the doubling, so delegating to the builder
+       would move roughly half the hub's links onto URLs that only redirect —
+       the churn the freeze exists to prevent. Stored first; build only for
+       rows the freeze has not reached.
+    """
+    return frozen_slug_for_row({"provider": provider, "name": name,
+                                "canonical_slug": canonical_slug})
 
 
 def _conn():
     from db_utils import get_read_db
     return get_read_db()
+
+
+def _canon_col(conn, cur):
+    """`canonical_slug` when the LIVE column exists, else a NULL placeholder.
+
+    Same probe routes/indexnow.py and routes/d1_sync.py use: live DDL can lag
+    repo DDL, and naming a missing column here would not degrade the link — the
+    whole SELECT is inside `except Exception: rows = []`, so one country page
+    would go dark instead. The column count is 7 either way, so the row unpack
+    in _rows_to_facs is stable across the degrade.
+
+    ★ A failed probe MUST roll back: psycopg2 keeps an explicit transaction
+      open after an error and every later read on the connection then fails
+      too, silently, because the caller swallows it (see the all-zero
+      /agent/index class of bug).
+    """
+    try:
+        cur.execute("SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'discovered_facilities' "
+                    "  AND column_name = 'canonical_slug'")
+        if cur.fetchone() is not None:
+            return "canonical_slug"
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    return "NULL AS canonical_slug"
 
 
 def _e(s) -> str:
@@ -349,10 +404,12 @@ def _store(path_key, html_str):
 
 # ── shared listing renderer (country + state pages) ────────────────────
 def _rows_to_facs(rows):
-    """(grp, slug, name, loc) for every facility row with a valid slug."""
+    """(grp, slug, name, loc) for every facility row with a valid slug.
+    Row shape: (name, provider, grp, city, state, power_mw, canonical_slug) —
+    the last column is the row's FROZEN URL and wins whenever it is set."""
     facs = []
-    for name, provider, grp, city, state, _power in rows:
-        slug = _fac_slug(provider, name)
+    for name, provider, grp, city, state, _power, canon in rows:
+        slug = _fac_slug(provider, name, canon)
         if not slug:
             continue
         loc = ", ".join([x for x in (city, state) if x and str(x).strip()])
@@ -443,10 +500,16 @@ def facilities_index():
     try:
         conn = _conn()
         cur = conn.cursor()
+        # r-hubslug (2026-09-05): `AND char_length(name) >= 3` was here, the
+        # SQL twin of the len<3 rejection _fac_slug used to carry. It has to go
+        # with it: the country page it links to now LISTS those rows, so the
+        # (N) beside the country would understate by exactly the facilities
+        # this change rescues, and the page total would disagree with the link
+        # the reader clicked. Matches hub_sitemap_counts, which never had it.
         cur.execute("""
             SELECT country, COUNT(*) AS n
               FROM discovered_facilities
-             WHERE name IS NOT NULL AND name <> '' AND char_length(name) >= 3
+             WHERE name IS NOT NULL AND name <> ''
                AND country IS NOT NULL AND btrim(country) <> ''
                AND duplicate_of_id IS NULL
              GROUP BY country
@@ -513,11 +576,12 @@ def facilities_in_country(country, page=1):
     try:
         conn = _conn()
         cur = conn.cursor()
-        cur.execute("""
+        _cs = _canon_col(conn, cur)
+        cur.execute(f"""
             SELECT name, provider,
                    COALESCE(NULLIF(btrim(market),''), NULLIF(btrim(state),''),
                             NULLIF(btrim(city),''), 'Other') AS grp,
-                   city, state, power_mw
+                   city, state, power_mw, {_cs}
               FROM discovered_facilities
              WHERE LOWER(btrim(country)) = %s
                AND name IS NOT NULL AND name <> ''
@@ -573,8 +637,8 @@ def facilities_in_country(country, page=1):
     extra_block = ""
     if country == "us":
         st_counts: dict = {}
-        for name, provider, _grp, _city, state, _power in rows:
-            if not _fac_slug(provider, name):
+        for name, provider, _grp, _city, state, _power, canon in rows:
+            if not _fac_slug(provider, name, canon):
                 continue
             ss = us_state_slug(state)
             if ss:
@@ -633,11 +697,12 @@ def facilities_in_us_state(st, page=1):
     try:
         conn = _conn()
         cur = conn.cursor()
-        cur.execute("""
+        _cs = _canon_col(conn, cur)
+        cur.execute(f"""
             SELECT name, provider,
                    COALESCE(NULLIF(btrim(market),''),
                             NULLIF(btrim(city),''), 'Other') AS grp,
-                   city, state, power_mw
+                   city, state, power_mw, {_cs}
               FROM discovered_facilities
              WHERE LOWER(btrim(country)) = 'us'
                AND (UPPER(btrim(state)) = %s OR LOWER(btrim(state)) = %s)
