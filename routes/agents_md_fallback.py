@@ -197,8 +197,18 @@ https://dchub.cloud/integrations/mcp#operator-prompt
 | llms-full.txt | https://dchub.cloud/llms-full.txt | text/plain |
 | OpenAPI | https://dchub.cloud/openapi.json | application/json |
 | MCP manifest | https://dchub.cloud/.well-known/mcp-server.json | application/json |
-| Sitemap | https://dchub.cloud/sitemap.xml | application/xml |
+| Sitemap (ranking set) | https://dchub.cloud/sitemap.xml | application/xml |
+| Sitemap (retrieval set) | https://dchub.cloud/sitemap-ai.xml | application/xml |
 | AI Capacity Index | https://dchub.cloud/api/v1/ai-capacity-index | application/json |
+
+**Which sitemap you want.** `/sitemap.xml` is the set submitted to Google and
+Bing: facility pages there are filtered to those carrying a published power-capacity
+figure, because a search engine crawls a thin page and declines it. `/sitemap-ai.xml`
+is every canonical facility page we serve — a superset, never a different set. If you
+are building an entity index or grounding an answer, use that one: a facility with no
+published capacity is still a distinct record that answers "is there a data centre in
+X, who runs it, and what grid is it on". It is generated on a schedule and served only
+from its snapshot; a 503 there carries a `Retry-After` and is not an error to report.
 
 ## Authentication
 
