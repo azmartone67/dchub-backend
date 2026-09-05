@@ -11,11 +11,23 @@ name: pre-merge-gauntlet
 #   workflow, which is the one where it matters most.
 #
 #   Grouped per REF, so pushing a new commit to a PR cancels that PR's older
-#   run and nobody else's. main is deliberately NOT cancelled: a push to main
-#   is a merge, and cancelling its gauntlet would leave the merged commit
-#   unverified.
+#   run and nobody else's.
+#
+# ★ MAIN IS EXCLUDED FROM GROUPING ENTIRELY, and `cancel-in-progress: false` is
+#   NOT what does it. That flag only protects a run that has already STARTED:
+#   GitHub still cancels a PENDING run the moment a newer run joins the same
+#   group. So grouping main pushes together means two merges landing close
+#   enough leave the MIDDLE commit's gauntlet cancelled before it ever ran —
+#   and the push-side backstop for a stale architecture map goes blind on
+#   exactly the commit it was meant to catch (tests/test_vault_map_generator.py
+#   ::test_the_push_side_backstop_still_runs_the_suite; caught this in review).
+#
+#   Hence github.run_id on main: every push to main lands in a group of its
+#   own, so it can never queue behind or cancel another. run_id is always a
+#   non-zero number, so the `&& ... ||` ternary cannot fall through to its
+#   right-hand side on main — the classic trap with that idiom.
 concurrency:
-  group: pre-merge-${{ github.ref }}
+  group: pre-merge-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 on:
