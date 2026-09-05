@@ -289,3 +289,41 @@ def test_the_frontend_checkout_is_not_scanned_for_backend_routes(tmp_path, mod, 
     (tmp_path / "main.py").write_text('from x import fe_bp\napp.register_blueprint(fe_bp)\n')
     monkeypatch.setattr(mod, "FRONTEND", fe)
     assert "/not-a-backend-route" not in mod.extract_flask_paths(tmp_path)
+
+
+# ── Cloudflare Pages glob semantics ──────────────────────────────────────────
+
+def test_a_slash_star_include_also_routes_the_bare_path(mod):
+    """dchub-frontend/scripts/check-edge-caps.mjs is the authority and its own
+    note records getting this backwards: "/redeem/*" DOES route bare "/redeem".
+    Measured 2026-09-05: GET /redeem is 200 and carries x-dc-worker-version.
+    Reading it the other way puts three reachable paths in the debt register."""
+    inc = ["/redeem/*"]
+    assert mod._covers(inc, "/redeem")
+    assert mod._covers(inc, "/redeem/")
+    assert mod._covers(inc, "/redeem/abc")
+    assert not mod._covers(inc, "/redeemer")
+
+
+def test_exclude_claws_a_bare_path_back_out_of_a_wildcard(mod):
+    """15 exclude entries exist for exactly this. A checker reading only
+    `include` calls /pricing covered; it answers 200 from a static file with NO
+    x-dc-worker-version — the silent failure this gate exists to catch."""
+    tables = {"routes_json_include": ["/pricing/*", "/iso/*"],
+              "routes_json_exclude": ["/pricing", "/iso/*.json"],
+              "worker_paths": ["/pricing", "/iso/x", "/iso/x.json"],
+              "worker_prefixes": []}
+    mr, _ = mod._uncovered({"/pricing", "/pricing/plans", "/iso/x", "/iso/x.json"}, tables)
+    assert "/pricing" in mr and "/iso/x.json" in mr
+    assert "/pricing/plans" not in mr and "/iso/x" not in mr
+
+
+def test_a_dynamic_route_is_probed_as_a_concrete_path(mod):
+    """"/news/<slug>" truncated at "<" becomes "/news/", which hits the
+    deliberate "/news/" exclude — while the pages it serves match "/news/*" and
+    ARE worker-routed (GET /news/some-article carries x-dc-worker-version)."""
+    tables = {"routes_json_include": ["/news/*"],
+              "routes_json_exclude": ["/news", "/news/"],
+              "worker_paths": [], "worker_prefixes": ["/news/"]}
+    mr, mw = mod._uncovered({"/news/<slug>"}, tables)
+    assert mr == [] and mw == [], (mr, mw)

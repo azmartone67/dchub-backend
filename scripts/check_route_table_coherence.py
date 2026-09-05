@@ -389,7 +389,9 @@ def _worker_fallthrough_prefixes(src: str) -> tuple[set[str], set[str]]:
 
 
 def cmd_route_tables(_args) -> int:
-    routes_json = set(json.loads((FRONTEND / "_routes.json").read_text()).get("include", []))
+    raw = json.loads((FRONTEND / "_routes.json").read_text())
+    routes_json = set(raw.get("include", []))
+    routes_json_exclude = set(raw.get("exclude", []))
     src = (FRONTEND / "_worker.js").read_text()
     worker_paths = _js_string_list(src, "PHASE_282_RAILWAY_PATHS")
     worker_prefixes = _js_string_list(src, "PHASE_282_PREFIXES")
@@ -398,10 +400,13 @@ def cmd_route_tables(_args) -> int:
     worker_prefixes |= extra_prefix
     TABLES_OUT.write_text(json.dumps({
         "routes_json_include": sorted(routes_json),
+        "routes_json_exclude": sorted(routes_json_exclude),
         "worker_paths": sorted(worker_paths),
         "worker_prefixes": sorted(worker_prefixes),
     }, indent=2))
-    print(f"_routes.json include: {len(routes_json)} entries")
+    print(f"_routes.json include: {len(routes_json)} entries, "
+          f"exclude: {len(routes_json_exclude)} entries "
+          f"({len(routes_json) + len(routes_json_exclude)}/98 rules)")
     print(f"worker PHASE_282_RAILWAY_PATHS (+ dispatch-guard exacts): {len(worker_paths)} entries")
     print(f"worker PHASE_282_PREFIXES (+ dispatch-guard prefixes): {len(worker_prefixes)} entries")
     return 0
@@ -409,25 +414,59 @@ def cmd_route_tables(_args) -> int:
 
 # ── 3. The ratchet ───────────────────────────────────────────────────────────
 
+def _glob_re(glob: str) -> re.Pattern:
+    r"""Cloudflare Pages _routes.json glob semantics.
+
+    ★ A FAITHFUL PORT of globToRe() in dchub-frontend/scripts/check-edge-caps.mjs,
+    which is the authority here.  Two rules that are easy to get backwards:
+
+      1. "/x/*" matches "/x/...", "/x/" AND BARE "/x".  The frontend's own note
+         records getting this wrong and building a whole fix on it, and names the
+         paths that prove it: /docs (301), /operators (200), /relay (404),
+         /redeem (200) are listed ONLY as "/x/*" and all answer worker-side.
+         Measured 2026-09-05: GET /redeem is 200 and DOES carry
+         x-dc-worker-version, so a checker that reads "/redeem/*" as not
+         covering "/redeem" puts a reachable path in the debt register.
+      2. "*" anywhere else is a plain wildcard — "/static/og/*", "/agent*".
+    """
+    body = ".*".join(re.escape(part) for part in glob.split("*"))
+    if glob.endswith("/*"):
+        return re.compile(rf"^(?:{body}|{re.escape(glob[:-2])})$")
+    return re.compile(rf"^{body}$")
+
+
+def _covers(globs, path: str) -> bool:
+    return any(_glob_re(g).match(path) for g in globs)
+
+
 def _uncovered(flask: set[str], tables: dict) -> tuple[list[str], list[str]]:
-    routes_json = set(tables["routes_json_include"])
+    routes_json = list(tables["routes_json_include"])
+    # ★ exclude is not decoration. 15 entries exist precisely to claw bare paths
+    # back OUT of a "/x/*" include (/ai, /news, /pricing, /interconnection-queue,
+    # …). A checker that reads only `include` calls those covered when the worker
+    # is never invoked for them — the exact 404-or-silent-static failure this
+    # gate exists to catch, missed on the paths someone deliberately marked.
+    routes_json_exclude = list(tables.get("routes_json_exclude", []))
     worker_paths = set(tables["worker_paths"])
     worker_prefixes = tuple(tables["worker_prefixes"])
 
     def by_routes_json(path: str) -> bool:
-        if path in routes_json:
-            return True
-        return any(inc.endswith("/*") and path.startswith(inc[:-1]) for inc in routes_json) or \
-               any(inc.endswith("*") and not inc.endswith("/*") and path.startswith(inc[:-1])
-                   for inc in routes_json)
+        return _covers(routes_json, path) and not _covers(routes_json_exclude, path)
 
     def by_worker(path: str) -> bool:
         return path in worker_paths or any(path.startswith(p) for p in worker_prefixes)
 
     missing_routes_json, missing_worker = [], []
     for r in sorted(flask):
-        probe = r.split("<")[0] if "<" in r else r
-        if not (by_routes_json(probe) or by_routes_json(probe.rstrip("/"))):
+        # ★ A dynamic route is tested as a REPRESENTATIVE CONCRETE PATH, not as
+        # the bare prefix before its first "<".  "/news/<slug>" truncated to
+        # "/news/" hits the deliberate "/news/" EXCLUDE and reads as uncovered,
+        # while the paths it actually serves match the "/news/*" include and are
+        # worker-routed — GET /news/some-article carries x-dc-worker-version,
+        # measured 2026-09-05.  Substituting a segment keeps the bare-path
+        # exclusions doing their job without condemning the children.
+        probe = re.sub(r"<[^>]+>", "_", r)
+        if not by_routes_json(probe):
             missing_routes_json.append(r)
         if not by_worker(probe):
             missing_worker.append(r)
