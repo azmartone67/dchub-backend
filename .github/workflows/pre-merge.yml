@@ -1,4 +1,23 @@
 name: pre-merge-gauntlet
+
+# ★ 2026-09-05 — THE QUEUE FIX. This workflow had no concurrency group, so every
+#   push to a PR queued ANOTHER full gauntlet and every one of them ran to
+#   completion. On a busy day that is a standing queue of superseded runs, each
+#   holding a runner, each making the run you actually care about wait behind
+#   work whose commit is already dead.
+#
+#   app-contract-gate.yml has had the correct pattern all along
+#   (cancel-in-progress: true) — it simply was never applied to the slow
+#   workflow, which is the one where it matters most.
+#
+#   Grouped per REF, so pushing a new commit to a PR cancels that PR's older
+#   run and nobody else's. main is deliberately NOT cancelled: a push to main
+#   is a merge, and cancelling its gauntlet would leave the merged commit
+#   unverified.
+concurrency:
+  group: pre-merge-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 on:
   pull_request:
     branches: [main]
@@ -257,6 +276,11 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+          # ★ This job installs psycopg2-binary, psycopg[binary], Pillow and
+          #   feedparser on EVERY run and was the only heavy job here without a
+          #   pip cache — app-contract-gate has had `cache: pip` since it was
+          #   written. Same wheels, same Python, every run.
+          cache: pip
       - name: Install pytest + the light deps the suite needs
         # pytest-only aborted collection: routes the tests import pull flask /
         # requests / yaml / psycopg2. Installing these light, no-DB deps lets the
