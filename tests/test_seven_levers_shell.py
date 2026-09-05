@@ -324,7 +324,23 @@ def test_repo_worker_is_canon_clean_and_current():
     # Verify with (want 4.9.54):
     #   curl -sI "https://dchub.cloud/.well-known/glama.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.54-glama-claim-ownership'" in src
+    # 4.9.54 -> 4.9.55-mcp-surfaces-name-their-tools: the two agent-facing MCP
+    # surfaces this worker owns both declared tools without naming or teaching
+    # them. GET /mcp said `tools: 83` and named none — the payload's own comment
+    # records an assistant fabricating a whole DCIM product from that shape.
+    # And resolveManifestTools() fetched the live tools/list, inputSchema and
+    # all, then slimmed it to {name, description}, so /.well-known/mcp.json
+    # published 83 names and no way to call one.
+    # ★ TWO BUILDERS ON ONE PATH: backend #3959 added a per-tool `example` to
+    # the ORIGIN manifest (verified live at the Railway origin, 83/83) and the
+    # public edge still served 0/83 — this worker builds its own manifest.
+    # ★ 4.9.54-glama-claim-ownership bumped the const without a changelog block
+    # or a title-line move; both corrected in the same commit.
+    # ★ PASTE OUTSTANDING — merging does not ship this.
+    # Verify with (want 4.9.55):
+    #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.55-mcp-surfaces-name-their-tools'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

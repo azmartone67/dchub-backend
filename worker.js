@@ -1,6 +1,6 @@
 
 /**
- * DC Hub API Proxy Worker v4.9.52 — ai-plugin/agent.json canon-bound (2026-09-02)
+ * DC Hub API Proxy Worker v4.9.55 — MCP surfaces name their tools (2026-09-05)
  *
  * ★ THIS TITLE LINE READ v4.9.30 FOR EIGHTEEN EDITS. The version this worker
  * actually reports — `const WORKER_VERSION` below, and the X-DC-Worker-Version
@@ -9,6 +9,36 @@
  * Anyone comparing the dashboard's title against a file they were handed would
  * conclude they were looking at the same code. Keep this in step with
  * WORKER_VERSION, or delete it.
+ * ================================================================================
+ * v4.9.55 CHANGES (Sep 05 2026) — Phase mcp-surfaces-name-their-tools:
+ *   - FIX: GET /mcp declared `tools: 83` and named NONE of them. The comment
+ *          above that payload already says why that is dangerous — an assistant
+ *          read this endpoint, found unnamed tool slots and FABRICATED a whole
+ *          DCIM product — and then it left them unnamed. Most-crawled path on
+ *          the domain (4.66k successful AI-crawler requests in the AI Crawl
+ *          Control window). Adds `tools_sample` (ten real names, curated then
+ *          FILTERED against MCP_FALLBACK_TOOLS so a renamed tool drops out
+ *          rather than shipping as a call that errors) and `tool_examples`.
+ *   - FIX: resolveManifestTools() fetched the live tools/list — inputSchema and
+ *          all — then slimmed it to {name, description}, discarding every
+ *          schema. So /.well-known/mcp.json published 83 tool names and no way
+ *          to call one, on the document registries and AI crawlers scan.
+ *          MEASURED 2026-09-05: get_market_intel(market_slug:"dallas") returns
+ *          NO market data (undeclared arg stripped; the tier gate answers with
+ *          an upgrade envelope) while get_market_intel(market:"dallas") returns
+ *          372 facilities — so an agent that guesses tells its human we charge
+ *          for data we return free. Now carries `params`, the declared property
+ *          NAMES from the schema already fetched (342 across 83 tools, ~4.5KB).
+ *   - ★ TWO BUILDERS ON ONE PATH. dchub-backend #3959 added a per-tool
+ *          `example` to the ORIGIN manifest, verified live at the Railway
+ *          origin (83/83). The public edge URL still served 0/83: this worker
+ *          builds its own manifest and merges only a whitelist of origin keys.
+ *          Measured the same minute — origin 84,825 b {name,tier,description,
+ *          example}; edge 131,170 b {name,description}.
+ *   - CACHE: MANIFEST_TOOLS_KV_KEY -> 'mcp:manifest-tools-v2'.
+ *   ★ MANUAL DASHBOARD PASTE ONLY — merging does not ship this. Want 4.9.55.
+ *   ★ NOTE: 4.9.54-glama-claim-ownership bumped the const without adding a
+ *     changelog block or moving the title line. Both are corrected here.
  * ================================================================================
  * v4.9.52 CHANGES (Sep 02 2026) — Phase ai-plugin-canon-bound:
  *   - FIX: /.well-known/ai-plugin.json and /.well-known/agent.json served
@@ -491,7 +521,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.54-glama-claim-ownership';
+const WORKER_VERSION = '4.9.55-mcp-surfaces-name-their-tools';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -2060,7 +2090,12 @@ async function proxyToRender(request, pathname, search, timeoutMs) {
 //    break or shrink. Effect: add a tool on the mcp-server and /.well-known/mcp.json
 //    reflects it within the TTL with ZERO worker redeploys. Stops the recurring
 //    hand-sync of MCP_FALLBACK_TOOLS.
-const MANIFEST_TOOLS_KV_KEY = 'mcp:manifest-tools';
+// ★2026-09-05 key bumped -v2: the cached value's SHAPE changed (adds
+// `params`). The reader accepts any non-empty array, so a surviving v1
+// entry would keep serving the param-less shape for a full TTL after the
+// paste — a stale cache that satisfies the freshness check is
+// indistinguishable from a working one. A new key retires it instantly.
+const MANIFEST_TOOLS_KV_KEY = 'mcp:manifest-tools-v2';
 const MANIFEST_TOOLS_TTL    = 3600;
 function _parseToolsList(text) {
   // mcp-server replies as SSE ("data: {...}") or plain JSON-RPC
@@ -2098,7 +2133,28 @@ async function resolveManifestTools(kv, env) {
     if (resp.ok) {
       const t = _parseToolsList(await resp.text());
       if (t && t.length) {
-        const slim = t.map(x => ({ name: x.name, description: x.description || '' }));
+        // ★2026-09-05: this fetched the REAL tools/list — inputSchema and all —
+        // and then threw the schema away, so /.well-known/mcp.json published 83
+        // tool names and no way to call one. That is the document registries and
+        // AI crawlers scan, and the only tool surface readable WITHOUT opening
+        // an MCP session.
+        //
+        // MEASURED the same day: get_market_intel(market_slug:"dallas") returns
+        // NO market data — the undeclared argument is stripped and the tier gate
+        // answers with an upgrade envelope — while get_market_intel(market:
+        // "dallas") returns the full row. An agent that guesses tells its human
+        // DC Hub charges for data it returns free. `params` would have said
+        // `market`.
+        //
+        // ★ Names only, from the schema we already have — not types, not the
+        // whole JSON Schema. Enough to construct a call, small enough not to
+        // bloat a manifest (342 properties across 83 tools, ~4.5KB), and
+        // DERIVED, so it cannot drift the way a transcribed list would.
+        const slim = t.map(x => ({
+          name: x.name,
+          description: x.description || '',
+          params: Object.keys((x.inputSchema && x.inputSchema.properties) || {}),
+        }));
         if (kv) { try { await kv.put(MANIFEST_TOOLS_KV_KEY, JSON.stringify(slim), { expirationTtl: MANIFEST_TOOLS_TTL }); } catch (_) {} }
         return slim;
       }
@@ -3156,6 +3212,36 @@ export default {
             // the constant survives only as the offline fallback.
             version: await mcpOriginVersion(env, ctx),
             tools: MCP_FALLBACK_TOOLS.length,
+            // ★2026-09-05: the comment above says "82 unnamed tools is an
+            // invitation to fill the slots", then declares a COUNT and names
+            // none of them — which is the invitation it warns about. An
+            // assistant fabricated a whole DCIM product from exactly this
+            // shape. Naming real tools is the antidote, and this path is the
+            // most-crawled on the domain (4.66k successful AI-crawler requests
+            // in the AI Crawl Control window), so it is where the naming pays.
+            //
+            // ★ Curated for usefulness, then FILTERED against the same array
+            // `tools:` counts, so a renamed or retired tool silently drops out
+            // instead of being published as a call that errors. Tops up from
+            // the array so it can never come back empty.
+            tools_sample: (() => {
+              const have = new Set(MCP_FALLBACK_TOOLS.map(t => t.name));
+              const want = ['execute_plan', 'search_facilities', 'get_facility',
+                            'rank_markets', 'get_market_intel',
+                            'get_grid_intelligence', 'get_interconnection_queue',
+                            'get_fiber_intel', 'list_transactions', 'analyze_site'];
+              const out = want.filter(n => have.has(n));
+              for (const t of MCP_FALLBACK_TOOLS) {
+                if (out.length >= 8) break;
+                if (!out.includes(t.name)) out.push(t.name);
+              }
+              return out.slice(0, 10);
+            })(),
+            // ★ How to CALL them, not just what they are called. The manifest
+            // publishes each tool's declared parameter names (see
+            // resolveManifestTools); duplicating call shapes here would freeze
+            // them.
+            tool_examples: 'https://dchub.cloud/.well-known/mcp.json (each tool carries `params`)',
             product: 'A read-mostly DATA LAYER about the data-center industry, for AI agents: facilities, DCPI market scores, live ISO grid feeds, fiber routes, interconnection queues, tax incentives and tracked M&A.',
             not: 'NOT a DCIM or monitoring product. No rack telemetry, no per-customer equipment monitoring, no workload scheduler, no webhooks, no websocket stream. Nothing here connects to or operates your infrastructure. It answers questions ABOUT data centers; it does not run one.',
             api_base: 'https://dchub.cloud/api/v1',
