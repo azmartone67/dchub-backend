@@ -20106,25 +20106,61 @@ def generate_market_pdf(markets, report_type):
 
     elements = []
 
-    # Title
-    title = f"Data Center Market Report"
-    elements.append(Paragraph(title, title_style))
-    elements.append(Paragraph(f"Markets: {', '.join([m.title() for m in markets])}", normal_style))
-    elements.append(Paragraph(f"Generated: {datetime.utcnow().strftime('%B %d, %Y')}", normal_style))
-    elements.append(Spacer(1, 20))
+    # r-markets-api-ident (2026-09-05): resolve BEFORE the title is written, so
+    # the document can only claim the markets it actually contains.
+    #
+    # ★ THIS LOOP USED TO `continue` ON AN UNKNOWN MARKET — a SILENT omission
+    # from a paid deliverable. The header printed every market the caller
+    # asked for, the download was named dc-hub-<all-of-them>-report.pdf, and
+    # the reports row stored all of them, while the body quietly held only the
+    # ones present in MARKET_ALIASES' 34 curated US keys. A Pro customer
+    # ($299/mo) asking for "Ashburn, London" received a file titled
+    # "Markets: Ashburn, London" containing Ashburn alone, with nothing
+    # anywhere saying London was dropped. A 404 is a bad answer; a document
+    # that asserts coverage it does not have is a wrong one.
+    from util.market_aliases import (
+        market_scope_sql, report_coverage_lines, resolve_market_list)
 
-    conn = get_db()
+    # Read replica: SELECT-only and staleness-tolerant, and the universe build
+    # is the ~120-query aggregate r-poolhold routed off the primary pool.
+    conn = get_read_db()
     try:
         c = conn.cursor()
 
-        for market in markets:
-            market_lower = market.lower().replace('-', ' ')
-            if market_lower not in MARKET_ALIASES:
-                continue
+        try:
+            _universe = build_market_universe(c)
+        except Exception as _uerr:
+            logger.warning(f"generate_market_pdf universe build failed: {_uerr}")
+            _universe = []
 
-            cities = MARKET_ALIASES[market_lower]
+        # The partition and the header lines come from the SAME call, which is
+        # what makes "the title claims a market the body does not contain"
+        # unrepresentable rather than merely discouraged. Both helpers are pure
+        # and EXECUTED by tests/test_pdf_report_market_resolution.py — a
+        # source-level check could not tell a live disclosure from a dead one,
+        # and demonstrably did not: replacing `unresolved.append(raw)` with
+        # `pass`, and wrapping the disclosure in `if False:`, both survived a
+        # substring-based version of that guard.
+        resolved, unresolved = resolve_market_list(markets, _universe,
+                                                   curated=MARKET_ALIASES)
 
-            elements.append(Paragraph(f"📍 {market.title()} Market", heading_style))
+        title = f"Data Center Market Report"
+        elements.append(Paragraph(title, title_style))
+        for _line in report_coverage_lines(resolved, unresolved):
+            elements.append(Paragraph(_line, normal_style))
+        # r-markets-api-ident: this line moved into the try block with the
+        # resolve-before-title change, so the delta lint counts it as new —
+        # and it is a real one. utcnow() is naive and deprecated.
+        elements.append(Paragraph(
+            f"Generated: {datetime.now(timezone.utc).strftime('%B %d, %Y')}",
+            normal_style))
+        elements.append(Spacer(1, 20))
+
+        for _mkt in resolved:
+            market = _mkt['id']
+            cities = _mkt['cities']
+
+            elements.append(Paragraph(f"\U0001F4CD {_mkt['name']} Market", heading_style))
 
             # Build query
             conditions = []
@@ -20134,10 +20170,23 @@ def generate_market_pdf(markets, report_type):
                     conditions.append('state = %s')
                     params.append(city)
                 else:
-                    conditions.append('city ILIKE %s')
-                    params.append(f'%{city}%')
+                    # r-markets-api-ident: was `city ILIKE '%city%'` with NO
+                    # country guard — the substring bleed r43-H fixed in
+                    # get_market_stats on 2026-05-27, which reached neither
+                    # this builder nor /api/v1/markets/compare. Measured live
+                    # 2026-09-05 on compare, which carried the identical
+                    # predicate: reno read 43 facilities against the detail
+                    # route's 22, because 'reno' matches Grenoble. Resolving
+                    # international markets here without fixing this would
+                    # print those inflated numbers into a paid PDF.
+                    conditions.append('(LOWER(city) = LOWER(%s) OR city ILIKE %s)')
+                    params.append(city)
+                    params.append(f'{city},%')
 
             where_clause = ' OR '.join(conditions)
+            _scope_sql, _scope_params = market_scope_sql(
+                _mkt.get('country'), _mkt.get('state'))
+            params += _scope_params
 
             # Get stats
             c.execute(f"""
@@ -20148,6 +20197,7 @@ def generate_market_pdf(markets, report_type):
                     COUNT(DISTINCT provider) as provider_count
                 FROM discovered_facilities 
                 WHERE ({where_clause})
+                {_scope_sql}
                 {RAILWAY_EXCLUSION}
             """, params)
 
@@ -20182,6 +20232,7 @@ def generate_market_pdf(markets, report_type):
                 SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
                 FROM discovered_facilities 
                 WHERE ({where_clause}) AND provider != ''
+                {_scope_sql}
                 {RAILWAY_EXCLUSION}
                 GROUP BY provider
                 ORDER BY count DESC

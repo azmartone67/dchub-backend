@@ -236,3 +236,63 @@ def market_scope_sql(country, state):
     if state:
         return guard + " AND UPPER(state) = %s", [str(state).upper()]
     return guard, []
+
+
+def resolve_market_list(raw_markets, universe, curated=None):
+    """Partition requested identifiers into (resolved, unresolved).
+
+    r-markets-api-ident (2026-09-05). Pure, and therefore EXECUTABLE by a
+    test — which is the whole reason it exists as a function instead of a
+    loop inlined in main.generate_market_pdf. The property it carries is
+    "nothing is dropped in silence", and a source-level guard cannot prove
+    that: asserting the word "unresolved" appears in the builder stays green
+    when `unresolved.append(...)` is replaced by `pass`, because the word
+    survives in the declaration one line above. That mutation survived a
+    substring-based version of this guard, so the check moved here where a
+    test can watch the list actually fill.
+
+    `curated` is the no-DB fast path (main.MARKET_ALIASES); anything not in
+    it resolves against the published `universe`. Every input appears in
+    exactly one of the two outputs — that total is the invariant.
+    """
+    curated = curated or {}
+    resolved, unresolved = [], []
+    for raw in (raw_markets or ()):
+        raw = str(raw)
+        key = raw.lower().replace('-', ' ')
+        if key in curated:
+            resolved.append({'id': key,
+                             'name': key.replace('_', ' ').title(),
+                             'cities': list(curated[key])})
+            continue
+        hit = resolve_market_identifier(raw, universe)
+        if hit is None or not (hit.get('cities') or []):
+            unresolved.append(raw)
+        else:
+            resolved.append(hit)
+    return resolved, unresolved
+
+
+#: Rendered when a requested market is not tracked. Named so a test can
+#: assert on the emitted line rather than on the template's presence in the
+#: source — an `if False:` around the render leaves the template in place.
+COVERAGE_GAP_PREFIX = "Not covered: "
+
+
+def report_coverage_lines(resolved, unresolved):
+    """The header lines a market report must carry, given what it resolved.
+
+    Returns the "Markets:" line and, when anything failed to resolve, the
+    "Not covered:" line naming it. The builder used to join the CALLER's
+    list into the title and silently omit the bodies it could not produce,
+    so a Pro customer's PDF asserted coverage it did not have. Building both
+    lines from the SAME partition is what makes that unrepresentable.
+    """
+    lines = ["Markets: " + (", ".join(m.get('name') or str(m.get('id'))
+                                      for m in (resolved or [])) or "none")]
+    if unresolved:
+        lines.append(
+            COVERAGE_GAP_PREFIX + ", ".join(str(u) for u in unresolved)
+            + " — no market by that name is tracked by DC Hub. "
+              "See https://dchub.cloud/api/v1/markets for every market ID.")
+    return lines
