@@ -1752,6 +1752,116 @@ _LAST_FIRED = {}
 _LAST_FIRED_LOCK = threading.Lock()
 
 
+# ── STEP TWO: jobs a module declares about itself ─────────────────────
+#
+# ★ 2026-09-04. _DISPATCH is a single 120-entry literal, so two concurrent
+# feature PRs conflict on it every time. A module may now declare its own job:
+#
+#     CRON_JOBS = [{
+#         "label": "ghost_shell_daily",
+#         "path":  "/api/v1/admin/ghost/master-tick",   # PATH, not URL
+#         "method": "POST",
+#         "when":  lambda now: now.hour == 6 and now.minute < 55,
+#         "heavy": True,              # -> _HEAVY_LABELS
+#         "min_refire_s": 6 * 3600,   # -> _MIN_REFIRE_S
+#     }]
+#
+# PATH, NOT URL: all 119 legacy entries are f"{BASE}/...", so the collector
+# joins BASE here. A declaring module never needs to import this one.
+#
+# ★ heavy / min_refire_s RIDE IN THE DECLARATION ON PURPOSE. Without them the
+# conflict does not go away — it moves ~90 lines down this same file into
+# _HEAVY_LABELS and _MIN_REFIRE_S, two blocks smaller and hotter than _DISPATCH.
+# A real feature commit was measured touching all three.
+#
+# ★ COLLECTED FROM sys.modules, NEVER IMPORTED HERE.
+# The predicate is a lambda, so it cannot be read statically — the declaration
+# has to be the live object. But importing route modules from inside the
+# dispatcher would put all 120 jobs one ImportError away from disappearing:
+# main.py wraps this module's own import in a blanket try/except that prints and
+# continues. So nothing is imported. main.py has already imported every module
+# whose blueprint registered; this reads what is ALREADY there. A module that is
+# absent contributes nothing and cannot raise.
+#
+# ★ AND THE ABSENCE IS NOT SILENT — which is the whole reason step one shipped
+# first. routes/cron_declarations reads the same declarations statically off
+# disk. Anything declared on disk but missing at runtime means that module
+# failed to import and its blueprint registration was swallowed, so its job
+# vanished. `declaration_drift()` names it and /api/v1/cron/health publishes it.
+# Without that cross-check this mechanism would introduce a new silent death:
+# today a broken module still leaves its literal _DISPATCH entry firing and
+# 404ing, which is an observable in cron_job_outcomes.
+def _declared_jobs_live() -> list[dict]:
+    """CRON_JOBS from already-imported routes.* modules. Imports nothing."""
+    import sys as _sys
+    out = []
+    for name, mod in list(_sys.modules.items()):
+        if not name.startswith("routes.") or mod is None:
+            continue
+        jobs = getattr(mod, "CRON_JOBS", None)
+        if not isinstance(jobs, (list, tuple)):
+            continue
+        for j in jobs:
+            if not isinstance(j, dict):
+                continue
+            label, path, when = j.get("label"), j.get("path"), j.get("when")
+            if not (isinstance(label, str) and isinstance(path, str)
+                    and callable(when)):
+                # Malformed declarations are dropped rather than crashing the
+                # dispatcher, and surface via declaration_drift() below.
+                continue
+            out.append({
+                "label": label,
+                "url": f"{BASE}{path}",
+                "method": (j.get("method") or "POST").upper(),
+                "when": when,
+                "heavy": bool(j.get("heavy")),
+                "min_refire_s": j.get("min_refire_s"),
+                "module": name,
+            })
+    return out
+
+
+def _effective_dispatch() -> list:
+    """The legacy literal plus every live declaration, as 4-tuples."""
+    return list(_DISPATCH) + [
+        (j["label"], j["url"], j["method"], j["when"])
+        for j in _declared_jobs_live()
+    ]
+
+
+def _heavy_labels() -> frozenset:
+    return _HEAVY_LABELS | {j["label"] for j in _declared_jobs_live() if j["heavy"]}
+
+
+def _min_refire_table() -> dict:
+    out = dict(_MIN_REFIRE_S)
+    for j in _declared_jobs_live():
+        if isinstance(j.get("min_refire_s"), (int, float)):
+            out[j["label"]] = j["min_refire_s"]
+    return out
+
+
+def declaration_drift() -> list:
+    """Declared on disk but ABSENT at runtime — i.e. the module did not import.
+
+    This is the observable that keeps decentralisation from introducing a silent
+    death. It compares the static read (routes/cron_declarations, step one)
+    against what is actually live.
+    """
+    try:
+        import os as _os
+        from routes.cron_declarations import collect_declared_jobs, collect_problems
+        root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        on_disk = {(j.get("label"), j["path"]) for j in collect_declared_jobs(root)}
+        live = {(j["label"], j["url"][len(BASE):]) for j in _declared_jobs_live()}
+        missing = sorted(f"{lbl or '?'} ({path})" for lbl, path in on_disk - live)
+        return ([f"declared but not live (module failed to import?): {m}"
+                 for m in missing] + collect_problems(root))
+    except Exception as e:  # noqa: BLE001
+        return [f"declaration drift unmeasurable: {type(e).__name__}: {e}"]
+
+
 def _refire_suppressed(label, now):
     """True when `label` fired too recently to be fired again.
 
@@ -1763,7 +1873,7 @@ def _refire_suppressed(label, now):
     them. Recording the fire is a SIDE EFFECT, so call it exactly once per
     label per heartbeat.
     """
-    window = _MIN_REFIRE_S.get(label)
+    window = _min_refire_table().get(label)
     if not window:
         return False
     with _LAST_FIRED_LOCK:
@@ -1804,7 +1914,7 @@ def heartbeat():
     # per label per heartbeat — hence the explicit loop rather than two
     # comprehensions over _DISPATCH.
     due, skipped = [], []
-    for (label, url, method, pred) in _DISPATCH:
+    for (label, url, method, pred) in _effective_dispatch():
         if not pred(started):
             skipped.append(label)
         elif _refire_suppressed(label, started):
@@ -1822,7 +1932,7 @@ def heartbeat():
     # the reader already proves works, so it can't trip the edge-worker timeout.
     try:
         from routes.cron_observability import log_heartbeat
-        log_heartbeat(jobs_run=len(due), jobs_total=len(_DISPATCH),
+        log_heartbeat(jobs_run=len(due), jobs_total=len(_effective_dispatch()),
                       elapsed_ms=0, ua=_ua, ip=_ip)
     except Exception:
         pass
@@ -1838,8 +1948,9 @@ def heartbeat():
         # once — run at most 3-wide. Idempotent + wide hour windows mean a
         # throttled tick still fires on a later heartbeat in its hour.
         import concurrent.futures
-        heavy = [j for j in jobs if j[0] in _HEAVY_LABELS]
-        light = [j for j in jobs if j[0] not in _HEAVY_LABELS]
+        _hv = _heavy_labels()
+        heavy = [j for j in jobs if j[0] in _hv]
+        light = [j for j in jobs if j[0] not in _hv]
 
         # r-cron-outcome (2026-08-29): READ the futures. They were submitted
         # and dropped, so _hit's result went nowhere and a job that 500'd, timed
@@ -1884,7 +1995,9 @@ def health():
     return jsonify({
         "blueprint": "cron_heartbeat_bp",
         "now_utc": now.isoformat() + "Z",
-        "dispatch_count": len(_DISPATCH),
+        "dispatch_count": len(_effective_dispatch()),
+        "declared_jobs": len(_declared_jobs_live()),
+        "declaration_drift": declaration_drift(),
         "would_run_now": [
             label for label, _, _, pred in _DISPATCH if pred(now)
         ],

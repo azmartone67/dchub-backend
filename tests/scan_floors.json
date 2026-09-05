@@ -73,6 +73,9 @@
     "test_contract_healer.py": {
       "walk": 120
     },
+    "test_cron_decentralized_dispatch.py": {
+      "glob": 640
+    },
     "test_cron_declarations.py": {
       "glob": 640
     },
