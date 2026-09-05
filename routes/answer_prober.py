@@ -237,13 +237,38 @@ def _probe_agent_index(canon):
 
 
 def _probe_alive(canon):
+    """★ A surface that declares itself NOT READY is not a surface that is wrong.
+
+    /alive fills its DB-backed blocks inside try/except, so while a replica is
+    still warming it returns `"warming": true` with `"dcpi": {}` — 200, well
+    formed, empty. Scored naively that reads as extractor-blind, and the whole
+    scorecard goes red for a few minutes after every deploy and every time a
+    replica cycles.
+
+    Measured on this prober's FIRST live run, which is how this was found:
+    eight reads over seven minutes, `warming` true on two of them and the dcpi
+    block empty on exactly those two. A probe that cries wolf after every
+    deploy is one the operator learns to ignore, which is the same failure as
+    having no probe — so `warming` is its own verdict, and it does not make the
+    run red.
+
+    The distinction that matters: EMPTY WHILE WARMING is honest; empty while
+    claiming to be ready is not, and still reports extractor-blind. A warming
+    flag excuses ABSENCE, never a wrong number.
+    """
     code, body = _fetch("/api/v1/alive")
     if code != 200:
         return [_unreachable("alive", "markets", f"HTTP {code}")]
     try:
-        v = (json.loads(body).get("dcpi") or {}).get("markets_scored")
+        d = json.loads(body)
     except Exception:
-        v = None
+        return [_result("alive", "markets", None, canon["markets"])]
+    v = (d.get("dcpi") or {}).get("markets_scored")
+    if v is None and d.get("warming"):
+        return [{"surface": "alive", "field": "markets", "observed": None,
+                 "expected": canon["markets"], "verdict": "warming",
+                 "note": "replica reports warming=true and has not filled its "
+                         "DB-backed blocks yet — not a drift signal"}]
     return [_result("alive", "markets", v, canon["markets"])]
 
 
@@ -401,14 +426,19 @@ def run_answer_probe(only: str | None = None) -> dict:
     bad = counts.get("disagrees", 0) + counts.get("extractor-blind", 0)
     return {
         "ok": bad == 0,
-        "verdict": "drift" if bad else ("degraded" if counts.get("unreachable") else "clean"),
+        "verdict": ("drift" if bad
+                    else "degraded" if counts.get("unreachable")
+                    # A run held back only by a warming replica is not clean and
+                    # not drift: it is a run that did not fully happen yet.
+                    else "warming" if counts.get("warming")
+                    else "clean"),
         "canon": canon,
         "summary": counts,
         # worst first, so the scorecard opens on what is wrong
         "comparisons": sorted(
             comparisons,
             key=lambda c: {"disagrees": 0, "extractor-blind": 1, "unreachable": 2,
-                           "skipped": 3, "agrees": 4}.get(c["verdict"], 5)),
+                           "warming": 3, "skipped": 4, "agrees": 5}.get(c["verdict"], 6)),
     }
 
 
