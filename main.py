@@ -40410,6 +40410,16 @@ try:
     print("[main] map_layer_probe_bp registered: /api/v1/jobs/map-layer-probe", flush=True)
 except Exception as _mlp_e:
     print(f"[main] map_layer_probe_bp register failed: {_mlp_e}", flush=True)
+# 2026-09-04: geographic coverage per layer — the dimension infra_growth does
+# not have. It tracks row COUNT over time, so a US-only table that keeps growing
+# reads as one of the healthiest loaders on the board while the map has nothing
+# to draw outside the US. See routes/infra_coverage.py.
+try:
+    from routes.infra_coverage import infra_coverage_bp
+    app.register_blueprint(infra_coverage_bp)
+    print("[main] infra_coverage_bp registered: /api/v1/jobs/infra-coverage", flush=True)
+except Exception as _ic_e:
+    print(f"[main] infra_coverage_bp register failed: {_ic_e}", flush=True)
 
 # 2026-06-08: proactive Railway-failover cache warmer. Re-fetches the must-survive
 # endpoints through the CF edge worker every ~20 min so DCHUB_CACHE always holds
