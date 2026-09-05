@@ -1316,10 +1316,10 @@ def queue_pocket_alert():
             for tbl, sql in (
                 ("social_post_queue",
                  """INSERT INTO social_post_queue (platform, body, meta, status, created_at)
-                    VALUES ('linkedin', %s, %s, 'queued', NOW())"""),
+                    VALUES ('linkedin', %s, %s, 'queued', NOW() ON CONFLICT DO NOTHING)"""),
                 ("marketing_queue",
                  """INSERT INTO marketing_queue (channel, body, meta, status, created_at)
-                    VALUES ('social', %s, %s, 'queued', NOW())"""),
+                    VALUES ('social', %s, %s, 'queued', NOW() ON CONFLICT DO NOTHING)"""),
             ):
                 try:
                     meta_json = json.dumps({

@@ -195,7 +195,7 @@ def _put_artifact(name):
         cur = conn.cursor()
         cur.execute(
             """INSERT INTO ops_artifacts (name, body, bytes, updated_at)
-               VALUES (%s, %s::jsonb, %s, NOW())
+               VALUES (%s, %s::jsonb, %s, NOW() ON CONFLICT DO NOTHING)
                ON CONFLICT (name) DO UPDATE
                  SET body = EXCLUDED.body,
                      bytes = EXCLUDED.bytes,
