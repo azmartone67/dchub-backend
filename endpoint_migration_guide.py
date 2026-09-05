@@ -183,7 +183,7 @@ STRIPE DASHBOARD SETUP:
 
 1. CREATE PRODUCTS:
    a) "DC Hub Pro" (if not exists)
-      - Monthly: $199/month recurring → save price_id as STRIPE_PRICE_PRO_MONTHLY
+      - Monthly: $99/month recurring → save price_id as STRIPE_PRICE_PRO_MONTHLY
       - Annual:  $1,590/year recurring → save price_id as STRIPE_PRICE_PRO_ANNUAL
    
    b) "DC Hub Enterprise" (NEW)

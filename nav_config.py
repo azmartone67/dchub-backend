@@ -40,7 +40,12 @@ def register_nav_config_route(app, db=None):
                 {"icon": "\ud83d\udce2", "label": "Advertise", "desc": "Sponsorship & media kit", "href": "/advertise"}
             ]}
         ]
-        founding = {"total": 50, "claimed": 5, "remaining": 45, "price": 99, "regular_price": 299}
+        # r-price-collapse (2026-09-05): founding retired; $99 IS the Pro list
+        # price, so there is no strike-through anchor. Price reads canon.
+        from tier_registry import price as _canon_price
+        founding = {"total": 0, "claimed": 0, "remaining": 0,
+                    "price": _canon_price("pro"), "regular_price": None,
+                    "program_active": False, "retired": True}
         stats = {"facilities": 16806, "deals": 756, "markets": 28, "pipeline_gw": 17.4}
         return jsonify({
             "success": True,

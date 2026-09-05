@@ -7254,6 +7254,17 @@ def handle_well_known():
         # reasoning.
         _wk_gate = _well_known_tool_gate(len(_wk_tools))
         _wk_tier_tools = _wk_gate["tier_tools_count"]
+        # r-price-collapse (2026-09-05): Pro's price + checkout link are read
+        # from canon here instead of being typed into the payload below. The
+        # literal that was there charged an unmapped Stripe link, so no test
+        # or sweep could tell what a caller of this manifest was being sold.
+        try:
+            from tier_registry import price as _wk_canon_price
+            from routes._stripe_links import STRIPE_LINKS as _WK_LINKS
+            _wk_pro_price = _wk_canon_price("pro")
+            _wk_pro_link = _WK_LINKS["pro"]
+        except Exception:
+            _wk_pro_price, _wk_pro_link = 99, "https://dchub.cloud/pricing#pro"
         # Phase QQ (2026-05-15): refreshed manifest. Adds tier annotations
         # (FREE / IDENTIFIED / DEVELOPER) per tool so agent registries
         # know what's free-without-auth, what's email-gated, and what's
@@ -7319,8 +7330,12 @@ def handle_well_known():
                                 "checkout_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02",
                                 "value_pitch": "Replaces ~2h/call of manual research from CBRE/DCD/EIA reports. At $150/hr analyst rate that's $300+ per call."},
                 "PRO":        {"description": "2,000 calls/day + multi-site comparator + alerts. For broker/buyer teams.",
-                                "tools_count": _wk_tier_tools["PRO"], "monthly_price_usd": 299,
-                                "checkout_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04",
+                                # r-price-collapse (2026-09-05): price + link now read
+                                # canon. The literal link here was 00w28o7BqaXLeP31QIaZi04
+                                # — an UNMAPPED id absent from STRIPE_LINKS, so nothing
+                                # verified what it charged.
+                                "tools_count": _wk_tier_tools["PRO"], "monthly_price_usd": _wk_pro_price,
+                                "checkout_url": _wk_pro_link,
                                 "value_pitch": "Replaces $30-80K per multi-site comparison from CBRE/Cushman/JLL."}
             },
             "tools": _wk_tools,
@@ -10689,7 +10704,7 @@ MCP_USER_NOTES = {
     'get_renewable_energy': "\U0001f4a1 DC Hub free preview \u2014 detailed energy and infrastructure data requires a Developer key ($49/mo). Unlock at dchub.cloud/developers",
     'get_fiber_intel': "\U0001f4a1 DC Hub free preview \u2014 full dark fiber routes, carrier details, and connectivity scoring at dchub.cloud/developers",
     'get_intelligence_index': "\U0001f4a1 DC Hub free preview \u2014 limited results shown. Full market intelligence, deal data, and pipeline tracking at dchub.cloud/developers",
-    'get_site_forecast': "\U0001f4a1 DC Hub free preview \u2014 suitability score shown. Full 2030\u20132050 deployment forecast and scenario analysis requires Pro plan ($299/mo). Upgrade at dchub.cloud/pricing#pro",
+    'get_site_forecast': "\U0001f4a1 DC Hub free preview \u2014 suitability score shown. Full 2030\u20132050 deployment forecast and scenario analysis requires Pro plan ($99/mo). Upgrade at dchub.cloud/pricing#pro",
 }
 MCP_RATE_LIMIT_NOTE = (
     f"\u26a0\ufe0f DC Hub free tier limit reached ({MCP_FREE_DAILY_LIMIT} calls/day). "
@@ -12529,7 +12544,7 @@ def mcp_manifest():
                 "tools_available": "all"
             },
             "pro": {
-                "price": "$299/mo",
+                "price": "$99/mo",
                 "limits": "Full data, 2,000 calls/day.",
                 "signup": "https://dchub.cloud/pricing"
             },
@@ -19507,7 +19522,7 @@ def list_markets():
             # stale TOTAL, not a tier cap (the Pro cap above is 1000,
             # "effectively all"), so the upsell under-claimed the product by
             # more than half. The 10/50 above ARE real caps and stay typed.
-            'developer': (_canon_text('Upgrade to Pro for all {canon_markets} markets · $299/mo'), 'https://dchub.cloud/pricing'),
+            'developer': (_canon_text('Upgrade to Pro for all {canon_markets} markets · $99/mo'), 'https://dchub.cloud/pricing'),
             'pro':       (None, None),
             'enterprise':(None, None),
         }
@@ -25365,7 +25380,7 @@ def ai_learn(topic=None):
     topics = {
         'capabilities': {'tools': 51, 'facilities': _canon_text('{canon_facilities}'), 'countries': 178, 'sources': 40},
         'endpoints': {'mcp': '/mcp', 'rest': '/api/v1/', 'discovery': '/api/v1/discovery'},
-        'pricing': {'free': '3 results/basic fields', 'developer': '$49/mo — 500 calls/day', 'pro': '$299/mo — 2,000 calls/day', 'enterprise': '$699/mo — 100,000 calls/day'},
+        'pricing': {'free': '3 results/basic fields', 'developer': '$49/mo — 500 calls/day', 'pro': '$99/mo — 2,000 calls/day', 'enterprise': 'Custom, from $12,000/yr — 100,000 calls/day'},
     }
     if topic and topic in topics:
         return jsonify({'success': True, 'data': topics[topic]})
@@ -28534,7 +28549,7 @@ def _fiber_teaser_response():
                 f"free preview. Full dataset (carriers, route geometries, "
                 f"route classes incl. carrier-advertised dark corridors "
                 f"across {total:,} segments) needs a Pro key "
-                f"at $299/mo — https://dchub.cloud/pricing. For fund-grade "
+                f"at $99/mo — https://dchub.cloud/pricing. For fund-grade "
                 f"access (raw exports, custom DCPI weights, monthly briefings), "
                 f"see Enterprise at $25K+/yr — https://dchub.cloud/enterprise."),
             'starter_url':     'https://dchub.cloud/pricing',
@@ -33196,6 +33211,15 @@ def _canonical_pricing():
     # arithmetic claim built on a zero operand ("0 of 82") is worse than prose.
     _non_pro = (f"{_total - _n_pro} of {_total} (excludes {_n_pro} Pro-only)"
                 if _total and _n_pro else "all but the Pro-only tools")
+    # r-price-collapse (2026-09-05): Pro's price is READ from canon here rather
+    # than typed. It was the literal 299 sitting beside a legacy_strings entry
+    # that quoted a different number — the exact drift
+    # test_canonical_counts_drift guards, in the very dict it guards.
+    try:
+        from tier_registry import price as _cp_canon_price
+        _cp_pro_price = _cp_canon_price("pro")
+    except Exception:
+        _cp_pro_price = 99
     return {
         "free":       {"price_usd_month": 0,   "calls_per_day": 10,
                           "results_per_query": 2,
@@ -33213,7 +33237,7 @@ def _canonical_pricing():
                           "results_per_query": "full",
                           "tools_unlocked": _non_pro,
                           "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"},
-        "pro":        {"price_usd_month": 299, "calls_per_day": 2000,
+        "pro":        {"price_usd_month": _cp_pro_price, "calls_per_day": 2000,
                           "results_per_query": "full",
                           "tools_unlocked": _canon_text("all {canon_tools} incl Pro-only"),
                           "stripe_url": "https://dchub.cloud/pricing?plan=pro"},
@@ -33224,7 +33248,7 @@ def _canonical_pricing():
         "legacy_strings": {
             "free":       _canon_text("10 calls/day, truncated results, {canon_tools} tools (preview)"),
             "developer":  _canon_text("$49/mo · 500/day, all {canon_tools} tools, full results"),
-            "pro":        _canon_text("$299/mo · 2,000/day + all {canon_tools} incl Pro-only tools"),
+            "pro":        _canon_text("$99/mo · 2,000/day + all {canon_tools} incl Pro-only tools"),
             "enterprise": "$499/mo · 100,000/day + SSO + SLA",
         },
     }
@@ -37413,7 +37437,7 @@ def api_site_forecast():
             forecast = {
                 'message': 'Full 2030-2050 deployment forecast (reference + high-DC scenarios) available on Pro plan.',
                 'upgrade_url': 'https://dchub.cloud/pricing#pro',
-                'price': '$299/mo',
+                'price': '$99/mo',
             }
 
         return jsonify({

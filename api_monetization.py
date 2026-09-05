@@ -78,7 +78,8 @@ RATE_LIMITS = {
         'max_keys': 5,
         'features': ['basic_search', 'facility_list', 'news', 'market_data', 'energy_data', 'exports', 'alerts'],
         'name': 'Pro',
-        'price': 299  # $299/month
+        'price': 99  # $99/month (r-price-collapse 2026-09-05; canon:
+                     # tier_registry.TIER_PRICE_USD_MONTH['pro'])
     },
     'enterprise': {
         'requests_per_day': 100000,

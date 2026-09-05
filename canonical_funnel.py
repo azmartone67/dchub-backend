@@ -46,12 +46,14 @@ import threading
 # should import from here. Keep in lock-step with Stripe pricing.
 PLAN_MONTHLY_USD = {
     "starter":            9,
-    # pro: list is $299 since r-reprice 2026-06-19, but every EXISTING sub is
-    # grandfathered on the old $199 link (Stripe never migrates a sub's price).
-    # 199 is the conservative floor (house rule: never above reality); real
-    # cash truth is mrr_invoiced_usd from mcp_conversions.mrr_cents.
+    # pro: $99 list since r-price-collapse 2026-09-05. The house rule here is
+    # "never above reality", and 99 is now BOTH the floor and the list: checked
+    # against live Stripe on 2026-09-05, there is no active subscription above
+    # $99/mo except the NLR annual research seed, which is not plan 'pro'.
+    # (Was 199 as a conservative floor while $199/$299 pro links were live.)
+    # Real cash truth is still mrr_invoiced_usd from mcp_conversions.mrr_cents.
     "developer":          49,
-    "pro":                199,
+    "pro":                99,
     "pro_annual":         99,    # $1188/yr ≈ $99/mo equivalent
     "pro_annual_onetime": 99,
     # brain-ascension #28 (2026-07-25): team + founding were MISSING — a $699

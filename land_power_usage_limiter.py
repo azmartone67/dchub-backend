@@ -101,7 +101,7 @@ LAND_POWER_LIMITS = {
         'searches_per_month': 50,
         'max_filters': 15,
         'label': 'Developer',
-        'upgrade_text': 'Upgrade to Pro ($199/mo) for unlimited Land & Power searches with all filters.',
+        'upgrade_text': 'Upgrade to Pro ($99/mo) for unlimited Land & Power searches with all filters.',
     },
     'pro': {
         'searches_per_month': -1,  # unlimited
@@ -640,7 +640,7 @@ def register_usage_routes(app):
                 'pro': {
                     'searches_per_month': 'Unlimited',
                     'max_filters': 'Unlimited',
-                    'price': '$199/mo',
+                    'price': '$99/mo',
                 },
                 'enterprise': {
                     'searches_per_month': 'Unlimited',

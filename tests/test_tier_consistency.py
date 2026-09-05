@@ -60,18 +60,30 @@ def test_registry_pricing_canonical():
     def c(cond, msg):
         if not cond:
             fails.append(msg)
-    # canonical flat-rate monthly prices (r-reprice 2026-06-19: pro 199→299,
-    # team 499→699; developer HELD at 49 per owner call — builder on-ramp.
-    # Kept in lockstep with routes/_stripe_links.py + pricing.html).
+    # canonical flat-rate monthly prices. r-price-collapse (2026-09-05):
+    # pro 299→99 — over 90d of Stripe checkout sessions, every self-serve
+    # price above $99 closed 0 of 76 opens, while $99 closed 8 of 43.
+    # starter/team keep their prices for grandfathered subs but are off
+    # the public page. Kept in lockstep with routes/_stripe_links.py.
+    # developer HELD at 49 (builder on-ramp).
     c(tr.price('starter') == 9,    f"starter price {tr.price('starter')} != 9")
     c(tr.price('developer') == 49, f"developer price {tr.price('developer')} != 49")
-    c(tr.price('pro') == 299,      f"pro price {tr.price('pro')} != 299")
+    c(tr.price('pro') == 99,       f"pro price {tr.price('pro')} != 99")
     c(tr.price('team') == 699,     f"team price {tr.price('team')} != 699")
-    # founding price DECOUPLED from pro at r-reprice; the charged truth is
-    # $99/mo (r-founder99 'founding' Stripe link in routes/_stripe_links.py;
-    # canonical_funnel.PLAN_MONTHLY_USD agrees). founding still == pro for
-    # ACCESS/rank — guarded separately by test_backend_maps_founding_equals_pro.
+    # founding was DECOUPLED from pro at r-reprice (pro 299 / founding 99).
+    # r-price-collapse (2026-09-05) RE-COUPLED them: one product, one price,
+    # one Stripe link. founding is a legacy alias kept so existing subs and
+    # ?tier=founding URLs resolve. ACCESS equality is guarded separately by
+    # test_backend_maps_founding_equals_pro.
     c(tr.price('founding') == 99, f"founding price {tr.price('founding')} != 99")
+    # ★ The invariant NO price literal above can catch: pro and founding must
+    #   bill through the SAME Stripe link. A price map can agree on "$99" while
+    #   the two links charge different amounts — the link is what the customer
+    #   is actually charged, and it is asserted nowhere else in this file.
+    from routes._stripe_links import STRIPE_LINKS as _SL
+    c(_SL.get('pro') == _SL.get('founding'),
+      f"pro link {_SL.get('pro')} != founding link {_SL.get('founding')} "
+      f"— same tier must bill through the same link")
     # canonical calls/day (mcp_daily) — what the paywall quotes
     c(tr.calls_per_day('starter') == 200,    f"starter calls/day {tr.calls_per_day('starter')} != 200")
     c(tr.calls_per_day('developer') == 500, f"developer calls/day {tr.calls_per_day('developer')} != 500")

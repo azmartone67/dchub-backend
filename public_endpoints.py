@@ -242,13 +242,24 @@ def founding_members_status():
         total = FOUNDING_TOTAL
         remaining = max(0, total - claimed)
         program_active = remaining > 0
+    # r-price-collapse (2026-09-05): the founding PROGRAM is retired — $99 is
+    # simply the Pro list price now, so there is no longer a higher price to
+    # strike through and no scarcity to count. `regular_price` used to be 299;
+    # publishing it beside a $99 that anyone can buy is a fake anchor, so it is
+    # now None. `program_active` is False so any surface still reading this
+    # endpoint stops rendering a countdown. The claimed/remaining counters are
+    # left in the payload (still truthfully computed) rather than removed, so
+    # no consumer KeyErrors on deploy.
+    from tier_registry import price as _canon_price
     return jsonify({
         'total': total,
         'claimed': claimed,
         'remaining': remaining,
-        'price': 99,
-        'regular_price': 299,
-        'program_active': program_active
+        'price': _canon_price('pro'),
+        'regular_price': None,
+        'program_active': False,
+        'retired': True,
+        'note': 'Founding is retired — $99/mo is the Pro list price.',
     })
 
 

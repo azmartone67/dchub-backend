@@ -22,9 +22,9 @@ if ROOT not in sys.path:
 def test_arm_a_is_the_canonical_pro_price():
     import tier_registry
     from routes import pricing_ab
-    assert pricing_ab._ARM_A_PRICE_USD == tier_registry.price("pro") == 299
+    assert pricing_ab._ARM_A_PRICE_USD == tier_registry.price("pro") == 99
     assert pricing_ab._ARM_A_PRICE_USD != 199
-    assert pricing_ab._canon_pro_price_usd() == 299
+    assert pricing_ab._canon_pro_price_usd() == 99
 
 
 def test_the_fail_safe_arm_prices_from_canon_when_the_ab_is_off(monkeypatch):
@@ -45,11 +45,13 @@ def test_the_cohort_endpoint_labels_the_link_it_serves(monkeypatch):
     app.register_blueprint(pricing_ab.pricing_ab_bp)
     body = app.test_client().get("/api/v1/pricing/ab-cohort").get_json()
     assert body["ab_active"] is False
-    assert body["price_usd"] == 299 and body["display_price"] == "$299"
+    assert body["price_usd"] == 99 and body["display_price"] == "$99"
     assert body["stripe_url"] == STRIPE_LINKS["pro"]
 
 
 def test_no_price_literal_is_typed_into_the_module():
     src = open(os.path.join(ROOT, "routes", "pricing_ab.py"), encoding="utf-8").read()
     assert "_ARM_A_PRICE_USD = _canon_pro_price_usd()" in src
-    assert "_ARM_A_PRICE_USD = 199" not in src and "_ARM_A_PRICE_USD = 299" not in src
+    assert ("_ARM_A_PRICE_USD = 199" not in src
+            and "_ARM_A_PRICE_USD = 299" not in src
+            and "_ARM_A_PRICE_USD = 99" not in src)  # must DERIVE, never be typed

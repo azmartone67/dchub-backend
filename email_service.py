@@ -532,7 +532,7 @@ WELCOME_SERIES_TEMPLATES = {
             </table>
             
             <p style="text-align: center; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 24px; border-radius: 12px; color: #fff;">
-                <strong style="font-size: 20px;">$299/month</strong><br>
+                <strong style="font-size: 20px;">$99/month</strong><br>
                 <span style="font-size: 14px; color: #9a9aaa;">Billed monthly. Cancel anytime.</span><br><br>
                 <a href="{app_url}/pricing.html" class="cta-button" style="background: #00d4ff;">Upgrade to Pro →</a>
             </p>

@@ -425,7 +425,7 @@ except Exception:  # pragma: no cover
     _canon_link = lambda _k: None  # noqa: E731
 _STRIPE_LINKS = {k: (_canon_link(k) or v) for k, v in {
     "developer": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-    "pro":       "https://buy.stripe.com/7sY7sM9J8enX7CB69YaZi0l",
+    "pro":       "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o",   # $99 (r-price-collapse 2026-09-05; was 7sY7sM9J8enX7CB69YaZi0l @ $299)
     "starter":   "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",
     "enterprise":"https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",
 }.items()}

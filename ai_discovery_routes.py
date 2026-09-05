@@ -1227,14 +1227,20 @@ POST /api/v1/agentic/intents    (X-API-Key required)
 The following endpoints require an API key passed via the X-API-Key header.
 API keys are available at https://dchub.cloud/pricing
 
-### Pro Tier ($49/month)
+### Developer Tier ($49/month)
 - Higher rate limits (1,000 requests/day vs 100 free)
 - Full facility detail records (contact info, power capacity, certifications)
 - Bulk export (CSV/JSON) up to 5,000 records
 - Historical transaction data (12+ months)
 - Priority support
 
-### Enterprise Tier ($199/month)
+### Pro Tier ($99/month)
+- 2,000 requests/day, full result sets
+- Pro-only tools: grid intelligence, fiber, analyze & compare sites
+- Full-precision coordinates, PDF reports, CSV/Excel export
+- Priority support
+
+### Enterprise (from $12,000/year)
 - Unlimited API requests
 - Real-time webhook notifications for new facilities, deals, and news
 - Custom data feeds and white-label options

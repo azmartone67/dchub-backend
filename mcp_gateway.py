@@ -1784,7 +1784,7 @@ class MCPGateway:
                 "anonymous": "60 req/min/IP",
                 "free_tier": "10 calls/day across 14 paid tools",
                 "developer": "500 calls/day ($49/mo)",
-                "pro": "2,000 calls/day ($199/mo)",
+                "pro": "2,000 calls/day ($99/mo)",
                 "enterprise": "100,000 calls/day (custom)",
             },
 

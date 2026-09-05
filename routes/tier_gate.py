@@ -60,7 +60,7 @@ _STRIPE_LINKS = {
         "STARTER_MONTHLY_STRIPE_LINK",
         "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"),
     "developer_monthly": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-    "pro_monthly":       _canon("pro") or "https://buy.stripe.com/7sY7sM9J8enX7CB69YaZi0l",  # canon; pre-reprice literal retired 2026-08-21
+    "pro_monthly":       _canon("pro") or "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o",  # canon; $299 literal retired 2026-09-05 (r-price-collapse)
     "pro_annual":        "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # 50%-off one-time annual
     "enterprise_monthly":"https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",
 }
@@ -70,7 +70,7 @@ _TIER_PRICE = {
     "IDENTIFIED": "$0 (free with email)",
     "STARTER":    "$9/mo",
     "DEVELOPER":  "$49/mo",
-    "PRO":        "$299/mo",
+    "PRO":        "$99/mo",
     "ENTERPRISE": "Custom",
 }
 

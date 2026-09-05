@@ -25,7 +25,23 @@ STRIPE_LINKS = {
     # tier→'paid' for any paid sub: flask_mcp_endpoints.py:2347/2407), so the
     # new amounts provision + email a key correctly.
     "developer":       "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo (HELD 2026-06-19 owner call — builder on-ramp; the $79 link 00w28s3kK0x7f5355UaZi0k was minted then reverted/deactivated)
-    "pro":             "https://buy.stripe.com/7sY7sM9J8enX7CB69YaZi0l",  # $299/mo (r-reprice; legacy $199: eVq5kE4oOfs13mleGuaZi0h)
+    # ── r-price-collapse (2026-09-05, owner call) ────────────────────
+    # Pro IS $99/mo. This key now points at the SAME live link the $99
+    # founding SKU used (r-founder99), because that link is already proven:
+    # it charges $99, its webhook branch provisions api_tier 'pro', and 10
+    # current subscriptions came through it. Retired $299 link (kept here so
+    # a grandfathered sub or an old URL is still traceable, NOT advertised):
+    #     7sY7sM9J8enX7CB69YaZi0l  ($299/mo, r-reprice 2026-06-19)
+    #     eVq5kE4oOfs13mleGuaZi0h  ($199/mo, pre-r-reprice)
+    # ★ OWNER ACTION (optional, 5 min): mint a dedicated "Pro — $99/mo" link
+    #   in Stripe and swap it in here. Until then a new Pro buyer is stamped
+    #   plan_name='founding' by the webhook's $99 amount band
+    #   (main.py ~:17833) — api_tier is 'pro' either way, so ACCESS is
+    #   correct; only the internal plan label reads 'founding'. The webhook
+    #   is deliberately NOT changed in this PR: relabelling that band would
+    #   move ground under founding_customers, the welcome-email CTA and the
+    #   drip, for a reporting nicety.
+    "pro":             "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o",  # $99/mo
     "team":            "https://buy.stripe.com/14AbJ2bRga7H0a98i6aZi0m",  # $699/mo, 5 seats (r-reprice; no prior link existed)
     "pro_annual":      "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $1,188/yr (50% off $199/mo) - operator-provided link dRm7...07, 2026-06-04
     # r-annual50 (2026-06-26): NEW $1,794/yr one-time = 50% off the current
@@ -35,7 +51,11 @@ STRIPE_LINKS = {
     # r-founder99 (2026-06-26): $99/mo Founding Member recurring, limited
     # licenses (see /api/founding-members counter). plink_1Tml5YJ9ey2ATcQlbQSMZRu4,
     # price_1Tml5XJ9ey2ATcQl0pbU4htM. Webhook → founding → ('founding','pro').
-    "founding":        "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o",  # $99/mo (founding member)
+    # LEGACY ALIAS since r-price-collapse — identical URL to "pro" above.
+    # Kept so every ?tier=founding link, email and saved bookmark still
+    # resolves; the founding PROGRAM (scarcity counter, separate card) is
+    # retired from the public page because $99 is simply the list price now.
+    "founding":        "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o",  # $99/mo
     "metered":         "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",  # $10 one-time = 1,000 API calls (single one-time pack; 2026-06-25 repricing)
     "pack5":           "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i",  # $10 one-time = 1,000 API calls (2026-06-25 repricing; env override DCHUB_PACK5_URL in mcp_conversion_plays.py)
     "enterprise":      "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",  # Custom
@@ -75,7 +95,7 @@ TOOL_TIER_MAP = {
 TIER_PRICE_LABEL = {
     "starter":    "$9/mo",
     "developer":  "$49/mo",
-    "pro":        "$299/mo",
+    "pro":        "$99/mo",
     "founding":   "$99/mo",
     "pro_annual": "$1,188/yr",
     "metered":    "$10 / 1,000 API calls",

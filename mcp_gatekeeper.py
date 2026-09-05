@@ -619,7 +619,7 @@ def _pack5_cta():
 # concrete numbers to relay to the human instead of just "upgrade").
 TIER_PRICE = {
     Tier.DEVELOPER:  _canonical_price("developer", "$49/mo"),
-    Tier.PRO:        _canonical_price("pro", "$299/mo"),
+    Tier.PRO:        _canonical_price("pro", "$99/mo"),
     Tier.ENTERPRISE: "Contact sales",
 }
 
@@ -983,9 +983,15 @@ def _cta_gated(tool: str, current: Tier, required: Tier, args: Optional[Dict] = 
     # concrete demand-side social proof ("100+ users hit this tool last
     # 30d"). MCP agents relay this verbatim — humans see "100+ users
     # like me already pay for this" rather than a generic upgrade ask.
-    stripe_direct = "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"  # $9/mo dev
+    # ★ r-price-collapse (2026-09-05): these were two hand-typed Stripe link
+    #   ids — 14k14og7w7Zz9KJ8i6aZi02 ("$9/mo dev", but Developer is $49) and
+    #   00w28o7BqaXLeP31QIaZi04 ("$199/mo pro") — and NEITHER appears in
+    #   routes/_stripe_links.py. They are relayed to humans as one-click
+    #   checkouts, so nothing in the codebase could tell you what an agent was
+    #   selling. Both now resolve through canon.
+    stripe_direct = _canonical_link("developer")
     if required == Tier.PRO:
-        stripe_direct = "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04"  # $199/mo pro
+        stripe_direct = _canonical_link("pro")
     url = (f"{PRICING_URL}?utm_source=mcp&utm_tool={tool}"
            f"{('&utm_term=' + str(args.get('state') or args.get('iso') or args.get('market'))) if args else ''}")
     # Per-tool social proof (real signal counts from /api/v1/mcp/funnel
@@ -1089,7 +1095,7 @@ def _value_unlock_block(tool_name: str, tier: Tier, max_rows: int,
         # Price read from tier_registry — the hardcoded "$199/mo" here was
         # two repricings stale (canonical Pro is $299 since r-reprice).
         block["recommended_tier"] = (
-            f"PRO ({_canonical_price('pro', '$299/mo')}) for multi-site + alerts")
+            f"PRO ({_canonical_price('pro', '$99/mo')}) for multi-site + alerts")
 
     if teaser:
         block["full_value"] = teaser

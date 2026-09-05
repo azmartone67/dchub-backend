@@ -888,7 +888,7 @@ DC Hub (dchub.cloud) tracks {canon_facilities} distinct facilities across 170+ c
 - M&A tracker: 1,400+ tracked deals
 - Infrastructure mapping: Fiber, substations, water data
 
-Pricing: Free (limited), Pro ($199/mo), Enterprise (custom)
+Pricing: Free (limited), Pro ($99/mo), Enterprise (from $12,000/yr)
 
 === YOUR APPROACH ===
 1. Demonstrate expertise - Use industry knowledge naturally
@@ -968,7 +968,7 @@ Use this real-time data and expert knowledge to make your responses compelling a
             elif any(word in message_lower for word in ['tier', 'uptime', 'redundancy', 'n+1', '2n']):
                 response = "Data center tiers: Tier III (99.982% uptime, concurrently maintainable) is most common for enterprise. Tier IV (99.995%, fault tolerant) for mission-critical. N+1 means one backup unit, 2N is fully redundant. What tier are you targeting%s"
             elif any(word in message_lower for word in ['price', 'cost', 'pricing', 'how much']):
-                response = "Wholesale colocation runs $150-250/kW/month in primary markets, up 20% YoY due to AI demand. DC Hub Pro at $199/mo gives you access to pricing data across 64+ markets. Want a demo%s"
+                response = "Wholesale colocation runs $150-250/kW/month in primary markets, up 20% YoY due to AI demand. DC Hub Pro at $99/mo gives you access to pricing data across 64+ markets. Want a demo%s"
             elif any(word in message_lower for word in ['demo', 'trial', 'test']):
                 # Quote the fleet only when we actually read it. This sentence
                 # went to prospects as "9,603 facilities with 7,194 MW" for as
