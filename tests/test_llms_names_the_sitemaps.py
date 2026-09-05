@@ -89,3 +89,69 @@ def test_robots_still_advertises_the_ranking_sitemap():
         "robots.txt no longer names the canonical sitemap (found %r) — the "
         "guard above would pass on a robots.txt that advertises no sitemap "
         "index at all" % (directives,))
+
+
+# ── the widened announcement (2026-09-05) ───────────────────────────────────
+# MEASURED, and the reason this file grew: llms.txt is read by Perplexity about
+# ONCE EVERY SIX WEEKS. Fetches by external AI platforms over the 60d to
+# 2026-09-05, from ai_requests:
+#
+#     surface           all   perplexity   chatgpt
+#     /llms.txt          17            2         9
+#     /AGENTS.md         23            2        10
+#     /.well-known/      31            5        14
+#
+# Perplexity last read llms.txt on 2026-09-02 — three days BEFORE it started
+# naming /sitemap-ai.xml. For contrast it fetched 7,968 facility pages in the
+# same window: it crawls pages ~4,000x more often than it reads our
+# instructions. One announcement surface is a six-week channel; three is still
+# slow but roughly triples the chance of an early catch.
+#
+# The fast channel is robots.txt `Sitemap:`, and it stays off-limits — see
+# test_the_ai_sitemap_is_absent_from_the_robots_sitemap_directive above.
+
+_MAIN = os.path.join(ROOT, "main.py")
+_AGENTS = os.path.join(ROOT, "routes", "agents_md_fallback.py")
+
+
+def test_agents_md_names_the_ai_sitemap():
+    src = open(_AGENTS, encoding="utf-8").read()
+    assert "https://dchub.cloud/sitemap-ai.xml" in src, (
+        "/AGENTS.md does not name the AI sitemap — it is read as often as "
+        "llms.txt (23 vs 17 fetches/60d) and is half the widened channel")
+    assert "https://dchub.cloud/sitemap.xml" in src, (
+        "/AGENTS.md dropped the ranking sitemap")
+
+
+def test_agents_md_distinguishes_the_two_sitemaps():
+    """Two rows in a table with no explanation makes a reader take the first,
+    which is the gated one."""
+    src = open(_AGENTS, encoding="utf-8").read()
+    seg = src[src.index("sitemap-ai.xml"):src.index("sitemap-ai.xml") + 1400]
+    assert "superset" in seg, "the relationship between the two must be stated"
+    assert "entity index" in seg or "grounding an answer" in seg, (
+        "say what the retrieval set is FOR, or the row is noise")
+
+
+def test_ai_agents_json_names_the_ai_sitemap_in_machine_indexes():
+    src = open(_MAIN, encoding="utf-8").read()
+    i = src.index('"machine_indexes"')
+    block = src[i:i + 600]
+    assert "sitemap-ai.xml" in block, (
+        "/.well-known/ai-agents.json machine_indexes omits the AI sitemap — it "
+        "is the one .well-known file with measurable Perplexity reads (7/60d)")
+    assert '"sitemap"' in block, "machine_indexes dropped the ranking sitemap"
+
+
+def test_every_announcement_surface_agrees_on_the_url():
+    """Three surfaces now carry this URL. A typo in one is a dead pointer that
+    nothing else catches, because each file is tested by a different suite."""
+    URL = "https://dchub.cloud/sitemap-ai.xml"
+    for path, label in ((SRC, "llms.txt"), (_AGENTS, "AGENTS.md"),
+                        (_MAIN, "ai-agents.json")):
+        src = open(path, encoding="utf-8").read()
+        assert URL in src, f"{label} does not carry the exact URL {URL}"
+        # a near-miss is worse than an absence: it 404s instead of 503-ing
+        for typo in ("sitemap_ai.xml", "sitemap-ai.xhtml", "sitemaps-ai.xml",
+                     "/sitemap-ai/", "sitemap-ai.xml.xml"):
+            assert typo not in src, f"{label} carries a malformed variant: {typo}"

@@ -7981,7 +7981,8 @@ def handle_well_known():
                 "ai_txt":     "https://dchub.cloud/ai.txt",
                 "llms_txt":   "https://dchub.cloud/llms.txt",
                 "llms_full":  "https://dchub.cloud/llms-full.txt",
-                "sitemap":    "https://dchub.cloud/sitemap.xml"
+                "sitemap":    "https://dchub.cloud/sitemap.xml",
+                "sitemap_ai": "https://dchub.cloud/sitemap-ai.xml"
             },
 
             "related_files": {
