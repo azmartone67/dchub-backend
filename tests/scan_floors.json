@@ -46,6 +46,9 @@
     "test_brain_model_routing.py": {
       "walk": 120
     },
+    "test_canon_resolved_per_request.py": {
+      "pglob": 3140
+    },
     "test_canonical_counts_drift.py": {
       "walk": 50
     },
