@@ -71,6 +71,7 @@ import jwt
 import io
 import os
 from db_utils import get_db
+from utc_clock import utc_iso_z
 
 # Stripe Integration
 try:
@@ -1485,7 +1486,7 @@ def compare_markets():
     return jsonify({
         'success': True,
         'comparison': comparison,
-        'generated_at': datetime.utcnow().isoformat()
+        'generated_at': utc_iso_z()
     })
 
 # =============================================================================
@@ -1775,7 +1776,7 @@ def get_stats():
     return jsonify({
         'success': True,
         'data': stats,
-        'generated_at': datetime.utcnow().isoformat()
+        'generated_at': utc_iso_z()
     })
 
 @app.route('/api/v1/facilities', methods=['GET'])
@@ -1932,7 +1933,7 @@ def agents_health():
         "status": "healthy",
         "agents": ["sales", "enrichment", "social"],
         "anthropic_configured": bool(os.environ.get('ANTHROPIC_API_KEY')),
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": utc_iso_z()
     })
 
 @app.route('/api/agents/social/generate', methods=['POST'])
@@ -2022,7 +2023,7 @@ def health():
         'database': 'connected',
         'facilities_count': count,
         'pdf_available': PDF_AVAILABLE,
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': utc_iso_z()
     })
 
 # =============================================================================
@@ -2605,7 +2606,7 @@ def run_discovery():
         sources = data.get('sources', ['all'])
         
         results = {
-            'started_at': datetime.utcnow().isoformat(),
+            'started_at': utc_iso_z(),
             'sources': [],
             'total_found': 0,
             'total_added': 0,
@@ -3181,7 +3182,7 @@ def _dchub_refresh_transactions():
     return jsonify({
         'ok': err is None,
         'started': started,
-        'finished': _dchub_refresh_dt.utcnow().isoformat(),
+        'finished': utc_iso_z(),
         'entrypoint': entry,
         'inserted': inserted,
         'note': err,
@@ -3206,7 +3207,7 @@ def _dchub_refresh_facilities():
     return jsonify({
         'ok': err is None,
         'started': started,
-        'finished': _dchub_refresh_dt.utcnow().isoformat(),
+        'finished': utc_iso_z(),
         'entrypoint': entry,
         'inserted': inserted,
         'note': err,

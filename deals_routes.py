@@ -25,6 +25,7 @@ from flask import Blueprint, request, jsonify
 from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
 
 from utils.cache import BoundedCache
+from utc_clock import utc_iso_z
 
 logger = logging.getLogger(__name__)
 
@@ -770,7 +771,7 @@ def get_pipeline():
             'unique_markets': len(set(p.get('market') for p in pipeline))
         },
         'by_quarter': quarters,
-        'last_updated': datetime.utcnow().isoformat()
+        'last_updated': utc_iso_z()
     })
 
 
@@ -926,7 +927,7 @@ def get_markets():
         'success': True,
         'markets': markets,
         'count': len(markets),
-        'generated_at': datetime.utcnow().isoformat()
+        'generated_at': utc_iso_z()
     })
 
 @deals_bp.route('/api/pipeline', methods=['GET'])
@@ -1028,7 +1029,7 @@ def get_public_pipeline():
             'pre_leased_pct': 73
         },
         'by_status': by_status,
-        'generated_at': datetime.utcnow().isoformat()
+        'generated_at': utc_iso_z()
     })
 
 @deals_bp.route('/api/v1/pipeline/summary', methods=['GET'])
@@ -1117,7 +1118,7 @@ def get_pipeline_summary():
         'under_construction': construction,
         'announced': announced,
         'pre_leased_pct': 73,
-        'generated_at': datetime.utcnow().isoformat()
+        'generated_at': utc_iso_z()
     })
 
 @deals_bp.route('/api/v1/analytics', methods=['GET'])
@@ -1312,7 +1313,7 @@ def get_live_news():
 
             return jsonify({
                 'success': True, 'articles': articles, 'count': len(articles),
-                'total': total, 'fetched_at': datetime.utcnow().isoformat(),
+                'total': total, 'fetched_at': utc_iso_z(),
                 'source': 'postgresql'
             })
         except Exception as pg_err:
@@ -1343,7 +1344,7 @@ def trigger_news_sync():
             'success': True,
             'message': f'News sync complete: {saved} new articles saved',
             'neon_saved': neon_saved,
-            'synced_at': datetime.utcnow().isoformat()
+            'synced_at': utc_iso_z()
         })
     except Exception as e:
         return jsonify({
