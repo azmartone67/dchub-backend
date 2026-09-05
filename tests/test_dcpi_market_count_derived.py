@@ -240,6 +240,37 @@ def test_narrative_arc_fallback_reads_when_canon_is_unreadable(monkeypatch):
     assert na._canon_markets() == ""
 
 
+def test_partner_landing_iso_count_is_derived():
+    """The live-strip named ISOs and published the GRID OPERATOR count.
+
+    10 is the operator total (the US ISOs plus TVA, BPA and IESO); there are 7
+    live US ISOs, so the strip over-claimed by three the metric it named. The
+    repo already banned this shape — tests/test_canonical_counts_drift.py's
+    isos_non_canonical — but this file sat in KNOWN_STALE_COUNT_DEBT, so the
+    ban was recorded rather than enforced here. That register only travels
+    downward, so the entry is removed in the same commit as the fix.
+    """
+    import routes.partner_landing as pl
+
+    assert pl._CANON_ISOS == ai_surface_canon.canon_nums()["{canon_isos}"]
+    html = pl._render_partner_page("cohere", pl._PARTNERS["cohere"])
+    m = re.search(r"markets\s*·\s*([^<]*?)\s*ISOs", html)
+    assert m, "the ISO clause vanished from the live-strip"
+    assert m.group(1) == pl._CANON_ISOS
+    assert "{_CANON" not in html and "{canon_" not in html
+
+
+def test_partner_landing_is_off_the_iso_debt_register():
+    """A fix that leaves its debt entry behind re-permits the defect."""
+    drift = (_ROOT / "tests/test_canonical_counts_drift.py").read_text()
+    m = re.search(r"'routes/partner_landing\.py':\s*\{([^}]*)\}", drift)
+    assert m, "partner_landing's debt entry disappeared entirely — expected it "
+    assert "isos_non_canonical" not in m.group(1), (
+        "routes/partner_landing.py still claims isos_non_canonical as known "
+        "debt, so the repo-wide fence stays disarmed for this file"
+    )
+
+
 def test_canon_markets_placeholder_still_resolves():
     """These surfaces all lean on one placeholder; if it stops resolving they
     serve the raw token, which is worse than the number it replaced."""
