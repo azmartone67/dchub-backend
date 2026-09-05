@@ -1082,7 +1082,10 @@ def job_market_report():
     try:
         conn = _get_pg()
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+        # DISTINCT buildings — published below as 'total_facilities'.
+        # COUNT(*) here is source rows, ~1.38x the estate.
+        cur.execute("SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
+                    "WHERE canonical_slug IS NOT NULL")
         fac_count = cur.fetchone()[0]
         cur.execute(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
         deal_count = cur.fetchone()[0]

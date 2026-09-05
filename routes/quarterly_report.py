@@ -161,13 +161,24 @@ def _headline_stats() -> dict:
         except Exception:
             pass
 
-        # Facilities — discovered_facilities raw count (homepage headline).
+        # Facilities — the citable STOCK, i.e. distinct buildings.
+        # ★ NOT COUNT(*). discovered_facilities holds SOURCE RECORDS: the same
+        # building arrives from several providers under varying name strings
+        # and lands as several rows. COUNT(*) is ~1.38x the building count
+        # (28,345 vs 20,523 on 2026-09-05), so publishing it overstates the
+        # estate by a third. facilities_distinct is COUNT(DISTINCT
+        # canonical_slug), and public_endpoints.py:143 is the query this
+        # mirrors exactly. Same fix as #3795 made on nine other surfaces; this
+        # page and its sibling below were missed because /reports/quarterly is
+        # a DIFFERENT route from the /reports/quarterly-deep that #3795 fixed.
         try:
-            cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+            cur.execute(
+                "SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
+                "WHERE canonical_slug IS NOT NULL")
             n = (cur.fetchone() or [0])[0]
             if n:
                 s["facilities"] = int(n)
-                s["_origin"]["facilities"] = "discovered_facilities"
+                s["_origin"]["facilities"] = "discovered_facilities.canonical_slug (distinct)"
         except Exception:
             pass
 
@@ -1202,13 +1213,17 @@ def _legacy_compute_report_data() -> dict:
             # `merged_at IS NULL AND is_duplicate=0` filter dropped 14k+ rows
             # and produced a misleading 6,951 investor-facing headline.
             try:
-                # facilities COUNT = discovered_facilities (canonical 21,809).
+                # facilities = DISTINCT buildings, not source rows: see the
+                # note on the stats query above. COUNT(*) here published
+                # 28,345 against canon facilities_distinct 20,523 (1.38x).
                 # total_mw = the FULL `facilities` table — discovered_facilities
                 # .power_mw is sparse and undercounted to 170.8 GW vs the
                 # MONTHLY report's 849.7 GW (which sums `facilities.power_mw`).
                 # Match the monthly's source so the two snapshots AGREE on the
                 # "Power tracked · Operational + pipeline" headline.
-                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                cur.execute(
+                    "SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
+                    "WHERE canonical_slug IS NOT NULL")
                 _n_fac = int((cur.fetchone() or [0])[0] or 0)
                 cur.execute(
                     "SELECT COALESCE(SUM(power_mw),0) FROM facilities "
