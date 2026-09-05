@@ -190,6 +190,10 @@ def test_baseline_is_two_lists_not_a_union():
     data = json.loads(BASELINE.read_text())
     assert "missing_routes_json" in data and "missing_worker" in data
     assert "uncovered" not in data, "collapsed back to a single union list"
+    assert "worker_measured_forwarded" in data, (
+        "the measured exception list is gone; the worker model's false positives "
+        "would be back in the register as if they were real debt"
+    )
     assert data["_comment"].strip(), "the register must explain itself"
 
 
@@ -327,3 +331,67 @@ def test_a_dynamic_route_is_probed_as_a_concrete_path(mod):
               "worker_paths": [], "worker_prefixes": ["/news/"]}
     mr, mw = mod._uncovered({"/news/<slug>"}, tables)
     assert mr == [] and mw == [], (mr, mw)
+
+
+# ── only the sound half blocks ───────────────────────────────────────────────
+
+def _run_diff(tmp_path, mod, monkeypatch, flask, tables, baseline):
+    """Drive cmd_diff end to end against synthetic inputs."""
+    routes = tmp_path / "flask.json"; routes.write_text(json.dumps(sorted(flask)))
+    tbl = tmp_path / "tables.json";   tbl.write_text(json.dumps(tables))
+    base = tmp_path / "baseline.json"; base.write_text(json.dumps(baseline))
+    monkeypatch.setattr(mod, "FLASK_ROUTES_OUT", routes)
+    monkeypatch.setattr(mod, "TABLES_OUT", tbl)
+    monkeypatch.setattr(mod, "BASELINE", base)
+    monkeypatch.setattr(mod, "ROOT", tmp_path)
+    return mod.cmd_diff(None)
+
+
+_TABLES = {"routes_json_include": ["/docs/*"], "routes_json_exclude": [],
+           "worker_paths": ["/docs/known"], "worker_prefixes": []}
+_EMPTY = {"missing_routes_json": [], "missing_worker": [], "worker_measured_forwarded": []}
+
+
+def test_a_new_routes_json_miss_FAILS(tmp_path, mod, monkeypatch, capsys):
+    """The sound half. _routes.json include/exclude is the COMPLETE answer to
+    "does the worker run for this path", so this one is allowed to block."""
+    rc = _run_diff(tmp_path, mod, monkeypatch, {"/not-in-any-table"}, _TABLES, _EMPTY)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "route-table coherence ADVISORY" in out
+    assert "★NEW UNCOVERED [missing_routes_json]: /not-in-any-table" in out
+
+
+def test_a_new_worker_only_miss_is_REPORTED_but_does_not_fail(tmp_path, mod, monkeypatch, capsys):
+    """The unsound half. Measured 2026-09-05, 9 of 47 probed worker-only entries
+    were forwarded to Flask anyway — PHASE_282 membership is SUFFICIENT for
+    forwarding, not NECESSARY. Failing on a not-necessary condition is how this
+    gate got switched off the first time."""
+    rc = _run_diff(tmp_path, mod, monkeypatch, {"/docs/new-page"}, _TABLES, _EMPTY)
+    assert rc == 0, "a worker-table miss must NOT fail the build"
+    out = capsys.readouterr().out
+    assert "newly absent from" in out and "/docs/new-page" in out, (
+        "…but it must still be REPORTED; silent is not the same as advisory"
+    )
+    assert "route-table coherence ADVISORY" not in out, (
+        "the ADVISORY token is the ledger's fail signal; a worker-only miss "
+        "would peg the gate-liveness board at fail"
+    )
+
+
+def test_measured_forwarded_overrides_the_model(tmp_path, mod, monkeypatch, capsys):
+    """/poe answers 405 WITH x-railway-request-id: Flask got the request and
+    refused the method. The model says PHASE_282 lacks it. The measurement wins."""
+    base = dict(_EMPTY, worker_measured_forwarded=["/docs/poe"])
+    _run_diff(tmp_path, mod, monkeypatch, {"/docs/poe"}, _TABLES, base)
+    out = capsys.readouterr().out
+    assert "/docs/poe" not in out, "a path proven to reach the origin is not debt"
+
+
+def test_the_docstring_states_why_the_worker_half_cannot_block():
+    """If someone later makes it blocking, the three measured reasons should be
+    sitting right there rather than needing to be rediscovered by probing."""
+    doc = SCRIPT.read_text()
+    assert "WHY THE WORKER HALF DOES NOT BLOCK" in doc
+    for reason in ("proxyWithRetry", "x-dc-worker-version", "worker-mcp-get-health"):
+        assert reason in doc, f"the {reason!r} evidence is gone"

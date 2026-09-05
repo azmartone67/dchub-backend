@@ -43,6 +43,40 @@ Prefixes come from two places and BOTH are resolved here:
 The AST walk also picks up multi-line Blueprint() constructor calls (15 in this
 repo) that a line regex cannot see at all, and app.add_url_rule() paths.
 
+★ WHY THE WORKER HALF DOES NOT BLOCK (measured 2026-09-05).
+
+_routes.json is a DECLARATIVE table: `include` minus `exclude` is the complete
+answer to "does the worker run for this path", so that half is sound and it is
+the half that fails the build.  The worker half asks "does the worker FORWARD
+this to Flask", and that is decided by imperative code, not a table.  All 47
+static worker-only entries in the baseline were probed at the live edge; 9 came
+back with an x-railway-request-id header, meaning the origin answered them and
+the model was simply wrong.  Three independent reasons, none fixable by reading
+the two tables harder:
+
+  1. PHASE_282 IS ONE BRANCH OF NINE.  _worker.js has 4 proxyToRailway() and 5
+     proxyWithRetry() call sites.  /facilities/directory, /poe, /poe/query,
+     /news/rss and /press-release/rss are forwarded by other branches —
+     /facilities/directory comes back tagged
+     x-dc-hub-source: facility-profile-dynamic-backend.
+  2. ZONE-LEVEL ROUTES LIVE OUTSIDE THIS REPO.  /agents-md, /agents-md-inline
+     and /mcp-server-card.json reach Railway with NO x-dc-worker-version at all
+     — the Pages worker never ran and something at the zone forwarded them.
+     Nothing in _worker.js can predict those.
+  3. "THE WORKER KNOWS THE PATH" IS NOT "THE WORKER FORWARDS IT".  The whole
+     /mcp family (/mcp, /mcp/, /mcp/health, /mcp/manifest, /mcp/sse,
+     /mcp/tools/, /mcp/tools/call) answers 200 from the WORKER ITSELF
+     (x-dc-hub-source: worker-mcp-get-health) and never reaches Flask.  Widening
+     the model to every `pathname ===` / `startsWith` literal in the file was
+     tried and scored WORSE: false positives 9 -> 3, but 8 new blind spots,
+     because it cannot tell answering from forwarding.
+
+So PHASE_282 membership is SUFFICIENT for forwarding and not NECESSARY, and a
+gate that fails on a not-necessary condition cries wolf — which is how this
+gate got switched off the first time.  The worker half is printed as a notice,
+its measured exceptions are recorded in the baseline's
+`worker_measured_forwarded`, and only _routes.json can turn the build red.
+
 Run it locally exactly as CI does:
 
     python3 scripts/check_route_table_coherence.py flask-routes
@@ -473,6 +507,17 @@ def _uncovered(flask: set[str], tables: dict) -> tuple[list[str], list[str]]:
     return missing_routes_json, missing_worker
 
 
+def measured_forwarded() -> set[str]:
+    r"""Paths the worker-table MODEL calls uncovered that production proves are
+    forwarded to Flask.  Evidence, not opinion: each was probed at the live edge
+    and came back with an x-railway-request-id header, which appears only when
+    the request actually reached the Railway origin.
+    """
+    if not BASELINE.exists():
+        return set()
+    return set(json.loads(BASELINE.read_text()).get("worker_measured_forwarded", []))
+
+
 def load_baseline() -> dict[str, set[str]]:
     """The enumerated debt.  Two lists, because the two tables fail differently.
 
@@ -495,6 +540,8 @@ def cmd_diff(_args) -> int:
     flask = set(json.loads(FLASK_ROUTES_OUT.read_text()))
     tables = json.loads(TABLES_OUT.read_text())
     missing_routes_json, missing_worker = _uncovered(flask, tables)
+    # ★ A MEASUREMENT BEATS THE MODEL. See measured_forwarded().
+    missing_worker = [p for p in missing_worker if p not in measured_forwarded()]
     base = load_baseline()
 
     current = {"missing_routes_json": set(missing_routes_json),
@@ -504,8 +551,9 @@ def cmd_diff(_args) -> int:
     # Counted in PATHS, not in table-rows: one new route missing from both
     # tables is ONE new mis-registration, not two. Mixing the units made the
     # failure message say "2 NEW ... 129 pre-existing" for a single probe path.
-    new_paths = set(added["missing_routes_json"]) | set(added["missing_worker"])
-    n_added = len(new_paths)
+    # ★ ONLY the _routes.json half can FAIL the build — see the module docstring's
+    # "WHY THE WORKER HALF DOES NOT BLOCK". The worker half is reported, never fatal.
+    n_added = len(set(added["missing_routes_json"]))
     n_known = len(set(missing_routes_json) | set(missing_worker))
 
     LABEL = {
@@ -547,14 +595,26 @@ def cmd_diff(_args) -> int:
             for r in fixed[key]:
                 print(f"  - {r}")
 
+    if added["missing_worker"]:
+        # Reported, NEVER fatal. Going red here would be a coin-flip: measured
+        # 2026-09-05, 9 of 47 probed worker-only entries were forwarded to Flask
+        # anyway, and the fix this gate would demand (an _routes.json include
+        # entry, against a 97/98 cap) is the wrong action for every one of them.
+        print(f"::notice::{len(added['missing_worker'])} route(s) newly absent from "
+              f"the _worker.js PHASE_282 tables. ADVISORY ONLY — PHASE_282 membership "
+              f"is SUFFICIENT for forwarding, not NECESSARY. Confirm with a live probe "
+              f"(x-railway-request-id present = the origin answered) before acting, and "
+              f"record the answer in {BASELINE.relative_to(ROOT)}:")
+        for r in added["missing_worker"]:
+            print(f"  - {r}")
+
     if n_added:
         print(f"::error::route-table coherence ADVISORY — {n_added} NEW Flask route(s) "
               f"are not in the CF tables. This PR added mis-registration; the "
               f"{n_known - n_added} pre-existing uncovered route(s) are baselined "
               f"and ignored.")
-        for key in ("missing_routes_json", "missing_worker"):
-            for r in added[key]:
-                print(f"  ★NEW UNCOVERED [{key}]: {r}")
+        for r in added["missing_routes_json"]:
+            print(f"  ★NEW UNCOVERED [missing_routes_json]: {r}")
         print("")
         print("  Fix: add the path to dchub-frontend/_routes.json 'include' — but MIND "
               "THE CAP. It is 98 rules counting include AND exclude TOGETHER (not 100, "

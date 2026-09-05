@@ -1,5 +1,5 @@
 {
-  "_comment": "Flask HTML routes not reachable through the Cloudflare routing tables, measured 2026-09-05 against dchub-frontend@dbce499a8 (_routes.json 97/98 rules: 82 include + 15 exclude) and this repo at the commit that introduced the file. RATCHET: scripts/check_route_table_coherence.py fails on any NEW entry, so these lists may SHRINK BUT NEVER GROW. Nothing here is fixed by the commit that added it \u2014 the entries are recorded so that new mis-registration is visible. TWO LISTS, because the two tables fail differently and a path must not be allowed to migrate silently between them: missing_routes_json means the worker is NEVER INVOKED (404, or a same-named static file answers with NO x-dc-worker-version header \u2014 read that header PER PATH); missing_worker means the worker runs and declines to forward (403). THIS IS A DEBT REGISTER, NOT AN ALLOW-LIST. When a route here becomes covered the checker prints a ::notice:: naming it and you delete the line; that is how a payment gets recorded. Do NOT add an entry to silence a route you just broke \u2014 the fix is normally an entry in _routes.json 'include', and the cap is 98 rules counting include AND exclude together, currently 97/98, with rule 99 dropped SILENTLY (run `node scripts/check-edge-caps.mjs` in dchub-frontend; the cap is not stated anywhere in the file). SPOT-CHECKED AGAINST PRODUCTION on 2026-09-05, 13 paths, 13 agreeing: every path this register calls uncovered answered with NO x-dc-worker-version header (/ui 404, /industry 404, /blog 404, /security 404, /status 301, /app 308, /pipeline 301, /dcpi/methodology 308, /iso/ercot 301, /iso/ercot.json 404), and every path it calls covered answered WITH one (/team, /pockets, /dcpi, /upgrade, /markets, /radar, /iso, /redeem, /spare-capacity, /news/some-article). That probe is what found three false entries \u2014 /iso, /redeem and /spare-capacity are listed in _routes.json only as '/x/*', which DOES route the bare '/x'. Roughly 30 of these are known-dead or deliberately static: six 'static twins' (/cited-by, /system-status, /competitive, /watchlist, /feedback, /tax-incentives) where a static file is the correct thing to serve, four of whose handler files also serve the live /api/v1/* endpoints those pages call \u2014 deleting them would break the pages they appear to shadow. This register does NOT authorise deleting anything; its job is preventing NEW mis-registration. TO RE-MEASURE after a legitimate change: run the three phases (`python3 scripts/check_route_table_coherence.py flask-routes|route-tables|diff`) with a current dchub-frontend checkout and move only the lines the diff names. There is deliberately no --write-baseline flag: a guard that can bless itself is not a guard.",
+  "_comment": "Flask HTML routes not reachable through the Cloudflare routing tables, measured 2026-09-05 against dchub-frontend@dbce499a8 (_routes.json 97/98 rules: 82 include + 15 exclude) and this repo at the commit that introduced the file. RATCHET: scripts/check_route_table_coherence.py fails on any NEW entry, so these lists may SHRINK BUT NEVER GROW. Nothing here is fixed by the commit that added it \u2014 the entries are recorded so that new mis-registration is visible. TWO LISTS, because the two tables fail differently and a path must not be allowed to migrate silently between them: missing_routes_json means the worker is NEVER INVOKED (404, or a same-named static file answers with NO x-dc-worker-version header \u2014 read that header PER PATH); missing_worker means the worker runs and declines to forward (403). THIS IS A DEBT REGISTER, NOT AN ALLOW-LIST. When a route here becomes covered the checker prints a ::notice:: naming it and you delete the line; that is how a payment gets recorded. Do NOT add an entry to silence a route you just broke \u2014 the fix is normally an entry in _routes.json 'include', and the cap is 98 rules counting include AND exclude together, currently 97/98, with rule 99 dropped SILENTLY (run `node scripts/check-edge-caps.mjs` in dchub-frontend; the cap is not stated anywhere in the file). SPOT-CHECKED AGAINST PRODUCTION on 2026-09-05, 13 paths, 13 agreeing: every path this register calls uncovered answered with NO x-dc-worker-version header (/ui 404, /industry 404, /blog 404, /security 404, /status 301, /app 308, /pipeline 301, /dcpi/methodology 308, /iso/ercot 301, /iso/ercot.json 404), and every path it calls covered answered WITH one (/team, /pockets, /dcpi, /upgrade, /markets, /radar, /iso, /redeem, /spare-capacity, /news/some-article). That probe is what found three false entries \u2014 /iso, /redeem and /spare-capacity are listed in _routes.json only as '/x/*', which DOES route the bare '/x'. Roughly 30 of these are known-dead or deliberately static: six 'static twins' (/cited-by, /system-status, /competitive, /watchlist, /feedback, /tax-incentives) where a static file is the correct thing to serve, four of whose handler files also serve the live /api/v1/* endpoints those pages call \u2014 deleting them would break the pages they appear to shadow. This register does NOT authorise deleting anything; its job is preventing NEW mis-registration. TO RE-MEASURE after a legitimate change: run the three phases (`python3 scripts/check_route_table_coherence.py flask-routes|route-tables|diff`) with a current dchub-frontend checkout and move only the lines the diff names. There is deliberately no --write-baseline flag: a guard that can bless itself is not a guard. \u2605 WORKER HALF IS ADVISORY. missing_routes_json FAILS the build; missing_worker does NOT. All 47 static worker-only entries were probed at the live edge on 2026-09-05 and 9 came back with x-railway-request-id \u2014 the origin answered them, so the model was wrong. PHASE_282 membership is SUFFICIENT for forwarding, not NECESSARY: _worker.js has 9 proxy call sites, zone-level routes reach Railway without the Pages worker running at all (/agents-md, /agents-md-inline, /mcp-server-card.json come back with NO x-dc-worker-version), and the whole /mcp family answers 200 from the WORKER ITSELF and never reaches Flask. See the 'WHY THE WORKER HALF DOES NOT BLOCK' section of scripts/check_route_table_coherence.py. worker_measured_forwarded below is the measured exception list, subtracted from missing_worker; add to it only with a live probe as evidence.",
   "missing_routes_json": [
     "/AGENTS-inline.md",
     "/__gone",
@@ -83,8 +83,6 @@
     "/account/alerts",
     "/address/<slug>",
     "/agent-verdicts",
-    "/agents-md",
-    "/agents-md-inline",
     "/ai-capacity-index/badge.svg",
     "/ai-capacity-index/today.json",
     "/ai-capacity-index/today.txt",
@@ -126,7 +124,6 @@
     "/facilities/",
     "/facilities/<path:slug>",
     "/facilities/<path:slug>.json",
-    "/facilities/directory",
     "/grids/<code>",
     "/hyperscaler-deals.rss",
     "/hyperscaler-deals.xml",
@@ -138,7 +135,6 @@
     "/iso/<iso>.json",
     "/li/<short>",
     "/mcp",
-    "/mcp-server-card.json",
     "/mcp/",
     "/mcp/health",
     "/mcp/manifest",
@@ -163,7 +159,6 @@
     "/moltbook/submolt/create",
     "/news/<slug>",
     "/news/digest-<date_slug>",
-    "/news/rss",
     "/newsletter/archive",
     "/newsletter/issue/<issue_id>",
     "/newsletter/unsubscribe/<token>",
@@ -174,12 +169,8 @@
     "/open-data",
     "/pipeline",
     "/pocket-listings.html",
-    "/poe",
-    "/poe/",
-    "/poe/query",
     "/posts/daily/<date>",
     "/powered-land.html",
-    "/press-release/rss",
     "/press/<slug>",
     "/publish/all",
     "/publish/linkedin",
@@ -202,5 +193,16 @@
     "/system-status.json",
     "/topup/<token>",
     "/ui"
+  ],
+  "worker_measured_forwarded": [
+    "/agents-md",
+    "/agents-md-inline",
+    "/facilities/directory",
+    "/mcp-server-card.json",
+    "/news/rss",
+    "/poe",
+    "/poe/",
+    "/poe/query",
+    "/press-release/rss"
   ]
 }
