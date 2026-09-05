@@ -62,8 +62,8 @@ that says so. "Could not run" is not "ran and passed".
 from __future__ import annotations
 
 import re
-import urllib.error
-import urllib.request
+
+import requests
 
 # Glama 403s a bare urllib UA the way Smithery does.
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -138,14 +138,17 @@ def parse_listing(html: str) -> dict:
 
 
 def _fetch(url: str, timeout: float = 10.0) -> str | None:
-    """The page body, or None on ANY transport failure. Never raises."""
+    """The page body, or None on ANY transport failure. Never raises.
+
+    A non-200 counts as unreachable, not as a listing to parse: an error page
+    has no Status block, so parsing it would raise the fail-closed
+    `glama_listing_unparseable` finding on what is really a transport problem.
+    """
     try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": _UA, "Accept": "text/html"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
-        return None
+        resp = requests.get(
+            url, headers={"User-Agent": _UA, "Accept": "text/html"},
+            timeout=timeout)
+        return resp.text if resp.status_code == 200 else None
     except Exception:  # noqa: BLE001 — a probe must never take the caller down
         return None
 
