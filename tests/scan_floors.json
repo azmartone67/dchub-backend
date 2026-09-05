@@ -115,6 +115,9 @@
     "test_delegated_202_crons.py": {
       "glob": 130
     },
+    "test_enterprise_inquiries_schema_fork.py": {
+      "pglob": 1910
+    },
     "test_envelope_migration.py": {
       "pglob": 640
     },
