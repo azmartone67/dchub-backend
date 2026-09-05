@@ -61,21 +61,26 @@ RETIRED_PATHS = ("/facility/equinix-nj-campus-26f01f95", "/grids/ercot")
 PAGE = ("<html><head><title>t</title></head><body><h1>x</h1></body></html>")
 
 
+def _app(page=PAGE):
+    """One catch-all rule serving `page`, with the hook registered.
+
+    ★ Built with add_url_rule and a single `<path:>` rule on purpose. Flask's
+    `path` converter already matches a bare segment, so /hyperscaler-deals and
+    /ai-capacity-index need no rules of their own — and declaring them would
+    trip scripts/regression_lint.py's duplicate-route rule, which scans tests
+    too and cannot tell a fixture app from a production one.
+    """
+    app = flask.Flask(__name__)
+    app.add_url_rule(
+        "/<path:anything>", "any_page",
+        lambda anything: flask.Response(page, mimetype="text/html"))
+    register_alternate_hook(app)
+    return app
+
+
 @pytest.fixture
 def client():
-    app = flask.Flask(__name__)
-
-    @app.route("/<path:anything>")
-    def any_page(anything):
-        return flask.Response(PAGE, mimetype="text/html")
-
-    @app.route("/hyperscaler-deals")
-    @app.route("/ai-capacity-index")
-    def flat():
-        return flask.Response(PAGE, mimetype="text/html")
-
-    register_alternate_hook(app)
-    return app.test_client()
+    return _app().test_client()
 
 
 @pytest.mark.parametrize("path,kind", sorted(LIVE_HTML_PATHS.items()))
@@ -154,19 +159,11 @@ def test_no_tool_name_is_wrapped_in_em(client, path, kind):
         "tool name that does not exist. Carry italics in CSS. " + str(offenders))
 
 
-def test_a_page_that_already_has_a_handoff_is_left_alone(client):
+def test_a_page_that_already_has_a_handoff_is_left_alone():
     """/facilities/<slug> names get_facility in its own footer, and that one
     survives markdown intact — a second line would be noise."""
-    app = flask.Flask(__name__)
-
-    @app.route("/markets/<slug>")
-    def already(slug):
-        return flask.Response(
-            "<html><head></head><body>see https://dchub.cloud/mcp</body></html>",
-            mimetype="text/html")
-
-    register_alternate_hook(app)
-    r = app.test_client().get("/markets/dallas")
+    r = _app("<html><head></head><body>see https://dchub.cloud/mcp</body></html>"
+             ).test_client().get("/markets/dallas")
     assert r.headers.get("X-DC-Alternates-Injected") == "market", (
         "the head tags should still be injected")
     assert r.headers.get("X-DC-Agent-Handoff") is None, (
