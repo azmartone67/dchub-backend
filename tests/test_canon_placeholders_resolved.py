@@ -63,6 +63,13 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 # and asserts no placeholder survives, in both the warm and cold branches.
 _SWEPT = [
     "agent_hub.py",
+    # ★2026-09-04 (b): added when the retired deal floor was drained from this
+    # file. Its ground-truth block for the editor LLM is an f-string, so the
+    # obvious repair — doubling the braces — parses, imports and passes every
+    # other guard while handing the model a literal {canon_*} token as a fact.
+    # The value is interpolated instead; this entry is what makes the wrong
+    # repair fail rather than ship silently.
+    "content_publisher.py",
     "ai_agent_discovery.py",
     "ai_agent_teaching.py",
     "ai_discovery_routes.py",

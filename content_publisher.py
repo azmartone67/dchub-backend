@@ -3072,10 +3072,24 @@ def _editor_review(content_text: str):
     # editor those figures are verified ground truth (pulled live so they track
     # honest-numbers / canonical_stats).
     try:
-        from canonical_stats import get_canonical_stats as _gcs
+        from canonical_stats import (
+            get_canonical_stats as _gcs,
+            deals_phrase as _deals_phrase,
+        )
         _cs = _gcs() or {}
+        # The deal figure is a FLOORED PHRASE, not an int like its siblings —
+        # deals_phrase() dedups before it floors. Fail-open to a count-free
+        # sentence rather than to a seed, matching ai_surface_canon.canon_text:
+        # a missing number is visible, a wrong one is what this line shipped.
+        _deals = _deals_phrase()
     except Exception:
         _cs = {}
+        _deals = ""
+    # Absorb the count into a clause so the fail-open sentence still reads as
+    # prose. Without this the empty branch leaves a doubled space where the
+    # number was — a malformed line handed to the editor as ground truth, in a
+    # prompt whose own reject rule names broken templates.
+    _deals_clause = f"{_deals} tracked M&A deals" if _deals else "tracked M&A deals"
     try:
         import datetime as _dt
         _today = _dt.datetime.utcnow().strftime("%B %d, %Y")
@@ -3092,8 +3106,8 @@ def _editor_review(content_text: str):
         "fictional'. Canonical (rounded): "
         f"~{int(_cs.get('facilities', 21000)):,}+ tracked facilities, "
         f"{int(_cs.get('countries', 178))}+ countries, "
-        f"{int(_cs.get('markets', 230))}+ markets (DCPI), 4,000+ tracked "
-        "M&A deals, 7 live US ISOs. A post citing these (or consistent figures) is "
+        f"{int(_cs.get('markets', 230))}+ markets (DCPI), {_deals_clause}, "
+        "7 live US ISOs. A post citing these (or consistent figures) is "
         "accurate, not fabricated.\n"
         "DC Hub Media ALSO ships and announces PLATFORM / CAPABILITY UPDATES, not "
         "only market-movement insight — new MCP tools, a provenance/citation "
