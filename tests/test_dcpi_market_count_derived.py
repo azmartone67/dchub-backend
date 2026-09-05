@@ -10,7 +10,9 @@ number, and one writes the count on the far side of its label.
     at the top of that same file and the two bullets on either side of it
     resolved theirs.
   * routes/case_studies_landing.py served one as an HTML stat tile, one <div>
-    from the derived facilities tile.
+    from the derived facilities tile. RETIRED 2026-09-04 (#3831): the page
+    it fenced was never reachable at the edge, so its entry and its render
+    test are gone and four publishers remain.
   * routes/mcp_outreach_drafts.py listed one under a heading reading
     "Stats (live)", between two genuinely live siblings.
   * routes/dcpi_auto_press.py put one in the body of EVERY auto-generated
@@ -35,7 +37,6 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 # The surfaces this change bound. A new surface that needs the number
 # belongs here too.
 _PUBLISHERS = [
-    "routes/case_studies_landing.py",
     "routes/mcp_outreach_drafts.py",
     "routes/dcpi_auto_press.py",
     "routes/narrative_arc.py",
@@ -139,26 +140,6 @@ def _canon_phrase():
 # Static structure cannot tell you what a byte-stream looks like: an f-string
 # parses {canon_x} as an expression (NameError), and a plain string does not
 # substitute at all. Both failures pass every check above. Render them.
-
-def test_case_studies_stat_tile_is_derived():
-    flask = pytest.importorskip("flask")
-    import routes.case_studies_landing as csl
-
-    app = flask.Flask(__name__)
-    app.register_blueprint(csl.case_studies_bp)
-    body = app.test_client().get("/case-studies").get_data(as_text=True)
-
-    assert "{canon_" not in body, "unresolved placeholder served to a browser"
-    tiles = {
-        label: num
-        for num, label in re.findall(
-            r'<div class="stat-num">([^<]*)</div><div class="stat-label">([^<]*)</div>',
-            body,
-        )
-    }
-    assert "DCPI markets" in tiles, "the DCPI stat tile vanished from the page"
-    assert tiles["DCPI markets"] == _canon_phrase()
-
 
 def test_outreach_draft_stats_block_is_live():
     """The block is headed "Stats (live)"; the DCPI line was not."""

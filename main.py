@@ -40165,7 +40165,8 @@ except Exception as _ti_e:
 
 # Phase ZZZZZ-round47.7-47.10 (2026-05-25): master shell
 #   /team           — founder bio + Brain v2 acknowledgment
-#   /case-studies   — auto-pulled press + deal proof (until named cases land)
+#   /case-studies   — RETIRED 2026-09-04 (never routed at the edge; see
+#                     routes/team_landing.py for the nav link removed with it)
 #   /api/v1/admin/outreach/mcp-registry/mark-defunct — cleanup endpoint
 #   /api/v1/linkedin-quad/best-of-day — cross-post helper for personal feed
 try:
@@ -40174,12 +40175,6 @@ try:
     print("[main] team_bp registered: /team", flush=True)
 except Exception as _tm_e:
     print(f"[main] team_bp register failed: {_tm_e}", flush=True)
-try:
-    from routes.case_studies_landing import case_studies_bp
-    app.register_blueprint(case_studies_bp)
-    print("[main] case_studies_bp registered: /case-studies", flush=True)
-except Exception as _cs_e:
-    print(f"[main] case_studies_bp register failed: {_cs_e}", flush=True)
 try:
     from routes.mcp_registry_cleanup import mcp_registry_cleanup_bp
     app.register_blueprint(mcp_registry_cleanup_bp)
