@@ -40,6 +40,7 @@ _PUBLISHERS = [
     "routes/dcpi_auto_press.py",
     "routes/narrative_arc.py",
     "routes/partner_landing.py",
+    "routes/competitive_intel.py",
 ]
 
 # "285 US markets", "230+ data center markets", "300+ DCPI-scored markets".
@@ -268,6 +269,104 @@ def test_partner_landing_is_off_the_iso_debt_register():
     assert "isos_non_canonical" not in m.group(1), (
         "routes/partner_landing.py still claims isos_non_canonical as known "
         "debt, so the repo-wide fence stays disarmed for this file"
+    )
+
+
+# A value canon will never produce, so a string that carries it can only have
+# come through the resolver. Comparing against the real phrase cannot do this:
+# the literals being replaced happened to EQUAL the live phrase, which is how
+# they survived every previous check.
+_SENTINEL = "<<CANON>>"
+
+
+def _sentinel_canon_text(s):
+    return re.sub(r"\{canon_[a-z_]+\}", _SENTINEL, s) if s else s
+
+
+def _resolved_with_sentinel(ci):
+    real = ci.canon_text
+    ci.canon_text = _sentinel_canon_text
+    try:
+        return {d["key"]: d["value"] for d in ci._resolved_differentiators()}
+    finally:
+        ci.canon_text = real
+
+
+def test_competitive_intel_market_counts_are_derived():
+    """These two matched canon by luck, which is the quiet version of the bug.
+
+    The DCPI differentiator sat two entries above a `facilities` claim that
+    already resolved per request — and that entry carries a comment recording
+    the exact failure this one was set up for: a value frozen at import,
+    drifting away from the resolver the same response uses elsewhere.
+    """
+    import routes.competitive_intel as ci
+
+    phrase = canonical_stats.markets_phrase()
+
+    # module-level literal must hold no copy at all — a direct reader of
+    # _DCHUB_DIFFERENTIATORS gets nothing rather than something stale
+    entry = next(d for d in ci._DCHUB_DIFFERENTIATORS
+                 if d["key"] == "proprietary_indices")
+    assert entry["value"] == "", (
+        "the DCPI differentiator carries copy at module level again, which "
+        "freezes it at import"
+    )
+
+    resolved = {d["key"]: d["value"] for d in ci._resolved_differentiators()}
+    dcpi = resolved["proprietary_indices"]
+    assert f"scores {phrase} markets" in dcpi, f"not derived: {dcpi[:120]!r}"
+    assert "{canon_" not in dcpi
+    # the gas token is filled by resolve_gas_copy AFTER the count substitution;
+    # if the ordering ever flips, the token ships raw to an agent
+    assert "@@" not in dcpi, f"unresolved gas token: {dcpi[:120]!r}"
+
+    # ★ The assertion above cannot tell DERIVED from LUCKY. The literal these
+    #   two strings carried was "300+", which is what canon resolves to today,
+    #   so a hardcoded copy satisfies every check that compares against the
+    #   canon phrase — mutation testing caught exactly that. Drive the resolver
+    #   to a value canon never produces and require the surface to follow.
+    assert _SENTINEL in _resolved_with_sentinel(ci)["proprietary_indices"], (
+        "the DCPI differentiator ignores the resolver — it matched canon by "
+        "coincidence, not by derivation"
+    )
+
+
+def test_competitive_intel_media_draft_is_derived():
+    flask = pytest.importorskip("flask")
+    import routes.competitive_intel as ci
+
+    app = flask.Flask(__name__)
+    real_guard = ci._admin_guard
+    ci._admin_guard = lambda: None          # exercising copy, not auth
+    try:
+        with app.test_request_context("/api/v1/competitive/media-drafts"):
+            out = ci.media_drafts()
+            resp = out[0] if isinstance(out, tuple) else out
+            txt = resp.get_data(as_text=True)
+    finally:
+        ci._admin_guard = real_guard
+
+    phrase = canonical_stats.markets_phrase()
+    assert f"report scores {phrase} markets" in txt, "media draft not derived"
+    assert "{canon_" not in txt
+
+    # ★ Same coincidence trap as above — re-render with the resolver forced to
+    #   a value canon never produces.
+    ci._admin_guard = lambda: None
+    real_canon_text = ci.canon_text
+    ci.canon_text = _sentinel_canon_text
+    try:
+        with app.test_request_context("/api/v1/competitive/media-drafts"):
+            out = ci.media_drafts()
+            resp = out[0] if isinstance(out, tuple) else out
+            forced = resp.get_data(as_text=True)
+    finally:
+        ci.canon_text = real_canon_text
+        ci._admin_guard = real_guard
+    assert _SENTINEL in forced, (
+        "the media draft ignores the resolver — it matched canon by "
+        "coincidence, not by derivation"
     )
 
 

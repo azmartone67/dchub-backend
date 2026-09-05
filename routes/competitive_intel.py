@@ -121,9 +121,13 @@ _COMPETITOR_BY_SLUG: dict[str, dict] = {c["slug"]: c for c in _COMPETITORS}
 #      • facilities → ai_surface_canon.PINNED public.facilities (the
 #        verified distinct-site floor; raw-row counts are the retired
 #        over-claim path).
-#      • markets scored ~286 → routes/agent_capabilities_feed.py default
-#        counts.markets_scored = 286 (live-overridden from
-#        market_power_scores). We state "~285+" conservatively.
+#      • markets scored → ai_surface_canon canon_text -> {canon_markets},
+#        resolved per request in _resolved_differentiators(). This note used
+#        to reason about which hardcoded figure to type and how far to round
+#        it down; that question is now answered by the canon, so no figure is
+#        written here — one in a comment rots exactly like the literal it
+#        explains, and this file's own fence (see the note above about
+#        BANNED_STALE) reads comments too.
 #      • grids with live data = live grid operators on 5 continents + 43 US
 #        utility balancing authorities = 53 US grid regions. The 10 are the
 #        7 live US ISOs (PJM,CAISO,ERCOT,MISO,SPP,NYISO,ISO-NE — each with a
@@ -246,14 +250,22 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
     {
         "key":    "proprietary_indices",
         "label":  "Proprietary live index (DCPI)",
-        "value":  ("The DC Hub Power Index (DCPI) is recomputed daily and "
-                   "scores 300+ markets with live BUILD / AVOID verdicts. "
-                   "Its gas sibling, the DC Hub Gas Index (DCGI): "
-                   "@@GAS_INDEX_STATE@@ Live Henry Hub, ISO gas share and "
-                   "pipeline presence are unaffected and remain available "
-                   "via get_gas_intelligence."),
+        # ★2026-09-04 — the market count here was hand-typed while the
+        # facilities claim two entries down already resolved per request. It
+        # happened to match canon, which is the quiet version of the same bug:
+        # nothing recomputed it, so it matched by luck and would drift the
+        # first time the scored universe moved.
+        #
+        # Filled at REQUEST time by _resolved_differentiators() below, for the
+        # two reasons the facilities entry records: a module-level literal
+        # freezes at import, and tests/test_canon_placeholders_resolved.py
+        # walks the AST and fails any {canon_*} string not lexically inside a
+        # resolver call. Empty here on purpose — a direct reader of
+        # _DCHUB_DIFFERENTIATORS gets no number rather than a stale one.
+        "value":  "",
         "proof":  "https://dchub.cloud/dcpi",
-        "source": "routes/dcpi.py (DCPI) + routes/dcgi.py (DCGI)",
+        "source": "ai_surface_canon canon_text -> canon_markets (per request)"
+                  " + routes/dcpi.py (DCPI) + routes/dcgi.py (DCGI)",
     },
     {
         "key":    "facilities",
@@ -318,8 +330,22 @@ def _resolved_differentiators() -> list[dict]:
     facilities_detail = canon_text(
         "{canon_facilities} physical data center facilities tracked with "
         "operator, location and power detail.")
+    # ★ The @@GAS_INDEX_STATE@@ token stays unresolved here on purpose:
+    #   resolve_gas_copy() below is what fills it, and it runs over the list
+    #   this returns. Substituting the count first leaves that token intact.
+    dcpi_detail = canon_text(
+        "The DC Hub Power Index (DCPI) is recomputed daily and "
+        "scores {canon_markets} markets with live BUILD / AVOID verdicts. "
+        "Its gas sibling, the DC Hub Gas Index (DCGI): "
+        "@@GAS_INDEX_STATE@@ Live Henry Hub, ISO gas share and "
+        "pipeline presence are unaffected and remain available "
+        "via get_gas_intelligence.")
+    _per_request = {
+        "facilities": facilities_detail,
+        "proprietary_indices": dcpi_detail,
+    }
     return resolve_gas_copy([
-        {**d, "value": facilities_detail} if d.get("key") == "facilities" else d
+        {**d, "value": _per_request[d["key"]]} if d.get("key") in _per_request else d
         for d in _DCHUB_DIFFERENTIATORS
     ])
 
@@ -992,11 +1018,11 @@ def media_drafts():
             "id":    "draft_cite_this",
             "title": "Citable, open, machine-readable",
             "channel_hint": "linkedin",
-            "text": (
+            "text": canon_text(
                 "An AI answer is only as trustworthy as its sources. That's "
                 "why DC Hub publishes core datasets and reports under "
                 "CC-BY-4.0, with stable URLs and JSON-LD baked in.\n\n"
-                "Our State of Data Center Power report scores 300+ markets "
+                "Our State of Data Center Power report scores {canon_markets} markets "
                 "with live BUILD/AVOID verdicts (the DC Hub Power Index) "
                 "and pairs it with the DC Hub Gas Index — and every figure "
                 "links to a live endpoint an agent can cite.\n\n"
