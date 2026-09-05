@@ -44,13 +44,6 @@ class ImageMatcher:
                 "style": "photorealistic"
             },
             {
-                "id": "dc-cooling-1",
-                "url": "https://images.unsplash.com/photo-1600267165477-6d4cc741b379",
-                "category": "cooling",
-                "tags": ["cooling", "hvac", "infrastructure"],
-                "style": "photorealistic"
-            },
-            {
                 "id": "dc-power-1",
                 "url": "https://images.unsplash.com/photo-1473341304170-971dccb5ac1e",
                 "category": "power",

@@ -124,18 +124,5 @@
       "ai"
     ],
     "style": "photorealistic"
-  },
-  {
-    "id": "dc-cooling-1",
-    "url": "https://images.unsplash.com/photo-1600267165477-6d4cc741b379",
-    "category": "cooling",
-    "tags": [
-      "cooling",
-      "hvac",
-      "infrastructure",
-      "water",
-      "thermal"
-    ],
-    "style": "photorealistic"
   }
 ]
