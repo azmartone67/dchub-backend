@@ -1047,6 +1047,12 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
 </div>
 <div class="toast" id="toast"></div>
 <script>
+// Any closing script tag written inside this block MUST be escaped as <\/…>,
+// including inside strings and comments: the HTML parser ends script data at
+// the first literal one and does not know JS syntax. An unescaped one here
+// truncates the page mid-IIFE and the dashboard renders blank
+// ("Uncaught SyntaxError: Unexpected end of input"). Guarded by
+// test_page_script_block_is_not_truncated.
 (function(){
   // Carry the SAME admin key the page was opened with onto the digest fetch +
   // grade POSTs (mirrors the page's own ?admin_key= gate). Header is preferred;
@@ -1069,8 +1075,8 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
   }
   // TRANSPORT for the operator's directive. It is free text that routinely
   // quotes shell AND HTML in one breath ("run `curl -i https://…`" … "add
-  // `<script src=…></script>` before </body>"), and Cloudflare's WAF 403s both
-  // signatures on the request body. It BASE64-DECODES the body before
+  // `<script src=…><\/script>` before </body>"), and Cloudflare's WAF 403s
+  // both signatures on the request body. Cloudflare BASE64-DECODES it before
   // matching, so b64 alone hides the command-injection signature and NOT the
   // XSS one — measured on the full inv:100502 directive at the live edge:
   // plain 403, base64 403, zlib+base64 400 (5/5). Deflate first and what the
