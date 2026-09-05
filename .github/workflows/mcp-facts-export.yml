@@ -158,8 +158,10 @@ jobs:
           set -euo pipefail
           node scripts/sync-tools-manifest.mjs
 
-      - name: Commit + push into dchub-mcp-server
+      - name: Commit + open a PR into dchub-mcp-server
         working-directory: dchub-mcp-server
+        env:
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN || secrets.GH_PAT }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
@@ -188,9 +190,32 @@ jobs:
           # dchub-mcp-server squash-merges, which concatenates commit bodies, so
           # the literal token would ride into main's head commit and skip CI
           # there too.
-          git commit -m "chore(facts): regenerate from canonical_stats + heal the derived surfaces"
-          git push
-          echo "✓ pushed facts AND every surface derived from them, in ONE commit"
+          # ★2026-09-04 — PR, NEVER PUSH. dchub-mcp-server's main is moving to
+          # required status checks, which makes a direct push here fail with
+          # GH006 the same way pushing to THIS repo's main already does. That is
+          # not hypothetical for this file: the comment further down records
+          # SEVENTEEN DAYS of daily red caused by exactly that against the
+          # backend's own main, ignored the whole time because the remediation
+          # text called the failure cosmetic.
+          #
+          # ★ Still no [skip ci] — for the reason stated above, and now also
+          # because the PR's checks are what let it merge at all.
+          #
+          # ★ set -euo pipefail (top of this step) makes a failed PR LOUD. The
+          # sister workflows in dchub-frontend ended their push loop with `done`
+          # and exited 0 after failing every attempt (#1344): three jobs reported
+          # SUCCESS while nothing reached main. A facts export that cannot open
+          # its PR must go red, not quietly succeed.
+          BRANCH="bot/facts-$(date -u +%Y%m%dT%H%M%SZ)"
+          git checkout -b "$BRANCH"
+          git commit -q -m "chore(facts): regenerate from canonical_stats + heal the derived surfaces"
+          git push -q -u origin "$BRANCH"
+          PR_URL=$(gh pr create --repo azmartone67/dchub-mcp-server --base main --head "$BRANCH" \
+            --title "chore(facts): regenerate from canonical_stats + heal the derived surfaces" \
+            --body "Automated facts export from dchub-backend. Facts and every surface derived from them land in ONE commit (#3793), and the drift guard was run against this tree before the PR was opened.")
+          echo "opened $PR_URL"
+          gh pr merge --auto --squash --delete-branch "$PR_URL"
+          echo "✓ facts AND every derived surface, in ONE commit, via $PR_URL"
 
       # ★2026-08-30 — THE "WEAKER CLAIM" COMMENT WAS TRUE WHEN WRITTEN AND
       # FALSE TEN DAYS LATER. It read "NOTHING SERVES IT ... returned 404 when
