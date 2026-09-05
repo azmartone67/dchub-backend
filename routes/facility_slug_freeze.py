@@ -134,7 +134,24 @@ def build_canonical_slug(provider, name):
     a row's identity is untouched — only the human-readable part differs.
     """
     name_slug = _slugify(name) or ''
-    if not name_slug or len(name_slug) < 3:
+    # ★★★ 2026-09-05 — THE LENGTH TEST WAS ON THE WRONG STRING.
+    # This used to read `if not name_slug or len(name_slug) < 3`, rejecting the
+    # NAME FRAGMENT for being short. But the fragment is never the slug: the
+    # returned value always carries an 8-char stable hash and usually a
+    # provider prefix, so "SC" at Equinix becomes `equinix-sc-<hash8>` — 20
+    # characters, unique, and a perfectly good URL. The guard measured a part
+    # and rejected the whole.
+    #
+    # It cost 28 real facilities their only URL, for five months. Operators do
+    # name buildings with one or two characters — measured in the stuck set:
+    #   SC (US) · L7 (UA) · RZ (DE, Rechenzentrum) · Oi (BR, the telco)
+    #   A / B / C (AT) · 1A / 1B / 2 / 3 / 4 (CN, HK) · B4 (FR)
+    # first_seen 2026-03-18 to 2026-04-10, every one still Operational.
+    #
+    # An EMPTY name_slug is still rejected, and that guard is the real one: a
+    # name that folds to nothing gives the URL no human-readable identity at
+    # all, and `-<hash8>` alone is not a page anyone can read or cite.
+    if not name_slug:
         return None
     provider_slug = _slugify(provider) or ''
     h = _stable_hash8(provider, name)
@@ -297,9 +314,17 @@ def backfill_canonical_slugs(conn, table, batch=5000, max_batches=50):
         updated += sum(1 for _, s in values if s)
         if len(rows) < batch:
             break
+    # ★★★ 2026-09-05 — THIS COUNTER READ A STRICT SUBSET OF WHAT THE WORKER
+    # SELECTS. The loop above picks up `canonical_slug IS NULL OR = ''`; this
+    # counted only `IS NULL`. So the 28 rows that reached the '' sentinel were
+    # re-selected every run, produced no slug, wrote nothing — and were then
+    # reported as pending=0. The workflow printed "pending=0" on every tick for
+    # five months while those rows had no URL. A checker must read the same
+    # population it publishes a verdict on.
     cur.execute(
         f"SELECT COUNT(*) FROM {table} "
-        f"WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> ''")
+        f"WHERE (canonical_slug IS NULL OR canonical_slug = '') "
+        f"  AND name IS NOT NULL AND name <> ''")
     remaining = cur.fetchone()[0]
     return updated, remaining
 

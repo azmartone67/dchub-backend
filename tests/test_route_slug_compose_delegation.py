@@ -147,8 +147,13 @@ def test_delegated_helper_contracts():
     # unfrozen: deduped + ascii-folded builder output
     s = _build_facility_slug({"provider": "Télécom", "name": "Télécom Paris DC"})
     assert s.startswith("telecom-paris-dc-"), s
-    # un-sluggable rows keep the '' contract (id fallback / skip upstream)
-    assert _build_facility_slug({"provider": "X", "name": "ab"}) == ""
+    # ★ 2026-09-05: a one- or two-character facility name is a REAL name — the
+    # stuck set was RZ (DE), Oi (BR), B4 (FR), 1A/1B/2/3/4 (CN/HK), SC, L7.
+    # The len<3 rejection measured the name fragment, not the slug, and left
+    # 28 Operational rows with no URL from March to September.
+    assert _build_facility_slug({"provider": "X", "name": "ab"}) == "x-ab-c343e6d0"
+    # un-sluggable rows (NO readable name at all) keep the '' contract
+    assert _build_facility_slug({"provider": "X", "name": ""}) == ""
     assert _fac_slug(9, "X", "") == ""
 
 

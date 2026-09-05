@@ -81,8 +81,13 @@ def test_builder_contract_the_emitters_rely_on():
     # token boundary: a provider that merely prefixes a word is kept
     s2 = fsf.build_canonical_slug("Int", "Internap Dallas")
     assert s2 and s2.startswith("int-internap-dallas-"), s2
-    # short/empty names → None, which every site coalesces to ''/skip
-    assert fsf.build_canonical_slug("X", "ab") is None
+    # ★ 2026-09-05: "ab" was `is None`. The len<3 rejection measured the name
+    # FRAGMENT, but the slug always carries a provider prefix and an 8-char
+    # hash, so `x-ab-<h>` is unique and perfectly citable. The old rule stranded
+    # 28 Operational facilities with no URL from March to September.
+    assert fsf.build_canonical_slug("X", "ab") == "x-ab-c343e6d0"
+    # a MISSING name is still None — that guard is the real one, and every
+    # call site coalesces it to ''/skip
     assert fsf.build_canonical_slug("X", "") is None
     # no provider → name-hash form
     s3 = fsf.build_canonical_slug("", "Standalone Site")

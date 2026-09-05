@@ -132,10 +132,19 @@ def test_hash_is_unchanged_by_the_dedupe():
     assert g["build_canonical_slug"]("NTT", "NTT Frankfurt").endswith("-" + h)
 
 
-def test_short_or_missing_names_still_return_none():
+def test_a_missing_name_returns_none_but_a_short_one_does_not():
+    """★ 2026-09-05: the `len(name_slug) < 3` half of this was pinning a defect.
+
+    The rejected fragment is never the slug — the return value always carries an
+    8-char hash and usually a provider prefix, so "ab" at NTT is `ntt-ab-<h>`.
+    It cost 28 Operational facilities their only URL from March to September
+    (SC, L7, RZ, Oi, A/B/C, 1A/1B/2/3/4, B4). The MISSING-name half is the real
+    guard and stays: a name that folds to nothing leaves the URL with no
+    readable identity."""
     b = _slug_fns()["build_canonical_slug"]
     assert b("NTT", "") is None
-    assert b("NTT", "ab") is None
+    assert b("NTT", "!!!") is None
+    assert b("NTT", "ab") == "ntt-ab-" + _slug_fns()["_stable_hash8"]("NTT", "ab")
 
 
 def test_no_provider_means_no_prefix():
