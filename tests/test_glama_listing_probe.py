@@ -109,7 +109,8 @@ def _row(key, disposition, badge_page=True, **kw):
     row = {"key": key, "url": f"https://glama.ai/{key}",
            "disposition": disposition, "has_health_badge": badge_page,
            "reachable": True, "status": "Healthy", "last_tested": "t",
-           "tools_badge": 83, "retired_phrases": [], "status_found": True}
+           "tools_badge": 83, "retired_phrases": [], "status_found": True,
+           "deprecated": False, "deprecated_at": None}
     row.update(kw)
     return row
 
@@ -336,3 +337,59 @@ def test_that_guard_can_actually_see_a_count():
     # guard flagged its own `.{0,400}?` anchors, which is the kind of noise
     # that gets a guard deleted rather than fixed.
     assert not _COUNT_SHAPE.search("re.compile(r\"x.{0,400}?y\")")
+
+
+# ── deprecation: the end state, measured on the real page ───────────────────
+#
+# Glama's owner UI offers no delete for a claimed connector. Deprecation is
+# what it offers, it banner-marks the listing and sorts it last in search, and
+# there is nothing further a human can do. So the duplicate finding has to go
+# quiet on it — otherwise it is a red no action can clear, which is exactly the
+# treatment this module refuses to give Glama's own cached copy.
+#
+# The marker below was MEASURED on the live page at 2026-09-05T17:14:48Z, after
+# the duplicate was deprecated, and checked against the capture taken before
+# it. Both directions, on real bytes, not a guessed fixture.
+
+# ★ The hashed class names from the real markup (`iPpNxm jrPWok jLqugF`) are
+# DELIBERATELY LEFT OUT. With them present, a detector anchored on a class
+# passed this fixture — the test could not tell a sturdy anchor from a fragile
+# one, which is the whole property it exists to hold. Glama's classes are
+# CSS-in-JS and rotate on deploy, so the plain-text banner is the only stable
+# thing on the page. Verified by mutation: re-anchoring _DEPRECATED_RE on a
+# class now fails here.
+DEPRECATED_MARKUP = (
+    '<strong>This connector has been deprecated</strong>'
+    '<div><p>duplicate</p></div>')
+
+
+def test_the_deprecation_banner_is_read_from_the_rendered_marker():
+    got = glp.parse_listing(_connector_page(status="Unhealthy", badge=None,
+                                            extra=DEPRECATED_MARKUP))
+    assert got["deprecated"] is True
+
+
+def test_a_live_connector_is_not_read_as_deprecated():
+    assert glp.parse_listing(_connector_page())["deprecated"] is False
+
+
+def test_the_deprecated_at_timestamp_is_read_from_the_payload():
+    payload = r'\"deprecatedAt\",\"2026-09-05T17:14:48.727945Z\",\"deprecationComment\"'
+    got = glp.parse_listing(_connector_page(extra=payload))
+    assert got["deprecated_at"] == "2026-09-05T17:14:48.727945Z"
+
+
+def test_a_deprecated_duplicate_stops_firing():
+    """The action was taken. Continuing to page for it trains people to ignore
+    the monitor, and the next real duplicate arrives into that silence."""
+    assert glp.findings([_row("dupe", glp.DEPRECATE, status="Unhealthy",
+                              deprecated=True)], canon_tools=83) == []
+
+
+def test_an_undeprecated_duplicate_fires_again():
+    """Detection is kept, not dropped — deprecation can be reversed in the same
+    UI that applied it, and that has to be visible."""
+    out = glp.findings([_row("dupe", glp.DEPRECATE, status="Unhealthy",
+                             deprecated=False)], canon_tools=83)
+    assert [f["issue"] for f in out] == ["glama_duplicate_connector_listed"]
+    assert "NOT marked deprecated" in out[0]["detail"]

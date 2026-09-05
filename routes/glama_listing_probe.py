@@ -116,6 +116,17 @@ _TESTED_RE = re.compile(
 # Anchored on the badge, and tolerant of the HTML comments React emits inside
 # it. Bounded lookahead so a missing badge fails to match rather than scanning
 # to the far end of a 2 MB document.
+# ★ Measured against the real page 2026-09-05 17:14Z, after the duplicate was
+# deprecated — not guessed. Glama renders a plain <strong> banner with the
+# owner's reason beneath it; there are no hashed class names in the marker
+# itself, which makes it the sturdiest anchor on the page.
+#     <strong>This connector has been deprecated</strong><div…><p>duplicate</p>
+# The timestamp only appears in the page's data payload, where the value sits
+# immediately after its key (before deprecation the key had no value at all).
+_DEPRECATED_RE = re.compile(r"This connector has been deprecated", re.I)
+_DEPRECATED_AT_RE = re.compile(
+    r'\\?"deprecatedAt\\?"\s*,\s*\\?"([0-9TZ:.+\-]{10,40})\\?"')
+
 _TOOLS_BADGE_RE = re.compile(
     r"Available\s+Tools</h\d>.{0,200}?>\s*(\d{1,4})\s*(?:<!--.*?-->)?\s*tool",
     re.I | re.S)
@@ -136,10 +147,14 @@ def parse_listing(html: str) -> dict:
     m = _STATUS_RE.search(html)
     t = _TESTED_RE.search(html)
     b = _TOOLS_BADGE_RE.search(html)
+    dep = _DEPRECATED_RE.search(html)
+    dep_at = _DEPRECATED_AT_RE.search(html)
     return {
         "status": (m.group(1).capitalize() if m else None),
         "last_tested": (t.group(1) if t else None),
         "tools_badge": (int(b.group(1)) if b else None),
+        "deprecated": bool(dep),
+        "deprecated_at": (dep_at.group(1) if dep_at else None),
         "retired_phrases": [p for p in RETIRED_COUNT_PHRASES if p in html],
         "status_found": bool(m),
     }
@@ -258,6 +273,16 @@ def findings(rows: list[dict], canon_tools: int | None = None) -> list[dict]:
             continue
 
         if row["disposition"] == DEPRECATE:
+            # ★ Deprecation is the END STATE, not a step toward one. Glama's
+            # owner UI offers no delete for a claimed connector, and a
+            # deprecated connector is banner-marked and sorted last in search.
+            # There is nothing further a human can do here, so continuing to
+            # fire would be a red that no action can clear — the thing this
+            # module refuses to do with their cached copy, and it would be no
+            # better here. Detection is KEPT rather than dropped so that an
+            # un-deprecation fires again.
+            if row.get("deprecated"):
+                continue
             out.append({
                 "issue": "glama_duplicate_connector_listed",
                 "url": row["url"],
@@ -269,8 +294,9 @@ def findings(rows: list[dict], canon_tools: int | None = None) -> list[dict]:
                     f"its copy: {stale}). It is Glama-native — not in the official "
                     f"registry — so it carries its own category, description and "
                     f"health clock, and an installer comparing two DC Hub cards can "
-                    f"land on the worse one. Two actions, and the first alone does "
-                    f"not hold: (1) DEPRECATE this connector in the Glama owner UI "
+                    f"land on the worse one. It is NOT marked deprecated. Two "
+                    f"actions, and the first alone does not hold: "
+                    f"(1) DEPRECATE this connector in the Glama owner UI "
                     f"— deprecation, not deletion, is what the UI offers for a "
                     f"claimed connector, and Glama models it as first-class state "
                     f"(`deprecatedAt` + `deprecationComment` on the record); "
