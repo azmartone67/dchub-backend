@@ -19,6 +19,8 @@ house rule: tests NEVER import main).
 """
 
 import ast
+
+from tests import _market_canon_consts as _canon_consts
 import json
 import logging
 
@@ -159,41 +161,28 @@ class _Resp:
 def _page_canon():
     """The real MARKETS_DEEP_DIVE_PAGE_CANON literal from the module under
     test (never a hand copy — a drift twin here would green-light a broken
-    map)."""
-    _, tree, _ = _module()
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) \
-                        and t.id == "MARKETS_DEEP_DIVE_PAGE_CANON":
-                    return ast.literal_eval(node.value)
-    raise AssertionError("MARKETS_DEEP_DIVE_PAGE_CANON literal not found")
+    map).
+
+    r-market-canon-split (2026-09-05): read by IMPORT, not literal_eval. All
+    three constants are derived from util.market_aliases now, so there is no
+    literal to eval; see tests/_market_canon_consts.py for why importing is
+    both necessary and safe.
+    """
+    return _canon_consts.page_canon()
 
 
 def _canonical_redirect():
-    """The real MARKETS_CANONICAL_REDIRECT literal from the module under test.
+    """The real MARKETS_CANONICAL_REDIRECT from the module under test.
 
-    Sourced from the AST, not hand-copied — a drift twin here would green-light
-    a page URL that 301s.
+    Sourced from the module, not hand-copied — a drift twin here would
+    green-light a page URL that 301s.
     """
-    _, tree, _ = _module()
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == "MARKETS_CANONICAL_REDIRECT":
-                    return ast.literal_eval(node.value)
-    raise AssertionError("MARKETS_CANONICAL_REDIRECT literal not found")
+    return _canon_consts.canonical_redirect()
 
 
 def _curated_slugs():
-    """The real CURATED_MARKET_SLUGS literal from the module under test."""
-    _, tree, _ = _module()
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == "CURATED_MARKET_SLUGS":
-                    return ast.literal_eval(node.value)
-    raise AssertionError("CURATED_MARKET_SLUGS literal not found")
+    """The real CURATED_MARKET_SLUGS from the module under test."""
+    return _canon_consts.curated_slugs()
 
 
 def _ns(**overrides):

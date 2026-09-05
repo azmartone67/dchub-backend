@@ -41,6 +41,10 @@ exact hole this file exists to close.
 """
 
 import ast
+
+from util.market_aliases import DCPI_METRO_ALIASES, canonical_slug
+from util.dcpi_score_row import PUBLISHED_ONLY
+from tests import _market_canon_consts as _canon_consts
 import builtins
 import datetime
 import functools
@@ -145,6 +149,14 @@ def _consts():
                         out[t.id] = ast.literal_eval(node.value)
                     except Exception:
                         pass
+    # r-market-canon-split (2026-09-05): CURATED_MARKET_SLUGS is derived from
+    # util.market_aliases now, so it is not a literal and the loop above drops
+    # it — SILENTLY, into a KeyError at the call site. Read it from the module
+    # instead; tests/_market_canon_consts.py explains why importing is safe and
+    # asserts the no-main house rule while doing it.
+    out["CURATED_MARKET_SLUGS"] = _canon_consts.curated_slugs()
+    out["MARKETS_CANONICAL_REDIRECT"] = _canon_consts.canonical_redirect()
+    out["MARKETS_DEEP_DIVE_PAGE_CANON"] = _canon_consts.page_canon()
     return out
 
 
@@ -191,14 +203,25 @@ def _ns(**overrides):
         # bogota/santiago/etc are not city-name collisions; the real helper
         # imports util.market_aliases and is exercised by its own tests.
         "_collision_slugs": lambda: set(),
+        # r-market-canon-split (2026-09-05): _gather_market_facts resolves the
+        # alias and interpolates the publish predicate. Both come from the REAL
+        # modules — a stub canonical_slug here would let this whole file pass
+        # while /markets read a retired twin's frozen score.
+        "canonical_slug": canonical_slug,
+        "PUBLISHED_ONLY": PUBLISHED_ONLY,
     }
     # Real module constants — never hand copies.
+    # r-market-canon-split (2026-09-05): _CRON_FLAGSHIP_METRO_SLUGS is gone —
+    # see test_rotation_no_longer_re_admits_unpublished_alias_twins. The three
+    # canon constants are no longer literals; _consts() reads those from the
+    # module, which is why they must still be PRESENT here: a constant that
+    # quietly stops resolving would leave the extracted code NameError-ing in a
+    # branch no test reaches.
     for k in ("CURATED_MARKET_SLUGS", "MARKETS_CANONICAL_REDIRECT",
               "MARKETS_DEEP_DIVE_PAGE_CANON", "POCKET_LIST_CEILING",
               "US_CITY_MARKET_SQL", "US_CITY_MARKET_SQL_NODATE",
-              "_CRON_FLAGSHIP_METRO_SLUGS", "_FAC_UNION_SQL",
-              "_SLUG_TO_MARKET_NAME"):
-        assert k in c, f"module constant {k} is no longer literal_eval-able"
+              "_FAC_UNION_SQL", "_SLUG_TO_MARKET_NAME"):
+        assert k in c, f"module constant {k} did not resolve"
         ns[k] = c[k]
 
     need = set()
@@ -293,18 +316,27 @@ def test_the_four_unscored_metros_are_still_in_the_published_sitemap():
 
 
 def test_rotation_is_parameterised_with_every_sitemapped_slug():
+    # r-market-canon-split (2026-09-05): the redirect key is
+    # 'northern-virginia' now, not 'ashburn' — the pair points the other way
+    # and the probe has to move with it or it stops probing anything.
+    redirect_key = "northern-virginia"
+    assert redirect_key in _canon_consts.canonical_redirect(), (
+        "the probe slug is no longer a redirect key, so this test would pass "
+        "without exercising the filter it exists for")
     cur = _Cur(city_rows=[("boise", None), ("tulsa", None),
                           # a redirect key: the sitemap skips it, so the
                           # rotation must not be handed it either
-                          ("ashburn", None)],
+                          (redirect_key, None)],
                targets=["bogota"])
     ns = _ns(_conn=lambda: _Conn(cur),
              generate_for_market=lambda slug: {"ok": False, "slug": slug})
     ns["cron_rotate"]()
 
     q, params = _sql_of(cur, "market_deep_dives mdd")[0]
-    sitemapped = params[1]
-    assert isinstance(sitemapped, list)
+    # Found by SHAPE, not by index: the flagship-whitelist parameter that used
+    # to sit at params[0] is gone, and a positional read would have silently
+    # started asserting about a different bind.
+    sitemapped = next(p for p in params if isinstance(p, list))
 
     # THE INVARIANT: sitemap ⊆ rotation universe. Computed from the real
     # inventory function, so a slug added to either side is caught.
@@ -317,7 +349,7 @@ def test_rotation_is_parameterised_with_every_sitemapped_slug():
     assert "boise" in sitemapped and "tulsa" in sitemapped
     # listable_market_slug drops MARKETS_CANONICAL_REDIRECT keys — a sitemap
     # never lists a URL that 301s, so the rotation must not target one either.
-    assert "ashburn" not in sitemapped
+    assert redirect_key not in sitemapped
 
     # and the query must actually SELECT over that array, not merely carry it
     assert "UNNEST(%s::text[])" in q
@@ -346,13 +378,38 @@ def test_a_scored_market_keeps_its_tie_break_and_is_not_listed_twice():
     assert "excess_power_score DESC NULLS LAST" in q
 
 
-def test_rotation_still_reaches_the_unpublished_flagship_metros():
-    """r-portland-canon's whitelist must survive the widening."""
+def test_rotation_no_longer_re_admits_unpublished_alias_twins():
+    """The inverse of what this test used to assert.
+
+    r-portland-canon whitelisted ('northern-virginia', 'silicon-valley') back
+    into the rotation with `OR market_slug = ANY(%s)`, because their
+    /markets pages were sitemapped while their market_power_scores rows were
+    unpublished retired twins. r-market-canon-split (2026-09-05) removed that
+    contradiction at the source: those pages now 301 to the canonical slug,
+    which is published and therefore already in the `published = true` arm, so
+    the whitelist could only re-authorise writing a brief for a URL nothing
+    serves — and would keep a retired twin alive inside the one loop that
+    re-scores markets without asking whether they are published.
+
+    Sitemapped markets with NO mps row at all (bogota and the other three
+    r-latam-rotation metros) still reach the rotation; that is the UNION ALL
+    arm, asserted by test_rotation_is_parameterised_with_every_sitemapped_slug.
+    """
     cur = _Cur(targets=[])
     ns = _ns(_conn=lambda: _Conn(cur))
     ns["cron_rotate"]()
-    _q, params = _sql_of(cur, "market_deep_dives mdd")[0]
-    assert set(_consts()["_CRON_FLAGSHIP_METRO_SLUGS"]) <= set(params[0])
+    q, params = _sql_of(cur, "market_deep_dives mdd")[0]
+    assert "published = true" in q
+    assert "OR market_slug = ANY(" not in q, (
+        "the scored arm accepts slugs outside published=true again — that is "
+        "the door retired alias-twins re-entered the rotation through")
+    twins = set(DCPI_METRO_ALIASES)
+    for bound in params:
+        if isinstance(bound, (list, tuple)):
+            offenders = twins & set(bound)
+            assert not offenders, (
+                f"the rotation is parameterised with retired alias slugs "
+                f"{sorted(offenders)}; /markets/<those> 301 away")
 
 
 # ── 2. RESOLUTION: a published market is never "not found" ──────────────────

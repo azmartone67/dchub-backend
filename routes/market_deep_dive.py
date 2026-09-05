@@ -29,6 +29,8 @@ import re
 import datetime
 from flask import Blueprint, Response, jsonify, request, abort, redirect
 
+from util.market_aliases import DCPI_METRO_ALIASES, canonical_slug
+from util.dcpi_score_row import PUBLISHED_ONLY
 from util.market_entity import SITE as ENTITY_SITE, market_entity
 from util.slug_suffix import normalize_periods
 from utils.anthropic_helper import anthropic_messages_url
@@ -309,16 +311,44 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
         # generate_for_market('portland') silently resolved (and upserted)
         # portland-or every night. The name clause stays as a fallback so a
         # metro page whose mps row lives under another slug still resolves.
-        cur.execute("""
+        # r-market-canon-split (2026-09-05): resolve the alias BEFORE the
+        # query and read only PUBLISHED rows. Both halves are load-bearing and
+        # they fail differently.
+        #
+        # Without the alias resolution this asked for the literal URL slug, and
+        # the retired twins still HAVE a row — that is why r-twin-unpublish
+        # unpublished them rather than deleting them. `northern-virginia` is
+        # one, frozen at 2026-07-19, and the exact-slug clause in the old
+        # ORDER BY did not merely fail to exclude it, it PREFERRED it. Measured
+        # live 2026-09-05: /markets/northern-virginia published "DCPI score
+        # 11.7/100" while /dcpi/ashburn — the same market, the published row —
+        # published 27.4. Same shape as the r-poe-canon fix in
+        # ai_interconnection.py, same two lines of fix.
+        #
+        # Without PUBLISHED_ONLY the resolution alone is not enough: the
+        # name-match fallback below can still land on an unpublished twin
+        # (market_name 'Northern Virginia' belongs to the retired row), and
+        # `_load_markets_dynamic` can mint an unpublished row under any slug.
+        # PUBLISHED_ONLY is the same predicate character-for-character that
+        # /dcpi and /api/v1/dcpi/scores serve on, which is the whole point:
+        # agreement is not something a second, independently-worded predicate
+        # can promise.
+        #
+        # A twin whose canonical row is missing or unpublished resolves to
+        # nothing and falls through to _unscored_market_facts / a 404 — the
+        # honest answer, and never back to the frozen row.
+        _canon = canonical_slug(slug) or slug
+        cur.execute(f"""
             SELECT market_slug, market_name,
                    constraint_score, excess_power_score, verdict,
                    computed_at, time_to_power_months, state
               FROM market_power_scores
-             WHERE LOWER(market_slug) = LOWER(%s)
-                OR LOWER(market_name) = LOWER(REPLACE(%s, '-', ' '))
+             WHERE (LOWER(market_slug) = LOWER(%s)
+                    OR LOWER(market_name) = LOWER(REPLACE(%s, '-', ' ')))
+               AND {PUBLISHED_ONLY}
              ORDER BY (LOWER(market_slug) = LOWER(%s)) DESC,
                       computed_at DESC LIMIT 1
-        """, (slug, slug, slug))
+        """, (_canon, _canon, _canon))
         r = cur.fetchone()
     except Exception:
         # A failed QUERY is not an unscored market — fall through to the
@@ -805,50 +835,41 @@ def _redis_set_deep_dive(slug: str, r: dict) -> None:
         pass
 
 
-# r-portland-canon (2026-08-02): the ONE deep-dive row whose /markets page
-# slug differs from its market_power_scores slug. The Oregon market's mps row
-# is 'portland-or' (bare 'portland' belonged to Portland, ME — see
-# util/market_aliases.py), but its flagship indexable page is
-# /markets/portland (curated + sitemapped). Briefs are keyed by PAGE slug, so
-# generation for the mps slug must land on the page row, and reads for either
-# slug must find it. Do NOT add city→metro pairs here whose display names
-# differ (e.g. ashburn→northern-virginia): the brief's title/name comes from
-# the mps row, and mapping those would retitle the metro flagship with the
-# city name. 'portland-or' maps cleanly because its market_name IS 'Portland'.
-MARKETS_DEEP_DIVE_PAGE_CANON = {
-    'portland-or': 'portland',
-}
-
-# r-portland-canon (2026-08-02): sitemapped metro-canon /markets pages whose
-# market_power_scores rows are deliberately retired (published=false; DCPI
-# canon is the city slug — util/market_aliases.py). cron_rotate whitelists
-# these so the flagship briefs re-enter the monthly rotation; every other
-# retired twin's /markets page 301s to a city slug that rotates normally.
-# Measured 2026-08-02: these were the ONLY curated sitemap slugs with a brief
-# but no published mps row (bogota/mexico-city/santiago/sao-paulo have
-# neither and render curated shells).
-_CRON_FLAGSHIP_METRO_SLUGS = ('northern-virginia', 'silicon-valley')
-
-# r43-H (2026-05-28) + r-portland-canon (2026-08-02): /markets/<slug>
-# canonical-consolidation 301s, lifted to module level so the sitemap builder
-# (main.py city-markets shard) can skip these slugs — a sitemap must never
-# list a URL that redirects. Metro↔city twin pairs follow the canon recorded
-# in util/market_aliases.py: where the SITEMAPPED /markets page is the city
-# form (dallas, cheyenne, columbus, the-dalles, dc), the metro/legacy slug
-# 301s to it; northern-virginia and portland are metro-canon (curated +
-# sitemapped), so their city/legacy forms 301 the other way.
-MARKETS_CANONICAL_REDIRECT = {
-    'ashburn':            'northern-virginia',
-    'nova':               'northern-virginia',
-    'dfw':                'dallas',
-    'dallas-fort-worth':  'dallas',
-    'cheyenne-wy':        'cheyenne',
-    'columbus-oh':        'columbus',
-    'the-dalles-or':      'the-dalles',
-    'washington':         'dc',
-    'portland-or':        'portland',
-    'portland-hillsboro': 'portland',
-}
+# r-market-canon-split (2026-09-05): /markets/<slug> canonical-consolidation
+# 301s. DERIVED from util.market_aliases.DCPI_METRO_ALIASES, never re-typed —
+# that map is the ONE record of which slug names a market, and this dict used
+# to be a second, hand-maintained opinion of the same thing.
+#
+# ★ THE TWO OPINIONS HAD DRIFTED APART, IN OPPOSITE DIRECTIONS. Measured live
+# through the edge, cache-busted 2026-09-05, three of the ten twin pairs
+# disagreed with /dcpi about which slug is the market:
+#
+#     /dcpi/northern-virginia  301 -> /dcpi/ashburn      DCPI 27.4
+#     /markets/ashburn         301 -> /markets/northern-virginia   score 11.7
+#
+#     /dcpi/silicon-valley     301 -> /dcpi/santa-clara   DCPI 42.4
+#     /markets/silicon-valley  200  (self-canonical)      score 29.9
+#     /markets/santa-clara     200  (self-canonical)      score 42.9
+#
+#     /dcpi/portland           301 -> /dcpi/portland-or
+#     /markets/portland-or     301 -> /markets/portland
+#
+# Every one of those pages carried <link rel=canonical> to ITSELF and each
+# sitemap advertised its own side of the pair, so each surface told a crawler
+# the other did not exist. These are the pages AI assistants cite: an agent
+# asking about Ashburn got 27.4 or 11.7 depending on where it landed.
+#
+# The canon is Ashburn / Santa Clara / Portland-OR, per PR #3841 ("Northern
+# Virginia is tracked as Ashburn") and per DCPI_METRO_ALIASES itself, which
+# both /dcpi/<slug> and /api/v1/dcpi/scores/<slug> already resolve through.
+# Deriving rather than re-listing is what makes a fourth divergence
+# unrepresentable — same lesson as util/iso_taxonomy.py and
+# util/dcpi_score_row.py: a slug map is not the hard part, keeping ONE of it is.
+#
+# The sitemap builder (main.py city-markets shard, via listable_market_slug)
+# skips exactly these keys, because a sitemap must never list a URL that
+# redirects.
+MARKETS_CANONICAL_REDIRECT = dict(DCPI_METRO_ALIASES)
 
 
 # ── /markets hub inventory (seo F6, 2026-09-02) ─────────────────────────
@@ -860,7 +881,15 @@ MARKETS_CANONICAL_REDIRECT = {
 # /market-intelligence (measured live 2026-09-02 00:40Z), so the 580-URL
 # markets shard (250 /markets/, 330 /pockets/) had a "hub" that disclaimed
 # itself and 561 of those pages were internal-link dead ends (SH52-092).
-CURATED_MARKET_SLUGS = (
+#
+# ★ EVERY ENTRY IS RUN THROUGH canonical_slug (r-market-canon-split
+# 2026-09-05). Three of these were alias slugs — 'northern-virginia',
+# 'silicon-valley' and 'portland' — so the sitemap advertised, and this hub
+# linked, the exact URLs MARKETS_CANONICAL_REDIRECT now 301s away. Listing a
+# redirect in a sitemap is the defect r-portland-canon added
+# listable_market_slug to prevent; the curated arm simply never went through
+# that filter, because it is emitted unconditionally.
+_CURATED_MARKET_SLUGS_RAW = (
     'northern-virginia', 'dallas', 'phoenix', 'atlanta', 'chicago',
     'silicon-valley', 'new-york', 'los-angeles', 'portland', 'seattle',
     'salt-lake-city', 'toronto', 'columbus', 'houston', 'denver',
@@ -869,6 +898,46 @@ CURATED_MARKET_SLUGS = (
     'jakarta', 'kuala-lumpur', 'bangkok', 'sao-paulo', 'mexico-city',
     'santiago', 'bogota',
 )
+
+
+def _canon_unique(slugs):
+    """Canonicalise each slug and drop the duplicates that collapse out.
+
+    Order-preserving: the first spelling of a market keeps that market's
+    position, so the hub and the sitemap do not reshuffle when an alias is
+    added to DCPI_METRO_ALIASES.
+    """
+    out, seen = [], set()
+    for s in slugs:
+        c = canonical_slug(s) or s
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return tuple(out)
+
+
+CURATED_MARKET_SLUGS = _canon_unique(_CURATED_MARKET_SLUGS_RAW)
+
+
+# r-portland-canon (2026-08-02), rebuilt for r-market-canon-split (2026-09-05):
+# canonical market slug → the market_deep_dives ROW KEY its brief is stored
+# under. A storage key, never a URL, and the only reason it is not the identity
+# map is history: these three markets' briefs were written while the alias was
+# the page slug, so the rows are keyed 'northern-virginia', 'silicon-valley'
+# and 'portland'. Re-keying them would blank three flagship narratives until
+# the rotation caught up, and would pin all three at the head of
+# `generated_at NULLS FIRST` in the meantime.
+#
+# DERIVED from the curated list, so it cannot name a pair the redirect map does
+# not: the keys are exactly the curated entries that canonicalised to something
+# else. The old hand-written version held one pair ('portland-or': 'portland')
+# and its comment forbade adding the other two, because at the time the metro
+# slug was the page and the city slug was the alias — that direction is now
+# reversed for all three at once.
+MARKETS_DEEP_DIVE_PAGE_CANON = {
+    canonical_slug(_s): _s
+    for _s in _CURATED_MARKET_SLUGS_RAW if canonical_slug(_s)
+}
 
 # ★★ 2026-07-28 — THE SITEMAP WAS SUBMITTING 404s. The old criterion (>=3
 # facilities for a city+state) was NOT the criterion /markets/<slug> serves
@@ -1343,11 +1412,22 @@ def cron_rotate():
             _sitemapped = sitemapped_market_slugs(c)
             cur.execute(f"""
                 WITH scored AS (
+                    -- r-market-canon-split (2026-09-05): the `OR market_slug =
+                    -- ANY(flagship metro whitelist)` arm is gone. It existed
+                    -- to re-admit ('northern-virginia', 'silicon-valley') --
+                    -- rows that are unpublished precisely BECAUSE they are
+                    -- retired twins -- so their sitemapped /markets pages kept
+                    -- getting briefs written. Those pages are now 301s to the
+                    -- canonical slug, which is published and therefore already
+                    -- in this arm, so the whitelist would only re-authorise
+                    -- writing a brief for a URL nothing serves. Sitemapped
+                    -- markets with NO mps row at all (bogota, mexico-city,
+                    -- santiago, sao-paulo) still enter via the UNION ALL below,
+                    -- which is the arm r-latam-rotation added for them.
                     SELECT DISTINCT ON (market_slug)
                            market_slug, excess_power_score, computed_at
                       FROM market_power_scores
                      WHERE published = true
-                        OR market_slug = ANY(%s)
                      ORDER BY market_slug, computed_at DESC
                 ), mps AS (
                     SELECT market_slug,
@@ -1364,8 +1444,7 @@ def cron_rotate():
                     ON mdd.market_slug = {_canon_case}
                  ORDER BY mdd.generated_at NULLS FIRST, mps.excess_power_score DESC NULLS LAST
                  LIMIT %s
-            """, (list(_CRON_FLAGSHIP_METRO_SLUGS), _sitemapped)
-                 + _canon_params + (n,))
+            """, (_sitemapped,) + _canon_params + (n,))
             targets = [r[0] for r in cur.fetchall()]
     finally:
         try: c.close()
@@ -1766,8 +1845,18 @@ a{{color:var(--ind)}}
 # to return 200. Either renders the cached deep-dive narrative if present,
 # or a minimal SEO shell built from MARKET_DATA so the route is always 200.
 _SLUG_TO_MARKET_NAME = {
+    # r-market-canon-split (2026-09-05): the CANONICAL slug of each twin pair
+    # needs its own display name. 'ashburn', 'santa-clara' and 'portland-or'
+    # were absent, so once /markets stopped 301ing to the metro form they
+    # would have fallen through to the title-cased slug — and, worse, to
+    # `_known_curated = False`, which sends a curated market into the
+    # soft-404 guard. The alias keys stay: they still name the market for
+    # anything that resolves a name before the redirect runs.
+    "ashburn":                "Northern Virginia",
     "northern-virginia":      "Northern Virginia",
     "nova":                   "Northern Virginia",
+    "santa-clara":            "Silicon Valley",
+    "portland-or":            "Portland-Hillsboro",
     "dallas":                 "Dallas-Fort Worth",
     "dallas-fort-worth":      "Dallas-Fort Worth",
     "dfw":                    "Dallas-Fort Worth",

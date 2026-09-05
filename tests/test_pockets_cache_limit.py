@@ -33,6 +33,8 @@ main.py; house rule: tests NEVER import main).
 import ast
 import builtins
 import functools
+
+from util.dcpi_score_row import PUBLISHED_ONLY
 import pathlib
 import time
 
@@ -44,7 +46,13 @@ WANT = {"_fetch_pockets"}
 _BUILTINS = set(dir(builtins))
 
 # Module-level names _fetch_pockets reads but does not define itself.
-_PROVIDED = ("time", "_CACHE", "_CACHE_TTL", "_get_db", "_return_db", "logger")
+# r-market-canon-split (2026-09-05): _fetch_pockets now interpolates
+# util.dcpi_score_row.PUBLISHED_ONLY, so the extracted body reads that name.
+# Provided from the REAL module, never a hand-copied string — a drift twin
+# here would let the predicate change under a test that still asserts the
+# old one.
+_PROVIDED = ("time", "_CACHE", "_CACHE_TTL", "_get_db", "_return_db",
+             "logger", "PUBLISHED_ONLY")
 
 
 def _free_names(fn):
@@ -188,6 +196,7 @@ def _ns(n_rows=40):
         "_get_db": _get_db,
         "_return_db": lambda c: None,
         "logger": _Logger(),
+        "PUBLISHED_ONLY": PUBLISHED_ONLY,
     }
     code = compile(ast.Module(body=body, type_ignores=[]), str(POCKETS), "exec")
     exec(code, ns)

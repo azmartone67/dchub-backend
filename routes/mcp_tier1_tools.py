@@ -309,14 +309,22 @@ def rank_markets():
 def _market_page_slug(metro_slug: str) -> str:
     """The slug whose /markets/<slug> page serves 200 with no redirect.
 
-    routes/market_deep_dive.MARKETS_CANONICAL_REDIRECT is the WEB's canon and
-    is what decides where a page URL lands, so it is the right authority for a
-    URL. Note it points the OPPOSITE way from util/market_aliases —
-    DCPI_METRO_ALIASES maps 'northern-virginia' -> 'ashburn' while the web 301s
-    'ashburn' -> 'northern-virginia'. Both are internally consistent; they
-    answer different questions (which SCORE row, vs which PAGE). Do not
-    "reconcile" them by pointing this at the DCPI map — that reintroduces the
-    redirect this function exists to remove.
+    routes/market_deep_dive.MARKETS_CANONICAL_REDIRECT decides where a page URL
+    lands, so it is the right authority for a URL.
+
+    ★ THIS DOCSTRING USED TO ARGUE THE OPPOSITE, AND IT WAS THE DEFECT
+    (r-market-canon-split, 2026-09-05). It said the web map points the other
+    way from util/market_aliases, that "both are internally consistent; they
+    answer different questions (which SCORE row, vs which PAGE)", and warned
+    against reconciling them. A page and the score printed on it are not
+    different questions. Measured live 2026-09-05, that separation is what let
+    this tool cite https://dchub.cloud/markets/northern-virginia — a page
+    reading DCPI 11.7 off a retired twin's frozen row — for a market whose
+    published score at /dcpi/ashburn was 27.4.
+
+    MARKETS_CANONICAL_REDIRECT is now derived from DCPI_METRO_ALIASES, so this
+    function needs no change to be right: there is one canon and this reads it
+    through the map that owns page URLs.
 
     Fail-soft: an unresolvable slug is returned unchanged, so the worst case is
     today's behaviour rather than a broken link.

@@ -29,6 +29,8 @@ builds MARKETS at import time, which needs a DB — house rule).
 """
 
 import ast
+
+from tests import _market_canon_consts as _canon_consts
 import pathlib
 import re
 
@@ -139,11 +141,15 @@ def test_recompute_self_heals_the_bare_maine_row():
 
 # ── routes/market_deep_dive.py: deterministic resolve, page-slug persist ─
 def test_facts_resolver_prefers_exact_slug_over_name_match():
+    # r-market-canon-split (2026-09-05): the statement is an f-string now (it
+    # interpolates PUBLISHED_ONLY), so it is a JoinedStr and _str_constants no
+    # longer sees it. Reading the SOURCE SEGMENT keeps the assertion pointed at
+    # the real query — the alternative, dropping to _str_constants and finding
+    # nothing, is a guard that passes because it stopped looking.
     fn = _func(_tree("routes/market_deep_dive.py"), "_gather_market_facts")
-    sqls = [_norm(s) for s in _str_constants(fn) if "market_power_scores" in s]
-    assert any(
-        "ORDER BY (LOWER(market_slug) = LOWER(%s)) DESC" in s for s in sqls
-    ), (
+    seg = _norm(ast.get_source_segment(_src("routes/market_deep_dive.py"), fn))
+    assert "market_power_scores" in seg, "extraction found no query to check"
+    assert "ORDER BY (LOWER(market_slug) = LOWER(%s)) DESC" in seg, (
         "_gather_market_facts orders on computed_at alone again — with a "
         "name-twin (two markets both named 'Portland') the resolution "
         "depends on recompute order, not on the slug that was asked for"
@@ -177,28 +183,37 @@ def test_generate_persists_under_the_requested_page_slug():
 
 
 def test_page_canon_and_redirects_are_consistent():
-    tree = _tree("routes/market_deep_dive.py")
-    page_canon = _assigned_literal(tree, "MARKETS_DEEP_DIVE_PAGE_CANON")
-    redirects = _assigned_literal(tree, "MARKETS_CANONICAL_REDIRECT")
+    """r-market-canon-split (2026-09-05) reversed the direction this pinned.
+
+    MARKETS_DEEP_DIVE_PAGE_CANON is now page-slug -> market_deep_dives ROW KEY:
+    the page is the canonical slug and the row key is the historical alias the
+    brief was first written under. So its keys must NOT redirect (they are the
+    served URLs), and the flagship exemption is gone — there is no longer a
+    sitemapped /markets page whose mps row is a retired twin.
+    """
+    page_canon = _canon_consts.page_canon()
+    redirects = _canon_consts.canonical_redirect()
 
     assert page_canon.get("portland-or") == "portland"
-    # a slug whose generation is re-keyed must also 301 on /markets, or two
-    # URLs serve the same brief (duplicate content, the r43-H class)
-    for src_slug, dst in page_canon.items():
-        assert redirects.get(src_slug) == dst
+    for page_slug, row_key in page_canon.items():
+        assert page_slug not in redirects, (
+            f"/markets/{page_slug} serves a brief AND 301s away")
+        assert canonical_slug(page_slug) == "", (
+            f"the brief page {page_slug} is an alias of "
+            f"{canonical_slug(page_slug)}")
+        # the row key is the alias it replaced, which must itself redirect
+        # onto this page — otherwise two URLs serve the same brief
+        assert redirects.get(row_key) == page_slug, (
+            f"/markets/{row_key} does not 301 to /markets/{page_slug}")
 
-    # every retired twin's /markets URL must consolidate onto the recorded
-    # canon (util/market_aliases) — EXCEPT the metro-canon flagships, whose
-    # /markets page IS the sitemapped canonical and must keep serving 200
-    flagship = {"northern-virginia", "silicon-valley"}
-    for twin in REDUNDANT_TWIN_SLUGS - flagship - {"portland"}:
+    # EVERY retired twin's /markets URL consolidates onto the recorded canon,
+    # with no exemptions — that list of exemptions was the split.
+    for twin in REDUNDANT_TWIN_SLUGS:
         assert redirects.get(twin) == canonical_slug(twin), (
             f"/markets/{twin} does not 301 to its canonical page"
         )
-    for slug in flagship:
-        assert slug not in redirects, f"flagship {slug} must not redirect"
-    # bare 'portland' is the Oregon flagship PAGE, not a redirect source
-    assert "portland" not in redirects
+    # bare 'portland' is an ALIAS of the Oregon row now, on every surface
+    assert redirects.get("portland") == "portland-or"
     # no redirect chains: a target is never itself a source
     chained = sorted(set(redirects.values()) & set(redirects))
     assert not chained, f"redirect chain via: {chained}"
@@ -218,16 +233,23 @@ def test_read_deep_dive_canonicalizes_the_slug():
 
 
 # ── cron rotation: flagships reachable, staleness measured on page row ──
-def test_cron_reaches_the_retired_flagship_metros():
+def test_cron_no_longer_needs_a_retired_flagship_whitelist():
+    """The premise of the test this replaces is gone.
+
+    r-portland-canon whitelisted ('northern-virginia', 'silicon-valley') past
+    `published = true` because their /markets pages were sitemapped while
+    their mps rows were retired twins. r-market-canon-split (2026-09-05)
+    removed the contradiction instead of the symptom: those pages 301 to the
+    canonical slug, whose row IS published. A whitelist would now be the only
+    remaining way for a retired twin to re-enter a scoring loop.
+    """
     tree = _tree("routes/market_deep_dive.py")
-    assert set(_assigned_literal(tree, "_CRON_FLAGSHIP_METRO_SLUGS")) == \
-        {"northern-virginia", "silicon-valley"}
     fn = _func(tree, "cron_rotate")
-    sqls = [_norm(s) for s in _str_constants(fn) if "market_power_scores" in s]
-    assert any("published = true" in s and "OR market_slug = ANY(%s)" in s
-               for s in sqls), (
-        "cron_rotate selects published=true only — the sitemapped flagship "
-        "metro briefs (published=false by design) can never rotate again"
+    seg = _norm(ast.get_source_segment(_src("routes/market_deep_dive.py"), fn))
+    assert "published = true" in seg, "extraction found no publish predicate"
+    assert "OR market_slug = ANY(%s)" not in seg, (
+        "cron_rotate accepts slugs outside published=true again — that is how "
+        "retired alias-twins re-entered the rotation"
     )
 
 
@@ -246,11 +268,22 @@ def test_cron_staleness_join_uses_the_page_canon():
 
 
 # ── market_brief + sitemap surfaces ─────────────────────────────────────
-def test_market_brief_alias_steers_portland_at_oregon():
-    alias = _assigned_literal(_tree("routes/market_brief.py"), "MARKET_ALIAS")
-    assert alias.get("portland") == "portland-or", (
+def test_market_brief_steers_portland_at_oregon():
+    """Same property, one layer earlier.
+
+    It used to be MARKET_ALIAS['portland'] steering the hero DB lookup. As of
+    r-market-canon-split (2026-09-05) the URL slug is canonicalised before the
+    lookup, by the SAME table /dcpi uses, so 'portland' never reaches the
+    query — which is what stops the Maine name-twin resolving.
+    """
+    from routes.market_brief import _canonical, MARKET_ALIAS
+    assert _canonical("portland") == "portland-or", (
         "/markets/portland/brief hero lookup falls back to name-matching "
         "'Portland' — with the Maine twin that is nondeterministic"
+    )
+    assert "portland" not in MARKET_ALIAS, (
+        "MARKET_ALIAS is a second copy of the twin table again; two call "
+        "sites INVERT it to relabel a city slug back into a metro slug"
     )
 
 

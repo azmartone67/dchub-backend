@@ -20,11 +20,11 @@ from routes.mcp_tier1_tools import _market_page_slug, _rank_markets_provenance
 
 class TestPageSlugResolves:
     def test_resolves_the_two_hop_case_in_one_step(self):
-        assert _market_page_slug("ashburn") == "northern-virginia"
-        assert _market_page_slug("nova") == "northern-virginia"
+        assert _market_page_slug("northern-virginia") == "ashburn"
+        assert _market_page_slug("nova") == "ashburn"
 
     def test_leaves_an_already_canonical_slug_alone(self):
-        for s in ("dallas", "chicago", "phoenix", "northern-virginia"):
+        for s in ("dallas", "chicago", "phoenix", "ashburn"):
             assert _market_page_slug(s) == s
 
     def test_an_unknown_slug_passes_through_unchanged(self):
@@ -32,18 +32,27 @@ class TestPageSlugResolves:
         assert _market_page_slug("made-up-market") == "made-up-market"
         assert _market_page_slug("") == ""
 
-    def test_it_uses_the_WEB_canon_not_the_DCPI_canon(self):
-        """The two maps point OPPOSITE ways and both are right.
+    def test_the_web_canon_and_the_dcpi_canon_are_the_same_canon(self):
+        """This test asserted the OPPOSITE until 2026-09-05, and that is how
+        the split survived review.
 
-        util/market_aliases.DCPI_METRO_ALIASES: 'northern-virginia' -> 'ashburn'
-        market_deep_dive.MARKETS_CANONICAL_REDIRECT: 'ashburn' -> 'northern-virginia'
+        It used to read "the two maps point OPPOSITE ways and both are right",
+        pinning MARKETS_CANONICAL_REDIRECT['ashburn'] == 'northern-virginia'
+        against DCPI_METRO_ALIASES['northern-virginia'] == 'ashburn' and
+        calling the disagreement a feature ("which SCORE row, vs which PAGE").
 
-        A page URL must follow the web's canon or it 301s. Pointing this at the
-        DCPI map would reintroduce the redirect it exists to remove.
+        A cited page and the score printed on that page are not two questions.
+        Measured live 2026-09-05, rank_markets cited /markets/northern-virginia
+        showing DCPI 11.7 while /dcpi/ashburn — the same market — showed 27.4.
+        The page URL now follows the one canon, per PR #3841.
         """
-        from util.market_aliases import DCPI_METRO_ALIASES
-        assert DCPI_METRO_ALIASES.get("northern-virginia") == "ashburn"   # opposite
-        assert _market_page_slug("ashburn") == "northern-virginia"        # web wins
+        from util.market_aliases import DCPI_METRO_ALIASES, canonical_slug
+        assert DCPI_METRO_ALIASES.get("northern-virginia") == "ashburn"
+        assert _market_page_slug("northern-virginia") == "ashburn"
+        # and generally, for every alias the table knows
+        for alias, canon in DCPI_METRO_ALIASES.items():
+            assert _market_page_slug(alias) == canon, alias
+            assert canonical_slug(canon) == "", canon
 
     def test_the_published_url_is_built_from_the_RESOLVED_slug(self):
         import io, pathlib, re

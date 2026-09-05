@@ -85,10 +85,13 @@ def test_listable_market_slug_applies_the_sitemap_filters():
     assert md.listable_market_slug("miami", seen) == "miami"
     assert md.listable_market_slug("miami", seen) is None, "dedupe"
     assert md.listable_market_slug("dallas", seen) is None, "curated already"
-    assert md.listable_market_slug("ashburn", seen) is None, "301s to northern-virginia"
+    # r-market-canon-split (2026-09-05): the pair points the other way now —
+    # 'ashburn' is the page and 'northern-virginia' 301s to it.
+    assert md.listable_market_slug("northern-virginia", seen) is None, \
+        "301s to ashburn"
     for junk in ("st.-louis", "-", "x-", "-x", "ab", "", None, "---"):
         assert md.listable_market_slug(junk, seen) is None, junk
-    assert "ashburn" not in seen and "st.-louis" not in seen
+    assert "northern-virginia" not in seen and "st.-louis" not in seen
 
 
 def test_inventory_lists_exactly_what_the_shard_would(monkeypatch):
@@ -155,7 +158,7 @@ def test_hub_links_every_market_and_pocket_page(monkeypatch):
     assert 'href="https://dchub.cloud/pockets/miami"' in html
     assert 'href="https://dchub.cloud/pockets/cheyenne"' in html
     # what the sitemap skips, the hub skips
-    assert "/markets/ashburn" not in html
+    assert "/markets/northern-virginia" not in html
     assert "st.-louis" not in html
     assert "<h1>Data Center Markets</h1>" in html
     assert 'href="https://dchub.cloud/market-intelligence"' in html
