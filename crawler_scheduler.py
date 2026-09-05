@@ -317,6 +317,26 @@ SCHEDULE = [
     # No-ops unless AI_SURFACE_SENTINEL_ENABLED=1; the downstream draft-PR
     # writer additionally stays DRY_RUN unless DCHUB_DRIFT_PR=1.
     (12, 12, "ai_surface_sentinel", "_run_ai_surface_sentinel"),
+    # ANSWER prober (2026-09-05): the sentinel above audits CLAIM surfaces
+    # (llms.txt, the manifests, /connect) for stale text. This audits ANSWER
+    # surfaces — /dcpi, the og card, agent/index, alive, the monthly report,
+    # the open-data CSVs and /poe/query — by asking each one and comparing to
+    # what canon returns at that moment. Six surfaces served wrong data for
+    # weeks on 2026-09-04 while the sentinel was green, because none of them
+    # is prose.
+    #
+    # ★ TWO ENTRIES, DISTINCT hour1, NOT (10, 22). CRAWLER_SCHEDULE=once is
+    # the deployed value and _should_run_now drops hour2 entirely — the trap
+    # tests/test_schedule_once_mode.py exists for, and the one that made the
+    # founding-welcome 21:00 leg never fire. Both names map to the same runner
+    # in the dispatch table below, the shape founding_customer_welcome_pm uses.
+    #
+    # 10:00/22:00 UTC: after the daily DCPI recompute (~06:30) so canon is
+    # settled, and off the sentinel's 12:00 slot. Read-only — the run makes
+    # ~14 outside-in HTTP reads and writes nothing.
+    # No-ops unless ANSWER_PROBER_ENABLED is non-falsy (default ON).
+    (10, 10, "answer_probe",    "_run_answer_probe"),
+    (22, 22, "answer_probe_pm", "_run_answer_probe"),
     # Daily R2 refresh — POST /refresh on the heroic-reprieve daily
     # FastAPI so today's PNGs land in R2 (2026-06-05). R2 has been
     # empty for 7+ days because extractor_cron.py's daily_refresh_if_needed()
@@ -4157,6 +4177,56 @@ def _run_ai_surface_sentinel():
         logger.error("🛰️ ai_surface_sentinel: error — %s", e)
 
 
+def _run_answer_probe():
+    """Answer-surface drift probe (2026-09-05): in-process run of
+    routes.answer_prober.run_answer_probe().
+
+    In-process like _run_ai_surface_sentinel, and for the same reason — no HTTP
+    self-call to an admin-gated endpoint, no key to leak into a scheduler. The
+    PROBES themselves still go out over the public origin; that is the whole
+    design (every bug this catches would have passed an in-process assertion,
+    because the SQL was wrong and anything sharing that code path agreed with
+    it). Invocation is internal; measurement is external.
+
+    Gate: prober_enabled() — ON unless ANSWER_PROBER_ENABLED is falsy. Shared
+    with the admin endpoint so the two cannot disagree, and defaulted ON
+    because an opt-IN default is exactly why the sentinel's own slot was
+    scheduled for weeks and never ran.
+
+    Logged at WARNING on drift so it surfaces, INFO otherwise. `warming` is not
+    drift — a replica that has not filled its DB-backed blocks yet says so, and
+    scoring that red would redden the scorecard after every deploy until nobody
+    read it. Never raises.
+    """
+    try:
+        from routes.answer_prober import prober_enabled
+    except Exception as _imp:
+        logger.error("🎯 answer_probe: cannot import gate — %s", _imp)
+        return
+    if not prober_enabled():
+        logger.info("🎯 answer_probe: disabled (ANSWER_PROBER_ENABLED off)")
+        return
+    try:
+        from routes.answer_prober import run_answer_probe
+        out = run_answer_probe()
+        summary = out.get("summary") or {}
+        verdict = out.get("verdict")
+        line = ("🎯 answer_probe: verdict=%s canon=%s summary=%s",
+                verdict, out.get("canon"), summary)
+        if verdict == "drift":
+            logger.warning(*line)
+            for c in out.get("comparisons", []):
+                if c.get("verdict") in ("disagrees", "extractor-blind"):
+                    logger.warning(
+                        "🎯 answer_probe: %s %s.%s observed=%r expected=%r",
+                        c["verdict"], c.get("surface"), c.get("field"),
+                        c.get("observed"), c.get("expected"))
+        else:
+            logger.info(*line)
+    except Exception as e:
+        logger.error("🎯 answer_probe: error — %s", e)
+
+
 def _run_white_glove_propagate():
     """White-glove canonical-facts propagation (r-white-glove BUILD 1,
     2026-07-18): read the pinned canon, probe every SEED_REGISTRIES
@@ -4505,6 +4575,8 @@ _RUNNERS = {
     #     Flip the flag off to arm the autonomous approve→publish→email lane.
     "founding_customer_welcome": _run_founding_customer_welcome,
     "founding_customer_welcome_pm": _run_founding_customer_welcome,
+    "answer_probe":        _run_answer_probe,
+    "answer_probe_pm":     _run_answer_probe,
     "ai_platform_onboarder":     _run_ai_platform_onboarder,
     "ai_platform_onboarder_b":   _run_ai_platform_onboarder,
     "market_brief_warm":   _run_market_brief_warm,
