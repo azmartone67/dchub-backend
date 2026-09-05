@@ -106,8 +106,23 @@ def _admin_ok():
     return is_valid_internal_key(sent)
 
 
-@ops_artifacts_bp.route("/api/v1/ops/artifact/<name>", methods=["GET"])
-def get_artifact(name):
+@ops_artifacts_bp.route("/api/v1/ops/artifact/<name>",
+                        methods=["GET", "POST", "PUT"])
+def artifact(name):
+    """One path, both directions.
+
+    ★ Deliberately ONE decorator rather than a GET one and a POST one.
+    regression_lint.py's `duplicate-route` check reads the same path declared
+    twice as a duplicate regardless of method, and it is right to: two
+    decorators on one path are two places a reader has to find before they know
+    what the URL does.
+    """
+    if request.method in ("POST", "PUT"):
+        return _put_artifact(name)
+    return _get_artifact(name)
+
+
+def _get_artifact(name):
     if name not in ARTIFACTS:
         return jsonify({
             "error": "unknown_artifact",
@@ -151,8 +166,7 @@ def get_artifact(name):
     return resp
 
 
-@ops_artifacts_bp.route("/api/v1/ops/artifact/<name>", methods=["POST", "PUT"])
-def put_artifact(name):
+def _put_artifact(name):
     if not _admin_ok():
         return jsonify({"error": "unauthorized"}), 401
     if name not in ARTIFACTS:
