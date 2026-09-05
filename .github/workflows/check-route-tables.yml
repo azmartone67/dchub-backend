@@ -27,6 +27,43 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+
+      # ★ 2026-09-05 — READ THE ROUTING TABLES THAT ARE ACTUALLY DEPLOYED.
+      # _routes.json and _worker.js belong to the dchub-frontend repo. This job
+      # used to read them out of a vendored mirror committed into THIS repo,
+      # which was last touched 2026-09-02 and is now deleted. So the coherence
+      # check — whose entire job is catching the /pockets 404 class — was
+      # diffing live Flask routes against a SNAPSHOT of the routing tables. A
+      # route added to the real _routes.json read as missing; one removed from
+      # it read as present. Wrong in both directions, quietly.
+      - name: Check out the canonical frontend (routing tables live there)
+        continue-on-error: true
+        uses: actions/checkout@v5
+        with:
+          repository: azmartone67/dchub-frontend
+          path: dchub-frontend
+          token: ${{ secrets.DCHUB_FRONTEND_RO_TOKEN || github.token }}
+
+      # ★ AND SAY SO WHEN THEY ARE NOT THERE. The checkout above is
+      # continue-on-error, and DCHUB_FRONTEND_RO_TOKEN has been failing since
+      # 2026-08-19 (deploy-integrity.yml records the same "Not Found"). Without
+      # this gate, a missing checkout means _routes.json is absent, the include
+      # set is empty, and step 3 reports every Flask route as uncovered — or,
+      # worse under different tuning, reports nothing and looks clean. Neither
+      # is a measurement. Steps 2 and 3 are skipped instead, and the ledger
+      # step below records `unmeasured` because neither of its verdict lines
+      # ever prints. Not-run is a state this board can already represent.
+      - name: 0 — are the canonical routing tables present?
+        id: tables
+        run: |
+          if [ -f dchub-frontend/_routes.json ] && [ -f dchub-frontend/_worker.js ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "✅ canonical routing tables checked out"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Route-table coherence NOT checked::dchub-frontend was not checked out (private repo — rotate DCHUB_FRONTEND_RO_TOKEN). Flask routes were NOT diffed against _routes.json / _worker.js this run. This is 'could not check', NOT 'coherent'."
+          fi
+
       - name: 1 — extract Flask HTML routes
         # tee'd: this step — not step 3 — prints "discovered N Flask HTML
         # routes", which is the POPULATION the ledger beat reports. The first
@@ -109,6 +146,7 @@ jobs:
           jq length /tmp/flask_html_routes.json || true
 
       - name: 2 — extract _routes.json include + _worker.js PHASE_282 tables
+        if: steps.tables.outputs.available == 'true'
         run: |
           python3 <<'PY'
           import json, re, sys
@@ -137,6 +175,7 @@ jobs:
           PY
 
       - name: 3 — diff Flask routes vs the two tables, fail on mismatch
+        if: steps.tables.outputs.available == 'true'
         # Piped through tee (not exec+process-substitution) so the log is fully
         # flushed when the step ends: the ledger beat reads it in the NEXT step,
         # and this job's continue-on-error means its output is the only place

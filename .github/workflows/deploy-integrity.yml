@@ -24,42 +24,25 @@ jobs:
         uses: actions/checkout@v5
         with:
           path: dchub-backend
-      - name: Check out frontend (sibling, private)
-        continue-on-error: true
-        uses: actions/checkout@v5
-        with:
-          repository: azmartone67/dchub-frontend
-          path: dchub-frontend
-          token: ${{ secrets.DCHUB_FRONTEND_RO_TOKEN || github.token }}
-
-      - name: Dual-repo divergence on shared frontend files
-        run: |
-          # ★ The checkout above is continue-on-error, and as of 2026-08-19 it
-          # FAILS ("Not Found" — DCHUB_FRONTEND_RO_TOKEN no longer grants access
-          # to the private dchub-frontend). Without this guard every `[ -f "$A" ]`
-          # was false, the loop body never ran, and the step printed
-          # "✅ shared frontend files in sync" — a divergence check that compared
-          # NOTHING and reported healthy. Say "could not check" instead of "in
-          # sync"; a check that cannot fail is worse than no check.
-          if [ ! -d "dchub-frontend" ] || [ -z "$(ls -A dchub-frontend 2>/dev/null)" ]; then
-            echo "::warning title=Divergence check SKIPPED::dchub-frontend was not checked out (private repo, token lacks access) — shared-file divergence was NOT verified this run. Rotate DCHUB_FRONTEND_RO_TOKEN."
-            echo "⚠️ divergence NOT checked — frontend checkout missing"
-            exit 0
-          fi
-          FILES="land-power-map.html dc-hub-media/index.html"
-          DIVERGED=0
-          for f in $FILES; do
-            A="dchub-frontend/$f"; B="dchub-backend/dchub-frontend/$f"
-            if [ -f "$A" ] && [ -f "$B" ]; then
-              if ! diff -q "$A" "$B" >/dev/null 2>&1; then
-                echo "::warning title=Dual-repo divergence::$f differs between standalone frontend and backend mirror — the CF Pages race can serve the stale copy. Re-sync."
-                DIVERGED=1
-              fi
-            elif [ -f "$A" ] && [ ! -f "$B" ]; then
-              echo "::warning::$f exists only in standalone frontend (backend mirror missing)"
-            fi
-          done
-          [ "$DIVERGED" = "0" ] && echo "✅ shared frontend files in sync" || echo "⚠️ divergence found (warnings above)"
+      # ── Dual-repo divergence check RETIRED 2026-09-05 ──────────────────
+      # It diffed dchub-frontend/<f> (fresh sibling checkout) against
+      # dchub-backend/dchub-frontend/<f> (a vendored 2,426-file mirror). That
+      # mirror is now deleted — the canonical frontend is the standalone repo
+      # and nothing serves from a copy in here — so there is no second copy
+      # left to diverge FROM. With the mirror gone the loop's own
+      # "exists only in standalone frontend (backend mirror missing)" branch
+      # would warn on every file, every run, forever: a check reporting on a
+      # subject that no longer exists.
+      #
+      # The frontend checkout went with it: this job used it for nothing else.
+      # It had also been FAILING since 2026-08-19 (DCHUB_FRONTEND_RO_TOKEN lost
+      # access), and the guard added then — say "could not check", never "in
+      # sync" — is what kept that honest. Retiring the check retires its
+      # dependency rather than leaving a token nobody rotates.
+      #
+      # Divergence between the two repos is now structurally impossible for
+      # the files it watched, and tests/test_no_vendored_frontend_mirror.py
+      # fails if a mirror is ever committed back.
 
       - name: Live route smoke (200 + non-blank)
         run: |

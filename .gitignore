@@ -85,7 +85,12 @@ qa-csp-results.json
 qa-asset-results.json
 qa-stale-results.json
 qa-state/
-dchub-frontend/index.legacy-2026-05-11.html.bak
+# The vendored frontend mirror, retired 2026-09-05. The canonical frontend is
+# the standalone dchub-frontend repo; CI checks it out as a SIBLING
+# (path: dchub-frontend, alongside dchub-backend/), never in here. Ignored so
+# a local sibling clone or a stray checkout cannot re-commit the mirror.
+# Guarded by tests/test_no_vendored_frontend_mirror.py.
+/dchub-frontend/
 .claude/
 
 # Microsoft Office lock files (created when a .docx/.xlsx/.pptx is open)
