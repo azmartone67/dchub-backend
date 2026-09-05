@@ -35,10 +35,17 @@ MAIN = os.path.join(REPO, "main.py")
 # edge that day: 200, zero redirects, self-canonical or no canonical tag, no
 # noindex. Pinned by name so an edit to static_pages cannot drop them back out.
 RESTORED = (
+    # round 1 — reachable from the nav snapshot vendored in this repo
     "/glossary", "/faq", "/team", "/changelog", "/hyperscaler-deals",
     "/advertise", "/ai-wars", "/announcements", "/api-docs",
     "/capacity-pipeline", "/compare", "/construction-pipeline", "/developers",
     "/intelligence", "/land-power-map", "/map", "/press", "/rankings",
+    # round 2 — from the CURRENT nav (66 links, not the snapshot's 36), once
+    # dchub-frontend's build-search-index.py started reporting the gap
+    "/brief", "/connect-mcp", "/daily", "/dc-hub-media/", "/dcgi",
+    "/hyperscalers", "/listings", "/mcp-standing", "/partners/feedback",
+    "/premium", "/product", "/radar", "/receipts", "/reports/quarterly",
+    "/state-of-2026", "/system-status", "/what-ais-say",
 )
 
 # Deliberately NOT listed, and why. Each was linked from the site chrome and
@@ -50,7 +57,16 @@ WITHHELD = {
     "/assets": "301 -> /database, which is listed",
     "/research/grid-intelligence": "301 -> /grid-intelligence, which is listed",
     "/integrations": "self-canonicals to /integrations/mcp, which is listed",
+    # ★ Live 200s the nav links to, and inside `Disallow: /sites/` in
+    # robots.txt. A sitemap entry for a robots-blocked URL is a contradiction
+    # Search Console reports against the whole sitemap. Guarded below, so a
+    # robots.txt change is what unblocks them — not someone re-adding the line.
+    "/sites/": "robots.txt Disallow: /sites/",
+    "/sites/value": "robots.txt Disallow: /sites/",
 }
+
+# Paths robots.txt refuses. Kept beside WITHHELD so the two cannot disagree.
+ROBOTS_BLOCKED_PREFIXES = ("/sites/",)
 
 
 def _static_pages():
@@ -112,3 +128,50 @@ def test_every_listed_path_is_a_rooted_relative_path():
            if not p.startswith("/") or p.startswith("//") or "://" in p
            or " " in p or p.endswith(("?", "#"))]
     assert not bad, f"malformed sitemap path(s): {bad}"
+
+
+def test_no_robots_blocked_path_is_in_the_sitemap():
+    """★ THE CONTRADICTION GUARD. Listing a URL the site's own robots.txt
+    refuses is not a discovery hint — Search Console reports it as "Submitted
+    URL blocked by robots.txt" and counts it against the sitemap as a whole.
+    Two of the nav-linked pages found on 2026-09-05 were exactly this, and the
+    eligibility check is the only reason they were not swept in with the other
+    seventeen."""
+    listed = _static_pages()
+    blocked = sorted(p for p in listed
+                     if p.startswith(ROBOTS_BLOCKED_PREFIXES))
+    assert not blocked, (
+        f"{blocked} are in static_pages but robots.txt disallows "
+        f"{ROBOTS_BLOCKED_PREFIXES}. Either drop them, or change robots.txt "
+        f"first and update ROBOTS_BLOCKED_PREFIXES in the same PR.")
+
+
+def test_this_repo_does_not_pretend_to_own_robots_txt():
+    """★ THE HALF OF THE INVARIANT THAT BELONGS HERE.
+
+    The first version of this leg asserted "Disallow: /sites/" in
+    static/robots.txt and FAILED — correctly. That file is not what
+    dchub.cloud serves: the live robots.txt comes from the dchub-frontend repo
+    (verified 2026-09-05 — the served body matches that repo's copy, and
+    static/robots.txt here disallows a different set entirely, with no /sites/
+    line at all). A guard reading it would have pinned this sitemap's
+    behaviour to a file nobody serves — the same defect as the vendored
+    frontend mirror retired in #3871.
+
+    So the reciprocal check — "robots.txt still disallows what WITHHELD claims
+    it does" — lives in dchub-frontend#1374, beside the file it reads. What is
+    checkable here is that this repo does not grow a second answer: if
+    static/robots.txt ever starts disallowing these prefixes, there are two
+    robots.txt files making claims about the same paths and only one is
+    served."""
+    local = os.path.join(REPO, "static", "robots.txt")
+    if not os.path.exists(local):
+        return                       # nothing here to contradict anything
+    with open(local, encoding="utf-8") as fh:
+        body = fh.read()
+    overlap = [p for p in ROBOTS_BLOCKED_PREFIXES if f"Disallow: {p}" in body]
+    assert not overlap, (
+        f"static/robots.txt now disallows {overlap}, which the SERVED "
+        f"robots.txt (dchub-frontend) also governs. Two files answering for "
+        f"the same paths and only one reaching the edge is how the vendored "
+        f"mirror went stale. Keep the answer in one repo.")
