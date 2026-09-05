@@ -25165,6 +25165,62 @@ def ai_tracking_full():
                 pass
             logger.warning(f"ai_tracking_full 30d calc skipped: {_d30_err}")
 
+        # r-reach-selfrefresh (2026-09-05): the share of each platform's reach
+        # that is OUR OWN DASHBOARDS POLLING THEMSELVES.
+        #
+        # Measured that day: 10,050 of one operator machine's 10,816
+        # claude-attributed rows were `/api/v1/mcp/handoff-funnel`. The UA is
+        # genuine — `Claude/1.40609.1 ... Electron/42.7.0`, the Claude DESKTOP
+        # app with a DC Hub dashboard open — so detect_platform() is correct by
+        # its own rule and nothing is spoofed. It is simply not Claude-the-AI
+        # reading DC Hub. Across ALL IPs, 7d: claude 24.7% self, you 17.1%,
+        # copilot 12.6%, gemini 11.3%; perplexity 0.0%, chatgpt 0.1%.
+        #
+        # ★ THE LIST IS NOT NEW AND IS NOT RETYPED. FEED_SELF_REFRESH_ENDPOINTS
+        # already names `/api/v1/mcp/` and every other self-poll path — and had
+        # exactly ONE call site, inside the recent-activity FEED query. It has
+        # been cleaning the 20-row DISPLAY since 2026-08-06 while the headline
+        # counted every one of these polls. Same defect shape as the
+        # organic_content bucket (#3906): right rule, wired to one reader.
+        #
+        # ★ PUBLISHED, NEVER SUBTRACTED SILENTLY. requests_7d keeps its exact
+        # meaning and value; self_refresh_7d sits beside it with the net, so a
+        # reader can audit the subtraction or reject it. Same contract as
+        # mcp_calls_30d / mcp_calls_30d_including_self_traffic.
+        #
+        # ★ CROSS-TABLE, AND THE PAYLOAD SAYS SO. requests_7d comes from
+        # ai_cumulative (path-LESS, so this cannot be subtracted at its own
+        # source); self_refresh_7d is counted over ai_requests, the only table
+        # retaining the path. Read the net as "requests_7d minus a count taken
+        # from a sibling table", not as an exact residue —
+        # /api/v1/ai/crawler-split.cross_check publishes their divergence.
+        try:
+            from ai_tracking import FEED_SELF_REFRESH_ENDPOINTS as _SRE
+            _csr = conn.cursor()
+            _csr.execute(
+                "SELECT platform, COUNT(*) FROM ai_requests "
+                "WHERE created_at >= NOW() - INTERVAL '7 days' AND (" +
+                " OR ".join(["endpoint LIKE %s"] * len(_SRE)) +
+                ") GROUP BY platform",
+                ["%" + _m + "%" for _m in _SRE])
+            for _psr, _nsr in _csr.fetchall():
+                _ksr = (_psr or '').lower()
+                if _ksr in platforms:
+                    _n = int(_nsr or 0)
+                    _r7 = int(platforms[_ksr].get("requests_7d") or 0)
+                    platforms[_ksr]["self_refresh_7d"] = _n
+                    platforms[_ksr]["requests_7d_net_of_self_refresh"] = max(0, _r7 - _n)
+            _csr.close()
+        except Exception as _sr_err:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            # Fail-soft: the fields are ABSENT, never 0. A zero would read as
+            # "measured, none found" — the claim this block cannot make when
+            # its query did not run.
+            logger.warning(f"ai_tracking_full self-refresh split skipped: {_sr_err}")
+
         # 2026-07-21: honest companion to the reach bars — agents ACTUALLY
         # calling MCP tools (a different funnel; never sum with reach).
         real_tool_use = _real_tool_use_7d(conn)
@@ -25241,9 +25297,21 @@ def ai_tracking_full():
             "reach_definition": (
                 "crawler & citation requests by AI-platform user-agent (NOT "
                 "agent tool calls). NO externality filter is applied to this "
-                "figure: DC Hub's own instructed fetches are included and "
-                "cannot be subtracted from it. Read crawler_split_7d before "
-                "quoting it."),
+                "figure: DC Hub's own instructed fetches are included. "
+                "★ 2026-09-05 — an earlier version of this definition said the "
+                "self-traffic component could not be removed. That was wrong "
+                "and is withdrawn (the wording is not restated here: this "
+                "payload is machine-read, and quoting a false clause leaves it "
+                "extractable). One large, named component CAN be subtracted "
+                "and now is: each platform in chart_data carries "
+                "self_refresh_7d (its requests to endpoints only our own "
+                "dashboards poll, per ai_tracking.FEED_SELF_REFRESH_ENDPOINTS) "
+                "and requests_7d_net_of_self_refresh. Measured that day this "
+                "was 24.7% of claude, 17.1% of you, 12.6% of copilot and 11.3% "
+                "of gemini — and 0.0% of perplexity, 0.1% of chatgpt. What is "
+                "still NOT subtracted is instructed-fetch traffic on ordinary "
+                "content and API paths; crawler_split_7d answers that by path. "
+                "Read both before quoting this figure."),
             "crawler_split_7d": crawler_split,
             "real_tool_use_7d": real_tool_use,
             # r-honest-feed-live (2026-08-06): the /ai "Latest AI Requests"
