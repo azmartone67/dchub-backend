@@ -491,7 +491,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.53-og-asset-cache-tier';
+const WORKER_VERSION = '4.9.54-glama-claim-ownership';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -2199,8 +2199,49 @@ async function wellKnownResponse(pathname, kv, env) {
   if (pathname === '/.well-known/mcp-registry-auth') {
     return new Response('v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=', { status: 200, headers: { ...headers, 'Content-Type': 'text/plain; charset=utf-8' } });
   }
+  // ── Glama connector ownership ─────────────────────────────────────────────
+  // ★ THIS IS THE LIVE DEFINITION. dchub-frontend/_worker.js:3063 has a second,
+  // identical one — but the ZONE worker sits in front of Pages and returns here
+  // first, so the Pages copy never runs for this path. Measured 2026-09-05:
+  // GET /.well-known/glama.json carries `x-dc-worker-version: 4.9.52-…`, the
+  // zone worker's scheme, not Pages' 4.88.0. Same decoy shape as
+  // /.well-known/agent.json, which has three definitions and serves from one.
+  // If you change one, change both, and verify by the version header.
+  //
+  // ★ THE EMAIL FORM IS WHY WE HAVE A DUPLICATE CONNECTOR. maintainers[{email}]
+  // verifies ANY connector submitted against this origin, so a second,
+  // hand-submitted DC Hub connector auto-verified as ours — and on 2026-09-05
+  // that card had shown a public red Unhealthy badge since 09-01, filed under a
+  // different category, advertising "33 tools" beside the real card's 83.
+  // Deprecating it in the Glama UI (deprecation is what the UI offers for a
+  // claimed connector, not deletion) does not hold while this line stands:
+  // another connector can auto-verify tomorrow.
+  //
+  // Glama's schema (glama.ai/mcp/schemas/connector.json, draft-07) marks
+  // maintainers DEPRECATED and prefers an opaque account-bound claim token:
+  //     anyOf: [ {required:[claim]}, {required:[maintainers]} ]
+  //     claim: ^glama_claim_[A-Za-z0-9_-]{32}$
+  // Their own FAQ says never publish an email as ownership proof; ours has been
+  // publishing azmartone@gmail.com in cleartext on a public well-known path.
+  //
+  // ★ TO CLOSE THIS: paste the token from the Glama claim panel into
+  // GLAMA_CLAIM_TOKEN and deploy. That switches the origin to the claim form
+  // and STOPS serving the email in the same deploy — the two must never be
+  // published together, because that leaves the origin-wide hole open while
+  // looking fixed. The token carries no personal information and must stay
+  // published to keep verified ownership; if it disappears there is a 7-day
+  // grace, and a claim cannot transfer origins. Until it is set we serve the
+  // legacy form unchanged — ownership today beats a broken swap.
+  //
+  // Watched by check_glama_listing_health() → ownership_finding(), which reads
+  // this response and fires while it is still the email form.
+  const GLAMA_CLAIM_TOKEN = '';  // paste 'glama_claim_<32 chars>' here
   if (pathname === '/.well-known/glama.json') {
-    return new Response(JSON.stringify({ "$schema": "https://glama.ai/mcp/schemas/connector.json", "maintainers": [{"email": "azmartone@gmail.com"}] }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
+    const claimed = /^glama_claim_[A-Za-z0-9_-]{32}$/.test(GLAMA_CLAIM_TOKEN);
+    const body = claimed
+      ? { "$schema": "https://glama.ai/mcp/schemas/connector.json", "claim": GLAMA_CLAIM_TOKEN }
+      : { "$schema": "https://glama.ai/mcp/schemas/connector.json", "maintainers": [{"email": "azmartone@gmail.com"}] };
+    return new Response(JSON.stringify(body, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
   }
   // ChatGPT Apps directory domain-verification (2026-07-13): serve the OpenAI-issued
   // token inline (mirrors the security.txt handler) so the DC Hub ChatGPT Apps
