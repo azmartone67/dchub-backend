@@ -38,7 +38,8 @@ import datetime as dt
 import json
 import os
 import sys
-import urllib.request
+
+import requests
 
 API = os.environ.get("DCHUB_API_BASE", "https://dchub.cloud")
 
@@ -52,14 +53,26 @@ PRO_FIELDS = {"composite_score", "excess_power_score", "constraint_score",
 
 
 def _get(path: str, key: str) -> dict:
-    req = urllib.request.Request(
+    """GET one DC Hub endpoint.
+
+    ★ requests, NOT urllib — a live edge behaviour, not a style preference. A
+      User-Agent beginning "Python-" + "urllib" is 403'd with Cloudflare
+      `error code: 1010` on every public path of dchub.cloud, by the Pages
+      Browser Integrity Check. That runs BEFORE the zone worker, so the 403
+      carries no x-dc-worker-version and neither worker.js nor Flask can see
+      it — only an outside probe can. A custom UA does dodge it, which is
+      exactly the trap: the script keeps working until someone simplifies the
+      header away. scripts/regression_lint.py blocks the import outright.
+    """
+    r = requests.get(
         f"{API}{path}",
         headers={"X-API-Key": key,
-                 "User-Agent": "dchub-hf-dataset-refresh/1.0 (+https://dchub.cloud)"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        # DCPI narratives carry raw newlines inside JSON strings; strict=False
-        # is required or a valid response fails to parse.
-        return json.loads(r.read().decode("utf-8"), strict=False)
+                 "User-Agent": "dchub-hf-dataset-refresh/1.0 (+https://dchub.cloud)"},
+        timeout=60)
+    r.raise_for_status()
+    # DCPI narratives carry raw newlines inside JSON strings, which strict JSON
+    # rejects — so parse the text with strict=False rather than using r.json().
+    return json.loads(r.text, strict=False)
 
 
 def fetch_rows(key: str) -> list[dict]:
