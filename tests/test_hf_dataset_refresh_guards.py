@@ -186,3 +186,68 @@ def test_the_workflow_installs_every_third_party_import_the_script_needs():
             f"will die on ModuleNotFoundError — as it did for 'requests'. Add "
             f"it to the 'Install dependencies' step."
         )
+
+
+def _publish_commands() -> list:
+    """The publish step's real shell lines, comments stripped.
+
+    ★ Comments MUST be stripped. The sibling test in this file shipped a draft
+      that matched raw file text and passed with the thing it checked deleted,
+      because a comment nearby happened to contain the word it looked for. The
+      prose below this function's callers explains `git add` at length; if that
+      prose could satisfy the check, the check would be decoration.
+    """
+    wf = os.path.join(REPO, ".github", "workflows", "hf-dataset-refresh.yml")
+    src = open(wf, encoding="utf-8").read()
+    body = src[src.index("Publish to Hugging Face"):]
+    lines = [l.strip() for l in body.splitlines()
+             if l.strip() and not l.lstrip().startswith("#")]
+    # ★ Join backslash continuations. The commit is written across two lines
+    #   (`git -c user.name=... \` / `commit -q -m ...`), so a line-based scan
+    #   sees no line that both starts with "git " and contains "commit" — the
+    #   first draft of this guard reported "the publish step no longer commits"
+    #   against a workflow that plainly does. A guard that cannot parse the
+    #   thing it guards is not a guard.
+    joined, buf = [], ""
+    for l in lines:
+        if l.endswith("\\"):
+            buf += l[:-1].rstrip() + " "
+            continue
+        joined.append((buf + l).strip())
+        buf = ""
+    if buf:
+        joined.append(buf.strip())
+    return joined
+
+
+def test_the_publish_step_stages_before_it_commits():
+    """★ THE FIRST FULL RUN DIED HERE, after generating a correct snapshot.
+
+    `git commit` with nothing staged and no -a prints "no changes added to
+    commit" and exits 1. The step copied the CSV in, confirmed it differed, then
+    committed nothing — because `git diff --quiet` inspects the WORKING TREE,
+    so the change was visible to the check and invisible to the commit. The
+    local dry-run of the same sequence passed only because it was staged by hand.
+
+    Nothing else in this suite can see it: the generator is fine, the guards are
+    fine, and the defect lives entirely in the ordering of three shell lines.
+    """
+    cmds = _publish_commands()
+    add = next((i for i, l in enumerate(cmds) if l.startswith("git add")), None)
+    commit = next((i for i, l in enumerate(cmds) if "commit" in l and l.startswith("git ")), None)
+    assert commit is not None, "the publish step no longer commits"
+    assert add is not None, (
+        "the publish step commits without staging — `git commit` with nothing "
+        "staged exits 1, failing a run that already produced a good snapshot"
+    )
+    assert add < commit, (
+        f"`git add` (line {add}) must come BEFORE the commit (line {commit})"
+    )
+
+
+def test_the_publish_step_pushes_only_after_committing():
+    """Ordering, not just presence: a push before the commit publishes nothing."""
+    cmds = _publish_commands()
+    commit = next(i for i, l in enumerate(cmds) if "commit" in l and l.startswith("git "))
+    push = next(i for i, l in enumerate(cmds) if l.startswith("git push"))
+    assert commit < push, "the publish step pushes before it commits"
