@@ -342,9 +342,104 @@ def test_the_push_side_backstop_still_runs_the_suite():
     assert "pytest tests/" in wf, (
         "pre-merge-gauntlet no longer runs the full suite, so it would not run "
         "this gate on push to main.")
-    assert "\nconcurrency:" not in wf, (
-        "pre-merge-gauntlet gained a concurrency block — a push run cancelled by "
-        "the next merge would stop being a reliable backstop for stale main.")
+    # A concurrency block is ALLOWED, but only if a push to main can never
+    # share a group with another run. Evaluated, not grepped — see
+    # _assert_main_push_is_never_queued below.
+    _assert_main_push_is_never_queued(wf)
+
+
+# ── the concurrency invariant, evaluated ─────────────────────────────────────
+# ★ 2026-09-05. The check above used to be `"\nconcurrency:" not in wf`, which
+# is a DRIFT check, not a correctness one: it fails any concurrency block,
+# including a correct one, and would equally have passed a block that kept main
+# safe by accident. It also could not express the actual danger, which is
+# subtler than "main gets cancelled":
+#
+#   cancel-in-progress: false is NOT enough. It protects a run that has already
+#   STARTED. GitHub still cancels a PENDING run when a newer run joins the same
+#   group — so grouping main pushes together loses the MIDDLE commit of any two
+#   close merges, which is exactly the stale-main blind spot this file exists
+#   to prevent. That defect shipped in the first draft of the queue fix and is
+#   what this replacement catches.
+
+
+def _truthy(v) -> bool:
+    """GitHub's truthiness: empty string and 0 are false, everything else true."""
+    return not (v is False or v == "" or v == 0)
+
+
+def _eval_gha(expr: str, ctx: dict):
+    """Evaluate the subset of GitHub expression syntax a concurrency group uses.
+
+    ★ `&&` and `||` return an OPERAND, not a boolean, exactly as GitHub does —
+    that is the whole reason the `a == b && x || y` ternary idiom works, and
+    the reason it silently falls through when x is falsy. Modelling that is the
+    point; a boolean-returning version would not catch the fall-through bug.
+    """
+    e = expr.strip()
+    if "||" in e:
+        lhs, rhs = e.split("||", 1)
+        v = _eval_gha(lhs, ctx)
+        return v if _truthy(v) else _eval_gha(rhs, ctx)
+    if "&&" in e:
+        lhs, rhs = e.split("&&", 1)
+        v = _eval_gha(lhs, ctx)
+        return _eval_gha(rhs, ctx) if _truthy(v) else v
+    for op in ("==", "!="):
+        if op in e:
+            lhs, rhs = e.split(op, 1)
+            eq = _eval_gha(lhs, ctx) == _eval_gha(rhs, ctx)
+            return eq if op == "==" else not eq
+    if e.startswith("'") and e.endswith("'"):
+        return e[1:-1]
+    if e not in ctx:
+        raise AssertionError(
+            f"concurrency group references {e!r}, which this guard cannot "
+            "evaluate — teach _eval_gha about it rather than deleting the check")
+    return ctx[e]
+
+
+def _group_for(wf: str, ref: str, run_id: str) -> str:
+    """The concurrency group pre-merge-gauntlet would compute for one run."""
+    import re as _re
+    line = _re.search(r"^concurrency:\n(?:.*\n)*?[ \t]+group:[ \t]*(.+)$",
+                      wf, _re.M)
+    assert line, "concurrency block present but has no group: line"
+    ctx = {"github.ref": ref, "github.run_id": run_id}
+    out, rest = "", line.group(1).strip()
+    while "${{" in rest:
+        head, rest = rest.split("${{", 1)
+        expr, rest = rest.split("}}", 1)
+        out += head + str(_eval_gha(expr, ctx))
+    return out + rest
+
+
+def _assert_main_push_is_never_queued(wf: str) -> None:
+    if "\nconcurrency:" not in wf:
+        return                                   # no grouping at all is safe
+    a = _group_for(wf, "refs/heads/main", "111")
+    b = _group_for(wf, "refs/heads/main", "222")
+    assert a != b, (
+        f"two pushes to main share the concurrency group {a!r}. "
+        "cancel-in-progress: false does NOT save this — GitHub cancels a "
+        "PENDING run when a newer one joins the group, so the middle commit "
+        "of two close merges never runs its gauntlet and a stale main goes "
+        "unseen. Give main a per-run group (github.run_id).")
+    # Positive control: without this, a group that is unique for EVERY run
+    # would pass the assertion above while doing nothing about the queue the
+    # block was added to fix.
+    p = _group_for(wf, "refs/pull/7/merge", "111")
+    q = _group_for(wf, "refs/pull/7/merge", "222")
+    assert p == q, (
+        f"two runs on the same PR ref got different groups ({p!r} vs {q!r}), "
+        "so no superseded run is ever cancelled and the concurrency block is "
+        "decorative — the queue it exists to drain would still be there.")
+
+
+def test_a_push_to_main_never_shares_a_concurrency_group():
+    """The invariant above, run against the shipped workflow."""
+    _assert_main_push_is_never_queued(
+        (_ROOT / ".github" / "workflows" / "pre-merge.yml").read_text(encoding="utf-8"))
 
 
 def test_the_healer_that_justifies_the_exemption_exists():

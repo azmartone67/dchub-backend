@@ -1,0 +1,65 @@
+name: auto-enable-automerge
+
+# Turn on GitHub's native auto-merge (SQUASH) the moment a PR opens, so nobody
+# has to come back and click merge once the gauntlet finally goes green.
+#
+# ★ THIS DOES NOT BYPASS ANY CHECK. GitHub auto-merge waits for every REQUIRED
+#   status and every required review, exactly as a human clicking Merge would.
+#   It only removes the waiting-and-clicking, which on this repo means waiting
+#   ~20-26 minutes for unit-tests and then remembering to come back.
+#
+# ★ WHY A WORKFLOW RATHER THAN A REPO SETTING: "Allow auto-merge" is already ON
+#   for this repo (verified 2026-09-05 via the API: allow_auto_merge=true). That
+#   setting only makes the button AVAILABLE — it does not enable auto-merge on
+#   any individual PR. Every PR still needed the click. This closes that gap.
+#
+# ★ DRAFTS ARE SKIPPED, and here that guard is load-bearing rather than tidy.
+#   This repo already has a second merger: brain_automerge, scoped to autofix
+#   PRs (brain_pr_janitor reuses its list_autofix_prs filter). Its companion
+#   autonomy lane auto-opens DRAFT PRs. Arming native auto-merge on a draft
+#   would land brain's proposals the instant anyone marked one ready for
+#   review — turning a propose-only lane into a merging one. Skipping drafts
+#   keeps the two systems in their own lanes.
+#
+#   The two cannot double-merge: brain merges via the API, and a PR already
+#   merged simply leaves the native auto-merge moot.
+on:
+  pull_request_target:
+    types: [opened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_ID: ${{ github.event.pull_request.node_id }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # enablePullRequestAutoMerge is GraphQL-only; there is no REST verb.
+          # Failure here must NOT fail the PR — a PR that cannot auto-merge is
+          # merely one a human merges, which is today's behaviour anyway. So the
+          # step reports and exits 0 rather than painting the PR red.
+          RESP=$(gh api graphql -f query='
+            mutation($id: ID!) {
+              enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: SQUASH}) {
+                pullRequest { number autoMergeRequest { enabledAt mergeMethod } }
+              }
+            }' -f id="$PR_ID" 2>&1) || true
+          if echo "$RESP" | grep -q '"enabledAt"'; then
+            echo "::notice::auto-merge (squash) enabled on #${PR_NUM}"
+          elif echo "$RESP" | grep -qi 'clean status\|not mergeable\|already'; then
+            # Already enabled, or the PR is in a state GitHub will not arm yet
+            # (e.g. no required checks configured). Neither is an error.
+            echo "::notice::auto-merge not armed on #${PR_NUM} — $(echo "$RESP" | head -c 200)"
+          else
+            echo "::warning::could not enable auto-merge on #${PR_NUM} — $(echo "$RESP" | head -c 300)"
+          fi
