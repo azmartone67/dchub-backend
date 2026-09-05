@@ -67,6 +67,27 @@ def test_the_installer_admits_its_own_structural_weakness():
     assert "fresh clone" in head.lower()
 
 
+
+def _pushes_to_another_service(cmd: str) -> bool:
+    """True only for a push whose remote is an EXPLICIT non-GitHub URL.
+
+    ★ The premise this file defends is about THIS repo's main — the
+      enforce_admins argument in scripts/install-git-hooks.sh. A workflow that
+      publishes to a different service entirely does not touch that premise,
+      and the scan could not tell the two apart: it read `git push origin main`
+      inside a job that had cloned a Hugging Face dataset and reported it as a
+      push to our own main.
+
+    ★ THE EXEMPTION IS DELIBERATELY NARROW, because the tempting version of it
+      is unsafe. A bare remote NAME is never exempt — `origin` means whatever
+      the last clone in that job set it to, so exempting it would let a real
+      push to our main hide behind a rename. Only a spelled-out URL on a host
+      that is not GitHub qualifies. That also forces the remote to be legible
+      at the push site, which is the property a reviewer needs anyway.
+    """
+    return "https://" in cmd and "github.com" not in cmd
+
+
 def test_nothing_in_ci_writes_to_main():
     """The premise the two tests above rest on. If a workflow ever starts
     pushing to main again, this fails and the enforce_admins argument has to be
@@ -88,8 +109,39 @@ def test_nothing_in_ci_writes_to_main():
             s = line.strip()
             if s.startswith("git push") and (
                     " main" in s or "HEAD:main" in s or ":main" in s):
+                if _pushes_to_another_service(s):
+                    continue
                 offenders.append(f"{fn}: {s[:90]}")
     assert not offenders, (
         "a workflow pushes to main again — the enforce_admins decision in "
         "scripts/install-git-hooks.sh rests on this being false:\n  "
         + "\n  ".join(offenders))
+
+
+def test_the_external_push_exemption_cannot_launder_a_push_to_our_own_main():
+    """★ A GUARD ON THE EXEMPTION. It must not become a way through.
+
+    Every shape below still has to be an offender. Without this, widening
+    _pushes_to_another_service to something permissive — `"origin" in cmd`, or
+    dropping the github.com test — would fail nothing, because the only other
+    assertion here is that the CURRENT workflows are clean.
+    """
+    must_be_offenders = [
+        "git push origin main",
+        "git push origin HEAD:main",
+        "git push https://github.com/azmartone67/dchub-backend main",
+        "git push https://x-access-token:${GITHUB_TOKEN}@github.com/azmartone67/dchub-backend HEAD:main",
+        "git push --force origin main",
+    ]
+    for cmd in must_be_offenders:
+        assert not _pushes_to_another_service(cmd), (
+            f"{cmd!r} would be exempted from the CI push guard — a push to our "
+            f"own main must never qualify as 'another service'"
+        )
+
+
+def test_the_exemption_actually_exempts_a_real_external_publish():
+    """The control. An exemption that exempts nothing is a broken guard, and
+    every other assertion here would still pass under it."""
+    assert _pushes_to_another_service(
+        'git push "https://user:${HF_TOKEN}@huggingface.co/datasets/dchubcloud/dcpi-market-verdicts" main')

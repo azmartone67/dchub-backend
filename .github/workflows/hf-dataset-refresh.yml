@@ -1,0 +1,109 @@
+name: HF dataset refresh — dcpi-market-verdicts
+
+# Publishes the DCPI market-verdict snapshot to the Hugging Face dataset
+# huggingface.co/datasets/dchubcloud/dcpi-market-verdicts.
+#
+# WHAT WENT WRONG WITHOUT THIS (2026-09-04)
+# The published snapshot sat at as_of_date 2026-07-02/03 for 63 days while its
+# own card told readers the verdicts were "recomputed daily". Both halves were
+# true, which is what made it misleading: the INDEX does recompute daily, but
+# publishing the CSV was a hand-run step with no script, so nothing carried the
+# fresh rows to HF. A cadence claim with no mechanism behind it is a claim about
+# someone remembering.
+#
+# It was not a cosmetic gap. Measured when the snapshot was finally regenerated:
+# 122 of 308 shared markets had changed verdict, and the index had tightened
+# (BUILD 18->24, CAUTION 117->86, AVOID 182->217). Anyone citing the stale file
+# for a siting decision was reading a different market than the one that exists.
+#
+# WEEKLY, NOT DAILY — deliberately. The scores recompute daily, but a daily push
+# would write a commit to a public dataset every day whether or not verdicts
+# moved, burying real movement in noise. Weekly keeps the snapshot honest against
+# its own card, which now says: the index is daily, this snapshot is not, cite
+# as_of_date.
+#
+# ★ THE JOB IS ALLOWED TO PUBLISH NOTHING. The generator refuses to write a
+#   TRUNCATED universe (rows < _total_available), refuses when coverage cannot be
+#   checked at all, and refuses if a Pro numeric ever arrives populated. Any of
+#   those fails the run with nothing pushed. Publishing a partial market universe
+#   is worse than publishing a stale one, because the gaps are invisible
+#   downstream — a missing market reads as a market that does not exist.
+
+on:
+  schedule:
+    - cron: "41 6 * * 1"        # Mondays 06:41 UTC, off the hour to dodge the rush
+  workflow_dispatch:
+
+concurrency:
+  group: hf-dataset-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # ★ Fail LOUD and EARLY on missing secrets. Without this the run reaches
+      #   the generator, exits on its own "key required" message, and reads like
+      #   an API problem rather than an unconfigured repo.
+      - name: Secrets must be present
+        env:
+          DCHUB_API_KEY: ${{ secrets.DCHUB_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          missing=""
+          [ -n "$DCHUB_API_KEY" ] || missing="$missing DCHUB_API_KEY"
+          [ -n "$HF_TOKEN" ] || missing="$missing HF_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::missing repo secret(s):$missing"
+            echo "DCHUB_API_KEY needs a tier that reads the FULL scored universe;"
+            echo "the free tier previews a handful of rows and the generator will"
+            echo "correctly refuse to publish a truncated universe."
+            exit 1
+          fi
+
+      - name: Generate the snapshot from live
+        env:
+          DCHUB_API_KEY: ${{ secrets.DCHUB_API_KEY }}
+        run: |
+          python3 scripts/refresh_hf_dcpi_dataset.py --out hf-out
+          echo "--- generated ---"
+          head -2 hf-out/data/dcpi-market-verdicts.csv
+          wc -l hf-out/data/dcpi-market-verdicts.csv
+
+      - name: Publish to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          # ★ The remote is spelled out at BOTH the clone and the push, never
+          #   carried by a bare `origin`. Inside a workflow that cloned a
+          #   third-party repo, `origin` means whatever that clone set — so
+          #   "git push origin main" reads exactly like a push to THIS repo's
+          #   main, to a reviewer and to tests/test_push_guard_is_installed_by_setup.py
+          #   alike. Naming the host at the push site removes the ambiguity for
+          #   both. The token is a masked Actions secret.
+          git clone --depth 1 \
+            "https://user:${HF_TOKEN}@huggingface.co/datasets/dchubcloud/dcpi-market-verdicts" hf-repo
+          cp hf-out/data/dcpi-market-verdicts.csv hf-repo/data/dcpi-market-verdicts.csv
+          cd hf-repo
+          # ★ Nothing to say is a valid outcome. An empty commit every Monday
+          #   would make the dataset's history a calendar rather than a record of
+          #   when the index actually moved.
+          if git diff --quiet -- data/dcpi-market-verdicts.csv; then
+            echo "no change in the scored universe since the last snapshot — nothing to publish"
+            exit 0
+          fi
+          AS_OF="$(python3 -c "import csv,sys;r=list(csv.DictReader(open('data/dcpi-market-verdicts.csv')));print(sorted({x['as_of_date'] for x in r})[-1])")"
+          ROWS="$(python3 -c "import csv;print(len(list(csv.DictReader(open('data/dcpi-market-verdicts.csv')))))")"
+          git -c user.name="dchub-bot" -c user.email="bot@dchub.cloud" \
+              commit -q -m "refresh: ${ROWS} markets as of ${AS_OF}" \
+              -m "Automated weekly snapshot (.github/workflows/hf-dataset-refresh.yml). Free-tier columns only; the generator refuses to publish a truncated universe or a populated Pro field."
+          git push "https://user:${HF_TOKEN}@huggingface.co/datasets/dchubcloud/dcpi-market-verdicts" main
+          echo "published ${ROWS} markets as of ${AS_OF}"
