@@ -33,6 +33,7 @@ from flask import Blueprint, Response, jsonify
 
 from routes.url_registry import build_public_url
 from util.capacity_pipeline import CP_OK
+from util.dcpi_score_row import PUBLISHED_ONLY
 
 open_data_csv_bp = Blueprint("open_data_csv", __name__)
 
@@ -126,7 +127,9 @@ _DATASETS = {
                    time_to_power_months, queue_wait_months, computed_at
               FROM market_power_scores
              WHERE market_slug IS NOT NULL
-             ORDER BY market_slug, computed_at DESC""",
+               AND {PUBLISHED_ONLY}
+             ORDER BY market_slug, computed_at DESC""".replace(
+            "{PUBLISHED_ONLY}", PUBLISHED_ONLY),
         "header": ["market_slug", "market_name", "iso", "state", "verdict",
                    "excess_power_score", "constraint_score",
                    "time_to_power_months", "queue_wait_months", "computed_at"],
@@ -165,8 +168,10 @@ _DATASETS = {
                    NOW() AS as_of
               FROM market_power_scores
              WHERE iso IS NOT NULL AND iso <> ''
+               AND {PUBLISHED_ONLY}
              GROUP BY iso
-             ORDER BY avg_excess DESC NULLS LAST""",
+             ORDER BY avg_excess DESC NULLS LAST""".replace(
+            "{PUBLISHED_ONLY}", PUBLISHED_ONLY),
         "header": ["iso", "markets_scored", "build_count", "caution_count",
                    "avoid_count", "avg_excess", "avg_constraint",
                    "avg_ttp_months", "as_of"],

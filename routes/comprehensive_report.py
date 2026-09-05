@@ -29,6 +29,7 @@ except Exception:  # never let a CTA import break the public CC-BY report
         return ""
 from flask import Blueprint, Response, jsonify
 from ai_surface_canon import canon_text
+from util.dcpi_score_row import PUBLISHED_ONLY
 _CANON_FAC = canon_text("{canon_facilities}")
 
 try:
@@ -88,7 +89,8 @@ def _gather(quarter_window=False):
                 out["total_facilities"] = 0
             try:
                 with c.cursor() as cur:
-                    cur.execute("SELECT COUNT(*) FROM market_power_scores")
+                    cur.execute(f"SELECT COUNT(*) FROM market_power_scores"
+                                f" WHERE {PUBLISHED_ONLY}")
                     out["markets_scored"] = cur.fetchone()[0]
             except Exception:
                 out["markets_scored"] = 0
@@ -102,8 +104,9 @@ def _gather(quarter_window=False):
             # ─── DCPI VERDICT DISTRIBUTION ──────────────────────────
             try:
                 with c.cursor() as cur:
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT verdict, COUNT(*) FROM market_power_scores
+                         WHERE {PUBLISHED_ONLY}
                          GROUP BY verdict ORDER BY 2 DESC
                     """)
                     verdicts = {(r[0] or 'UNKNOWN'): r[1] for r in cur.fetchall()}
@@ -117,12 +120,12 @@ def _gather(quarter_window=False):
             # compute composite as (excess_power_score - constraint_score).
             try:
                 with c.cursor() as cur:
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT market_name, state, iso, verdict,
                                excess_power_score, constraint_score,
                                time_to_power_months
                           FROM market_power_scores
-                         WHERE verdict = 'BUILD' AND published = TRUE
+                         WHERE verdict = 'BUILD' AND {PUBLISHED_ONLY}
                          ORDER BY (COALESCE(excess_power_score,0) - COALESCE(constraint_score,0)) DESC
                          LIMIT 25
                     """)
@@ -141,11 +144,11 @@ def _gather(quarter_window=False):
             # ─── TOP 10 AVOID MARKETS (the warnings) ────────────────
             try:
                 with c.cursor() as cur:
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT market_name, state, iso,
                                constraint_score, excess_power_score
                           FROM market_power_scores
-                         WHERE verdict = 'AVOID' AND published = TRUE
+                         WHERE verdict = 'AVOID' AND {PUBLISHED_ONLY}
                          ORDER BY constraint_score DESC NULLS LAST LIMIT 10
                     """)
                     out["top_avoid_markets"] = [{

@@ -22,6 +22,7 @@ import os
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+from util.dcpi_score_row import PUBLISHED_ONLY
 
 from util.capacity_pipeline import CP_OK
 from util.deals import DEALS_OK
@@ -126,13 +127,16 @@ def _enums(cur):
         out[key] = vals[:limit] if limit else vals
 
     enum("iso_codes",
-         "SELECT DISTINCT iso FROM market_power_scores WHERE iso IS NOT NULL AND iso <> ''")
+         "SELECT DISTINCT iso FROM market_power_scores WHERE iso IS NOT NULL AND iso <> ''"
+         f" AND {PUBLISHED_ONLY}")
     out["dcpi_verdicts"] = ["BUILD", "CAUTION", "AVOID", "LOW_SIGNAL"]
     enum("dcpi_market_slugs",
-         """SELECT DISTINCT market_slug FROM market_power_scores
-            WHERE market_slug IS NOT NULL ORDER BY market_slug""", limit=120)
+         f"""SELECT DISTINCT market_slug FROM market_power_scores
+             WHERE market_slug IS NOT NULL AND {PUBLISHED_ONLY}
+             ORDER BY market_slug""", limit=120)
     enum("us_states_covered",
-         "SELECT DISTINCT state FROM market_power_scores WHERE state IS NOT NULL AND char_length(state) = 2")
+         "SELECT DISTINCT state FROM market_power_scores WHERE state IS NOT NULL"
+         f" AND char_length(state) = 2 AND {PUBLISHED_ONLY}")
     out["listing_statuses"] = ["public", "pocket", "draft"]
     enum("facility_status_values",
          "SELECT DISTINCT status FROM facilities WHERE status IS NOT NULL LIMIT 20")
@@ -442,13 +446,15 @@ def agent_coverage():
             elif domain == "dcpi":
                 if region:
                     rows = _q("scored_markets",
-                        """SELECT COUNT(DISTINCT market_slug)
-                             FROM market_power_scores
-                            WHERE UPPER(state) = %s OR UPPER(iso) = %s""",
+                        f"""SELECT COUNT(DISTINCT market_slug)
+                              FROM market_power_scores
+                             WHERE (UPPER(state) = %s OR UPPER(iso) = %s)
+                               AND {PUBLISHED_ONLY}""",
                         (region, region))
                 else:
                     rows = _q("scored_markets",
-                        "SELECT COUNT(DISTINCT market_slug) FROM market_power_scores")
+                        "SELECT COUNT(DISTINCT market_slug) FROM market_power_scores"
+                        f" WHERE {PUBLISHED_ONLY}")
                 have["scored_markets"] = int(rows[0][0]) if rows else None
                 have["fields"] = ["verdict", "excess_power_score",
                                   "constraint_score", "time_to_power_months",

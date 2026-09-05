@@ -361,6 +361,33 @@ PUBLISH_STALE_AFTER = "7 days"
 #: %-formatting anywhere near such a string is how a literal % reaches the
 #: driver (see the psycopg2 percent trap, and the same note at the top of
 #: this module).
+#: Read-side counterpart to MAY_PUBLISH: which rows a PUBLIC surface may count,
+#: list or roll up as a scored market.
+#:
+#: MAY_PUBLISH decides what earns the flag; this decides who believes it. They
+#: sit together so that changing one puts the other in front of you — the two
+#: drifted apart once already, and the retired alias-twins r-twin-unpublish had
+#: correctly unpublished went on being counted, listed and averaged by every
+#: surface that queried this table without asking.
+#:
+#: `published = true`, NOT `COALESCE(published, true) = true`. The column is
+#: nullable and its schema DEFAULT is false, so coalescing a NULL to TRUE
+#: inverts the table's own stated default and would serve a row nobody ever
+#: published. This spelling is also character-identical to the predicate /dcpi
+#: and /api/v1/dcpi/scores use, which is the whole point: the surfaces that
+#: import this exist to AGREE with those two, and agreement is not something a
+#: second, independently-worded predicate can promise.
+#:
+#: Written against the bare table name, like MAY_PUBLISH, so it drops into any
+#: query over market_power_scores.
+#:
+#: ★ A WHERE clause that already contains an OR must be parenthesised before
+#: this is ANDed onto it — AND binds tighter than OR, so appending it to
+#: `WHERE a = %s OR b = %s` silently filters only the second branch. See the
+#: region query in routes/agent_index.py.
+PUBLISHED_ONLY = "market_power_scores.published = true"
+
+
 MAY_PUBLISH = """(
         market_power_scores.method_version IS NOT NULL
     AND market_power_scores.computed_at IS NOT NULL
