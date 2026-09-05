@@ -29,7 +29,7 @@
       "pglob": 8050
     },
     "test_backfill_status_scanner.py": {
-      "walk": 290
+      "walk": 70
     },
     "test_brain_consistency_radar.py": {
       "walk": 110
@@ -38,7 +38,7 @@
       "glob": 640
     },
     "test_brain_findings_writer_discipline.py": {
-      "pglob": 2930
+      "pglob": 1760
     },
     "test_brain_loggers_defined.py": {
       "glob": 90
@@ -134,7 +134,7 @@
       "pglob": 130
     },
     "test_honest_numbers.py": {
-      "walk": 340
+      "walk": 130
     },
     "test_identity_view_columns.py": {
       "pglob": 640
@@ -173,7 +173,7 @@
       "walk": 120
     },
     "test_response_content_type_charset.py": {
-      "pglob": 3060
+      "pglob": 1840
     },
     "test_route_auth_criticals.py": {
       "pglob": 640
@@ -197,13 +197,13 @@
       "glob": 640
     },
     "test_sql_literal_percent.py": {
-      "pglob": 2930
+      "pglob": 1760
     },
     "test_sqlite_time_functions_on_postgres.py": {
-      "walk": 330
+      "walk": 110
     },
     "test_stripe_route_auth.py": {
-      "pglob": 2930
+      "pglob": 1760
     },
     "test_substations_columns.py": {
       "pglob": 640
