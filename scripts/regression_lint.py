@@ -321,6 +321,36 @@ def lint_file(p, src):
                     add(p, sub.lineno, 'sys-exit-in-async',
                         f'sys.exit() inside async {node.name}')
 
+        # ── naive-utcnow ────────────────────────────────────────────────
+        # datetime.utcnow() returns a NAIVE datetime. This codebase already
+        # holds both kinds — measured 2026-09-04: 1,012 naive utcnow() calls
+        # beside 605 aware now(timezone.utc)/now(datetime.UTC) calls — and
+        # comparing one to the other raises at RUNTIME:
+        #     TypeError: can't compare offset-naive and offset-aware datetimes
+        # 79 sites do timedelta arithmetic on it and 18 compare it directly, so
+        # the mixture is load-bearing, not theoretical. Backend #3775 was
+        # already exactly this class (a naive/injected-clock mismatch).
+        #
+        # utcnow() is also deprecated (3.12) and scheduled for removal; it emits
+        # 812 DeprecationWarnings per CI run today.
+        #
+        # ★ DELIBERATELY NOT IN HARD_RULES. A hard rule fires repo-wide, which
+        # would mean 1,012 blocking hits on the first PR to touch anything. In
+        # the default `--mode delta` this reports only lines the change itself
+        # touched, so it stops the population GROWING while the existing 1,012
+        # are retired deliberately, with coverage, rather than by a sweep that
+        # cannot tell which comparisons are currently naive-vs-naive and which
+        # would break. Converting them blind is the actual hazard.
+        #
+        # Matching on `.attr == 'utcnow'` alone is intentional: it catches
+        # datetime.utcnow(), datetime.datetime.utcnow() and any aliased import,
+        # none of which a name-qualified check would cover together.
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'utcnow'):
+            add(p, node.lineno, 'naive-utcnow',
+                'datetime.utcnow() is naive + deprecated — use '
+                'datetime.now(timezone.utc); compare aware-to-aware only')
+
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             f = node.func
             if (f.attr == 'urlopen'
