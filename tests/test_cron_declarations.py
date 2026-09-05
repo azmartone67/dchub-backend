@@ -238,3 +238,69 @@ def test_nothing_declares_cron_jobs_yet():
 
 def test_the_live_tree_has_no_unverifiable_declarations():
     assert cd.collect_problems(_ROOT) == []
+
+
+# ── guard 2: the dead-man coverage check ──────────────────────────────
+#
+# This is the SILENT-GREEN guard — a decentralized shell dropping out of it
+# does not go red, it just stops being watched. It had four controls fewer than
+# guard 1 when this file was first written, which is exactly backwards: the
+# quieter failure needs MORE proof, not less.
+
+def _beat_repo(tmp_path, *, label, via, beats):
+    """A repo with one shell, scheduled either through the _DISPATCH literal or
+    its own CRON_JOBS, and either beating the dead-man ledger or not."""
+    (tmp_path / "routes").mkdir(exist_ok=True)
+    body = 'from flask import Blueprint\nbp = Blueprint("g", __name__)\n'
+    if beats:
+        body += 'def beat():\n    return "ingest-runs/beat"\n'
+    if via == "declaration":
+        body += f'CRON_JOBS = [{{"label": "{label}", "path": "/p/tick"}}]\n'
+    (tmp_path / "routes" / "ghost_master_shell.py").write_text(body)
+    dispatch = (f'_DISPATCH = [("{label}", f"{{BASE}}/p/tick", "POST", lambda n: True)]\n'
+                if via == "literal" else "_DISPATCH = []\n")
+    (tmp_path / "routes" / "cron_heartbeat.py").write_text(dispatch)
+    return str(tmp_path)
+
+
+@pytest.fixture
+def beat_guard():
+    sys.path.insert(0, os.path.join(_ROOT, "tests"))
+    import test_shell_beat_reports_red as m
+    return m
+
+
+def test_ledger_guard_catches_an_unwatched_shell_on_the_literal(beat_guard, tmp_path):
+    """MUST-FAIL control for the ORIGINAL path — proves teaching the guard about
+    declarations did not blunt what it already caught."""
+    r = _beat_repo(tmp_path, label="ghost_shell_daily", via="literal", beats=False)
+    assert "ghost_shell_daily" in beat_guard._unwatched_shells(r)
+
+
+def test_ledger_guard_catches_an_unwatched_shell_that_declared_itself(
+        beat_guard, tmp_path):
+    """★ THE POINT OF STEP ONE. A shell that schedules itself via CRON_JOBS and
+    beats nothing must still be reported. Before the wiring, this returned an
+    empty list — passing green while nothing watched the shell."""
+    r = _beat_repo(tmp_path, label="ghost_shell_daily", via="declaration", beats=False)
+    assert "ghost_shell_daily" in beat_guard._unwatched_shells(r), (
+        "a self-declared shell with no dead-man feed was invisible to the "
+        "coverage guard — this is the silent-green hole step one exists to close")
+
+
+def test_ledger_guard_is_quiet_when_a_declared_shell_does_beat(beat_guard, tmp_path):
+    """And it must not cry wolf: declared + beating is healthy."""
+    r = _beat_repo(tmp_path, label="ghost_shell_daily", via="declaration", beats=True)
+    assert beat_guard._unwatched_shells(r) == []
+
+
+def test_declared_shell_labels_reach_the_scheduled_set(beat_guard, tmp_path):
+    r = _beat_repo(tmp_path, label="ghost_shell_daily", via="declaration", beats=False)
+    assert "ghost_shell_daily" in beat_guard._scheduled_shell_labels(r)
+
+
+def test_a_declared_non_shell_job_is_not_treated_as_a_shell(beat_guard, tmp_path):
+    """The guard is scoped to shells. A declared ordinary job must not be pulled
+    into shell coverage and reported as an unwatched shell."""
+    r = _beat_repo(tmp_path, label="ordinary_job_daily", via="declaration", beats=False)
+    assert beat_guard._unwatched_shells(r) == []
