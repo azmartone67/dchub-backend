@@ -32,6 +32,32 @@ import re
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAIN = os.path.join(ROOT, "main.py")
 
+def _reach_definition_text():
+    """The reach_definition STRING, extracted by AST — never a fixed-width slice.
+
+    ★ This replaced `src[i:i+1800]`. The gemini attribution fix (#3973) added
+    ~900 characters to reach_definition and pushed `crawler_split_7d` past the
+    window, so a guard that was passing failed on a payload where the pointer it
+    checks for was still present and correct. A fixed slice measures the LENGTH
+    of the thing it is reading, not its content — and widening the number only
+    moves the next failure further out.
+
+    Implicit string concatenation collapses into one Constant in the AST, so
+    this returns the whole value however long it grows.
+    """
+    import ast as _ast
+    tree = _ast.parse(open(MAIN, encoding="utf-8").read())
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Dict):
+            continue
+        for k, v in zip(node.keys, node.values):
+            if (isinstance(k, _ast.Constant) and k.value == "reach_definition"
+                    and isinstance(v, _ast.Constant)
+                    and isinstance(v.value, str)):
+                return v.value
+    raise AssertionError("reach_definition string literal not found in main.py")
+
+
 
 def _tracking_route(strip_comments=True):
     """Body of ai_tracking_full(), comments stripped by default.
@@ -100,9 +126,7 @@ def test_a_failed_query_leaves_the_field_absent_not_zero():
 def test_the_reach_definition_no_longer_says_it_cannot_be_subtracted():
     """The old definition said DC Hub's own fetches 'cannot be subtracted from
     it'. One large, named component can be, and now is."""
-    s = open(MAIN, encoding="utf-8").read()
-    i = s.index('"reach_definition"')
-    block = s[i:i + 1800]
+    block = _reach_definition_text()
     assert "cannot be subtracted from it" not in block, (
         "reach_definition still claims the figure cannot be corrected, while "
         "the payload beside it now publishes the correction")

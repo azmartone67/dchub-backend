@@ -82,7 +82,34 @@ EXPECTED_MCP_CONNECTIONS_COLUMNS = {
 AI_PLATFORMS = {
     "chatgpt":    {"name": "ChatGPT",    "color": "#10a37f", "company": "OpenAI",     "agents": ["ChatGPT-User", "GPTBot", "OAI-SearchBot"]},
     "claude":     {"name": "Claude",     "color": "#7c3aed", "company": "Anthropic",  "agents": ["Claude-Web", "Anthropic", "claude"]},
-    "gemini":     {"name": "Gemini",     "color": "#4285f4", "company": "Google",     "agents": ["Googlebot", "Google-Extended", "GoogleOther", "Gemini"]},
+    # r-gemini-not-googlebot (2026-09-05): "Googlebot" REMOVED from this list.
+    # Measured that day, 7d: 837 of 837 gemini-attributed rows carried a plain
+    # `Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)`
+    # — Google SEARCH's crawler. Google-Extended: 0. GoogleOther: 0. A UA
+    # naming Gemini: 0. So 100% of the published "Gemini" reach bar was our SEO
+    # crawl volume wearing an AI platform's name and colour.
+    #
+    # The mapping was deliberate — robots.txt records "Gemini crawls as
+    # Googlebot/GoogleOther" — but `Googlebot/2.1` is the Search crawler and
+    # `Google-Extended` is the token Google documents for AI use, which our own
+    # robots.txt already names SEPARATELY. Treating the first as the second
+    # means every SEO crawl-rate change reads as AI demand moving.
+    #
+    # Google-Extended and GoogleOther STAY: those are Google's AI-side agents
+    # and neither substring appears in a plain Googlebot UA, so this narrows
+    # attribution without blinding us to real Gemini traffic if it arrives.
+    #
+    # A plain Googlebot UA now falls through to the generic-bot branch and
+    # returns "seo_bot", which _log_ai_request already drops — so these rows
+    # stop being written rather than being written to another bucket.
+    #
+    # ★ COPILOT IS DELIBERATELY LEFT ALONE despite being the same shape
+    # (its bucket is mostly BingBot). Copilot crawls as Bingbot and has NO
+    # other surface — robots.txt reopened /api/ to Bingbot on 2026-08-31
+    # precisely because "Copilot is the point". Removing it would zero the
+    # channel rather than narrow it. Gemini is different: Google-Extended
+    # exists as a distinct token and is simply not being used on us.
+    "gemini":     {"name": "Gemini",     "color": "#4285f4", "company": "Google",     "agents": ["Google-Extended", "GoogleOther", "Gemini"]},
     "perplexity": {"name": "Perplexity", "color": "#1fb8cd", "company": "Perplexity", "agents": ["PerplexityBot"]},
     "copilot":    {"name": "Copilot",    "color": "#0078d4", "company": "Microsoft",  "agents": ["Copilot", "BingBot", "bingbot"]},
     "grok":       {"name": "Grok",       "color": "#1d9bf0", "company": "xAI",        "agents": ["Grok", "xAI"]},
