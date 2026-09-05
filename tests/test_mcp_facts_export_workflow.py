@@ -123,9 +123,26 @@ def test_a_write_that_never_happened_fails_the_job():
 def test_unchanged_facts_are_not_treated_as_an_error_on_push():
     """Numbers are floors that round DOWN and move slowly. 'Nothing to commit'
     is a legitimate outcome and must not page anyone."""
-    code = _run_code("Commit + push into dchub-mcp-server")
+    code = _run_code("open a PR into dchub-mcp-server")
     assert "git diff --quiet" in code, "must detect no-change before committing"
     assert "exit 0" in code, "no-change must exit cleanly, not fail"
+
+
+def test_the_sibling_change_lands_via_a_PR_not_a_push_to_main():
+    """★2026-09-04 — dchub-mcp-server's main is gaining required status checks,
+    so the bare `git push` this step used to do would start failing with GH006
+    the same way the backend copy already did for 17 days. The step opens a PR
+    instead, and this asserts the executable body actually does that rather
+    than a comment claiming it."""
+    code = _run_code("open a PR into dchub-mcp-server")
+    assert re.search(r"git\s+(?:checkout\s+-b|switch\s+-c)", code), (
+        "must create a branch — a push from the checkout targets main"
+    )
+    assert "gh pr create" in code, "must open a PR, not push to main"
+    assert "[skip ci]" not in code, (
+        "no CI-skip marker: the PR's checks are what let it merge, and this "
+        "repo squash-merges, so the token would ride into main's head commit"
+    )
 
 
 def test_has_a_kill_switch():
@@ -178,12 +195,17 @@ def test_the_job_may_actually_push():
 def test_the_critical_push_runs_before_the_fragile_one():
     """Order is the fix, not a preference.
 
-    dchub-mcp-server/main is unprotected, so that push lands. The backend's
-    main requires 6 status checks and the commit carries [skip ci], so a bot
-    push to it cannot report them and is rejected on principle. With
-    `set -euo pipefail`, whichever runs first decides whether the other runs at
-    all — and for a week the one that CANNOT work ran first and starved the one
-    that feeds all 30 registry surfaces."""
+    ★2026-09-04: the ORIGINAL reason has expired and the rule outlived it. It
+    read "dchub-mcp-server/main is unprotected, so that push lands" — both
+    steps now open PRs, and that repo's main is gaining required checks too, so
+    neither is the doomed one any more. The ordering still matters for the
+    surviving reason: with `set -euo pipefail`, whichever runs first decides
+    whether the other runs at all, and the sibling step is the one feeding all
+    30 registry surfaces. A failure in the backend's own servable copy must not
+    discard the run's real work.
+
+    (Kept rather than deleted: for a week the step that CANNOT work ran first
+    and starved the one that does.)"""
     # ★ Key on WHAT THE STEP DOES, not what it is called. The first draft
     # matched `"dchub-mcp-server" in name`, which also matches the *checkout*
     # step at index 1 — so it compared 1 < backend and was true no matter how
