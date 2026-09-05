@@ -101,18 +101,144 @@ MAX_LISTING_FETCHES = 20    # SEED_REGISTRIES is ~16; hard ceiling regardless
 # Registries whose refresh path is AUTOMATED (see mcp_presence_crawler
 # SUBMITTERS): real form POST, or upstream manifest/README re-crawl that the
 # daily-manifest-sync + mcp-registry-weekly-sync workflows keep fresh.
-AUTO_PATH_REGISTRIES = {
-    "mcphive",              # real POST submitter
-    "cursor_directory",     # real POST submitter
-    "smithery",             # manifest re-crawl + weekly-sync rescan
-    "lobehub",              # manifest/badge re-crawl
-    "glama",                # manifest re-crawl (glama refresh on their cadence)
-    "pulsemcp",             # manifest re-crawl
-    "mcp_official_registry",  # mcp-registry-publish / weekly-sync republish
+# ── AUTOMATED PATHS, SPLIT BY WHETHER THEY ACTUALLY REACH THE REGISTRY ──────
+#
+# ★ THIS SET USED TO HOLD SEVEN REGISTRIES ON THE STRENGTH OF A COMMENT. Lane
+#   (d) EXCLUDES anything in here from the human-gated issue, on the promise
+#   that something automated will fix it. Measured 2026-09-05, five of the seven
+#   promises were empty — so five registries were excluded from the only lane
+#   that could have helped them, and nothing said so:
+#
+#     mcphive           POST https://mcphive.com/api/submit      -> 404 (GET+POST)
+#     cursor_directory  POST https://cursor.directory/api/plugin-submit
+#                                                                -> 429, Vercel wall
+#     lobehub           assumed re-crawl; it does NOT re-crawl — a human must
+#                       click "Refresh Metadata". Stuck at 74 tools vs a live 83.
+#     glama             connector blurb is typed into THEIR database and never
+#                       re-read from this repo (documented above: cost 22 days)
+#     pulsemcp          submissions AND listing changes paused site-wide
+#
+# ★ THE ROOT CAUSE IS ONE MECHANISM DOING ALL THE WORK. r-nofakepush (2026-07-17)
+#   correctly deleted the speculative refresh webhooks after finding they all
+#   404'd. What went unnoticed is that deleting them left "bump the manifest and
+#   wait for the registry to re-crawl" as the ONLY strategy — and exactly one
+#   registry actually re-crawls. Smithery's listing is current for that reason,
+#   not because this lane pushed anything to it.
+#
+# ★ VERIFIED means we have OBSERVED the path land, not that a submitter returned
+#   ok=True. That distinction is the same one r-closeloop learned when Smithery's
+#   submitter reported success while doing nothing.
+_AUTO_PATH_VERIFIED = {
+    "smithery": "their discovery re-crawls our README + manifest; listing "
+                "observed tracking canon",
+    "mcp_official_registry": "mcp-publisher republish via "
+                             "mcp-registry-weekly-sync.yml; observed publishing "
+                             "2.12.7 on 2026-09-05",
 }
+
+# Demoted: the path was ASSUMED. Each entry is a measurement, not an opinion.
+# These are HUMAN-GATED, so they now reach the consolidated issue with
+# paste-ready copy instead of being silently excluded from it.
+_AUTO_PATH_DEMOTED = {
+    "mcphive":          "submit endpoint 404 (GET+POST) — measured 2026-09-05",
+    "cursor_directory": "submit endpoint 429 behind a Vercel bot wall — "
+                        "measured 2026-09-05",
+    "lobehub":          "does not re-crawl; needs a manual Refresh Metadata "
+                        "click — listing stuck at 74 vs live 83",
+    "glama":            "connector blurb typed into their DB, never re-read "
+                        "from this repo",
+    "pulsemcp":         "submissions and listing changes paused site-wide",
+}
+
+# ★ DERIVED, never hand-edited. Adding a name here without evidence is exactly
+#   the failure this replaces — put it in _AUTO_PATH_VERIFIED with the
+#   observation that earned it.
+AUTO_PATH_REGISTRIES = set(_AUTO_PATH_VERIFIED)
 # Everything else in SEED_REGISTRIES (mcp.so + secondary, smith_land, dxt_so,
 # yellowmcp, klavis_ai, cline, continue_dev, awesome_mcp_servers) is
 # HUMAN-GATED: dashboard edit, forum post, or PR someone must review.
+
+
+# ── SUBMIT-ENDPOINT PROBE (2026-09-05) ──────────────────────────────────────
+#
+# Item (2): an automated path that stops working must demote ITSELF. Both of
+# tonight's dead submitters (mcphive 404, cursor.directory 429) had been dead
+# for an unknown length of time, and the only reason anyone found out is that a
+# human probed them by hand.
+#
+# ★ DEMOTE-ONLY, AND THAT ASYMMETRY IS THE WHOLE DESIGN. A failing probe MOVES a
+#   registry to human-gated, which is the fail-safe direction — worst case a
+#   human is shown a listing that was fine. A PASSING probe promotes nothing:
+#   "the endpoint answered" is not "the listing changed", and treating it as
+#   such is precisely how five registries got into the automated set on a
+#   promise nobody kept. Promotion stays a human edit to _AUTO_PATH_VERIFIED,
+#   with the observation that earned it.
+#
+# ★ READING THE STATUS. For a SUBMIT endpoint the question is "does this exist
+#   and will it take our POST", which is not the same ladder as a page fetch:
+#     404          -> the endpoint is gone                     DEMOTE
+#     429 / 403    -> a bot wall we cannot pass programmatically DEMOTE
+#     5xx          -> their outage; do NOT demote on a blip    keep, report
+#     400/401/422  -> it EXISTS and rejected our probe body    alive
+#     200/201/202  -> alive
+SUBMIT_ENDPOINTS = {
+    "mcphive":          "https://mcphive.com/api/submit",
+    "cursor_directory": "https://cursor.directory/api/plugin-submit",
+}
+_DEMOTING_STATUSES = {403, 404, 405, 410, 429}
+
+
+def probe_submit_endpoint(url: str, timeout: int = 12) -> dict:
+    """POST a harmless probe body. Never raises."""
+    # requests, not urllib — scripts/regression_lint.py enforces
+    # [urllib-request-on-railway]. allow_redirects=False so a submit endpoint
+    # that starts redirecting reports 3xx rather than being silently followed
+    # to something that answers 200.
+    import requests
+    try:
+        r = requests.post(
+            url, json={"probe": True}, timeout=timeout, allow_redirects=False,
+            headers={"User-Agent": "dchub-white-glove-endpoint-probe/1.0"})
+        code = r.status_code
+    except Exception as e:
+        return {"reachable": None, "status": None, "note": f"transport: {e}"[:90]}
+    if code in _DEMOTING_STATUSES:
+        return {"reachable": False, "status": code, "note": "endpoint refuses us"}
+    if code >= 500:
+        # Their outage is not our demotion. Report, keep the current standing.
+        return {"reachable": None, "status": code, "note": "upstream 5xx — inconclusive"}
+    return {"reachable": True, "status": code, "note": "endpoint alive"}
+
+
+def probe_all_submit_endpoints() -> dict:
+    """Probe every known submit endpoint. Returns {registry: probe_result}.
+
+    Callers apply DEMOTIONS only — see the note above."""
+    out = {}
+    for name, url in SUBMIT_ENDPOINTS.items():
+        r = probe_submit_endpoint(url)
+        r["url"] = url
+        r["currently_automated"] = name in AUTO_PATH_REGISTRIES
+        out[name] = r
+    return out
+
+
+def apply_endpoint_demotions(probe: dict) -> list[str]:
+    """Remove from the live automated set any registry whose endpoint refuses
+    us. Returns the names demoted THIS RUN (already-demoted ones are silent).
+
+    Mutates AUTO_PATH_REGISTRIES for the current process only — the durable
+    record is _AUTO_PATH_DEMOTED, edited by a human who has seen the evidence."""
+    demoted = []
+    for name, r in (probe or {}).items():
+        if r.get("reachable") is False and name in AUTO_PATH_REGISTRIES:
+            AUTO_PATH_REGISTRIES.discard(name)
+            demoted.append(name)
+            logger.warning(
+                "[white-glove] DEMOTED %s from the automated set — submit "
+                "endpoint %s answered %s (%s). It is now human-gated.",
+                name, r.get("url"), r.get("status"), r.get("note"))
+    return demoted
 
 
 def _disabled() -> bool:
@@ -1083,6 +1209,18 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
         else:
             summary["clean"].append(name)
 
+    # ── (b2) submit-endpoint probe → DEMOTE-ONLY ─────────────────────
+    # Runs BEFORE the auto-path lane so a dead endpoint moves its registry to
+    # human-gated in the SAME run, rather than one run later.
+    try:
+        _probe = probe_all_submit_endpoints()
+        summary["submit_endpoint_probe"] = _probe
+        _newly = apply_endpoint_demotions(_probe)
+        if _newly:
+            summary["demoted_this_run"] = _newly
+    except Exception as _pe:                      # never let the probe break the lane
+        summary["submit_endpoint_probe_error"] = str(_pe)[:150]
+
     # ── (c) automated refresh paths ──────────────────────────────────
     auto_drifted = [n for n in drifts_by_registry if n in AUTO_PATH_REGISTRIES]
     # ★2026-07-28 r-closeloop: registries land in AUTO_PATH_REGISTRIES on the
@@ -1125,6 +1263,8 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
             summary["auto_path_error"] = str(e)[:150]
         summary["workflow_dispatch"] = _trigger_registry_sync_workflow(dry_run)
     summary["escalated_to_human"] = sorted(escalated)
+    summary["auto_path_verified"] = sorted(AUTO_PATH_REGISTRIES)
+    summary["auto_path_demoted"] = {k: v for k, v in _AUTO_PATH_DEMOTED.items()}
 
     # ── (d) human-gated: ONE finding + ONE issue ─────────────────────
     human_drifted = {n: d for n, d in drifts_by_registry.items()
