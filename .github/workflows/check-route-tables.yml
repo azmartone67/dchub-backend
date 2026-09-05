@@ -86,8 +86,13 @@ jobs:
           token: ${{ secrets.DCHUB_FRONTEND_RO_TOKEN || github.token }}
 
       # ★ AND SAY SO WHEN THEY ARE NOT THERE. The checkout above is
-      # continue-on-error, and DCHUB_FRONTEND_RO_TOKEN has been failing since
-      # 2026-08-19 (deploy-integrity.yml records the same "Not Found"). Without
+      # continue-on-error. This comment used to add that the token "has been
+      # failing since 2026-08-19" — I wrote that hours earlier by quoting
+      # deploy-integrity.yml instead of measuring, and it was already false:
+      # the secret was rotated 2026-09-02 and this job's own runs check the
+      # frontend out successfully (33954259437 — steps 2 and 3 ran, and they
+      # are gated on the tables being present). The gate below is still worth
+      # having for the day it expires again. Without
       # this gate, absent tables mean an empty include set and every Flask route
       # reads as uncovered — or, under this ratchet, every route reads as
       # already-baselined and the job goes GREEN on no measurement at all. That
