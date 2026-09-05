@@ -310,9 +310,51 @@ def test_the_healer_branch_prefix_matches_the_workflow_that_mints_it():
         "carve-out in _is_pull_request() now matches nothing.")
 
 
+def test_the_push_side_backstop_still_runs_the_suite():
+    """★ THE NET THAT DOES NOT DEPEND ON THE HEALER.
+
+    Adversarial review of this exemption found that
+    test_the_healer_that_justifies_the_exemption_exists (below) is GREP, NOT
+    BEHAVIOUR: setting the repo variable ARCH_MAP_AUTOHEAL_DISABLE=1 turns the
+    healer into a no-op that still `exit 0`s as SUCCESS
+    (refresh-architecture-map.yml:73-75, 84-86), and every assertion in that
+    test still passes. A guard that cannot see its own kill switch is the exact
+    failure this file's docstring is about, so the exemption must not rest on it
+    alone.
+
+    It does not. pre-merge-gauntlet runs the FULL suite on `push: branches:
+    [main]` with no `concurrency:` block, so a stale main reds independently of
+    the healer — and this gate is not exempt there, because the event is `push`.
+    Measured by the review: main commits aa8693350 and 405224687 were genuinely
+    stale (routes/ count 793, committed map 792) and BOTH push runs failed
+    (33789265981, 33789288736) while the commits either side succeeded.
+
+    So: the healer makes staleness SHORT (~28 min); this makes it VISIBLE even
+    if the healer is off. Pin the second net, because it is the load-bearing one.
+    """
+    wf = (_ROOT / ".github" / "workflows" / "pre-merge.yml").read_text(encoding="utf-8")
+    import re as _re
+    on_block = wf.split("jobs:", 1)[0]
+    assert _re.search(r"push:\s*\n\s*branches:\s*\[\s*main\s*\]", on_block), (
+        "pre-merge-gauntlet no longer runs on push to main — that is the backstop "
+        "that catches a stale map when the healer is disabled. Without it the PR "
+        "exemption in test_the_in_repo_copy_is_current has no independent net.")
+    assert "pytest tests/" in wf, (
+        "pre-merge-gauntlet no longer runs the full suite, so it would not run "
+        "this gate on push to main.")
+    assert "\nconcurrency:" not in wf, (
+        "pre-merge-gauntlet gained a concurrency block — a push run cancelled by "
+        "the next merge would stop being a reliable backstop for stale main.")
+
+
 def test_the_healer_that_justifies_the_exemption_exists():
-    """The PR exemption is only safe because main is healed after merge. If that
-    workflow is ever deleted, drift would ship silently — so pin it."""
+    """The healer keeps main's staleness SHORT. It is wiring-level only.
+
+    ★ This asserts the workflow is present and wired — NOT that it heals. Setting
+    ARCH_MAP_AUTOHEAL_DISABLE=1 makes it a no-op that reports SUCCESS and every
+    assertion below still passes. That limit is why
+    test_the_push_side_backstop_still_runs_the_suite exists above; do not treat
+    this test as proof the healer works."""
     import pathlib as _p
     wf = _ROOT / ".github" / "workflows" / "refresh-architecture-map.yml"
     assert wf.is_file(), (
