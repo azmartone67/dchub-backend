@@ -15,6 +15,12 @@ touches Postgres) and cover:
   · the register helper actually wires both routes onto a real app (the false-DONE
     guard — module+tests can pass while the blueprint never registers).
 """
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+
 import pytest
 
 dash = pytest.importorskip("routes.brain_innovation_dashboard")
@@ -474,3 +480,69 @@ def test_page_names_a_non_json_failure_instead_of_saying_error(client, monkeypat
     assert "never reached the app" in body
     # the old bare-word fallback must be gone from the approve path
     assert "toast('Approve failed: '+approveErr(res), false)" in body
+
+
+# ════════════════════════════════════════════════════════════════════
+# The script block must reach the browser WHOLE
+# ════════════════════════════════════════════════════════════════════
+
+# How an HTML parser ends script data: the first literal `</script` followed by
+# whitespace, `/` or `>`. It does not know JS — a closing tag inside a string or
+# a `//` comment ends the block just the same. Escape it as `<\/script>`.
+_SCRIPT_END_RE = re.compile(r"</script[\s/>]", re.I)
+
+
+def _script_the_browser_sees(html):
+    """The script text an HTML parser actually hands the JS engine, and the
+    1-based page line the block ends on."""
+    open_at = html.index("<script>") + len("<script>")
+    end = _SCRIPT_END_RE.search(html, open_at)
+    assert end, "the page's script block is never closed"
+    return html[open_at:end.start()], html.count("\n", 0, end.start()) + 1
+
+
+def test_page_script_block_is_not_truncated(client, monkeypatch):
+    """THE REGRESSION GUARD for the blank dashboard. A comment added to explain
+    the WAF workaround quoted `</script>` verbatim; the HTML parser ended the
+    block right there, the browser got 24 of 260 lines of JS with the opening
+    IIFE unclosed, and the page died on 'Uncaught SyntaxError: Unexpected end of
+    input' at that line while rendering nothing. Asserted on the SERVED body."""
+    monkeypatch.setattr(dash, "_admin_ok", lambda: True)
+    body = client.get("/api/v1/brain/innovation/dashboard").get_data(as_text=True)
+
+    js, ends_on_line = _script_the_browser_sees(body)
+
+    # It must end on the page's LAST closing tag — not on an earlier one.
+    last_close = body.rindex("</script>")
+    assert ends_on_line == body.count("\n", 0, last_close) + 1, (
+        f"the script block is cut short at page line {ends_on_line}: something "
+        f"between there and the real close writes a literal closing script tag. "
+        f"Escape it as <\\/script>. Browser sees only {js.count(chr(10)) + 1} "
+        f"lines of JS.")
+
+    # …and the whole IIFE must be inside what the browser sees.
+    assert js.lstrip().startswith("//") and "(function(){" in js
+    assert js.rstrip().endswith("})();"), (
+        "the served script does not end with the IIFE close — it was truncated")
+
+
+def test_page_script_block_parses_as_javascript(client, monkeypatch):
+    """The structural check above proves the block is whole; this proves the
+    whole block is valid JS, using the same parser the browser uses."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    monkeypatch.setattr(dash, "_admin_ok", lambda: True)
+    body = client.get("/api/v1/brain/innovation/dashboard").get_data(as_text=True)
+    js, _ = _script_the_browser_sees(body)
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                     encoding="utf-8") as fh:
+        fh.write(js)
+        path = fh.name
+    try:
+        proc = subprocess.run([node, "--check", path], capture_output=True,
+                              text=True)
+    finally:
+        os.unlink(path)
+    assert proc.returncode == 0, (
+        f"the served dashboard JS does not parse:\n{proc.stderr}")

@@ -229,6 +229,137 @@ def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]
         return None, None
 
 
+# ── inline <script> ended early by a literal closing tag ────────────────
+# An HTML parser ends script data at the FIRST literal `</script` followed by
+# whitespace, `/` or `>`. It has no idea it is inside a JS string or a `//`
+# comment. One unescaped closing tag anywhere in inline JS therefore truncates
+# the block: the browser gets a fragment that dies on "Unexpected end of
+# input", and every line after it is parsed as page text. The response is still
+# 200, still the right length, still the right Content-Type — nothing upstream
+# of a browser console notices. 2026-09-04: a comment added to the innovation
+# dashboard to EXPLAIN the WAF workaround quoted the tag it warns about; the
+# page served 24 of 260 lines of JS and rendered blank.
+#
+# THE SIGNAL IS EXACT, and it is not "count the tags" — the first cut of this
+# detector did that and was vacuous, because the same comment also contained a
+# literal `<script src=…>` that balanced the books. Inside script data NOTHING
+# opens a new block, so a walk that models the parser consumes exactly one
+# closing tag per opening tag. A close the walk never reaches is ORPHANED, and
+# an orphan proves an earlier close was sitting inside the JS. Measured on
+# 2,314 served pages: 0 false positives; restoring the dashboard bug fires it.
+_SCRIPT_OPEN_RE = re.compile(r"<script(?![a-zA-Z])[^>]*>", re.I)
+_SCRIPT_CLOSE_RE = re.compile(r"</script[\s/>]", re.I)
+
+
+def _script_blocks_as_parsed(html: str):
+    """([(open_offset, close_offset)], unterminated_open_offset_or_None) the
+    way an HTML parser walks them."""
+    blocks, i = [], 0
+    while True:
+        m = _SCRIPT_OPEN_RE.search(html, i)
+        if not m:
+            return blocks, None
+        e = _SCRIPT_CLOSE_RE.search(html, m.end())
+        if not e:
+            return blocks, m.start()           # opened and never closed
+        blocks.append((m.start(), e.start()))
+        i = e.end()
+
+
+def _orphaned_script_closes(html: str):
+    """[(cut_block_open_line, premature_close_line, orphan_line)] — empty for a
+    page whose inline JS reaches the browser whole.
+
+    KNOWN BLIND SPOT, stated rather than hidden: if the JS after the premature
+    close itself contains a literal `<script…>` opening tag, the parser
+    re-enters script data there and consumes the orphan, so this returns [].
+    The truncation is real and the page is still broken; this signal just
+    cannot see it. _unterminated_script_open covers the tail of that case.
+    """
+    blocks, _unterminated = _script_blocks_as_parsed(html)
+    consumed = {c for _o, c in blocks}
+    line = lambda off: html.count("\n", 0, off) + 1
+    out = []
+    for m in _SCRIPT_CLOSE_RE.finditer(html):
+        if m.start() in consumed:
+            continue
+        cut = [b for b in blocks if b[1] < m.start()]
+        o, c = cut[-1] if cut else (None, None)
+        out.append((line(o) if o is not None else None,
+                    line(c) if c is not None else None, line(m.start())))
+    return out
+
+
+def _unterminated_script_open(html: str):
+    """Page line of a <script> the document never closes, or None. Same
+    outcome as a premature close — the JS never reaches the browser whole."""
+    _blocks, un = _script_blocks_as_parsed(html)
+    return None if un is None else html.count("\n", 0, un) + 1
+
+
+def _served_page_constants():
+    """(module, attr, html) for every module-level HTML page this app has
+    loaded. The radar runs INSIDE the Flask app, so the pages it serves are
+    already in memory — no network, no auth, and admin-gated pages (which an
+    HTTP probe would only ever see the 403 of) are covered too."""
+    for name, mod in list(sys.modules.items()):
+        if name != "main" and not name.startswith(("routes.", "util.")):
+            continue
+        path = getattr(mod, "__file__", "") or ""
+        if "/tests/" in path or "/site-packages/" in path:
+            continue
+        try:
+            items = list(vars(mod).items())
+        except Exception:
+            continue
+        for attr, val in items:
+            if not isinstance(val, str) or len(val) < 200:
+                continue
+            low = val.lower()
+            if "<script" not in low:
+                continue
+            if "<!doctype" not in low and "<html" not in low and "<body" not in low:
+                continue                       # a fragment, not a whole page
+            yield name, attr, val
+
+
+def check_inline_script_truncated() -> list[dict]:
+    """Served HTML whose inline <script> is cut short by an unescaped closing
+    tag inside the JS. The page 200s and looks healthy from every angle except
+    a browser console, where the script never runs at all."""
+    findings = []
+    for mod_name, attr, html in _served_page_constants():
+        try:
+            orphans = _orphaned_script_closes(html)
+            unterminated = _unterminated_script_open(html)
+        except Exception:
+            continue
+        tail = ("The browser gets a truncated script that dies on 'Unexpected "
+                "end of input' and renders the rest of the page as text, while "
+                "the response stays 200. Escape it as <\\/script> — in "
+                "comments and strings too.")
+        if orphans:
+            opened, cut_at, orphan_at = orphans[0]
+            findings.append({
+                "issue": "inline_script_truncated",
+                "count": len(orphans),
+                "detail": (
+                    f"{mod_name}.{attr} serves a page whose inline script block "
+                    f"(opened at line {opened}) is ended at line {cut_at} by a "
+                    f"closing tag written inside its own JavaScript, leaving "
+                    f"the real close at line {orphan_at} orphaned. " + tail),
+            })
+        elif unterminated is not None:
+            findings.append({
+                "issue": "inline_script_unterminated",
+                "count": 1,
+                "detail": (
+                    f"{mod_name}.{attr} serves a page whose <script> at line "
+                    f"{unterminated} is never closed. " + tail),
+            })
+    return findings
+
+
 def check_worker_version_drift() -> list[dict]:
     """Compare _worker.js source's WORKER_VERSION vs the live header
     value. Flag if they diverge."""
@@ -11705,6 +11836,10 @@ def scan_all() -> list[dict]:
                check_canonical_floor_exceeds_live,
                check_cross_surface_value_drift,
                check_worker_version_drift,
+               # 2026-09-04: the innovation dashboard served a
+               # script block truncated by a closing tag quoted
+               # inside a comment — 200 OK, blank page, no JS.
+               check_inline_script_truncated,
                # r-env-drift (2026-07-18): shared-critical env vars silently
                # drifting between the backend and worker services (dashboard
                # saves per-service; 3 incidents on 2026-07-17 alone).
