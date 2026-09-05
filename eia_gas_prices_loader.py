@@ -399,7 +399,7 @@ def fetch_and_upsert(conn):
                     """
                     INSERT INTO eia_gas_prices
                         (state, sector, price, period, eia_process, units, retrieved_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (state, sector, period) DO UPDATE
                     SET price        = EXCLUDED.price,
                         eia_process  = EXCLUDED.eia_process,

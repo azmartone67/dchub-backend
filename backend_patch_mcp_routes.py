@@ -29,6 +29,7 @@ SERVER_CARD = {
 
 
 def register_mcp_v1_routes(app):
+# AUTO-REPAIR: duplicate route '/api/v1/mcp/analytics' also in main.py:20342 — review and remove one
     @app.route("/api/v1/mcp/analytics", methods=["GET"])
     def mcp_v1_analytics():
         try:
@@ -55,6 +56,7 @@ def register_mcp_v1_routes(app):
         except Exception as e:
             logger.error(f"mcp_v1_analytics error: {e}")
             return jsonify({"requests": {"total": 0}, "discovery": {"total_hits": 0}, "period_hours": 24, "error": str(e)}), 200
+# AUTO-REPAIR: duplicate route '/api/v1/mcp/platforms' also in main.py:20553 — review and remove one
 
     @app.route("/api/v1/mcp/platforms", methods=["GET"])
     def mcp_v1_platforms():
@@ -86,6 +88,7 @@ def register_mcp_v1_routes(app):
             return jsonify({"registered": platforms, "unknown_agents": [], "total_registered": len(platforms), "timestamp": datetime.now(timezone.utc).isoformat()})
         except Exception as e:
             logger.error(f"mcp_v1_platforms error: {e}")
+# AUTO-REPAIR: duplicate route '/.well-known/mcp/server-card.json' also in ai_discovery_routes.py:533 — review and remove one
             return jsonify({"registered": [], "unknown_agents": [], "total_registered": 0, "error": str(e)}), 200
 
     @app.route("/.well-known/mcp/server-card.json", methods=["GET"])

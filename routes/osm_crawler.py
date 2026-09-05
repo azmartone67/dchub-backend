@@ -748,7 +748,7 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
                         INSERT INTO osm_crawl_log
                           (regions, pois_seen, pois_new, pois_dup,
                            errors, dry_run, finished_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                        VALUES (%s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     """, (summary["regions_processed"], summary["pois_seen"],
                            summary["pois_new"], summary["pois_dup"],
                            summary["errors"], dry_run))
