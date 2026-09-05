@@ -5,6 +5,13 @@
 import threading as _dchub_threading
 _DCHUB_CRAWLER_LOCK = _dchub_threading.BoundedSemaphore(1)
 
+# ★ 2026-09-05 — name our own outbound calls. This module runs STANDALONE (it
+#   does not import main), so it never picked up http_ua_default and every call
+#   it made went out as Python-urllib/* or python-requests/*. Measured at the
+#   edge, that anonymity was half of all /mcp traffic and made every growth
+#   number unreadable. Import for the side effect only.
+import http_ua_default  # noqa: F401
+
 """
 DC Hub Staggered Crawler Scheduler 2.0
 ====================================
