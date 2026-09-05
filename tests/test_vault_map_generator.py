@@ -197,9 +197,31 @@ def test_a_promoted_draft_starts_counting(tmp_path, monkeypatch):
 # ★ The skip is deliberately narrow: exactly GITHUB_EVENT_NAME == "pull_request".
 # test_the_pr_exemption_cannot_widen below pins that, because a guard that
 # learns to skip everywhere is the failure this file's own docstring is about.
+# The healer's own branch is the ONE pull request that must still be gated.
+# refresh-architecture-map.yml mints it at :110 as "chore/arch-map-<sha>" and
+# matches on that prefix at :104; tests/test_architecture_map_autoheal.py:73
+# already pins the string, so this reuses a constant rather than inventing one.
+_HEALER_BRANCH_PREFIX = "chore/arch-map-"
+
+
 def _is_pull_request() -> bool:
+    """True on a PR that may defer regeneration to the healer.
+
+    ★ The healer's OWN PR is excluded, and that carve-out is the whole point.
+    Its entire purpose is to make the committed map match the tree, so it is the
+    one PR that must not be allowed to merge a stale one. main's protection has
+    strict:false, so a healing PR is never required to be up to date: during its
+    ~25-minute check cycle more merges can land and move the count again, and
+    because the checkout is the MERGE ref its tree already contains those new
+    modules while its committed map does not. Exempting it would disarm the only
+    check that ever validated the healer's output — the healer would merge a map
+    that was already stale, and the next push would just open another one.
+    """
     import os
-    return os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return False
+    head = os.environ.get("GITHUB_HEAD_REF") or ""
+    return not head.startswith(_HEALER_BRANCH_PREFIX)
 
 
 def test_the_in_repo_copy_is_current():
@@ -243,6 +265,7 @@ def test_the_pr_exemption_cannot_widen(monkeypatch):
     """The exemption must be EXACTLY pull_request. A guard that learns to skip
     on push, schedule or a bare local run stops gating main — which is the only
     thing this gate was ever for."""
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
     for ev, expected in (("pull_request", True), ("push", False),
                          ("schedule", False), ("workflow_dispatch", False),
                          ("", False)):
@@ -250,6 +273,41 @@ def test_the_pr_exemption_cannot_widen(monkeypatch):
         assert _is_pull_request() is expected, f"event {ev!r} misclassified"
     monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
     assert _is_pull_request() is False, "unset env (local run) must still enforce"
+
+
+def test_the_healers_own_pr_is_never_exempt(monkeypatch):
+    """The healer exists to make the committed map match the tree, so it is the
+    one PR that must not merge a stale one.
+
+    main's protection has strict:false, so a healing PR is never required to be
+    up to date. During its ~25-minute check cycle more merges land, and its
+    checkout is the MERGE ref — tree already updated, committed map not. Before
+    the PR exemption, this check failing there is exactly what blocked auto-merge
+    and forced a fresh regeneration. Exempting it would let the healer merge a
+    map that is already stale again."""
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    for branch, exempt in (
+        ("chore/arch-map-abc1234", False),   # the healer itself — MUST enforce
+        ("chore/arch-map-", False),
+        ("feat/some-feature", True),         # an ordinary PR — may defer
+        ("fix/whatever", True),
+        ("", True),
+    ):
+        monkeypatch.setenv("GITHUB_HEAD_REF", branch)
+        assert _is_pull_request() is exempt, (
+            f"branch {branch!r}: expected exempt={exempt}")
+
+
+def test_the_healer_branch_prefix_matches_the_workflow_that_mints_it():
+    """If the workflow renames its branch, the carve-out above silently stops
+    matching and the healer becomes exempt again — the failure this whole file
+    is about."""
+    wf = (_ROOT / ".github" / "workflows" / "refresh-architecture-map.yml"
+          ).read_text(encoding="utf-8")
+    assert _HEALER_BRANCH_PREFIX in wf, (
+        f"{_HEALER_BRANCH_PREFIX!r} no longer appears in "
+        "refresh-architecture-map.yml — the healer branch was renamed and the "
+        "carve-out in _is_pull_request() now matches nothing.")
 
 
 def test_the_healer_that_justifies_the_exemption_exists():
