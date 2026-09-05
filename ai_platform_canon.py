@@ -44,13 +44,32 @@ breakdowns may keep the raw ids — the fragmentation only misleads when summed.
 from __future__ import annotations
 
 # Recognized external AI platforms (substring match, lowercased).
-# Mirrors flask_mcp_endpoints._LP_KNOWN_AI_TOKENS and
-# agent_network_effect._KNOWN_AI_TOKENS — those now import from here.
+#
+# THE ONLY definition in the repo. flask_mcp_endpoints._LP_KNOWN_AI_TOKENS and
+# agent_network_effect._KNOWN_AI_TOKENS are `import ... as` aliases of this
+# tuple, enforced by tests/test_platform_canon_single_source.py.
+#
+# ★These three lines used to say "those now import from here" while both of
+# them in fact held byte-identical literal copies (2026-07-27 -> 2026-09-05).
+# The comment asserting the invariant WAS the whole enforcement, so the
+# invariant quietly stopped holding and the file kept claiming it did. That is
+# why there is now a test: a sentence cannot enforce anything.
 KNOWN_AI_TOKENS = (
     "claude", "anthropic", "chatgpt", "openai", "gpt", "gemini", "bard",
     "copilot", "perplexity", "grok", "deepseek", "cursor", "cline",
     "windsurf", "mistral", "cohere", "llama", "meta", "nvidia", "groq",
     "huggingface", "phind", "you.com", "poe", "replit", "opencode",
+    # ── 2026-09-05, measured, not guessed ──────────────────────────────────
+    # `codex` appeared in /api/v1/ai/reach?period=30d per_platform (1 agent,
+    # 5 requests) and canonical_platform() returned None for it: OpenAI's own
+    # coding agent was calling the server and the published platform count
+    # could not see it. It only stayed invisible because `chatgpt` happened to
+    # be calling in the same window and already contributed the openai vendor
+    # — so this was a live count that was RIGHT BY COINCIDENCE. The remaining
+    # ids below are the other first-party agent clients that speak MCP and
+    # would have landed in the same blind spot.
+    "codex", "vscode", "visual studio code", "goose", "librechat",
+    "openhands", "devin", "roocode", "kilocode",
 )
 
 # Vendor collapse. Order matters: the first matching token wins, so put the
@@ -61,6 +80,15 @@ _VENDOR_ALIASES = (
     ("chatgpt",   "openai"),
     ("openai",    "openai"),
     ("gpt",       "openai"),
+    ("codex",     "openai"),   # OpenAI Codex collapses INTO openai, like claude-code
+    ("visual studio code", "vscode"),   # before "vscode": both spellings, one vendor
+    ("vscode",    "vscode"),
+    ("goose",     "goose"),
+    ("librechat", "librechat"),
+    ("openhands", "openhands"),
+    ("devin",     "devin"),
+    ("roocode",   "roocode"),
+    ("kilocode",  "kilocode"),
     ("bard",      "gemini"),
     ("gemini",    "gemini"),
     ("copilot",   "copilot"),

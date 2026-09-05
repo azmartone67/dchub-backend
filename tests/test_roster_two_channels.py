@@ -51,23 +51,24 @@ def test_openai_keyspace_bridge(monkeypatch):
     assert _run(monkeypatch, [("chatgpt", 4)]) == {"chatgpt": 4}
 
 
-def test_known_gap_codex_mcp_client_is_dropped_not_guessed(monkeypatch):
-    """★ HONEST GAP, recorded rather than papered over.
+def test_codex_mcp_client_now_attributes_to_chatgpt(monkeypatch):
+    """★ THE GAP CLOSED, 2026-09-05 — this test is the signal it worked.
 
-    'codex-mcp-client' (36 calls / 1 IP live on 2026-08-03) is OpenAI's Codex
-    CLI, so it BELONGS to chatgpt — but neither existing vocabulary says so:
-    ai_platform_canon has no 'codex' token, and the roster's chatgpt markers
-    are ChatGPT-User / GPTBot / OAI-SearchBot, none of which substring-match
-    it. So it is DROPPED.
+    It used to assert `== {}` and carried the instruction for its own
+    replacement: "The fix belongs in ai_platform_canon._VENDOR_ALIASES
+    ('codex' -> 'openai') … When it lands, this test flips to asserting
+    {'chatgpt': 36} and that is the signal it worked."
 
-    Dropping is the correct behaviour for this module — inventing an
-    attribution from a hunch is how a dashboard starts lying. The fix belongs
-    in ai_platform_canon._VENDOR_ALIASES ('codex' -> 'openai'), which is the
-    single source both this and count_platforms() read; it is deliberately NOT
-    done here because that module's output feeds published platform COUNTS and
-    deserves its own change. When it lands, this test flips to asserting
-    {'chatgpt': 36} and that is the signal it worked."""
-    assert _run(monkeypatch, [("codex-mcp-client", 36)]) == {}
+    That alias landed. 'codex-mcp-client' is OpenAI's Codex CLI, the canon now
+    collapses it onto the openai vendor, and the roster bridge maps openai onto
+    its own 'chatgpt' key (see test_openai_keyspace_bridge). The attribution is
+    derived from the canon, not guessed here — which is why the old behaviour
+    was correct until the canon could say it.
+
+    What triggered the change: `codex` was observed live in
+    /api/v1/ai/reach?period=30d per_platform on 2026-09-05 (1 agent, 5
+    requests) while canonical_platform('codex') still returned None."""
+    assert _run(monkeypatch, [("codex-mcp-client", 36)]) == {"chatgpt": 36}
 
 
 def test_generic_buckets_are_dropped_never_invented(monkeypatch):

@@ -64,13 +64,13 @@ def _is_internal_caller(p):
 # + agent count reflect ONLY these — a denylist can't keep up with the long tail
 # of audit/test/probe one-offs (Scraper-Block-Verify, Leakaudit4, ...).
 # Conservative by design: a brand-new platform not yet listed is undercounted,
-# never noise-inflated. Extend as real platforms appear (cf. partner task).
-_KNOWN_AI_TOKENS = (
-    "claude", "anthropic", "chatgpt", "openai", "gpt", "gemini", "bard",
-    "copilot", "perplexity", "grok", "deepseek", "cursor", "cline",
-    "windsurf", "mistral", "cohere", "llama", "meta", "nvidia", "groq",
-    "huggingface", "phind", "you.com", "poe", "replit", "opencode",
-)
+# never noise-inflated.
+#
+# ★2026-09-05 — IMPORTED, NOT COPIED. This was the third byte-identical copy of
+# the canon's tuple; "extend as real platforms appear" meant extending it in
+# three places, and in practice it was extended in none. Extend
+# ai_platform_canon.KNOWN_AI_TOKENS instead — it reaches all three.
+from ai_platform_canon import KNOWN_AI_TOKENS as _KNOWN_AI_TOKENS
 def _is_recognized_platform(p):
     if not p:
         return False
