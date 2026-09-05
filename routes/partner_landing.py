@@ -47,14 +47,54 @@ from ai_surface_canon import canon_text
 # recipient checking the claim landed on a different wrong number.
 # Half-canonised is how that happens: the derived value sits next to the
 # typed one and looks equally trustworthy.
-_CANON_FAC = canon_text("{canon_facilities}")
-_CANON_DEALS = canon_text("{canon_deals}")
-_CANON_MKTS = canon_text("{canon_markets}")
-# ★2026-09-04: the live-strip said "10 ISOs". 10 is the GRID OPERATOR
-# count (the US ISOs plus TVA, BPA and Ontario's IESO) — a different
-# metric wearing the ISO label, so the strip over-claimed the thing it
-# actually named. canonical_stats keeps the two apart; so does this.
-_CANON_ISOS = canon_text("{canon_isos}")
+# ★2026-09-05 — RESOLVED PER REQUEST, NOT AT IMPORT.
+#
+# These four were module-level `canon_text(...)` constants, which reads as
+# canon-bound and is not: canon_text() runs ONCE, at import, so the value
+# freezes for the life of the process. It satisfies the AST guard in
+# tests/test_canon_placeholders_resolved.py (the placeholder genuinely is
+# inside a resolver call) and drains the ledger entry, while the page keeps
+# serving whatever the canon said at boot.
+#
+# Measured on the live site, same host, same second:
+#   /api/v1/canon/phrases   facilities = one value
+#   /partners/cohere        facilities = an OLDER one
+# Two answers to one question from one process — the exact shape this file's
+# 2026-08-29 note below describes, one level further down: there the typed
+# number sat beside the derived one, here the *stale* derived number does.
+# dchub-backend #3831 named the mechanism while retiring a page for it.
+#
+# The copy in _PARTNERS carries @@CANON_*@@ tokens instead of interpolated
+# values — the same convention routes/competitive_intel.py uses for
+# @@GAS_INDEX_STATE@@ — and _resolve_canon() below fills them at render time.
+# The placeholder strings stay lexically inside canon_text() so the AST guard
+# still covers them.
+_CANON_TOKENS = ("@@CANON_FAC@@", "@@CANON_DEALS@@", "@@CANON_MKTS@@",
+                 "@@CANON_ISOS@@")
+
+
+def _canon_values() -> dict:
+    """Canon phrases for this request. Never cached at module scope."""
+    return {
+        "@@CANON_FAC@@":   canon_text("{canon_facilities}"),
+        "@@CANON_DEALS@@": canon_text("{canon_deals}"),
+        "@@CANON_MKTS@@":  canon_text("{canon_markets}"),
+        # ★2026-09-04: the live-strip said "10 ISOs". 10 is the GRID OPERATOR
+        # count (the US ISOs plus TVA, BPA and Ontario's IESO) — a different
+        # metric wearing the ISO label, so the strip over-claimed the thing it
+        # actually named. canonical_stats keeps the two apart; so does this.
+        "@@CANON_ISOS@@":  canon_text("{canon_isos}"),
+    }
+
+
+def _resolve_canon(text: str) -> str:
+    """Substitute every @@CANON_*@@ token. Fail-open like canon_text()."""
+    if not text:
+        return text
+    for tok, val in _canon_values().items():
+        if tok in text:
+            text = text.replace(tok, val)
+    return text
 
 
 partner_landing_bp = Blueprint("partner_landing", __name__)
@@ -174,13 +214,13 @@ _PARTNERS = {
                        "wrong capacity numbers, wrong M&A details. DC Hub is the "
                        "citation engine that fixes that."),
         "value_bullets": [
-            f"{_CANON_FAC} global facilities, daily-refreshed — every facility cited with attribution",
+            "@@CANON_FAC@@ global facilities, daily-refreshed — every facility cited with attribution",
             # ★2026-09-04: this bullet hardcoded its count while _CANON_MKTS
             # sat defined at the top of this same file and its two neighbouring
             # bullets resolved theirs. The literal had drifted well under the
             # live span; the derived constant it should have used never moved.
-            f"DCPI (Data Center Power Index) — {_CANON_MKTS} markets, US + international",
-            f"{_CANON_DEALS} tracked M&A deals — every deal sourced and linked",
+            "DCPI (Data Center Power Index) — @@CANON_MKTS@@ markets, US + international",
+            "@@CANON_DEALS@@ tracked M&A deals — every deal sourced and linked",
             "369 GW construction pipeline — verifiable, citable, free",
         ],
         "integration_path": "mcp_server",
@@ -237,7 +277,7 @@ _PARTNERS = {
                        "Gemini itself."),
         "value_bullets": [
             "8 tools live + drift-monitored (tool_set_hash on /api/v1/vertex/health)",
-            f"{_CANON_FAC} facilities · {_CANON_MKTS} DCPI markets · 21-ISO live grid scoreboard",
+            "@@CANON_FAC@@ facilities · @@CANON_MKTS@@ DCPI markets · 21-ISO live grid scoreboard",
             "Every tool description embeds 'Cite DC Hub (dchub.cloud/dcpi)' — your Gemini answers attribute the source by design",
             "Free-tier: rate-limited but no key required. PRO+ ($499/mo) lifts limits + unlocks full data envelope",
             "Already cited by Claude, ChatGPT, Perplexity, Cursor — Vertex closes the loop",
@@ -315,7 +355,7 @@ _PARTNERS = {
             # regions) and TVA (a federal utility). The ENTITY count was
             # honest; the noun covering them was not. Membership is unchanged
             # here, only the label, and the ISO half now derives.
-            f"Interconnection-queue data across the {_CANON_ISOS} US ISOs "
+            "Interconnection-queue data across the @@CANON_ISOS@@ US ISOs "
             "(ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE) plus WECC, SERC and TVA",
             "Time-to-power estimates so customers know if a market is 90-day or 90-month buildable",
             "Free API tier covers most partner DevRel use cases — Pro tier for grid_intelligence + analyze_site",
@@ -564,8 +604,20 @@ def _render_pre_execution_stub(slug: str, p: dict) -> str:
 def _render_partner_page(slug: str, p: dict) -> str:
     """Build the HTML for one target. Inline CSS, dark theme, DM Sans."""
     accent = p["accent"]
+    # ★ Resolve canon HERE, once per request. _canon_values() is called once
+    #   and reused across this render so the strip and the bullets on one page
+    #   cannot disagree — the failure the 2026-08-29 note above describes.
+    _canon = _canon_values()
+    def _fill(t):
+        for tok, val in _canon.items():
+            if tok in t:
+                t = t.replace(tok, val)
+        return t
+    _CANON_FAC = _canon["@@CANON_FAC@@"]
+    _CANON_MKTS = _canon["@@CANON_MKTS@@"]
+    _CANON_ISOS = _canon["@@CANON_ISOS@@"]
     bullets_html = "\n".join(
-        f"      <li><span class=\"check\">✓</span> {b}</li>"
+        f"      <li><span class=\"check\">✓</span> {_fill(b)}</li>"
         for b in p["value_bullets"]
     )
     # Cross-partner interconnect — link the other live partner pages so the

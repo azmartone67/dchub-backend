@@ -152,20 +152,97 @@ def test_outreach_draft_stats_block_is_live():
     assert m, "the DCPI stat line vanished from the outreach draft"
     assert m.group(1) == _canon_phrase()
 
-    for name in ("_DESC_LONG", "_DESC_SHORT", "_DESC_TWEET"):
-        blurb = getattr(mod, name)
-        assert "{canon_" not in blurb, f"{name} serves an unresolved placeholder"
-        assert _canon_phrase() in blurb, f"{name} lost its derived market count"
+    long_, short_, tweet = mod._resolved_descs()
+    for blurb in (long_, short_, tweet):
+        assert "{canon_" not in blurb
+        assert _canon_phrase() in blurb
+
+
+def test_outreach_drafts_are_not_latched_at_import(monkeypatch):
+    """★ Resolving canon at MODULE scope reads as canon-bound and is not.
+
+    canon_text() runs once at import, so the value freezes for the life of the
+    process — it satisfies the AST guard and drains the ledger entry while the
+    surface keeps serving what the canon said at boot. These strings go to
+    third-party registries, which republish them, so a frozen number outlives
+    our next deploy on someone else's site.
+
+    Asserting the value equals the canon phrase CANNOT catch this: both read
+    the same in-process value. Move the canon and require the surface to follow.
+    """
+    import routes.mcp_outreach_drafts as mod
+
+    monkeypatch.setattr(
+        mod, "canon_text",
+        lambda t: re.sub(r"\{canon_[a-z_]+\}", "CANON_MOVED", t) if t else t)
+    draft = mod._draft_for_target({"name": "t", "url": "https://x/"}, 48, 20100)
+    assert "CANON_MOVED" in draft["markdown_block"], (
+        "the registry draft ignored a canon change — it is latched at import"
+    )
+    assert "CANON_MOVED" in draft["tweet_announcement"]
 
 
 def test_partner_landing_bullet_matches_its_derived_neighbours():
     import routes.partner_landing as pl
 
-    assert pl._CANON_MKTS == _canon_phrase()
-    src = (_ROOT / "routes/partner_landing.py").read_text()
-    assert "_CANON_MKTS} markets" in src, (
-        "the DCPI bullet no longer reads the constant defined in its own file"
+    # perplexity is the partner whose value_bullets carry the DCPI market
+    # count; asserting on a page that never had the bullet would pass forever.
+    html = pl._render_partner_page("perplexity", pl._PARTNERS["perplexity"])
+    assert "@@CANON" not in html, "an unresolved canon token reached the page"
+    assert "{canon_" not in html and "{_CANON" not in html
+    assert f"{_canon_phrase()} markets, US + international" in html, (
+        "the DCPI bullet lost its derived count"
     )
+
+
+def test_partner_landing_iso_count_is_derived():
+    """The live-strip named ISOs and published the GRID OPERATOR count.
+
+    10 is the operator total (the US ISOs plus TVA, BPA and IESO); there are 7
+    live US ISOs, so the strip over-claimed by three the metric it named. The
+    repo already banned this shape — tests/test_canonical_counts_drift.py's
+    isos_non_canonical — but this file sat in KNOWN_STALE_COUNT_DEBT, so the
+    ban was recorded rather than enforced here.
+    """
+    import routes.partner_landing as pl
+
+    isos = ai_surface_canon.canon_nums()["{canon_isos}"]
+    html = pl._render_partner_page("cohere", pl._PARTNERS["cohere"])
+    m = re.search(r"markets\s*·\s*([^<]*?)\s*ISOs", html)
+    assert m, "the ISO clause vanished from the live-strip"
+    assert m.group(1) == isos
+
+
+def test_partner_landing_is_off_the_iso_debt_register():
+    """A fix that leaves its debt entry behind re-permits the defect."""
+    drift = (_ROOT / "tests/test_canonical_counts_drift.py").read_text()
+    m = re.search(r"'routes/partner_landing\.py':\s*\{([^}]*)\}", drift)
+    if m:
+        assert "isos_non_canonical" not in m.group(1), (
+            "routes/partner_landing.py still claims isos_non_canonical as known "
+            "debt, so the repo-wide fence stays disarmed for this file"
+        )
+
+
+def test_partner_pages_are_not_latched_at_import(monkeypatch):
+    """Same import-time latch as the outreach drafts, on served HTML.
+
+    Measured live before this was fixed, same host and second:
+    /api/v1/canon/phrases and /partners/<slug> gave DIFFERENT facility counts
+    from one process. Comparing the page against the canon phrase cannot see
+    that — both read the same latched value — so move the canon and require
+    every partner page to follow.
+    """
+    import routes.partner_landing as pl
+
+    monkeypatch.setattr(
+        pl, "canon_text",
+        lambda t: re.sub(r"\{canon_[a-z_]+\}", "CANON_MOVED", t) if t else t)
+    for slug in list(pl._PARTNERS)[:3]:
+        html = pl._render_partner_page(slug, pl._PARTNERS[slug])
+        assert "CANON_MOVED" in html, (
+            f"/partners/{slug} ignored a canon change — it is latched at import"
+        )
 
 
 def test_auto_press_body_is_derived():
@@ -222,41 +299,10 @@ def test_narrative_arc_fallback_reads_when_canon_is_unreadable(monkeypatch):
     assert na._canon_markets() == ""
 
 
-def test_partner_landing_iso_count_is_derived():
-    """The live-strip named ISOs and published the GRID OPERATOR count.
-
-    10 is the operator total (the US ISOs plus TVA, BPA and IESO); there are 7
-    live US ISOs, so the strip over-claimed by three the metric it named. The
-    repo already banned this shape — tests/test_canonical_counts_drift.py's
-    isos_non_canonical — but this file sat in KNOWN_STALE_COUNT_DEBT, so the
-    ban was recorded rather than enforced here. That register only travels
-    downward, so the entry is removed in the same commit as the fix.
-    """
-    import routes.partner_landing as pl
-
-    assert pl._CANON_ISOS == ai_surface_canon.canon_nums()["{canon_isos}"]
-    html = pl._render_partner_page("cohere", pl._PARTNERS["cohere"])
-    m = re.search(r"markets\s*·\s*([^<]*?)\s*ISOs", html)
-    assert m, "the ISO clause vanished from the live-strip"
-    assert m.group(1) == pl._CANON_ISOS
-    assert "{_CANON" not in html and "{canon_" not in html
-
-
-def test_partner_landing_is_off_the_iso_debt_register():
-    """A fix that leaves its debt entry behind re-permits the defect."""
-    drift = (_ROOT / "tests/test_canonical_counts_drift.py").read_text()
-    m = re.search(r"'routes/partner_landing\.py':\s*\{([^}]*)\}", drift)
-    assert m, "partner_landing's debt entry disappeared entirely — expected it "
-    assert "isos_non_canonical" not in m.group(1), (
-        "routes/partner_landing.py still claims isos_non_canonical as known "
-        "debt, so the repo-wide fence stays disarmed for this file"
-    )
-
-
 # A value canon will never produce, so a string that carries it can only have
 # come through the resolver. Comparing against the real phrase cannot do this:
-# the literals being replaced happened to EQUAL the live phrase, which is how
-# they survived every previous check.
+# a hardcoded literal that happens to EQUAL the live phrase satisfies it, which
+# is how the competitive_intel counts survived every previous check.
 _SENTINEL = "<<CANON>>"
 
 
