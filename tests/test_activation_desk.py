@@ -35,6 +35,28 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "routes", "activation_desk.py")
 
 
+def _tree():
+    return ast.parse(open(SRC, encoding="utf-8").read())
+
+
+def _stmt_source(pred):
+    """Source of the first top-level-or-nested statement matching `pred`.
+
+    ★ REPLACES FIXED-WIDTH SLICES. These checks used `body[i:i + 220]` and
+    `body[i - 300:i + 200]` from an .index() anchor. A fixed slice measures the
+    LENGTH of what it reads, not its content: on 2026-09-05 the sibling guard in
+    tests/test_reach_self_refresh_split.py went red because a string it checks
+    GREW past its window while remaining entirely correct. Widening the number
+    only moves the next failure out. Bound the region by the AST node instead,
+    so it tracks the code however it is edited.
+    """
+    src = open(SRC, encoding="utf-8").read()
+    for node in ast.walk(_tree()):
+        if pred(node):
+            return ast.get_source_segment(src, node) or ""
+    return ""
+
+
 def _src(strip_comments=True):
     s = open(SRC, encoding="utf-8").read()
     if strip_comments:
@@ -96,9 +118,21 @@ def test_an_unmatched_user_is_unmeasured_not_a_segment():
     assert "matched_user" in body, (
         "matched_user is not published, so a reader cannot tell a real "
         "'never logged in' from a failed join")
-    i = body.index("row[\"segment\"] =")
-    assert "matched_user" in body[i:i + 220], (
-        "segment is assigned without checking matched_user first")
+    def _is_segment_assign(n):
+        if not isinstance(n, ast.Assign):
+            return False
+        for t in n.targets:
+            if (isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant)
+                    and t.slice.value == "segment"):
+                return True
+        return False
+
+    assign = _stmt_source(_is_segment_assign)
+    assert assign, "no assignment to row['segment'] found"
+    assert "matched_user" in assign, (
+        "segment is assigned without checking matched_user first — a failed "
+        "join would be classified instead of reported as unmeasured. "
+        "Statement was: %r" % assign)
 
 
 def test_drafts_invent_no_prior_interest():
@@ -128,9 +162,13 @@ def test_drafts_invent_no_prior_interest():
 
 
 def test_a_failed_query_says_unread_not_empty():
-    body = _src()
-    i = body.index("query failed")
-    seg = body[i - 300:i + 200]
+    # The whole except handler, however long it grows — not a window around a
+    # string that happens to sit inside it.
+    seg = _stmt_source(
+        lambda n: isinstance(n, ast.ExceptHandler)
+        and "query failed" in (ast.get_source_segment(
+            open(SRC, encoding="utf-8").read(), n) or ""))
+    assert seg, "no except handler carrying the 'query failed' path"
     assert "UNREAD" in seg and "not empty" in seg, (
         "a failed read must not render as an empty queue — that is the "
         "absence-vs-zero defect this codebase keeps paying for")
