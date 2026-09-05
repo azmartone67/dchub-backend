@@ -136,6 +136,31 @@ AI_ENDPOINT_PATTERNS = [
     r"^/ai-agents\.json",
     r"^/openapi\.json",
     r"^/AGENTS\.md",
+    # r-sitemap-visible (2026-09-05): a sitemap fetch was recorded by NOBODY.
+    # Not here (this list had no /sitemap), and not by the edge beacon
+    # (ORGANIC_CONTENT_PREFIXES has no /sitemap either). So when a crawler read
+    # llms.txt, saw /sitemap-ai.xml named there, and went and fetched it, that
+    # fetch was invisible — and the whole point of publishing the AI sitemap is
+    # to find out whether anyone follows the pointer.
+    #
+    # Measured 2026-09-05 17:20-17:22, ClaudeBot read /llms.txt, then
+    # agent-card.json, mcp-server.json and /AGENTS.md. Whether it then fetched
+    # the sitemap those files name could not be answered from any table.
+    #
+    # ★ THIS IS ONLY HONEST FOR THE AI FAMILY, and the asymmetry is published in
+    #   crawler_externality.collector_coverage rather than left for someone to
+    #   trip over. Measured the same day with two consecutive requests each:
+    #       /sitemap.xml                  cf-cache-status EXPIRED -> HIT
+    #       /sitemap-ai.xml               DYNAMIC, DYNAMIC
+    #       /sitemap-ai-facilities-1.xml  DYNAMIC, DYNAMIC
+    #   The canonical sitemap is edge-cached, so its fetches reach the origin
+    #   only on a MISS and this hook UNDER-COUNTS them. The AI family is never
+    #   cached, so it is seen in full. Do not compare the two counts.
+    #
+    # No double-count: the edge beacon deliberately does NOT carry /sitemap, so
+    # exactly one collector records these. Googlebot and friends never arrive
+    # here — the hook drops platform in ('direct','seo_bot') a few lines below.
+    r"^/sitemap",
 ]
 
 

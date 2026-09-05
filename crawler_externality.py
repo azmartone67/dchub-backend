@@ -139,6 +139,12 @@ _BUCKET_RULES = (
         "/agents.md",
         "/openapi.json",
         "/ai-agents.json",
+        # r-sitemap-visible (2026-09-05): a sitemap is a DISCOVERY artefact —
+        # the same class as llms.txt and AGENTS.md, which is why it belongs
+        # here and NOT in organic_content. A crawler fetching the URL inventory
+        # has not read a content page, and letting these land in the content
+        # bucket would inflate exactly the number the AI sitemap exists to move.
+        "/sitemap",
         "/skill.json",
         "/skill.md",
         "/ai.txt",
@@ -307,6 +313,18 @@ def collector_coverage() -> dict:
             "AI-platform hits on the organic content prefixes to "
             "/api/ai/track-request, which does not apply is_ai_endpoint(). "
             "This is the first collector that can see a content-page crawl"),
+        "sitemap_fetches": (
+            "instrumented since 2026-09-05 — ^/sitemap joined the Flask hook's "
+            "allowlist, and these rows classify as instructed_metadata (a "
+            "discovery artefact, not a content page). ★ COVERAGE IS UNEVEN AND "
+            "THE COUNTS ARE NOT COMPARABLE: measured that day, /sitemap.xml is "
+            "edge-cached (cf-cache-status EXPIRED then HIT) so it reaches the "
+            "origin only on a miss and is UNDER-COUNTED, while /sitemap-ai.xml "
+            "and its shards answer DYNAMIC on every request and are seen in "
+            "full. A higher count for the AI family would be a caching "
+            "artefact, not more interest. If a CF cache rule ever starts "
+            "caching the AI family this instrument goes blind SILENTLY — there "
+            "is no signal at the origin for a request that never arrives."),
         "consequence": (
             "organic content crawling was NOT INSTRUMENTED until 2026-08-29, "
             "and the bucket IS NOW A NUMBER: the edge beacon has recorded "
