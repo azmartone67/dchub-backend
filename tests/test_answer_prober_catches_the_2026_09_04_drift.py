@@ -229,3 +229,44 @@ def test_every_expectation_traces_back_to_a_live_read():
     src = inspect.getsource(ap)
     assert "_canon_counts" in src and "canon[" in src, (
         "no expectation is drawn from the live canon read any more")
+
+
+# ── a surface that says it is not ready ──────────────────────────────────────
+
+def test_a_warming_replica_is_not_scored_as_drift(monkeypatch):
+    """Found on this prober's first live run.
+
+    /alive fills its DB-backed blocks inside try/except, so a warming replica
+    returns 200 with `"dcpi": {}`. Naively that is extractor-blind and the whole
+    scorecard goes red for minutes after every deploy — the cry-wolf failure
+    that gets a probe switched off.
+    """
+    _install(monkeypatch, {**PRE_FIX, "/api/v1/alive": (200, json.dumps(
+        {"warming": True, "dcpi": {}}))})
+    out = ap.run_answer_probe("alive")
+    c = out["comparisons"][0]
+    assert c["verdict"] == "warming", (
+        f"a warming replica scored {c['verdict']!r}; deploys would redden the "
+        f"scorecard until the operator stopped reading it")
+    assert out["ok"] is True, "a warming replica must not fail the run"
+    assert out["verdict"] == "warming", (
+        "a run held back by warmup is neither clean nor drift")
+
+
+def test_an_empty_block_WITHOUT_warming_is_still_caught(monkeypatch):
+    """The other half. Empty while claiming to be ready is a real failure —
+    exactly the shape of every bug this module exists to catch."""
+    _install(monkeypatch, {**PRE_FIX, "/api/v1/alive": (200, json.dumps({"dcpi": {}}))})
+    out = ap.run_answer_probe("alive")
+    assert out["comparisons"][0]["verdict"] == "extractor-blind"
+    assert out["ok"] is False
+
+
+def test_warming_does_not_mask_a_real_disagreement(monkeypatch):
+    """A warming flag must excuse ABSENCE, never a wrong number."""
+    _install(monkeypatch, {**PRE_FIX, "/api/v1/alive": (200, json.dumps(
+        {"warming": True, "dcpi": {"markets_scored": 334}}))})
+    out = ap.run_answer_probe("alive")
+    assert out["comparisons"][0]["verdict"] == "disagrees", (
+        "a warming replica served a WRONG count and the probe excused it")
+    assert out["ok"] is False
