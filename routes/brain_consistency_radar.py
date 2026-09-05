@@ -9488,6 +9488,41 @@ def check_cron_freshness() -> list[dict]:
     return findings
 
 
+def check_glama_listing_health() -> list[dict]:
+    """Glama's PUBLIC health badge on our listings — the one check_mcp_presence_stale
+    structurally cannot make. That check watches the presence CRAWLER, which reads a
+    registry index for the substring "dchub"; it cannot see a Healthy/Unhealthy badge,
+    the Available-Tools count on a specific card, or a SECOND card existing at all.
+
+    All three were live on 2026-09-05: a Glama-native duplicate connector had been
+    showing a red Unhealthy badge since 09-01 advertising "33 tools" under the Energy
+    category, while the real card was tested Healthy at 14:41 the same day with 83.
+    Four days public, invisible here. Glama is the inspected registry — that badge sits
+    next to the install button, so it is part of the product, not a dashboard detail.
+
+    FAIL-SAFE on transport (Glama down or rate-limiting us yields NO finding — that is
+    not DC Hub being broken), FAIL-CLOSED on parse (a connector page we fetched and
+    could not read fires, because could-not-run is not ran-and-passed). Parsing and
+    finding construction live in routes/glama_listing_probe.py and are unit-tested
+    without network."""
+    try:
+        from routes.glama_listing_probe import findings as _glama_findings
+        from routes.glama_listing_probe import probe as _glama_probe
+    except Exception:
+        return []
+    try:
+        canon_tools = None
+        try:
+            from ai_surface_canon import PINNED as _PINNED
+            canon_tools = int(_PINNED.get("tools_advertised") or 0) or None
+        except Exception:
+            canon_tools = None
+        return _glama_findings(_glama_probe(), canon_tools=canon_tools)
+    except Exception:
+        # A registry probe must never be able to take the radar down with it.
+        return []
+
+
 def check_mcp_presence_stale() -> list[dict]:
     """The MCP-registry presence flywheel keeps our listings across ~16 registries
     fresh + drift-corrected via the SEPARATE crawler_scheduler (lanes
@@ -12447,6 +12482,12 @@ def scan_all() -> list[dict]:
                # runs on crawler_scheduler (not /api/jobs) so check_cron_freshness
                # is blind to it — caught the ~51/61h stall + the GitHub drift.
                check_mcp_presence_stale,
+               # 2026-09-05: the presence crawler above is blind to Glama's
+               # PUBLIC health badge, to a card's Available-Tools count, and to
+               # a duplicate listing existing — a red duplicate advertising
+               # "33 tools" sat public for 4 days beside the healthy 83-tool
+               # card and nothing here could see it.
+               check_glama_listing_health,
                # r-customer-loop (2026-07-20) — systemic activation-failure +
                # nudge-escalation backlog, the course-correction leg of the
                # customer white-glove loop (its cron freshness is covered by
