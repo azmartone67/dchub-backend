@@ -137,7 +137,7 @@
       "pglob": 130
     },
     "test_honest_numbers.py": {
-      "walk": 130
+      "walk": 80
     },
     "test_identity_view_columns.py": {
       "pglob": 640
