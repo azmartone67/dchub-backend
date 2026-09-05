@@ -141,6 +141,72 @@ _PAID_TIERS = {"starter", "developer", "pro", "founding", "enterprise",
 # ("strong excess capacity (85)"), so it is ALSO gold — masking the
 # numbers but leaving `why` would just re-leak them in prose. We null it
 # for gated callers and swap in a generic upsell teaser.
+# ═══════════════════════════════════════════════════════════════════════
+# WHAT `rank_score` IS CALLED — r-pocket-score-label (2026-09-05)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# This page published `rank_score` as "DCPI composite score". It is not one.
+#
+# There ARE two numbers here and they are both real. The DCPI composite is
+# routes/dcpi.derive_composite_score — 0-100, weighted 60/30/10 across the
+# three components and multiplied by a verdict quality gate — and it is what
+# /dcpi/<market>, /api/v1/dcpi/scores and util/market_entity's "DCPI Score"
+# PropertyValue all publish, described there as "buildability composite scored
+# 0-100". `rank_score` is THIS page's deployability ordering:
+#
+#     excess − constraint/2 − max(0, ttp−24)×2  ± verdict bonus
+#
+# Different weights, a much harder time-to-power penalty, and — the tell —
+# UNBOUNDED BELOW. Measured live 2026-09-05, /pockets/ashburn published
+# "DCPI composite score -4.3" and /pockets/northern-virginia published
+# "-109.6", for a market whose DCPI composite at /dcpi/ashburn was 27.4. A
+# negative value is not merely a different number, it is outside the declared
+# range of the thing the label named.
+#
+# Keeping the number and fixing the name, rather than the reverse: the ranking
+# this page exists to publish (and its /pockets.rss, movers and for-me
+# ordering) is built on `rank_score`, and swapping in the DCPI composite would
+# silently re-order every one of those. The formula is legitimate; the label
+# was the defect.
+#
+# ONE definition, referenced by every surface that prints it — the wire field
+# name `rank_score` is deliberately unchanged, since it never claimed DCPI and
+# agents parse it.
+POCKET_RANK_LABEL = "Pocket rank score"
+
+#: Rendered under the number wherever there is room for one line.
+POCKET_RANK_FORMULA = "excess − constraint/2 − time-to-power penalty ± verdict"
+
+#: For meta descriptions, JSON-LD and RSS — the places an agent reads without
+#: seeing the page. Says what the number is AND what it is not, because the
+#: name it used to carry is a real DC Hub quantity that still exists elsewhere.
+#: ★ NO APOSTROPHE, deliberately. This string is interpolated inside
+#: <script type="application/ld+json">, where Jinja autoescape rewrites ' as
+#: &#39; — and a JSON parser does not decode HTML entities, so an agent reads
+#: the entity literally. Same reason the sentence avoids < and &.
+POCKET_RANK_BASIS = (
+    "Pocket rank score is the DC Hub deployability ranking for this page "
+    "(excess power minus half grid-constraint minus a time-to-power penalty, "
+    "plus a verdict bonus); it is unbounded and can be negative. It is NOT "
+    "the DCPI composite, which is scored 0-100 and published at "
+    "https://dchub.cloud/dcpi/"
+)
+
+#: The short form, for the meta description — search engines truncate around
+#: 160 characters, so the full basis there would be cut mid-sentence and the
+#: "not the DCPI composite" half is exactly the half that would be lost.
+POCKET_RANK_SHORT = "a deployability ranking, not the 0-100 DCPI composite"
+
+
+def _rank_context() -> dict:
+    """The label constants, as template context. One call site per template so
+    a new surface cannot invent a fourth name for this number."""
+    return {"rank_label": POCKET_RANK_LABEL,
+            "rank_formula": POCKET_RANK_FORMULA,
+            "rank_short": POCKET_RANK_SHORT,
+            "rank_basis": POCKET_RANK_BASIS}
+
+
 _POCKET_MASK_FIELDS = ("rank_score", "excess_power_score", "constraint_score",
                        "time_to_power_months", "delta_7d", "personal_score")
 
@@ -166,7 +232,8 @@ def _mask_pockets_for_tier(rows: list[dict], tier: str) -> tuple[list[dict], boo
                 _r[_k] = None
         # `why` is derived from the raw scores → also gold. Replace, don't leak.
         if "why" in _r:
-            _r["why"] = "Upgrade to unlock the DCPI score, momentum and rationale"
+            _r["why"] = (f"Upgrade to unlock the DCPI scores, {POCKET_RANK_LABEL}, "
+                         "momentum and rationale")
         _r["locked"] = True
         masked.append(_r)
     return masked, True
@@ -183,9 +250,9 @@ def _apply_gated_markers(payload: dict, gated: bool, total_available: int) -> di
     payload["_required_tier"] = "pro"
     payload["_upgrade_cta"] = (
         "Market names + BUILD/HOLD/AVOID verdicts are free. The numeric "
-        "DCPI scores (rank, excess-power, grid-constraint, time-to-power) "
-        "and 7-day momentum are Pro — unlock every pocket with scores at "
-        "https://dchub.cloud/pricing."
+        "DCPI scores (excess-power, grid-constraint, time-to-power), the "
+        f"{POCKET_RANK_LABEL} and 7-day momentum are Pro — unlock every "
+        "pocket with scores at https://dchub.cloud/pricing."
     )
     payload["_signup_url"] = "https://dchub.cloud/pricing"
     payload["_playground_url"] = "https://dchub.cloud/playground"  # r80 #3: human can see what is gated, no signup
@@ -616,7 +683,7 @@ footer a{color:var(--acc)}
 </div>
 <h2>Top {{ shown }} Pockets</h2>
 <table><thead><tr>
-<th>#</th><th>Market</th><th>ISO</th><th>Score</th><th>Excess</th><th>Verdict</th><th>7d Δ</th><th>TTP</th><th class="why-h">Why</th>
+<th>#</th><th>Market</th><th>ISO</th><th title="{{ rank_formula }} — not the 0-100 DCPI composite">Rank score</th><th>Excess</th><th>Verdict</th><th>7d Δ</th><th>TTP</th><th class="why-h">Why</th>
 </tr></thead><tbody>
 {% for p in pockets %}
 <tr>
@@ -644,7 +711,7 @@ footer a{color:var(--acc)}
 {% if not paid %}
 <div class="upgrade">
 <div style="font-size:1.1rem;font-weight:700;margin-bottom:0.3rem">🔒 {{ total_known }} pockets ranked — scores &amp; verdicts are paid intelligence</div>
-<div style="opacity:0.85">You're seeing market names only. Unlock live DCPI scores, BUILD/AVOID verdicts, 7-day momentum and time-to-power for every market.</div>
+<div style="opacity:0.85">You're seeing market names only. Unlock live DCPI scores, {{ rank_label|lower }}, BUILD/AVOID verdicts, 7-day momentum and time-to-power for every market.</div>
 <a href="{{ upgrade_url }}">Unlock all {{ total_known }} pockets →</a>
 </div>
 {% elif truncated_by_tier > 0 %}
@@ -654,7 +721,7 @@ footer a{color:var(--acc)}
 </div>
 {% endif %}
 <footer>
-Methodology: composite of EIA retail rates, ISO grid headroom, DCPI verdict, time-to-power.
+Ranked by {{ rank_label }} ({{ rank_formula }}), over EIA retail rates, ISO grid headroom, the DCPI verdict and time-to-power. It is not the 0-100 DCPI composite — that is published per market at <a href="/dcpi">/dcpi</a>.
 Data refreshed daily. <a href="/digest">Daily brief →</a> · <a href="/api/v1/pockets/top">JSON</a> · <a href="/pockets.rss">RSS</a> · <a href="/dcpi">DCPI index</a>
 </footer>
 </div><script src="/js/dchub-nav.js" defer></script></body></html>'''
@@ -696,6 +763,7 @@ def pockets_page():
 
     html = render_template_string(
         _POCKETS_PAGE_HTML,
+        **_rank_context(),
         as_of=_utc_iso_z(),
         pockets=rows,
         shown=len(rows),
@@ -1077,9 +1145,9 @@ def pocket_detail_json(slug):
 _POCKET_DETAIL_HTML = '''<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8">
 <title>{{ d.market_name }} · Pocket of Power · DC Hub</title>
-<meta name="description" content="{{ d.market_name }} ({{ d.iso or 'no ISO' }}, {{ d.state or 'no state' }}) — DCPI composite score {{ d.rank_score }}, verdict {{ d.verdict or 'HOLD' }}. {{ d.why }}.">
-<meta property="og:title" content="{{ d.market_name }} — Pocket of Power Score {{ d.rank_score }}">
-<meta property="og:description" content="DCPI verdict: {{ d.verdict or 'HOLD' }} · Composite score {{ d.rank_score }} · {{ d.why }}.">
+<meta name="description" content="{{ d.market_name }} ({{ d.iso or 'no ISO' }}, {{ d.state or 'no state' }}) — {{ rank_label }} {{ d.rank_score }} ({{ rank_short }}), DCPI verdict {{ d.verdict or 'HOLD' }}. {{ d.why }}.">
+<meta property="og:title" content="{{ d.market_name }} — Pocket of Power · {{ rank_label }} {{ d.rank_score }}">
+<meta property="og:description" content="DCPI verdict: {{ d.verdict or 'HOLD' }} · {{ rank_label }} {{ d.rank_score }} ({{ rank_formula }}) · {{ d.why }}.">
 <meta property="og:url" content="https://dchub.cloud/pockets/{{ d.market_slug }}">
 <meta property="og:type" content="article">
 <meta name="twitter:card" content="summary_large_image">
@@ -1089,7 +1157,7 @@ _POCKET_DETAIL_HTML = '''<!DOCTYPE html><html lang="en"><head>
   "@context": "https://schema.org",
   "@type": "Article",
   "headline": "{{ d.market_name }} — Pocket of Power Ranking",
-  "description": "DCPI composite score {{ d.rank_score }}, verdict {{ d.verdict or 'HOLD' }}. {{ d.why }}.",
+  "description": "{{ rank_label }} {{ d.rank_score }}, DCPI verdict {{ d.verdict or 'HOLD' }}. {{ d.why }}. {{ rank_basis }}{{ d.market_slug }}.",
   "datePublished": "{{ d.computed_at or '' }}",
   "dateModified": "{{ d.computed_at or '' }}",
   "author": {"@type": "Organization", "name": "DC Hub"},
@@ -1149,7 +1217,7 @@ footer a{color:var(--acc)}
 <p class="sub">{{ d.iso or 'No ISO' }} · {{ d.state or 'No state' }} · last computed {{ d.computed_at[:10] if d.computed_at else 'never' }}</p>
 
 <div class="hero-grid">
-  <div class="hero-stat"><div class="n">{{ d.rank_score }}</div><div class="l">Composite score</div><div class="x">excess − constraint/2 − ttp penalty</div></div>
+  <div class="hero-stat"><div class="n">{{ d.rank_score }}</div><div class="l">{{ rank_label }}</div><div class="x">{{ rank_formula }} · not the <a href="/dcpi/{{ d.market_slug }}" style="color:inherit;text-decoration:underline">DCPI composite</a></div></div>
   <div class="hero-stat"><div class="n {% if d.excess_power_score >= 70 %}green{% elif d.excess_power_score >= 40 %}amber{% else %}red{% endif %}">{{ d.excess_power_score }}</div><div class="l">Excess power</div><div class="x">0=tight · 100=ample</div></div>
   <div class="hero-stat"><div class="n {% if d.constraint_score <= 30 %}green{% elif d.constraint_score <= 60 %}amber{% else %}red{% endif %}">{{ d.constraint_score }}</div><div class="l">Grid constraint</div><div class="x">0=clear · 100=blocked</div></div>
   <div class="hero-stat"><div class="n">{{ d.time_to_power_months|int }}<span style="font-size:.55em">mo</span></div><div class="l">Time to power</div><div class="x">interconnect → MW</div></div>
@@ -1195,13 +1263,13 @@ footer a{color:var(--acc)}
 {% endif %}
 
 <div class="share">
-<a href="https://twitter.com/intent/tweet?text={{ d.market_name }} — DCPI verdict {{ d.verdict or 'HOLD' }}, score {{ d.rank_score }}&url=https://dchub.cloud/pockets/{{ d.market_slug }}" target="_blank" rel="noopener">Share on X</a>
+<a href="https://twitter.com/intent/tweet?text={{ d.market_name }} — DCPI verdict {{ d.verdict or 'HOLD' }}, {{ rank_label }} {{ d.rank_score }}&url=https://dchub.cloud/pockets/{{ d.market_slug }}" target="_blank" rel="noopener">Share on X</a>
 <a href="https://www.linkedin.com/sharing/share-offsite/?url=https://dchub.cloud/pockets/{{ d.market_slug }}" target="_blank" rel="noopener">Share on LinkedIn</a>
 <a href="/api/v1/pockets/{{ d.market_slug }}">JSON</a>
 </div>
 
 <footer>
-Methodology: composite of EIA retail rates, ISO grid headroom, DCPI verdict, time-to-power. Updated daily.
+{{ rank_label }}: {{ rank_formula }}, over EIA retail rates, ISO grid headroom, the DCPI verdict and time-to-power. Updated daily. It ranks this page and is not the 0-100 DCPI composite, which is published per market at <a href="/dcpi/{{ d.market_slug }}">/dcpi/{{ d.market_slug }}</a>.
 <a href="/pockets">All pockets</a> · <a href="/dcpi/{{ d.market_slug }}">Market deep-dive</a> · <a href="/digest">Daily brief</a>
 </footer>
 </div></body></html>'''
@@ -1234,7 +1302,8 @@ def pocket_detail_page(slug):
         <p><a href="/pockets">← See all ranked pockets</a></p></body></html>"""
         return Response(html, mimetype="text/html"), 404
 
-    html = render_template_string(_POCKET_DETAIL_HTML, d=detail)
+    html = render_template_string(_POCKET_DETAIL_HTML, d=detail,
+                                  **_rank_context())
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=600, must-revalidate"
     return resp
@@ -1254,11 +1323,11 @@ _POCKETS_RSS = '''<?xml version="1.0" encoding="UTF-8"?>
   <ttl>360</ttl>
 {% for p in pockets %}
   <item>
-    <title>{{ p.market_name }} — {{ p.verdict or 'HOLD' }} — Score {{ p.rank_score }}{% if p.delta_7d and p.delta_7d > 0 %} (▲ +{{ p.delta_7d }}){% elif p.delta_7d and p.delta_7d < 0 %} (▼ {{ p.delta_7d }}){% endif %}</title>
+    <title>{{ p.market_name }} — {{ p.verdict or 'HOLD' }} — {{ rank_label }} {{ p.rank_score }}{% if p.delta_7d and p.delta_7d > 0 %} (▲ +{{ p.delta_7d }}){% elif p.delta_7d and p.delta_7d < 0 %} (▼ {{ p.delta_7d }}){% endif %}</title>
     <link>https://dchub.cloud/pockets/{{ p.market_slug }}</link>
     <guid isPermaLink="true">https://dchub.cloud/pockets/{{ p.market_slug }}</guid>
     <pubDate>{{ p.computed_at_rfc }}</pubDate>
-    <description><![CDATA[{{ p.market_name }} ({{ p.iso or 'no ISO' }}, {{ p.state or 'no state' }}) — DCPI verdict {{ p.verdict or 'HOLD' }}. Composite score {{ p.rank_score }}, excess power {{ p.excess_power_score }}, constraint {{ p.constraint_score }}, TTP {{ p.time_to_power_months|int }}mo. {{ p.why }}.]]></description>
+    <description><![CDATA[{{ p.market_name }} ({{ p.iso or 'no ISO' }}, {{ p.state or 'no state' }}) — DCPI verdict {{ p.verdict or 'HOLD' }}. {{ rank_label }} {{ p.rank_score }} ({{ rank_formula }}; not the 0-100 DCPI composite), excess power {{ p.excess_power_score }}, constraint {{ p.constraint_score }}, TTP {{ p.time_to_power_months|int }}mo. {{ p.why }}.]]></description>
     <category>{{ p.verdict or 'HOLD' }}</category>
     {% if p.iso %}<category>{{ p.iso }}</category>{% endif %}
     {% if p.state %}<category>{{ p.state }}</category>{% endif %}
@@ -1291,6 +1360,7 @@ def pockets_rss():
         r["computed_at_rfc"] = _rfc822(r.get("computed_at") or "")
     xml = render_template_string(
         _POCKETS_RSS,
+        **_rank_context(),
         pockets=rows,
         build_date=_rfc822(_utc_iso_z()),
     )

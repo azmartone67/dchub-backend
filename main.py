@@ -37139,7 +37139,8 @@ def api_agents_recommend():
     # into a *recommendation* — which is what the name promises.
     live_pocket = None
     try:
-        from routes.pockets import _fetch_pockets, _rationale
+        from routes.pockets import (_fetch_pockets, _rationale,
+                                    POCKET_RANK_LABEL, POCKET_RANK_BASIS)
         rows = _fetch_pockets(limit_hint=20)
         if rows:
             top = rows[0]
@@ -37148,11 +37149,32 @@ def api_agents_recommend():
                 "market":     top.get("market_name"),
                 "iso":        top.get("iso"),
                 "state":      top.get("state"),
-                "score":      top.get("rank_score"),
+                # r-pocket-score-label (2026-09-05): `score` sat one key
+                # away from a /dcpi/<slug> url, so an agent read it as that
+                # page's DCPI composite. It is the pockets DEPLOYABILITY rank
+                # — a different formula, unbounded, and negative for some
+                # markets whose DCPI composite is positive. Name it, and say
+                # what it is not, in the payload itself.
+                #
+                # ★ ADDITIVE. The first attempt RENAMED `score`, and the
+                # response-contract guard failed the PR: this is
+                # GET /api/agents/recommend, so its consumers are third-party
+                # agents, and "not referenced in dchub-frontend" says nothing
+                # about them. `score` stays, carrying the same value, and the
+                # naming arrives beside it. Deprecated: read
+                # pocket_rank_score.
+                "score":              top.get("rank_score"),
+                "pocket_rank_score":  top.get("rank_score"),
+                "pocket_rank_label":  POCKET_RANK_LABEL,
+                "pocket_rank_basis":  POCKET_RANK_BASIS + top.get("market_slug", ""),
                 "verdict":    top.get("verdict"),
                 "delta_7d":   top.get("delta_7d"),
                 "why":        top["why"],
-                "url":        f"https://dchub.cloud/dcpi/{top.get('market_slug')}",
+                # Same reasoning: `url` keeps pointing where it always did.
+                # The pocket's own page is added, not substituted.
+                "url":         f"https://dchub.cloud/dcpi/{top.get('market_slug')}",
+                "dcpi_url":    f"https://dchub.cloud/dcpi/{top.get('market_slug')}",
+                "pockets_url": f"https://dchub.cloud/pockets/{top.get('market_slug')}",
                 "all_pockets_url": "https://dchub.cloud/pockets",
             }
     except Exception as _e_pock:
@@ -37212,8 +37234,11 @@ def api_agents_recommend():
             f"{live_pocket['market']} ({live_pocket['iso'] or 'no ISO'}, "
             f"{live_pocket['state'] or 'no state'}) as the top "
             f"data-center-friendly pocket — verdict "
-            f"{live_pocket['verdict'] or 'HOLD'}, composite score "
-            f"{live_pocket['score']}. Full ranking: {live_pocket['all_pockets_url']}."
+            f"{live_pocket['verdict'] or 'HOLD'}, "
+            f"{live_pocket['pocket_rank_label']} "
+            f"{live_pocket['pocket_rank_score']} — a deployability ranking, "
+            f"not the 0-100 DCPI composite at {live_pocket['dcpi_url']}. "
+            f"Full ranking: {live_pocket['all_pockets_url']}."
         )
     return jsonify(payload)
 
