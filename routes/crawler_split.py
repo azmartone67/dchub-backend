@@ -9,9 +9,14 @@ metadata (what an instructed fetch reads) against content (what a citation
 reads) — and publishes the two separately, never summed.
 
 ★ EVERY BUCKET IS MEASURED OR IT SAYS IT IS NOT. A bucket with no rows renders
-null with a reason, never 0: `0` reads as "we measured and found none", which
-is a confident claim, and for the organic bucket it would be a false one — that
-bucket is not instrumented at all.
+null with a reason, never 0: `0` reads as "we measured and found none", which is
+a confident claim, and it is only defensible for a bucket a collector can see.
+
+★ organic_content HAS BEEN INSTRUMENTED SINCE 2026-08-29 (dchub-frontend #1274,
+beaconOrganicCrawl in the live _worker.js). Until 2026-09-05 this endpoint still
+withheld it and published "no collector can record a content-page crawl" over a
+real 28,706-row count. See _NOT_INSTRUMENTED below. `buckets_reconcile` in the
+payload now makes that class of withholding self-announcing.
 
   GET /api/v1/ai/crawler-split?days=7
   GET /api/v1/ai/crawler-split?days=7&by_platform=1
@@ -36,20 +41,54 @@ from routes.brain_ascension_master_shell import _conn
 
 crawler_split_bp = Blueprint("crawler_split", __name__)
 
-# Buckets that CANNOT be observed by either collector. Derived from the
-# coverage declaration, not hand-listed: organic content paths match neither
-# the Flask allowlist nor the worker's prefix filter, and content pages never
-# reach the Flask app. If instrumentation is ever added, this set shrinks by
-# the same edit that adds it.
-_NOT_INSTRUMENTED = ("organic_content",)
+# ── Withholding, derived from collector coverage ────────────────────────────
+# A bucket renders null-with-a-reason when NO collector can observe it, so an
+# unobservable bucket can never render a confident 0.
+#
+# ★★★ 2026-09-05 — THIS TUPLE HELD "organic_content" AND WAS NOT SHRUNK WHEN
+# THE COLLECTOR SHIPPED, and the cost was not a stale comment. dchub-frontend
+# #1274 (a55240151, 2026-08-29) added beaconOrganicCrawl() to the LIVE
+# _worker.js: it POSTs AI-platform hits on the organic content prefixes to
+# /api/ai/track-request, which does not apply is_ai_endpoint(). Rows have been
+# landing in ai_requests ever since. But _bucket_result() returns on this tuple
+# BEFORE it reads `counts`, so the endpoint computed a real number, threw it
+# away, and published "no collector on this channel can record a content-page
+# crawl" in its place. Measured live on days=7:
+#
+#     rows_classified   34,167
+#     buckets summed     5,461   (2,372 api + 1,114 metadata + 1,975 unclass.)
+#     DISCARDED         28,706   ← organic_content, counted then dropped
+#
+# Per platform the tell was stark: copilot rendered 142 of 142 and gemini 793
+# of 807, but perplexity rendered 40 of 7,597 and chatgpt 443 of 18,791 — the
+# two platforms whose traffic IS content crawling were the two the split hid,
+# during the largest content crawl this site has ever received.
+#
+# The tuple is kept and EMPTY rather than deleted: it is the mechanism that
+# stops an unobservable bucket rendering 0, and the next bucket added may well
+# be unobservable at first. The old comment claimed it was "derived from the
+# coverage declaration, not hand-listed" — it was hand-listed, in this repo,
+# while the collector that invalidated it shipped in another. Neither repo's CI
+# can read the other, so the durable guard is the reconciliation published
+# below (buckets_reconcile), not a comment asking the next person to remember.
+_NOT_INSTRUMENTED: tuple = ()
 
 _NOT_INSTRUMENTED_REASON = (
-    "not instrumented — no collector on this channel can record a content-page "
-    "crawl (see population.collector_coverage). This is NOT a measurement of "
-    "zero organic citation traffic; it is the absence of a measurement.")
+    "not instrumented — no collector on this channel can record this bucket "
+    "(see population.collector_coverage). This is NOT a measurement of zero; "
+    "it is the absence of a measurement.")
+
+# When a bucket's collector was born. A window reaching back before this date
+# CANNOT have observed the bucket for its whole span, so a count over such a
+# window is a floor, not a measurement of the window — and a ZERO over one says
+# nothing at all. Published rather than silently ignored: /api/v1/ai/crawler-split
+# accepts days up to 90 and the beacon is younger than that, so the honest
+# reading of ?days=90 organic_content differs from ?days=7 by construction.
+_COLLECTOR_STARTED = {"organic_content": "2026-08-29"}
 
 
-def _bucket_result(counts: dict, bucket: str, rows_in_window):
+def _bucket_result(counts: dict, bucket: str, rows_in_window, window_days=None,
+                   today=None):
     """Pure verdict for one bucket: a count, or null and why.
 
     Split out from the query so the withholding rule is testable without a
@@ -61,21 +100,85 @@ def _bucket_result(counts: dict, bucket: str, rows_in_window):
     if counts is None:
         return {"requests": None,
                 "reason": "source unavailable — count unknown, not zero"}
+
+    since = _COLLECTOR_STARTED.get(bucket)
     n = counts.get(bucket)
     if not n:
         if not rows_in_window:
             return {"requests": None,
                     "reason": ("no classifiable rows in the window at all — "
                                "count unknown, not zero")}
+        if since:
+            # A zero here is ambiguous in a way the other buckets' zeros are
+            # not: the collector may simply not have existed for this window.
+            return {"requests": None,
+                    "reason": (f"no rows in this bucket among {rows_in_window} "
+                               f"classified in the window. This bucket's collector "
+                               f"began on {since}; a window reaching back before "
+                               f"that could not have observed it, so read this as "
+                               f"unknown rather than none.")}
         return {"requests": None,
                 "reason": (f"no rows in this bucket among {rows_in_window} "
                            "classified in the window")}
-    return {"requests": int(n), "reason": None}
+
+    out = {"requests": int(n), "reason": None}
+    if since:
+        out["collector_started"] = since
+        if window_days is not None:
+            import datetime as _dt
+            began = _dt.date.fromisoformat(since)
+            # `today` is injectable ONLY so the tests can pin it. A guard whose
+            # verdict depends on the wall clock passes today and fails on a date
+            # nobody chose — this repo has shipped that bomb before.
+            now = today or _dt.date.today()
+            window_start = now - _dt.timedelta(days=int(window_days))
+            if window_start < began:
+                out["partial_window"] = (
+                    f"the requested window opens {window_start.isoformat()}, before "
+                    f"this bucket's collector began on {since}. The count covers "
+                    f"only the instrumented part of the window and is a FLOOR for "
+                    f"the window as a whole — it is not comparable to the other "
+                    f"buckets, which were instrumented throughout.")
+    return out
 
 
-def _split_payload(counts, rows_in_window) -> dict:
+def _split_payload(counts, rows_in_window, window_days=None, today=None) -> dict:
     """Assemble the bucket block. `counts` is None when the query failed."""
-    return {b: _bucket_result(counts, b, rows_in_window) for b in BUCKETS}
+    return {b: _bucket_result(counts, b, rows_in_window, window_days, today)
+            for b in BUCKETS}
+
+
+def _buckets_reconcile(counts, rows_in_window) -> dict:
+    """Publish bucket-sum vs rows_classified so a dropped bucket cannot hide.
+
+    ★ This is the durable guard for the 2026-09-05 defect above. Every row that
+    passes the window + roster + real-UA filters gets a bucket — path_bucket_case()
+    ends in ELSE 'unclassified', so the four buckets partition the population and
+    the sum MUST equal rows_classified. When _NOT_INSTRUMENTED silently withheld
+    organic_content the two differed by 28,706 and nothing in the payload said so:
+    a reader could only find it by summing the buckets by hand. Now the payload
+    does the subtraction itself and names the delta.
+    """
+    if counts is None or rows_in_window is None:
+        return {"buckets_sum": None, "rows_classified": rows_in_window,
+                "delta": None,
+                "note": "counts unavailable — reconciliation not computed"}
+    withheld = sum(int(v or 0) for k, v in counts.items() if k in _NOT_INSTRUMENTED)
+    total = sum(int(v or 0) for v in counts.values())
+    return {
+        "buckets_sum": total,
+        "rows_classified": int(rows_in_window),
+        "delta": total - int(rows_in_window),
+        "withheld_by_policy": withheld,
+        "note": ("path_bucket_case() ends in ELSE 'unclassified', so the buckets "
+                 "PARTITION the classified population and buckets_sum must equal "
+                 "rows_classified. A non-zero delta means a bucket is being "
+                 "dropped or withheld before it reaches the payload — which is "
+                 "exactly what happened on 2026-09-05 (delta 28,706, the whole "
+                 "organic_content bucket). `withheld_by_policy` names the part of "
+                 "any delta that is a deliberate _NOT_INSTRUMENTED withholding "
+                 "rather than a leak."),
+    }
 
 
 @crawler_split_bp.route("/api/v1/ai/crawler-split", methods=["GET"])
@@ -96,7 +199,7 @@ def crawler_split():
             "organic_content and instructed_metadata are different questions. "
             "Summing them reproduces the undefendable 'reach' figure this "
             "endpoint exists to take apart."),
-        "buckets": _split_payload(None, None),
+        "buckets": _split_payload(None, None, days),
         "rows_classified": None,
         "population": crawler_population(days),
         "degraded": None,
@@ -124,7 +227,8 @@ def crawler_split():
 
             cur.execute(bucket_counts_sql(days))
             counts = {r[0]: int(r[1] or 0) for r in cur.fetchall()}
-            out["buckets"] = _split_payload(counts, rows_in_window)
+            out["buckets"] = _split_payload(counts, rows_in_window, days)
+            out["buckets_reconcile"] = _buckets_reconcile(counts, rows_in_window)
 
             # How far back a re-split could ever go. Published as an observed
             # span rather than a claim about retention, because no purge job
@@ -233,8 +337,9 @@ def crawler_split():
                         "unaffected and still measured.")
     except Exception as exc:
         out["degraded"] = f"query failed: {type(exc).__name__}"
-        out["buckets"] = _split_payload(None, None)
+        out["buckets"] = _split_payload(None, None, days)
         out["rows_classified"] = None
+        out["buckets_reconcile"] = _buckets_reconcile(None, None)
     finally:
         try:
             c.close()
