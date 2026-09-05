@@ -20,6 +20,7 @@ import os
 import datetime
 from contextlib import contextmanager
 from flask import Blueprint, Response
+from utc_clock import utc_now
 
 try:
     import psycopg2 as _pg
@@ -193,7 +194,7 @@ def review():
         return jsonify(error="unauthorized",
                        hint="X-Admin-Key header or ?admin_key= required"), 401
     data = _gather_pending()
-    today = datetime.datetime.utcnow().strftime("%B %d, %Y · %H:%M UTC")
+    today = utc_now().strftime("%B %d, %Y · %H:%M UTC")
 
     # Build press drafts cards
     press_cards = ""

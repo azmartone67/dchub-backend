@@ -13,6 +13,7 @@ import logging
 from datetime import datetime, date
 from functools import wraps
 from flask import request, jsonify
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +236,7 @@ def register_ai_deals_routes(app, get_db):
         try:
             data = request.get_json(force=True)
             deals = data.get('deals', [])
-            batch_id = data.get('batch_id', datetime.utcnow().strftime('batch_%Y%m%d_%H%M%S'))
+            batch_id = data.get('batch_id', utc_now().strftime('batch_%Y%m%d_%H%M%S'))
             if not deals:
                 return jsonify({"error": "No deals provided"}), 400
 

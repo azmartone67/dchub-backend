@@ -17,7 +17,7 @@ from flask import Blueprint, request, jsonify
 from utils.anthropic_helper import anthropic_messages_url
 from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
 from routes._swallowed_writes import note_swallowed_write
-from utc_clock import utc_iso_z
+from utc_clock import utc_iso_z, utc_now
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
 def _phase30c_landing_url(d=None):
@@ -3093,7 +3093,7 @@ def _editor_review(content_text: str):
     _deals_clause = f"{_deals} tracked M&A deals" if _deals else "tracked M&A deals"
     try:
         import datetime as _dt
-        _today = _dt.datetime.utcnow().strftime("%B %d, %Y")
+        _today = utc_now().strftime("%B %d, %Y")
     except Exception:
         _today = "2026"
     _canon = (
@@ -3911,7 +3911,7 @@ _PUBLISHER_STATE = {
 
 
 def _utcnow_iso() -> str:
-    return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    return utc_now().strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 def _maybe_reset_24h_counters(platform: str) -> None:
@@ -3919,7 +3919,7 @@ def _maybe_reset_24h_counters(platform: str) -> None:
     midnight. Cheap: one date comparison per attempt. We keep last_* fields
     untouched so the diagnostic still shows what last happened across the
     midnight boundary."""
-    today = datetime.utcnow().strftime('%Y-%m-%d')
+    today = utc_now().strftime('%Y-%m-%d')
     st = _PUBLISHER_STATE.get(platform)
     if not st:
         return

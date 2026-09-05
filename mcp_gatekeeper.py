@@ -18,6 +18,7 @@ from enum import IntEnum
 from collections import defaultdict
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+from utc_clock import utc_now
 
 logger = logging.getLogger("dchub-mcp-gate")
 
@@ -456,7 +457,7 @@ class _RateLimiter:
         self._last: Dict[str, float] = {}
 
     def _today(self) -> str:
-        return datetime.utcnow().strftime("%Y-%m-%d")
+        return utc_now().strftime("%Y-%m-%d")
 
     def check(self, key: str, tier: Tier) -> Optional[str]:
         """Returns error message if rate-limited, None if OK.

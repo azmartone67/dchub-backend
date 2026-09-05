@@ -36,6 +36,7 @@ from flask import Blueprint, request, jsonify, Response, send_file, make_respons
 from db_utils import get_db, try_get_db
 from workos_authkit import authkit_endpoints, AUTHKIT_SCOPES
 from ai_surface_canon import canon_text
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -595,7 +596,7 @@ def ai_tracking_stats():
             weekly_by_platform = [{"platform": row[0], "count": row[1]} for row in c.fetchall()]
 
             # Today's count
-            today = datetime.utcnow().strftime('%Y-%m-%d')
+            today = utc_now().strftime('%Y-%m-%d')
             c.execute("SELECT COUNT(*) FROM ai_access_log WHERE DATE(timestamp) = %s", (today,))
             today_count = c.fetchone()[0]
 

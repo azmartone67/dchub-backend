@@ -21,6 +21,7 @@ from typing import Optional, Dict, Any, List, Callable
 from datetime import datetime, timedelta
 from collections import defaultdict
 from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
+from utc_clock import utc_now
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +160,7 @@ class InMemoryRateLimiter:
         self._last_call: Dict[str, float] = {}
 
     def _today(self) -> str:
-        return datetime.utcnow().strftime("%Y-%m-%d")
+        return utc_now().strftime("%Y-%m-%d")
 
     def check_and_increment(self, api_key: str, tier: TierLevel) -> Optional[str]:
         """Returns None if allowed, or an error message if rate-limited."""

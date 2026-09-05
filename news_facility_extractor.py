@@ -19,6 +19,7 @@ import json
 import logging
 import traceback
 from datetime import datetime
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +250,7 @@ def extract_facility_from_article(title, body, source_url, source_name):
         'source': 'news_extraction',
         'source_url': source_url,
         'confidence_score': 0.65,  # Lower confidence — needs manual review
-        'discovered_at': datetime.utcnow().strftime('%Y-%m-%d'),
+        'discovered_at': utc_now().strftime('%Y-%m-%d'),
         'notes': f'Auto-extracted from {source_name}',
         'investment_usd': extract_investment_usd(combined),
         'acreage': extract_acreage(combined),

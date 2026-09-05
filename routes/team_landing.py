@@ -17,6 +17,7 @@ retired path into the served body of a live page.
 """
 import datetime
 from flask import Blueprint
+from utc_clock import utc_now
 
 team_bp = Blueprint("team_landing", __name__)
 
@@ -114,7 +115,7 @@ infrastructure and the AI agents that need to act on it.</p>
 
 @team_bp.route("/team", methods=["GET"], strict_slashes=False)
 def team():
-    html = _TEMPLATE.replace("__DATE__", datetime.datetime.utcnow().strftime("%B %Y"))
+    html = _TEMPLATE.replace("__DATE__", utc_now().strftime("%B %Y"))
     return html, 200, {
         "Content-Type":  "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=900, s-maxage=3600",

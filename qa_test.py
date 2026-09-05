@@ -23,6 +23,7 @@ import argparse
 import urllib.request
 import urllib.error
 from datetime import datetime
+from utc_clock import utc_now
 
 # ── Targets ──────────────────────────────────────────────────────────────────
 TARGETS = {
@@ -323,7 +324,7 @@ def run(env_name, base_url, key):
     print(f"{BOLD}  DC Hub QA — {env_name.upper()}{RESET}")
     print(f"  Target : {base_url}")
     print(f"  Admin  : {'✓ key set' if key else '✗ not set (some tests skipped)'}")
-    print(f"  Time   : {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"  Time   : {utc_now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
     print(f"{BOLD}{'='*60}{RESET}")
 
     global pass_count, fail_count, warn_count

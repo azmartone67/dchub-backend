@@ -24,6 +24,7 @@ import os
 
 import psycopg2
 from flask import Blueprint, jsonify, request
+from utc_clock import utc_now
 
 log = logging.getLogger("brain_codegen_expose")
 codegen_expose_bp = Blueprint("brain_codegen_expose", __name__)
@@ -202,7 +203,7 @@ def _build_one(spec: dict, dry_run: bool) -> dict:
     base = _get_default_branch_sha()
     if not base:
         out["status"] = "no_base_sha"; return out
-    ts = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    ts = utc_now().strftime("%Y%m%d%H%M%S")
     branch = f"brain-codegen/expose-{spec['key']}-{ts}"
     if not _create_branch(branch, base):
         out["status"] = "branch_failed"; return out

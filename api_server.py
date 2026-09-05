@@ -71,7 +71,7 @@ import jwt
 import io
 import os
 from db_utils import get_db
-from utc_clock import utc_iso_z
+from utc_clock import utc_iso_z, utc_now
 
 # Stripe Integration
 try:
@@ -1610,7 +1610,7 @@ def generate_market_pdf(markets, report_type):
     title = f"Data Center Market Report"
     elements.append(Paragraph(title, title_style))
     elements.append(Paragraph(f"Markets: {', '.join([m.title() for m in markets])}", normal_style))
-    elements.append(Paragraph(f"Generated: {datetime.utcnow().strftime('%B %d, %Y')}", normal_style))
+    elements.append(Paragraph(f"Generated: {utc_now().strftime('%B %d, %Y')}", normal_style))
     elements.append(Spacer(1, 20))
     
     conn = get_db()

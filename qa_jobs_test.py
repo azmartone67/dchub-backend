@@ -19,6 +19,7 @@ WARNING: Some jobs (news_sync, autopilot) hit external APIs and insert DB rows.
 
 import os, sys, json, time, argparse, urllib.request, urllib.error
 from datetime import datetime
+from utc_clock import utc_now
 
 TARGETS = {
     "railway": "https://dchub-backend-production.up.railway.app",
@@ -224,7 +225,7 @@ def run(env_name, base_url, args):
     print(f"  Target  : {base_url}")
     print(f"  Admin   : {'✓ key set' if key else '✗ not set'}")
     print(f"  Mode    : {'DRY RUN (route existence only)' if args.dry_run else 'LIVE (triggers jobs)'}")
-    print(f"  Time    : {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"  Time    : {utc_now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
     print(f"{BOLD}{'='*60}{RESET}")
 
     if not args.dry_run and not args.job:

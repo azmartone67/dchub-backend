@@ -15,6 +15,7 @@ from routes.url_registry import build_public_url
 import datetime
 from contextlib import contextmanager
 from flask import Blueprint, jsonify, Response
+from utc_clock import utc_now
 
 try:
     import psycopg2 as _pg
@@ -177,7 +178,7 @@ def dashboard_html():
         "emails_sent":     sum(t["emails_sent"] for t in data),
         "clicks_30d":      sum(t["clicks_30d"] for t in data),
     }
-    today = datetime.datetime.utcnow().strftime("%B %d, %Y · %H:%M UTC")
+    today = utc_now().strftime("%B %d, %Y · %H:%M UTC")
     html = f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

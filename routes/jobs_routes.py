@@ -23,7 +23,7 @@ from functools import wraps
 from flask import Blueprint, request, jsonify, g
 from util.deals import DEALS_OK
 from util.admin_auth import accepted_admin_keys
-from utc_clock import utc_iso_z
+from utc_clock import utc_iso_z, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -1113,7 +1113,7 @@ def job_market_report():
         }
         report_dir = 'market_reports'
         os.makedirs(report_dir, exist_ok=True)
-        report_path = os.path.join(report_dir, f"market_report_{datetime.utcnow().strftime('%Y-%m-%d')}.json")
+        report_path = os.path.join(report_dir, f"market_report_{utc_now().strftime('%Y-%m-%d')}.json")
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2, default=str)
 

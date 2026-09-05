@@ -29,6 +29,7 @@ from contextlib import contextmanager
 import psycopg2 as _pg
 import psycopg2.extras
 from flask import Blueprint, request, jsonify, Response
+from utc_clock import utc_now
 
 mcp_tier2_bp = Blueprint("mcp_tier2_reports", __name__,
                           url_prefix="/api/v1/mcp/tools")
@@ -240,7 +241,7 @@ def create_site_report():
         return jsonify({"error": "facility not found", "facility_id": facility_id}), 404
 
     market = _get_market_context(f.get("city") or "", f.get("state") or "")
-    report_id = f"rpt_{datetime.datetime.utcnow().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
+    report_id = f"rpt_{utc_now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
     html = _render_report_html(f, market, report_id)
     _REPORT_CACHE[report_id] = {
         "html": html, "created": time.time(),

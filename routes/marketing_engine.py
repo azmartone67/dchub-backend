@@ -49,6 +49,7 @@ from util.ddl_once import ensure_once  # a no-op ALTER still takes ACCESS EXCLUS
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
 from util.json_column import json_for_column
+from utc_clock import utc_now
 
 marketing_bp = Blueprint("marketing_engine", __name__)
 
@@ -1147,7 +1148,7 @@ def pick_topic_with_bias(default_topic_picker_fn, candidate_topics,
     # (matches the og_cards.smart_style pattern — important for the
     # afternoon retry to see the same "winner" the morning run saw).
     import random as _random
-    day = datetime.utcnow().strftime('%Y-%m-%d')
+    day = utc_now().strftime('%Y-%m-%d')
     rng = _random.Random('topic-bias-' + day)
 
     if rng.random() < _TOPIC_EXPLORE_RATE:

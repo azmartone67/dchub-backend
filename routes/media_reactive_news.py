@@ -67,6 +67,7 @@ import logging
 from datetime import datetime
 
 from flask import Blueprint, request, jsonify, Response
+from utc_clock import utc_now
 
 logger = logging.getLogger("media_reactive_news")
 
@@ -453,7 +454,7 @@ def _draft_reframe(external: dict, dcpi: dict) -> str | None:
             "time_to_power_months": dcpi.get("time_to_power_months"),
         },
         "market_url": _market_url(dcpi.get("market_slug")),
-        "as_of": datetime.utcnow().strftime("%Y-%m-%d"),
+        "as_of": utc_now().strftime("%Y-%m-%d"),
     }, default=str)
     user = (
         "Write the LinkedIn reaction post. Attribute the external claim to its "

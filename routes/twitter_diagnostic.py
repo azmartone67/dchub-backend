@@ -32,6 +32,7 @@ import json
 import os
 
 from flask import Blueprint, jsonify, request
+from utc_clock import utc_now
 
 
 twitter_diagnostic_bp = Blueprint("twitter_diagnostic", __name__)
@@ -217,7 +218,7 @@ def test_tweet():
 
     test_text = (request.args.get("text")
                    or f"DC Hub X publisher verification — "
-                       f"{datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}. "
+                       f"{utc_now().strftime('%Y-%m-%d %H:%M UTC')}. "
                        f"Live data center intelligence: dchub.cloud")
     test_text = test_text[:240]
 

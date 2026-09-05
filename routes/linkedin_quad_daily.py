@@ -28,6 +28,7 @@ from contextlib import contextmanager
 
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+from utc_clock import utc_now
 
 try:
     import psycopg2 as _pg
@@ -1217,7 +1218,7 @@ def run():
                 """, (target_slot["topic"], text[:200]))
                 if cur.fetchone():
                     # Same text already posted in last 14d — diversify
-                    text = text + f"\n\n— {datetime.datetime.utcnow().strftime('%b %d')}"
+                    text = text + f"\n\n— {utc_now().strftime('%b %d')}"
         except Exception:
             pass
 
@@ -1240,7 +1241,7 @@ def run():
         # "now"/"just" appear in any prose → false "already fresh" → skip → stuck
         # at 0.55). A trailing date stamp is harmless even if the body cites a date.
         if text:
-            text = text.rstrip() + f"\n\n(DC Hub data · {datetime.datetime.utcnow().strftime('%b %d, %Y')})"
+            text = text.rstrip() + f"\n\n(DC Hub data · {utc_now().strftime('%b %d, %Y')})"
     except Exception:
         pass
 

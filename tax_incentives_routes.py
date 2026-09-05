@@ -27,7 +27,7 @@ import json
 import csv
 import io
 from internal_auth import require_internal_or_admin
-from utc_clock import utc_iso_z
+from utc_clock import utc_iso_z, utc_now
 
 tax_incentives_bp = Blueprint('tax_incentives', __name__)
 
@@ -483,7 +483,7 @@ def _setup_v2_routes(app, incentives_data, db):
         writer.writerow(['State','Abbreviation','FIPS','Has Incentive','Rating','Duration','Min Investment','Jobs Required','Sales Tax Exempt','Property Tax Exempt','Income Tax Exempt','Electricity Exempt','Summary','Details','Source','Source URL'])
         for s in results:
             writer.writerow([s.get('name'),s.get('abbr'),s.get('fips'),'Yes' if s.get('has_incentive') else 'No',s.get('rating',0),s.get('duration',''),s.get('min_investment',''),s.get('jobs_required',''),'Yes' if s.get('sales_tax') else 'No','Yes' if s.get('property_tax') else 'No','Yes' if s.get('income_tax') else 'No','Yes' if s.get('electricity_tax') else 'No',s.get('summary',''),s.get('details',''),s.get('source',''),s.get('source_url','')])
-        return Response(output.getvalue(), mimetype='text/csv', headers={'Content-Disposition': f'attachment; filename=dc-hub-tax-incentives-{datetime.utcnow().strftime("%Y%m%d")}.csv'})
+        return Response(output.getvalue(), mimetype='text/csv', headers={'Content-Disposition': f'attachment; filename=dc-hub-tax-incentives-{utc_now().strftime("%Y%m%d")}.csv'})
 
     @app.route('/api/v1/tax-incentives/map-layer', methods=['GET', 'OPTIONS'])
     def get_map_layer():

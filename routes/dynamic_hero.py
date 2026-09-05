@@ -36,6 +36,7 @@ import hashlib
 import logging
 import datetime
 from flask import Blueprint, jsonify, request
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 dynamic_hero_bp = Blueprint("dynamic_hero", __name__)
@@ -269,7 +270,7 @@ def hero_messaging():
         ip = (request.headers.get("CF-Connecting-IP")
               or request.remote_addr or "0.0.0.0").split(".")
         ip_bucket = ".".join(ip[:3])  # /24 — same network sees same msg
-        hour = datetime.datetime.utcnow().strftime("%Y%m%d%H")
+        hour = utc_now().strftime("%Y%m%d%H")
         seed = f"{hour}|{ip_bucket}"
         h = int(hashlib.md5(seed.encode()).hexdigest(), 16)
         idx = h % len(rows)

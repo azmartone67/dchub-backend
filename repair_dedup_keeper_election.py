@@ -68,6 +68,7 @@ import os
 import sys
 import json
 import datetime
+from utc_clock import utc_now
 
 # Rows suppressed BECAUSE THEY ARE NOT FACILITIES are not candidates for
 # election. Without this, the 34 scraped page titles that
@@ -204,7 +205,7 @@ def main() -> int:
                 print("\nDRY RUN — nothing written. Re-run with --apply to write.")
                 return 0
 
-            stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            stamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
             rb = os.path.expanduser(
                 f"~/Downloads/dedup_keeper_election_rollback_{stamp}.json")
             json.dump({"generated_at_utc": stamp,

@@ -79,6 +79,7 @@ import os, json, time, traceback, logging
 from datetime import datetime, timezone
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
+from utc_clock import utc_now
 
 log = logging.getLogger("self_heal")
 log.setLevel(logging.INFO)
@@ -432,7 +433,7 @@ def heal_cycle(force=False, max_wait_seconds=30):
                     "reason": f"could not acquire lock in {max_wait_seconds}s"}
         log.info("self_heal: another worker holds lock, skipping")
         return {"skipped": True}
-    cycle_id = (datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    cycle_id = (utc_now().strftime("%Y%m%d-%H%M%S")
                 + ("-force" if force else ""))
     summary = {"cycle_id": cycle_id, "probes": 0, "issues": 0,
                 "fixes_ok": 0, "fixes_fail": 0, "events": [],

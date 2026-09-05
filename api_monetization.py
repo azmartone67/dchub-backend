@@ -42,7 +42,7 @@ from functools import wraps
 from collections import defaultdict
 from flask import Blueprint, request, jsonify, g
 from db_utils import get_db, safe_db
-from utc_clock import utc_iso_z
+from utc_clock import utc_iso_z, utc_now
 
 # =============================================================================
 # CONFIGURATION
@@ -357,10 +357,10 @@ class RateLimiter:
         self.cleanup_thread.start()
     
     def _get_minute_key(self):
-        return datetime.utcnow().strftime('%Y-%m-%d-%H-%M')
+        return utc_now().strftime('%Y-%m-%d-%H-%M')
     
     def _get_day_key(self):
-        return datetime.utcnow().strftime('%Y-%m-%d')
+        return utc_now().strftime('%Y-%m-%d')
     
     def check_rate_limit(self, user_id, plan='free'):
         """Check if request is within rate limits"""

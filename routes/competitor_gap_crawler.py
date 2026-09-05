@@ -60,6 +60,7 @@ import random
 import logging
 import datetime
 from urllib.parse import urlsplit
+from utc_clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -593,7 +594,7 @@ def _to_discovered_facility(cand: dict, slug: str) -> dict:
         "source": f"competitor_gap:{slug}",
         "source_url": cand.get("source_url") or "",
         "confidence_score": 0.55,  # LEAD, not verified — low confidence
-        "discovered_at": datetime.datetime.utcnow().strftime("%Y-%m-%d"),
+        "discovered_at": utc_now().strftime("%Y-%m-%d"),
         "notes": (f"Coverage-gap lead from {slug}: "
                   f"{(cand.get('operator') or '')} "
                   f"{(cand.get('address') or '')}").strip()[:400],

@@ -5,6 +5,7 @@ OG meta tags, and pulls live data from /api/v1/grid/intelligence/<iso>.
  [phase68_gating_applied]"""
 from flask import Blueprint, render_template, jsonify, request, Response, redirect
 import json, datetime, requests
+from utc_clock import utc_now
 
 grid_public_bp = Blueprint('grid_public', __name__)
 
@@ -456,7 +457,7 @@ def sitemap():
     The grid-specific sitemap is still useful as a niche resource at
     /grid/sitemap.xml; main.py:16297 owns the canonical `/sitemap.xml`.
     """
-    today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+    today = utc_now().strftime('%Y-%m-%d')
     base = 'https://dchub.cloud'
     urls = [
         ('/grid', '0.9', 'hourly'),
@@ -589,7 +590,7 @@ def render_grid_hub_html(cards, schema, tier):
     </div>
   </div>
   <footer>
-    <p>Data: EIA Open Data API · Updated {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</p>
+    <p>Data: EIA Open Data API · Updated {utc_now().strftime('%Y-%m-%d %H:%M UTC')}</p>
     <p><a href="/" style="color:#ff6b35">← DC Hub home</a> · <a href="/api/docs" style="color:#ff6b35">API access</a></p>
   </footer>
   <!-- 2026-05-24: site_sentinel nav_missing finding — include dchub-nav.js

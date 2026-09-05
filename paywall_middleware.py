@@ -40,6 +40,7 @@ import psycopg2
 from psycopg2 import pool
 from flask import Blueprint, request, jsonify, g, current_app
 import stripe
+from utc_clock import utc_now
 
 # Initialize logging
 logger = logging.getLogger(__name__)
@@ -391,7 +392,7 @@ def _bust_tier_cache(user_id: int) -> None:
 
 def _get_today_key() -> str:
     """Get today's date as a key for rate limiting."""
-    return datetime.utcnow().strftime('%Y-%m-%d')
+    return utc_now().strftime('%Y-%m-%d')
 
 
 def _check_rate_limit_internal(user_id: int, tier: str) -> bool:

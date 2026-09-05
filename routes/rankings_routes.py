@@ -17,6 +17,7 @@ from flask import Blueprint, jsonify, request
 from datetime import datetime
 
 from util.capacity_pipeline import CP_OK
+from utc_clock import utc_now
 
 rankings_bp = Blueprint('rankings', __name__)
 
@@ -259,7 +260,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
         return jsonify({
             "success": True, "category": "construction",
             "title": "Data Centers Under Construction",
-            "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
+            "subtitle": f"in the United States (As of {utc_now().strftime('%b %d, %Y')})",
             "metric_label": "Pipeline MW Under Construction",
             "primary_metric": "total_mw", "secondary_metric": "project_count",
             "rankings": results,
@@ -313,7 +314,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             return jsonify({
                 "success": True, "category": "power",
                 "title": "Data Center Power Capacity",
-                "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
+                "subtitle": f"in the United States (As of {utc_now().strftime('%b %d, %Y')})",
                 "metric_label": "Total Operational MW",
                 "primary_metric": "total_mw", "secondary_metric": "facility_count",
                 "rankings": results,
@@ -371,7 +372,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             return jsonify({
                 "success": True, "category": "gas",
                 "title": "Gas Pipeline Infrastructure",
-                "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
+                "subtitle": f"in the United States (As of {utc_now().strftime('%b %d, %Y')})",
                 "metric_label": "Pipeline Segments",
                 "primary_metric": "pipeline_count", "secondary_metric": "operator_count",
                 "rankings": results,
@@ -436,7 +437,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             return jsonify({
                 "success": True, "category": "fiber",
                 "title": "Fiber Network Density",
-                "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
+                "subtitle": f"in the United States (As of {utc_now().strftime('%b %d, %Y')})",
                 "metric_label": "Fiber Routes",
                 "primary_metric": "route_count", "secondary_metric": "provider_count",
                 "rankings": results,

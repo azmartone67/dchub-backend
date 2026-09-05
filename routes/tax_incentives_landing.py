@@ -11,6 +11,7 @@ import datetime
 import json
 import urllib.request
 from flask import Blueprint
+from utc_clock import utc_now
 
 tax_incentives_bp = Blueprint("tax_incentives_landing", __name__)
 
@@ -38,7 +39,7 @@ def landing():
     states = payload.get("data", [])
     hidden = payload.get("_hidden_count", 0)
     total = payload.get("_total_available", 50)
-    today = datetime.datetime.utcnow().strftime("%B %Y")
+    today = utc_now().strftime("%B %Y")
 
     rows = []
     for s in states[:15]:
