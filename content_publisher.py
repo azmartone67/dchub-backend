@@ -17,6 +17,7 @@ from flask import Blueprint, request, jsonify
 from utils.anthropic_helper import anthropic_messages_url
 from linkedin_text import escape_li_commentary  # /rest/posts commentary escaping
 from routes._swallowed_writes import note_swallowed_write
+from utc_clock import utc_iso_z
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
 def _phase30c_landing_url(d=None):
@@ -825,7 +826,7 @@ def _press_not_actionable(action):
 def content_approve(item_id):
     if not _check_admin(request):
         return jsonify({'error': 'Unauthorized'}), 401
-    now = datetime.utcnow().isoformat() + 'Z'
+    now = utc_iso_z()
     with _db_conn() as conn:
         cur = conn.cursor()
         table, err = _resolve_content_table(cur, item_id, request.args.get('type'))
@@ -868,7 +869,7 @@ def content_edit(item_id):
     data = request.get_json(force=True)
     new_content = data.get('content', '')
     auto_approve = data.get('auto_approve', False)
-    now = datetime.utcnow().isoformat() + 'Z'
+    now = utc_iso_z()
     with _db_conn() as conn:
         cur = conn.cursor()
         table, err = _resolve_content_table(cur, item_id, request.args.get('type'))
@@ -2173,7 +2174,7 @@ def publish_linkedin():
         success, result = _post_to_linkedin(content_text, access_token,
                                               article_url=_art_url,
                                               article_title=_art_title)
-        now = datetime.utcnow().isoformat() + 'Z'
+        now = utc_iso_z()
         if success:
             cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
             # r72: capture the URN so we can later fetch engagement
@@ -3658,7 +3659,7 @@ def enqueue_custom():
             ok, result = _post_to_linkedin(content, access_token,
                                              article_url=_art_url,
                                              article_title=_art_title)
-            now = datetime.utcnow().isoformat() + 'Z'
+            now = utc_iso_z()
             if ok:
                 cur.execute("""UPDATE social_media_posts
                                   SET status = 'published',
@@ -4652,7 +4653,7 @@ def start_auto_publisher():
                             content_text, access_token,
                             article_url=_art_url, article_title=_art_title,
                             article_thumbnail_url=_row_og)
-                        now = datetime.utcnow().isoformat() + 'Z'
+                        now = utc_iso_z()
                         if success:
                             cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
                             # r72: capture URN → engagement loop can find this post.
@@ -4699,7 +4700,7 @@ def start_auto_publisher():
                                         (json.dumps({
                                             "error_class": _classify_publish_error(result),
                                             "error": str(result)[:400],
-                                            "at": datetime.utcnow().isoformat() + "Z",
+                                            "at": utc_iso_z(),
                                         }), post_id))
                                     conn.commit()
                                 except Exception:
@@ -4946,7 +4947,7 @@ def start_twitter_publisher():
                         _record_attempt("twitter", "no_queued")
                         continue
                     success, result = _post_to_twitter(content_text)
-                    now = datetime.utcnow().isoformat() + 'Z'
+                    now = utc_iso_z()
                     if success:
                         # r-xid (2026-07-18): persist the tweet id. _post_to_twitter
                         # returns it on success but it was discarded — 35 published
@@ -5107,7 +5108,7 @@ def start_bluesky_publisher():
                             _attempts += 1
                             continue
                         ok, result = _post_to_bluesky(content_text)
-                        now = datetime.utcnow().isoformat() + 'Z'
+                        now = utc_iso_z()
                         if ok:
                             cur.execute(
                                 "UPDATE social_media_posts SET status = %s, "
@@ -5128,7 +5129,7 @@ def start_bluesky_publisher():
                                     (json.dumps({
                                         "error_class": _classify_publish_error(result),
                                         "error": str(result)[:400],
-                                        "at": datetime.utcnow().isoformat() + "Z",
+                                        "at": utc_iso_z(),
                                     }), post_id))
                                 conn.commit()
                             except Exception:

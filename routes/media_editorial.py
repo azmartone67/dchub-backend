@@ -33,6 +33,7 @@ import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, request
 from ai_surface_canon import canon_text
+from utc_clock import utc_iso_z
 
 logger = logging.getLogger(__name__)
 media_editorial_bp = Blueprint("media_editorial", __name__)
@@ -2104,7 +2105,7 @@ def editorial_decision(slot: str | None = None) -> dict:
             "entity_window_relaxed": entity_relaxed,
             "press_terms_seen": len(press_terms),
             "ranked": ranked[:6],
-            "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+            "generated_at": utc_iso_z(),
         }
     # r-capability-slot-unstarve (2026-07-24): the reserved slot exists because
     # evergreen capability cards are BY DESIGN not news — yet the gates above
@@ -2142,7 +2143,7 @@ def editorial_decision(slot: str | None = None) -> dict:
                 "entity_window_relaxed": entity_relaxed,
                 "press_terms_seen": len(press_terms),
                 "ranked": ranked[:6],
-                "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+                "generated_at": utc_iso_z(),
             }
     # ── PUBLISH-BLOCK PROBE (2026-08-24) ────────────────────────────────────
     # Every path above has declined. The slot is about to go SILENT, so a lead
@@ -2184,7 +2185,7 @@ def editorial_decision(slot: str | None = None) -> dict:
                 "entity_window_relaxed": entity_relaxed,
                 "press_terms_seen": len(press_terms),
                 "ranked": ranked[:6],
-                "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+                "generated_at": utc_iso_z(),
             }
 
     return {
@@ -2200,7 +2201,7 @@ def editorial_decision(slot: str | None = None) -> dict:
         "press_terms_seen": len(press_terms),
         "publish_block_probe": False,
         "ranked": ranked[:6],
-        "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+        "generated_at": utc_iso_z(),
     }
 
 
@@ -2245,7 +2246,7 @@ def editorial_decision_endpoint():
 def data_leads_endpoint():
     try:
         return jsonify({"ok": True, "leads": rank_data_events(),
-                        "generated_at": _dt.datetime.utcnow().isoformat() + "Z"}), 200
+                        "generated_at": utc_iso_z()}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 200
 
@@ -2270,7 +2271,7 @@ def brain_insight_leads_endpoint():
             "note": ("Draft-only candidates. When the gate is live these compete in "
                      "editorial_decision() and still pass claim-verify + "
                      "partner-disparagement guards + human approval before publish."),
-            "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+            "generated_at": utc_iso_z(),
         }), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 200
@@ -2303,7 +2304,7 @@ def operator_lane_debug_endpoint():
     if not _admin_ok():
         return jsonify({"ok": False, "error": "admin_only"}), 403
     payload: dict = {"ok": True,
-                     "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+                     "generated_at": utc_iso_z(),
                      "lane_disabled": (os.environ.get("MEDIA_OPERATOR_LANE_DISABLE")
                                        or "").strip() == "1",
                      "entity_window_days": _MARKET_WINDOW_DAYS}
@@ -2402,7 +2403,7 @@ def engagement_scoreboard_endpoint():
                      "neutral 1.0 and does not set the ceiling for the others — "
                      "on 2026-08-25 the three thinnest lanes swung 115-137% of "
                      "their own rate when a single post was dropped."),
-            "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+            "generated_at": utc_iso_z(),
         }), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 200

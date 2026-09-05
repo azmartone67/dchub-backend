@@ -41,6 +41,7 @@ import json
 from typing import Iterable
 from flask import Blueprint, jsonify, request, Response
 from routes._swallowed_writes import note_swallowed_write
+from utc_clock import utc_iso_z
 
 
 site_sentinel_bp = Blueprint("site_sentinel", __name__)
@@ -1257,7 +1258,7 @@ def verify_outcomes(stuck_hours: float = 2.0) -> dict:
     un-escalated. Read-mostly: only writes a heal-update + a resolution row
     when a page has actually recovered."""
     out: dict = {"checked": 0, "resolved": [], "stuck": [], "fresh": [],
-                 "ran_at": datetime.datetime.utcnow().isoformat() + "Z"}
+                 "ran_at": utc_iso_z()}
     c = _conn()
     if c is None:
         out["error"] = "no_database"; return out
@@ -1368,7 +1369,7 @@ def sentinel_resolutions():
         try: c.close()
         except Exception: pass
     resp = jsonify(resolutions=rows, count=len(rows),
-                   generated_at=datetime.datetime.utcnow().isoformat() + "Z")
+                   generated_at=utc_iso_z())
     resp.headers["Cache-Control"] = "public, max-age=120"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
@@ -1443,7 +1444,7 @@ def track_consecutive_failures(results: list[dict] | None = None) -> dict:
     import time as _time
     out: dict = {"checked": 0, "opened": [], "escalated": [], "reset": [],
                  "skipped_reason": None,
-                 "ran_at": datetime.datetime.utcnow().isoformat() + "Z"}
+                 "ran_at": utc_iso_z()}
 
     # Probe-storm guard (paranoid; not strictly needed since we don't probe).
     now_ts = _time.time()
@@ -1765,7 +1766,7 @@ def sentinel_inbox_json():
         manifest_size=len(_MANIFEST),
         grades=grades,
         items=items,
-        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+        generated_at=utc_iso_z(),
     ), 200
 
 
@@ -2284,7 +2285,7 @@ def sentinel_scan():
         unhealthy=len(rows) - healthy,
         results=rows,
         manifest_size=len(_MANIFEST),
-        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+        generated_at=utc_iso_z(),
     )
     resp.headers["Cache-Control"] = "public, max-age=300"
     resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -2296,7 +2297,7 @@ def sentinel_findings():
     """Only the unhealthy pages — what the brain detector ingests."""
     f = unhealthy_findings()
     resp = jsonify(findings=f, count=len(f),
-                   generated_at=datetime.datetime.utcnow().isoformat() + "Z")
+                   generated_at=utc_iso_z())
     resp.headers["Cache-Control"] = "public, max-age=300"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200

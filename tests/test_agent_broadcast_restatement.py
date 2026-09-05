@@ -125,9 +125,16 @@ def _shipped(names):
     import datetime as _dt
 
     from util.dcpi_method import verdict_case_sql
+    # ★2026-09-05 (utcnow batch 2): this namespace is hand-built, so ANY new
+    # import in the shipped module arrives here as an unbound free variable —
+    # the function raises, _run() returns [], and every assertion below fails
+    # with an empty-result message that says nothing about the real cause.
+    # Mirror the module's imports here when they change.
+    from utc_clock import utc_iso_z
 
     ns = {
         "datetime": _dt,
+        "utc_iso_z": utc_iso_z,
         "build_public_url": lambda kind, slug: f"https://dchub.cloud/{kind}/{slug}",
         "_verdict_case_sql": verdict_case_sql,
         "_METHODOLOGY_URL": "https://dchub.cloud/api/v1/dcpi/methodology",
