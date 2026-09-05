@@ -30963,7 +30963,7 @@ def _build_sitemap_sections():
     # ONLY when you actually edit the static_pages / markets / locations lists.
     # DB-driven shards below carry their REAL per-row timestamps: dcpi →
     # computed_at, city-state markets → MAX(first_seen), facilities → first_seen.
-    _STATIC_LASTMOD = '2026-09-02'  # bumped: +/integrations/cloudflare (portal recipe)
+    _STATIC_LASTMOD = '2026-09-05'  # bumped: +18 nav/footer-linked pages that were unlisted
 
     def slugify(text):
         """Convert facility name to URL slug."""
@@ -31672,6 +31672,32 @@ def _build_sitemap_sections():
         ('/vs/datacenterdynamics',       '0.8', 'weekly'),
         ('/vs/data-center-frontier',     '0.8', 'weekly'),
         ('/vs/datacenters-com',          '0.8', 'weekly'),
+        # r-linked-not-listed (2026-09-05): 18 pages the SITE'S OWN CHROME
+        # links to were absent from every sitemap shard, so /wiki ("every page
+        # on DC Hub") and the search palette -- both GENERATED FROM THIS LIST
+        # -- could not find them. The palette was fixed on 2026-09-04 by
+        # generating from the sitemap instead of a hand-typed catalog; THIS
+        # list is that hand-typed catalog, one level up. All 18 verified live
+        # 2026-09-05: 200, zero redirects, self-canonical (or no canonical
+        # tag), no noindex. Guarded by tests/test_sitemap_covers_linked_pages.
+        ('/glossary',                    '0.7', 'monthly'),
+        ('/faq',                         '0.7', 'monthly'),
+        ('/team',                        '0.6', 'monthly'),
+        ('/changelog',                   '0.6', 'weekly'),
+        ('/hyperscaler-deals',           '0.8', 'daily'),
+        ('/advertise',                   '0.6', 'monthly'),
+        ('/ai-wars',                     '0.7', 'weekly'),
+        ('/announcements',               '0.6', 'weekly'),
+        ('/api-docs',                    '0.8', 'monthly'),
+        ('/capacity-pipeline',           '0.8', 'daily'),
+        ('/compare',                     '0.7', 'weekly'),
+        ('/construction-pipeline',       '0.8', 'daily'),
+        ('/developers',                  '0.7', 'monthly'),
+        ('/intelligence',                '0.8', 'weekly'),
+        ('/land-power-map',              '0.8', 'weekly'),
+        ('/map',                         '0.8', 'weekly'),
+        ('/press',                       '0.7', 'weekly'),
+        ('/rankings',                    '0.7', 'weekly'),
     ]
     # r-sitemap-shard (2026-07-03): the seed brief landings ported from the
     # retired routes/seo_pages.py sitemap-landings.xml (which was UNREACHABLE
