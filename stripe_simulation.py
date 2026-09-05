@@ -23,6 +23,7 @@ import sys
 import json
 from datetime import datetime
 from unittest.mock import patch, MagicMock
+from utc_clock import utc_iso_z
 
 # ============================================================================
 # SETUP: Create a test database matching DC Hub's schema
@@ -83,7 +84,7 @@ def setup_test_db():
         VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, 'none')
     """, ('existing_user_001', 'freeuser@example.com',
           hash_password_test('oldpassword123'), 'Free User', 'free', 'free',
-          datetime.utcnow().isoformat()))
+          utc_iso_z()))
 
     # Give existing user a free-tier API key
     raw_key = 'dchub_' + secrets.token_urlsafe(32)
@@ -93,7 +94,7 @@ def setup_test_db():
                              rate_limit_tier, is_active, created_at, usage_count, plan)
         VALUES (%s, %s, %s, %s, '["read"]', 'free', 1, %s, 0, 'free')
     """, ('existing_user_001', key_hash, raw_key[:12], 'freeuser@example.com Free Key',
-          datetime.utcnow().isoformat()))
+          utc_iso_z()))
 
     conn.commit()
     conn.close()
@@ -211,7 +212,7 @@ def load_handle_checkout():
                 import secrets as sec
                 new_user_id = f"stripe_{sec.token_hex(8)}"
                 stripe_customer_id = session.get('customer', '')
-                now = datetime.utcnow().isoformat()
+                now = utc_iso_z()
                 display_name = customer_name or customer_email.split('@')[0]
                 temp_password = sec.token_urlsafe(16)
                 hashed_pw = hash_password_test(temp_password)
@@ -248,7 +249,7 @@ def load_handle_checkout():
                     c.execute("""
                         UPDATE api_keys SET rate_limit_tier = %s, updated_at = %s
                         WHERE user_id = %s
-                    """, (api_tier, datetime.utcnow().isoformat(), resolved_user_id))
+                    """, (api_tier, utc_iso_z(), resolved_user_id))
                     update_count = c.rowcount
                     print(f"    Updated {update_count} credential record(s) to tier: {api_tier}")
 
@@ -256,7 +257,7 @@ def load_handle_checkout():
                     raw_key = 'dchub_' + sec.token_urlsafe(32)
                     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
                     key_prefix = raw_key[:12]
-                    now = datetime.utcnow().isoformat()
+                    now = utc_iso_z()
                     c.execute("""INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
                                  rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
                                  VALUES (%s, %s, %s, %s, '["read","write"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total""",

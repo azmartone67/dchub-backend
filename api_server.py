@@ -449,7 +449,7 @@ def subscribe_lead():
         else:
             # Re-subscribe
             c.execute("UPDATE leads SET subscribed = 1, last_activity = %s WHERE email = %s",
-                     (datetime.utcnow().isoformat(), email))
+                     (utc_iso_z(), email))
             conn.commit()
             conn.close()
             return jsonify({'success': True, 'message': 'Re-subscribed successfully', 'new': False})
@@ -469,15 +469,15 @@ def subscribe_lead():
         data.get('source', 'newsletter'),
         data.get('source_detail', ''),
         verify_token,
-        datetime.utcnow().isoformat(),
-        datetime.utcnow().isoformat()
+        utc_iso_z(),
+        utc_iso_z()
     ))
     
     # Log activity
     c.execute("""
         INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
         VALUES (%s, 'subscribed', %s, %s)
-    """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), datetime.utcnow().isoformat()))
+    """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), utc_iso_z()))
     
     conn.commit()
     conn.close()
@@ -528,7 +528,7 @@ def capture_lead():
                 last_activity = ?,
                 source_detail = COALESCE(source_detail, '') || ',' || ?
             WHERE email = %s
-        """, (new_score, datetime.utcnow().isoformat(), source, email))
+        """, (new_score, utc_iso_z(), source, email))
     else:
         lead_id = secrets.token_hex(8)
         verify_token = secrets.token_urlsafe(32)
@@ -545,15 +545,15 @@ def capture_lead():
             source,
             verify_token,
             score_delta,
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat()
+            utc_iso_z(),
+            utc_iso_z()
         ))
     
     # Log activity
     c.execute("""
         INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
         VALUES (%s, 'content_access', %s, %s)
-    """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), datetime.utcnow().isoformat()))
+    """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), utc_iso_z()))
     
     conn.commit()
     conn.close()
@@ -580,7 +580,7 @@ def verify_lead(token):
     
     c.execute("""
         UPDATE leads SET verified = 1, verified_at = %s, verify_token = NULL WHERE id = %s
-    """, (datetime.utcnow().isoformat(), lead[0]))
+    """, (utc_iso_z(), lead[0]))
     
     conn.commit()
     conn.close()
@@ -647,7 +647,7 @@ def register_user():
     c.execute("""
         INSERT INTO users (id, email, password_hash, name, company, created_at, last_login)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (user_id, email, password_hash, name, company, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+    """, (user_id, email, password_hash, name, company, utc_iso_z(), utc_iso_z()))
     
     conn.commit()
     conn.close()
@@ -691,7 +691,7 @@ def capture_lead_internal(email, name, company, source):
         c.execute("""
             INSERT INTO leads (id, email, name, company, source, lead_score, created_at, last_activity)
             VALUES (%s, %s, %s, %s, %s, 30, %s, %s)
-        """, (lead_id, email, name, company, source, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+        """, (lead_id, email, name, company, source, utc_iso_z(), utc_iso_z()))
         conn.commit()
     conn.close()
 
@@ -720,7 +720,7 @@ def login_user():
         return jsonify({'error': 'Invalid email or password', 'code': 'AUTH_FAILED'}), 401
     
     # Update last login
-    c.execute("UPDATE users SET last_login = %s WHERE id = %s", (datetime.utcnow().isoformat(), user[0]))
+    c.execute("UPDATE users SET last_login = %s WHERE id = %s", (utc_iso_z(), user[0]))
     conn.commit()
     conn.close()
     
@@ -799,7 +799,7 @@ def google_auth():
     
     if user:
         # Existing user - update last login
-        c.execute("UPDATE users SET last_login = %s WHERE id = %s", (datetime.utcnow().isoformat(), user[0]))
+        c.execute("UPDATE users SET last_login = %s WHERE id = %s", (utc_iso_z(), user[0]))
         conn.commit()
         
         user_data = {
@@ -822,8 +822,8 @@ def google_auth():
             '',  # No company yet
             'user',
             'free',
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat()
+            utc_iso_z(),
+            utc_iso_z()
         ))
         conn.commit()
         
@@ -834,7 +834,7 @@ def google_auth():
             c.execute("""
                 INSERT INTO leads (email, name, source, source_detail, lead_score, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s)
-            """, (email, name, 'google_signup', 'google_oauth_registration', 30, datetime.utcnow().isoformat()))
+            """, (email, name, 'google_signup', 'google_oauth_registration', 30, utc_iso_z()))
             conn.commit()
         except:
             note_swallowed_write("leads", where="api_server.google_auth")
@@ -1526,10 +1526,10 @@ def generate_report():
                 c.execute("""
                     INSERT INTO leads (id, email, source, source_detail, lead_score, created_at, last_activity)
                     VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s)
-                """, (lead_id, email, json.dumps(markets), datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+                """, (lead_id, email, json.dumps(markets), utc_iso_z(), utc_iso_z()))
             else:
                 c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
-                         (datetime.utcnow().isoformat(), email))
+                         (utc_iso_z(), email))
             conn.commit()
             conn.close()
         except:
@@ -1554,8 +1554,8 @@ def generate_report():
             email or (request.user['email'] if request.user else None),
             report_type,
             json.dumps(markets),
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat()
+            utc_iso_z(),
+            utc_iso_z()
         ))
         conn.commit()
         conn.close()
@@ -1975,7 +1975,7 @@ def enrichment_submit():
     c.execute("""
         INSERT INTO submissions (id, api_key, submission_type, data, status, submitted_at)
         VALUES (%s, 'crowdsource', 'enrichment', %s, 'pending', %s)
-    """, (submission_id, json.dumps(data), datetime.utcnow().isoformat()))
+    """, (submission_id, json.dumps(data), utc_iso_z()))
     
     conn.commit()
     conn.close()
@@ -2648,7 +2648,7 @@ def run_discovery():
                     'duplicate': 0
                 })
         
-        results['completed_at'] = datetime.utcnow().isoformat()
+        results['completed_at'] = utc_iso_z()
         
         return jsonify({
             'success': True,
@@ -2692,7 +2692,7 @@ def run_operator_discovery():
                         disc.get('provider'), disc.get('market'), disc.get('city'),
                         disc.get('state'), disc.get('country', 'US'), disc.get('power_mw'),
                         disc.get('status'), disc.get('facility_type'),
-                        datetime.utcnow().isoformat()
+                        utc_iso_z()
                     ))
                     result['added'] += 1
             except Exception as e:
@@ -2739,7 +2739,7 @@ def run_peeringdb_discovery():
                         disc.get('state'), disc.get('country', 'US'),
                         disc.get('latitude'), disc.get('longitude'),
                         disc.get('status'), disc.get('facility_type'),
-                        datetime.utcnow().isoformat()
+                        utc_iso_z()
                     ))
                     result['added'] += 1
             except Exception as e:
@@ -2762,7 +2762,7 @@ def process_discovery_source(source_name, discovery_func, conn):
         c.execute("""
             INSERT INTO discovery_runs (source, started_at, status)
             VALUES (%s, %s, 'running')
-        """, (source_name, datetime.utcnow().isoformat()))
+        """, (source_name, utc_iso_z()))
         run_id = c.lastrowid
         conn.commit()
     except Exception as e:
@@ -2807,7 +2807,7 @@ def process_discovery_source(source_name, discovery_func, conn):
                         disc.get('state'), disc.get('country'), disc.get('latitude'),
                         disc.get('longitude'), disc.get('power_mw'), disc.get('status'),
                         disc.get('facility_type'), disc.get('source_url'), disc.get('raw_data'),
-                        datetime.utcnow().isoformat()
+                        utc_iso_z()
                     ))
                     result['added'] += 1
                     
@@ -2826,7 +2826,7 @@ def process_discovery_source(source_name, discovery_func, conn):
                         facilities_duplicate = %s
                     WHERE id = %s
                 """, (
-                    datetime.utcnow().isoformat(), result['found'], 
+                    utc_iso_z(), result['found'], 
                     result['added'], result['duplicate'], run_id
                 ))
                 conn.commit()
@@ -3165,7 +3165,7 @@ def _dchub_try_run(*candidates):
 
 @app.route('/api/transactions/refresh', methods=['POST', 'GET'])
 def _dchub_refresh_transactions():
-    started = _dchub_refresh_dt.utcnow().isoformat()
+    started = utc_iso_z()
     result, entry, err = _dchub_try_run(
         ('deal_ingestion_scheduler', 'run_deal_ingestion'),
         ('deal_ingestion_scheduler', 'ingest_deals'),
@@ -3190,7 +3190,7 @@ def _dchub_refresh_transactions():
 
 @app.route('/api/facilities/refresh', methods=['POST', 'GET'])
 def _dchub_refresh_facilities():
-    started = _dchub_refresh_dt.utcnow().isoformat()
+    started = utc_iso_z()
     result, entry, err = _dchub_try_run(
         ('facility_ingestion',         'run_facility_ingestion'),
         ('facility_ingestion',         'ingest_facilities'),
