@@ -140,6 +140,75 @@ def _relay_to_webhook(payload: dict) -> str:
         return f"webhook_failed: {str(e)[:80]}"
 
 
+# ── r-contact-notify (2026-09-05) ─────────────────────────────────────────
+# The public lead form notified NOBODY. _relay_to_webhook is the only
+# notification this endpoint had, and it opens `if not SALES_WEBHOOK: return
+# "no_webhook_configured"` — DCHUB_SALES_WEBHOOK has never been set, so every
+# submission returned that string and the lead sat in a table nobody watches.
+#
+# ★ THE SIBLING ENDPOINT ALREADY HAD THIS. routes/enterprise_inquiry.py's
+# _notify_admin fires a Resend email on every inquiry, using RESEND_API_KEY and
+# ADMIN_INBOX_EMAIL — both already configured in production. So the two
+# enterprise capture paths diverged a SECOND way: one emails a human, the
+# public one did nothing. (The first divergence was the schema fork, #3894.)
+# Closing it needs no new credential, which is why this is code and not a
+# Railway variable.
+#
+# The webhook stays exactly as it was: an optional Slack upgrade for whoever
+# sets DCHUB_SALES_WEBHOOK. Email is the path that works today.
+def _sales_email_html(payload: dict) -> str:
+    """The admin-notification body. Pure, so a test can inspect it without a
+    network call and without importing main.
+
+    ★ EVERY FIELD IS ESCAPED. This is attacker-controlled free text from a
+    PUBLIC form being interpolated into HTML that a human opens in a mail
+    client. The sibling routes/enterprise_inquiry.py::_notify_admin
+    interpolates the same class of input RAW — that is a live injection into
+    the admin inbox and is not fixed here, but new code must not copy it.
+    """
+    org = _h(payload.get("org_name") or "?")
+    return (
+        f"<h2>New enterprise inquiry — {org}</h2>"
+        f"<p><b>Org:</b> {org}<br>"
+        f"<b>Email:</b> {_h(payload.get('email') or '?')}<br>"
+        f"<b>Expected volume:</b> {_h(payload.get('expected_volume') or '?')}/mo<br>"
+        f"<b>Source IP:</b> {_h(payload.get('source_ip') or '?')}</p>"
+        f"<p><b>Use case:</b><br>{_h(payload.get('use_case') or '—')}</p>"
+        f"<p style='color:#666;font-size:12px'>Reply to {_h(payload.get('email') or '')} "
+        f"to reach them. Submitted via the /enterprise form.</p>"
+    )
+
+
+def _notify_sales(payload: dict) -> bool:
+    """Email the inquiry to the admin inbox. True if the send was accepted.
+
+    ★ ROUTED THROUGH main._resend_email, the SANCTIONED transactional sender,
+    not a hand-rolled POST to api.resend.com. tests/test_marketing_chokepoint.py
+    ratchets against new direct Resend callers — the backend already has ~45
+    hand-rolled senders and no way to prove CAN-SPAM compliance across them, so
+    every new one has to justify itself. The first version of this function was
+    a direct POST and that guard caught it. This is an ops alert about an
+    inbound lead, so it is transactional rather than marketing, but reusing the
+    governed sender is still strictly better than adding a 46th bypass and an
+    allow-list entry.
+
+    Lazy import, matching routes/auth_routes.py and
+    routes/agent_iteration_suite.py — main imports this blueprint, so a
+    module-level import would be circular.
+    """
+    to_addr = os.environ.get("ADMIN_INBOX_EMAIL") or SALES_EMAIL
+    try:
+        from main import _resend_email
+        return bool(_resend_email(
+            to_addr,
+            f"New enterprise inquiry — {payload.get('org_name') or '?'}",
+            _sales_email_html(payload),
+        ))
+    except Exception as e:
+        logger.warning(f"[enterprise] sales notify failed: {e}")
+        return False
+
+
 @enterprise_bp.route("/api/v1/enterprise/contact", methods=["POST"])
 def api_enterprise_contact():
     """Accept an enterprise inquiry. JSON body or form-encoded.
@@ -198,6 +267,9 @@ def api_enterprise_contact():
             message=f"We couldn't save your request. Please email {SALES_EMAIL} directly. ({str(e)[:120]})",
         ), 503
 
+    # r-contact-notify: the lead is STORED by here. Tell a human about it.
+    notified = _notify_sales(payload)
+
     return jsonify(
         ok=True,
         message=(
@@ -205,6 +277,11 @@ def api_enterprise_contact():
             f"If urgent, email {SALES_EMAIL}."
         ),
         relay_status=relay_status,
+        # Honest per-path result, matching what submit_inquiry reports: a lead
+        # that stored but reached no inbox is a different state from one that
+        # did, and "200 ok" alone hid that for the whole life of this endpoint.
+        stored=True,
+        notified=notified,
     ), 200
 
 
