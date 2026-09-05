@@ -22479,13 +22479,31 @@ def get_stats():
         # len(top_countries) (~10) — a mislabel that made /api/v1/stats contradict
         # the site-wide "300+ DCPI markets". Source it from the canonical DCPI count
         # (live COUNT(DISTINCT market_slug) FROM market_power_scores, cached; 232 floor).
+        # r-one-dcpi-universe (2026-09-04): this fell open to TWO hand-typed
+        # literals, and BOTH are on ai_surface_canon's stale_markers denylist —
+        # one as a bare-number entry, one scoped as a claim shape because the
+        # bare form collides with record IDs. So a canon read failure made this
+        # PUBLIC endpoint publish exactly the retired counts the sentinel exists
+        # to catch on served bodies. Same shape as the retired DCPI count in
+        # #3816: the project denylists a number in one place and keeps a code
+        # path that can emit it in another.
+        #
+        # Now falls open to canon's OWN maintained cold-start pin
+        # (_FALLBACK['markets']), which is documented, re-floored when reality
+        # moves, and rounds DOWN so it can never over-claim. Never a literal
+        # typed here, which is the thing that goes stale unobserved.
+        _canon_markets = 0
         try:
-            from canonical_stats import get_canonical_stats as _gcs
+            from canonical_stats import get_canonical_stats as _gcs, _FALLBACK as _canon_fb
             _canon = _gcs()
-            _canon_markets = int(_canon.get('markets', 311)) or 232
+            _canon_markets = int(_canon.get('markets') or _canon_fb.get('markets') or 0)
         except Exception:
             _canon = {}
-            _canon_markets = 232
+            try:
+                from canonical_stats import _FALLBACK as _canon_fb
+                _canon_markets = int(_canon_fb.get('markets') or 0)
+            except Exception:
+                _canon_markets = 0
         # r-deals-count-fix (2026-07-17): the public 'deals' field was
         # `stats['total_announcements']` — the ~11,500-row `announcements` (news)
         # table, published as "M&A deals". That is a ~8x over-claim (a wrong
@@ -22526,6 +22544,9 @@ def get_stats():
             'version': 'v92',
             'build': '93',
             'facilities': stats.get('total_facilities', 0),
+            # 0 only when canon AND its pin are both unreadable. Omitted
+            # below rather than published — "0 markets" is a confident lie; a
+            # missing key is visible and a client can tell it apart.
             'markets': _canon_markets,
             'deals': _canon_deals,
             'substations': stats.get('total_substations', 0),
@@ -22535,6 +22556,14 @@ def get_stats():
             'transmission_lines': stats.get('total_transmission_lines', 0),
             'transmission_lines_source': stats.get('transmission_lines_source'),
         }
+        # r-one-dcpi-universe: drop the key rather than publish "0 markets".
+        # Reached only when the live query AND canon's cold-start pin are both
+        # unreadable. A zero here would be a confident lie on a public,
+        # 60s-cacheable payload; an absent key is visible and a client can tell
+        # the two apart. Done BEFORE the caches below so neither the
+        # degradation store nor the 5-min memo can hold a zeroed count.
+        if not result.get('markets'):
+            result.pop('markets', None)
         cache_for_degradation('v1_stats', result)
         # Phase ZZZZ-stats-cache (2026-05-18): memo-store so next 5 min
         # of /api/v1/stats requests serve from memory (~1ms) instead of
