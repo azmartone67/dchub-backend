@@ -1652,7 +1652,188 @@ def todays_style():
     return DAILY_STYLES.get(datetime.datetime.utcnow().weekday(), 'data_brutal')
 
 
+# ---------------------------------------------------------------------------
+# GRID INVENTORY card (2026-09-05) — the graphic IS the data.
+#
+# Every other style illustrates a headline with a stock photograph. This one
+# draws the inventory itself: ONE MARK PER ASSET, counted live out of the grid
+# layer for a coordinate. It is free, unique per market, impossible for anyone
+# without the dataset to copy, and it varies because the DATA varies — which is
+# also the standing answer to the media desk's repetition problem.
+#
+# Three rules keep it honest, and they are what the tests pin:
+#   1. A FAILED READ IS NEVER A ZERO. Any class whose query raises comes back
+#      None and is omitted from the card. A card that silently draws "0
+#      substations" because a connection dropped is worse than no card.
+#   2. THE RADIUS CLAIM MUST BE TRUE. The existing grid_intelligence counts use
+#      `ABS(lat - x) < deg` — a bounding BOX. This card says "within N km", so
+#      it bbox-prefilters (index-friendly) and then applies real haversine.
+#   3. THE CARD NAMES ITS BASIS. Radius, and the fact that the transmission
+#      layer is the GEOCODED SNAPSHOT (transmission_lines_eia, ~56k rows) and
+#      not the maintained ~95k layer, are printed on the card.
+_GRID_CLASSES = (
+    # key, table, label, colour-role
+    ('transmission_lines', 'transmission_lines_eia', 'TRANSMISSION LINES', 'line'),
+    ('substations',        'substations',            'SUBSTATIONS',        'dot'),
+    ('power_plants',       'power_plants_eia',       'POWER PLANTS',       'dot'),
+)
+
+_GRID_COUNT_SQL = """
+    SELECT COUNT(*) FROM {table}
+     WHERE lat IS NOT NULL AND lng IS NOT NULL
+       AND lat BETWEEN %(lat_lo)s AND %(lat_hi)s
+       AND lng BETWEEN %(lng_lo)s AND %(lng_hi)s
+       AND 6371.0 * 2 * asin(sqrt(
+             power(sin(radians(lat - %(lat)s) / 2), 2)
+             + cos(radians(%(lat)s)) * cos(radians(lat))
+             * power(sin(radians(lng - %(lng)s) / 2), 2)
+           )) <= %(radius_km)s
+"""
+
+
+def _grid_counts(lat, lon, radius_km=50.0):
+    """One count per asset class within a TRUE radius. Value is None — never 0
+    — for any class whose read failed, so the card can omit it rather than
+    publish a zero it did not measure."""
+    import math
+    out = {k: None for k, _t, _l, _s in _GRID_CLASSES}
+    url = os.environ.get('DATABASE_URL')
+    if not url:
+        return out
+    deg_lat = radius_km / 111.0
+    deg_lng = radius_km / max(111.0 * math.cos(math.radians(lat)), 1e-6)
+    params = {
+        'lat': lat, 'lng': lon, 'radius_km': radius_km,
+        'lat_lo': lat - deg_lat, 'lat_hi': lat + deg_lat,
+        'lng_lo': lon - deg_lng, 'lng_hi': lon + deg_lng,
+    }
+    conn = None
+    try:
+        import psycopg2
+        conn = psycopg2.connect(url, connect_timeout=5)
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = 6000")
+            for key, table, _label, _shape in _GRID_CLASSES:
+                try:
+                    cur.execute(_GRID_COUNT_SQL.format(table=table), params)
+                    row = cur.fetchone()
+                    out[key] = int(row[0]) if row and row[0] is not None else None
+                except Exception as e:
+                    conn.rollback()          # keep the txn usable for the next class
+                    print(f"[og_cards] grid count failed for {table}: {e}")
+    except Exception as e:
+        print(f"[og_cards] grid counts unavailable: {e}")
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
+    return out
+
+
+def _unit_field(img, d, x0, y0, n, colour, shape, cols=22, gap=19):
+    """One mark per asset. Returns the y below the field."""
+    for i in range(n):
+        cx = x0 + (i % cols) * gap + 4
+        cy = y0 + (i // cols) * gap + 8
+        if shape == 'line':
+            d.line([(cx, cy - 6), (cx, cy + 6)], fill=colour, width=3)
+        else:
+            d.ellipse([(cx - 4, cy - 4), (cx + 4, cy + 4)], fill=colour)
+    rows = -(-n // cols) if n else 0
+    return y0 + rows * gap
+
+
+def _draw_grid_inventory(pr):
+    """Data-native card: the right panel is the asset inventory itself.
+
+    Needs `card` = {lat, lon, place, radius_km}. With no coordinate, or with no
+    class that returned a count, it falls back to the editorial style rather
+    than inventing a graphic."""
+    from PIL import Image, ImageDraw
+    spec = pr.get('card') or {}
+    try:
+        lat = float(spec.get('lat')); lon = float(spec.get('lon'))
+    except (TypeError, ValueError):
+        return _draw_editorial(pr)
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return _draw_editorial(pr)
+    try:
+        radius_km = float(spec.get('radius_km') or 50)
+    except (TypeError, ValueError):
+        radius_km = 50.0
+    radius_km = max(5.0, min(radius_km, 250.0))
+    place = (str(spec.get('place') or '').strip() or 'this coordinate')[:42]
+
+    counts = _grid_counts(lat, lon, radius_km)
+    live = [(k, t, l, s) for (k, t, l, s) in _GRID_CLASSES if counts.get(k) is not None]
+    if not live:
+        # Nothing measured — do NOT draw an empty grid and call it an inventory.
+        return _draw_editorial(pr)
+    total = sum(counts[k] for k, _t, _l, _s in live)
+
+    img = Image.new('RGB', (W, H), BG)
+    d = ImageDraw.Draw(img)
+
+    # ── right: the inventory panel ─────────────────────────────────────────
+    PX = 690
+    d.rectangle([(PX, 0), (W, H)], fill=PANEL)
+    d.line([(PX, 0), (PX, H)], fill=PANEL_HI, width=2)
+    X0 = PX + 40
+    d.text((X0, 46), f'ASSETS WITHIN {int(radius_km)} KM', font=_mono(14), fill=DIM)
+
+    shades = {'line': (58, 60, 110), 'dot': INDIGO}
+    y = 84
+    for idx, (key, _table, label, shape) in enumerate(live):
+        n = counts[key]
+        colour = VIOLET if idx == len(live) - 1 else shades[shape]
+        d.text((X0, y), f'{n:,}', font=_mono(22), fill=TEXT)
+        nw, _ = _text_size(d, f'{n:,}', _mono(22))
+        if shape == 'line':
+            d.line([(X0 + nw + 16, y + 4), (X0 + nw + 16, y + 18)], fill=colour, width=3)
+        else:
+            d.ellipse([(X0 + nw + 12, y + 6), (X0 + nw + 22, y + 16)], fill=colour)
+        d.text((X0 + nw + 34, y + 5), label, font=_mono(12), fill=MUTED)
+        # Cap the drawn marks so a dense metro cannot overflow the panel — and
+        # SAY SO on the card rather than silently drawing a wrong quantity.
+        drawn = min(n, 22 * 8)
+        y = _unit_field(img, d, X0, y + 32, drawn, colour, shape) + 26
+        if drawn < n:
+            d.text((X0, y - 20), f'showing {drawn:,} of {n:,}', font=_mono(11), fill=DIM)
+            y += 8
+
+    # ── left: type, in the site's hero treatment ───────────────────────────
+    img.paste(_brand_gradient((5, H)), (0, 0))
+    _brand_chip(d, 64, 44, size=40)
+    d.text((120, 52), 'DC HUB  ·  GRID INTELLIGENCE', font=_font(22), fill=INDIGO)
+
+    hf = _font(58)
+    lines = _wrap_px(f'{total:,} grid assets within {int(radius_km)} km of {place}',
+                     hf, 560, max_lines=3)
+    ty = 150
+    grad_i = len(lines) - 1 if len(lines) > 1 else -1
+    for i, line in enumerate(lines):
+        if i == grad_i:
+            _grad_text(img, (64, ty), line, hf)
+        else:
+            d.text((64, ty), line, font=hf, fill=WHITE)
+        ty += 70
+
+    img.paste(_brand_gradient((80, 5)), (64, ty + 22))
+    sy = ty + 58
+    for line in _wrap_px('Every mark is one asset in the DC Hub grid layer '
+                         '— counted, not illustrated.', _font(21, bold=False), 560,
+                         max_lines=2):
+        d.text((64, sy), line, font=_font(21, bold=False), fill=MUTED)
+        sy += 30
+
+    d.text((64, H - 62), 'dchub.cloud', font=_font(20, weight='SemiBold'), fill=TEXT)
+    d.text((64, H - 34), 'HIFLD + EIA  ·  transmission = geocoded snapshot',
+           font=_mono(11), fill=DIM)
+    return img
+
+
 STYLE_MAP = {
+    'grid_inventory': _draw_grid_inventory,
     'data_brutal': _draw_data_brutal,
     'editorial':   _draw_editorial,
     'infographic': _draw_infographic,
@@ -2044,6 +2225,17 @@ def og_card_dynamic():
     # per-kind layout; the 6 canonical numbers ride along as params so the card
     # shows the lead's LIVE values (v=verified, t=tracked, m=markets, dl=deals,
     # c=countries, tl=tools). Absent numbers fall back to canonical constants.
+    # grid_inventory (2026-09-05): the data-native card. Coordinate in, real
+    # counts out — see _draw_grid_inventory. No coordinate ⇒ it falls back to
+    # editorial rather than drawing an inventory it did not measure.
+    if style == 'grid_inventory':
+        _gi = {}
+        for _k in ('lat', 'lon', 'place', 'radius_km'):
+            _vv = args.get(_k)
+            if _vv not in (None, ''):
+                _gi[_k] = str(_vv)[:64]
+        pr['card'] = _gi
+
     _kind = (args.get('kind') or '').strip()[:48]
     if style == 'data_card' or _kind:
         if _kind == 'market':
