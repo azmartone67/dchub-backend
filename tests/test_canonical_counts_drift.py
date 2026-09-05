@@ -3126,6 +3126,20 @@ STALE_SCAN_SKIP_FILES = {
     # it is inside RETIRED_LITERALS — a stricter check than the scan it replaces,
     # because the scan would accept such a literal anywhere the regex missed.
     "canon_floor.py": "IS the denylist — covered by test_canon_floor.py",
+    # ★2026-09-05 — a fourth member, same class, same price. Glama's listing
+    # pages carry retired counts in GLAMA-authored copy (their cached summary
+    # says "21,000+ facilities / 232 global DC markets"; their AI review says
+    # "With 82 tools, this server is extremely heavy compared to typical MCP
+    # servers (3-15 tools)"). routes/glama_listing_probe.py must NAME those to
+    # detect them — flagging it is the self-reference above.
+    #
+    # And, as with canon_floor.py, the skip does not rest on the precedent.
+    # test_glama_listing_probe.py::test_no_count_literal_escapes_the_
+    # docstrings_or_the_phrase_list walks the module's AST and asserts every
+    # count-shaped literal in it — retired or not, so a wider net than this
+    # scan casts — sits in a docstring or in RETIRED_COUNT_PHRASES. A count
+    # reaching an emitted string breaks the argument and fails there.
+    "glama_listing_probe.py": "IS the denylist — covered by test_glama_listing_probe.py",
 }
 
 # ── (e) BARE-INT EVASION ──────────────────────────────────────────────────────
