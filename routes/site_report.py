@@ -501,6 +501,19 @@ def _usdm_in_coverage(lat, lon):
         return False
     if lat != lat or lon != lon:            # NaN
         return False
+    # ★ Census polygons, not boxes — the same switch the air gate made. A box
+    # cannot draw the land border: the per-state boxes hand Toronto to NY and
+    # Tijuana to CA, which would score both on a US drought map.
+    # util/state_polygons carries the committed Census geometry and its docstring
+    # names "Toronto, Ontario -> 'NY'" as the exact result it removes.
+    try:
+        from util.state_polygons import state_containing, load_error
+        if load_error() is None:
+            return bool(state_containing(lat, lon))
+    except Exception:
+        pass
+    # Geometry unavailable: fall back to boxes rather than declaring the whole
+    # United States out of coverage, which is the worse failure.
     if not any(a <= lat <= b and c <= lon <= d for a, b, c, d in _USDM_US_BOXES):
         return False
     try:

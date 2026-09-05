@@ -39772,24 +39772,31 @@ _AP_US_BOXES = (
     (18.0, 23.0, -161.0, -154.0),   # Hawaii
 )
 
-# ★ THE BORDER IS THE HARD PART, AND A BBOX CANNOT DRAW IT.
-# Measured 2026-09-05, both directions:
+# ★ THE BORDER IS DRAWN BY POLYGON NOW, NOT BY BOXES.
+# The first cut of this gate used bounding boxes and could not draw the land
+# border. Measured 2026-09-05, all three attempts:
 #
 #   the national box alone      -> admits Ottawa, Toronto, Montreal, Vancouver
-#   the state boxes alone       -> hand Toronto to NY and Tijuana to CA
-#   hand-drawn exclusion boxes  -> blind Buffalo, Detroit, San Diego and
-#                                  Minneapolis, all genuinely in coverage
+#   the per-state boxes         -> hand Toronto to NY and Tijuana to CA
+#   hand-drawn exclusion boxes  -> blind Buffalo, Detroit, San Diego, Minneapolis
 #
-# So the predicate requires BOTH: inside the national box AND resolving to a US
-# state. That is principled rather than arbitrary — every dataset feeding this
-# score is state-indexed, so "no state" IS "no data", and it costs nothing at
-# the metros that matter (all ten US sites in the test file still resolve).
+# It shipped as national-box AND resolvable-state, with Toronto and Tijuana
+# pinned as known-wrong xfails. util/state_polygons removes the compromise: the
+# Census cartographic boundaries, committed to the repo (662 KB, 56 areas), so
+# the answer is exact and needs no network. That module exists for this exact
+# failure — its docstring names "Toronto, Ontario -> 'NY'" as the bbox result it
+# was written to delete. The union of the 50 states, DC and the territories IS
+# the border, so a state lookup is a country lookup.
 #
-# ★ KNOWN LIMIT, STATED RATHER THAN HIDDEN: Toronto and Tijuana sit inside a
-# US state's bounding box and are still scored as if American. Drawing that
-# border needs a country polygon lookup, not more boxes — the attempt is
-# recorded above because the next person will otherwise try it too. The tests
-# pin these two as xfail so the limit is visible and cannot be forgotten.
+# Measured on the polygons: Toronto '', Tijuana '', Ottawa '', Montreal '',
+# Vancouver '', Monterrey '', Hesse '', Tokyo '' — and Ashburn 'VA', San Diego
+# 'CA', Buffalo 'NY', Detroit 'MI', El Paso 'TX', Anchorage 'AK', Honolulu 'HI'.
+#
+# ★ THE BOXES SURVIVE ONLY AS A FAILURE PATH. If the geometry cannot load,
+# state_containing returns '' for EVERY point, which would silently blank the
+# score for the whole US — the opposite failure and a worse one. So a load error
+# falls back to the old box test and says so, rather than reporting the entire
+# country as out of coverage.
 def _ap_in_us_coverage(lat, lon):
     """Inside the coverage of the US datasets this score is built from.
 
@@ -39803,9 +39810,16 @@ def _ap_in_us_coverage(lat, lon):
         return False
     if lat != lat or lon != lon:            # NaN
         return False
+    try:
+        from util.state_polygons import state_containing, load_error
+        if load_error() is None:
+            return bool(state_containing(lat, lon))
+    except Exception:
+        pass
+    # Geometry unavailable: fall back to the boxes rather than declaring the
+    # entire United States out of coverage.
     if not any(a <= lat <= b and c <= lon <= d for a, b, c, d in _AP_US_BOXES):
         return False
-    # Every dataset here is state-indexed, so no resolvable state means no data.
     return _ap_resolve_state(lat, lon) is not None
 
 

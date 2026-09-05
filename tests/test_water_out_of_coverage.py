@@ -62,6 +62,11 @@ def test_out_of_coverage_is_not_the_no_drought_value():
     (35.6762, 139.6503, "Tokyo JP"),
     (-33.8688, 151.2093, "Sydney AU"),
     (45.4215, -75.6972, "Ottawa CA"),
+    # ★ The two the bbox gate got WRONG until the polygon lookup landed:
+    # Toronto sat inside New York's box, Tijuana inside California's.
+    (43.6532, -79.3832, "Toronto CA"),
+    (32.5149, -117.0382, "Tijuana MX"),
+    (49.2827, -123.1207, "Vancouver CA"),
 ])
 def test_non_us_sites_are_out_of_coverage(lat, lon, name):
     assert sr._usdm_in_coverage(lat, lon) is False, f"{name} must not be scored"
@@ -157,3 +162,19 @@ def test_both_render_sites_use_the_shared_predicate():
         "a render site is still testing the water score string by hand")
     assert 'water.get("score") != "—"' not in src, (
         "an old hand-rolled water check survived and will print N/A/100")
+
+
+def test_the_water_gate_uses_polygons_too():
+    """Both gates must move together. A polygon air gate beside a bbox water
+    gate would report Toronto as unassessed for air and scored for water."""
+    import inspect
+    src = inspect.getsource(sr._usdm_in_coverage)
+    assert "state_containing" in src and "load_error" in src
+
+
+def test_a_failed_geometry_load_does_not_blank_the_united_states(monkeypatch):
+    import util.state_polygons as sp
+    monkeypatch.setattr(sp, "load_error", lambda: "simulated load failure")
+    monkeypatch.setattr(sp, "state_containing", lambda lat, lng: "")
+    assert sr._usdm_in_coverage(39.0438, -77.4874) is True
+    assert sr._usdm_in_coverage(50.363083, 9.307306) is False
