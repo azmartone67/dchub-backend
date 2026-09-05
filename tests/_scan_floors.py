@@ -52,7 +52,9 @@ import glob as _glob_mod
 import json
 import os
 import pathlib
+import re as _re
 import threading
+from os import fspath as _os_fspath
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _MANIFEST = os.path.join(_HERE, "scan_floors.json")
@@ -69,6 +71,60 @@ _NOISE = 3
 # a pinned file is still floor-checked at ANY size — this only governs whether
 # an UNPINNED file is nagged into the manifest.
 _ADOPTION_MIN = 8
+
+# ── What a scan is NOT allowed to take credit for ────────────────────
+# ★ 2026-09-05. A floor is supposed to measure how much of OUR code a guard
+# saw. It was measuring how big the checkout happened to be.
+#
+# The scan primitives yield every path they visit; a caller that skips
+# vendored paths with `continue` (rather than pruning `dirnames`) has already
+# had those paths COUNTED by the time it rejects them. So directories the
+# guard never reads still propped up its floor, and the floor moved whenever
+# the tree changed size for reasons unrelated to coverage:
+#
+#   #3868  docs/mcp-helper-pkg/.venv retired  -> 10 floors re-pinned
+#   #3871  the dchub-frontend mirror retired  ->  1 floor re-pinned, main red
+#   (and test_honest_numbers.py:506 records a third: .claude/worktrees, where
+#    the floor "tracked how many worktrees happened to exist")
+#
+# Three separate incidents, one cause. Excluding these segments from the COUNT
+# is the fix: the number now tracks our code, so retiring vendored files does
+# not move it. The same change makes the measurement environment-independent —
+# __pycache__ accumulates in a long-lived worktree and not in a fresh CI
+# checkout, which is exactly why #3868's local runs disagreed with CI twice.
+#
+# ★ This filters the COUNT ONLY. Every item is still yielded, unchanged and in
+# order — see test_scan_floors_noise_filter.py::test_the_wrapper_is_transparent.
+# Filtering what the caller receives would silently change what guards scan,
+# which is a far worse bug than the one being fixed.
+_NOISE_SEGMENTS = frozenset({
+    ".git", ".claude", "__pycache__", "node_modules", ".venv", "venv",
+    "site-packages", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+})
+_NOISE_RE = _re.compile(
+    r"(?:^|/)(?:" + "|".join(_re.escape(seg) for seg in sorted(_NOISE_SEGMENTS))
+    + r")(?:/|$)")
+
+
+def _is_noise(item, kind: str) -> bool:
+    """True when this yielded item sits inside a vendored/ephemeral directory.
+
+    os.walk yields (dirpath, dirnames, filenames); the glob family yields a
+    path. Anything unrecognised counts, so a new primitive fails OPEN into
+    being measured rather than silently uncounted.
+    """
+    path = item[0] if kind == "walk" and isinstance(item, tuple) and item else item
+    try:
+        s = _os_fspath(path)
+    except TypeError:
+        return False
+    if isinstance(s, bytes):
+        try:
+            s = s.decode("utf-8", "surrogateescape")
+        except Exception:
+            return False
+    return _NOISE_RE.search(s.replace(os.sep, "/")) is not None
+
 
 _lock = threading.Lock()
 # {test_file_basename: {kind: max_size}}
@@ -121,8 +177,9 @@ def install() -> None:
     def _counted(it, kind):
         n = 0
         for item in it:
-            n += 1
-            _record(kind, n)
+            if not _is_noise(item, kind):
+                n += 1
+                _record(kind, n)
             yield item
 
     def iglob_(pathname, *a, **k):
