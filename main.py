@@ -3914,6 +3914,16 @@ try:
         from ai_surface_sentinel import ai_surface_sentinel_bp
         app.register_blueprint(ai_surface_sentinel_bp)
         print("[main] ai_surface_sentinel_bp registered: /api/v1/admin/ai-surface/{audit,canon,refresh}", flush=True)
+
+        # The ANSWER prober sits beside the surface sentinel deliberately: the
+        # sentinel audits CLAIM surfaces (llms.txt, AGENTS.md, the manifests)
+        # for stale text; this one asks whether the DATA surfaces still return
+        # the same answer canon does. Neither subsumes the other — see the
+        # module docstring for the six surfaces that were wrong while the
+        # sentinel was green.
+        from routes.answer_prober import answer_prober_bp
+        app.register_blueprint(answer_prober_bp)
+        print("[main] answer_prober_bp registered: /api/v1/admin/answer-probe", flush=True)
     except Exception as _ass:
         import logging
         logging.getLogger(__name__).warning('ai_surface_sentinel wiring failed: %s', _ass)
