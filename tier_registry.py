@@ -135,10 +135,15 @@ TIER_PRICE_USD_MONTH = {
     # canonical_funnel.PLAN_MONTHLY_USD and the webhook amount-band both
     # mirror. The previous 199 here was a stale display value that made
     # /api/v1/tiers quote 2x what founding members are actually charged.
-    'founding':   99,     # == pro. LEGACY ALIAS as of r-price-collapse: kept so
-                          # the 10 existing founding subs, their keys and every
-                          # ?tier=founding URL keep resolving. New buyers are
-                          # sold 'pro' at the same $99 on the same Stripe link.
+    'founding':   99,     # == pro IN PRICE AND ACCESS. LEGACY ALIAS as of
+                          # r-price-collapse: kept so the 10 existing founding
+                          # subs, their keys and every ?tier=founding URL keep
+                          # resolving. New buyers are sold 'pro' at the same
+                          # $99 — but on a DIFFERENT Stripe link. "the same
+                          # Stripe link" here was wrong from 2026-09-05 until
+                          # 2026-09-06; the two links are deliberately separate
+                          # so the webhook does not stamp a Pro buyer
+                          # plan_name='founding'. See routes/_stripe_links.py.
     'enterprise': None,   # custom / contact sales — see ENTERPRISE_FROM_USD_YEAR
     'research_seed': None,
     'admin':      None,
