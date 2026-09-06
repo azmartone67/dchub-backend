@@ -177,6 +177,15 @@ def _tools_count() -> int:
 _STALE_RED_DAYS = 7  # registry_truth four-state doctrine: a verification older
                      # than this ages into RED — it no longer earns a green check.
 
+# ★2026-09-05 — a COUNT needs fresher evidence than a CHECKMARK, because they
+# are different claims. "we saw this listing" survives a week; "this listing
+# says 83 tools" does not, because OUR canon moves every few days and the
+# listing lags it. Measured: the Glama row published "82" at exactly 7 days old
+# (passing `<= _STALE_RED_DAYS`) while canon had moved to 83 — a wrong number,
+# on a page built to be shared, sitting next to a same-day Smithery row.
+# Same EVIDENCE as the checkmark, stricter RECENCY for the more specific claim.
+_STALE_COUNT_DAYS = 3
+
 
 def _tools_plausible(tools, canon_count) -> bool:
     """A published per-registry tool count must be within tolerance of canon.
@@ -203,6 +212,20 @@ def _is_fresh(when, now=None) -> bool:
     error — never downgrade a real check to a crash, and never 500 a public page."""
     if when is None:
         return False
+    age = _age_days(when, now)
+    if age is None:
+        return True   # date-handling error → fail OPEN, exactly as before
+    return age <= _STALE_RED_DAYS
+
+
+def _age_days(when, now=None):
+    """Age of a verification in days, or None when it cannot be determined.
+
+    FAIL-OPEN is expressed by the CALLERS (each decides what an unknown age
+    means for its own claim), not buried here — the checkmark may keep its
+    historical benefit of the doubt while a published number does not."""
+    if when is None:
+        return None
     try:
         from datetime import datetime, timezone
         now = now or datetime.now(timezone.utc)
@@ -211,10 +234,47 @@ def _is_fresh(when, now=None) -> bool:
             try:
                 w = w.replace(tzinfo=timezone.utc)  # DB naive timestamp -> assume UTC
             except (TypeError, ValueError):
-                return True  # a bare date etc. — preserve prior behavior, don't hide it
-        return (now - w).days <= _STALE_RED_DAYS
+                # A bare date etc. Age is UNKNOWN — the checkmark keeps its
+                # historical benefit of the doubt via _is_fresh, the published
+                # count does not. Returning True here would have leaked a bool
+                # into an int-returning helper.
+                return None
+        return (now - w).days
     except Exception:
-        return True
+        return None
+
+
+def _publishable_count(tools, verdict, when, canon_tools, now=None):
+    """The tool count we are willing to PUBLISH, or None.
+
+    ★ Extracted from _verified_map so it can be tested. While this logic lived
+    inline it needed a database to reach, so the tests around it asserted on the
+    CONSTANTS instead — and a mutation swapping _STALE_COUNT_DAYS back to
+    _STALE_RED_DAYS passed all of them. A rule nothing can execute is a rule
+    nothing defends.
+
+    Three independent bars, all of which a number must clear:
+      · the scan VERIFIED the listing (same evidence as the checkmark);
+      · the scan is fresher than _STALE_COUNT_DAYS — sharper than the
+        checkmark's window because "says N tools" decays faster than "exists";
+      · the number is plausible against canon (a parse artifact renders "—").
+
+    Unknown age fails CLOSED here, unlike the checkmark: declining to print a
+    number costs a dash, printing a wrong one costs a reader.
+    """
+    if not tools:
+        return None
+    if not str(verdict or "").startswith("verified"):
+        return None
+    age = _age_days(when, now)
+    if age is None or age > _STALE_COUNT_DAYS:
+        return None
+    if not _tools_plausible(tools, canon_tools):
+        return None
+    try:
+        return int(tools)
+    except (TypeError, ValueError):
+        return None
 
 
 def _verified_map() -> dict:
@@ -260,9 +320,15 @@ def _verified_map() -> dict:
             else:
                 when_col = "NULL"
             verdict_col = "truth_verdict" if "truth_verdict" in have else "NULL"
+            # ★ The URL the scan actually READ. The page links a curated URL, and
+            # for Glama those were DIFFERENT PAGES: the row linked
+            # /mcp/servers/azmartone67/… while the crawler measured
+            # /mcp/connectors/cloud.dchub/dc-hub-… (the duplicate). A reader who
+            # followed "verify →" was checking a page the number never came from.
+            url_col = "listing_url" if "listing_url" in have else "NULL"
             cur.execute(
-                "SELECT registry_name, %s, %s, %s FROM mcp_presence_listings"
-                % (tools_col, when_col, verdict_col))
+                "SELECT registry_name, %s, %s, %s, %s FROM mcp_presence_listings"
+                % (tools_col, when_col, verdict_col, url_col))
             rows = cur.fetchall()
     except Exception:
         return {}
@@ -273,7 +339,7 @@ def _verified_map() -> dict:
             pass
     out = {}
     canon_tools = _tools_count()
-    for name, tools, when, verdict in rows:
+    for name, tools, when, verdict, measured_url in rows:
         verified = str(verdict or "").startswith("verified")
         # ★2026-08-08 (SH52-034): a verification only earns a green check while it
         # is FRESH — a check older than _STALE_RED_DAYS ages into RED (Smithery sat
@@ -285,7 +351,8 @@ def _verified_map() -> dict:
         # about us. ★2026-08-08 (SH52-033): also require the count to be plausible
         # vs canon — a gross mismatch renders "—" rather than a bogus fact.
         out[name] = {
-            "tools": int(tools) if (tools and fresh and _tools_plausible(tools, canon_tools)) else None,
+            "measured_url": measured_url or None,
+            "tools": _publishable_count(tools, verdict, when, canon_tools),
             # Only a FRESH 'verified_*' earns a checkmark. broken / unverified /
             # NULL / stale all fall through to a plain "listed" — we state what we
             # checked recently, and stay silent about what we could not.
@@ -305,9 +372,22 @@ def _registries_live():
     out = []
     for r in CONFIRMED_REGISTRIES:
         v = vm.get(r.get("db") or "", {})
-        out.append({"registry": r["registry"], "url": r["url"], "listed": True,
+        tools = v.get("tools")
+        measured = v.get("measured_url")
+        # ★ If we publish a NUMBER, "verify →" must point at the page the number
+        # was measured on — otherwise the link invites a reader to check a claim
+        # against a document that never carried it. The curated URL still owns
+        # the SET (aspirational crawler seeds never appear as "listed") and is
+        # what we show when there is no measurement to defend.
+        use_measured = tools is not None and bool(measured)
+        out.append({"registry": r["registry"],
+                    "url": measured if use_measured else r["url"],
+                    "listed": True,
                     "is_registry": _is_registry(r),
-                    "tools": v.get("tools"), "verified_at": v.get("verified_at"),
+                    # Names which URL the reader is being sent to, so the pairing
+                    # is auditable from the payload rather than inferred.
+                    "url_basis": "measured" if use_measured else "curated",
+                    "tools": tools, "verified_at": v.get("verified_at"),
                     "last_seen": None})
     return out
 
