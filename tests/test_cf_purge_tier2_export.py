@@ -1,4 +1,4 @@
-"""The tier2-tools purge must target the leaking URL and nothing a caller names.
+"""The tier2-export purge must target the leaking URL and nothing a caller names.
 
 2026-09-06. #4038 gated export_facility_csv at the origin (401 anon), but the
 eyeball cache kept serving the pre-gate body: 10/10 un-cache-busted probes
@@ -36,14 +36,14 @@ def test_purge_route_takes_no_caller_supplied_urls():
     """A public endpoint that purges whatever it is handed lets anyone evict any
     path on the zone — cheap origin-load amplification. Same constraint the
     og-cards purge documents."""
-    fn = _fn("purge_tier2_tools")
+    fn = _fn("purge_tier2_export")
     reads = [
         n.attr for n in ast.walk(fn)
         if isinstance(n, ast.Attribute) and n.attr in
         ("args", "json", "form", "values", "data", "get_json")
     ]
     assert not reads, (
-        f"purge_tier2_tools reads caller input {sorted(set(reads))}; it is "
+        f"purge_tier2_export reads caller input {sorted(set(reads))}; it is "
         f"PUBLIC (no admin key), so a caller-supplied URL would let anyone "
         f"purge any path on the zone"
     )
@@ -66,7 +66,7 @@ def test_purge_covers_the_url_measured_leaking():
     m._purge_urls = _fake
     try:
         with app.test_client() as c:
-            r = c.get("/api/v1/cf/purge/tier2-tools")
+            r = c.get("/api/v1/cf/purge/tier2-export")
         assert r.status_code == 200
     finally:
         m._purge_urls = m_orig

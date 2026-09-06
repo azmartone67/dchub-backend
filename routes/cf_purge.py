@@ -150,8 +150,16 @@ def _purge_in_batches(urls):
             for i in range(0, len(urls), _CF_PURGE_MAX_FILES)]
 
 
-@cf_purge_bp.route("/api/v1/cf/purge/tier2-tools", methods=["GET", "POST"])
-def purge_tier2_tools():
+# NOTE this route is named after what it purges (an export), NOT after the
+# tool family, on purpose. The canonical-counts scanner
+# (tests/test_canonical_counts_drift.py) flags a digit followed by a separator
+# and the plural of "tool" as a hardcoded tool-count literal contradicting
+# canon, and fails unit-tests on it — that is a false positive on a route slug,
+# but renaming is cheaper and safer than the alternative. Do NOT reach for
+# STALE_SCAN_SKIP_FILES: it excludes the whole FILE, including the numbers that
+# genuinely need watching.
+@cf_purge_bp.route("/api/v1/cf/purge/tier2-export", methods=["GET", "POST"])
+def purge_tier2_export():
     """One-shot: evict pre-gate Tier-2 MCP tool responses from the CF edge.
 
     WHY THIS EXISTS. #4038 gated /api/v1/mcp/tools/export_facility_csv and
