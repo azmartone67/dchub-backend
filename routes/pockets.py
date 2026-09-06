@@ -1350,6 +1350,12 @@ def _pocket_dataset_ld(d: dict) -> str:
                 "constraint_score":     d.get("constraint_score"),
                 "time_to_power_months": d.get("time_to_power_months"),
                 "rank_score":           d.get("rank_score"),
+                # The REAL verdict, never the template default: this page
+                # renders `{{ d.verdict or "HOLD" }}`, and HOLD is not a
+                # verdict the scorer produces. market_entity drops anything
+                # outside the published domain, and passing d.verdict raw
+                # rather than the rendered string is what lets it.
+                "verdict":              d.get("verdict"),
                 "rank_label":           _r.label,
                 "rank_basis":           _r.basis + str(d.get("market_slug") or ""),
                 "dcpi_as_of":           d.get("computed_at"),
