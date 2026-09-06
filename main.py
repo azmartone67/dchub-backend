@@ -17813,7 +17813,18 @@ def handle_checkout_completed(session):
             'plink_1Tml5XJ9ey2ATcQlAMDgpMI2': 'pro_annual',
             # r-founder99 (2026-06-26): $99/mo Founding Member recurring
             # (price_1Tml5XJ9ey2ATcQl0pbU4htM, limited-license campaign).
+            # RETIRED as a public SKU 2026-09-05 but MUST stay mapped: existing
+            # founding subscribers renew through it, and an unmapped id falls
+            # through to the $99 amount band, which resolves to 'founding'
+            # anyway — correct for them, wrong for anyone new.
             'plink_1Tml5YJ9ey2ATcQlbQSMZRu4': 'founding',
+            # r-price-collapse (2026-09-05): Pro's own $99/mo link
+            # (price_1UCTZDJ9ey2ATcQlrpMPBVWf). It already carries metadata
+            # plan=pro_monthly, which wins on the branch ABOVE this map, so
+            # this entry is deliberate redundancy: if metadata is ever stripped
+            # or a session arrives without it, this catches the id before it
+            # reaches the $99 amount band and gets stamped 'founding'.
+            'plink_1UCTZKJ9ey2ATcQlByJCXN3W': 'pro_monthly',
         }
 
         if plan_from_metadata and plan_from_metadata in plan_tier_map:

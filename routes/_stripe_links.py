@@ -33,15 +33,17 @@ STRIPE_LINKS = {
     # a grandfathered sub or an old URL is still traceable, NOT advertised):
     #     7sY7sM9J8enX7CB69YaZi0l  ($299/mo, r-reprice 2026-06-19)
     #     eVq5kE4oOfs13mleGuaZi0h  ($199/mo, pre-r-reprice)
-    # ★ OWNER ACTION (optional, 5 min): mint a dedicated "Pro — $99/mo" link
-    #   in Stripe and swap it in here. Until then a new Pro buyer is stamped
-    #   plan_name='founding' by the webhook's $99 amount band
-    #   (main.py ~:17833) — api_tier is 'pro' either way, so ACCESS is
-    #   correct; only the internal plan label reads 'founding'. The webhook
-    #   is deliberately NOT changed in this PR: relabelling that band would
-    #   move ground under founding_customers, the welcome-email CTA and the
-    #   drip, for a reporting nicety.
-    "pro":             "https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o",  # $99/mo
+    # ★ DONE 2026-09-05 (owner asked): Pro has its OWN $99/mo link now, so a
+    #   Pro buyer is no longer stamped plan_name='founding'. Minted on the
+    #   EXISTING "DC Hub Pro" product (prod_UjfdlGX29T62cy) — the same product
+    #   the $299 price hangs off — so Pro's Stripe history stays in one place.
+    #     price price_1UCTZDJ9ey2ATcQlrpMPBVWf  ($99.00/month, verified via line_items)
+    #     link  plink_1UCTZKJ9ey2ATcQlByJCXN3W
+    #   It carries metadata plan=pro_monthly, which is the webhook's HIGHEST
+    #   priority branch (main.py `plan_from_metadata` -> plan_tier_map
+    #   'pro_monthly' -> ('pro','pro')), verified against live sessions:
+    #   payment-link metadata does reach the Checkout Session.
+    "pro":             "https://buy.stripe.com/dRm28s2gGcfP6yx0PEaZi0p",  # $99/mo
     "team":            "https://buy.stripe.com/14AbJ2bRga7H0a98i6aZi0m",  # $699/mo, 5 seats (r-reprice; no prior link existed)
     "pro_annual":      "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $1,188/yr (50% off $199/mo) - operator-provided link dRm7...07, 2026-06-04
     # r-annual50 (2026-06-26): NEW $1,794/yr one-time = 50% off the current

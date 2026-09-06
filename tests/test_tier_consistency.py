@@ -76,14 +76,25 @@ def test_registry_pricing_canonical():
     # ?tier=founding URLs resolve. ACCESS equality is guarded separately by
     # test_backend_maps_founding_equals_pro.
     c(tr.price('founding') == 99, f"founding price {tr.price('founding')} != 99")
-    # ★ The invariant NO price literal above can catch: pro and founding must
-    #   bill through the SAME Stripe link. A price map can agree on "$99" while
-    #   the two links charge different amounts — the link is what the customer
-    #   is actually charged, and it is asserted nowhere else in this file.
+    # ★ SUPERSEDED the same day, and the reason is worth keeping.
+    #   When Pro was repriced to $99 it temporarily REUSED the founding link,
+    #   and this guard asserted the two were identical. That shim is gone: Pro
+    #   now has its own $99/mo link (2026-09-05), because sharing the founding
+    #   link meant every new Pro buyer was stamped plan_name='founding' by the
+    #   webhook. So sameness is no longer the invariant — SEPARATENESS is.
+    #
+    #   Reverting `pro` to the founding link would silently resume mislabelling
+    #   every new Pro subscriber, and nothing else in the repo would notice:
+    #   access would still be correct, the price would still read $99, and only
+    #   the internal plan label would rot. That is exactly the kind of quiet
+    #   regression a literal price assertion cannot see.
     from routes._stripe_links import STRIPE_LINKS as _SL
-    c(_SL.get('pro') == _SL.get('founding'),
-      f"pro link {_SL.get('pro')} != founding link {_SL.get('founding')} "
-      f"— same tier must bill through the same link")
+    _pro_link, _f_link = _SL.get('pro'), _SL.get('founding')
+    c(bool(_pro_link) and bool(_f_link), "pro/founding Stripe link missing from canon")
+    c(_pro_link != _f_link,
+      "pro is pointing at the FOUNDING Stripe link again — every new Pro buyer "
+      "will be stamped plan_name='founding' by the webhook's $99 amount band. "
+      "Pro has its own link; use it.")
     # canonical calls/day (mcp_daily) — what the paywall quotes
     c(tr.calls_per_day('starter') == 200,    f"starter calls/day {tr.calls_per_day('starter')} != 200")
     c(tr.calls_per_day('developer') == 500, f"developer calls/day {tr.calls_per_day('developer')} != 500")
