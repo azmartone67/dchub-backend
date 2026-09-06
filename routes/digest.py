@@ -53,9 +53,14 @@ def _unsub_url(email: str) -> str:
 # ── data ────────────────────────────────────────────────────────────────
 def _movers_from_snapshots(cur):
     """REAL 7-day excess-power movers from dcpi_daily_snapshots (history-
-    preserving). Returns only markets that actually moved >=1pt; [] if the
-    snapshot history is too thin to compute a true delta. NEVER fabricates
-    a Δ+0.0 row. Do NOT diff market_power_scores here — it is re-stamped."""
+    preserving). Returns (movers, error): only markets that actually moved
+    >=1pt, and error=None when the comparison RAN. An empty list with
+    error=None means a genuinely quiet week; an empty list with an error
+    means nothing was compared. NEVER fabricates a Δ+0.0 row. Do NOT diff
+    market_power_scores here — it is re-stamped.
+
+    ★ The caller renders empty as "Markets held steady". That sentence is a
+    measurement, so it may only be printed when error is None."""
     try:
         cur.execute("""
             WITH latest AS (
@@ -93,11 +98,16 @@ def _movers_from_snapshots(cur):
                         "now": round(r["now_e"] or 0, 1), "delta": dkey})
             if len(out) >= 5:
                 break
-        return out
-    except Exception:
+        return out, None
+    except Exception as e:
         try: cur.connection.rollback()
         except Exception: pass
-        return []
+        # ★ Returning a bare [] made a FAILED comparison indistinguishable
+        # from a genuinely quiet week, and the template renders empty as
+        # "Markets held steady — no market shifted by 1+ excess-power point".
+        # A missing table, a renamed column or under 7 days of snapshot
+        # history all published a stability claim nobody measured.
+        return [], "%s: %s" % (type(e).__name__, str(e)[:90])
 
 
 def _today_summary():
@@ -106,6 +116,8 @@ def _today_summary():
            "title": f"DC Hub Daily — {datetime.date.today().strftime('%B %d, %Y')}",
            "top_build": [], "top_avoid": [], "biggest_movers": [],
            "markets_total": 0, "news_count_24h": 0, "deals_count_7d": 0,
+           "movers_measured": False, "news_measured": False,
+           "build_verdict_count": 0,
            "dcpi_summary": ""}
     try:
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -119,24 +131,45 @@ def _today_summary():
                                  "excess": r["excess_power_score"],
                                  "constraint": r["constraint_score"],
                                  "verdict": r["verdict"]} for r in rows[:5]]
+            # ★ top_build is the 5 highest excess-power scores, NOT a verdict
+            # filter -- a market can sit in it with any verdict. The og card
+            # said "{top_build|length} BUILD-verdict markets", i.e. always 5,
+            # from a slice that never reads the column it names. Count it.
+            out["build_verdict_count"] = sum(
+                1 for r in rows if (r.get("verdict") or "").upper() == "BUILD")
             rows_c = sorted(rows, key=lambda r: -(r.get("constraint_score") or 0))
             out["top_avoid"] = [{"market": r["market_name"], "slug": r["market_slug"],
                                  "constraint": r["constraint_score"],
                                  "ttp_months": r.get("time_to_power_months")} for r in rows_c[:5]]
 
             # Movers — REAL 7d delta from snapshot history (no fabricated zeros)
-            out["biggest_movers"] = _movers_from_snapshots(cur)
+            out["biggest_movers"], _mv_err = _movers_from_snapshots(cur)
+            out["movers_measured"] = _mv_err is None
+            if _mv_err:
+                out["movers_error"] = _mv_err
 
-            # News count 24h
-            try:
-                for tbl in ('industry_news', 'news_articles', 'news', 'press_releases'):
+            # News count 24h. ★ The try used to wrap the WHOLE loop, so the
+            # FIRST table that does not exist aborted it and the remaining
+            # three were never tried -- news_count_24h stayed 0 and the page
+            # published "0 news items in last 24h" having queried nothing.
+            # Same fan-out shape as the GDACS eventtype fix: try each, record
+            # which answered, and report unmeasured only if none did.
+            _news_ok = False
+            for tbl in ('industry_news', 'news_articles', 'news', 'press_releases'):
+                try:
                     cur.execute("""SELECT COUNT(*) AS n FROM %s WHERE created_at > NOW() - INTERVAL '24 hours'""" %
                                 tbl.replace("'", ""))
                     out["news_count_24h"] = int((cur.fetchone() or {}).get("n") or 0)
-                    if out["news_count_24h"]: break
-            except Exception:
-                try: cur.connection.rollback()
-                except Exception: pass
+                    _news_ok = True
+                    if out["news_count_24h"]:
+                        break
+                except Exception:
+                    try: cur.connection.rollback()
+                    except Exception: pass
+                    continue
+            out["news_measured"] = _news_ok
+            if not _news_ok:
+                out["news_count_24h"] = None
 
             # Deals 7d
             try:
@@ -208,7 +241,8 @@ def _render_digest_email_html(d, unsub_url=None):
         (str(d.get("markets_total") or "—"), "Markets scored"),
         (_num(leader.get("excess"), 0), "Top excess"),
         (_num(worst.get("constraint"), 0), "Worst constraint"),
-        (str(len(d.get("biggest_movers") or [])), "Movers (7d)"),
+        (str(len(d.get("biggest_movers") or []))
+         if d.get("movers_measured") else "—", "Movers (7d)"),
     ]
     tile_cells = "".join(
         '<td width="25%" align="center" valign="top" style="padding:6px">'
@@ -258,12 +292,21 @@ def _render_digest_email_html(d, unsub_url=None):
         )
         movers_section = _section("📈 Biggest 7-day movers", mover_rows)
     else:
-        # Honest empty state — no fabricated zeros.
+        # Honest empty state — no fabricated zeros. ★ And no fabricated
+        # STABILITY either: this is the SECOND render site for that sentence
+        # (the HTML page is the other), so gating only the page would have left
+        # the emailed edition still asserting a comparison that never ran.
+        _msg = ('Markets held steady — no market shifted by 1+ excess-power '
+                'point over the last 7 days.'
+                if d.get("movers_measured")
+                else '7-day movement could not be measured for this edition — '
+                     'the snapshot comparison did not complete. This is not a '
+                     'statement that markets were stable.')
         movers_section = (
             '<tr><td style="padding:18px 0 8px 0;font:700 12px/1 -apple-system,Segoe UI,Roboto,Arial,sans-serif;'
             'letter-spacing:.09em;text-transform:uppercase;color:#a1a1aa">📈 Biggest 7-day movers</td></tr>'
             '<tr><td style="padding:4px 2px;font:400 14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#71717a">'
-            'Markets held steady — no market shifted by 1+ excess-power point over the last 7 days.</td></tr>'
+            + _esc(_msg) + '</td></tr>'
         )
 
     footer_unsub = (f'<a href="{_esc(unsub_url)}" style="color:#71717a;text-decoration:underline">Unsubscribe</a> · '
@@ -369,7 +412,7 @@ def digest_today_page():
     HTML = '''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <title>{{ d.title }} · DC Hub</title>
 <meta property="og:title" content="{{ d.title }}">
-<meta property="og:description" content="DC market brief — {{ d.top_build|length }} BUILD-verdict markets, {{ d.biggest_movers|length }} movers, {{ d.news_count_24h }} news items in last 24h.">
+<meta property="og:description" content="DC market brief — {{ d.build_verdict_count }} BUILD-verdict markets, top {{ d.biggest_movers|length }} movers, {% if d.news_measured %}{{ d.news_count_24h }} news items in last 24h{% else %}news count unavailable{% endif %}.">
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/dchub-brand.css">
 <script src="/js/dchub-nav.js" defer></script>
@@ -404,7 +447,7 @@ footer a{color:var(--acc)}
 <div class="stats">
 <div class="stat"><div class="n">{{ d.markets_total }}</div><div class="l">Markets scored</div></div>
 <div class="stat"><div class="n">{{ d.biggest_movers|length }}</div><div class="l">Movers (7d)</div></div>
-<div class="stat"><div class="n">{{ d.news_count_24h }}</div><div class="l">News (24h)</div></div>
+<div class="stat"><div class="n">{% if d.news_measured %}{{ d.news_count_24h }}{% else %}&mdash;{% endif %}</div><div class="l">News (24h)</div></div>
 <div class="stat"><div class="n">{{ d.deals_count_7d }}</div><div class="l">Deals (7d)</div></div>
 </div>
 <h2>🟢 Top BUILD markets</h2>
@@ -416,7 +459,8 @@ footer a{color:var(--acc)}
 <h2>📈 Biggest 7-day movers</h2>
 {% if d.biggest_movers %}{% for r in d.biggest_movers %}<div class="row"><a href="/dcpi/{{ r.slug }}"><span class="name">{{ r.market }}</span></a>
 <span class="delta {{ 'up' if r.delta > 0 else 'down' }}">{{ '+' if r.delta > 0 else '' }}{{ r.delta|round(1) }}</span></div>{% endfor %}
-{% else %}<div class="muted">Markets held steady — no market shifted by 1+ excess-power point over the last 7 days.</div>{% endif %}
+{% elif d.movers_measured %}<div class="muted">Markets held steady — no market shifted by 1+ excess-power point over the last 7 days.</div>
+{% else %}<div class="muted">7-day movement could not be measured for this edition — the snapshot comparison did not complete. This is not a statement that markets were stable.</div>{% endif %}
 <footer><p>Daily at 14:00 UTC · Free for citation. <a href="/dcpi">Open the index →</a> · <a href="/dcpi/press">Press kit</a></p></footer>
 </div></body></html>'''
     resp = Response(render_template_string(HTML, d=d), mimetype="text/html")
