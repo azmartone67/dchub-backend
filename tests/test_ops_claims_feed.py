@@ -305,7 +305,16 @@ def test_anon_get_ops_claims_carries_a_retracted_claim(monkeypatch):
     with _app(oc.ops_claims_bp).test_client() as c:
         rv = c.get("/api/v1/ops/claims")       # no key, no header — ANON
     assert rv.status_code == 200
-    assert "no-store" in rv.headers.get("Cache-Control", "")
+    # ★2026-09-06: was `"no-store" in Cache-Control`. A SUCCESSFUL read is now
+    # briefly shareable so a cold origin hit is absorbed once instead of by every
+    # visitor who lands on it. Browsers still revalidate (max-age=0), so a human
+    # refreshing never sees a cached verdict; only shared caches may reuse, and
+    # the payload carries generated_at/as_of so a reused copy is a timestamped
+    # snapshot rather than an undetectable stale read.
+    cc = rv.headers.get("Cache-Control", "")
+    assert "no-store" not in cc, cc
+    assert "max-age=0" in cc and "must-revalidate" in cc, cc
+    assert "s-maxage=" in cc, cc
     body = rv.get_json()
     assert body["ok"] is True
     week = body["week"]
@@ -710,3 +719,119 @@ def test_detector_field_is_built_from_step_4s_predicate_when_importable(monkeypa
     assert got["prs"] == 3
     monkeypatch.setenv("OPS_CLAIMS_DETECTOR_MODULE", "routes.this_module_does_not_exist")
     assert oc.brain_prs_with_detector(cur, _WS, _NOW) is None
+
+
+# ── the detector step must never dominate the endpoint (2026-09-06) ─────────
+# brain_pr_carries_detector -> evaluate_pr_remote calls the GitHub API per PR
+# with its own 10s default timeout, and this endpoint called it for up to 10 PRs
+# SEQUENTIALLY on the request path of a keyless feed the homepage fetches on
+# load. Worst case 100s against a 15s edge route timeout. Measured on production
+# before the fix: 7.62s and 11.41s cold, ~0.8s warm (the 600s per-process cache),
+# and the homepage strip — which aborted at 6s and only asked once — went blank
+# for that visitor's whole session.
+def _detector_cur(n_prs=10):
+    class _Cur:
+        def execute(self, q, *a): self._q = q
+        def fetchone(self): return ("brain_merge_reconciliation",)
+        def fetchall(self): return [(i,) for i in range(n_prs)]
+    return _Cur()
+
+
+def _week_now():
+    import datetime as _d
+    return (_d.datetime(2026, 8, 31, tzinfo=_d.timezone.utc),
+            _d.datetime(2026, 9, 6, tzinfo=_d.timezone.utc))
+
+
+def test_a_slow_detector_cannot_run_away_with_the_request():
+    """A predicate that sleeps its whole timeout must still be bounded."""
+    import time
+    from routes import ops_claims as oc
+    ws, now = _week_now()
+
+    def slow(pr, **kw):
+        time.sleep(kw.get("timeout") or 10)
+        return None
+
+    t0 = time.monotonic()
+    out = oc.brain_prs_with_detector(_detector_cur(), ws, now, predicate=slow)
+    elapsed = time.monotonic() - t0
+
+    ceiling = oc._DETECTOR_BUDGET_S + oc._DETECTOR_HTTP_TIMEOUT_S + 1.0
+    assert elapsed < ceiling, (
+        f"the detector step took {elapsed:.2f}s against a {ceiling:.1f}s ceiling. "
+        f"Unbounded this is 10 PRs x the rule's 10s default = 100s, on the request "
+        f"path of a keyless feed, behind a 15s edge timeout.")
+    # Not attempted is UNKNOWN, never silently dropped and never counted as checked.
+    assert out["prs"] == 10 and out["checked"] == 0 and out["unknown"] == 10
+    assert "not attempted" in out["basis"], (
+        "the basis must say how many PRs were skipped — 'we asked and could not "
+        f"tell' and 'we did not ask' are different answers. basis={out['basis']!r}")
+
+
+def test_the_budget_stops_ISSUING_calls_not_merely_waiting():
+    """A deadline checked AFTER each call still pays for every call."""
+    import time
+    from routes import ops_claims as oc
+    ws, now = _week_now()
+    calls = []
+
+    def slow(pr, **kw):
+        calls.append(pr)
+        time.sleep(kw.get("timeout") or 10)
+        return None
+
+    oc.brain_prs_with_detector(_detector_cur(), ws, now, predicate=slow)
+    assert len(calls) < 10, (
+        f"every one of the 10 PRs was still called ({len(calls)}) — the budget is "
+        f"being checked after the work instead of before it")
+
+
+def test_the_short_http_timeout_is_actually_passed_down():
+    """The rule's own default is 10s; one call must not outlast the budget."""
+    from routes import ops_claims as oc
+    ws, now = _week_now()
+    seen = []
+
+    def probe(pr, **kw):
+        seen.append(kw.get("timeout"))
+        return None
+
+    oc.brain_prs_with_detector(_detector_cur(3), ws, now, predicate=probe)
+    assert seen and all(t == oc._DETECTOR_HTTP_TIMEOUT_S for t in seen), (
+        f"predicate received timeout={seen!r}; without it the FIRST call can "
+        f"outlast any total budget on its own")
+
+
+def test_a_predicate_without_a_timeout_kwarg_still_works():
+    """Probed, not assumed — and never called twice to find out."""
+    from routes import ops_claims as oc
+    ws, now = _week_now()
+    calls = []
+
+    def no_timeout(pr):          # positional only, no **kw
+        calls.append(pr)
+        return True
+
+    out = oc.brain_prs_with_detector(_detector_cur(3), ws, now, predicate=no_timeout)
+    assert out["checked"] == 3 and out["with_detector"] == 3
+    assert calls == [0, 1, 2], f"predicate called {calls} — expected each PR once"
+
+
+def test_a_failed_read_is_never_cached(monkeypatch):
+    """ok=false must not be pinned at the edge while the ledger is already fine.
+
+    The success path is briefly shareable; a FAILURE answered 200 with ok=false
+    is the one shape where reuse is actively harmful, because the caller cannot
+    distinguish "the ledger is down" from "it was down a minute ago".
+    """
+    from routes import ops_claims as oc
+    monkeypatch.setattr(oc, "read_feed",
+                        lambda **kw: {"ok": False, "error": "no database",
+                                      "week": None, "claims": None})
+    with _app(oc.ops_claims_bp).test_client() as c:
+        rv = c.get("/api/v1/ops/claims")
+    assert rv.status_code == 200 and rv.get_json()["ok"] is False
+    cc = rv.headers.get("Cache-Control", "")
+    assert "no-store" in cc, f"a failed read is cacheable: {cc!r}"
+    assert "s-maxage" not in cc, cc

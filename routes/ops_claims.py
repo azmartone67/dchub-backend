@@ -10,10 +10,15 @@ is a diary. The point is that an agent, or a human, can check what DC Hub
 said about itself against what happened, without a key, exactly the way
 /api/v1/ops/deadman already lets them check whether the feeds ran.
 
-So this is the dead-man feed's sibling: keyless, `Cache-Control: no-store`,
-under the same /api/v1/ops/ prefix (already edge-bypassed — verified
-`cf-cache-status: DYNAMIC` on /api/v1/ops/leader), and it documents its own
-shape IN the response (`shape`) so nobody has to guess a field name.
+So this is the dead-man feed's sibling: keyless, under the same /api/v1/ops/
+prefix (edge-bypassed — verified `cf-cache-status: DYNAMIC` on
+/api/v1/ops/leader), and it documents its own shape IN the response (`shape`)
+so nobody has to guess a field name.
+
+★2026-09-06 — this line used to read "keyless, `Cache-Control: no-store`". A
+SUCCESSFUL read is now briefly shareable (see _briefly_shareable); failures and
+the kill-switch 404 stay no-store. no-store made every cold origin hit a real
+visitor's problem, and the cold hit here was 7-11s.
 
 THE RULES — every one is mutation-tested in tests/test_ops_claims_feed.py
   * `week` is the CURRENT ISO week, Monday 00:00Z → as_of, as a COHORT over
@@ -40,7 +45,9 @@ THE RULES — every one is mutation-tested in tests/test_ops_claims_feed.py
     ok=false and NULL week/claims — never a fabricated zero.
 
 Surface:
-  GET /api/v1/ops/claims?limit=50&since=<ISO-8601>   keyless · no-store
+  GET /api/v1/ops/claims?limit=50&since=<ISO-8601>   keyless
+       200 ok=true   public, max-age=0, s-maxage=60, must-revalidate
+       200 ok=false  no-store          404 disabled  no-store
 """
 from __future__ import annotations
 
@@ -314,7 +321,42 @@ _DETECTOR_MODULE_DEFAULT = "routes.brain_pr_detector_gate"
 _DETECTOR_FN = "brain_pr_carries_detector"
 _DETECTOR_MAX_PRS = 10
 _DETECTOR_CACHE_S = 600
+# ★2026-09-06 — THIS FIELD WAS THE ENDPOINT'S LATENCY.
+# brain_pr_carries_detector -> evaluate_pr_remote makes a GitHub API call per
+# PR, and its own default timeout is 10s. Ten PRs, sequential, ON THE REQUEST
+# PATH of a keyless endpoint the homepage fetches on load. Worst case 100s
+# against a 15s edge route timeout, i.e. a 503 the caller reads as a dead origin.
+#
+# Measured on production before this change, cache-busted so every call reached
+# the origin:  7.62s  11.41s  1.13s  0.76s  0.96s  0.71s  — all of it TTFB. The
+# cold hits are this loop; the fast ones are _DETECTOR_CACHE_S serving the
+# already-computed value for 600s. The homepage claim strip aborted at 6s and,
+# because it only asked once, stayed blank for that visitor's whole session.
+#
+# And the loop was buying nothing: live payload read {"checked": 0, "prs": 10,
+# "unknown": 10} — ten calls, zero usable answers. Paying up to 100s for that is
+# the whole defect.
+#
+# TWO bounds, because either alone is insufficient:
+#   · _DETECTOR_HTTP_TIMEOUT_S caps ONE call. Without it the FIRST call can
+#     outlast any total budget on its own — a deadline checked between calls
+#     cannot interrupt a call already in flight.
+#   · _DETECTOR_BUDGET_S caps the WHOLE step, checked BEFORE each call so it
+#     stops ISSUING work rather than merely stopping waiting for it.
+# PRs not attempted are reported as `unknown` — which is what they are — and the
+# basis says how many and why, so a reader can tell "we asked and could not
+# tell" from "we did not ask".
+# Worst case for the whole step is BUDGET + one HTTP_TIMEOUT (the last call may
+# start just under the deadline), so 2.0 + 2.0 = 4s. That is deliberately under
+# the homepage strip's 6s first attempt, on top of the endpoint's ~1s of real
+# ledger work — the sub-field must never dominate the answer it decorates.
+# 2s is generous for the GitHub API (p50 is a few hundred ms); the point is a
+# ceiling, not a tight fit.
+_DETECTOR_HTTP_TIMEOUT_S = 2
+_DETECTOR_BUDGET_S = 2.0
 _DETECTOR_CACHE = {"key": None, "at": 0.0, "value": None}
+# Predicate -> does it accept a `timeout` kwarg. Probed once, never re-probed.
+_DETECTOR_ACCEPTS_TIMEOUT: dict = {}
 
 
 def _detector_predicate():
@@ -325,6 +367,27 @@ def _detector_predicate():
     except Exception:  # noqa: BLE001 — absent module = absent instrument
         return None
     return fn if callable(fn) else None
+
+
+def _call_detector(fn, pr):
+    """Call the predicate with a SHORT http timeout when it accepts one.
+
+    The rule's own default is 10s. Probed once per predicate rather than
+    guessed, and never called twice: a TypeError raised from INSIDE the
+    predicate must not be mistaken for "it does not take timeout" and retried.
+    """
+    accepts = _DETECTOR_ACCEPTS_TIMEOUT.get(fn)
+    if accepts is None:
+        try:
+            import inspect
+            params = inspect.signature(fn).parameters
+            accepts = ("timeout" in params
+                       or any(p.kind is inspect.Parameter.VAR_KEYWORD
+                              for p in params.values()))
+        except (TypeError, ValueError):  # builtins / C callables
+            accepts = False
+        _DETECTOR_ACCEPTS_TIMEOUT[fn] = accepts
+    return fn(pr, timeout=_DETECTOR_HTTP_TIMEOUT_S) if accepts else fn(pr)
 
 
 def brain_prs_with_detector(cur, week_start, now, predicate=None):
@@ -349,10 +412,18 @@ def brain_prs_with_detector(cur, week_start, now, predicate=None):
     except Exception as e:  # noqa: BLE001
         return {"with_detector": None, "checked": 0, "unknown": 0, "prs": None,
                 "basis": f"read failed: {type(e).__name__}: {str(e)[:120]}"}
-    with_det = checked = unknown = 0
+    import time as _time
+    deadline = _time.monotonic() + _DETECTOR_BUDGET_S
+    with_det = checked = unknown = not_attempted = 0
     for pr in prs:
+        # BEFORE the call, not after: a budget that only stops waiting still
+        # issues every request.
+        if _time.monotonic() >= deadline:
+            not_attempted += 1
+            unknown += 1
+            continue
         try:
-            v = fn(pr)
+            v = _call_detector(fn, pr)
         except Exception:  # noqa: BLE001
             v = None
         if v is None:
@@ -360,6 +431,9 @@ def brain_prs_with_detector(cur, week_start, now, predicate=None):
         else:
             checked += 1
             with_det += 1 if v else 0
+    if not_attempted:
+        basis += (f"; {not_attempted} of {len(prs)} not attempted — "
+                  f"{_DETECTOR_BUDGET_S}s budget spent, counted unknown")
     return {"with_detector": with_det, "checked": checked, "unknown": unknown,
             "prs": len(prs), "basis": basis}
 
@@ -423,8 +497,41 @@ def read_feed(limit: int = DEFAULT_LIMIT, since=None, now=None) -> dict:
 # ── the route ────────────────────────────────────────────────────────────
 
 def _no_store(resp):
+    """For answers that must NEVER be reused — the kill-switch 404 and errors."""
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     resp.headers["CDN-Cache-Control"] = "no-store"
+    return resp
+
+
+# ★2026-09-06 — the 200 answer becomes briefly shareable, and only in SHARED
+# caches. The module docstring called `no-store` a design property of a keyless
+# accountability ledger, and that instinct is right about one thing: a reader
+# must never be handed a stale verdict and be unable to tell. But `no-store`
+# was answering that with "nobody may ever reuse this", which made every cold
+# origin hit a real visitor's problem — and this endpoint's cold hit was 7-11s.
+#
+# The payload already solves the honesty half itself: it carries `generated_at`
+# and `week.as_of`, so a cached copy is a TIMESTAMPED SNAPSHOT, not an
+# undetectable stale read. A reader can always see how old the answer is.
+#
+#   max-age=0, must-revalidate  browsers still revalidate every time, so a human
+#                               refreshing the page never sees a cached verdict
+#   s-maxage / CDN-Cache-Control  a shared cache may serve up to _EDGE_TTL_S
+#                               seconds, which is what absorbs the cold hit
+#
+# NOTE, because it is easy to over-claim: /api/v1/ops/ is edge-BYPASSED at the
+# Cloudflare rule level (that bypass is why this route is not swept up by CF
+# Rule #3's override_origin on /api/v1/*). These headers make the response
+# cacheable; they cannot by themselves make the edge cache it. Whether
+# cf-cache-status moves off DYNAMIC depends on that rule, which lives in the
+# Cloudflare dashboard, not in this repo. Verify from the outside before
+# claiming the cold hit is gone.
+_EDGE_TTL_S = 60
+
+
+def _briefly_shareable(resp):
+    resp.headers["Cache-Control"] = f"public, max-age=0, s-maxage={_EDGE_TTL_S}, must-revalidate"
+    resp.headers["CDN-Cache-Control"] = f"max-age={_EDGE_TTL_S}"
     return resp
 
 
@@ -451,7 +558,10 @@ def ops_claims():
     if not feed.get("ok"):
         body["error"] = feed.get("error")
         body["basis"] = "ledger unavailable — week and claims are null, not 0"
-    return _no_store(jsonify(body)), 200
+    # A read FAILURE is never cached — ok=false must not be pinned at the edge
+    # for a minute while the ledger is fine again.
+    wrap = _briefly_shareable if body.get("ok") else _no_store
+    return wrap(jsonify(body)), 200
 
 
 def register_ops_claims(app) -> bool:
