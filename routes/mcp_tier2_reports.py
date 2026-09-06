@@ -6,8 +6,19 @@ strategic review. Each replaces 5-50× the cost of consultant deliverables.
 
 Endpoints:
   POST /api/v1/mcp/tools/create_site_report   — generate PDF report for facility
+                                                 [API key required]
   GET  /api/v1/mcp/tools/site_report/<id>     — download generated report
+                                                 [capability URL, see below]
   POST /api/v1/mcp/tools/export_facility_csv  — export filtered facility data
+                                                 [API key required]
+
+Auth (r-tier2anon, 2026-09-06): the two GENERATING routes require a verified
+credential. Retrieval by <report_id> deliberately does not: the id is an
+unguessable uuid4 fragment handed only to the authenticated caller that
+created it, and the tool's documented workflow is to open that link in a
+browser and Cmd+P it to PDF — a browser that carries no API key. Gating
+retrieval would break print-to-PDF without closing anything, since the report
+cannot be produced without a key in the first place.
 
 PDF generation strategy:
   - Renders HTML template with Jinja-style substitution
@@ -227,10 +238,155 @@ ArcGIS), and on-the-ground verification. Market stats reflect facilities tagged 
 </body></html>"""
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Access gate
+# ─────────────────────────────────────────────────────────────────────────
+# r-tier2anon (2026-09-06): both tools in this blueprint were world-readable.
+#
+#   curl 'https://dchub.cloud/api/v1/mcp/tools/export_facility_csv?limit=10000'
+#     -> HTTP 200, 10,000 rows, 1,003,630 bytes, X-Limit-Applied: 10000
+#        no key, no cookie, no header. Measured content of that anonymous dump:
+#        4,641 rows with coordinates (2,824 at >=6dp ~0.1m, 41 at 7dp),
+#        6,935 provider, 1,378 power_mw, 10,000 source.
+#
+# The ONLY limit in export_facility_csv() was `min(10000, int(limit))` — a
+# ceiling, not a gate. The 100 rows a bare probe gets back is the DEFAULT
+# VALUE of the `limit` argument, which is why this read as a working free-tier
+# preview for four months: you have to pass ?limit= to see the hole.
+#
+# Those are the same table and the same fields that PR #2091 / #2096 exist to
+# withhold from anonymous callers on /api/v1/map (anon coords rounded to
+# MAP_ANON_COORD_DP, provider/power_mw masked out entirely) — served here at
+# HIGHER fidelity than the door that was closed. The 2026-08-01 anon-bulk
+# audit swept /api/v1/map and never covered this blueprint.
+#
+# create_site_report had the same shape: HTTP 200 to an anonymous caller with
+# `"tier": "pro"` in the response BODY. A self-declared tier string in a
+# payload is not a gate.
+#
+# Both were also ADVERTISED as paid: llms.txt lists Bulk Export under
+# "## Paid API (Key Required — Developer $49/mo)" and llms-full.txt says
+# "Auth: Pro or Enterprise". Neither was true. The generator copy is corrected
+# in ai_discovery_routes.py in this same change.
+#
+# Resolution goes through detect_tier_for_data_gate, NOT detect_tier_failopen:
+# the fail-open promotes any credential-SHAPED header to 'pro', so
+# `X-API-Key: x` would walk straight through this gate (that is exactly how
+# the map mask and search cap were bypassed — see #3512).
+_TIER_RANK = {
+    "anonymous": 0, "": 0,
+    "free": 1, "identified": 1, "starter": 1,
+    "developer": 2,
+    "pro": 3, "paid": 3, "team": 3, "metered": 3, "founding": 3,
+    "enterprise": 4, "admin": 4, "internal": 4, "research_seed": 4,
+}
+
+# Owner decision 2026-09-06: gate at the tier the published copy ALREADY
+# advertises, so the surface stops lying in both directions at once —
+#   llms.txt   "## Paid API (Key Required — Developer $49/mo)"
+#   /ai/learn  'free': '3 results/basic fields'   (main.py:25486)
+# Letting a free key pull all 10,000 full-fidelity rows would have satisfied
+# the first claim and newly broken the second. "developer" is the only
+# setting under which both are true with no further copy changes.
+#
+# No-deploy switch, mirroring MAP_ANON_COORD_DP: TIER2_EXPORT_MIN_TIER=free
+# relaxes this to "any verified key" if the free-tier funnel ever needs it.
+_MIN_TIER = (os.environ.get("TIER2_EXPORT_MIN_TIER") or "developer").strip().lower()
+
+
+def _tier_rank(t):
+    """Rank a resolved tier. A verified-but-unrecognised plan string counts as
+    'free' (1), never as anonymous (0) — the credential was still verified by
+    the resolver, so an unfamiliar plan name must not lock a real user out."""
+    t = (t or "anonymous").strip().lower()
+    if t in ("anonymous", ""):
+        return 0
+    return _TIER_RANK.get(t, 1)
+
+
+def _caller_tier():
+    """Resolve the caller's tier. Fails CLOSED: any error is 'anonymous'.
+
+    This is a data gate, so it must not use detect_tier_failopen(). A real key
+    never needed the fail-open anyway — _detect_caller_tier resolves API keys
+    itself (dual key_hash match plus the mcp_dev_keys fallback).
+    """
+    def _dec(_t):
+        try:
+            import jwt as _j
+            secret = os.environ.get("JWT_SECRET") or os.environ.get("SECRET_KEY", "")
+            return _j.decode(_t, secret, algorithms=["HS256"])
+        except Exception:
+            return None
+
+    try:
+        from map_tier_gating import detect_tier_for_data_gate
+        t, _info = detect_tier_for_data_gate(decode_jwt_func=_dec)
+        return (t or "anonymous").lower()
+    except Exception:
+        return "anonymous"
+
+
+def _require_key(tool):
+    """(error_response, tier). error_response is None when the caller passes.
+
+    Two distinct refusals, because they need two distinct remedies and an
+    agent should not be told to go claim a key that will not work:
+
+      401 — no credential, or one that does not resolve (anonymous,
+            `X-API-Key: x`). Remedy: authenticate.
+      402 — a REAL, verified account that sits below _MIN_TIER. Remedy:
+            upgrade. Collapsing this into 401 would send a signed-in free
+            user to the signup page they already completed.
+    """
+    tier = _caller_tier()
+    rank = _tier_rank(tier)
+    if rank >= _tier_rank(_MIN_TIER):
+        return None, tier
+
+    if rank == 0:
+        return (jsonify({
+            "error": "authentication required",
+            "tool": tool,
+            "detail": (
+                f"{tool} requires an API key on the {_MIN_TIER} plan or higher. "
+                "Anonymous callers and unverified credentials are refused."
+            ),
+            "min_tier": _MIN_TIER,
+            "signup_url": "https://dchub.cloud/signup",
+            "pricing_url": "https://dchub.cloud/pricing",
+            "docs": "https://dchub.cloud/llms.txt",
+        }), 401), tier
+
+    return (jsonify({
+        "error": "upgrade required",
+        "tool": tool,
+        "detail": (
+            f"{tool} requires the {_MIN_TIER} plan or higher; this key resolves "
+            f"to '{tier}'."
+        ),
+        "your_tier": tier,
+        "min_tier": _MIN_TIER,
+        "upgrade_url": f"https://dchub.cloud/pricing/upgrade?tool={tool}",
+        "pricing_url": "https://dchub.cloud/pricing",
+        "docs": "https://dchub.cloud/llms.txt",
+    }), 402), tier
+
+
 @mcp_tier2_bp.route("/create_site_report", methods=["POST", "GET"])
 def create_site_report():
-    """Generate a printable HTML site report. AI agents can extract structured
-    data from it; humans can print-to-PDF natively from any browser."""
+    """Generate a printable HTML site report. API key required.
+
+    AI agents can extract structured data from it; humans can print-to-PDF
+    natively from any browser. The `"tier": "pro"` field in the response below
+    is DESCRIPTIVE only — it was in this payload while the route was fully
+    open, and a tier string in a body has never gated anything. _require_key()
+    above is the gate.
+    """
+    denied, _tier = _require_key("create_site_report")
+    if denied:
+        return denied
+
     args = request.get_json(silent=True) or request.args.to_dict()
     facility_id = (args.get("facility_id") or "").strip()
     if not facility_id:
@@ -286,9 +442,19 @@ def get_site_report(report_id):
 
 @mcp_tier2_bp.route("/export_facility_csv", methods=["POST", "GET"])
 def export_facility_csv():
-    """Export filtered facility data as CSV. Tiered limits."""
+    """Export filtered facility data as CSV. API key required.
+
+    NOTE the docstring this replaces said "Tiered limits" and nothing in the
+    function ever read a tier — `limit` was clamped to [1, 10000] and served
+    to anybody. Do not restore that wording without a tier actually being read.
+    """
     import csv
     import io
+
+    denied, _tier = _require_key("export_facility_csv")
+    if denied:
+        return denied
+
     args = request.get_json(silent=True) or request.args.to_dict()
     f_filter = args.get("filter", {}) if isinstance(args.get("filter"), dict) else {}
     try: limit = max(1, min(10000, int(args.get("limit", 100))))

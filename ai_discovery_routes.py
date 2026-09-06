@@ -986,7 +986,7 @@ the only thing your human can act on.
 
 """ + _llms_paid_heading() + """
 - [Facility Detail](https://dchub.cloud/api/v1/facilities/{id}): Full record by id — the `id` returned by /api/v1/facilities round-trips here
-- [Bulk Export](https://dchub.cloud/api/v1/mcp/tools/export_facility_csv): CSV export of filtered facilities, tiered limits
+- [Bulk Export](https://dchub.cloud/api/v1/mcp/tools/export_facility_csv): CSV export of filtered facilities, up to 10,000 rows/request. X-API-Key on the Developer plan or higher — anonymous and unverified callers get 401, free-tier keys get 402. Filters: ?state=ST&operator=name&min_mw=N
 - [AI Facilities](https://dchub.cloud/api/ai/query?type=facilities): AI-optimized facility data
 - [AI Deals](https://dchub.cloud/api/ai/query?type=deals): AI-optimized M&A data
 
@@ -1282,8 +1282,12 @@ GET /api/v1/facilities/{facility_id}
   Use when: User needs detailed info on a specific data center
 
 GET /api/v1/mcp/tools/export_facility_csv?limit={n}&state={ST}&operator={name}
-  Returns: Bulk export of facility search results
-  Auth: Pro or Enterprise
+  Returns: Bulk export of facility search results (max 10,000 rows per request)
+  Auth: X-API-Key required, Developer plan or higher. Anonymous callers and
+        unverified keys receive 401; a verified free-tier key receives 402.
+        (This line read "Pro or Enterprise" while the route in fact enforced
+        nothing at all and served 10,000 rows to anyone; corrected 2026-09-06
+        when the gate was added.)
   Use when: User wants to download or analyze facility datasets
 
 GET /api/ai/query?type=facilities
