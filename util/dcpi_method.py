@@ -209,6 +209,72 @@ VERDICT_BANDS = (
 )
 VERDICT_FALLBACK = "AVOID"
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# The verdict, as a publishable measurement
+# ─────────────────────────────────────────────────────────────────────────
+#
+# r-publish-the-verdict (2026-09-06). BUILD/CAUTION/AVOID is displayed on
+# /dcpi, /markets and /pockets and was published as structured data by none of
+# them — the single most citable fact about a market reached an agent only as
+# prose.
+#
+# The sentence is GENERATED from VERDICT_BANDS and VERDICT_FALLBACK, never
+# typed, and it lives here because this module already owns them: it is what
+# /api/v1/dcpi/methodology serves. A second hand-written account of the bands
+# is not hypothetical — the static methodology page published a NEUTRAL band
+# for months that derive_verdict could not produce, and 67% of published
+# markets carried a verdict that page could not explain.
+#
+# ★ WHAT THE SENTENCE MUST SAY, and why each part is load-bearing:
+#
+#   * THE DOMAIN, from the bands themselves. LOW_SIGNAL is deliberately NOT in
+#     it: it is documented, carries a 0.35 composite multiplier, is accepted by
+#     ?verdict= and counted by iso_snapshot — and has NO WRITER AT ALL
+#     ("unreachable in practice", fallbacks list). Publishing it as a value the
+#     scorer emits would re-create the NEUTRAL defect exactly.
+#
+#   * TWO INPUTS, NOT THREE. derive_verdict(constraint, excess) does not take
+#     time-to-power. That matters here more than anywhere else, because the
+#     Dataset these measures ship in publishes Time to Power immediately
+#     beside the verdict, and an agent reading them as one group would
+#     conclude a faster interconnect could move a market out of AVOID. It
+#     cannot.
+#
+#   * AVOID IS THE FALLBACK, so it means "did not clear a band" — including
+#     for a market whose inputs are missing — not "actively bad". An agent
+#     that reads every AVOID as a judgement will overstate what DCPI claims.
+
+def verdict_domain() -> tuple:
+    """The verdicts derive_verdict can actually return, banded first."""
+    return tuple(v for v, _b in VERDICT_BANDS) + (VERDICT_FALLBACK,)
+
+
+def verdict_basis() -> str:
+    """The measurementTechnique for a published verdict.
+
+    ★ NO apostrophe, and NO ASCII >= or <=. This is interpolated into ld+json,
+    where Jinja autoescape rewrites & < > \' " into entities a JSON parser will
+    not decode — and a band description is almost all comparison operators, so
+    the naive spelling would have shipped "excess-power &gt;= 65" to every
+    agent. The unicode forms are not escaped.
+    """
+    bands = "; ".join(
+        f"{v} when excess-power ≥ {b['excess_min']:g} and grid-constraint "
+        f"≤ {b['constraint_max']:g}"
+        for v, b in VERDICT_BANDS)
+    return (
+        f"DC Hub Power Index verdict. One of "
+        f"{', '.join(verdict_domain())}. Derived from exactly two inputs, "
+        f"the excess-power and grid-constraint scores: {bands}; otherwise "
+        f"{VERDICT_FALLBACK}. Time-to-power is NOT an input — a faster "
+        f"interconnect cannot move a market out of {VERDICT_FALLBACK}. "
+        f"{VERDICT_FALLBACK} is the fallback, so it means the market did not "
+        f"clear a band, including when an input is missing; it is not a claim "
+        f"that the market is actively bad. A label, not a score: not "
+        f"orderable and not comparable with a number."
+    )
+
 COMPOSITE_WEIGHTS = {
     "excess": 0.60,
     "inverse_constraint": 0.30,     # applied to (100 - constraint)

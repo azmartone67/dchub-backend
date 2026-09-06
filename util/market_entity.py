@@ -177,6 +177,37 @@ def market_entity(slug: str, name: str, stats: dict | None, *,
     # `rank_label` / `rank_basis` come from util.deployability_rank via the
     # calling surface, never typed here, so there is one account of what the
     # number is.
+    # r-publish-the-verdict (2026-09-06). BUILD/CAUTION/AVOID is the single
+    # most citable fact about a market and reached an agent only as prose.
+    #
+    # ★ ONLY A VERDICT THE SCORER CAN PRODUCE. routes/pockets.py renders the
+    # verdict through `{{ d.verdict or "HOLD" }}` in ten places — HOLD is a
+    # DISPLAY DEFAULT for a null, and derive_verdict has never emitted it.
+    # Publishing it as a measured value would invent a fourth verdict, which
+    # is precisely the NEUTRAL-band defect util/dcpi_method.py records: a
+    # value the docs published and the scorer could not produce, carried by
+    # 67% of markets. So an unrecognised verdict is OMITTED — no measure at
+    # all is honest; a made-up label is not.
+    #
+    # The basis comes from util.dcpi_method, which owns the bands and serves
+    # them at /api/v1/dcpi/methodology. Imported here rather than passed by
+    # the caller so no surface can supply its own account of them.
+    _verdict = stats.get("verdict")
+    if _verdict:
+        try:
+            from util.dcpi_method import verdict_basis, verdict_domain
+            if str(_verdict).strip().upper() in verdict_domain():
+                _v_desc = verdict_basis()
+                if stats.get("dcpi_as_of"):
+                    _v_desc += f" Observed {str(stats['dcpi_as_of'])[:19]}."
+                measured.append({
+                    "@type": "PropertyValue", "name": "DCPI Verdict",
+                    "value": str(_verdict).strip().upper(),
+                    "measurementTechnique": _v_desc, "description": _v_desc,
+                })
+        except Exception:   # pragma: no cover - never break a page over this
+            pass
+
     _rank = stats.get("rank_score")
     if _rank is not None and stats.get("rank_label"):
         measured.append({
