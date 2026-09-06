@@ -96,23 +96,60 @@ def _notify_admin(inquiry: dict):
         admin_to = os.environ.get("ADMIN_INBOX_EMAIL", "azmartone@gmail.com")
         if not api_key:
             return
+        # ── EVERY field below is PUBLIC FORM INPUT ────────────────────────
+        # Until 2026-09-05 all six were interpolated into this HTML raw, so
+        # anyone who could POST /api/v1/enterprise/contact could put arbitrary
+        # markup — or an event handler — into the admin's inbox. The worst was
+        # `email`: it landed inside a SINGLE-QUOTED href, so one apostrophe
+        # broke out of the attribute into attribute context.
+        # Nothing that reaches this function is trusted. Treat it as hostile.
+        import html as _html
+        from urllib.parse import quote as _urlquote
+
+        def _t(key, default="?"):
+            """Escaped for HTML TEXT context."""
+            return _html.escape(str(inquiry.get(key) or default), quote=False)
+
+        def _a(key, default=""):
+            """Escaped for HTML ATTRIBUTE context (quotes included)."""
+            return _html.escape(str(inquiry.get(key) or default), quote=True)
+
+        def _hdr(value, default=""):
+            """Header-safe: no CR/LF, so a newline cannot inject a mail header."""
+            v = str(value or default)
+            return v.replace("\r", " ").replace("\n", " ").strip()[:200]
+
+        # Notes: escape FIRST, then turn newlines into <br>. Doing it the other
+        # way round escapes the <br> itself and prints it as literal text.
+        _notes = _html.escape(str(inquiry.get("notes") or "—"), quote=False)
+        _notes = _notes.replace(chr(10), "<br>")
+        # mailto target is URL-encoded as well as attribute-escaped
+        _mailto = _urlquote(str(inquiry.get("email") or ""), safe="@.+-_")
+
         body_html = (
-            f"<h2>🎯 New enterprise inquiry — {inquiry.get('firm','?')}</h2>"
-            f"<p><b>Tier:</b> {inquiry.get('tier_requested','?')}</p>"
-            f"<p><b>Name:</b> {inquiry.get('name','?')}<br>"
-            f"<b>Email:</b> <a href='mailto:{inquiry.get('email','')}'>{inquiry.get('email','?')}</a><br>"
-            f"<b>Use case:</b> {inquiry.get('use_case','?')}</p>"
-            f"<p><b>Notes:</b><br>{(inquiry.get('notes') or '—').replace(chr(10), '<br>')}</p>"
+            f"<h2>🎯 New enterprise inquiry — {_t('firm')}</h2>"
+            f"<p><b>Tier:</b> {_t('tier_requested')}</p>"
+            f"<p><b>Name:</b> {_t('name')}<br>"
+            f"<b>Email:</b> <a href=\"mailto:{_mailto}\">{_t('email')}</a><br>"
+            f"<b>Use case:</b> {_t('use_case')}</p>"
+            f"<p><b>Notes:</b><br>{_notes}</p>"
             f"<p style='color:#666;font-size:12px'>"
             f"Reply directly to start the conversation. "
             f"Full pipeline at https://dchub.cloud/admin/partnerships/review</p>"
         )
+        # The subject is NOT html-escaped — it is plain text, and escaping it
+        # would print "&amp;" in the admin's subject line. It IS stripped of
+        # CR/LF, which is the actual risk in a header.
+        _subject = _hdr(
+            f"🎯 Enterprise inquiry — {inquiry.get('firm') or '?'} "
+            f"({inquiry.get('tier_requested') or '?'})"
+        )
         payload = json.dumps({
             "from":    "DC Hub <press@dchub.cloud>",
             "to":      [admin_to],
-            "subject": f"🎯 Enterprise inquiry — {inquiry.get('firm','?')} ({inquiry.get('tier_requested','?')})",
+            "subject": _subject,
             "html":    body_html,
-            "reply_to": inquiry.get("email") or admin_to,
+            "reply_to": _hdr(inquiry.get("email")) or admin_to,
         }).encode()
         req = _req.Request("https://api.resend.com/emails", data=payload, headers={
             "Authorization": f"Bearer {api_key}",
