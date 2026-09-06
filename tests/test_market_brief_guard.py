@@ -21,6 +21,8 @@ house rule: tests NEVER import main).
 import ast
 
 from tests import _market_canon_consts as _canon_consts
+from util.market_aliases import canonical_slug
+from util.dcpi_score_row import PUBLISHED_ONLY
 import json
 import logging
 
@@ -51,6 +53,14 @@ WANT = {"_brief_guard_reason", "_render_neutral_market_page",
         # _PROVIDED — it is pure (no DB, no network), so the render tests below
         # exercise the real structured data instead of a stub that could drift.
         "_market_dataset_ld",
+        # r-brief-live-score (2026-09-06): the render path reads the DCPI
+        # score live. EXTRACTED, not stubbed — overlay_live_score, _drifted
+        # and live_score_note are pure, and live_dcpi_reading only needs the
+        # `_conn` the namespace already supplies, so the render tests exercise
+        # the real overlay. A stub here would let the page publish a stored
+        # score while this file stayed green.
+        "read_live_stats", "live_dcpi_reading", "overlay_live_score",
+        "_drifted", "live_score_note",
         # r-latam-rotation (2026-09-04): the refusal's neutral copy is no
         # longer one string — it is chosen from the guard reason, so the
         # placeholder for a market with 40 tracked facilities stops asserting
@@ -127,7 +137,12 @@ _PROVIDED = ("Response", "read_deep_dive", "_conn", "_ensure_schema",
              # whether a guard-shaped row is a self-identifying placeholder on
              # a CURATED page before serving the neutral copy. Real module
              # literal below, never a hand copy.
-             "CURATED_MARKET_SLUGS")
+             "CURATED_MARKET_SLUGS",
+             # r-brief-live-score (2026-09-06): the live-score overlay's own
+             # dependencies. canonical_slug and PUBLISHED_ONLY are seeded in
+             # `ns` from the REAL modules — a stub of either would let the
+             # page read a retired twin's frozen row with this file green.
+             "canonical_slug", "PUBLISHED_ONLY", "_SCORE_DRIFT_EPSILON")
 
 
 @functools.lru_cache(maxsize=1)
@@ -156,6 +171,21 @@ class _Resp:
         self.status = status
         self.mimetype = mimetype
         self.headers = dict(headers or {})
+
+
+def _consts_of(name):
+    """A module-level literal from routes/market_deep_dive.py, by AST.
+
+    _SCORE_DRIFT_EPSILON is a plain float, so it literal_evals — unlike the
+    canon maps, which are derived (see tests/_market_canon_consts.py).
+    """
+    _, tree, _ = _module()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == name:
+                    return ast.literal_eval(node.value)
+    raise AssertionError(f"no module-level literal {name}")
 
 
 def _page_canon():
@@ -188,6 +218,14 @@ def _curated_slugs():
 def _ns(**overrides):
     src, tree, body = _module()
     ns = {"Response": _Resp, "datetime": datetime,
+          # r-brief-live-score (2026-09-06): the live-score overlay's own
+          # dependencies. The two predicates come from the REAL modules — a
+          # stubbed canonical_slug or a hand-typed publish predicate here
+          # would let the page read a retired twin's frozen row while this
+          # file stayed green.
+          "canonical_slug": canonical_slug,
+          "PUBLISHED_ONLY": PUBLISHED_ONLY,
+          "_SCORE_DRIFT_EPSILON": _consts_of("_SCORE_DRIFT_EPSILON"),
           "logger": logging.getLogger("test_market_brief_guard"),
           "json": json,
           "read_deep_dive": lambda slug: None,

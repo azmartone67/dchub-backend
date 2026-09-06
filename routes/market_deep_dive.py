@@ -1274,7 +1274,12 @@ def market_entity_json(slug):
     r = read_deep_dive(_slug)
     if r:
         _name  = r.get("market_name") or _slug
-        _stats = r.get("key_stats") or {}
+        # r-brief-live-score (2026-09-06): the SAME overlay the HTML page uses.
+        # If only one of the two went live, /markets/<slug> and
+        # /markets/<slug>.json would publish different DCPI scores for one
+        # market — a fresh split between two surfaces of the same page, which
+        # is the defect this whole family exists to close.
+        _stats, _, _ = read_live_stats(_slug, r.get("key_stats") or {})
         _as_of = (r["generated_at"].isoformat()
                   if r.get("generated_at") else None)
     else:
@@ -1703,6 +1708,160 @@ joins.</p>
 # surfaces — all correct, all different populations. A crawler that takes the
 # page figure and an API caller that takes the tool figure must both be able to
 # see WHY they differ, or the difference reads as us contradicting ourselves.
+# ═══════════════════════════════════════════════════════════════════════
+# LIVE SCORE OVERLAY — r-brief-live-score (2026-09-06)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# /markets/<slug> renders a STORED brief. Its key_stats were measured when the
+# narrative was written, and `dcpi_score` is the one figure in there that moves
+# on a different clock: DCPI recomputes 4x/day, briefs rotate roughly monthly.
+# So the page published a dated snapshot of a live number, and an agent citing
+# it disagreed with /dcpi for the same market — measured live 2026-09-06,
+# BEFORE the flagship set was regenerated:
+#
+#     /markets/santa-clara   DCPI score 42.4      /dcpi/santa-clara   40.8
+#     /markets/los-angeles   DCPI score 44.3      /dcpi/los-angeles   40.6
+#
+# Regenerating fixed those two for a day. It is a treadmill, not a fix: the
+# next recompute re-opens the gap on whichever briefs the rotation has not
+# reached. The durable answer is to stop storing that particular number.
+#
+# ★ WHAT IS OVERLAID, AND WHAT DELIBERATELY IS NOT.
+# Only `dcpi_score` and `verdict` — one indexed point-select. facility_count
+# and total_mw stay from the snapshot: they cost a two-table union per render,
+# and — the real reason — they are what the NARRATIVE talks about. Making them
+# live would leave prose reading "303 tracked facilities" beside a tile reading
+# something else, which is the same defect one layer in.
+#
+# ★ THE PROSE STILL CARRIES THE OLD SCORE, so the page SAYS SO. A brief written
+# against 42.4 and topped with a live 40.8 is a contradiction unless the page
+# discloses it; _live_score_note is that disclosure. Turning the gap into
+# stated information is the only honest way to serve both numbers at once.
+#
+# Fail-soft everywhere: any error leaves the stored stats exactly as they are,
+# because a DCPI blip must never blank a page that already has an answer.
+
+#: Below this, the live and stored scores are the same number and there is
+#: nothing to disclose. Both are rounded to 1dp before comparison.
+_SCORE_DRIFT_EPSILON = 0.05
+
+
+def live_dcpi_reading(cur, slug):
+    """The PUBLISHED DCPI composite for `slug` right now, or None.
+
+    Canonical slug + PUBLISHED_ONLY, the same two lines as _gather_market_facts
+    and PR #3841's handle_poe_query — a retired twin's frozen row is exactly
+    what this must not read, and it is the row an exact-slug match finds.
+
+    Returns {"dcpi_score", "verdict", "computed_at"} or None. None means "could
+    not read", never "no score": every caller falls back to the stored value.
+    """
+    _canon = canonical_slug(slug) or slug
+    try:
+        cur.execute(f"""
+            SELECT constraint_score, excess_power_score, verdict,
+                   time_to_power_months, computed_at
+              FROM market_power_scores
+             WHERE LOWER(market_slug) = LOWER(%s) AND {PUBLISHED_ONLY}
+             LIMIT 1
+        """, (_canon,))
+        row = cur.fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    constraint, excess, verdict, ttp, computed = row[0], row[1], row[2], row[3], row[4]
+    if constraint is None or excess is None:
+        # Both components must exist. derive_composite_score coerces None to 0,
+        # which mints a plausible-looking score for a market with no data —
+        # the same guard _gather_market_facts carries.
+        return None
+    try:
+        from routes.dcpi import derive_composite_score
+        score = derive_composite_score(excess, constraint, ttp, verdict)
+    except Exception:
+        return None
+    return {
+        "dcpi_score": score,
+        "verdict": verdict,
+        "computed_at": computed.isoformat() if hasattr(computed, "isoformat")
+                       else (str(computed) if computed else None),
+    }
+
+
+def overlay_live_score(stats, live):
+    """`stats` with the live score and verdict in place of the stored ones.
+
+    Pure, and separate from the read so a test can drive every branch without a
+    database. Returns (stats, stored_score) — `stored_score` is what the
+    narrative was written against, which the caller needs to decide whether
+    there is drift worth disclosing.
+    """
+    stats = dict(stats or {})
+    stored = stats.get("dcpi_score")
+    if not live:
+        return stats, stored
+    stats["dcpi_score"] = live["dcpi_score"]
+    if live.get("verdict"):
+        stats["verdict"] = live["verdict"]
+    # The score's OWN vintage, read by util.market_entity so the ld+json
+    # measure states when it was observed rather than inheriting the
+    # narrative's date. Both surfaces get it from this one assignment.
+    if live.get("computed_at"):
+        stats["dcpi_as_of"] = live["computed_at"]
+    return stats, stored
+
+
+def _drifted(stored, live_score):
+    """True when the two round to different published numbers."""
+    if stored is None or live_score is None:
+        return False
+    try:
+        return abs(round(float(stored), 1) - round(float(live_score), 1)) \
+            > _SCORE_DRIFT_EPSILON
+    except (TypeError, ValueError):
+        return False
+
+
+def live_score_note(slug, stored, live, gen_at):
+    """The sentence a page must carry when its prose predates its headline.
+
+    '' when the two agree, so a page with nothing to disclose says nothing.
+    """
+    if not live or not _drifted(stored, live.get("dcpi_score")):
+        return ""
+    when = f" on {gen_at}" if gen_at and gen_at != "?" else ""
+    return (f"This analysis was written{when}, when the DC Hub Power Index for "
+            f"this market read {float(stored):.1f}. The index is recomputed "
+            f"through the day and reads {float(live['dcpi_score']):.1f} now — "
+            f"the figure above is the live one, and the narrative below "
+            f"describes the market as it stood when it was written.")
+
+
+def read_live_stats(slug, stats):
+    """(stats-with-live-score, stored_score, live) — opens its own connection.
+
+    Wraps the two pure functions above with the one impure step, so both the
+    HTML page and the .json twin get the same overlay from one call and cannot
+    drift into publishing different scores for one market.
+    """
+    live = None
+    try:
+        c = _conn()
+        if c is not None:
+            try:
+                with c.cursor() as cur:
+                    live = live_dcpi_reading(cur, slug)
+            finally:
+                try: c.close()
+                except Exception: pass
+    except Exception as e:
+        logger.warning("live DCPI overlay unavailable for %s: %s", slug, e)
+        live = None
+    merged, stored = overlay_live_score(stats, live)
+    return merged, stored, live
+
+
 def _market_dataset_ld(slug: str, name: str, stats: dict, gen_at) -> str:
     """The citable half of the deep-dive page's structured data.
 
@@ -1771,7 +1930,17 @@ def _render_deep_dive_body(slug):
     )
     name = r["market_name"]
     gen_at = r["generated_at"].strftime("%Y-%m-%d") if r["generated_at"] else "?"
-    stats = r.get("key_stats") or {}
+    # r-brief-live-score (2026-09-06): the headline DCPI figure comes from the
+    # published row at render time, not from the snapshot the narrative was
+    # written against. Everything downstream — tiles, meta description, both
+    # ld+json blocks — reads `stats`, so overlaying here is the single point
+    # that keeps them agreeing with each other AND with /dcpi.
+    stats, _stored_score, _live = read_live_stats(slug, r.get("key_stats") or {})
+    _score_note = live_score_note(slug, _stored_score, _live, gen_at)
+    # Two vintages in one sentence, so the sentence says which is which. A
+    # bare "Updated <brief date>" beside a live score dates the wrong figure.
+    _live_suffix = (f" (live {str((_live or {}).get('computed_at'))[:10]})"
+                    if (_live or {}).get("computed_at") else "")
 
     # P1-1 (2026-08-28): Product 1's sponsored module on the market template.
     # '' whenever no sponsor is active, which is its state until a row is
@@ -1788,7 +1957,7 @@ def _render_deep_dive_body(slug):
 <head><meta charset=utf-8>
 <meta name="market-slug" content="{slug}">
 <title>{name} Market Deep-Dive · DC Hub</title>
-<meta name="description" content="{name} data center market analysis. DCPI score {stats.get('dcpi_score','?')}/100, {stats.get('facility_count',0)} facilities, {stats.get('total_mw',0):,.0f} MW. Updated {gen_at}.">
+<meta name="description" content="{name} data center market analysis. DCPI score {stats.get('dcpi_score','?')}/100{_live_suffix}; {stats.get('facility_count',0)} facilities, {stats.get('total_mw',0):,.0f} MW as of {gen_at}.">
 <meta name="robots" content="index,follow,max-snippet:-1">
 <link rel="canonical" href="https://dchub.cloud/markets/{slug}">
 <meta property="og:title" content="{name} Market Deep-Dive · DC Hub">
@@ -1813,6 +1982,7 @@ body{{font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,sans-serif;
 h1{{font-weight:700;letter-spacing:-.02em;margin:0 0 .25rem;font-size:2.1rem;color:var(--tx)}}
 .sub{{color:var(--dim);margin:0 0 1.75rem;font-size:.82rem;font-family:'JetBrains Mono',monospace}}
 .stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.75rem;margin:1rem 0 2.25rem}}
+.drift{{color:var(--mut);font-size:.9rem;background:var(--surf);border:1px solid var(--b);border-left:3px solid var(--ind);border-radius:8px;padding:.85rem 1.05rem;margin:1.25rem 0}}
 .stat{{background:var(--surf);border:1px solid var(--b);border-radius:12px;padding:.9rem 1.1rem;font-size:.68rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}}
 .stat b{{display:block;font-size:1.5rem;color:var(--tx);margin-top:.35rem;letter-spacing:0;text-transform:none}}
 p{{margin:1.1rem 0;font-size:1.06rem}}
@@ -1823,13 +1993,14 @@ a{{color:var(--ind)}}
 </style>
 </head><body>
 <h1>{name}</h1>
-<p class="sub">Data Center Market Deep-Dive · {r.get('word_count') or 0} words · generated {gen_at} by Claude haiku from live DC Hub data</p>
+<p class="sub">Data Center Market Deep-Dive · {r.get('word_count') or 0} words · generated {gen_at} by Claude haiku from live DC Hub data{' · DCPI live as of ' + _live['computed_at'][:10] if (_live or {}).get('computed_at') else ''}</p>
 <div class="stats">
  <div class="stat">DCPI Score<b>{stats.get('dcpi_score','?')}/100</b></div>
  <div class="stat">Facilities<b>{stats.get('facility_count',0):,}</b></div>
  <div class="stat">Total MW<b>{stats.get('total_mw',0):,.0f}</b></div>
  <div class="stat">Verdict<b>{stats.get('verdict','?')}</b></div>
 </div>
+{('<p class="drift">' + _score_note + '</p>') if _score_note else ''}
 {paragraphs}
 {sponsor_html}
 <div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing?ref=market-deep-dive&tool={slug}" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
