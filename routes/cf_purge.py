@@ -201,6 +201,24 @@ def _og_card_urls() -> tuple[list, list]:
     return urls, notes
 
 
+
+def _still_cached(urls: list) -> list:
+    """Re-fetch each purged URL and return those the edge STILL serves from
+    cache. CF's `success:true` means "we accepted the request", not "the object
+    is gone" — see the note on purge_og_cards."""
+    import requests
+    stuck = []
+    for u in urls:
+        try:
+            r = requests.get(u, timeout=12, headers={
+                "User-Agent": "dchub-og-purge/1.0 (+https://dchub.cloud)"})
+            if (r.headers.get("cf-cache-status") or "").upper() == "HIT":
+                stuck.append({"url": u, "age": r.headers.get("age")})
+        except Exception as e:
+            stuck.append({"url": u, "error": type(e).__name__})
+    return stuck
+
+
 @cf_purge_bp.route("/api/v1/cf/purge/og-cards", methods=["GET", "POST"])
 def purge_og_cards():
     """One-shot: purge the OG/social cards after a card redesign.
@@ -243,10 +261,35 @@ def purge_og_cards():
         if res.get("ok"):
             purged.extend(chunk)
 
+    # ★ 2026-09-06: CF ACCEPTED != OBJECT EVICTED. Measured on the first live
+    # run: one call purged /images/og-default.png (MISS afterwards — worked) and
+    # the homepage CARD (still HIT, age climbing 2250 -> 2326 — did nothing),
+    # and CF reported success:true for BOTH.
+    #
+    # Cause: worker.js proxies with
+    #     fetch(RAILWAY_BACKEND + pathname, {cf:{cacheTtl, cacheEverything:true}})
+    # so the generated cards are cached under the RAILWAY origin URL, not the
+    # public api.dchub.cloud one. Purge-by-URL on our zone cannot match a key it
+    # does not own, so it is STRUCTURALLY incapable of clearing them. Only
+    # purge_everything (or a worker cache-key change) reaches those objects.
+    #
+    # So this endpoint verifies its own work instead of trusting the API's
+    # acknowledgement, and `ok` is false when anything survived.
+    accepted = all(r["ok"] for r in results) if results else False
+    stuck = _still_cached(purged) if accepted else []
+    if stuck:
+        notes.append(
+            "CF accepted the purge but these are STILL cached — worker.js caches "
+            "them under the Railway origin URL (cf.cacheEverything), which "
+            "purge-by-URL on this zone cannot address. Needs purge_everything or "
+            "a worker cache-key fix.")
     return jsonify(
-        ok=all(r["ok"] for r in results) if results else False,
+        ok=accepted and not stuck,
+        cf_accepted=accepted,
         purged=purged,
         purged_count=len(purged),
+        evicted_count=len(purged) - len(stuck),
+        still_cached=stuck,
         pages_checked=len(_OG_PAGES),
         batches=results,
         # Say what was NOT purged and why, rather than reporting a clean count
