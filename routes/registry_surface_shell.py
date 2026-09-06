@@ -230,27 +230,48 @@ def _lane_fixer_target() -> list:
 
 
 # ── Lane 3 — rank is asserted, never measured ────────────────────────
-def _lane_rank_claim() -> list:
+def _lane_rank_claim(fetch=None) -> list:
     """We publish '#1 on Smithery for data-center / energy / grid' as fact.
 
-    This lane deliberately does NOT invent a rank number. Smithery's public API
-    exposes no ranked search endpoint we have verified, and scoring a position
-    from an unverified source would manufacture exactly the kind of confident,
-    unfounded metric the last three shells were spent removing. It reports the
-    claim as UNVERIFIED until a real measurement exists, so the gap stays visible
-    instead of being closed by assertion.
+    ★2026-09-06: this lane USED TO SAY "Smithery's public API exposes no ranked
+    search endpoint we have verified" and returned UNVERIFIED forever. That
+    sentence was false when it was written and stayed in the tree for six weeks.
+    `registry.smithery.ai/servers?q=<term>` returns an ORDERED list with a
+    totalCount, and scripts/registry_monitor.py in dchub-mcp-server has read our
+    position out of it since July. The measurement existed in the other repo the
+    whole time; this lane just could not see it, and "we have not verified" got
+    published as "cannot be verified". A lane that reports a gap it could have
+    closed by looking is worse than no lane.
+
+    It now MEASURES, three-valued: True (we hold #1 on every term the claim
+    names), False (a named term slipped), None (the registry did not answer —
+    never rendered as a slip).
     """
-    checks = [_check(
-        "L3.1", "published rank claim is measured", None,
-        "We publish " + "; ".join(RANK_CLAIMS) + " in mcp-server.json and "
-        "integration docs, and nothing measures position. Per the freshness "
-        "workflow's own 27-agent teardown, Smithery rank is RELEVANCE-driven "
-        "(recency ~0.00), so republishing cannot defend it, and byteaskai is "
-        "recorded as out-ranking us on 'interconnection'. UNVERIFIED is the "
-        "honest status: either wire a real position probe or stop publishing "
-        "the claim.",
-        critical=False)]
-    return checks
+    from routes.mcp_ecosystem_board import category_ranks
+
+    # Only the terms the published claim actually names. A slip on a term we
+    # never claimed is a growth question, not a false statement.
+    claimed = ("data center", "energy", "grid")
+    rows = category_ranks(terms=claimed, fetch=fetch)
+    readable = [r for r in rows if r.get("readable")]
+    if not readable:
+        return [_check("L3.1", "published rank claim is measured", None,
+                       "the registry answered for none of "
+                       f"{list(claimed)} — UNMEASURED, which is not a slip",
+                       critical=False)]
+    lost = [f"{r['term']} at {r['position']} (leader {r['leader']})"
+            for r in readable if not r.get("held")]
+    unread = [r["term"] for r in rows if not r.get("readable")]
+    return [_check(
+        "L3.1", "published rank claim is measured", not lost,
+        ("we publish " + "; ".join(RANK_CLAIMS) + ". Measured now: "
+         + ", ".join(f"{r['term']} #{r['position']} of {r['of']}"
+                     for r in readable)
+         + (f". SLIPPED: {'; '.join(lost)} — correct the copy or reclaim the "
+            f"term; a published rank we do not hold is the same class of error "
+            f"as a green check that ran against nothing." if lost else ".")
+         + (f" UNREADABLE (not counted either way): {unread}." if unread else "")),
+        critical=bool(lost))]
 
 
 LANES = (
