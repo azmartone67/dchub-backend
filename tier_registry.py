@@ -357,8 +357,19 @@ def as_public_dict():
         'annual_options': ANNUAL_OPTIONS,
         'features': TIER_FEATURES,
         'rule': 'founding == pro for access and benefits',
-        'price_note': ('price_usd_month: starter 9 · developer 49 · pro 299 · team 699 · '
-                       'enterprise custom. calls_per_day = mcp_daily; '
+        # ★ r-price-collapse follow-up (2026-09-05): this sentence used to TYPE
+        #   its own price list ("pro 299 · team 699") right beside the
+        #   machine-readable `pricing` map in the SAME response. When Pro moved
+        #   to 99 the map updated and the sentence did not, so /api/v1/tiers
+        #   published two different prices for one tier in one payload — and
+        #   the prose is the half an LLM is most likely to quote. DERIVED now,
+        #   so it cannot drift again.
+        'price_note': ('price_usd_month: '
+                       + ' · '.join(
+                           f"{_t} {TIER_PRICE_USD_MONTH[_t]}"
+                           for _t in ('starter', 'developer', 'pro', 'team')
+                       )
+                       + ' · enterprise custom. calls_per_day = mcp_daily; '
                        f'calls_per_month = mcp_daily x {MCP_DAYS_PER_MONTH} — quote PAID '
                        'tiers monthly (that is the enforced ceiling) and free/identified '
                        'daily (those gates are still per-day).'),
