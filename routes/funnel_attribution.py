@@ -193,11 +193,16 @@ def trace_chain(api_key):
                 grace_count = 0
                 try:
                     cur.execute("""
-                        SELECT COUNT(*) FROM anon_grace_log
+                        SELECT COUNT(*) AS n FROM anon_grace_log
                          WHERE caller_hash = %s
                            AND granted_at <= %s
                     """, (r["request_ip_hash"], r["minted_at"]))
-                    grace_count = int((cur.fetchone() or [0])[0] or 0)
+                    # RealDictCursor: `(row or [0])[0]` never took the fallback
+                    # (a non-empty dict is truthy) and [0] was a key lookup, so
+                    # this raised KeyError(0) into the bare `except: pass`
+                    # below and grace_count was SILENTLY ALWAYS 0.
+                    _g = cur.fetchone()
+                    grace_count = int((_g and _g.get("n")) or 0)
                 except Exception: pass
                 return jsonify({
                     "api_key":         r["api_key"],
