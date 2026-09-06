@@ -747,9 +747,10 @@ def fetch_pjm() -> list[dict]:
             def _eia_latest(series_type):
                 js = _http_json(
                     "https://api.eia.gov/v2/electricity/rto/region-data/data/"
-                    f"?api_key={eia_key}&frequency=hourly&data[0]=value"
+                    "?frequency=hourly&data[0]=value"
                     f"&facets[respondent][]=PJM&facets[type][]={series_type}"
-                    "&sort[0][column]=period&sort[0][direction]=desc&length=1")
+                    "&sort[0][column]=period&sort[0][direction]=desc&length=1",
+                    headers={"X-Api-Key": eia_key})   # never in the query
                 rows = (((js or {}).get("response") or {}).get("data")) or []
                 if rows:
                     try:

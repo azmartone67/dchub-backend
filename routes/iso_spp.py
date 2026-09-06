@@ -31,8 +31,11 @@ def _spp_urls():
         "https://marketplace.spp.org/chart-api/gen-mix/asChart?type=json",
         # Same chart-api with the fuel-mix-rtbm slug as alt
         "https://marketplace.spp.org/chart-api/fuel-mix-rtbm-genmix/asChart",
-        # EIA v2 API with key (works when EIA_API_KEY is set on Railway)
-        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=SWPP&sort[0][column]=period&sort[0][direction]=desc&length=12",
+        # EIA v2 API (works when EIA_API_KEY is set on Railway). The key rides
+        # in a header via the (url, headers) form fetch_first_working supports —
+        # never the query string, which gets logged and echoed to callers.
+        ("https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?frequency=hourly&data[0]=value&facets[respondent][]=SWPP&sort[0][column]=period&sort[0][direction]=desc&length=12",
+         {"X-Api-Key": eia_key} if eia_key else {}),
     ]
 
 SPP_URLS = _spp_urls()  # kept for back-compat; call _spp_urls() directly to pick up env changes

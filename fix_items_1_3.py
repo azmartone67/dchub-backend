@@ -55,12 +55,13 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL, connect_timeout=15)
 
 
-def fetch_json(url, retries=3):
+def fetch_json(url, retries=3, headers=None):
     """Fetch JSON from URL with retries."""
     ctx = ssl.create_default_context()
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'DCHub/1.0'})
+            req = urllib.request.Request(
+                url, headers={'User-Agent': 'DCHub/1.0', **(headers or {})})
             with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
                 return json.loads(resp.read().decode())
         except Exception as e:
@@ -159,8 +160,7 @@ def fix_eia_gas_consumption():
         
         url = (
             f"https://api.eia.gov/v2/natural-gas/cons/sum/data/"
-            f"?api_key={EIA_API_KEY}"
-            f"&frequency=annual"
+            f"?frequency=annual"
             f"&data[0]=value"
             f"&facets[process][]={sector_code}"
             f"&sort[0][column]=period"
@@ -170,7 +170,7 @@ def fix_eia_gas_consumption():
         )
         
         try:
-            data = fetch_json(url)
+            data = fetch_json(url, headers={"X-Api-Key": EIA_API_KEY})
             
             if 'response' not in data or 'data' not in data.get('response', {}):
                 print(f"  ⚠️  No response.data in EIA response for {sector_name}")

@@ -128,12 +128,15 @@ def _eia_request(path, params=None):
     """Make EIA API v2 request."""
     if not EIA_API_KEY:
         return {'error': 'EIA_API_KEY not configured'}
-    base_params = {'api_key': EIA_API_KEY}
+    # EIA reads X-Api-Key. A key in the query string is logged verbatim by
+    # every proxy it crosses — see tests/test_no_provider_key_in_url.py.
+    base_params = {}
     if params:
         base_params.update(params)
     url = f"{EIA_BASE}/{path}?{urllib.parse.urlencode(base_params, doseq=True)}"
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'DCHub/1.0'})
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'DCHub/1.0', 'X-Api-Key': EIA_API_KEY})
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode('utf-8'))
     except Exception as e:
