@@ -3731,16 +3731,30 @@ async def recommend_market(
 ) -> str:
     """
     Rank US data-center markets against a capacity + deadline + constraint
-    envelope and return the top picks with composite scores and narrative
-    justifications. Use when: user asks "where should I build a [N] MW data
+    envelope and return the top picks with an Envelope fit score and
+    narrative justifications. Use when: user asks "where should I build a [N] MW data
     center", "best market for [N] MW by [date]", "rank markets by build
     feasibility", or any *which-market* (vs what-market) decision.
 
     Unlike get_market_intel (which describes one market) or get_grid_data
     (which dumps ISO metrics), this tool *decides*: it filters all 270+
-    DCPI-scored markets by hard constraints, then ranks the survivors by a
-    composite score (excess_power − 0.5×constraint + urgency bonus) and
-    returns the top N with the *why*.
+    DCPI-scored markets by hard constraints, then ranks the survivors by the
+    Envelope fit score and returns the top N with the *why*.
+
+    ★ THE ENVELOPE FIT SCORE IS NOT THE DCPI COMPOSITE. It is a deployability
+    ranking against the envelope you sent: excess_power − 0.5×constraint,
+    minus 5 when the market has no queue-capacity signal at all, plus an
+    urgency bonus for sub-18-month time-to-power. Unbounded, and it can be
+    negative. The DCPI composite is a different weighting with a verdict
+    multiplier, bounded 0-100, served by get_market_dcpi_rank and at
+    dchub.cloud/dcpi/<market> — measured 2026-09-06, midland-tx scored 82.3
+    here and 83.0 there. Each ranked market carries `scores.composite_label`
+    and `scores.composite_basis` saying so; the full formula is in the
+    response's `methodology`.
+
+    This docstring used to describe the score as "composite score
+    (excess_power − 0.5×constraint + urgency bonus)", which named it after
+    the other quantity AND omitted the no-queue-signal penalty.
 
     Args:
         capacity_mw:           MW the user needs (default 50). Markets with
@@ -3759,10 +3773,12 @@ async def recommend_market(
         top_n:                 Number of markets to return (1-20, default 5).
 
     Returns:
-        JSON string with `ranked_markets[]` (each with composite score,
-        constraint check, retail rate, water stress, narrative reason,
-        risk flags), `criteria_echo`, `total_evaluated`, `passed_filters`,
-        and methodology string.
+        JSON string with `ranked_markets[]` (each with `scores.composite`
+        — the Envelope fit score, plus `composite_label` /
+        `composite_basis` naming it — constraint check, retail rate, water
+        stress, narrative reason, risk flags), `criteria_echo`,
+        `total_evaluated`, `passed_filters`, and a generated `methodology`
+        string carrying every term the scorer applies.
 
     Example:
         recommend_market(capacity_mw=200, deadline_months=18,

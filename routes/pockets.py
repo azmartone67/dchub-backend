@@ -55,6 +55,7 @@ def _utc_iso_z() -> str:
 from flask import (Blueprint, jsonify, request, Response,
                    render_template_string, redirect)
 from util.market_aliases import canonical_slug
+from util.deployability_rank import RANKINGS as _RANKINGS
 from util.dcpi_score_row import PUBLISHED_ONLY
 
 logger = logging.getLogger(__name__)
@@ -172,30 +173,28 @@ _PAID_TIERS = {"starter", "developer", "pro", "founding", "enterprise",
 # ONE definition, referenced by every surface that prints it — the wire field
 # name `rank_score` is deliberately unchanged, since it never claimed DCPI and
 # agents parse it.
-POCKET_RANK_LABEL = "Pocket rank score"
+# r-deployability-rank (2026-09-06): these four now come from
+# util.deployability_rank, which holds the same vocabulary for the other two
+# non-DCPI rankings (/api/v1/brief/developer, /api/v1/dcpi/recommend). The
+# strings are unchanged — RANKINGS["pockets"] reproduces them exactly, and a
+# test asserts it, because they are live in indexed meta descriptions and
+# ld+json where a reword is an invisible content change.
+_RANK = _RANKINGS["pockets"]
+POCKET_RANK_LABEL = _RANK.label
 
 #: Rendered under the number wherever there is room for one line.
-POCKET_RANK_FORMULA = "excess − constraint/2 − time-to-power penalty ± verdict"
+POCKET_RANK_FORMULA = _RANK.formula
 
 #: For meta descriptions, JSON-LD and RSS — the places an agent reads without
 #: seeing the page. Says what the number is AND what it is not, because the
 #: name it used to carry is a real DC Hub quantity that still exists elsewhere.
-#: ★ NO APOSTROPHE, deliberately. This string is interpolated inside
-#: <script type="application/ld+json">, where Jinja autoescape rewrites ' as
-#: &#39; — and a JSON parser does not decode HTML entities, so an agent reads
-#: the entity literally. Same reason the sentence avoids < and &.
-POCKET_RANK_BASIS = (
-    "Pocket rank score is the DC Hub deployability ranking for this page "
-    "(excess power minus half grid-constraint minus a time-to-power penalty, "
-    "plus a verdict bonus); it is unbounded and can be negative. It is NOT "
-    "the DCPI composite, which is scored 0-100 and published at "
-    "https://dchub.cloud/dcpi/"
-)
+#: No apostrophe: see util.deployability_rank.basis for why.
+POCKET_RANK_BASIS = _RANK.basis
 
 #: The short form, for the meta description — search engines truncate around
 #: 160 characters, so the full basis there would be cut mid-sentence and the
 #: "not the DCPI composite" half is exactly the half that would be lost.
-POCKET_RANK_SHORT = "a deployability ranking, not the 0-100 DCPI composite"
+POCKET_RANK_SHORT = _RANK.short
 
 
 def _rank_context() -> dict:
