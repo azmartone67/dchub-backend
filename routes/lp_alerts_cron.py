@@ -118,7 +118,11 @@ def _current_dcpi_for_market(cur, market: str | None, lat: float,
     if market:
         try:
             cur.execute("""
-                SELECT excess_power_score AS v FROM market_power_scores
+                SELECT excess_power_score   AS excess,
+                       constraint_score     AS constraint_s,
+                       time_to_power_months AS ttp,
+                       verdict              AS verdict
+                  FROM market_power_scores
                  WHERE LOWER(market_name) = LOWER(%s)
                     OR LOWER(market_slug) = LOWER(%s)
                  ORDER BY computed_at DESC LIMIT 1
@@ -131,9 +135,20 @@ def _current_dcpi_for_market(cur, market: str | None, lat: float,
             # — a plausible-sounding reason that was never true.
             if r is None:
                 return None, "market_not_in_scores:%s" % (market or "")[:40]
-            if r.get("v") is None:
+            if r.get("excess") is None:
                 return None, "score_is_null:%s" % (market or "")[:40]
-            return float(r["v"]), None
+            # ★ THE BASELINE IS A COMPOSITE, SO THE CURRENT VALUE MUST BE ONE.
+            # routes/lp_sites.py derives dcpi_score_at_save as
+            #     derive_composite_score(excess, constraint, ttp, verdict)
+            # Reading excess_power_score ALONE would compare a four-input
+            # composite against one of its own components — a delta between two
+            # different quantities, which would fire or not fire for reasons
+            # unrelated to anything moving. A wrong number is worse than an
+            # error, because nobody investigates it.
+            from routes.dcpi import derive_composite_score
+            return float(derive_composite_score(
+                r.get("excess"), r.get("constraint_s"),
+                r.get("ttp"), r.get("verdict"))), None
         except Exception as e:
             # ★ AND THE REASON NOW NAMES THE CAUSE. Returning a bare None made
             # THREE different conditions — a swallowed exception, no matching

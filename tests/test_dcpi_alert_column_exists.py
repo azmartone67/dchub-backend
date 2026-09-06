@@ -67,8 +67,9 @@ def test_score_is_not_a_column_and_never_was():
     assert "score" not in _ddl_columns()
 
 
-@pytest.mark.parametrize("col", ["excess_power_score", "market_name",
-                                 "market_slug", "computed_at"])
+@pytest.mark.parametrize("col", ["excess_power_score", "constraint_score",
+                                 "time_to_power_months", "verdict",
+                                 "market_name", "market_slug", "computed_at"])
 def test_each_column_the_query_names_is_declared(col):
     q = _alert_query()
     assert col in q, f"the alert query no longer references {col}"
@@ -85,7 +86,9 @@ def test_the_query_selects_no_undeclared_column():
     # identifiers that look like columns, minus SQL keywords and the alias
     words = set(re.findall(r"\b[a-z_][a-z0-9_]{2,}\b", q))
     keywords = {"select", "from", "where", "lower", "order", "by", "desc",
-                "limit", "market_power_scores", "as"}
+                "limit", "market_power_scores", "as",
+                # column ALIASES, not columns
+                "excess", "constraint_s", "ttp"}
     for w in words - keywords:
         assert w in ddl, (
             f"the alert query references {w!r}, which is not declared in the "
@@ -94,3 +97,38 @@ def test_the_query_selects_no_undeclared_column():
 
 def test_the_query_still_targets_the_right_table():
     assert "FROM market_power_scores" in _alert_query()
+
+
+# ── the baseline and the current value must be the SAME quantity ──────
+
+def test_current_value_is_the_same_composite_as_the_baseline():
+    """★ routes/lp_sites.py derives dcpi_score_at_save as
+    derive_composite_score(excess, constraint, ttp, verdict). If the cron read
+    excess_power_score ALONE, every comparison would be a four-input composite
+    against one of its own components — a delta between two different
+    quantities. It would fire, and be meaningless."""
+    src = open(os.path.join(_ROOT, "routes", "lp_alerts_cron.py"),
+               encoding="utf-8").read()
+    i = src.index("def _current_dcpi_for_market")
+    body = src[i:src.index("\ndef ", i + 10)]
+    assert "derive_composite_score" in body, (
+        "the cron no longer derives the composite — it would be comparing a "
+        "component against the composite baseline")
+
+
+def test_the_baseline_writer_uses_the_same_function():
+    """Both sides must move together. If lp_sites stops using the composite,
+    the cron's comparison silently becomes wrong again."""
+    src = open(os.path.join(_ROOT, "routes", "lp_sites.py"), encoding="utf-8").read()
+    assert "derive_composite_score" in src, (
+        "lp_sites no longer derives dcpi_score_at_save as a composite — the "
+        "cron's current value must be changed to match whatever it now stores")
+
+
+def test_the_composite_takes_all_four_inputs():
+    """A composite called with fewer inputs is a different number."""
+    import inspect
+    from routes.dcpi import derive_composite_score
+    params = list(inspect.signature(derive_composite_score).parameters)
+    assert params[:3] == ["excess", "constraint", "ttp_months"]
+    assert "verdict" in params
