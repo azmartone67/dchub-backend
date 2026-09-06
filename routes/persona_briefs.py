@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 
 from util.capacity_pipeline import CP_OK
+from util.dcpi_score_row import PUBLISHED_ONLY
+from util.deployability_rank import RANKINGS as _DEPLOY_RANKINGS
 from util.db_honesty import (DEAL_DATE, close_quietly, open_conn,
                              try_fetchall)
 from util.deals import DEALS_OK
@@ -55,6 +57,10 @@ except Exception:
         return deco
     class RestTier:  # minimal shim
         DEVELOPER = 2
+
+#: This brief's ranking — named, so `rank_score` never reads as a DCPI
+#: score beside the two real DCPI columns in the same row.
+_RANK = _DEPLOY_RANKINGS["developer_brief"]
 
 persona_briefs_bp = Blueprint("persona_briefs", __name__)
 
@@ -141,7 +147,18 @@ def developer_brief():
     try:
         c = _conn()
         with c.cursor() as cur:
-            where = ["computed_at IS NOT NULL", "verdict != 'AVOID'"]
+            # r-deployability-rank (2026-09-06): PUBLISHED_ONLY was
+            # missing. The retired alias-twins (r-twin-unpublish) were
+            # unpublished, NOT deleted, so this shortlist could rank a row
+            # frozen since 2026-07-19 beside daily-recomputed ones and hand a
+            # paying developer a market under a slug every other surface now
+            # 301s away from. Same read-side hole closed on /markets,
+            # /pockets and the market brief; the same spelling, character for
+            # character, as /dcpi and /api/v1/dcpi/scores serve on — which is
+            # the point of importing it rather than writing `published = true`
+            # a fifth time.
+            where = ["computed_at IS NOT NULL", "verdict != 'AVOID'",
+                     PUBLISHED_ONLY]
             params = []
             if state:
                 where.append("UPPER(state) = %s")
@@ -165,6 +182,16 @@ def developer_brief():
                 constraint_v = float(constraint) if constraint is not None else 0
                 ttp_v = float(ttp) if ttp is not None else 36
                 # penalty: 0 if under deadline, else 5pts per month over
+                #
+                # r-deployability-rank (2026-09-06): this is a DEPLOYABILITY
+                # RANKING, not the DCPI composite. It is deadline-relative —
+                # the penalty is measured against what THIS caller asked for —
+                # which is why it is not shared with /pockets (fixed 24-month
+                # penalty) or /api/v1/dcpi/recommend (urgency bonus, no
+                # penalty). Three questions, three formulas, all legitimate.
+                # What they must share is the NAME, so an agent never reads
+                # one of them as the 0-100 DCPI composite; see
+                # util/deployability_rank.py.
                 deadline_penalty = max(0, (ttp_v - deadline_months)) * 5
                 score = excess_v - (constraint_v * 0.5) - deadline_penalty
                 if verdict == "BUILD":
@@ -210,6 +237,13 @@ def developer_brief():
     # null, not [] — an empty shortlist is a real answer ("no market clears
     # your deadline"); a failed read is not, and the two must not render alike.
     payload["shortlist"] = None if "shortlist" in errors else shortlist
+    # ADDITIVE (r-deployability-rank 2026-09-06): `rank_score` sits in every
+    # shortlist row beside excess_power_score and constraint_score, which are
+    # real DCPI columns — so an unnamed third number reads as a DCPI score.
+    # The key stays; the naming arrives beside it, once per response rather
+    # than once per row.
+    payload["rank_score_label"] = _RANK.label
+    payload["rank_score_basis"] = _RANK.basis
     payload["methodology"] = (
         "Score = excess_power_score − (constraint_score × 0.5) − "
         "max(0, time_to_power − deadline) × 5; +10 bonus for BUILD verdict. "

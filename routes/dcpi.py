@@ -117,6 +117,15 @@ dcpi_bp = Blueprint("dcpi", __name__)
 # the same day. routes/site_valuation_engine.py imports this name too.
 from util.market_aliases import DCPI_METRO_ALIASES  # noqa: E402,F401
 from util.slug_suffix import normalize_periods  # noqa: E402
+from util.deployability_rank import (            # noqa: E402
+    RANKINGS as _DEPLOY_RANKINGS,
+    envelope_fit_score as _envelope_fit_score,
+    envelope_fit_methodology as _envelope_fit_methodology,
+)
+
+#: /api/v1/dcpi/recommend's ranking. Named here so the route body reads
+#: the same object the guard enumerates.
+_ENVELOPE_RANK = _DEPLOY_RANKINGS["envelope_fit"]
 
 # r-status-taxonomy (2026-07-29): the operational/pipeline vocabulary lives in
 # ONE module for the same reason DCPI_METRO_ALIASES does — every hand-copied
@@ -5217,21 +5226,32 @@ def api_dcpi_recommend():
         if not (capacity_ok and deadline_ok and water_ok and rate_ok):
             continue
 
-        # ── Step 5: composite score ──
-        # Same weighting as persona_briefs.py (line 173) — keeps DCPI consistent.
+        # ── Step 5: envelope fit score ──
+        # r-deployability-rank (2026-09-06). This used to say "Same weighting
+        # as persona_briefs.py (line 173) — keeps DCPI consistent." Both
+        # halves of that were false, and the sentence is why the copy existed:
+        #
+        #   * NOT the same weighting. persona_briefs subtracts 5 points per
+        #     month past the CALLER's deadline; this applies no time penalty at
+        #     all, an urgency BONUS instead, plus a no-queue-signal penalty
+        #     persona_briefs has no equivalent of.
+        #   * NOT "DCPI consistent". The DCPI composite is
+        #     derive_composite_score — different weights, a verdict multiplier,
+        #     and bounded 0-100. Measured live 2026-09-06 this endpoint served
+        #     scores.composite 82.3 for midland-tx while
+        #     /api/v1/dcpi/scores/midland-tx served composite_score 83.0, and
+        #     72.4 vs 77.0 for upper-michigan. Close enough to read as
+        #     rounding, which is what makes it worse than an obvious gap.
+        #   * The line number had drifted too: persona_briefs.py:173 is a dict
+        #     key now, not the formula.
+        #
+        # The scorer lives in util/deployability_rank.py with the sentence that
+        # DESCRIBES it, because the published `methodology` string had already
+        # drifted from the code — it omitted the −5 entirely.
         excess     = _safe_round(r.get("excess_power_score"), 1)
         constraint = _safe_round(r.get("constraint_score"), 1)
-        composite  = excess - 0.5 * constraint
-
-        # Penalize markets with no queue capacity signal at all
-        if qcap is None:
-            composite -= 5
-
-        # Bonus for sub-12-month time-to-power (urgency premium)
-        if ttp is not None and float(ttp) <= 12:
-            composite += 8
-        elif ttp is not None and float(ttp) <= 18:
-            composite += 4
+        composite  = _envelope_fit_score(excess, constraint, ttp,
+                                         has_queue_signal=qcap is not None)
 
         risk_flags = []
         if water is not None and water >= 4: risk_flags.append("high_water_stress")
@@ -5274,6 +5294,20 @@ def api_dcpi_recommend():
             "verdict":     verdict,
             "scores": {
                 "composite":             round(composite, 1),
+                # ADDITIVE, r-deployability-rank (2026-09-06). `composite` is
+                # a published key and stays exactly as it was — renaming it is
+                # the contract break the response-key guard fails a PR on, and
+                # this endpoint is read by third-party agents. What it lacked
+                # was a name and a disclaimer travelling WITH it: `excess_power`
+                # and `constraint` beside it really ARE DCPI columns, so an
+                # unqualified "composite" under /api/v1/dcpi/ reads as the DCPI
+                # composite — a different number (82.3 here against 83.0 at
+                # /api/v1/dcpi/scores/midland-tx, measured 2026-09-06).
+                # Short form per market; the full basis is in `methodology`
+                # once, so a top_n=20 response does not repeat 200 characters
+                # twenty times.
+                "composite_label":       _ENVELOPE_RANK.label,
+                "composite_basis":       _ENVELOPE_RANK.short,
                 "excess_power":          excess,
                 "constraint":            constraint,
                 "time_to_power_months":  _safe_round(ttp, 1) if ttp is not None else None,
@@ -5321,7 +5355,16 @@ def api_dcpi_recommend():
         total_evaluated=total_evaluated,
         passed_filters=len(candidates),
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
-        methodology="composite = excess_power_score − 0.5 × constraint_score + urgency_bonus; filters: verdict≠AVOID (default), queue ≥ capacity, time_to_power ≤ deadline, water ≤ max, retail ≤ max",
+        # GENERATED, never typed (r-deployability-rank 2026-09-06). The
+        # literal this replaces described "+ urgency_bonus" and omitted the
+        # −5 a market takes for having no queue-capacity signal at all — a
+        # penalty big enough to reorder the top of the list, published
+        # nowhere. The scorer and this sentence now read the same constants,
+        # so the description cannot omit a branch the code applies. The filter
+        # list stays here because this endpoint, not the scorer, owns it.
+        methodology=(_envelope_fit_methodology()
+                     + "; filters: verdict≠AVOID (default), queue ≥ capacity,"
+                       " time_to_power ≤ deadline, water ≤ max, retail ≤ max"),
         signal_tier_note=("Each ranked market carries signal_tier: full = all 3 "
                           "live-capable adapters (interconnect_queue, "
                           "planned_generators, grid_telemetry) returned data for "
