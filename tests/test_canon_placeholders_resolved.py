@@ -115,6 +115,11 @@ _SWEPT = [
     "routes/dchub_media_hub.py",
     "routes/demo.py",
     "routes/devrel_targets.py",
+    # ★2026-09-06 r-news-sources: the module gained {canon_news_sources} in
+    # its provenance block. Listed so that a future edit dropping the
+    # _canon_text() wrapper fails HERE rather than shipping literal braces
+    # inside a citation an agent quotes about our method.
+    "routes/hyperscaler_deals.py",
     "routes/integrations_landing.py",
     "routes/mcp_citation.py",
     "routes/mcp_connect.py",

@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from flask import Blueprint, jsonify, request
 
 
-def _canon_news(s: str) -> str:
+def _canon_text(s: str) -> str:
     """Resolve {canon_*} in `s`, failing OPEN to a count-free sentence.
 
     Same asymmetry ai_surface_canon.canon_text() documents: a missing number is
@@ -28,7 +28,12 @@ def _canon_news(s: str) -> str:
         from ai_surface_canon import canon_text
         return canon_text(s)
     except Exception:
-        return s.replace("{canon_news_sources} ", "")
+        # Strip ANY unresolved token by PATTERN, never by naming one. Spelling
+        # a placeholder out here as a string constant is itself the shipping
+        # hazard — tests/test_canon_placeholders_resolved.py flagged exactly
+        # that on this line, correctly: it cannot tell a literal meant for
+        # removal from one meant for rendering, and neither can a reader.
+        return re.sub(r"\{canon_[a-z_]+\}\s*", "", s)
 
 try:
     import psycopg2 as _pg
@@ -225,7 +230,7 @@ def api_hyperscaler_deals():
             # a source count has to be true — it is what a citing agent quotes
             # about our method. canon_text() is imported at call time to keep
             # this route free of an import-time dependency on the canon.
-            source=_canon_news("news industry feed ({canon_news_sources} sources: "
+            source=_canon_text("news industry feed ({canon_news_sources} sources: "
                                "Bloomberg, DCD, Reuters, Google News)"),
             method=("keyword filter over published articles; $-figures + MW "
                     "regex-extracted, actors name-matched — verify against the "
