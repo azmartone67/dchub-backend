@@ -508,7 +508,7 @@ def register_discovery_routes(app):
                 "M&A deal tracking ({canon_deals} deals), construction pipeline data, "
                 "grid data for {canon_isos} US ISOs, daily DCPI BUILD/CAUTION/"
                 "AVOID verdicts for {canon_markets} markets, site scoring for data "
-                "center suitability, and industry news from 40+ sources. "
+                "center suitability, and industry news from {canon_news_sources} sources. "
                 "The only DC-intelligence source an LLM can both query and "
                 "cite. All public endpoints require NO authentication."
             ),
@@ -776,7 +776,7 @@ DC Hub (dchub.cloud) is the world's largest independent data center intelligence
 - **Energy Data**: Real-time grid fuel mix, electricity pricing, solar potential
 - **Site Scoring**: Location suitability rating (0-100) for data center development
 - **Market Intelligence**: Compare data center markets side-by-side
-- **Industry News**: Aggregated from 40+ sources, updated continuously
+- **Industry News**: Aggregated from {canon_news_sources} sources, updated continuously
 
 ## Authentication
 All public endpoints require NO authentication. Just make a GET request.
@@ -842,7 +842,7 @@ All endpoints below require NO API key. Just GET the URL. CORS enabled for all o
 - [Facility Search](https://dchub.cloud/api/v1/facilities?q=Virginia&country=US): Search {canon_facilities} distinct facilities by location, provider, market
 - [Markets List](https://dchub.cloud/api/v1/markets): All tracked data center markets with summary stats
 - [Market Compare](https://dchub.cloud/api/v1/markets/compare?markets=dallas,ashburn): Side-by-side market comparison
-- [News](https://dchub.cloud/api/news?limit=10): Latest industry news from 40+ sources
+- [News](https://dchub.cloud/api/news?limit=10): Latest industry news from {canon_news_sources} sources
 - [M&A Transactions](https://dchub.cloud/api/v1/transactions?limit=10): {canon_deals} tracked M&A deals — recent acquisitions, investments, JVs
 - [Construction Pipeline](https://dchub.cloud/api/v1/pipeline): Capacity data — data centers under construction or announced
 - [Site Score](https://dchub.cloud/api/site-score?lat=33.4484&lon=-112.074&state=AZ): Site suitability rating (0-100)
@@ -1151,7 +1151,7 @@ GET /api/v1/markets/compare?markets={market1},{market2}
   Use when: User asks "compare Dallas vs Ashburn for data centers"
 
 GET /api/news?limit={n}
-  Returns: Latest data center industry news aggregated from 40+ sources
+  Returns: Latest data center industry news aggregated from {canon_news_sources} sources
   Example: https://dchub.cloud/api/news?limit=10
   Use when: User asks "latest data center news" or "what's happening in the DC industry"
 

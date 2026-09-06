@@ -613,6 +613,13 @@ def _canon_nums():
         '{canon_deals}':      _pub.get('deals') or '',
         '{canon_markets}':    _pub.get('markets') or '',
         '{canon_countries}':  _pub.get('countries') or '',
+        # r-news-sources (2026-09-06): pinned floor only in this degraded twin,
+        # like every sibling here — the live derivation lives in
+        # canonical_stats.news_sources_phrase() and reaches surfaces through
+        # ai_surface_canon.canon_nums(). Omitting it here would resolve the
+        # placeholder to '' on the degraded path, which is the documented
+        # fail-open but needlessly drops a number the pin already carries.
+        '{canon_news_sources}': _pub.get('news_sources') or '',
         # r-dcpi-regions (2026-09-03): the DEGRADED twin of canon_nums(). It
         # serves the pinned cold-start floor only — no live derivation — which
         # is why the pin is a citation-safe SUBSET of the live region set.
@@ -9353,7 +9360,7 @@ def serve_tools_manifest():
         {"name": "search_facilities", "description": _canon_text("Search {canon_facilities} distinct data centers by market, operator, tier, or capacity"), "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
         {"name": "list_transactions", "description": _canon_text("M&A deals -- {canon_deals} deals tracked with buyer, seller, price, date"), "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
-        {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
+        {"name": "get_news", "description": _canon_text("Industry news from {canon_news_sources} sources, updated every 5 minutes"), "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
         {"name": "get_energy_prices", "description": "Live 5-min real-time LMP (benchmark hub/zone per ISO) across ERCOT, PJM, CAISO, MISO, NYISO, SPP; ISO-NE not covered (registration-gated feed)", "endpoint": "GET /api/v1/lmp/prices", "parameters": {"type": "object", "properties": {"iso": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP"]}}}},
         # ★2026-08-08: the "~7.8 GW" literal is removed here AND in tools.json
         # (this inline copy is the fallback when that file is unreadable, so
@@ -25510,8 +25517,46 @@ def ai_usage_stats_alias():
 @app.route('/ai/learn/<path:topic>', methods=['GET'])
 def ai_learn(topic=None):
     """AI learning endpoint -- returns structured platform info for AI crawlers."""
+    # ★2026-09-06 r-news-sources. THIS DICT WAS THE ARGUMENT FOR THE WHOLE
+    # CHANGE. One `capabilities` block, four headline numbers, and only
+    # `facilities` resolved through the canon — the other three were typed by
+    # hand and every one of them was wrong:
+    #
+    #   tools     51  -> canon 83   (a value on ai_surface_canon's OWN
+    #                                stale_markers denylist, i.e. already
+    #                                known-retired and served anyway — the
+    #                                same defect as the "2.1.22" server card)
+    #   countries 178 -> canon 170+ (an EXACT count where the canon publishes a
+    #                                FLOOR. 178 is the deduped ISO-code span, so
+    #                                it re-drifts on every ingest and over-claims
+    #                                the moment the fleet shrinks — exactly why
+    #                                PINNED['markets'] stopped pinning "311")
+    #   sources   40  -> canon 2,000+
+    #
+    # ★ `sources` was the one with NO canonical owner at all — no pin, no
+    #   derivation, no endpoint publishing it — so unlike its siblings it could
+    #   not be checked in either direction. Measured 2026-09-06 it was low by
+    #   ~61x (live COUNT(DISTINCT source) FROM announcements = 2,442).
+    # ★ AND IT WAS MISLABELLED, which is why the key is renamed. A bare
+    #   unlabelled `sources` sitting between `facilities` and `countries` reads
+    #   as "40 DATA sources"; every sibling surface meant "40+ NEWS sources".
+    #   Renaming to `news_sources` is the half of the fix a number cannot do.
+    # ★ countries/news_sources are now STRINGS ("170+", "2,000+") where they
+    #   were ints, because they are floor phrases — the same shape `facilities`
+    #   has carried in this dict since it was bound. `tools` stays an int via
+    #   _canon_int; its floor is read from the canon rather than typed, so this
+    #   block contains no hand-written number at all.
+    _tools_floor = 0
+    try:
+        from ai_surface_canon import PINNED as _cp
+        _tools_floor = _cp.get('tools_advertised') or len(_cp.get('tool_manifest') or ())
+    except Exception:
+        pass
     topics = {
-        'capabilities': {'tools': 51, 'facilities': _canon_text('{canon_facilities}'), 'countries': 178, 'sources': 40},
+        'capabilities': {'tools': _canon_int('{canon_tools}', _tools_floor),
+                         'facilities': _canon_text('{canon_facilities}'),
+                         'countries': _canon_text('{canon_countries}'),
+                         'news_sources': _canon_text('{canon_news_sources}')},
         'endpoints': {'mcp': '/mcp', 'rest': '/api/v1/', 'discovery': '/api/v1/discovery'},
         'pricing': {'free': '3 results/basic fields', 'developer': '$49/mo — 500 calls/day', 'pro': '$99/mo — 2,000 calls/day', 'enterprise': 'Custom, from $12,000/yr — 100,000 calls/day'},
     }

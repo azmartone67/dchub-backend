@@ -1111,7 +1111,7 @@ async def get_news(
     min_relevance: float = 0.5,
 ) -> str:
     """
-    Real-time data center industry news from 40+ sources, refreshed every 5 minutes. Use when: user asks 'what is happening in DCs', 'news about [operator/market]', or needs recent context before analysis. Example: query='Virginia power constraints', limit=10. Returns headline, source, published date, and summary per article. Not for M&A specifically (use list_transactions).
+    Real-time data center industry news, refreshed every 5 minutes. Use when: user asks 'what is happening in DCs', 'news about [operator/market]', or needs recent context before analysis. Example: query='Virginia power constraints', limit=10. Returns headline, source, published date, and summary per article. Not for M&A specifically (use list_transactions).
 
     AI-powered categorization and relevance scoring.
 

@@ -198,7 +198,7 @@
       "get": {
         "operationId": "getNews",
         "summary": "Get industry news",
-        "description": "Get latest data center industry news from 40+ sources.",
+        "description": "Get latest data center industry news from 2,000+ sources.",
         "parameters": [
           {"name": "q", "in": "query", "schema": {"type": "string"}, "description": "Search keyword"},
           {"name": "limit", "in": "query", "schema": {"type": "integer"}, "description": "Max results"}

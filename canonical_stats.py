@@ -78,6 +78,14 @@ _FALLBACK = {
     #   GET /api/v1/iso/eu/snapshot (privileged key) → zone_coverage.returned
     #   or count the EU_* rows in get_grid_scoreboard.
     "eu_zones": 24,
+    # ★2026-09-06 r-news-sources. DISTINCT `source` values in the rolling
+    # 90-day announcements corpus — the measured owner of the "40+ sources"
+    # claim that had none. Seeded at the PUBLISHED floor (2,000), not at the
+    # measured 2,442, because this is the DB-DOWN cold start: a seed above
+    # reality is the defect that re-floored facilities_verified three times in
+    # June 2026, and a rolling window is the one metric here that can shrink.
+    # Re-floor DOWNWARD if the live corpus ever drops below 2,000.
+    "news_sources": 2000,
     "substations": 126427,    # HIFLD substations (had no SoT home before)
     "pipeline_gw": 369,       # construction pipeline GW (had no SoT home before)
 }
@@ -441,6 +449,56 @@ def _query_live() -> dict:
                 _live_keys.add("deals")
         except Exception:
             pass
+        # ── DISTINCT news sources in the live corpus ──────────────────
+        # r-news-sources (2026-09-06). "40+ sources" was the one agent-facing
+        # headline with NO canonical owner: no pin, no derivation, no endpoint
+        # publishing it, so it could not be verified in EITHER direction. It was
+        # typed by hand on ~47 files and served live on /llms.txt, /llms-full.txt,
+        # /ai, /connect and two integration manifests, plus a bare unlabelled
+        # integer `sources: 40` in /ai/learn's capabilities dict.
+        #
+        # Measured 2026-09-06 against this exact query: 2,442 distinct sources
+        # over 15,050 rows. The claim was not stale-high, it was stale-LOW by
+        # ~61x — the inverse of the `deals` defect two fields up, and the reason
+        # "check it against the claim before adopting it" is in the runbook.
+        #
+        # ★ WHY announcements AND NOT news_engine.RSS_FEEDS. There IS a feed
+        #   registry (34 entries) and counting it was the obvious move, but it
+        #   answers a DIFFERENT question: what we POLL. `source` is the
+        #   publisher credited ON THE ITEM, so syndication and the crawler and
+        #   discovery writers (news_engine, crawler_scheduler, discovery_nexus,
+        #   discovery_engine_v3, main.py) contribute publishers no feed list
+        #   holds. It is also the column get_news's `source=` filter matches, so
+        #   this is the number that answers the only question an agent actually
+        #   asks of it: how many sources can I filter by. A registry count would
+        #   publish 34 and be wrong by two orders of magnitude against the tool's
+        #   own parameter.
+        #
+        # ★ ROLLING, NOT CUMULATIVE. news_engine.py:823 prunes announcements at
+        #   90 days, so this is "distinct sources seen in the last 90 days" and
+        #   it can genuinely FALL — unlike every cumulative metric above it.
+        #   That is why the floor spec below uses step=1000 rather than the
+        #   deals-style step=100: a 100-step would publish "2,400+" against a
+        #   live 2,442 and go false on a 1.7% dip. Measured 30-day windows over
+        #   the same corpus: 1,120 / 1,265 / 1,326 — the breadth is stable and
+        #   growing, but the headroom has to survive an ingest outage.
+        #
+        # ★ DISTINCT STRINGS ARE A CEILING ON DISTINCT PUBLISHERS. 493 of the
+        #   2,442 are bare domains and 135 collapse into a sibling under light
+        #   normalisation ('Data Center Knowledge' / 'datacenterknowledge.com'),
+        #   so the deduped publisher count is ~2,292. The floor is checked
+        #   against the DEDUPED number, not this one: 2,000 < 2,292 < 2,442.
+        #   Counting strings and publishing them as entities is precisely how
+        #   `deals` published a 2.9x over-claim for months.
+        try:
+            cur.execute("SELECT COUNT(DISTINCT source) FROM announcements "
+                        "WHERE source IS NOT NULL AND btrim(source) <> ''")
+            n = int((cur.fetchone() or [0])[0] or 0)
+            if n > 0:
+                out["news_sources"] = n
+                _live_keys.add("news_sources")
+        except Exception:
+            pass
     finally:
         try:
             c.close()
@@ -547,6 +605,22 @@ def deals_phrase() -> str:
     "0+", which resolve_canon() was feeding to the public surfaces. Matches
     markets_phrase() rounding: citation-safe, never above reality."""
     return _deals_floor(get_canonical_stats().get("deals", _FALLBACK["deals"]))
+
+
+def news_sources_phrase() -> str:
+    """DISTINCT news-source floor, e.g. '2,000+'.
+
+    ★2026-09-06 r-news-sources. Floors to the nearest 1,000, NOT the nearest
+    100 that deals_phrase() uses, and the difference is not cosmetic: `deals`
+    is a cumulative tracked set that only grows, while this counts a corpus
+    news_engine.py:823 PRUNES at 90 days. A step of 100 would publish "2,400+"
+    against a live 2,442 and go false the first time ingest stalls for a week.
+
+    Floors round DOWN and never above reality — the invariant every entry in
+    _FALLBACK's history was re-floored to restore."""
+    return _floor_phrase(
+        get_canonical_stats().get("news_sources", _FALLBACK["news_sources"]),
+        step=1000)
 
 
 def dcpi_countries_phrase() -> str:
@@ -680,6 +754,15 @@ _PUBLIC_FLOOR_SPECS = {
     # instead. _countries_floor matches countries_phrase(), so the two
     # country spans on the same page can never round differently.
     "dcpi_countries": ("dcpi_countries",  _countries_floor),
+    # ★2026-09-06 r-news-sources. Added for the third time for the same reason
+    # `substations` and `dcpi_countries` were: a surface that needs a number and
+    # has no {canon_*} placeholder to reach it HAS to hardcode. "40+ sources"
+    # proves it — it reached ~47 files and six live surfaces without ever
+    # touching a measurement, because there was nothing to touch.
+    #
+    # Same callable as news_sources_phrase() above, so the floor here and the
+    # phrase there can never round the same number two different ways.
+    "news_sources": ("news_sources",      lambda n: _floor_phrase(n, step=1000)),
 }
 
 

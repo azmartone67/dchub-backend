@@ -45,7 +45,7 @@ const MCP_JSON_BODY = JSON.stringify({
     { "name": "get_market_intel",        "description": "Market intelligence: supply/demand, pricing, vacancy, absorption by metro." },
     { "name": "get_intelligence_index",  "description": "Real-time composite market health score across all major data center markets." },
     { "name": "list_transactions",       "description": "M&A transactions — $324B+ tracked. Filter by buyer, seller, value, region, deal type." },
-    { "name": "get_news",                "description": "Curated data center industry news from 40+ sources, ranked by relevance." },
+    { "name": "get_news",                "description": "Curated data center industry news from 2,000+ sources, ranked by relevance." },
     { "name": "get_pipeline",            "description": "540+ projects, 369 GW construction pipeline. Filter by status, country, operator, capacity." },
     { "name": "get_grid_data",           "description": "Real-time electricity grid data for US ISOs (PJM, ERCOT, CAISO, MISO, NYISO, SPP)." },
     { "name": "analyze_site",            "description": "Evaluate a location for data center suitability — power, fiber, climate, water, tax. (Paid)" },

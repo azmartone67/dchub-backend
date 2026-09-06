@@ -53,7 +53,7 @@
     },
     {
       "name": "get_news",
-      "description": "Get latest data center industry news from 40+ sources.",
+      "description": "Get latest data center industry news from 2,000+ sources.",
       "input_schema": {
         "type": "object",
         "properties": {

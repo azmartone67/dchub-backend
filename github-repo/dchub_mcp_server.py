@@ -254,7 +254,7 @@ async def get_news(
     source: str = "",
     limit: int = 10,
 ) -> str:
-    """Get latest data center industry news aggregated from 40+ sources.
+    """Get latest data center industry news.
 
     Args:
         topic: Filter by topic keyword (e.g. 'AI', 'power', 'expansion', 'acquisition')

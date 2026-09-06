@@ -65,7 +65,7 @@
       "type": "function",
       "function": {
         "name": "get_news",
-        "description": "Get latest data center industry news from 40+ sources.",
+        "description": "Get latest data center industry news from 2,000+ sources.",
         "parameters": {
           "type": "object",
           "properties": {

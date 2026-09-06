@@ -25,7 +25,7 @@
     },
     {
       "name": "get_news",
-      "description": "Real-time industry news from 40+ sources, updated every 5 minutes",
+      "description": "Real-time industry news from 2,000+ sources, updated every 5 minutes",
       "parameters": {
         "query": { "type": "string", "required": false },
         "limit": { "type": "integer", "required": false }

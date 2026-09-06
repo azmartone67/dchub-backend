@@ -351,7 +351,7 @@
       "get": {
         "operationId": "getNews",
         "summary": "Get latest data center industry news",
-        "description": "Returns real-time data center industry news aggregated from 40+ sources including M&A announcements, capacity expansions, energy developments, and regulatory changes. Free tier, no auth required.",
+        "description": "Returns real-time data center industry news aggregated from 2,000+ sources including M&A announcements, capacity expansions, energy developments, and regulatory changes. Free tier, no auth required.",
         "parameters": [
           {
             "name": "limit",
