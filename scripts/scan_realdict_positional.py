@@ -60,6 +60,45 @@ def row_names(fn):
                         out.add(t.id)
     return out
 
+# ★ 2026-09-06 — SECOND PASS: HELPERS THAT RECEIVE A CURSOR.
+# The limitation documented above bit within a day. routes/lp_alerts_cron.py
+# has three helpers taking `cur` as their first parameter, all called with a
+# RealDictCursor, all reading rows positionally — and every one of the three
+# alert triggers was dead because of it, each reporting a different
+# plausible-sounding reason that was never true. Function-scoped analysis could
+# not see them because the cursor is created in the CALLER.
+#
+# So a second pass flags any function whose first parameter is named like a
+# cursor and which subscripts a fetch result by integer. That is a HEURISTIC —
+# the caller may well pass a plain cursor — so these are reported separately
+# and must be traced to their call sites, not fixed on sight.
+def cursor_param_hits(path, tree):
+    out = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not fn.args.args or fn.args.args[0].arg not in ("cur", "c", "cursor"):
+            continue
+        names = row_names(fn)
+        for n in ast.walk(fn):
+            if not isinstance(n, ast.Subscript):
+                continue
+            idx = n.slice
+            if not (isinstance(idx, ast.Constant) and isinstance(idx.value, int)):
+                continue
+            v = n.value
+            named = isinstance(v, ast.Name) and v.id in names
+            called = isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) \
+                     and v.func.attr in ("fetchone", "fetchall", "fetchmany")
+            boolop = isinstance(v, ast.BoolOp) and any(
+                isinstance(x, ast.Call) and isinstance(x.func, ast.Attribute)
+                and x.func.attr in ("fetchone", "fetchall") for x in v.values)
+            if named or called or boolop:
+                out.append((os.path.relpath(path, ROOT), n.lineno, fn.name))
+    return out
+
+
+param_hits = []
 hits = []
 for path in sorted(glob.glob(os.path.join(ROOT, "routes", "*.py")) +
                    glob.glob(os.path.join(ROOT, "*.py")) +
@@ -69,6 +108,7 @@ for path in sorted(glob.glob(os.path.join(ROOT, "routes", "*.py")) +
         tree = ast.parse(src)
     except Exception:
         continue
+    param_hits.extend(cursor_param_hits(path, tree))
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -109,3 +149,8 @@ print(f"POSITIONAL ACCESS ON A REALDICT ROW: {len(hits)} site(s)\n")
 for f, ln, fn, expr in hits:
     print(f"  {f}:{ln}  {fn}()  ->  {expr}")
 
+
+print(f"\nCURSOR-PARAM HELPERS with positional row access: {len(param_hits)} site(s)")
+print("  (heuristic — the CALLER decides whether the cursor is RealDict; trace before fixing)\n")
+for f, ln, fn in param_hits:
+    print(f"  {f}:{ln}  {fn}(cur, ...)")

@@ -102,13 +102,19 @@ def _current_dcpi_for_market(cur, market: str | None, lat: float, lon: float) ->
     if market:
         try:
             cur.execute("""
-                SELECT score FROM market_power_scores
+                SELECT score AS v FROM market_power_scores
                  WHERE LOWER(market_name) = LOWER(%s)
                     OR LOWER(market_slug) = LOWER(%s)
                  ORDER BY computed_at DESC LIMIT 1
             """, (market, market.replace(" ", "-")))
             r = cur.fetchone()
-            if r and r[0] is not None: return float(r[0])
+            # ★ 2026-09-06 — KEY, NOT POSITION. `cur` is passed in from
+            # fire_pending_alerts, where it is a RealDictCursor, so r[0] raised
+            # KeyError(0) into the bare `except: pass` below and this returned
+            # None on EVERY call. The caller reported that as "no_current_value"
+            # — a plausible-sounding reason that was never true — so no
+            # dcpi_change alert could ever fire.
+            if r and r.get("v") is not None: return float(r["v"])
         except Exception: pass
     # No market match → just return None (caller skips)
     return None
@@ -125,14 +131,15 @@ def _current_capacity_for_market(cur, market: str | None) -> float | None:
         return None
     try:
         cur.execute("""
-            SELECT COALESCE(SUM(power_mw), 0) FROM discovered_facilities
+            SELECT COALESCE(SUM(power_mw), 0) AS v FROM discovered_facilities
              WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
                AND COALESCE(is_duplicate, 0) = 0
                AND LOWER(COALESCE(status, '')) IN
                    ('operational','operating','live','active','running','in-service')
         """, (market,))
         r = cur.fetchone()
-        if r and r[0] is not None: return float(r[0])
+        # Same RealDictCursor, same defect: reported as "no_market_capacity".
+        if r and r.get("v") is not None: return float(r["v"])
     except Exception: pass
     return None
 
@@ -152,7 +159,7 @@ def _new_facilities_within_radius(cur, lat: float, lon: float,
         deg_lat = radius_km / 111.0
         deg_lon = radius_km / (111.0 * max(0.01, abs((90.0 - abs(lat)) / 90.0) + 0.1))
         cur.execute("""
-            SELECT COUNT(*) FROM discovered_facilities
+            SELECT COUNT(*) AS n FROM discovered_facilities
              WHERE first_seen >= %s
                AND COALESCE(is_duplicate, 0) = 0
                AND latitude  BETWEEN %s AND %s
@@ -170,7 +177,12 @@ def _new_facilities_within_radius(cur, lat: float, lon: float,
               lon - deg_lon, lon + deg_lon,
               lat, lon, lat, radius_km))
         r = cur.fetchone()
-        return int((r or [0])[0] or 0)
+        # ★ The worst of the three. `(r or [0])[0]` reads as a null guard and is
+        # not one: a non-empty RealDictRow is TRUTHY, so the fallback never
+        # substituted and [0] raised KeyError(0) — caught below and returned 0.
+        # The caller then reported "only_0_new_within_50km", which is a COUNT
+        # this function never performed.
+        return int((r and r.get("n")) or 0)
     except Exception:
         return 0
 
