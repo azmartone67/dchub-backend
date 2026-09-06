@@ -188,8 +188,19 @@ def test_self_refresh_patterns_are_passed_as_params_not_interpolated(monkeypatch
     t.recent_activity_feed(20)
     params = ex.params_seen[0]
     flat = [p for grp in params if isinstance(grp, list) for p in grp]
-    assert "%/api/v1/mcp/%" in flat
-    assert "%dchub%" in flat
+    # ★ 2026-09-05: the endpoint patterns are ANCHORED PREFIXES now, not
+    # contains-matches. Read as `%pattern%`, `/health` matched real facility
+    # pages — /facilities/healthpartners-data-center and
+    # /facilities/health-dialog-bedford-datacenter — and excluded genuine
+    # ChatGPT crawls as our own polling. This test is about PARAMETERISATION
+    # (a literal % in a psycopg2 SQL string is a 500), and that property is
+    # unchanged: the wildcards still ride in params, they just no longer lead.
+    assert "/api/v1/mcp/%" in flat, flat
+    assert not any(p.startswith("%/") for p in flat), (
+        "a leading-wildcard endpoint pattern is back: %r"
+        % [p for p in flat if p.startswith("%/")])
+    # the PLATFORM pattern is a name prefix and keeps its own shape
+    assert "dchub%" in flat, flat
 
 
 def test_include_internal_still_bypasses_every_filter(monkeypatch):

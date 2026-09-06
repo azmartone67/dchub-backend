@@ -136,3 +136,66 @@ def test_the_reach_definition_no_longer_says_it_cannot_be_subtracted():
     assert "crawler_split_7d" in block, (
         "reach_definition dropped the pointer to the PATH split, which is what "
         "still answers the part self_refresh_7d does not")
+
+
+def test_self_refresh_patterns_are_anchored_at_both_call_sites():
+    """★ A self-traffic filter that deletes other people's traffic.
+
+    FEED_SELF_REFRESH_ENDPOINTS entries are absolute path PREFIXES; none is
+    meant to match mid-string. Read as `%pattern%`, `/health` matched real
+    pages (measured 2026-09-05, 7d):
+
+        chatgpt  3  /facilities/health-dialog-bedford-datacenter-d0b8b129
+        chatgpt  2  /facilities/healthpartners-data-center-0bec7315
+
+    HealthPartners and Health Dialog are real data-centre operators. Both call
+    sites must anchor, or the 20-row feed and the published count disagree about
+    which rows are ours — the exact divergence the shared list exists to prevent.
+    """
+    import re as _re
+    from ai_tracking import FEED_SELF_REFRESH_ENDPOINTS as SRE
+
+    for pat in SRE:
+        assert pat.startswith("/"), (
+            "%r is not an absolute path prefix; anchoring it would change what "
+            "it means" % pat)
+
+    # the FEED query
+    feed = open(os.path.join(ROOT, "ai_tracking.py"), encoding="utf-8").read()
+    m = _re.search(r"ep_pat\s*=\s*\[(.+?)for m in FEED_SELF_REFRESH_ENDPOINTS",
+                   feed, _re.S)
+    assert m, "the feed's pattern construction was not found"
+    assert '"%" + m' not in m.group(1), (
+        "the FEED still builds leading-wildcard patterns — it would keep hiding "
+        "real crawls of HealthPartners/Health Dialog from the live panel")
+
+    # the COUNTING query
+    count = _reach_definition_text.__globals__  # noqa: F841 - keep import graph
+    main_src = open(MAIN, encoding="utf-8").read()
+    i = main_src.index("SELECT platform, COUNT(*) FROM ai_requests ")
+    seg = main_src[i:main_src.index(")", main_src.index("_SRE]", i))]
+    assert '"%" + _m' not in seg, (
+        "the COUNT query still builds leading-wildcard patterns, so the feed "
+        "and the headline would disagree about which rows are self-traffic")
+
+
+def test_a_facility_named_health_is_not_self_traffic():
+    """The concrete regression, stated as data rather than as source."""
+    from ai_tracking import FEED_SELF_REFRESH_ENDPOINTS as SRE
+
+    real_pages = [
+        "/facilities/healthpartners-data-center-0bec7315",
+        "/facilities/health-dialog-bedford-datacenter-d0b8b129",
+    ]
+    for page in real_pages:
+        assert not any(page.startswith(p) for p in SRE), (
+            "%s is excluded as self-traffic by an anchored match — the "
+            "narrowing did not actually fix it" % page)
+        assert any(p in page for p in SRE), (
+            "%s no longer even collides under contains-matching, so this "
+            "regression test is no longer exercising the defect it names" % page)
+
+    # and a genuine self-poll must STILL be excluded
+    assert any("/api/v1/mcp/handoff-funnel".startswith(p) for p in SRE), (
+        "the real dashboard self-poll is no longer matched — the narrowing "
+        "went too far and self-traffic is back in the headline")

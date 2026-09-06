@@ -1240,6 +1240,25 @@ _NON_PLATFORM_BUCKETS = ("internal", "mcp", "mcp_generic")
 # channel externality work reuses this list instead of growing a second copy
 # that drifts — this repo has lost sessions to exactly that (manifest drift,
 # the two-classifier feed/roster split).
+# ★ MATCHED AS ANCHORED PREFIXES (trailing %, no leading %) since 2026-09-05.
+# Every entry below is an absolute path prefix; none is meant to match
+# mid-string. Read as `%pattern%` they had been eating real pages:
+#
+#     chatgpt  3  /facilities/health-dialog-bedford-datacenter-d0b8b129
+#     chatgpt  2  /facilities/healthpartners-data-center-0bec7315
+#
+# HealthPartners and Health Dialog are real data-centre operators, so genuine
+# crawls of their facility pages were being excluded as our own health-check
+# polling — a self-traffic filter deleting other people's traffic.
+#
+# FEED_SCANNER_PROBE_PATHS below already documents exactly this discipline
+# ("a probe path is matched from the string start"); it simply was never
+# applied here. Now both are anchored and the reasoning lives in one place.
+#
+# ★ A path that merely ENDS in one of these is no longer excluded — e.g.
+# /api/v1/marketing/distribution/health now counts. If it should not, add it
+# to this list explicitly; relying on a substring accident to exclude it is
+# how the two facility pages above got caught.
 FEED_SELF_REFRESH_ENDPOINTS = (
     # dashboard data sources (the /ai page and siblings polling themselves)
     "/api/v1/ai-tracking/", "/api/ai/tracking", "/api/ai/recent",
@@ -1317,7 +1336,7 @@ def recent_activity_feed(limit=20, include_internal=False):
     excl = "','".join(_NON_PLATFORM_BUCKETS)
     # Params, never interpolation — a literal % in the SQL string is a 500 in
     # psycopg2, and these patterns are all wildcards.
-    ep_pat = ["%" + m + "%" for m in FEED_SELF_REFRESH_ENDPOINTS]
+    ep_pat = [m + "%" for m in FEED_SELF_REFRESH_ENDPOINTS]
     # Scanner probe paths ride the same NOT LIKE ALL clause, anchored at the
     # start of the path (see FEED_SCANNER_PROBE_PATHS — a 404 probe wearing
     # ChatGPT's UA is not ChatGPT activity).
