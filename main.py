@@ -24721,13 +24721,43 @@ def serve_indexnow_key():
 
 @app.route('/skill.md', methods=['GET'])
 def serve_skill_md():
-    """Serve skill.md for Moltbook and AI agent discovery"""
+    """Serve skill.md for Moltbook and AI agent discovery
+
+    ★2026-09-06 — this route was UNREACHABLE from the public edge for months:
+    /skill.md was absent from dchub-frontend's _routes.json include, so CF Pages
+    answered its own 404 and this handler never ran (dchub-frontend PR routes it
+    together with the matching _worker.js DISCOVERY_PATHS literal). While it was
+    unreachable, static/skill.md rotted to "21,000+ facilities" — a number on
+    ai_surface_canon's stale_markers denylist ("the PRE-DEDUP facility floors …
+    scrub on sight"), and a ~1.7x over-claim. Its maintained sibling twin
+    /skill.json meanwhile served the correct 20,700+. Routing a stale body is a
+    worse outcome than the 404, so the counts now render from canon.
+
+    ★ canon_text() is called HERE, per request — never at module scope. Binding
+    canon at import LATCHES the value for the life of the process:
+    routes/case_studies_landing.py did that and served 20,100+ while /llms.txt on
+    the SAME process served 20,400+. The AST placeholder guard cannot catch it,
+    because it checks WHERE the resolver sits lexically, not WHEN it runs.
+    """
     try:
         with open('static/skill.md', 'r') as f:
             content = f.read()
-        return content, 200, {'Content-Type': 'text/markdown'}
-    except:
-        return '# DC Hub - Data Center Intelligence', 200, {'Content-Type': 'text/markdown'}
+    except Exception:
+        content = '# DC Hub - Data Center Intelligence'
+
+    try:
+        from ai_surface_canon import canon_text as _canon_text
+        content = _canon_text(content)
+    except Exception:
+        pass
+
+    # Belt-and-braces: serving a literal "{canon_facilities}" to an agent is the
+    # one outcome canon_text's own docstring calls WORSE than the stale number it
+    # replaced. Whatever happened above, no placeholder leaves this handler; the
+    # fail-open result is a count-free sentence, never a wrong one.
+    import re as _re
+    content = _re.sub(r'\{canon_[a-z_]+\}', '', content)
+    return content, 200, {'Content-Type': 'text/markdown'}
 
 @app.route('/skill.json', methods=['GET'])
 def serve_skill_json():
