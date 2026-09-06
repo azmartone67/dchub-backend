@@ -307,6 +307,33 @@ PINNED = {
         #   the six-cycle `facilities` walk documented above, and the whole
         #   reason the derivation exists.
         "dcpi_regions": "North America, Europe and Asia-Pacific",
+        # ★2026-09-06 r-news-sources NEW KEY. The DISTINCT news sources in the
+        # rolling 90-day corpus. Added because "40+ sources" was the LAST
+        # agent-facing headline number with no canonical owner — no pin, no
+        # derivation, no endpoint publishing it — so unlike every sibling here
+        # it could not be verified in either direction, and it drifted the way
+        # "48 tools" and "12,650+ facilities" did before their own pins landed.
+        #
+        # ★ IT WAS WRONG IN THE UNUSUAL DIRECTION. Every previous entry in this
+        #   block was retired for over-claiming; this one under-claimed by ~61x.
+        #   Measured 2026-09-06: COUNT(DISTINCT source) FROM announcements =
+        #   2,442 over 15,050 rows (~2,292 after collapsing bare-domain twins
+        #   like 'datacenterknowledge.com' onto 'Data Center Knowledge').
+        #   Floor rounds DOWN and is checked against the DEDUPED number, never
+        #   the raw string count: 2,000 < 2,292 < 2,442.
+        #
+        # ★ THE KEY IS news_sources, NOT sources, AND THAT IS HALF THE FIX.
+        #   The literal this replaces sat in /ai/learn's `capabilities` dict as
+        #   a bare unlabelled `'sources': 40`, between `facilities` and
+        #   `countries` — which reads as "40 DATA sources" (we publish ~330,000
+        #   mapped assets across dozens of feeds) rather than the "40+ NEWS
+        #   sources" every sibling surface meant. An unscoped name is what let
+        #   one number mean two things on one page, so the scope is in the name
+        #   and no future surface can paste it into the wrong sentence.
+        #
+        # canonical_stats.news_sources_phrase() overrides this live; step=1000
+        # not 100 because the corpus is PRUNED at 90 days and can shrink.
+        "news_sources": "2,000+",
         "countries": "170+",  # ★2026-07-30 VERIFIED correct: the deduped fleet spans 178 distinct codes (incl. territories) → floor "170+". NOT "180+": /api/v1/stats served countries=186 off the legacy `facilities` table, which double-counts 9 full-name/ISO-code pairs ("USA"+"US"). resolve_canon() now overrides this live (countries_verified_phrase).
     },
     # Values known to be STALE/WRONG on some surface — the sentinel flags these.
@@ -402,6 +429,28 @@ PINNED = {
                       # hardcoded in public_endpoints.py + enhanced_promotion.py.
                       # Scoped to "311 markets" — bare "311" collides with IDs.
                       "311 markets",
+                      # ★2026-09-06 r-news-sources. The retired news-source
+                      # figure. Unlike every marker above it, this one was never
+                      # a FLOOR that went stale — it was a number with no owner
+                      # at all: no pin, no derivation, no endpoint. It reached
+                      # ~47 files and was live on /llms.txt, /llms-full.txt,
+                      # /ai, /connect and two integration manifests while the
+                      # corpus it described held 2,442 distinct sources.
+                      #
+                      # ★ SAFE AGAINST THE "2,000+" COLLISION THAT RETIRED THE
+                      #   DEAL MARKERS ABOVE, BUT ONLY BECAUSE OF THE STEP.
+                      #   These are plain substrings (ai_surface_sentinel.py:156),
+                      #   so "40+ sources" would also match "1,240+ sources".
+                      #   news_sources_phrase() floors with step=1000, so the
+                      #   published value always ends ",000+" and can never grow
+                      #   into these. ★If that step is ever changed to 100, these
+                      #   two entries MUST be re-checked — that is exactly how
+                      #   the canon came to denylist its own answer on 09-02.
+                      # ★ Bare "40" is deliberately NOT listed: it collides with
+                      #   any 40 MW / $40 / 40% on a served body. The unlabelled
+                      #   integer in /ai/learn is fenced by a real assertion
+                      #   instead — tests/test_ai_learn_capabilities_derived.py.
+                      "40+ sources", "40+ news sources",
                       "24 tools", "48 tools", "49 tools", "51 tools", "53 tools",
                       # ★2026-07-31: "81 tools" retired (live 82,
                       # +get_power_availability_timeline). Non-headline surfaces
@@ -867,6 +916,11 @@ def canon_nums() -> dict:
         # into prose and frozen while the snapshot measured 127,269.
         '{canon_substations}': _live.get('substations') or _pub.get('substations') or '',
         '{canon_deals}':      _live.get('deals')      or _pub.get('deals') or '',
+        # ★2026-09-06 r-news-sources. See PINNED['public']['news_sources'] for
+        # why this is named for NEWS and not the bare `sources` the surfaces
+        # used: the unlabelled name is what made a news figure read as a
+        # data-feed figure inside a capabilities block.
+        '{canon_news_sources}': _live.get('news_sources') or _pub.get('news_sources') or '',
         '{canon_markets}':    _live.get('markets')    or _pub.get('markets') or '',
         '{canon_countries}':  _live.get('countries')  or _pub.get('countries') or '',
         # ★2026-09-03 r-dcpi-regions. /.well-known/ai-agents.json described

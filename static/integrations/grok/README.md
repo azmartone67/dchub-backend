@@ -107,7 +107,7 @@ Full tool list (51): https://dchub.cloud/llms.txt
 | `GET /api/agent/facilities` | Search 21,000+ data centers |
 | `GET /api/agent/stats` | Platform statistics |
 | `GET /api/transactions` | 4,000+ tracked M&A deals |
-| `GET /api/news` | Industry news (40+ sources) |
+| `GET /api/news` | Industry news (2,000+ sources) |
 | `GET /api/stats` | High-level stats |
 | `GET /api/v1/markets/list` | 300+ tracked power markets (DCPI) |
 | `GET /api/v1/lmp/prices` | Energy pricing (7 ISOs: PJM, ERCOT, CAISO, NYISO, ISO-NE, MISO, SPP) |

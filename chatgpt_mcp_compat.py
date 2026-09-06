@@ -500,7 +500,7 @@ def register_chatgpt_compat(mcp_server):
                 canon_text("Search DC Hub's comprehensive data center intelligence. "
                 "Covers {canon_facilities} distinct facilities across 170+ countries, M&A transactions "
                 "(1,400+ deals tracked), construction pipeline (21+ GW), market intelligence, "
-                "and curated industry news from 40+ sources. "
+                "and curated industry news from {canon_news_sources} sources. "
                 "Returns results with IDs that can be passed to the fetch tool for full details.")
             ),
         )

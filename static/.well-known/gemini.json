@@ -30,7 +30,7 @@
     {"name": "get_facility", "description": "Get detailed info about a specific facility"},
     {"name": "list_transactions", "description": "List M&A transactions ($51B+ tracked)"},
     {"name": "get_market_intel", "description": "Market intelligence and trends"},
-    {"name": "get_news", "description": "Real-time industry news from 40+ sources"},
+    {"name": "get_news", "description": "Real-time industry news from 2,000+ sources"},
     {"name": "analyze_site", "description": "Evaluate location for data center suitability"}
   ]
 }

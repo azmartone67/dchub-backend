@@ -13,7 +13,7 @@ Transport: **Streamable HTTP** (MCP spec 2025-03-26)
 | 2 | `get_facility` | Get detailed information about a specific data center facility |
 | 3 | `list_transactions` | List data center M&A transactions with deal values and details |
 | 4 | `get_market_intel` | Get data center market intelligence and statistics |
-| 5 | `get_news` | Get latest data center industry news aggregated from 40+ sources |
+| 5 | `get_news` | Get latest data center industry news aggregated from 2,000+ sources |
 | 6 | `analyze_site` | Evaluate a location for data center suitability using DC Hub's scoring engine |
 ## Installation
 ### Claude Desktop
@@ -59,7 +59,7 @@ The server will start at `http://localhost:8888/mcp`.
 - **Get facility details** — Full specs including power, connectivity, certifications
 - **Track M&A deals** — Browse transactions by buyer, seller, year, deal value
 - **Market intelligence** — Capacity, pricing, growth trends by market
-- **Industry news** — Real-time aggregated news from 40+ sources
+- **Industry news** — Real-time aggregated news from 2,000+ sources
 - **Site analysis** — Score any location for data center suitability (power, fiber, risk, workforce)
 ## API Tiers
 Some tools may return limited results without an API key. For full access:

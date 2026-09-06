@@ -178,7 +178,7 @@
     "type": "function",
     "function": {
       "name": "get_news",
-      "description": "Real-time data center industry news from DC Hub aggregating 40+ sources, refreshed every ~5 minutes, with AI categorization and relevance scoring. Use to ground analysis in recent context or surface news about an operator or market. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/news.",
+      "description": "Real-time data center industry news from DC Hub aggregating 2,000+ sources, refreshed every ~5 minutes, with AI categorization and relevance scoring. Use to ground analysis in recent context or surface news about an operator or market. Source: DC Hub (https://dchub.cloud). Backed by REST GET /api/v1/news.",
       "parameters": {
         "type": "object",
         "properties": {

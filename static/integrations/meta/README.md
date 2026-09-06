@@ -80,7 +80,7 @@ Each maps a Meta AI infrastructure question to the exact DC Hub MCP tool that an
 | `GET /api/agent/facilities` | Search 10,706+ data centers |
 | `GET /api/agent/stats` | Platform statistics |
 | `GET /api/transactions` | M&A deals ($185B+ tracked) |
-| `GET /api/news` | Industry news (40+ sources) |
+| `GET /api/news` | Industry news (2,000+ sources) |
 | `GET /api/stats` | High-level stats |
 | `GET /api/v1/markets/list` | 35+ tracked markets |
 | `GET /api/v1/lmp/prices` | Energy pricing (7 ISOs: PJM, ERCOT, CAISO, NYISO, ISO-NE, MISO, SPP) |

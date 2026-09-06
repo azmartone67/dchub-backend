@@ -48,7 +48,7 @@ class DCHub:
         return self._get("/api/transactions", {"limit": limit, "deal_type": deal_type})
 
     def news(self, limit=20):
-        """Latest industry news from 40+ sources."""
+        """Latest industry news. (Source count is not quoted here — see the module docstring.)"""
         return self._get("/api/news", {"limit": limit})
 
     def markets(self):

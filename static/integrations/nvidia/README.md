@@ -60,7 +60,7 @@ curl -H "X-API-Key: YOUR_DCHUB_KEY" \
 | `GET /api/agent/facilities` | Search 10,706+ data centers | `?q=Equinix&country=US` |
 | `GET /api/agent/stats` | Facility counts, countries, providers | Returns actual platform metrics |
 | `GET /api/transactions` | M&A deals ($185B+ tracked) | `?limit=10` |
-| `GET /api/news` | Industry news (40+ sources, 5-min refresh) | `?limit=5` |
+| `GET /api/news` | Industry news (2,000+ sources, 5-min refresh) | `?limit=5` |
 | `GET /api/stats` | High-level platform statistics | Facilities, providers, countries |
 | `GET /api/v1/markets/list` | 35+ tracked metro markets | Vacancy, pricing, inventory |
 | `GET /api/v1/lmp/prices` | Energy pricing (PJM, ERCOT, CAISO, MISO, NYISO, SPP, ISO-NE) | Real-time LMP data |

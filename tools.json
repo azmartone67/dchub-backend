@@ -125,7 +125,7 @@
   },
   {
     "name": "get_news",
-    "description": "Industry news aggregated from 40+ sources, updated every 5 minutes. Returns titles, URLs, sources, and summaries.",
+    "description": "Industry news aggregated from {canon_news_sources} sources, updated every 5 minutes. Returns titles, URLs, sources, and summaries.",
     "endpoint": "GET /api/news",
     "parameters": {
       "type": "object",

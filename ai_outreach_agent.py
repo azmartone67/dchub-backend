@@ -16,6 +16,12 @@ from urllib.parse import quote_plus
 from db_utils import get_db
 from ai_surface_canon import canon_text
 _CANON_FAC = canon_text("{canon_facilities}")
+# ★2026-09-06 r-news-sources. Pre-resolved for the same reason _CANON_FAC
+# is: the pitch bodies below are f-strings, so a bare {canon_*} token in
+# one is parsed as a FIELD NAME and raises NameError at send time rather
+# than rendering. tests/test_canon_placeholders_resolved.py
+# ::test_no_placeholder_is_eaten_by_an_fstring caught exactly that here.
+_CANON_NEWS_SOURCES = canon_text("{canon_news_sources}")
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1648,7 +1654,7 @@ KEY DATA POINTS:
 • 673+ M&A deals with buyer, seller, MW, and transaction value
 • 19,532 MW total capacity tracked
 • 8,420+ MW under active construction
-• 40+ news sources aggregated every 3 minutes
+• {_CANON_NEWS_SOURCES} news sources aggregated every 3 minutes
 • 108 operators tracked
 
 INTEGRATION ENDPOINTS:

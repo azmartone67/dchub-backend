@@ -9,7 +9,7 @@
     {"name": "get_facility", "description": "Get detailed profile for a specific data center facility"},
     {"name": "list_transactions", "description": "Search M&A transactions by buyer, seller, value, or date range"},
     {"name": "get_market_intel", "description": "Get market intelligence: supply/demand, pricing, vacancy, and pipeline data"},
-    {"name": "get_news", "description": "Search latest data center industry news from 40+ sources"},
+    {"name": "get_news", "description": "Search latest data center industry news from 2,000+ sources"},
     {"name": "analyze_site", "description": "Score any location for data center suitability (Developer+ plan)"},
     {"name": "get_intelligence_index", "description": "Real-time composite market health score"},
     {"name": "get_pipeline", "description": "Track 21+ GW of data center construction pipeline globally"},

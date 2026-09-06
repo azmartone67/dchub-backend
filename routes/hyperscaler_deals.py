@@ -17,6 +17,19 @@ import datetime
 from contextlib import contextmanager
 from flask import Blueprint, jsonify, request
 
+
+def _canon_news(s: str) -> str:
+    """Resolve {canon_*} in `s`, failing OPEN to a count-free sentence.
+
+    Same asymmetry ai_surface_canon.canon_text() documents: a missing number is
+    visible, a wrong one is not. Imported lazily so this route module keeps no
+    import-time dependency on the canon."""
+    try:
+        from ai_surface_canon import canon_text
+        return canon_text(s)
+    except Exception:
+        return s.replace("{canon_news_sources} ", "")
+
 try:
     import psycopg2 as _pg
     import psycopg2.extras
@@ -208,7 +221,12 @@ def api_hyperscaler_deals():
     try:
         from routes.provenance import provenance_block
         _prov = provenance_block(
-            source="news industry feed (40+ sources: Bloomberg, DCD, Reuters, Google News)",
+            # ★2026-09-06 r-news-sources: a PROVENANCE string is the one place
+            # a source count has to be true — it is what a citing agent quotes
+            # about our method. canon_text() is imported at call time to keep
+            # this route free of an import-time dependency on the canon.
+            source=_canon_news("news industry feed ({canon_news_sources} sources: "
+                               "Bloomberg, DCD, Reuters, Google News)"),
             method=("keyword filter over published articles; $-figures + MW "
                     "regex-extracted, actors name-matched — verify against the "
                     "per-deal source url before citing figures"),

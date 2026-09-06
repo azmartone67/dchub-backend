@@ -70,10 +70,18 @@ CANONICAL = {
                      or len(_CANON.get('tool_manifest') or ())),
     'markets': _PUBLIC.get('markets', ''),
     'substations': f"{int(_CANON_FLOOR.get('substations', 0)):,}",
-    # No canon home for these three — they are NOT fenced and NOT derived.
+    # ★2026-09-06 r-news-sources: news_sources GRADUATED out of the block
+    # below. It now has a canon home (PINNED['public']['news_sources'], derived
+    # live by canonical_stats.news_sources_phrase()) and is read from it like
+    # every other entry above. The hand-typed '40+' it replaces was not merely
+    # underived — it was low by ~61x against a measured 2,442.
+    'news_sources': _PUBLIC.get('news_sources', ''),
+    # No canon home for these two — they are NOT fenced and NOT derived.
     # Give them one before quoting them anywhere agent-facing.
+    # ★news_articles measured 15,050 on 2026-09-06 against the same corpus,
+    #   i.e. this literal is stale-low too. It needs its own floor spec, not a
+    #   hand-bump — see the news_sources wiring for the shape.
     'pipeline_projects': '540+',
-    'news_sources': '40+',
     'news_articles': '13,900+',
 }
 
@@ -121,6 +129,15 @@ REPLACEMENTS = [
     # ai_surface_canon's stale_markers denylist.
     (r'(?<![\d,])(?:2,000|2,200|3,000|4,000)\+\s+(?:tracked\s+)?(?:M&A\s+)?deals\b',
      _DEALS, 'deals: retired row-count floor → canonical distinct count'),
+
+    # --- News sources ---
+    # ★2026-09-06 r-news-sources. The retired "40+ sources" claim, in the two
+    # shapes the frontend actually carries ("40+ sources" and "40+ news
+    # sources"). Anchored on the trailing noun for the same reason the market
+    # markers are: a bare 40 collides with any 40 MW / 40% on the page.
+    (r'(?<![\d,])40\+\s+(news\s+)?sources\b',
+     rf"{CANONICAL['news_sources']} \1sources",
+     f"news sources: retired hand-typed floor -> {CANONICAL['news_sources']}"),
 
     # --- MCP tool count ---
     (_STALE_MCP_TOOLS, f'{_T} MCP Tools', f'tools: non-canonical → {_T}'),
