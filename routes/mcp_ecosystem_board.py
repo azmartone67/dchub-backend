@@ -350,11 +350,26 @@ def build_snapshot(fetch=None) -> dict:
 
 
 def _ensure_table(cur) -> None:
+    """One row per UTC day.
+
+    ★ THE CONFLICT TARGET IS DECLARED UNIQUE HERE, and a test cross-checks that
+    it is. This repo has already paid for the other version: brain_findings has
+    no UNIQUE(issue,url), so every hand-rolled ON CONFLICT against it failed
+    silently until routes.brain_findings_writer became the only writer. An
+    ON CONFLICT naming a column with no unique index is not a guard, it is an
+    exception at runtime.
+
+    Daily rather than append-only because a rank series is only readable if a
+    manual refresh cannot stack six rows on one day, and because the board's
+    value is the TREND — the day `fiber` fell to #3 is the finding, not the
+    3,000th row.
+    """
     cur.execute("""
         CREATE TABLE IF NOT EXISTS mcp_ecosystem_snapshot (
-            id          BIGSERIAL PRIMARY KEY,
-            captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            payload     JSONB NOT NULL
+            id           BIGSERIAL PRIMARY KEY,
+            captured_day DATE NOT NULL UNIQUE,
+            captured_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            payload      JSONB NOT NULL
         )
     """)
 
@@ -371,8 +386,12 @@ def store_snapshot(snap: dict) -> bool:
     try:
         with conn, conn.cursor() as cur:
             _ensure_table(cur)
-            cur.execute("INSERT INTO mcp_ecosystem_snapshot (payload) "
-                        "VALUES (%s)", (json_for_column(snap),))
+            cur.execute(
+                "INSERT INTO mcp_ecosystem_snapshot "
+                "(captured_day, payload) VALUES ((NOW() AT TIME ZONE 'utc')"
+                "::date, %s) ON CONFLICT (captured_day) DO UPDATE SET "
+                "payload = EXCLUDED.payload, captured_at = NOW()",
+                (json_for_column(snap),))
         return True
     except Exception as e:  # noqa: BLE001
         logger.warning("ecosystem snapshot store failed: %s", str(e)[:160])
@@ -394,7 +413,7 @@ def latest_snapshot() -> dict | None:
         with conn, conn.cursor() as cur:
             _ensure_table(cur)
             cur.execute("SELECT payload, captured_at FROM mcp_ecosystem_snapshot "
-                        "ORDER BY captured_at DESC LIMIT 1")
+                        "ORDER BY captured_day DESC LIMIT 1")
             row = cur.fetchone()
         if not row:
             return None

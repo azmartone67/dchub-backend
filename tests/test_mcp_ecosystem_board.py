@@ -225,3 +225,44 @@ def test_routes_are_registered_and_the_html_board_is_the_typed_url():
     # /api/v1/admin/* carries the 120s ceiling — the probing happens here.
     assert "/api/v1/admin/mcp-ecosystem" in paths
     assert "/api/v1/admin/mcp-ecosystem/refresh" in paths
+
+
+# ── the upsert, and the column it conflicts on ───────────────────────
+def _sql_of(fn) -> str:
+    import inspect
+    return inspect.getsource(fn)
+
+
+def test_on_conflict_target_is_actually_declared_unique():
+    """★ AN ON CONFLICT ON A COLUMN WITH NO UNIQUE INDEX IS AN EXCEPTION, NOT A
+    GUARD. This repo has already paid for it: brain_findings has no
+    UNIQUE(issue,url), so every hand-rolled upsert against it failed until one
+    canonical writer took over. A substring check for "ON CONFLICT" would pass
+    on exactly that bug, so this reads the conflict COLUMN out of the INSERT and
+    demands the CREATE TABLE declare that same column UNIQUE.
+    """
+    import re
+    insert_sql = _sql_of(B.store_snapshot)
+    create_sql = _sql_of(B._ensure_table)
+
+    m = re.search(r"ON CONFLICT \((\w+)\)", insert_sql)
+    assert m, "the INSERT names no conflict target"
+    col = m.group(1)
+
+    unique_cols = set(re.findall(r"^\s*(\w+)\s+[A-Z ]+UNIQUE",
+                                 create_sql, re.M))
+    unique_cols |= set(re.findall(r"UNIQUE\s*\(\s*(\w+)\s*\)", create_sql))
+    assert col in unique_cols, (
+        f"INSERT conflicts on {col!r} but the table declares UNIQUE on "
+        f"{sorted(unique_cols) or 'nothing'} — this upsert would raise at "
+        f"runtime, and the write would be lost")
+
+
+def test_conflict_resolves_by_replacing_the_day_not_by_dropping_the_write():
+    """DO NOTHING here would mean the first refresh of a day wins and every
+    later one is silently discarded — a board that quietly stops updating after
+    its first read of the morning."""
+    insert_sql = _sql_of(B.store_snapshot)
+    assert "DO UPDATE" in insert_sql
+    assert "DO NOTHING" not in insert_sql
+    assert "payload = EXCLUDED.payload" in insert_sql
