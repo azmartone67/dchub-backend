@@ -38,9 +38,15 @@ That is the failure this header prevents.
 
 ★ HTML ONLY, on purpose. JSON, XML and plain-text responses do not vary by
 Accept; declaring that they do would fragment their cache keys for nothing.
-"""
-import re
 
+★ NO FLASK APP AND NO ROUTES HERE, and that is not stylistic. An earlier draft
+registered /html, /json, /plain and /novary on a throwaway app; CI's route-table
+coherence checker scans tests/ for Flask routes and reported four "NEW uncovered
+routes" that ought to be in dchub-frontend/_routes.json — a file capped at 98
+rules and sitting at 97. A fixture app is indistinguishable from production
+registration to that scanner. declare_accept_variance() is a pure function over
+a Response, so it needs neither.
+"""
 import pytest
 
 flask = pytest.importorskip("flask")
@@ -48,90 +54,73 @@ flask = pytest.importorskip("flask")
 from api_response_enrichment import declare_accept_variance  # noqa: E402
 
 
-def _app():
-    """Register the real hook against a bare app.
-
-    ★ Registers the SHIPPED helper, not a copy of it. An earlier draft of this
-    file re-implemented the two-line body here; mutation testing showed the
-    behavioural tests then stayed GREEN while main.py was broken, because they
-    were exercising the copy. api_response_enrichment imports cleanly on its own
-    (main.py does not — the house rule bans importing it), so the real function
-    can be called directly.
-    """
-    app = flask.Flask(__name__)
-    app.after_request(declare_accept_variance)
-
-    @app.route("/html")
-    def html():
-        r = flask.Response("<html></html>", mimetype="text/html")
-        r.headers["Vary"] = "Accept-Encoding"
-        return r
-
-    @app.route("/json")
-    def json_():
-        r = flask.Response("{}", mimetype="application/json")
-        r.headers["Vary"] = "Accept-Encoding"
-        return r
-
-    @app.route("/plain")
-    def plain():
-        return flask.Response("hi", mimetype="text/plain")
-
-    @app.route("/novary")
-    def novary():
-        return flask.Response("<html></html>", mimetype="text/html")
-
-    return app.test_client()
+def _resp(mimetype, vary=None):
+    """A response shaped like the one the after_request hook receives."""
+    r = flask.Response("body", mimetype=mimetype)
+    if vary is not None:
+        r.headers["Vary"] = vary
+    return r
 
 
-@pytest.fixture(scope="module")
-def client():
-    return _app()
+def _vary_of(mimetype, vary=None, passes=1):
+    r = _resp(mimetype, vary)
+    for _ in range(passes):
+        declare_accept_variance(r)
+    return r.headers.get("Vary", "")
 
 
-def test_html_declares_that_it_varies_by_accept(client):
+def test_html_declares_that_it_varies_by_accept():
     """The defect: the HTML claimed to be the only representation."""
-    vary = client.get("/html").headers.get("Vary", "")
-    assert "accept" in vary.lower().replace("accept-encoding", ""), (
-        f"HTML response does not name Accept in Vary: {vary!r}")
+    vary = _vary_of("text/html", "Accept-Encoding")
+    tokens = [p.strip().lower() for p in vary.split(",")]
+    assert "accept" in tokens, f"HTML does not name Accept in Vary: {vary!r}"
 
 
-def test_accept_encoding_is_not_clobbered(client):
+def test_accept_encoding_is_not_clobbered():
     """Compression negotiation must survive — .add() appends, never replaces."""
-    vary = client.get("/html").headers.get("Vary", "")
-    assert "Accept-Encoding" in vary, f"lost Accept-Encoding: {vary!r}"
-    assert "Accept" in vary
+    vary = _vary_of("text/html", "Accept-Encoding")
+    tokens = [p.strip().lower() for p in vary.split(",")]
+    assert "accept-encoding" in tokens, f"lost Accept-Encoding: {vary!r}"
 
 
-def test_it_is_idempotent(client):
-    """Two requests, and a second pass over one response, must not duplicate."""
-    for _ in range(3):
-        vary = client.get("/html").headers.get("Vary", "")
-        parts = [p.strip().lower() for p in vary.split(",") if p.strip()]
-        assert len(parts) == len(set(parts)), f"duplicated token: {vary!r}"
-
-
-def test_html_with_no_prior_vary_still_gets_one(client):
-    vary = client.get("/novary").headers.get("Vary", "")
-    assert "Accept" in vary, f"expected a Vary header to be created: {vary!r}"
-
-
-@pytest.mark.parametrize("path", ["/json", "/plain"])
-def test_non_html_is_left_alone(client, path):
-    """Those representations do not vary by Accept; saying so would fragment
-    their cache keys for nothing."""
-    vary = client.get(path).headers.get("Vary", "")
+def test_it_is_idempotent():
+    """The hook can run more than once over one response."""
+    vary = _vary_of("text/html", "Accept-Encoding", passes=3)
     tokens = [p.strip().lower() for p in vary.split(",") if p.strip()]
+    assert len(tokens) == len(set(tokens)), f"duplicated token: {vary!r}"
+
+
+def test_html_with_no_prior_vary_still_gets_one():
+    vary = _vary_of("text/html")
+    assert "accept" in vary.lower(), f"expected a Vary header: {vary!r}"
+
+
+@pytest.mark.parametrize("mimetype", ["application/json", "text/plain",
+                                      "application/xml"])
+def test_non_html_is_left_alone(mimetype):
+    """Those have one representation; saying otherwise fragments cache keys."""
+    vary = _vary_of(mimetype, "Accept-Encoding")
+    tokens = [p.strip().lower() for p in vary.split(",")]
     assert "accept" not in tokens, (
-        f"{path} should not declare Vary: Accept — it has one representation "
-        f"({vary!r})")
+        f"{mimetype} should not declare Vary: Accept ({vary!r})")
+
+
+def test_a_response_that_cannot_carry_headers_does_not_raise():
+    """Fail-open by contract — this runs on EVERY response."""
+    class Hostile:
+        headers = {"Content-Type": "text/html"}
+
+        @property
+        def vary(self):
+            raise RuntimeError("no vary here")
+
+    declare_accept_variance(Hostile())  # must not raise
 
 
 def test_main_py_actually_calls_the_shipped_helper():
     """Behaviour above proves the helper is right; this proves it RUNS.
 
-    A helper nothing calls is dead code that tests green — the failure this
-    pairing exists to prevent.
+    A helper nothing calls is dead code that tests green.
     """
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent / "main.py").read_text(
