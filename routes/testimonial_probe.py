@@ -189,7 +189,7 @@ _PROBE_PROMPT = (
 # (http_404). Bump DCHUB_PERPLEXITY_MODEL / DCHUB_GEMINI_MODEL on Railway
 # if a default retires; no redeploy needed.
 PERPLEXITY_MODEL = os.environ.get("DCHUB_PERPLEXITY_MODEL", "sonar")
-GEMINI_MODEL = os.environ.get("DCHUB_GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("DCHUB_GEMINI_MODEL", "gemini-flash-lite-latest")
 
 
 def _probe_claude() -> dict:
@@ -281,12 +281,15 @@ def _probe_gemini() -> dict:
     try:
         import urllib.request, urllib.error
         req = urllib.request.Request(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={key}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
             data=json.dumps({
                 "contents": [{"parts": [{"text": _PROBE_PROMPT}]}],
                 "generationConfig": {"maxOutputTokens": 300},
             }).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST")
+            # key in a HEADER, never the query string (see
+            # tests/test_no_provider_key_in_url.py).
+            headers={"Content-Type": "application/json",
+                     "x-goog-api-key": key}, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])

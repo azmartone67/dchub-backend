@@ -39,10 +39,11 @@ def gemini_api_key() -> str:
 # Model churn has now broken Gemini probes THREE ways (gemini-1.5-flash
 # retired → 404; gemini-2.5-flash gated off for this project → 404;
 # gemini-2.0-flash daily quota → 429). The -latest aliases exist exactly to
-# absorb retirement churn; keep 2.0-flash as the historic middle hop while
-# it still serves, and the lite alias as the cheap last resort.
-GEMINI_MODEL_CHAIN = ("gemini-flash-latest", "gemini-2.0-flash",
-                      "gemini-flash-lite-latest")
+# absorb retirement churn, so the chain is now aliases ONLY: 2.0-flash was
+# dropped 2026-09-06 after it stopped existing altogether (absent from the
+# live model list; every call 404s), which made it a guaranteed wasted
+# request between the two aliases rather than a fallback.
+GEMINI_MODEL_CHAIN = ("gemini-flash-latest", "gemini-flash-lite-latest")
 
 
 def gemini_generate(prompt_text: str, timeout: int = 30) -> tuple:
@@ -63,11 +64,15 @@ def gemini_generate(prompt_text: str, timeout: int = 30) -> tuple:
         try:
             req = urllib.request.Request(
                 "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model}:generateContent?key={key}",
+                f"{model}:generateContent",
                 data=json.dumps({"contents": [{"parts": [
                     {"text": prompt_text}]}]}).encode(),
+                # key in a HEADER, never the query string — a query key is
+                # written verbatim into gateway/proxy logs (see
+                # tests/test_no_provider_key_in_url.py).
                 headers={"Content-Type": "application/json",
-                         "User-Agent": "dchub-brain/1.0"})
+                         "User-Agent": "dchub-brain/1.0",
+                         "x-goog-api-key": key})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 data = json.loads(r.read().decode("utf-8", "replace"))
             text = ""
