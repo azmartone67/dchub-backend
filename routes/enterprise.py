@@ -162,9 +162,16 @@ def _sales_email_html(payload: dict) -> str:
 
     ★ EVERY FIELD IS ESCAPED. This is attacker-controlled free text from a
     PUBLIC form being interpolated into HTML that a human opens in a mail
-    client. The sibling routes/enterprise_inquiry.py::_notify_admin
-    interpolates the same class of input RAW — that is a live injection into
-    the admin inbox and is not fixed here, but new code must not copy it.
+    client.
+
+    ★ 2026-09-06 — this docstring used to end "the sibling
+    routes/enterprise_inquiry.py::_notify_admin interpolates the same class of
+    input RAW ... that is a live injection ... and is not fixed here". THAT IS
+    NO LONGER TRUE: the sibling was fixed on 2026-09-05 (_t / _a / _hdr
+    helpers, tests/test_enterprise_inquiry_notify_escapes.py) and the claim
+    outlived it. A comment asserting a live vulnerability that has been closed
+    sends the next reader hunting for a bug that is not there, and invites the
+    conclusion that the codebase ships a known injection. Both notifiers escape.
     """
     org = _h(payload.get("org_name") or "?")
     return (
@@ -177,6 +184,13 @@ def _sales_email_html(payload: dict) -> str:
         f"<p style='color:#666;font-size:12px'>Reply to {_h(payload.get('email') or '')} "
         f"to reach them. Submitted via the /enterprise form.</p>"
     )
+
+
+def _hdr(value, default="") -> str:
+    """Header-safe: no CR/LF, so a newline in public input cannot start a new
+    mail header. Matches routes/enterprise_inquiry.py::_notify_admin._hdr --
+    the two notifiers take the same class of input and must treat it alike."""
+    return str(value or default).replace("\r", " ").replace("\n", " ").strip()[:200]
 
 
 def _notify_sales(payload: dict) -> bool:
@@ -201,7 +215,9 @@ def _notify_sales(payload: dict) -> bool:
         from main import _resend_email
         return bool(_resend_email(
             to_addr,
-            f"New enterprise inquiry — {payload.get('org_name') or '?'}",
+            # org_name is PUBLIC form input. The body was escaped from the
+            # start; the subject was not, and a subject is a mail HEADER.
+            _hdr(f"New enterprise inquiry — {payload.get('org_name') or '?'}"),
             _sales_email_html(payload),
         ))
     except Exception as e:
