@@ -87,13 +87,31 @@ def subscribe():
     if not isinstance(markets, list) or not markets:
         return jsonify(ok=False, error="markets_required",
                        hint="POST {\"email\": \"...\", \"markets\": [\"northern-virginia\", \"phoenix\"]}"), 400
-    markets = [str(m).lower().strip() for m in markets if m][:_ANON_MARKET_CAP]
+    _requested = [str(m).lower().strip() for m in markets if m]
+    markets = _requested[:_ANON_MARKET_CAP]
+    _over_cap = _requested[_ANON_MARKET_CAP:]
     token = secrets.token_urlsafe(16)
 
     c = _db()
     if c is None:
         return jsonify(ok=False, error="no_database"), 503
     try:
+        # ★ Which of these slugs can the daily check actually match? It reads
+        # market_power_scores WHERE published = TRUE, so a slug absent from
+        # that set can never produce a shift. Subscribing used to store it
+        # anyway and answer ok=True naming it, so a typo -- or a retired twin
+        # like "northern-virginia", which is what this endpoint's OWN 400 hint
+        # suggests -- bought a confirmation for a watch that cannot fire.
+        _known = set()
+        try:
+            with c.cursor() as _kc:
+                _kc.execute("SELECT DISTINCT market_slug FROM market_power_scores "
+                            "WHERE published = TRUE")
+                _known = {r[0] for r in _kc.fetchall() if r and r[0]}
+        except Exception:
+            _known = set()          # cannot verify -> claim nothing below
+        _verified = bool(_known)
+        _unknown = [m for m in markets if m not in _known] if _verified else []
         with c.cursor() as cur:
             # Upsert by email — replace markets list
             cur.execute("""
@@ -115,7 +133,7 @@ def subscribe():
                 row = cur.fetchone()
             c.commit()
             sub_id, unsub = row
-        return jsonify(
+        _resp = dict(
             ok=True,
             subscription_id=sub_id,
             email=email,
@@ -124,7 +142,24 @@ def subscribe():
             cap_note=(f"Free tier: up to {_ANON_MARKET_CAP} markets. "
                      f"Upgrade to DC Hub Pro Alerts for unlimited + custom thresholds."),
             unsubscribe_url=f"https://dchub.cloud/alerts/unsubscribe?token={unsub}",
-        ), 200
+        )
+        # Say what was NOT accepted. cap_note is an upsell, not a receipt --
+        # it never named the markets silently dropped past the cap.
+        if _over_cap:
+            _resp["dropped_over_cap"] = _over_cap
+        if not _verified:
+            _resp["markets_verified"] = False
+            _resp["note"] = ("market slugs could not be verified against "
+                             "published scores on this request")
+        elif _unknown:
+            _resp["markets_verified"] = True
+            _resp["unknown_markets"] = _unknown
+            _resp["note"] = ("these slugs are not in the published DCPI score "
+                             "set, so alerts for them cannot fire until they "
+                             "are: " + ", ".join(_unknown))
+        else:
+            _resp["markets_verified"] = True
+        return jsonify(**_resp), 200
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
     finally:

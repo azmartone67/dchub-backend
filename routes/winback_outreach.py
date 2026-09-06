@@ -56,6 +56,29 @@ def _conn():
         return None
 
 
+# The operator briefing states when the next one arrives. That sentence said
+# 14:45 while .github/workflows/winback-weekly.yml has fired at `48 14 * * 1`
+# — a stale literal in customer-facing-ish copy that nothing compared to the
+# schedule. Kept here as ONE constant, and tests/test_winback_claims_match_
+# behaviour.py parses the workflow's cron and fails if the two diverge again.
+def _count(v) -> str:
+    """A thousands-separated count, or "?" when it is absent.
+
+    ★ The call sites wrote `{p.get('total_prior_calls','?'):,}` -- a default
+    that CANNOT render. `format('?', ',')` raises "Cannot specify ',' with
+    's'", so the fallback the author added for a missing key could only ever
+    crash, and at one of the three sites that happens inside the send loop,
+    taking the whole run with it rather than one pitch. Verified by calling
+    the renderer with a pitch that omits the key.
+    """
+    try:
+        return format(int(v), ",")
+    except (TypeError, ValueError):
+        return "?"
+
+
+_SCHEDULE_UTC = "14:48"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS winback_outreach_sent (
     id           BIGSERIAL PRIMARY KEY,
@@ -105,11 +128,20 @@ def _send_via_resend(to_email: str, subject: str, body_html: str) -> tuple[bool,
 
 
 def _platform_was_recently_sent(cur, platform: str, days: int = 7) -> bool:
+    """Did the operator actually RECEIVE a briefing for this platform lately?
+
+    ★ The insert records status='send_failed' when the mail did not go out --
+    correctly -- but this check counted any row, so a failed send suppressed
+    the platform for the full cooldown. The operator never saw the pitch and
+    never saw an error, because the error was in the mail that never arrived.
+    The record stays; only deliveries gate the retry.
+    """
     try:
         cur.execute("""
             SELECT 1 FROM winback_outreach_sent
              WHERE platform = %s
                AND sent_at >= NOW() - %s * INTERVAL '1 day'
+               AND COALESCE(status, '') <> 'send_failed'
              LIMIT 1
         """, (platform, days))
         return bool(cur.fetchone())
@@ -134,10 +166,13 @@ def _render_operator_briefing_html(pitch: dict) -> str:
                          f'border-radius:6px;text-decoration:none;font-weight:600">'
                          f'📧 Open in email client</a>')
     elif contact.startswith("http"):
+        # The ellipsis was unconditional, so a 20-character URL displayed as
+        # truncated and the operator could not tell a short link from a cut one.
+        _shown = contact[:60] + ("…" if len(contact) > 60 else "")
         contact_block = (f'<a href="{contact}" style="display:inline-block;'
                          f'background:#1e40af;color:white;padding:.5rem 1rem;'
                          f'border-radius:6px;text-decoration:none;font-weight:600">'
-                         f'🌐 Open contact form: {contact[:60]}…</a>')
+                         f'🌐 Open contact form: {_shown}</a>')
     else:
         contact_block = f'<code style="background:#f3f4f6;padding:.2rem .4rem;border-radius:3px">{contact}</code>'
 
@@ -151,14 +186,14 @@ padding:1rem 1.25rem;border-radius:8px;margin-bottom:1.5rem">
  <p style="margin:.25rem 0 0;color:#cbd5e1;font-size:.9rem">
    Platform: <strong>{p.get('platform','?')}</strong> ·
    {p.get('dormant_count','?')} dormant agents ·
-   {p.get('total_prior_calls','?'):,} historical calls
+   {_count(p.get('total_prior_calls'))} historical calls
  </p>
 </div>
 
 <p>The brain identified {p.get('platform')} as a winback target:</p>
 <ul>
  <li><strong>{p.get('dormant_count','?')} dormant agents</strong> idle 14+ days</li>
- <li><strong>{p.get('total_prior_calls','?'):,} total historical calls</strong></li>
+ <li><strong>{_count(p.get('total_prior_calls'))} total historical calls</strong></li>
  <li>Pitch angle: {p.get('pitch_angle','?')}</li>
 </ul>
 
@@ -182,7 +217,8 @@ border:1px solid #e5e7eb">{p.get('email_body','')}</pre>
  -H "X-Admin-Key: $K"
  -d '{{"platform":"{p.get('platform')}", "status":"sent"}}'</code><br><br>
  Sample UAs in the dormant set: {', '.join((p.get('sample_uas') or [])[:3])[:200]}<br>
- 7-day cooldown per platform; next pitch will email Mon at 14:45 UTC.
+ 7-day cooldown per platform (successful sends only); next pitch will
+ email Mon at {_SCHEDULE_UTC} UTC.
 </p>
 </body></html>"""
 
@@ -202,11 +238,17 @@ def deliver_pending(dry_run: bool = False) -> dict:
         # Re-compute the same pitch shape the public endpoint serves
         import requests as _req
         # Easier: fetch our own endpoint (it's already memoized)
+        _fetch_why = None
         try:
             r = _req.get("http://localhost:8080/api/v1/media/winback-pitches",
                           timeout=5)
-            data = r.json() if r.status_code == 200 else {}
-        except Exception:
+            if r.status_code != 200:
+                _fetch_why = "pitch_endpoint_http_%s" % r.status_code
+                data = {}
+            else:
+                data = r.json()
+        except Exception as _fe:
+            _fetch_why = "pitch_endpoint_unreachable:%s" % type(_fe).__name__
             data = {}
         pitches = data.get("pitches") or []
     except Exception as e:
@@ -214,7 +256,11 @@ def deliver_pending(dry_run: bool = False) -> dict:
         return out
 
     if not pitches:
-        out["errors"].append("no_pitches_found")
+        # ★ "no_pitches_found" used to cover a timeout, a non-200 and a
+        # genuinely empty week alike. The loop can be dead for months while
+        # reporting the benign one, which is the only reading an operator or
+        # a brain detector would act on.
+        out["errors"].append(_fetch_why or "no_pitches_found")
         return out
 
     c = _conn()
@@ -234,7 +280,7 @@ def deliver_pending(dry_run: bool = False) -> dict:
 
                 subject = (f"[DC Hub Brain] Winback pitch ready: "
                            f"{platform} ({p.get('dormant_count','?')} agents, "
-                           f"{p.get('total_prior_calls','?'):,} calls)")
+                           f"{_count(p.get('total_prior_calls'))} calls)")
                 html = _render_operator_briefing_html(p)
 
                 if dry_run:
