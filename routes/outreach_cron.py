@@ -314,21 +314,17 @@ def process_pending():
             continue
 
         if not provider:
+            # ★ This used to set outreach_sent = TRUE with a note explaining
+            # why, "so we don't keep re-evaluating". A missing API key is
+            # transient CONFIGURATION, not a completed action: every pending
+            # lead was permanently marked done, none was ever retried once the
+            # key landed, and /status counted them all under already_sent. A
+            # silent, total loss of the backlog read as a green dashboard.
+            # Leave the row alone; there is nothing to re-evaluate anyway,
+            # because the whole batch stops here.
             out["skipped_no_provider"] += 1
-            # Mark so we don't keep re-evaluating
-            try:
-                with _conn() as c, c.cursor() as cur:
-                    cur.execute("""
-                        UPDATE identified_checkout_signals
-                           SET outreach_sent = TRUE, outreach_at = NOW(),
-                               notes = 'no_provider_configured_set_RESEND_API_KEY_or_SENDGRID_API_KEY'
-                         WHERE id = %s
-                    """, (lead["id"],))
-                    c.commit()
-            except Exception:
-                note_swallowed_write("identified_checkout_signals", where="outreach_cron.process_pending")
-                pass
-            out["results"].append({"id": lead["id"], "email": email, "status": "no_provider"})
+            out["results"].append({"id": lead["id"], "email": email,
+                                    "status": "no_provider_retryable"})
             continue
 
         # Tokenized one-click unsubscribe link + List-Unsubscribe headers.
@@ -414,8 +410,19 @@ def status():
             with _conn() as c, c.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM identified_checkout_signals WHERE outreach_sent=FALSE")
                 out["awaiting_outreach"] = cur.fetchone()[0]
+                # ★ outreach_sent = TRUE has FOUR writers and only one of
+                # them mailed anything -- the others mark test addresses and
+                # suppressed addresses as handled. Reporting the total as
+                # "already_sent" counted leads that were deliberately never
+                # contacted. Break it out by the note each writer leaves.
                 cur.execute("SELECT COUNT(*) FROM identified_checkout_signals WHERE outreach_sent=TRUE")
+                out["marked_handled"] = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM identified_checkout_signals "
+                            "WHERE outreach_sent=TRUE AND notes LIKE 'sent_via_%%'")
                 out["already_sent"] = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM identified_checkout_signals "
+                            "WHERE outreach_sent=TRUE AND notes LIKE 'skipped_%%'")
+                out["marked_skipped_not_mailed"] = cur.fetchone()[0]
         except Exception as e:
             out["db_error"] = str(e)[:140]
     return jsonify(out), 200

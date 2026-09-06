@@ -87,13 +87,31 @@ def subscribe():
     if not isinstance(markets, list) or not markets:
         return jsonify(ok=False, error="markets_required",
                        hint="POST {\"email\": \"...\", \"markets\": [\"northern-virginia\", \"phoenix\"]}"), 400
-    markets = [str(m).lower().strip() for m in markets if m][:_ANON_MARKET_CAP]
+    _requested = [str(m).lower().strip() for m in markets if m]
+    markets = _requested[:_ANON_MARKET_CAP]
+    _over_cap = _requested[_ANON_MARKET_CAP:]
     token = secrets.token_urlsafe(16)
 
     c = _db()
     if c is None:
         return jsonify(ok=False, error="no_database"), 503
     try:
+        # ★ Which of these slugs can the daily check actually match? It reads
+        # market_power_scores WHERE published = TRUE, so a slug absent from
+        # that set can never produce a shift. Subscribing used to store it
+        # anyway and answer ok=True naming it, so a typo -- or a retired twin
+        # like "northern-virginia", which is what this endpoint's OWN 400 hint
+        # suggests -- bought a confirmation for a watch that cannot fire.
+        _known = set()
+        try:
+            with c.cursor() as _kc:
+                _kc.execute("SELECT DISTINCT market_slug FROM market_power_scores "
+                            "WHERE published = TRUE")
+                _known = {r[0] for r in _kc.fetchall() if r and r[0]}
+        except Exception:
+            _known = set()          # cannot verify -> claim nothing below
+        _verified = bool(_known)
+        _unknown = [m for m in markets if m not in _known] if _verified else []
         with c.cursor() as cur:
             # Upsert by email — replace markets list
             cur.execute("""
@@ -115,6 +133,23 @@ def subscribe():
                 row = cur.fetchone()
             c.commit()
             sub_id, unsub = row
+        # ★ Every key ALWAYS present, in one literal jsonify(). The first
+        # version of this built a dict and added keys conditionally, which made
+        # the response dynamic -- and the contract guard failed the build with
+        # "UNMEASURED ... a response that became dynamic is not 'fine', it is
+        # invisible to this guard." Seven previously-covered keys had silently
+        # dropped out of coverage. That guard is right, and it is the same rule
+        # this whole change is about: could-not-measure is not measured-clean.
+        # A stable key set is also a better contract for callers.
+        if not _verified:
+            _note = ("market slugs could not be verified against published "
+                     "scores on this request")
+        elif _unknown:
+            _note = ("these slugs are not in the published DCPI score set, so "
+                     "alerts for them cannot fire until they are: "
+                     + ", ".join(_unknown))
+        else:
+            _note = ""
         return jsonify(
             ok=True,
             subscription_id=sub_id,
@@ -124,6 +159,10 @@ def subscribe():
             cap_note=(f"Free tier: up to {_ANON_MARKET_CAP} markets. "
                      f"Upgrade to DC Hub Pro Alerts for unlimited + custom thresholds."),
             unsubscribe_url=f"https://dchub.cloud/alerts/unsubscribe?token={unsub}",
+            markets_verified=_verified,
+            unknown_markets=_unknown,
+            dropped_over_cap=_over_cap,
+            note=_note,
         ), 200
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
