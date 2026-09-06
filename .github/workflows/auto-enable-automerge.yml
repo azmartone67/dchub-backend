@@ -69,6 +69,26 @@ jobs:
           # armed, and a human merges — which triggers everything. Failing
           # towards "a person clicks merge" is the safe direction.
           GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN || secrets.GH_PAT }}
+          #
+          # ── HOW TO TELL THIS IS STILL WORKING ────────────────────────────
+          # The failure mode is silent by construction: if the PAT lapses or
+          # loses scope, arming fails, the step exits 0 (by design — see above),
+          # a human merges instead, and everything still works. Nothing goes
+          # red. What changes is WHO merged, and that is the only tell.
+          #
+          #     gh pr view <N> --json mergedBy --jq .mergedBy.login
+          #       azmartone67          -> armed with the PAT, push lanes fire
+          #       app/github-actions   -> armed with GITHUB_TOKEN, push lanes
+          #                               are silent and nobody will notice
+          #
+          # And to count what actually ran on that merge commit — PAGINATE, a
+          # busy SHA has more than 100 runs and a truncated query reports 0:
+          #
+          #     gh api --paginate \
+          #       "repos/$O/$R/actions/runs?head_sha=$SHA&event=push&per_page=100" \
+          #       --jq '[.workflow_runs[]]|length'
+          #
+          # 14-15 is healthy. 0 means this line has regressed.
           PR_ID: ${{ github.event.pull_request.node_id }}
           PR_NUM: ${{ github.event.pull_request.number }}
         run: |
