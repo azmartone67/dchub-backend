@@ -267,6 +267,11 @@ DATA_GATES = [
     ("main.py", "search_facilities"),
     ("power_plant_intel.py", "_pp_tier"),
     ("routes/infrastructure_data_routes.py", None),
+    # 2026-09-06: this blueprint served the whole facility registry as CSV to
+    # anonymous callers (10,000 rows, no key) because it resolved NO tier at
+    # all. Now that it resolves one, fence it against the fail-open like the
+    # rest — see tests/test_tier2_anon_export_gate.py for the behaviour.
+    ("routes/mcp_tier2_reports.py", "_caller_tier"),
 ]
 
 
