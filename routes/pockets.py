@@ -362,7 +362,10 @@ def _fetch_pockets(limit_hint: int = 100) -> list[dict]:
                 "verdict": verdict,
                 "excess_power_score": round(excess_v, 1),
                 "constraint_score": round(constraint_v, 1),
-                "time_to_power_months": round(ttp_v, 0),
+                # r-ttp-one-precision (2026-09-06): 1dp, matching
+                # /api/v1/dcpi/scores and /markets. See the note on the
+                # detail reader below.
+                "time_to_power_months": round(ttp_v, 1),
                 "rank_score": round(score, 1),
                 "delta_7d": delta_7d,
                 "computed_at": cat.isoformat() if cat else None,
@@ -1031,7 +1034,23 @@ def _fetch_pocket_detail(slug: str) -> dict | None:
             "verdict":     row[4],
             "excess_power_score":    round(excess_v, 1),
             "constraint_score":      round(constraint_v, 1),
-            "time_to_power_months":  round(ttp_v, 0),
+            # ★ r-ttp-one-precision (2026-09-06): 1dp, NOT 0.
+            #
+            # This rounded to whole months, which was invisible while the
+            # value was only ever displayed (`|int` -> "24mo" either way).
+            # #4010 made it a PUBLISHED measure and #4016 gave /markets the
+            # same measure at 1dp, so one row began serving three numbers:
+            #
+            #     /api/v1/dcpi/scores/ashburn   24.2
+            #     /markets/ashburn  (Dataset)   24.2
+            #     /pockets/ashburn  (Dataset)   24.0   <- here
+            #     dallas: 66.6 / 66.6 / 67.0
+            #
+            # Same row, same Observed timestamp, every other measure
+            # identical — a pure precision disagreement, and I shipped it.
+            # /dcpi owns the number and serves 1dp, so 1dp it is. No display
+            # changes: all three templates render it through `|int`.
+            "time_to_power_months":  round(ttp_v, 1),
             "rank_score":            round(rank_score, 1),
             "computed_at": row[8].isoformat() if row[8] else None,
         }
