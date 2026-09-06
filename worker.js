@@ -521,7 +521,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.56-public-cache-key';
+const WORKER_VERSION = '4.9.57-manifest-version-live';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -3109,12 +3109,41 @@ export default {
       // so tool count is always honest. Pre-v4.9.1 this was hardcoded 40 (wrong).
       // v4.9.29 manifest-live — tools_count now reflects the mcp-server's live
       // tools/list (KV-cached, falls back to MCP_FALLBACK_TOOLS.length on error).
-      const _mTools = await resolveManifestTools(env.DCHUB_CACHE, env);
+      // ★2026-09-06 (v4.9.57) — THE LAST SURFACE STILL ANSWERING 2.5.0.
+      // v4.9.45 moved /.well-known/mcp.json, server-card.json and agent.json
+      // onto the origin's canon and said why: "Fixing only mcp.json would have
+      // created a NEW split-brain — two well-known surfaces on the same zone
+      // disagreeing about the server's own version." This handler was missed,
+      // so the split-brain simply moved one path further out. Swept live the
+      // day dchub-mcp-server shipped 2.12.8, Pragma: no-cache on every read:
+      //
+      //   /.well-known/mcp.json               2.12.8  tools_count=85  desc: —
+      //   /.well-known/mcp/server-card.json   2.12.8  tools_count=85  desc: —
+      //   /.well-known/agent.json             2.12.8                  desc: —
+      //   /mcp/manifest                       2.5.0   tools_count=85  desc: "83 tools"
+      //   /mcp/manifest.json                  2.5.0   tools_count=85  desc: "83 tools"
+      //
+      // ★ WHAT MAKES IT WORSE THAN A PLAIN STALE FIELD: tools_count was already
+      // live (v4.9.29 put it on resolveManifestTools), so ONE body asserted 85
+      // tools and 83 tools and version 2.5.0 at the same time. The live half is
+      // what makes the dead half credible — nothing about the response looks
+      // unmaintained, and 2.5.0 is seven minor releases behind.
+      //
+      // Same `extras.x || literal` shape as server-card.json and agent.json, on
+      // purpose: MANIFEST_DERIVED_STR_KEYS is ['version','description'], both
+      // guarded non-empty upstream, so the worst case is the MCP_SERVER_INFO
+      // fallback — never a blank field. NOT the `...spread` used by mcp.json:
+      // that would also inject anchor_intents / problem_taxonomy into a body
+      // declaring schema_version 'mcp-server-card/v1', which does not carry them.
+      const [_mTools, _mExtras] = await Promise.all([
+        resolveManifestTools(env.DCHUB_CACHE, env),
+        resolveManifestExtras(env.DCHUB_CACHE),
+      ]);
       return new Response(JSON.stringify({
         schema_version:   'mcp-server-card/v1',
         name:             MCP_SERVER_INFO.name,
-        version:          MCP_SERVER_INFO.version,
-        description:      MCP_SERVER_INFO.description,
+        version:          _mExtras.version || MCP_SERVER_INFO.version,
+        description:      _mExtras.description || MCP_SERVER_INFO.description,
         url:              MCP_SERVER_INFO.url,
         transport:        MCP_SERVER_INFO.transport,
         protocol_version: MCP_SERVER_INFO.protocol_version,
