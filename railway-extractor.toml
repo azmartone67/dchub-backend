@@ -1,5 +1,31 @@
 [deploy]
-startCommand = "python3 extractor_cron.py --limit 50"
+# ★2026-09-06: run the venv interpreter by PATH-independent absolute path, not
+# `python3`. Railpack builds this service as `python -m venv /app/.venv` →
+# `pip install -r requirements.txt` → `copy /app/.venv` into the runtime image,
+# so EVERY third-party package lives in that venv and nowhere else.
+#
+# On deployment 8c643bec (2026-09-06T23:05Z) the container ran
+# `mise python@3.13.14 [1/3] install / download / verify GitHub artifact
+# attestations` at START and the cron then executed against that freshly
+# installed bare interpreter instead of /app/.venv. Nothing third-party was
+# importable, and the run died at extractor_cron.py:14 with
+# `ModuleNotFoundError: No module named 'flask'` — flask only because lines
+# 1-13 are pure stdlib and line 14 is the first import that leaves it. The next
+# one would have been `import psycopg2` at line 159. The dependency set was
+# never the problem: requirements.txt:5 pins Flask==3.0.0 and that same
+# deployment's build log says "Successfully installed ... Flask-3.0.0 ...".
+#
+# Rate: 1 crash in 41 firings over 20:01-23:25 that day, and it was the ONLY
+# container of 7 deployments sampled that ran mise-install-at-start. The other
+# 40 firings succeeded, including real work at 21:35:32
+# ("read=7 | capacity=1 | deals=3"), so this is a start-time flake, not a
+# broken service.
+#
+# NOT VERIFIED IN PRODUCTION: at 1-in-41, a green deploy cannot demonstrate the
+# flake is gone. What a deploy does prove is that the pinned path resolves and
+# the extractor still runs — check `get-service-config` reports this
+# startCommand and that a firing logs its "Done |" line.
+startCommand = "/app/.venv/bin/python extractor_cron.py --limit 50"
 restartPolicyType = "NEVER"
 
 # No healthcheck for cron jobs — they run, exit, done.
