@@ -135,15 +135,18 @@ def run_extraction():
     return summary
 
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/iso_bpa.py:101 — review and remove one
 @iso_isone_bp.route("/extract", methods=["POST", "GET"])
 def trigger():
     s = run_extraction()
     return jsonify(s), (200 if s.get("status") == "ok" else 500)
 
+# AUTO-REPAIR: duplicate route '/latest' also in routes/iso_bpa.py:107 — review and remove one
 
 @iso_isone_bp.route("/latest", methods=["GET"])
 def latest():
     return jsonify(iso="ISONE", metrics=latest_for_iso("ISONE")), 200
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 
 
 @iso_isone_bp.route("/health", methods=["GET"])

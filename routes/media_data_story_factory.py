@@ -261,7 +261,7 @@ def _write_snapshot(cur, current: dict) -> None:
                 INSERT INTO media_dcpi_snapshots
                     (market_slug, market_name, verdict,
                      excess_power_score, constraint_score, time_to_power_months)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (
                 s.get("market_slug"), s.get("market_name"), s.get("verdict"),
                 s.get("excess_power_score"), s.get("constraint_score"),
@@ -587,7 +587,7 @@ def run_factory():
                             INSERT INTO media_story_queue
                                 (market_slug, market_name, shift_kind, shift_detail,
                                  data_brief, journalist_pitch, status, reject_reason)
-                            VALUES (%s,%s,%s,%s,%s,%s,'rejected',%s)
+                            VALUES (%s,%s,%s,%s,%s,%s,'rejected',%s) ON CONFLICT DO NOTHING
                         """, (sh.get("market_slug"), sh.get("market_name"),
                               sh.get("kind"), json.dumps(sh.get("detail"), default=str),
                               brief, pitch, reason[:480]))
@@ -605,7 +605,7 @@ def run_factory():
                         INSERT INTO media_story_queue
                             (market_slug, market_name, shift_kind, shift_detail,
                              data_brief, journalist_pitch, status)
-                        VALUES (%s,%s,%s,%s,%s,%s,'queued')
+                        VALUES (%s,%s,%s,%s,%s,%s,'queued') ON CONFLICT DO NOTHING
                         RETURNING id
                     """, (sh.get("market_slug"), sh.get("market_name"),
                           sh.get("kind"), json.dumps(sh.get("detail"), default=str),

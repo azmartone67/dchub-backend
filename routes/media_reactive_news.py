@@ -576,7 +576,7 @@ def _persist(cur, conn, external: dict, res: dict) -> int | None:
             INSERT INTO media_reactive_queue
                 (source, source_url, external_claim, market_slug, market_name,
                  our_data, post_draft, status, reject_reason, guard_warnings)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             RETURNING id
         """, (
             external.get("source"), external.get("source_url"),
@@ -822,7 +822,7 @@ def approve_item(item_id):
                 try:
                     cur.execute("""
                         INSERT INTO social_media_posts (content, platform, status, created_at)
-                        VALUES (%s, 'linkedin', 'approved', now())
+                        VALUES (%s, 'linkedin', 'approved', now() ON CONFLICT DO NOTHING)
                     """, (row.get("post_draft"),))
                     conn.commit()
                     posted = True

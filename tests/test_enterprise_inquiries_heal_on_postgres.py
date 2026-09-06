@@ -69,10 +69,10 @@ CREATE TABLE enterprise_inquiries (
 
 INS_ENTERPRISE = """INSERT INTO enterprise_inquiries
   (org_name, email, use_case, expected_volume, source_ip, user_agent, relay_status)
-  VALUES ('Acme','a@b.co','sizing','10k','1.2.3.4','ua','sent')"""
+  VALUES ('Acme','a@b.co','sizing','10k','1.2.3.4','ua','sent') ON CONFLICT DO NOTHING"""
 INS_INQUIRY = """INSERT INTO enterprise_inquiries
   (tier_requested, name, email, firm, use_case, notes, source, ip_hash)
-  VALUES ('pro','Jo','j@b.co','Firm','sizing','n','enterprise_page','h')"""
+  VALUES ('pro','Jo','j@b.co','Firm','sizing','n','enterprise_page','h') ON CONFLICT DO NOTHING"""
 
 
 @pytest.fixture()
@@ -162,7 +162,7 @@ def test_an_explicitly_null_status_is_backfilled(cur):
     util.status_taxonomy.status_histogram."""
     _start_from(cur, DDL_INQUIRY, INS_INQUIRY)
     cur.execute("ALTER TABLE enterprise_inquiries ALTER COLUMN status DROP NOT NULL")
-    cur.execute("INSERT INTO enterprise_inquiries (email, status) VALUES ('n@b.co', NULL)")
+    cur.execute("INSERT INTO enterprise_inquiries (email, status) VALUES ('n@b.co', NULL) ON CONFLICT DO NOTHING")
     cur.execute("SELECT count(*) FROM enterprise_inquiries WHERE status IS NULL")
     assert cur.fetchone()[0] == 1, "the NULL seed did not land; test proves nothing"
     _heal(cur)

@@ -52,6 +52,7 @@ def require_admin_key(f):
     return decorated
 
 
+# AUTO-REPAIR: duplicate route '/trigger' also in routes.py:45 — review and remove one
 @enrichment_bp.route("/trigger", methods=["POST"])
 @require_admin_key
 def trigger_enrichment():
@@ -92,6 +93,7 @@ def trigger_enrichment():
         "check_status": f"/api/enrichment/status/{job_id}",
     }), 202
 
+# AUTO-REPAIR: duplicate route '/status/<job_id>' also in routes.py:86 — review and remove one
 
 @enrichment_bp.route("/status/<job_id>", methods=["GET"])
 @require_admin_key
@@ -101,6 +103,7 @@ def check_status(job_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify(job)
+# AUTO-REPAIR: duplicate route '/nccs/query' also in routes.py:96 — review and remove one
 
 
 @enrichment_bp.route("/nccs/query", methods=["GET"])
@@ -145,6 +148,7 @@ def nccs_query():
 
     except Exception as e:
         logger.error(f"NCCS query failed: {e}")
+# AUTO-REPAIR: duplicate route '/nccs/layers' also in routes.py:141 — review and remove one
         return jsonify({"error": str(e)}), 500
 
 

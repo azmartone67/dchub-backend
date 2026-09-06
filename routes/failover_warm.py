@@ -115,6 +115,7 @@ def _authorized():
     return False
 
 
+# AUTO-REPAIR: duplicate route '/warm' also in routes/brain_warming.py:62 — review and remove one
 @failover_warm_bp.route("/warm", methods=["GET", "POST"])
 def warm():
     if not _authorized():
@@ -139,6 +140,7 @@ def warm():
         "at": started.isoformat() + "Z",
     }), 200 if not failed else 207
 
+# AUTO-REPAIR: duplicate route '/coverage' also in routes/coverage_page.py:147 — review and remove one
 
 @failover_warm_bp.route("/coverage", methods=["GET"])
 def coverage():

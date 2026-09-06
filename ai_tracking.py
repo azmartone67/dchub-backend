@@ -625,7 +625,7 @@ def init_db():
         for key, info in AI_PLATFORMS.items():
             _execute("""
                 INSERT INTO ai_cumulative (platform, total_requests, first_seen, last_seen, name, color, company)
-                VALUES (%s, 0, NOW(), NOW(), %s, %s, %s)
+                VALUES (%s, 0, NOW() ON CONFLICT DO NOTHING, NOW(), %s, %s, %s)
                 ON CONFLICT (platform) DO UPDATE SET
                     name = EXCLUDED.name,
                     color = EXCLUDED.color,
@@ -656,7 +656,7 @@ def log_ai_request(platform, endpoint, user_agent="", ip_address="",
         # 1. Insert into ai_requests
         _execute("""
             INSERT INTO ai_requests (platform, endpoint, user_agent, ip_address, status_code, response_ms, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (platform, endpoint[:500] if endpoint else "", user_agent[:500] if user_agent else "",
               ip_address, status_code, response_ms, now))
 
@@ -694,7 +694,7 @@ def log_ai_request(platform, endpoint, user_agent="", ip_address="",
             buf = _get_buffer_db()
             buf.execute("""
                 INSERT INTO buffered_requests (platform, endpoint, user_agent, ip_address, status_code, response_ms, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING
             """, (platform, endpoint[:500] if endpoint else "", user_agent[:500] if user_agent else "",
                   ip_address, status_code, response_ms, now.isoformat()))
             buf.commit()
@@ -756,7 +756,7 @@ def log_mcp_connection(
                 client_name, client_version, protocol_version,
                 success, error_message, created_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             # r-mcpconn-append (2026-06-23): mcp_connections is an APPEND-ONLY event
             # log (one row per RPC), NOT an upsert-by-platform table. The old
@@ -789,7 +789,7 @@ def log_mcp_connection(
                     client_name, client_version, protocol_version,
                     success, error_message, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING
             """, (
                 platform, method, ua, ip,
                 tool_name, params_str, status_code, response_ms or 0,
@@ -833,7 +833,7 @@ def _sync_buffer_to_neon():
                 try:
                     _execute("""
                         INSERT INTO ai_requests (platform, endpoint, user_agent, ip_address, status_code, response_ms, created_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """, (row["platform"], row["endpoint"], row["user_agent"],
                           row["ip_address"], row["status_code"], row["response_ms"],
                           row["created_at"]))
@@ -897,7 +897,7 @@ def _sync_buffer_to_neon():
                             client_name, client_version, protocol_version,
                             success, error_message, created_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """, (
                         row["platform"], row["method"], row["user_agent"], row["ip_address"],
                         row["tool_name"], row["params"], row["status_code"], row["response_ms"],
