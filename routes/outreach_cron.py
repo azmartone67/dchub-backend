@@ -92,11 +92,45 @@ def _is_suppressed(email):
         return False
 
 
+def _tier_copy(tier):
+    """(label, "$N/mo", [bullets]) from tier_registry, or None if unpriced.
+
+    ★ 2026-09-06 — these were THREE hand-typed dicts keyed on three tiers
+    while tier_registry defines twelve. Measured against the registry that
+    /pricing and checkout actually read:
+
+        price   pro "$199/mo"          -> price("pro") == 99
+                                          leads were quoted DOUBLE
+        caps    100 / 1,000 / 10,000   -> 200 / 500 / 2,000
+                                          all three wrong
+        .get(tier, "1,000")            -> INVENTED a daily quota for the
+                                          other nine tiers, whose subject
+                                          also rendered "upgrade — —"
+
+    Returning None rather than a placeholder is the point: a checkout mail
+    that cannot state the real price must not be sent at all.
+    """
+    try:
+        import tier_registry as _tr
+        price = _tr.price(tier)
+        bullets = list(_tr.pricing_copy(tier) or [])
+        label = _tr.label(tier) or str(tier or "").title()
+    except Exception:
+        return None
+    if not price or not bullets:
+        return None
+    return label, "$%s/mo" % price, bullets
+
+
 def _build_email(lead, unsub_url=None):
+    """Returns (subject, html, text), or None when the tier cannot be priced."""
     tool = lead["tool"] or "DC Hub"
     tier = lead["tier"]
-    tier_price = {"developer":"$49/mo","pro":"$199/mo","starter":"$9/mo"}.get(tier, "—")
-    subject = f"Finish your DC Hub {tier.title()} upgrade — {tier_price}"
+    facts = _tier_copy(tier)
+    if facts is None:
+        return None
+    label, tier_price, bullets = facts
+    subject = f"Finish your DC Hub {label} upgrade — {tier_price}"
     # Real tokenized one-click unsubscribe (replaces bare "Reply STOP").
     if unsub_url:
         unsub_html = (f' <a href="{unsub_url}" style="color:#94a3b8">Unsubscribe</a>.')
@@ -104,30 +138,30 @@ def _build_email(lead, unsub_url=None):
     else:
         unsub_html = " Reply STOP to unsubscribe."
         unsub_text = "Reply STOP to unsubscribe."
+    bullet_html = "\n".join(
+        f'<li>{b}</li>' for b in bullets) + '\n<li>Cancel anytime — Stripe-managed billing</li>'
+    checkout = (f"https://api.dchub.cloud/pricing/upgrade?tool={tool}"
+                f"&tier={tier}&direct=1&ref=outreach")
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="font-family:-apple-system,sans-serif;max-width:560px;margin:40px auto;padding:0 24px;color:#0f172a;line-height:1.55">
 <p>Hey,</p>
-<p>You started a DC Hub <b>{tier.title()}</b> upgrade ({tier_price}) after hitting the paywall on <code style="background:#e0e7ff;padding:1px 6px;border-radius:3px">{tool}</code> — but didn't finish checkout.</p>
-<p>One click to pick back up where you left off (your email is prefilled):</p>
-<p style="margin:24px 0"><a href="https://api.dchub.cloud/pricing/upgrade?tool={tool}&tier={tier}&direct=1&ref=outreach"
+<p>You started a DC Hub <b>{label}</b> upgrade ({tier_price}) after hitting the paywall on <code style="background:#e0e7ff;padding:1px 6px;border-radius:3px">{tool}</code> — but didn't finish checkout.</p>
+<p>One click to pick back up where you left off:</p>
+<p style="margin:24px 0"><a href="{checkout}"
    style="background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">Complete checkout →</a></p>
-<p style="font-size:.9rem;color:#64748b">What you unlock with {tier.title()}:</p>
+<p style="font-size:.9rem;color:#64748b">What you unlock with {label}:</p>
 <ul style="font-size:.9rem;color:#475569">
-<li><b>{ {"developer":"1,000","pro":"10,000","starter":"100"}.get(tier, "1,000") } calls/day</b> across all 25 MCP tools</li>
-<li>Full result sizes (no truncation)</li>
-<li>{ {"developer":"Export to CSV/JSON", "pro":"All gated tools (analyze_site, compare_sites, get_grid_intelligence, etc)", "starter":"Same data as Developer, lighter cap"}.get(tier, "Full feature set") }</li>
-<li>Cancel anytime — Stripe-managed billing</li>
+{bullet_html}
 </ul>
 <p style="font-size:.85rem;color:#64748b;margin-top:32px">Questions? Reply to this email — we respond within a few hours.</p>
 <p style="font-size:.85rem;color:#64748b">— DC Hub team<br><a href="https://dchub.cloud" style="color:#6366f1">dchub.cloud</a></p>
 <hr style="border:none;border-top:1px solid #e2e8f0;margin:32px 0 16px">
-<p style="font-size:.75rem;color:#94a3b8">You're receiving this because you started a DC Hub Pro signup that wasn't completed.{unsub_html}</p>
+<p style="font-size:.75rem;color:#94a3b8">You're receiving this because you started a DC Hub {label} signup that wasn't completed.{unsub_html}</p>
 </body></html>"""
     text = (
-        f"You started a DC Hub {tier.title()} upgrade ({tier_price}) after hitting "
+        f"You started a DC Hub {label} upgrade ({tier_price}) after hitting "
         f"the paywall on {tool} but didn't finish.\n\n"
-        f"Finish here (email prefilled):\n"
-        f"https://api.dchub.cloud/pricing/upgrade?tool={tool}&tier={tier}&direct=1&ref=outreach\n\n"
+        f"Finish here:\n{checkout}\n\n"
         "— DC Hub\n"
         f"{unsub_text}"
     )
@@ -239,6 +273,7 @@ def process_pending():
     out["sent"] = 0
     out["failed"] = 0
     out["skipped_no_provider"] = 0
+    out["skipped_unpriced_tier"] = 0
 
     provider = _provider()
     for lead in leads:
@@ -311,7 +346,19 @@ def process_pending():
             except Exception:
                 unsub_headers = None
 
-        subject, html, text = _build_email(lead, unsub_url=unsub_url)
+        built = _build_email(lead, unsub_url=unsub_url)
+        if built is None:
+            # tier_registry does not price this tier. Do NOT mail a
+            # placeholder -- the previous code rendered the subject as
+            # "upgrade — —" and invented a daily quota in the body. Leave
+            # outreach_sent FALSE so the lead is retried once the tier is
+            # priced, and name the condition in the response.
+            out["skipped_unpriced_tier"] = out.get("skipped_unpriced_tier", 0) + 1
+            out["results"].append({"id": lead["id"], "email": email,
+                                    "status": "skipped_unpriced_tier",
+                                    "tier": lead.get("tier")})
+            continue
+        subject, html, text = built
         if provider == "resend":
             status, body = _send_resend(email, subject, html, text, extra_headers=unsub_headers)
         else:
