@@ -332,6 +332,33 @@ def _require_internal(fn):
     return wrapper
 
 
+# ★ PERF (2026-09-05): 30-SECOND RESULT CACHE.
+# This route runs _win() three times (24h / 7d / 30d) and each _win is 19
+# sequential COUNT(DISTINCT ...) queries — 57 round trips per request, measured
+# at 3.3s, on an endpoint the /ai dashboard polls every 30 seconds. The page was
+# losing the race on a cold load and rendering its "Funnel unavailable" state.
+#
+# The TTL matches the page's own refresh interval, so a viewer never sees a
+# figure older than one poll cycle.
+#
+# ★ THE AGE IS PUBLISHED, not implied. `cache` in the payload carries age_s and
+#   ttl_s, so a reader can tell a 29-second-old number from a live one. A cache
+#   that hides its age turns a stale read into an unfalsifiable claim, which is
+#   the defect this whole endpoint exists to avoid.
+# ★ FAILURES ARE NEVER CACHED. Only ok=True results are stored, so a transient
+#   DB error cannot be served for 30 seconds after it has cleared — and an
+#   "unavailable" is always a live verdict, never a remembered one.
+# Kill switch: HANDOFF_FUNNEL_CACHE_TTL=0
+_FUNNEL_CACHE = {"payload": None, "ts": 0.0}
+
+
+def _funnel_ttl():
+    try:
+        return max(0, int(os.environ.get("HANDOFF_FUNNEL_CACHE_TTL", "30")))
+    except Exception:  # noqa: BLE001
+        return 30
+
+
 # ── GET /api/v1/mcp/handoff-funnel ──────────────────────────────────────────
 # r-handoff (2026-06-21): the agent→human conversion funnel, end to end, on
 # DISTINCT sessions — surfaces WHERE the handoff leaks. paywall-hit → high-intent
@@ -745,6 +772,23 @@ def handoff_funnel():
     # below reference this vocabulary. A consumer reads the convention off the
     # wire instead of being told about it in a memo it will not have.
     out["evidence_status"] = _ev_vocabulary()
+    _ttl = _funnel_ttl()
+    _now = time.time()
+    _hit = _FUNNEL_CACHE.get("payload")
+    if _ttl and _hit is not None and (_now - _FUNNEL_CACHE.get("ts", 0.0)) < _ttl:
+        _cached = dict(_hit)
+        _cached["cache"] = {
+            "hit": True,
+            "age_s": round(_now - _FUNNEL_CACHE["ts"], 1),
+            "ttl_s": _ttl,
+            "note": ("served from a process-local result cache. 57 COUNT(DISTINCT)"
+                     " round trips per miss; the TTL matches the /ai page's own"
+                     " 30s refresh so a viewer never sees a figure older than one"
+                     " poll. Only ok=True results are cached — an error is always"
+                     " a live verdict. Kill: HANDOFF_FUNNEL_CACHE_TTL=0"),
+        }
+        return jsonify(_cached), 200
+
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             out["last_24h"] = _win(cur, 1)
@@ -753,6 +797,10 @@ def handoff_funnel():
     except Exception as e:
         out["ok"] = False
         out["error"] = str(e)[:160]
+    out["cache"] = {"hit": False, "age_s": 0.0, "ttl_s": _ttl}
+    if _ttl and out.get("ok"):
+        _FUNNEL_CACHE["payload"] = out
+        _FUNNEL_CACHE["ts"] = time.time()
     return jsonify(out), 200
 
 
