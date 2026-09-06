@@ -137,6 +137,124 @@ def purge_frontend_static():
     ])), 200
 
 
+# ── OG/social card purge (2026-09-05) ──────────────────────────────────────
+# Card designs change. Since #3938 gave /api/v1/og/* a 7-day edge TTL (they are
+# deterministic PNGs and were being re-rendered every 5 minutes at ~1.4s each),
+# a redesign no longer reaches LinkedIn until that TTL expires. #3979 shipped a
+# full re-skin onto the brand tokens and the fleet would have served the old art
+# for a week. This is the missing step, and it recurs on EVERY card change.
+#
+# Three constraints shaped it:
+#
+#  1. NO CALLER-SUPPLIED URLS. This is public, matching purge/markets-fix and
+#     purge/frontend-static. A public endpoint that purges whatever it is handed
+#     lets anyone evict any path on the zone — cheap origin-load amplification.
+#     The list is DERIVED here and the caller cannot influence it.
+#  2. DERIVED, NOT HARDCODED. A card URL embeds the page's title
+#     (?style=editorial&title=...), so a hardcoded list silently rots the first
+#     time a headline is edited — it would purge URLs nobody serves while the
+#     live card stayed stale. So: read the pages and take the og:image they
+#     actually publish.
+#  3. ALLOWLISTED. A page could point og:image at any host. Only our own hosts,
+#     and only OG-card paths, are ever sent to CF.
+_OG_PAGES = (
+    "/", "/news", "/pricing", "/about", "/agents", "/markets",
+    "/dcpi", "/enterprise", "/integrations/mcp",
+)
+_OG_HOSTS = ("dchub.cloud", "api.dchub.cloud", "www.dchub.cloud")
+_OG_PATH_HINTS = ("/api/v1/og/", "/images/og")
+_OG_PURGE_COOLDOWN_S = 60
+_og_purge_last = [0.0]          # per-PROCESS, so it blunts a loop, not a fleet
+
+
+def _og_card_urls() -> tuple[list, list]:
+    """Return (urls, notes). Reads each page and keeps the og:image it
+    publishes, if it points at one of our own card paths."""
+    import re
+    import requests
+    urls, notes = [], []
+    for path in _OG_PAGES:
+        page = f"https://dchub.cloud{path}"
+        try:
+            r = requests.get(page, timeout=8, headers={
+                # urllib/py UA is 403'd at the edge; identify honestly.
+                "User-Agent": "dchub-og-purge/1.0 (+https://dchub.cloud)"})
+            if r.status_code != 200:
+                notes.append(f"{path}: HTTP {r.status_code}")
+                continue
+            m = re.search(r'property=["\']og:image["\'][^>]*content=["\']([^"\']+)',
+                          r.text) or \
+                re.search(r'content=["\']([^"\']+)["\'][^>]*property=["\']og:image',
+                          r.text)
+            if not m:
+                notes.append(f"{path}: no og:image")
+                continue
+            url = m.group(1).strip()
+            host = url.split("//", 1)[-1].split("/", 1)[0].lower()
+            if host not in _OG_HOSTS or not any(h in url for h in _OG_PATH_HINTS):
+                notes.append(f"{path}: og:image outside the card allowlist ({host})")
+                continue
+            if url not in urls:
+                urls.append(url)
+        except Exception as e:
+            notes.append(f"{path}: {type(e).__name__}")
+    return urls, notes
+
+
+@cf_purge_bp.route("/api/v1/cf/purge/og-cards", methods=["GET", "POST"])
+def purge_og_cards():
+    """One-shot: purge the OG/social cards after a card redesign.
+
+    Public GET, idempotent and read-side — same rationale as
+    purge/markets-fix and purge/frontend-static above. The URL list is derived
+    from the og:image each page actually publishes and allowlisted to our own
+    card paths; nothing the caller sends is used.
+    """
+    import time
+    now = time.time()
+    if now - _og_purge_last[0] < _OG_PURGE_COOLDOWN_S:
+        # Not an error — the previous purge is seconds old and purges are
+        # idempotent, so the honest answer is "already done".
+        return jsonify(ok=True, skipped="cooldown",
+                       cooldown_s=_OG_PURGE_COOLDOWN_S,
+                       retry_in_s=round(_OG_PURGE_COOLDOWN_S - (now - _og_purge_last[0]), 1),
+                       note="per-process cooldown; another replica may accept sooner"), 200
+    _og_purge_last[0] = now
+
+    urls, notes = _og_card_urls()
+    # The static fallback card is served on pages that never touch the
+    # generator, so a card redesign does not regenerate it — but it IS an OG
+    # asset and it does go stale at the edge.
+    static = "https://dchub.cloud/images/og-default.png"
+    if static not in urls:
+        urls.append(static)
+    if not urls:
+        return jsonify(ok=False, error="no og:image URLs could be derived",
+                       pages_checked=len(_OG_PAGES), notes=notes), 200
+
+    # CF accepts at most 30 files per purge call.
+    results, purged = [], []
+    for i in range(0, len(urls), 30):
+        chunk = urls[i:i + 30]
+        res = _purge_urls(chunk)
+        results.append({"count": len(chunk), "ok": res.get("ok"),
+                        "status": res.get("status"),
+                        "error": res.get("error")})
+        if res.get("ok"):
+            purged.extend(chunk)
+
+    return jsonify(
+        ok=all(r["ok"] for r in results) if results else False,
+        purged=purged,
+        purged_count=len(purged),
+        pages_checked=len(_OG_PAGES),
+        batches=results,
+        # Say what was NOT purged and why, rather than reporting a clean count
+        # over a list that quietly lost half its entries.
+        notes=notes,
+    ), 200
+
+
 def _cf_get(path: str) -> dict:
     """Helper: GET against CF API. Returns parsed JSON or error dict."""
     if not _CF_API_TOKEN:
