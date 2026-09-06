@@ -231,6 +231,35 @@ def enrich_grid_fuel_mix(mix_data: dict, iso: str = None) -> dict:
 # RESPONSE HEADERS
 # =============================================================================
 
+def declare_accept_variance(response):
+    """Name `Accept` in Vary when the response is a NEGOTIATED representation.
+
+    DC Hub's pages are content-negotiated: Cloudflare's "Markdown for Agents"
+    serves a converted text/markdown body for `Accept: text/markdown` and the
+    HTML otherwise. Two representations, one URL — which per RFC 9110 §12.5.5
+    obliges the response to name the request header that selected it. The
+    markdown variant already carries `vary: accept` (CF adds it); the HTML
+    variant declared only Accept-Encoding, so it claimed to be THE
+    representation of the URL when it is one of two.
+
+    ★ HTML ONLY. JSON, XML and plain-text responses have one representation;
+    declaring that they vary by Accept would fragment their cache keys for
+    nothing.
+
+    ★ APPENDS. `response.vary` is a HeaderSet, so `.add()` keeps the existing
+    Accept-Encoding (compression negotiation) and is idempotent — clobbering
+    the header would disable compressed caching.
+
+    Fail-open by contract: this can never break a response.
+    """
+    try:
+        if "text/html" in (response.headers.get("Content-Type") or "").lower():
+            response.vary.add("Accept")
+    except Exception:
+        pass
+    return response
+
+
 def get_enrichment_headers() -> dict:
     """
     Add these headers to every response for agent discovery.
