@@ -897,6 +897,29 @@ _CURATED_MARKET_SLUGS_RAW = (
     'singapore', 'tokyo', 'sydney', 'hong-kong', 'mumbai', 'seoul',
     'jakarta', 'kuala-lumpur', 'bangkok', 'sao-paulo', 'mexico-city',
     'santiago', 'bogota',
+    # r-dc-sitemapped (2026-09-06): /markets/dc served 200 — "Washington, DC
+    # Market Deep-Dive", DCPI 24.1 — and appeared in NO sitemap, while
+    # /dcpi/dc was in sitemap-dcpi.xml. Found by asserting the invariant this
+    # family established (both sitemaps advertise the same canonical slugs)
+    # against a market I had not spot-checked.
+    #
+    # It was unreachable by BOTH arms of sitemap-markets.xml, for two
+    # independent reasons that predate this work:
+    #   * not curated, so the unconditional arm never emitted it;
+    #   * listable_market_slug drops anything under 3 characters as junk
+    #     (#3571), and 'dc' is two — so the DB arm could not emit it either.
+    # And the DB arm could not have reached it anyway: it joins on
+    # LOWER(REPLACE(city,' ','-')), and Washington folds to 'washington',
+    # never to the market_slug 'dc'.
+    #
+    # Curated is the right arm for it: util/market_aliases.py records 'dc' as
+    # the INTENTIONAL 'Washington, DC' market (68 press refs), chosen over the
+    # bare 'washington' dynamic dupe. The other two non-curated canonical
+    # targets — cheyenne and the-dalles — are left alone deliberately: their
+    # city names match their slugs, so the DB arm reaches them WITH a real
+    # per-market lastmod, and moving them here would swap that for the
+    # pinned static date (r-lastmod-honesty).
+    'dc',
 )
 
 
@@ -2073,6 +2096,10 @@ _SLUG_TO_MARKET_NAME = {
     "austin":                 "Austin",
     "salt-lake-city":         "Salt Lake City",
     "columbus":               "Columbus",
+    # r-dc-sitemapped (2026-09-06): without this the /markets hub renders the
+    # slug title-cased — "Dc" — for a market whose own page is titled
+    # "Washington, DC Market Deep-Dive".
+    "dc":                     "Washington, DC",
     "kansas-city":            "Kansas City",
     "toronto":                "Toronto",
     "montreal":               "Montreal",
