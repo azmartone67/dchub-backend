@@ -1784,6 +1784,15 @@ def live_dcpi_reading(cur, slug):
     return {
         "dcpi_score": score,
         "verdict": verdict,
+        # r-markets-components (2026-09-06): the three components the composite
+        # is BUILT from. This query already selected them — it derived the
+        # score and threw them away — so /markets published a single composite
+        # while /pockets/<slug> published all four with their bases. Same row,
+        # same read, same vintage: carrying them costs nothing and closes the
+        # gap between two surfaces of one market.
+        "excess_power_score": float(excess),
+        "constraint_score": float(constraint),
+        "time_to_power_months": float(ttp) if ttp is not None else None,
         "computed_at": computed.isoformat() if hasattr(computed, "isoformat")
                        else (str(computed) if computed else None),
     }
@@ -1804,6 +1813,19 @@ def overlay_live_score(stats, live):
     stats["dcpi_score"] = live["dcpi_score"]
     if live.get("verdict"):
         stats["verdict"] = live["verdict"]
+    # r-markets-components (2026-09-06): the components travel with the score
+    # under util.market_entity's own key names. Deliberately NOT merged with
+    # the stored `excess`/`constraint` that key_stats already carries under
+    # different names: those are the snapshot's integers, frozen when the
+    # narrative was written, and publishing them beside a live composite would
+    # re-create the mixed-vintage problem this whole overlay removed. When
+    # there is no live reading they are simply absent — market_entity omits a
+    # measure it does not have, which is the honest answer, and never the
+    # stale one dressed as current.
+    for _k in ("excess_power_score", "constraint_score",
+               "time_to_power_months"):
+        if live.get(_k) is not None:
+            stats[_k] = live[_k]
     # The score's OWN vintage, read by util.market_entity so the ld+json
     # measure states when it was observed rather than inheriting the
     # narrative's date. Both surfaces get it from this one assignment.
