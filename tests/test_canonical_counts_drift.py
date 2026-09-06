@@ -3445,7 +3445,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/openapi_dynamic.py': {'markets_232', 'tool_count_literal'},
     'routes/operator_brief.py': {'deals_stale_floor'},
     'routes/operators.py': {'facilities_stale_floor'},
-    'routes/outreach_cron.py': {'tool_count_literal'},
     'routes/partner_landing.py': {'tool_count_literal'},
     'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
     'routes/press_outreach.py': {'deals_stale_floor'},
@@ -3675,7 +3674,17 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # tool_count_literal debt left the repo with the file. Composes with (b)
     # above — a different file, so the drains add rather than restate. Lowered
     # in the SAME commit that removes it, as this assertion's message asks.
-    assert len(outside) >= 77, (
+    # ★2026-09-06: 77 -> 76. routes/outreach_cron.py drained its
+    # tool_count_literal — the abandoned-checkout mail's benefits list said
+    # "across all 25 MCP tools" beside a hand-typed daily cap, and BOTH now come
+    # from tier_registry.pricing_copy(), the same copy /pricing renders. The
+    # file's other defects in that commit (a $199/mo Pro price against a $99
+    # registry, and caps of 100/1,000/10,000 against 200/500/2,000) were not
+    # ledgered here at all — this fence catches stale canonical COUNTS, not
+    # stale prices, which is why a mail quoting double the real price passed it
+    # for months. Lowered in the SAME commit that drains it, exactly as this
+    # assertion's message asks.
+    assert len(outside) >= 76, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
