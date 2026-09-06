@@ -70,30 +70,68 @@ def _consts():
 
 # ── 1. The gate-defeat guard ────────────────────────────────────────────────
 
-def test_ai_shards_are_absent_from_the_submitted_sitemap_index():
-    """★ THE load-bearing assertion. _sitemap_shard_files() renders
-    /sitemap.xml, which is what GSC and Bing Webmaster fetch. If the AI family
-    appears there, the capacity gate is void and nothing else in this repo
-    notices — the sitemap is still valid, still 200, just wrong."""
-    body = _fn("_sitemap_shard_files")
-    for token in ("ai-facilities", "_SITEMAP_AI_SHARD_PREFIX",
-                  "_SITEMAP_AI_INDEX_KEY", "_ai_shard_keys",
-                  "_build_sitemap_facilities_ungated"):
-        assert token not in body, (
-            "_sitemap_shard_files() references %r — the ungated family would be "
-            "advertised in the sitemap SUBMITTED to Google and Bing, which is "
-            "exactly what the capacity gate exists to prevent" % token)
+def test_ai_shards_ARE_in_the_submitted_index_now():
+    """★ REVERSED 2026-09-06, on evidence gathered after the exclusion.
+
+    This test previously asserted the opposite — that the AI family must never
+    appear in /sitemap.xml, because that file is what GSC and Bing Webmaster
+    read. What changed:
+
+      · Crawlers discover shards by WALKING THIS INDEX, not by reading our
+        discovery files. GPTBot fetched /sitemap-markets.xml, named nowhere but
+        here, and GUESSED /sitemap-news.xml (404). ClaudeBot read llms.txt and
+        AGENTS.md — both of which name /sitemap-ai.xml — then fetched
+        /sitemap.xml instead, twice.
+      · External fetches of /sitemap-ai.xml over a full day, two crawlers: ZERO.
+      · robots.txt cannot scope it: `Sitemap:` is a NON-GROUP directive in
+        RFC 9309.
+
+    ★ It also caught itself being vacuous: the old assertion read
+    _sitemap_shard_files(), and the shards are appended in the REBUILD instead,
+    so it stayed green while the index started carrying them. A guard that
+    passes for a reason unrelated to its subject is worse than no guard.
+    """
+    body = _fn("_rebuild_sitemap_snapshot")
+    assert "ai_shard_keys]" in body and "shard_files + " in body, (
+        "the AI shards are no longer appended to the submitted index — the "
+        "family goes back to being published and unreachable")
+    assert "rows = [r for r in rows if r[0] != 'index']" in body, (
+        "the earlier index row is not removed, so the snapshot would carry TWO "
+        "'index' rows and which one serves is undefined")
 
 
-def test_the_submitted_index_still_lists_the_gated_facility_shards():
-    """The test above must not pass by the index listing nothing at all."""
-    body = _fn("_sitemap_shard_files")
-    assert "sitemap-facilities-" in body, (
-        "the submitted index no longer lists the gated facility shards — the "
-        "guard above would pass on a sitemap that advertises no facilities")
+def test_the_capacity_GATE_itself_is_untouched():
+    """★ THE LOAD-BEARING ASSERTION NOW. Adding a second family beside the
+    gated one is not the same as widening the first. sitemap-facilities-N must
+    still come from the CAPACITY-GATED set — if this change ever leaks the
+    ungated list into it, Google and Bing get the thin pages in the family they
+    already index, which is the thing the 2026-08-14 evidence actually argued
+    against."""
+    body = _fn("_rebuild_sitemap_snapshot")
+    # ★ Bounded by the NEXT construct, not by a character count. A 700-char
+    # window ran straight into the AI block and failed on its `ai_fac` — the
+    # fourth fixed-slice failure in two days. The gated shard construction ends
+    # where the index row is first written.
+    i = body.index("fac = sections.get('facilities')")
+    seg = body[i:body.index("rows.append(('index'", i)]
+    assert "_build_sitemap_facilities_ungated" not in seg, (
+        "the GATED facility shards are being built from the ungated list — the "
+        "capacity gate is void, not merely bypassed for a second family")
+    assert "ai_fac" not in seg, (
+        "the ungated list leaked into the gated shard construction")
 
 
-# ── 2. The stampede guard ───────────────────────────────────────────────────
+def test_a_failed_ai_build_leaves_a_VALID_index():
+    """If the ungated build fails, the index must still be the gated one — not
+    an index naming shards that were never written."""
+    body = _fn("_rebuild_sitemap_snapshot")
+    # the append happens only inside the success branch
+    i = body.index("shard_files + ")
+    j = body.index("except Exception as _ai_e")
+    assert i < j, "the index rewrite sits outside the guarded block"
+    assert "ai_shard_keys = []" in body, (
+        "no empty default — a failed build would reference an unbound name")
+
 
 def test_ai_sections_never_reach_the_live_builder():
     """The AI branch must return BEFORE _sitemap_sections(), the live union."""
