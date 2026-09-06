@@ -71,15 +71,22 @@ def test_the_scan_is_restricted_to_the_roster():
         "non-rostered and would be counted then discarded (0.83s vs 0.16s)")
 
 
-def test_the_likes_are_NOT_anchored_here():
-    """★ The load-bearing assertion. Anchoring is a correctness change with a
-    judgment call in it; it does not belong in a perf edit."""
+def test_the_likes_are_anchored_prefixes():
+    """★ FLIPPED 2026-09-05 by the correction that followed the perf change.
+
+    This guard previously asserted the patterns were NOT anchored — its job was
+    to stop a speed edit silently moving a published number. That correction has
+    now shipped on its own, so the assertion inverts: leading-wildcard matching
+    is the defect, because `/health` read as `%/health%` excluded real crawls of
+    /facilities/healthpartners-data-center and
+    /facilities/health-dialog-bedford-datacenter as our own polling."""
     q = _self_refresh_query_src()
-    assert '"%" + _m + "%"' in q or "'%' + _m + '%'" in q, (
-        "the self-refresh patterns were anchored in this query. That is faster "
-        "AND it changes published numbers (the /health contains-match currently "
-        "eats real crawls of HealthPartners and Health Dialog). Ship it as a "
-        "correction, not inside a speed fix")
+    assert '_m + "%"' in q, (
+        "the self-refresh patterns are not anchored — a contains-match on "
+        "`/health` eats any path containing the word, and DC Hub has "
+        "facilities operated by HealthPartners and Health Dialog")
+    assert '"%" + _m' not in q, (
+        "a leading wildcard is back on the self-refresh patterns")
 
 
 def _funnel_src():

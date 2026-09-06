@@ -25218,20 +25218,20 @@ def ai_tracking_full():
             # Verified by running both forms and comparing the dicts, not by
             # reasoning about them.
             #
-            # ★ The LIKEs stay leading-wildcard ON PURPOSE here. Anchoring them
-            # is faster still (0.09s) and it CHANGES THE NUMBERS — `/health` is
-            # a contains-pattern and DC Hub has facilities named HealthPartners
-            # and Health Dialog, so real crawls of those pages are currently
-            # excluded as our own polling. That is a correctness bug and it is
-            # being fixed in its own change, published as a correction. A perf
-            # commit must not move a published figure.
+            # ★ ANCHORED PREFIXES (2026-09-05). Read as `%pattern%` these were
+            # excluding real pages: `/health` matched
+            # /facilities/healthpartners-data-center and
+            # /facilities/health-dialog-bedford-datacenter — a self-traffic
+            # filter deleting other people's crawls. See the list's own note in
+            # ai_tracking.py; the feed query anchors identically so the display
+            # and the count cannot disagree.
             _csr.execute(
                 "SELECT platform, COUNT(*) FROM ai_requests "
                 "WHERE created_at >= NOW() - INTERVAL '7 days' "
                 "  AND platform = ANY(%s) AND (" +
                 " OR ".join(["endpoint LIKE %s"] * len(_SRE)) +
                 ") GROUP BY platform",
-                [list(platforms.keys())] + ["%" + _m + "%" for _m in _SRE])
+                [list(platforms.keys())] + [_m + "%" for _m in _SRE])
             for _psr, _nsr in _csr.fetchall():
                 _ksr = (_psr or '').lower()
                 if _ksr in platforms:
