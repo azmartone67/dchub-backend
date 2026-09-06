@@ -35,16 +35,17 @@ logger = logging.getLogger('welcome_emails')
 # dashboard.html / api_server.py / api_tier_gating.py, not a Pro link at all,
 # so the CTA sold a different plan than its own label.
 #
-# WELCOME_CTA_TIER picks which plan the day7 CTA sells. Default is 'founding'
-# ($99/mo, SH52-109 owner call 2026-08-21) while
-# /api/v1/founding-customers/count reports remaining>0 (8 of 25 on
-# 2026-08-21); _billing_vars() falls back to 'pro' (the canonical list plan)
-# automatically when the counter reads 0, so a perpetual drip can never point
-# at a sold-out link. Env WELCOME_CTA_TIER is an explicit override. Accepted
-# values = tiers with BOTH tier_registry.price()>0 AND a STRIPE_LINKS entry:
-# starter, developer, pro, team, founding (anything else raises in
-# _billing_vars, as before).
-WELCOME_CTA_TIER = (os.environ.get('WELCOME_CTA_TIER') or 'founding').strip().lower()
+# WELCOME_CTA_TIER picks which plan the day7 CTA sells.
+# r-price-collapse (2026-09-05): default moved 'founding' -> 'pro'. Founding is
+# retired as a program — $99 IS the Pro list price, and both tiers now resolve
+# to the same price and the SAME Stripe link, so selling "founding" would
+# advertise a scarcity that no longer exists for a product anyone can buy.
+# The sold-out demotion below is kept (harmless, and it costs nothing to leave
+# the safety net in place) but with the default at 'pro' it never fires.
+# Env WELCOME_CTA_TIER is still an explicit override. Accepted values = tiers
+# with BOTH tier_registry.price()>0 AND a STRIPE_LINKS entry: starter,
+# developer, pro, team, founding (anything else raises in _billing_vars).
+WELCOME_CTA_TIER = (os.environ.get('WELCOME_CTA_TIER') or 'pro').strip().lower()
 
 
 def _effective_cta_tier():

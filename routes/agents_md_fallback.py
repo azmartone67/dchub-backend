@@ -215,7 +215,7 @@ from its snapshot; a 503 there carries a `Retry-After` and is not an error to re
 - **Free tier**: {free} calls/day, no signup, no auth header
 - **Starter ($9/mo)**: 200 calls/day — unlocks all {tools} tools + full grid, fiber & market data
 - **Developer ($49/mo)**: 500 calls/day, X-API-Key header — signup at https://dchub.cloud/signup
-- **Pro ($299/mo)**: 2,000 calls/day + analyze_site, compare_sites, PDF reports & CSV export
+- **Pro ($99/mo)**: 2,000 calls/day + analyze_site, compare_sites, PDF reports & CSV export
 - **Enterprise**: SLA + MCP 2025-06-18 OAuth — contact api@dchub.cloud
 
 ## When a call is gated

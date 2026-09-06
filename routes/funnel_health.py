@@ -75,7 +75,11 @@ _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
 _PLAN_MONTHLY_USD = {
     "starter":            9,
     "developer":          49,
-    "pro":                199,  # conservative floor — existing subs grandfathered
+    "pro":                99,   # r-price-collapse 2026-09-05: $99 list. Checked
+                                # against live Stripe the same day — no active
+                                # sub sits above $99 except the NLR annual seed,
+                                # which is not plan 'pro'. So 99 is both the
+                                # conservative floor AND the list. (Was 199.)
                                 # at $199; new list is $299 (r-reprice 2026-06-19)
     "pro_annual":         99,   # $1188/yr ≈ $99/mo equivalent
     "pro_annual_onetime": 99,   # source_plan value matches above

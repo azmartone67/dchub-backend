@@ -79,7 +79,12 @@ def test_the_counter_itself_reads_the_cohort_table(monkeypatch):
     monkeypatch.setattr(fc, "FOUNDING_CAP", 25)
     monkeypatch.setattr(fc, "_get_db", lambda: _Conn(18))
     st = fc.founding_status()
-    assert st == {"claimed": 18, "cap": 25, "remaining": 7, "program_active": True}
+    # r-price-collapse (2026-09-05): the cohort is still counted from the same
+    # table — which is what this test is about — but the PROGRAMME is retired,
+    # so program_active is False and `retired` joined the shape. Kept exact
+    # (that is what catches a stray key) rather than relaxed to a subset.
+    assert st == {"claimed": 18, "cap": 25, "remaining": 7,
+                  "program_active": False, "retired": True}
     monkeypatch.setattr(fc, "_get_db", lambda: _Conn(25))
     assert fc.founding_status()["program_active"] is False
 

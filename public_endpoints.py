@@ -216,6 +216,7 @@ def founding_members_status():
         claimed = st['claimed']
         remaining = st['remaining']
         program_active = st['program_active']
+        retired = bool(st.get('retired'))
     except Exception:
         # Legacy inline fallback so this endpoint never 500s if the import
         # breaks. Same shape, module-constant total.
@@ -241,14 +242,33 @@ def founding_members_status():
                     pass
         total = FOUNDING_TOTAL
         remaining = max(0, total - claimed)
-        program_active = remaining > 0
+        # r-price-collapse: the fallback fails toward RETIRED, not active. If
+        # the canonical import is broken we cannot know the seat state, and the
+        # safe render for a retired programme is nothing at all — publishing a
+        # live scarcity countdown from a fallback path is the failure that
+        # actually costs something.
+        program_active = False
+        retired = True
+    # r-price-collapse (2026-09-05): the founding PROGRAM is retired — $99 is
+    # simply the Pro list price now, so there is no longer a higher price to
+    # strike through and no scarcity to count. `regular_price` used to be 299;
+    # publishing it beside a $99 that anyone can buy is a fake anchor, so it is
+    # now None. `program_active` is False so any surface still reading this
+    # endpoint stops rendering a countdown. The claimed/remaining counters are
+    # left in the payload (still truthfully computed) rather than removed, so
+    # no consumer KeyErrors on deploy.
+    from tier_registry import price as _canon_price
     return jsonify({
         'total': total,
         'claimed': claimed,
         'remaining': remaining,
-        'price': 99,
-        'regular_price': 299,
-        'program_active': program_active
+        'price': _canon_price('pro'),
+        'regular_price': None,
+        # Both read from routes.founding_customers.founding_status() — never
+        # restated here. See that function for why.
+        'program_active': program_active,
+        'retired': retired,
+        'note': 'Founding is retired — $99/mo is the Pro list price.',
     })
 
 

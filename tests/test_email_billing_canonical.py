@@ -120,22 +120,33 @@ def _founding(monkeypatch, remaining):
     })
 
 
-def test_welcome_drip_sells_founding_while_licences_remain(monkeypatch):
-    """SH52-109 (owner call 2026-08-21): the day7 CTA sells Founding ($99)
-    while /api/v1/founding-customers/count reports remaining>0. The exact
-    predicate audit_closure_master_shell c_drip reads is the module constant."""
+def test_welcome_drip_label_price_and_link_all_name_the_same_plan(monkeypatch):
+    """r-price-collapse (2026-09-05, owner call) SUPERSEDES SH52-109.
+
+    SH52-109 made the day7 CTA sell "Founding $99" while licences remained.
+    Founding is retired — $99 is the Pro list price — so the drip sells Pro.
+
+    The invariant that survives is the one SH52-108 was written for and is the
+    only one that can actually cost money: the LABEL, the PRICE and the LINK in
+    the sent email must all name the same plan. A drip that says "Pro" over a
+    link billing something else is the exact defect this file exists to catch.
+    """
     import tier_registry
     import welcome_emails
 
-    assert welcome_emails.WELCOME_CTA_TIER == "founding"
-    _founding(monkeypatch, remaining=8)
+    assert welcome_emails.WELCOME_CTA_TIER == "pro"
+    _founding(monkeypatch, remaining=8)   # irrelevant now, and must STAY irrelevant
     html = welcome_emails._render(
         welcome_emails.EMAILS["day7_convert"]["html"], name="Jordan", signup_date="July 01, 2026"
     )
-    assert tier_registry._stripe_link("founding") in html
-    assert f"${tier_registry.price('founding'):,}" in html
-    assert "Founding Member" in html
-    assert "Upgrade to Pro" not in html, "label says Pro while the link sells Founding (SH52-108 mislabel class)"
+    billing = welcome_emails._billing_vars()
+    # link, price and label are all read from canon and all agree
+    assert billing["pro_url"] == tier_registry._stripe_link("pro")
+    assert tier_registry._stripe_link("pro") in html
+    assert f"${tier_registry.price('pro'):,}" in html
+    assert billing["cta_label"] == "Pro" and "Become a Pro" in html
+    # and the retired program is not advertised
+    assert "Founding Member" not in html
 
 
 def test_welcome_drip_falls_back_to_pro_when_founding_sold_out(monkeypatch):
@@ -152,8 +163,19 @@ def test_welcome_drip_falls_back_to_pro_when_founding_sold_out(monkeypatch):
     html = welcome_emails._render(
         welcome_emails.EMAILS["day7_convert"]["html"], name="Jordan", signup_date="July 01, 2026"
     )
-    assert tier_registry._stripe_link("founding") not in html
+    # ★ r-price-collapse (2026-09-05): the old assertion here was
+    #   `_stripe_link("founding") not in html`. That can no longer distinguish
+    #   anything — pro and founding are ONE tier billing through ONE link, so
+    #   the founding URL is now literally the Pro URL and the assertion would
+    #   fail on a correct email. What still matters is asserted instead: the
+    #   CTA sells Pro, at canon price, through the canon Pro link, and carries
+    #   no retired founding-scarcity language.
+    assert tier_registry._stripe_link("pro") in html
     assert "Become a Pro" in html
+    assert f"${tier_registry.price('pro'):,}" in html
+    low = html.lower()
+    assert "founding" not in low, "retired founding program still advertised in the drip"
+    assert "licenses left" not in low and "limited license" not in low
 
 
 def test_welcome_drip_keeps_founding_on_counter_failure(monkeypatch):
@@ -165,7 +187,13 @@ def test_welcome_drip_keeps_founding_on_counter_failure(monkeypatch):
     def _boom():
         raise RuntimeError("db down")
     monkeypatch.setattr(fc, "founding_status", _boom)
+    # r-price-collapse: the default is 'pro' now, so a DB blip has nothing to
+    # demote. The invariant that still matters is that an exception in the
+    # counter never changes the configured tier.
+    monkeypatch.setattr(welcome_emails, "WELCOME_CTA_TIER", "founding")
     assert welcome_emails._effective_cta_tier() == "founding"
+    monkeypatch.setattr(welcome_emails, "WELCOME_CTA_TIER", "pro")
+    assert welcome_emails._effective_cta_tier() == "pro"
 
 
 def test_welcome_email_cta_tier_is_a_real_purchasable_tier():

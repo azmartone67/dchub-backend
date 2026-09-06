@@ -107,11 +107,27 @@ TIER_PRICE_USD_MONTH = {
     # real DCGI gas-cost + gas-to-grid economics). DISPLAY price only; the
     # customer is charged by the Stripe link in routes/_stripe_links.py — both
     # updated together. Existing subscribers grandfathered on their old links.
-    'starter':    9,      # held — the relay/conversion wedge
-    'developer':  49,     # HELD at 49 (2026-06-19 owner call): the builder/agent
-                          # on-ramp stays wide; capture the increase on Pro instead.
-    'pro':        299,    # was 199 (restores original pre-r38 anchor)
-    'team':       699,    # was 499; 5 seats = $139.80/seat (frontend already showed $699)
+    # ── r-price-collapse (2026-09-05, owner call) ────────────────────
+    # MEASURED over 90d of Stripe checkout sessions: every self-serve price
+    # ABOVE $99 closed at 0% — $299 Pro 17 opens/0 paid, $699 Team 8/0,
+    # $1,188 annual 24/0, $1,794 annual promo 6/0, $199 legacy 16/0. That is
+    # 76 checkout opens above $99 with zero sales. $99 closed 8 of 43 (18.6%)
+    # — the best rate on the page — and is 10 of 16 live subscriptions.
+    # Self-serve has a ceiling and it sits at $99; anything worth more than
+    # that needs a human, which is what ENTERPRISE_FROM_USD_YEAR is for.
+    # So Pro IS $99 now. `founding` collapses into it (they were already the
+    # same tier — see the founding==pro rule below); the separate
+    # founding SKU and its scarcity counter are retired.
+    'starter':    9,      # retired from the public page (2.6% close); tier kept
+                          # for the 2 grandfathered subs + ?budget=tight downsell.
+    'developer':  49,     # HELD: the builder/agent on-ramp (6.1% close).
+    'pro':        99,     # was 299 (r-reprice 2026-06-19), was 199 before that.
+                          # Charged truth is the r-founder99 $99/mo link, which
+                          # is now STRIPE_LINKS['pro'] — see _stripe_links.py.
+    'team':       699,    # retired from the public page: 8 checkout opens, 0
+                          # sales, 0 subscribers ever. Tier kept so an existing
+                          # link cannot 404; Teams are sold via the enterprise
+                          # lane now.
     # founding DECOUPLED from pro at r-reprice: founding members must NOT see
     # the new Pro price. founding still == pro for ACCESS/rank/benefits (TIERS
     # + TIER_LIMITS below). Charged truth is $99/mo — the r-founder99
@@ -119,11 +135,30 @@ TIER_PRICE_USD_MONTH = {
     # canonical_funnel.PLAN_MONTHLY_USD and the webhook amount-band both
     # mirror. The previous 199 here was a stale display value that made
     # /api/v1/tiers quote 2x what founding members are actually charged.
-    'founding':   99,     # $99/mo (SoT: routes/_stripe_links.py 'founding' link, r-founder99)
-    'enterprise': None,   # custom / contact sales
+    'founding':   99,     # == pro. LEGACY ALIAS as of r-price-collapse: kept so
+                          # the 10 existing founding subs, their keys and every
+                          # ?tier=founding URL keep resolving. New buyers are
+                          # sold 'pro' at the same $99 on the same Stripe link.
+    'enterprise': None,   # custom / contact sales — see ENTERPRISE_FROM_USD_YEAR
     'research_seed': None,
     'admin':      None,
 }
+
+# ─────────────────────────────────────────────────────────────────────
+# The enterprise anchor (r-price-collapse, 2026-09-05).
+#
+# The public page needs ONE number above $99 so the product is not read as
+# a $99 product. This is the "from" price for a seat-and-scope deal sold by
+# a human — NOT a self-serve SKU, and deliberately NOT in STRIPE_LINKS:
+# nothing at this price may ever be closable on a payment link, because 90d
+# of data says a payment link closes exactly 0% above $99.
+#
+# Anchored against the category: comparable single-purpose tools quote
+# ~$20K/yr (site/power screening) and ~$5K/yr (fiber lookup); DC Hub covers
+# both surfaces plus grid telemetry, DCPI and M&A in one licence, so $12K
+# sits under the incumbent while pricing the union of two of them.
+# ─────────────────────────────────────────────────────────────────────
+ENTERPRISE_FROM_USD_YEAR = 12000
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -255,15 +290,24 @@ def paid_plans():
 # it upgrades; nothing here changes rank/access/limits (founding==pro rule
 # and test_tier_consistency are untouched). Keep amounts in lock-step with
 # _stripe_links.py comments.
+#
+# ★ r-price-collapse (2026-09-05): PRO ANNUAL IS WITHDRAWN, and the reason is
+#   arithmetic, not taste. Both annual SKUs were priced off the $299 monthly
+#   list. Against a $99 list they stop making sense the instant the price
+#   changes:
+#       pro_annual        $1,188/yr = 12 x $99 exactly  -> a 0% "discount"
+#       pro_annual_promo  $1,794/yr                     -> 51% MORE than
+#                                                          paying monthly
+#   Selling either one next to a $99/mo button is an offer that punishes the
+#   buyer for taking it. Neither has ever sold (0 of 24 and 0 of 6 checkout
+#   opens in 90d), so withdrawing them costs nothing measurable.
+#   The links in _stripe_links.py are LEFT INTACT so any annual sub already
+#   provisioned keeps renewing and any live URL keeps resolving — they are
+#   simply no longer advertised.
+#   TO RESTORE a real annual: mint a $990/yr link (2 months free on $99) and
+#   put it back here. That is an owner action in Stripe; nothing in code
+#   blocks it.
 ANNUAL_OPTIONS = {
-    'pro': {
-        'annual_usd_year': 1188,        # pro_annual link — $99/mo equivalent
-        'annual_link_key': 'pro_annual',
-        'annual_promo_usd_year': 1794,  # one-time, 50% off $299/mo list
-        'annual_promo_link_key': 'pro_annual_promo',
-        'note': 'annual is a Stripe-link SKU (webhook → plan pro_annual, '
-                '365-day expiry); monthly list stays $299',
-    },
     'enterprise': {
         'annual_usd_year': None,        # custom / contact sales
         'annual_link_key': 'enterprise_annual',

@@ -23,7 +23,7 @@ STRIPE SETUP:
   2. Add Price: $699/month (recurring) → copy price_id → set STRIPE_PRICE_ENTERPRISE_MONTHLY
   3. Add Price: $5,990/year (recurring) → copy price_id → set STRIPE_PRICE_ENTERPRISE_ANNUAL
   4. Create Product: "DC Hub Pro" (if not already created)
-  5. Add Price: $199/month → set STRIPE_PRICE_PRO_MONTHLY  
+  5. Add Price: $99/month → set STRIPE_PRICE_PRO_MONTHLY  
   6. Add Price: $1,590/year → set STRIPE_PRICE_PRO_ANNUAL
   7. Update Payment Links in PAYMENT_LINKS below
 """
@@ -237,8 +237,13 @@ PLAN_INFO = {
     },
     'pro': {
         'name': 'Pro',
-        'price_monthly': 299,   # audit #9: was 199 — canonical is tier_registry PRICES['pro']=299 (r-reprice 2026-06-19)
-        'price_annual': 2392,   # preserves the prior ~8x annual ratio at the new $299 anchor
+        'price_monthly': 99,    # r-price-collapse 2026-09-05: canon is
+                                # tier_registry.TIER_PRICE_USD_MONTH['pro']=99
+                                # (was 299, was 199 before that).
+        'price_annual': None,   # Pro annual is WITHDRAWN — at $99/mo the old
+                                # $1,188/yr SKU was exactly 12x the monthly
+                                # (a 0% discount) and the $1,794 "promo" was
+                                # 51% MORE. See tier_registry.ANNUAL_OPTIONS.
         'rate_limit': 5000,     # audit #9 follow-up: was 10000 — enforced limit is tier_registry TIER_LIMITS['pro']['rate_limit']=5000; no public surface sells 10k (pricing.html quotes the 2,000/day MCP lane)
         'tagline': f"Developer + market compare + PDF reports ({tier_registry.TIER_LIMITS['pro']['rate_limit']:,} calls/day)",
         'show_in_gate': True,

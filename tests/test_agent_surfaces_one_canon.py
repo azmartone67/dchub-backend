@@ -421,5 +421,5 @@ def test_checkout_never_overrides_an_explicit_or_pro_choice(checkout_app, monkey
     monkeypatch.setattr(fc, "founding_status", lambda: {"program_active": True})
     assert _get(app, "?tier=developer")["tier"] == "developer"
     j = _get(app, "?tool=analyze_site")          # TOOL_TIER_MAP -> pro
-    assert j["tier"] == "pro" and j["tier_pricing"] == "$299/mo", j
+    assert j["tier"] == "pro" and j["tier_pricing"] == "$99/mo", j
     assert _get(app, "?tier=enterprise")["tier_pricing"] == "Custom"

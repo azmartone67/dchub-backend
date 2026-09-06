@@ -8,7 +8,7 @@ Tier breakdown:
                                 L&P: Grid demand names only, 3 heatmap dots
   Developer ($49/mo)         → Map: 1000 facilities, +provider +status +power_mw, full coords
                                 L&P: Grid demand + energy prices + full heatmap (no EPA/utility)
-  Pro/Enterprise ($199+/mo)  → Everything, no limits
+  Pro ($99/mo) / Enterprise  → Everything, no limits
 
 Deploy: upload to Railway repo root, then in main.py add:
     from map_tier_gating import register_map_tier_gating
@@ -363,7 +363,7 @@ def _upgrade_cta(tier, feature_name='full map data'):
     elif tier == 'free':
         return {
             'action': 'upgrade',
-            'message': f'Upgrade to Developer ($49/mo) for more {feature_name}. Pro ($199/mo) unlocks everything.',
+            'message': f'Upgrade to Developer ($49/mo) for more {feature_name}. Pro ($99/mo) unlocks everything.',
             'url': 'https://dchub.cloud/pricing#developer',
             'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
             'price': '$49/mo',
@@ -371,7 +371,7 @@ def _upgrade_cta(tier, feature_name='full map data'):
     elif tier == 'developer':
         return {
             'action': 'upgrade',
-            'message': f'Upgrade to Pro ($199/mo) for full {feature_name} with no limits.',
+            'message': f'Upgrade to Pro ($99/mo) for full {feature_name} with no limits.',
             'url': 'https://dchub.cloud/pricing',
         }
     return None  # Pro/Enterprise — no CTA
@@ -490,7 +490,7 @@ def _gated_map_handler(decode_jwt_func):
             elif tier == 'developer':
                 response['_note'] = (
                     f'Developer tier: showing {len(facilities)} of {total} facilities. '
-                    f'Pro plan ($199/mo) unlocks all {total} facilities with full infrastructure data.'
+                    f'Pro plan ($99/mo) unlocks all {total} facilities with full infrastructure data.'
                 )
 
         return jsonify(response)
@@ -590,7 +590,7 @@ def _gated_land_power_handler(decode_jwt_func):
         result['_note'] = (
             'Free tier: showing grid operator names and 3 market locations. '
             'Developer plan ($49/mo) unlocks energy pricing, full heatmap, and grid demand data. '
-            'Pro plan ($199/mo) unlocks EPA data, utility territories, and all infrastructure layers.'
+            'Pro plan ($99/mo) unlocks EPA data, utility territories, and all infrastructure layers.'
         )
         result['_upgrade'] = _upgrade_cta('free', 'Land & Power data')
         return jsonify(result)
@@ -644,12 +644,12 @@ def _gated_land_power_handler(decode_jwt_func):
         result['capacity_heatmap'] = _strip_heatmap(HEATMAP_FULL, 'developer')
 
         # EPA + utility: gated for Developer
-        result['epa_summary'] = {'note': 'Upgrade to Pro ($199/mo) for EPA facility data and environmental analysis.'}
+        result['epa_summary'] = {'note': 'Upgrade to Pro ($99/mo) for EPA facility data and environmental analysis.'}
         result['utility_territories'] = []
 
         result['_note'] = (
             'Developer tier: grid demand, energy pricing, and market heatmap included. '
-            'Pro plan ($199/mo) adds EPA environmental data, utility territories, and proximity analysis.'
+            'Pro plan ($99/mo) adds EPA environmental data, utility territories, and proximity analysis.'
         )
         result['_upgrade'] = _upgrade_cta('developer', 'Land & Power data')
         return jsonify(result)

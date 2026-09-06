@@ -288,7 +288,7 @@ Pro tier ($99/month billed annually, $1,188/yr) unlocks:
   • MCP + REST + Webhooks
   • Priority support
 
-Pro is $199/mo (or $99/mo billed annually).
+Pro is $99/mo.
 
 Direct checkout (utm-tracked so we know it's you): https://dchub.cloud/pricing?utm_source=mcp&utm_email={customer.get('email','')}#pro-annual
 

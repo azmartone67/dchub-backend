@@ -88,10 +88,16 @@ def _canon_pro_price_usd() -> int:
             return p
     except Exception:  # noqa: BLE001 — the fail-safe arm must always price
         pass
-    return 299
+    return 99  # r-price-collapse 2026-09-05 (was 299)
 
 
 _ARM_A_PRICE_USD = _canon_pro_price_usd()
+# ★ r-price-collapse (2026-09-05): arm B was the $99 challenger against a $299
+#   arm A. Canon IS $99 now, so BOTH arms price identically and this experiment
+#   can no longer measure anything. `_ab_enabled()` is already off
+#   (ab_active:false live), so nothing is served from it — but arming it in this
+#   state would produce a confident-looking null result. Give B a real
+#   alternative before re-arming, or delete the surface.
 _ARM_B_PRICE_USD = 99
 
 # Cookie name shared with pricing.html JS hook.
