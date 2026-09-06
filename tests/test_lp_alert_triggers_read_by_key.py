@@ -77,7 +77,9 @@ def test_no_positional_row_access_survives(fn):
 
 
 @pytest.mark.parametrize("fn,key", [
-    ("_current_dcpi_for_market", '"v"'),
+    # dcpi now reads four components and composites them (see
+    # test_dcpi_alert_column_exists), so its key is the first of the four.
+    ("_current_dcpi_for_market", '"excess"'),
     ("_current_capacity_for_market", '"v"'),
     ("_new_facilities_within_radius", '"n"'),
 ])
@@ -90,7 +92,7 @@ def test_each_helper_reads_its_aliased_column(fn, key):
 def test_the_select_aliases_its_scalar(fn):
     """An unaliased scalar leaves the dict key to libpq's default labelling."""
     code = _code(fn).upper().replace(" ", "")
-    assert "AS V" in code or "ASV" in code or "ASN" in code, (
+    assert any(a in code for a in ("ASV", "ASN", "ASEXCESS")), (
         f"{fn}'s SELECT no longer aliases its scalar column")
 
 

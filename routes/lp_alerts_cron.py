@@ -96,6 +96,20 @@ def _send_resend_email(to_email, subject, body_html, unsub_headers=None):
         return False, f"{type(e).__name__}:{str(e)[:60]}"
 
 
+# ★ 2026-09-06 — THE COLUMN NEVER EXISTED. This read `SELECT score`, and
+# market_power_scores has 30 columns, none of them named `score`. psycopg2
+# raised UndefinedColumn, a bare `except` swallowed it, and the caller reported
+# "no_current_value" — so no dcpi_change alert has EVER been able to fire.
+#
+# It surfaced only once #4000 made the skip reason name its cause: the very
+# next probe answered `dcpi_lookup_failed:UndefinedColumn` instead of the
+# category string that had covered it since the alert was written.
+#
+# The column is excess_power_score (grid headroom) — chosen by the owner over
+# constraint_score and quality_score, which are the other two "*_score" columns
+# the table actually has. tests/test_dcpi_alert_column_exists.py asserts every
+# column this query names is declared in the DDL at routes/dcpi.py, so a
+# non-existent column cannot silently return.
 def _current_dcpi_for_market(cur, market: str | None, lat: float,
                              lon: float) -> tuple[float | None, str | None]:
     """(score, why_not). `why_not` is None on success and otherwise NAMES the
@@ -104,7 +118,11 @@ def _current_dcpi_for_market(cur, market: str | None, lat: float,
     if market:
         try:
             cur.execute("""
-                SELECT score AS v FROM market_power_scores
+                SELECT excess_power_score   AS excess,
+                       constraint_score     AS constraint_s,
+                       time_to_power_months AS ttp,
+                       verdict              AS verdict
+                  FROM market_power_scores
                  WHERE LOWER(market_name) = LOWER(%s)
                     OR LOWER(market_slug) = LOWER(%s)
                  ORDER BY computed_at DESC LIMIT 1
@@ -117,9 +135,20 @@ def _current_dcpi_for_market(cur, market: str | None, lat: float,
             # — a plausible-sounding reason that was never true.
             if r is None:
                 return None, "market_not_in_scores:%s" % (market or "")[:40]
-            if r.get("v") is None:
+            if r.get("excess") is None:
                 return None, "score_is_null:%s" % (market or "")[:40]
-            return float(r["v"]), None
+            # ★ THE BASELINE IS A COMPOSITE, SO THE CURRENT VALUE MUST BE ONE.
+            # routes/lp_sites.py derives dcpi_score_at_save as
+            #     derive_composite_score(excess, constraint, ttp, verdict)
+            # Reading excess_power_score ALONE would compare a four-input
+            # composite against one of its own components — a delta between two
+            # different quantities, which would fire or not fire for reasons
+            # unrelated to anything moving. A wrong number is worse than an
+            # error, because nobody investigates it.
+            from routes.dcpi import derive_composite_score
+            return float(derive_composite_score(
+                r.get("excess"), r.get("constraint_s"),
+                r.get("ttp"), r.get("verdict"))), None
         except Exception as e:
             # ★ AND THE REASON NOW NAMES THE CAUSE. Returning a bare None made
             # THREE different conditions — a swallowed exception, no matching

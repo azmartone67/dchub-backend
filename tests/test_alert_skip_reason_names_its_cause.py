@@ -43,10 +43,21 @@ class _Cur:
         return self._row
 
 
-def test_a_real_score_returns_the_value_and_no_reason():
-    v, why = lp._current_dcpi_for_market(
-        _Cur(RealDictRow({"v": 71.5})), "ashburn", 39.0, -77.4)
-    assert v == 71.5 and why is None
+# The query returns the four DCPI components; the helper composites them the
+# same way routes/lp_sites.py derives dcpi_score_at_save, so current and
+# baseline are the same quantity.
+_ROW = RealDictRow({"excess": 71.5, "constraint_s": 40.0,
+                    "ttp": 24.0, "verdict": "BUILD"})
+
+
+def test_a_real_score_returns_a_composite_and_no_reason():
+    v, why = lp._current_dcpi_for_market(_Cur(_ROW), "ashburn", 39.0, -77.4)
+    assert why is None
+    assert isinstance(v, float) and 0.0 <= v <= 100.0
+    from routes.dcpi import derive_composite_score
+    assert v == float(derive_composite_score(71.5, 40.0, 24.0, "BUILD")), (
+        "the helper must return the SAME composite the baseline was derived "
+        "from, not one of its components")
 
 
 def test_no_matching_market_says_so_and_names_the_market():
@@ -60,7 +71,7 @@ def test_a_null_score_is_distinct_from_a_missing_row():
     """These are different problems: one is a misconfigured alert, the other is
     a market awaiting its first score."""
     v, why = lp._current_dcpi_for_market(
-        _Cur(RealDictRow({"v": None})), "ashburn", 39.0, -77.4)
+        _Cur(RealDictRow({"excess": None})), "ashburn", 39.0, -77.4)
     assert v is None and why.startswith("score_is_null")
 
 
@@ -80,9 +91,9 @@ def test_an_alert_with_no_market_is_its_own_reason():
 
 
 @pytest.mark.parametrize("row,boom,expect", [
-    (RealDictRow({"v": 71.5}), None, None),
+    (_ROW, None, None),
     (None, None, "market_not_in_scores"),
-    (RealDictRow({"v": None}), None, "score_is_null"),
+    (RealDictRow({"excess": None}), None, "score_is_null"),
     (None, KeyError(0), "dcpi_lookup_failed"),
 ])
 def test_every_outcome_is_distinguishable(row, boom, expect):
@@ -98,7 +109,7 @@ def test_every_outcome_is_distinguishable(row, boom, expect):
 def test_reasons_are_pairwise_distinct():
     seen = {
         lp._current_dcpi_for_market(_Cur(None), "m", 1.0, 2.0)[1],
-        lp._current_dcpi_for_market(_Cur(RealDictRow({"v": None})), "m", 1.0, 2.0)[1],
+        lp._current_dcpi_for_market(_Cur(RealDictRow({"excess": None})), "m", 1.0, 2.0)[1],
         lp._current_dcpi_for_market(_Cur(None, KeyError(0)), "m", 1.0, 2.0)[1],
         lp._current_dcpi_for_market(_Cur(None), None, 1.0, 2.0)[1],
     }
