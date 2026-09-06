@@ -5,7 +5,13 @@ on:
     # 06:00 PT. Sends a digest email to every active subscriber whose
     # tracked markets shifted BUILD/CAUTION/AVOID since the last check.
     # If no markets shifted, no email goes out — same-state days are
-    # silent by design. Subscribe at POST /api/v1/alerts/dcpi/subscribe.
+    # silent by design. ★ 2026-09-06: "silent by design" was ALSO how a
+    # bootstrap deadlock looked. Every subscriber landed in no_shifts
+    # because the baseline write sat below the `continue` that fires
+    # when there is no baseline, so no alert could ever be sent. The
+    # run log now separates settled / seeded / unresolvable — read
+    # baseline_seeded and no_markets_resolvable, not just no_shifts.
+    # Subscribe at POST /api/v1/alerts/dcpi/subscribe.
     - cron: '9 14 * * *'   # staggered off the Monday 14:00 herd
   workflow_dispatch: {}
 jobs:
@@ -35,9 +41,16 @@ jobs:
           SUBS=$(echo "${RESPONSE}" | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('subscribers_checked', 0))" 2>/dev/null || echo "0")
           SENT=$(echo "${RESPONSE}" | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('emails_sent', 0))" 2>/dev/null || echo "0")
           NO_SHIFTS=$(echo "${RESPONSE}" | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('no_shifts', 0))" 2>/dev/null || echo "0")
+          SEEDED=$(echo "${RESPONSE}" | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('baseline_seeded', 0))" 2>/dev/null || echo "0")
+          NOMKT=$(echo "${RESPONSE}" | python3 -c "import sys, json; print((json.load(sys.stdin) or {}).get('no_markets_resolvable', 0))" 2>/dev/null || echo "0")
           echo ""
           echo "═══════════════════════════════════════════════"
           echo "Subscribers checked: ${SUBS}"
           echo "Emails sent:         ${SENT}"
-          echo "No shifts (silent):  ${NO_SHIFTS}"
+          echo "Settled (no shift):  ${NO_SHIFTS}"
+          echo "Baseline seeded:     ${SEEDED}   (compares from next run)"
+          echo "No market resolves:  ${NOMKT}   (cannot ever fire — bad slug)"
           echo "═══════════════════════════════════════════════"
+          if [ "${NOMKT}" != "0" ]; then
+            echo "::warning::${NOMKT} subscriber(s) track slugs absent from market_power_scores — those alerts can never fire"
+          fi
