@@ -119,8 +119,9 @@ class EnergyPricingService:
         
         try:
             url = f"{self.EIA_BASE_URL}/electricity/retail-sales/data"
+            # key in a HEADER: params= lands in the query string, which every
+            # proxy logs. EIA reads X-Api-Key (verified 2026-09-06).
             params = {
-                'api_key': self.eia_key,
                 'frequency': 'monthly',
                 'data[0]': 'price',
                 'facets[stateid][]': state.upper(),
@@ -129,7 +130,9 @@ class EnergyPricingService:
                 'length': 6
             }
             
-            response = self.session.get(url, params=params, timeout=API_TIMEOUT)
+            response = self.session.get(
+                url, params=params, timeout=API_TIMEOUT,
+                headers={'X-Api-Key': self.eia_key})
             response.raise_for_status()
             data = response.json()
             

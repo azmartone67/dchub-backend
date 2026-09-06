@@ -297,12 +297,18 @@ def _ingest_conn(get_db):
     return get_db()
 
 
-def _fetch_json(url, params=None, retries=MAX_RETRIES):
-    """Fetch JSON with retry + rate limiting."""
+def _fetch_json(url, params=None, retries=MAX_RETRIES, headers=None):
+    """Fetch JSON with retry + rate limiting.
+
+    headers= exists so a credential rides in a header: params= lands in the
+    QUERY STRING, which every proxy logs. EIA reads X-Api-Key (verified
+    2026-09-06). See tests/test_no_provider_key_in_url.py.
+    """
     for attempt in range(retries):
         try:
             time.sleep(REQUEST_DELAY_SECONDS)
-            resp = requests.get(url, params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+            resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT,
+                                headers={**HEADERS, **(headers or {})})
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.RequestException as e:
@@ -500,8 +506,8 @@ def _eia_latest_period():
     crawl rather than falling back to an unbounded all-periods window.
     """
     try:
-        data = _fetch_json(EIA_860_PLANTS_URL, params={
-            'api_key': EIA_API_KEY,
+        data = _fetch_json(EIA_860_PLANTS_URL,
+                           headers={'X-Api-Key': EIA_API_KEY}, params={
             'frequency': 'monthly',
             'data[0]': 'nameplate-capacity-mw',
             'sort[0][column]': 'period',
@@ -574,7 +580,6 @@ def crawl_power_plants(get_db, full_refresh=False):
 
         while True:
             params = {
-                'api_key': EIA_API_KEY,
                 'frequency': 'monthly',
                 'data[0]': 'nameplate-capacity-mw',
                 'data[1]': 'latitude',
@@ -588,7 +593,8 @@ def crawl_power_plants(get_db, full_refresh=False):
                 'length': page_size,
             }
 
-            data = _fetch_json(EIA_860_PLANTS_URL, params=params)
+            data = _fetch_json(EIA_860_PLANTS_URL, params=params,
+                               headers={'X-Api-Key': EIA_API_KEY})
             if not data or 'response' not in data:
                 break
 
@@ -1333,7 +1339,6 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
 
         while True:
             params = {
-                'api_key': EIA_API_KEY,
                 'frequency': 'annual',
                 'data[0]': 'value',
                 'facets[process][]': ['FPR'],  # Pipeline receipts
@@ -1343,7 +1348,8 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
                 'length': page_size,
             }
 
-            data = _fetch_json(EIA_NG_PIPELINES_URL, params=params)
+            data = _fetch_json(EIA_NG_PIPELINES_URL, params=params,
+                               headers={'X-Api-Key': EIA_API_KEY})
             if not data or 'response' not in data:
                 break
 

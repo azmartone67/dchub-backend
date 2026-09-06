@@ -129,6 +129,14 @@ def _enrich_abstract(email, key):
     """abstractapi.com — cheaper, company-only lookup."""
     import requests
     domain = email.split("@")[-1] if "@" in email else email
+    # ★ EXCEPTION, and the only one: AbstractAPI has NO header auth. Verified
+    # 2026-09-06 — with `X-Api-Key: <bogus>` it still answers
+    #   {"api_key": ["This is a required argument."]}
+    # so the header is ignored and the query parameter is mandatory. The key
+    # therefore reaches abstractapi's logs and any proxy in between; that is
+    # their design, not ours to fix. ABSTRACT_API_KEY is unset on every Railway
+    # service as of 2026-09-06, so this lane is inert today.
+    # tests/test_no_provider_key_in_url.py allows exactly this call site.
     r = requests.get(
         "https://companyenrichment.abstractapi.com/v1/",
         params={"api_key": key, "domain": domain},
@@ -153,7 +161,9 @@ def _enrich_hunter(email, key):
     domain = email.split("@")[-1] if "@" in email else email
     r = requests.get(
         "https://api.hunter.io/v2/domain-search",
-        params={"domain": domain, "api_key": key, "limit": 1},
+        params={"domain": domain, "limit": 1},
+        # Bearer, not ?api_key= — verified 2026-09-06 that Hunter accepts it.
+        headers={"Authorization": f"Bearer {key}"},
         timeout=10,
     )
     if r.status_code != 200:

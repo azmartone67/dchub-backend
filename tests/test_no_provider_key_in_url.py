@@ -155,6 +155,85 @@ def scan_source_urlencode(src: str, label: str):
     return hits
 
 
+# ── shape 3: requests(..., params={"api_key": KEY}) ─────────────────────────
+# requests builds the query string from params=, so this leaks exactly like a
+# hand-built URL — and neither detector above can see it. Found 2026-09-06,
+# AFTER #4008 declared the sweep complete, which is the third time a "complete"
+# list here turned out to cover only the shapes someone had thought of.
+_HTTP_VERBS = {"get", "post", "put", "request", "patch", "delete"}
+
+# Call sites where the provider genuinely offers no header auth. Each entry is
+# a decision with evidence, not a shrug.
+_NO_HEADER_AUTH = {
+    # AbstractAPI ignores X-Api-Key entirely — with a bogus header it still
+    # answers {"api_key": ["This is a required argument."]} (verified
+    # 2026-09-06). Their design; the key must ride in the query.
+    ("routes/signup_enrichment.py", "api_key"),
+    # NREL is reached through OUR OWN dchub.cloud worker proxy (Railway cannot
+    # resolve developer.nrel.gov — .gov egress block, see NREL_API_BASE). The
+    # key never crosses a third party, and moving it to a header needs the
+    # worker in dchub-frontend to forward it. Tracked separately.
+    ("enhancements/nrel_renewable.py", "api_key"),
+}
+
+
+def _scope_nodes(root):
+    """Walk one scope WITHOUT descending into nested function/class bodies.
+
+    ★ THIS IS LOAD-BEARING. A plain ast.walk from the module makes every
+    `params = {...}` in the file visible to every call in the file, and a name
+    as common as `params` collides constantly: an early draft of this check
+    reported enhancements/site_scoring.py:363 — a WattTime call that already
+    uses a Bearer header — because a DIFFERENT function's params dict shared
+    the name. test_a_dict_in_another_function_does_not_match pins it.
+    """
+    out = []
+    stack = list(ast.iter_child_nodes(root))
+    while stack:
+        n = stack.pop()
+        out.append(n)
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            stack.extend(ast.iter_child_nodes(n))
+    return out
+
+
+def scan_source_params(src: str, label: str):
+    """Credentials handed to requests(params=...), which become a query string."""
+    hits = []
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return hits
+    scopes = [tree] + [n for n in ast.walk(tree)
+                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    for sc in scopes:
+        nodes = _scope_nodes(sc)
+        local = {n.targets[0].id: n.value for n in nodes
+                 if isinstance(n, ast.Assign) and len(n.targets) == 1
+                 and isinstance(n.targets[0], ast.Name)
+                 and isinstance(n.value, ast.Dict)}
+        for n in nodes:
+            if not isinstance(n, ast.Call):
+                continue
+            fn = n.func
+            verb = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if verb not in _HTTP_VERBS:
+                continue
+            for kw in n.keywords:
+                if kw.arg != "params":
+                    continue
+                d = kw.value if isinstance(kw.value, ast.Dict) \
+                    else local.get(getattr(kw.value, "id", ""))
+                if d is None:
+                    continue
+                for k, v in zip(d.keys, d.values):
+                    if (isinstance(k, ast.Constant) and isinstance(k.value, str)
+                            and _SECRET_PARAM.search("?" + k.value + "=")
+                            and isinstance(v, (ast.Name, ast.Attribute))):
+                        hits.append((label, n.lineno, k.value))
+    return hits
+
+
 def _hit_is_ai_host(hit) -> bool:
     """Re-read the flagged line to decide whether it targets an AI provider."""
     f, ln, _param = hit
@@ -175,7 +254,7 @@ def _python_files():
 
 @functools.lru_cache(maxsize=1)   # four tests, one walk of 2,400+ files
 def scan_repo():
-    hits, enc, files, fstrings = [], [], 0, 0
+    hits, enc, prm, files, fstrings = [], [], [], 0, 0
     for p in _python_files():
         try:
             src = p.read_text(encoding="utf-8", errors="replace")
@@ -190,7 +269,8 @@ def scan_repo():
         rel = str(p.relative_to(_ROOT))
         hits += scan_source(src, rel)
         enc += scan_source_urlencode(src, rel)
-    return tuple(hits), files, fstrings, tuple(enc)
+        prm += scan_source_params(src, rel)
+    return tuple(hits), files, fstrings, tuple(enc), tuple(prm)
 
 
 # ── the checker must be able to SEE a violation ──────────────────────────────
@@ -249,7 +329,7 @@ _KNOWN_DEBT: dict[tuple[str, str], int] = {}
 
 def test_the_scan_actually_reads_the_repo():
     """Floors, so a broken glob cannot make the rules below vacuously green."""
-    _, files, fstrings, _ = scan_repo()
+    _, files, fstrings, _, _ = scan_repo()
     assert files >= _MIN_FILES, (
         f"scanned only {files} python files (floor {_MIN_FILES}) — this guard "
         "is not reading the repo any more, so its green means nothing")
@@ -260,7 +340,7 @@ def test_the_scan_actually_reads_the_repo():
 
 def test_no_ai_provider_key_is_ever_in_a_url():
     """ABSOLUTE. This is the surface the leak was observed on."""
-    hits, _, _, _ = scan_repo()
+    hits, _, _, _, _ = scan_repo()
     bad = [h for h in hits if _hit_is_ai_host(h)]
     assert not bad, (
         "AI provider credential in a URL query string — it will be written "
@@ -271,7 +351,7 @@ def test_no_ai_provider_key_is_ever_in_a_url():
 def test_no_new_credential_in_url_outside_the_known_debt():
     """RATCHET. A new site fails — including a new one in a file already on
     the list, which a name-only allowlist would have waved through."""
-    hits, _, _, _ = scan_repo()
+    hits, _, _, _, _ = scan_repo()
     seen = collections.Counter((f, p) for f, _ln, p in hits)
     extra = []
     for key, n in seen.items():
@@ -288,7 +368,7 @@ def test_the_known_debt_list_does_not_rot():
     """If a listed site is fixed, its entry must be updated or removed —
     otherwise the list slowly stops describing anything and the ratchet
     loosens for free."""
-    hits, _, _, _ = scan_repo()
+    hits, _, _, _, _ = scan_repo()
     seen = collections.Counter((f, p) for f, _ln, p in hits)
     stale = [f"  {k[0]}  ?{k[1]}=  (recorded {n}, now {seen.get(k, 0)})"
              for k, n in _KNOWN_DEBT.items() if seen.get(k, 0) < n]
@@ -319,6 +399,48 @@ def test_the_urlencode_detector_ignores_fixtures_and_json_bodies():
 
 
 def test_no_credential_reaches_a_query_string_via_urlencode():
-    _, _, _, enc = scan_repo()
+    _, _, _, enc, _ = scan_repo()
     assert not enc, "credential urlencoded into a query string:\n" + "\n".join(
         f"  {f}:{ln}  {param}" for f, ln, param in enc)
+
+
+_BAD_PARAMS = ("r = requests.get(url, params={'api_key': EIA_API_KEY}, timeout=5)\n")
+_BAD_PARAMS_VAR = ("p = {'api_key': KEY, 'x': 1}\n"
+                   "r = requests.get(url, params=p, timeout=5)\n")
+_PARAMS_OK = ("r = requests.get(url, params={'state': st}, "
+              "headers={'X-Api-Key': KEY}, timeout=5)\n")
+_PARAMS_FIXTURE_OK = "r = requests.get(url, params={'api_key': 'literal-fixture'})\n"
+_SCOPE_COLLISION = (
+    "def a(KEY):\n"
+    "    params = {'api_key': KEY}\n"
+    "    return requests.get(u, params=params, headers={})\n"
+    "def b(lat):\n"
+    "    params = {'latitude': lat}\n"
+    "    return requests.get(u2, params=params, headers={'Authorization': 'Bearer x'})\n")
+
+
+def test_the_params_detector_sees_both_inline_and_variable_dicts():
+    assert len(scan_source_params(_BAD_PARAMS, "<s>")) == 1
+    assert len(scan_source_params(_BAD_PARAMS_VAR, "<s>")) == 1
+
+
+def test_the_params_detector_ignores_headers_and_fixtures():
+    assert scan_source_params(_PARAMS_OK, "<s>") == []
+    assert scan_source_params(_PARAMS_FIXTURE_OK, "<s>") == []
+
+
+def test_a_dict_in_another_function_does_not_match():
+    """★ The scope bug, pinned. Both functions call their local `params`; only
+    the one that actually carries a credential may be reported. An ast.walk
+    from the module makes this report TWO."""
+    hits = scan_source_params(_SCOPE_COLLISION, "<s>")
+    assert len(hits) == 1, hits
+
+
+def test_no_credential_reaches_a_query_string_via_requests_params():
+    _, _, _, _, prm = scan_repo()
+    unexpected = [h for h in prm if (h[0], h[2]) not in _NO_HEADER_AUTH]
+    assert not unexpected, (
+        "credential handed to requests(params=...), which makes it a query "
+        "string:\n" + "\n".join(f"  {f}:{ln}  params[{p}]"
+                                 for f, ln, p in unexpected))

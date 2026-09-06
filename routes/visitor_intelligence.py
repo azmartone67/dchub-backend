@@ -110,7 +110,9 @@ def _ipinfo_enrich(ip: str) -> dict:
         import requests
         r = requests.get(
             f"https://ipinfo.io/{ip}/json",
-            params={"token": token},
+            # Bearer, not ?token= — verified 2026-09-06: anonymous 200,
+            # bogus Bearer -> 403 "Unknown token", so the header is read.
+            headers={"Authorization": f"Bearer {token}"},
             timeout=4,
         )
         if r.status_code != 200:
