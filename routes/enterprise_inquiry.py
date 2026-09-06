@@ -110,9 +110,13 @@ def _notify_admin(inquiry: dict):
             """Escaped for HTML TEXT context."""
             return _html.escape(str(inquiry.get(key) or default), quote=False)
 
-        def _a(key, default=""):
-            """Escaped for HTML ATTRIBUTE context (quotes included)."""
-            return _html.escape(str(inquiry.get(key) or default), quote=True)
+        # NOTE: there is deliberately no _a() attribute-escaper here. The one
+        # attribute this body builds is the mailto href, and it is defended by
+        # URL-encoding (_urlquote below) rather than HTML-escaping, which is
+        # the correct tool for a URL in an attribute. An _a() helper existed
+        # and was never called — a defined-but-unused escaper reads as though
+        # attribute contexts are handled when nothing routes through it. If an
+        # attribute is ever added here, escape it at that call site.
 
         def _hdr(value, default=""):
             """Header-safe: no CR/LF, so a newline cannot inject a mail header."""
