@@ -11,14 +11,25 @@ name: MCP Tool-Tuner Re-seed (keep per-platform descriptions fresh)
 # cadence instead of sitting in cosmetic shadow.
 #
 # Endpoint: POST /api/v1/admin/mcp/tool-tuner/seed?force=1  (X-Admin-Key)
-#   - idempotent + bounded (top-10 tools × top-5 platforms = 50 Claude calls)
+#   - idempotent + bounded (TUNED_TOOLS × TUNED_PLATFORMS; 132 cells at
+#     11 tools × 12 platforms as of 2026-09-06 — NOT the 50 this line
+#     claimed, which was the top-10 × top-5 shape retired in July)
 #   - force=1 regenerates so descriptions stay current as tools/positioning change
 #   - no-ops cleanly if AI_AGENT_EXPANSION_DISABLE=1 or the key is unset
 
 on:
   schedule:
     - cron: '23 14 * * 1'   # Mondays 14:23 UTC — distinct minute (cron-collision guard)
-  workflow_dispatch: {}     # manual trigger from the Actions tab
+  workflow_dispatch:        # manual trigger from the Actions tab
+    inputs:
+      force:
+        description: >-
+          1 = REGENERATE every cell (rewrites copy that is currently working).
+          0 = fill-only: write just the cells that do not exist yet.
+        required: false
+        default: '0'
+        type: choice
+        options: ['0', '1']
 
 permissions:
   contents: read
@@ -38,8 +49,12 @@ jobs:
       - name: Re-seed per-platform tool descriptions
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          # The weekly cron keeps its original force=1 regeneration. Only a manual
+          # dispatch can ask for fill-only, and that is what it defaults to.
+          FORCE: ${{ github.event_name == 'schedule' && '1' || inputs.force || '0' }}
         run: |
           set -euo pipefail
+          echo "::notice::force=$FORCE (event=${{ github.event_name }})"
           if [ -z "$ADMIN_KEY" ]; then
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping tuner re-seed"
             exit 0
@@ -51,12 +66,13 @@ jobs:
           response=$(curl -sS --max-time 420 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "$RAILWAY_BASE/api/v1/admin/mcp/tool-tuner/seed?force=1" \
+            "$RAILWAY_BASE/api/v1/admin/mcp/tool-tuner/seed?force=$FORCE" \
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | head -c 4000 || true
           echo
-          echo "$response" | python3 -c "
-          import json, sys
+          echo "$response" | FORCE="$FORCE" python3 -c "
+          import json, os, sys
+          force = os.environ.get('FORCE', '1')
           # 2026-07-04 FIX: the seed endpoint returns INTEGER counts
           # (written/skipped/failed). The old parser did len(d.get('written')),
           # which raised TypeError on an int and — because the bare except only
@@ -89,6 +105,17 @@ jobs:
           # Fail RED: endpoint said not-ok, or produced no writes despite failures.
           if (not ok) or (w == 0 and f > 0):
               print(f'::error::tuner re-seed UNHEALTHY: {str(d)[:300]}')
+              sys.exit(1)
+          # ★ A FILL-ONLY RUN THAT WROTE NOTHING IS NOT SUCCESS. The endpoint
+          # skips cells that already exist, so if the running build does not yet
+          # carry a newly-added tool, every cell is 'already_exists' and the run
+          # returns a healthy 200 with written=0 — a silent no-op that looks
+          # exactly like a good outcome. Fill-only is REQUESTED because there is
+          # something new to fill; zero writes means it was not there.
+          if force == '0' and w == 0:
+              print('::error::fill-only re-seed wrote 0 cells '
+                    f'(skipped={s}). The deployed build is missing the tool, '
+                    'or every cell already exists and no fill was needed.')
               sys.exit(1)
           print('::notice::tuner re-seed healthy')
           "
