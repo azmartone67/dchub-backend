@@ -89,11 +89,12 @@ FEED_STATUS = {
 # ──────────────────────────────────────────────────────────────────────
 # helpers
 # ──────────────────────────────────────────────────────────────────────
-def _fetch(url, timeout=60, return_bytes=False):
+def _fetch(url, timeout=60, return_bytes=False, headers=None):
     req = urllib.request.Request(url, headers={
         "User-Agent": UA,
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
+        **(headers or {}),
     })
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = resp.read()
@@ -215,7 +216,6 @@ def ingest_henry_hub(length=120, full=False):
     try:
         for _page in range(3 if full else 1):  # full history is ~7.4k rows; cap 15k
             params = {
-                "api_key": api_key,
                 "frequency": "daily",
                 "data[0]": "value",
                 "facets[series][]": HH_SERIES,
@@ -225,7 +225,9 @@ def ingest_henry_hub(length=120, full=False):
                 "offset": offset,
             }
             url = f"{EIA_BASE}/{HH_ROUTE}?" + urllib.parse.urlencode(params)
-            body, st = _fetch(url, timeout=45)
+            # key in a HEADER, never the query string
+            body, st = _fetch(url, timeout=45,
+                              headers={"X-Api-Key": api_key})
             if st != 200:
                 return False, None, "; ".join(debug + [f"eia_http_{st}"])
             resp = (json.loads(body).get("response") or {})

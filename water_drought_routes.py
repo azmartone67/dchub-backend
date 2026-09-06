@@ -761,8 +761,7 @@ def register_water_routes(app):
                     try:
                         eia_url = (
                             f'https://api.eia.gov/v2/electricity/operating-generator-capacity/data/'
-                            f'?api_key={eia_key}'
-                            f'&frequency=monthly'
+                            f'?frequency=monthly'
                             f'&data[0]=nameplate-capacity-mw'
                             f'&facets[stateid][]={est_state}'
                             f'&facets[energy_source_code][]=NG'
@@ -770,7 +769,10 @@ def register_water_routes(app):
                             f'&sort[0][direction]=desc'
                             f'&length=200'
                         )
-                        eia_resp = _fetch_json(eia_url, timeout=10)
+                        # key in a HEADER, never the query string
+                        eia_resp = _fetch_json(
+                            eia_url, timeout=10,
+                            headers={'X-Api-Key': eia_key})
                         eia_records = eia_resp.get('response', {}).get('data', [])
 
                         seen_plants = set()

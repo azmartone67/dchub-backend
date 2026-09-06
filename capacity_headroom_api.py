@@ -176,11 +176,12 @@ def fetch_eia_demand(eia_code):
     try:
         url = (
             f"https://api.eia.gov/v2/electricity/rto/region-data/data/"
-            f"?api_key={api_key}&frequency=hourly&data[0]=value"
+            f"?frequency=hourly&data[0]=value"
             f"&facets[respondent][]={eia_code}&facets[type][]=D"
             f"&sort[0][column]=period&sort[0][direction]=desc&length=1"
         )
-        resp = requests.get(url, timeout=15)
+        # key in a HEADER: a query key is logged verbatim by every proxy
+        resp = requests.get(url, timeout=15, headers={"X-Api-Key": api_key})
         resp.raise_for_status()
         data = resp.json()
         records = data.get('response', {}).get('data', [])
@@ -202,11 +203,12 @@ def fetch_eia_retail_rate(state):
     try:
         url = (
             f"https://api.eia.gov/v2/electricity/retail-sales/data/"
-            f"?api_key={api_key}&frequency=monthly&data[0]=price"
+            f"?frequency=monthly&data[0]=price"
             f"&facets[stateid][]={state}&facets[sectorid][]=IND"
             f"&sort[0][column]=period&sort[0][direction]=desc&length=1"
         )
-        resp = requests.get(url, timeout=15)
+        # key in a HEADER: a query key is logged verbatim by every proxy
+        resp = requests.get(url, timeout=15, headers={"X-Api-Key": api_key})
         resp.raise_for_status()
         data = resp.json()
         records = data.get('response', {}).get('data', [])

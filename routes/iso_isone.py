@@ -71,12 +71,18 @@ def _isone_urls():
             {"Authorization": "Basic " + _token},
         ))
     # Primary public fallback — EIA v2 with API key
-    urls.append(
-        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=ISNE&sort[0][column]=period&sort[0][direction]=desc&length=12"
-    )
-    urls.append(
-        f"https://api.eia.gov/v2/electricity/rto/region-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=ISNE&sort[0][column]=period&sort[0][direction]=desc&length=24"
-    )
+    # (url, headers) — the form fetch_first_working added so credentials go in
+    # a header instead of the query string. scrub_url()'s docstring records why
+    # it matters: the key used to be echoed back to callers from here.
+    _eia_h = {"X-Api-Key": eia_key} if eia_key else {}
+    urls.append((
+        "https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?frequency=hourly&data[0]=value&facets[respondent][]=ISNE&sort[0][column]=period&sort[0][direction]=desc&length=12",
+        _eia_h,
+    ))
+    urls.append((
+        "https://api.eia.gov/v2/electricity/rto/region-data/data/?frequency=hourly&data[0]=value&facets[respondent][]=ISNE&sort[0][column]=period&sort[0][direction]=desc&length=24",
+        _eia_h,
+    ))
     # Legacy iso-ne.com paths kept LAST (all 404/403/500 in 2026 but
     # harmless to try in case they come back).
     urls.extend([

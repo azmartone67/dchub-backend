@@ -17,8 +17,10 @@ SCOPE, deliberately narrow to stay actionable:
   · only f-strings whose literal text ends in a secret-ish `?param=` right
     before an interpolation. A hard-coded `?key=test-key` in a test is inert
     and is not flagged.
-  · it does NOT see %-formatting, .format(), or urlencode() dict building.
-    Those are real gaps; this catches the shape that actually shipped.
+  · urlencode() dict building IS covered, by a second detector below — it
+    was added after that gap hid three live sites from the first one.
+  · %-formatting and .format() are still NOT seen. Real gaps, stated so they
+    are not mistaken for a clean sweep.
 """
 import ast
 import collections
@@ -71,6 +73,88 @@ def scan_source(src: str, label: str):
     return hits
 
 
+def _query_bound_urlencode_args(tree):
+    """Names passed to a urlencode() whose RESULT lands in a query string.
+
+    ★ urlencode IS NOT A QUERY-STRING SIGNAL ON ITS OWN. An OAuth token
+    exchange form-encodes client_secret/password into the request BODY, which
+    is correct and must not be flagged — a first draft of this check reported
+    routes/ercot_realtime.py and linkedin_poster.py as leaks. What makes it a
+    leak is the result being concatenated into a URL, so that is what we look
+    for: a "?" or "&" literal beside the call, either directly or through the
+    variable the call was assigned to.
+    """
+    def has_q(node):
+        return any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+                   and ("?" in n.value or "&" in n.value) for n in ast.walk(node))
+
+    def calls(node):
+        for n in ast.walk(node):
+            if isinstance(n, ast.Call):
+                fn = n.func
+                if (isinstance(fn, ast.Name) and fn.id == "urlencode") or \
+                   (isinstance(fn, ast.Attribute) and fn.attr == "urlencode"):
+                    yield n
+
+    direct, via_var, qs_vars = set(), {}, set()
+    for node in ast.walk(tree):
+        # (a) urlencode() sitting inside a concat / f-string that has ? or &
+        if isinstance(node, (ast.BinOp, ast.JoinedStr)) and has_q(node):
+            for c in calls(node):
+                for a in c.args[:1]:
+                    if isinstance(a, ast.Name):
+                        direct.add(a.id)
+        # (b) q = urlencode(params)   ... later   f"{base}?{q}"
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            for c in calls(node.value):
+                for a in c.args[:1]:
+                    if isinstance(a, ast.Name):
+                        via_var.setdefault(node.targets[0].id, set()).add(a.id)
+        if isinstance(node, (ast.BinOp, ast.JoinedStr)) and has_q(node):
+            for n in ast.walk(node):
+                if isinstance(n, ast.Name):
+                    qs_vars.add(n.id)
+    for var, params in via_var.items():
+        if var in qs_vars:
+            direct |= params
+    return direct
+
+
+def scan_source_urlencode(src: str, label: str):
+    """Credentials smuggled into a query string via a dict + urlencode().
+
+    ★ THIS IS THE GAP THAT HID THREE SITES. The f-string detector walks
+    JoinedStr only, so `params = {"api_key": KEY}; url = base + "?" +
+    urlencode(params)` was invisible to it — and that shape was live in
+    eia_retirements.py and both discovery scripts while the f-string list read
+    as complete. A guard that reports a clean sweep over a subset of the shapes
+    it claims to cover is worse than none, because it gets believed.
+
+    A secret-named key counts only when its VALUE IS A VARIABLE (a literal is a
+    test fixture) and the dict is urlencoded INTO A URL, not into a body.
+    """
+    hits = []
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return hits
+    wanted = _query_bound_urlencode_args(tree)
+    if not wanted:
+        return hits
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in wanted \
+                and isinstance(node.value, ast.Dict):
+            for k, v in zip(node.value.keys, node.value.values):
+                if (isinstance(k, ast.Constant) and isinstance(k.value, str)
+                        and _SECRET_PARAM.search("?" + k.value + "=")
+                        and isinstance(v, (ast.Name, ast.Attribute))):
+                    hits.append((label, k.lineno, k.value))
+    return hits
+
+
 def _hit_is_ai_host(hit) -> bool:
     """Re-read the flagged line to decide whether it targets an AI provider."""
     f, ln, _param = hit
@@ -91,7 +175,7 @@ def _python_files():
 
 @functools.lru_cache(maxsize=1)   # four tests, one walk of 2,400+ files
 def scan_repo():
-    hits, files, fstrings = [], 0, 0
+    hits, enc, files, fstrings = [], [], 0, 0
     for p in _python_files():
         try:
             src = p.read_text(encoding="utf-8", errors="replace")
@@ -103,8 +187,10 @@ def scan_repo():
                             if isinstance(n, ast.JoinedStr))
         except SyntaxError:
             pass
-        hits += scan_source(src, str(p.relative_to(_ROOT)))
-    return tuple(hits), files, fstrings
+        rel = str(p.relative_to(_ROOT))
+        hits += scan_source(src, rel)
+        enc += scan_source_urlencode(src, rel)
+    return tuple(hits), files, fstrings, tuple(enc)
 
 
 # ── the checker must be able to SEE a violation ──────────────────────────────
@@ -151,40 +237,19 @@ _AI_HOSTS = ("generativelanguage.googleapis.com", "gateway.ai.cloudflare.com",
              "api.anthropic.com", "api.openai.com", "api.x.ai",
              "api.mistral.ai", "api.cohere.ai", "api.groq.com")
 
-# Everything else is a RATCHET, not a blessing. These 12 EIA call sites bake
-# the key into a URL that is built in one place and fetched in another (three
-# of them append to a list of URLs consumed elsewhere), so converting them is a
-# plumbing change that cannot be exercised without a live EIA key — not
-# something to smuggle into a security fix.
-#
-# ★ THEY ARE NOT EXEMPT ON TECHNICAL GROUNDS. Verified live 2026-09-06:
-#   no key            -> API_KEY_MISSING
-#   X-Api-Key header  -> API_KEY_INVALID   <- the header IS read
-# so every one of these is fixable.
-#
-# ★ COUNTED PER FILE, not just named. An earlier draft keyed this on
-# (file, param) alone — and a mutation proved it: adding a BRAND NEW leaking
-# URL to water_drought_routes.py, a file already on the list, kept all 7 tests
-# green. A named-file allowlist silently covers every future defect in that
-# file. The counts below are asserted EXACTLY, so one more occurrence fails and
-# one fewer fails too (the list must shrink when a site is fixed, not rot).
-_KNOWN_DEBT = {
-    ("capacity_headroom_api.py", "api_key"): 2,
-    ("eia_860m.py", "api_key"): 1,
-    ("eia_retirements.py", "api_key"): 1,
-    ("fix_items_1_3.py", "api_key"): 1,
-    ("iso_grid_adapters.py", "api_key"): 1,
-    ("routes/iso_isone.py", "api_key"): 2,
-    ("routes/iso_spp.py", "api_key"): 1,
-    ("scripts/dchub_discovery_patch_v2_1.py", "api_key"): 1,
-    ("scripts/dchub_master_discovery_v2.py", "api_key"): 1,
-    ("water_drought_routes.py", "api_key"): 1,
-}
+# Everything else was a RATCHET while the api.eia.gov sites were converted.
+# All 15 are DONE (2026-09-06) — 12 found by the f-string detector plus 3
+# the urlencode detector found once it existed. Each sends X-Api-Key now,
+# verified live against api.eia.gov:
+#   no key -> API_KEY_MISSING ; bogus header -> API_KEY_INVALID
+# so the list is empty and the rule is absolute everywhere. Re-populating this
+# is a deliberate act that has to be argued for in a PR, which is the point.
+_KNOWN_DEBT: dict[tuple[str, str], int] = {}
 
 
 def test_the_scan_actually_reads_the_repo():
     """Floors, so a broken glob cannot make the rules below vacuously green."""
-    _, files, fstrings = scan_repo()
+    _, files, fstrings, _ = scan_repo()
     assert files >= _MIN_FILES, (
         f"scanned only {files} python files (floor {_MIN_FILES}) — this guard "
         "is not reading the repo any more, so its green means nothing")
@@ -195,7 +260,7 @@ def test_the_scan_actually_reads_the_repo():
 
 def test_no_ai_provider_key_is_ever_in_a_url():
     """ABSOLUTE. This is the surface the leak was observed on."""
-    hits, _, _ = scan_repo()
+    hits, _, _, _ = scan_repo()
     bad = [h for h in hits if _hit_is_ai_host(h)]
     assert not bad, (
         "AI provider credential in a URL query string — it will be written "
@@ -206,7 +271,7 @@ def test_no_ai_provider_key_is_ever_in_a_url():
 def test_no_new_credential_in_url_outside_the_known_debt():
     """RATCHET. A new site fails — including a new one in a file already on
     the list, which a name-only allowlist would have waved through."""
-    hits, _, _ = scan_repo()
+    hits, _, _, _ = scan_repo()
     seen = collections.Counter((f, p) for f, _ln, p in hits)
     extra = []
     for key, n in seen.items():
@@ -223,10 +288,37 @@ def test_the_known_debt_list_does_not_rot():
     """If a listed site is fixed, its entry must be updated or removed —
     otherwise the list slowly stops describing anything and the ratchet
     loosens for free."""
-    hits, _, _ = scan_repo()
+    hits, _, _, _ = scan_repo()
     seen = collections.Counter((f, p) for f, _ln, p in hits)
     stale = [f"  {k[0]}  ?{k[1]}=  (recorded {n}, now {seen.get(k, 0)})"
              for k, n in _KNOWN_DEBT.items() if seen.get(k, 0) < n]
     assert not stale, (
         "recorded as known debt but no longer present that many times — "
         "tighten _KNOWN_DEBT:\n" + "\n".join(stale))
+
+
+_BAD_ENC = (
+    "from urllib.parse import urlencode\n"
+    "params = {'api_key': EIA_API_KEY, 'frequency': 'monthly'}\n"
+    "url = base + '?' + urlencode(params)\n")
+_ENC_LITERAL_OK = (
+    "from urllib.parse import urlencode\n"
+    "params = {'api_key': 'test-fixture-key'}\n"
+    "url = base + '?' + urlencode(params)\n")
+_ENC_NO_URLENCODE_OK = "payload = {'api_key': EIA_API_KEY}\nrequests.post(u, json=payload)\n"
+
+
+def test_the_urlencode_detector_sees_the_shape_that_hid_three_sites():
+    hits = scan_source_urlencode(_BAD_ENC, "<synthetic>")
+    assert len(hits) == 1 and hits[0][2] == "api_key", hits
+
+
+def test_the_urlencode_detector_ignores_fixtures_and_json_bodies():
+    assert scan_source_urlencode(_ENC_LITERAL_OK, "<synthetic>") == []
+    assert scan_source_urlencode(_ENC_NO_URLENCODE_OK, "<synthetic>") == []
+
+
+def test_no_credential_reaches_a_query_string_via_urlencode():
+    _, _, _, enc = scan_repo()
+    assert not enc, "credential urlencoded into a query string:\n" + "\n".join(
+        f"  {f}:{ln}  {param}" for f, ln, param in enc)

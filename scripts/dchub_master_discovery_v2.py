@@ -182,7 +182,6 @@ def fix_eia_generators(conn):
     
     while True:
         params = {
-            "api_key": EIA_API_KEY,
             "frequency": "monthly",
             "data[0]": "nameplate-capacity-mw",
             "data[1]": "net-summer-capacity-mw",
@@ -195,7 +194,7 @@ def fix_eia_generators(conn):
         url = base_url + "?" + urlencode(params, doseq=True)
         print(f"  Fetching offset={offset}...")
         
-        data = api_get(url, timeout=60)
+        data = api_get(url, timeout=60, headers={"User-Agent": "DCHub-Discovery/2.1", "X-Api-Key": EIA_API_KEY})
         if not data or "response" not in data:
             print(f"  [WARN] No response at offset {offset}")
             break
@@ -772,14 +771,16 @@ def fix_eia_rto(conn):
     
     url = (
         f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/"
-        f"?api_key={EIA_API_KEY}"
-        f"&frequency=hourly"
+        f"?frequency=hourly"
         f"&data[0]=value"
         f"&sort[0][column]=period&sort[0][direction]=desc"
         f"&length=2000"
     )
     
-    data = api_get(url, timeout=60)
+    # ★ key in a HEADER, never the query string. NOTE api_get(headers=...)
+    # REPLACES its default UA, so the UA is restated or the request goes
+    # out anonymous. See tests/test_no_provider_key_in_url.py.
+    data = api_get(url, timeout=60, headers={"User-Agent": "DCHub-Discovery/2.1", "X-Api-Key": EIA_API_KEY})
     if not data or "response" not in data:
         print("  [WARN] No data")
         return 0

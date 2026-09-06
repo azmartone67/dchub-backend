@@ -31,6 +31,13 @@ import urllib.parse
 logger = logging.getLogger(__name__)
 
 EIA_BASE = "https://api.eia.gov/v2/electricity/operating-generator-capacity/data/"
+
+
+def _eia_headers(api_key):
+    """EIA reads X-Api-Key. A key in the query string is written verbatim
+    into every proxy/gateway log it passes through — see
+    tests/test_no_provider_key_in_url.py."""
+    return {"X-Api-Key": api_key} if api_key else {}
 PAGE = 5000
 
 _DDL = """
@@ -66,15 +73,19 @@ def _f(v):
         return None
 
 
-def _get_json(url, timeout=90, tries=3):
+def _get_json(url, timeout=90, tries=3, headers=None):
     """GET with retry — the EIA API and DNS both flake transiently; a monthly
     cron must ride through it."""
     import time
+
+    import requests   # house rule: requests, not urllib, on Railway — urllib's
+                      # default UA is what Cloudflare 1010-blocks (2026-08-10)
     last = None
     for i in range(tries):
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as r:
-                return json.load(r)
+            r = requests.get(url, timeout=timeout, headers=headers or {})
+            r.raise_for_status()
+            return r.json()
         except Exception as e:
             last = e
             time.sleep(2 * (i + 1))
@@ -82,9 +93,9 @@ def _get_json(url, timeout=90, tries=3):
 
 
 def _latest_period(api_key):
-    url = ("https://api.eia.gov/v2/electricity/operating-generator-capacity/"
-           f"?api_key={api_key}")
-    return _get_json(url, timeout=30)["response"]["endPeriod"]
+    url = "https://api.eia.gov/v2/electricity/operating-generator-capacity/"
+    return _get_json(url, timeout=30,
+                     headers=_eia_headers(api_key))["response"]["endPeriod"]
 
 
 def fetch_planned_retirements(api_key, period):
@@ -93,7 +104,7 @@ def fetch_planned_retirements(api_key, period):
     keep, offset = [], 0
     while True:
         params = {
-            "api_key": api_key, "frequency": "monthly",
+            "frequency": "monthly",
             "start": period, "end": period,
             "length": str(PAGE), "offset": str(offset),
         }
@@ -102,7 +113,8 @@ def fetch_planned_retirements(api_key, period):
         cols = "&".join("data[]=" + c for c in (
             "nameplate-capacity-mw", "planned-retirement-year-month",
             "latitude", "longitude", "county"))
-        resp = _get_json(f"{EIA_BASE}?{q}&{cols}", timeout=90)["response"]
+        resp = _get_json(f"{EIA_BASE}?{q}&{cols}", timeout=90,
+                         headers=_eia_headers(api_key))["response"]
         rows = resp.get("data") or []
         keep.extend(x for x in rows if x.get("planned-retirement-year-month"))
         offset += PAGE
