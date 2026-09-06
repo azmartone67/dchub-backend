@@ -358,9 +358,18 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                 if trigger == "dcpi_change":
                     curr, dcpi_why = _current_dcpi_for_market(
                         cur, a["market"], site["latitude"], site["longitude"])
-                    if curr is None and a["dcpi_score_at_save"] is not None:
-                        # Fall back: compare against initial score at save
-                        prev = prev if prev is not None else float(a["dcpi_score_at_save"])
+                    if prev is None and a["dcpi_score_at_save"] is not None:
+                        # Baseline for a never-fired alert: the composite
+                        # captured when the site was saved. This condition
+                        # read `curr is None` until be#4014 -- true only on
+                        # the path that skips the alert two statements
+                        # later, so the baseline was set and then thrown
+                        # away on every single run. Every first firing got
+                        # prev=None and mailed a "crossed" subject with an
+                        # empty delta line. Comparable to curr only because
+                        # be#4003 made _current_dcpi_for_market return the
+                        # same composite dcpi_score_at_save holds.
+                        prev = float(a["dcpi_score_at_save"])
                 elif trigger == "capacity_change":
                     # Phase LLLL (2026-05-16): operational MW in the
                     # saved site's market. Compare against last_value.
@@ -442,8 +451,17 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                     except Exception:
                         unsub_headers = None
 
-                subject = (f"DC Hub Alert: {site['name']} — "
-                           f"{trigger.replace('_', ' ')} crossed {threshold}")
+                # A first-time fire crosses nothing -- prev is None, so the
+                # body's delta line renders empty. Saying "crossed" there put
+                # a threshold claim in the subject of a mail with no numbers
+                # in it. Name which of the two events this actually is.
+                if first_time:
+                    subject = (f"DC Hub Alert: {site['name']} — "
+                               f"{trigger.replace('_', ' ')} baseline set "
+                               f"at {curr:.1f}")
+                else:
+                    subject = (f"DC Hub Alert: {site['name']} — "
+                               f"{trigger.replace('_', ' ')} crossed {threshold}")
                 body = _render_alert_html(site, alert, curr, prev, unsub_url=unsub_url)
 
                 if dry_run:
