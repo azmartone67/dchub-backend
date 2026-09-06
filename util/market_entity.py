@@ -143,8 +143,16 @@ def market_entity(slug: str, name: str, stats: dict | None, *,
     ):
         _v = stats.get(_key)
         if _v is not None:
+            # ★ THE BUILDER ROUNDS, NOT THE CALLER (r-ttp-one-precision
+            # 2026-09-06). /markets passed these straight off the row while
+            # /pockets pre-rounded to 1dp, so one market_power_scores row
+            # published two different numbers for one measure the moment a
+            # value carried a second decimal. Rounding here makes the two
+            # surfaces identical by construction rather than by both callers
+            # remembering — the same reason Total Capacity is rounded here and
+            # not at its call sites.
             _m = {"@type": "PropertyValue", "name": _name,
-                  "value": _v, "maxValue": _max,
+                  "value": round(float(_v), 1), "maxValue": _max,
                   "measurementTechnique": _tech, "description": _tech}
             if stats.get("dcpi_as_of"):
                 _m["description"] += f" Observed {str(stats['dcpi_as_of'])[:19]}."
