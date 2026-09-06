@@ -56,6 +56,7 @@ from flask import (Blueprint, jsonify, request, Response,
                    render_template_string, redirect)
 from util.market_aliases import canonical_slug
 from util.deployability_rank import RANKINGS as _RANKINGS
+from util.market_entity import market_entity
 from util.dcpi_score_row import PUBLISHED_ONLY
 
 logger = logging.getLogger(__name__)
@@ -1001,9 +1002,30 @@ def _fetch_pocket_detail(slug: str) -> dict | None:
             rank_score += 10
         elif row[4] == "AVOID":
             rank_score -= 20
+        # r-pockets-structured-data (2026-09-06): the DCPI composite, from the
+        # SAME row the rank score is built from. This page ranks on
+        # `rank_score` and named it honestly (r-pocket-score-label), but it
+        # never published the number /dcpi owns for this market — so a reader
+        # who landed here got a deployability rank and no way to see the DCPI
+        # score at all. Derived at read time like every other figure here;
+        # /pockets stores nothing, which is why it needed no live-score
+        # overlay when /markets did.
+        #
+        # BOTH components required. derive_composite_score coerces None to 0
+        # and returns a plausible number from half a row — the collision that
+        # made mutation L5 survive on the /markets fix.
+        _dcpi = None
+        if row[5] is not None and row[6] is not None:
+            try:
+                from routes.dcpi import derive_composite_score
+                _dcpi = derive_composite_score(excess_v, constraint_v, ttp_v,
+                                               row[4])
+            except Exception:
+                _dcpi = None
         out = {
             "market_slug": row[0],
             "market_name": row[1],
+            "dcpi_score":  round(_dcpi, 1) if _dcpi is not None else None,
             "iso":         row[2],
             "state":       row[3],
             "verdict":     row[4],
@@ -1173,6 +1195,7 @@ _POCKET_DETAIL_HTML = '''<!DOCTYPE html><html lang="en"><head>
   }
 }
 </script>
+<script type="application/ld+json">{{ dataset_ld|safe }}</script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#0a0a12;--card:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--acc:#6366f1;--violet:#8b5cf6}
@@ -1216,6 +1239,7 @@ footer a{color:var(--acc)}
 <p class="sub">{{ d.iso or 'No ISO' }} · {{ d.state or 'No state' }} · last computed {{ d.computed_at[:10] if d.computed_at else 'never' }}</p>
 
 <div class="hero-grid">
+  {% if d.dcpi_score is not none %}<div class="hero-stat"><div class="n">{{ d.dcpi_score }}</div><div class="l">DCPI score</div><div class="x">0-100 buildability composite · <a href="/dcpi/{{ d.market_slug }}" style="color:inherit;text-decoration:underline">full breakdown</a></div></div>{% endif %}
   <div class="hero-stat"><div class="n">{{ d.rank_score }}</div><div class="l">{{ rank_label }}</div><div class="x">{{ rank_formula }} · not the <a href="/dcpi/{{ d.market_slug }}" style="color:inherit;text-decoration:underline">DCPI composite</a></div></div>
   <div class="hero-stat"><div class="n {% if d.excess_power_score >= 70 %}green{% elif d.excess_power_score >= 40 %}amber{% else %}red{% endif %}">{{ d.excess_power_score }}</div><div class="l">Excess power</div><div class="x">0=tight · 100=ample</div></div>
   <div class="hero-stat"><div class="n {% if d.constraint_score <= 30 %}green{% elif d.constraint_score <= 60 %}amber{% else %}red{% endif %}">{{ d.constraint_score }}</div><div class="l">Grid constraint</div><div class="x">0=clear · 100=blocked</div></div>
@@ -1274,6 +1298,50 @@ footer a{color:var(--acc)}
 </div></body></html>'''
 
 
+def _pocket_dataset_ld(d: dict) -> str:
+    """The citable half of /pockets/<slug>, from util.market_entity.
+
+    r-pockets-structured-data (2026-09-06). This page displayed four numbers
+    and published an ld+json Article carrying NONE of them — its only measure
+    was prose in `description`, so an agent citing it had nothing structured
+    and no basis for anything. Measured 2026-09-06: variableMeasured absent
+    entirely.
+
+    Built by THE SAME builder as /markets/<slug> and /markets/<slug>.json, for
+    the reason r-one-builder gives: a second Dataset writer for one market
+    drifts immediately, and this family has spent four PRs on exactly that
+    failure. Every measure states its own basis, and the DCPI composite states
+    its observation time, because everything on this page comes from one
+    market_power_scores row read at request time — /pockets stores nothing, so
+    there is no second vintage to reconcile.
+
+    `market_entity` points `url` at /markets/<slug>, NOT at this page, and that
+    is right: the Dataset describes the market, whose canonical home is the
+    market page. Saying so here is what keeps one market to one identity.
+
+    Fail-soft: an empty object rather than a broken page.
+    """
+    try:
+        _r = _RANK
+        return json.dumps(market_entity(
+            d.get("market_slug"), d.get("market_name") or d.get("market_slug"),
+            {
+                "dcpi_score":           d.get("dcpi_score"),
+                "excess_power_score":   d.get("excess_power_score"),
+                "constraint_score":     d.get("constraint_score"),
+                "time_to_power_months": d.get("time_to_power_months"),
+                "rank_score":           d.get("rank_score"),
+                "rank_label":           _r.label,
+                "rank_basis":           _r.basis + str(d.get("market_slug") or ""),
+                "dcpi_as_of":           d.get("computed_at"),
+            },
+            canonical_slug=d.get("market_slug"),
+            as_of=d.get("computed_at")), ensure_ascii=False)
+    except Exception as e:   # pragma: no cover - structured data never breaks a page
+        logger.warning("pocket dataset ld+json unavailable: %s", e)
+        return "{}"
+
+
 @pockets_bp.route("/pockets/<slug>", methods=["GET"])
 def pocket_detail_page(slug):
     """Per-market HTML detail page — SEO-friendly, schema.org Article
@@ -1302,6 +1370,7 @@ def pocket_detail_page(slug):
         return Response(html, mimetype="text/html"), 404
 
     html = render_template_string(_POCKET_DETAIL_HTML, d=detail,
+                                  dataset_ld=_pocket_dataset_ld(detail),
                                   **_rank_context())
     resp = Response(html, mimetype="text/html")
     resp.headers["Cache-Control"] = "public, max-age=600, must-revalidate"

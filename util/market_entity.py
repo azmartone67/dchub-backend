@@ -121,6 +121,63 @@ def market_entity(slug: str, name: str, stats: dict | None, *,
             "description": _dcpi_desc,
         })
 
+    # r-pockets-structured-data (2026-09-06): the three DCPI COMPONENTS and,
+    # when a surface ranks on one, its deployability rank. Optional and
+    # omitted when absent, so /markets/<slug> and its .json twin are
+    # byte-unchanged until they choose to pass them — /pockets/<slug> was the
+    # surface that needed them, having published four numbers as prose with an
+    # ld+json carrying no variableMeasured at all.
+    #
+    # Each states its own direction, because these are the scores where a
+    # reader's intuition is wrong half the time: HIGHER excess is better,
+    # LOWER constraint is better, and the two are not two views of one axis.
+    for _key, _name, _max, _tech in (
+        ("excess_power_score", "Excess Power Score", 100,
+         "DCPI excess-power headroom, 0-100. HIGHER IS BETTER: 0 = no "
+         "uncommitted headroom, 100 = ample. Not a capacity and not a "
+         "percentage of anything."),
+        ("constraint_score", "Grid Constraint Score", 100,
+         "DCPI grid-constraint index, 0-100. LOWER IS BETTER: 0 = clear, "
+         "100 = blocked. Not the inverse of the excess-power score; the two "
+         "measure different things and can be high together."),
+    ):
+        _v = stats.get(_key)
+        if _v is not None:
+            _m = {"@type": "PropertyValue", "name": _name,
+                  "value": _v, "maxValue": _max,
+                  "measurementTechnique": _tech, "description": _tech}
+            if stats.get("dcpi_as_of"):
+                _m["description"] += f" Observed {str(stats['dcpi_as_of'])[:19]}."
+            measured.append(_m)
+
+    _ttp = stats.get("time_to_power_months")
+    if _ttp is not None:
+        _ttp_tech = ("DC Hub estimate of interconnection-to-energised months "
+                     "for new load in this market. An estimate, not a utility "
+                     "commitment or a quoted queue position.")
+        measured.append({
+            "@type": "PropertyValue", "name": "Time to Power",
+            "value": round(float(_ttp), 1), "unitCode": "MON",
+            "unitText": "months",
+            # Both fields, like every other measure here: a consumer reading
+            # only `description` must not get a bare number with no basis.
+            "measurementTechnique": _ttp_tech, "description": _ttp_tech,
+        })
+
+    # A ranking is NOT a DCPI score, and the one place it must say so is here
+    # — structured data is what an agent cites without reading the page.
+    # `rank_label` / `rank_basis` come from util.deployability_rank via the
+    # calling surface, never typed here, so there is one account of what the
+    # number is.
+    _rank = stats.get("rank_score")
+    if _rank is not None and stats.get("rank_label"):
+        measured.append({
+            "@type": "PropertyValue", "name": stats["rank_label"],
+            "value": _rank,
+            "measurementTechnique": stats.get("rank_basis") or "",
+            "description": stats.get("rank_basis") or "",
+        })
+
     out = {
         "@context": "https://schema.org",
         "@type": "Dataset",
