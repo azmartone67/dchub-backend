@@ -43,6 +43,33 @@ def _upstream_suppressed() -> float:
     return max(0.0, _NREL_DOWN_UNTIL - _time.time())
 
 
+NREL_SOURCE_ID = os.environ.get("NREL_HEARTBEAT_SOURCE", "nrel_pvwatts")
+
+
+def _beat(status: str, error=None) -> None:
+    """Report this lane's liveness to the same surface every other
+    ingestor uses (dchub_heartbeat).
+
+    ★ WHY, 2026-09-06. This lane had been returning 502 for an unknown
+    length of time — developer.nrel.gov has no DNS records at all — and
+    nothing said so. The breaker logs ONCE per window and the caller gets a
+    tidy 'temporarily unavailable', which is exactly how a dead lane stays
+    invisible for months (cf. the Gemini lane, dead on a retired model and
+    swallowed by a bare `return ""`). A heartbeat makes the deadness a
+    fact somebody can see instead of a silence.
+
+    Fires only on a state EDGE (a success, or the moment the breaker
+    trips), never per request — this runs on a user-facing lookup path.
+    Never raises: a monitoring call must not break the thing it watches.
+    """
+    try:
+        from dchub_heartbeat import heartbeat as _hb
+        _hb(NREL_SOURCE_ID, status=status,
+            error=(_scrub_secret(error) if error else None))
+    except Exception:
+        pass
+
+
 def _trip_breaker() -> None:
     global _NREL_DOWN_UNTIL
     if NREL_BREAKER_SECONDS > 0:
@@ -66,6 +93,17 @@ class NRELClient:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.environ.get("NREL_API_KEY", "DEMO_KEY")
         self.session = requests.Session()
+
+    def _auth_headers(self) -> dict:
+        """Credential in a HEADER, never in params.
+
+        params= becomes a query string, and BASE_URL points at our own
+        dchub.cloud worker proxy — a zone whose CF request logs record the
+        full path, and whose 300s response cache keys on it. The worker
+        reads X-Api-Key and re-attaches it upstream (dchub-frontend
+        #1397). See tests/test_no_provider_key_in_url.py."""
+        return {"X-Api-Key": self.api_key}
+
     
     # =========================================================================
     # PVWATTS - SOLAR POTENTIAL
@@ -96,7 +134,6 @@ class NRELClient:
         url = f"{self.BASE_URL}/pvwatts/v8.json"
         
         params = {
-            "api_key": self.api_key,
             "lat": lat,
             "lon": lon,
             "system_capacity": system_capacity_kw,
@@ -124,11 +161,13 @@ class NRELClient:
                     "retry_after_s": int(_left), "breaker": "open"}
 
         try:
-            response = self.session.get(url, params=params, timeout=30)
+            response = self.session.get(url, params=params, timeout=30,
+                                        headers=self._auth_headers())
             response.raise_for_status()
             data = response.json()
             
             if "outputs" in data:
+                _beat("success")
                 return self._format_solar_response(data, lat, lon)
             elif "errors" in data:
                 return {"error": data["errors"], "status": "failed"}
@@ -143,6 +182,7 @@ class NRELClient:
             # the breaker so the next NREL_BREAKER_SECONDS of polls do not
             # re-dial a host that is down.
             _trip_breaker()
+            _beat("error", e)
             try:
                 import logging
                 logging.getLogger(__name__).warning(
@@ -246,7 +286,6 @@ class NRELClient:
         url = f"{self.BASE_URL}/wind-toolkit/v2/wind/wtk-download.json"
         
         params = {
-            "api_key": self.api_key,
             "lat": lat,
             "lon": lon,
             "year": year,

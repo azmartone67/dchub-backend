@@ -169,11 +169,6 @@ _NO_HEADER_AUTH = {
     # answers {"api_key": ["This is a required argument."]} (verified
     # 2026-09-06). Their design; the key must ride in the query.
     ("routes/signup_enrichment.py", "api_key"),
-    # NREL is reached through OUR OWN dchub.cloud worker proxy (Railway cannot
-    # resolve developer.nrel.gov — .gov egress block, see NREL_API_BASE). The
-    # key never crosses a third party, and moving it to a header needs the
-    # worker in dchub-frontend to forward it. Tracked separately.
-    ("enhancements/nrel_renewable.py", "api_key"),
 }
 
 
