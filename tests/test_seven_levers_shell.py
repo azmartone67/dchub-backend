@@ -350,11 +350,33 @@ def test_repo_worker_is_canon_clean_and_current():
     # 2250 -> 2326, CF reporting success:true for both. The asset tier now caches
     # via the Cache API keyed on the PUBLIC request (and passes edgeTtl 0 so the
     # unpurgeable copy is not recreated), which makes purge-by-URL work.
+    # ★ PASTED — measured live 2026-09-06:
+    #   x-dc-worker-version: 4.9.56-public-cache-key
+    #
+    # 4.9.56 -> 4.9.57-manifest-version-live (2026-09-06): /mcp/manifest and
+    # /mcp/manifest.json were the last surfaces still answering with the
+    # hardcoded MCP_SERVER_INFO.version, '2.5.0'. v4.9.45 had put the three
+    # .well-known surfaces on the origin's canon and its own comment gave the
+    # reason — "Fixing only mcp.json would have created a NEW split-brain, two
+    # well-known surfaces on the same zone disagreeing about the server's own
+    # version" — but this handler was missed, so the split-brain moved one path
+    # further out. Swept the day dchub-mcp-server shipped 2.12.8, Pragma:
+    # no-cache on every read:
+    #
+    #   /.well-known/mcp.json              2.12.8  tools_count=85  desc: —
+    #   /.well-known/mcp/server-card.json  2.12.8  tools_count=85  desc: —
+    #   /.well-known/agent.json            2.12.8                  desc: —
+    #   /mcp/manifest                      2.5.0   tools_count=85  desc: "83 tools"
+    #   /mcp/manifest.json                 2.5.0   tools_count=85  desc: "83 tools"
+    #
+    # ★ tools_count was ALREADY live (v4.9.29), so one JSON body asserted 85
+    # tools, 83 tools and version 2.5.0 at once. The live half is what makes the
+    # dead half credible.
     # ★ PASTE OUTSTANDING — merging does not ship this.
-    # Verify with (want 4.9.56):
+    # Verify with (want 4.9.57):
     #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.56-public-cache-key'" in src
+    assert "WORKER_VERSION = '4.9.57-manifest-version-live'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
