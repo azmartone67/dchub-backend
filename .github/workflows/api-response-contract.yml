@@ -28,6 +28,14 @@ on:
   push:
     branches: [main]
   workflow_dispatch: {}
+  schedule:
+    # ★2026-09-06 — schedule fallback. This lane used to run only on push to
+    # main, and a push made with GITHUB_TOKEN creates NO workflow run. When
+    # auto-enable-automerge armed merges with that token, 17 of 24 commits
+    # landed without this ever running. The token is fixed; this is the
+    # belt. A post-merge gate reachable only by `push` is one bot merge away
+    # from silence, whatever the token happens to be today.
+    - cron: '18 */6 * * *'
 
 permissions:
   contents: read

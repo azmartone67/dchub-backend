@@ -35,6 +35,18 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    # ★2026-09-06 — a post-merge gate reachable only by `push` is one bot
+    # merge away from silence: GitHub creates NO workflow run for a push made
+    # with GITHUB_TOKEN, and 17 of 24 commits landed that way in the 6h after
+    # auto-enable-automerge shipped. The token is fixed; this is the belt, and
+    # it holds for any future bot push too.
+    # DAILY, not 6-hourly: this suite runs ~20-26 minutes. Its push-to-main run
+    # is the stale-main backstop that tests/test_vault_map_generator.py
+    # ::test_the_push_side_backstop_still_runs_the_suite exists to protect, so it
+    # must not depend on the push event alone.
+    - cron: '51 7 * * *'
+  workflow_dispatch: {}
 
 jobs:
   syntax-check:

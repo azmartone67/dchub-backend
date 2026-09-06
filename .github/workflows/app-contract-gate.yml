@@ -24,6 +24,14 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    # ★2026-09-06 — a post-merge gate reachable only by `push` is one bot
+    # merge away from silence: GitHub creates NO workflow run for a push made
+    # with GITHUB_TOKEN, and 17 of 24 commits landed that way in the 6h after
+    # auto-enable-automerge shipped. The token is fixed; this is the belt, and
+    # it holds for any future bot push too.
+    - cron: '49 */6 * * *'
+  workflow_dispatch: {}
 
 concurrency:
   group: app-contract-${{ github.event.pull_request.number || github.sha }}

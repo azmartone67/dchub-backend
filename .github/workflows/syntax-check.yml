@@ -2,6 +2,16 @@ name: Syntax Check
 on:
   push:
     branches: [main]
+  schedule:
+    # ★2026-09-06 — a post-merge gate reachable only by `push` is one bot
+    # merge away from silence: GitHub creates NO workflow run for a push made
+    # with GITHUB_TOKEN, and 17 of 24 commits landed that way in the 6h after
+    # auto-enable-automerge shipped. The token is fixed; this is the belt, and
+    # it holds for any future bot push too.
+    # This one had NO pull_request trigger either — main pushes were its only
+    # run, so it went fully dark for those 17 commits.
+    - cron: '46 */6 * * *'
+  workflow_dispatch: {}
 
 # 2026-08-10: this workflow files a GitHub issue when it fails, but the repo's
 # default_workflow_permissions is "read", so every attempt died with

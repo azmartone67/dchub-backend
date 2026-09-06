@@ -3,6 +3,17 @@ name: Deploy Guard
 on:
   push:
     branches: [main]
+  workflow_dispatch: {}
+  schedule:
+    # ★2026-09-06 — schedule fallback. This lane used to run only on push to
+    # main, and a push made with GITHUB_TOKEN creates NO workflow run. When
+    # auto-enable-automerge armed merges with that token, 17 of 24 commits
+    # landed without this ever running. The token is fixed; this is the
+    # belt. A post-merge gate reachable only by `push` is one bot merge away
+    # from silence, whatever the token happens to be today.
+    # This one was the most exposed of the five: push-only, with no
+    # pull_request run and no manual escape hatch either.
+    - cron: '36 */3 * * *'
 
 # 2026-08-10: this workflow files a GitHub issue when it fails, but the repo's
 # default_workflow_permissions is "read", so every attempt died with
