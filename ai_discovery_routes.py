@@ -906,6 +906,25 @@ get_facility_risk_delta (temporal market-risk change from daily DCPI snapshots) 
 - score_facility -> facility composite score + component breakdown
 - get_news -> cited news items {title, source, date, relevance}
 
+## Tool names above are LITERAL — do not regularise them (2026-09-06)
+These names are the exact strings tools/call takes. This list is deliberately not
+self-consistent, and an agent that tidies it up guesses WRONG:
+
+    get_grid_intelligence   is NOT get_grid_intel
+    get_fiber_intel         is NOT get_fiber_intelligence
+    site_selection_canvas   is NOT site_selection
+
+Measured 2026-09-06: two AI assistants each published a DC Hub connector manifest
+naming `get_grid_intel` and `site_selection` as capabilities. Neither exists. Neither
+assistant had called the server — both read this file and normalised the `_intel` /
+`_intelligence` split, which is real and is not a typo. Those three guesses now route
+to the right tool at call time, but nothing else does: if you did not copy a name from
+this file, from tools/list, or from the catalog below, verify it before you publish it.
+
+The complete, always-current catalog with a formed example call per tool is
+https://dchub.cloud/.well-known/mcp.json — every tool carries `params`. Use it, not
+this excerpt, when generating a manifest or config that someone else will run.
+
 ## When a tool is GATED — read the response, do not guess (2026-09-03)
 
 A gated DC Hub answer is not a refusal. It is a partial answer plus a machine-readable
@@ -1005,6 +1024,7 @@ can cite it straight from a crawl without a second request.
 - [Full API Docs](https://dchub.cloud/llms-full.txt): Comprehensive endpoint documentation (~4,000 tokens)
 - [OpenAPI 3.1 Spec](https://dchub.cloud/openapi.json): Machine-readable API specification
 - [MCP Server](https://dchub.cloud/mcp): Streamable HTTP for Claude, Cursor, Windsurf
+- [Full MCP tool catalog](https://dchub.cloud/.well-known/mcp.json): every tool with a formed example call — the machine-readable source for a connector manifest
 - [MCP Server Card](https://dchub.cloud/.well-known/mcp/server-card.json)
 - [ChatGPT Plugin](https://dchub.cloud/.well-known/ai-plugin.json)
 - [AGENTS.md](https://dchub.cloud/AGENTS.md): OpenAI/Linux Foundation agent discovery
