@@ -1,5 +1,5 @@
 {
-  "_comment": "PINNED COVERAGE FLOORS \u2014 a test whose principal repo scan falls below its floor fails. Regenerate with scripts/rescan_floors.py ONLY when the code legitimately changed shape, never to make a red build green. See tests/_scan_floors.py.",
+  "_comment": "PINNED COVERAGE FLOORS — a test whose principal repo scan falls below its floor fails. Regenerate with scripts/rescan_floors.py ONLY when the code legitimately changed shape, never to make a red build green. See tests/_scan_floors.py.",
   "floors": {
     "test_admin_credential_strength.py": {
       "pglob": 660
@@ -159,6 +159,9 @@
     },
     "test_llm_spend.py": {
       "pglob": 660
+    },
+    "test_no_provider_key_in_url.py": {
+      "pglob": 1950
     },
     "test_outbound_claims_are_substantiated.py": {
       "glob": 4
