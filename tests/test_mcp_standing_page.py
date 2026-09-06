@@ -188,14 +188,27 @@ def test_tool_count_is_gated_on_the_same_evidence_as_the_checkmark(ms):
     it, so an unverified row shows neither a date nor a count.
     ★2026-08-08 (SH52-033/034): tightened — the count now ALSO requires the row
     to be FRESH and the count PLAUSIBLE vs canon (the 40/30 were verified-but-
-    implausible), and the check itself derives from `verified`."""
-    src = _read(os.path.join("routes", "mcp_standing.py"))
-    i = src.index("def _verified_map")
-    body = src[i:src.index("def _registries_live")]
-    # the count is gated on freshness + plausibility (which subsume verification)
-    assert '"tools": int(tools) if (tools and fresh and _tools_plausible(tools, canon_tools)) else None' in body
-    # and freshness is only granted to a verified row
-    assert 'fresh = verified and _is_fresh(when)' in body
+    implausible), and the check itself derives from `verified`.
+
+    ★2026-09-05: this asserted the literal SOURCE TEXT of the gating expression
+    inside _verified_map. That form passes on dead code and breaks on a
+    refactor that preserves the rule, which is what happened when the decision
+    was extracted into _publishable_count so it could be executed at all. Now
+    asserts the RULE, by running it.
+    """
+    import datetime as _dt
+    now = _dt.datetime(2026, 9, 5, 12, 0, tzinfo=_dt.timezone.utc)
+    fresh_when = now - _dt.timedelta(days=1)
+
+    # the happy path publishes
+    assert ms._publishable_count(83, "verified", fresh_when, 83, now) == 83
+    # verification is required — an unverified row shows no count
+    assert ms._publishable_count(83, "broken", fresh_when, 83, now) is None
+    # freshness is required
+    assert ms._publishable_count(
+        83, "verified", now - _dt.timedelta(days=30), 83, now) is None
+    # plausibility vs canon is required — 30 was the live parse artifact
+    assert ms._publishable_count(30, "verified", fresh_when, 83, now) is None
 
 
 def test_a_lagging_listing_still_shows_when_it_was_checked(ms):
