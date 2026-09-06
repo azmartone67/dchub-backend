@@ -37,8 +37,8 @@ Endpoints:
 
 Safety:
   * Kill switch: AI_AGENT_EXPANSION_DISABLE=1
-  * Seed is bounded: at most len(TOP_10_TOOLS) × len(TUNED_PLATFORMS)
-    Claude calls per /seed invocation (110 at 11 platforms)
+  * Seed is bounded: at most len(TUNED_TOOLS) × len(TUNED_PLATFORMS)
+    Claude calls per /seed invocation (132 at 11 tools x 12 platforms)
   * Read endpoint is public (descriptions are not secret) but cached 5min
   * Generator is admin-keyed
 """
@@ -81,7 +81,10 @@ def _disabled() -> bool:
 
 
 # ── Config: top-10 tools + tuned platforms ───────────────────────────
-TOP_10_TOOLS = [
+# ★ RENAMED from TUNED_TOOLS (2026-09-06). The list is no longer ten, and a
+# constant whose name states its own length becomes a lie the moment it grows —
+# the next reader trusts the name over the contents.
+TUNED_TOOLS = [
     "search_facilities",
     "get_facility",
     "get_market_intel",
@@ -92,6 +95,34 @@ TOP_10_TOOLS = [
     "compare_sites",
     "get_pipeline",
     "site_selection_canvas",
+    # ── added 2026-09-06 ────────────────────────────────────────────────
+    # get_market_dcpi_rank was the widest-reach UNTUNED tool. Measured over
+    # mcp_tool_calls, 30d, net of chain-hire and our own buckets/registries:
+    #
+    #     clients  calls  tool                      tuned?
+    #          13    135  search_facilities         yes
+    #          10     92  get_market_dcpi_rank      NO   <-- this
+    #           9    456  analyze_site              no (95% ONE caller)
+    #           8     17  get_interconnection_queue NO
+    #
+    # ★ RANKED BY DISTINCT CLIENTS, NOT CALLS, and that is the whole point.
+    # By raw volume the top tool was `search` at 1,481 calls — of which 1,473
+    # were a single automated client (chain-hire). A description cannot change
+    # the behaviour of a caller that already invokes the tool 1,473 times; it
+    # can only influence an agent CHOOSING between tools. Breadth measures that,
+    # volume measures whoever loops hardest. Two earlier rankings in this same
+    # investigation were wrong because they used volume.
+    #
+    # get_market_dcpi_rank survives the decomposition: its 92 calls come from 10
+    # distinct clients with the top one at 37% (grok 24, Anthropic/API 16,
+    # mcp 13, claude 12) — genuinely distributed demand.
+    #
+    # It is also the tool with the least description leverage today: it answers
+    # "should I build HERE" for one market with a BUILD/CAUTION/AVOID verdict, a
+    # 0-100 composite, time_to_power_months AND a quotable ~100-word analyst
+    # narrative — and none of that reaches a tuned platform, because the inline
+    # 562-char fallback is what they receive.
+    "get_market_dcpi_rank",
 ]
 
 # Each entry: (canonical name, lowercase aliases for UA-sniff, voice cue)
@@ -152,9 +183,11 @@ TUNED_PLATFORMS = [
      "and units — Kimi K2 selects tools on concrete capability claims."),
 ]
 
-# Back-compat alias — the seed shipped 2026-06-07 as literally the top-5;
-# keep the old name pointing at the full tuned list.
-TOP_5_PLATFORMS = TUNED_PLATFORMS
+# ★ TOP_5_PLATFORMS deleted 2026-09-06. It was a back-compat alias for a list
+# that has been 12 platforms since July, and it had ZERO references anywhere in
+# any of the three repos — a dead constant whose name asserted a false count.
+# Found by the guard added for the TUNED_TOOLS rename, which flagged it while I
+# was only looking at the tools list. Same defect, same fix.
 
 
 PLATFORM_MAP = {alias: canon for canon, aliases, _ in TUNED_PLATFORMS for alias in aliases}
@@ -283,7 +316,7 @@ def _canonical_descriptions() -> dict:
     scope (an inflated facility count vs the canonical 15,000+) and the seed baked
     the stale figure into every per-platform rewrite.
 
-    Returns {tool_name: description} for TOP_10_TOOLS, starting from
+    Returns {tool_name: description} for TUNED_TOOLS, starting from
     GENERIC_DESCRIPTIONS and overlaying whatever the live endpoint returns.
     Fully fail-soft: any fetch/parse error leaves the frozen fallback in place so
     the seed still runs when the MCP server is unreachable."""
@@ -299,7 +332,7 @@ def _canonical_descriptions() -> dict:
             timeout=20)
         data = resp.json()
         tools = ((data.get("result") or {}).get("tools")) or []
-        wanted = set(TOP_10_TOOLS)
+        wanted = set(TUNED_TOOLS)
         found = 0
         for t in tools:
             name = t.get("name")
@@ -308,7 +341,7 @@ def _canonical_descriptions() -> dict:
                 out[name] = desc
                 found += 1
         logger.info("[tool-tuner] canonical descriptions: %d/%d tools from live "
-                    "tools/list (%s)", found, len(TOP_10_TOOLS), url)
+                    "tools/list (%s)", found, len(TUNED_TOOLS), url)
     except Exception as e:
         logger.warning("[tool-tuner] live tools/list fetch failed (%s); using "
                        "frozen GENERIC_DESCRIPTIONS", e)
@@ -496,7 +529,7 @@ def _claims_enabled() -> bool:
     return os.environ.get("TOOL_COPY_CLAIMS_ENABLED", "").strip() == "1"
 
 
-# ★ BOUNDED. A forced reseed is up to len(TOP_10_TOOLS) x len(TUNED_PLATFORMS)
+# ★ BOUNDED. A forced reseed is up to len(TUNED_TOOLS) x len(TUNED_PLATFORMS)
 # = 120 upserts on ONE request, and register_claim opens its OWN connection per
 # call (it must — it may not ride the producer's transaction). 120 sequential
 # connect/close inside a 40s request is real pool pressure on a pool that has
@@ -727,7 +760,7 @@ def seed_variants():
 
         # Build the work list first (skip existing unless force).
         jobs = []  # (canon, tool_name, generic, voice)
-        for tool_name in TOP_10_TOOLS:
+        for tool_name in TUNED_TOOLS:
             generic = canonical.get(tool_name, tool_name)
             for canon, _aliases, voice in TUNED_PLATFORMS:
                 if (canon, tool_name) in existing and not force:
@@ -849,10 +882,10 @@ def coverage():
         matrix = {}
         for canon, _, _ in TUNED_PLATFORMS:
             row = {}
-            for tool in TOP_10_TOOLS:
+            for tool in TUNED_TOOLS:
                 row[tool] = (canon in all_tuned and tool in all_tuned[canon])
             matrix[canon] = row
-        total_cells = len(TUNED_PLATFORMS) * len(TOP_10_TOOLS)
+        total_cells = len(TUNED_PLATFORMS) * len(TUNED_TOOLS)
         filled = sum(1 for canon in matrix for t in matrix[canon] if matrix[canon][t])
         # Per-platform freshness — the whole point of the reseed. A fresh, non-
         # cached read so a monitor can assert every platform's newest row is
@@ -879,7 +912,7 @@ def coverage():
             except Exception: pass
         return jsonify(ok=True, total_cells=total_cells, filled=filled,
                        percent=round(100 * filled / max(total_cells, 1), 1),
-                       matrix=matrix, freshness=freshness, top_tools=TOP_10_TOOLS,
+                       matrix=matrix, freshness=freshness, top_tools=TUNED_TOOLS,
                        top_platforms=[p for p, _, _ in TUNED_PLATFORMS])
     finally:
         _put_db(c)
@@ -934,8 +967,8 @@ def adoption():
 def _smoke():
     logger.info("[ai_platform_tool_tuner] loaded · disabled=%s · %d cells "
                 "(%d tools × %d platforms)", _disabled(),
-                len(TOP_10_TOOLS) * len(TUNED_PLATFORMS),
-                len(TOP_10_TOOLS), len(TUNED_PLATFORMS))
+                len(TUNED_TOOLS) * len(TUNED_PLATFORMS),
+                len(TUNED_TOOLS), len(TUNED_PLATFORMS))
 
 
 _smoke()
