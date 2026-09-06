@@ -75,6 +75,14 @@ WANT = {
     # resolution + the guard's new vocabulary
     "_market_name_candidates", "measured_market_facts",
     "_unscored_market_facts", "_gather_market_facts",
+    # r-brief-live-score (2026-09-06): the render path reads the DCPI
+    # score live. EXTRACTED, not stubbed — overlay_live_score, _drifted
+    # and live_score_note are pure, and live_dcpi_reading only needs the
+    # `_conn` the namespace already supplies, so the render tests exercise
+    # the real overlay. A stub here would let the page publish a stored
+    # score while this file stayed green.
+    "read_live_stats", "live_dcpi_reading", "overlay_live_score",
+    "_drifted", "live_score_note",
     "_brief_guard_reason", "_guard_placeholder_text", "generate_for_market",
     # the render path a seeded placeholder must not shadow
     "_render_neutral_market_page", "_market_dataset_ld",
@@ -209,6 +217,8 @@ def _ns(**overrides):
         # while /markets read a retired twin's frozen score.
         "canonical_slug": canonical_slug,
         "PUBLISHED_ONLY": PUBLISHED_ONLY,
+        # r-brief-live-score (2026-09-06): the overlay's drift threshold.
+        "_SCORE_DRIFT_EPSILON": _consts()["_SCORE_DRIFT_EPSILON"],
     }
     # Real module constants — never hand copies.
     # r-market-canon-split (2026-09-05): _CRON_FLAGSHIP_METRO_SLUGS is gone —

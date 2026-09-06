@@ -95,6 +95,18 @@ def market_entity(slug: str, name: str, stats: dict | None, *,
 
     dcpi = stats.get("dcpi_score")
     if dcpi is not None:
+        # r-brief-live-score (2026-09-06): the DCPI measure can be FRESHER than
+        # the node. /markets/<slug> renders a stored narrative whose facility
+        # and capacity readings are the brief's, but reads the score live —
+        # they move on different clocks (DCPI 4x/day, briefs ~monthly). The
+        # node-level dateModified stays the brief's, because it is the vintage
+        # of most of what is in here; stamping it with the score's date would
+        # over-claim the counts. So the score states its own, in the one place
+        # schema.org lets a single PropertyValue carry free text.
+        _dcpi_at = stats.get("dcpi_as_of")
+        _dcpi_desc = "DC Hub Power Index — buildability composite, 0-100."
+        if _dcpi_at:
+            _dcpi_desc += f" Observed {str(_dcpi_at)[:19]}."
         measured.append({
             "@type": "PropertyValue", "name": "DCPI Score",
             "value": dcpi, "maxValue": 100,
@@ -106,7 +118,7 @@ def market_entity(slug: str, name: str, stats: dict | None, *,
                 "(excess-power headroom, grid constraint, time-to-power), "
                 "verdict-gated. Comparable only against other DCPI scores; not "
                 "a capacity, a ranking position, or a percentage."),
-            "description": "DC Hub Power Index — buildability composite, 0-100.",
+            "description": _dcpi_desc,
         })
 
     out = {
