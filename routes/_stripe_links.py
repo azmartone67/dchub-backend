@@ -26,11 +26,14 @@ STRIPE_LINKS = {
     # new amounts provision + email a key correctly.
     "developer":       "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo (HELD 2026-06-19 owner call — builder on-ramp; the $79 link 00w28s3kK0x7f5355UaZi0k was minted then reverted/deactivated)
     # ── r-price-collapse (2026-09-05, owner call) ────────────────────
-    # Pro IS $99/mo. This key now points at the SAME live link the $99
-    # founding SKU used (r-founder99), because that link is already proven:
-    # it charges $99, its webhook branch provisions api_tier 'pro', and 10
-    # current subscriptions came through it. Retired $299 link (kept here so
-    # a grandfathered sub or an old URL is still traceable, NOT advertised):
+    # Pro IS $99/mo. It BRIEFLY pointed at the $99 founding link (r-founder99)
+    # on 2026-09-05, because that link was already proven: it charges $99, its
+    # webhook branch provisions api_tier 'pro', and 10 subscriptions came
+    # through it. That is NO LONGER TRUE — see the ★ DONE note below, which
+    # gave Pro its own link the same day. This paragraph is kept for the
+    # history, not as a description of the current value.
+    # Retired $299 link (kept here so a grandfathered sub or an old URL is
+    # still traceable, NOT advertised):
     #     7sY7sM9J8enX7CB69YaZi0l  ($299/mo, r-reprice 2026-06-19)
     #     eVq5kE4oOfs13mleGuaZi0h  ($199/mo, pre-r-reprice)
     # ★ DONE 2026-09-05 (owner asked): Pro has its OWN $99/mo link now, so a
@@ -53,7 +56,23 @@ STRIPE_LINKS = {
     # r-founder99 (2026-06-26): $99/mo Founding Member recurring, limited
     # licenses (see /api/founding-members counter). plink_1Tml5YJ9ey2ATcQlbQSMZRu4,
     # price_1Tml5XJ9ey2ATcQl0pbU4htM. Webhook → founding → ('founding','pro').
-    # LEGACY ALIAS since r-price-collapse — identical URL to "pro" above.
+    # ★ NOT A URL ALIAS, AND THE DISTINCTNESS IS THE POINT. This comment read
+    # "identical URL to 'pro' above" from 2026-09-05 until 2026-09-06. It was
+    # true for a few hours: r-price-collapse first repointed "pro" AT this
+    # link, and then the ★ DONE note above gave Pro its own newly-minted link
+    # the same day. The second change did not come back and correct this line.
+    #     pro       dRm28s2gGcfP6yx0PEaZi0p   plink_1UCTZKJ9ey2ATcQlByJCXN3W
+    #     founding  14A9AUcVk4Nn1edcymaZi0o   plink_1Tml5YJ9ey2ATcQlbQSMZRu4
+    # Both are documented $99/mo (the trailing comments; Stripe is the only
+    # authority on the charged amount — checkout_integrity_master_shell's
+    # _lane_charge_agreement asks it daily). They are SEPARATE links so the
+    # webhook can tell the two apart: this one maps founding → ('founding',
+    # 'pro'), while Pro's carries metadata plan=pro_monthly → ('pro','pro').
+    # Collapsing them would re-stamp every new Pro buyer plan_name='founding',
+    # which is the exact bug minting Pro's own link was meant to fix. It is a
+    # LEGACY TIER ALIAS (same price, same access), never a URL alias.
+    # Pinned by tests/test_stripe_link_canonical.py::
+    #   test_founding_and_pro_are_distinct_links.
     # Kept so every ?tier=founding link, email and saved bookmark still
     # resolves; the founding PROGRAM (scarcity counter, separate card) is
     # retired from the public page because $99 is simply the list price now.

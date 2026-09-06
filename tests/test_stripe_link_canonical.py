@@ -139,6 +139,55 @@ def test_founding_price_matches_canon():
     assert tier_registry.price("founding") == 99
 
 
+def test_founding_and_pro_are_distinct_links():
+    """'founding' is a legacy TIER alias, never a URL alias.
+
+    THE COMMENT THIS REPLACES. From 2026-09-05 to 2026-09-06 _stripe_links.py
+    said of "founding": `identical URL to "pro" above`, and tier_registry said
+    new buyers are sold pro "on the same Stripe link". Both were true for a few
+    hours — r-price-collapse first repointed "pro" AT the founding link — and
+    both went stale the same day, when Pro was given its own newly-minted link
+    and nobody came back to correct the two sentences that described the old
+    arrangement. Three surfaces asserted an identity the code did not have.
+
+    WHY IT MATTERS THAT THEY ARE SEPARATE. The two links carry different
+    webhook outcomes on purpose: founding maps to ('founding', 'pro'), while
+    Pro's link carries metadata plan=pro_monthly and maps to ('pro', 'pro').
+    Collapsing them would stamp every new Pro buyer plan_name='founding' —
+    precisely the bug that minting Pro's own link was meant to fix. So this is
+    not a style rule about comments; it pins a behavioural invariant that a
+    well-meaning "these are the same, let's dedupe" edit would silently undo.
+
+    NOTE ON SCOPE. Distinct links are asserted here; the AMOUNT each one
+    charges is Stripe's to answer, and checkout_integrity_master_shell's
+    _lane_charge_agreement asks it daily. This test deliberately does not
+    pretend to check that.
+    """
+    from routes._stripe_links import STRIPE_LINKS
+
+    pro = STRIPE_LINKS["pro"]
+    founding = STRIPE_LINKS["founding"]
+
+    assert pro and founding, "one of the two canonical $99 links is missing"
+    assert pro != founding, (
+        "STRIPE_LINKS['pro'] and STRIPE_LINKS['founding'] are the SAME URL "
+        f"({pro}). They must stay distinct: the webhook tells a Pro buyer from "
+        "a grandfathered founding member by which link they came through, and "
+        "sharing one re-stamps new Pro buyers as plan_name='founding'. If this "
+        "collapse is deliberate, the webhook branch in main.py "
+        "(plan_from_metadata -> plan_tier_map) has to change in the same commit."
+    )
+
+    # Sharing a URL is NOT forbidden in general — metered and pack5 are the
+    # same one-time pack and legitimately share. The rule is specific to these
+    # two subscription tiers, so assert the general case still holds and this
+    # test is not read as "no two keys may share".
+    assert STRIPE_LINKS["metered"] == STRIPE_LINKS["pack5"], (
+        "metered and pack5 no longer share a URL — that is fine, but this "
+        "test's premise (sharing is legal in general) needs re-checking."
+    )
+
+
 # ── the surfaces derive, not hardcode ────────────────────────────────────────
 
 
