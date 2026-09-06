@@ -39,7 +39,36 @@ jobs:
     steps:
       - name: Enable auto-merge (squash)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ★2026-09-06 — NOT GITHUB_TOKEN, and this is the whole point.
+          #
+          # GitHub does not create workflow runs for pushes made with
+          # GITHUB_TOKEN. Arming auto-merge with it made GitHub perform the
+          # merge as app/github-actions, so the push to main that followed
+          # TRIGGERED NOTHING. Measured over the 24 commits that landed in the
+          # 6 hours after this workflow shipped:
+          #
+          #     merged by azmartone67        7 commits   14-15 push workflows each
+          #     merged by app/github-actions 17 commits   ZERO push workflows each
+          #
+          # Not one exception. Five post-merge lanes have no schedule fallback
+          # and so ran on none of those 17: API Response Contract, route-tables
+          # coherence, dataset-inventory, Deploy Guard, refresh-architecture-map.
+          # (They now have one — added in the same change as this line.) The
+          # rest — auto-rollback, Post-Deploy Smoke, QA Health, Link Check,
+          # sitemap-snapshot-rebuild — were delayed to their crons rather than
+          # lost, which is why this stayed invisible: main still healed, just
+          # up to 15 minutes or 4 hours later.
+          #
+          # PR_SUBMIT_TOKEN is proven for exactly this operation in this repo:
+          # refresh-architecture-map.yml arms auto-merge with it, and its merge
+          # (PR #3964) was attributed to azmartone67 and fired 14 push workflows.
+          #
+          # NO FALLBACK TO GITHUB_TOKEN. That is the broken state, and falling
+          # back to it would restore this bug silently. If neither PAT is set the
+          # mutation fails, the step warns and exits 0, auto-merge is simply not
+          # armed, and a human merges — which triggers everything. Failing
+          # towards "a person clicks merge" is the safe direction.
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN || secrets.GH_PAT }}
           PR_ID: ${{ github.event.pull_request.node_id }}
           PR_NUM: ${{ github.event.pull_request.number }}
         run: |
