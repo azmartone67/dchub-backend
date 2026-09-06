@@ -83,7 +83,8 @@ def _shell_lanes(mod_name: str) -> dict:
 def _north_star() -> dict:
     """A couple of headline numbers not on the shells: distinct real agents this
     full week + prior week (the growth signal), and real conversions 30d."""
-    out = {"agents_wk": None, "agents_prev_wk": None, "conv_30d": None}
+    out = {"agents_wk": None, "agents_prev_wk": None,
+           "agents_prev_wtd": None, "conv_30d": None}
     try:
         import psycopg2
         url = os.environ.get("NEON_REPLICA_URL") or os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
@@ -109,6 +110,19 @@ def _north_star() -> dict:
             "WHERE is_real_external AND is_public_ip "
             "AND created_at >= date_trunc('week', now()) - interval '7 days' "
             "AND created_at < date_trunc('week', now())")
+        # ★ agents_wk is WEEK-TO-DATE (>= date_trunc('week', now())), so on
+        # Monday it holds a few hours. Differencing it against the FULL prior
+        # week printed a double-digit collapse every Monday that recovered by
+        # Friday with nothing underneath it -- a decline-and-recovery cycle
+        # manufactured by the window, once a week, in the headline of a digest
+        # whose subject line carries the number. The comparable quantity is the
+        # SAME elapsed slice of the previous week.
+        out["agents_prev_wtd"] = _scalar(
+            "SELECT count(DISTINCT agent_id) FROM mcp_calls_identity "
+            "WHERE is_real_external AND is_public_ip "
+            "AND created_at >= date_trunc('week', now()) - interval '7 days' "
+            "AND created_at < date_trunc('week', now()) - interval '7 days' "
+            "          + (now() - date_trunc('week', now()))")
         out["conv_30d"] = _scalar(
             "SELECT COUNT(*) FROM mcp_conversions "
             "WHERE created_at >= now() - interval '30 days' AND COALESCE(is_test,false)=false")
@@ -200,9 +214,13 @@ def _build_digest() -> dict:
 
     # headline — the growth signal
     aw, apw = ns.get("agents_wk"), ns.get("agents_prev_wk")
-    delta = ("" if aw is None or apw is None else
-             f" ({'+' if aw>=apw else ''}{aw-apw} WoW)")
-    add(f"NORTH STAR · distinct real agents this week: {aw}{delta}  (prev full wk {apw})")
+    apwtd = ns.get("agents_prev_wtd")
+    # Difference like with like: week-to-date against the same elapsed slice of
+    # last week. `apw` stays on the line as context, NOT as the comparand.
+    delta = ("" if aw is None or apwtd is None else
+             f" ({'+' if aw >= apwtd else ''}{aw - apwtd} vs same point last wk)")
+    add(f"NORTH STAR · distinct real agents week-to-date: {aw}{delta}"
+        f"  (same point last wk {apwtd} · prev full wk {apw})")
     add(f"Real conversions 30d: {ns.get('conv_30d')}")
     add("")
 
@@ -212,29 +230,37 @@ def _build_digest() -> dict:
     _act = _activation_signals()
     if _act.get("ok") and _act.get("signals"):
         add("LEADING SIGNALS · the five that move before revenue does")
+        # ★ Counted HERE, off the same ladder that picks _mark. The summary
+        # used to read _act["verdict"], a key read_signals() has never set
+        # (it sets ok/error/signals/session_upgrades_all_time/checkout_binding),
+        # so `.get("verdict") or {}` was always {} and the line printed five
+        # zeros directly beneath five signals that had just said IMPROVING or
+        # WORSENING. One classification, one place -- a second implementation
+        # is how the two drifted apart in the first place.
+        _counts = {"improving": 0, "worsening": 0, "flat": 0,
+                   "unknown": 0, "withheld": 0}
         for _s in _act["signals"]:
             _v = _s.get("value")
             _p = _s.get("prior")
             _vs = "n/a (probe failed)" if _v is None else str(_v)
             _ps = "n/a" if _p is None else str(_p)
             if _s.get("improving") is True:
-                _mark = "IMPROVING"
+                _mark, _bucket = "IMPROVING", "improving"
             elif _s.get("improving") is False:
-                _mark = "WORSENING"
+                _mark, _bucket = "WORSENING", "worsening"
             elif _s.get("direction") == "withheld":
                 _mark = ("WITHHELD — the two weeks straddle a definition change; "
                          "not a trend (see comparability)")
+                _bucket = "withheld"
             elif _s.get("direction") == "flat":
-                _mark = "flat"
+                _mark, _bucket = "flat", "flat"
             else:
-                _mark = "no read"
+                _mark, _bucket = "no read", "unknown"
+            _counts[_bucket] += 1
             add(f"  · {_s['label']}: {_vs} (prev {_ps}, better={_s['better']}) — {_mark}")
-        _vd = _act.get("verdict") or {}
-        if not _vd:
-            _vd = {}
-        add(f"  = {_vd.get('improving', 0)} improving · {_vd.get('worsening', 0)} worsening · "
-            f"{_vd.get('flat', 0)} flat · {_vd.get('unknown', 0)} unread · "
-            f"{_vd.get('withheld', 0)} withheld")
+        add(f"  = {_counts['improving']} improving · {_counts['worsening']} worsening · "
+            f"{_counts['flat']} flat · {_counts['unknown']} unread · "
+            f"{_counts['withheld']} withheld")
     else:
         # A failed read is NOT zero. Say so rather than printing five zeros.
         add(f"LEADING SIGNALS · unavailable this run ({_act.get('error') or 'unknown'}) — "
