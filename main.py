@@ -14320,6 +14320,21 @@ def add_security_headers(response):
             'public, max-age=120, s-maxage=600, stale-while-revalidate=86400')
         response.headers['CDN-Cache-Control'] = 'public, max-age=600'
         response.headers['Vary'] = 'Accept-Encoding'  # drop Cookie — no per-caller variance
+    elif (response.status_code == 200 and request.method in ('GET', 'HEAD')
+          and path == '/api/v1/ops/claims' and 'no-store' not in _existing_cc):
+        # ★2026-09-06 — LEAVE THE ROUTE'S OWN HEADER ALONE. routes/ops_claims.py
+        # emits `public, max-age=0, s-maxage=60, must-revalidate` on a SUCCESSFUL
+        # read and `no-store` on a failed one, because a cached ok=false pins
+        # "the ledger is down" at an edge for a minute after it is fine again.
+        # That distinction is the point, so this cannot be the force-public
+        # branch above — that one stamps every 200 alike and would cache the
+        # failure. It is a `pass`, not a restatement: the TTL lives in one place.
+        #
+        # Without this the header never survived. It carries neither 'private'
+        # nor 'no-store', so it fell past the respect-clause below into the
+        # `/api/` catch-all and came back out as no-store — the shipped header
+        # was INERT, and measuring the origin was the only way to find that.
+        pass
     elif 'private' in _existing_cc or 'no-store' in _existing_cc:
         pass  # respect the view's explicit private/no-store directive
     elif _matched_curated is not None:
