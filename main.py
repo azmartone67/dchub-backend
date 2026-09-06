@@ -6381,6 +6381,36 @@ def _add_mcp_discovery_headers(response):
         for _k, _v in get_enrichment_headers().items():
             response.headers.setdefault(_k, _v)
         response.headers.setdefault("X-MCP-Endpoint", "https://dchub.cloud/mcp")
+        # ★2026-09-05 — Vary: Accept on the HTML representation.
+        #
+        # These pages are CONTENT-NEGOTIATED: Cloudflare's "Markdown for Agents"
+        # serves a converted text/markdown body for `Accept: text/markdown` and
+        # the HTML for everything else. Two representations, one URL — which per
+        # RFC 9110 §12.5.5 obliges the response to name the request header that
+        # selected it. The markdown variant already carries `vary: accept` (CF
+        # adds it); the HTML variant declared only Accept-Encoding, so it claimed
+        # to be THE representation of this URL when it is one of two.
+        #
+        # ★ WHAT THIS DOES NOT FIX, measured before writing it. Cloudflare's own
+        # cache is NOT affected: six alternating html/markdown request pairs on
+        # one un-cache-busted URL returned the right type every time, all
+        # cf-cache-status HIT. CF keys on Accept internally regardless of what we
+        # advertise. Nor is this the dashboard's "97% of markdown requests
+        # fulfilled" — sweeping every page class, EVERY html page converts; the
+        # unfulfilled remainder is markdown requests against things that are not
+        # html (sitemap.xml, openapi.json, llms.txt) and 301/308 redirects, which
+        # cannot be converted and are not defects.
+        #
+        # ★ WHO IT IS FOR: every cache that is NOT Cloudflare and does obey Vary
+        # — a corporate proxy, another CDN in front, and the HTTP caches inside
+        # agent frameworks. Those key on URL + the headers Vary names, so today
+        # they can store the HTML and hand it to a later `Accept: text/markdown`
+        # request. That is the failure this header exists to prevent.
+        #
+        # ★ HTML ONLY. JSON/XML/plain-text responses do not vary by Accept, and
+        # declaring that they do would fragment their cache keys for nothing.
+        from api_response_enrichment import declare_accept_variance
+        declare_accept_variance(response)
         _mcp_link = '<https://dchub.cloud/.well-known/mcp.json>; rel="mcp-manifest"'
         _existing = response.headers.get("Link")
         response.headers["Link"] = f"{_existing}, {_mcp_link}" if _existing else _mcp_link
