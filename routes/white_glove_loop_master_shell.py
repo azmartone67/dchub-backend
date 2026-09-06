@@ -52,6 +52,19 @@ _PRODUCT_CONTRACT_KEYS = ("platform", "platform_unavailable_reason")
 _SYNTH = ("dchub-internal", "dchub-selfheal", "value-harness",
           "fixwave-probe", "reviewer-sim")
 
+# ── lane 7 · registry onboarding ────────────────────────────────────────────
+# The registry loop lives in dchub-mcp-server: registry-discover.mjs crawls for
+# curated MCP lists every Monday and refreshes ONE tracking issue; a scaffold PR
+# is the bridge from "found" to "onboarded".
+_REGISTRY_REPO = os.environ.get("WHITE_GLOVE_REGISTRY_REPO",
+                                "azmartone67/dchub-mcp-server")
+_REGISTRY_ISSUE_TITLE = "New MCP registry candidates"
+_SCAFFOLD_BRANCH_PREFIX = "discover/add-target-"
+# Discovery runs weekly; allow a missed Monday before calling the crawl dead.
+_DISCOVERY_STALE_DAYS = int(os.environ.get("WHITE_GLOVE_DISCOVERY_STALE_DAYS", "10"))
+# How long a discovered candidate may sit undisposed before it is a dropped lead.
+_ONBOARD_SLA_DAYS = int(os.environ.get("WHITE_GLOVE_ONBOARD_SLA_DAYS", "21"))
+
 
 def _admin_ok() -> bool:
     sent = (request.headers.get("X-Admin-Key")
@@ -556,6 +569,120 @@ _AI_SURFACE_MAX_AGE_H = int(
     os.environ.get("WHITE_GLOVE_AI_SURFACE_MAX_AGE_H", "48"))
 
 
+# ── lane 7 · registry onboarding: found is not onboarded ──────────────
+def _lane_registry_onboarding() -> list:
+    """★THE 48-DAY LEAD NOBODY CALLED.
+
+    Measured 2026-09-06. `registry-discover.mjs` had been running every Monday,
+    exiting GREEN, and refreshing tracking issue #73 with the SAME five curated
+    MCP lists since 2026-07-20 — 48 days. Zero were onboarded. The owner found
+    out by asking, and the answer had to be re-derived by hand from a repo the
+    other lanes never look at.
+
+    Two distinct failures, and the shell saw neither:
+
+      1. THE BRIDGE WAS WEDGED. The discover -> onboard step logged
+         `contents PUT failed 409 — skip` and exited 0, every Monday. Root cause
+         (sending main's blob sha against a diverged branch) was fixed 2026-09-01
+         — the day AFTER the last scheduled run — so the fix sat unexecuted and
+         unproven until a manual dispatch on 09-06 opened PR #359, the first
+         scaffold in seven weeks.
+
+      2. NOBODY DISPOSED THE PROPOSALS. Even with the bridge working, discovery
+         only PROPOSES. A candidate sitting undisposed is a lead nobody called,
+         which is exactly what lane 1 already asserts for partner keys — an
+         issued key nobody used is indistinguishable from a won partner. Same
+         shape, different noun.
+
+    ★WHY THIS LANE READS ANOTHER REPO. The registry loop has its own cron, its
+    own tracking issue and its own green check, in dchub-mcp-server. That is
+    precisely why it could stall for seven weeks: nothing that the owner LOOKS
+    AT was asking whether it had. A lane that only reads our own database would
+    reproduce the blind spot it exists to close.
+
+    Read-only, unauthenticated (the repo is public), fail-open to UNMEASURED —
+    a lane that cannot check must never read as PASS.
+    """
+    import datetime as _dt
+
+    def _age_days(iso: str):
+        try:
+            d = _dt.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+            return (_dt.datetime.now(_dt.timezone.utc) - d).days
+        except Exception:  # noqa: BLE001
+            return None
+
+    try:
+        import requests
+        q = (f'repo:{_REGISTRY_REPO} in:title "{_REGISTRY_ISSUE_TITLE}" '
+             f'state:open')
+        r = requests.get("https://api.github.com/search/issues",
+                         params={"q": q}, timeout=25,
+                         headers={"Accept": "application/vnd.github+json"})
+        r.raise_for_status()
+        items = (r.json() or {}).get("items") or []
+        pr = requests.get(
+            f"https://api.github.com/repos/{_REGISTRY_REPO}/pulls",
+            params={"state": "all", "per_page": 100}, timeout=25,
+            headers={"Accept": "application/vnd.github+json"})
+        pr.raise_for_status()
+        pulls = pr.json() or []
+    except Exception as e:  # noqa: BLE001
+        return [_check("registry_loop", "the registry onboarding loop is visible",
+                       None,
+                       f"GitHub unreachable ({str(e)[:80]}) — UNMEASURED",
+                       critical=True)]
+
+    if not items:
+        return [_check("registry_candidates",
+                       "discovery has an open candidate ledger", True,
+                       "no open candidate issue — nothing is waiting to be "
+                       "onboarded, or discovery has not run since the last "
+                       "triage")]
+
+    issue = items[0]
+    open_days = _age_days(issue.get("created_at") or "")
+    since_refresh = _age_days(issue.get("updated_at") or "")
+    scaffolds = [p for p in pulls
+                 if str((p.get("head") or {}).get("ref") or "")
+                 .startswith(_SCAFFOLD_BRANCH_PREFIX)]
+    newest = max((_age_days(p.get("created_at") or "") for p in scaffolds
+                  if _age_days(p.get("created_at") or "") is not None),
+                 default=None)
+    unmerged = [p for p in scaffolds if p.get("state") == "open"]
+
+    return [
+        _check("discovery_running",
+               "the weekly crawl is still refreshing its ledger",
+               (since_refresh is not None and since_refresh <= _DISCOVERY_STALE_DAYS),
+               f"candidate issue #{issue.get('number')} last refreshed "
+               f"{since_refresh}d ago (weekly cron; stale over "
+               f"{_DISCOVERY_STALE_DAYS}d)"
+               if since_refresh is not None else "refresh time unreadable",
+               critical=True),
+        _check("candidates_disposed",
+               "no discovered registry has been left sitting past the SLA",
+               (open_days is not None and open_days <= _ONBOARD_SLA_DAYS),
+               f"candidate ledger #{issue.get('number')} open {open_days}d "
+               f"(SLA {_ONBOARD_SLA_DAYS}d). Discovery PROPOSES; onboarding is "
+               f"the undone half — this is the check that was missing while it "
+               f"sat 48d with five candidates and zero onboarded"
+               if open_days is not None else "issue age unreadable",
+               critical=True),
+        _check("onboarding_bridge",
+               "discovery has actually produced an onboarding PR",
+               (newest is not None and open_days is not None
+                and newest <= open_days),
+               (f"newest scaffold PR is {newest}d old; "
+                f"{len(unmerged)} still open, {len(scaffolds)} total"
+                if newest is not None else
+                "NO scaffold PR has ever been opened — candidates are "
+                "accumulating with no bridge to onboarding, the shape the "
+                "409 wedge produced for seven green Mondays"),
+               critical=True),
+    ]
+
+
 def _lane_ai_surface(cur) -> list:
     out = []
 
@@ -673,6 +800,8 @@ def _run_tick() -> dict:
                  _lane_media(cur)),
                 ("6 · AI surface — do our published numbers agree, "
                  "and do partners know?", _lane_ai_surface(cur)),
+                ("7 · registry onboarding — found is not onboarded",
+                 _lane_registry_onboarding()),
             ]
             for label, checks in lanes:
                 out["lanes"].append({"lane": label, "checks": checks,
