@@ -192,10 +192,96 @@ def test_subscribe_names_what_the_cap_dropped():
         "is an upsell, not a receipt")
 
 
-def test_verification_failure_is_not_reported_as_verified():
-    """If the lookup itself fails, the response must claim nothing."""
-    src = open(da.__file__, encoding="utf-8").read()
-    i = src.index("_verified = bool(_known)")
-    assert "_known = set()" in src[i - 400:i], src[i - 200:i]
-    j = src.index('_resp["markets_verified"] = False')
-    assert "if not _verified" in src[j - 120:j]
+def _subscribe(monkeypatch, known, markets, boom=False):
+    """Drive the real endpoint. `known` is what market_power_scores returns."""
+    from flask import Flask
+
+    class _Cur:
+        def __init__(self):
+            self._rows = []
+
+        def execute(self, sql, params=None):
+            t = " ".join(sql.split()).lower()
+            if "from market_power_scores" in t:
+                if boom:
+                    raise RuntimeError("relation does not exist")
+                self._rows = [(k,) for k in known]
+            elif t.startswith("insert into dcpi_alert_subscriptions"):
+                self._rows = [(1, "tok")]
+            elif t.startswith("update dcpi_alert_subscriptions"):
+                self._rows = [(1, "tok")]
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    conn = type("C", (), {"cursor": lambda s, **k: _Cur(),
+                          "commit": lambda s: None, "close": lambda s: None})()
+    monkeypatch.setattr(da, "_db", lambda: conn)
+    monkeypatch.setattr(da, "_ensure_table", lambda: None)
+    app = Flask(__name__)
+    app.register_blueprint(da.dcpi_alerts_bp)
+    with app.test_client() as cl:
+        return cl.post("/api/v1/alerts/dcpi/subscribe",
+                       json={"email": "a@b.com", "markets": markets}).get_json()
+
+
+def test_a_failed_lookup_claims_nothing(monkeypatch):
+    """★ Behavioural. The earlier version of this test asserted on the SOURCE
+    shape of the conditional, and broke when the response was rewritten as a
+    single literal -- for contract-guard reasons that had nothing to do with
+    the behaviour it guards. Drive the endpoint and read the answer."""
+    d = _subscribe(monkeypatch, known=[], markets=["ashburn"], boom=True)
+    assert d["ok"] is True
+    assert d["markets_verified"] is False, d
+    assert "could not be verified" in d["note"]
+    assert d["unknown_markets"] == [], (
+        "an unverifiable lookup must not name markets as unknown")
+
+
+def test_an_unmatched_slug_is_named(monkeypatch):
+    d = _subscribe(monkeypatch, known=["ashburn"], markets=["ashburn", "atlantis"])
+    assert d["markets_verified"] is True
+    assert d["unknown_markets"] == ["atlantis"], d
+    assert "atlantis" in d["note"]
+
+
+def test_all_slugs_known_says_so_quietly(monkeypatch):
+    d = _subscribe(monkeypatch, known=["ashburn"], markets=["ashburn"])
+    assert d["markets_verified"] is True
+    assert d["unknown_markets"] == []
+    assert d["note"] == ""
+
+
+def test_markets_past_the_cap_are_named_not_silently_dropped(monkeypatch):
+    over = [f"m{i}" for i in range(da._ANON_MARKET_CAP + 3)]
+    d = _subscribe(monkeypatch, known=over, markets=over)
+    assert len(d["markets"]) == da._ANON_MARKET_CAP
+    assert d["dropped_over_cap"] == over[da._ANON_MARKET_CAP:], d
+
+
+def test_the_response_key_set_is_stable_across_all_three_cases(monkeypatch):
+    """★ Why this endpoint returns one literal: the first version added keys
+    conditionally, and the repo's API contract guard failed the build with
+    "UNMEASURED -- a response that became dynamic is not 'fine', it is
+    invisible to this guard." Seven covered keys had dropped out of coverage.
+    A caller can now rely on every key being present."""
+    cases = [
+        _subscribe(monkeypatch, known=[], markets=["x"], boom=True),
+        _subscribe(monkeypatch, known=["ashburn"], markets=["ashburn"]),
+        _subscribe(monkeypatch, known=["ashburn"], markets=["nope"]),
+    ]
+    keysets = [frozenset(c) for c in cases]
+    assert len(set(keysets)) == 1, [sorted(k) for k in keysets]
+    for k in ("ok", "subscription_id", "email", "markets", "tier", "cap_note",
+              "unsubscribe_url", "markets_verified", "unknown_markets",
+              "dropped_over_cap", "note"):
+        assert k in keysets[0], k

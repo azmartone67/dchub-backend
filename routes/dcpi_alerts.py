@@ -133,7 +133,24 @@ def subscribe():
                 row = cur.fetchone()
             c.commit()
             sub_id, unsub = row
-        _resp = dict(
+        # ★ Every key ALWAYS present, in one literal jsonify(). The first
+        # version of this built a dict and added keys conditionally, which made
+        # the response dynamic -- and the contract guard failed the build with
+        # "UNMEASURED ... a response that became dynamic is not 'fine', it is
+        # invisible to this guard." Seven previously-covered keys had silently
+        # dropped out of coverage. That guard is right, and it is the same rule
+        # this whole change is about: could-not-measure is not measured-clean.
+        # A stable key set is also a better contract for callers.
+        if not _verified:
+            _note = ("market slugs could not be verified against published "
+                     "scores on this request")
+        elif _unknown:
+            _note = ("these slugs are not in the published DCPI score set, so "
+                     "alerts for them cannot fire until they are: "
+                     + ", ".join(_unknown))
+        else:
+            _note = ""
+        return jsonify(
             ok=True,
             subscription_id=sub_id,
             email=email,
@@ -142,24 +159,11 @@ def subscribe():
             cap_note=(f"Free tier: up to {_ANON_MARKET_CAP} markets. "
                      f"Upgrade to DC Hub Pro Alerts for unlimited + custom thresholds."),
             unsubscribe_url=f"https://dchub.cloud/alerts/unsubscribe?token={unsub}",
-        )
-        # Say what was NOT accepted. cap_note is an upsell, not a receipt --
-        # it never named the markets silently dropped past the cap.
-        if _over_cap:
-            _resp["dropped_over_cap"] = _over_cap
-        if not _verified:
-            _resp["markets_verified"] = False
-            _resp["note"] = ("market slugs could not be verified against "
-                             "published scores on this request")
-        elif _unknown:
-            _resp["markets_verified"] = True
-            _resp["unknown_markets"] = _unknown
-            _resp["note"] = ("these slugs are not in the published DCPI score "
-                             "set, so alerts for them cannot fire until they "
-                             "are: " + ", ".join(_unknown))
-        else:
-            _resp["markets_verified"] = True
-        return jsonify(**_resp), 200
+            markets_verified=_verified,
+            unknown_markets=_unknown,
+            dropped_over_cap=_over_cap,
+            note=_note,
+        ), 200
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
     finally:
