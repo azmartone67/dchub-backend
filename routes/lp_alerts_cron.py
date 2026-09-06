@@ -96,9 +96,11 @@ def _send_resend_email(to_email, subject, body_html, unsub_headers=None):
         return False, f"{type(e).__name__}:{str(e)[:60]}"
 
 
-def _current_dcpi_for_market(cur, market: str | None, lat: float, lon: float) -> float | None:
-    """Best-effort DCPI score lookup. If market is set, use that.
-    Otherwise approximate via nearest market_power_scores row."""
+def _current_dcpi_for_market(cur, market: str | None, lat: float,
+                             lon: float) -> tuple[float | None, str | None]:
+    """(score, why_not). `why_not` is None on success and otherwise NAMES the
+    condition — a caller that only ever saw None could not tell a swallowed
+    exception from a missing market from a NULL score."""
     if market:
         try:
             cur.execute("""
@@ -112,12 +114,20 @@ def _current_dcpi_for_market(cur, market: str | None, lat: float, lon: float) ->
             # fire_pending_alerts, where it is a RealDictCursor, so r[0] raised
             # KeyError(0) into the bare `except: pass` below and this returned
             # None on EVERY call. The caller reported that as "no_current_value"
-            # — a plausible-sounding reason that was never true — so no
-            # dcpi_change alert could ever fire.
-            if r and r.get("v") is not None: return float(r["v"])
-        except Exception: pass
-    # No market match → just return None (caller skips)
-    return None
+            # — a plausible-sounding reason that was never true.
+            if r is None:
+                return None, "market_not_in_scores:%s" % (market or "")[:40]
+            if r.get("v") is None:
+                return None, "score_is_null:%s" % (market or "")[:40]
+            return float(r["v"]), None
+        except Exception as e:
+            # ★ AND THE REASON NOW NAMES THE CAUSE. Returning a bare None made
+            # THREE different conditions — a swallowed exception, no matching
+            # market row, and a NULL score — indistinguishable at the only
+            # surface anyone reads. That is what made the KeyError invisible for
+            # as long as it was, and it would have hidden the next one too.
+            return None, "dcpi_lookup_failed:%s" % type(e).__name__
+    return None, "alert_has_no_market"
 
 
 # Phase LLLL (2026-05-16) — capacity_change + new_facility_nearby
@@ -315,9 +325,10 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                 prev = float(a["last_value"]) if a["last_value"] is not None else None
                 curr = None
 
+                dcpi_why = None
                 if trigger == "dcpi_change":
-                    curr = _current_dcpi_for_market(cur, a["market"],
-                                                     site["latitude"], site["longitude"])
+                    curr, dcpi_why = _current_dcpi_for_market(
+                        cur, a["market"], site["latitude"], site["longitude"])
                     if curr is None and a["dcpi_score_at_save"] is not None:
                         # Fall back: compare against initial score at save
                         prev = prev if prev is not None else float(a["dcpi_score_at_save"])
@@ -361,7 +372,10 @@ def fire_pending_alerts(dry_run: bool = False, max_alerts: int = 100) -> dict:
                     continue
 
                 if curr is None:
-                    out["skipped"].append({"alert_id": int(a["alert_id"]), "reason": "no_current_value"})
+                    # Carry the helper's specific reason when it gave one.
+                    out["skipped"].append({
+                        "alert_id": int(a["alert_id"]),
+                        "reason": dcpi_why or "no_current_value"})
                     continue
 
                 crossed = (prev is not None and abs(curr - prev) >= threshold)
