@@ -66,13 +66,17 @@ def eia_get(endpoint, params=None):
             "one. Set it on the Railway service (free key: "
             "https://www.eia.gov/opendata/register.php).")
     url = f"{EIA_BASE}/{endpoint}"
-    base_params = {"api_key": EIA_API_KEY}
+    # credential in a HEADER: requests(params=...) puts it in the QUERY
+    # STRING, where every proxy logs it. EIA reads X-Api-Key (verified
+    # 2026-09-06). See tests/test_no_provider_key_in_url.py.
+    base_params = {}
     if params:
         base_params.update(params)
     
     for attempt in range(3):
         try:
-            resp = requests.get(url, params=base_params, timeout=30)
+            resp = requests.get(url, params=base_params, timeout=30,
+                                headers={"X-Api-Key": EIA_API_KEY})
             if resp.status_code == 429:
                 wait = 2 ** (attempt + 1)
                 print(f"  Rate limited, waiting {wait}s...")

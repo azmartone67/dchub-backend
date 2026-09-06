@@ -90,7 +90,9 @@ def gs_request(path, params=None, timeout=15, caller="unknown", api_key=None):
         print(f"[gridstatus] REFUSED caller={caller} path={path} — "
               f"{BUDGET_EXHAUSTED}", flush=True)
         return None, BUDGET_EXHAUSTED
-    p = {"api_key": key}
+    # GridStatus reads x-api-key (verified 2026-09-06: "Missing API Key." ->
+    # "Invalid API key."). A query key is logged by every proxy it crosses.
+    p = {}
     if params:
         p.update(params)
     import time as _t
@@ -98,7 +100,8 @@ def gs_request(path, params=None, timeout=15, caller="unknown", api_key=None):
         try:
             r = requests.get(GRIDSTATUS_BASE + path, params=p, timeout=timeout,
                              headers={"Accept": "application/json",
-                                      "User-Agent": UA})
+                                      "User-Agent": UA,
+                                      "x-api-key": key})
             if r.status_code == 429 and _attempt == 0:
                 _t.sleep(1.1)
                 continue

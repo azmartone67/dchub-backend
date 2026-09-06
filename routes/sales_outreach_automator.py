@@ -578,7 +578,8 @@ def enrich_company(domain: str) -> dict:
             import requests as _rq
             r = _rq.get(
                 "https://api.hunter.io/v2/domain-search",
-                params={"domain": domain, "api_key": key, "limit": 1},
+                params={"domain": domain, "limit": 1},
+                headers={"Authorization": f"Bearer {key}"},
                 timeout=HUNTER_TIMEOUT_S,
             )
             if r.status_code == 200:
