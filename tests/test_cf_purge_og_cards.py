@@ -189,3 +189,55 @@ def test_the_endpoint_is_registered_and_public():
              for r in app.url_map.iter_rules()}
     assert "/api/v1/cf/purge/og-cards" in rules
     assert rules["/api/v1/cf/purge/og-cards"] == ["GET", "POST"]
+
+
+# ── CF accepted != object evicted (2026-09-06) ─────────────────────────────
+
+def _wire_with_cache_status(monkeypatch, sent, status_for):
+    """Stub page reads, the CF POST, and the post-purge verification fetch."""
+    import requests
+
+    class _R(_Resp):
+        def __init__(self, text="", cc=None):
+            super().__init__(text)
+            self.headers = {"content-type": "application/json"}
+            if cc:
+                self.headers["cf-cache-status"] = cc
+                self.headers["age"] = "2326"
+
+    def fake_get(url, **kw):
+        if "/og/dynamic.png" in url or "/images/og" in url:
+            return _R(cc=status_for(url))          # the verification re-fetch
+        return _R(_page(CARD))                     # a page read
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post",
+                        lambda url, **kw: (sent.extend((kw.get("json") or {}).get("files", [])), _Resp())[1])
+
+
+def test_a_purge_cf_accepted_but_did_not_evict_reports_not_ok(monkeypatch, cf, client):
+    """★ Measured live: one call purged the static card (MISS afterwards) and
+    left the generated card HIT with age climbing — CF said success:true for
+    both. worker.js caches generated cards under the RAILWAY origin URL
+    (cf.cacheEverything), a key purge-by-URL on this zone cannot address."""
+    sent = []
+    _wire_with_cache_status(monkeypatch, sent,
+                            lambda u: "HIT" if "/og/dynamic.png" in u else "MISS")
+    body = client.get("/api/v1/cf/purge/og-cards").get_json()
+    assert body["cf_accepted"] is True, "CF's own acknowledgement should still be reported"
+    assert body["ok"] is False, "a purge that evicted nothing must not report ok"
+    assert body["still_cached"], "the surviving object was not named"
+    assert any("/og/dynamic.png" in s["url"] for s in body["still_cached"])
+    assert body["evicted_count"] < body["purged_count"]
+    assert any("Railway origin URL" in n for n in body["notes"]), \
+        "the cause was not explained in the response"
+
+
+def test_a_genuinely_successful_purge_still_reports_ok(monkeypatch, cf, client):
+    """The check must not make every purge look broken."""
+    sent = []
+    _wire_with_cache_status(monkeypatch, sent, lambda u: "MISS")
+    body = client.get("/api/v1/cf/purge/og-cards").get_json()
+    assert body["ok"] is True
+    assert body["still_cached"] == []
+    assert body["evicted_count"] == body["purged_count"]
