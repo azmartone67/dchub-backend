@@ -40,8 +40,12 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The pre-r-founder99 founding link. Must never reappear on a live surface.
 LEGACY_FOUNDING_ID = "9B6fZi1cCdjT3ml8i6aZi00"
 # The pre-r-reprice $199 Pro link, retired 2026-08-21 (owner call, SH52-103).
-# Canon Pro is $299 (routes/_stripe_links.py); every served pro_monthly now
-# derives from it. The four files the audit checker c_legacy199 scans RAW.
+# Canon Pro is $99 (routes/_stripe_links.py) since r-price-collapse
+# 2026-09-05 — it was $299 when this comment was written, and $199 before
+# that. The CONSTANT below is a retired LINK ID, not a price, so it is
+# unaffected by repricings; only this note went stale. Every served
+# pro_monthly derives from canon.
+# The four files the audit checker c_legacy199 scans RAW.
 LEGACY_PRO_ID = "eVq5kE4oOfs13mleGuaZi0h"
 LEGACY_PRO_AUDIT_CARRIERS = [
     "mcp_gatekeeper.py",
