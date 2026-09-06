@@ -39,10 +39,11 @@ def gemini_api_key() -> str:
 # Model churn has now broken Gemini probes THREE ways (gemini-1.5-flash
 # retired → 404; gemini-2.5-flash gated off for this project → 404;
 # gemini-2.0-flash daily quota → 429). The -latest aliases exist exactly to
-# absorb retirement churn; keep 2.0-flash as the historic middle hop while
-# it still serves, and the lite alias as the cheap last resort.
-GEMINI_MODEL_CHAIN = ("gemini-flash-latest", "gemini-2.0-flash",
-                      "gemini-flash-lite-latest")
+# absorb retirement churn, so the chain is now aliases ONLY: 2.0-flash was
+# dropped 2026-09-06 after it stopped existing altogether (absent from the
+# live model list; every call 404s), which made it a guaranteed wasted
+# request between the two aliases rather than a fallback.
+GEMINI_MODEL_CHAIN = ("gemini-flash-latest", "gemini-flash-lite-latest")
 
 
 def gemini_generate(prompt_text: str, timeout: int = 30) -> tuple:

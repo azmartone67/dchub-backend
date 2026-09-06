@@ -25,7 +25,7 @@ PLATFORM_CONFIGS = {
     "gemini": {
         "env_key": "GOOGLE_AI_KEY",
         "url": "https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/google-ai-studio/v1beta/models/{model}:generateContent",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-flash-lite-latest",   # alias: 2.0-flash was retired
         "adapter": "google",
     },
     "grok": {

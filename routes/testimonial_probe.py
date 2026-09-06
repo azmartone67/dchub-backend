@@ -189,7 +189,7 @@ _PROBE_PROMPT = (
 # (http_404). Bump DCHUB_PERPLEXITY_MODEL / DCHUB_GEMINI_MODEL on Railway
 # if a default retires; no redeploy needed.
 PERPLEXITY_MODEL = os.environ.get("DCHUB_PERPLEXITY_MODEL", "sonar")
-GEMINI_MODEL = os.environ.get("DCHUB_GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("DCHUB_GEMINI_MODEL", "gemini-flash-lite-latest")
 
 
 def _probe_claude() -> dict:

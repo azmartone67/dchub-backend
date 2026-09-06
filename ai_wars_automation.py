@@ -582,8 +582,17 @@ def _call_anthropic(prompt, max_tokens=1000):
     return ""
 
 
+# ★ PIN AN ALIAS, NOT A VERSION. gemini-2.0-flash was retired and this lane
+# 404'd on every call — silently, because _call_google logs a warning and
+# returns "". Measured 2026-09-06: the whole 2.0 family is gone from the live
+# model list, and gemini-2.5-flash answers "no longer available to new users".
+# The -latest aliases exist to absorb exactly this churn (cf. the same lesson,
+# arrived at independently, in routes/_google_key.GEMINI_MODEL_CHAIN).
+_GEMINI_MODEL = os.environ.get("DCHUB_GEMINI_MODEL", "gemini-flash-lite-latest")
+
+
 def _call_google(prompt, max_tokens=1000):
-    """Google Gemini API (Gemini 2.0 Flash for speed + free tier)."""
+    """Google Gemini API via the CF AI Gateway (cheap flash-lite alias)."""
     key = os.environ.get('GOOGLE_AI_KEY', '')
     if not key:
         return ""
@@ -600,7 +609,7 @@ def _call_google(prompt, max_tokens=1000):
     # tests/test_no_provider_key_in_url.py fails the build if it comes back.
     r = requests.post(
         'https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52'
-        '/dchub/google-ai-studio/v1beta/models/gemini-2.0-flash:generateContent',
+        f'/dchub/google-ai-studio/v1beta/models/{_GEMINI_MODEL}:generateContent',
         headers={'Content-Type': 'application/json', 'x-goog-api-key': key},
         json={
             'contents': [{'parts': [{'text': f"{SYSTEM_PROMPT}\n\n{prompt}"}]}],
