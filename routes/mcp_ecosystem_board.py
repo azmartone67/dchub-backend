@@ -66,7 +66,7 @@ import os
 
 from flask import Blueprint, Response, jsonify, request
 
-from utc_clock import utc_iso_z
+from utc_clock import utc_iso_z, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -386,12 +386,20 @@ def store_snapshot(snap: dict) -> bool:
     try:
         with conn, conn.cursor() as cur:
             _ensure_table(cur)
-            cur.execute(
-                "INSERT INTO mcp_ecosystem_snapshot "
-                "(captured_day, payload) VALUES ((NOW() AT TIME ZONE 'utc')"
-                "::date, %s) ON CONFLICT (captured_day) DO UPDATE SET "
-                "payload = EXCLUDED.payload, captured_at = NOW()",
-                (json_for_column(snap),))
+            # The day is computed HERE, from the aware UTC clock, rather than
+            # as a SQL `NOW() AT TIME ZONE 'utc'` expression: the database
+            # session's timezone is not ours to assume, and a snapshot filed
+            # under the server's local date would silently split one day in two
+            # across a deploy. It also keeps the statement free of quote
+            # characters, which is what lets regression_lint's
+            # insert-no-on-conflict scanner see the ON CONFLICT at all — its
+            # window stops at the first quote in the statement.
+            cur.execute("""
+                INSERT INTO mcp_ecosystem_snapshot (captured_day, payload)
+                VALUES (%s, %s)
+                ON CONFLICT (captured_day) DO UPDATE SET
+                    payload = EXCLUDED.payload, captured_at = NOW()
+            """, (utc_now().date(), json_for_column(snap)))
         return True
     except Exception as e:  # noqa: BLE001
         logger.warning("ecosystem snapshot store failed: %s", str(e)[:160])
