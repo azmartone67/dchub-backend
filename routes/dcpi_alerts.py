@@ -184,6 +184,40 @@ def stats():
         except Exception: pass
 
 
+def _persist_baseline(c, sub_id, markets, last_known, current, *, notified):
+    """Record the verdicts just observed. Returns (changed, error_or_None).
+
+    ★ MUST run on the no-shifts path too. Until 2026-09-06 the only call site
+    sat below `if not shifts: continue` AND below the send, so the state that
+    makes a shift detectable was written only after a shift had been detected
+    and mailed. A subscription is born with '{}', so prev_v was None for every
+    market, `shifts` was always empty, and the row could never leave that
+    state. No subscriber has ever received a DCPI alert.
+
+    `notified` also stamps last_notified_at -- seeding a baseline notifies
+    nobody, so it must not claim to have.
+    """
+    new_known = dict(last_known or {})
+    for slug in markets or []:
+        if current.get(slug):
+            new_known[slug] = current[slug]
+    if new_known == (last_known or {}) and not notified:
+        return False, None
+    sql = ("""UPDATE dcpi_alert_subscriptions
+                 SET last_known_verdicts = %s, last_notified_at = NOW()
+               WHERE id = %s""" if notified else
+           """UPDATE dcpi_alert_subscriptions
+                 SET last_known_verdicts = %s
+               WHERE id = %s""")
+    try:
+        with c.cursor() as cur2:
+            cur2.execute(sql, (json.dumps(new_known), sub_id))
+            c.commit()
+        return True, None
+    except Exception as _e:
+        return False, "update %s: %s" % (sub_id, str(_e)[:80])
+
+
 @dcpi_alerts_bp.route("/api/v1/alerts/dcpi/check", methods=["POST", "GET"])
 def check_and_send():
     """Cron-fired. For each active subscription, diff current verdicts
@@ -213,7 +247,9 @@ def check_and_send():
         return jsonify(ok=False, error=f"verdict_fetch: {str(e)[:120]}"), 500
 
     sent = 0
-    skipped = 0
+    skipped = 0        # had a baseline, genuinely did not move
+    seeded = 0         # had none; one written now, comparison starts next run
+    unresolvable = 0   # no tracked slug exists in `current` -- can never fire
     errors = []
     try:
         with c.cursor() as cur:
@@ -231,7 +267,20 @@ def check_and_send():
                 if cur_v and prev_v and cur_v != prev_v:
                     shifts.append({"market": slug, "from": prev_v, "to": cur_v})
             if not shifts:
-                skipped += 1
+                # Classify BEFORE writing, and name the condition. A single
+                # "no_shifts" counter reported three different states, one of
+                # which was "this comparison is structurally impossible".
+                resolvable = [x for x in (markets or []) if current.get(x)]
+                if not resolvable:
+                    unresolvable += 1
+                elif any(not last_known.get(x) for x in resolvable):
+                    seeded += 1
+                else:
+                    skipped += 1
+                _chg, _err = _persist_baseline(c, sub_id, markets, last_known,
+                                               current, notified=False)
+                if _err:
+                    errors.append(_err)
                 continue
 
             # Build digest email
@@ -259,22 +308,11 @@ def check_and_send():
                 errors.append(f"{email}: {str(_e)[:100]}")
                 continue
 
-            # Update last_known_verdicts to reflect all current verdicts
-            # for the tracked markets (so next call only fires on NEW shifts)
-            new_known = dict(last_known)
-            for slug in markets or []:
-                if current.get(slug):
-                    new_known[slug] = current[slug]
-            try:
-                with c.cursor() as cur2:
-                    cur2.execute("""UPDATE dcpi_alert_subscriptions
-                                      SET last_known_verdicts = %s,
-                                          last_notified_at = NOW()
-                                    WHERE id = %s""",
-                                  (json.dumps(new_known), sub_id))
-                    c.commit()
-            except Exception as _e:
-                errors.append(f"update {sub_id}: {str(_e)[:80]}")
+            # Advance the baseline so the next call fires only on NEW shifts.
+            _chg, _err = _persist_baseline(c, sub_id, markets, last_known,
+                                           current, notified=True)
+            if _err:
+                errors.append(_err)
 
         return jsonify(
             ok=True,
@@ -282,6 +320,8 @@ def check_and_send():
             subscribers_checked=len(subs),
             emails_sent=sent,
             no_shifts=skipped,
+            baseline_seeded=seeded,
+            no_markets_resolvable=unresolvable,
             errors=errors[:10],
         ), 200
     finally:
