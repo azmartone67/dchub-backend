@@ -3379,6 +3379,20 @@ try:
     except Exception as _rss:
         import logging
         logging.getLogger(__name__).warning('registry_surface_shell wiring failed: %s', _rss)
+    # 2026-09-06: MCP ecosystem board — the two ranks on one page. We are #1 on
+    # ten domain terms AND no better than #162 of 11,729 by useCount; publishing
+    # only the first is how a server is #1 on ten terms and nobody's tool.
+    # GET /admin/mcp-ecosystem (snapshot, never fetches — /admin/* is 15s)
+    # GET /api/v1/admin/mcp-ecosystem/refresh (probes + stores — 120s budget)
+    # Kill: MCP_ECOSYSTEM_BOARD_DISABLE=1
+    try:
+        from routes.mcp_ecosystem_board import register_mcp_ecosystem_board
+        register_mcp_ecosystem_board(app)
+        print("[main] mcp_ecosystem_board registered: GET /admin/mcp-ecosystem",
+              flush=True)
+    except Exception as _meb:
+        import logging
+        logging.getLogger(__name__).warning('mcp_ecosystem_board wiring failed: %s', _meb)
     # 2026-07-29: Handoff contract shell (#43) — one single-use claim token has TWO
     # consumers, and our own gateway auto-redeem forecloses the human by design.
     # GET /api/v1/admin/handoff-contract-shell
