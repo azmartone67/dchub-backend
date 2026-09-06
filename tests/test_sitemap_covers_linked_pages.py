@@ -46,6 +46,14 @@ RESTORED = (
     "/hyperscalers", "/listings", "/mcp-standing", "/partners/feedback",
     "/premium", "/product", "/radar", "/receipts", "/reports/quarterly",
     "/state-of-2026", "/system-status", "/what-ais-say",
+    # round 3 (2026-09-06) — the FOOTER half. Rounds 1 and 2 both derived from
+    # the NAV, so pages linked only from dchub-frontend/index.html's footer were
+    # never candidates: "every page the chrome links" was really "every page the
+    # NAV links". Found by pruning nine thin footer links and having to prove the
+    # pruned pages kept a route. Each probed 2026-09-06 through the edge: 200,
+    # no redirect, no noindex, self-canonical or none, allowed by robots.txt.
+    "/founders", "/ai-hub", "/ai-integrations", "/cited-by", "/data-sources",
+    "/data-center-grid-constraint", "/where-to-build-data-center",
 )
 
 # Deliberately NOT listed, and why. Each was linked from the site chrome and
@@ -91,8 +99,9 @@ def test_the_list_is_actually_parsed():
 
 
 def test_the_restored_pages_are_listed():
-    """THE REGRESSION GUARD. These 18 were linked from the site's own chrome
-    and missing from its own index."""
+    """THE REGRESSION GUARD. Every one of these was linked from the site's own
+    chrome and missing from its own index. Three rounds: 18 from the vendored nav
+    snapshot, 17 more from the current nav, 7 from the FOOTER."""
     listed = set(_static_pages())
     missing = [p for p in RESTORED if p not in listed]
     assert not missing, (
