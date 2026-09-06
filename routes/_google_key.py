@@ -63,11 +63,15 @@ def gemini_generate(prompt_text: str, timeout: int = 30) -> tuple:
         try:
             req = urllib.request.Request(
                 "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model}:generateContent?key={key}",
+                f"{model}:generateContent",
                 data=json.dumps({"contents": [{"parts": [
                     {"text": prompt_text}]}]}).encode(),
+                # key in a HEADER, never the query string — a query key is
+                # written verbatim into gateway/proxy logs (see
+                # tests/test_no_provider_key_in_url.py).
                 headers={"Content-Type": "application/json",
-                         "User-Agent": "dchub-brain/1.0"})
+                         "User-Agent": "dchub-brain/1.0",
+                         "x-goog-api-key": key})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 data = json.loads(r.read().decode("utf-8", "replace"))
             text = ""

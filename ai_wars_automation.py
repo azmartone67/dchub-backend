@@ -589,9 +589,19 @@ def _call_google(prompt, max_tokens=1000):
         return ""
 
     import requests
+    # ★ THE KEY GOES IN A HEADER, NEVER THE QUERY STRING (2026-09-06).
+    # Google AI Studio accepts either `?key=` or the `x-goog-api-key` header.
+    # The query-string form leaks: Cloudflare's AI Gateway records the full
+    # request path, so every call wrote GOOGLE_AI_KEY into the gateway log in
+    # plaintext, readable by anyone holding AI Gateway Read on the account and
+    # retained for up to 10M rows. Found 2026-09-06 by reading those logs —
+    # 4 rows, key visible. This stops it RECURRING; the already-exposed key
+    # must be rotated separately — code cannot un-log it.
+    # tests/test_no_provider_key_in_url.py fails the build if it comes back.
     r = requests.post(
-        f'https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/google-ai-studio/v1beta/models/gemini-2.0-flash:generateContent?key={key}',
-        headers={'Content-Type': 'application/json'},
+        'https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52'
+        '/dchub/google-ai-studio/v1beta/models/gemini-2.0-flash:generateContent',
+        headers={'Content-Type': 'application/json', 'x-goog-api-key': key},
         json={
             'contents': [{'parts': [{'text': f"{SYSTEM_PROMPT}\n\n{prompt}"}]}],
             'generationConfig': {'maxOutputTokens': max_tokens, 'temperature': 0.7},
