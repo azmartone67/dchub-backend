@@ -521,7 +521,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.55-mcp-surfaces-name-their-tools';
+const WORKER_VERSION = '4.9.56-public-cache-key';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -1070,7 +1070,10 @@ const CACHE_TIERS = {
   // cold PoP pay a fresh 1.4s PIL render. kvStaleTtl:0 keeps them out of the KV
   // lane on purpose: kvCacheStore JSON.stringify's `await resp.text()`, which is
   // not safe for PNG bytes, and this worker has no isTextualContentType guard.
-  asset:     { kvFreshTtl: 0,    kvStaleTtl: 0,     browserMaxAge: 604800, edgeTtl: 604800 },
+  // publicKeyCache (2026-09-06): cache under the PUBLIC request URL via the
+  // Cache API instead of `cf.cacheEverything` on the origin subrequest, so
+  // purge-by-URL can actually address these objects. See assetCacheMatch.
+  asset:     { kvFreshTtl: 0,    kvStaleTtl: 0,     browserMaxAge: 604800, edgeTtl: 604800, publicKeyCache: true },
 };
 
 const ROUTE_CACHE_MAP = [
@@ -2016,6 +2019,50 @@ function json(data, status = 200) {
 // ============================================================
 // PROXY TO RAILWAY
 // ============================================================
+// ── PUBLIC-KEY EDGE CACHE (2026-09-06) ─────────────────────────────────────
+//
+// `cf: { cacheEverything: true }` on the origin subrequest caches the response
+// under the RAILWAY URL, because that is the URL being fetched. The zone never
+// owns that key, so `purge_cache {files:[...]}` on dchub.cloud cannot address
+// it — CF answers success:true and evicts nothing. Measured 2026-09-06: one
+// purge call cleared /images/og-default.png (a normal zone object) and left the
+// generated card HIT with age climbing 2250 -> 2326, both reported successful.
+//
+// For tiers marked publicKeyCache we use the Cache API keyed on the PUBLIC
+// request instead. Same edge storage, a key this zone owns, so purge-by-URL
+// works. Deliberately NOT fleet-wide: this is the OG/social card path
+// (deterministic PNGs on a 7-day TTL), not the API hot path.
+//
+// `caches.default.put()` refuses anything but a cacheable GET 200, so the
+// guards below are the contract, not defensiveness.
+function _assetCacheKey(url) {
+  // Strip cache-busting noise so a ?_=<ms> probe cannot fill the cache with
+  // one-shot entries that purge-by-URL would then never be able to name.
+  const u = new URL(url.toString());
+  u.searchParams.delete('_');
+  return new Request(u.toString(), { method: 'GET' });
+}
+
+async function assetCacheMatch(url) {
+  try {
+    return await caches.default.match(_assetCacheKey(url));
+  } catch (e) { return null; }
+}
+
+function assetCachePut(ctx, url, resp, ttl) {
+  try {
+    if (!ctx || !resp || resp.status !== 200) return;
+    const body = resp.clone();
+    const store = new Response(body.body, body);
+    // The stored copy carries its OWN lifetime; the client-facing header is set
+    // separately by cacheControlFor().
+    store.headers.set('Cache-Control', `public, max-age=${ttl}`);
+    store.headers.delete('Set-Cookie');
+    ctx.waitUntil(caches.default.put(_assetCacheKey(url), store));
+  } catch (e) { /* caching is best-effort; never fail the request for it */ }
+}
+
+
 async function proxyToRailway(request, pathname, search, edgeTtl, timeoutMs) {
 
   const targetUrl = RAILWAY_BACKEND + pathname + (search || '');
@@ -3961,8 +4008,26 @@ export default {
       }
     }
 
+    // STEP 1.5: public-key edge cache (asset tier only — see assetCacheMatch).
+    const _pkc = !!(tier.publicKeyCache && isGet && !hasApiKey);
+    if (_pkc) {
+      const hit = await assetCacheMatch(url);
+      if (hit) {
+        const cached = addCORS(new Response(hit.body, hit), request);
+        cached.headers.set('x-dc-hub-backend', 'edge-asset-cache');
+        cached.headers.set('X-DC-Worker-Version', WORKER_VERSION);
+        cached.headers.set('X-DC-Response-Time', `${Date.now() - startTime}ms`);
+        const _cc0 = cacheControlFor(hit.headers.get('Cache-Control'), tier.browserMaxAge);
+        if (_cc0) cached.headers.set('Cache-Control', _cc0);
+        return cached;
+      }
+    }
+
     // STEP 2: Proxy to Railway
-    const edgeTtl = (isGet && !hasApiKey) ? tier.edgeTtl : 0;
+    // ★ publicKeyCache tiers pass edgeTtl 0 on purpose: letting `cf.cacheTtl`
+    //   ALSO cache under the Railway URL recreates the unpurgeable copy this
+    //   change exists to remove. One cache, one key, owned by this zone.
+    const edgeTtl = (isGet && !hasApiKey && !_pkc) ? tier.edgeTtl : 0;
     const { resp, attempts } = await proxyWithRetry(request, pathname, url.search, edgeTtl, timeoutMs);
 
     if (resp && resp.status < 500) {
@@ -3978,6 +4043,7 @@ export default {
         if (_cc) result.headers.set('Cache-Control', _cc);
       }
       if (cacheClone) ctx.waitUntil((async () => { const body = await cacheClone.text(); await kvCacheStore(env.DCHUB_CACHE, kvCacheKey(url.toString()), body, cacheClone.headers.get('content-type') || 'application/json', tier.kvStaleTtl); })());
+      if (_pkc) assetCachePut(ctx, url, resp, tier.edgeTtl);
       return result;
     }
 

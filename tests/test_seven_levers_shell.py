@@ -340,7 +340,21 @@ def test_repo_worker_is_canon_clean_and_current():
     # Verify with (want 4.9.55):
     #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.55-mcp-surfaces-name-their-tools'" in src
+    #
+    # 4.9.55 -> 4.9.56-public-cache-key (2026-09-06): the OG cards were
+    # cached under the RAILWAY origin URL, because proxyToRailway fetches
+    # RAILWAY_BACKEND + pathname with `cf: {cacheEverything:true}` and the cache
+    # key is the URL being fetched. This zone does not own that key, so
+    # purge_cache{files} could not address them: measured 2026-09-06, one call
+    # evicted /images/og-default.png and left the card HIT with age climbing
+    # 2250 -> 2326, CF reporting success:true for both. The asset tier now caches
+    # via the Cache API keyed on the PUBLIC request (and passes edgeTtl 0 so the
+    # unpurgeable copy is not recreated), which makes purge-by-URL work.
+    # ★ PASTE OUTSTANDING — merging does not ship this.
+    # Verify with (want 4.9.56):
+    #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.56-public-cache-key'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
