@@ -32897,6 +32897,45 @@ def _rebuild_sitemap_snapshot():
                          _render_index_xml([f'sitemap-{k}.xml' for k in ai_shard_keys],
                                            today),
                          len(ai_shard_keys)))
+            # ★★★ r-ai-in-index (2026-09-06): THE AI SHARDS NOW GO IN THE
+            # SUBMITTED INDEX TOO. This reverses the deliberate exclusion made
+            # on 2026-09-05, on evidence gathered after it.
+            #
+            # WHY IT WAS EXCLUDED: /sitemap.xml is what GSC and Bing Webmaster
+            # read, and listing ~15,950 ungated URLs there hands Google and Bing
+            # the pages the capacity gate withholds.
+            #
+            # WHY THAT NO LONGER HOLDS. Measured over the following day:
+            #  · Crawlers discover shards by WALKING THIS INDEX, not by reading
+            #    our discovery files. GPTBot fetched /sitemap-markets.xml — a
+            #    shard named nowhere but here — and even GUESSED
+            #    /sitemap-news.xml (404). ClaudeBot read llms.txt and AGENTS.md
+            #    at 17:20, both of which name /sitemap-ai.xml, and then fetched
+            #    /sitemap.xml instead. Twice.
+            #  · External fetches of /sitemap-ai.xml across both crawlers and a
+            #    full day: ZERO. Published, advertised on three surfaces, and
+            #    unreachable.
+            #  · robots.txt cannot fix it: `Sitemap:` is a NON-GROUP directive
+            #    in RFC 9309, so it cannot be scoped to the AI-crawler group.
+            #  · The cost is smaller than the gate assumes. GSC shows Google
+            #    already surfaced 11,998 distinct facility pages in 90 days
+            #    against the 6,266 we submit — it is finding most of the
+            #    withheld set on its own. And the gate's OWN readmission pool is
+            #    1,991 against a 9,000 cap, so the cap has never bound.
+            #
+            # ★ THE GATE ITSELF IS UNTOUCHED. sections['facilities'] still
+            #   carries the capacity-gated set and sitemap-facilities-N.xml is
+            #   byte-identical. This adds a second family beside it; it does not
+            #   widen the first. Reverse by deleting this block — nothing else
+            #   changes.
+            # ★ The Bing half of the original evidence (2026-08-14, "limited
+            #   crawl capacity") could NOT be re-measured: Bing is invisible to
+            #   both collectors and we hold no Bing Webmaster data. Recorded as
+            #   unverified rather than as disproven.
+            shard_files = shard_files + [f'sitemap-{k}.xml' for k in ai_shard_keys]
+            rows = [r for r in rows if r[0] != 'index']
+            rows.append(('index', _render_index_xml(shard_files, today),
+                         len(shard_files)))
             logger.info("sitemap: AI (ungated) family = %d URLs across %d shards "
                         "(gated facilities = %d)",
                         len(ai_fac), len(ai_shard_keys), len(fac))
