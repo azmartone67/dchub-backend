@@ -99,6 +99,27 @@ def test_registry_pricing_canonical():
     c(tr.calls_per_day('starter') == 200,    f"starter calls/day {tr.calls_per_day('starter')} != 200")
     c(tr.calls_per_day('developer') == 500, f"developer calls/day {tr.calls_per_day('developer')} != 500")
     c(tr.calls_per_day('pro') == 2000,      f"pro calls/day {tr.calls_per_day('pro')} != 2000")
+    # ★ The PROSE in the payload must agree with the MAP in the payload.
+    #   /api/v1/tiers carries both a machine-readable `pricing` map and a
+    #   human-readable `price_note` sentence. On 2026-09-05 the map said pro 99
+    #   and the sentence still said pro 299 — two prices for one tier in ONE
+    #   response, and the sentence is the half an LLM quotes. Checked for every
+    #   tier the note names, so a future reprice cannot desync them again.
+    #   ★ Matched on a WORD BOUNDARY, not a substring: "pro 9" is a substring
+    #     of "pro 99", so a plain `in` check reports the correct note as stale.
+    import re as _re
+    _note = tr.as_public_dict().get('price_note', '')
+    for _t in ('starter', 'developer', 'pro', 'team'):
+        _p = tr.price(_t)
+        c(bool(_re.search(rf"\b{_t} {_p}\b", _note)),
+          f"price_note does not say '{_t} {_p}' — it reads: {_note[:90]}")
+        for _stale in (9, 49, 99, 199, 299, 499, 699):
+            if _stale == _p:
+                continue
+            c(not _re.search(rf"\b{_t} {_stale}\b", _note),
+              f"price_note quotes a STALE price for {_t}: '{_t} {_stale}' "
+              f"while canon is {_p}")
+
     # /api/v1/tiers must expose the fields every surface reads
     pub = tr.as_public_dict()
     for t in ('starter', 'developer', 'pro'):
