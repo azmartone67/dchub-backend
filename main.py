@@ -32182,6 +32182,29 @@ def _build_sitemap_sections():
         ('/state-of-2026',               '0.8', 'weekly'),
         ('/system-status',               '0.6', 'daily'),
         ('/what-ais-say',                '0.7', 'weekly'),
+        # r-footer-not-listed (2026-09-06): SEVEN more, and the reason they
+        # survived the 2026-09-05 sweep above is worth writing down. That sweep
+        # derived its candidates from the NAV (dchub-nav.js). These are linked
+        # only from the site FOOTER, which lives in dchub-frontend/index.html
+        # and was never read — so "every page the chrome links" was really
+        # "every page the nav links", and the footer half went unchecked.
+        #
+        # Found from the other end: pruning nine thin links out of that footer
+        # meant proving the pruned pages kept a route, which meant asking which
+        # footer links have a route at all. Eight had none. Six of the eight are
+        # substantial pages, so this was never a thin-content problem.
+        #
+        # All seven probed 2026-09-06 through the edge: 200, no redirect chain,
+        # no noindex, self-canonical (or no canonical tag), and allowed by
+        # robots.txt. The eighth, /sites/value, is NOT here — it is inside
+        # `Disallow: /sites/` and is already named in the WITHHELD block below.
+        ('/founders',                    '0.6', 'monthly'),
+        ('/ai-hub',                      '0.7', 'weekly'),
+        ('/ai-integrations',             '0.7', 'weekly'),
+        ('/cited-by',                    '0.7', 'weekly'),
+        ('/data-sources',                '0.6', 'monthly'),
+        ('/data-center-grid-constraint', '0.8', 'weekly'),
+        ('/where-to-build-data-center',  '0.8', 'weekly'),
         # ── /sites/ and /sites/value are DELIBERATELY ABSENT ──────────────
         # Both are live 200s the nav links to, and both are inside
         # `Disallow: /sites/` in robots.txt. A sitemap entry for a
