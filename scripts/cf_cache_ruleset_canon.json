@@ -4,8 +4,8 @@
   "zone_id": "1cb22dda8d50546d6edf0c09a8be5128",
   "ruleset_id": "fecada9378704aa395b8f98ecfbdfbf0",
   "phase": "http_request_cache_settings",
-  "pinned_version": "61",
-  "pinned_at": "2026-09-07T01:25:58Z",
+  "pinned_version": "62",
+  "pinned_at": "2026-09-07T06:01:28Z",
   "rules": [
     {
       "position": 1,
@@ -378,8 +378,8 @@
     {
       "position": 24,
       "id": "b3ce82fb57cc4834b43fb5516b3bdb9e",
-      "description": "Bypass cache for CREDENTIALED /api/v1/* (X-API-Key header or ?api_key=). 2026-09-06: Rule 2 (Cache Public API, override_origin) cached a developer-key 200 under an auth-blind key and served it byte-identical (1,003,630 B) to an anonymous caller the origin answers 401. CF ignores Vary other than Accept-Encoding and override_origin ignores no-store, and the edge cache sits IN FRONT of the Pages worker, so no _worker.js change can stop the HIT. Generic by credential rather than by path: rules 9/11/12/13/17/19/20/21/22/23 are the same class patched one prefix at a time. Worker half: dchub-frontend#1409. Origin gate: dchub-backend#4038.",
-      "expression": "(starts_with(http.request.uri.path, \"/api/v1/\") and (any(http.request.headers[\"x-api-key\"][*] != \"\") or any(http.request.uri.args[\"api_key\"][*] != \"\")))",
+      "description": "Bypass cache for CREDENTIALED /api/* on EVERY channel, not just x-api-key. 2026-09-07 measured on /api/v1/stats: X-Admin-Key HIT age=17, X-Internal-Key HIT age=17, cookie dchub_token/dchub_refresh HIT age=18 - rule 2 (override_origin 3600, URL-only key) stored those responses and would serve them to anyone. x-api-key was already DYNAMIC here; Authorization was already BYPASS via CF default and is named anyway so the rule does not depend on that default. Phase is capped at 25 rules, so this EXTENDS rule 24 rather than adding #26.",
+      "expression": "starts_with(http.request.uri.path, \"/api/\") and (any(http.request.headers[\"x-api-key\"][*] != \"\") or any(http.request.uri.args[\"api_key\"][*] != \"\") or any(http.request.headers[\"authorization\"][*] != \"\") or any(http.request.headers[\"x-admin-key\"][*] != \"\") or any(http.request.headers[\"x-internal-key\"][*] != \"\") or http.cookie contains \"dchub_token\" or http.cookie contains \"dchub_refresh\")",
       "action": "set_cache_settings",
       "action_parameters": {
         "cache": false
