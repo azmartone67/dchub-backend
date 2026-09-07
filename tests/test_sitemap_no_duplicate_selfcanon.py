@@ -485,9 +485,15 @@ def test_the_live_checkers_budget_is_pinned_just_above_the_measured_residual():
     live number was 303 — 97 groups of headroom, so the guard would have kept
     exiting 0 all the way back up to the population it exists to catch.
 
-    Measured 2026-09-07: 3,930 before #4101, 310 after it, 80 after
-    r-twin-pointer. The budget is 100 — 20 groups of headroom over the measured
-    residual, and far below the 310 a regression would return to.
+    Measured 2026-09-07 on the LIVE artefact: 3,930 before #4101, 322 after it,
+    103 after r-twin-pointer. The budget is 120 — 17 groups of headroom, and far
+    below the 322 a regression would return to.
+
+    ★ #4110 set this to 100 from a SIMULATED 80 and the guard failed on its
+      first real run. A budget is only honest if it is read off the artefact:
+      the simulation anchored on a stale BEFORE and modelled 231 drops where 220
+      happened. Re-measure with scripts/check_sitemap_selfcanon.py after any
+      change that moves the residual — never re-derive it from a prediction.
 
     Pinned as LITERALS so raising the ceiling is a code review, not a side
     effect. Both numbers are pinned: MIN_URLS is the floor that stops a failed
@@ -508,10 +514,13 @@ def test_the_live_checkers_budget_is_pinned_just_above_the_measured_residual():
                 and getattr(node.func, "attr", None) == "add_argument"
                 and node.args and getattr(node.args[0], "value", None) == "--max-groups"):
             budget = next(k.value.value for k in node.keywords if k.arg == "default")
-    assert budget == 100, budget
-    assert budget < 310, (
+    assert budget == 120, budget
+    assert budget < 322, (
         "the budget must sit below the pre-fix live number or a full "
         "regression still exits 0")
+    assert budget >= 103, (
+        "the budget must sit ABOVE the measured live residual or the guard "
+        "cries wolf on every run — which is how a real alarm gets ignored")
 
 
 if __name__ == "__main__":
