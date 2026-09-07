@@ -4,30 +4,36 @@ mcp_tier1_tools.py — Tier 1 MCP tool backend endpoints.
 Phase ZZZZZ-round33 (2026-05-24). Backends for new MCP tools added to
 dchub-mcp-server.
 
-★ NOT GATED. This docstring said "Each is gated to Developer tier ($49/mo) or
-above" from 2026-05-24 until 2026-09-07. Nothing in this file has ever read a
-tier: there is no _require_key, no _caller_tier, no credential read of any
-kind. Measured live 2026-09-07 at the Railway origin, anonymous, at each
-route's ceiling — and again with a bogus `X-API-Key: x` control, byte-identical:
+★ GATING, EXACTLY — read this before adding a claim to it.
+
+  rank_markets      NOT gated. No credential is read; anonymous callers get
+  score_facility    the full result at the ceiling limit.
+  find_alternatives PARTIALLY gated: `provider` and `power_mw` (and the prose
+                    forms of both in match_reasons / key_differences) require
+                    FIND_ALT_SPECS_MIN_TIER, default "developer". Everything
+                    else on that route is ungated.
+
+From 2026-05-24 to 2026-09-07 this docstring said "Each is gated to Developer
+tier ($49/mo) or above" while nothing in the file read a tier at all. Measured
+live at the Railway origin, anonymous, at each route's ceiling, each with a
+bogus `X-API-Key: x` control that returned byte-identical bodies:
 
     GET /api/v1/mcp/tools/rank_markets?limit=50       -> 200  14,353 b
     GET /api/v1/mcp/tools/find_alternatives?limit=20  -> 200   6,124 b
     GET /api/v1/mcp/tools/score_facility              -> 200   1,433 b
 
-This is the SAME wording defect that hid the open /api/v1/mcp/tools/
+That was the SAME wording defect that hid the open /api/v1/mcp/tools/
 export_facility_csv for months — its docstring claimed "Tiered limits" while
-nothing read a tier (gated in #4038, whose replacement docstring warns: "Do not
-restore that wording without a tier actually being read"). That warning lives
-one file over in routes/mcp_tier2_reports.py; this file still carried the
-wording it warns about.
+nothing read a tier (gated in #4038, whose replacement warns: "Do not restore
+that wording without a tier actually being read"). #4081 corrected the claim;
+the find_alternatives half of it became true in the NEXT commit, and this
+paragraph is written to be re-checked rather than re-read.
 
-★ Being open here is NOT, by itself, a bypass: `POST /mcp` serves these same
-three tools anonymously with the same fields (measured the same day), so the
-REST twins are consistent with the MCP layer rather than a way around it.
-Whether these fields SHOULD reach anonymous callers is a pricing decision and
-is deliberately NOT settled here — see the note on find_alternatives below.
-If that decision is ever "gate it", use routes/mcp_tier2_reports._require_key
-and delete this paragraph; do not re-add a tier claim to a docstring first.
+★ If you gate rank_markets or score_facility, the tier must come from
+_end_user_tier() below, NOT from map_tier_gating's stock resolver: that one
+maps X-Internal-Key to 'pro' at step 1 and dchub-mcp-server sends the header on
+every call, so the stock resolver leaves POST /mcp — the advertised path —
+ungated while direct REST looks fixed. See _end_user_tier's own docstring.
 
 Endpoints (POST **and GET** — the GET half is why a browser or a crawler
 reaches these without doing anything special):
@@ -59,6 +65,74 @@ _FLEET_FILTER = "COALESCE(is_duplicate, 0) = 0"
 # Declared parameter names for rank_markets — the STRICT-SUBSET allow-list
 # any error_version:1 suggested_params must validate against.
 RANK_MARKETS_PARAMS = ("criteria", "region", "limit", "min_capacity_mw")
+
+# ═════════════════════════════════════════════════════════════════════
+# find_alternatives spec gate — provider / power_mw
+# ═════════════════════════════════════════════════════════════════════
+# Minimum tier that receives operator + capacity specs. Env-overridable so the
+# gate can be loosened WITHOUT a deploy, exactly like MAP_ANON_COORD_DP=6 is
+# the kill switch for the /api/v1/map coordinate gate. Set to "anonymous" to
+# disable this gate entirely.
+_SPECS_MIN_TIER = (os.environ.get("FIND_ALT_SPECS_MIN_TIER") or "developer").strip().lower()
+
+_SPEC_TIER_RANK = {"anonymous": 0, "": 0, "free": 1, "identified": 1,
+                   "starter": 1, "developer": 2, "pro": 3, "founding": 3,
+                   "team": 3, "paid": 3, "metered": 3,
+                   "enterprise": 4, "admin": 4, "internal": 4}
+
+
+def _decode_jwt(_t):
+    try:
+        import jwt as _j
+        secret = os.environ.get("JWT_SECRET") or os.environ.get("SECRET_KEY", "")
+        return _j.decode(_t, secret, algorithms=["HS256"])
+    except Exception:
+        return None
+
+
+def _end_user_tier():
+    """Tier of the END USER — deliberately NOT of the transport.
+
+    ★ THE WHOLE POINT OF THIS FUNCTION. `map_tier_gating._detect_caller_tier`
+    maps a valid `X-Internal-Key` to 'pro' at **STEP 1**, before any user
+    credential is read — and dchub-mcp-server's `callAPI()` (server.mjs:3325)
+    sends that header on EVERY call, including for a completely anonymous
+    agent. So gating on the stock resolver would mask the direct REST path and
+    leave `POST /mcp` — the ADVERTISED path — entirely unmasked, while every
+    test written against REST passed. Measured before this change: the MCP
+    proxy is a straight passthrough to this very route (server.mjs:16574).
+
+    The internal key proves PROVENANCE ("this arrived through our own MCP
+    server"), never ENTITLEMENT. So it is hidden from the resolver for the
+    duration of one call and the FORWARDED end-user credential — `X-API-Key`,
+    which callAPI sets ONLY when the agent actually presented one — resolves on
+    its own merits through detect_tier_for_data_gate, which refuses the
+    credential-PRESENCE fail-open (`X-API-Key: x` is not evidence of payment).
+
+    We hide the header rather than re-implementing the lookup on purpose: the
+    dual key_hash match plus the mcp_dev_keys fallback lives in ONE place and a
+    second copy would drift out of agreement with every other data gate.
+
+    Fails CLOSED — any error is 'anonymous'.
+    """
+    from flask import request
+    env = request.environ
+    _stashed = env.pop("HTTP_X_INTERNAL_KEY", None)
+    try:
+        from map_tier_gating import detect_tier_for_data_gate
+        tier, _info = detect_tier_for_data_gate(decode_jwt_func=_decode_jwt)
+        return (tier or "anonymous").strip().lower()
+    except Exception:
+        return "anonymous"
+    finally:
+        if _stashed is not None:
+            env["HTTP_X_INTERNAL_KEY"] = _stashed
+
+
+def _specs_visible(tier):
+    """True when this caller may see operator + capacity on find_alternatives."""
+    return (_SPEC_TIER_RANK.get(tier, 0)
+            >= _SPEC_TIER_RANK.get(_SPECS_MIN_TIER, 2))
 
 try:
     import psycopg2
@@ -618,31 +692,44 @@ def find_alternatives():
       exclude_operator:   bool — exclude same-operator results       (default: false)
       limit:              default 5, max 20
 
-    ★2026-09-07 — OPEN QUESTION, recorded here so it is not rediscovered as a
-    surprise. This route returns `provider` and `power_mw` to anonymous callers.
-    Those are two of the exact fields /api/v1/map WITHHOLDS from anon and names
-    in its own upgrade copy ("Upgrade for exact coordinates, power capacity,
-    operator, fiber, and full facility specs"). Measured the same minute, both
-    anonymous, at the origin:
+    ★2026-09-07 — provider / power_mw ARE GATED on this route. They were the
+    two fields /api/v1/map withholds from anon and names in its own upgrade
+    copy ("Upgrade for exact coordinates, power capacity, operator, fiber…"),
+    and this route handed them to anybody. Measured before the gate, the same
+    minute, both anonymous, at the origin:
 
-        /api/v1/map        _gated:true, coords 2dp, fields = city country id
-                           latitude longitude market name region slug state
-                           status   (no provider, no power_mw)
+        /api/v1/map        _gated:true, 2dp coords, no provider, no power_mw
         find_alternatives  provider, power_mw, similarity_score, key_differences
 
-    ★ The `limit` cap does NOT bound this, because `facility_id` is caller-
-    controlled: 11 anonymous calls across spread ids returned 127 unique
-    facilities, 123 with `provider` and 97 with `power_mw`. That is the
-    reference_dchub_anon_bulk_exposure lesson from /api/v1/map restated — a
-    per-call ROW cap cannot gate a corpus the caller pages through with a
-    DIFFERENT parameter. (The app-wide before_request chain does rate-limit, so
-    this is slower than an unbounded export, not free.)
+    ★ The `limit` cap never bounded it: `facility_id` is caller-controlled, so
+    11 anonymous calls across spread ids returned 127 unique facilities, 123
+    with provider and 97 with power_mw — a per-call ROW cap cannot gate a
+    corpus the caller pages through with a DIFFERENT parameter.
 
-    Deliberately NOT changed here: this commit only makes the claims in this
-    file true. Whether these fields should reach anon is a pricing decision,
-    and the fix if it is ever made is a FIELD MASK on this route — not
-    _require_key, because `POST /mcp` serves the same tool anonymously with the
-    same fields, so gating only the REST twin would make the two disagree.
+    THREE things had to move together, and any one alone is a hole:
+      1. the row fields (`provider`, `power_mw`) — the obvious half;
+      2. `target_facility`, which carries the SAME two specs for whatever
+         facility_id the caller names — that is the corpus one row at a time;
+      3. `match_reasons` / `key_differences`, which republish both specs in
+         PROSE ("different operator (Amazon Web Services)", "larger (+1000
+         MW)", "similar capacity (1000 vs 500 MW)"). Masking the fields and
+         keeping the sentences suppresses the value where it is READ while
+         still publishing it where it is SCRAPED. The MW *delta* is not safe
+         either: the caller chose the target and can look its capacity up.
+
+    Gated callers get the qualitative form — "different operator", "larger",
+    "similar capacity" — which keeps the tool's actual product (WHY is this an
+    alternative?) while withholding the specs, plus `_gated` / `_withheld_
+    fields` / `_upgrade_cta` so an agent can tell a gate from an empty result.
+
+    ★ The gate reads `_end_user_tier()`, NOT map_tier_gating's stock resolver.
+    See that function: `X-Internal-Key` resolves to 'pro' at step 1 and
+    dchub-mcp-server sends it on every call, so the stock resolver would have
+    masked REST and left POST /mcp — the advertised path — wide open.
+
+    Threshold is FIND_ALT_SPECS_MIN_TIER (default "developer"); set it to
+    "anonymous" to disable the gate with no deploy, the MAP_ANON_COORD_DP=6
+    precedent.
     """
     args = request.get_json(silent=True) or request.args.to_dict()
     facility_id = (args.get("facility_id") or "").strip()
@@ -720,6 +807,9 @@ def find_alternatives():
         except Exception as e:
             return jsonify({"error": f"query_failed: {type(e).__name__}: {str(e)[:200]}"}), 500
 
+    # Resolve the caller ONCE, before scoring — every branch below reads it.
+    _tier = _end_user_tier()
+
     # Score each candidate
     target_mw   = float(target.get("power_mw") or 0)
     target_tier = int(target.get("tier") or 0)
@@ -758,9 +848,20 @@ def find_alternatives():
         else:  # "all"
             similarity = (cap_match * 0.45 + tier_match * 0.25 + proximity * 0.30)
 
+        # ★ These strings ARE the gated fields, in prose. Dropping `provider`
+        # and `power_mw` from the row while emitting "different operator (Amazon
+        # Web Services)" and "larger (+1000 MW)" would suppress the value where
+        # it is READ and keep publishing it where it is SCRAPED — and the MW
+        # DELTA is not safe either, because the caller chose the target and can
+        # look its capacity up. Gated callers get the qualitative form: the
+        # REASON the match was made, with no number and no operator name.
+        _specs = _specs_visible(_tier)
+
         match_reasons = []
         if cap_match > 0.7:
-            match_reasons.append(f"similar capacity ({cand_mw:.0f} vs {target_mw:.0f} MW)")
+            match_reasons.append(
+                f"similar capacity ({cand_mw:.0f} vs {target_mw:.0f} MW)"
+                if _specs else "similar capacity")
         if cand_tier == target_tier and cand_tier > 0:
             match_reasons.append(f"same tier ({cand_tier})")
         if distance_km is not None and distance_km < 20:
@@ -771,50 +872,87 @@ def find_alternatives():
         diffs = []
         mw_diff = cand_mw - target_mw
         if abs(mw_diff) > 20:
-            diffs.append(f"{'larger' if mw_diff > 0 else 'smaller'} ({mw_diff:+.0f} MW)")
+            _dir = "larger" if mw_diff > 0 else "smaller"
+            diffs.append(f"{_dir} ({mw_diff:+.0f} MW)" if _specs else _dir)
         if cand.get("provider") != target.get("provider"):
-            diffs.append(f"different operator ({cand.get('provider') or 'unknown'})")
+            diffs.append(
+                f"different operator ({cand.get('provider') or 'unknown'})"
+                if _specs else "different operator")
 
-        scored.append({
+        _row = {
             "facility_id":     cand["id"],
             "name":            cand["name"],
-            "provider":        cand.get("provider"),
             "distance_km":     round(distance_km, 1) if distance_km is not None else None,
             "similarity_score": round(similarity, 3),
-            "power_mw":        cand_mw,
             "tier":            cand_tier,
             "match_reasons":   match_reasons,
             "key_differences": diffs,
             "url":             f"https://dchub.cloud/facility/{cand['id']}",
-        })
+        }
+        if _specs:
+            _row["provider"] = cand.get("provider")
+            _row["power_mw"] = cand_mw
+        scored.append(_row)
 
     scored.sort(key=lambda x: x["similarity_score"], reverse=True)
     scored = scored[:limit]
 
-    return jsonify({
-        "target_facility": {
-            "facility_id": target["id"],
-            "name":        target["name"],
-            "provider":    target.get("provider"),
-            "city":        target.get("city"),
-            "state":       target.get("state"),
-            "power_mw":    target_mw,
-            "tier":        target_tier,
-            "url":         f"https://dchub.cloud/facility/{target['id']}",
-        },
+    # The TARGET carries the same two specs and must be masked with the rest —
+    # leaving it whole would hand back capacity + operator for any facility_id
+    # the caller names, which is the corpus one row at a time.
+    _target_block = {
+        "facility_id": target["id"],
+        "name":        target["name"],
+        "city":        target.get("city"),
+        "state":       target.get("state"),
+        "tier":        target_tier,
+        "url":         f"https://dchub.cloud/facility/{target['id']}",
+    }
+    if _specs_visible(_tier):
+        _target_block["provider"] = target.get("provider")
+        _target_block["power_mw"] = target_mw
+
+    out = {
+        "target_facility": _target_block,
         "alternatives":    scored,
         "result_count":    len(scored),
         "radius_km":       radius_km,
         "match_on":        match_on,
         "search_method":   "weighted_similarity: capacity (0.45) + tier (0.25) + proximity (0.30)",
-        # DESCRIPTIVE ONLY. The comment here said "3 results free; full 20
-        # require Developer". BOTH halves were false: `scored = scored[:limit]`
-        # above is the only truncation in this file, `limit` comes from the
-        # caller (clamped to [1, 20]), and there is no free-tier cut to 3
-        # anywhere — grep the file. An anonymous caller asking for limit=20
-        # gets 20 (measured 2026-09-07).
-        "tier":            "free",
-    }), 200
+        # The caller's RESOLVED tier, not a hardcoded label. The literal "free"
+        # that stood here carried the comment "3 results free; full 20 require
+        # Developer" — both halves false; there has never been a cut to 3 and
+        # `limit` is the caller's. It is now the answer to "what did the server
+        # think I was", which is the only version of this field that can be
+        # checked against behaviour.
+        "tier":            _tier,
+    }
+
+    if not _specs_visible(_tier):
+        # Disclose the withholding rather than silently thinning the payload —
+        # an agent that cannot see WHAT is missing cannot tell a gate from an
+        # empty database. Mirrors /api/v1/map's _gated/_upgrade_cta contract.
+        # ★ It names the fields and NOT a way around them: #2096 had to remove
+        # a _coord_note that literally advertised "pass bbox for exact
+        # coordinates" to the callers it was gating.
+        out["_gated"] = True
+        out["_withheld_fields"] = ["provider", "power_mw"]
+        out["_withheld_note"] = (
+            "Operator and capacity are withheld below the "
+            f"{_SPECS_MIN_TIER} plan; match_reasons and key_differences are "
+            "returned in qualitative form for the same reason. Everything "
+            "else on this response is complete.")
+        try:
+            from map_tier_gating import _upgrade_cta
+            out["_upgrade_cta"] = _upgrade_cta(_tier, "operator and capacity data")
+        except Exception:
+            out["_upgrade_cta"] = {
+                "action": "upgrade",
+                "message": "Developer ($49/mo) unlocks operator and capacity.",
+                "url": "https://dchub.cloud/pricing#developer",
+            }
+
+    return jsonify(out), 200
 
 
 # ═════════════════════════════════════════════════════════════════════
