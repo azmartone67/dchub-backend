@@ -466,6 +466,40 @@ def handoff_funnel():
             "s.mcp_session_id", _DELOOP_SELF_SEED_V4)
         opened_v4 = one(("select count(distinct s.mcp_session_id) "
                          + _v3_body + " and " + _not_self_v4) % iv)
+        # ── human_acted DEFINITION v6 (2026-09-07) — ANCHOR ON THE ARTIFACT
+        # THAT RECORDS THE EVENT. v2..v5 all count `from
+        # mcp_high_intent_sessions s` and only THEN ask whether a relay row
+        # exists, so an open on a session that table never received is not a
+        # zero — it is unreachable, and downstream the two look identical. The
+        # denominator gap published beside this stage already measured it: 148
+        # of 163 joinable opens sat on sessions absent from the table.
+        #
+        # Measured 2026-09-07 over 30d, the stage reads 0 while:
+        #     relay opens total   174
+        #     probe_ua            142   rejected by the UA filter
+        #     no_session_id        30   no id recorded — unjoinable either way
+        #     countable             2   and 1 of those 2 is not in the table
+        # 7d: 82 opens, 0 countable. "0 humans acted" is overwhelmingly an
+        # instrument limit, not an observed absence of humans.
+        #
+        # v6 counts DISTINCT SESSIONS FROM relay_opens, which is the table the
+        # open is written to, and keeps BOTH filters that earlier versions
+        # exist for: the real-UA predicate, and the operator self-traffic
+        # exclusion that v4/v5 were written to enforce after v3 counted the
+        # operator's own click. Re-anchoring without those would re-introduce
+        # exactly the bug the definition changelog documents.
+        #
+        # PUBLISHED ALONGSIDE, NOT PROMOTED. `human_acted` remains v5 in this
+        # change. A stage that has been wrong-non-zero twice does not get a new
+        # definition installed on the headline before its number has been read
+        # against live data.
+        _ro_not_self = _deloop_external_session_predicate("ro.session_id")
+        _v6_body = ("from relay_opens ro "
+                    "where ro.ts > now() - interval '%s' "
+                    "and " + _ro_real + " "
+                    "and coalesce(ro.session_id,'') <> '' "
+                    "and " + _ro_not_self)
+        opened_v6 = one(("select count(distinct ro.session_id) " + _v6_body) % iv)
         opened_v2 = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                         "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         opened_legacy = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
@@ -549,6 +583,17 @@ def handoff_funnel():
             "steps": steps,
             "emails_captured_total": captured,
             "human_acted_legacy_claim_page": opened_legacy,
+            "human_acted_v6_from_relay_opens": opened_v6,
+            "human_acted_v6_basis": (
+                "COUNT(DISTINCT ro.session_id) FROM relay_opens — the table the "
+                "open is written to — with the same real-UA predicate and the "
+                "same declared operator self-traffic exclusion v5 applies. v2..v5 "
+                "count FROM mcp_high_intent_sessions and can only see an open "
+                "whose session reached that table; this one cannot miss those. "
+                "It still cannot see opens with no session_id recorded (30 of "
+                "174 over 30d on 2026-09-07) — that is an instrumentation gap in "
+                "relay_opens, not a definition choice. PUBLISHED ALONGSIDE: "
+                "`human_acted` is still v5."),
             "human_acted_v2_all_view_opens": opened_v2,
             "human_acted_v3_including_self_traffic": opened_v3,
             "human_acted_v4_before_rotation": opened_v4,
