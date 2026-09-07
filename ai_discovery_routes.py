@@ -1584,6 +1584,52 @@ Allow: /llms.txt
 Allow: /llms-full.txt
 Allow: /openapi.json
 Allow: /sitemap.xml
+#
+# ★★★ 2026-09-06 — THE 2026-08-11 FIX WAS HALF THE SURFACE.
+#   The six lines above unblocked the DISCOVERY files. They did not unblock the
+#   DATA API those files spend their whole length advertising, and every one of
+#   those examples carries a query string:
+#
+#     /api/v1/facilities?q=Virginia&country=US
+#     /api/ai/query?type=stats
+#     /api/v1/dcpi/scores?limit=500
+#     /api/grid/fuel-mix?iso=ERCOT        ... 12 in llms.txt, 9 in llms-full.txt
+#
+#   Measured with Protego (RFC 9309) against the served body: 12 of the 57 URLs
+#   llms.txt advertises were DISALLOWED for PerplexityBot, Perplexity-User,
+#   GPTBot, ClaudeBot, Googlebot and bingbot alike. We published a machine
+#   surface and told the machines not to fetch it. Same silence as last time,
+#   read the same way — as a crawler losing interest.
+#
+#   WHY A PREFIX AND NOT TEN MORE Allow LINES. Six hand-maintained exceptions
+#   are what just rotted: llms.txt gained endpoints, the allow list did not.
+#   `/api/` cannot drift as the catalog grows, and it needs no maintenance when
+#   an endpoint is added. It is also exactly what this group's own header
+#   already promises — "/api/* stays OPEN for this group: it is the only
+#   surface the assistant crawlers fetch". Only the query-string form was ever
+#   in doubt.
+#
+#   THE HYGIENE IS UNTOUCHED. `Disallow: /*?` exists to stop crawl budget
+#   draining into ?cb=/?filter= duplicates of RANKABLE HTML. /api/* is raw
+#   JSON that can never rank — this file says so — so widening here trades
+#   nothing away. Bingbot's budget, the reason the rule is strict, is governed
+#   by its OWN group below and is not affected by this line.
+#
+#   tests/test_robots_permits_what_llms_advertises.py derives its assertions
+#   from the served llms.txt / llms-full.txt bodies, so "everything we
+#   advertise, we permit" is now checked rather than remembered.
+Allow: /api/
+
+# Widening /api/ to query strings would also expose the admin, auth and billing
+# prefixes in their ?-carrying form. They were never meant for crawlers and were
+# only ever covered here by accident: `Disallow: /admin` does not match
+# /api/admin (no leading match), so their CLEAN paths have been crawlable by
+# this group all along. Name them, at a longer prefix than `Allow: /api/` so
+# RFC 9309 most-octets-wins keeps them shut both ways.
+Disallow: /api/admin/
+Disallow: /api/v1/admin/
+Disallow: /api/auth/
+Disallow: /api/stripe/
 Disallow: /admin
 Disallow: /sites/
 Allow: /sites/$
@@ -1629,6 +1675,17 @@ User-agent: Bingbot
 Content-Signal: search=yes, ai-input=yes, ai-train=no
 Disallow: /*?
 Allow: /sitemap.xml
+# ★ 2026-09-06 — a pre-existing hole, not a new one. `Disallow: /admin` does not
+#   match /api/admin (no leading match), so the admin, auth and billing APIs have
+#   been crawlable by this group on their CLEAN paths all along; only the
+#   ?-carrying form was ever shut, and only incidentally, by `Disallow: /*?`.
+#   Naming them costs nothing here — Bingbot keeps its query-string restriction
+#   either way — and closes the hole for the one group that still has /api/ open
+#   without them. Found by tests/test_robots_permits_what_llms_advertises.py.
+Disallow: /api/admin/
+Disallow: /api/v1/admin/
+Disallow: /api/auth/
+Disallow: /api/stripe/
 Disallow: /admin
 Disallow: /sites/
 Allow: /sites/$

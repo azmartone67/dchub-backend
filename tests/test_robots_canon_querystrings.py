@@ -64,12 +64,23 @@ CANON_WITH_QUERY = (
 # are what the anti-vacuous guard below deletes to prove they are load-bearing,
 # so they must stay in sync with ai_discovery_routes.py — the guard fails loudly
 # if they drift rather than quietly testing nothing.
+#
+# 2026-09-06: + `Allow: /api/`. The canon paths are now unblocked by TWO lines —
+# their own prefix and the broader /api/ one added when the same `/*?` rule was
+# found blocking the data API that llms.txt advertises (see
+# test_robots_permits_what_llms_advertises.py). With only the specific lines
+# stripped, `Allow: /api/` still unblocks /api/v1/canon/*, the mutation below
+# changes nothing for four of the seven paths, and the control stops proving
+# anything. Stripping both restores it: the assertion is "some Allow line
+# carries this, not the absence of `Disallow: /*?`", and that needs every line
+# that could carry it.
 CANON_ALLOW_LINES = (
     "Allow: /api/v1/canon/",
     "Allow: /.well-known/",
     "Allow: /llms.txt",
     "Allow: /llms-full.txt",
     "Allow: /openapi.json",
+    "Allow: /api/",
 )
 
 
