@@ -238,7 +238,19 @@ def ensure_twin_schema(conn):
       behaviour rather than an error.
     """
     added = []
+    # ★★ autocommit is turned OFF for the DDL, and that is not incidental.
+    #    _conn(write=True) hands back a connection with autocommit=True, and
+    #    under autocommit every statement is its own transaction — so
+    #    `SET LOCAL lock_timeout` would apply to the SET's own transaction and
+    #    be gone before the ALTER ran. The timeout would silently not exist,
+    #    and a contended ALTER TABLE (ACCESS EXCLUSIVE on `facilities`) would
+    #    sit out the whole statement_timeout instead of giving up in 2s. A
+    #    guard that does not apply is worse than no guard.
+    #    The connection is POOLED, so autocommit is restored in `finally`.
+    prev_autocommit = getattr(conn, "autocommit", True)
     try:
+        try: conn.autocommit = False
+        except Exception: pass
         cur = conn.cursor()
         if not _column_exists(cur, "facilities", TWIN_COL):
             cur.execute("SET LOCAL lock_timeout = '2s'")
@@ -247,12 +259,14 @@ def ensure_twin_schema(conn):
         cur.execute(f"CREATE INDEX IF NOT EXISTS idx_facilities_{TWIN_COL} "
                     f"ON facilities ({TWIN_COL}) "
                     f"WHERE {TWIN_COL} IS NOT NULL")
-        try: conn.commit()
-        except Exception: pass
+        conn.commit()
     except Exception as e:
         try: conn.rollback()
         except Exception: pass
         logger.warning("twin schema: %s", e)
+    finally:
+        try: conn.autocommit = prev_autocommit
+        except Exception: pass
     return added
 
 

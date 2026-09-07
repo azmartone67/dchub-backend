@@ -525,6 +525,59 @@ def test_apply_does_not_repoint_when_it_makes_no_alternate():
 
 
 
+def test_the_ddl_runs_in_a_real_transaction_so_lock_timeout_applies():
+    """★ `SET LOCAL lock_timeout` is a NO-OP under autocommit: each statement
+    becomes its own transaction, so the setting is gone before the ALTER runs
+    and the 2s bound silently does not exist. _conn(write=True) returns an
+    autocommit connection, so ensure_twin_schema must turn it off around the
+    DDL — and turn it back on, because the connection is pooled.
+
+    Asserted on the ORDER of what the connection saw, not on the source text."""
+    from routes import facility_dedup_v4 as v4
+
+    events = []
+
+    class _C:
+        rowcount = 0
+        def __init__(self, ev): self.ev = ev
+        def execute(self, sql, params=None):
+            self.ev.append(("sql", " ".join(str(sql).split())))
+            self._probe = "information_schema" in sql
+            return self
+        def fetchone(self):
+            return None if getattr(self, "_probe", False) else None
+
+    class _Conn:
+        def __init__(self, ev):
+            self.ev = ev
+            self._ac = True
+        @property
+        def autocommit(self): return self._ac
+        @autocommit.setter
+        def autocommit(self, v):
+            self._ac = v
+            self.ev.append(("autocommit", v))
+        def cursor(self): return _C(self.ev)
+        def commit(self): self.ev.append(("commit", None))
+        def rollback(self): self.ev.append(("rollback", None))
+
+    conn = _Conn(events)
+    added = v4.ensure_twin_schema(conn)
+    assert added == [f"facilities.{TWIN_COL}"], added
+
+    kinds = [e[0] for e in events]
+    sqls = [e[1] for e in events if e[0] == "sql"]
+    # autocommit off BEFORE any DDL, SET LOCAL before the ALTER, commit after
+    assert events[0] == ("autocommit", False), events[:3]
+    i_set = next(i for i, q in enumerate(sqls) if "SET LOCAL lock_timeout" in q)
+    i_alter = next(i for i, q in enumerate(sqls) if q.startswith("ALTER TABLE facilities"))
+    assert i_set < i_alter, sqls
+    assert "commit" in kinds
+    # ...and the pooled connection is handed back with autocommit RESTORED
+    assert events[-1] == ("autocommit", True), events[-3:]
+    assert conn.autocommit is True
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
