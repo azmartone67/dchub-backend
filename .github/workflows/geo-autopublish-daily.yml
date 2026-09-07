@@ -1,0 +1,114 @@
+name: GEO autopublish (daily — one answer page per run)
+
+# 2026-09-07. THE MISSING CRON.
+#
+# routes/geo_autopublish.py has been able to publish for real since 07-03 and
+# GEO_AUTOPUBLISH_ENABLED=1 has been set on the backend — but nothing on a
+# schedule ever called it in act mode:
+#
+#   · ai_adoption_master_shell.py:279  autopublish_next(dry=True)   ← the only
+#     scheduled caller (ai-adoption-master-tick.yml, every 6h). Preview only;
+#     it is a status snapshot and must stay dry.
+#   · distribution_master_shell.py:279 autopublish_next(dry=False)  ← the real
+#     one, reachable at POST /api/v1/admin/distribution/master-tick, which no
+#     workflow calls.
+#
+# This fires the narrow, purpose-built endpoint instead of the distribution
+# master tick: the master tick also dispatches registry submits and broadcasts,
+# a much wider blast radius than "write one page".
+#
+# ★ Hits the RAILWAY ORIGIN, not dchub.cloud — this call does an LLM draft plus
+#   a GitHub commit and will exceed the 15s CF admin-POST route timeout.
+#
+# RATE: the endpoint publishes at most ONE page per call, and this runs once a
+# day, so cadence is the cap. Manual runs default to dry — pass dry=0 to act.
+
+on:
+  schedule:
+    # 14:37 UTC — well after the 05:19 citation hunt (facility-snapshot-daily)
+    # has written the day's fresh lost queries, on an unused minute.
+    - cron: '37 14 * * *'
+  workflow_dispatch:
+    inputs:
+      dry:
+        description: 'preview only (1) or actually publish (0)'
+        required: false
+        default: '1'
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  autopublish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Publish next uncovered GEO answer page
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DRY: ${{ github.event.inputs.dry }}
+        run: |
+          set -euo pipefail
+          # Loud, not silent: a rotated/deleted secret must NOT produce a green
+          # run that published nothing. A red run is cheap and honest, and the
+          # publish is idempotent (_page_exists skips anything already live), so
+          # a retry once the secret is restored is safe.
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY is missing — no page was written"
+            exit 1
+          fi
+          # Scheduled runs act; manual runs preview unless dry=0 is passed.
+          dry="${DRY:-}"
+          if [ -z "$dry" ]; then dry=0; fi
+          url="$BASE/api/v1/admin/geo/autopublish?dry=$dry&cb=${GITHUB_RUN_ID}"
+          echo "POST $url"
+          http=$(curl -sS --max-time 180 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/geo.json -w "%{http_code}" \
+            "$url" || echo "000")
+          echo "HTTP $http"
+          cat /tmp/geo.json 2>/dev/null | python3 -m json.tool 2>/dev/null \
+            || cat /tmp/geo.json 2>/dev/null || true
+
+          if [ "$http" != "200" ]; then
+            echo "::error::geo autopublish returned $http — no page was written"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          try:
+              d = json.load(open('/tmp/geo.json'))
+          except Exception as e:
+              print(f"::warning::output parse: {e}")
+              raise SystemExit(0)
+
+          if d.get('dry_run'):
+              w = d.get('would_publish') or {}
+              print(f"::notice::DRY — would publish {w.get('slug')} "
+                    f"[{d.get('source')}/{d.get('pack')}]: {w.get('title')}")
+          elif d.get('acted'):
+              pub = d.get('published') or {}
+              print(f"::notice::PUBLISHED {pub.get('slug') or d.get('question')} "
+                    f"[{d.get('source')}/{d.get('pack')}] — {pub.get('url') or ''}")
+          else:
+              print(f"::notice::no page written — {d.get('reason') or 'see considered'}")
+
+          gaps = d.get('gap_candidates')
+          if gaps is not None:
+              print(f"::notice::gap-driven candidates in plan: {gaps}")
+
+          # An unroutable loss is the signal that the next fact pack is worth
+          # writing. Surface it rather than letting it vanish into the payload.
+          unrouted = [c for c in (d.get('considered') or [])
+                      if isinstance(c, dict) and c.get('skip') == 'no_fact_pack']
+          for c in unrouted[:10]:
+              print(f"::warning::no fact pack for lost query: {c.get('query')} "
+                    f"(cited: {', '.join(c.get('competitors') or [])})")
+          if unrouted:
+              print(f"::notice::{len(unrouted)} lost queries have no fact pack — "
+                    f"add one to _FACT_PACKS/_PACK_ROUTER in routes/geo_autopublish.py")
+          PY
