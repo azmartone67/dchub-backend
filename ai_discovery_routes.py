@@ -1541,6 +1541,37 @@ User-agent: Applebot
 # user-initiated fetches and search indexing today.
 User-agent: Claude-User
 User-agent: Claude-SearchBot
+# ★ 2026-09-07 — PARITY FOR EVERY PLATFORM WE RECOGNISE. The You.com note above
+#   fixed one instance of a general defect: a platform can be well-known enough
+#   for ai_tracking.AI_PLATFORMS to COUNT it while robots.txt does not NAME it,
+#   and the gap is invisible because the traffic still arrives — just under a
+#   stricter policy than every named peer. Measured 2026-09-07, 11 of the 21
+#   recognised platforms had no matching group, two of them with real traffic:
+#
+#       deepseek   3,107 requests all-time   (more than You.com had when the
+#       cursor       601 requests all-time    You.com case was fixed by hand)
+#
+#   Naming a UA no crawler sends costs nothing — the group simply never
+#   matches. Omitting one that is sent costs that platform the /api/ surface,
+#   silently. So the list below is now the CLOSURE of AI_PLATFORMS, not a
+#   hand-curated subset, and tests/test_robots_platform_parity.py fails if a
+#   platform is ever added to the census without being named here.
+User-agent: DeepSeek
+User-agent: Cursor
+User-agent: Smithery
+User-agent: Groq
+User-agent: HuggingFace
+User-agent: Kimi
+User-agent: Moonshot
+User-agent: Qwen
+User-agent: Tongyi
+User-agent: MiniMax
+User-agent: Zhipu
+User-agent: ChatGLM
+User-agent: z-ai
+User-agent: Windsurf
+User-agent: Codeium
+User-agent: webmcp
 # ★ Content Signals repeated — void for this group otherwise (RFC 9309).
 #   MUST sit below the LAST User-agent line above: a non-UA directive
 #   TERMINATES the user-agent run, so placing it mid-list would split this
