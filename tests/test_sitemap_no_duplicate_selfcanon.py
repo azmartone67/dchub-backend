@@ -133,12 +133,19 @@ class _Cur:
     """Answers only the queries the facility path needs; [] for the rest."""
 
     def __init__(self, drain_link=DRAIN_LINK, legacy=LEGACY,
-                 discovered=DISCOVERED, twin_link=TWIN_LINK):
+                 discovered=DISCOVERED, twin_link=TWIN_LINK, evidence=None):
         self._rows = []
         self.drain_link = drain_link
         self.twin_link = twin_link
         self.legacy = legacy
         self.discovered = discovered
+        # r-noindex-coherence: (canonical_slug, city, address, lat, lng, mw)
+        # rows for the contentless-set query. Default: every fixture slug
+        # carries a city, i.e. nothing is contentless and the guard is inert —
+        # so every OTHER test in this file keeps testing what it tested.
+        self.evidence = (evidence if evidence is not None else
+                         [(r[7], "Paris", None, None, None, None)
+                          for r in list(discovered) + list(legacy)])
         self.seen = []
 
     def execute(self, sql, params=None):
@@ -153,6 +160,8 @@ class _Cur:
             self._rows = list(self.legacy)
         elif "join discovered_facilities d on d.merged_facility_id = f.id" in low:
             self._rows = list(self.drain_link)       # _drained_keeper, drain arm
+        elif "select canonical_slug, city, address" in low:
+            self._rows = list(self.evidence)          # r-noindex-coherence
         elif "join discovered_facilities d on d.id = f.discovered_twin_id" in low:
             self._rows = list(self.twin_link)        # _drained_keeper, twin arm
         else:
@@ -662,6 +671,78 @@ def test_the_numeric_osm_junk_it_was_meant_to_catch_is_still_dropped():
     # …and the builder really ran the facility path, so the two absences above
     # are a verdict and not an empty section.
     assert len(slugs) >= len(DISCOVERED), slugs
+
+
+# ── r-noindex-coherence: never advertise a URL the page noindexes ────────
+#
+# Measured 2026-09-07 over the live sitemap: 770 of 18,991 facility URLs serve
+# robots=noindex, and ALL 770 are util.thin_content.is_contentless (0 OSM-junk,
+# 0 NER, 0 headline — those guards work). 763 arrive via the ungated AI family,
+# 7 via the r-proven-exempt readmission past the capacity gate.
+
+CONTENTLESS_ROW = ("Aa Telekom Istanbul", None, None, None, "TR",
+                   990100, "2026-08-01", "aa-telekom-istanbul-46fa5ef6")
+RICH_ROW = ("Nautilus Maine", "Nautilus", "Portland", "ME", "US",
+            990101, "2026-08-01", "nautilus-nautilus-maine-c0336e33")
+
+
+def _ev(rows, contentless_slugs):
+    """Evidence tuples for `rows`; the named slugs carry NOTHING."""
+    return [(r[7], (None if r[7] in contentless_slugs else "Portland"),
+             None, None, None, None) for r in rows]
+
+
+def test_a_noindexed_contentless_url_is_not_advertised():
+    """THE DEFECT, on the artefact. The page for this slug serves
+    robots=noindex; the sitemap was still telling Google to index it."""
+    disc = list(DISCOVERED) + [CONTENTLESS_ROW, RICH_ROW]
+    cur = _Cur(discovered=disc,
+               evidence=_ev(disc + list(LEGACY),
+                            {"aa-telekom-istanbul-46fa5ef6"}))
+    slugs = _facility_slugs(_run_builder(cur))
+    assert "aa-telekom-istanbul-46fa5ef6" not in slugs, slugs
+    # FLOOR: the row beside it, with a city, is still advertised — so the
+    # absence above is a verdict and not an empty section.
+    assert "nautilus-nautilus-maine-c0336e33" in slugs, slugs
+
+
+def test_the_builder_actually_ran_the_contentless_query():
+    """A second floor: the test above also passes if the query silently
+    stopped being issued and the set stayed empty for a different reason."""
+    cur = _Cur()
+    _run_builder(cur)
+    q = [x for x in cur.seen if "select canonical_slug, city, address" in x.lower()]
+    assert q, "builder never issued the contentless-evidence query"
+    # it must read BOTH tables — the page resolves discovered first, then legacy
+    assert "from discovered_facilities" in q[0].lower(), q[0]
+    assert "from facilities" in q[0].lower(), q[0]
+
+
+def test_a_slug_carried_by_a_rich_row_too_is_kept():
+    """_fetch_facility_by_slug orders by power_mw DESC, so when two rows share
+    a slug the RICHEST one serves the page — and that page is not noindexed.
+    Dropping the URL would remove a real page."""
+    disc = list(DISCOVERED) + [CONTENTLESS_ROW, RICH_ROW]
+    ev = _ev(disc + list(LEGACY), {"aa-telekom-istanbul-46fa5ef6"})
+    # a SECOND row on the same slug, this one carrying a city
+    ev.append(("aa-telekom-istanbul-46fa5ef6", "Istanbul", None, None, None, None))
+    cur = _Cur(discovered=disc, evidence=ev)
+    slugs = _facility_slugs(_run_builder(cur))
+    assert "aa-telekom-istanbul-46fa5ef6" in slugs, slugs
+
+
+def test_an_implausibly_large_contentless_set_is_refused():
+    """The blast-radius cap. If the evidence columns go missing, every row
+    reads as contentless and this guard would empty the sitemap. Measured rate
+    is ~4%; a quarter of the corpus is ~6x that and cannot be real."""
+    disc = list(DISCOVERED) + [CONTENTLESS_ROW, RICH_ROW]
+    every = {r[7] for r in disc + list(LEGACY)}
+    cur = _Cur(discovered=disc, evidence=_ev(disc + list(LEGACY), every))
+    slugs = _facility_slugs(_run_builder(cur))
+    assert "aa-telekom-istanbul-46fa5ef6" in slugs, (
+        "the cap did not fire — a corpus-wide contentless verdict emptied the "
+        "sitemap instead of being refused")
+    assert "nautilus-nautilus-maine-c0336e33" in slugs, slugs
 
 
 if __name__ == "__main__":
