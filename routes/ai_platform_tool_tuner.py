@@ -48,8 +48,11 @@ import json
 import logging
 import os
 import time
-import urllib.error
-import urllib.request
+
+# requests, not urllib — scripts/regression_lint.py enforces
+# `urllib-request-on-railway` repo-wide. The urllib imports that used to sit
+# here went with the last urlopen call in this module.
+import requests
 
 from flask import Blueprint, jsonify, request
 
@@ -419,6 +422,9 @@ _DESC_ASK = 240
 # Below this fraction of the cap, falling back to the last sentence would throw
 # away too much of the description, so we keep more text and end on a word.
 _DESC_SENTENCE_FLOOR = 0.6
+# Per-run telemetry so "how often does the model overshoot" is an
+# observable number rather than a guess. Reset by reset_claim_run().
+_RETRY_STATS = {"attempted": 0, "succeeded": 0}
 
 
 def _clamp_description(text: str, limit: int = _DESC_MAX) -> str:
@@ -502,52 +508,100 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
            f"numbers or this note in your output): {outcome}\n\n" if outcome else "")
         + "Output ONLY the rewritten description, nothing else."
     )
-    for i, model in enumerate(models[:3]):
-        try:
-            body = json.dumps({
-                "model": model,
-                # 2026-07-10: 300 → 2000. brain_model_for('routine') can
-                # resolve to a THINKING-tier model, and thinking tokens
-                # count against max_tokens — at 300 the model's reasoning
-                # ate the whole budget and the text block came back empty
-                # (same trap as the brain's Fable restore). 2000 leaves
-                # headroom for thinking + the ≤280-char description; the
-                # [:280] clamp below still bounds the stored output.
-                "max_tokens": 2000,
-                "system": ("You are an MCP tool-description copywriter. You "
-                           "tune one tool description at a time for a specific "
-                           "AI platform. You output ONLY the description."),
-                "messages": [{"role": "user", "content": prompt}],
-            }).encode("utf-8")
-            req = urllib.request.Request(url, data=body, headers={
-                "Content-Type": "application/json",
-                "X-API-Key": api_key,
-                "User-Agent": "dchub-tool-tuner/1.0",
-                "Anthropic-Version": "2023-06-01",
-            })
-            with urllib.request.urlopen(req, timeout=40) as r:
-                data = json.loads(r.read().decode("utf-8"))
-            for block in (data.get("content") or []):
-                if block.get("type") == "text":
-                    text = (block.get("text") or "").strip().strip('"').strip("'")
-                    if text:
-                        return _clamp_description(text)
-            return None
-        except urllib.error.HTTPError as e:
-            detail = http_error_detail(e)
-            if e.code in (404, 400) and i + 1 < len(models):
-                logger.warning("[tool-tuner] %s/%s model=%s HTTP %s %s — trying "
-                               "next fallback rung", platform, tool_name, model,
-                               e.code, detail)
-                continue
-            logger.warning("[tool-tuner] %s/%s model=%s HTTP %s %s — no more rungs, "
-                           "giving up", platform, tool_name, model, e.code, detail)
-            return None
-        except Exception as e:
-            logger.warning("[tool-tuner] %s/%s model=%s rewrite error: %s",
-                           platform, tool_name, model, e)
-            return None
-    return None
+    def _ask(_prompt: str):
+        """One pass at the model, keeping the existing model-rung fallback.
+        Returns the model's RAW text — bounding it is the caller's job."""
+        for i, model in enumerate(models[:3]):
+            try:
+                payload = ({
+                    "model": model,
+                    # 2026-07-10: 300 → 2000. brain_model_for('routine') can
+                    # resolve to a THINKING-tier model, and thinking tokens
+                    # count against max_tokens — at 300 the model's reasoning
+                    # ate the whole budget and the text block came back empty
+                    # (same trap as the brain's Fable restore). 2000 leaves
+                    # headroom for thinking + the ≤280-char description; the
+                    # [:280] clamp below still bounds the stored output.
+                    "max_tokens": 2000,
+                    "system": ("You are an MCP tool-description copywriter. You "
+                               "tune one tool description at a time for a specific "
+                               "AI platform. You output ONLY the description."),
+                    # ★ _prompt, NOT the enclosing `prompt`. _ask closing over
+                    # the outer variable would make the corrective retry re-send
+                    # the IDENTICAL question — the retry fires, costs a call, and
+                    # changes nothing but sampling noise.
+                    "messages": [{"role": "user", "content": _prompt}],
+                })
+                # requests, not urllib: scripts/regression_lint.py rule
+                # `urllib-request-on-railway`. The restructure moved this call,
+                # which made delta-mode lint treat a pre-existing urlopen as a
+                # new violation — and the rule is right, so it is converted
+                # rather than suppressed.
+                r = requests.post(url, json=payload, headers={
+                    "X-API-Key": api_key,
+                    "User-Agent": "dchub-tool-tuner/1.0",
+                    "Anthropic-Version": "2023-06-01",
+                }, timeout=40)
+                if r.status_code >= 400:
+                    detail = http_error_detail(r)
+                    if r.status_code in (404, 400) and i + 1 < len(models):
+                        logger.warning("[tool-tuner] %s/%s model=%s HTTP %s %s — "
+                                       "trying next fallback rung", platform,
+                                       tool_name, model, r.status_code, detail)
+                        continue
+                    logger.warning("[tool-tuner] %s/%s model=%s HTTP %s %s — no "
+                                   "more rungs, giving up", platform, tool_name,
+                                   model, r.status_code, detail)
+                    return None
+                data = r.json()
+                for block in (data.get("content") or []):
+                    if block.get("type") == "text":
+                        text = (block.get("text") or "").strip().strip('"').strip("'")
+                        if text:
+                            # RAW — the caller decides whether to retry or
+                            # clamp. Clamping here would cap the string at
+                            # _DESC_MAX before the length check upstream,
+                            # so the retry could never fire and this whole
+                            # path would be dead code.
+                            return text
+                return None
+            except Exception as e:
+                logger.warning("[tool-tuner] %s/%s model=%s rewrite error: %s",
+                               platform, tool_name, model, e)
+                return None
+        return None
+
+    # ★ 2026-09-07 — RETRY, DO NOT GUILLOTINE. _clamp_description was meant to
+    # be a backstop, but the model kept overshooting and the backstop became
+    # the normal path: over the 02:28Z regeneration, 37 of 132 descriptions
+    # had to be cut and each ends mid-thought — "...fiber carriers, costs, and
+    # decision", "...distance_miles ready for". Cutting a too-long answer can
+    # only ever produce a broken sentence; ASKING AGAIN produces a short one.
+    # So an over-length answer now buys exactly one corrective pass that tells
+    # the model what it did wrong, in characters. One retry, not a loop: the
+    # seed makes 132 of these and an unbounded retry would reintroduce the
+    # runtime that got the DB connection reclaimed.
+    text = _ask(prompt)
+    if text and len(text) > _DESC_MAX:
+        _RETRY_STATS["attempted"] += 1
+        shorter = _ask(
+            prompt
+            + f"\n\nYour previous answer was {len(text)} characters, over the "
+              f"{_DESC_MAX}-character hard limit. Rewrite it COMPLETE and "
+              f"self-contained in under {_DESC_ASK} characters. Do not end "
+              f"mid-sentence, and do not simply truncate your previous answer "
+              f"— say less, in whole sentences."
+        )
+        if shorter and len(shorter) <= _DESC_MAX:
+            _RETRY_STATS["succeeded"] += 1
+            text = shorter
+        else:
+            logger.warning("[tool-tuner] %s/%s retry still over cap (%s -> %s "
+                           "chars); falling back to the clamp", platform,
+                           tool_name, len(text),
+                           len(shorter) if shorter else "none")
+    return _clamp_description(text) if text else None
+
 
 
 # A rewrite written BY the revert path must not register a claim of its own —
@@ -584,6 +638,8 @@ def reset_claim_run() -> None:
     """Called at the top of a reseed so the cap is per-run, not per-process."""
     _CLAIM_RUN["registered"] = 0
     _CLAIM_RUN["capped"] = 0
+    _RETRY_STATS["attempted"] = 0
+    _RETRY_STATS["succeeded"] = 0
 
 
 def _adoption_calls(c, platform: str, tool_name: str, days: int):
@@ -924,6 +980,11 @@ def seed_variants():
         claims_registered=_CLAIM_RUN["registered"],
         claims_capped=_CLAIM_RUN["capped"],
         claims_enabled=_claims_enabled(),
+        # How often the model overshot the cap, and how often asking again
+        # fixed it. Published so "the clamp is the exception" stays a claim
+        # somebody can check rather than an intention in a comment.
+        overlong_retries=_RETRY_STATS["attempted"],
+        overlong_retries_succeeded=_RETRY_STATS["succeeded"],
         failed=n_failed,
         elapsed_s=round(time.time() - started, 2),
         anthropic_key_present=api_key_present,
