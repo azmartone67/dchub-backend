@@ -19,7 +19,9 @@ Threat model:
     Secure + SameSite=Lax for additional defense.
 
 Cookie shape:
-  dchub_session = "<issued_ts>|<ip_prefix>|<hmac_sig>"
+  dchub_browser = "<issued_ts>|<ip_prefix>|<hmac_sig>"
+  (named `dchub_session` before 2026-09-07 — see COOKIE_NAME below for why
+  the name, and only the name, changed)
   Signed with HMAC-SHA256, truncated to 16 hex chars (96 bits — enough
   to make brute force impossible at HTTPS request rates).
 
@@ -40,7 +42,44 @@ logger = logging.getLogger(__name__)
 _SECRET = (os.environ.get("DCHUB_SESSION_SECRET") or
             os.environ.get("DCHUB_ADMIN_KEY") or
             "dchub-default-rotate-via-DCHUB_SESSION_SECRET-env").encode()
-COOKIE_NAME = "dchub_session"
+# ── cookie-name-vs-cache-rule (2026-09-07) ──────────────────────────────
+# RENAMED from `dchub_session`. Nothing about the cookie's meaning changed:
+# same HMAC, same format, same /16 pin, same anti-scrape job. What changed is
+# that the NAME is no longer credential-shaped.
+#
+# Why the old name cost us the edge cache. Cloudflare cache rule 24
+# (ruleset fecada93, rule id b3ce82fb) bypasses the cache for /api/* whenever
+# the raw Cookie header contains any of six SUBSTRINGS:
+#
+#     session | token | key | admin | sid | refresh
+#
+# `dchub_session` contains "session", so it matched. And because this cookie
+# is handed to EVERY visitor — it is an anti-scrape browser attestation, not
+# a login artifact; see the module docstring and map_tier_gating.py's
+# "★ WHY THIS IS SAFE" note — that bypass applied to essentially all
+# browser-originated /api/* traffic. Measured on /api/v1/stats, 2026-09-07:
+#
+#     anonymous, cookieless      → cf-cache-status: HIT   (age 1705)
+#     same URL + dchub_session   → cf-cache-status: DYNAMIC
+#
+# Rule 24 is CORRECT and is deliberately left alone: a cookie that says
+# "session" should not share a URL-only cache key. The defect was ours —
+# we were putting a credential-shaped name on a non-credential.
+#
+# ★ The new name must avoid all six substrings, and so must the VALUE, since
+# rule 24 matches the raw Cookie header as one string. "dchub_browser" clears
+# all six. The value — "<ts>|<ip_prefix>|<hmac16>" — is digits, dots, colons,
+# '|' and lowercase hex only; every one of the six families contains at least
+# one non-hex letter (s, i, n, t, k, y, m, r, h), so the value can never
+# collide. tests/test_browser_cookie_name_vs_cache_rule.py pins both halves.
+COOKIE_NAME = "dchub_browser"
+
+# The pre-rename name. Still ACCEPTED on read (below) so a browser holding one
+# when this deploys keeps its attestation instead of being silently demoted to
+# scraper-class for the rest of its 24h life. Never ISSUED any more — with no
+# issuer left it self-expires within MAX_AGE_S, and the edge worker deletes it
+# on sight (dchub-frontend _worker.js attachSessionCookie).
+LEGACY_COOKIE_NAME = "dchub_session"
 MAX_AGE_S = 86400  # 24h
 
 
@@ -70,7 +109,11 @@ def validate_cookie(cookie_value: str | None = None) -> bool:
     """Returns True iff the cookie was issued by us, within MAX_AGE,
     and pinned to the same /16 the request is coming from."""
     if cookie_value is None:
-        cookie_value = request.cookies.get(COOKIE_NAME, "")
+        # Transition window: prefer the current name, fall back to the
+        # pre-rename one. Both are the same HMAC over the same payload, so
+        # verification below is identical — only the envelope changed.
+        cookie_value = (request.cookies.get(COOKIE_NAME)
+                        or request.cookies.get(LEGACY_COOKIE_NAME, ""))
     if not cookie_value:
         return False
     parts = cookie_value.split("|")
