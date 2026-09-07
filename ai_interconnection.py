@@ -1324,9 +1324,10 @@ def ai_outreach_status():
         ★2026-09-07 — the _worker.js half of that was NOT TRUE when this
         docstring first claimed it: the path was named in _routes.json only, so
         the worker declined it and dchub.cloud/ai/outreach answered a Pages 404
-        while this handler answered 200 at the origin. Routed in
-        dchub-frontend#<PR>; before believing this paragraph again, measure it
-        (`x-dc-hub-served-by: railway-primary`), do not re-read the comment.
+        while this handler answered 200 at the origin. It is now named in
+        dchub-frontend/_worker.js PHASE_282_RAILWAY_PATHS — grep that file, it
+        is the authority. Before believing this paragraph again, MEASURE it
+        (`x-dc-hub-served-by: railway-primary`); do not re-read the comment.
       · No page fetches it today. The live dchub-frontend ai.html and for-ai.html
         contain no reference to it (measured 2026-09-07, `git grep`); the only
         callers left are the backend's OWN static/ai.html and static/for-ai.html,
