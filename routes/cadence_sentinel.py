@@ -670,7 +670,7 @@ def _run_tick() -> dict:
             with c.cursor() as cur:
                 cur.execute(
                     "INSERT INTO cadence_sentinel_snapshots "
-                    "(lanes_stalled, lanes_total, payload) VALUES (%s, %s, %s)",
+                    "(lanes_stalled, lanes_total, payload) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                     (payload["lanes_stalled"], payload["lanes_total"],
                      json.dumps(payload)))
         except Exception as e:
