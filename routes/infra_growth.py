@@ -64,6 +64,14 @@ _LAYERS = [
     # (14,480 rows, refreshed 2026-07-31), so the label stays accurate.
     ("power_plants_eia",        "power_plants",             "periodic", 120),
     ("power_plants_discovered", "discovered_power_plants",   "static",   None),
+    # ★ ADDED 2026-09-07: /api/v1/sites/find publishes gas-proximity distances
+    # computed from this table, so it is now user-facing data whose staleness
+    # someone has to own. Declared "static" like its discovered_* siblings
+    # because it is a one-shot HIFLD seed (source='hifld_seed') with no
+    # refresh loop — asserting a cadence it does not have would be worse than
+    # asserting none. Its only timestamp is created_at (verified against the
+    # CREATE TABLE, not assumed).
+    ("gas_pipelines_discovered", "discovered_pipelines",     "static",   None),
     # ★ SUBSEA ADDED 2026-08-07 (audit SH52-059: "infra_growth_snapshot has no
     # subsea layer"). This is the (a) case the board could not distinguish: the
     # layer was not measured AT ALL, which on the page is indistinguishable from
@@ -102,6 +110,10 @@ _FRESH_COL = {
     "transmission_lines":      "created_at",
     "power_plants_eia":        "created_at",
     "power_plants_discovered": "discovered_at",   # TEXT — cast below
+    # created_at TIMESTAMP DEFAULT NOW(), read off the CREATE TABLE rather than
+    # assumed. It is a one-shot seed so this stamps the load, not a refresh —
+    # which is exactly what a "static" layer's freshness should report.
+    "gas_pipelines_discovered": "created_at",
     "gem_global_power":        "ingested_at",
     "gem_lng_terminals":       "ingested_at",
     "gem_pipelines":           "ingested_at",
