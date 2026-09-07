@@ -929,6 +929,89 @@ def probe_outcomes():
 # ─────────────────────────────────────────────────────────────────────
 # 4A.2 — Ground-truth verifier for merged MECHANICAL code fixes
 # ─────────────────────────────────────────────────────────────────────
+_MO_HEALTHY = "merged_healthy"
+_MO_INEFFECTIVE = "merged_ineffective"
+
+
+def sync_merge_outcomes(limit: int = 200) -> dict:
+    """Mirror settled mechanical-fix verdicts into
+    brain_proposed_code_fixes.merge_outcome — the column the L5 auto-PR
+    confidence calibration actually reads.
+
+    ★ Why (2026-09-07). `_calibration_stats` in brain_v2_layer5 tunes the
+    per-source threshold only when
+    `COUNT(*) FILTER (WHERE merge_outcome IS NOT NULL) >= _CALIB_MIN_SAMPLES`
+    (3). Measured live: that count was **0 for every loop_name**, so the
+    threshold had never left `_CALIB_BASE_THRESHOLD` (0.85) since the feature
+    shipped, while the best pending proposal scored 0.83.
+
+    The verdicts were never missing — they were written to the wrong place.
+    This sweep has been recording ground-truth results into
+    brain_fix_outcomes since 2026-07-11 (47 settled code verdicts live), and
+    nothing ever carried them across. So this mirrors rather than re-decides:
+    no GitHub calls, no second oracle, no new judgement.
+
+    ★ Two verdict sources, and only ONE of them belongs here.
+    brain_merge_reconciler grades a finding by whether its detector re-fires;
+    that oracle does not exist for a mechanical fix, which is why 42 of 42
+    autofix PRs land on `no_evidence` there. THIS module's oracle is ground
+    truth on main — search_text gone and replace_text present — and it is the
+    right one for exactly those PRs.
+
+    ★ `file_path NOT LIKE 'github:%'` IS THE CARVE-OUT, and it is not
+    decoration: 8 of the settled verdicts are doc-only rows (reconciler
+    backfills use `file_path='github:<branch>'`), 7 of them graded
+    still_broken=TRUE on 2026-07-10 — the day BEFORE the doc-only rule
+    shipped. Mirroring those would write a fix verdict for a markdown note
+    and teach the threshold to trust a producer that ships nothing. Same
+    predicate this endpoint's own candidate query already uses.
+
+    DISTINCT ON keeps the newest verdict per proposal: a re-check row must
+    not make the mirrored value depend on which duplicate Postgres happens
+    to pick.
+    """
+    out = {"mirrored": 0, "healthy": 0, "ineffective": 0, "error": None}
+    c = None
+    try:
+        c = _conn()
+        with c.cursor() as cur:
+            cur.execute("""
+                UPDATE brain_proposed_code_fixes p
+                   SET merge_outcome = CASE WHEN v.still_broken
+                                            THEN %s ELSE %s END,
+                       merge_outcome_at = NOW(),
+                       merge_outcome_detail =
+                           LEFT(COALESCE(v.evidence_note,
+                                         'ground-truth verdict'), 500)
+                  FROM (
+                    SELECT DISTINCT ON (bo.proposal_id)
+                           bo.proposal_id, bo.still_broken, bo.evidence_note
+                      FROM brain_fix_outcomes bo
+                      JOIN brain_proposed_code_fixes q
+                        ON q.id = bo.proposal_id
+                     WHERE bo.proposal_kind = 'code'
+                       AND bo.still_broken IS NOT NULL
+                       AND q.merge_outcome IS NULL
+                       AND q.file_path NOT LIKE 'github:%%'
+                     ORDER BY bo.proposal_id, bo.checked_at DESC NULLS LAST
+                     LIMIT %s) v
+                 WHERE v.proposal_id = p.id
+                   AND p.merge_outcome IS NULL
+             RETURNING p.merge_outcome""",
+                (_MO_INEFFECTIVE, _MO_HEALTHY, max(1, min(500, limit))))
+            rows = cur.fetchall() or []
+        c.commit()
+        out["mirrored"] = len(rows)
+        out["healthy"] = sum(1 for r in rows if r[0] == _MO_HEALTHY)
+        out["ineffective"] = sum(1 for r in rows if r[0] == _MO_INEFFECTIVE)
+    except Exception as e:
+        out["error"] = str(e)[:200]
+        note_swallowed_write("sync_merge_outcomes", out["error"])
+    finally:
+        close_quietly(c)
+    return out
+
+
 @brain_learning_bp.route("/api/v1/brain/verify-merged-fixes",
                          methods=["POST", "GET"])
 @_require_admin
@@ -971,6 +1054,10 @@ def verify_merged_fixes():
     except Exception:
         limit = 25
     _ensure_schema()
+    # Carry any already-settled verdicts across FIRST, so a sweep that finds
+    # no new candidates still repairs the gap. Pull-shaped on purpose: it
+    # cannot fall behind the way the GG#4 push callback did.
+    mo_sync = sync_merge_outcomes()
     try:
         from routes.brain_fix_outcome_verify import verify_fix_resolved
     except Exception as e:
@@ -1032,6 +1119,7 @@ def verify_merged_fixes():
 
     return jsonify(ok=True,
                    measured_source="merged_mechanical_code_fixes",
+                   merge_outcome_sync=mo_sync,
                    candidates=len(candidates),
                    resolved=resolved_n,
                    still_broken=still_broken_n,
