@@ -503,6 +503,13 @@ def _summary(plans, stats):
 #    whatever happens next (the keeper is self-canonical, re-asserted below), so
 #    a partial failure leaves a shorter chain, never a longer one or a cycle.
 #    `id <> keeper` is what makes a self-pointer impossible.
+# ★ SCOPE, stated so nobody reads more into it: this closes the chains THIS lane
+#   creates, at the moment it creates them. It is gated on `p["writes"]`, so a
+#   later run that has nothing new to write issues no repoint — and if v2 or v3
+#   subsequently points a row at a row v4 already made an alternate, that chain
+#   is not healed here. Healing arbitrary chains is a different job with a
+#   different blast radius; measured today the whole population is nine rows and
+#   all nine are ours.
 # ★ dedup_method is NOT restamped. X's verdict belongs to the lane that made it
 #   (v2 here) and a v4 undo must never roll back another lane's decision. The
 #   cost is stated in undo(): a repointed row is left on the keeper, which is a
