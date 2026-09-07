@@ -16,6 +16,7 @@ Safety:
 """
 import json
 import logging
+import time
 import os
 import urllib.parse
 import urllib.request
@@ -27,6 +28,33 @@ log = logging.getLogger("gas_pipeline_ingest")
 gas_ingest_bp = Blueprint("gas_pipeline_ingest", __name__)
 
 _SRC = "eia_geodot_lines"
+
+#: The name this producer reports under on /api/land-power/status.
+#: ★ 2026-09-07 — this ingest maintains 32,851 of the 33,771 rows in
+#: gas_pipelines and logged NOTHING, while the status board watched
+#: `eia-ng-pipelines` — a 365-row legacy slice frozen at 2026-03-30. So the
+#: board published `degraded` for a superseded feed while the live one ran
+#: unmonitored: if THIS ingest died, the board would show the exact same
+#: degraded it already showed, and nobody would notice. A monitor pointed at a
+#: retired producer is worse than no monitor, because it looks like coverage.
+_SYNC_SOURCE = "eia-geodot-pipelines"
+
+
+def _log_sync(fetched, upserted, errors, detail, duration):
+    """Record this run on land_power_sync_log so /api/land-power/status can
+    judge the LIVE gas producer. Fail-soft: logging must never break ingest."""
+    try:
+        import psycopg2
+        with psycopg2.connect(_dsn()) as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO land_power_sync_log (source, records_fetched, "
+                "records_upserted, records_skipped, errors, error_detail, "
+                "duration_seconds) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (_SYNC_SOURCE, fetched, upserted, 0, errors,
+                 (detail or "")[:300] or None, round(duration, 2)))
+            conn.commit()
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not log gas sync: %s", str(e)[:160])
 # geo.dot.gov died 2026-06 (backend DB refuses conns). Live replacement =
 # the EIA national interstate+intrastate service. NOTE: the daily refresh
 # now feeds rows from the GitHub runner (tools/infra_fetch.py) since Railway
@@ -104,6 +132,7 @@ def _fetch(cap: int):
 
 @gas_ingest_bp.route("/api/v1/admin/ingest/gas-pipelines", methods=["POST"])
 def ingest_gas_pipelines():
+    _started = time.time()
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
     dsn = _dsn()
@@ -149,7 +178,9 @@ def ingest_gas_pipelines():
         try:
             rows = _fetch(cap)
         except Exception as e:
-            return jsonify(ok=False, error=f"source fetch failed: {str(e)[:160]}"), 502
+            _log_sync(0, 0, 1, f"source fetch failed: {str(e)[:200]}",
+                  time.time() - _started)
+        return jsonify(ok=False, error=f"source fetch failed: {str(e)[:160]}"), 502
 
     if dry:
         return jsonify(ok=True, dry_run=True, fetched=len(rows), sample=rows[:3])
@@ -221,9 +252,12 @@ def ingest_gas_pipelines():
                     inserted += len(batch)
             c.commit()
     except Exception as e:
+        _log_sync(0, inserted, 1, str(e)[:300], time.time() - _started)
         return jsonify(ok=False, error=str(e)[:200], inserted=inserted), 500
 
-    return jsonify(ok=True, inserted=inserted, source=_SRC)
+    _log_sync(len(rows), inserted, 0, None, time.time() - _started)
+    return jsonify(ok=True, inserted=inserted, source=_SRC,
+                   sync_source=_SYNC_SOURCE)
 
 
 def register_gas_pipeline_ingest(app):
