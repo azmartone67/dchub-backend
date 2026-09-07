@@ -2,12 +2,38 @@
 mcp_tier1_tools.py — Tier 1 MCP tool backend endpoints.
 
 Phase ZZZZZ-round33 (2026-05-24). Backends for new MCP tools added to
-dchub-mcp-server. Each is gated to Developer tier ($49/mo) or above.
+dchub-mcp-server.
 
-Endpoints:
-  POST /api/v1/mcp/tools/rank_markets       — Top-N markets by criteria
-  POST /api/v1/mcp/tools/find_alternatives  — Given facility, find similar nearby
-  POST /api/v1/mcp/tools/score_facility     — Independent 7-dimension score
+★ NOT GATED. This docstring said "Each is gated to Developer tier ($49/mo) or
+above" from 2026-05-24 until 2026-09-07. Nothing in this file has ever read a
+tier: there is no _require_key, no _caller_tier, no credential read of any
+kind. Measured live 2026-09-07 at the Railway origin, anonymous, at each
+route's ceiling — and again with a bogus `X-API-Key: x` control, byte-identical:
+
+    GET /api/v1/mcp/tools/rank_markets?limit=50       -> 200  14,353 b
+    GET /api/v1/mcp/tools/find_alternatives?limit=20  -> 200   6,124 b
+    GET /api/v1/mcp/tools/score_facility              -> 200   1,433 b
+
+This is the SAME wording defect that hid the open /api/v1/mcp/tools/
+export_facility_csv for months — its docstring claimed "Tiered limits" while
+nothing read a tier (gated in #4038, whose replacement docstring warns: "Do not
+restore that wording without a tier actually being read"). That warning lives
+one file over in routes/mcp_tier2_reports.py; this file still carried the
+wording it warns about.
+
+★ Being open here is NOT, by itself, a bypass: `POST /mcp` serves these same
+three tools anonymously with the same fields (measured the same day), so the
+REST twins are consistent with the MCP layer rather than a way around it.
+Whether these fields SHOULD reach anonymous callers is a pricing decision and
+is deliberately NOT settled here — see the note on find_alternatives below.
+If that decision is ever "gate it", use routes/mcp_tier2_reports._require_key
+and delete this paragraph; do not re-add a tier claim to a docstring first.
+
+Endpoints (POST **and GET** — the GET half is why a browser or a crawler
+reaches these without doing anything special):
+  POST|GET /api/v1/mcp/tools/rank_markets       — Top-N markets by criteria
+  POST|GET /api/v1/mcp/tools/find_alternatives  — Given facility, find similar nearby
+  POST|GET /api/v1/mcp/tools/score_facility     — Independent 7-dimension score
 
 These are designed to be CHEAP (sub-200ms) so they don't trip the
 worker timeout. Heavy computation happens nightly into materialized
@@ -302,7 +328,12 @@ def rank_markets():
         # by _runtime_as_of (never hardcoded — the contract requires the true
         # runtime date).
         "provenance":     _rank_markets_provenance(criteria),
-        "tier":           "developer",  # required tier for full results
+        # DESCRIPTIVE ONLY — nothing reads it. The comment here said "required
+        # tier for full results"; no tier is required and these ARE the full
+        # results. A tier string in a response body has never gated anything
+        # (same note as mcp_tier2_reports.create_site_report). Left in place
+        # because it is a published response field, not a control.
+        "tier":           "developer",
     }), 200
 
 
@@ -561,7 +592,7 @@ def _rank_markets_ai_ready(region: str, limit: int, min_cap: float):
             "low": sum(1 for x in results if x.get("signal_tier") == "low"),
             "unrecorded": sum(1 for x in results if not x.get("signal_tier")),
         },
-        "tier":         "developer",
+        "tier":         "developer",   # descriptive only — see module docstring
     }
     if min_cap and min_cap > 0:
         # Honest: no populated per-market MW column to filter on. Say so rather
@@ -586,6 +617,32 @@ def find_alternatives():
       match_on:           all | capacity | tier | operator_class    (default: all)
       exclude_operator:   bool — exclude same-operator results       (default: false)
       limit:              default 5, max 20
+
+    ★2026-09-07 — OPEN QUESTION, recorded here so it is not rediscovered as a
+    surprise. This route returns `provider` and `power_mw` to anonymous callers.
+    Those are two of the exact fields /api/v1/map WITHHOLDS from anon and names
+    in its own upgrade copy ("Upgrade for exact coordinates, power capacity,
+    operator, fiber, and full facility specs"). Measured the same minute, both
+    anonymous, at the origin:
+
+        /api/v1/map        _gated:true, coords 2dp, fields = city country id
+                           latitude longitude market name region slug state
+                           status   (no provider, no power_mw)
+        find_alternatives  provider, power_mw, similarity_score, key_differences
+
+    ★ The `limit` cap does NOT bound this, because `facility_id` is caller-
+    controlled: 11 anonymous calls across spread ids returned 127 unique
+    facilities, 123 with `provider` and 97 with `power_mw`. That is the
+    reference_dchub_anon_bulk_exposure lesson from /api/v1/map restated — a
+    per-call ROW cap cannot gate a corpus the caller pages through with a
+    DIFFERENT parameter. (The app-wide before_request chain does rate-limit, so
+    this is slower than an unbounded export, not free.)
+
+    Deliberately NOT changed here: this commit only makes the claims in this
+    file true. Whether these fields should reach anon is a pricing decision,
+    and the fix if it is ever made is a FIELD MASK on this route — not
+    _require_key, because `POST /mcp` serves the same tool anonymously with the
+    same fields, so gating only the REST twin would make the two disagree.
     """
     args = request.get_json(silent=True) or request.args.to_dict()
     facility_id = (args.get("facility_id") or "").strip()
@@ -750,7 +807,13 @@ def find_alternatives():
         "radius_km":       radius_km,
         "match_on":        match_on,
         "search_method":   "weighted_similarity: capacity (0.45) + tier (0.25) + proximity (0.30)",
-        "tier":            "free",  # 3 results free; full 20 require Developer
+        # DESCRIPTIVE ONLY. The comment here said "3 results free; full 20
+        # require Developer". BOTH halves were false: `scored = scored[:limit]`
+        # above is the only truncation in this file, `limit` comes from the
+        # caller (clamped to [1, 20]), and there is no free-tier cut to 3
+        # anywhere — grep the file. An anonymous caller asking for limit=20
+        # gets 20 (measured 2026-09-07).
+        "tier":            "free",
     }), 200
 
 
@@ -943,7 +1006,7 @@ def score_facility():
             "percentile_estimate":  int(composite),
         },
         "methodology":         "7 dimensions weighted by user preference. Phase 1 uses state-level baselines for water/climate/tax; Phase 2 integrates real-time water-risk + tax-incentive APIs.",
-        "tier":                "developer",
+        "tier":                "developer",   # descriptive only — see module docstring
         "url":                 f"https://dchub.cloud/facility/{f['id']}",
     }), 200
 
