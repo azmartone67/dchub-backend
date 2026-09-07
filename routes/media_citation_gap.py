@@ -457,7 +457,7 @@ def _run(days: int, limit: int) -> dict:
                             INSERT INTO media_citation_content_queue
                                 (query, competitors, draft_title, draft_body,
                                  verified_facts, status, reject_reason)
-                            VALUES (%s,%s::jsonb,%s,%s,%s::jsonb,'rejected',%s)
+                            VALUES (%s,%s::jsonb,%s,%s,%s::jsonb,'rejected',%s) ON CONFLICT DO NOTHING
                         """, (query, json.dumps(item["competitors"]),
                               _draft_title(query), text,
                               json.dumps(facts, default=str), reason[:300]))
@@ -473,7 +473,7 @@ def _run(days: int, limit: int) -> dict:
                         INSERT INTO media_citation_content_queue
                             (query, competitors, draft_title, draft_body,
                              verified_facts, status)
-                        VALUES (%s,%s::jsonb,%s,%s,%s::jsonb,'draft')
+                        VALUES (%s,%s::jsonb,%s,%s,%s::jsonb,'draft') ON CONFLICT DO NOTHING
                         RETURNING id
                     """, (query, json.dumps(item["competitors"]),
                           _draft_title(query), text,
