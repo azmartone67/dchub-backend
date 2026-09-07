@@ -131,6 +131,12 @@ def parse_miso_public_fuelmix(json_text, prefix="fuel_"):
        "Fuel": {"Type": [{"INTERVALEST": "2026-09-07 2:40:00 AM",
                           "CATEGORY": "Coal", "ACT": "20588", ...}, ...]}}
 
+    ★ RETURNS THE persist_metrics CONTRACT: {name: {"value": float, "unit": str}},
+      NOT {name: float}. persist_metrics reads data["value"] inside a bare
+      `except Exception: pass`, so a bare float raises TypeError and every row
+      is dropped SILENTLY — the extractor still answers status "ok" with
+      metrics_extracted 8 and rows_inserted 0. That shipped once (2026-09-07);
+      see test_parser_output_survives_the_persist_metrics_access_pattern.
     ★ ACT arrives as a STRING ("20588"), and can be negative ("-75") — coercion
       is load-bearing or downstream compares megawatts lexically.
     ★ An UNKNOWN category is dropped, never coerced into fuel_oth: silently
@@ -161,9 +167,9 @@ def parse_miso_public_fuelmix(json_text, prefix="fuel_"):
             continue
         code = _MISO_FUEL_CODE.get(cat)
         if code:
-            out[f"{prefix}{code}"] = mw
+            out[f"{prefix}{code}"] = {"value": mw, "unit": "MW"}
         elif cat in _MISO_NON_FUEL:
-            out[_MISO_NON_FUEL[cat]] = mw
+            out[_MISO_NON_FUEL[cat]] = {"value": mw, "unit": "MW"}
     return out
 
 

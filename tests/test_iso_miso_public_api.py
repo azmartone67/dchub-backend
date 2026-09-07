@@ -82,19 +82,19 @@ def test_the_retired_broker_is_last():
 
 def test_live_payload_parses_into_the_eia_vocabulary():
     got = m.parse_miso_public_fuelmix(LIVE)
-    assert got["fuel_col"] == 20332.0
-    assert got["fuel_ng"] == 20971.0
-    assert got["fuel_nuc"] == 11820.0
-    assert got["fuel_wnd"] == 10062.0
-    assert got["fuel_sun"] == 0.0
-    assert got["fuel_oth"] == -1192.0
+    assert got["fuel_col"] == {"value": 20332.0, "unit": "MW"}
+    assert got["fuel_ng"]["value"] == 20971.0
+    assert got["fuel_nuc"]["value"] == 11820.0
+    assert got["fuel_wnd"]["value"] == 10062.0
+    assert got["fuel_sun"]["value"] == 0.0
+    assert got["fuel_oth"]["value"] == -1192.0
 
 
 def test_act_is_coerced_from_string_including_negatives():
     """ACT arrives as a string; a lexical compare downstream would be silent."""
     got = m.parse_miso_public_fuelmix(LIVE)
-    assert isinstance(got["fuel_col"], float)
-    assert got["battery_storage_mw"] == -77.0
+    assert isinstance(got["fuel_col"]["value"], float)
+    assert got["battery_storage_mw"]["value"] == -77.0
 
 
 def test_absent_fuels_are_omitted_not_zeroed():
@@ -111,11 +111,11 @@ def test_battery_and_imports_stay_out_of_the_fuel_namespace():
     """★ Battery goes negative and Imports is not generation. Either inside
     fuel_* corrupts every consumer that sums or sign-checks that prefix."""
     got = m.parse_miso_public_fuelmix(LIVE)
-    assert got["battery_storage_mw"] == -77.0
-    assert got["net_imports_mw"] == 6572.0
-    for k in got:
-        assert not (k.startswith("fuel_") and got[k] == -77.0), k
-        assert not (k.startswith("fuel_") and got[k] == 6572.0), k
+    assert got["battery_storage_mw"]["value"] == -77.0
+    assert got["net_imports_mw"]["value"] == 6572.0
+    for k, v in got.items():
+        assert not (k.startswith("fuel_") and v["value"] == -77.0), k
+        assert not (k.startswith("fuel_") and v["value"] == 6572.0), k
     assert "fuel_bat" not in got and "fuel_imports" not in got
 
 
@@ -135,8 +135,8 @@ def test_an_unreadable_act_is_omitted_never_written_as_a_real_zero(act):
             t["ACT"] = act
     got = m.parse_miso_public_fuelmix(json.dumps(d))
     assert "fuel_col" not in got, f"unreadable ACT={act!r} became {got.get('fuel_col')!r}"
-    assert got["fuel_sun"] == 0.0, "a REAL zero must still be published"
-    assert got["fuel_ng"] == 20971.0, "one bad field must not drop the others"
+    assert got["fuel_sun"]["value"] == 0.0, "a REAL zero must still be published"
+    assert got["fuel_ng"]["value"] == 20971.0, "one bad field must not drop the others"
 
 
 def test_an_unknown_category_is_dropped_never_folded_into_other():
@@ -145,8 +145,8 @@ def test_an_unknown_category_is_dropped_never_folded_into_other():
     d["Fuel"]["Type"].append({"INTERVALEST": "2026-09-07 2:45:00 AM",
                               "CATEGORY": "Geothermal", "ACT": "999"})
     got = m.parse_miso_public_fuelmix(json.dumps(d))
-    assert got["fuel_oth"] == -1192.0, "a new category was folded into 'other'"
-    assert 999.0 not in got.values()
+    assert got["fuel_oth"]["value"] == -1192.0, "a new category was folded into 'other'"
+    assert 999.0 not in [v["value"] for v in got.values()]
 
 
 @pytest.mark.parametrize("bad", [
@@ -187,3 +187,41 @@ def test_an_unparseable_stamp_is_none_not_a_guess(bad):
     """None lets persist_metrics fall back to the insert clock, which is
     honest. A fabricated stamp would dedup against the wrong interval."""
     assert m.parse_miso_interval(bad) is None
+
+
+# ── 5 · the CONSUMER's contract, not our own assumption ─────────────────────
+
+def test_parser_output_survives_the_persist_metrics_access_pattern():
+    """★ THE BUG THIS FILE MISSED THE FIRST TIME.
+
+    Every assertion above was a mirror of the parser: `got["fuel_col"] ==
+    20332.0` describes what the parser does, not what its ONLY caller needs.
+    _iso_common.persist_metrics does `data["value"]` and `data.get("unit", "")`
+    inside a bare `except Exception: pass`, so a bare float raises TypeError
+    and EVERY row is dropped in silence — the extractor still answers
+    status "ok", metrics_extracted 8, rows_inserted 0. Observed in production
+    2026-09-07 immediately after the repoint merged.
+
+    So exercise the caller's exact access pattern instead of restating ours.
+    """
+    got = m.parse_miso_public_fuelmix(LIVE)
+    assert got, "nothing to check"
+    for name, data in got.items():
+        value = data["value"]                      # persist_metrics line 1
+        unit = data.get("unit", "")                # persist_metrics line 2
+        assert isinstance(value, float), (name, type(value))
+        assert isinstance(unit, str) and unit, (name, unit)
+
+
+def test_the_eia_fallback_and_miso_agree_on_shape():
+    """Both parsers feed the same persist_metrics, so their shapes must match.
+    A divergence here is invisible until rows stop landing."""
+    from routes._iso_common import parse_eia_v2_fuel_mix
+    eia = parse_eia_v2_fuel_mix(json.dumps({"response": {"data": [
+        {"period": "2026-09-06T04", "respondent": "MISO",
+         "fueltype": "NG", "value": 20971.0, "value-units": "megawatthours"}]}}))
+    miso = m.parse_miso_public_fuelmix(LIVE)
+    assert eia and miso
+    assert set(type(v) for v in eia.values()) == set(type(v) for v in miso.values())
+    assert set(next(iter(eia.values()))) >= {"value", "unit"}
+    assert set(next(iter(miso.values()))) >= {"value", "unit"}
