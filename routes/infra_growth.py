@@ -110,6 +110,10 @@ _FRESH_COL = {
     "transmission_lines":      "created_at",
     "power_plants_eia":        "created_at",
     "power_plants_discovered": "discovered_at",   # TEXT — cast below
+    # created_at TIMESTAMP DEFAULT NOW(), read off the CREATE TABLE rather than
+    # assumed. It is a one-shot seed so this stamps the load, not a refresh —
+    # which is exactly what a "static" layer's freshness should report.
+    "gas_pipelines_discovered": "created_at",
     "gem_global_power":        "ingested_at",
     "gem_lng_terminals":       "ingested_at",
     "gem_pipelines":           "ingested_at",
