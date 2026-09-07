@@ -29,8 +29,32 @@ import re
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "main.py")
 
-# Every client that has a page in dchub-frontend/install/.
-CLIENTS = ("claude", "chatgpt", "cursor", "grok", "perplexity")
+# ★ 2026-09-07 — THIS TUPLE WAS THE BUG, not the sitemap.
+# It read ("claude", "chatgpt", "cursor", "grok", "perplexity") under the
+# comment above claiming it was "every client that has a page in
+# dchub-frontend/install/". It was five of TWELVE. The list and the sentence
+# asserting its completeness were written in the same commit and went stale
+# together, so the guard could not notice: it verified the five it already
+# knew and reported green while seven live, indexable pages sat in no shard —
+# including gemini-cli, the only Gemini install surface.
+#
+# All twelve verified 200 on the apex, 2026-09-07.
+CLIENTS = ("claude", "chatgpt", "cursor", "grok", "perplexity",
+           "gemini-cli", "claude-code", "claude-desktop", "cline",
+           "vscode", "windsurf", "antigravity")
+
+# A floor, because a hardcoded roster's failure mode is SHRINKING silently:
+# drop an entry from CLIENTS and every assertion below still passes.
+_CLIENTS_FLOOR = 12
+
+# Where dchub-frontend is checked out, if it is. CI checks it out with
+# continue-on-error (private repo), so absence is normal and must be reported
+# as NOT RUN rather than passing quietly.
+_FRONTEND_ROOTS = (
+    os.environ.get("DCHUB_FRONTEND_ROOT") or "",
+    os.path.join(os.path.dirname(ROOT), "dchub-frontend"),
+    os.path.join(ROOT, "dchub-frontend"),
+)
 
 
 def _static_section():
@@ -69,3 +93,50 @@ def test_they_are_listed_as_crawlable_tuples_not_bare_strings():
         assert 0.0 < float(m.group(1)) <= 1.0
         assert m.group(2) in ("always", "hourly", "daily", "weekly", "monthly",
                              "yearly", "never")
+
+
+def test_the_client_roster_cannot_shrink_silently():
+    """★ The 2026-08-25 version could not fail this way: every assertion here
+    iterates CLIENTS, so deleting an entry deletes its own check. The floor is
+    the only thing that notices a roster getting smaller."""
+    assert len(CLIENTS) >= _CLIENTS_FLOOR, (
+        f"CLIENTS has {len(CLIENTS)} entries, below the pinned floor of "
+        f"{_CLIENTS_FLOOR}. If an install page was genuinely retired, lower "
+        f"the floor in the same commit and say which page and why.")
+    assert len(set(CLIENTS)) == len(CLIENTS), f"duplicate client in {CLIENTS}"
+
+
+def _frontend_install_dir():
+    for root in _FRONTEND_ROOTS:
+        if not root:
+            continue
+        d = os.path.join(root, "install")
+        if os.path.isdir(d):
+            return d
+    return None
+
+
+def test_clients_matches_the_frontend_directory_when_it_is_available():
+    """The real canon is dchub-frontend/install/*.html. When that checkout is
+    present, CLIENTS must equal it exactly — this is the check the hardcoded
+    tuple was pretending to be.
+
+    ★ SKIPS LOUDLY when the frontend is absent. `could not run` is not `ran and
+    passed`, and this suite's whole failure mode was a check that looked green
+    while measuring nothing."""
+    d = _frontend_install_dir()
+    if d is None:
+        import pytest
+        pytest.skip(
+            "dchub-frontend not checked out (private repo; CI uses "
+            "continue-on-error) — CLIENTS could not be cross-checked against "
+            "the real directory. The floor test still applies.")
+    on_disk = {f[:-5] for f in os.listdir(d) if f.endswith(".html")}
+    missing = on_disk - set(CLIENTS)
+    extra = set(CLIENTS) - on_disk
+    assert not missing, (
+        f"install pages exist in the frontend but are absent from CLIENTS, so "
+        f"nothing checks they are in a sitemap shard: {sorted(missing)}")
+    assert not extra, (
+        f"CLIENTS names pages that no longer exist in the frontend; a sitemap "
+        f"URL that 404s is worse than an unlisted one: {sorted(extra)}")

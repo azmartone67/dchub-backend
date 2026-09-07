@@ -32323,11 +32323,40 @@ def _build_sitemap_sections():
         # Verified 2026-08-25 before listing: all five 200 on the apex, no
         # robots meta (so index,follow), self-canonical to the listed URL, and
         # robots.txt does not disallow /install/.
+        # r-install-sitemap-complete (2026-09-07): the 2026-08-25 fix listed
+        # FIVE of the twelve install pages and its guard hardcoded those same
+        # five under the comment "Every client that has a page in
+        # dchub-frontend/install/". It was not. The list and the sentence
+        # asserting its completeness were written together and drifted
+        # together, so the guard could never notice.
+        #
+        # dchub-frontend/install/ ships twelve pages; all twelve return 200 on
+        # the apex, verified 2026-09-07. The seven added here were live,
+        # indexable, self-canonical and in NO shard:
+        #
+        #   antigravity  claude-code  claude-desktop  cline
+        #   gemini-cli   vscode       windsurf
+        #
+        # ★ gemini-cli is the one that prompted this. /install/gemini 301s to
+        # it and it is the ONLY Gemini install surface — so of the platforms
+        # with an install page, Gemini was the one whose page no crawler was
+        # told about. Gemini cites us on 1.8% of category probes against
+        # Perplexity's 17.1% (ai_citations, 30d, 217 vs 222 probes).
+        # Discoverability is the only claim being made here, exactly as the
+        # 2026-08-25 note says: listing a URL does not make Google index it,
+        # and it certainly does not make Gemini cite it.
         ('/install/claude', '0.8', 'weekly'),
         ('/install/chatgpt', '0.8', 'weekly'),
         ('/install/cursor', '0.8', 'weekly'),
         ('/install/grok', '0.8', 'weekly'),
         ('/install/perplexity', '0.8', 'weekly'),
+        ('/install/gemini-cli', '0.8', 'weekly'),
+        ('/install/claude-code', '0.8', 'weekly'),
+        ('/install/claude-desktop', '0.8', 'weekly'),
+        ('/install/cline', '0.8', 'weekly'),
+        ('/install/vscode', '0.8', 'weekly'),
+        ('/install/windsurf', '0.8', 'weekly'),
+        ('/install/antigravity', '0.8', 'weekly'),
         ('/for/', '0.8', 'weekly'),
         ('/for/claude', '0.8', 'weekly'),
         ('/for/chatgpt', '0.8', 'weekly'),
