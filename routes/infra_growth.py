@@ -64,6 +64,14 @@ _LAYERS = [
     # (14,480 rows, refreshed 2026-07-31), so the label stays accurate.
     ("power_plants_eia",        "power_plants",             "periodic", 120),
     ("power_plants_discovered", "discovered_power_plants",   "static",   None),
+    # ★ ADDED 2026-09-07: /api/v1/sites/find publishes gas-proximity distances
+    # computed from this table, so it is now user-facing data whose staleness
+    # someone has to own. Declared "static" like its discovered_* siblings
+    # because it is a one-shot HIFLD seed (source='hifld_seed') with no
+    # refresh loop — asserting a cadence it does not have would be worse than
+    # asserting none. Its only timestamp is created_at (verified against the
+    # CREATE TABLE, not assumed).
+    ("gas_pipelines_discovered", "discovered_pipelines",     "static",   None),
     # ★ SUBSEA ADDED 2026-08-07 (audit SH52-059: "infra_growth_snapshot has no
     # subsea layer"). This is the (a) case the board could not distinguish: the
     # layer was not measured AT ALL, which on the page is indistinguishable from
