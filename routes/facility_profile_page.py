@@ -987,10 +987,15 @@ _JUNK_SLUG_RE = None
 def _is_osm_junk(name, slug) -> bool:
     global _JUNK_NAME_RE, _JUNK_SLUG_RE
     import re as _re
+    # ★ r-junk-hash8 (2026-09-07): _JUNK_SLUG_RE is anchored to the trailing
+    #   hash8. This arm decides robots=noindex, so it has to move in lockstep
+    #   with main._junk_slug_re — a sitemap that advertises a page this
+    #   function still noindexes is worse than the page being absent.
     if _JUNK_NAME_RE is None:
         _JUNK_NAME_RE = _re.compile(
             r"(?i)^\s*(?:data\s+cent(?:er|re)|osm\s+dc)\s*#?\d{6,}\b")
-        _JUNK_SLUG_RE = _re.compile(r"(?:^|-)data-center-\d{6,}(?:-|$)")
+        _JUNK_SLUG_RE = _re.compile(
+            r"(?:^|-)data-center-\d{6,}-(?:[a-z0-9-]+-)?[0-9a-f]{8}$")
     n = (name or "").strip()
     s = slug or ""
     return bool(_JUNK_NAME_RE.match(n)

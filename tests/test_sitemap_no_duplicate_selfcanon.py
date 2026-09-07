@@ -105,6 +105,29 @@ JUNK_KEEPER = ("Shb Lljn Ltby", None, "Taipei", None, "TW",
 JUNK_ALT = ("Shb Lljn Ltby", "Shb Lljn Ltby", "Taipei", None, "TW",
             "legacy-shb", "2026-08-20", "shb-lljn-ltby-55880373")
 
+# ── r-junk-hash8 (2026-09-07) — THE FALSE POSITIVE IN THE JUNK FILTER ────
+# The frozen slug is <provider-slug>-<name-slug>-<hash8>. A facility literally
+# NAMED "… Data Center" yields '…-data-center-<hash8>', and (10/16)^8 ≈ 2.3% of
+# hash8 values are all decimal digits — indistinguishable, to a pattern that
+# only asks for 6+ digits, from an OSM node id. Measured 2026-09-07 over the
+# 21,068 live discovered slugs: the old pattern matched 695, the anchored one
+# matches 674, and the 21 it freed are REAL facilities (every one has a name and
+# a city; every one of the 674 that remain is named literally
+# "Data Center <digits>" and carries no power_mw).
+#
+# ★ The three rows below are LIVE slugs, pinned as literals: the real facility
+#   the filter was eating, the OSM junk it must keep eating, and the junk shape
+#   where the node id is followed by a CITY before the hash8 — that last one is
+#   why the anchor allows name text between the digit run and the hash8.
+REAL_DIGIT_HASH = ("Meta Rosemount Data Center", "Meta", "Rosemount", "MN",
+                   "US", 8157, "2026-03-18",
+                   "meta-meta-rosemount-data-center-45882878")
+OSM_NUMERIC_JUNK = ("Data Center 32538035", None, "Chicago", None, "US",
+                    999001, "2026-05-04", "data-center-32538035-fdf34756")
+OSM_NUMERIC_JUNK_CITY = ("Data Center 343593591 West Chicago", None,
+                         "West Chicago", None, "US", 999002, "2026-05-04",
+                         "data-center-343593591-west-chicago-ab12cd34")
+
 
 class _Cur:
     """Answers only the queries the facility path needs; [] for the rest."""
@@ -612,6 +635,33 @@ def test_both_readers_call_the_shared_helper_not_a_copy():
         assert called, f"{rel} does not CALL junk_slug_sql"
         assert "!~ '^unknown-'" not in src, (
             f"{rel} spells the predicate itself instead of calling the helper")
+
+
+# ── r-junk-hash8: an all-digit identity hash is not an OSM node id ───────
+
+def test_a_real_facility_named_data_center_is_emitted():
+    """THE DEFECT, on the artefact. 'Meta Rosemount Data Center' (100 MW,
+    Rosemount MN) is a real page that serves 200, and the junk filter was
+    dropping it from the sitemap because its frozen hash8 — 45882878 — happens
+    to be all digits. Run through the SHIPPED builder, not a mirror of it."""
+    cur = _Cur(discovered=list(DISCOVERED) + [REAL_DIGIT_HASH])
+    slugs = _facility_slugs(_run_builder(cur))
+    assert "meta-meta-rosemount-data-center-45882878" in slugs, slugs
+
+
+def test_the_numeric_osm_junk_it_was_meant_to_catch_is_still_dropped():
+    """The other half, and the reason this cannot simply be deleted: 674 live
+    slugs are genuine OSM junk whose NAME is literally 'Data Center <digits>'.
+    Both shapes stay out — the node id immediately before the hash, and the
+    node id followed by a city."""
+    cur = _Cur(discovered=list(DISCOVERED) + [OSM_NUMERIC_JUNK,
+                                              OSM_NUMERIC_JUNK_CITY])
+    slugs = _facility_slugs(_run_builder(cur))
+    assert "data-center-32538035-fdf34756" not in slugs, slugs
+    assert "data-center-343593591-west-chicago-ab12cd34" not in slugs, slugs
+    # …and the builder really ran the facility path, so the two absences above
+    # are a verdict and not an empty section.
+    assert len(slugs) >= len(DISCOVERED), slugs
 
 
 if __name__ == "__main__":

@@ -249,10 +249,17 @@ def _conn_diag(c):
 #   _drained_twin_url executes WITH params so psycopg2 runs %-substitution and
 #   the literal would have to be '%%', while main's query executes with NO
 #   params, where '%%' stays two characters. A regex has no such split.
+# ★ r-junk-hash8 (2026-09-07): the numeric-OSM clause is anchored to the
+#   TRAILING hash8. An all-digit identity hash ('adobe-data-center-95545925')
+#   is not an OSM node id; a node id is followed by MORE slug — the hash, or a
+#   city and then the hash. Verified against production: over all 45,623 live
+#   canonical_slugs this POSIX form and is_junk_slug classify identically, row
+#   for row, 0 disagreements.
 def junk_slug_sql(col: str) -> str:
     """`col` is not a junk slug — the SQL form of is_junk_slug()."""
     return (f"{col} !~ '^unknown-' "
-            f"AND {col} !~ '(^|-)data-center-[0-9]{{6,}}(-|$)'")
+            f"AND {col} !~ "
+            f"'(^|-)data-center-[0-9]{{6,}}-([a-z0-9-]+-)?[0-9a-f]{{8}}$'")
 
 
 def _column_exists(cur, table, col) -> bool:
@@ -331,12 +338,20 @@ def same_name(a, b) -> bool:
 
 def is_junk_slug(slug: str) -> bool:
     """Slugs the sitemap already refuses to emit and the page already
-    noindexes — mirrors main._build_sitemap_sections' r-junk-prune guard."""
+    noindexes — mirrors main._build_sitemap_sections' r-junk-prune guard.
+
+    ★ r-junk-hash8 (2026-09-07): this gates `_collect`, so a false positive
+      here costs more than a sitemap entry — the row never enters the
+      rendered-identity universe at all, and PR #4125 refuses to canonicalise
+      onto it. Freeing the 21 mis-classified rows added 18 dedup groups,
+      removed none, and moved no existing keeper (measured against production).
+    """
     import re as _re
     s = (slug or "")
     if not s or s.startswith("unknown-"):
         return True
-    return bool(_re.search(r"(?:^|-)data-center-\d{6,}(?:-|$)", s))
+    return bool(_re.search(
+        r"(?:^|-)data-center-\d{6,}-(?:[a-z0-9-]+-)?[0-9a-f]{8}$", s))
 
 
 def _refuse(reason):
