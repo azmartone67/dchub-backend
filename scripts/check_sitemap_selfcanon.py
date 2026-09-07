@@ -35,8 +35,28 @@ MEASURED 2026-09-07, live:
                                                        merges; 310 is the
                                                        honest self-canonical
                                                        number without them)
-    after  r-twin-pointer (this PR)        80 groups   <- the budget's basis
-    --max-groups default                  100          20 groups of headroom
+    after  r-twin-pointer (#4110)         103 groups   <- the budget's basis
+    --max-groups default                  120          17 groups of headroom
+
+★ 103 is MEASURED, live, after the apply. #4110 predicted 80 by simulation and
+  shipped a budget of 100 on that prediction, so the guard failed on its first
+  real run. The simulation was wrong twice over: it anchored on a BEFORE of 310
+  when the checker's own number at apply time was 322, and it assumed 231 URLs
+  would drop when 220 did (11 were held back by guards it did not model). A
+  budget set from a prediction is a guess wearing a measurement's clothes —
+  this one is set from the artefact.
+
+EVERY ONE OF THE 103 IS ACCOUNTED FOR, and none of them is a defect:
+
+    37  drain fork — consolidated by #4101's pointer; the URL is still emitted
+        because its keeper is absent from the sitemap or the slug is shared
+    36  refused: name mismatch (see below) — the deliberate refusal
+    13  twin pointer IS set; the URL stays because a LIVE discovered row also
+        wears that legacy slug (the NOT EXISTS guard — dropping it would take a
+        live page's only URL, the 2026-07-28 lesson)
+    11  coordinate veto fired — genuinely distant rows under one <h1>
+     5  group larger than MAX_GROUP — a generic-name collision, not a facility
+     1  no discovered keeper — duplicate_of_id addresses no other id space
 
 WHAT THE ~80 RESIDUAL IS, AND WHY IT IS NOT GOING TO ZERO. It is the
 name_mismatch class routes/facility_dedup_v4.plan_group deliberately REFUSES:
@@ -118,7 +138,7 @@ def _rows(cur, sql):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--max-groups", type=int, default=100)
+    ap.add_argument("--max-groups", type=int, default=120)
     ap.add_argument("--sitemap", default=SITEMAP)
     a = ap.parse_args()
 
