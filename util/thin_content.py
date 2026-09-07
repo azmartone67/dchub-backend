@@ -47,12 +47,23 @@ to prevent. A page with nothing to say gets LANE 3, not filler.
 """
 import os
 
-# City values this dataset uses when the real city is unknown. 314 rows carry
-# 'Regional' across 30 countries. NOT a place — see the same list in
-# routes/facility_profile_page.py's comparables guard, which must agree.
-# 'California Regional' / 'Connecticut Regional' (136 rows each) are REAL
-# market labels and are deliberately absent: the test is equality, never
-# substring, or 272 real pages lose their content instead of gaining it.
+# City values this dataset uses when the real city is unknown. NOT a place —
+# see the same list in routes/facility_profile_page.py's comparables guard,
+# which must agree.
+#
+# ★ RE-MEASURED 2026-09-07 (the 08-14 figures below were 314 / 30 / "136 each",
+#   and the second one understates the hazard by ~4x):
+#     bare 'Regional'          727 live rows, 35 countries, and EVERY one of
+#                              them source 'competitor_gap:cloudscene' — one
+#                              upstream, not a corpus-wide habit
+#     '<X> Regional' labels  1,149 rows across 74 distinct values in EACH
+#                              table — Connecticut 142, California 141,
+#                              New York 97, Florida 90, Ohio 83, Texas 47,
+#                              West Virginia 42, Illinois 35, Arizona 32 …
+#   These are REAL market labels and are deliberately absent from the tuple:
+#   the test is EQUALITY, never substring, or 1,149 real pages lose their
+#   city instead of gaining one. tests/test_thin_content_lanes.py pins a
+#   spread of them, not just the two that used to be named here.
 PLACEHOLDER_CITIES = ("regional", "unknown", "n/a", "none", "other")
 
 

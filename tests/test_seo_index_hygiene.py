@@ -89,14 +89,20 @@ def test_a_real_city_is_still_rendered():
     assert "is a data center operated by Telehouse in Frankfurt, DE" in html
 
 
-def test_california_regional_is_a_real_market_label_and_survives():
-    """Equality, never substring. 'California Regional' and 'Connecticut
-    Regional' are 136 real rows each; a substring test loses their content
-    instead of gaining it."""
-    html = fpp._render_profile(
-        _fac("Some Facility", "Op", city="California Regional",
-             state="CA", country="US"), "x")
-    assert "California Regional" in html
+def test_real_regional_market_labels_survive_on_the_rendered_page():
+    """Equality, never substring — on the ARTEFACT, not just the predicate.
+
+    Re-measured 2026-09-07: '<X> Regional' is 1,149 real rows across 74
+    distinct labels in each facility table, not the 272 across 2 the 08-14
+    note recorded. A substring predicate would strip the city from every one
+    of them."""
+    for city in ("California Regional", "Connecticut Regional",
+                 "New York Regional", "Ohio Regional",
+                 "West Virginia Regional"):
+        html = fpp._render_profile(
+            _fac("Some Facility", "Op", city=city, state="CA", country="US"), "x")
+        assert city in html, city
+        assert f'"addressLocality": "{city}"' in html, city
 
 
 # ── 1. title operator-duplication ────────────────────────────────────────
