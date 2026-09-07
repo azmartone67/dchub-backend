@@ -1,0 +1,74 @@
+name: CF cache ruleset drift
+
+# The Cloudflare cache ruleset for dchub.cloud (25 rules, last-match-wins) is
+# the only layer that can serve a response the origin never produced — on a
+# `cf-cache-status: HIT` the Pages worker does not execute at all. Until this
+# workflow, NOTHING in this repository referenced it: `grep -rn 'fecada93'`
+# returned zero hits, and an unreviewed dashboard edit had no alarm anywhere.
+#
+# This job is READ-ONLY. It never writes to Cloudflare. It diffs the live
+# ruleset against scripts/cf_cache_ruleset_canon.json and fails on any change
+# to the rule set, their ORDER, expressions, actions, action parameters or
+# enabled flags. Intentional changes are blessed by a human running
+# `--repin` and landing the canon diff in a PR.
+#
+# ★ NO `pull_request` TRIGGER ON PURPOSE. The offline half (canon well-formed,
+# floors, the /api/v1/mcp/tools/ invariant) is covered by
+# tests/test_cf_cache_ruleset_canon.py, which pre-merge.yml already runs on
+# every PR. Putting a secret-dependent live call on the PR path would paint
+# every PR red for anyone without the secret.
+#
+# ★ MISSING SECRET IS RED, NOT GREEN. cf-purge.yml warns and exits 0 when its
+# secret is absent, which is how a purge job ran as a no-op in 6 of 8 cases
+# while reporting success. A guard that cannot look must say so.
+
+on:
+  schedule:
+    # Daily at 03:41 UTC — off the herd, and after the 20:20 registry scan and
+    # the 01:xx window when edge changes tend to get applied by hand.
+    - cron: '41 3 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: python3 -m pip install --quiet requests
+
+      - name: Diff live cache ruleset against pinned canon (+ outside-in probe)
+        env:
+          CF_CACHE_RULES_TOKEN: ${{ secrets.CF_CACHE_RULES_TOKEN }}
+        run: |
+          # ★ GitHub runs `run:` under `bash -e`, so a bare nonzero exit from the
+          # guard would abort this step BEFORE the messaging below — the drift
+          # would be red but unexplained. `|| STATUS=$?` is what keeps -e out of
+          # it. And no pipe on the guard itself: a pipe reports tee/tail's exit
+          # code, not the guard's.
+          STATUS=0
+          python3 scripts/check_cf_cache_ruleset.py --probe > /tmp/cf-drift.log 2>&1 || STATUS=$?
+          cat /tmp/cf-drift.log
+          case "$STATUS" in
+            0)
+              echo "::notice::cache ruleset matches canon and no bypass path was served from cache."
+              ;;
+            1)
+              echo "::error::Cloudflare cache ruleset DRIFTED from scripts/cf_cache_ruleset_canon.json, or a bypass path was served from the edge cache. Someone changed the edge without a PR. If it was intentional: run 'python3 scripts/check_cf_cache_ruleset.py --repin' and land the canon diff."
+              ;;
+            2)
+              echo "::error::The guard's own canon file failed its floor checks (missing, unparseable, truncated below 20 rules, or duplicate ids). The guard did NOT compare anything."
+              ;;
+            3)
+              echo "::error::COULD NOT CHECK the cache ruleset — this is not a pass. Most likely the CF_CACHE_RULES_TOKEN repo secret is missing or lacks 'Zone > Config Rules: Read' on dchub.cloud. The existing CLOUDFLARE_API_TOKEN secret is scoped to Cache Purge only and cannot read rulesets."
+              ;;
+            *)
+              echo "::error::guard exited with unexpected status $STATUS"
+              ;;
+          esac
+          exit "$STATUS"
