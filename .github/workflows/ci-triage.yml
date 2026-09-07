@@ -29,6 +29,14 @@ on:
       - "Syntax Check"
       - "API Response Contract"
       - "route-tables coherence"
+      # ★2026-09-07 — same omission as the 2026-08-30 note above, caught before
+      # it cost anything. "CF cache ruleset drift" is the ONLY thing in this
+      # repo that can notice an unreviewed edit to the Cloudflare cache rules,
+      # and the edge is the one layer that can serve a response the origin
+      # never produced (on a HIT the Pages worker does not execute). A guard
+      # whose alarm reaches nobody is the alarm not existing. It watches
+      # config no PR touches, so its red is ALWAYS worth a human look.
+      - "CF cache ruleset drift"
     types: [completed]
 
 permissions:
