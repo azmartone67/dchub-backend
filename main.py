@@ -25744,23 +25744,50 @@ def ai_discovery_index():
     reach = _discovery_reachability()
     _paths = dict(_DISCOVERY_SURFACES)
 
-    def _proto(name, standard):
-        rec = reach.get(name)
-        return {"url": f"{_DISCOVERY_PUBLIC}{_paths[name]}",
-                "standard": standard,
-                "exists": _discovery_exists(rec),
-                "status": _discovery_status(rec)}
+    # ★2026-09-07 r-protocols-measurable. These six entries were built by a
+    # `_proto(name, standard)` helper — three fewer lines, and it took
+    # data.protocols.* OUT OF the API response-key contract, which reads dict
+    # LITERALS out of the handler. The guard reported UNMEASURED on 10 keys and
+    # refused to call that a pass, correctly: a response that became dynamic is
+    # not fine, it is invisible. Losing static coverage of a published agent
+    # surface to save three lines is the wrong trade — and it is the same defect
+    # this endpoint was just rewritten to remove, one level up.
+    #
+    # So the dicts are literal and the DERIVATION is what gets factored out.
+    # _durl/_dex/_dst each take the surface name, so url, exists and status for
+    # one protocol still cannot describe different surfaces — which is the
+    # invariant, not the helper's shape.
+    def _durl(name):
+        return f"{_DISCOVERY_PUBLIC}{_paths[name]}"
+
+    def _dex(name):
+        return _discovery_exists(reach.get(name))
+
+    def _dst(name):
+        return _discovery_status(reach.get(name))
 
     return jsonify({
         "success": True,
         "data": {
             "protocols": {
-                "agents_md": _proto("AGENTS.md", "AGENTS.md (Linux Foundation)"),
-                "a2a": _proto("agent.json", "Google A2A Protocol"),
-                "mcp": _proto("mcp.json", "Anthropic MCP"),
-                "openapi": _proto("openapi.json", "OpenAPI 3.1"),
-                "chatgpt": _proto("ai-plugin.json", "ChatGPT Plugin"),
-                "copilot": _proto("copilot-agent.json", "Microsoft Copilot"),
+                "agents_md": {"url": _durl("AGENTS.md"),
+                              "standard": "AGENTS.md (Linux Foundation)",
+                              "exists": _dex("AGENTS.md"), "status": _dst("AGENTS.md")},
+                "a2a": {"url": _durl("agent.json"),
+                        "standard": "Google A2A Protocol",
+                        "exists": _dex("agent.json"), "status": _dst("agent.json")},
+                "mcp": {"url": _durl("mcp.json"),
+                        "standard": "Anthropic MCP",
+                        "exists": _dex("mcp.json"), "status": _dst("mcp.json")},
+                "openapi": {"url": _durl("openapi.json"),
+                            "standard": "OpenAPI 3.1",
+                            "exists": _dex("openapi.json"), "status": _dst("openapi.json")},
+                "chatgpt": {"url": _durl("ai-plugin.json"),
+                            "standard": "ChatGPT Plugin",
+                            "exists": _dex("ai-plugin.json"), "status": _dst("ai-plugin.json")},
+                "copilot": {"url": _durl("copilot-agent.json"),
+                            "standard": "Microsoft Copilot",
+                            "exists": _dex("copilot-agent.json"), "status": _dst("copilot-agent.json")},
             },
             "file_status": {name: _discovery_status(reach.get(name))
                             for name, _ in _DISCOVERY_SURFACES},

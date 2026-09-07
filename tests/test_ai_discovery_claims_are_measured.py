@@ -124,46 +124,86 @@ def test_discovery_index_does_not_stat_the_filesystem(tree):
     assert "_discovery_status" in src, "file_status no longer derives from a measurement"
 
 
-def test_discovery_protocols_and_status_share_one_map(tree):
-    """A protocol entry cannot advertise one URL and report another's status."""
+def _protocol_entries(tree):
+    """Each `protocols` entry as {key: {field: value-node}}.
+
+    ★2026-09-07: these were built by a `_proto()` helper until the API
+    response-key contract reported data.protocols.* UNMEASURED — that guard
+    reads dict LITERALS out of the handler, and a factored-out helper made ten
+    keys on a published agent surface invisible to it. The literals came back
+    and the DERIVATION was factored out instead, so this guard follows the
+    values rather than the helper.
+    """
     fn = _func(tree, "ai_discovery_index")
-    src = ast.unparse(fn)
-    assert "_DISCOVERY_SURFACES" in src, "the endpoint no longer reads the surface map"
-    # every _proto("name", ...) must name a surface in the map
-    named = {n.args[0].value for n in ast.walk(fn)
-             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-             and n.func.id == "_proto" and n.args
-             and isinstance(n.args[0], ast.Constant)}
-    assert named, "no _proto() call sites found — this guard is blind"
-    assert named <= _PUBLISHED, f"protocols name surfaces outside the map: {named - _PUBLISHED}"
+    protocols = _dict_value(fn, "protocols")
+    assert protocols is not None and isinstance(protocols, ast.Dict), (
+        "ai_discovery_index no longer builds `protocols` as a dict literal — the "
+        "API response contract cannot see a dynamic one, and neither can this guard")
+    out = {}
+    for k, v in zip(protocols.keys, protocols.values):
+        assert isinstance(k, ast.Constant), "a protocol key is not a literal"
+        assert isinstance(v, ast.Dict), (
+            f"protocol {k.value!r} is not a dict literal — it would drop out of the "
+            "response-key contract (that is what #4055 did and #4056 undid)")
+        out[k.value] = {kk.value: vv for kk, vv in zip(v.keys, v.values)
+                        if isinstance(kk, ast.Constant)}
+    assert out, "no protocol entries found — this guard is blind"
+    return out
+
+
+def test_every_protocol_field_names_the_same_surface(tree):
+    """★ THE invariant: url, exists and status must describe ONE surface.
+
+    The defect this whole endpoint was rewritten to remove is a status published
+    beside the wrong thing. A protocol entry whose `url` says AGENTS.md and whose
+    `exists` reads llms.txt is that defect in miniature, and no amount of correct
+    measurement upstream would save it.
+    """
+    for key, fields in _protocol_entries(tree).items():
+        for required in ("url", "exists", "status"):
+            assert required in fields, f"protocol {key!r} has no {required!r}"
+        named = {}
+        for field in ("url", "exists", "status"):
+            args = [c.value for c in ast.walk(fields[field])
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+            assert len(args) == 1, (
+                f"protocol {key!r} field {field!r} does not name exactly one "
+                f"surface: {args}")
+            named[field] = args[0]
+        assert len(set(named.values())) == 1, (
+            f"protocol {key!r} mixes surfaces across its own fields: {named} — a "
+            "status reported for one thing beside a URL for another")
+        assert named["url"] in _PUBLISHED, (
+            f"protocol {key!r} names {named['url']!r}, which is not in the surface map")
 
 
 def test_protocol_urls_are_built_from_the_map(tree):
     """The advertised URL must be the map's path, not a second hand-typed one.
 
-    ★ Added because the first version of the guard above SURVIVED its mutation.
-    Rewriting _proto's url to "https://dchub.cloud/.well-known/" + name still
+    ★ Added because the first version of this guard SURVIVED its mutation.
+    Rewriting the URL to "https://dchub.cloud/.well-known/" + name still
     referenced _DISCOVERY_SURFACES elsewhere in the function and still named
     valid surfaces, so every assertion passed — while the endpoint advertised
     https://dchub.cloud/.well-known/AGENTS.md (a 404) beside AGENTS.md's real
-    "active" status. That is the original defect exactly: a status reported for
-    one thing, published next to a URL for another.
+    "active" status.
     """
     fn = _func(tree, "ai_discovery_index")
-    proto = next((n for n in ast.walk(fn)
-                  if isinstance(n, ast.FunctionDef) and n.name == "_proto"), None)
-    assert proto is not None, "ai_discovery_index no longer builds protocols via _proto()"
-    url = _dict_value(proto, "url")
-    assert url is not None, "_proto no longer returns a 'url'"
-    src = ast.unparse(url)
-    assert "_paths[" in src, (
-        f"protocol URL is not read from the surface map: {src}")
-    typed = [c.value for c in ast.walk(url)
+    for key, fields in _protocol_entries(tree).items():
+        src = ast.unparse(fields["url"])
+        assert "_durl(" in src, f"protocol {key!r} url is not built from the map: {src}"
+        typed = [c.value for c in ast.walk(fields["url"])
+                 if isinstance(c, ast.Constant) and isinstance(c.value, str) and "/" in c.value]
+        assert not typed, (
+            f"protocol {key!r} url carries a hand-typed path fragment {typed}")
+    # ...and the one indirection those go through must itself read the map.
+    durl = next((n for n in ast.walk(fn)
+                 if isinstance(n, ast.FunctionDef) and n.name == "_durl"), None)
+    assert durl is not None, "_durl is gone — the url guard above proves nothing"
+    body = ast.unparse(durl)
+    assert "_paths[" in body, f"_durl no longer reads the surface map: {body}"
+    typed = [c.value for c in ast.walk(durl)
              if isinstance(c, ast.Constant) and isinstance(c.value, str) and "/" in c.value]
-    assert not typed, (
-        f"protocol URL carries a hand-typed path fragment {typed}; it must come "
-        "from _DISCOVERY_SURFACES so the URL and the status cannot describe "
-        "different things")
+    assert not typed, f"_durl carries a hand-typed path fragment {typed}"
 
 
 def test_surface_map_covers_every_published_name():
