@@ -150,7 +150,7 @@ CANON_MARKETS_PHRASE = f"{CANON_MARKETS} markets"
 #    goalposts — test_fence_baseline_matches_canon_sot cross-checks that the
 #    imported SoT still agrees with these. ──────────────────────────────────────
 CANONICAL = {
-    "tools": 86,        # live tools/list length on the public MCP gate (★2026-09-07: 85 -> 86, mcp-server #373 added find_sites)
+    "tools": 88,        # live tools/list length on the public MCP gate (★2026-09-07: 86 -> 88, mcp-server #375 added get_subsea_cables + get_peering_intel)
     "markets_min": 300,  # DCPI markets floor (live ~311; grows via intl expansion)
     "deals_min": 1400,  # DISTINCT deduped tracked deals floor (rows over-state ~2.9x)
     "gas": 52,          # gas-suitability states (DCGI)

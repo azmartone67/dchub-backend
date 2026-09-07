@@ -391,12 +391,16 @@ def test_repo_worker_is_canon_clean_and_current():
     # from POST /mcp tools/list — name, description and inputSchema fetched and
     # inserted verbatim — because a hand-typed copy is a second source of truth
     # sitting in the one path that only runs when everything else is down.
+    #
+    # 4.9.59 -> 4.9.60-fallback-tools-88 (2026-09-07): mcp-server #375 added
+    # get_subsea_cables + get_peering_intel (86 -> 88). Both fallback entries
+    # DERIVED from POST /mcp tools/list, same as find_sites.
     # ★ Confirmed live before canon moved: /.well-known/mcp.json tools_count=86,
     # tools/list 86, check-served-manifest.mjs OK.
     # Verify with (want 4.9.59):
     #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.59-fallback-tools-86'" in src
+    assert "WORKER_VERSION = '4.9.60-fallback-tools-88'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
