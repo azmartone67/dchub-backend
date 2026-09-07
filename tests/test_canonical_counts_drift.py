@@ -3464,7 +3464,10 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
     'routes/press_outreach.py': {'deals_stale_floor'},
     'routes/quarterly_report.py': {'deals_stale_floor', 'facilities_bare_int'},
-    'routes/quick_redirects.py': {'deals_stale_floor', 'tool_count_literal'},
+    # ★2026-09-07 deals_stale_floor PAID: the '4,000+ tracked M&A deals'
+    # over-claim in _AGENTS_MD now renders {canon_deals}. tool_count_literal
+    # stays — this file still types a tool count.
+    'routes/quick_redirects.py': {'tool_count_literal'},
     'routes/registry_distribution_master_shell.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/registry_surface_shell.py': {'markets_232', 'tool_count_literal'},
     'routes/sample_landing.py': {'tool_count_literal'},
