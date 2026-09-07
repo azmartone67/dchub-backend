@@ -123,12 +123,18 @@ def _log_open(info: dict | None, token: str, valid: bool) -> None:
                         " token_ts TIMESTAMPTZ,"
                         " valid BOOLEAN,"
                         " user_agent TEXT,"
-                        " referer TEXT)")
+                        " referer TEXT,"
+                        " token_hash TEXT)")
+                    # CREATE TABLE IF NOT EXISTS is a no-op on the live table,
+                    # so the new column needs its own ALTER or it exists only
+                    # for a fresh database.
+                    cur.execute("ALTER TABLE relay_opens"
+                                " ADD COLUMN IF NOT EXISTS token_hash TEXT")
                     _DDL_DONE[0] = True
                 cur.execute(
                     "INSERT INTO relay_opens (session_id, tool, tier,"
-                    " token_ts, valid, user_agent, referer)"
-                    " VALUES (%s,%s,%s, to_timestamp(%s), %s, %s, %s)"
+                    " token_ts, valid, user_agent, referer, token_hash)"
+                    " VALUES (%s,%s,%s, to_timestamp(%s), %s, %s, %s, %s)"
                     " ON CONFLICT DO NOTHING",
                     ((info or {}).get("sid"), (info or {}).get("tool"),
                      (info or {}).get("tier"),
@@ -150,7 +156,24 @@ def _log_open(info: dict | None, token: str, valid: bool) -> None:
                      # it is free and a future edge change could make it real;
                      # tests/test_relay_open_provenance.py fails if any read
                      # path starts treating it as a signal.
-                     (request.headers.get("Referer") or "")[:300]))
+                     (request.headers.get("Referer") or "")[:300],
+                     # ★ THE IDENTITY AN OPEN HAS WHEN IT HAS NO SESSION.
+                     # Measured 2026-09-07 over 30d: of 178 relay opens, 32
+                     # passed the real-UA filter and 30 of those 32 carried NO
+                     # session_id — so human_acted could count 2. The sid is
+                     # baked into the token at MINT time
+                     # (`${sessionId || ''}|tool|tier|ts` in buildHumanRelay);
+                     # when the minting path had no session, the link is born
+                     # without one and nothing at open time can recover it.
+                     #
+                     # But every link carries a token that is UNIQUE PER MINT —
+                     # the HMAC covers sid|tool|tier|ts. Hashing it gives each
+                     # open a stable identity even with an empty sid, so the
+                     # funnel can count DISTINCT LINKS OPENED instead of
+                     # discarding the row. Stored as a hash, not the token: the
+                     # token is a working credential for /upgrade/h/<token> and
+                     # this table has no business holding one.
+                     hashlib.sha256((token or "").encode()).hexdigest()[:32]))
             conn.commit()
         finally:
             try:

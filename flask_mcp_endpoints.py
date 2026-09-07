@@ -494,12 +494,24 @@ def handoff_funnel():
         # definition installed on the headline before its number has been read
         # against live data.
         _ro_not_self = _deloop_external_session_predicate("ro.session_id")
+        # ★ 2026-09-07 — IDENTITY FALLS BACK TO THE TOKEN. Measured over 30d:
+        # 178 opens, 32 passed the real-UA filter, and 30 of THOSE 32 carried no
+        # session_id — so v6 could count 2. The sid is baked in at MINT time
+        # (`${sessionId || ''}|tool|tier|ts`), so a link minted without a
+        # session is born without one and no read-side change recovers it.
+        # Every link does carry a token unique per mint, now stored hashed on
+        # the open (routes/human_relay._log_open), which gives those rows an
+        # identity. The unit becomes DISTINCT LINKS OPENED rather than distinct
+        # sessions — for a stage that asks "did a human click", that is the
+        # honest unit anyway, and it is the difference between counting 2 and
+        # counting 32.
+        _v6_id = "coalesce(nullif(ro.session_id,''), ro.token_hash)"
         _v6_body = ("from relay_opens ro "
                     "where ro.ts > now() - interval '%s' "
                     "and " + _ro_real + " "
-                    "and coalesce(ro.session_id,'') <> '' "
+                    "and " + _v6_id + " is not null "
                     "and " + _ro_not_self)
-        opened_v6 = one(("select count(distinct ro.session_id) " + _v6_body) % iv)
+        opened_v6 = one(("select count(distinct " + _v6_id + ") " + _v6_body) % iv)
         opened_v2 = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                         "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         opened_legacy = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
@@ -669,14 +681,19 @@ def handoff_funnel():
                 "wins, and sum to relay_open_provenance.total."),
             "human_acted_v6_from_relay_opens": opened_v6,
             "human_acted_v6_basis": (
-                "COUNT(DISTINCT ro.session_id) FROM relay_opens — the table the "
+                "COUNT(DISTINCT coalesce(nullif(session_id,''), token_hash)) "
+                "FROM relay_opens — the table the "
                 "open is written to — with the same real-UA predicate and the "
                 "same declared operator self-traffic exclusion v5 applies. v2..v5 "
                 "count FROM mcp_high_intent_sessions and can only see an open "
                 "whose session reached that table; this one cannot miss those. "
-                "It still cannot see opens with no session_id recorded (30 of "
-                "174 over 30d on 2026-09-07) — that is an instrumentation gap in "
-                "relay_opens, not a definition choice. PUBLISHED ALONGSIDE: "
+                "Identity is coalesce(session_id, token_hash): the sid is baked "
+                "in at mint time and a link minted without a session never has "
+                "one, so the per-mint token hash supplies identity for those "
+                "rows. The unit is therefore DISTINCT LINKS OPENED, not distinct "
+                "sessions. Rows written BEFORE 2026-09-07 have no token_hash and "
+                "stay uncountable — this fix is forward-looking and does not "
+                "retroactively recover the 30. PUBLISHED ALONGSIDE: "
                 "`human_acted` is still v5."),
             "human_acted_v2_all_view_opens": opened_v2,
             "human_acted_v3_including_self_traffic": opened_v3,
