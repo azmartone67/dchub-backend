@@ -561,6 +561,65 @@ def handoff_funnel():
                          + " and " + _ro_real + " and " + _sid_ok) % iv)
         prov_real_sids = one(("select count(distinct ro.session_id) " + _ro_win
                               + " and " + _ro_real + " and " + _sid_ok) % iv)
+        # ── WHAT THE FILTERED OPENS ACTUALLY ARE ─────────────────────────
+        # prov_probe says 142 of 174 opens (30d, 2026-09-07) fail the real-UA
+        # predicate. That single number cannot answer the question it raises,
+        # and the answer decides opposite next moves:
+        #
+        #   link-unfurl bots  -> a URL landed in a channel a HUMAN reads.
+        #                        Slack/Discord/iMessage fetch on paste. The
+        #                        link was delivered and human_acted:0 is a
+        #                        FALSE zero — the funnel is discarding its
+        #                        own evidence.
+        #   scripting/scanner -> nobody received it. Delivery is still the
+        #                        problem and the work goes back into the
+        #                        envelope (r-relay-render, r-human-first).
+        #
+        # Those two live in the same `probe_ua` bucket today. This publishes
+        # the family split so the question is read off the endpoint instead of
+        # argued from priors.
+        #
+        # ★ REGEX, NOT ILIKE. A literal % in this predicate took the live
+        # handoff-funnel down inside one deploy — the caller builds its SQL
+        # with `sql % iv` and Python choked on `%'`. `~*` carries no %.
+        # ★ Applebot is DELIBERATELY NOT in link_unfurl. iMessage previews do
+        # use it, but so does Apple's search crawl, and the two are
+        # indistinguishable from the UA alone. link_unfurl is the bucket that
+        # would justify "the links ARE reaching humans" — the one conclusion
+        # this histogram exists to test — so an ambiguous agent must not
+        # inflate it. It falls through to other_bot, which is the conservative
+        # side of a question that decides the next three weeks of work.
+        _ua_family = (
+            "case"
+            " when coalesce(ro.user_agent,'') = '' then 'no_user_agent'"
+            " when ro.user_agent ~* '(slackbot|discordbot|whatsapp|telegrambot"
+            "|twitterbot|facebookexternalhit|linkedinbot|skypeuripreview"
+            "|redditbot|bingpreview|iframely|embedly|quora link preview"
+            "|vkshare|pinterest)' then 'link_unfurl'"
+            " when ro.user_agent ~* '(dchub|brain-|uptimerobot|statuscake"
+            "|pingdom|health-check|heartbeat)' then 'internal_or_monitor'"
+            " when ro.user_agent ~* '(python-requests|python-httpx|urllib|curl"
+            "|wget|libwww|node-fetch|undici|axios|go-http|okhttp|java/|ruby"
+            "|scrapy)' then 'scripting_client'"
+            " when ro.user_agent ~* '(headlesschrome|phantomjs|puppeteer"
+            "|playwright|selenium)' then 'headless_browser'"
+            " when ro.user_agent ~* '(bot|spider|crawler|scan)' then 'other_bot'"
+            " else 'unclassified' end")
+        ua_families = []
+        try:
+            with c.cursor() as _uc:
+                _uc.execute(
+                    ("select " + _ua_family + " as family, count(*) as opens,"
+                     " count(*) filter (where " + _ro_real + ") as passes_real_ua"
+                     " " + _ro_win + " group by 1 order by 2 desc") % iv)
+                ua_families = [
+                    {"family": r[0], "opens": int(r[1] or 0),
+                     "passes_real_ua": int(r[2] or 0)}
+                    for r in _uc.fetchall()]
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
+            ua_families = []
         # ── the stage's DENOMINATOR GAP ──────────────────────────────────
         # human_acted counts FROM mcp_high_intent_sessions and only then asks
         # whether a relay row exists. Relay links are minted on paths that
@@ -583,6 +642,17 @@ def handoff_funnel():
             "steps": steps,
             "emails_captured_total": captured,
             "human_acted_legacy_claim_page": opened_legacy,
+            "relay_open_ua_families": ua_families,
+            "relay_open_ua_families_basis": (
+                "relay_opens rows in the window bucketed by user_agent family, "
+                "with how many of each PASS the real-UA predicate that "
+                "human_acted applies. Purpose: prov_probe counts the opens the "
+                "filter rejects but not what they ARE, and link-unfurl bots "
+                "(Slack/Discord/iMessage fetching a pasted URL) mean a human "
+                "received the link, while scripting clients and scanners mean "
+                "nobody did. Those imply opposite fixes and shared one bucket. "
+                "Families are regex-matched, mutually exclusive, first match "
+                "wins, and sum to relay_open_provenance.total."),
             "human_acted_v6_from_relay_opens": opened_v6,
             "human_acted_v6_basis": (
                 "COUNT(DISTINCT ro.session_id) FROM relay_opens — the table the "
