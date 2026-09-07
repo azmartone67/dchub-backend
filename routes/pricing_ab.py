@@ -184,7 +184,8 @@ def _resolve_session_id(req) -> str:
     """Best-effort stable session id. Order:
       1. existing dchub_pricing_cohort cookie → reuse so same caller
          sees same cohort (cookie value contains the hash prefix)
-      2. dchub_session cookie (web UI logged-in)
+      2. dchub_browser cookie (or legacy dchub_session) — per-browser,
+         NOT a login signal; it is only used here as a stable opaque id
       3. X-API-Key header (for MCP callers — same key = same arm)
       4. IP + UA hash (anon fallback; not perfect but stable for ~hours)
     """
@@ -195,7 +196,12 @@ def _resolve_session_id(req) -> str:
             # Format we write: "<arm>.<sess_hash_prefix>"
             return prior_cookie.split(".", 1)[1]
 
-        sess = req.cookies.get("dchub_session") or ""
+        # 2026-09-07: the browser-attestation cookie was renamed
+        # dchub_session → dchub_browser (routes/session_cookie.py COOKIE_NAME).
+        # Read both: the old name may still be on a browser for up to 24h, and
+        # cohort assignment must not reshuffle mid-flight for those callers.
+        sess = (req.cookies.get("dchub_browser")
+                or req.cookies.get("dchub_session") or "")
         if sess:
             return f"sess:{sess}"
 
