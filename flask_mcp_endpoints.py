@@ -605,21 +605,34 @@ def handoff_funnel():
             "|playwright|selenium)' then 'headless_browser'"
             " when ro.user_agent ~* '(bot|spider|crawler|scan)' then 'other_bot'"
             " else 'unclassified' end")
+        # ★ USE `cur`, THE CURSOR EVERY OTHER QUERY IN THIS FUNCTION USES.
+        # The first version opened `c.cursor()`. There is no `c` in _win — the
+        # working queries all go through one(sql), which closes over `cur` —
+        # so this raised NameError on every call, the blanket except swallowed
+        # it, and the endpoint published an empty list. Deployed and live for
+        # an hour: relay_open_ua_families [] beside relay_open_provenance
+        # total 178. A histogram of nothing next to a count of 178 is worse
+        # than no histogram, because it reads as "measured, and there is
+        # nothing there".
         ua_families = []
+        ua_families_error = None
         try:
-            with c.cursor() as _uc:
-                _uc.execute(
-                    ("select " + _ua_family + " as family, count(*) as opens,"
-                     " count(*) filter (where " + _ro_real + ") as passes_real_ua"
-                     " " + _ro_win + " group by 1 order by 2 desc") % iv)
-                ua_families = [
-                    {"family": r[0], "opens": int(r[1] or 0),
-                     "passes_real_ua": int(r[2] or 0)}
-                    for r in _uc.fetchall()]
-        except Exception:
-            try: c.rollback()
-            except Exception: pass
+            cur.execute(
+                ("select " + _ua_family + " as family, count(*) as opens,"
+                 " count(*) filter (where " + _ro_real + ") as passes_real_ua"
+                 " " + _ro_win + " group by 1 order by 2 desc") % iv)
+            ua_families = [
+                {"family": r[0], "opens": int(r[1] or 0),
+                 "passes_real_ua": int(r[2] or 0)}
+                for r in cur.fetchall()]
+        except Exception as _uae:
+            # ★ AND SAY SO. The empty list is now accompanied by the reason it
+            # is empty. A bare `except: []` converted a coding error into a
+            # published fact and nothing in the payload could tell the two
+            # apart — the exact defect class this histogram was built to fix,
+            # committed inside the fix for it.
             ua_families = []
+            ua_families_error = type(_uae).__name__ + ": " + str(_uae)[:160]
         # ── the stage's DENOMINATOR GAP ──────────────────────────────────
         # human_acted counts FROM mcp_high_intent_sessions and only then asks
         # whether a relay row exists. Relay links are minted on paths that
@@ -643,6 +656,7 @@ def handoff_funnel():
             "emails_captured_total": captured,
             "human_acted_legacy_claim_page": opened_legacy,
             "relay_open_ua_families": ua_families,
+            "relay_open_ua_families_error": ua_families_error,
             "relay_open_ua_families_basis": (
                 "relay_opens rows in the window bucketed by user_agent family, "
                 "with how many of each PASS the real-UA predicate that "

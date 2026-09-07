@@ -149,5 +149,119 @@ def test_the_query_failure_path_leaves_an_empty_list_not_a_crash():
     src = SRC.read_text(encoding="utf-8")
     i = src.index("ua_families = []")
     seg = src[i:src.index('"relay_open_ua_families"')]
-    assert "except Exception" in seg and "rollback" in seg, (
-        "the histogram query is not wrapped fail-soft with a rollback")
+    # ★ This used to require a `rollback` in the except. That assertion encoded
+    # the BUG: the rollback was `c.rollback()`, and there is no `c` in _win —
+    # so it could never have run either. The histogram now shares `cur` with
+    # every other query in the function, whose transaction it does not own.
+    # What fail-soft must mean here is: never raise, and never go quiet.
+    assert "except Exception as _uae:" in seg, (
+        "the histogram query is not wrapped fail-soft")
+    assert "ua_families = []" in seg and "ua_families_error =" in seg, (
+        "the failure path must leave an empty list AND say why it is empty")
+
+
+def _win_fn():
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "_win"), None)
+    assert fn is not None, "_win not found in flask_mcp_endpoints.py"
+    return fn
+
+
+def test_every_name_the_histogram_reads_is_actually_bound():
+    """★ THE BUG THIS EXISTS FOR. The first version ran `with c.cursor()`.
+    There is no `c` in _win — every working query goes through one(sql), which
+    closes over `cur`. It raised NameError on every call, the blanket except
+    swallowed it, and the endpoint published `relay_open_ua_families: []` beside
+    `relay_open_provenance.total: 178` for an hour. A histogram of nothing next
+    to a count of 178 reads as "measured, and empty".
+
+    No test asserted about the SQL could catch that — the SQL was fine. What was
+    wrong was a name that did not exist. So: bind-check the block."""
+    import builtins
+    fn = _win_fn()
+    src = SRC.read_text(encoding="utf-8")
+
+    # the histogram statements, by line range
+    start = src[:src.index("ua_families = []")].count("\n") + 1
+    end = src[:src.index('"relay_open_ua_families": ua_families,')].count("\n") + 1
+
+    bound = {a.arg for a in fn.args.args}
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                for sub in ast.walk(t):
+                    if isinstance(sub, ast.Name):
+                        bound.add(sub.id)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound.add(n.name)
+            bound.update(a.arg for a in n.args.args)
+        elif isinstance(n, ast.For):
+            for sub in ast.walk(n.target):
+                if isinstance(sub, ast.Name):
+                    bound.add(sub.id)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for al in n.names:
+                bound.add((al.asname or al.name).split(".")[0])
+        elif isinstance(n, ast.withitem) and n.optional_vars is not None:
+            for sub in ast.walk(n.optional_vars):
+                if isinstance(sub, ast.Name):
+                    bound.add(sub.id)
+        elif isinstance(n, ast.comprehension):
+            for sub in ast.walk(n.target):
+                if isinstance(sub, ast.Name):
+                    bound.add(sub.id)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            bound.add(n.name)
+
+    # module-level globals are legitimate too
+    mod = ast.parse(src)
+    for n in mod.body:
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    bound.add(t.id)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(n.name)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for al in n.names:
+                bound.add((al.asname or al.name).split(".")[0])
+
+    unbound = set()
+    for n in ast.walk(fn):
+        if (isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                and start <= n.lineno <= end
+                and n.id not in bound
+                and not hasattr(builtins, n.id)):
+            unbound.add(n.id)
+    assert not unbound, (
+        f"the histogram block reads name(s) that are never bound in _win or at "
+        f"module scope: {sorted(unbound)} — this is how `c.cursor()` shipped a "
+        f"NameError that the except swallowed into an empty published list")
+
+
+def test_an_empty_histogram_publishes_its_reason():
+    """`[]` must never again be indistinguishable from "no rows"."""
+    src = SRC.read_text(encoding="utf-8")
+    assert '"relay_open_ua_families_error": ua_families_error,' in src, (
+        "an empty histogram publishes no reason, so a crash and a genuinely "
+        "empty window look identical to every consumer")
+    # ★ BIND THE VALUE, NOT THE NAME. Asserting the string
+    # "ua_families_error =" appears is satisfied by `ua_families_error = None`,
+    # which is exactly the silence this field exists to end — the same
+    # name-vs-derivation miss as the passes_real_ua check above.
+    tree = ast.parse(src)
+    handlers = [h for h in ast.walk(tree)
+                if isinstance(h, ast.ExceptHandler) and h.name == "_uae"]
+    assert handlers, "no `except Exception as _uae` handler found"
+    derived = False
+    for h in handlers:
+        for node in ast.walk(h):
+            if isinstance(node, ast.Assign) and any(
+                    getattr(t, "id", "") == "ua_families_error" for t in node.targets):
+                if any(isinstance(n, ast.Name) and n.id == "_uae"
+                       for n in ast.walk(node.value)):
+                    derived = True
+    assert derived, (
+        "ua_families_error is assigned in the except branch but not DERIVED "
+        "from the exception — an empty histogram would still publish no reason")
