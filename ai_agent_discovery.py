@@ -661,8 +661,20 @@ def ai_tracking_recent():
 
 
 # ----- Discovery index -----
+# ★2026-09-07 r-retire-ai-discovery-alias. The '/ai/discovery' decorator is gone
+# from here TOO. It had to be: main.py registered the same alias, so deleting
+# only main.py's would have left this one still advertising an unreachable route.
+#
+# Measured while removing it: this whole function is already SHADOWED. main.py's
+# ai_discovery_index() registers '/api/v1/discovery' at import time, before
+# register_blueprint(discovery_bp) runs, and Werkzeug returns the FIRST matching
+# rule — so main.py answers and this body never executes. Proof from the live
+# origin: every protocols.* entry carries 'exists'/'status' (main.py's shape) and
+# no 'description' (this function's shape), and the key is 'a2a', not this
+# function's 'a2a_agent_card'. Left in place rather than deleted here: retiring a
+# shadowed handler is a separate change from retiring a dead alias, and this one
+# still needs its log_ai_access() side effect checked before it goes.
 @discovery_bp.route('/api/v1/discovery')
-@discovery_bp.route('/ai/discovery')
 def discovery_index():
     """List all AI discovery files and their status"""
     log_ai_access('discovery-index')

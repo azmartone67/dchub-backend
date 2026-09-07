@@ -154,6 +154,10 @@ _BUCKET_RULES = (
         "/api/v1/ai/",
         "/api/ai/",
         "/api/v1/discovery",
+        # Route retired 2026-09-07. KEPT ON PURPOSE: this tuple classifies hits
+        # that are already in the logs. Dropping it would reclassify historical
+        # /ai/discovery crawls as CONTENT and inflate the very number the AI
+        # sitemap exists to move — the failure this comment block opens with.
         "/ai/discovery",
         "/ai/learn",
         "/api/v1/agent/",

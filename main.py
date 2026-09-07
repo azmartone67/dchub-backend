@@ -25737,8 +25737,23 @@ def _discovery_exists(rec):
     return 200 <= code < 300
 
 
+# ★2026-09-07 r-retire-ai-discovery-alias. The `/ai/discovery` alias was
+# removed, not routed. It was registered here AND on discovery_bp, served the
+# byte-identical body to /api/v1/discovery at the origin, and was a 404 at the
+# public edge: `/ai/*` IS in dchub-frontend/_routes.json include, so the worker
+# runs — it just never named the path, so the request fell through to
+# env.ASSETS. That is the `missing_worker` half of the debt register, not the
+# `missing_routes_json` half, and no _routes.json slot was ever involved.
+#
+# Routing it would have cost one _worker.js literal, so cost is not why it went.
+# Nothing advertises it: `git grep dchub.cloud/ai/discovery` is empty across all
+# three repos, unlike /skill.md (#4041), which was routed precisely BECAUSE
+# outreach copy hands it out by name. And dchub-frontend/ai.html — the file the
+# live /ai page is actually built from — had already dropped its call to this
+# alias ("Primary /api/v1/discovery serves this on both API_URLS hosts").
+# A second public URL for identical JSON on an AI-discovery surface is a cost,
+# not a feature. /api/v1/discovery is canonical and is verified public.
 @app.route('/api/v1/discovery', methods=['GET'])
-@app.route('/ai/discovery', methods=['GET'])
 def ai_discovery_index():
     """List all AI discovery files and protocols"""
     reach = _discovery_reachability()
@@ -36154,7 +36169,9 @@ LOCKED_GATE_MANIFEST = {
         '/api/v2/plans',
         '/api/uptime-check',
         '/ai/learn',
-        '/ai/discovery',
+        # '/ai/discovery' removed 2026-09-07 with the route itself — this list is
+        # probed with app.test_client() and expects 200, so a stale entry here
+        # would log "🚨 PUBLIC BLOCKED ... SECURITY RISK" on every boot.
         '/api/ai/discover',
         '/api/ai/cite',
         # Phase WW (2026-05-16): moved from 'free' tier. The site_qa.py
