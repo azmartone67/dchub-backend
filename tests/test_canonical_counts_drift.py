@@ -2928,8 +2928,9 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     flask = pytest.importorskip("flask")
     from routes import agent_capabilities_feed as feed
 
-    # ★2026-09-07: moved again with the facilities/deals walk (20,203/2,069 ->
-    # 20,840/2,118, the live /api/v1/stats pair on the day of the walk). The
+    # ★2026-09-07: facilities moved with the walk (20,203 -> 20,840, the live
+    # /api/v1/stats reading that day); `deals` stays 2,069 because the deals pin
+    # was NOT walked -- see the note on PINNED['public']['deals']. The
     # floor overtook the old pair exactly as the note below predicts, and the
     # symptom was this test failing with `counts.facilities is None` — the feed
     # OMITTING rather than under-claiming, which is correct behaviour.
@@ -2941,7 +2942,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     # an omitted field makes the assertion below fail for the wrong reason.
     live_like = {
         "facilities_verified": 20840, "markets": 300,
-        "deals": 2118, "countries_verified": 178,
+        "deals": 2069, "countries_verified": 178,
     }
     app = flask.Flask(__name__)
     app.register_blueprint(feed.agent_capabilities_bp)
@@ -2968,7 +2969,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
         "would pass vacuously."
     )
     for field, value in (("facilities", 20840), ("markets_scored", 300),
-                         ("deals_tracked", 2118), ("countries", 178)):
+                         ("deals_tracked", 2069), ("countries", 178)):
         assert counts.get(field) == value, f"counts.{field} != injected {value}"
         assert f"{value:,}" in quotable or str(value) in quotable, (
             f"agent_quotable omits counts.{field}={value}. The sentence and the "
@@ -3385,12 +3386,7 @@ KNOWN_STALE_COUNT_DEBT = {
     # ★2026-09-02: deals_stale_floor DROPPED — this file carries '2,000+ ... deals',
     # which the canon walk made the CURRENT floor. The debt was not paid, it
     # stopped being debt. facilities_stale_floor stands.
-    # ★2026-09-07 deals 2,000+ -> 2,100+: both of these are one-shot migration
-    # scripts that already ran, and their literal is the RECORD of what they
-    # substituted ('BUG-024: list_transactions docstring "$185B+" -> "2,000+
-    # deals"'). Ledgered rather than skip-listed, so the debt stays visible and
-    # counted instead of disappearing from the scan entirely.
-    'dchub-mcp-v2.1/apply_worker_patch.py': {'facilities_stale_floor', 'deals_stale_floor'},
+    'dchub-mcp-v2.1/apply_worker_patch.py': {'facilities_stale_floor'},
     'dchub_daily_automation.py': {'facilities_bare_int'},
     'dchub_mcp_server.py': {'facilities_stale_floor', 'tool_count_literal'},
     'fix_neon_tables.py': {'tool_count_literal'},
@@ -3406,7 +3402,7 @@ KNOWN_STALE_COUNT_DEBT = {
     # ★2026-09-02: deals_stale_floor DROPPED — this file carries '2,000+ ... deals',
     # which the canon walk made the CURRENT floor. The debt was not paid, it
     # stopped being debt. facilities_stale_floor stands.
-    'mcp_bug_fixes_and_new_tools.py': {'facilities_stale_floor', 'deals_stale_floor'},
+    'mcp_bug_fixes_and_new_tools.py': {'facilities_stale_floor'},
     'mcp_gateway.py': {'facilities_stale_floor'},
     'mcp_qa_fixes_v7.py': {'tool_count_literal'},
     'mcp_server_patch.py': {'tool_count_literal'},
