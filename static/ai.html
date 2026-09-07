@@ -1949,7 +1949,10 @@ dchub_tool = Tool(
     // FETCH: Discovery Index from /api/v1/discovery
     // ═══════════════════════════════════════════════════════
     async function fetchDiscoveryIndex() {
-        const paths = ['/api/v1/discovery', '/ai/discovery'];
+        // /ai/discovery dropped 2026-09-07 with the alias route itself; it had
+        // been a 404 at the public edge, so this fallback could only ever burn
+        // a timeout. /api/v1/discovery serves this on every API_URLS host.
+        const paths = ['/api/v1/discovery'];
         for (const base of API_URLS) {
         for (const p of paths) {
             try {

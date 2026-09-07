@@ -1665,9 +1665,11 @@ dchub_tool = Tool(
     // FETCH: Discovery Index from /api/v1/discovery
     // ═══════════════════════════════════════════════════════
     async function fetchDiscoveryIndex() {
+        // /ai/discovery dropped 2026-09-07: the alias route was retired, and it
+        // was a 404 at the public edge long before that. Matches the same call
+        // in dchub-frontend/ai.html, which is the file the live /ai is built from.
         const urls = [
-            `${API_BASE}/api/v1/discovery`,
-            `${API_BASE}/ai/discovery`
+            `${API_BASE}/api/v1/discovery`
         ];
         for (const url of urls) {
             try {
