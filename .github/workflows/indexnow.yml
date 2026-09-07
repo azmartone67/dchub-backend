@@ -101,12 +101,22 @@ jobs:
           # ★ A submit that reports ok:false is a FAILURE. The scheduled steps
           # above end in `exit 0` because a missed 6-hourly sweep retries in six
           # hours; a one-off has no next run, so it must go red.
+          # ★ NO F-STRINGS HERE. The first version of this check crashed with
+          # SyntaxError: unexpected character after line continuation character
+          # — backslash-escaped quotes inside an f-string EXPRESSION are not
+          # legal, and the whole snippet is already wrapped in shell single
+          # quotes so an inner ' would close it. The submission had succeeded
+          # (Bing 200, submitted=12) and this step failed anyway: a check that
+          # cannot run is not a check that passed, and here it produced a FALSE
+          # RED on a good submit. %-formatting on plain locals, no nesting.
           echo "$resp" | python3 -c '
-          import json,sys
-          d=json.load(sys.stdin)
+          import json, sys
+          d = json.load(sys.stdin)
           if not d.get("ok"):
-              print(f"::error::IndexNow one-off submit failed: {str(d)[:300]}"); sys.exit(1)
-          print(f"::notice::submitted={d.get(\"submitted\")} endpoint={d.get(\"endpoint\")} status={d.get(\"status\")}")
+              print("::error::IndexNow one-off submit failed: " + str(d)[:300])
+              sys.exit(1)
+          print("::notice::submitted=%s endpoint=%s status=%s"
+                % (d.get("submitted"), d.get("endpoint"), d.get("status")))
           '
 
       - name: Submit key SEO pages explicitly (leaderboard, MCP standing, DCPI)
