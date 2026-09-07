@@ -187,6 +187,87 @@ def boot():
     return main.app, time.time() - t
 
 
+ROUTE_MAP = os.path.join(ROOT, "contracts", "route_serving_map.json")
+
+
+def route_serving_map(app) -> dict:
+    """`METHOD /path` -> the modules that actually serve it.
+
+    Consumed by scripts/api_response_contract.py, which is stdlib-only by
+    design and so cannot boot the app to learn this for itself. Without it that
+    extractor has to UNION the keys of every file defining a path, including
+    files whose blueprint is never registered — which published keys no live
+    response can produce (115 endpoints, 135 keys, measured 2026-09-07).
+
+    This gate already boots, so it is the cheap place to answer the question.
+    """
+    out: dict = {}
+    for rule in app.url_map.iter_rules():
+        fn = app.view_functions.get(rule.endpoint)
+        mod = getattr(fn, "__module__", "") or ""
+        if not mod:
+            continue
+        for m in (rule.methods or set()) - {"HEAD", "OPTIONS"}:
+            slot = out.setdefault("%s %s" % (m, rule.rule), {"modules": []})
+            if mod not in slot["modules"]:
+                slot["modules"].append(mod)
+    for slot in out.values():
+        slot["modules"].sort()
+    return {"_readme": ("DERIVED — do not hand-edit. Written by "
+                        "scripts/app_contract_gate.py from the booted app's "
+                        "url_map; read by scripts/api_response_contract.py to "
+                        "attribute duplicate route definitions. Regenerate: "
+                        "python3 scripts/app_contract_gate.py --write-route-map"),
+            "serving": dict(sorted(out.items()))}
+
+
+def classify_route_map_drift(committed: dict, live: dict) -> tuple[list, list]:
+    """Split route-map drift into what must FAIL and what is merely a note.
+
+    ★ ONLY A MODULE DISAGREEMENT IS A FAILURE, and the first version of this
+    gate got that wrong: it demanded the committed map equal the booted one
+    exactly, and CI went red over two routes it registers and a laptop does
+    not. Route registration here is ENVIRONMENT-DEPENDENT — CI boots
+    "LEGACY ENVIRONMENT ... FAILOVER (Replit-era defaults)" — so exact equality
+    is not achievable by any regeneration, and a gate that demands it is red
+    forever for a reason nobody can fix.
+
+    Only one of the three discrepancies can delete a real key:
+      in app, not in map  -> the extractor finds no entry and keeps the union.
+                             Unattributed, never misattributed. SAFE.
+      in map, not in app  -> the path is not served at all, so there is no live
+                             response whose keys could be lost.
+      DIFFERENT MODULES   -> the map names A, the app serves B; the extractor
+                             keeps A's keys and drops B's. That deletes keys a
+                             live response really produces.
+    """
+    failures: list = []
+    notes: list = []
+    both = set(committed) & set(live)
+    changed = sorted(k for k in both
+                     if committed[k].get("modules") != live[k].get("modules"))
+    if changed:
+        listing = "\n".join(
+            "    %s\n      map says %s\n      app serves %s"
+            % (k, committed[k].get("modules"), live[k].get("modules"))
+            for k in changed[:10])
+        failures.append(
+            "ROUTE SERVING MAP DISAGREES WITH THE APP on %d route(s).\n"
+            "  scripts/api_response_contract.py attributes response keys with "
+            "this map: where it names the wrong module, that extractor drops "
+            "the keys of the handler that actually serves the route.\n"
+            "  Regenerate: python3 scripts/app_contract_gate.py --write-route-map\n"
+            "%s" % (len(changed), listing))
+    missing = sorted(set(live) - set(committed))
+    if missing:
+        notes.append(
+            "note: %d route(s) served here are absent from "
+            "contracts/route_serving_map.json and will not be attributed "
+            "(e.g. %s). Not a failure; regenerate to include them if this "
+            "environment is the canonical one." % (len(missing), missing[:3]))
+    return failures, notes
+
+
 def shadowed(app) -> dict:
     """rule+method pairs served by more than one handler."""
     seen = collections.defaultdict(list)
@@ -204,6 +285,9 @@ def load_baseline() -> dict:
 def main_() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--update-baseline", action="store_true")
+    ap.add_argument("--write-route-map", action="store_true",
+                    help="rewrite contracts/route_serving_map.json from the "
+                         "booted app and exit")
     args = ap.parse_args()
 
     try:
@@ -214,6 +298,16 @@ def main_() -> int:
         print("\nEvery static test in this suite would still pass. That is the")
         print("gap this gate exists to close — fix the import error above.")
         return 1
+
+    # ── the route serving map, for the stdlib-only response-contract extractor ──
+    rmap = route_serving_map(app)
+    if args.write_route_map:
+        os.makedirs(os.path.dirname(ROUTE_MAP), exist_ok=True)
+        with open(ROUTE_MAP, "w", encoding="utf-8") as fh:
+            json.dump(rmap, fh, indent=1, sort_keys=False)
+            fh.write("\n")
+        print(f"wrote {ROUTE_MAP} ({len(rmap['serving'])} method+path entries)")
+        return 0
 
     rules = list(app.url_map.iter_rules())
     n_rules, n_bps = len(rules), len(app.blueprints)
@@ -278,6 +372,25 @@ def main_() -> int:
             f"in source. Remove the duplicate registration — do not raise the "
             f"baseline.\n{listing}"
         )
+
+    # ★ A STALE ROUTE MAP IS A SILENT MISATTRIBUTION, so it is a red gate here
+    # rather than a wrong answer there. api_response_contract.py uses this map
+    # to decide which file's keys are real; if a route moved between modules
+    # and the map still names the old one, that extractor would drop the keys
+    # of the handler that actually serves it — deleting real keys from a
+    # published contract. A missing map is NOT a failure: the extractor
+    # degrades to its old union, which can only add keys, never remove one.
+    try:
+        with open(ROUTE_MAP, encoding="utf-8") as fh:
+            committed = json.load(fh).get("serving")
+    except (OSError, ValueError):
+        committed = None
+    if committed is not None:
+        drift_failures, drift_notes = classify_route_map_drift(
+            committed, rmap["serving"])
+        failures.extend(drift_failures)
+        for n in drift_notes:
+            print(n)
 
     client = app.test_client()
     for path in base["contract_routes"]:
