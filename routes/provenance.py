@@ -448,9 +448,14 @@ def legacy_facility_counts():
 # correctly returned null.
 #
 # 0,0 is Null Island: open water in the Gulf of Guinea. No data center is there.
-# The value is an ingestion artifact of the `float(x or 0)` idiom (see
-# hifld_neon_routes.py, site_risk_apis.py, data_grabber.py), which turns a
-# missing coordinate into a confident, plottable, WRONG one.
+# The value is an ingestion artifact of the `float(x or 0)` idiom, which turns
+# a missing coordinate into a confident, plottable, WRONG one. The idiom is
+# still common across this repo's ingest paths.
+#
+# 2026-09-07: this passage used to cite hifld_neon_routes.py, site_risk_apis.py
+# and data_grabber.py as the examples. All three citations were stale — the
+# first was dead, unregistered code and has been deleted; the other two no
+# longer contain the idiom. Named examples rot; the rule below does not.
 #
 # This is worse than a gap. A null tells a consumer to go find the number
 # elsewhere; a 0.0 tells them they already have it. It is the exact opposite of

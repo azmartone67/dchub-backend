@@ -66,6 +66,30 @@
       ],
       "reason": "'recorded_id' was a PHANTOM key: only the SHADOWED email_engagement.resend_webhook returned it. The live handler (resend_webhook.resend_webhook) has only ever returned {ok:true}, so no caller could observe recorded_id. Removed with the shadowed blueprint.",
       "added": "2026-08-28"
+    },
+    {
+      "endpoint": "GET /api/v2/infrastructure/hifld/substations",
+      "keys": [
+        "error"
+      ],
+      "reason": "These keys were NEVER SERVED at a 2xx status. The contract merges the key surface of every file defining a route path; these three paths were defined twice - by expanded_infrastructure_api.py (registered from main.py:9990) and by hifld_neon_routes.py, whose blueprint register_hifld_neon_routes() was called from nowhere, so none of its routes were ever reachable. 'error' (substations, gas-pipelines) and 'features' (transmission) came only from that dead file's HTTP-200 error returns; the generator records the 2xx surface only (api_response_contract.py:353 skips non-2xx), so the live handlers' 'error' - which they emit at 500 - never contributed it. Verified live 2026-09-07: GET substations returns [_gated, _pricing_url, _upgrade_cta, count, source, substations, success, total_available], gas-pipelines [count, pipelines, source, success, total_available], transmission [count, source, success, total_available, transmission_lines] - no 'error' and no 'features' on any of the three. hifld_neon_routes.py is deleted in this change.",
+      "added": "2026-09-07"
+    },
+    {
+      "endpoint": "GET /api/v2/infrastructure/hifld/gas-pipelines",
+      "keys": [
+        "error"
+      ],
+      "reason": "These keys were NEVER SERVED at a 2xx status. The contract merges the key surface of every file defining a route path; these three paths were defined twice - by expanded_infrastructure_api.py (registered from main.py:9990) and by hifld_neon_routes.py, whose blueprint register_hifld_neon_routes() was called from nowhere, so none of its routes were ever reachable. 'error' (substations, gas-pipelines) and 'features' (transmission) came only from that dead file's HTTP-200 error returns; the generator records the 2xx surface only (api_response_contract.py:353 skips non-2xx), so the live handlers' 'error' - which they emit at 500 - never contributed it. Verified live 2026-09-07: GET substations returns [_gated, _pricing_url, _upgrade_cta, count, source, substations, success, total_available], gas-pipelines [count, pipelines, source, success, total_available], transmission [count, source, success, total_available, transmission_lines] - no 'error' and no 'features' on any of the three. hifld_neon_routes.py is deleted in this change.",
+      "added": "2026-09-07"
+    },
+    {
+      "endpoint": "GET /api/v2/infrastructure/hifld/transmission",
+      "keys": [
+        "features"
+      ],
+      "reason": "These keys were NEVER SERVED at a 2xx status. The contract merges the key surface of every file defining a route path; these three paths were defined twice - by expanded_infrastructure_api.py (registered from main.py:9990) and by hifld_neon_routes.py, whose blueprint register_hifld_neon_routes() was called from nowhere, so none of its routes were ever reachable. 'error' (substations, gas-pipelines) and 'features' (transmission) came only from that dead file's HTTP-200 error returns; the generator records the 2xx surface only (api_response_contract.py:353 skips non-2xx), so the live handlers' 'error' - which they emit at 500 - never contributed it. Verified live 2026-09-07: GET substations returns [_gated, _pricing_url, _upgrade_cta, count, source, substations, success, total_available], gas-pipelines [count, pipelines, source, success, total_available], transmission [count, source, success, total_available, transmission_lines] - no 'error' and no 'features' on any of the three. hifld_neon_routes.py is deleted in this change.",
+      "added": "2026-09-07"
     }
   ]
 }
