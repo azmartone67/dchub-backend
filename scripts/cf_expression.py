@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["ParseError", "parse", "evaluate", "disposition"]
+__all__ = ["ParseError", "Request", "parse", "evaluate", "disposition"]
 
 
 class ParseError(Exception):
@@ -53,6 +53,9 @@ _TOKEN = re.compile(
 _FUNCS = {"starts_with", "ends_with", "lower", "any", "concat"}
 _INFIX = {"contains", "eq", "ne", "in", "wildcard", "matches"}
 _PATH_FIELD = "http.request.uri.path"
+_COOKIE_FIELD = "http.cookie"
+_HEADERS_FIELD = "http.request.headers"
+_ARGS_FIELD = "http.request.uri.args"
 
 
 def _lex(src: str) -> list[tuple[str, str]]:
@@ -139,8 +142,13 @@ class _Parser:
             node = ("field", value)
 
         while self.peek()[0] == "idx":
-            self.next()
-            node = ("index", node)
+            _, idx_token = self.next()
+            inner = idx_token.strip()[1:-1].strip()
+            # ["name"] keeps the name; [*] carries none. Discarding the name is
+            # what made headers["x-api-key"] and headers["x-admin-token"]
+            # indistinguishable, which is precisely the question rule 24 turns on.
+            key = _unquote(inner) if inner.startswith('"') else None
+            node = ("index", node, key)
 
         kind, value = self.peek()
         if kind == "word" and value in _INFIX:
@@ -178,48 +186,128 @@ def parse(expression: str):
     return node
 
 
-def evaluate(node, path: str):
-    """Evaluate one parsed expression for an ANONYMOUS request to `path`."""
+class Request:
+    """A request as the CACHE RULES see it.
+
+    Only PRESENCE matters: every credential clause in the ruleset is either
+    ``any(<field>["name"][*] != "")`` or ``http.cookie contains "name"``, so the
+    values are irrelevant and are never modelled. ``headers`` and ``args`` are
+    sets of names; ``cookies`` is a tuple of cookie NAMES from which the raw
+    Cookie header is reconstructed, because ``http.cookie contains "token"``
+    matches that raw string — and therefore also matches ``auth_token``. That
+    substring behaviour is real and is modelled rather than idealised away.
+    """
+
+    __slots__ = ("path", "headers", "args", "cookies")
+
+    def __init__(self, path, headers=(), args=(), cookies=()):
+        # a plain class, NOT a dataclass: the guard's test harness loads this
+        # module by file path without registering it in sys.modules, and
+        # @dataclass resolves cls.__module__ through sys.modules to do its
+        # type checks. It raises AttributeError there. Plain __init__ does not.
+        object.__setattr__(self, "path", path)
+        object.__setattr__(self, "headers", frozenset(headers))
+        object.__setattr__(self, "args", frozenset(args))
+        object.__setattr__(self, "cookies", tuple(cookies))
+
+    def __repr__(self) -> str:
+        return (f"Request(path={self.path!r}, headers={sorted(self.headers)}, "
+                f"args={sorted(self.args)}, cookies={list(self.cookies)})")
+
+    @property
+    def cookie_header(self) -> str:
+        return "; ".join(f"{name}=v" for name in self.cookies)
+
+
+def _as_request(ctx) -> Request:
+    """A bare path string means THE ANONYMOUS REQUEST — the original contract."""
+    if isinstance(ctx, Request):
+        return ctx
+    if isinstance(ctx, str):
+        return Request(path=ctx)
+    raise TypeError(f"expected str path or Request, got {type(ctx).__name__}")
+
+
+def _chain(node):
+    """Walk an index chain down to (field_name, first_named_subscript)."""
+    keys = []
+    while node[0] == "index":
+        keys.append(node[2] if len(node) > 2 else None)
+        node = node[1]
+    if node[0] != "field":
+        return None, None
+    named = [k for k in keys if k is not None]
+    return node[1], (named[0] if named else None)
+
+
+def _present(req: Request, field_name: str | None, key: str | None) -> bool:
+    if not field_name or key is None:
+        return False
+    if field_name == _HEADERS_FIELD:
+        return key.lower() in {h.lower() for h in req.headers}
+    if field_name == _ARGS_FIELD:
+        return key in req.args
+    return False
+
+
+def evaluate(node, ctx):
+    """Evaluate one parsed expression for `ctx`.
+
+    `ctx` is either a path string (the ANONYMOUS request — unchanged contract)
+    or a `Request` carrying credential channels.
+    """
+    return _eval(node, _as_request(ctx))
+
+
+def _eval(node, req: Request):
     kind = node[0]
     if kind == "or":
-        return any(evaluate(child, path) for child in node[1])
+        return any(_eval(child, req) for child in node[1])
     if kind == "and":
-        return all(evaluate(child, path) for child in node[1])
+        return all(_eval(child, req) for child in node[1])
     if kind == "not":
-        return not evaluate(node[1], path)
+        return not _eval(node[1], req)
     if kind == "field":
-        # Every field other than the path is ABSENT for an anonymous caller.
-        return path if node[1] == _PATH_FIELD else ""
+        if node[1] == _PATH_FIELD:
+            return req.path
+        if node[1] == _COOKIE_FIELD:
+            return req.cookie_header
+        return ""
     if kind == "lit":
         return node[1]
     if kind == "index":
-        return ""          # headers["x-api-key"][*] / args["api_key"][*]
+        field_name, key = _chain(node)
+        return key if _present(req, field_name, key) else ""
     if kind == "any":
-        return False       # any(<absent array> != "")
+        return any(_eval(child, req) for child in node[1])
     if kind == "cmp":
-        return False
+        # the only comparison in use is `!= ""`, i.e. "this channel is present"
+        return _present(req, *_chain(node[1]))
     if kind == "lower":
-        return str(evaluate(node[1][0], path)).lower()
+        return str(_eval(node[1][0], req)).lower()
     if kind == "starts_with":
-        return str(evaluate(node[1][0], path)).startswith(str(evaluate(node[1][1], path)))
+        return str(_eval(node[1][0], req)).startswith(str(_eval(node[1][1], req)))
     if kind == "ends_with":
-        return str(evaluate(node[1][0], path)).endswith(str(evaluate(node[1][1], path)))
+        return str(_eval(node[1][0], req)).endswith(str(_eval(node[1][1], req)))
     if kind == "contains":
-        return node[2] in str(evaluate(node[1], path))
+        return node[2] in str(_eval(node[1], req))
     if kind == "eq":
-        return str(evaluate(node[1], path)) == node[2]
+        return str(_eval(node[1], req)) == node[2]
     if kind == "ne":
-        return str(evaluate(node[1], path)) != node[2]
+        return str(_eval(node[1], req)) != node[2]
     if kind == "in":
-        return str(evaluate(node[1], path)) in node[2]
+        return str(_eval(node[1], req)) in node[2]
     if kind == "wildcard":
         pattern = "^" + ".*".join(re.escape(part) for part in node[2].split("*")) + "$"
-        return re.match(pattern, str(evaluate(node[1], path))) is not None
+        return re.match(pattern, str(_eval(node[1], req))) is not None
     raise ParseError(f"cannot evaluate node kind {kind!r}")
 
 
-def disposition(rules: list[dict], path: str) -> tuple[str, dict | None, str | None]:
-    """What the edge does with an ANONYMOUS GET of `path`.
+def disposition(rules: list[dict], ctx) -> tuple[str, dict | None, str | None]:
+    """What the edge does with a GET described by `ctx`.
+
+    `ctx` is a path string (the ANONYMOUS request) or a `Request` carrying
+    credential channels.
 
     Returns (verdict, winning_rule, error). verdict is one of:
       bypass   — a cache:false rule wins       (safe for tier-varying content)
@@ -234,7 +322,7 @@ def disposition(rules: list[dict], path: str) -> tuple[str, dict | None, str | N
         if not rule.get("enabled", True):
             continue
         try:
-            if evaluate(parse(rule["expression"]), path):
+            if evaluate(parse(rule["expression"]), ctx):
                 winner = rule
         except ParseError as exc:
             return "unknown", rule, str(exc)
