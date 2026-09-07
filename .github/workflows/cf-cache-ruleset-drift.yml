@@ -44,7 +44,15 @@ jobs:
 
       - name: Diff live cache ruleset against pinned canon (+ outside-in probe)
         env:
+          # ★ Export EVERY credential the script knows how to try. The first
+          # version exported only CF_CACHE_RULES_TOKEN while the script
+          # documented a CLOUDFLARE_API_TOKEN fallback — so the fallback could
+          # never fire in CI, and the run blamed a missing secret when a
+          # present one might have worked. A documented fallback that the
+          # caller does not wire up is not a fallback.
           CF_CACHE_RULES_TOKEN: ${{ secrets.CF_CACHE_RULES_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_TOKEN: ${{ secrets.CF_TOKEN }}
         run: |
           # ★ GitHub runs `run:` under `bash -e`, so a bare nonzero exit from the
           # guard would abort this step BEFORE the messaging below — the drift
@@ -65,7 +73,7 @@ jobs:
               echo "::error::The guard's own canon file failed its floor checks (missing, unparseable, truncated below 20 rules, or duplicate ids). The guard did NOT compare anything."
               ;;
             3)
-              echo "::error::COULD NOT CHECK the cache ruleset — this is not a pass. Most likely the CF_CACHE_RULES_TOKEN repo secret is missing or lacks 'Zone > Config Rules: Read' on dchub.cloud. The existing CLOUDFLARE_API_TOKEN secret is scoped to Cache Purge only and cannot read rulesets."
+              echo "::error::COULD NOT CHECK the cache ruleset — this is not a pass. The log line above says which: NO CREDENTIAL PRESENT (add a repo secret named CF_CACHE_RULES_TOKEN) or CREDENTIAL REFUSED (a token IS set but lacks Zone > Config Rules: Read on dchub.cloud — a Cache Purge token gives exactly that error). Read scope is sufficient; this job never writes to Cloudflare."
               ;;
             *)
               echo "::error::guard exited with unexpected status $STATUS"
