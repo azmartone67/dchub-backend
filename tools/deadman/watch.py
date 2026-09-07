@@ -82,6 +82,15 @@ WORKFLOWS = {
     "backup-neon-r2.yml": 30,          # daily 09:31 — Neon PITR/pg_dump -> R2
     "billing-reconcile-daily.yml": 30, # daily 08:23 — invoices_paid_count vs Stripe
     "seo-sitemap-and-warm.yml": 30,    # daily 07:40 — sitemap re-crawl + narrative warm
+    # 2026-09-07: the GEO answer author. Daily 14:37 UTC, so 30h is ~2.5 cycles
+    # — one missed run never alarms, two do. It is the ONLY writer of new
+    # answers/<slug>.html pages, and its whole reason for existing is that its
+    # predecessor was silently not running: geo_autopublish could publish since
+    # 07-03 and GEO_AUTOPUBLISH_ENABLED was on, but the only scheduled caller
+    # invoked it dry. A second silent death would look exactly like the first —
+    # coverage simply stops growing, which reads as "nothing to write" rather
+    # than "nobody asked".
+    "geo-autopublish-daily.yml": 30,
     # 2026-08-31: the SEO performance series. Daily 06:20 UTC, so 30h is
     # ~2.5 cycles — one missed run never alarms, two do. This is the ONLY
     # writer of gsc_daily_performance; its silent death would freeze the

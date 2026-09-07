@@ -52,9 +52,13 @@ jobs:
           DRY: ${{ github.event.inputs.dry }}
         run: |
           set -euo pipefail
+          # Loud, not silent: a rotated/deleted secret must NOT produce a green
+          # run that published nothing. A red run is cheap and honest, and the
+          # publish is idempotent (_page_exists skips anything already live), so
+          # a retry once the secret is restored is safe.
           if [ -z "${ADMIN_KEY:-}" ]; then
-            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"
-            exit 0
+            echo "::error::DCHUB_ADMIN_KEY is missing — no page was written"
+            exit 1
           fi
           # Scheduled runs act; manual runs preview unless dry=0 is passed.
           dry="${DRY:-}"
