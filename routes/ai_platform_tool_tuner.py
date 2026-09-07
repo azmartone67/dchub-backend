@@ -38,7 +38,7 @@ Endpoints:
 Safety:
   * Kill switch: AI_AGENT_EXPANSION_DISABLE=1
   * Seed is bounded: at most len(TUNED_TOOLS) × len(TUNED_PLATFORMS)
-    Claude calls per /seed invocation (132 at 11 tools x 12 platforms)
+    Claude calls per /seed invocation (168 at 14 tools x 12 platforms)
   * Read endpoint is public (descriptions are not secret) but cached 5min
   * Generator is admin-keyed
 """
@@ -126,6 +126,28 @@ TUNED_TOOLS = [
     # narrative — and none of that reaches a tuned platform, because the inline
     # 562-char fallback is what they receive.
     "get_market_dcpi_rank",
+    # ── added 2026-09-07, the next three by the same breadth rule ──────────
+    # Measured over mcp_tool_calls, 30d, net of chain-hire and our own
+    # buckets/registries — DISTINCT CLIENTS, not call volume, for the reason
+    # recorded above the get_market_dcpi_rank entry:
+    #
+    #     clients  tool
+    #           8  get_interconnection_queue
+    #           7  get_energy_prices
+    #           6  get_news
+    #
+    # ★ ALL THREE HAVE ZERO CALLS IN THE CURRENT 7-DAY WINDOW, and that is the
+    # case FOR tuning them rather than against it. Only 9 of 85 registered
+    # tools were called at all in that window, and the top one (analyze_site,
+    # 142 calls) is 95% a single automated caller. A tool that six-to-eight
+    # distinct clients have chosen historically, is choosing nothing now, and
+    # still ships the generic inline fallback is exactly what per-platform copy
+    # is for. It also means the read-out is SLOW: there is no baseline traffic
+    # to move week-over-week, so judge these on whether they start being
+    # selected at all, not on a delta.
+    "get_interconnection_queue",
+    "get_energy_prices",
+    "get_news",
 ]
 
 # Each entry: (canonical name, lowercase aliases for UA-sniff, voice cue)
