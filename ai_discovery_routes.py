@@ -1090,6 +1090,7 @@ learn the tools existed but not how to install them anywhere.
     # =========================================================================
     # /llms-full.txt — Full API documentation for LLMs
     # =========================================================================
+# AUTO-REPAIR: duplicate route '/llms-full.txt' also in ai_agent_discovery.py:518 — review and remove one
     @app.route('/llms-full.txt')
     def serve_llms_full_txt():
         content = canon_text("""# DC Hub — Data Center Intelligence Platform
