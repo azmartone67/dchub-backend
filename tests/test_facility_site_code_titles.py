@@ -23,7 +23,8 @@ if "main" not in sys.modules:
         get_read_db=lambda: None, get_db=lambda: None)
 
 from util.facility_site_code import (   # noqa: E402
-    detect_site_code, site_code_headline, DENY_PREFIXES)
+    detect_site_code, detect_site_designator, site_code_headline,
+    DENY_PREFIXES, DENY_SUFFIX_WORDS)
 
 
 POSITIVES = [
@@ -90,6 +91,139 @@ def test_deny_list_covers_the_documented_ambiguities():
         assert pfx in DENY_PREFIXES, pfx
 
 
+# ── r-site-code-tail: the designator riding on the code ──────────────
+#
+# Measured 2026-09-07 on the live publishable universe (39,739 rows): 237
+# rendered-identity groups hold >=2 URLs with DIFFERING names, 229 of them
+# because every member takes the site-code path and the tail was dropped. The
+# pairs below are confirmed distinct buildings that rendered ONE <h1>.
+
+DESIGNATORS = [
+    # name, city, expected code, expected designator
+    ("SecureIT DCB1.1", "Bettembourg", "DCB1", "DCB1.1"),
+    ("SecureIT DCB1.2", "Bettembourg", "DCB1", "DCB1.2"),
+    ("Equinix FR2.6", "Frankfurt am Main", "FR2", "FR2.6"),
+    ("Equinix FR8.1", "Frankfurt am Main", "FR8", "FR8.1"),
+    ("noris network AG ING1 ITA", "Ingolstadt", "ING1", "ING1 ITA"),
+    ("noris network AG ING1 ITB", "Ingolstadt", "ING1", "ING1 ITB"),
+    ("Centersquare IAD1-A", "Sterling", "IAD1", "IAD1-A"),
+    ("Centersquare IAD1-B", "Sterling", "IAD1", "IAD1-B"),
+    ("RIC3 DC1", "Sandston", "RIC3", "RIC3 DC1"),
+    ("RIC3 DC5", "Sandston", "RIC3", "RIC3 DC5"),
+    ("Centersquare Atlanta (ATL1-A/B/C)", "Lithia Springs", "ATL1", "ATL1-A/B/C"),
+    ("Centersquare Northern Virginia (IAD1-C/E)", "Sterling", "IAD1", "IAD1-C/E"),
+    ("Digital Realty Marseille MRS1/2/3/4", "Marseille", "MRS1", "MRS1/2/3/4"),
+    ("Digital Realty Stockholm STO1-6", "Stockholm", "STO1", "STO1-6"),
+    ("MICROSOFT BLUE RIDGE (IAD11-12-13) DATA CENTER", "ALDIE",
+     "IAD11", "IAD11-12-13"),
+    ("Flexential - Nashville/Cool Springs (NAS02/03)", "Franklin",
+     "NAS02", "NAS02/03"),
+]
+
+# Tails that are a LOCATION or a legal form, not a building. Each one keeps
+# rendering the bare code — dropping these is the whole point of
+# r-site-code-title, and every one is a live name.
+NON_DESIGNATORS = [
+    ("Equinix FR5 - Frankfurt, KleyerStrasse", "Frankfurt", "FR5"),
+    ("Equinix SG1 - Singapore", "Singapore", "SG1"),
+    ("LADC1 - 624 S Grand Ave", "Los Angeles", "LADC1"),
+    ("AirTrunk HKG1 Hong Kong", "Hong Kong", "HKG1"),
+    ("DataBank Dallas (DFW2)", "Dallas", "DFW2"),
+    ("365 Data Centers Nashville (NA1)", "Nashville", "NA1"),
+    ("CORESITE REAL ESTATE OR1 LLC", "Hillsboro", "OR1"),
+    ("NTT GLOBAL DATA CENTERS VA10 LLC", "Ashburn", "VA10"),
+    ("O-NET ABOL1 CO", "Abuja", "ABOL1"),
+    ("Mobily JED1 DC", "Jeddah", "JED1"),
+    ("UIH BCH4 IDC - Bangkok, Thailand", "Bangkok", "BCH4"),
+    ("CYRUSONE CHI6 FACILITY", "Chicago", "CHI6"),
+    ("Hetzner Online FSN1 (Falkenstein)", "Falkenstein", "FSN1"),
+    ("TYO3 Tokyo Data Center", "Tokyo", "TYO3"),
+    ("STOKAB KN3, Kista", "Stockholm", "KN3"),
+    ("Data4 Italia - Campus MIL01 - DC10", "Milan", "MIL01"),
+    ("Matrix Data Center BM1 (MDC BM1)", "Jakarta", "BM1"),
+    ("OVHcloud LIM1 Rechenzentrum", "Limburg", "LIM1"),
+]
+
+
+@pytest.mark.parametrize("name,city,code,ident", DESIGNATORS)
+def test_designator_survives_the_collapse(name, city, code, ident):
+    # the bare code is UNCHANGED — detect_site_code keeps its contract
+    assert detect_site_code(name) == code
+    assert detect_site_designator(name, city) == ident
+    head = site_code_headline(name, "TestCo", city)
+    assert head is not None, name
+    assert head.endswith(f"{ident} — {city} Data Center"), head
+
+
+@pytest.mark.parametrize("name,city,code", NON_DESIGNATORS)
+def test_location_and_legal_tails_are_still_dropped(name, city, code):
+    assert detect_site_code(name) == code
+    assert detect_site_designator(name, city) == code, name
+    head = site_code_headline(name, "TestCo", city)
+    assert head is not None, name
+    assert head.endswith(f"{code} — {city} Data Center"), head
+
+
+def test_the_two_measured_pairs_no_longer_render_one_headline():
+    """The defect this fixes, stated as the pair it was measured on."""
+    for a, b, city in (("SecureIT DCB1.1", "SecureIT DCB1.2", "Bettembourg"),
+                       ("noris network AG ING1 ITA",
+                        "noris network AG ING1 ITB", "Ingolstadt"),
+                       ("Centersquare IAD1-A", "Centersquare IAD1-B",
+                        "Sterling"),
+                       ("RIC3 DC1", "RIC3 DC2", "Sandston")):
+        ha = site_code_headline(a, "TestCo", city)
+        hb = site_code_headline(b, "TestCo", city)
+        assert ha and hb and ha != hb, (a, b, ha, hb)
+
+
+def test_a_designator_never_creates_a_headline_on_its_own():
+    """Every negative in NEGATIVES has no code, so it has no designator —
+    the suffix rule can only EXTEND a headline that already existed."""
+    for name, _provider, city in NEGATIVES:
+        assert detect_site_designator(name, city) is None, name
+
+
+def test_a_hyphen_before_a_word_is_not_a_designator():
+    """The trailing boundary in _SUFFIX_GLUED_RE: without it "FR5-Frankfurt"
+    would read a designator "-F" out of the city name."""
+    assert detect_site_designator("Equinix FR5-Frankfurt", "Frankfurt") == "FR5"
+    assert detect_site_designator("Equinix FR5-FrankfurtWest", "Frankfurt") == "FR5"
+
+
+def test_a_trailing_city_token_is_not_a_designator():
+    """A short all-caps LOCATION token would stutter against the "— <City>"
+    that follows it. Denied on THIS row's city, not on a word list."""
+    assert detect_site_designator("Switch RNO1 RENO", "Reno") == "RNO1"
+    assert detect_site_designator("Switch RNO1 RENO", "Las Vegas") == "RNO1 RENO"
+
+
+def test_deny_suffix_words_carry_the_measured_three():
+    for w in ("LLC", "CO", "DC"):
+        assert w in DENY_SUFFIX_WORDS, w
+    # and the designators that share their shape are NOT denied
+    for w in ("DC1", "DC5", "ITA", "ITB"):
+        assert w not in DENY_SUFFIX_WORDS, w
+
+
+def test_the_rationale_queries_are_byte_identical_to_before():
+    """r-site-code-title's own measured queries — none of these names carries
+    a designator, so every one must render exactly what it rendered before."""
+    assert site_code_headline("Interxion MAD1", "Interxion", "Madrid") == \
+        "Interxion MAD1 — Madrid Data Center"
+    assert site_code_headline("Digital Realty IAD14", "Digital Realty",
+                              "Ashburn") == \
+        "Digital Realty IAD14 — Ashburn Data Center"
+    assert site_code_headline("Interxion FRA28", "Digital Realty",
+                              "Frankfurt") == \
+        "Digital Realty Interxion FRA28 — Frankfurt Data Center"
+    assert site_code_headline("HTL05", "Equinix", "Hartlepool") == \
+        "Equinix HTL05 — Hartlepool Data Center"
+    assert site_code_headline("Interxion DUS2", "Digital Realty",
+                              "Düsseldorf") == \
+        "Digital Realty Interxion DUS2 — Düsseldorf Data Center"
+
+
 # ── the rendered page ────────────────────────────────────────────────
 
 BASE = {
@@ -135,6 +269,24 @@ def test_rendered_page_without_a_code_is_byte_identical_to_the_legacy_title():
         "Google Data Center Council Bluffs — Council Bluffs, DE Data Center | ")
     assert _h1(html) == "Google Data Center Council Bluffs"
     assert _og(html) == "Google Data Center Council Bluffs — Data Center"
+
+
+def test_rendered_page_carries_the_designator():
+    """The h1/title/og the crawler actually sees — two halls, two headlines."""
+    a = _render("SecureIT DCB1.1", "SecureIT", "Bettembourg")
+    b = _render("SecureIT DCB1.2", "SecureIT", "Bettembourg")
+    assert _h1(a) == "SecureIT DCB1.1 — Bettembourg Data Center"
+    assert _h1(b) == "SecureIT DCB1.2 — Bettembourg Data Center"
+    assert _h1(a) != _h1(b) and _title(a) != _title(b)
+    assert _og(a) == "SecureIT DCB1.1 — Bettembourg Data Center"
+    # the JSON-LD still carries the real row name, untouched
+    assert '"name": "SecureIT DCB1.1"' in a
+
+
+def test_rendered_page_still_drops_the_location_tail():
+    """r-site-code-title's own example — unchanged, byte for byte."""
+    html = _render("Equinix FR5 - Frankfurt, KleyerStrasse", "Equinix", "Frankfurt")
+    assert _h1(html) == "Equinix FR5 — Frankfurt Data Center"
 
 
 def test_rendered_page_with_two_codes_keeps_the_legacy_title():
