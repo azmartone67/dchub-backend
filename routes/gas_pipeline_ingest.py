@@ -42,26 +42,23 @@ _SYNC_SOURCE = "eia-geodot-pipelines"
 
 def _log_sync(fetched, upserted, errors, detail, duration):
     """Record this run on land_power_sync_log so /api/land-power/status can
-    judge the LIVE gas producer. Fail-soft: logging must never break ingest."""
+    judge the LIVE gas producer.
+
+    ★ REUSES land_power_crawler._log_sync rather than repeating its INSERT.
+      A second copy of that statement is what regression_lint's
+      `insert-no-on-conflict` rule caught, and it was right for a better
+      reason than the rule states: two writers to one log table drift, and the
+      copy nobody is looking at is the one that rots. One writer, one shape.
+
+    Fail-soft: logging must never break ingest.
+    """
     try:
         import psycopg2
-        with psycopg2.connect(_dsn()) as conn, conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO land_power_sync_log (source, records_fetched, "
-                "records_upserted, records_skipped, errors, error_detail, "
-                "duration_seconds) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (_SYNC_SOURCE, fetched, upserted, 0, errors,
-                 (detail or "")[:300] or None, round(duration, 2)))
-            conn.commit()
+        from land_power_crawler import _log_sync as _write
+        _write(lambda: psycopg2.connect(_dsn()), _SYNC_SOURCE,
+               fetched, upserted, 0, errors, detail, duration)
     except Exception as e:  # noqa: BLE001
         log.warning("could not log gas sync: %s", str(e)[:160])
-# geo.dot.gov died 2026-06 (backend DB refuses conns). Live replacement =
-# the EIA national interstate+intrastate service. NOTE: the daily refresh
-# now feeds rows from the GitHub runner (tools/infra_fetch.py) since Railway
-# egress to ArcGIS is unreliable; this _SVC is only the server-side fallback.
-_SVC = ("https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
-        "Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0/query")
-
 
 def _dsn() -> str:
     return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
