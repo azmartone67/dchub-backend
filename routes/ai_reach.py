@@ -201,10 +201,65 @@ def _attach_canonical_7d(cur, out):
 #     deeper. The 7d keys exist ONLY in the 7d payload.
 # `all` is bounded by RETENTION, not by the beginning of time — so it publishes
 # the observed MIN(created_at) and says so, rather than implying since-launch.
+try:
+    from ai_platform_canon import canonical_platform
+except Exception:  # pragma: no cover - canon must never break reach
+    canonical_platform = None
+
 _SUPPORTED_PERIODS = ("7d", "30d", "all")
 _wcache: dict = {}          # period -> {"ts": float, "data": dict}
 _WTTL = 1800
 
+
+
+def _stamp_vendor(rows):
+    """Attach each row's canonical vendor, and summarise what was not counted.
+
+    ★ distinct_platforms_basis already tells the reader to "recompute either
+    from per_platform[] to check" — and until now they could NOT. The collapse
+    lives in ai_platform_canon and the payload shipped only raw client ids, so
+    reproducing 16 rows -> 3 vendors required source access. Measured
+    2026-09-07: per_platform carried 16 ids totalling 577 requests next to
+    distinct_platforms=3, with nothing in the payload connecting them.
+
+    Stamping the vendor makes the published instruction true from the payload
+    alone: count the distinct non-null canonical_vendor values and you get
+    distinct_platforms. Rows that collapse to nothing (mcp-generic-client,
+    connectors-manager, a verifier, a spec study) carry null and are counted in
+    the returned summary — the recognition rule is an ALLOWLIST, so "not a
+    known vendor" is the normal case for tooling, not an error, and it should
+    be visible rather than merely absent.
+    """
+    unrec_ids = 0
+    unrec_reqs = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        vendor = None
+        if canonical_platform is not None:
+            try:
+                vendor = canonical_platform(r.get("platform_id"))
+            except Exception:
+                vendor = None
+        r["canonical_vendor"] = vendor
+        if vendor is None:
+            unrec_ids += 1
+            try:
+                unrec_reqs += int(r.get("requests") or 0)
+            except Exception:
+                pass
+    return {
+        "unrecognised_client_ids": unrec_ids,
+        "unrecognised_requests": unrec_reqs,
+        "unrecognised_basis": (
+            "client ids that collapse to no known vendor under "
+            "ai_platform_canon.canonical_platform — MCP tooling, verifiers, "
+            "registry simulators and generic clients. Recognition is an "
+            "allowlist, so this is the expected home for non-assistant "
+            "traffic; it is published so the gap between "
+            "per_platform_client_ids and distinct_platforms is readable "
+            "without source access."),
+    }
 
 def _window_reach(period: str):
     """Compute reach over a REAL window at the canonical agent grain.
@@ -268,6 +323,7 @@ def _window_reach(period: str):
             rows = [dict(r) for r in cur.fetchall()]
             out["per_platform"] = rows
             out["per_platform_client_ids"] = len(rows)
+            out.update(_stamp_vendor(rows))
             out["distinct_platforms"] = (
                 count_platforms(r.get("platform_id") for r in rows)
                 if count_platforms is not None else len(rows))
@@ -476,6 +532,7 @@ def ai_reach():
                 out["distinct_platforms"] = _vendors(best)
                 out["per_platform"] = pp
                 out["per_platform_client_ids"] = len(pp)
+                out.update(_stamp_vendor(pp))
                 out["distinct_platforms_basis"] = (
                     "distinct_platforms counts canonical VENDORS "
                     "(ai_platform_canon.count_platforms over the per_platform "
