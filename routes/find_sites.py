@@ -39,8 +39,11 @@ This endpoint answers that one, and it does it WITHOUT inventing geography.
 
 Distances and their bases, published per field rather than implied:
 
-  * ``gas_distance_km``   — geodesic to the nearest ``discovered_pipelines``
-    point feature. Point-to-point, both real coordinates.
+  * ``gas_distance_km``   — geodesic to the nearest ``gas_pipelines`` point
+    feature (columns ``lat``/``lng``). Point-to-point, both real coordinates.
+    NOT ``discovered_pipelines``: that table has no ``latitude`` column at all,
+    and this endpoint shipped querying it — the error surfaced only because a
+    caller passed max_gas_km and read constraint_coverage. See layer_status.
   * ``fiber_distance_km`` — geodesic from the anchor to the straight-line CHORD
     between a route's endpoints in ``fiber_routes``. An approximation: a real
     route is a polyline, and a route that bows away from its chord is FARTHER
@@ -261,6 +264,45 @@ def build_coverage(requested, evaluated, notes):
     return coverage, unapplied
 
 
+def build_layer_status(evaluated, notes, row_counts, queried):
+    """Per-LAYER health, reported ALWAYS — not only for constraints the caller
+    happened to request.
+
+    ★ Why this exists. constraint_coverage answers "was the filter you asked
+    for applied?", so it is silent about a layer nobody filtered on. That left
+    a hole: with no max_gas_km, a broken gas layer produced
+    `gas_distance_km: null` on every candidate, which reads as "no gas nearby"
+    — the confident wrong answer, with nothing anywhere in the response to
+    contradict it. It shipped that way, and the defect surfaced only because a
+    caller passed max_gas_km and read the coverage block.
+
+    `answered` is the field that disambiguates a null distance:
+      True  + rows 0  -> the layer was read and there is genuinely nothing near
+      False           -> the layer failed; the null means UNKNOWN, not absent
+      None            -> not queried at all (nothing asked for it)
+    """
+    out = {}
+    for key, table in (("gas", "gas_pipelines"),
+                       ("fiber", "fiber_routes"),
+                       ("moratorium", "permitting_intel")):
+        arg = {"gas": "max_gas_km", "fiber": "max_fiber_km",
+               "moratorium": "exclude_moratorium"}[key]
+        if not queried.get(key):
+            out[key] = {"table": table, "answered": None,
+                        "note": "not queried — nothing in this request needed it"}
+            continue
+        ok = bool(evaluated.get(arg))
+        entry = {"table": table, "answered": ok,
+                 "rows_in_region": row_counts.get(key) if ok else None}
+        if not ok:
+            reason, instead = notes.get(arg, ("layer did not answer", None))
+            entry["reason"] = reason
+            if instead:
+                entry["instead"] = instead
+        out[key] = entry
+    return out
+
+
 def _fnum(v, default=None):
     try:
         return float(v)
@@ -459,15 +501,15 @@ def find_sites():
         if anchors and region:
             try:
                 cur.execute(
-                    "SELECT latitude, longitude FROM discovered_pipelines "
-                    "WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s "
+                    "SELECT lat, lng FROM gas_pipelines "
+                    "WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s "
                     "LIMIT %s", (region[0], region[1], region[2], region[3], MAX_LAYER_ROWS))
                 gas_pts = [(r[0], r[1]) for r in cur.fetchall()]
                 evaluated["max_gas_km"] = True
             except Exception as e:
                 conn.rollback()
                 notes["max_gas_km"] = (
-                    "gas layer (discovered_pipelines) did not answer: %s" % str(e)[:120],
+                    "gas layer (gas_pipelines) did not answer: %s" % str(e)[:120],
                     "call get_infrastructure at each returned coordinate for the gas read")
                 evaluated["max_gas_km"] = False
         # ── fiber: chord approximation, basis stamped per candidate ──────────
@@ -548,6 +590,12 @@ def find_sites():
             "constraint_coverage": coverage,
             "constraint_coverage_shape": "argument_disposition",
             "unapplied_constraints": unapplied,
+            "layer_status": build_layer_status(
+                evaluated, notes,
+                {"gas": len(gas_pts), "fiber": len(fiber_segs),
+                 "moratorium": sum(len(v) for v in moratoria.values())},
+                {"gas": bool(anchors and region), "fiber": bool(anchors and region),
+                 "moratorium": bool(exclude_moratorium)}),
             "basis": {
                 "anchors": {
                     "table": "substations",
@@ -555,8 +603,8 @@ def find_sites():
                                   "usable voltage_kv and coordinates",
                     "scope": "United States",
                 },
-                "gas": {"table": "discovered_pipelines",
-                        "population": "natural-gas pipeline point features"},
+                "gas": {"table": "gas_pipelines",
+                        "population": "natural-gas pipeline point features (HIFLD/EIA), lat/lng point geometry"},
                 "fiber": {"table": "fiber_routes",
                           "population": "route records with endpoint coordinates; "
                                         "distance is a chord approximation"},
