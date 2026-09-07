@@ -9,6 +9,16 @@ on:
   schedule:
     - cron: '23 */6 * * *'   # every 6 hours
   workflow_dispatch:
+    inputs:
+      urls:
+        description: >-
+          One-off: newline- or comma-separated absolute dchub.cloud URLs to
+          submit INSTEAD of the scheduled delta/recent sweep. Leave blank for
+          the normal run. Use this when a page becomes newly discoverable —
+          IndexNow asks for CHANGED urls, so a one-off beats adding a fixed
+          list to a job that runs every 6 hours.
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -19,6 +29,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Submit CHANGED facilities (cursor delta) + a small recent net to IndexNow
+        if: ${{ github.event.inputs.urls == '' }}
         run: |
           # F7 (2026-09-02): this step used to call ?facilities=1&recent=1&n=2000 —
           # the newest 2,000 facilities BY ID (not "changed") plus the 2,000
@@ -61,7 +72,45 @@ jobs:
           submit "recent net" "recent=1&n=200"
           exit 0
 
+      - name: Submit the one-off URL list
+        if: ${{ github.event.inputs.urls != '' }}
+        env:
+          URLS: ${{ github.event.inputs.urls }}
+        run: |
+          # A one-off submission for URLs that just BECAME discoverable. Kept
+          # out of the scheduled path on purpose: this job already carries a
+          # note about re-sending ~4,000 unchanged URLs every 6h and IndexNow
+          # de-prioritising repeated identical batches. A page that changed
+          # once should be submitted once.
+          set -euo pipefail
+          ORIGIN="https://dchub-backend-production.up.railway.app"
+          payload=$(printf '%s' "$URLS" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | grep -E '^https://dchub\.cloud/' \
+            | python3 -c 'import json,sys; print(json.dumps({"urls":[l.strip() for l in sys.stdin if l.strip()]}))')
+          n=$(printf '%s' "$payload" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["urls"]))')
+          if [ "$n" = "0" ]; then
+            echo "::error::no valid https://dchub.cloud/ URLs in the input"
+            exit 1
+          fi
+          echo "::notice::submitting $n one-off URL(s) to IndexNow"
+          resp=$(curl -sS -m 60 -X POST \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            -H "Content-Type: application/json" \
+            --data "$payload" "$ORIGIN/api/v1/admin/indexnow")
+          echo "$resp" | head -c 600; echo
+          # ★ A submit that reports ok:false is a FAILURE. The scheduled steps
+          # above end in `exit 0` because a missed 6-hourly sweep retries in six
+          # hours; a one-off has no next run, so it must go red.
+          echo "$resp" | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)
+          if not d.get("ok"):
+              print(f"::error::IndexNow one-off submit failed: {str(d)[:300]}"); sys.exit(1)
+          print(f"::notice::submitted={d.get(\"submitted\")} endpoint={d.get(\"endpoint\")} status={d.get(\"status\")}")
+          '
+
       - name: Submit key SEO pages explicitly (leaderboard, MCP standing, DCPI)
+        if: ${{ github.event.inputs.urls == '' }}
         run: |
           # 2026-06-08: explicitly re-ping the high-value structured pages every run so
           # Perplexity/Google/Bing cite the LIVE leaderboard instead of stale LinkedIn posts.
