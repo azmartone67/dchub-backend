@@ -216,7 +216,11 @@ def test_pinned_manifest_matches_live_tools_list():
 
 def test_fallback_list_carries_the_seven_restored_tools():
     src = _read("worker.js")
-    for name in ("plan_query", "research_task", "standing_intent",
+    # ★2026-09-07: standing_intent was SPLIT on the live gate into
+    # register/list/delete_standing_intent (mcp-server #368, 83 -> 85 tools),
+    # so the fallback must now carry the three successors, not the retired name.
+    for name in ("plan_query", "research_task", "register_standing_intent",
+                 "list_standing_intents", "delete_standing_intent",
                  "get_global_power", "get_permitting_intel",
                  "simulate_scenario", "cluster_sites_by_latency"):
         assert '{ name: "%s"' % name in src, name

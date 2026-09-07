@@ -372,11 +372,21 @@ def test_repo_worker_is_canon_clean_and_current():
     # ★ tools_count was ALREADY live (v4.9.29), so one JSON body asserted 85
     # tools, 83 tools and version 2.5.0 at once. The live half is what makes the
     # dead half credible.
-    # ★ PASTE OUTSTANDING — merging does not ship this.
-    # Verify with (want 4.9.57):
+    # ★ PASTED — 4.9.57 confirmed live 2026-09-07 (all five surfaces 2.12.8/85,
+    # x-dc-worker-version: 4.9.57-manifest-version-live).
+    #
+    # 4.9.57 -> 4.9.58-fallback-tools-85 (2026-09-07): mcp-server #368 split the
+    # single standing_intent tool into register/list/delete_standing_intent
+    # (+2 -> 85). MCP_FALLBACK_TOOLS still carried the old membership and
+    # MCP_SERVER_INFO.description still said "83 tools" — both reconciled to the
+    # live tools/list here alongside ai_surface_canon.PINNED (canon PR #4068).
+    # ★ PASTE OUTSTANDING — merging does not ship this. Fallback-only: the served
+    # count already derives 85 from origin, so this is degraded-mode correctness,
+    # not a live regression.
+    # Verify with (want 4.9.58):
     #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.57-manifest-version-live'" in src
+    assert "WORKER_VERSION = '4.9.58-fallback-tools-85'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

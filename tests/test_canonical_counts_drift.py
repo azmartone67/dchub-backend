@@ -150,7 +150,7 @@ CANON_MARKETS_PHRASE = f"{CANON_MARKETS} markets"
 #    goalposts — test_fence_baseline_matches_canon_sot cross-checks that the
 #    imported SoT still agrees with these. ──────────────────────────────────────
 CANONICAL = {
-    "tools": 83,        # live tools/list length on the public MCP gate (★2026-08-30: 82 -> 83, +summarize_for_citation — it went live on the MCP server and the canon pin did not follow, so the catalog auto-synced to 83 while every discovery surface still advertised 82; ★2026-07-31: 81 -> 82, +get_power_availability_timeline, gateway v2.10.0 — live-probed on dchub.cloud/mcp; ★2026-07-29: 80 -> 81, +get_hosting_capacity)
+    "tools": 85,        # live tools/list length on the public MCP gate (★2026-09-07: 83 -> 85, mcp-server #368 SPLIT the single standing_intent into register_standing_intent / list_standing_intents / delete_standing_intent (+2 net) — verified via a live tools/list handshake against dchub.cloud/mcp; reconciled with ai_surface_canon.PINNED['tools_advertised'] and worker.js MCP_FALLBACK_TOOLS in the same PR; ★2026-08-30: 82 -> 83, +summarize_for_citation — it went live on the MCP server and the canon pin did not follow, so the catalog auto-synced to 83 while every discovery surface still advertised 82; ★2026-07-31: 81 -> 82, +get_power_availability_timeline, gateway v2.10.0 — live-probed on dchub.cloud/mcp; ★2026-07-29: 80 -> 81, +get_hosting_capacity)
     "markets_min": 300,  # DCPI markets floor (live ~311; grows via intl expansion)
     "deals_min": 1400,  # DISTINCT deduped tracked deals floor (rows over-state ~2.9x)
     "gas": 52,          # gas-suitability states (DCGI)
