@@ -25286,7 +25286,37 @@ def ai_tracking_full():
             # So the comparison now requires the prior window to actually be
             # covered. Fewer than 7 distinct dates and we publish null plus the
             # reason, never a number.
-            if _prior_day_count < 7:
+            # ★ 2026-09-07, SECOND PASS. The day-count guard below was
+            # necessary and NOT sufficient, and the live payload proved it: it
+            # passed, and wow_pct still published 2472.5.
+            #
+            #   current window  2026-08-31 .. 09-07   61,353  (8,765/day)
+            #   prior window    2026-08-24 .. 08-30    2,385  (341/day)
+            #
+            # The prior window HAS its seven dates — they simply predate the
+            # instrument. The CF edge beacon (beaconOrganicCrawl) began writing
+            # on 2026-08-29, so six of those seven days were recorded by a
+            # collector that did not exist yet. The step is the instrument
+            # switching on, published as four-figure demand growth. Same defect
+            # class as the _NOT_INSTRUMENTED bucket suppression fixed this
+            # morning; the date guard could not see it because absence here is
+            # not a missing ROW, it is a missing COLLECTOR.
+            _collector_start = None
+            try:
+                from routes.crawler_split import _COLLECTOR_STARTED as _CS
+                _collector_start = max(_CS.values()) if _CS else None
+            except Exception:
+                _collector_start = None
+            from datetime import date as _wow_date, timedelta as _wow_delta
+            _prior_start = (_wow_date.today() - _wow_delta(days=14)).isoformat()
+            if _collector_start and _prior_start < _collector_start:
+                wow_pct = None
+                wow_unavailable_reason = (
+                    f"prior window starts {_prior_start}, before a collector "
+                    f"that began {_collector_start} — the comparison spans an "
+                    f"instrument change, so the step measures coverage coming "
+                    f"online, not demand")
+            elif _prior_day_count < 7:
                 wow_pct = None
                 wow_unavailable_reason = (
                     f"prior window has {_prior_day_count} of 7 days in "
