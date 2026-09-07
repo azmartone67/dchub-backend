@@ -39661,8 +39661,8 @@ def cf_stub_infrastructure():
     holds at least one non-null row; a pair that exists and is entirely NULL is
     skipped and named. When no pair carries data the count is null with a
     reason, never 0. `geo_columns` publishes the pair each count was measured
-    through, which is what makes a real 0 ("none nearby") distinguishable from
-    a probe that read the wrong column.
+    through (`lat_col`/`lon_col`), which is what makes a real 0 ("none nearby")
+    distinguishable from a probe that read the wrong column.
     """
     import math as _m
     lat = request.args.get('lat', type=float)
@@ -39732,7 +39732,7 @@ def cf_stub_infrastructure():
                         # Publish the columns the count came through, so a 0 is
                         # readable as "none nearby" and not confusable with
                         # "measured through the wrong column".
-                        geo_columns[table] = {'lat': lat_col, 'lon': lon_col}
+                        geo_columns[table] = {'lat_col': lat_col, 'lon_col': lon_col}
                         if empty_pairs:
                             geo_columns[table]['skipped_all_null'] = empty_pairs
                     elif empty_pairs:

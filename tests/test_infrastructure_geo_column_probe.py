@@ -338,11 +338,11 @@ def test_geo_columns_publishes_the_pair_each_count_came_through():
     body, _ = _near_midland(_schema())
     geo = body.get("geo_columns")
     assert geo, "no geo_columns published — a 0 here is unattributable"
-    assert geo["gas_pipelines"]["lat"] == "lat"
-    assert geo["gas_pipelines"]["lon"] == "lng", (
+    assert geo["gas_pipelines"]["lat_col"] == "lat"
+    assert geo["gas_pipelines"]["lon_col"] == "lng", (
         "counted through %r, not the populated `lng`" % (geo["gas_pipelines"],))
     for name in ("substations", "transmission_lines_eia", "discovered_power_plants"):
-        assert geo[name] == {"lat": "lat", "lon": "lng"}, (name, geo[name])
+        assert geo[name] == {"lat_col": "lat", "lon_col": "lng"}, (name, geo[name])
 
 
 def test_the_rejected_all_null_pair_is_named():
@@ -394,7 +394,7 @@ def test_a_genuinely_empty_bbox_still_reports_zero():
     for name, count in body["counts"].items():
         assert count == 0, (name, count)
     assert not body.get("unmeasured"), body.get("unmeasured")
-    assert body["geo_columns"]["gas_pipelines"]["lon"] == "lng", (
+    assert body["geo_columns"]["gas_pipelines"]["lon_col"] == "lng", (
         "a 0 that cannot name the column it was measured through is the bug")
 
 
