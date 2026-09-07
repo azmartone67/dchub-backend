@@ -111,4 +111,14 @@ jobs:
           if unrouted:
               print(f"::notice::{len(unrouted)} lost queries have no fact pack — "
                     f"add one to _FACT_PACKS/_PACK_ROUTER in routes/geo_autopublish.py")
+
+          # A pack whose SQL returns terawatts is a DATA defect somebody must fix.
+          # It must not read as "nothing to publish today".
+          refused = [c for c in (d.get('considered') or [])
+                     if isinstance(c, dict) and c.get('skip') == 'implausible_facts']
+          for c in refused:
+              for o in (c.get('offending') or []):
+                  print(f"::error::pack '{c.get('pack')}' returned an implausible "
+                        f"{o.get('field')}={o.get('value')} (ceiling: {o.get('ceiling')}) "
+                        f"— {c.get('slug')} was REFUSED, fix the pack's SQL")
           PY

@@ -81,14 +81,24 @@ _FACT_PACKS = {
                 WHERE verdict='AVOID' AND excess_power_score IS NOT NULL
                 ORDER BY excess_power_score ASC NULLS LAST LIMIT 8""",
     },
+    # ★2026-09-07: this pack used to SUM(queue_capacity_mw) over market_power_scores
+    # GROUP BY iso. That is not an ISO queue total — those rows are not
+    # market-scoped slices of one queue (ERCOT read 474,958 MW PER MARKET ROW), so
+    # summing 19 of them produced 9,024,200 MW = 9.02 TW for ERCOT: roughly the
+    # world's entire installed generating capacity, and 40x ERCOT's own published
+    # >225 GW large-load queue. The draft was never wrong about the row it was
+    # handed — the row was wrong. Repointed at interconnect_queue, the per-project
+    # table the live /api/v1/interconnection-queue/by-iso route already aggregates
+    # exactly this way (routes/interconnection_queues.py:1194).
     "queue_by_iso": {
         "tools": "get_interconnection_queue",
-        "sql": """SELECT iso, COUNT(*) AS markets,
-                      ROUND(AVG(queue_wait_months)::numeric,1) AS avg_queue_wait_months,
-                      ROUND(SUM(queue_capacity_mw)::numeric,0) AS total_queue_mw
-                 FROM market_power_scores
-                WHERE iso IS NOT NULL AND queue_capacity_mw IS NOT NULL
-                GROUP BY iso ORDER BY total_queue_mw DESC NULLS LAST LIMIT 8""",
+        "sql": """SELECT upper(iso) AS iso, COUNT(*) AS projects,
+                      ROUND(SUM(capacity_mw)::numeric,0) AS total_queue_mw,
+                      ROUND(AVG(capacity_mw)::numeric,1) AS avg_project_mw
+                 FROM interconnect_queue
+                WHERE iso IS NOT NULL AND capacity_mw IS NOT NULL
+                GROUP BY upper(iso)
+                ORDER BY SUM(capacity_mw) DESC NULLS LAST LIMIT 8""",
     },
     # ── added 2026-09-07 so gap-driven pages don't all land on one pack ──
     "market_ranking": {
@@ -243,6 +253,49 @@ def _lost_query_plan(limit: int) -> tuple[list, list]:
         if len(items) >= int(limit):
             break
     return items, skipped
+
+
+# ── physical plausibility ceilings ────────────────────────────────────────────
+# ★ NOT a correctness check, and it must never be described as one. This catches
+# ORDER-OF-MAGNITUDE errors only — the class where an aggregate is summed over
+# the wrong grain and the draft then faithfully publishes the result, which is
+# exactly how queue_by_iso came within one cron tick of publishing 9.02 TW as
+# ERCOT's interconnection queue (2026-09-07). It cannot tell a right number from
+# a slightly wrong one. An empty result means nothing was CAUGHT, not that
+# anything was VERIFIED.
+#
+# The ceilings are physical, not tuned: US installed generating capacity is
+# ~1.2 TW and the whole world ~9 TW, so no ISO queue, market or facility row is
+# a terawatt. A value over the ceiling is not "high" — it is a different unit or
+# a double count.
+_CEILINGS = (
+    ("_mw", 1_000_000.0, "1 TW — larger than any ISO queue, market or facility"),
+    ("_gw", 1_000.0, "1 TW expressed in GW"),
+    ("_months", 600.0, "50 years"),
+    ("_score", 100.0, "scores are 0-100"),
+    ("_pct", 100.0, "percentages are 0-100"),
+)
+
+
+def _implausible_facts(rows: list) -> list:
+    """[(field, value, ceiling_reason)] for every value that breaks a ceiling."""
+    import decimal
+    bad = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        for k, v in row.items():
+            # bool is an int subclass; Decimal is what psycopg2 returns for
+            # ::numeric, and is NOT a numbers.Real — miss it and this guard
+            # silently inspects nothing at all on live data.
+            if isinstance(v, bool) or not isinstance(v, (int, float, decimal.Decimal)):
+                continue
+            key = str(k).lower()
+            for suffix, ceiling, why in _CEILINGS:
+                if key.endswith(suffix) and abs(float(v)) > ceiling:
+                    bad.append((str(k), float(v), why))
+                    break
+    return bad
 
 
 def _canonical_rows() -> list:
@@ -407,6 +460,18 @@ def autopublish_next(dry: bool = False) -> dict:
         rows = _gather_facts(item)
         if not rows:
             considered.append({"slug": item["slug"], "skip": "no_facts", "source": src})
+            continue
+        bad = _implausible_facts(rows)
+        if bad:
+            # Loud: a pack producing terawatts is a data defect somebody must fix,
+            # not a page to quietly not write.
+            logger.error("geo_autopublish REFUSED %s — implausible facts: %s",
+                         item["slug"], bad[:3])
+            considered.append({
+                "slug": item["slug"], "skip": "implausible_facts", "source": src,
+                "pack": item.get("pack"),
+                "offending": [{"field": f, "value": v, "ceiling": w}
+                              for f, v, w in bad[:3]]})
             continue
         draft = _llm_draft(item, rows)
         if not draft:
