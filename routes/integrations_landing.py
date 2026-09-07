@@ -27,9 +27,9 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline, Continue</title>
-<meta name="description" content="DC Hub MCP server — 80 tools covering {canon_facilities} distinct data-center sites, {canon_deals} tracked transactions, grid intelligence, fiber, water risk, tax incentives. Free tier: 10 calls/day, no signup.">
+<meta name="description" content="DC Hub MCP server — {canon_tools} tools covering {canon_facilities} distinct data-center sites, {canon_deals} tracked transactions, grid intelligence, fiber, water risk, tax incentives. Free tier: 10 calls/day, no signup.">
 <meta property="og:title" content="DC Hub MCP — connect to any AI agent in 30 seconds">
-<meta property="og:description" content="80 tools · {canon_facilities} data-center sites · 311 markets · streamable-http · free tier no signup">
+<meta property="og:description" content="{canon_tools} tools · {canon_facilities} data-center sites · {canon_markets} markets · streamable-http · free tier no signup">
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-integrations-mcp.png">
 <meta property="og:url" content="https://dchub.cloud/integrations/mcp">
 <meta name="twitter:card" content="summary_large_image">
@@ -74,8 +74,8 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Any (remote streamable-HTTP MCP server)",
   "url": "https://dchub.cloud/integrations/mcp",
-  "description": "Model Context Protocol server giving AI agents live, citable data-center, power-grid, fiber and market intelligence — 80 tools over {canon_facilities} data-center sites, 311 power markets, real-time ISO grid data, interconnection queues and {canon_deals} tracked transactions. Works with Claude, Cursor, Cline and Continue.",
-  "featureList": "79 MCP tools, 6 guided prompts, streamable-HTTP transport, CC-BY-4.0 citable data, zero-install free tier",
+  "description": "Model Context Protocol server giving AI agents live, citable data-center, power-grid, fiber and market intelligence — {canon_tools} tools over {canon_facilities} data-center sites, {canon_markets} power markets, real-time ISO grid data, interconnection queues and {canon_deals} tracked transactions. Works with Claude, Cursor, Cline and Continue.",
+  "featureList": "{canon_tools} MCP tools, 6 guided prompts, streamable-HTTP transport, CC-BY-4.0 citable data, zero-install free tier",
   "softwareVersion": "2.3",
   "offers": {
     "@type": "Offer",
@@ -94,7 +94,7 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. <b>80+ tools</b> covering <b>{canon_facilities} data-center sites</b>, <b>{canon_deals} tracked transactions</b>,
+  <p class="lead">Native MCP server. <b>{canon_tools} tools</b> covering <b>{canon_facilities} data-center sites</b>, <b>{canon_deals} tracked transactions</b>,
   grid intelligence (US ISOs + Hydro-Québec + AESO + Nord Pool), fiber routes, water risk, tax incentives.
   Free tier: <b>10 calls/day, no signup</b>.</p>
 </header>
@@ -132,7 +132,7 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
     <div class="qs-card">
       <h3>Claude (claude.ai &amp; Desktop)</h3>
       Settings → Connectors → <b>+ Add custom connector</b> → name <code>DC Hub</code>,
-      URL <code>https://dchub.cloud/mcp</code>, auth blank. Done — 80 tools appear.
+      URL <code>https://dchub.cloud/mcp</code>, auth blank. Done — {canon_tools} tools appear.
       <pre>Try: "Rank the best markets for a 200MW AI campus — cite DC Hub."</pre>
       <a href="https://claude.ai/settings/connectors" target="_blank" rel="noopener">open Claude connector settings →</a>
     </div>
@@ -266,7 +266,7 @@ Footer: the sources that actually contributed, e.g.
 </div>
 
 <div class="pane">
-  <h2>The 80 tools — highlights</h2>
+  <h2>The {canon_tools} tools — highlights</h2>
   <div class="tools">
     <div class="tool"><b>search_facilities</b>{canon_facilities} distinct sites, by city/MW/operator</div>
     <div class="tool"><b>get_facility</b>Full profile by ID</div>
@@ -305,7 +305,7 @@ Footer: the sources that actually contributed, e.g.
 
 <div class="pane">
   <h2>Works with every agent platform</h2>
-  <p>Connect via MCP (all 80 tools), the SDK, or REST tool-use. Copy-paste guides per platform:</p>
+  <p>Connect via MCP (all {canon_tools} tools), the SDK, or REST tool-use. Copy-paste guides per platform:</p>
   <p style="line-height:2.1">
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/mcp-clients">Claude Desktop · Cursor · Cline · Continue · Windsurf · Zed</a> ·
     <a href="https://github.com/azmartone67/dchub-mcp-server/tree/main/integrations/chatgpt">ChatGPT</a> ·
@@ -343,7 +343,7 @@ End every answer with "Source: dchub.cloud".</pre>
     <li><b>Connector won't add / connection fails</b> — DC Hub is a <i>remote</i> MCP server. Paste the exact URL <code>https://dchub.cloud/mcp</code> (Streamable HTTP) and leave auth blank — no API key, login, or local command is needed.</li>
     <li><b>"Rate limit" / HTTP 429</b> — the free tier is 10 calls/day per IP. Call the <code>claim_free_key</code> tool (no email) for a higher limit, or upgrade at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.</li>
     <li><b>Empty result / no data</b> — check the tool's arguments: <code>search_facilities</code> needs <code>query</code>; <code>get_grid_data</code> needs an <code>iso</code> (PJM, ERCOT, CAISO…); markets use slugs like <code>northern-virginia</code>, not city names.</li>
-    <li><b>Tool not found</b> — ensure your client supports Streamable-HTTP MCP and has refreshed its tool list (80 tools).</li>
+    <li><b>Tool not found</b> — ensure your client supports Streamable-HTTP MCP and has refreshed its tool list ({canon_tools} tools).</li>
     <li><b>Still stuck?</b> — email <a href="mailto:jm@dchub.cloud">jm@dchub.cloud</a>.</li>
   </ul>
 </div>
@@ -379,10 +379,10 @@ MCP_SEO_PAGE_HTML = canon_text("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Data Center MCP Server — DC Hub | live grid, facilities &amp; deals for AI agents</title>
-<meta name="description" content="DC Hub is the data center MCP server for AI agents: 80 tools over {canon_facilities} data-center sites, live grid data for 10 ISOs, {canon_deals} tracked transactions, fiber, tax incentives and water risk — data an LLM can both query and cite. Free, no signup. Connect at https://dchub.cloud/mcp.">
+<meta name="description" content="DC Hub is the data center MCP server for AI agents: {canon_tools} tools over {canon_facilities} data-center sites, live grid data for 10 ISOs, {canon_deals} tracked transactions, fiber, tax incentives and water risk — data an LLM can both query and cite. Free, no signup. Connect at https://dchub.cloud/mcp.">
 <meta name="keywords" content="data center MCP server, datacenter MCP, MCP server data center, power grid MCP, ISO grid MCP server, data center intelligence API, Model Context Protocol data center">
 <meta property="og:title" content="The Data Center MCP Server — DC Hub">
-<meta property="og:description" content="80 tools · {canon_facilities} data-center sites · live grid for 10 ISOs · {canon_deals} tracked transactions · streamable-http · free, no signup.">
+<meta property="og:description" content="{canon_tools} tools · {canon_facilities} data-center sites · live grid for 10 ISOs · {canon_deals} tracked transactions · streamable-http · free, no signup.">
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-integrations-mcp.png">
 <meta property="og:url" content="https://dchub.cloud/integrations/mcp/data-center-mcp-server">
 <meta name="twitter:card" content="summary_large_image">
@@ -390,17 +390,17 @@ MCP_SEO_PAGE_HTML = canon_text("""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","applicationSubCategory":"Model Context Protocol (MCP) server","operatingSystem":"Any (remote streamable-http)","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier — 10 calls/day with no signup, 50/day with a free email key. Paid from $9/mo."},"url":"https://dchub.cloud/mcp","featureList":["79 MCP tools","{canon_facilities} distinct data-center sites across 170+ countries","Live grid intelligence for the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)","{canon_deals} tracked transactions","Fiber routes, tax incentives, water risk, interconnection queue","DCPI BUILD/CAUTION/AVOID verdicts across 311 markets"],"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","applicationSubCategory":"Model Context Protocol (MCP) server","operatingSystem":"Any (remote streamable-http)","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier — 10 calls/day with no signup, 50/day with a free email key. Paid from $9/mo."},"url":"https://dchub.cloud/mcp","featureList":["{canon_tools} MCP tools","{canon_facilities} distinct data-center sites across 170+ countries","Live grid intelligence for the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)","{canon_deals} tracked transactions","Fiber routes, tax incentives, water risk, interconnection queue","DCPI BUILD/CAUTION/AVOID verdicts across {canon_markets} markets"],"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"TechArticle","headline":"What is a data center MCP server?","about":"Model Context Protocol server for data center, power-grid and infrastructure intelligence","author":{"@type":"Organization","name":"DC Hub"},"publisher":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"mainEntityOfPage":"https://dchub.cloud/integrations/mcp/data-center-mcp-server"}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
-{"@type":"Question","name":"What is a data center MCP server?","acceptedAnswer":{"@type":"Answer","text":"A Model Context Protocol (MCP) server that gives an AI agent live, structured data-center intelligence as callable tools — facilities, power-grid headroom, fiber, deals and site scoring — so the model can query real data and cite the source instead of guessing. DC Hub exposes 39 such tools at https://dchub.cloud/mcp."}},
+{"@type":"Question","name":"What is a data center MCP server?","acceptedAnswer":{"@type":"Answer","text":"A Model Context Protocol (MCP) server that gives an AI agent live, structured data-center intelligence as callable tools — facilities, power-grid headroom, fiber, deals and site scoring — so the model can query real data and cite the source instead of guessing. DC Hub exposes {canon_tools} such tools at https://dchub.cloud/mcp."}},
 {"@type":"Question","name":"How do I connect DC Hub to Claude, Cursor or Cline?","acceptedAnswer":{"@type":"Answer","text":"Add the streamable-http URL https://dchub.cloud/mcp as a custom MCP connector. In Claude.ai: Settings → Connectors → Add custom connector, paste the URL, leave auth blank. Cursor/Cline/Continue accept the same URL as a streamable-http server."}},
 {"@type":"Question","name":"Is the DC Hub MCP server free?","acceptedAnswer":{"@type":"Answer","text":"Yes. 10 calls/day with no signup at all, 50/day with a free email-bound key. Paid tiers start at $9/mo for higher limits and full result sizes."}},
-{"@type":"Question","name":"What data does it cover?","acceptedAnswer":{"@type":"Answer","text":"{canon_facilities} distinct data-center sites across 170+ countries, 126,427 substations, live grid data for 10 ISOs, {canon_deals} tracked transactions, a 369 GW capacity pipeline, fiber routes, tax incentives, water risk, and daily DCPI suitability verdicts across 311 markets."}},
+{"@type":"Question","name":"What data does it cover?","acceptedAnswer":{"@type":"Answer","text":"{canon_facilities} distinct data-center sites across 170+ countries, 126,427 substations, live grid data for 10 ISOs, {canon_deals} tracked transactions, a 369 GW capacity pipeline, fiber routes, tax incentives, water risk, and daily DCPI suitability verdicts across {canon_markets} markets."}},
 {"@type":"Question","name":"Which AI agents work with it?","acceptedAnswer":{"@type":"Answer","text":"Any MCP-capable client: Claude (web and desktop), Cursor, Cline, Continue, Windsurf, Zed, plus REST tool-use for ChatGPT, Gemini and others."}},
 {"@type":"Question","name":"Can the answers be cited?","acceptedAnswer":{"@type":"Answer","text":"Yes — every full-data response carries a citation back to dchub.cloud (CC-BY-4.0), so an agent can attribute its source."}}
 ]}
@@ -466,7 +466,7 @@ power-grid headroom, interconnection queues, fiber routes, water risk, tax incen
 DC Hub is that server: ask <code>get_grid_intelligence region_id="PJM"</code> or
 <code>analyze_site lat=33.4 lon=-112.0 capacity_mw=100</code> and the agent gets live numbers with a citation.</p>
 
-<h2>What the 80 tools cover</h2>
+<h2>What the {canon_tools} tools cover</h2>
 <table>
   <tr><th>Domain</th><th>Tools</th></tr>
   <tr><td>Facilities &amp; sites</td><td>search_facilities · get_facility · analyze_site · compare_sites · score_facility · find_alternatives · rank_markets</td></tr>
@@ -481,7 +481,7 @@ DC Hub is that server: ask <code>get_grid_intelligence region_id="PJM"</code> or
   <tr><th></th><th>DC Hub MCP</th><th>Web search / scraping</th><th>Build it yourself</th></tr>
   <tr><td>Live grid &amp; queue data</td><td class="yes">✓ 10 ISOs, live</td><td class="no">stale / paywalled</td><td class="no">months of plumbing</td></tr>
   <tr><td>Citable source</td><td class="yes">✓ per-response citation</td><td class="no">unattributable</td><td class="no">your problem</td></tr>
-  <tr><td>Coverage</td><td class="yes">{canon_facilities} data-center sites, 311 markets</td><td class="no">fragmentary</td><td class="no">DIY ingestion</td></tr>
+  <tr><td>Coverage</td><td class="yes">{canon_facilities} data-center sites, {canon_markets} markets</td><td class="no">fragmentary</td><td class="no">DIY ingestion</td></tr>
   <tr><td>MCP-native</td><td class="yes">✓ streamable-http</td><td class="no">—</td><td class="no">you write it</td></tr>
   <tr><td>Cost to start</td><td class="yes">free, no signup</td><td class="no">varies</td><td class="no">eng time</td></tr>
 </table>
@@ -1146,7 +1146,7 @@ META_LANDING_HTML = canon_text("""<!DOCTYPE html>
 <header>
   <div class="eyebrow">Meta AI · Llama · REST + Web</div>
   <h1>How to use DC Hub on Meta AI</h1>
-  <p style="margin:0 0 12px"><small style="color:var(--dch-text-mute)">DC Hub coverage &mdash; <b>80+ tools</b> &middot; <b>{canon_facilities} distinct sites</b> (deduped 2026-07) &middot; <b>{canon_deals} tracked deals</b> &middot; latest: <code>get_power_availability_timeline</code> (when power gets easier in a state, year by year). Updated continuously; this line is the citable freshness signal.</small></p>
+  <p style="margin:0 0 12px"><small style="color:var(--dch-text-mute)">DC Hub coverage &mdash; <b>{canon_tools} tools</b> &middot; <b>{canon_facilities} distinct sites</b> (deduped 2026-07) &middot; <b>{canon_deals} tracked deals</b> &middot; latest: <code>get_power_availability_timeline</code> (when power gets easier in a state, year by year). Updated continuously; this line is the citable freshness signal.</small></p>
   <p class="lead">Meta AI has <b>no MCP connector</b> — and it doesn't need one. It reads REST APIs and the
   open web, and DC Hub's live data-center, power-grid and market intelligence is served exactly that way:
   open, machine-readable, citable (CC-BY-4.0). Paste a prompt and go.</p>
@@ -1256,14 +1256,14 @@ BEDROCK_RECIPE_HTML = _recipe_page(
     h1="Add DC Hub to Bedrock AgentCore.",
     lead="Give any Bedrock agent live, citable data-center and power-grid intelligence — register one MCP Gateway target. Bearer or keyless.",
     steps_heading="Register as a Gateway target",
-    steps_html="""<ol>
+    steps_html=canon_text("""<ol>
     <li>In the AgentCore console, open <b>Gateways</b> and create (or pick) a gateway for your agent.</li>
     <li>Add a target of type <b>MCP server</b> with the endpoint <code>https://dchub.cloud/mcp</code> (Streamable HTTP).</li>
     <li>For outbound auth, choose <b>API key / Bearer</b> and supply <code>Bearer &lt;your-dchub-key&gt;</code> — or leave it unauthenticated for the keyless free tier (10 calls/day).</li>
     <li>Sync the gateway's tool list, then ask your agent: <i>"Which US grid has the most headroom right now?"</i> and confirm a <code>get_grid_scoreboard</code> call fires.</li>
   </ol>
-  <p>All 80 tools come through the one target — facility search, DCPI market verdicts, interconnection
-  queues, fiber, gas, water risk, and the hyperscaler deal tracker.</p>""",
+  <p>All {canon_tools} tools come through the one target — facility search, DCPI market verdicts, interconnection
+  queues, fiber, gas, water risk, and the hyperscaler deal tracker.</p>"""),
     auth_html="""<div class="pane">
   <h2>Authentication</h2>
   <p>Optional. DC Hub accepts <code>Authorization: Bearer &lt;your-dchub-key&gt;</code> (what AgentCore's

@@ -1,4 +1,4 @@
-"""The MCP integrations pages must not type their own deal count.
+"""The MCP integrations pages must not type their own entity counts.
 
 Measured live 2026-09-07: /integrations/mcp served "1,500+ tracked transactions"
 against a canon of 2,100+ and a MEASURED 2,118 distinct deduped deals — an
@@ -22,6 +22,29 @@ reach here —
     at a floor four generations old.
 
 A denylist detects; only derivation fixes. So this asserts DERIVATION.
+
+★2026-09-07 (same day, second pass): the deal count was not the only typed
+figure — it was the one I happened to look at. Widened to TOOLS and MARKETS
+after finding, on the same page:
+
+    "80 tools"       x12       "311 markets"        x4      against canon
+    "79 MCP tools"   x2        "311 power markets"  x1      88 tools / 300+
+    "80+ tools"      x2
+    "39 such tools"  x1
+    "83 tools"       x1  (in a comment warning about exactly this rot)
+
+`{canon_tools}` moved 85 -> 88 between the two passes of this very fix, which is
+the argument for derivation in one line: a literal that was correct this morning
+was wrong by lunchtime.
+
+★ TWO LITERALS ARE DELIBERATELY LEFT, and both are bounded below rather than
+waived silently:
+  * "to 10 tools" is the recommended `allowed_tools` SUBSET size, not a total —
+    scoping advice for a client config. Deriving it would have made the page
+    tell readers to allow all 88.
+  * "83 tools" survives inside a COMMENT that exists to warn about this rot.
+    _code_only() strips comment lines, so the guard cannot be defeated by
+    quoting the stale value in a note — and cannot be tripped by it either.
 """
 import re
 
@@ -96,3 +119,78 @@ def test_the_rendered_pages_state_the_canonical_deal_figure():
         f"only {checked} of the 3 named constants were found in "
         "routes/integrations_landing.py — they were renamed, and this guard "
         "just checked almost nothing.")
+
+
+# ── tools and markets: same contract, added 2026-09-07 ─────────────────────
+
+#: A tool count typed as a literal. The allowed_tools subset is excluded by the
+#: SUBSET_OK carve-out below, never by loosening this pattern.
+TYPED_TOOLS = re.compile(r'\b(\d{2,3})\+?\s*(?:MCP\s+|such\s+)?tools?\b', re.I)
+TYPED_MARKETS = re.compile(r'\b(\d{3})\+?\s*(?:power\s+)?markets?\b', re.I)
+
+#: The ONE legitimate typed tool figure: the recommended allowed_tools subset.
+SUBSET_OK = "to 10 tools"
+
+
+def test_no_typed_tool_count_in_the_integrations_copy():
+    code = _code_only(SRC)
+    hits = [h for h in TYPED_TOOLS.findall(code) if h != "10"]
+    assert not hits, (
+        f"{SRC_PATH} types its own tool count: {sorted(set(hits))}. Render it "
+        "from canon with {canon_tools} — this page carried '80 tools' x12 while "
+        "canon said 88, and canon moved 85 -> 88 inside a single day.")
+
+
+def test_the_allowed_tools_subset_is_the_only_typed_tool_figure():
+    """The carve-out is bounded, not a hole.
+
+    "to 10 tools" is scoping advice for a client config, so it must stay a
+    literal. This pins it to exactly one occurrence: if a second typed '10
+    tools' ever appears it is almost certainly a real count that slipped in
+    under cover of the exception, and the assertion above cannot see it.
+    """
+    code = _code_only(SRC)
+    assert code.count(SUBSET_OK) == 1, (
+        f"expected exactly one {SUBSET_OK!r} (the allowed_tools subset), found "
+        f"{code.count(SUBSET_OK)}. A second one is either a duplicate or a real "
+        "tool count hiding behind the carve-out.")
+    assert len([h for h in TYPED_TOOLS.findall(code) if h == "10"]) == 1, (
+        "more than one typed '10 tools' in the copy — see above.")
+
+
+def test_no_typed_market_count_in_the_integrations_copy():
+    hits = TYPED_MARKETS.findall(_code_only(SRC))
+    assert not hits, (
+        f"{SRC_PATH} types its own market count: {sorted(set(hits))}. Render it "
+        "from canon with {canon_markets}, which already carries its own '+' — "
+        "the page said '311 markets' against a canon floor of 300+.")
+
+
+def test_the_rendered_pages_state_canonical_tools_and_markets():
+    """Behaviour, against canon rather than a pinned literal."""
+    pytest.importorskip("flask")
+    import ai_surface_canon as canon
+    import routes.integrations_landing as il
+
+    nums = canon.canon_nums()
+    want_tools, want_markets = nums.get("{canon_tools}"), nums.get("{canon_markets}")
+    assert want_tools and want_markets, "canon publishes no tools/markets phrase"
+
+    checked = 0
+    for name in ("MCP_LANDING_HTML", "MCP_SEO_PAGE_HTML", "META_LANDING_HTML"):
+        html = getattr(il, name, None)
+        if not html:
+            continue
+        checked += 1
+        tools = {t for t in TYPED_TOOLS.findall(html) if t != "10"}
+        assert tools <= {want_tools}, (
+            f"{name} states tool count(s) {sorted(tools - {want_tools})} but "
+            f"canon says {want_tools!r}")
+        markets = set(TYPED_MARKETS.findall(html))
+        bare = want_markets.rstrip("+")
+        assert markets <= {bare}, (
+            f"{name} states market count(s) {sorted(markets - {bare})} but "
+            f"canon says {want_markets!r}")
+    assert checked >= 3, (
+        f"only {checked} of 3 constants found — they were renamed and this "
+        "guard just checked almost nothing.")
