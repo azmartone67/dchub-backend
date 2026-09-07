@@ -69,6 +69,38 @@ _DATASETS = ("fuel-type-data", "region-data")
 # Verified divergences in-tree: routes/eia_utility_bas.py:56 (APS→AZPS),
 # routes/iso_bpa.py:46 (BPA→BPAT) and main.py:4342-4348 (the ISO set). Passing
 # our own label straight through returns an empty 200 for six of seven ISOs.
+#: The cadence evidence for every stream fed by THIS module, documented once
+#: at the feed that causes it.
+#:
+#: ★ 2026-09-07 — measured live against api.eia.gov v2 with the prod key. The
+#:   newest period EIA will serve, per respondent, against the wall clock:
+#:
+#:     PJM  2026-09-06T03  28.5h    SOCO  2026-09-06T04  27.5h
+#:     MISO 2026-09-06T04  27.5h    CISO  2026-09-06T06  25.5h
+#:     DUK  2026-09-06T03  28.5h    ERCO  2026-09-06T04  27.5h
+#:
+#:   Our newest PJM row in grid_data was 2026-09-06 03:00:00 — byte-identical
+#:   to EIA's newest available period, because grid_data.timestamp IS the EIA
+#:   period. So the ingest is not behind; it is exactly current with a source
+#:   that publishes a day late. A 24h zero-write detector on this feed
+#:   regenerates a finding for every stream it serves, every day, forever.
+#:
+#: ★ WHY ONE ANNOTATION AND NOT 47. The ENTSO-E zones carry per-zone evidence
+#:   because each was a separate fact (this zone does not publish A75). Here
+#:   the cause is a single property of the FEED, shared by every stream it
+#:   serves. Restating it 47 times at the balancing authorities would be 47
+#:   copies of one measurement — the drift this repo keeps paying for — and
+#:   would imply each BA had been probed separately, which would be a lie.
+#:   The leash still cannot be widened by this string alone: freshness_public
+#:   derives the covered set from the BA registry, so a stream that is not
+#:   actually EIA-930-fed gains nothing from it.
+FEED_CADENCE = (
+    "INTERMITTENT (2026-09-07: EIA-930 publishes ~26-28h behind real time; "
+    "measured PJM 28.5h / MISO 27.5h / DUK 28.5h / SOCO 27.5h / CISO 25.5h / "
+    "ERCO 27.5h against api.eia.gov v2, with our newest row equal to EIA's "
+    "newest available period)"
+)
+
 RESPONDENT_ALIASES = {
     "APS": "AZPS",
     "BPA": "BPAT",

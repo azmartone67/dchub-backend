@@ -179,6 +179,24 @@ def test_every_intermittent_entry_is_annotated_at_its_own_source_registry():
     annotated = {"EU_" + row[0] for row in _ZONE_REGISTRY
                  if "INTERMITTENT" in str(row[-1]).upper()}
 
+    # ★ 2026-09-07 — a SECOND source registry, for a second cause.
+    #   The ENTSO-E zones each carry their own annotation because each was a
+    #   separate fact ("this zone does not publish A75"). The EIA-930 fleet is
+    #   one property of the FEED — it publishes ~27h behind, so a 24h detector
+    #   fires on every stream it serves — and that evidence is documented once
+    #   at routes/eia930.FEED_CADENCE, the module that owns the feed. Copying
+    #   it to 47 balancing authorities would be 47 copies of one measurement,
+    #   and would imply each had been probed separately.
+    #
+    #   This does NOT weaken the fence. The covered set is
+    #   freshness_public._eia930_fleet(), derived from eia_utility_bas._BAS —
+    #   so a stream that is not actually EIA-930-fed gains nothing from the
+    #   annotation, and dropping the INTERMITTENT word from FEED_CADENCE
+    #   un-covers the whole fleet at once.
+    from routes.eia930 import FEED_CADENCE
+    if "INTERMITTENT" in FEED_CADENCE.upper():
+        annotated |= fp._eia930_fleet()
+
     undocumented = leashed - annotated
     assert not undocumented, (
         f"{undocumented} got a longer leash without being annotated "
