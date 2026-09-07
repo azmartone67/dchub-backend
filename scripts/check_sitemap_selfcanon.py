@@ -37,7 +37,7 @@ import json
 import os
 import re
 import sys
-import urllib.request
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -53,9 +53,16 @@ _FAC = re.compile(r"https://dchub\.cloud/facilities/(.+)$")
 
 
 def _get(url, timeout=60):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read()
+    import requests
+    # cache-busted: the sitemap is served through Cloudflare and a "verified
+    # live" read off a HIT is not one.
+    sep = "&" if "?" in url else "?"
+    r = requests.get(f"{url}{sep}_={int(time.time())}",
+                     headers={"User-Agent": UA}, timeout=timeout)
+    r.raise_for_status()
+    raw = r.content
+    # requests decodes Content-Encoding, but a shard that is a .gz FILE arrives
+    # as bytes — the magic number is the only reliable test.
     if raw[:2] == b"\x1f\x8b":
         raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
     return raw.decode("utf-8", "replace")
