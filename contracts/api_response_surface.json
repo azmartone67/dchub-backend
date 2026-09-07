@@ -12,13 +12,13 @@
  },
  "stats": {
   "python_files_scanned": 1437,
-  "endpoints_total": 1907,
-  "endpoints_resolved": 1361,
+  "endpoints_total": 1789,
+  "endpoints_resolved": 1287,
   "endpoints_partial": 65,
-  "endpoints_opaque_not_covered": 481,
-  "keys_total": 11017,
-  "keys_strictly_protected": 10053,
-  "keys_open_level_unmeasured_on_removal": 938,
+  "endpoints_opaque_not_covered": 437,
+  "keys_total": 10575,
+  "keys_strictly_protected": 9617,
+  "keys_open_level_unmeasured_on_removal": 932,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 115
  },
@@ -75,25 +75,6 @@
    "keys": [
     "error",
     "ok"
-   ]
-  },
-  "DELETE /api/v1/alerts/<int:alert_id>": {
-   "source": "alerts.py:507",
-   "handler": "delete_alert",
-   "resolution": "resolved",
-   "open_at": [],
-   "keys": [
-    "message",
-    "success"
-   ]
-  },
-  "DELETE /api/v1/linkedin/queue/<int:queue_id>": {
-   "source": "linkedin_autopost.py:911",
-   "handler": "linkedin_queue_delete",
-   "resolution": "resolved",
-   "open_at": [],
-   "keys": [
-    "deleted"
    ]
   },
   "DELETE /api/v1/lp/alerts/<int:alert_id>": {
@@ -204,16 +185,6 @@
    ],
    "keys": [
     "deleted",
-    "success"
-   ]
-  },
-  "DELETE /api/v2/keys/<int:key_id>": {
-   "source": "api_monetization.py:1005",
-   "handler": "revoke_api_key",
-   "resolution": "resolved",
-   "open_at": [],
-   "keys": [
-    "message",
     "success"
    ]
   },
@@ -486,61 +457,6 @@
    "resolution": "opaque",
    "open_at": [],
    "keys": []
-  },
-  "GET /api/ai-deals": {
-   "source": "ai_deals_api.py:115",
-   "handler": "get_ai_deals",
-   "resolution": "resolved",
-   "open_at": [
-    "deals",
-    "limit",
-    "offset",
-    "total"
-   ],
-   "keys": [
-    "deals",
-    "has_more",
-    "limit",
-    "offset",
-    "success",
-    "total"
-   ]
-  },
-  "GET /api/ai-deals/by-type": {
-   "source": "ai_deals_api.py:209",
-   "handler": "get_ai_deals_by_type",
-   "resolution": "resolved",
-   "open_at": [
-    "by_type"
-   ],
-   "keys": [
-    "by_type",
-    "success"
-   ]
-  },
-  "GET /api/ai-deals/health": {
-   "source": "ai_deals_api.py:298",
-   "handler": "ai_deals_health",
-   "resolution": "resolved",
-   "open_at": [
-    "health"
-   ],
-   "keys": [
-    "health",
-    "success"
-   ]
-  },
-  "GET /api/ai-deals/summary": {
-   "source": "ai_deals_api.py:180",
-   "handler": "get_ai_deals_summary",
-   "resolution": "resolved",
-   "open_at": [
-    "summary"
-   ],
-   "keys": [
-    "success",
-    "summary"
-   ]
   },
   "GET /api/ai-ecosystem/manifest": {
    "source": "ai_ecosystem_agent.py:600",
@@ -1357,32 +1273,6 @@
     "success"
    ]
   },
-  "GET /api/companies": {
-   "source": "transactions_news_api.py:274",
-   "handler": "dchub_api_get_companies",
-   "resolution": "resolved",
-   "open_at": [
-    "companies",
-    "total"
-   ],
-   "keys": [
-    "companies",
-    "success",
-    "total"
-   ]
-  },
-  "GET /api/companies/<company_id>": {
-   "source": "transactions_news_api.py:278",
-   "handler": "dchub_api_get_company",
-   "resolution": "resolved",
-   "open_at": [
-    "company"
-   ],
-   "keys": [
-    "company",
-    "success"
-   ]
-  },
   "GET /api/companies/dc-operators": {
    "source": "extended_data_apis.py:722",
    "handler": "get_dc_operators",
@@ -1668,18 +1558,6 @@
     "transactions_news_api.py:285"
    ]
   },
-  "GET /api/dc-markets/<market_id>": {
-   "source": "transactions_news_api.py:289",
-   "handler": "dchub_api_get_market",
-   "resolution": "resolved",
-   "open_at": [
-    "market"
-   ],
-   "keys": [
-    "market",
-    "success"
-   ]
-  },
   "GET /api/deals": {
    "source": "routes/deals_routes.py:493",
    "handler": "get_deals",
@@ -1849,57 +1727,6 @@
     "total_mw",
     "total_value_m",
     "value_unit"
-   ]
-  },
-  "GET /api/deals/refresh/dry-run": {
-   "source": "deal_scraper.py:712",
-   "handler": "dry_run_deals",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/deals/stats": {
-   "source": "deal_scraper.py:718",
-   "handler": "deal_stats",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/deals/stats/summary": {
-   "source": "transactions_news_api.py:263",
-   "handler": "dchub_api_deals_stats",
-   "resolution": "resolved",
-   "open_at": [
-    "byYear",
-    "totalDeals",
-    "totalMW",
-    "totalValueM"
-   ],
-   "keys": [
-    "byYear",
-    "success",
-    "totalDeals",
-    "totalMW",
-    "totalValueM"
-   ]
-  },
-  "GET /api/developer/usage": {
-   "source": "mcp_tier_config.py:747",
-   "handler": "developer_usage",
-   "resolution": "resolved",
-   "open_at": [
-    "calls_remaining",
-    "calls_today",
-    "daily_limit",
-    "tier",
-    "today"
-   ],
-   "keys": [
-    "calls_remaining",
-    "calls_today",
-    "daily_limit",
-    "tier",
-    "today"
    ]
   },
   "GET /api/discovery/all": {
@@ -2086,20 +1913,6 @@
     "success"
    ]
   },
-  "GET /api/discovery/operators": {
-   "source": "api_server.py:2972",
-   "handler": "get_target_operators",
-   "resolution": "resolved",
-   "open_at": [
-    "operators",
-    "websites"
-   ],
-   "keys": [
-    "operators",
-    "success",
-    "websites"
-   ]
-  },
   "GET /api/discovery/proactive/sources/fiber": {
    "source": "proactive_discovery.py:788",
    "handler": "list_fiber_sources",
@@ -2164,13 +1977,6 @@
     "target_operators"
    ]
   },
-  "GET /api/discovery/stats": {
-   "source": "data_layers_api.py:439",
-   "handler": "get_discovery_stats",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
   "GET /api/discovery/status": {
    "source": "routes/discovery_routes.py:905",
    "handler": "discovery_status",
@@ -2207,193 +2013,6 @@
    "resolution": "opaque",
    "open_at": [],
    "keys": []
-  },
-  "GET /api/ecosystem": {
-   "source": "ecosystem_routes.py:245",
-   "handler": "list_companies",
-   "resolution": "resolved",
-   "open_at": [
-    "companies",
-    "limit",
-    "offset",
-    "total"
-   ],
-   "keys": [
-    "companies",
-    "limit",
-    "offset",
-    "success",
-    "total"
-   ]
-  },
-  "GET /api/ecosystem/<company_id>": {
-   "source": "ecosystem_routes.py:410",
-   "handler": "get_company",
-   "resolution": "resolved",
-   "open_at": [
-    "company"
-   ],
-   "keys": [
-    "company",
-    "success"
-   ]
-  },
-  "GET /api/ecosystem/categories": {
-   "source": "ecosystem_routes.py:237",
-   "handler": "get_categories",
-   "resolution": "resolved",
-   "open_at": [
-    "categories"
-   ],
-   "keys": [
-    "categories",
-    "success"
-   ]
-  },
-  "GET /api/ecosystem/integrations": {
-   "source": "ecosystem_routes.py:809",
-   "handler": "list_integrations",
-   "resolution": "resolved",
-   "open_at": [
-    "integrations",
-    "total_active",
-    "total_syncs"
-   ],
-   "keys": [
-    "integrations",
-    "success",
-    "total_active",
-    "total_syncs"
-   ]
-  },
-  "GET /api/ecosystem/integrations/<integration_id>": {
-   "source": "ecosystem_routes.py:901",
-   "handler": "get_integration",
-   "resolution": "resolved",
-   "open_at": [
-    "integration",
-    "recent_logs"
-   ],
-   "keys": [
-    "integration",
-    "recent_logs",
-    "success"
-   ]
-  },
-  "GET /api/ecosystem/integrations/docs": {
-   "source": "ecosystem_routes.py:990",
-   "handler": "integration_docs",
-   "resolution": "resolved",
-   "open_at": [],
-   "keys": [
-    "api_version",
-    "authentication",
-    "authentication.alternative",
-    "authentication.header",
-    "authentication.type",
-    "base_url",
-    "data_types",
-    "endpoints",
-    "endpoints.pull",
-    "endpoints.pull.ecosystem",
-    "endpoints.pull.ecosystem.description",
-    "endpoints.pull.ecosystem.method",
-    "endpoints.pull.ecosystem.parameters",
-    "endpoints.pull.ecosystem.path",
-    "endpoints.pull.facilities",
-    "endpoints.pull.facilities.description",
-    "endpoints.pull.facilities.method",
-    "endpoints.pull.facilities.parameters",
-    "endpoints.pull.facilities.path",
-    "endpoints.pull.news",
-    "endpoints.pull.news.description",
-    "endpoints.pull.news.method",
-    "endpoints.pull.news.parameters",
-    "endpoints.pull.news.path",
-    "endpoints.push",
-    "endpoints.push.data",
-    "endpoints.push.data.body",
-    "endpoints.push.data.description",
-    "endpoints.push.data.method",
-    "endpoints.push.data.path",
-    "endpoints.webhooks",
-    "endpoints.webhooks.register",
-    "endpoints.webhooks.register.body",
-    "endpoints.webhooks.register.description",
-    "endpoints.webhooks.register.method",
-    "endpoints.webhooks.register.path",
-    "rate_limits",
-    "rate_limits.enterprise",
-    "rate_limits.free",
-    "rate_limits.pro",
-    "success",
-    "sync_directions",
-    "webhooks",
-    "webhooks.events"
-   ]
-  },
-  "GET /api/ecosystem/integrations/stats": {
-   "source": "ecosystem_routes.py:1133",
-   "handler": "integration_stats",
-   "resolution": "resolved",
-   "open_at": [
-    "active_integrations",
-    "by_direction",
-    "pending_integrations",
-    "syncs_last_24h",
-    "total_syncs"
-   ],
-   "keys": [
-    "active_integrations",
-    "by_direction",
-    "pending_integrations",
-    "success",
-    "syncs_last_24h",
-    "total_syncs"
-   ]
-  },
-  "GET /api/ecosystem/pending": {
-   "source": "ecosystem_routes.py:326",
-   "handler": "list_pending",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/ecosystem/search": {
-   "source": "ecosystem_routes.py:598",
-   "handler": "search_companies",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "query",
-    "results"
-   ],
-   "keys": [
-    "count",
-    "query",
-    "results",
-    "success"
-   ]
-  },
-  "GET /api/ecosystem/stats": {
-   "source": "ecosystem_routes.py:560",
-   "handler": "ecosystem_stats",
-   "resolution": "resolved",
-   "open_at": [
-    "ai_enriched",
-    "by_category",
-    "featured_companies",
-    "pending_submissions",
-    "total_companies"
-   ],
-   "keys": [
-    "ai_enriched",
-    "by_category",
-    "featured_companies",
-    "pending_submissions",
-    "success",
-    "total_companies"
-   ]
   },
   "GET /api/eia/generation": {
    "source": "eia_api.py:202",
@@ -2839,26 +2458,6 @@
     "us_count",
     "us_coverage_pct",
     "us_total"
-   ]
-  },
-  "GET /api/facilities/refresh": {
-   "source": "api_server.py:3192",
-   "handler": "_dchub_refresh_facilities",
-   "resolution": "resolved",
-   "open_at": [
-    "entrypoint",
-    "finished",
-    "inserted",
-    "note",
-    "started"
-   ],
-   "keys": [
-    "entrypoint",
-    "finished",
-    "inserted",
-    "note",
-    "ok",
-    "started"
    ]
   },
   "GET /api/fiber/bead-allocations": {
@@ -3545,13 +3144,6 @@
     "health_endpoint_update.py:26"
    ]
   },
-  "GET /api/health/cache": {
-   "source": "redis_cache.py:248",
-   "handler": "_cache_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
   "GET /api/health/data-freshness": {
    "source": "main.py:29441",
    "handler": "data_freshness",
@@ -3697,13 +3289,6 @@
   "GET /api/health/freshness/tables": {
    "source": "main.py:45096",
    "handler": "_bv2_freshness_tables",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/health/neon": {
-   "source": "neon_health_monitor.py:105",
-   "handler": "neon_health_endpoint",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
@@ -4703,22 +4288,6 @@
     "success"
    ]
   },
-  "GET /api/market-intelligence/<path:market_name>": {
-   "source": "market_intelligence_api.py:771",
-   "handler": "get_single_market_intelligence",
-   "resolution": "resolved",
-   "open_at": [
-    "data",
-    "timestamp"
-   ],
-   "keys": [
-    "data",
-    "last_updated",
-    "sources",
-    "success",
-    "timestamp"
-   ]
-  },
   "GET /api/market-report": {
    "source": "main.py:13850",
    "handler": "get_market_report",
@@ -4781,24 +4350,6 @@
    ],
    "phantom_sources": [
     "marketing_stats_route.py:15"
-   ]
-  },
-  "GET /api/marketing/stats-simple": {
-   "source": "marketing_stats_route.py:125",
-   "handler": "get_marketing_stats_simple",
-   "resolution": "resolved",
-   "open_at": [
-    "stats.deal_volume",
-    "stats.facilities",
-    "stats.pipeline_gw"
-   ],
-   "keys": [
-    "stats",
-    "stats.deal_volume",
-    "stats.facilities",
-    "stats.markets",
-    "stats.pipeline_gw",
-    "success"
    ]
   },
   "GET /api/markets": {
@@ -6390,36 +5941,6 @@
     "total"
    ]
   },
-  "GET /api/seo/backlinks": {
-   "source": "seo_agents.py:455",
-   "handler": "get_backlink_targets",
-   "resolution": "resolved",
-   "open_at": [
-    "summary.by_type.communities",
-    "summary.by_type.directories",
-    "summary.by_type.publications",
-    "summary.completed",
-    "summary.in_progress",
-    "summary.not_started",
-    "summary.total",
-    "targets",
-    "timestamp"
-   ],
-   "keys": [
-    "success",
-    "summary",
-    "summary.by_type",
-    "summary.by_type.communities",
-    "summary.by_type.directories",
-    "summary.by_type.publications",
-    "summary.completed",
-    "summary.in_progress",
-    "summary.not_started",
-    "summary.total",
-    "targets",
-    "timestamp"
-   ]
-  },
   "GET /api/seo/content-ideas": {
    "source": "seo_agent.py:328",
    "handler": "content_ideas",
@@ -6433,84 +5954,12 @@
     "success"
    ]
   },
-  "GET /api/seo/deep-links": {
-   "source": "seo_agents.py:430",
-   "handler": "get_deep_links",
-   "resolution": "resolved",
-   "open_at": [
-    "category_filter",
-    "deep_links",
-    "timestamp",
-    "total_available"
-   ],
-   "keys": [
-    "category_filter",
-    "deep_links",
-    "success",
-    "timestamp",
-    "total_available"
-   ]
-  },
   "GET /api/seo/head-snippet": {
    "source": "seo_meta_tags.py:488",
    "handler": "head_snippet",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
-  },
-  "GET /api/seo/meta-audit": {
-   "source": "seo_agents.py:518",
-   "handler": "meta_audit",
-   "resolution": "resolved",
-   "open_at": [
-    "audit.total_pages_audited",
-    "timestamp"
-   ],
-   "keys": [
-    "audit",
-    "audit.issues",
-    "audit.pages",
-    "audit.pages.https://dchub.cloud/",
-    "audit.pages.https://dchub.cloud/.canonical",
-    "audit.pages.https://dchub.cloud/.description",
-    "audit.pages.https://dchub.cloud/.og_image",
-    "audit.pages.https://dchub.cloud/.structured_data_type",
-    "audit.pages.https://dchub.cloud/.title",
-    "audit.pages.https://dchub.cloud/ai-agents",
-    "audit.pages.https://dchub.cloud/ai-agents.canonical",
-    "audit.pages.https://dchub.cloud/ai-agents.description",
-    "audit.pages.https://dchub.cloud/ai-agents.structured_data_type",
-    "audit.pages.https://dchub.cloud/ai-agents.title",
-    "audit.pages.https://dchub.cloud/ai-deals",
-    "audit.pages.https://dchub.cloud/ai-deals.canonical",
-    "audit.pages.https://dchub.cloud/ai-deals.description",
-    "audit.pages.https://dchub.cloud/ai-deals.structured_data_type",
-    "audit.pages.https://dchub.cloud/ai-deals.title",
-    "audit.pages.https://dchub.cloud/ai-pipeline",
-    "audit.pages.https://dchub.cloud/ai-pipeline.canonical",
-    "audit.pages.https://dchub.cloud/ai-pipeline.description",
-    "audit.pages.https://dchub.cloud/ai-pipeline.structured_data_type",
-    "audit.pages.https://dchub.cloud/ai-pipeline.title",
-    "audit.pages.https://dchub.cloud/api-docs",
-    "audit.pages.https://dchub.cloud/api-docs.canonical",
-    "audit.pages.https://dchub.cloud/api-docs.description",
-    "audit.pages.https://dchub.cloud/api-docs.structured_data_type",
-    "audit.pages.https://dchub.cloud/api-docs.title",
-    "audit.pages.https://dchub.cloud/land-power",
-    "audit.pages.https://dchub.cloud/land-power.canonical",
-    "audit.pages.https://dchub.cloud/land-power.description",
-    "audit.pages.https://dchub.cloud/land-power.structured_data_type",
-    "audit.pages.https://dchub.cloud/land-power.title",
-    "audit.pages.https://dchub.cloud/markets/",
-    "audit.pages.https://dchub.cloud/markets/.canonical",
-    "audit.pages.https://dchub.cloud/markets/.description",
-    "audit.pages.https://dchub.cloud/markets/.structured_data_type",
-    "audit.pages.https://dchub.cloud/markets/.title",
-    "audit.recommendations",
-    "audit.total_pages_audited",
-    "success",
-    "timestamp"
-   ]
   },
   "GET /api/seo/meta-tags/all": {
    "source": "seo_meta_tags.py:458",
@@ -6599,62 +6048,6 @@
     "meta",
     "page",
     "success"
-   ]
-  },
-  "GET /api/seo/outreach/generate": {
-   "source": "seo_agents.py:484",
-   "handler": "generate_outreach",
-   "resolution": "resolved",
-   "open_at": [
-    "outreach.body",
-    "outreach.target",
-    "outreach.type",
-    "timestamp"
-   ],
-   "keys": [
-    "outreach",
-    "outreach.body",
-    "outreach.target",
-    "outreach.type",
-    "success",
-    "timestamp"
-   ]
-  },
-  "GET /api/seo/social/generate": {
-   "source": "seo_agents.py:349",
-   "handler": "generate_social_post",
-   "resolution": "resolved",
-   "open_at": [
-    "post.category",
-    "post.character_count",
-    "post.deep_link",
-    "post.hashtags",
-    "post.page_title",
-    "post.platform",
-    "post.template_type",
-    "post.text",
-    "post_number",
-    "seo_value.keyword_targets",
-    "seo_value.target_page",
-    "timestamp"
-   ],
-   "keys": [
-    "post",
-    "post.category",
-    "post.character_count",
-    "post.deep_link",
-    "post.hashtags",
-    "post.page_title",
-    "post.platform",
-    "post.template_type",
-    "post.text",
-    "post_number",
-    "seo_value",
-    "seo_value.backlink_type",
-    "seo_value.keyword_targets",
-    "seo_value.target_page",
-    "success",
-    "timestamp"
    ]
   },
   "GET /api/seo/status": {
@@ -6919,26 +6312,6 @@
     "tier_required",
     "total",
     "upgrade_url"
-   ]
-  },
-  "GET /api/transactions/refresh": {
-   "source": "api_server.py:3167",
-   "handler": "_dchub_refresh_transactions",
-   "resolution": "resolved",
-   "open_at": [
-    "entrypoint",
-    "finished",
-    "inserted",
-    "note",
-    "started"
-   ],
-   "keys": [
-    "entrypoint",
-    "finished",
-    "inserted",
-    "note",
-    "ok",
-    "started"
    ]
   },
   "GET /api/uptime-check": {
@@ -7521,21 +6894,6 @@
     "total"
    ]
   },
-  "GET /api/v1/ai-tracking/recent": {
-   "source": "ai_agent_discovery.py:636",
-   "handler": "ai_tracking_recent",
-   "resolution": "resolved",
-   "open_at": [
-    "data",
-    "meta.count"
-   ],
-   "keys": [
-    "data",
-    "meta",
-    "meta.count",
-    "success"
-   ]
-  },
   "GET /api/v1/ai-tracking/stats": {
    "source": "main.py:24969",
    "handler": "ai_tracking_stats",
@@ -7818,25 +7176,6 @@
    "open_at": [],
    "keys": []
   },
-  "GET /api/v1/alerts": {
-   "source": "alerts.py:383",
-   "handler": "list_alerts",
-   "resolution": "resolved",
-   "open_at": [
-    "count"
-   ],
-   "keys": [
-    "alerts",
-    "count"
-   ]
-  },
-  "GET /api/v1/alerts/<int:alert_id>": {
-   "source": "alerts.py:414",
-   "handler": "get_alert",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
   "GET /api/v1/alerts/dcpi/check": {
    "source": "routes/dcpi_alerts.py:261",
    "handler": "check_and_send",
@@ -7913,22 +7252,6 @@
     "status",
     "subscriptions_by_channel",
     "total_snapshots"
-   ]
-  },
-  "GET /api/v1/alerts/history": {
-   "source": "alerts.py:567",
-   "handler": "get_alert_history",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "limit",
-    "offset"
-   ],
-   "keys": [
-    "count",
-    "history",
-    "limit",
-    "offset"
    ]
   },
   "GET /api/v1/alerts/list": {
@@ -9577,7 +8900,7 @@
    ]
   },
   "GET /api/v1/brain/merge-reconciler/status": {
-   "source": "routes/brain_merge_reconciler.py:654",
+   "source": "routes/brain_merge_reconciler.py:717",
    "handler": "merge_reconciler_status",
    "resolution": "opaque",
    "open_at": [],
@@ -11311,13 +10634,6 @@
   "GET /api/v1/competitive/sitemap-pulse": {
    "source": "routes/competitor_intel.py:588",
    "handler": "sitemap_pulse_endpoint",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/competitive/vs/<slug>": {
-   "source": "routes/competitive_vs.py:217",
-   "handler": "vs_json",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
@@ -13528,30 +12844,6 @@
    "keys": [
     "data",
     "success"
-   ]
-  },
-  "GET /api/v1/facilities/all": {
-   "source": "data_layers_api.py:200",
-   "handler": "get_all_facilities",
-   "resolution": "resolved",
-   "open_at": [
-    "facilities",
-    "limit",
-    "offset",
-    "returned",
-    "total"
-   ],
-   "keys": [
-    "facilities",
-    "gated",
-    "limit",
-    "message",
-    "offset",
-    "returned",
-    "success",
-    "tier_required",
-    "total",
-    "upgrade_url"
    ]
   },
   "GET /api/v1/facilities/by-market": {
@@ -16464,86 +15756,6 @@
     "topic"
    ]
   },
-  "GET /api/v1/linkedin/auth": {
-   "source": "linkedin_autopost.py:703",
-   "handler": "linkedin_auth",
-   "resolution": "resolved",
-   "open_at": [
-    "auth_url"
-   ],
-   "keys": [
-    "auth_url",
-    "message"
-   ]
-  },
-  "GET /api/v1/linkedin/callback": {
-   "source": "linkedin_autopost.py:728",
-   "handler": "linkedin_callback",
-   "resolution": "resolved",
-   "open_at": [],
-   "keys": [
-    "expires_in_days",
-    "message",
-    "success"
-   ]
-  },
-  "GET /api/v1/linkedin/history": {
-   "source": "linkedin_autopost.py:929",
-   "handler": "linkedin_post_history",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "posts"
-   ],
-   "keys": [
-    "count",
-    "posts"
-   ]
-  },
-  "GET /api/v1/linkedin/queue": {
-   "source": "linkedin_autopost.py:875",
-   "handler": "linkedin_queue_list",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "queue"
-   ],
-   "keys": [
-    "count",
-    "queue"
-   ]
-  },
-  "GET /api/v1/linkedin/status": {
-   "source": "linkedin_autopost.py:768",
-   "handler": "linkedin_status",
-   "resolution": "resolved",
-   "open_at": [
-    "config.client_id_set",
-    "config.client_secret_set",
-    "config.org_id_set",
-    "config.redirect_uri",
-    "error",
-    "last_token_update",
-    "queue",
-    "recent_posts",
-    "scopes",
-    "token_expires"
-   ],
-   "keys": [
-    "config",
-    "config.client_id_set",
-    "config.client_secret_set",
-    "config.org_id_set",
-    "config.redirect_uri",
-    "connected",
-    "error",
-    "last_token_update",
-    "queue",
-    "recent_posts",
-    "scopes",
-    "token_expires"
-   ]
-  },
   "GET /api/v1/listings": {
    "source": "routes/exclusive_listings.py:153",
    "handler": "list_listings",
@@ -19021,18 +18233,6 @@
    "phantom_sources": [
     "api_fixes.py:151",
     "deals_routes.py:1356"
-   ]
-  },
-  "GET /api/v1/news/sources": {
-   "source": "api_fixes.py:223",
-   "handler": "get_news_sources",
-   "resolution": "resolved",
-   "open_at": [
-    "data"
-   ],
-   "keys": [
-    "data",
-    "success"
    ]
   },
   "GET /api/v1/newsletter/pixel/<token>": {
@@ -23171,22 +22371,6 @@
    "open_at": [],
    "keys": []
   },
-  "GET /api/v1/solar/farms": {
-   "source": "data_layers_api.py:349",
-   "handler": "get_solar_farms",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "farms",
-    "total_mw"
-   ],
-   "keys": [
-    "count",
-    "farms",
-    "success",
-    "total_mw"
-   ]
-  },
   "GET /api/v1/spare-capacity/listings": {
    "source": "routes/spare_capacity.py:237",
    "handler": "listings",
@@ -23372,216 +22556,6 @@
   "GET /api/v1/status": {
    "source": "routes/status_api.py:262",
    "handler": "public_status",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/agent-facing-paid-data-endpoint-metered": {
-   "source": "routes/_proposed_agent_facing_paid_data_endpoint_metered.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/agent-native-payment-rail-on-hot-paid-tools": {
-   "source": "routes/_proposed_agent_native_payment_rail_on_hot_paid_tools.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/agent-to-human-checkout-handoff-link": {
-   "source": "routes/_proposed_agent_to_human_checkout_handoff_link.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/agent-to-human-upgrade-relay": {
-   "source": "routes/_proposed_agent_to_human_upgrade_relay.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/autopilot-recidivist-root-cause-gate": {
-   "source": "routes/_proposed_autopilot_recidivist_root_cause_gate.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/backlog-flush-merge-23-high-conf-stuck-fixes": {
-   "source": "routes/_proposed_backlog_flush_merge_23_high_conf_stuck_fixes.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/claim-mint-intent-threshold-agent-burn-guard": {
-   "source": "routes/_proposed_claim_mint_intent_threshold_agent_burn_guard.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/founder-entitlement-provisioning-repair": {
-   "source": "routes/_proposed_founder_entitlement_provisioning_repair.py:23",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/founder-entitlement-self-check-and-repair": {
-   "source": "routes/_proposed_founder_entitlement_self_check_and_repair.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/founder-license-entitlement-repair-healthcheck": {
-   "source": "routes/_proposed_founder_license_entitlement_repair_healthcheck.py:23",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/free-paid-tool-tags-in-mcp-manifest": {
-   "source": "routes/_proposed_free_paid_tool_tags_in_mcp_manifest.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/high-confidence-backlog-flush": {
-   "source": "routes/_proposed_high_confidence_backlog_flush.py:23",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/human-in-loop-claim-handoff-agent-buyer": {
-   "source": "routes/_proposed_human_in_loop_claim_handoff_agent_buyer.py:25",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/interconnection-queue-pro-tier": {
-   "source": "routes/_proposed_interconnection_queue_pro_tier.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/land-stalled-pr-outcome-snapshot-pipeline-pr-2828": {
-   "source": "routes/_proposed_land_stalled_pr_outcome_snapshot_pipeline_pr_2828.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/machine-payable-mcp-tools-agent-payment-rail": {
-   "source": "routes/_proposed_machine_payable_mcp_tools_agent_payment_rail.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/machine-readable-monthly-market-brief-for-enterpri": {
-   "source": "routes/_proposed_machine_readable_monthly_market_brief_for_enterpri.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/metered-pay-per-call-agent-billing": {
-   "source": "routes/_proposed_metered_pay_per_call_agent_billing.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/oauth-first-enterprise-tier-listing": {
-   "source": "routes/_proposed_oauth_first_enterprise_tier_listing.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/one-click-dxt-desktop-extension": {
-   "source": "routes/_proposed_one_click_dxt_desktop_extension.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/one-click-dxt-desktop-extension-package": {
-   "source": "routes/_proposed_one_click_dxt_desktop_extension_package.py:23",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/post-merge-pr-outcome-measurement-job": {
-   "source": "routes/_proposed_post_merge_pr_outcome_measurement_job.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/pr-before-after-metric-capture-harness": {
-   "source": "routes/_proposed_pr_before_after_metric_capture_harness.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/pr-outcome-grading-restoration": {
-   "source": "routes/_proposed_pr_outcome_grading_restoration.py:23",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/pr-outcome-telemetry-pipeline": {
-   "source": "routes/_proposed_pr_outcome_telemetry_pipeline.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/pre-merge-metric-snapshot-gate": {
-   "source": "routes/_proposed_pre_merge_metric_snapshot_gate.py:23",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/proposed-route-promotion-lane-to-production": {
-   "source": "routes/_proposed_proposed_route_promotion_lane_to_production.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/recidivism-gate-for-autopilot-actions": {
-   "source": "routes/_proposed_recidivism_gate_for_autopilot_actions.py:24",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/self-serve-market-intel-tier-vs-dcbyte": {
-   "source": "routes/_proposed_self_serve_market_intel_tier_vs_dcbyte.py:23",
-   "handler": "_scaffold_health",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "GET /api/v1/strategic-scaffold/tier-tagged-tool-manifest-free-vs-paid": {
-   "source": "routes/_proposed_tier_tagged_tool_manifest_free_vs_paid.py:24",
-   "handler": "_scaffold_health",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
@@ -24335,40 +23309,6 @@
    "open_at": [],
    "keys": []
   },
-  "GET /api/v1/usage/check-land-power": {
-   "source": "free_tier_limiter.py:666",
-   "handler": "check_land_power_availability",
-   "resolution": "resolved",
-   "open_at": [
-    "can_search",
-    "max_filters",
-    "resets_on",
-    "searches_limit",
-    "searches_remaining",
-    "searches_used",
-    "tier",
-    "upgrade_url"
-   ],
-   "keys": [
-    "can_search",
-    "max_filters",
-    "message",
-    "reason",
-    "resets_on",
-    "searches_limit",
-    "searches_remaining",
-    "searches_used",
-    "tier",
-    "upgrade_url"
-   ]
-  },
-  "GET /api/v1/usage/stats": {
-   "source": "free_tier_limiter.py:655",
-   "handler": "usage_stats",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
   "GET /api/v1/utility/<code>/extract": {
    "source": "routes/eia_utility_bas.py:363",
    "handler": "utility_extract_one",
@@ -24808,22 +23748,6 @@
     "since",
     "total_hosts",
     "until"
-   ]
-  },
-  "GET /api/v1/wind/farms": {
-   "source": "data_layers_api.py:379",
-   "handler": "get_wind_farms",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "farms",
-    "total_mw"
-   ],
-   "keys": [
-    "count",
-    "farms",
-    "success",
-    "total_mw"
    ]
   },
   "GET /api/v1/x402/quote": {
@@ -25333,81 +24257,6 @@
     "total_layer_types"
    ]
   },
-  "GET /api/v2/keys": {
-   "source": "api_monetization.py:877",
-   "handler": "list_api_keys",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "keys"
-   ],
-   "keys": [
-    "count",
-    "keys",
-    "success"
-   ]
-  },
-  "GET /api/v2/market-intelligence/<path:market_name>": {
-   "source": "market_intelligence_api.py:771",
-   "handler": "get_single_market_intelligence",
-   "resolution": "resolved",
-   "open_at": [
-    "data",
-    "timestamp"
-   ],
-   "keys": [
-    "data",
-    "last_updated",
-    "sources",
-    "success",
-    "timestamp"
-   ]
-  },
-  "GET /api/v2/plans": {
-   "source": "api_monetization.py:785",
-   "handler": "list_plans",
-   "resolution": "resolved",
-   "open_at": [
-    "plans"
-   ],
-   "keys": [
-    "plans",
-    "success"
-   ]
-  },
-  "GET /api/v2/plans/current": {
-   "source": "api_monetization.py:806",
-   "handler": "get_current_plan",
-   "resolution": "resolved",
-   "open_at": [
-    "billing.cycle_end",
-    "billing.cycle_start",
-    "billing.usage_this_cycle",
-    "limits.max_api_keys",
-    "limits.requests_per_day",
-    "limits.requests_per_minute",
-    "plan.id",
-    "plan.name",
-    "plan.price",
-    "usage"
-   ],
-   "keys": [
-    "billing",
-    "billing.cycle_end",
-    "billing.cycle_start",
-    "billing.usage_this_cycle",
-    "limits",
-    "limits.max_api_keys",
-    "limits.requests_per_day",
-    "limits.requests_per_minute",
-    "plan",
-    "plan.id",
-    "plan.name",
-    "plan.price",
-    "success",
-    "usage"
-   ]
-  },
   "GET /api/v2/risk/active-fires": {
    "source": "fire_data_layer.py:123",
    "handler": "get_active_fires",
@@ -25469,57 +24318,6 @@
     "success"
    ]
   },
-  "GET /api/v2/scoring/h3-cell": {
-   "source": "h3_scoring.py:363",
-   "handler": "score_single_cell",
-   "resolution": "resolved",
-   "open_at": [
-    "cell",
-    "neighbors",
-    "resolution"
-   ],
-   "keys": [
-    "cell",
-    "neighbors",
-    "resolution",
-    "success"
-   ]
-  },
-  "GET /api/v2/scoring/h3-heatmap": {
-   "source": "h3_scoring.py:227",
-   "handler": "get_h3_heatmap",
-   "resolution": "resolved",
-   "open_at": [
-    "",
-    "count",
-    "features",
-    "resolution",
-    "stats.avg_score",
-    "stats.grade_A",
-    "stats.grade_B",
-    "stats.grade_C",
-    "stats.grade_D",
-    "stats.grade_F",
-    "stats.max_score",
-    "stats.min_score"
-   ],
-   "keys": [
-    "count",
-    "features",
-    "resolution",
-    "stats",
-    "stats.avg_score",
-    "stats.grade_A",
-    "stats.grade_B",
-    "stats.grade_C",
-    "stats.grade_D",
-    "stats.grade_F",
-    "stats.max_score",
-    "stats.min_score",
-    "success",
-    "type"
-   ]
-  },
   "GET /api/v2/stripe/config": {
    "source": "api_tier_gating.py:1350",
    "handler": "stripe_config_v2",
@@ -25534,50 +24332,6 @@
     "payment_links",
     "plans",
     "publishableKey"
-   ]
-  },
-  "GET /api/v2/usage": {
-   "source": "api_monetization.py:1099",
-   "handler": "get_usage_stats",
-   "resolution": "resolved",
-   "open_at": [
-    "daily",
-    "limits.requests_per_day",
-    "limits.requests_per_minute",
-    "plan",
-    "today",
-    "top_endpoints",
-    "totals.avg_response_time_ms"
-   ],
-   "keys": [
-    "daily",
-    "limits",
-    "limits.requests_per_day",
-    "limits.requests_per_minute",
-    "plan",
-    "success",
-    "today",
-    "top_endpoints",
-    "totals",
-    "totals.avg_response_time_ms",
-    "totals.total_errors",
-    "totals.total_requests"
-   ]
-  },
-  "GET /api/v2/usage/history": {
-   "source": "api_monetization.py:1185",
-   "handler": "get_usage_history",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "days",
-    "history"
-   ],
-   "keys": [
-    "count",
-    "days",
-    "history",
-    "success"
    ]
   },
   "GET /api/v2/water/drought": {
@@ -25696,38 +24450,6 @@
     "verified"
    ]
   },
-  "GET /api/verify-session": {
-   "source": "paywall_middleware.py:639",
-   "handler": "verify_session",
-   "resolution": "resolved",
-   "open_at": [
-    "email",
-    "expiresAt",
-    "features",
-    "limits.dailyCalls",
-    "limits.maxResults.facilities",
-    "limits.maxResults.marketIntel",
-    "limits.maxResults.pipeline",
-    "limits.maxResults.transactions",
-    "tier",
-    "userId"
-   ],
-   "keys": [
-    "authenticated",
-    "email",
-    "expiresAt",
-    "features",
-    "limits",
-    "limits.dailyCalls",
-    "limits.maxResults",
-    "limits.maxResults.facilities",
-    "limits.maxResults.marketIntel",
-    "limits.maxResults.pipeline",
-    "limits.maxResults.transactions",
-    "tier",
-    "userId"
-   ]
-  },
   "GET /api/water/drought/state/<state>": {
    "source": "water_drought_routes.py:505",
    "handler": "drought_state_path",
@@ -25804,25 +24526,6 @@
    "keys": [
     "post",
     "success"
-   ]
-  },
-  "POST /api/ai-deals/ingest": {
-   "source": "ai_deals_api.py:235",
-   "handler": "ingest_ai_deals",
-   "resolution": "resolved",
-   "open_at": [
-    "batch_id",
-    "errors",
-    "inserted",
-    "updated"
-   ],
-   "keys": [
-    "batch_id",
-    "errors",
-    "inserted",
-    "success",
-    "total_processed",
-    "updated"
    ]
   },
   "POST /api/ai-ecosystem/run": {
@@ -26342,28 +25045,6 @@
     "deal_scraper.py:706"
    ]
   },
-  "POST /api/developer/register": {
-   "source": "mcp_tier_config.py:697",
-   "handler": "register_developer",
-   "resolution": "resolved",
-   "open_at": [
-    "trial_url"
-   ],
-   "keys": [
-    "message",
-    "premium_calls",
-    "success",
-    "trial_available",
-    "trial_url"
-   ]
-  },
-  "POST /api/developer/trial": {
-   "source": "mcp_tier_config.py:683",
-   "handler": "create_trial",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
   "POST /api/discovery/apis/learn": {
    "source": "api_auto_discovery.py:1763",
    "handler": "learn_from_discovered",
@@ -26486,112 +25167,6 @@
    ],
    "phantom_sources": [
     "api_server.py:2596"
-   ]
-  },
-  "POST /api/discovery/sync": {
-   "source": "data_layers_api.py:411",
-   "handler": "trigger_discovery_sync",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "POST /api/ecosystem": {
-   "source": "ecosystem_routes.py:428",
-   "handler": "submit_company",
-   "resolution": "resolved",
-   "open_at": [
-    "company_id"
-   ],
-   "keys": [
-    "ai_enriched",
-    "company_id",
-    "message",
-    "success"
-   ]
-  },
-  "POST /api/ecosystem/<company_id>/approve": {
-   "source": "ecosystem_routes.py:512",
-   "handler": "approve_company",
-   "resolution": "resolved",
-   "open_at": [],
-   "keys": [
-    "message",
-    "success"
-   ]
-  },
-  "POST /api/ecosystem/<company_id>/delete": {
-   "source": "ecosystem_routes.py:385",
-   "handler": "delete_company",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "POST /api/ecosystem/<company_id>/feature": {
-   "source": "ecosystem_routes.py:537",
-   "handler": "feature_company",
-   "resolution": "resolved",
-   "open_at": [],
-   "keys": [
-    "featured",
-    "success"
-   ]
-  },
-  "POST /api/ecosystem/<company_id>/reject": {
-   "source": "ecosystem_routes.py:354",
-   "handler": "reject_company",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
-  },
-  "POST /api/ecosystem/integrations": {
-   "source": "ecosystem_routes.py:842",
-   "handler": "register_integration",
-   "resolution": "resolved",
-   "open_at": [
-    "api_key",
-    "integration_id"
-   ],
-   "keys": [
-    "api_key",
-    "endpoints",
-    "endpoints.documentation",
-    "endpoints.pull_facilities",
-    "endpoints.pull_news",
-    "endpoints.push_data",
-    "endpoints.webhook_register",
-    "integration_id",
-    "message",
-    "success"
-   ]
-  },
-  "POST /api/ecosystem/integrations/push": {
-   "source": "ecosystem_routes.py:945",
-   "handler": "receive_push_data",
-   "resolution": "resolved",
-   "open_at": [
-    "integration_id",
-    "timestamp"
-   ],
-   "keys": [
-    "integration_id",
-    "message",
-    "success",
-    "timestamp"
-   ]
-  },
-  "POST /api/ecosystem/integrations/webhook": {
-   "source": "ecosystem_routes.py:1085",
-   "handler": "register_webhook",
-   "resolution": "resolved",
-   "open_at": [
-    "events",
-    "webhook_url"
-   ],
-   "keys": [
-    "events",
-    "message",
-    "success",
-    "webhook_url"
    ]
   },
   "POST /api/email/process": {
@@ -27467,19 +26042,6 @@
     "result"
    ]
   },
-  "POST /api/jobs/neon-health": {
-   "source": "neon_health_monitor.py:109",
-   "handler": "job_neon_health",
-   "resolution": "resolved",
-   "open_at": [
-    "result"
-   ],
-   "keys": [
-    "job",
-    "result",
-    "success"
-   ]
-  },
   "POST /api/jobs/network-sync": {
    "source": "network_ix_ingestion.py:948",
    "handler": "network_sync_job",
@@ -27579,13 +26141,6 @@
     "success",
     "ts"
    ]
-  },
-  "POST /api/jobs/smoke-test": {
-   "source": "smoke_test.py:351",
-   "handler": "job_smoke_test",
-   "resolution": "opaque",
-   "open_at": [],
-   "keys": []
   },
   "POST /api/jobs/subsea-sync": {
    "source": "fiber_integration.py:91",
@@ -27739,18 +26294,6 @@
    "open_at": [],
    "keys": []
   },
-  "POST /api/linkedin/delete": {
-   "source": "flask_linkedin_image_endpoint.py:117",
-   "handler": "linkedin_delete_post",
-   "resolution": "resolved",
-   "open_at": [
-    "urn"
-   ],
-   "keys": [
-    "deleted",
-    "urn"
-   ]
-  },
   "POST /api/linkedin/engagement-sync": {
    "source": "linkedin_poster.py:1592",
    "handler": "linkedin_engagement_sync",
@@ -27777,19 +26320,6 @@
    "resolution": "opaque",
    "open_at": [],
    "keys": []
-  },
-  "POST /api/linkedin/upload-image": {
-   "source": "flask_linkedin_image_endpoint.py:45",
-   "handler": "linkedin_upload_image",
-   "resolution": "resolved",
-   "open_at": [
-    "asset",
-    "asset_urn"
-   ],
-   "keys": [
-    "asset",
-    "asset_urn"
-   ]
   },
   "POST /api/market-report/generate": {
    "source": "main.py:13859",
@@ -28008,25 +26538,6 @@
     "priority_urls"
    ]
   },
-  "POST /api/seo/outreach/generate": {
-   "source": "seo_agents.py:484",
-   "handler": "generate_outreach",
-   "resolution": "resolved",
-   "open_at": [
-    "outreach.body",
-    "outreach.target",
-    "outreach.type",
-    "timestamp"
-   ],
-   "keys": [
-    "outreach",
-    "outreach.body",
-    "outreach.target",
-    "outreach.type",
-    "success",
-    "timestamp"
-   ]
-  },
   "POST /api/seo/run-cycle": {
    "source": "seo_agent.py:399",
    "handler": "run_seo_cycle",
@@ -28091,19 +26602,6 @@
    ],
    "phantom_sources": [
     "api_server.py:1220"
-   ]
-  },
-  "POST /api/stripe/tier-webhook": {
-   "source": "paywall_middleware.py:693",
-   "handler": "stripe_tier_webhook",
-   "resolution": "resolved",
-   "open_at": [
-    "eventType"
-   ],
-   "keys": [
-    "eventType",
-    "received",
-    "userUpdated"
    ]
   },
   "POST /api/stripe/webhook": {
@@ -28598,19 +27096,6 @@
     "success"
    ]
   },
-  "POST /api/v1/alerts": {
-   "source": "alerts.py:333",
-   "handler": "create_alert",
-   "resolution": "resolved",
-   "open_at": [
-    "alert"
-   ],
-   "keys": [
-    "alert",
-    "message",
-    "success"
-   ]
-  },
   "POST /api/v1/alerts/dcpi/check": {
    "source": "routes/dcpi_alerts.py:261",
    "handler": "check_and_send",
@@ -28754,21 +27239,6 @@
    "keys": [
     "message",
     "provider",
-    "success"
-   ]
-  },
-  "POST /api/v1/alerts/test/<int:alert_id>": {
-   "source": "alerts.py:528",
-   "handler": "test_alert",
-   "resolution": "resolved",
-   "open_at": [
-    "email",
-    "message",
-    "success"
-   ],
-   "keys": [
-    "email",
-    "message",
     "success"
    ]
   },
@@ -29556,7 +28026,7 @@
    ]
   },
   "POST /api/v1/brain/merge-reconciler/run": {
-   "source": "routes/brain_merge_reconciler.py:668",
+   "source": "routes/brain_merge_reconciler.py:731",
    "handler": "merge_reconciler_run",
    "resolution": "partial",
    "open_at": [
@@ -31254,26 +29724,6 @@
     "topic"
    ]
   },
-  "POST /api/v1/linkedin/post": {
-   "source": "linkedin_autopost.py:827",
-   "handler": "linkedin_post_now",
-   "resolution": "resolved",
-   "open_at": [
-    "details",
-    "post_id",
-    "published",
-    "queue_id",
-    "scheduled_for"
-   ],
-   "keys": [
-    "details",
-    "post_id",
-    "published",
-    "queue_id",
-    "queued",
-    "scheduled_for"
-   ]
-  },
   "POST /api/v1/lp/alerts": {
    "source": "routes/lp_sites.py:930",
    "handler": "lp_alerts_handler",
@@ -32100,21 +30550,6 @@
    "keys": [
     "arc",
     "ok"
-   ]
-  },
-  "POST /api/v1/news/sync": {
-   "source": "api_fixes.py:245",
-   "handler": "sync_news",
-   "resolution": "resolved",
-   "open_at": [
-    "error",
-    "output"
-   ],
-   "keys": [
-    "error",
-    "message",
-    "output",
-    "success"
    ]
   },
   "POST /api/v1/newsletter/subscribe": {
@@ -33565,15 +32000,6 @@
     "success"
    ]
   },
-  "POST /api/v1/track-conversion": {
-   "source": "mcp_analytics_postgres.py:673",
-   "handler": "track_conversion_event",
-   "resolution": "resolved",
-   "open_at": [],
-   "keys": [
-    "success"
-   ]
-  },
   "POST /api/v1/unsubscribe": {
    "source": "routes/email_suppression.py:140",
    "handler": "unsubscribe",
@@ -33810,56 +32236,6 @@
     "timestamp"
    ]
   },
-  "POST /api/v2/keys": {
-   "source": "api_monetization.py:924",
-   "handler": "create_api_key",
-   "resolution": "resolved",
-   "open_at": [
-    "api_key",
-    "key",
-    "key_data.api_key",
-    "key_data.created_at",
-    "key_data.id",
-    "key_data.key_prefix",
-    "key_data.name",
-    "key_data.plan"
-   ],
-   "keys": [
-    "api_key",
-    "key",
-    "key_data",
-    "key_data.api_key",
-    "key_data.created_at",
-    "key_data.id",
-    "key_data.key_prefix",
-    "key_data.name",
-    "key_data.plan",
-    "message",
-    "success"
-   ]
-  },
-  "POST /api/v2/keys/<int:key_id>/regenerate": {
-   "source": "api_monetization.py:1041",
-   "handler": "regenerate_api_key",
-   "resolution": "resolved",
-   "open_at": [
-    "key.api_key",
-    "key.created_at",
-    "key.id",
-    "key.key_prefix",
-    "key.name"
-   ],
-   "keys": [
-    "key",
-    "key.api_key",
-    "key.created_at",
-    "key.id",
-    "key.key_prefix",
-    "key.name",
-    "message",
-    "success"
-   ]
-  },
   "POST /api/v2/stripe/create-checkout": {
    "source": "api_tier_gating.py:1360",
    "handler": "create_checkout_v2",
@@ -33905,19 +32281,6 @@
    "resolution": "resolved",
    "open_at": [],
    "keys": [
-    "message",
-    "success"
-   ]
-  },
-  "PUT /api/v1/alerts/<int:alert_id>": {
-   "source": "alerts.py:441",
-   "handler": "update_alert",
-   "resolution": "resolved",
-   "open_at": [
-    "alert"
-   ],
-   "keys": [
-    "alert",
     "message",
     "success"
    ]
