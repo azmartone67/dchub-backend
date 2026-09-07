@@ -146,7 +146,8 @@ def _stub_db() -> None:
 
 
 def _isolate_repo_state(env=None) -> str:
-    """Point the boot's state writers at a throwaway path. Returns that path.
+    """Point the boot's state writers at throwaway paths. Returns the
+    ambassador path, the first one this covered.
 
     ★ BOOTING THE APP WRITES TO THE WORKING TREE. register_ambassador_routes()
       runs two ambassador cycles and persists them to data/ambassador_state.json
@@ -161,14 +162,39 @@ def _isolate_repo_state(env=None) -> str:
       So the gate defaults it ITSELF: however it is invoked, it cannot dirty
       tracked repo state. An explicit value always wins — the test still points
       it at tmp_path, and never at the working tree.
+
+    ★ data/ai_ecosystem_state.json is the same trap, and it hid behind a RACE.
+      main.py does not call register_ai_ecosystem_routes(); it imports the
+      module-level `agent` and starts the scheduler on a 60-SECOND DELAY, whose
+      loop runs run_cycle() immediately and ends in save_state(). The gate tears
+      the process down with os._exit a few seconds after boot, so the write
+      normally loses that race and data/ stays clean — which is why a digest
+      check across a fast run reports nothing. When boot runs long (cold DB,
+      upstream read timeouts), the delayed thread fires DURING `import main` and
+      the save lands on the tracked file first: observed 2026-09-07 as +142/-2,
+      appending outreach_log entries and walking the tracked `total_outreach`
+      counter 10021 -> 10041. An intermittent guard is not a guard, so this knob
+      is defaulted too rather than left to timing.
     """
     env = os.environ if env is None else env
-    path = (env.get("DCHUB_AMBASSADOR_STATE_FILE") or "").strip()
-    if not path:
-        path = os.path.join(tempfile.gettempdir(),
-                            "dchub-contract-gate-ambassador-%d.json" % os.getpid())
-        env["DCHUB_AMBASSADOR_STATE_FILE"] = path
-    return path
+    # Kept INSIDE the function on purpose: test_app_contract_gate.py extracts
+    # this one FunctionDef with ast and execs it against {os, tempfile} alone,
+    # so a module-level constant here would NameError under its own guard.
+    # Every TRACKED data/*.json a boot writes on a RELATIVE path belongs in
+    # this tuple, with the DCHUB_*_STATE_FILE knob that redirects it.
+    knobs = (
+        ("DCHUB_AMBASSADOR_STATE_FILE", "dchub-contract-gate-ambassador-%d.json"),
+        ("DCHUB_AI_ECOSYSTEM_STATE_FILE",
+         "dchub-contract-gate-ai-ecosystem-%d.json"),
+    )
+    paths = {}
+    for var, template in knobs:
+        path = (env.get(var) or "").strip()
+        if not path:
+            path = os.path.join(tempfile.gettempdir(), template % os.getpid())
+            env[var] = path
+        paths[var] = path
+    return paths["DCHUB_AMBASSADOR_STATE_FILE"]
 
 
 def boot():

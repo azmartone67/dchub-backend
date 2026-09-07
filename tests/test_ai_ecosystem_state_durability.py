@@ -7,13 +7,22 @@ write second), and a load_state() that collapsed "file absent" and "file
 unreadable" into the same empty default — the step that turns one torn write
 into permanent loss, because the next save persists the blank over the history.
 
-It has one mitigating difference and one aggravating one. register_ai_ecosystem_
-routes() is NEVER called — `git log -S` finds no reference in main.py anywhere
-in history — so unlike the ambassador this has never run at boot, and the suite
-only escaped dirtying the file because run_cycle() raises before reaching the
-save. But POST /api/ai-ecosystem/run calls run_cycle() on a request thread while
-the scheduler thread runs its own, against one module-level `agent` and one
-file, so the concurrency is there waiting for whoever wires it up.
+★ CORRECTED 2026-09-07. This file used to say register_ai_ecosystem_routes() is
+never called, so nothing boots this module and no boot can dirty the file. That
+is wrong, and believing it is why the gap stayed open: main.py does not call
+that function, but it imports the module-level `agent` directly and starts the
+scheduler on a 60-SECOND DELAY, whose loop runs run_cycle() immediately and ends
+in save_state(). So a boot DOES write the tracked file — it just usually loses a
+race, because scripts/app_contract_gate.py os._exits a few seconds after boot.
+When boot runs long (cold DB, upstream read timeouts) the delayed thread fires
+during `import main` and the save lands first: observed as +142/-2, appending
+outreach_log entries and walking the tracked `total_outreach` counter by 20.
+The gate now defaults DCHUB_AI_ECOSYSTEM_STATE_FILE in _isolate_repo_state(), so
+the race has nowhere to land regardless of how the gate is invoked.
+
+POST /api/ai-ecosystem/run also calls run_cycle() on a request thread while the
+scheduler thread runs its own, against one module-level `agent` and one file, so
+the concurrency below is live, not hypothetical.
 
 Behaviour tests against the shipped module, path redirected to tmp_path. None
 import main.py.
@@ -79,10 +88,13 @@ def test_the_env_knob_alone_moves_the_default_path(tmp_path):
 
     The sibling module has a second line of defence here — deleting
     DCHUB_AMBASSADOR_STATE_FILE reddens test_app_contract_gate.py, whose digest
-    check notices the boot dirtying data/. That backstop cannot cover THIS
-    module: register_ai_ecosystem_routes() is never called, so no boot touches
-    this file and the digest never moves. This test is the only thing standing
-    between a refactor and a tracked 2.1 MB file getting rewritten again.
+    check notices the boot dirtying data/. That backstop is WEAK for this
+    module, though not absent as this docstring once claimed: a boot does reach
+    save_state(), but only via a 60s-delayed scheduler that the gate's os._exit
+    usually beats, so the digest is silent on a fast run and fails only on a
+    slow one. An intermittent guard is not a guard — treat this test, and the
+    DCHUB_AI_ECOSYSTEM_STATE_FILE default in _isolate_repo_state(), as what
+    stands between a refactor and a tracked 2.1 MB file getting rewritten.
     """
     state = tmp_path / "redirected.json"
     env = {**os.environ, "DCHUB_AI_ECOSYSTEM_STATE_FILE": str(state)}

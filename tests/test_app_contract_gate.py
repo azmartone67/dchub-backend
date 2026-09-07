@@ -156,6 +156,27 @@ def test_the_gate_cannot_dirty_tracked_repo_state_however_it_is_invoked():
     # an empty string is not a value
     assert isolate({"DCHUB_AMBASSADOR_STATE_FILE": "  "}) != "  "
 
+    # ★ Every knob the gate defaults, not just the one that returns. Ambassador
+    #   was covered because it dirtied data/ on EVERY boot; the AI-ecosystem
+    #   write is racy (main.py starts that scheduler on a 60s delay and the gate
+    #   os._exits first), so a digest check across a fast run cannot pin it and
+    #   nothing else here would notice the default being dropped.
+    for var in ("DCHUB_AMBASSADOR_STATE_FILE", "DCHUB_AI_ECOSYSTEM_STATE_FILE"):
+        assert var in env, (
+            f"_isolate_repo_state no longer defaults {var} — a boot by hand can "
+            f"write that tracked data/ file again")
+        assert not os.path.abspath(env[var]).startswith(
+            os.path.abspath(_ROOT) + os.sep), (
+            f"the gate aims {var} INSIDE the repo: {env[var]}")
+        explicit = {var: "/somewhere/else.json"}
+        isolate(explicit)
+        assert explicit[var] == "/somewhere/else.json", (
+            f"{var} was overwritten — the suite's tmp_path redirect would be "
+            f"ignored and the write would land in the working tree")
+        blank = {var: "  "}
+        isolate(blank)
+        assert blank[var].strip(), f"{var} accepted whitespace as a value"
+
     boot_fn = next(n for n in tree.body
                    if isinstance(n, ast.FunctionDef) and n.name == "boot")
     assert [c for c in ast.walk(boot_fn) if isinstance(c, ast.Call)
