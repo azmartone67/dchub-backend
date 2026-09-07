@@ -50,10 +50,25 @@ THE CONTRACT
       (pre-existing behaviour, pinned so the fix does not erode it).
   C7. A genuinely empty bbox STILL reports 0. The fix must not launder every 0
       into null — that would trade a wrong number for a missing one.
-  C8. Global (no lat/lon) mode is untouched: plain COUNT(*), no geo_columns.
+  C8. Global (no lat/lon) mode is untouched: plain COUNT(*), no geo_columns —
+      and it resolves no columns, so it must not pay for a catalog read.
+  C9. Which columns exist is read ONCE from information_schema, not discovered
+      by firing statements at missing columns. Measured on the four real
+      schemas: 24 probes of which 19 RAISED (each aborting the transaction and
+      needing a rollback) becomes 1 catalog read + 5 probes + 0 rollbacks.
+      A catalog read that FAILS falls back to discover-by-failing and must
+      still produce the same answer — otherwise the cleanup trades wasted
+      statements for an outage.
 
-EXPECTED PASS/FAIL — MEASURED, not predicted. See the measurement recorded in
-the PR body; re-measure with `git stash` rather than trusting this comment.
+EXPECTED PASS/FAIL — MEASURED, not predicted, by checking each tree out into a
+clean worktree with __pycache__ purged and dropping this file in:
+
+    origin/main, no fix at all            10 failed,  6 passed
+    the fix without the C9 cleanup         3 failed, 13 passed
+    this branch                            0 failed, 16 passed
+
+The 3 in the middle row are exactly C9's guards. Re-measure rather than
+trusting this comment.
 
 Nothing here runs at module scope.
 
@@ -103,10 +118,14 @@ class _FakeCursor:
         r"^SELECT COUNT\(\*\) FROM (\w+) WHERE (\w+) BETWEEN %s AND %s "
         r"AND (\w+) BETWEEN %s AND %s$")
     _TOTAL = re.compile(r"^SELECT COUNT\(\*\) FROM (\w+)$")
+    _CATALOG = re.compile(
+        r"^SELECT table_name, column_name FROM information_schema\.columns "
+        r"WHERE table_name = ANY\(%s\) AND column_name = ANY\(%s\) "
+        r"AND table_schema = ANY\(current_schemas\(false\)\)$")
 
     def __init__(self, conn):
         self._conn = conn
-        self._result = None
+        self._rows = []
 
     # -- helpers ----------------------------------------------------------
     def _table(self, name):
@@ -132,6 +151,20 @@ class _FakeCursor:
         q = " ".join(sql.split())
         self._conn.queries.append(q)
 
+        m = self._CATALOG.match(q)
+        if m:
+            self._conn.catalog_reads += 1
+            if self._conn.catalog_fails:
+                self._conn.aborted = True
+                raise UndefinedColumn("simulated catalog read failure")
+            wanted_tables, wanted_cols = params
+            self._rows = [
+                (name, col)
+                for name in wanted_tables if name in self._conn.tables
+                for col in self._conn.tables[name].columns if col in wanted_cols
+            ]
+            return
+
         m = self._PROBE.match(q)
         if m:
             name, lat_col, lon_col = m.groups()
@@ -143,7 +176,7 @@ class _FakeCursor:
                 raise
             hit = any(r.get(lat_col) is not None and r.get(lon_col) is not None
                       for r in t.rows)
-            self._result = (1,) if hit else None
+            self._rows = [(1,)] if hit else []
             return
 
         m = self._BBOX.match(q)
@@ -159,12 +192,12 @@ class _FakeCursor:
             n = sum(1 for r in t.rows
                     if self._between(r.get(lat_col), lat_lo, lat_hi)
                     and self._between(r.get(lon_col), lon_lo, lon_hi))
-            self._result = (n,)
+            self._rows = [(n,)]
             return
 
         m = self._TOTAL.match(q)
         if m:
-            self._result = (len(self._table(m.group(1)).rows),)
+            self._rows = [(len(self._table(m.group(1)).rows),)]
             return
 
         raise AssertionError(
@@ -172,16 +205,21 @@ class _FakeCursor:
             "measuring nothing: %r" % q)
 
     def fetchone(self):
-        return self._result
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
 
 
 class _FakeConn:
-    def __init__(self, tables):
+    def __init__(self, tables, catalog_fails=False):
         self.tables = tables
         self.queries = []
         self.aborted = False
         self.rollbacks = 0
         self.returned = 0
+        self.catalog_reads = 0
+        self.catalog_fails = catalog_fails
 
     def cursor(self):
         return _FakeCursor(self)
@@ -254,10 +292,10 @@ def _shipped_local_list(name):
     raise AssertionError("%s not assigned inside %s" % (name, HANDLER))
 
 
-def _call(tables, **args):
+def _call(tables, catalog_fails=False, **args):
     fn = _fn()
     fn.decorator_list = []
-    conn = _FakeConn(tables)
+    conn = _FakeConn(tables, catalog_fails=catalog_fails)
 
     def jsonify(*a, **kw):
         return dict(kw) if kw else (a[0] if a else {})
@@ -280,9 +318,10 @@ def _call(tables, **args):
     return body, conn
 
 
-def _near_midland(tables, radius_km=40):
+def _near_midland(tables, radius_km=40, catalog_fails=False):
     lat, lon = MIDLAND
-    return _call(tables, lat=lat, lon=lon, radius_km=radius_km)
+    return _call(tables, catalog_fails=catalog_fails,
+                 lat=lat, lon=lon, radius_km=radius_km)
 
 
 # ── guard the guard ──────────────────────────────────────────────────────────
@@ -413,3 +452,51 @@ def test_global_mode_is_a_plain_count_with_no_geo_columns():
 def test_the_connection_is_returned_to_the_pool():
     _, conn = _near_midland(_schema())
     assert conn.returned == 1, "connection not returned (%d)" % conn.returned
+
+
+# ── C9: the catalog replaces discover-by-failing ─────────────────────────────
+
+def test_no_statement_is_fired_at_a_column_that_does_not_exist():
+    """THE CLEANUP. Which columns exist is read once from information_schema.
+    Discovering it by firing queries and catching the failures cost ~20
+    deliberately-failing statements per geo request, each aborting the
+    transaction and needing a rollback before the next could run."""
+    _, conn = _near_midland(_schema())
+    assert conn.catalog_reads == 1, (
+        "expected exactly one catalog read, got %d" % conn.catalog_reads)
+    assert conn.rollbacks == 0, (
+        "%d rollback(s) — a statement was still fired at a missing column: %r"
+        % (conn.rollbacks, conn.queries))
+    # `latitude`/`longitude` exist on none of the four tables. They may appear
+    # only as catalog PARAMETERS, never interpolated into a table query.
+    fired = [q for q in conn.queries if not _FakeCursor._CATALOG.match(q)]
+    assert fired, "no table queries issued at all — the test measures nothing"
+    for q in fired:
+        assert "latitude" not in q and "longitude" not in q, q
+
+
+def test_one_probe_per_table_not_one_per_candidate_pair():
+    """Only the pairs the catalog says exist are probed: `lat`/`lng` on three
+    tables, and `lat`/`lon` then `lat`/`lng` on the gas decoy = 5 probes."""
+    _, conn = _near_midland(_schema())
+    probes = [q for q in conn.queries if _FakeCursor._PROBE.match(q)]
+    assert len(probes) == 5, "%d probes: %r" % (len(probes), probes)
+
+
+def test_a_failed_catalog_read_falls_back_to_discover_by_failing():
+    """The degraded path must still produce the RIGHT answer, not an error.
+    Without this the cleanup would trade ~20 wasted statements for an outage
+    whenever information_schema is unreadable."""
+    body, conn = _near_midland(_schema(), catalog_fails=True)
+    assert conn.catalog_reads == 1
+    assert conn.rollbacks > 0, "fallback did not fire any exploratory statement"
+    assert body["counts"]["gas_pipelines"] > 0, (
+        "fallback lost the answer: %r" % (body["counts"],))
+    assert body["geo_columns"]["gas_pipelines"]["lon_col"] == "lng"
+    assert body["geo_columns"]["gas_pipelines"]["skipped_all_null"] == ["lat/lon"]
+
+
+def test_the_catalog_is_not_read_at_all_in_global_mode():
+    """No bbox, no column resolution — global mode is a plain COUNT(*)."""
+    _, conn = _call(_schema())
+    assert conn.catalog_reads == 0, conn.queries

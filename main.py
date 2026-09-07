@@ -39709,6 +39709,15 @@ def cf_stub_infrastructure():
     reason, never 0. `geo_columns` publishes the pair each count was measured
     through (`lat_col`/`lon_col`), which is what makes a real 0 ("none nearby")
     distinguishable from a probe that read the wrong column.
+
+    Which columns exist is read ONCE from information_schema, not discovered by
+    firing queries and catching the failures. Measured against the four real
+    schemas, the old shape issued 24 probes per geo request of which 19 RAISED
+    — every one aborting the transaction, so every one needing a rollback
+    before the next could run. Catalog-resolved, it is 1 catalog read + 5
+    probes, 0 rollbacks. The per-probe try/except survives as a fallback for
+    the case where the catalog read itself fails; discover-by-failing is now
+    the degraded path, not the normal one.
     """
     import math as _m
     lat = request.args.get('lat', type=float)
@@ -39726,6 +39735,9 @@ def cf_stub_infrastructure():
     LAT_COLS = ['latitude', 'lat']
     LON_COLS = ['longitude', 'lon', 'lng']
 
+    TABLES = ['substations', 'transmission_lines_eia', 'gas_pipelines',
+              'discovered_power_plants']
+
     conn = None
     try:
         conn = get_pg_connection()
@@ -39733,40 +39745,74 @@ def cf_stub_infrastructure():
         counts = {}
         unmeasured = {}
         geo_columns = {}
-        for table in ['substations', 'transmission_lines_eia', 'gas_pipelines', 'discovered_power_plants']:
+
+        # Which coordinate columns each table actually HAS, read once from the
+        # catalog. Discovering this by firing queries and catching the failures
+        # cost 19 aborted statements + 19 rollbacks per geo request (measured).
+        # `current_schemas(false)` is the search_path, so this resolves the same
+        # tables the unqualified `FROM {table}` below resolves.
+        #
+        # If the catalog read itself fails, fall back to treating every pair as
+        # a candidate — the per-probe try/except is still in place, so the old
+        # discover-by-failing behaviour is the degraded path rather than the
+        # normal one.
+        present = None
+        if use_geo:                      # global mode resolves no columns
+            try:
+                cur.execute(
+                    "SELECT table_name, column_name FROM information_schema.columns "
+                    "WHERE table_name = ANY(%s) AND column_name = ANY(%s) "
+                    "AND table_schema = ANY(current_schemas(false))",
+                    (TABLES, LAT_COLS + LON_COLS)
+                )
+                present = {t: set() for t in TABLES}
+                for t, c in cur.fetchall():
+                    if t in present:
+                        present[t].add(c)
+            except Exception:
+                present = None
+                try: conn.rollback()
+                except Exception: pass
+
+        for table in TABLES:
             try:
                 if use_geo:
                     # Pick the coordinate pair that CARRIES DATA, not merely the
                     # first pair that parses. "Does this query raise?" was the
                     # old test, and it is not the same question — see the
                     # docstring for the gas_pipelines.lon regression it caused.
+                    have = None if present is None else present.get(table, set())
+                    candidates = [
+                        (la, lo)
+                        for la in LAT_COLS for lo in LON_COLS
+                        if have is None or (la in have and lo in have)
+                    ]
                     chosen = None
                     empty_pairs = []
                     last_err = None
-                    for lat_col in LAT_COLS:
-                        if chosen: break
-                        for lon_col in LON_COLS:
-                            try:
-                                cur.execute(
-                                    f"SELECT 1 FROM {table} "
-                                    f"WHERE {lat_col} IS NOT NULL AND {lon_col} IS NOT NULL "
-                                    f"LIMIT 1"
-                                )
-                                carries_data = cur.fetchone() is not None
-                            except Exception as ce:
-                                # Column pair does not exist on this table.
-                                last_err = ce
-                                try: conn.rollback()
-                                except Exception: pass
-                                continue
-                            if carries_data:
-                                chosen = (lat_col, lon_col)
-                                break
-                            # The pair EXISTS and is entirely NULL. Counting a
-                            # bbox through it returns 0 for every point on
-                            # earth. Keep looking; record the rejection so the
-                            # published answer can name what was skipped.
-                            empty_pairs.append('%s/%s' % (lat_col, lon_col))
+                    for lat_col, lon_col in candidates:
+                        try:
+                            cur.execute(
+                                f"SELECT 1 FROM {table} "
+                                f"WHERE {lat_col} IS NOT NULL AND {lon_col} IS NOT NULL "
+                                f"LIMIT 1"
+                            )
+                            carries_data = cur.fetchone() is not None
+                        except Exception as ce:
+                            # Only reachable on the catalog-read fallback, or if
+                            # the schema moved under us mid-request.
+                            last_err = ce
+                            try: conn.rollback()
+                            except Exception: pass
+                            continue
+                        if carries_data:
+                            chosen = (lat_col, lon_col)
+                            break
+                        # The pair EXISTS and is entirely NULL. Counting a bbox
+                        # through it returns 0 for every point on earth. Keep
+                        # looking; record the rejection so the published answer
+                        # can name what was skipped.
+                        empty_pairs.append('%s/%s' % (lat_col, lon_col))
                     if chosen:
                         lat_col, lon_col = chosen
                         cur.execute(
@@ -39800,8 +39846,10 @@ def cf_stub_infrastructure():
                         unmeasured[table] = (
                             'no latitude/longitude column pair on this table, so '
                             'a radius filter cannot be applied — this is NOT a '
-                            'count of zero assets nearby. Last DB error: %s'
-                            % (str(last_err)[:120] if last_err else 'none')
+                            'count of zero assets nearby. Looked for latitude in '
+                            '(%s) and longitude in (%s). Last DB error: %s'
+                            % (', '.join(LAT_COLS), ', '.join(LON_COLS),
+                               str(last_err)[:120] if last_err else 'none')
                         )
                 else:
                     cur.execute(f"SELECT COUNT(*) FROM {table}")
