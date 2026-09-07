@@ -2051,13 +2051,16 @@ def _run_infrastructure_sync():
     except Exception as e:
         logger.warning(f"   Fiber discovery error: {e}")
 
-    # 2. Seeded carrier routes + PeeringDB discovery.
+    # 2. PeeringDB discovery. (W4: the hardcoded MAJOR_ROUTES seed step was
+    # removed from run_fiber_discovery — it re-stamped a fixed list every run,
+    # 0 new rows, and this sibling driver counted those 20 as work with no
+    # rows_persisted contract. Count only real discovery, in lockstep with
+    # main.py's twin so the two cannot drift.)
     try:
         from fiber_network_discovery import run_fiber_discovery
         fiber_result = run_fiber_discovery()
         if isinstance(fiber_result, dict):
-            total_new += (fiber_result.get('seeded', 0) +
-                          fiber_result.get('discovered', 0))
+            total_new += fiber_result.get('discovered', 0)
         logger.info(f"   Fiber network discovery: {fiber_result}")
     except Exception as e:
         logger.warning(f"   Fiber network discovery error: {e}")
