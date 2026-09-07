@@ -106,6 +106,22 @@ def _register_cluster_latency(state):
               flush=True)
 
 
+# 2026-09-07: FIND SITES (routes/find_sites.py — /api/v1/sites/find), the
+# inverse siting query: constraints in, power-anchored candidate areas out.
+# Rides on this blueprint's registration for the same frozen-main.py reason as
+# cluster_latency above. Defensive: a broken import never breaks the heartbeat
+# (or boot).
+@cron_heartbeat_bp.record_once
+def _register_find_sites(state):
+    try:
+        from routes.find_sites import find_sites_bp
+        if "find_sites" not in state.app.blueprints:
+            state.app.register_blueprint(find_sites_bp)
+    except Exception as _fs_e:
+        print(f"[cron_heartbeat] find_sites_bp register skipped: {_fs_e}",
+              flush=True)
+
+
 # 2026-07-11: WEBMCP MASTER SHELL (routes/webmcp_master_shell.py, webmcp-lane)
 # rides on this blueprint's registration for the same frozen-main.py reason
 # as analyst_note above. Defensive: a broken import never breaks the
