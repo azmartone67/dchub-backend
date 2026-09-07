@@ -25867,8 +25867,7 @@ def ai_discover_endpoint():
             {"method": "GET", "path": "/ai/learn/transactions", "description": "Transaction training data"},
             {"method": "GET", "path": "/ai/cite", "description": "Pre-formatted answers with citations"},
             {"method": "GET", "path": "/ai/cite/facility", "description": "Facility citation data"},
-            {"method": "GET", "path": "/ai/cite/market", "description": "Market citation data"},
-            {"method": "GET", "path": "/ai/tracking", "description": "AI platform usage tracking"}
+            {"method": "GET", "path": "/ai/cite/market", "description": "Market citation data"}
         ],
         "pro_endpoints": [
             {"method": "GET", "path": "/api/v1/energy/site-analysis", "description": "Full site energy analysis", "tier": "pro"},

@@ -85,7 +85,6 @@ GET /ai/learn/transactions          - Transaction data for training
 GET /ai/cite                        - Pre-formatted answers with citations
 GET /ai/cite/facility               - Facility citation
 GET /ai/cite/market                 - Market citation
-GET /ai/tracking                    - AI platform usage tracking
 GET /api/ai/discover                - JSON discovery for AI agents
 ```
 
