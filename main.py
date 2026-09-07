@@ -32135,6 +32135,52 @@ def _build_sitemap_sections():
             logger.warning("sitemap: drained-twin map unavailable, drain forks "
                            "will stay in the sitemap: %s", _dk)
 
+        # ★★ r-twin-pointer (2026-09-07): the SECOND source of the same map —
+        #    a legacy row with no drain link at all, pointed at its discovered
+        #    keeper explicitly through facilities.discovered_twin_id (written by
+        #    routes/facility_dedup_v4, which requires an identical NAME on top
+        #    of the identical rendered <h1>). Its page canonicalises there via
+        #    facility_profile_page._twin_pointer_url, so leaving the URL in the
+        #    sitemap would submit a guaranteed "Alternate page with proper
+        #    canonical" — the same reason r-drain-fork drops its half.
+        #
+        # ★ setdefault, NOT assignment: where a slug somehow has both links the
+        #   DRAIN FORK WINS, because facility_profile_page tries
+        #   _drained_twin_url first. Two answers here would put the canonical on
+        #   a URL the sitemap had dropped.
+        # ★ Every guard below is the drain-fork query's, unchanged and for the
+        #   same measured reasons — keeper unsuppressed, keeper points at
+        #   nobody, both slugs real, slugs differ, and NOT EXISTS so a slug a
+        #   LIVE discovered row also wears is never dropped (142 of the 374
+        #   pairs are exactly that: "this slug belongs to a duplicate" is not
+        #   "this URL is redundant", the 6,846-of-7,157 lesson).
+        # ★ Its own try/except: the column is created by an admin hit, not at
+        #   boot, so on an environment that has never taken one this fails open
+        #   and the drain-fork map above still stands.
+        try:
+            c.execute(
+                "SELECT DISTINCT ON (f.canonical_slug) "
+                "       f.canonical_slug, d.canonical_slug "
+                "  FROM facilities f "
+                "  JOIN discovered_facilities d ON d.id = f.discovered_twin_id "
+                " WHERE COALESCE(d.is_duplicate, 0) = 0 "
+                "   AND d.duplicate_of_id IS NULL "
+                "   AND d.canonical_slug IS NOT NULL AND d.canonical_slug <> '' "
+                "   AND f.canonical_slug IS NOT NULL AND f.canonical_slug <> '' "
+                "   AND d.canonical_slug <> f.canonical_slug "
+                "   AND NOT EXISTS (SELECT 1 FROM discovered_facilities s "
+                "                   WHERE COALESCE(s.is_duplicate, 0) = 0 "
+                "                     AND s.canonical_slug = f.canonical_slug) "
+                " ORDER BY f.canonical_slug, d.id ASC")
+            for _r in (c.fetchall() or []):
+                if _r and _r[0] and _r[1]:
+                    _drained_keeper.setdefault(_r[0], _r[1])
+        except Exception as _tp:
+            try: conn.rollback()
+            except Exception: pass
+            logger.warning("sitemap: twin-pointer map unavailable, unlinked "
+                           "legacy twins will stay in the sitemap: %s", _tp)
+
         _legacy_unioned = 0
         try:
             _has_canon_legacy = False

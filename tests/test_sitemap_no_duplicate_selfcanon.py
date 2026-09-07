@@ -58,6 +58,19 @@ SRC = os.path.join(ROOT, "main.py")
 # here; everything else answers [] so the markets/dcpi/press/pocket sections
 # come back empty and the facility set is the whole artefact under test.
 
+# ── r-twin-pointer (2026-09-07) — the OTHER cross-table class ────────────
+# An independently-ingested legacy row (PeeringDB here, as 318 of the 374 live
+# pairs are) that the drain NEVER touched: no merged_facility_id, so the map
+# above cannot see it. It renders the same <h1>+<title> as a discovered row AND
+# carries the same name, and routes/facility_dedup_v4 has written the link into
+# facilities.discovered_twin_id.
+DISCOVERED_TWIN = ("Equinix FR5", "Equinix", "Frankfurt", None, "DE",
+                   900, "2026-07-15", "equinix-fr5-aaaaaaaa")
+LEGACY_TWIN = ("Equinix FR5", "Equinix", "Frankfurt", None, "DE",
+               "peeringdb-1234", "2026-07-15", "equinix-fr5-bbbbbbbb")
+# facilities.canonical_slug -> discovered.canonical_slug, via discovered_twin_id
+TWIN_LINK = [("equinix-fr5-bbbbbbbb", "equinix-fr5-aaaaaaaa")]
+
 # (name, provider, city, state, country, id, first_seen, canonical_slug)
 DISCOVERED = [
     # the keeper of a drain fork — provider NULL, exactly as the live rows are
@@ -67,6 +80,7 @@ DISCOVERED = [
     # ever drops this URL, the sitemap is losing real pages, not duplicates.
     ("Equinix DC5", "Equinix", "Ashburn", "VA", "US",
      500, "2026-08-01", "equinix-dc5-11111111"),
+    DISCOVERED_TWIN,
 ]
 
 # the legacy row the drain forked off row 12300071. Same rendered identity
@@ -75,6 +89,7 @@ LEGACY = [
     ("007 Hebergement Paris", "007 Hebergement Paris", "Paris", None, "FR",
      "007-hebergement-paris-paris-fr", "2026-08-30",
      "007-hebergement-paris-d128fc26"),
+    LEGACY_TWIN,
 ]
 
 # discovered.merged_facility_id -> facilities.id, i.e. the drain's own stamp
@@ -85,9 +100,10 @@ class _Cur:
     """Answers only the queries the facility path needs; [] for the rest."""
 
     def __init__(self, drain_link=DRAIN_LINK, legacy=LEGACY,
-                 discovered=DISCOVERED):
+                 discovered=DISCOVERED, twin_link=TWIN_LINK):
         self._rows = []
         self.drain_link = drain_link
+        self.twin_link = twin_link
         self.legacy = legacy
         self.discovered = discovered
         self.seen = []
@@ -103,7 +119,9 @@ class _Cur:
         elif low.startswith("select name, provider") and "from facilities" in low:
             self._rows = list(self.legacy)
         elif "join discovered_facilities d on d.merged_facility_id = f.id" in low:
-            self._rows = list(self.drain_link)       # _drained_keeper
+            self._rows = list(self.drain_link)       # _drained_keeper, drain arm
+        elif "join discovered_facilities d on d.id = f.discovered_twin_id" in low:
+            self._rows = list(self.twin_link)        # _drained_keeper, twin arm
         else:
             self._rows = []
         return self
@@ -329,6 +347,171 @@ def test_identity_is_the_rendered_headline_not_the_slug():
     # differ by one site code — the Amazon IAD85/IAD75 class v3 exists to spare
     assert (identity_key("Amazon IAD85", "Amazon", "Manassas", "VA", "US")
             != identity_key("Amazon IAD75", "Amazon", "Manassas", "VA", "US"))
+
+
+# ── r-twin-pointer: the legacy row the drain never touched ───────────────
+
+def test_the_builder_actually_ran_the_twin_pointer_query():
+    """A FLOOR, for the same reason the drain-fork floor exists: the duplicate
+    test above passes trivially if the twin arm never runs and the legacy row
+    never reaches the emit loop. This pins that the shipped builder issued the
+    discovered_twin_id lookup, so "no duplicates" is a verdict, not an
+    absence."""
+    cur = _Cur()
+    _run_builder(cur)
+    joined = " || ".join(cur.seen).lower()
+    assert "join discovered_facilities d on d.id = f.discovered_twin_id" in joined, \
+        "builder never issued the twin-pointer lookup"
+
+
+def test_the_twinned_legacy_url_is_dropped_and_the_keeper_survived():
+    """Not just "one URL" — the RIGHT one. The discovered keeper is the row the
+    pipeline keeps updating and the row /facilities/<slug> prefers, so it must
+    be the survivor and the independently-ingested legacy copy the casualty."""
+    cur = _Cur()
+    slugs = _facility_slugs(_run_builder(cur))
+    assert "equinix-fr5-aaaaaaaa" in slugs, slugs
+    assert "equinix-fr5-bbbbbbbb" not in slugs, slugs
+
+
+def test_the_twinned_legacy_url_survives_when_its_keeper_is_not_emitted():
+    """THE SAFETY PROPERTY, and the reason the twin arm feeds the SAME map
+    rather than a drop-set of its own: the emit loop drops a legacy URL only
+    once the keeper's slug is already in seen_slugs. Remove the keeper and the
+    legacy URL is this facility's ONLY URL — dropping it would take the
+    facility out of the sitemap entirely, which is exactly what a drop-set cost
+    21 live pages on 2026-07-28."""
+    cur = _Cur(discovered=[r for r in DISCOVERED if r != DISCOVERED_TWIN])
+    slugs = _facility_slugs(_run_builder(cur))
+    assert "equinix-fr5-bbbbbbbb" in slugs, slugs
+
+
+def test_the_drain_link_wins_when_one_slug_carries_both():
+    """PRECEDENCE. facility_profile_page tries _drained_twin_url BEFORE
+    _twin_pointer_url, so the sitemap must resolve the same slug the same way,
+    or a URL it KEEPS renders a canonical pointing somewhere else — the exact
+    "Alternate page with proper canonical" this feature exists to stop
+    submitting. main builds the drain arm first and the twin arm with
+    setdefault.
+
+    ★ The two keepers are chosen so precedence is OBSERVABLE in the artefact:
+      the drain's keeper is emitted, the twin's does not exist. Drain-wins ->
+      the keeper is in seen_slugs -> the legacy URL is dropped. Twin-wins ->
+      the keeper is absent, the safety condition holds the URL in, and the page
+      still canonicalises at the drain keeper.
+      Written the obvious way — two keepers that are BOTH emitted — this test
+      passed with setdefault replaced by plain assignment, because the URL is
+      dropped either way and the map's value never reaches the output."""
+    cur = _Cur(
+        drain_link=[("equinix-fr5-bbbbbbbb", "equinix-fr5-aaaaaaaa")],
+        twin_link=[("equinix-fr5-bbbbbbbb", "ghost-keeper-99999999")])
+    slugs = _facility_slugs(_run_builder(cur))
+    assert "equinix-fr5-aaaaaaaa" in slugs, slugs      # the drain's keeper
+    assert "equinix-fr5-bbbbbbbb" not in slugs, slugs  # resolved via the DRAIN
+
+
+def test_a_twinned_legacy_page_canonicalises_to_its_keeper():
+    """The other half: the dropped URL still serves 200 and must point at the
+    keeper, so Google MERGES the pair instead of merely losing one from the
+    sitemap. _twin_pointer_url is stubbed because it reads the DB — what is
+    under test is that _render_profile consults it for a legacy-served row."""
+    import routes.facility_profile_page as fpp
+    keeper = "https://dchub.cloud/facilities/equinix-fr5-aaaaaaaa"
+    real_d, real_t = fpp._drained_twin_url, fpp._twin_pointer_url
+    fpp._drained_twin_url = lambda _id: None          # no drain link exists
+    fpp._twin_pointer_url = lambda _id: keeper
+    try:
+        html = fpp._render_profile(
+            {"name": "Equinix FR5", "provider": "Equinix", "city": "Frankfurt",
+             "country": "DE", "id": "peeringdb-1234",
+             "canonical_slug": "equinix-fr5-bbbbbbbb",
+             "_src_table": "facilities"},
+            "equinix-fr5-bbbbbbbb")
+    finally:
+        fpp._drained_twin_url, fpp._twin_pointer_url = real_d, real_t
+    assert f'<link rel="canonical" href="{keeper}"' in html, \
+        "an unlinked legacy twin still declares ITSELF canonical"
+    assert 'content="index, follow"' in html   # a canonical merges, not de-indexes
+
+
+def test_the_drain_link_is_preferred_in_the_render_path_too():
+    """Same precedence as the sitemap, asserted on the page: when both
+    resolvers would answer, the drain's own stamp wins. If these two ever
+    disagree, one facility gets a canonical pointing at a URL the sitemap
+    dropped."""
+    import routes.facility_profile_page as fpp
+    real_d, real_t = fpp._drained_twin_url, fpp._twin_pointer_url
+    fpp._drained_twin_url = lambda _id: "https://dchub.cloud/facilities/DRAIN"
+    fpp._twin_pointer_url = lambda _id: "https://dchub.cloud/facilities/TWIN"
+    try:
+        html = fpp._render_profile(
+            {"name": "Equinix FR5", "provider": "Equinix", "city": "Frankfurt",
+             "country": "DE", "id": "peeringdb-1234",
+             "canonical_slug": "equinix-fr5-bbbbbbbb",
+             "_src_table": "facilities"},
+            "equinix-fr5-bbbbbbbb")
+    finally:
+        fpp._drained_twin_url, fpp._twin_pointer_url = real_d, real_t
+    assert 'href="https://dchub.cloud/facilities/DRAIN"' in html
+    assert "/facilities/TWIN" not in html
+
+
+def test_a_discovered_page_is_never_sent_to_a_twin_pointer():
+    """The keeper, and every ordinary discovered row, must not be sent
+    anywhere. If the branch fired for discovered rows too, pages would
+    canonicalise onto each other in a loop."""
+    import routes.facility_profile_page as fpp
+    real = fpp._twin_pointer_url
+    fpp._twin_pointer_url = lambda _id: "https://dchub.cloud/facilities/WRONG"
+    try:
+        html = fpp._render_profile(
+            {"name": "Equinix FR5", "provider": "Equinix", "city": "Frankfurt",
+             "country": "DE", "id": 900,
+             "canonical_slug": "equinix-fr5-aaaaaaaa",
+             "_src_table": "discovered_facilities"},
+            "equinix-fr5-aaaaaaaa")
+    finally:
+        fpp._twin_pointer_url = real
+    assert '<link rel="canonical" href="https://dchub.cloud/facilities/' \
+           'equinix-fr5-aaaaaaaa"' in html
+    assert "WRONG" not in html
+
+
+# ── the live checker's budget ────────────────────────────────────────────
+
+def test_the_live_checkers_budget_is_pinned_just_above_the_measured_residual():
+    """★ A CEILING WITH SLACK IN IT IS THE SAME BUG AS A SCAN WITH NO FLOOR.
+    scripts/check_sitemap_selfcanon.py defaulted --max-groups to 400 while the
+    live number was 303 — 97 groups of headroom, so the guard would have kept
+    exiting 0 all the way back up to the population it exists to catch.
+
+    Measured 2026-09-07: 3,930 before #4101, 310 after it, 80 after
+    r-twin-pointer. The budget is 100 — 20 groups of headroom over the measured
+    residual, and far below the 310 a regression would return to.
+
+    Pinned as LITERALS so raising the ceiling is a code review, not a side
+    effect. Both numbers are pinned: MIN_URLS is the floor that stops a failed
+    fetch reading as a clean sitemap, and the two must move deliberately."""
+    import argparse, ast
+    src = open(os.path.join(ROOT, "scripts", "check_sitemap_selfcanon.py"),
+               encoding="utf-8").read()
+    tree = ast.parse(src)
+
+    floor = next(n.value.value for n in ast.walk(tree)
+                 if isinstance(n, ast.Assign)
+                 and getattr(n.targets[0], "id", None) == "MIN_URLS")
+    assert floor == 2000, floor
+
+    budget = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "attr", None) == "add_argument"
+                and node.args and getattr(node.args[0], "value", None) == "--max-groups"):
+            budget = next(k.value.value for k in node.keywords if k.arg == "default")
+    assert budget == 100, budget
+    assert budget < 310, (
+        "the budget must sit below the pre-fix live number or a full "
+        "regression still exits 0")
 
 
 if __name__ == "__main__":
