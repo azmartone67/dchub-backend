@@ -208,3 +208,81 @@ def test_mcp_tool_routes_bypass_and_outrank_the_public_api_cache_rule(canon):
         "the /api/v1/mcp/tools/ bypass sits BEFORE the public-API caching rule; "
         "last-match-wins means the caching rule wins and the leak is re-opened"
     )
+
+
+# ---------------------------------------------------------------- credentials
+def test_token_sources_are_tried_in_order():
+    env = {"CF_CACHE_RULES_TOKEN": "a", "CLOUDFLARE_API_TOKEN": "b", "CF_TOKEN": "c"}
+    assert guard.resolve_token(env) == ("a", "CF_CACHE_RULES_TOKEN")
+    del env["CF_CACHE_RULES_TOKEN"]
+    assert guard.resolve_token(env) == ("b", "CLOUDFLARE_API_TOKEN")
+    del env["CLOUDFLARE_API_TOKEN"]
+    assert guard.resolve_token(env) == ("c", "CF_TOKEN")
+
+
+def test_an_empty_secret_is_not_a_credential():
+    """★ `${{ secrets.MISSING }}` expands to the EMPTY STRING, not to unset.
+
+    So in CI the variable is always *present*; only its emptiness distinguishes
+    a missing secret. Treating "" as a credential would send a blank bearer
+    token and report the resulting 400 as a permission problem.
+    """
+    env = {"CF_CACHE_RULES_TOKEN": "", "CLOUDFLARE_API_TOKEN": "   ", "CF_TOKEN": "real"}
+    assert guard.resolve_token(env) == ("real", "CF_TOKEN")
+
+
+def test_no_credential_at_all_returns_none():
+    assert guard.resolve_token({}) == (None, None)
+
+
+def test_workflow_exports_every_token_source_the_script_knows():
+    """★ The bug this file exists to prevent a second time.
+
+    v1 exported only CF_CACHE_RULES_TOKEN while the script documented a
+    CLOUDFLARE_API_TOKEN fallback, so the fallback could never fire in CI and
+    the run blamed a missing secret. A documented fallback the caller does not
+    wire up is not a fallback.
+    """
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github" / "workflows" / "cf-cache-ruleset-drift.yml"
+    ).read_text()
+    step_env = workflow.split("env:", 1)[1].split("run:", 1)[0]
+    missing = [name for name in guard.TOKEN_ENV_VARS if f"{name}:" not in step_env]
+    assert not missing, f"script reads {missing} but the workflow never exports them"
+
+
+@pytest.mark.parametrize(
+    "status,expected_prefix",
+    [(401, "CREDENTIAL REFUSED"), (403, "CREDENTIAL REFUSED"), (500, "Cloudflare API returned HTTP 500")],
+)
+def test_refused_credential_is_reported_separately_from_a_server_error(
+    monkeypatch, status, expected_prefix
+):
+    """Absent, refused and broken are three different fixes, not one message."""
+    import requests
+
+    class FakeResponse:
+        status_code = status
+        text = '{"errors":[{"code":9109}]}'
+
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setenv("CF_CACHE_RULES_TOKEN", "pretend-token")
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResponse())
+    result, error = guard.fetch_live_ruleset("zone", "ruleset")
+    assert result is None
+    assert error.startswith(expected_prefix), error
+    if status in (401, 403):
+        assert "CF_CACHE_RULES_TOKEN" in error  # names WHICH credential was refused
+
+
+def test_absent_credential_names_every_variable_it_looked_for(monkeypatch):
+    for name in guard.TOKEN_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    result, error = guard.fetch_live_ruleset("zone", "ruleset")
+    assert result is None
+    assert error.startswith("NO CREDENTIAL PRESENT")
+    for name in guard.TOKEN_ENV_VARS:
+        assert name in error

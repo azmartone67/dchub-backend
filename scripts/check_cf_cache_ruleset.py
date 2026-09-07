@@ -54,9 +54,15 @@ Usage
 Cloudflare, run `--repin`, commit the canon diff in a PR. The canon diff is
 then the code review of an edge change that otherwise has none.
 
-Env: CF_CACHE_RULES_TOKEN (or CLOUDFLARE_API_TOKEN) needs
-Zone > Config Rules (or Zone > Cache Rules) READ on dchub.cloud. The existing
-CLOUDFLARE_API_TOKEN CI secret is scoped to Cache Purge only and will NOT work.
+Env: the first of CF_CACHE_RULES_TOKEN, CLOUDFLARE_API_TOKEN, CF_TOKEN that is
+set is used, and the run reports WHICH one it used. It needs
+Zone > Config Rules: Read on dchub.cloud. READ is sufficient — this script
+never writes, so do not hand it an Edit-scoped token just to make it work.
+
+★ "no credential" and "credential refused" are reported as DIFFERENT failures.
+They have different fixes (add a secret vs. re-scope a token) and an earlier
+version of this script collapsed both into one misleading message that blamed
+the missing secret while a present-but-underscoped token was the real cause.
 """
 from __future__ import annotations
 
@@ -192,28 +198,61 @@ def check_canon_floor(canon: dict) -> str | None:
 # --------------------------------------------------------------------------
 # network
 # --------------------------------------------------------------------------
-def _token() -> str | None:
-    return os.environ.get("CF_CACHE_RULES_TOKEN") or os.environ.get("CLOUDFLARE_API_TOKEN")
+# Ordered by intent: a purpose-made read-only token first, then the tokens the
+# repo already carries. Named in this order so the error message can say WHICH
+# credential was tried instead of leaving the reader to guess.
+TOKEN_ENV_VARS = ("CF_CACHE_RULES_TOKEN", "CLOUDFLARE_API_TOKEN", "CF_TOKEN")
+
+
+def resolve_token(environ=None) -> tuple[str | None, str | None]:
+    """Return (token, source_env_var_name). Both None when nothing is set.
+
+    Never returns or logs the token value — only the name of the variable it
+    came from.
+    """
+    env = os.environ if environ is None else environ
+    for name in TOKEN_ENV_VARS:
+        value = (env.get(name) or "").strip()
+        if value:
+            return value, name
+    return None, None
 
 
 def fetch_live_ruleset(zone_id: str, ruleset_id: str) -> tuple[dict | None, str | None]:
     """Return (result, error). Exactly one is not None."""
     import requests  # imported late so the pure tests need no network stack
 
-    token = _token()
+    token, source = resolve_token()
     if not token:
         return None, (
-            "CF_CACHE_RULES_TOKEN (or CLOUDFLARE_API_TOKEN) is not set. "
-            "Needs Zone > Config Rules READ on dchub.cloud. NOT the Cache "
-            "Purge token — that scope cannot read rulesets."
+            "NO CREDENTIAL PRESENT — none of "
+            + ", ".join(TOKEN_ENV_VARS)
+            + " is set in this environment. In CI that means the repo secret "
+            "does not exist (or the workflow does not export it to the step). "
+            "Needs Zone > Config Rules: Read on dchub.cloud."
         )
     url = f"{API_ROOT}/zones/{zone_id}/rulesets/{ruleset_id}"
     try:
         resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
     except Exception as exc:  # noqa: BLE001 - any transport failure is "could not look"
         return None, f"transport error talking to the Cloudflare API: {type(exc).__name__}: {exc}"
+    if resp.status_code in (401, 403):
+        # ★ A refused credential is a DIFFERENT failure from an absent one, and
+        # collapsing the two sends the reader to fix the wrong thing. This is
+        # the same class as `drift_detected` being a boolean that cannot say
+        # "I could not look".
+        return None, (
+            f"CREDENTIAL REFUSED — {source} reached the Cloudflare API and got "
+            f"HTTP {resp.status_code}. The variable IS set, so this is a "
+            f"permission problem, not a missing secret: that token lacks "
+            f"'Zone > Config Rules: Read' on dchub.cloud (a Cache Purge token "
+            f"reaches this exact error). API said: {resp.text[:200]!r}"
+        )
     if resp.status_code != 200:
-        return None, f"Cloudflare API returned HTTP {resp.status_code} (body starts: {resp.text[:200]!r})"
+        return None, (
+            f"Cloudflare API returned HTTP {resp.status_code} to {source} "
+            f"(body starts: {resp.text[:200]!r})"
+        )
     try:
         payload = resp.json()
     except ValueError:
