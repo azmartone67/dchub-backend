@@ -210,16 +210,71 @@ def site_code_headline(name: str | None, provider: str | None,
     return f"{operator} {ident} — {city} Data Center"
 
 
+_PUNCT = " -–—:,.()[]|/"
+
+
+def _head_words(head: str):
+    """[(word, ends_a_phrase)] for the words before the code.
+
+    `ends_a_phrase` is True when the word carried trailing punctuation
+    ("Lewisville," / "Irving -") or the next raw token was punctuation only.
+    That boundary is the whole difference between a city REFERENCE and a city
+    that is merely the first half of a longer proper noun — see _clean_prefix.
+    """
+    out: list[list] = []
+    for raw in head.split():
+        w = raw.strip(_PUNCT)
+        if not w:                       # a separator token ("-", "(")
+            if out:
+                out[-1][1] = True
+            continue
+        out.append([w, raw.rstrip(_PUNCT) != raw])
+    return out
+
+
 def _clean_prefix(head: str, city: str) -> str:
-    """Words before the code, minus the city and dangling punctuation."""
-    words = [w.strip(" -–—:,.()[]|/") for w in head.split()]
-    words = [w for w in words if w]
-    if city:
-        cw = [w.lower() for w in city.split()]
-        if cw and len(words) >= len(cw) and \
-                [w.lower() for w in words[-len(cw):]] == cw:
-            words = words[:-len(cw)]
-        words = [w for w in words if w.lower() not in cw]
+    """Words before the code, minus the city and dangling punctuation.
+
+    ★ r-prefix-city-run (2026-09-07). The city is removed only as a WHOLE
+    CONTIGUOUS RUN that something ends. Removing city words one at a time,
+    anywhere they appear, punched holes in phrases the city merely overlaps —
+    measured live over all 5,586 rows on this path, 69 of them:
+
+        'Flexential - Las Vegas/Downtown'  ->  'Flexential Vegas/Downtown'
+        'Flexential - Salt Lake City/…'    ->  'Flexential City/…'
+        'Cirion Santiago de Chile'         ->  'Cirion de Chile'
+        'Brighton Digital Exchange'        ->  'Digital Exchange'
+        'NTT Berlin 1 Data Center'         ->  'NTT 1'      (orphan number)
+        'H5 Data Centers St. Louis'        ->  'H5 Data Centers St'
+        'ELK GROVE VILLAGE (CHI10-11-12)'  ->  'VILLAGE'
+
+    The last one is why a contiguous run is not enough on its own: "ELK GROVE"
+    IS contiguous inside "ELK GROVE VILLAGE", and Elk Grove Village is a
+    different municipality from Elk Grove. So a run is only the city when a
+    boundary ENDS it — end of the prefix, a generic word ("CoreSite Chicago
+    Data Center" -> "CoreSite"), or punctuation ("Lewisville, TX" -> "TX",
+    "QTS Irving - Dallas" -> "QTS Dallas"). A run followed straight on by
+    another real word is part of that word's name and is KEPT. Repeating the
+    city reads as redundant; cutting a name in half reads as broken, and the
+    <h1> is the page's identity (util/facility_headline).
+    """
+    toks = _head_words(head)
+    words = [w for w, _ in toks]
+    cw = [w.strip(_PUNCT).lower() for w in (city or "").split()]
+    cw = [w for w in cw if w]
+    if cw:
+        n, i, kept = len(cw), 0, []
+        while i < len(words):
+            j = i + n
+            if [w.lower() for w in words[i:j]] == cw and (
+                    j >= len(words)
+                    or words[j].lower() in _GENERIC
+                    or toks[j - 1][1]):
+                i = j
+                continue
+            kept.append(words[i])
+            i += 1
+        words = kept
     # Generic trailing words are not part of a brand.
     while words and words[-1].lower() in _GENERIC:
         words.pop()
