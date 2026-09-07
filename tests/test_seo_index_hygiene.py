@@ -189,7 +189,7 @@ def test_sitemap_junk_guard_spares_real_facilities():
 
 
 def test_the_numeric_osm_class_is_still_caught_after_the_hash8_anchor():
-    """The other half of r-junk-hash8 — the anchor must not become a licence to
+    r"""The other half of r-junk-hash8 — the anchor must not become a licence to
     emit the 674 real OSM stubs. Both live shapes stay junk: the node id
     immediately before the identity hash, and the node id followed by a city.
 
