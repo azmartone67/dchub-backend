@@ -25,20 +25,24 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from routes.facility_dedup_v4 import (      # noqa: E402
-    DEDUP_METHOD, MAX_GROUP, plan_group, is_junk_slug, _collect)
+    DEDUP_METHOD, MAX_GROUP, TWIN_COL, plan_group, is_junk_slug, same_name,
+    _collect)
 
 
 def _df(i, slug, provider=None, lat=None, lon=None, pw=None,
-        dup=None, merged=None):
+        dup=None, merged=None, name="Acme DC1"):
     return {"table": "discovered_facilities", "id": i, "canonical_slug": slug,
-            "provider": provider, "latitude": lat, "longitude": lon,
-            "power_mw": pw, "duplicate_of_id": dup, "merged_facility_id": merged}
+            "name": name, "provider": provider, "latitude": lat,
+            "longitude": lon, "power_mw": pw, "duplicate_of_id": dup,
+            "merged_facility_id": merged, "discovered_twin_id": None}
 
 
-def _lg(i, slug, provider=None, lat=None, lon=None, pw=None):
+def _lg(i, slug, provider=None, lat=None, lon=None, pw=None,
+        name="Acme DC1", twin=None):
     return {"table": "facilities", "id": i, "canonical_slug": slug,
-            "provider": provider, "latitude": lat, "longitude": lon,
-            "power_mw": pw, "duplicate_of_id": None, "merged_facility_id": None}
+            "name": name, "provider": provider, "latitude": lat,
+            "longitude": lon, "power_mw": pw, "duplicate_of_id": None,
+            "merged_facility_id": None, "discovered_twin_id": twin}
 
 
 # ── what it writes ───────────────────────────────────────────────────────
@@ -70,15 +74,66 @@ def test_a_drain_fork_is_reported_and_NOT_written():
     assert p["unlinkable"] == []
 
 
-def test_an_unlinked_legacy_alternate_is_reported_not_guessed_at():
-    """facilities.duplicate_of_id is TEXT and addresses facilities.id — it
-    CANNOT point at a discovered keeper. An independently-ingested legacy row
-    that merely renders identically has no pointer available, so it is counted
-    as residual rather than silently claimed as fixed."""
-    p = plan_group([_df(1, "a-11111111"), _lg("other-id", "a-22222222")])
+def test_an_unlinked_legacy_alternate_with_the_SAME_name_gets_a_twin_pointer():
+    """facilities.duplicate_of_id is TEXT and addresses facilities.id, so it
+    can never name a discovered keeper. facilities.discovered_twin_id is the
+    third id space, added for exactly this class: an independently-ingested
+    legacy row (PeeringDB/OSM/operator site) the drain never touched."""
+    p = plan_group([_df(1, "a-11111111", name="Equinix FR5"),
+                    _lg("other-id", "a-22222222", name="Equinix FR5")])
     assert p["writes"] == []
     assert p["drain_fork"] == []
+    assert p["unlinkable"] == []
+    assert p["twin_writes"] == ["other-id"]
+
+
+def test_a_DIFFERENT_name_under_one_rendered_h1_is_refused():
+    """★ THE GATE. Measured 2026-09-07: 202 pairs render an identical <h1> from
+    DIFFERENT names, and 197 of them do so only because
+    util.facility_site_code.site_code_headline rewrites the <h1> down to
+    "<Operator> <CODE> — <City> Data Center" and drops the tail. These two are
+    real rows from that set — two halls of one campus, 0.00 km apart, one <h1>.
+    Merging them would hide a real site, which is the failure this whole family
+    of lanes exists to avoid."""
+    p = plan_group([_df(1, "a-11111111", name="SecureIT DCB1.1"),
+                    _lg("other-id", "a-22222222", name="SecureIT DCB1.2")])
+    assert p["twin_writes"] == []
     assert p["unlinkable"] == ["a-22222222"]
+
+
+def test_the_name_gate_folds_case_and_whitespace_only():
+    """Folded the way identity_key folds the h1 — "Orange Business Services"
+    and "orange  business services" are one name. Nothing else is folded: the
+    gate must not start normalising away the very tails it exists to keep."""
+    assert same_name("Orange Business Services", "orange  business services")
+    assert same_name(" Equinix FR5 ", "Equinix FR5")
+    assert not same_name("noris network AG ING1 ITA", "noris network AG ING1 ITB")
+    assert not same_name("Equinix FR2", "Equinix FR2.6")
+    assert not same_name("CoreSite - Denver (DE2)", "CoreSite DE2")
+
+
+def test_a_twin_pointer_already_set_is_not_re_reported_as_outstanding():
+    """v3 spent 2026-08-16 re-counting its own output as a 12x over-report
+    because its scan could not see what it had already done."""
+    p = plan_group([_df(1, "a-11111111", name="Equinix FR5"),
+                    _lg("other-id", "a-22222222", name="Equinix FR5",
+                        twin=1)])
+    assert p["twin_writes"] == []
+    assert p["unlinkable"] == []
+    assert p["twin_done"] == ["a-22222222"]
+
+
+def test_a_drain_fork_outranks_the_twin_pointer():
+    """The drain's own merged_facility_id stamp is evidence the house did not
+    invent; discovered_twin_id is an inference. Where both could apply the
+    drain link wins — and main._build_sitemap_sections applies the same
+    precedence with setdefault, so the sitemap and the rel=canonical can never
+    name different keepers for one slug."""
+    p = plan_group([_df(1, "a-11111111", name="Equinix FR5",
+                        merged="legacy-id"),
+                    _lg("legacy-id", "a-22222222", name="Equinix FR5")])
+    assert p["drain_fork"] == ["a-22222222"]
+    assert p["twin_writes"] == []
 
 
 def test_it_never_overwrites_another_lanes_pointer():
@@ -172,17 +227,93 @@ def test_junk_slugs_are_excluded_at_source():
 
 # ── it never sets the visibility flag ────────────────────────────────────
 
-def test_apply_writes_only_the_pointer_and_the_method():
-    """SOURCE-pinned because the UPDATE is the one thing here that touches
-    production data. Anchored on the single UPDATE in the module, not on prose:
-    if `is_duplicate` ever appears on the SET side, 2026-07-28 repeats."""
+def _updates(src):
+    """Every `UPDATE <table> ... SET <clause>` in a source file, as
+    (table, set_clause). The point of these tests is WHICH COLUMNS each
+    statement assigns, and a substring search over a whole file cannot tell an
+    assignment from a guard.
+
+    ★ Read through the AST, not off the raw text. Every SQL string in this
+      module is either implicit literal concatenation across lines or an
+      f-string interpolating TWIN_COL; a regex over the source matches NEITHER
+      and would report an empty list — a guard that passes because it looked at
+      nothing. ast joins adjacent literals for us, and JoinedStr is walked so
+      the f-strings read as the SQL they actually become.
+    """
+    import ast, re
+
+    def literal(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):
+            out = []
+            for part in node.values:
+                if isinstance(part, ast.Constant):
+                    out.append(str(part.value))
+                elif isinstance(part, ast.FormattedValue) and \
+                        isinstance(part.value, ast.Name):
+                    out.append({"TWIN_COL": TWIN_COL}.get(part.value.id, "?"))
+                else:
+                    out.append("?")
+            return "".join(out)
+        return None
+
+    found = []
+    for node in ast.walk(ast.parse(src)):
+        text = literal(node)
+        if not text or "UPDATE " not in text:
+            continue
+        for m in re.finditer(
+                r"UPDATE\s+(\w+)(?:\s+\w+)?\s+SET\s+(.*?)\s+WHERE", text, re.S):
+            found.append((m.group(1), " ".join(m.group(2).split())))
+    return found
+
+
+def test_apply_writes_only_pointers_and_never_the_visibility_flag():
+    """SOURCE-pinned because these UPDATEs are the only things here that touch
+    production data. Every SET clause in the module is enumerated and checked,
+    so a new statement cannot slip in unexamined — if `is_duplicate` ever
+    appears on the SET side of any of them, 2026-07-28 repeats."""
     src = open(os.path.join(ROOT, "routes", "facility_dedup_v4.py"),
                encoding="utf-8").read()
-    stmts = [s for s in src.split('"') if s.strip().startswith("UPDATE discovered_facilities")]
-    assert len(stmts) == 2, stmts        # the apply UPDATE and the undo UPDATE
-    sets = src[src.index("SET duplicate_of_id = %s, dedup_method = %s"):]
-    assert "is_duplicate" not in sets.split("WHERE")[0]
+    ups = _updates(src)
+    # Sorted: ast.walk does not yield in source order, and the invariant is the
+    # SET of statements, not their order in the file.
+    assert sorted(ups) == sorted([
+        ("discovered_facilities", "duplicate_of_id = %s"),        # _REPOINT_SQL
+        ("facilities", f"{TWIN_COL} = %s"),                       # _TWIN_WRITE_SQL
+        ("discovered_facilities",
+         "duplicate_of_id = %s, dedup_method = %s"),              # apply
+        ("discovered_facilities",
+         "duplicate_of_id = NULL, dedup_method = NULL"),          # undo
+        ("facilities", f"{TWIN_COL} = NULL"),                     # undo
+    ]), ups
+    for table, sets in ups:
+        assert "is_duplicate" not in sets, (table, sets)
     assert "COALESCE(is_duplicate, 0) = 0" in src      # read as a guard only
+
+
+def test_the_twin_column_is_written_by_this_lane_alone():
+    """undo clears facilities.discovered_twin_id with NO method filter, which is
+    only correct while this module is the column's sole writer. If another
+    module starts writing it, that undo silently rolls back its decisions."""
+    import subprocess
+    hits = sorted(os.path.relpath(f, ROOT) for f in subprocess.run(
+        ["grep", "-rl", "--include=*.py", TWIN_COL, ROOT],
+        capture_output=True, text=True).stdout.split())
+    # ★ FLOOR. A repo-wide scan that finds nothing passes every assertion
+    # below it. These three files are known to name the column — if the scan
+    # stops seeing them it is broken, not clean.
+    for known in ("routes/facility_dedup_v4.py", "routes/facility_profile_page.py",
+                  "main.py"):
+        assert known in hits, (known, hits)
+    writers = []
+    for f in hits:
+        body = open(os.path.join(ROOT, f), encoding="utf-8").read()
+        for _table, sets in _updates(body):
+            if TWIN_COL in sets:
+                writers.append(f)
+    assert sorted(set(writers)) == ["routes/facility_dedup_v4.py"], writers
 
 
 def test_the_method_stamp_is_unique_to_this_lane():
@@ -197,15 +328,25 @@ def test_the_method_stamp_is_unique_to_this_lane():
 # ── end to end over a stub cursor ────────────────────────────────────────
 
 class _Cur:
-    """Answers the two scan queries in the order _collect issues them."""
+    """Answers the two scan queries in the order _collect issues them.
+
+    The information_schema probe for the twin column is answered separately —
+    reporting it ABSENT, so these fixtures exercise the same fail-open path a
+    deploy that has not yet taken an admin hit runs on."""
 
     def __init__(self, discovered, legacy):
         self._q = [discovered, legacy]
         self._rows = []
+        self._probe = False
 
     def execute(self, sql, params=None):
-        self._rows = self._q.pop(0) if self._q else []
+        self._probe = "information_schema" in sql
+        if not self._probe:
+            self._rows = self._q.pop(0) if self._q else []
         return self
+
+    def fetchone(self):
+        return None if self._probe else (self._rows[0] if self._rows else None)
 
     def fetchall(self):
         return self._rows
@@ -215,15 +356,15 @@ def test_collect_groups_across_the_two_tables_on_the_rendered_identity():
     """The whole point: the pair disagrees about `provider` — that is WHY the
     slugs differ — and is still one group."""
     # (tbl, id, slug, name, provider, city, state, country, lat, lon, pw,
-    #  duplicate_of_id, merged_facility_id)
+    #  duplicate_of_id, merged_facility_id, discovered_twin_id)
     discovered = [("discovered_facilities", "12300071",
                    "007-hebergement-paris-a8b78433", "007 Hebergement Paris",
                    None, "Paris", None, "FR", None, None, None, None,
-                   "007-hebergement-paris-paris-fr")]
+                   "007-hebergement-paris-paris-fr", None)]
     legacy = [("facilities", "007-hebergement-paris-paris-fr",
                "007-hebergement-paris-d128fc26", "007 Hebergement Paris",
                "007 Hebergement Paris", "Paris", None, "FR",
-               None, None, None, None, None)]
+               None, None, None, None, None, None)]
     plans, stats = _collect(_Cur(discovered, legacy))
     assert len(plans) == 1, plans
     assert plans[0]["keeper_slug"] == "007-hebergement-paris-a8b78433"
@@ -237,9 +378,11 @@ def test_collect_does_not_group_two_distinct_buildings():
     these would hide a real site."""
     discovered = [
         ("discovered_facilities", "1", "amazon-iad85-11111111", "Amazon IAD85",
-         "Amazon", "Manassas", "VA", "US", 38.779, -77.542, None, None, None),
+         "Amazon", "Manassas", "VA", "US", 38.779, -77.542, None, None, None,
+         None),
         ("discovered_facilities", "2", "amazon-iad75-22222222", "Amazon IAD75",
-         "Amazon", "Manassas", "VA", "US", 38.779, -77.543, None, None, None),
+         "Amazon", "Manassas", "VA", "US", 38.779, -77.543, None, None, None,
+         None),
     ]
     plans, _ = _collect(_Cur(discovered, []))
     assert plans == []
@@ -250,12 +393,136 @@ def test_collect_skips_nameless_rows():
     would collapse into one enormous false cluster and merge unrelated sites."""
     discovered = [
         ("discovered_facilities", "1", "unknown-osm-dc-1-11111111", None,
-         None, "Paris", None, "FR", None, None, None, None, None),
+         None, "Paris", None, "FR", None, None, None, None, None, None),
         ("discovered_facilities", "2", "unknown-osm-dc-2-22222222", None,
-         None, "Paris", None, "FR", None, None, None, None, None),
+         None, "Paris", None, "FR", None, None, None, None, None, None),
     ]
     plans, _ = _collect(_Cur(discovered, []))
     assert plans == []
+
+
+# ── apply(), end to end over a recording connection ──────────────────────
+#
+# Everything above is pure. These drive the real endpoint so the ORDER and the
+# PARAMETERS of the writes are covered, not just the strings they are made of —
+# the chain fix is a claim about sequencing, and a source-pinned test cannot
+# make it.
+
+class _RecCur:
+    def __init__(self, log):
+        self.log = log
+        self.rowcount = 1
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def execute(self, sql, params=None):
+        one = " ".join(str(sql).split())
+        self.log.append((one, params))
+        self._probe = "information_schema" in one
+        return self
+    def fetchone(self):
+        # the twin column already exists -> ensure_twin_schema issues no ALTER
+        return (1,) if getattr(self, "_probe", False) else None
+    def fetchall(self): return []
+    def close(self): pass
+
+
+class _RecConn:
+    def __init__(self): self.log = []
+    def cursor(self): return _RecCur(self.log)
+    def commit(self): pass
+    def rollback(self): pass
+    def close(self): pass
+
+
+def _run_apply(monkeypatch, plans):
+    """POST /apply with _collect stubbed. Returns (json, executed_log)."""
+    import flask
+    from routes import facility_dedup_v4 as v4
+
+    conn = _RecConn()
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "k")
+    monkeypatch.delenv("FACILITY_DEDUP_V4_DISABLE", raising=False)
+    monkeypatch.setattr(v4, "_conn", lambda write=False: conn)
+    monkeypatch.setattr(v4, "_collect", lambda cur, limit=None: (plans, {}))
+
+    app = flask.Flask(__name__)
+    app.register_blueprint(v4.facility_dedup_v4_bp)
+    r = app.test_client().post(
+        "/api/v1/admin/facility-dedup-v4/apply?confirm=1",
+        headers={"X-Admin-Key": "k"})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    return r.get_json(), conn.log
+
+
+def _plan(keeper_id=100, writes=(), twin_writes=()):
+    return {"h1": "acme dc1", "keeper_id": keeper_id, "keeper_slug": "k-1",
+            "writes": list(writes), "twin_writes": list(twin_writes),
+            "drain_fork": [], "twin_done": [], "unlinkable": []}
+
+
+def test_apply_repoints_chain_rows_BEFORE_it_makes_the_alternate():
+    """★ THE CHAIN FIX. plan_group already refuses to elect a keeper that points
+    onward; nothing checked whether rows pointed AT the row it makes an
+    alternate. Measured after #4101: pointer_chains 350 -> 359, all nine a v2
+    row X -> Y where v4 had just written Y -> Z.
+
+    ORDER IS LOAD-BEARING, so it is asserted rather than assumed: X -> keeper is
+    correct whichever statement fails, but only in this order. Reversed, a crash
+    between the two leaves X -> Y -> Z — the very chain this closes."""
+    import pytest
+    mp = pytest.MonkeyPatch()
+    try:
+        out, log = _run_apply(mp, [_plan(keeper_id=100, writes=[7, 8])])
+    finally:
+        mp.undo()
+    sql = [q for q, _ in log if q.startswith("UPDATE")]
+    assert len(sql) == 2, sql
+    assert sql[0].startswith("UPDATE discovered_facilities SET duplicate_of_id = %s "
+                             "WHERE duplicate_of_id = ANY(%s)"), sql[0]
+    assert "SET duplicate_of_id = %s, dedup_method = %s" in sql[1], sql[1]
+
+    params = [p for q, p in log if q.startswith("UPDATE")]
+    # repoint: everything pointing at 7 or 8 moves to the keeper, and the
+    # keeper is excluded so it can never be made its own duplicate
+    assert params[0] == (100, [7, 8], 100)
+    assert params[1] == (100, DEDUP_METHOD, [7, 8], 100)
+    assert out["chain_rows_repointed"] == 1
+
+
+def test_apply_writes_the_twin_pointer_for_an_unlinked_legacy_row():
+    """The write is gated on the keeper still being usable — the same four
+    preconditions facility_profile_page._twin_pointer_url reads it under, so a
+    pointer can never name a keeper that page would refuse."""
+    import pytest
+    mp = pytest.MonkeyPatch()
+    try:
+        out, log = _run_apply(mp, [_plan(keeper_id=100, twin_writes=["lg-1"])])
+    finally:
+        mp.undo()
+    ups = [(q, p) for q, p in log if q.startswith("UPDATE")]
+    assert len(ups) == 1, ups          # no discovered writes planned
+    q, p = ups[0]
+    assert q.startswith(f"UPDATE facilities f SET {TWIN_COL} = %s")
+    assert f"f.{TWIN_COL} IS NULL" in q            # never overwrite
+    assert "COALESCE(d.is_duplicate, 0) = 0" in q  # keeper not suppressed
+    assert "d.duplicate_of_id IS NULL" in q        # keeper points at nobody
+    assert "d.canonical_slug <> ''" in q           # keeper has a real slug
+    assert p == (100, ["lg-1"], 100)
+    assert out["twin_pointers_written"] == 1
+
+
+def test_apply_does_not_repoint_when_it_makes_no_alternate():
+    """A group whose only work is a twin pointer must not issue the chain
+    UPDATE — _REPOINT_SQL with an empty id list would still scan, and an
+    UPDATE that runs for nothing is how a lane grows a cost it cannot see."""
+    import pytest
+    mp = pytest.MonkeyPatch()
+    try:
+        _out, log = _run_apply(mp, [_plan(keeper_id=100, twin_writes=["lg-1"])])
+    finally:
+        mp.undo()
+    assert not [q for q, _ in log if "WHERE duplicate_of_id = ANY" in q]
+
 
 
 if __name__ == "__main__":

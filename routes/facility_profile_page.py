@@ -1145,7 +1145,18 @@ def _render_profile(fac: dict, slug: str) -> str:
             # duplicate_of_id is TEXT and addresses facilities.id, a different
             # id space from discovered_facilities.id (integer) — so the link is
             # resolved from the drain's own merged_facility_id stamp instead.
-            _twin = _drained_twin_url(fac.get("id"))
+            # r-twin-pointer (2026-09-07): and where the drain never ran, from
+            # facilities.discovered_twin_id, the third id space, written by
+            # routes/facility_dedup_v4 only for pairs that render identically
+            # AND share a name.
+            # ★ ORDER IS THE CONTRACT. The drain fork is tried first because
+            # its link (merged_facility_id) is stamped by the drain itself,
+            # while discovered_twin_id is this house's own inference. The same
+            # precedence is applied when main._build_sitemap_sections builds
+            # _drained_keeper, so the sitemap and this canonical can never name
+            # different keepers for one slug.
+            _twin = (_drained_twin_url(fac.get("id"))
+                     or _twin_pointer_url(fac.get("id")))
             if _twin and _twin != canonical:
                 canonical = _twin
     except Exception:
@@ -1637,6 +1648,57 @@ def _drained_twin_url(legacy_id):
                     "   AND d.canonical_slug IS NOT NULL "
                     "   AND d.canonical_slug <> '' "
                     " ORDER BY d.id ASC "
+                    " LIMIT 1",
+                    (str(legacy_id),))
+                row = cur.fetchone()
+        finally:
+            try: conn.close()
+            except Exception: pass
+        if row and row[0]:
+            return "https://dchub.cloud/facilities/" + str(row[0])
+    except Exception:
+        return None
+    return None
+
+
+# ★ r-twin-pointer (2026-09-07, follow-up to #4101): the OTHER cross-table
+#   class. A legacy `facilities` row the drain never touched — independently
+#   ingested from PeeringDB/OSM/an operator site — that renders a byte-identical
+#   <h1>+<title> to a discovered row AND carries the same name. There is no
+#   merged_facility_id to resolve, so routes/facility_dedup_v4 writes the link
+#   explicitly into `facilities.discovered_twin_id` (INTEGER, addressing
+#   discovered_facilities.id — the third id space; see that module's TWIN_COL).
+#
+#   Preconditions are _drained_twin_url's, exactly, and for the same reasons:
+#   the keeper must exist, must not be suppressed, must carry a real frozen
+#   slug, and must point onward to NOBODY so a canonical chain is impossible.
+#   The writer re-asserts all four in its own WHERE (_TWIN_WRITE_SQL), so the
+#   two cannot disagree about what a usable keeper is.
+#
+# ★ FAILS OPEN when the column does not exist yet — it is created by an admin
+#   hit, not at boot, so a fresh deploy serves today's self-canonical instead of
+#   erroring. That is what the bare `except` below is for; it is not a shrug.
+def _twin_pointer_url(legacy_id):
+    """URL of the discovered keeper a legacy `facilities` row was explicitly
+    pointed at via facilities.discovered_twin_id, or None."""
+    if not legacy_id:
+        return None
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+        if conn is None:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT d.canonical_slug FROM facilities f "
+                    "  JOIN discovered_facilities d "
+                    "    ON d.id = f.discovered_twin_id "
+                    " WHERE f.id = %s "
+                    "   AND COALESCE(d.is_duplicate, 0) = 0 "
+                    "   AND d.duplicate_of_id IS NULL "
+                    "   AND d.canonical_slug IS NOT NULL "
+                    "   AND d.canonical_slug <> '' "
                     " LIMIT 1",
                     (str(legacy_id),))
                 row = cur.fetchone()
