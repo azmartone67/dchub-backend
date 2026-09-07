@@ -31824,6 +31824,10 @@ def _build_sitemap_sections():
     # r-ner-noindex (2026-08-09): same pre-bind contract for the published
     # news-NER slug set.
     _ner_junk_slugs = set()
+    # r-drain-fork (2026-09-07): same pre-bind contract — an early failure in
+    # the DB block must leave the emit loop with an empty map (keep every URL),
+    # never an unbound name.
+    _drained_keeper = {}
     try:
         conn = get_read_db()
         c = conn.cursor()
@@ -32054,6 +32058,74 @@ def _build_sitemap_sections():
             except Exception: pass
             logger.warning("sitemap: non-canonical slug set unavailable, sitemap "
                            "may include alternate-canonical entries: %s", _nc)
+
+        # ★★★ r-drain-fork (2026-09-07): THE LEGACY UNION'S OVERLAP GUARD IS
+        # KEYED ON THE ONE THING THE FORK DOES NOT SHARE.
+        #
+        # /api/v1/admin/dedup/drain (cron, every 20 min) INSERTs a `facilities`
+        # row for a discovered_facilities row and stamps that row's
+        # merged_facility_id. It does NOT suppress the discovered row. Both then
+        # get a frozen slug, and because the slug hashes provider|name while the
+        # tables disagree about `provider` (discovered often NULL, the drained
+        # copy carrying the operator), the hash8s DIFFER. The union comment
+        # above says "the seen_slugs dedup drops any overlap with discovered" —
+        # it cannot: there is no slug overlap to catch.
+        #
+        # MEASURED 2026-09-07 against the live /sitemap.xml (23,094 facility
+        # URLs, resolved back to their serving row and rendered):
+        #     3,989 groups of >=2 URLs share a byte-identical <h1> AND <title>
+        #     3,667 of them (92%) are this drain fork
+        #     4,910 discovered rows carry a merged_facility_id whose legacy twin
+        #           holds a DIFFERENT canonical_slug
+        # e.g. /facilities/007-hebergement-paris-a8b78433 (discovered) and
+        # /facilities/007-hebergement-paris-d128fc26 (drained copy) — both 200,
+        # both "index, follow", both rel=canonical at themselves, both here.
+        #
+        # The drained copy's page now emits rel=canonical at the discovered
+        # keeper (routes/facility_profile_page._drained_twin_url), so — exactly
+        # as r-selfcanon above — leaving it in the sitemap would submit a
+        # guaranteed GSC "Alternate page with proper canonical". Drop it.
+        #
+        # ★★ THE KEEPER MUST ACTUALLY BE EMITTED. This maps slug -> KEEPER SLUG
+        #    rather than collecting a drop-set, and the emit loop drops a legacy
+        #    URL only once the keeper's slug is already in seen_slugs. On
+        #    2026-07-28 a drop-set keyed on "belongs to a duplicate" cost 21 live
+        #    pages their sitemap entry; a membership test against what has
+        #    actually been emitted cannot do that, whatever the row ordering or
+        #    the capacity gate decide.
+        # ★ DISTINCT ON + the same ORDER BY as _drained_twin_url, so the sitemap
+        #   and the rel=canonical name the SAME keeper. Two answers here would
+        #   put the canonical on a URL the sitemap had dropped.
+        # ★ duplicate_of_id IS NULL on the keeper: a keeper that points onward
+        #   is not a canonical target (no chains), mirroring _canonical_twin_row.
+        # ★ NOT EXISTS: never drop a slug a live discovered row also wears —
+        #   the 6,846-of-7,157 lesson, "this slug belongs to a duplicate" is not
+        #   "this URL is redundant".
+        # ★ Fail-open like _dupe_slugs / _noncanon_slugs: no map → the old,
+        #   bigger sitemap, never a broken one.
+        _drained_keeper = {}
+        try:
+            c.execute(
+                "SELECT DISTINCT ON (f.canonical_slug) "
+                "       f.canonical_slug, d.canonical_slug "
+                "  FROM facilities f "
+                "  JOIN discovered_facilities d ON d.merged_facility_id = f.id "
+                " WHERE COALESCE(d.is_duplicate, 0) = 0 "
+                "   AND d.duplicate_of_id IS NULL "
+                "   AND d.canonical_slug IS NOT NULL AND d.canonical_slug <> '' "
+                "   AND f.canonical_slug IS NOT NULL AND f.canonical_slug <> '' "
+                "   AND d.canonical_slug <> f.canonical_slug "
+                "   AND NOT EXISTS (SELECT 1 FROM discovered_facilities s "
+                "                   WHERE COALESCE(s.is_duplicate, 0) = 0 "
+                "                     AND s.canonical_slug = f.canonical_slug) "
+                " ORDER BY f.canonical_slug, COALESCE(d.power_mw, 0) DESC, d.id ASC")
+            _drained_keeper = {r[0]: r[1] for r in (c.fetchall() or [])
+                               if r and r[0] and r[1]}
+        except Exception as _dk:
+            try: conn.rollback()
+            except Exception: pass
+            logger.warning("sitemap: drained-twin map unavailable, drain forks "
+                           "will stay in the sitemap: %s", _dk)
 
         _legacy_unioned = 0
         try:
@@ -32887,6 +32959,7 @@ def _build_sitemap_sections():
     # Sharding (10k/file) keeps every emitted file far below the 50k/50MB
     # sitemap hard limits, so no per-file cap juggling is needed anymore.
     seen_slugs = set()
+    _drain_fork_skipped = 0
     _osm_junk_skipped = 0
     _noncanon_skipped = 0
     _headline_junk_skipped = 0
@@ -33037,6 +33110,17 @@ def _build_sitemap_sections():
             _noncanon_skipped += 1
             continue
 
+        # r-drain-fork (2026-09-07): a legacy row the drain forked off a
+        # discovered row that has ALREADY been emitted under its own slug. Its
+        # page canonicalises to that keeper, so this URL is an alternate. The
+        # `in seen_slugs` test is the safety property — see _drained_keeper: if
+        # the keeper did not make it into this sitemap, neither of them is
+        # dropped and the facility keeps a URL.
+        _dk_keeper = _drained_keeper.get(full_slug)
+        if _dk_keeper and _dk_keeper in seen_slugs:
+            _drain_fork_skipped += 1
+            continue
+
         # per-facility lastmod from first_seen (trustworthy) — fall back to today
         _lm = today
         if fac_has_date and len(row) > 6 and row[6]:
@@ -33058,6 +33142,7 @@ def _build_sitemap_sections():
         f"{_osm_junk_skipped} unknown-*/numeric-OSM junk slugs excluded; "
         f"{_headline_junk_skipped} news-headline/NER-span names excluded; "
         f"{_ner_junk_skipped} published news-NER slugs excluded; "
+        f"{_drain_fork_skipped} drained legacy twins excluded (r-drain-fork); "
         f"{_noncanon_skipped} alternate-canonical slugs excluded)")
 
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
@@ -44663,6 +44748,20 @@ try:
           "/api/v1/admin/facility-dedup-v3/{analyze,apply,undo}", flush=True)
 except Exception as _fd3_e:
     print(f"[main] facility_dedup_v3 register skipped: {_fd3_e}", file=sys.stderr)
+
+# r-drain-fork (2026-09-07): duplicate PUBLISHED URLs keyed on what the page
+# RENDERS (<h1> + <title>), across BOTH facility tables. Every earlier lane
+# groups DB columns of one table; the population that is actually published
+# twice straddles them — measured 3,989 groups on the live sitemap, 97.6% of
+# them discovered_facilities + a legacy row the dedup drain forked off it.
+# Pointer-only, never sets is_duplicate. Kill: FACILITY_DEDUP_V4_DISABLE=1.
+try:
+    from routes.facility_dedup_v4 import facility_dedup_v4_bp
+    app.register_blueprint(facility_dedup_v4_bp)
+    print("[main] facility_dedup_v4_bp registered: "
+          "/api/v1/admin/facility-dedup-v4/{analyze,apply,undo}", flush=True)
+except Exception as _fd4_e:
+    print(f"[main] facility_dedup_v4 register skipped: {_fd4_e}", file=sys.stderr)
 
 # facility geo-quality: correct country labels from coordinates (bulk US-mislabel).
 try:

@@ -133,7 +133,8 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                    for t, ok in _has_band.items()}
             _cols = ("id, name, provider, city, state, country, {region}, "
                      "latitude, longitude, power_mw, status, address, "
-                     "is_duplicate, duplicate_of_id, {cs}, {sb}")
+                     "is_duplicate, duplicate_of_id, {cs}, {sb}, "
+                     "{src} AS _src_table")
             # r-slug-freeze (2026-07-03): exact match on the FROZEN
             # canonical_slug column FIRST — indexed, and immune to the
             # name/provider drift that recomputing MD5(provider|name) live
@@ -147,7 +148,8 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                     c.execute(
                         "SELECT " + _cols.format(region=_region,
                                                  cs=_cs[_tbl],
-                                                 sb=_sb[_tbl]) +
+                                                 sb=_sb[_tbl],
+                                                 src="'" + _tbl + "'") +
                         f" FROM {_tbl} WHERE canonical_slug = %s"
                         " ORDER BY COALESCE(power_mw, 0) DESC, id ASC LIMIT 1",
                         (slug,))
@@ -174,6 +176,7 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                        market AS region, latitude, longitude,
                        power_mw, status, address,
                        is_duplicate, duplicate_of_id,
+                       'discovered_facilities' AS _src_table,
                        """ + _cs["discovered_facilities"] + """,
                        """ + _sb["discovered_facilities"] + """
                 FROM discovered_facilities
@@ -196,6 +199,7 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                                NULL AS region, latitude, longitude,
                                power_mw, status, address,
                                NULL AS is_duplicate, NULL AS duplicate_of_id,
+                               'facilities' AS _src_table,
                                """ + _cs["facilities"] + """,
                                """ + _sb["facilities"] + """
                         FROM facilities
@@ -960,28 +964,16 @@ def _nearby_generation_html(rows, city: str, country: str) -> str:
 
 
 def _brand_already_in_name(provider: str, name: str) -> bool:
-    """True when prepending `provider` to `name` would double the brand in the
-    SERP title — measured 2026-08-01 as a corpus-wide CTR drag: "DataBank
-    DataBank Dallas (DFW2)", "Vantage Data Centers Vantage Berlin II", "Oso
-    Grande Technologies, Inc. Oso Grande Technologies". Three cases: provider
-    inside name (the old check), name inside provider (legal-suffix operator
-    strings), and a shared leading brand word ("Vantage …" vs "Vantage Data
-    Centers"). Titles/desc/h1 only — the FROZEN slug is composed elsewhere and
-    is never touched here."""
-    import re as _re
-    p = (provider or "").lower().strip()
-    n = (name or "").lower().strip()
-    if not p or not n:
-        return False
-    if p in n or n in p:
-        return True
-    pt = _re.findall(r"[a-z0-9]+", p)
-    nt = _re.findall(r"[a-z0-9]+", n)
-    # Leading-word brand match. Generic first words are not a brand signal —
-    # "Data Foundry" vs a name starting "Data Center …" must still prepend.
-    _generic = {"the", "data", "center", "centre", "datacenter", "datacenters",
-                "dc", "global"}
-    return bool(pt and nt and pt[0] == nt[0] and pt[0] not in _generic)
+    """Delegates to util.facility_headline.brand_already_in_name.
+
+    ★ 2026-09-07: the body MOVED, it was not copied. routes/facility_dedup_v4
+    groups published URLs on the rendered <h1>/<title>, which this decides, and
+    a second copy of the rule would let the detector and the page it is judging
+    drift apart silently. Kept as a module attribute because
+    tests/test_seo_index_hygiene.py asserts on `fpp._brand_already_in_name`.
+    """
+    from util.facility_headline import brand_already_in_name
+    return brand_already_in_name(provider, name)
 
 
 # r-junk-noindex (2026-08-01): nameless-OSM junk ("Data Center 343593591 —
@@ -1072,35 +1064,20 @@ def _render_profile(fac: dict, slug: str) -> str:
     lat = fac.get("latitude")
     lng = fac.get("longitude")
 
-    loc_short = ", ".join([p for p in (city, state, country) if p])
-    # r-geo-facility-title (2026-06-24): rich, entity-bearing title/desc/h1 instead
-    # of city-only "{name} | DC Hub". The on-demand renderer serves ~90% of facility
-    # pages (only ~2,002 have static files), and a city-only title (a) drops the
-    # OPERATOR — the strongest signal an AI crawler uses to identify+cite a facility —
-    # and (b) duplicates across every facility in a city. Prepend the operator unless
-    # the brand is already in the name (substring EITHER way, or shared leading
-    # brand word — the plain `provider in name` check shipped SERP titles like
-    # "Vantage Data Centers Vantage Berlin II"; see _brand_already_in_name).
-    _op = "" if (not provider or provider == "Operator" or _brand_already_in_name(provider, name)) else f"{provider} "
-    _disp = f"{_op}{name}".strip()
-    title = (f"{_disp} — {loc_short} Data Center | DC Hub" if loc_short
-             else f"{_disp} Data Center | DC Hub")
-    # r-site-code-title (2026-09-02, QA sweep expansion #1): operator
-    # site-code queries ("interxion mad1", "iad14 data center", "fra28",
-    # "htl05", "ewr12 piscataway", "dus2") sit at pos 6–13 with 0 clicks —
-    # the code is buried mid-title. When the NAME carries one unambiguous
-    # code (util/facility_site_code — no DB column exists), lead the
-    # <title>, <h1> and og:title with "<Operator> <CODE> — <City> Data
-    # Center"; every other facility keeps the title above, and the slug /
-    # canonical / JSON-LD name are never touched by this.
-    from util.facility_site_code import site_code_headline as _sc_headline
-    _sc_head = _sc_headline(name, "" if provider == "Operator" else provider, city)
-    _h1 = _disp
-    _og_title = f"{_disp} — Data Center"
-    if _sc_head:
-        title = f"{_sc_head} | DC Hub"
-        _h1 = _sc_head
-        _og_title = _sc_head
+    # r-geo-facility-title (2026-06-24) + r-site-code-title (2026-09-02): the
+    # whole <h1>/<title> composition now lives in util.facility_headline, so
+    # routes/facility_dedup_v4 can group published URLs on the SAME expressions
+    # this page renders rather than on a copy of them. Behaviour unchanged —
+    # tests/test_seo_index_hygiene.py renders through here and asserts on the
+    # emitted title, so an "equivalent" rewrite fails there.
+    from util.facility_headline import facility_headline as _headline
+    _hl = _headline(name, provider, city, state, country)
+    loc_short = _hl["loc_short"]
+    _disp = _hl["disp"]
+    title = _hl["title"]
+    _h1 = _hl["h1"]
+    _og_title = _hl["og_title"]
+    _op = _hl["op"]
     desc = (f"{_disp} is a data center"
             f"{f' operated by {provider}' if _op else ''}"
             f"{f' in {loc_short}' if loc_short else ''}. "
@@ -1159,6 +1136,16 @@ def _render_profile(fac: dict, slug: str) -> str:
     try:
         if fac.get("duplicate_of_id"):
             _twin = _canonical_twin_url(fac.get("duplicate_of_id"))
+            if _twin and _twin != canonical:
+                canonical = _twin
+        elif fac.get("_src_table") == "facilities":
+            # r-drain-fork (2026-09-07): a page served from the legacy table
+            # canonicalises to the discovered row it was drained from. The
+            # legacy row has no usable pointer of its own — facilities.
+            # duplicate_of_id is TEXT and addresses facilities.id, a different
+            # id space from discovered_facilities.id (integer) — so the link is
+            # resolved from the drain's own merged_facility_id stamp instead.
+            _twin = _drained_twin_url(fac.get("id"))
             if _twin and _twin != canonical:
                 canonical = _twin
     except Exception:
@@ -1582,6 +1569,78 @@ def _render_profile(fac: dict, slug: str) -> str:
   <script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>"""
+
+
+# ★★★ r-drain-fork (2026-09-07): THE LEGACY TWIN A DRAIN MINTED.
+#
+# /api/v1/admin/dedup/drain (main.py, cron every 20 min) INSERTs a `facilities`
+# row for a discovered_facilities row and stamps the discovered row's
+# merged_facility_id with the new TEXT id. It does NOT suppress the discovered
+# row — by design, it is a "merge into the curated table", not a delete. Both
+# rows then get a frozen slug, and because the slug hashes provider|name while
+# the two tables disagree about `provider` (discovered often NULL, the legacy
+# copy carrying the operator), the two hash8s DIFFER. One facility, two frozen
+# slugs, two live 200 pages, both self-canonical, and the 2026-07-01 legacy
+# union publishes BOTH — its overlap guard dedups on the slug, which is exactly
+# the thing that is not shared.
+#
+# MEASURED 2026-09-07 against the live /sitemap.xml (23,094 facility URLs):
+# 3,989 groups of >=2 URLs render a byte-identical <h1> AND <title>; 3,667 of
+# them (92%) are this drain fork. Live example — both HTTP 200, both
+# "index, follow", both rel=canonical at THEMSELVES:
+#
+#     /facilities/007-hebergement-paris-a8b78433   discovered_facilities
+#     /facilities/007-hebergement-paris-d128fc26   facilities (drain copy)
+#     <title>007 Hebergement Paris — Paris, FR Data Center | … | DC Hub</title>
+#
+# ★ NO WRITE AND NO NEW COLUMN IS NEEDED. The pointer already exists and the
+#   drain has been maintaining it all along: discovered.merged_facility_id =
+#   facilities.id. This resolves it in the OTHER direction — given the legacy
+#   row a page is being served from, find the discovered row it was drained
+#   from — and canonicalises to it. The legacy row stays live, stays counted,
+#   keeps serving 200. Suppression deletes a page; a canonical MERGES it.
+#
+# ★ Keeper = the DISCOVERED row, not the legacy copy. It is the row the
+#   discovery/enrichment pipeline keeps updating, the row /facilities/<slug>
+#   resolution already prefers (the loop above tries discovered_facilities
+#   first), and the row the sitemap emits first.
+#
+# Preconditions mirror _canonical_twin_row exactly, for the same reasons: the
+# keeper must exist, must not itself be flagged duplicate, must carry a real
+# frozen slug, and must point onward to NOBODY (duplicate_of_id IS NULL) so a
+# canonical chain is impossible by construction. Fail-soft: any error → None →
+# today's self-canonical.
+def _drained_twin_url(legacy_id):
+    """URL of the discovered_facilities row a legacy `facilities` row was
+    drained from, or None. `legacy_id` is a facilities.id (TEXT)."""
+    if not legacy_id:
+        return None
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+        if conn is None:
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT d.canonical_slug FROM discovered_facilities d "
+                    " WHERE d.merged_facility_id = %s "
+                    "   AND COALESCE(d.is_duplicate, 0) = 0 "
+                    "   AND d.duplicate_of_id IS NULL "
+                    "   AND d.canonical_slug IS NOT NULL "
+                    "   AND d.canonical_slug <> '' "
+                    " ORDER BY COALESCE(d.power_mw, 0) DESC, d.id ASC "
+                    " LIMIT 1",
+                    (str(legacy_id),))
+                row = cur.fetchone()
+        finally:
+            try: conn.close()
+            except Exception: pass
+        if row and row[0]:
+            return "https://dchub.cloud/facilities/" + str(row[0])
+    except Exception:
+        return None
+    return None
 
 
 def _canonical_twin_row(dup_of_id):

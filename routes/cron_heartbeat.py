@@ -1589,6 +1589,35 @@ _DISPATCH = [
      lambda now: (now.minute % 20 < 3)
                  and os.environ.get("DEDUP_DRAIN_CRON_DISABLE") != "1"),
 
+    # ★★★ r-drain-fork (2026-09-07): THE OTHER HALF OF dedup_drain, above.
+    # The drain INSERTs a `facilities` row for a discovered row and stamps
+    # merged_facility_id — it does NOT suppress the discovered row, so both get
+    # a frozen slug, and because the slug hashes provider|name while the two
+    # tables disagree about `provider`, the hash8s DIFFER. One facility, two
+    # live self-canonical URLs, both in the sitemap. Measured 2026-09-07 on the
+    # live /sitemap.xml: 3,989 groups of >=2 URLs render a byte-identical
+    # <h1> AND <title>; 4,007 surplus URLs.
+    # This is the detector that was missing. routes/facility_dedup_v4 groups
+    # the publishable universe of BOTH tables on the rendered identity and
+    # writes discovered_facilities.duplicate_of_id — POINTER ONLY, it never
+    # sets is_duplicate (that is a VISIBILITY flag; it deletes a page and drops
+    # the row from counts and the sitemap, and 2026-07-28 proved it leaves
+    # keeperless slugs behind).
+    # ★ Cadence: DAILY, deliberately not every-20-min like the drain. Every
+    #   write is idempotent (`duplicate_of_id IS NULL` in the WHERE) so a
+    #   re-fire is a no-op UPDATE, but the scan reads both facility tables whole
+    #   — that is a real cost to pay 72x a day for a backlog that grows by tens.
+    # 04:xx UTC: quiet hour, and it lands AFTER the drain has been forking all
+    # night so the day's new twins are consolidated before the sitemap rebuild.
+    # WIDE minute window because the heartbeat is sporadic (~hourly).
+    # No-deploy kill switch, checked BOTH here and in the endpoint:
+    # FACILITY_DEDUP_V4_DISABLE=1.
+    ("facility_dedup_v4_daily",
+     f"{BASE}/api/v1/admin/facility-dedup-v4/apply?confirm=1",
+     "POST",
+     lambda now: now.hour == 4 and now.minute < 55
+                 and os.environ.get("FACILITY_DEDUP_V4_DISABLE") != "1"),
+
     # 2026-07-11 (Gemini dark-fiber §4.3): DARK-AVAILABILITY ZONES rebuild —
     # crosses dark-capable carriers (fiber_providers.dark_fiber=TRUE, alias-
     # mapped to PeeringDB carrier names) against carrier_facility_presence
