@@ -25564,39 +25564,218 @@ def ai_learn(topic=None):
         return jsonify({'success': True, 'data': topics[topic]})
     return jsonify({'success': True, 'data': topics, 'available_topics': list(topics.keys())})
 
+# ── /api/v1/discovery reachability ─────────────────────────────────────────
+# r-discovery-reach (2026-09-06). `file_status` used to be
+# os.path.exists('static/<name>') and it was wrong in BOTH directions at once,
+# which is why it read 14/14 "active" against a surface that is not.
+#
+#   FALSE POSITIVE — static/llms.txt (8,718b) is NOT what serves /llms.txt.
+#     The live file is rendered by ai_discovery_routes.serve_llms_txt() and
+#     confirmed backend-served (x-dc-hub-served-by: railway-primary). There is
+#     a THIRD, also-dead copy at the repo root (llms.txt, 7,669b). Delete the
+#     route that actually serves the path and this endpoint keeps saying
+#     "active" off an artifact nothing reads.
+#   FALSE NEGATIVE — delete the dead static/ file and it flips to "missing"
+#     while the surface is perfectly healthy.
+#
+# So the oracle is the only thing that answers the question an agent is
+# actually asking — "if I GET this URL, do I get content?" — a real request to
+# the PUBLIC host, cached. Two cheaper oracles were measured and rejected:
+#
+#   os.path.exists  : wrong on llms.txt / llms-full.txt / AGENTS.md / robots.txt,
+#                     all of which are RENDERED, not served off static/.
+#   app.url_map     : wrong on 2 of 14, in opposite directions. /skill.md has a
+#                     Flask route that cannot 404 (serve_skill_md swallows the
+#                     read and returns a stub 200) and the origin does serve it
+#                     200 — but the public URL is 404, because the edge never
+#                     forwards that path. /.well-known/openapi.json has no Flask
+#                     route at all and is 301 -> /openapi.json -> 200 at the
+#                     edge. A route-registration check reports the first
+#                     "active" and the second "missing", and both are lies.
+#
+# ★ THREE states, not two. A probe that could not RUN (DNS, egress, timeout)
+# reports "unmeasured", never "missing" — otherwise one blocked egress path
+# turns this endpoint into a confident claim that every discovery surface on
+# the site is dead, which is a worse failure than the one being fixed here.
+# Same reason canonical_stats keeps its last-known-good instead of reverting to
+# the seed: could-not-run is not ran-and-failed.
+#
+# Cache/refresh: read-only, off the request path. The first call to either
+# discovery route returns "unmeasured" and kicks a daemon-thread probe; every
+# call after that reads the cache. 14 cache-busted GETs per replica per 6h,
+# with the sentinel's self-identifying UA so this traffic is separable from
+# real agent traffic in the logs (ai_surface_sentinel does the same thing
+# against the same host — this is that pattern, scoped to status codes).
+#
+# (name, public path) — ONE list. `protocols` below reads its URLs from here
+# too, so a protocol entry can no longer advertise one URL and report the
+# status of another.
+_DISCOVERY_SURFACES = (
+    ("llms.txt",           "/llms.txt"),
+    ("llms-full.txt",      "/llms-full.txt"),
+    ("AGENTS.md",          "/AGENTS.md"),
+    ("skill.md",           "/skill.md"),
+    ("skill.json",         "/skill.json"),
+    ("ai.txt",             "/ai.txt"),
+    ("robots.txt",         "/robots.txt"),
+    ("agent.json",         "/.well-known/agent.json"),
+    ("ai-agents.json",     "/.well-known/ai-agents.json"),
+    ("ai-plugin.json",     "/.well-known/ai-plugin.json"),
+    ("mcp.json",           "/.well-known/mcp.json"),
+    ("openapi.json",       "/.well-known/openapi.json"),
+    ("copilot-agent.json", "/.well-known/copilot-agent.json"),
+    ("security.txt",       "/.well-known/security.txt"),
+)
+_DISCOVERY_PUBLIC = "https://dchub.cloud"
+_DISCOVERY_REACH_TTL_S = 6 * 3600
+# Short retry when the probe could not run at all, so a transient egress
+# failure does not pin the surface to "unmeasured" for six hours.
+_DISCOVERY_REACH_RETRY_S = 300
+_discovery_reach_cache = {}      # name -> {"code": int|None, "checked_at": iso}
+_discovery_reach_next = 0.0      # earliest time.time() at which to re-probe
+_discovery_reach_running = False
+_discovery_reach_lock = threading.Lock()
+
+
+def _probe_discovery_surface(path, timeout=8):
+    """Final HTTP status for `path` on the public host, or None.
+
+    None means THE PROBE DID NOT RUN (transport error) — it is not a verdict on
+    the surface, and callers must not render it as one. A STATUS CODE is a
+    verdict: the server answered, and 404 is a measurement.
+
+    Redirects are followed, because a 301 to a live sibling still hands the
+    agent the content — /.well-known/openapi.json -> /openapi.json is reachable,
+    and reporting it "missing" would be the same class of false claim in the
+    other direction.
+
+    requests, not urllib: scripts/regression_lint.py blocks urllib.request on
+    Railway, and the IPv4-egress patch at the top of this file is applied to
+    urllib3 (which requests uses) for exactly this kind of outbound call.
+    """
+    url = f"{_DISCOVERY_PUBLIC}{path}"
+    sep = "&" if "?" in url else "?"
+    try:
+        r = requests.get(
+            f"{url}{sep}cb={int(time.time())}",
+            timeout=timeout,
+            allow_redirects=True,
+            headers={"Cache-Control": "no-cache",
+                     "User-Agent": "dchub-discovery-reachability/1"},
+        )
+        return int(r.status_code)
+    except Exception:
+        # No status came back at all — DNS, egress, TLS, timeout. Not a verdict.
+        return None
+
+
+def _refresh_discovery_reach():
+    """Re-probe every published surface. Runs on a daemon thread; never raises."""
+    global _discovery_reach_next, _discovery_reach_running
+    measured = 0
+    try:
+        stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        got = {}
+        for _name, _path in _DISCOVERY_SURFACES:
+            code = _probe_discovery_surface(_path)
+            if code is not None:
+                measured += 1
+            got[_name] = {"code": code, "checked_at": stamp}
+        with _discovery_reach_lock:
+            for _name, rec in got.items():
+                # Keep the last real MEASUREMENT rather than overwriting it with
+                # a probe that never reached the host.
+                if rec["code"] is None and (_discovery_reach_cache.get(_name) or {}).get("code") is not None:
+                    continue
+                _discovery_reach_cache[_name] = rec
+    except Exception as e:
+        logger.warning(f"discovery reachability probe failed: {e}")
+    finally:
+        with _discovery_reach_lock:
+            _discovery_reach_next = time.time() + (
+                _DISCOVERY_REACH_TTL_S if measured else _DISCOVERY_REACH_RETRY_S)
+            _discovery_reach_running = False
+
+
+def _discovery_reachability():
+    """Last measured reachability per surface. Never blocks, never probes inline."""
+    global _discovery_reach_running
+    kick = False
+    with _discovery_reach_lock:
+        snapshot = {k: dict(v) for k, v in _discovery_reach_cache.items()}
+        if time.time() >= _discovery_reach_next and not _discovery_reach_running:
+            _discovery_reach_running = True
+            kick = True
+    if kick:
+        try:
+            threading.Thread(target=_refresh_discovery_reach,
+                             name="discovery-reach", daemon=True).start()
+        except Exception:
+            with _discovery_reach_lock:
+                _discovery_reach_running = False
+    return snapshot
+
+
+def _discovery_status(rec):
+    """"active" | "missing" | "unmeasured" from one probe record."""
+    code = (rec or {}).get("code")
+    if not isinstance(code, int):
+        return "unmeasured"
+    return "active" if 200 <= code < 300 else "missing"
+
+
+def _discovery_exists(rec):
+    """True / False / None. None (JSON null) is UNMEASURED, not absent.
+
+    A bool cannot carry three states, and `false` for "we have not looked" is
+    the exact false claim this rewrite exists to remove — so the unknown case
+    is null and the sibling `status` field spells it out.
+    """
+    code = (rec or {}).get("code")
+    if not isinstance(code, int):
+        return None
+    return 200 <= code < 300
+
+
 @app.route('/api/v1/discovery', methods=['GET'])
 @app.route('/ai/discovery', methods=['GET'])
 def ai_discovery_index():
     """List all AI discovery files and protocols"""
-    import os
-    files = {
-        "llms.txt": os.path.exists('static/llms.txt'),
-        "llms-full.txt": os.path.exists('static/llms-full.txt'),
-        "AGENTS.md": os.path.exists('static/AGENTS.md'),
-        "skill.md": os.path.exists('static/skill.md'),
-        "skill.json": os.path.exists('static/skill.json'),
-        "ai.txt": os.path.exists('static/ai.txt'),
-        "robots.txt": os.path.exists('static/robots.txt'),
-        "agent.json": os.path.exists('static/.well-known/agent.json'),
-        "ai-agents.json": os.path.exists('static/.well-known/ai-agents.json'),
-        "ai-plugin.json": os.path.exists('static/.well-known/ai-plugin.json'),
-        "mcp.json": os.path.exists('static/.well-known/mcp.json'),
-        "openapi.json": os.path.exists('static/.well-known/openapi.json'),
-        "copilot-agent.json": os.path.exists('static/.well-known/copilot-agent.json'),
-        "security.txt": os.path.exists('static/.well-known/security.txt'),
-    }
+    reach = _discovery_reachability()
+    _paths = dict(_DISCOVERY_SURFACES)
+
+    def _proto(name, standard):
+        rec = reach.get(name)
+        return {"url": f"{_DISCOVERY_PUBLIC}{_paths[name]}",
+                "standard": standard,
+                "exists": _discovery_exists(rec),
+                "status": _discovery_status(rec)}
+
     return jsonify({
         "success": True,
         "data": {
             "protocols": {
-                "agents_md": {"url": "https://dchub.cloud/AGENTS.md", "standard": "AGENTS.md (Linux Foundation)", "exists": files["AGENTS.md"]},
-                "a2a": {"url": "https://dchub.cloud/.well-known/agent.json", "standard": "Google A2A Protocol", "exists": files["agent.json"]},
-                "mcp": {"url": "https://dchub.cloud/.well-known/mcp.json", "standard": "Anthropic MCP", "exists": files["mcp.json"]},
-                "openapi": {"url": "https://dchub.cloud/.well-known/openapi.json", "standard": "OpenAPI 3.1", "exists": files["openapi.json"]},
-                "chatgpt": {"url": "https://dchub.cloud/.well-known/ai-plugin.json", "standard": "ChatGPT Plugin", "exists": files["ai-plugin.json"]},
-                "copilot": {"url": "https://dchub.cloud/.well-known/copilot-agent.json", "standard": "Microsoft Copilot", "exists": files["copilot-agent.json"]},
+                "agents_md": _proto("AGENTS.md", "AGENTS.md (Linux Foundation)"),
+                "a2a": _proto("agent.json", "Google A2A Protocol"),
+                "mcp": _proto("mcp.json", "Anthropic MCP"),
+                "openapi": _proto("openapi.json", "OpenAPI 3.1"),
+                "chatgpt": _proto("ai-plugin.json", "ChatGPT Plugin"),
+                "copilot": _proto("copilot-agent.json", "Microsoft Copilot"),
             },
-            "file_status": {f: ("active" if v else "missing") for f, v in files.items()},
+            "file_status": {name: _discovery_status(reach.get(name))
+                            for name, _ in _DISCOVERY_SURFACES},
+            "file_status_basis": {
+                "derived_from": "last cache-busted GET of each public URL",
+                "url": {name: f"{_DISCOVERY_PUBLIC}{path}"
+                        for name, path in _DISCOVERY_SURFACES},
+                "http_status": {name: (reach.get(name) or {}).get("code")
+                                for name, _ in _DISCOVERY_SURFACES},
+                "measured_at": {name: (reach.get(name) or {}).get("checked_at")
+                                for name, _ in _DISCOVERY_SURFACES},
+                "note": ("active = a 2xx was observed at that URL; missing = a non-2xx "
+                         "was observed; unmeasured = no probe has completed yet, which "
+                         "is not a claim that the surface is down."),
+            },
             "chatgpt_gpts": [
                 {"name": "DC Hub - Data Center Intelligence", "url": "https://chatgpt.com/g/g-697dda8f65e8819189f9d353725cb6d5-dc-hub-data-center-intelligence"},
                 {"name": "Data Center M&A Analyst", "url": "https://chatgpt.com/g/g-697e373bb1c88191b97fc323b2a32166-data-center-m-a-analyst"},
