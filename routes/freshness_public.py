@@ -418,7 +418,14 @@ def _eia930_fleet() -> frozenset:
         return frozenset()
     if not codes:                      # a registry that reads empty is a bug,
         return frozenset()             # not a reason to silence 43 streams
-    return frozenset(codes | {"PJM", "MISO", "TVA", "BPA"})
+    # ★ MISO is NOT here. It has its own live 5-minute feed
+    #   (public-api.misoenergy.org, wired in routes/iso_miso.py) and reads
+    #   minutes old, so it stays on the 24h clock — leashing a live stream
+    #   would hide a real MISO outage for the full 168h. PJM/TVA/BPA remain
+    #   EIA-fed by design: PJM by an explicit owner decision (no Data Miner 2
+    #   serving without a PJM Redistribution License), TVA/BPA by their
+    #   adapters' documented EIA EBA path.
+    return frozenset(codes | {"PJM", "TVA", "BPA"})
 
 
 _INTERMITTENT_STREAMS: dict = {

@@ -44,7 +44,10 @@ def _fleet():
 # grid_data while EIA-930 is ~27h stale. Leashing one would hide a real death
 # for _INTERMITTENT_MAX_H.
 _OWN_LIVE_FEED = ("ERCOT", "CAISO", "NYISO", "SPP", "AESO",
-                  "ISONE", "IESO", "HYDROQUEBEC", "ENTSOE")
+                  "ISONE", "IESO", "HYDROQUEBEC", "ENTSOE",
+                  # joined this list when routes/iso_miso.py was repointed
+                  # onto public-api.misoenergy.org (5-min intervals)
+                  "MISO")
 
 
 @pytest.mark.parametrize("iso", _OWN_LIVE_FEED)
@@ -70,9 +73,10 @@ def test_every_registered_utility_ba_is_in_the_fleet():
     assert not missing, f"registered BAs not covered by the leash: {missing}"
 
 
-@pytest.mark.parametrize("iso", ("PJM", "MISO", "TVA", "BPA"))
-def test_the_four_eia_fed_isos_are_in_the_fleet(iso):
-    """Not utility BAs, but EIA-930-fed by design (see each iso_* docstring)."""
+@pytest.mark.parametrize("iso", ("PJM", "TVA", "BPA"))
+def test_the_eia_fed_isos_are_in_the_fleet(iso):
+    """Not utility BAs, but EIA-930-fed by design (see each iso_* docstring).
+    MISO was here until it got its own live feed — see _OWN_LIVE_FEED."""
     assert iso in _fleet()
 
 
@@ -94,8 +98,10 @@ _OPEN_ON_0907 = (
 
 
 def test_every_finding_open_on_0907_is_covered():
+    """Every one EXCEPT MISO, which got a real fix instead of a leash: its
+    feed was not retired, it moved to public-api.misoenergy.org."""
     assert len(_OPEN_ON_0907) == 48
-    missing = sorted(set(_OPEN_ON_0907) - _fleet())
+    missing = sorted(set(_OPEN_ON_0907) - _fleet() - {"MISO"})
     assert not missing, f"still firing daily with no fix available: {missing}"
 
 
