@@ -636,7 +636,14 @@ def _prior_description(c, platform: str, tool_name: str):
 
 
 def _upsert(c, platform: str, tool_name: str, description: str,
-            generated_by: str) -> None:
+            generated_by: str) -> bool:
+    """Write one cell. Returns True only if the row was actually committed.
+
+    ★ This used to return None and swallow every DB error, while the caller
+    appended to `written` regardless — so `written` counted REWRITES PRODUCED,
+    not rows stored. On 2026-09-07 a force=1 run reported
+    `written=132 failed=0 ok=True` while 17 cells were never written, and the
+    workflow went green on it."""
     is_revert = str(generated_by or "").startswith(_REVERT_GENERATED_BY_PREFIX)
     prior = None if is_revert else _prior_description(c, platform, tool_name)
     baseline = None
@@ -660,15 +667,15 @@ def _upsert(c, platform: str, tool_name: str, description: str,
         logger.warning("_upsert %s/%s failed: %s", platform, tool_name, e)
         try: c.rollback()
         except Exception: pass
-        return
+        return False
     # The row is written — the rewrite has SHIPPED. Pre-register the claim that
     # judges it. Lazily imported and fully fail-soft: the ledger may not be
     # deployed, and a tuner reseed must never die with it.
     if is_revert or baseline is None or not _claims_enabled():
-        return
+        return True
     if _CLAIM_RUN["registered"] >= _CLAIM_CAP_PER_RUN:
         _CLAIM_RUN["capped"] += 1
-        return
+        return True
     try:
         from routes.claim_ledger import register_tool_copy_claim
         register_tool_copy_claim(platform, tool_name, description,
@@ -677,6 +684,11 @@ def _upsert(c, platform: str, tool_name: str, description: str,
     except Exception as e:  # noqa: BLE001
         logger.warning("tool_copy claim registration skipped for %s/%s: %s",
                        platform, tool_name, e)
+    # ★ Every path below the commit is claim-ledger bookkeeping. The ROW IS
+    # WRITTEN by the time we get here, so they all report True — falling off
+    # the end would return None and turn a successful write into a reported
+    # failure, which is the same lie as the old one with the sign flipped.
+    return True
 
 
 # ── Endpoints ────────────────────────────────────────────────────────
@@ -815,9 +827,13 @@ def seed_variants():
             # least populated. Fast — do inline. Re-run once ANTHROPIC_API_KEY is set.
             for canon, tool_name, generic, _voice in jobs:
                 deterministic = _clamp_description(f"[{canon}] {generic}")
-                _upsert(c, canon, tool_name, deterministic, "deterministic_no_claude")
-                written.append({"platform": canon, "tool": tool_name,
-                                "via": "deterministic"})
+                if _upsert(c, canon, tool_name, deterministic,
+                           "deterministic_no_claude"):
+                    written.append({"platform": canon, "tool": tool_name,
+                                    "via": "deterministic"})
+                else:
+                    failed.append({"platform": canon, "tool": tool_name,
+                                   "reason": "db_write_failed"})
         elif jobs:
             # 2026-07-04: the Claude rewrites are the whole cost (~50 sequential
             # network calls → ~4 min). Run at ~230s the web worker gets recycled
@@ -836,21 +852,62 @@ def seed_variants():
                                   _tool_max.get(tool_name, 0), canon))
                 return (canon, tool_name, tuned)
 
+            # ★ 2026-09-07 — DO NOT HOLD THE POOLED CONNECTION ACROSS THE
+            # NETWORK PHASE. The pool's watchdog force-reclaims any connection
+            # held longer than main.py's _CONN_MAX_HOLD_SECONDS, and a full force=1
+            # seed spends ~88s in Claude calls — so it was ripped out from
+            # under the request and every write after that failed with
+            # "connection already closed". (_CONN_MAX_HOLD_SECONDS is 60 and
+            # the watchdog sweeps every 30s, which is why the observed kill
+            # landed at 75s rather than exactly 60.)
+            #
+            #   00:58:20 🔪 FORCED RECLAIM: Connection held 75s by
+            #            thread 'ThreadPoolExecutor-0_3'
+            #   00:58:22 _upsert copilot/site_selection_canvas failed:
+            #            connection already closed          (x17)
+            #   00:58:33 SLOW REQUEST: POST /tool-tuner/seed took 88.6s
+            #
+            # 17 cells were lost — the whole tail of the job list, which was
+            # every get_market_dcpi_rank cell. The rewrites need no database
+            # at all, so the connection is RELEASED before them and a fresh
+            # one taken for the writes. The write phase alone is DB-only and
+            # finishes well inside the reclaim window.
+            _put_db(c)
+            c = None
+            results = []
             with ThreadPoolExecutor(max_workers=6) as ex:
                 for canon, tool_name, tuned in ex.map(_rewrite_one, jobs):
-                    if tuned:
-                        _upsert(c, canon, tool_name, tuned, "claude")
-                        written.append({"platform": canon, "tool": tool_name,
-                                        "via": "claude"})
-                    else:
-                        failed.append({"platform": canon, "tool": tool_name})
+                    results.append((canon, tool_name, tuned))
+
+            c = _get_db()
+            if c is None:
+                return jsonify(ok=False, error="no_db_for_write_phase",
+                               rewrites_ready=len(results)), 503
+            for canon, tool_name, tuned in results:
+                if not tuned:
+                    failed.append({"platform": canon, "tool": tool_name,
+                                   "reason": "rewrite_returned_nothing"})
+                    continue
+                # ★ Count the WRITE, not the rewrite. _upsert returns False
+                # when the row did not commit; appending to `written`
+                # regardless is what published written=132 for 115 rows.
+                if _upsert(c, canon, tool_name, tuned, "claude"):
+                    written.append({"platform": canon, "tool": tool_name,
+                                    "via": "claude"})
+                else:
+                    failed.append({"platform": canon, "tool": tool_name,
+                                   "reason": "db_write_failed"})
 
         # Bust cache so the next read endpoint call sees fresh data.
         _TUNED_CACHE["data"] = {}
         _TUNED_CACHE["at"] = 0.0
 
     finally:
-        _put_db(c)  # issue #1655: release on ALL paths — an exception mid-seed leaked the conn
+        # issue #1655: release on ALL paths — an exception mid-seed leaked the
+        # conn. `c` is deliberately None while the network phase runs, so an
+        # exception raised in there must not blow up the cleanup.
+        if c is not None:
+            _put_db(c)
 
     n_written, n_skipped, n_failed = len(written), len(skipped), len(failed)
     # 2026-07-04 FIX: this always returned 200 ok:true, even when written==0 and
