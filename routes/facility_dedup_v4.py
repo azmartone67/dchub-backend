@@ -78,16 +78,19 @@ WHAT IT WRITES, AND WHAT IT DELIBERATELY DOES NOT
                            2026-09-07; 324 of them have coordinates on both
                            sides and the widest is 0.007 km apart.
 
-     unlinkable_legacy     the same shape, but the two NAMES differ. REFUSED,
-                           reported, never written — 202 pairs measured, and
-                           197 of them render identically only because
-                           util.facility_site_code.site_code_headline rewrites
-                           the <h1> to "<Operator> <CODE> — <City> Data Center"
-                           and drops the disambiguating tail. That collapse is
-                           lossy: "noris network AG ING1 ITA"/"…ITB" and
-                           "SecureIT DCB1.1"/"DCB1.2" are DISTINCT halls 0.00 km
-                           apart which both reduce to one <h1>. A missed
-                           duplicate is safe; a false merge hides a real site.
+     name_mismatch         ANY alternate, either table, whose NAME differs from
+                           the keeper's. REFUSED, reported, never written —
+                           202 cross-table pairs plus 25 of the 26
+                           discovered->discovered ones. 197 of the 202 render
+                           identically only because site_code_headline collapses
+                           the name to its site code, which is lossy: "noris
+                           network AG ING1 ITA"/"…ITB" and "SecureIT
+                           DCB1.1"/"DCB1.2" are DISTINCT halls 0.00-0.03 km
+                           apart that reduce to one <h1>. This bucket replaces
+                           the old `unlinkable_legacy`, which was named for a
+                           limitation (no column could carry the pointer) that
+                           discovered_twin_id has removed — what is left is a
+                           REFUSAL, and it is not confined to legacy rows.
 
 SAFETY RULES (each one is a measured lesson, not a precaution)
 -------------------------------------------------------------
@@ -95,9 +98,17 @@ SAFETY RULES (each one is a measured lesson, not a precaution)
   group bigger than that is a generic-name collision, not a facility. Refused
   and reported, never merged. (v3's lesson: 581 of 1,205 (name, city) groups
   were Amazon IAD85/IAD75/IAD96 — distinct buildings under a generic name.)
-★ Coordinates VETO a merge, never justify one. Rows without coordinates do not
-  block (a missing coordinate is not evidence of distance); two KNOWN
-  coordinates more than _COORD_EPS apart stop the group.
+★★★ COORDINATES ARE A VETO, AND FOR THIS LANE THEY ARE AN INERT ONE. Keep
+  them — they still stop a genuinely distant pair — but do NOT read them as the
+  safety rail here. The population this lane sees is CO-LOCATED by construction:
+  measured 2026-09-07, the differing-name pairs it must refuse sit 0.000-0.279 km
+  apart ('SecureIT DCB1.2'/'DCB1.1' at 0.000 km, 'noris … ING1 ITA'/'ITB' at
+  0.027 km, 'RIC1 DC2'/'DC3'/'DC1' at 0.13/0.28 km), and ALL 25 of them pass the
+  2 km veto. Two halls of one campus share a footprint. What actually does the
+  work is the IDENTICAL-NAME gate below; the veto has never once fired on this
+  class. Rows without coordinates do not block (a missing coordinate is not
+  evidence of distance); two KNOWN coordinates more than _COORD_EPS apart stop
+  the group.
 ★ A row must have a real name. `_render_profile` defaults a NULL name to "Data
   Center", so nameless rows would all group into one enormous false cluster.
 ★ Junk slugs ('unknown-%', numeric-OSM) are excluded at source — they are
@@ -105,15 +116,24 @@ SAFETY RULES (each one is a measured lesson, not a precaution)
 ★ Never overwrite an existing pointer: `duplicate_of_id IS NULL` (and
   `discovered_twin_id IS NULL`) in the WHERE, re-asserted at WRITE time, so
   another lane's verdict always wins over ours.
-★ IDENTICAL NAME is required before a cross-table pointer is written. The
-  rendered identity alone is NOT sufficient evidence here: unlike a drain fork,
-  which the drain's own merged_facility_id independently proves, an
-  independently-ingested legacy row has no corroboration except its fields.
-  Measured 2026-09-07 — with the name gate: 374 pairs, 324 with coordinates on
-  both sides, max separation 0.007 km, ZERO beyond 2 km. Without it: 202 more
-  pairs, median 0.045 km, max 2.532 km, and a sample that contains provably
-  distinct buildings. The gate is what makes the coordinate distribution the
-  same shape #4101 measured (133/133 identical names, 0.00 km).
+★★★ IDENTICAL NAME is required before ANY pointer is written — the
+  discovered->discovered `writes` as much as the cross-table `twin_writes`. The
+  drain fork is the only class exempt, because merged_facility_id is evidence
+  the house did not infer; it is also the only class this lane writes nothing
+  for. Everything else rests on the rendered identity ALONE, and the rendered
+  identity is lossy: util.facility_site_code.site_code_headline rewrites the
+  <h1> to "<Operator> <CODE> — <City> Data Center" and discards the tail that
+  separates "…ING1 ITA" from "…ING1 ITB".
+  ★ THIS WAS LEARNED THE EXPENSIVE WAY. #4101's apply wrote 26 pointers on
+    rendered identity alone. 25 of the 26 had DIFFERENT names, several of them
+    co-located halls, and all 26 were reverted on 2026-09-07 once this gate
+    existed to measure them against. The gate is not a refinement; it is the
+    difference between consolidating a duplicate and hiding a real facility.
+  Measured with the gate: 374 cross-table pairs, 324 with coordinates on both
+  sides, max separation 0.007 km, ZERO beyond 2 km — the same shape #4101
+  measured for the class it got right (133/133 identical names, 0.00 km).
+  Refused by it: 202 cross-table pairs (median 0.045 km, max 2.532 km) and 25
+  of the 26 discovered->discovered pairs.
 ★ NO CHAINS. Electing a keeper that points onward was already refused; making
   an alternate that others point AT was not, and it is the other half of the
   same defect. Measured after #4101: pointer_chains 350 -> 359 (+9, every one
@@ -301,7 +321,7 @@ def is_junk_slug(slug: str) -> bool:
 
 def _refuse(reason):
     return {"keeper": None, "writes": [], "twin_writes": [], "drain_fork": [],
-            "twin_done": [], "unlinkable": [], "skip": reason}
+            "twin_done": [], "name_mismatch": [], "skip": reason}
 
 
 def plan_group(rows):
@@ -313,7 +333,7 @@ def plan_group(rows):
 
     Returns {"keeper": row|None, "writes": [discovered ids],
              "twin_writes": [legacy ids], "drain_fork": [slugs],
-             "twin_done": [slugs], "unlinkable": [slugs], "skip": reason|None}.
+             "twin_done": [slugs], "name_mismatch": [slugs], "skip": reason|None}.
     """
     slugs = {r["canonical_slug"] for r in rows if r.get("canonical_slug")}
     if len(slugs) < 2:
@@ -344,42 +364,63 @@ def plan_group(rows):
     keeper = cand[0]
 
     writes, twin_writes = [], []
-    drain_fork, twin_done, unlinkable = [], [], []
+    drain_fork, twin_done, name_mismatch = [], [], []
     for r in rows:
         if r["canonical_slug"] == keeper["canonical_slug"]:
             continue
-        if r["table"] == "discovered_facilities":
-            # ★ never overwrite another lane's verdict
-            if r.get("duplicate_of_id") is None and r["id"] != keeper["id"]:
-                writes.append(r["id"])
-        elif str(keeper.get("merged_facility_id") or "") == str(r["id"]):
-            # the drain forked this legacy row off THIS keeper — the read path
-            # already consolidates it; writing anything here would create a
-            # second pointer that could disagree.
+
+        # The drain forked this legacy row off THIS keeper. The read path
+        # already consolidates it and the link is the DRAIN's own stamp, not our
+        # inference — writing anything here would create a second pointer that
+        # could disagree. This is the ONE branch that needs no name gate,
+        # because merged_facility_id is independent evidence.
+        if (r["table"] == "facilities"
+                and str(keeper.get("merged_facility_id") or "") == str(r["id"])):
             drain_fork.append(r["canonical_slug"])
+            continue
+
+        # ★ never overwrite another lane's verdict, and never point a row at
+        #   itself. Checked before the gate so an already-consolidated row is
+        #   not re-reported as a refusal.
+        if r["table"] == "discovered_facilities":
+            if r.get("duplicate_of_id") is not None or r["id"] == keeper["id"]:
+                continue
         elif r.get("discovered_twin_id") is not None:
             # already consolidated by an earlier run of THIS lane. Reported so
             # the mechanism stays visible, never re-counted as outstanding work
             # — v3 spent 2026-08-16 re-reporting its own output 12x over.
             twin_done.append(r["canonical_slug"])
-        elif same_name(keeper.get("name"), r.get("name")):
-            # ★ an independently-ingested legacy row that renders identically
-            # AND carries the same name. facilities.discovered_twin_id is the
-            # only column that can name a discovered keeper from this table.
-            twin_writes.append(r["id"])
-        else:
-            # ★ REFUSED. Same rendered <h1>, DIFFERENT name — 197 of the 202
-            # such pairs render alike only because site_code_headline collapses
-            # the name to its site code, which is lossy: "SecureIT DCB1.1" and
-            # "SecureIT DCB1.2" are two halls 0.00 km apart under one <h1>.
-            # A missed duplicate is safe; a false merge hides a real site.
-            unlinkable.append(r["canonical_slug"])
+            continue
 
-    if not (writes or twin_writes or drain_fork or twin_done or unlinkable):
+        # ★★★ THE GATE, AND IT APPLIES TO EVERY POINTER THIS LANE WRITES.
+        #     It was first written for the legacy class only, on the theory
+        #     that discovered-vs-discovered was somehow better corroborated. It
+        #     is not: both classes rest on the rendered identity ALONE, and the
+        #     rendered identity is lossy exactly here. Measured 2026-09-07 on
+        #     the 26 pointers #4101 actually wrote, 25 had DIFFERENT names and
+        #     included 'SecureIT DCB1.2'->'DCB1.1' (0.000 km), 'noris … ING1
+        #     ITA'->'ITB' (0.027 km) and 'RIC1 DC2'/'DC3'->'DC1' — co-located
+        #     halls, not duplicates. Those 26 were reverted; this gate is what
+        #     stops them being written again.
+        #     Cost, stated plainly: it also refuses real duplicates such as
+        #     'Equinix PA2 - Paris, Saint-Denis' -> 'Equinix PA2'. Nothing in
+        #     the data separates those from DCB1.1/DCB1.2, so they go together.
+        #     A missed duplicate is safe; a false merge hides a real site.
+        if not same_name(keeper.get("name"), r.get("name")):
+            name_mismatch.append(r["canonical_slug"])
+        elif r["table"] == "discovered_facilities":
+            writes.append(r["id"])
+        else:
+            # an independently-ingested legacy row that renders identically AND
+            # carries the same name. facilities.discovered_twin_id is the only
+            # column that can name a discovered keeper from this table.
+            twin_writes.append(r["id"])
+
+    if not (writes or twin_writes or drain_fork or twin_done or name_mismatch):
         return _refuse("nothing_to_do")
     return {"keeper": keeper, "writes": writes, "twin_writes": twin_writes,
             "drain_fork": drain_fork, "twin_done": twin_done,
-            "unlinkable": unlinkable, "skip": None}
+            "name_mismatch": name_mismatch, "skip": None}
 
 
 # ★ The publishable universe, both tables. A SUPERSET of what the sitemap emits
@@ -455,13 +496,13 @@ def _collect(cur, limit=None):
             stats["drain_fork_no_write"] = stats.get("drain_fork_no_write", 0) + 1
         if p["twin_done"]:
             stats["twin_pointer_already_set"] = stats.get("twin_pointer_already_set", 0) + 1
-        if p["unlinkable"]:
-            stats["unlinkable_legacy"] = stats.get("unlinkable_legacy", 0) + 1
+        if p["name_mismatch"]:
+            stats["refused_name_mismatch"] = stats.get("refused_name_mismatch", 0) + 1
         plans.append({"h1": key[0], "keeper_id": p["keeper"]["id"],
                       "keeper_slug": p["keeper"]["canonical_slug"],
                       "writes": p["writes"], "twin_writes": p["twin_writes"],
                       "drain_fork": p["drain_fork"], "twin_done": p["twin_done"],
-                      "unlinkable": p["unlinkable"]})
+                      "name_mismatch": p["name_mismatch"]})
         if limit and len(plans) >= limit:
             break
     return plans, stats
@@ -489,7 +530,7 @@ def _summary(plans, stats):
         "twin_pointers_writable": sum(len(p["twin_writes"]) for p in plans),
         "drain_fork_urls_no_write": sum(len(p["drain_fork"]) for p in plans),
         "twin_pointer_urls_already_set": sum(len(p["twin_done"]) for p in plans),
-        "unlinkable_legacy_urls": sum(len(p["unlinkable"]) for p in plans),
+        "refused_name_mismatch_urls": sum(len(p["name_mismatch"]) for p in plans),
         "skipped": stats,
     }
 

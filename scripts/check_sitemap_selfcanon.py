@@ -19,13 +19,36 @@ Identity is the RENDERED <h1> + <title> (util/facility_headline) — the only
 honest key. The slug is not: it hashes provider|name and the classic duplicate
 pair disagrees about `provider`, which is exactly why it has two slugs.
 
-RESIDUAL, MEASURED 2026-09-07 after the r-drain-fork fix: ~323 groups remain,
-almost all a legacy `facilities` row that renders identically to a discovered
-row with NO link between them (195 PeeringDB, 13 OSM, ...).
-facilities.duplicate_of_id is TEXT and addresses facilities.id, so it cannot
-point at a discovered keeper; consolidating those needs a cross-table pointer
-column that does not exist yet. --max-groups defaults to 400 so the KNOWN
-residual does not cry wolf while a return of the 3,989-group population does.
+★★★ THE BUDGET IS A CEILING, AND A CEILING WITH SLACK IN IT IS THE SAME BUG AS
+A SCAN WITH NO FLOOR. It defaulted to 400 against a live 303 — 97 groups of
+headroom, which meant this guard would have gone on exiting 0 all the way back
+up to the population it exists to catch. Set it just above what is actually
+measured, and re-measure it whenever the residual moves.
+
+MEASURED 2026-09-07, live:
+
+    before r-drain-fork (#4101)        3,930 groups
+    after  r-drain-fork                  310 groups   (the 303 reported at
+                                                       08:45Z was measured with
+                                                       26 pointers that were
+                                                       later reverted as false
+                                                       merges; 310 is the
+                                                       honest self-canonical
+                                                       number without them)
+    after  r-twin-pointer (this PR)        80 groups   <- the budget's basis
+    --max-groups default                  100          20 groups of headroom
+
+WHAT THE ~80 RESIDUAL IS, AND WHY IT IS NOT GOING TO ZERO. It is the
+name_mismatch class routes/facility_dedup_v4.plan_group deliberately REFUSES:
+two rows that render one <h1> from DIFFERENT names, because
+util.facility_site_code.site_code_headline rewrites the <h1> down to
+"<Operator> <CODE> — <City> Data Center" and drops the tail. 197 of the 202
+cross-table pairs are that shape, and it is lossy — "SecureIT DCB1.1"/"DCB1.2"
+and "noris network AG ING1 ITA"/"ITB" are DISTINCT halls 0.00-0.03 km apart
+under one heading. Consolidating them would hide a real facility, so the lane
+refuses and this checker counts them. ★ The real fix is in the HEADLINE, not
+here: until site_code_headline stops collapsing those names, two genuinely
+different buildings publish one <h1> and this number stays around 80.
 """
 from __future__ import annotations
 
@@ -95,7 +118,7 @@ def _rows(cur, sql):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--max-groups", type=int, default=400)
+    ap.add_argument("--max-groups", type=int, default=100)
     ap.add_argument("--sitemap", default=SITEMAP)
     a = ap.parse_args()
 

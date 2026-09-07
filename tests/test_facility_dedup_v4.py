@@ -71,7 +71,7 @@ def test_a_drain_fork_is_reported_and_NOT_written():
                     _lg("legacy-id", "a-22222222")])
     assert p["writes"] == []
     assert p["drain_fork"] == ["a-22222222"]
-    assert p["unlinkable"] == []
+    assert p["name_mismatch"] == []
 
 
 def test_an_unlinked_legacy_alternate_with_the_SAME_name_gets_a_twin_pointer():
@@ -83,8 +83,50 @@ def test_an_unlinked_legacy_alternate_with_the_SAME_name_gets_a_twin_pointer():
                     _lg("other-id", "a-22222222", name="Equinix FR5")])
     assert p["writes"] == []
     assert p["drain_fork"] == []
-    assert p["unlinkable"] == []
+    assert p["name_mismatch"] == []
     assert p["twin_writes"] == ["other-id"]
+
+
+def test_the_name_gate_covers_DISCOVERED_pairs_too_not_only_the_legacy_class():
+    """★★★ THE REGRESSION THIS EXISTS TO STOP. #4101's apply wrote 26
+    discovered->discovered pointers on rendered identity ALONE; 25 of them had
+    DIFFERENT names and all 26 were reverted on 2026-09-07. Every row below is
+    one of those real pairs, with its real measured separation — and every one
+    passes the 2 km coordinate veto, which is why the veto is not the guard
+    here and the name gate is.
+
+    Gating only the cross-table class (as this lane first did) leaves THIS
+    branch writing the false merges."""
+    cases = [
+        ("SecureIT DCB1.2", "SecureIT DCB1.1", 0.000),
+        ("noris network AG ING1 ITA", "noris network AG ING1 ITB", 0.027),
+        ("Equinix FR8.2", "Equinix FR8.1", 0.045),
+        ("RIC1 DC2", "RIC1 DC1", 0.131),
+        ("RIC1 DC3", "RIC1 DC1", 0.279),
+        ("Equinix FR2.6", "Equinix Frankfurt FR2", 0.117),
+    ]
+    for alt_name, keeper_name, km in cases:
+        # co-located, exactly as measured — the veto cannot see these
+        p = plan_group([_df(1, "a-11111111", name=keeper_name,
+                            lat=50.1109, lon=8.6821),
+                        _df(2, "a-22222222", name=alt_name,
+                            lat=50.1109, lon=8.6821)])
+        assert p["skip"] is None, (alt_name, p)
+        assert p["writes"] == [], f"{alt_name!r} ({km} km) would be MERGED into {keeper_name!r}"
+        assert p["name_mismatch"] == ["a-22222222"], (alt_name, p)
+
+
+def test_the_coordinate_veto_does_not_fire_on_the_class_the_gate_catches():
+    """The veto is kept but is INERT here, and that must be visible rather than
+    assumed: these two rows are 0.000 km apart, so `coords_far_apart` never
+    triggers and the group is decided entirely by the name."""
+    p = plan_group([_df(1, "a-11111111", name="SecureIT DCB1.1",
+                        lat=49.5, lon=6.1),
+                    _df(2, "a-22222222", name="SecureIT DCB1.2",
+                        lat=49.5, lon=6.1)])
+    assert p["skip"] is None            # the veto did NOT stop this group
+    assert p["writes"] == []            # the NAME did
+    assert p["name_mismatch"] == ["a-22222222"]
 
 
 def test_a_DIFFERENT_name_under_one_rendered_h1_is_refused():
@@ -98,7 +140,7 @@ def test_a_DIFFERENT_name_under_one_rendered_h1_is_refused():
     p = plan_group([_df(1, "a-11111111", name="SecureIT DCB1.1"),
                     _lg("other-id", "a-22222222", name="SecureIT DCB1.2")])
     assert p["twin_writes"] == []
-    assert p["unlinkable"] == ["a-22222222"]
+    assert p["name_mismatch"] == ["a-22222222"]
 
 
 def test_the_name_gate_folds_case_and_whitespace_only():
@@ -119,7 +161,7 @@ def test_a_twin_pointer_already_set_is_not_re_reported_as_outstanding():
                     _lg("other-id", "a-22222222", name="Equinix FR5",
                         twin=1)])
     assert p["twin_writes"] == []
-    assert p["unlinkable"] == []
+    assert p["name_mismatch"] == []
     assert p["twin_done"] == ["a-22222222"]
 
 
@@ -457,7 +499,7 @@ def _run_apply(monkeypatch, plans):
 def _plan(keeper_id=100, writes=(), twin_writes=()):
     return {"h1": "acme dc1", "keeper_id": keeper_id, "keeper_slug": "k-1",
             "writes": list(writes), "twin_writes": list(twin_writes),
-            "drain_fork": [], "twin_done": [], "unlinkable": []}
+            "drain_fork": [], "twin_done": [], "name_mismatch": []}
 
 
 def test_apply_repoints_chain_rows_BEFORE_it_makes_the_alternate():

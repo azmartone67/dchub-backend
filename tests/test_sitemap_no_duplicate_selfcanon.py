@@ -477,6 +477,43 @@ def test_a_discovered_page_is_never_sent_to_a_twin_pointer():
     assert "WRONG" not in html
 
 
+# ── the live checker's budget ────────────────────────────────────────────
+
+def test_the_live_checkers_budget_is_pinned_just_above_the_measured_residual():
+    """★ A CEILING WITH SLACK IN IT IS THE SAME BUG AS A SCAN WITH NO FLOOR.
+    scripts/check_sitemap_selfcanon.py defaulted --max-groups to 400 while the
+    live number was 303 — 97 groups of headroom, so the guard would have kept
+    exiting 0 all the way back up to the population it exists to catch.
+
+    Measured 2026-09-07: 3,930 before #4101, 310 after it, 80 after
+    r-twin-pointer. The budget is 100 — 20 groups of headroom over the measured
+    residual, and far below the 310 a regression would return to.
+
+    Pinned as LITERALS so raising the ceiling is a code review, not a side
+    effect. Both numbers are pinned: MIN_URLS is the floor that stops a failed
+    fetch reading as a clean sitemap, and the two must move deliberately."""
+    import argparse, ast
+    src = open(os.path.join(ROOT, "scripts", "check_sitemap_selfcanon.py"),
+               encoding="utf-8").read()
+    tree = ast.parse(src)
+
+    floor = next(n.value.value for n in ast.walk(tree)
+                 if isinstance(n, ast.Assign)
+                 and getattr(n.targets[0], "id", None) == "MIN_URLS")
+    assert floor == 2000, floor
+
+    budget = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "attr", None) == "add_argument"
+                and node.args and getattr(node.args[0], "value", None) == "--max-groups"):
+            budget = next(k.value.value for k in node.keywords if k.arg == "default")
+    assert budget == 100, budget
+    assert budget < 310, (
+        "the budget must sit below the pre-fix live number or a full "
+        "regression still exits 0")
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
