@@ -18,6 +18,13 @@ breath, told the machines not to fetch it:
     Googlebot       12          (same set)
     Bingbot         14          — and this one is Copilot's ONLY surface
 
+The first five closed on 2026-09-06 (#4052). Bingbot stayed open one more day
+because the trade looked forced: reopening /api/ to it in August was made safe
+by keeping `Disallow: /*?`, and this file recorded that robots.txt "cannot
+express the examples but not the long tail". That was wrong — an END-ANCHORED
+Allow expresses exactly one URL — and it closed on 2026-09-07 with the long-tail
+hygiene fully intact. See the Bingbot block in robots.txt for the measurement.
+
 This is the SECOND time. On 2026-08-11 the same rule blocked the cache-busted
 canon surfaces; Meta reported LIVE_CRAWL_POLICY_BLOCKED and Perplexity said it
 "could not fetch the live CACHE-BUSTED DC Hub MCP surface" every round for a
@@ -141,18 +148,23 @@ def _groups(body: str) -> list:
 # ?offset=5000. Bing had been reporting "limited crawl capacity" since June, so
 # unlike the assistant crawlers its budget is the binding constraint.
 #
-# robots.txt cannot express "the examples but not the long tail": `Allow:
-# /api/v1/facilities` unblocks ?q=Virginia and ?page=99 alike. So this is a real
-# trade, already decided once, and NOT one to reverse inside a guard.
+# ★★★ 2026-09-07 — RESOLVED, AND THE PREMISE WAS THE BUG. This block used to
+# read: "robots.txt cannot express the examples but not the long tail: `Allow:
+# /api/v1/facilities` unblocks ?q=Virginia and ?page=99 alike." True of a PREFIX
+# Allow, false of an END-ANCHORED one:
 #
-# THE COST IS REAL AND STAYS OPEN: 14 advertised URLs remain unfetchable for
-# Copilot's only crawler. That is a live product decision, not a settled one.
-EXCLUDED_UAS = {
-    "Bingbot": (
-        "tests/test_robots_crawl_hygiene.py",
-        "test_bingbot_still_refuses_the_query_string_long_tail",
-    ),
-}
+#     Allow: /api/v1/facilities*q=Virginia*country=US$
+#
+# permits that one URL and nothing else. Bingbot went 14 -> 0 blocked with 0 of
+# 68 adversarial probes leaking and no change to any other crawler, so the trade
+# this exclusion was granted for did not exist. The ownership test below said
+# what to do when that happens — "delete the EXCLUDED_UAS entry so this contract
+# starts covering it" — so the entry is gone and Bingbot is in scope.
+#
+# The MECHANISM stays. Deliberately empty is not the same as unused: the next
+# crawler we pace for a reason still needs its reason bound to a live guard, and
+# an empty dict must not make the tests below pass by having nothing to check.
+EXCLUDED_UAS = {}
 
 
 def _in_scope_uas(body: str) -> list:
@@ -162,10 +174,11 @@ def _in_scope_uas(body: str) -> list:
     and the fix for that is to NAME the partner (see the partner-parity note in
     robots.txt), not to widen the wildcard. PetalBot carries `Disallow: /api/`
     on purpose (11.73k requests, 0 referrals, paced 2026-09-04) and drops out
-    here on its own, without this file naming it. Bingbot needs the explicit
-    EXCLUDED_UAS entry above because its group does NOT say `Disallow: /api/` —
-    its restriction is expressed only by `Disallow: /*?`, which is the very
-    line this contract otherwise overrides.
+    here on its own, without this file naming it. Bingbot is IN scope as of
+    2026-09-07: its group says neither `Disallow: /api/` nor a bare `Allow:
+    /api/`, and its 14 advertised URLs are permitted by end-anchored Allow lines
+    instead — which is exactly why the mutation control below has to strip both
+    forms, not just the prefix one.
     """
     return [
         ua
@@ -260,9 +273,13 @@ def test_clean_content_paths_unaffected():
     assert parser.can_fetch("https://dchub.cloud/sites/", "PerplexityBot")
 
 
-@pytest.mark.parametrize("ua,owner", sorted(EXCLUDED_UAS.items()))
-def test_each_exclusion_is_still_owned_by_a_live_guard(ua, owner):
+def test_each_exclusion_is_still_owned_by_a_live_guard():
     """An exception with no owner is just a hole.
+
+    ★ NOT parametrized, on purpose. `@parametrize` over an empty EXCLUDED_UAS
+    collects ZERO tests and reports green — the same silent-green shape the
+    Floors section above exists to prevent. As a plain loop with an explicit
+    empty branch, emptiness has to assert something positive instead.
 
     Each EXCLUDED_UAS entry names the guard asserting the OPPOSITE — that this
     crawler must keep refusing the query-string long tail. If that guard is ever
@@ -270,35 +287,79 @@ def test_each_exclusion_is_still_owned_by_a_live_guard(ua, owner):
     the contract gets widened deliberately instead of the gap quietly outliving
     its reason.
     """
-    path, func = owner
-    full = os.path.join(ROOT, path)
-    assert os.path.exists(full), (
-        f"{ua} is excluded from the advertised-URL contract on the authority of "
-        f"{path}, which no longer exists. Re-decide the exclusion."
-    )
-    with open(full, encoding="utf-8") as fh:
-        assert "def %s(" % func in fh.read(), (
-            f"{path}::{func} is gone. It is the reason {ua} is excluded here — "
-            "if that policy was reversed, delete the EXCLUDED_UAS entry so this "
-            "contract starts covering it."
+    if not EXCLUDED_UAS:
+        # The empty case must still assert something. Bingbot was the only entry
+        # this dict ever held; if it silently fell back OUT of scope, the
+        # exclusion would be back without anyone deciding it.
+        assert "Bingbot" in IN_SCOPE, (
+            "EXCLUDED_UAS is empty, so every named crawler should be covered — "
+            f"but Bingbot is not in scope. IN_SCOPE={IN_SCOPE}. Either its group "
+            "grew a `Disallow: /api/`, or it vanished from robots.txt."
         )
+        return
+
+    for ua, (path, func) in sorted(EXCLUDED_UAS.items()):
+        full = os.path.join(ROOT, path)
+        assert os.path.exists(full), (
+            f"{ua} is excluded from the advertised-URL contract on the authority "
+            f"of {path}, which no longer exists. Re-decide the exclusion."
+        )
+        with open(full, encoding="utf-8") as fh:
+            assert "def %s(" % func in fh.read(), (
+                f"{path}::{func} is gone. It is the reason {ua} is excluded "
+                "here — if that policy was reversed, delete the EXCLUDED_UAS "
+                "entry so this contract starts covering it."
+            )
 
 
-def test_the_excluded_crawlers_gap_is_measured_not_assumed():
-    """Name the size of what the exclusion costs, so it cannot quietly grow.
+def test_bingbot_gets_the_examples_without_the_long_tail():
+    """The property that replaced the exclusion, asserted from both sides.
 
-    If a future edit blocked far more than the known query-string set for an
-    excluded crawler, that is a different and larger problem than the one this
-    exclusion was granted for.
+    Bingbot's 14 URLs are permitted by END-ANCHORED Allow lines, not by opening
+    /api/. So the contract above (everything advertised is fetchable) is only
+    half of it — the half that made the August reopen safe is that EXTENDING an
+    advertised URL must still be refused. A prefix Allow would pass the first
+    half and fail this one, which is the whole reason this test exists.
     """
     parser = Protego.parse(BODY)
-    for ua in EXCLUDED_UAS:
-        blocked = [u for u in ADVERTISED if not parser.can_fetch(u, ua)]
-        assert set(blocked) <= set(WITH_QUERY), (
-            f"{ua} is blocked from advertised URLs that carry NO query string: "
-            f"{sorted(set(blocked) - set(WITH_QUERY))}. The exclusion covers the "
-            "query-string trade only — this is a different defect."
+
+    for u in WITH_QUERY:
+        assert parser.can_fetch(u, "Bingbot") is True, (
+            f"Bingbot cannot fetch advertised {u} — its end-anchored Allow line "
+            "is missing or no longer matches. Derivation is "
+            "re.sub(r'[^A-Za-z0-9/._~=-]', '*', path) + '$' — a whitelist, "
+            "because a literal `,` fails to match just as `&` does."
         )
+
+    for u in WITH_QUERY:
+        for suffix in ("&page=99", "&cb=1", "&offset=5000", "0"):
+            probe = u + suffix
+            assert parser.can_fetch(probe, "Bingbot") is False, (
+                f"Bingbot regained {probe}. An advertised example leaked its "
+                "pagination long tail — the Allow line lost its `$` anchor, or "
+                "was widened to a prefix."
+            )
+
+    for probe in ("https://dchub.cloud/api/v1/facilities?page=99",
+                  "https://dchub.cloud/api/v1/facilities?q=Virginia",
+                  "https://dchub.cloud/api/news?limit=1000",
+                  "https://dchub.cloud/api/v1/search?q=junk&offset=5000"):
+        assert parser.can_fetch(probe, "Bingbot") is False, (
+            f"Bingbot regained {probe} — the crawl-budget sink that closing "
+            "/api/ in July was meant to drain."
+        )
+
+    # ★ MEASURED RESIDUAL, recorded rather than discovered later. `*` spans
+    #   separators, so PREPENDING a parameter keeps the advertised tail at the
+    #   end and is allowed. Bing crawls what it discovers and nothing links this
+    #   form, so it is bounded by discoverability, not by the pattern. Asserted
+    #   as EXPECTED so that if a future construction closes it, this test fails
+    #   and the comment gets deleted with it instead of going stale.
+    prepended = "https://dchub.cloud/api/v1/facilities?page=99&q=Virginia&country=US"
+    assert parser.can_fetch(prepended, "Bingbot") is True, (
+        "the prepended-parameter residual is now closed — good. Delete this "
+        "assertion and the RESIDUAL note in robots.txt, which no longer applies."
+    )
 
 
 def test_petalbot_stays_out_of_scope_without_being_named_here():
@@ -321,15 +382,39 @@ def test_removing_the_api_allow_lines_reblocks_everything():
 
     Mutating the body in memory needs no git, no history and no network, so
     unlike a `git show HEAD~1` control it can neither expire nor skip.
+
+    ★ TWO mechanisms now carry this, and the mutation has to strip BOTH.
+    The assistant group is unblocked by a prefix `Allow: /api/`; Bingbot is
+    unblocked by end-anchored `Allow: /api/...$` lines and has no prefix Allow
+    at all. Removing only the prefix form would leave Bingbot fetchable and this
+    control would fail for the wrong reason — reporting a leak where the design
+    changed.
     """
-    line = "Allow: /api/"
-    assert line in BODY, (
+    prefix = "Allow: /api/"
+    anchored = [
+        l.strip() for l in BODY.splitlines()
+        if l.strip().startswith("Allow: /api/") and l.strip().endswith("$")
+    ]
+    assert prefix in BODY, (
         "`Allow: /api/` is not in the served robots body — either the fix was "
         "reverted or this guard drifted from the emitter. Either way it was "
         "about to test nothing."
     )
-    mutated = "\n".join(l for l in BODY.splitlines() if l.strip() != line)
+    assert len(anchored) >= 10, (
+        f"only {len(anchored)} end-anchored `Allow: /api/...$` lines in the "
+        "served body, but Bingbot's 14 advertised URLs depend on them. Either "
+        "they were removed or the emitter changed shape."
+    )
+
+    drop = {prefix, *anchored}
+    mutated = "\n".join(l for l in BODY.splitlines() if l.strip() not in drop)
     assert mutated != BODY, "mutation did not apply — the red below proves nothing"
+    # ★ Compare LINE SETS, not substrings: "Allow: /api/" is a substring of
+    #   "Allow: /api/v1/canon/", so `gone not in mutated` would fail on a
+    #   mutation that applied perfectly.
+    remaining = {l.strip() for l in mutated.splitlines()}
+    for gone in drop:
+        assert gone not in remaining, f"mutation missed {gone!r}"
 
     before = Protego.parse(mutated)
     still = [
@@ -337,9 +422,10 @@ def test_removing_the_api_allow_lines_reblocks_everything():
         if before.can_fetch(u, ua)
     ]
     assert not still, (
-        f"removing `{line}` left {len(still)} advertised query-string URLs "
-        f"fetchable (e.g. {still[:3]}), so that line is not what unblocks them. "
-        "Most likely `Disallow: /*?` was dropped from a group instead."
+        f"removing the /api/ Allow lines left {len(still)} advertised "
+        f"query-string URLs fetchable (e.g. {still[:3]}), so those lines are not "
+        "what unblocks them. Most likely `Disallow: /*?` was dropped from a "
+        "group instead."
     )
 
 

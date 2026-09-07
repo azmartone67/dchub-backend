@@ -1706,6 +1706,73 @@ User-agent: Bingbot
 Content-Signal: search=yes, ai-input=yes, ai-train=no
 Disallow: /*?
 Allow: /sitemap.xml
+# ★★★ 2026-09-07 — "robots.txt cannot express the examples but not the long
+#   tail" was FALSE, and it had been written into a guard as settled fact.
+#
+#   The 2026-09-06 handoff recorded 14 advertised URLs unfetchable for this UA
+#   as a product trade with two options: accept Bing's pagination long tail, or
+#   delete the worked examples from the llms files. Both were unnecessary. An
+#   END-ANCHORED Allow expresses exactly one URL:
+#
+#     Allow: /api/v1/facilities*q=Virginia*country=US$
+#
+#   Measured with Protego 0.6.2 (RFC 9309) against the served body:
+#     bingbot advertised BLOCKED      14 -> 0   (of 63)
+#     adversarial probes LEAKED        0 -> 0   (of 68: &page=99, &cb=1,
+#                                                trailing 0, mutated params,
+#                                                /admin, /api/stripe, /sites/)
+#     other named crawlers CHANGED          0   (PetalBot stays 27, self-paced)
+#
+# ★ WHY `*` AND NOT THE LITERAL SEPARATORS. Protego silently refuses to match a
+#   pattern containing a literal `&` — `Allow: /api/v1/facilities?q=Virginia&
+#   country=US$` reads as BLOCKED, so the exact-looking form would have made our
+#   only oracle disagree with Bing. Substituting `*` for the separators matches
+#   under Protego AND is unambiguous in the Google/Bing wildcard spec.
+#
+#   ★ The rule is a WHITELIST, not a list of known-bad characters, because `?`
+#   and `&` are NOT the whole set: a literal `,` fails identically, which is how
+#   ?markets=dallas,ashburn slipped through a first green here. Keep only what
+#   Protego matches literally and wildcard everything else —
+#
+#       re.sub(r'[^A-Za-z0-9/._~=-]', '*', path) + '$'
+#
+#   — so an example carrying any other punctuation is covered without anyone
+#   having to rediscover this. Measured on the whitelist form: 14/14 advertised
+#   fetchable, 0 of 60 adversarial probes leaking.
+#
+# ★ THE HYGIENE THAT MADE REOPENING /api/ SAFE IS UNTOUCHED. `Disallow: /*?`
+#   still closes the whole parameterized surface; these 14 lines are longer, so
+#   per RFC 9309 (most octets wins) they win for exactly these URLs. Bare
+#   ?page=99, ?limit=1000 and ?q=Virginia stay blocked — asserted in
+#   tests/test_robots_crawl_hygiene.py, which did NOT need loosening for this.
+#
+# ★ RESIDUAL, MEASURED NOT ASSUMED: `*` spans separators, so a URL that ENDS in
+#   an advertised tail is allowed even with a parameter prepended —
+#   ?page=99&q=Virginia&country=US passes, while the appended form
+#   ?q=Virginia&country=US&page=99 does not. Bing crawls what it discovers and
+#   nothing links the prepended form, so the exposure is bounded by
+#   discoverability rather than by the pattern. Encoded as an explicit expected
+#   case in tests/test_robots_permits_what_llms_advertises.py rather than left
+#   for the next reader to find.
+#
+# ★ ANTI-ROT: these lines are hand-written but not hand-maintained. Bingbot is
+#   now IN SCOPE for the derived contract, so adding a parameterized example to
+#   llms.txt without its Allow line FAILS CI. That is the property the six
+#   2026-08-11 discovery Allow lines lacked when they fell behind the catalog.
+Allow: /api/ai/query*type=deals$
+Allow: /api/ai/query*type=facilities$
+Allow: /api/ai/query*type=stats$
+Allow: /api/grid/fuel-mix*iso=ERCOT$
+Allow: /api/news*limit=10$
+Allow: /api/renewable/solar*lat=36.17*lon=-115.14$
+Allow: /api/site-score*lat=33.4484*lon=-112.074*state=AZ$
+Allow: /api/v1/dcpi/scores*limit=500$
+Allow: /api/v1/facilities*q=Equinix*country=US*limit=10$
+Allow: /api/v1/facilities*q=Virginia*country=US$
+Allow: /api/v1/markets/compare*markets=dallas*ashburn$
+Allow: /api/v1/mcp/dcpi/compare*markets=dallas*ashburn$
+Allow: /api/v1/permitting/intel*class=moratorium$
+Allow: /api/v1/transactions*limit=10$
 # ★ 2026-09-06 — a pre-existing hole, not a new one. `Disallow: /admin` does not
 #   match /api/admin (no leading match), so the admin, auth and billing APIs have
 #   been crawlable by this group on their CLEAN paths all along; only the
