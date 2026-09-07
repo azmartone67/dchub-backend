@@ -102,7 +102,8 @@ def facility_headline(name, provider, city, state, country):
     # with 0 clicks — the code is buried mid-title. When the NAME carries one
     # unambiguous code, lead with "<Operator> <CODE> — <City> Data Center".
     from util.facility_site_code import site_code_headline as _sc_headline
-    sc_head = _sc_headline(name, "" if provider == "Operator" else provider, city)
+    sc_head = _sc_headline(name, "" if provider == "Operator" else provider,
+                           city, state, country)
     h1 = disp
     og_title = f"{disp} — Data Center"
     if sc_head:

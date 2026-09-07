@@ -24,7 +24,7 @@ if "main" not in sys.modules:
 
 from util.facility_site_code import (   # noqa: E402
     detect_site_code, detect_site_designator, site_code_headline,
-    _clean_prefix, DENY_PREFIXES, DENY_SUFFIX_WORDS)
+    _clean_prefix, _state_token, DENY_PREFIXES, DENY_SUFFIX_WORDS)
 
 
 POSITIVES = [
@@ -304,6 +304,101 @@ def test_a_city_word_is_never_removed_from_inside_a_word_run():
         assert got.split() == raw[:len(got.split())], (head, got, raw)
 
 
+# ── r-prefix-state-abbr: a bare postal code is a location ────────────
+#
+# Measured live 2026-09-07 over all 5,586 rows on this path: 54 rows / 27
+# published URLs carry a bare two-letter abbreviation of their OWN state in
+# the operator slot. Every one is CyrusOne ("<City>, <ST>, <CODE>") or
+# DartPoints ("<Brand> <City>, <ST> - <CODE>"). Every head below is real.
+
+# head, city, state, country, expected prefix
+STATE_REMOVED = [
+    ("Lewisville, TX, ", "Lewisville", "TX", "US", ""),
+    ("Sterling, VA, ", "Sterling", "VA", "US", ""),
+    ("Council Bluffs, IA, ", "Council Bluffs", "IA", "US", ""),
+    ("Norwalk, CT, ", "Norwalk", "CT", "US", ""),
+    ("DartPoints Cincinnati, OH - ", "Cincinnati", "OH", "US", "DartPoints"),
+    ("DartPoints Baton Rouge, LA - ", "Baton Rouge", "LA", "US", "DartPoints"),
+    ("DartPoints Spartanburg, SC - ", "Spartanburg", "SC", "US", "DartPoints"),
+    # the city is NOT the row's city here (Ladson), so only the state goes
+    ("DartPoints Charleston, SC - ", "Ladson", "SC", "US",
+     "DartPoints Charleston"),
+]
+
+# The looser tests that would break these are the point of the narrow rule.
+STATE_KEPT = [
+    # a FULL-WORD region that is the operator's own name — 64 live rows
+    ("DCI Indonesia (", "Bekasi, Cibitung", "Indonesia", "ID", "DCI Indonesia"),
+    ("Digital Realty Osaka - ", "Ibaraki-city", "Osaka", "JP",
+     "Digital Realty Osaka"),
+    ("Cirion Cordoba - ", "Córdoba", "Cordoba", "AR", "Cirion Cordoba"),
+    ("KIO Guatemala 1 (", "Guatemala City", "Guatemala", "GT",
+     "KIO Guatemala 1"),
+    # "DC" means Data Center on 94 live rows and is not in _US_STATE_ABBR
+    ("Artnet DC Gdansk ", "Gdansk", "Gdańsk", "PL", "Artnet DC"),
+    ("Artnet DC Gdansk ", "Gdansk", "DC", "US", "Artnet DC"),
+    # a two-letter code that is NOT this row's state stays
+    ("DartPoints Cincinnati, OH - ", "Cincinnati", "KY", "US",
+     "DartPoints OH"),
+    # ... and neither is it dropped outside the US
+    ("FSIT Dietikon CH-", "Dietikon", "CH", "CH", "FSIT Dietikon CH"),
+    # a brand that merely starts with a state-shaped word
+    ("US Signal ", "Gilbert", "AZ", "US", "US Signal"),
+]
+
+
+@pytest.mark.parametrize("head,city,state,country,want", STATE_REMOVED)
+def test_a_bare_postal_code_leaves_the_operator_slot(head, city, state,
+                                                     country, want):
+    assert _clean_prefix(head, city, state, country) == want
+
+
+@pytest.mark.parametrize("head,city,state,country,want", STATE_KEPT)
+def test_a_region_that_is_part_of_the_name_stays(head, city, state,
+                                                 country, want):
+    assert _clean_prefix(head, city, state, country) == want
+
+
+def test_state_token_answers_only_about_this_row():
+    """Not "is this a state" — "is THIS row's state a bare US postal code"."""
+    assert _state_token("TX", "US") == "TX"
+    assert _state_token("tx", "usa") == "TX"
+    assert _state_token("TX", "CA") == ""          # not a US row
+    assert _state_token("Texas", "US") == ""       # spelled out, not a code
+    assert _state_token("Osaka", "JP") == ""
+    assert _state_token(None, "US") == ""
+    assert _state_token("", "") == ""
+    # ★ "DC" is Data Center on 94 live rows and is deliberately not a state
+    assert _state_token("DC", "US") == ""
+
+
+def test_the_two_measured_shapes_end_to_end():
+    assert site_code_headline("Lewisville, TX, DFW2", "CyrusOne",
+                              "Lewisville", "TX", "US") == \
+        "CyrusOne DFW2 — Lewisville Data Center"
+    assert site_code_headline("DartPoints Cincinnati, OH - CVG1", "DartPoints",
+                              "Cincinnati", "OH", "US") == \
+        "DartPoints CVG1 — Cincinnati Data Center"
+
+
+def test_state_is_optional_and_absent_means_the_old_behaviour():
+    """The signature is additive: state/country default to None, and a caller
+    that passes neither gets exactly what it got before this change. Asserted
+    as the whole string, so a changed default cannot slip through."""
+    assert site_code_headline("Lewisville, TX, DFW2", "CyrusOne",
+                              "Lewisville") == \
+        "CyrusOne TX DFW2 — Lewisville Data Center"
+    assert site_code_headline("DartPoints Cincinnati, OH - CVG1", "DartPoints",
+                              "Cincinnati") == \
+        "DartPoints OH CVG1 — Cincinnati Data Center"
+    # and the one production caller DOES pass them (util.facility_headline)
+    import inspect
+    import util.facility_headline as fh
+    src = inspect.getsource(fh.facility_headline)
+    assert "city, state, country)" in src, \
+        "facility_headline stopped passing state/country to site_code_headline"
+
+
 # ── the rendered page ────────────────────────────────────────────────
 
 BASE = {
@@ -313,9 +408,9 @@ BASE = {
 }
 
 
-def _render(name, provider, city):
+def _render(name, provider, city, **kw):
     import routes.facility_profile_page as fpp
-    fac = dict(BASE, name=name, provider=provider, city=city)
+    fac = dict(BASE, name=name, provider=provider, city=city, **kw)
     return fpp._render_profile(fac, "equinix-equinix-fr5-3366f937")
 
 
@@ -373,6 +468,15 @@ def test_rendered_page_keeps_a_city_that_starts_a_longer_name():
     html = _render(ELK, None, "ELK GROVE")
     assert _h1(html) == "ELK GROVE VILLAGE CHI10-11-12 — ELK GROVE Data Center"
     assert "<h1>VILLAGE" not in html
+
+
+def test_rendered_page_drops_a_bare_postal_code():
+    html = _render("Lewisville, TX, DFW2", "CyrusOne", "Lewisville",
+                   state="TX", country="US")
+    assert _h1(html) == "CyrusOne DFW2 — Lewisville Data Center"
+    assert "CyrusOne TX DFW2" not in html
+    # the JSON-LD still carries the real row name
+    assert '"name": "Lewisville, TX, DFW2"' in html
 
 
 def test_rendered_page_with_two_codes_keeps_the_legacy_title():

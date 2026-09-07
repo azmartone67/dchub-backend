@@ -175,7 +175,8 @@ def detect_site_designator(name: str | None, city: str = "") -> str | None:
 
 
 def site_code_headline(name: str | None, provider: str | None,
-                       city: str | None) -> str | None:
+                       city: str | None, state: str | None = None,
+                       country: str | None = None) -> str | None:
     """`"<Operator> <CODE> — <City> Data Center"` when a code is detected and
     both an operator and a city are known; None otherwise (caller keeps its
     existing title). <CODE> carries its building designator when the name
@@ -196,7 +197,7 @@ def site_code_headline(name: str | None, provider: str | None,
     # building designator the name attaches to it, so two halls of one campus
     # do not render one <h1>. `head` is still split on the bare code.
     ident = code + _designator_suffix(name or "", code, city)
-    prefix = _clean_prefix(head, city)
+    prefix = _clean_prefix(head, city, state, country)
     if provider and prefix and _same_brand(provider, prefix):
         operator = prefix
     elif provider and prefix:
@@ -232,7 +233,50 @@ def _head_words(head: str):
     return out
 
 
-def _clean_prefix(head: str, city: str) -> str:
+# ── the state that is a location, not a brand ────────────────────────
+# Two ingest conventions write the location INTO the name — CyrusOne's
+# "<City>, <ST>, <CODE>" and DartPoints' "<Brand> <City>, <ST> - <CODE>" — so
+# once the city comes out the postal abbreviation is left sitting in the
+# operator slot: "CyrusOne TX DFW2 — Lewisville Data Center", "DartPoints OH
+# CVG1 — Cincinnati Data Center".
+#
+# Measured live 2026-09-07 over all 5,586 rows on this path: 54 rows / 27
+# published URLs, every one CyrusOne or DartPoints. 34 of them have NOTHING
+# else in the prefix (the operator column then leads on its own, which is what
+# the page should have said all along); 20 carry a real brand in front.
+#
+# ★ The test is the row's OWN `state`, and only in its two-letter postal form
+#   on a US row. A looser test eats real brands: 64 further rows carry a
+#   FULL-WORD region that IS the operator's name — "DCI Indonesia JK1",
+#   "Digital Realty Osaka KIX10", "Cirion Cordoba COR1", "KIO Guatemala 1",
+#   "DCI Seoul 01". Two letters + equal to this row's state + US separates the
+#   two sets with no overlap in the corpus.
+_US_STATE_ABBR = frozenset({
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID",
+    "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+    "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+    "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+    "WI", "WY",
+})
+_US = frozenset({"US", "USA", "UNITED STATES"})
+
+
+def _state_token(state: str | None, country: str | None) -> str:
+    """The postal abbreviation to drop from the prefix, or "".
+
+    ★ NOT a general "is this a state" test — it answers only "is THIS row's
+    state written as a bare two-letter US code". "DC" is deliberately absent:
+    94 rows carry it in the operator slot meaning Data Center ("Artnet DC
+    Gdansk MP100"), and none of them is in Washington.
+    """
+    st = (state or "").strip().upper()
+    if st in _US_STATE_ABBR and (country or "").strip().upper() in _US:
+        return st
+    return ""
+
+
+def _clean_prefix(head: str, city: str, state: str | None = None,
+                  country: str | None = None) -> str:
     """Words before the code, minus the city and dangling punctuation.
 
     ★ r-prefix-city-run (2026-09-07). The city is removed only as a WHOLE
@@ -258,23 +302,34 @@ def _clean_prefix(head: str, city: str) -> str:
     city reads as redundant; cutting a name in half reads as broken, and the
     <h1> is the page's identity (util/facility_headline).
     """
-    toks = _head_words(head)
-    words = [w for w, _ in toks]
+    toks = _head_words(head)          # [(word, ends_a_phrase), ...]
     cw = [w.strip(_PUNCT).lower() for w in (city or "").split()]
     cw = [w for w in cw if w]
     if cw:
         n, i, kept = len(cw), 0, []
-        while i < len(words):
+        while i < len(toks):
             j = i + n
-            if [w.lower() for w in words[i:j]] == cw and (
-                    j >= len(words)
-                    or words[j].lower() in _GENERIC
+            if [w.lower() for w, _ in toks[i:j]] == cw and (
+                    j >= len(toks)
+                    or toks[j][0].lower() in _GENERIC
                     or toks[j - 1][1]):
                 i = j
                 continue
-            kept.append(words[i])
+            kept.append(toks[i])
             i += 1
-        words = kept
+        toks = kept
+    # r-prefix-state-abbr: this row's own state, written as a bare two-letter
+    # postal code, is a location and not a brand. Same boundary discipline as
+    # the city run — a token another real word follows belongs to that word's
+    # name and is kept.
+    st = _state_token(state, country)
+    if st:
+        toks = [(w, b) for k, (w, b) in enumerate(toks)
+                if not (w.strip(".,").upper() == st
+                        and (k + 1 >= len(toks)
+                             or toks[k + 1][0].lower() in _GENERIC
+                             or b))]
+    words = [w for w, _ in toks]
     # Generic trailing words are not part of a brand.
     while words and words[-1].lower() in _GENERIC:
         words.pop()
