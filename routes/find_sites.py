@@ -461,10 +461,17 @@ def find_sites():
             params.append(state)
         n_rows = min(MAX_ANCHOR_ROWS, limit * OVERSAMPLE)
         cur.execute(
-            "SELECT name, city, state, status, voltage_kv, capacity_mva, "
+            "SELECT id, name, city, state, status, voltage_kv, capacity_mva, "
             "lat, lng, owner, operator FROM substations WHERE "
             + " AND ".join(conds)
-            + " ORDER BY voltage_kv DESC NULLS LAST LIMIT %s",
+            # ★ id is the TIEBREAKER, not decoration. Ordering on voltage_kv
+            # alone is unstable wherever voltages tie, and they tie constantly:
+            # Virginia alone has many 765 kV substations, so Postgres was free
+            # to return a different top-N per call and two identical requests
+            # produced different candidate sets. For a tool whose output feeds
+            # a diligence shortlist, an unreproducible answer is a broken one.
+            # id is the SERIAL PRIMARY KEY, so this is total and cheap.
+            + " ORDER BY voltage_kv DESC NULLS LAST, id ASC LIMIT %s",
             params + [n_rows])
         cols = [d[0] for d in cur.description]
         raw = [dict(zip(cols, r)) for r in cur.fetchall()]
