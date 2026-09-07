@@ -725,9 +725,29 @@ def require_plan(min_plan='pro'):
                 # ── STEP 1: Check web session cookies ──────────────────
                 # dchub.cloud frontend may store JWT in a cookie after
                 # Google OAuth login. Check common cookie names.
+                #
+                # ★ 2026-09-07 — `dchub_session` REMOVED from this chain, and it
+                # was not merely dead. `or` short-circuits on the first truthy
+                # value, and the anti-scrape attestation cookie sat AHEAD of
+                # `dchub_token`. Every browser carries an attestation (it is
+                # issued to every visitor — routes/session_cookie.py), so
+                # session_token was ALWAYS the attestation, decode_jwt ALWAYS
+                # raised, and the `except: pass` below dropped through to STEP 2.
+                # The real login JWT in the `dchub_token` cookie was never read.
+                # A user whose credential lived only in that cookie — no Bearer
+                # header — silently resolved to no plan. Proven by executing this
+                # expression against a browser holding both cookies; see
+                # tests/test_attestation_cookie_is_not_a_jwt_candidate.py.
+                #
+                # The attestation can never decode: its value is
+                # `<issued_ts>|<ip_prefix>|<hmac_sig>`, it carries no user id and
+                # no plan, and map_tier_gating.py's "★ WHY THIS IS SAFE" note
+                # makes it a rule that it may never stand in for paid status. So
+                # it does not belong in a list of credentials at all — leaving it
+                # here is also how it would BECOME one if anyone ever made it a
+                # JWT. Only names that can actually carry a JWT belong below.
                 session_token = (
                     request.cookies.get('session_token') or
-                    request.cookies.get('dchub_session') or
                     request.cookies.get('dchub_token') or
                     request.cookies.get('token')
                 )
@@ -1037,7 +1057,13 @@ def get_request_tier():
                     return _mt
             except Exception:
                 pass
-        session_token = (request.cookies.get('session_token') or request.cookies.get('dchub_session') or
+        # ★ 2026-09-07 — `dchub_session` removed: same shadowing defect as the
+        # STEP 1 chain above. It is an attestation, not a credential, it can
+        # never decode, and sitting ahead of `dchub_token` it prevented the real
+        # login JWT from ever being read. Here the decode is not even wrapped in
+        # its own try, so the raise fell to the function-level `except: pass`
+        # and the caller got 'anon'.
+        session_token = (request.cookies.get('session_token') or
                          request.cookies.get('dchub_token') or request.cookies.get('token'))
         if session_token:
             decode_jwt = _get_decode_jwt()
