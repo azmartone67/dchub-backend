@@ -137,6 +137,77 @@ def purge_frontend_static():
     ])), 200
 
 
+# CF purge-by-file accepts 30 files per request on this plan; a 31st in the same
+# call is rejected, which would silently leave that URL serving. Named and split
+# out so a test can drive it with a list long enough to actually chunk — with
+# only ~24 derived URLs the route itself never produces a second batch, so
+# asserting on the route alone cannot tell 30 from 300 (measured: it did not).
+_CF_PURGE_MAX_FILES = 30
+
+
+def _purge_in_batches(urls):
+    return [_purge_urls(urls[i:i + _CF_PURGE_MAX_FILES])
+            for i in range(0, len(urls), _CF_PURGE_MAX_FILES)]
+
+
+# NOTE this route is named after what it purges (an export), NOT after the
+# tool family, on purpose. The canonical-counts scanner
+# (tests/test_canonical_counts_drift.py) flags a digit followed by a separator
+# and the plural of "tool" as a hardcoded tool-count literal contradicting
+# canon, and fails unit-tests on it — that is a false positive on a route slug,
+# but renaming is cheaper and safer than the alternative. Do NOT reach for
+# STALE_SCAN_SKIP_FILES: it excludes the whole FILE, including the numbers that
+# genuinely need watching.
+@cf_purge_bp.route("/api/v1/cf/purge/tier2-export", methods=["GET", "POST"])
+def purge_tier2_export():
+    """One-shot: evict pre-gate Tier-2 MCP tool responses from the CF edge.
+
+    WHY THIS EXISTS. #4038 gated /api/v1/mcp/tools/export_facility_csv and
+    create_site_report behind a developer-tier key. The ORIGIN gate went live
+    and works — every cache-busted anonymous probe returns 401. But the eyeball
+    cache sits IN FRONT of the worker, so entries warmed BEFORE the gate kept
+    being served. Measured 2026-09-06, after the gate deployed, on the
+    un-cache-busted URL a scraper would actually use:
+
+        10/10 probes -> HTTP 200, cf-cache-status: HIT, 1,003,630 bytes,
+        age climbing past 1,900s — the full 10,000-row registry, anonymous.
+
+    dchub-frontend#1409 (worker 4.92.0) stopped the worker RE-caching this
+    family, but nothing in the worker runs on a HIT, so it cannot evict what is
+    already there. Only a purge does.
+
+    PUBLIC GET, no admin key — same rationale and same shape as
+    purge/markets-fix and purge/frontend-static above: the URL list is DERIVED
+    HERE and the caller cannot influence it, so this cannot be used to evict
+    arbitrary paths on the zone. Purges are idempotent and read-side. The admin
+    key gates /api/v1/cf/purge because that one takes caller-supplied URLs;
+    this one does not, and requiring a secret to close a live data leak is the
+    thing that kept it open.
+
+    A CF zone Cache Rule bypass for /api/v1/mcp/tools/* is still the durable
+    fix — this only evicts what is cached NOW. Re-run it after any window in
+    which a paid caller may have primed a new URL shape.
+    """
+    urls = []
+    for host in ("https://dchub.cloud", "https://api.dchub.cloud"):
+        b = f"{host}/api/v1/mcp/tools"
+        urls.append(f"{b}/export_facility_csv")
+        # The row-cap shapes an enumerator actually sends. limit=10000 is the
+        # ceiling and the one measured leaking; the rest are the round numbers
+        # a caller reaches for. CF purge-by-file is exact-match on the full
+        # URL including query string, so each shape must be listed.
+        for lim in (10000, 5000, 2000, 1000, 500, 250, 100, 50, 25, 10):
+            urls.append(f"{b}/export_facility_csv?limit={lim}")
+        urls.append(f"{b}/create_site_report")
+    results = _purge_in_batches(urls)
+    return jsonify({
+        "ok": all(r.get("ok") for r in results),
+        "batches": len(results),
+        "url_count": len(urls),
+        "results": results,
+    }), 200
+
+
 # ── OG/social card purge (2026-09-05) ──────────────────────────────────────
 # Card designs change. Since #3938 gave /api/v1/og/* a 7-day edge TTL (they are
 # deterministic PNGs and were being re-rendered every 5 minutes at ~1.4s each),
