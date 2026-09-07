@@ -4,30 +4,36 @@ mcp_tier1_tools.py — Tier 1 MCP tool backend endpoints.
 Phase ZZZZZ-round33 (2026-05-24). Backends for new MCP tools added to
 dchub-mcp-server.
 
-★ NOT GATED. This docstring said "Each is gated to Developer tier ($49/mo) or
-above" from 2026-05-24 until 2026-09-07. Nothing in this file has ever read a
-tier: there is no _require_key, no _caller_tier, no credential read of any
-kind. Measured live 2026-09-07 at the Railway origin, anonymous, at each
-route's ceiling — and again with a bogus `X-API-Key: x` control, byte-identical:
+★ GATING, EXACTLY — read this before adding a claim to it.
+
+  rank_markets      NOT gated. No credential is read; anonymous callers get
+  score_facility    the full result at the ceiling limit.
+  find_alternatives PARTIALLY gated: `provider` and `power_mw` (and the prose
+                    forms of both in match_reasons / key_differences) require
+                    FIND_ALT_SPECS_MIN_TIER, default "developer". Everything
+                    else on that route is ungated.
+
+From 2026-05-24 to 2026-09-07 this docstring said "Each is gated to Developer
+tier ($49/mo) or above" while nothing in the file read a tier at all. Measured
+live at the Railway origin, anonymous, at each route's ceiling, each with a
+bogus `X-API-Key: x` control that returned byte-identical bodies:
 
     GET /api/v1/mcp/tools/rank_markets?limit=50       -> 200  14,353 b
     GET /api/v1/mcp/tools/find_alternatives?limit=20  -> 200   6,124 b
     GET /api/v1/mcp/tools/score_facility              -> 200   1,433 b
 
-This is the SAME wording defect that hid the open /api/v1/mcp/tools/
+That was the SAME wording defect that hid the open /api/v1/mcp/tools/
 export_facility_csv for months — its docstring claimed "Tiered limits" while
-nothing read a tier (gated in #4038, whose replacement docstring warns: "Do not
-restore that wording without a tier actually being read"). That warning lives
-one file over in routes/mcp_tier2_reports.py; this file still carried the
-wording it warns about.
+nothing read a tier (gated in #4038, whose replacement warns: "Do not restore
+that wording without a tier actually being read"). #4081 corrected the claim;
+the find_alternatives half of it became true in the NEXT commit, and this
+paragraph is written to be re-checked rather than re-read.
 
-★ Being open here is NOT, by itself, a bypass: `POST /mcp` serves these same
-three tools anonymously with the same fields (measured the same day), so the
-REST twins are consistent with the MCP layer rather than a way around it.
-Whether these fields SHOULD reach anonymous callers is a pricing decision and
-is deliberately NOT settled here — see the note on find_alternatives below.
-If that decision is ever "gate it", use routes/mcp_tier2_reports._require_key
-and delete this paragraph; do not re-add a tier claim to a docstring first.
+★ If you gate rank_markets or score_facility, the tier must come from
+_end_user_tier() below, NOT from map_tier_gating's stock resolver: that one
+maps X-Internal-Key to 'pro' at step 1 and dchub-mcp-server sends the header on
+every call, so the stock resolver leaves POST /mcp — the advertised path —
+ungated while direct REST looks fixed. See _end_user_tier's own docstring.
 
 Endpoints (POST **and GET** — the GET half is why a browser or a crawler
 reaches these without doing anything special):
