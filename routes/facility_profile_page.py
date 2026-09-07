@@ -31,6 +31,10 @@ import logging
 from flask import Blueprint, request, Response, jsonify
 
 from util.facility_entity import facility_entity, facility_measures
+# r-placeholder-city (2026-09-07): ONE definition of "this city value is not a
+# place", owned by util/thin_content alongside the list itself. Three copies of
+# that list used to live in this file and the renderer consulted none of them.
+from util.thin_content import is_placeholder_city as _placeholder_city
 import datetime as _dt
 
 logger = logging.getLogger(__name__)
@@ -656,7 +660,7 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
     # weaker signal. Measured 2026-08-14; 'California Regional' and
     # 'Connecticut Regional' (136 rows each) are REAL market labels, not this
     # placeholder, and are deliberately not matched here.
-    if city.lower() in ("regional", "unknown", "n/a", "none", "other"):
+    if _placeholder_city(city):
         city = ""
         if not state:
             return ""
@@ -761,7 +765,13 @@ def _narrative(fac: dict, dcpi) -> str:
     city, state, country = (fac.get("city") or ""), (fac.get("state") or ""), (fac.get("country") or "")
     power = fac.get("power_mw")
     status = (fac.get("status") or "").strip()
-    loc = ", ".join([p for p in (city, state, country) if p])
+    # r-placeholder-city (2026-09-07): this composes its OWN location string —
+    # a fourth spelling, and the one that put "is a data center in Regional, CN"
+    # in the page BODY after the <title> and the meta description were fixed.
+    # The docstring above promises every sentence is sourced from this
+    # facility's data; 'Regional' is the marker for data we do not have.
+    loc = ", ".join([p for p in (("" if _placeholder_city(city) else city),
+                                 state, country) if p])
     bits = []
     lead = f"<strong>{_esc(name)}</strong> is a data center"
     if provider and provider.lower() != (name or "").strip().lower():
@@ -1176,7 +1186,11 @@ def _render_profile(fac: dict, slug: str) -> str:
     _addr = {k: v for k, v in {
         "@type": "PostalAddress",
         "streetAddress": address or None,
-        "addressLocality": city or None,
+        # r-placeholder-city (2026-09-07): the comment above says "no
+        # fabricated fields", and this line was publishing a PostalAddress
+        # whose locality is 'Regional' — a machine-readable claim, to the
+        # engines that read JSON-LD, that a place by that name exists.
+        "addressLocality": (None if _placeholder_city(city) else (city or None)),
         "addressRegion": state or None,
         "addressCountry": country or None,
     }.items() if v is not None}
@@ -1246,7 +1260,10 @@ def _render_profile(fac: dict, slug: str) -> str:
     if _has(power):                    stats.append(("Power", f"{power} MW"))
     if _has(status):                   stats.append(("Status", str(status).title()))
     if _has(region):                   stats.append(("Market", region))
-    if _has(city) and city != region:  stats.append(("City", city))
+    # r-placeholder-city (2026-09-07): `_has` already refused 'Unknown' — its
+    # own partial copy of the placeholder list. Ask the module that owns it.
+    if _has(city) and city != region and not _placeholder_city(city):
+        stats.append(("City", city))
     if _has(state):                    stats.append(("State", state))
     if _has(country):                  stats.append(("Country", country))
     if lat and lng:                    stats.append(("Coordinates", f"{float(lat):.4f}, {float(lng):.4f}"))

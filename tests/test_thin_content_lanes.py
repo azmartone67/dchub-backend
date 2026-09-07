@@ -91,6 +91,48 @@ def test_coordinates_alone_keep_the_page_indexable():
     assert evidence(fac)["coords"] is True
 
 
+def test_the_scalar_placeholder_predicate_matches_real_city():
+    """r-placeholder-city (2026-09-07): callers holding a bare city string get
+    the SAME answer as callers holding a row. Three separate copies of this
+    list existed before the scalar form did."""
+    from util.thin_content import is_placeholder_city
+    for v in ("Regional", "regional", "  UNKNOWN ", "n/a", "None", "other"):
+        assert is_placeholder_city(v), v
+        assert real_city({"city": v}) == "", v
+    # an EMPTY city is absent, not a placeholder — both mean "no city", but the
+    # predicate answers the narrower question and must not claim the wider one
+    assert not is_placeholder_city("")
+    assert real_city({"city": ""}) == ""
+    for v in ("Frankfurt", "California Regional", "Connecticut Regional",
+              "Shanwei", "Naha"):
+        assert not is_placeholder_city(v), v
+    # None is ABSENT too — same reason as "". The predicate must not widen into
+    # "falsy", or a caller reading it as "we have no city" gets a different
+    # answer from one reading it as "the upstream wrote a non-place here".
+    assert not is_placeholder_city(None)
+
+
+def test_the_headline_treats_a_placeholder_city_as_absent():
+    """identity_key and the page <title> both ride on this. The dedup grouping
+    was measured against production before the change: 727 affected rows, every
+    key string moves, 4,363 groups before and after — 0 added, 0 removed, 0
+    keeper changes."""
+    from util.facility_headline import facility_headline, identity_key
+    hl = facility_headline("China Telecom Shanwei Data Center", None,
+                           "Regional", None, "CN")
+    assert hl["loc_short"] == "CN", hl["loc_short"]
+    assert hl["title"] == ("China Telecom Shanwei Data Center — CN "
+                           "Data Center | DC Hub"), hl["title"]
+    assert "regional" not in identity_key(
+        "China Telecom Shanwei Data Center", None, "Regional", None, "CN")[1]
+    # a real city is untouched
+    assert facility_headline("Equinix FR5", "Equinix", "Frankfurt", None,
+                             "DE")["loc_short"] == "Frankfurt, DE"
+    # and the real market label survives
+    assert "california regional" in identity_key(
+        "X", "Y", "California Regional", "CA", "US")[1]
+
+
 def test_placeholder_city_is_not_a_real_city():
     assert real_city({"city": "Regional"}) == ""
     assert real_city({"city": "  UNKNOWN "}) == ""
