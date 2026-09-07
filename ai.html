@@ -1692,7 +1692,8 @@ dchub_tool = Tool(
     async function fetchTrackingData() {
         const urls = [
             `${API_BASE}/api/v1/ai-tracking/stats`,
-            `${API_BASE}/ai/tracking`,
+            // /ai/tracking removed 2026-09-07: retired (500 at origin, 404 at the
+            // edge, never routed). /api/ai/tracking is the live twin.
             `${API_BASE}/api/ai/tracking`
         ];
 

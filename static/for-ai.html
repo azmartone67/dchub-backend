@@ -432,7 +432,7 @@
                 </div>
                 <div class="endpoint">
                     <span class="method">GET</span>
-                    <span class="endpoint-path">/ai/tracking</span>
+                    <span class="endpoint-path">/api/ai/tracking</span>
                     <span class="endpoint-desc">AI platform usage stats</span>
                 </div>
             </div>
@@ -486,7 +486,7 @@
                 console.error('Error fetching stats:', error);
                 // Try alternate endpoint
                 try {
-                    const altResponse = await fetch('/ai/tracking');
+                    const altResponse = await fetch('/api/ai/tracking');
                     if (altResponse.ok) {
                         const data = await altResponse.json();
                         updateUI(data);

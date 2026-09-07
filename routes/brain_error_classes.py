@@ -375,7 +375,7 @@ REGISTRY: list[ErrorClass] = [
             "(b) warning: the long tail of tools isn't being discovered "
             "because the manifest under-advertises them. Decide per-tool: "
             "lift the paywall lower on the top 5 (faster conversions) OR "
-            "improve discovery surfaces (sitemap, /ai/llms.txt) for the "
+            "improve discovery surfaces (sitemap, /llms.txt) for the "
             "long tail."
         ),
         confidence=0.8,
