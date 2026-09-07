@@ -251,7 +251,20 @@ PINNED = {
         #  DOWN and never exceeds the resolver: /api/v1/canon/phrases facilities
         #  = "20,100+" (source=resolve_canon live), /api/v1/stats facilities =
         #  20,198. 20,100 == resolver, < 20,198.
-        "facilities": "20,100+",
+        # ★2026-09-07: 20,100+ -> 20,700+. Same PINNED-vs-resolve_canon lag as
+        #  the tool count #4068 walked one day earlier, and it was VISIBLE: the
+        #  integrations pages bind {canon_facilities} at MODULE scope
+        #  (routes/integrations_landing.py:26 `MCP_LANDING_HTML = canon_text(...)`),
+        #  which is a LATCH, not a binding — the value freezes at process import
+        #  and canon_nums() reads PINNED, so /integrations/perplexity served
+        #  "20,100+" x4 while /api/v1/canon/phrases on the SAME deploy served
+        #  "20,700+" (source=resolve_canon live). Walking the floor is what
+        #  actually moves those surfaces; see the import-latch note on
+        #  /case-studies, which had the identical split.
+        #  Probed live 2026-09-07: /api/v1/canon/phrases facilities = "20,700+",
+        #  /api/v1/stats facilities = 20,840. Floor rounds DOWN and never exceeds
+        #  the resolver: 20,700 == resolver, < 20,840.
+        "facilities": "20,700+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
@@ -279,7 +292,7 @@ PINNED = {
         #  — so the canon denylisted the exact phrase it resolves to. Measured
         #  2026-09-02, live bodies, six hits on four agent surfaces. See the
         #  denylist note for the full reading.
-        "deals": "2,000+",   # ★2026-08-23: 1,800+ -> 1,900+ — and this bump is the FIRST one the ledger asked for instead of a hand-walk. Claim 100974 (canon:public.deals, expected "== 1,800+", measured against the live resolve_canon() override) was judged **refuted** at 05:51Z; 100976 carries the same frozen expectation to its 24h horizon. Probed live at 06:57Z: /api/v1/canon/phrases deals = "1,900+", /api/v1/stats deals = 1,931. Floor rounds DOWN and never above the resolver: 1,900 < 1,931. ★The literal ALSO had a second home (mcp_gateway.py data_coverage.deals_tracked fell back to a hardcoded "1,800+" while its siblings called canon_text) — that copy now reads {canon_deals}, so this line is the only place the floor is typed. ★2026-08-16: 1,700+ -> 1,800+, same PINNED-vs-resolve_canon lag as `facilities` above, one cycle later — /api/v1/canon/phrases already served 1,800+ while this floor fed the stale figure into /.well-known/mcp.json. Probed live: /api/v1/stats deals = 1,849. Floor rounds DOWN: 1,800 < 1,849. ★2026-08-08 canon-surface audit: 1,600+ -> 1,700+ (resolve_canon live = 1,700+, deals_tracked = 1,745; same PINNED-vs-resolve_canon lag as `facilities`). ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
+        "deals": "2,100+",   # ★2026-09-07: 2,000+ -> 2,100+ — same lag as `facilities` above, found by walking the whole PINNED set against live instead of only the number the handoff named. Probed live 2026-09-07: /api/v1/canon/phrases deals = "2,100+", /api/v1/stats deals = 2,118. Floor rounds DOWN and never above the resolver: 2,100 == resolver, < 2,118. ★2026-08-23: 1,800+ -> 1,900+ — and this bump is the FIRST one the ledger asked for instead of a hand-walk. Claim 100974 (canon:public.deals, expected "== 1,800+", measured against the live resolve_canon() override) was judged **refuted** at 05:51Z; 100976 carries the same frozen expectation to its 24h horizon. Probed live at 06:57Z: /api/v1/canon/phrases deals = "1,900+", /api/v1/stats deals = 1,931. Floor rounds DOWN and never above the resolver: 1,900 < 1,931. ★The literal ALSO had a second home (mcp_gateway.py data_coverage.deals_tracked fell back to a hardcoded "1,800+" while its siblings called canon_text) — that copy now reads {canon_deals}, so this line is the only place the floor is typed. ★2026-08-16: 1,700+ -> 1,800+, same PINNED-vs-resolve_canon lag as `facilities` above, one cycle later — /api/v1/canon/phrases already served 1,800+ while this floor fed the stale figure into /.well-known/mcp.json. Probed live: /api/v1/stats deals = 1,849. Floor rounds DOWN: 1,800 < 1,849. ★2026-08-08 canon-surface audit: 1,600+ -> 1,700+ (resolve_canon live = 1,700+, deals_tracked = 1,745; same PINNED-vs-resolve_canon lag as `facilities`). ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
         # ★2026-08-01 NEW KEY. The mapped-asset total was the one headline
         # figure with NO pinned home, so it drifted unchecked: worker.js's
         # why_dchub blurb and the /faq page both still claim "500,000+" while
