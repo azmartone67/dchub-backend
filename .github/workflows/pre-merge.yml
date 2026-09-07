@@ -336,7 +336,17 @@ jobs:
         # charset fallbacks, so it can only be checked against the real library
         # at the version production runs. importorskip there would make the
         # subtlest assertion in that file a silent green.
-        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0" "feedparser==6.0.12"
+        #
+        # 2026-09-06: + protego. Two robots guards
+        # (test_robots_canon_querystrings.py, test_robots_crawl_hygiene.py) call
+        # pytest.importorskip("protego"), and it was installed NOWHERE and is not
+        # in requirements.txt — so both have been SKIPPING here since the day they
+        # landed, reporting green while the surface they guard drifted. That is how
+        # the /*? block on the advertised /api/ examples survived a month. Protego
+        # is the RFC 9309 parser; the stdlib robotparser cannot see `Disallow: /*?`
+        # at all and reports those paths allowed either way, so there is no
+        # stdlib fallback that would make these guards real.
+        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0" "feedparser==6.0.12" protego
       # The beat wiring's own must-fail control. Runs BEFORE the suite so a
       # dishonest count fails fast — and it lives HERE rather than in
       # syntax-check because it reads the workflow YAML and needs pyyaml, which
