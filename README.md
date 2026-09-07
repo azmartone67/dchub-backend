@@ -31,7 +31,7 @@ DC Hub is the live data layer for data-center infrastructure — every API, MCP 
 - **Live ISO grid telemetry** — PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE (fuel mix, carbon intensity, demand, prices, queue depth)
 - **2,100+ tracked M&A transactions** + hyperscaler capex tracker
 - **Site factors** — fiber routes, water-stress, tax incentives, transmission & substations
-- **126,427 substations** with voltage class + capacity estimates
+- **127,000+ substations** with voltage class + capacity estimates
 - **NEPA filings** for upcoming federal energy + data center projects
 
 ## Architecture
