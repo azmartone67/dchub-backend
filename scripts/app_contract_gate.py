@@ -187,6 +187,40 @@ def boot():
     return main.app, time.time() - t
 
 
+ROUTE_MAP = os.path.join(ROOT, "contracts", "route_serving_map.json")
+
+
+def route_serving_map(app) -> dict:
+    """`METHOD /path` -> the modules that actually serve it.
+
+    Consumed by scripts/api_response_contract.py, which is stdlib-only by
+    design and so cannot boot the app to learn this for itself. Without it that
+    extractor has to UNION the keys of every file defining a path, including
+    files whose blueprint is never registered — which published keys no live
+    response can produce (115 endpoints, 135 keys, measured 2026-09-07).
+
+    This gate already boots, so it is the cheap place to answer the question.
+    """
+    out: dict = {}
+    for rule in app.url_map.iter_rules():
+        fn = app.view_functions.get(rule.endpoint)
+        mod = getattr(fn, "__module__", "") or ""
+        if not mod:
+            continue
+        for m in (rule.methods or set()) - {"HEAD", "OPTIONS"}:
+            slot = out.setdefault("%s %s" % (m, rule.rule), {"modules": []})
+            if mod not in slot["modules"]:
+                slot["modules"].append(mod)
+    for slot in out.values():
+        slot["modules"].sort()
+    return {"_readme": ("DERIVED — do not hand-edit. Written by "
+                        "scripts/app_contract_gate.py from the booted app's "
+                        "url_map; read by scripts/api_response_contract.py to "
+                        "attribute duplicate route definitions. Regenerate: "
+                        "python3 scripts/app_contract_gate.py --write-route-map"),
+            "serving": dict(sorted(out.items()))}
+
+
 def shadowed(app) -> dict:
     """rule+method pairs served by more than one handler."""
     seen = collections.defaultdict(list)
@@ -204,6 +238,9 @@ def load_baseline() -> dict:
 def main_() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--update-baseline", action="store_true")
+    ap.add_argument("--write-route-map", action="store_true",
+                    help="rewrite contracts/route_serving_map.json from the "
+                         "booted app and exit")
     args = ap.parse_args()
 
     try:
@@ -214,6 +251,16 @@ def main_() -> int:
         print("\nEvery static test in this suite would still pass. That is the")
         print("gap this gate exists to close — fix the import error above.")
         return 1
+
+    # ── the route serving map, for the stdlib-only response-contract extractor ──
+    rmap = route_serving_map(app)
+    if args.write_route_map:
+        os.makedirs(os.path.dirname(ROUTE_MAP), exist_ok=True)
+        with open(ROUTE_MAP, "w", encoding="utf-8") as fh:
+            json.dump(rmap, fh, indent=1, sort_keys=False)
+            fh.write("\n")
+        print(f"wrote {ROUTE_MAP} ({len(rmap['serving'])} method+path entries)")
+        return 0
 
     rules = list(app.url_map.iter_rules())
     n_rules, n_bps = len(rules), len(app.blueprints)
@@ -277,6 +324,35 @@ def main_() -> int:
             f"matched first and the other is dead code that still reads as live "
             f"in source. Remove the duplicate registration — do not raise the "
             f"baseline.\n{listing}"
+        )
+
+    # ★ A STALE ROUTE MAP IS A SILENT MISATTRIBUTION, so it is a red gate here
+    # rather than a wrong answer there. api_response_contract.py uses this map
+    # to decide which file's keys are real; if a route moved between modules
+    # and the map still names the old one, that extractor would drop the keys
+    # of the handler that actually serves it — deleting real keys from a
+    # published contract. A missing map is NOT a failure: the extractor
+    # degrades to its old union, which can only add keys, never remove one.
+    try:
+        with open(ROUTE_MAP, encoding="utf-8") as fh:
+            committed = json.load(fh).get("serving")
+    except (OSError, ValueError):
+        committed = None
+    if committed is not None and committed != rmap["serving"]:
+        only_live = sorted(set(rmap["serving"]) - set(committed))[:5]
+        only_map = sorted(set(committed) - set(rmap["serving"]))[:5]
+        changed = sorted(k for k in set(committed) & set(rmap["serving"])
+                         if committed[k] != rmap["serving"][k])[:5]
+        failures.append(
+            "ROUTE SERVING MAP IS STALE: contracts/route_serving_map.json no "
+            "longer matches the booted app.\n"
+            "  scripts/api_response_contract.py attributes response keys with "
+            "this map; stale entries make it drop the keys of the handler that "
+            "actually serves a route.\n"
+            "  Regenerate: python3 scripts/app_contract_gate.py --write-route-map\n"
+            f"  in app not map: {only_live}\n"
+            f"  in map not app: {only_map}\n"
+            f"  different modules: {changed}"
         )
 
     client = app.test_client()

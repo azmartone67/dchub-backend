@@ -85,6 +85,7 @@ from typing import Any
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASELINE_PATH = os.path.join(REPO, "contracts", "api_response_surface.json")
 EXCEPTIONS_PATH = os.path.join(REPO, "contracts", "api_response_exceptions.json")
+ROUTE_MAP_PATH = os.path.join(REPO, "contracts", "route_serving_map.json")
 
 SCHEMA_VERSION = 1
 
@@ -381,8 +382,118 @@ def _extract_returns(fn: ast.AST, scope: "_FnScope") -> list[ast.AST]:
     return payloads
 
 
+def _module_of(rel: str) -> str:
+    """Repo-relative path -> the dotted module name Python imports it as."""
+    return rel[:-3].replace("/", ".") if rel.endswith(".py") else rel
+
+
+def serving_map() -> dict[str, dict[str, list[str]]] | None:
+    """`METHOD /path` -> the modules that ACTUALLY serve it, or None.
+
+    ★ THIS EXTRACTOR DOES NOT BOOT THE APP, DELIBERATELY. It is stdlib-only by
+    design and CI enforces that with an AST check — the rationale, in the
+    workflow, is that it "must not be able to fail for a reason unrelated to the
+    contract". Importing main.py can fail for ~200 unrelated reasons, and every
+    one of them would land as UNMEASURED and block every PR.
+
+    So the boot happens where a boot already happens: scripts/app_contract_gate.py
+    writes ROUTE_MAP_PATH from the real url_map, and verifies on every run that
+    the committed copy still matches reality — a stale map is a red gate there,
+    not a silent misattribution here.
+
+    Returns None when the map is absent or unreadable; callers must treat that
+    as "cannot attribute", never as "nothing serves it".
+    """
+    if os.environ.get("DCHUB_CONTRACT_NO_BOOT"):
+        return None
+    try:
+        with open(ROUTE_MAP_PATH, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    serving = doc.get("serving")
+    return serving if isinstance(serving, dict) and serving else None
+
+
+def _record_serves(rec: dict[str, Any], live: dict[str, list[str]]) -> bool:
+    """Does the module this record came from actually serve the route?
+
+    EXACT dotted-module match, and nothing else. Two looser signals were tried
+    and both were measured wrong on this codebase:
+
+      * matching on the handler's NAME rescued 80 endpoints that are genuine
+        phantoms — `auto_pilot.py` still holds same-named copies of functions
+        that now live in `routes/autopilot_routes.py`, so the names collide by
+        refactor. It could not have earned its keep anyway: a decorator without
+        functools.wraps rewrites __name__ and __module__ TOGETHER, so the name
+        never survives a case where the module does not.
+      * matching on the basename would equate `auto_pilot.py` with
+        `static/auto_pilot.py`, two different files that both exist here.
+
+    The protection against a wrongly-dropped handler is not a looser match, it
+    is the never-empty invariant at the call site: if no record matches, every
+    record is kept and the old union stands.
+    """
+    return rec["_module"] in (live.get("modules") or [])
+
+
+def _merge_records(recs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Union the keys of several handlers for one route; weakest resolution
+    wins so we never claim more certainty than we have."""
+    order = {"resolved": 2, "partial": 1, "opaque": 0}
+    keep = dict(min(recs, key=lambda r: order[r["resolution"]]))
+    keep["resolution"] = min((r["resolution"] for r in recs), key=lambda r: order[r])
+    keys: set[str] = set()
+    open_at: set[str] = set()
+    for r in recs:
+        keys |= set(r["keys"])
+        open_at |= set(r["open_at"])
+    keep["keys"] = sorted(keys)
+    keep["open_at"] = sorted(open_at)
+    keep["source"] = ",".join(r["source"] for r in recs)
+    return keep
+
+
+def attribute_records(
+    pending: dict[str, list[dict[str, Any]]],
+    serving: dict[str, dict[str, list[str]]] | None,
+) -> tuple[dict[str, dict[str, Any]], int]:
+    """Collapse each endpoint's candidate records to the one(s) that serve it.
+
+    SAFETY INVARIANT — this may only ever NARROW a union, never empty it:
+      * a single candidate is never filtered, whatever the url_map says;
+      * if the url_map has no entry for the endpoint, nothing is dropped;
+      * if NO candidate matches, every candidate is kept (the old union).
+    A false negative here would delete a real key from a published contract,
+    which is worse than the phantom keys this removes, so every ambiguous case
+    keeps the union. Returns (endpoints, number_of_endpoints_narrowed).
+    """
+    endpoints: dict[str, dict[str, Any]] = {}
+    narrowed = 0
+    for eid, recs in pending.items():
+        dropped: list[dict[str, Any]] = []
+        if len(recs) > 1 and serving is not None:
+            live = serving.get(eid)
+            if live:
+                keep = [r for r in recs if _record_serves(r, live)]
+                if keep and len(keep) < len(recs):
+                    dropped = [r for r in recs if r not in keep]
+                    recs = keep
+                    narrowed += 1
+        merged = _merge_records(recs)
+        if dropped:
+            # Publish the correction rather than performing it silently.
+            merged["served_by"] = sorted({r["_module"] for r in recs})
+            merged["phantom_sources"] = sorted(r["source"] for r in dropped)
+        merged.pop("_module", None)
+        merged.pop("_handler", None)
+        endpoints[eid] = merged
+    return endpoints, narrowed
+
+
 def extract_surface() -> dict[str, Any]:
     endpoints: dict[str, dict[str, Any]] = {}
+    pending: dict[str, list[dict[str, Any]]] = {}
     parse_errors: list[str] = []
     files = _git_files()
 
@@ -447,32 +558,31 @@ def extract_surface() -> dict[str, Any]:
                     if method in ("OPTIONS", "HEAD"):
                         continue
                     eid = f"{method} {path}"
-                    rec = {
+                    pending.setdefault(eid, []).append({
                         "source": f"{rel}:{fn.lineno}",
                         "handler": fn.name,
                         "resolution": resolution,
                         "open_at": sorted(builder.open_at),
                         "keys": sorted(builder.keys),
-                    }
-                    prev = endpoints.get(eid)
-                    if prev is None:
-                        endpoints[eid] = rec
-                    else:
-                        # Duplicate registration (a real thing in this repo).
-                        # Union the keys; the weakest resolution wins so we
-                        # never claim more certainty than we have.
-                        order = {"resolved": 2, "partial": 1, "opaque": 0}
-                        merged_keys = sorted(set(prev["keys"]) | set(rec["keys"]))
-                        merged_open = sorted(set(prev["open_at"]) | set(rec["open_at"]))
-                        keep = prev if order[prev["resolution"]] <= order[rec["resolution"]] else rec
-                        keep = dict(keep)
-                        keep["resolution"] = min(
-                            (prev["resolution"], rec["resolution"]), key=lambda r: order[r]
-                        )
-                        keep["keys"] = merged_keys
-                        keep["open_at"] = merged_open
-                        keep["source"] = prev["source"] + "," + rec["source"]
-                        endpoints[eid] = keep
+                        "_module": _module_of(rel),
+                        "_handler": fn.name,
+                    })
+
+    # ── attribute duplicate registrations to the handler that actually serves ──
+    # A path defined in two files is a real thing here. Unioning their keys was
+    # the safe read while "which one serves it" was unknowable statically — but
+    # it is knowable: boot the app and read url_map. Unioning a file that never
+    # serves the route publishes keys NO live response can produce. Measured
+    # 2026-09-07: 103 of 1,893 endpoints carried keys from a non-serving file.
+    #
+    # SAFETY INVARIANT — this may only ever NARROW a union, never empty it.
+    # A record is dropped only when the url_map positively contradicts it, and
+    # never the last one standing. A false negative here would delete a real
+    # key from a published contract, which is worse than the phantom keys being
+    # removed, so every ambiguous case keeps the old union.
+    serving = serving_map()
+    url_map_available = serving is not None
+    endpoints, filtered_count = attribute_records(pending, serving)
 
     resolved = [e for e in endpoints.values() if e["resolution"] == "resolved"]
     partial = [e for e in endpoints.values() if e["resolution"] == "partial"]
@@ -522,6 +632,22 @@ def extract_surface() -> dict[str, Any]:
             "keys_strictly_protected": strict_keys,
             "keys_open_level_unmeasured_on_removal": open_keys,
             "parse_errors": len(parse_errors),
+            "endpoints_attributed_by_url_map": filtered_count,
+        },
+        "url_map": {
+            "available": url_map_available,
+            "note": (
+                "Duplicate route definitions are attributed to the handler the "
+                "REAL app serves, read from url_map after booting with the DB "
+                "stubbed. When unavailable the old union is kept, which can only "
+                "ADD keys (additive change is never blocked) — never remove one. "
+                "`baseline` REFUSES to write without it, so an unfiltered surface "
+                "cannot be frozen as truth."
+                if url_map_available else
+                "UNAVAILABLE — the app would not boot, so duplicate definitions "
+                "keep the old union. Keys here may include some no live response "
+                "can produce. This surface must NOT be written as a baseline."
+            ),
         },
         "parse_errors": parse_errors,
         "endpoints": dict(sorted(endpoints.items())),
@@ -853,6 +979,18 @@ def main() -> int:
 
     if args.cmd == "baseline":
         surface = extract_surface()
+        if not surface["url_map"]["available"]:
+            # Freezing an unfiltered surface would re-enshrine the phantom keys
+            # this attribution exists to remove, and the next check would then
+            # read them back as truth. UNMEASURED is a failure here, per the
+            # workflow's own three-valued rule.
+            print("REFUSING to write a baseline: the app would not boot, so "
+                  "duplicate route definitions could not be attributed to the "
+                  "handler that actually serves them.", file=sys.stderr)
+            print("  Fix the boot (python3 scripts/app_contract_gate.py) and "
+                  "re-run. DCHUB_CONTRACT_NO_BOOT disables attribution but is "
+                  "for `check`/`extract` only.", file=sys.stderr)
+            return 2
         os.makedirs(os.path.dirname(args.baseline), exist_ok=True)
         with open(args.baseline, "w", encoding="utf-8") as fh:
             json.dump(surface, fh, indent=1, sort_keys=False)
@@ -864,6 +1002,8 @@ def main() -> int:
               f"{s['endpoints_opaque_not_covered']} opaque/NOT COVERED)")
         print(f"  {s['keys_total']} protected keys from "
               f"{s['python_files_scanned']} python files")
+        print(f"  {s['endpoints_attributed_by_url_map']} endpoint(s) attributed "
+              f"to the serving handler via url_map (phantom sources dropped)")
         return 0
 
     return check(args.baseline)
