@@ -68,6 +68,9 @@ class _PGLikeCursor:
         r"published_at\s*>=", re.I)
     _HAS_CAST = re.compile(r"published_at\s*::\s*timestamptz", re.I)
 
+    #: The ONLY table that exists. to_regclass on any other name resolves NULL.
+    _REAL_TABLE = "brain_proposed_code_fixes"
+
     def __init__(self, *, linkedin_published=6, table_exists=True,
                  proposals_24h=7):
         self.linkedin_published = linkedin_published
@@ -92,8 +95,16 @@ class _PGLikeCursor:
             return
 
         if "to_regclass" in s:
-            name = "brain_proposed_code_fixes" if self.table_exists else None
-            self._result = (name,)
+            # ★ RESOLVE THE NAME THAT WAS ACTUALLY PROBED, as Postgres does.
+            #   An earlier version answered from self.table_exists alone and
+            #   ignored the name — so probing a table that does not exist was
+            #   UNDETECTABLE, and the mutation "point layer5 back at
+            #   public.brain_proposed_code" survived the whole file. The stub
+            #   has to model the lookup, not the expected answer.
+            m = re.search(r"to_regclass\('([^']+)'\)", s)
+            probed = (m.group(1) if m else "").split(".")[-1]
+            ok = self.table_exists and probed == self._REAL_TABLE
+            self._result = (self._REAL_TABLE if ok else None,)
             return
 
         if "brain_proposed_code_fixes" in s:
@@ -133,10 +144,20 @@ class _Conn:
 
 
 def _media_quality(monkeypatch, cursor):
-    """Run only the media_quality/layer5 vitals against a stub connection."""
-    monkeypatch.setattr(ba, "_conn", lambda: _Conn(cursor))
-    out = ba._compute_heartbeat_sync()
-    return out
+    """Exercise ONLY the two vitals blocks, against a stub cursor.
+
+    ★ These call the extracted helpers rather than _compute_heartbeat_sync().
+      Building the whole heartbeat reaches surface_brain and the evolution
+      snapshot, which walk the repo — tests/_scan_floors.py attributes an
+      os.walk to the test file that triggered it, so calling the full builder
+      registered a repo scan this test does not own (and CI's meta-guard
+      test_scan_floors_are_pinned correctly flagged it). It also spent ~25s to
+      exercise two SQL statements. Direct calls are ~0.1s and walk nothing.
+    """
+    return {
+        "media_quality": ba._media_quality_block(cursor),
+        "layer5":        ba._layer5_block(cursor),
+    }
 
 
 # ── 1 · the publish count must actually be measurable ────────────────────────

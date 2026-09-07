@@ -2901,6 +2901,119 @@ def _compute_heartbeat_async():
     finally:
         _HEARTBEAT_COMPUTING["in_progress"] = False
 
+def _media_quality_block(cur) -> dict:
+    """DC Hub Media's gate-rejection telemetry as a heartbeat vitals block.
+
+    Extracted from _compute_heartbeat_sync (2026-09-07) so it can be tested
+    against a stub cursor without building the ENTIRE heartbeat. The full
+    builder reaches surface_brain and the evolution snapshot, which walk the
+    repo — so a test that called it registered a repo scan it does not own
+    (tests/_scan_floors.py attributes os.walk to the running test file) and
+    took ~25s to exercise two SQL statements.
+    """
+    _cats = {}
+    try:
+        cur.execute("""
+            SELECT reason FROM media_review_log
+             WHERE decision='blocked'
+               AND created_at > NOW() - INTERVAL '7 days'
+               AND reason IS NOT NULL LIMIT 500
+        """)
+        for row in cur.fetchall() or []:
+            rr = (row[0] or "").lower()
+            if "disclaimer" in rr:                 k = "ai_disclaimer"
+            elif "duplicate" in rr or "hook" in rr: k = "duplicate"
+            elif "zero-stat" in rr:                k = "zero_stat"
+            elif "stub" in rr or "deal" in rr:     k = "deal_stub"
+            elif "low quality" in rr or "editor rejected" in rr: k = "thin_or_offbrand"
+            else:                                  k = "other"
+            _cats[k] = _cats.get(k, 0) + 1
+    except Exception:
+        _cats = {}  # table not created until the first block
+    _blocked = sum(_cats.values())
+    # social_media_posts.published_at is TEXT (mixed
+    # 'YYYY-MM-DD HH:MI+00' / 'YYYY-MM-DDTHH:MIZ'), so comparing it
+    # to a timestamptz raises `operator does not exist: text >=
+    # timestamp with time zone` on EVERY call. The old bare
+    # `except: _pub = 0` swallowed that, so this counter had never
+    # once succeeded and reject_rate was pinned at 100% while
+    # LinkedIn was publishing normally. Cast, as
+    # media_master_shell.tier1_measure already does for the same
+    # column. A measurement that could not RUN is reported as None,
+    # never as a real 0 — otherwise a broken query looks like a
+    # dead feed and pages the owner forever.
+    _pub = None
+    _pub_error = None
+    try:
+        cur.execute("""SELECT COUNT(*) FROM social_media_posts
+            WHERE status='published' AND publish_platform='linkedin'
+              AND NULLIF(published_at, '') IS NOT NULL
+              AND published_at::timestamptz >= (NOW() - INTERVAL '7 days')""")
+        _pub = int((cur.fetchone() or [0])[0] or 0)
+    except Exception as _pe:
+        _pub_error = str(_pe)[:160]
+    _tot = _blocked + (_pub or 0)
+    _top = max(_cats.items(), key=lambda x: x[1])[0] if _cats else None
+    _mq = {
+        "blocked_7d": _blocked, "published_7d": _pub,
+        # reject_rate needs BOTH halves. With the publish count
+        # unmeasurable the ratio is unknowable, not 100%.
+        "reject_rate": (round(_blocked / _tot, 3)
+                        if (_pub is not None and _tot) else None),
+        "top_reject_category": _top, "by_category": _cats,
+        "self_critique": "/api/v1/media/self-critique",
+    }
+    if _pub_error:
+        _mq["published_7d_error"] = _pub_error
+    # A disclaimer-class block is the credibility self-own; a high
+    # reject rate means the generator is producing junk. Either is a
+    # brain-visible alert the autopilot/operator can act on.
+    if _cats.get("ai_disclaimer", 0) > 0:
+        _mq["status"] = "alert"
+        _mq["alert"] = (f"{_cats['ai_disclaimer']} disclaimer-as-citation "
+                        f"post(s) blocked in 7d — media generator regressing")
+    elif _pub_error:
+        # Loud, and distinct from a real high-reject verdict.
+        _mq["status"] = "unknown"
+        _mq["alert"] = ("media publish count unmeasurable — "
+                        f"reject rate unknown ({_pub_error})")
+    elif _mq["reject_rate"] is not None and _mq["reject_rate"] >= 0.5 and _blocked >= 3:
+        _mq["status"] = "warn"
+        _mq["alert"] = f"high media reject rate {_mq['reject_rate']:.0%} (top: {_top})"
+    else:
+        _mq["status"] = "ok"
+    return _mq
+
+
+def _layer5_block(cur) -> dict:
+    """Layer-5 (code-proposal) activity as a heartbeat vitals block.
+
+    Extracted alongside _media_quality_block, same reason.
+    """
+    cur.execute("""
+        SELECT to_regclass('public.brain_proposed_code_fixes')
+    """)
+    if (cur.fetchone() or [None])[0]:
+        cur.execute("""
+            SELECT COUNT(*) FILTER (WHERE proposed_at >= NOW() - INTERVAL '24 hours'),
+                   MAX(proposed_at)
+              FROM brain_proposed_code_fixes
+        """)
+        r = cur.fetchone()
+        if r:
+            return {
+                "proposals_24h":  int(r[0] or 0),
+                "last_proposal":   r[1].isoformat() if r[1] else None,
+            }
+        # Falling through here used to return None implicitly — the same
+        # silent-absence shape this whole change exists to remove.
+        return {"error": "brain_proposed_code_fixes returned no row"}
+    else:
+        return {
+            "error": "table public.brain_proposed_code_fixes not found",
+        }
+
+
 def _compute_heartbeat_sync():
     """The original synchronous compute body. Refactored out of
     brain_heartbeat() so it can be called from the async refresh path."""
@@ -3012,78 +3125,7 @@ def _compute_heartbeat_sync():
     try:
         if c:
             with c.cursor() as cur:
-                _cats = {}
-                try:
-                    cur.execute("""
-                        SELECT reason FROM media_review_log
-                         WHERE decision='blocked'
-                           AND created_at > NOW() - INTERVAL '7 days'
-                           AND reason IS NOT NULL LIMIT 500
-                    """)
-                    for row in cur.fetchall() or []:
-                        rr = (row[0] or "").lower()
-                        if "disclaimer" in rr:                 k = "ai_disclaimer"
-                        elif "duplicate" in rr or "hook" in rr: k = "duplicate"
-                        elif "zero-stat" in rr:                k = "zero_stat"
-                        elif "stub" in rr or "deal" in rr:     k = "deal_stub"
-                        elif "low quality" in rr or "editor rejected" in rr: k = "thin_or_offbrand"
-                        else:                                  k = "other"
-                        _cats[k] = _cats.get(k, 0) + 1
-                except Exception:
-                    _cats = {}  # table not created until the first block
-                _blocked = sum(_cats.values())
-                # social_media_posts.published_at is TEXT (mixed
-                # 'YYYY-MM-DD HH:MI+00' / 'YYYY-MM-DDTHH:MIZ'), so comparing it
-                # to a timestamptz raises `operator does not exist: text >=
-                # timestamp with time zone` on EVERY call. The old bare
-                # `except: _pub = 0` swallowed that, so this counter had never
-                # once succeeded and reject_rate was pinned at 100% while
-                # LinkedIn was publishing normally. Cast, as
-                # media_master_shell.tier1_measure already does for the same
-                # column. A measurement that could not RUN is reported as None,
-                # never as a real 0 — otherwise a broken query looks like a
-                # dead feed and pages the owner forever.
-                _pub = None
-                _pub_error = None
-                try:
-                    cur.execute("""SELECT COUNT(*) FROM social_media_posts
-                        WHERE status='published' AND publish_platform='linkedin'
-                          AND NULLIF(published_at, '') IS NOT NULL
-                          AND published_at::timestamptz >= (NOW() - INTERVAL '7 days')""")
-                    _pub = int((cur.fetchone() or [0])[0] or 0)
-                except Exception as _pe:
-                    _pub_error = str(_pe)[:160]
-                _tot = _blocked + (_pub or 0)
-                _top = max(_cats.items(), key=lambda x: x[1])[0] if _cats else None
-                _mq = {
-                    "blocked_7d": _blocked, "published_7d": _pub,
-                    # reject_rate needs BOTH halves. With the publish count
-                    # unmeasurable the ratio is unknowable, not 100%.
-                    "reject_rate": (round(_blocked / _tot, 3)
-                                    if (_pub is not None and _tot) else None),
-                    "top_reject_category": _top, "by_category": _cats,
-                    "self_critique": "/api/v1/media/self-critique",
-                }
-                if _pub_error:
-                    _mq["published_7d_error"] = _pub_error
-                # A disclaimer-class block is the credibility self-own; a high
-                # reject rate means the generator is producing junk. Either is a
-                # brain-visible alert the autopilot/operator can act on.
-                if _cats.get("ai_disclaimer", 0) > 0:
-                    _mq["status"] = "alert"
-                    _mq["alert"] = (f"{_cats['ai_disclaimer']} disclaimer-as-citation "
-                                    f"post(s) blocked in 7d — media generator regressing")
-                elif _pub_error:
-                    # Loud, and distinct from a real high-reject verdict.
-                    _mq["status"] = "unknown"
-                    _mq["alert"] = ("media publish count unmeasurable — "
-                                    f"reject rate unknown ({_pub_error})")
-                elif _mq["reject_rate"] is not None and _mq["reject_rate"] >= 0.5 and _blocked >= 3:
-                    _mq["status"] = "warn"
-                    _mq["alert"] = f"high media reject rate {_mq['reject_rate']:.0%} (top: {_top})"
-                else:
-                    _mq["status"] = "ok"
-                out["media_quality"] = _mq
+                out["media_quality"] = _media_quality_block(cur)
     except Exception as e:
         out["media_quality"] = {"error": str(e)[:160]}
 
@@ -3096,25 +3138,7 @@ def _compute_heartbeat_sync():
     try:
         if c:
             with c.cursor() as cur:
-                cur.execute("""
-                    SELECT to_regclass('public.brain_proposed_code_fixes')
-                """)
-                if (cur.fetchone() or [None])[0]:
-                    cur.execute("""
-                        SELECT COUNT(*) FILTER (WHERE proposed_at >= NOW() - INTERVAL '24 hours'),
-                               MAX(proposed_at)
-                          FROM brain_proposed_code_fixes
-                    """)
-                    r = cur.fetchone()
-                    if r:
-                        out["layer5"] = {
-                            "proposals_24h":  int(r[0] or 0),
-                            "last_proposal":   r[1].isoformat() if r[1] else None,
-                        }
-                else:
-                    out["layer5"] = {
-                        "error": "table public.brain_proposed_code_fixes not found",
-                    }
+                out["layer5"] = _layer5_block(cur)
     except Exception as e:
         out["layer5"] = {"error": str(e)[:160]}
 
