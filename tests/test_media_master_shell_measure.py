@@ -131,16 +131,68 @@ def test_posts_24h_no_db_degrades_to_loop_counters(monkeypatch):
 
 def test_score_35_reproduces_the_observed_lane(monkeypatch):
     # 1 post/24h, citations 0 -> 0.7*0.5 + 0.3*0 = 0.35 -> 35.0.
+    # ★ starved flipped True here in r-cadence-floor (2026-09-07): the score
+    # was ALWAYS 35/100 for this input, but the lane still called it "not
+    # starved" and acted none. See test_one_post_a_day_is_starved below.
     sc = ms.tier2_score({"posts_24h": 1, "citation_velocity_7d": 0})
     assert sc["media_score"] == 35.0
-    assert sc["starved"] is False
+    assert sc["starved"] is True
 
 
 def test_score_full_health_with_cadence_and_citations():
     sc = ms.tier2_score({"posts_24h": 7, "citation_velocity_7d": 2})
     assert sc["media_score"] == 100.0
+    assert sc["starved"] is False
 
 
 def test_score_starved_at_zero_posts():
     sc = ms.tier2_score({"posts_24h": 0, "citation_velocity_7d": 2})
     assert sc["starved"] is True
+
+
+# ── 4 · cadence floor (r-cadence-floor, 2026-09-07) ─────────────────────────
+#
+# THE DEFECT: `starved = (posts == 0)`. A floor of zero only detects a feed
+# that has stopped COMPLETELY. Measured live on 2026-09-07, twenty consecutive
+# ticks of /api/v1/admin/media/master-state read
+#     posts_24h=1, score=65, starved=False, acted=none
+# with reason "feed not starved (1 posts/24h)" — for 12+ hours, while the
+# analyst voice was effectively silent and X/Bluesky shipped nothing at all.
+# One surviving post per day held the dead-man above its own floor forever.
+
+def test_one_post_a_day_is_starved(monkeypatch):
+    """★ THE REGRESSION. 1 post/24h is below the 2/day cadence target."""
+    monkeypatch.delenv("MEDIA_CADENCE_FLOOR", raising=False)
+    sc = ms.tier2_score({"posts_24h": 1, "citation_velocity_7d": 4})
+    assert sc["starved"] is True
+    assert sc["cadence_floor"] == 2
+
+
+def test_two_posts_a_day_is_fed(monkeypatch):
+    monkeypatch.delenv("MEDIA_CADENCE_FLOOR", raising=False)
+    sc = ms.tier2_score({"posts_24h": 2, "citation_velocity_7d": 0})
+    assert sc["starved"] is False
+
+
+def test_floor_matches_the_cadence_target_the_score_uses(monkeypatch):
+    """The two must not drift: full cadence score == not starved."""
+    monkeypatch.delenv("MEDIA_CADENCE_FLOOR", raising=False)
+    full_cadence = ms.tier2_score({"posts_24h": 2, "citation_velocity_7d": 2})
+    assert full_cadence["media_score"] == 100.0
+    assert full_cadence["starved"] is False
+
+
+def test_floor_cannot_be_tuned_back_to_zero(monkeypatch):
+    """★ An env var must not be able to restore the original defect."""
+    for bad in ("0", "-5", "not-a-number", ""):
+        monkeypatch.setenv("MEDIA_CADENCE_FLOOR", bad)
+        sc = ms.tier2_score({"posts_24h": 0, "citation_velocity_7d": 0})
+        assert sc["starved"] is True, f"floor disabled by MEDIA_CADENCE_FLOOR={bad!r}"
+        assert sc["cadence_floor"] >= 1, bad
+
+
+def test_floor_is_raisable_for_a_higher_cadence_target(monkeypatch):
+    monkeypatch.setenv("MEDIA_CADENCE_FLOOR", "4")
+    sc = ms.tier2_score({"posts_24h": 3, "citation_velocity_7d": 2})
+    assert sc["starved"] is True
+    assert sc["cadence_floor"] == 4

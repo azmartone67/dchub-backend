@@ -60,6 +60,20 @@ def _act_disabled() -> bool:
     return str(os.environ.get("MEDIA_MASTER_ACT_DISABLED", "")).lower() in ("1", "true", "yes")
 
 
+#: Posts/24h at or above which the feed is considered fed. tier2_score already
+#: treats 2+ posts/24h as full cadence ("cadence is 70% (2+ posts/24h = full)")
+#: — the starvation test now uses that SAME number instead of 0, so the two
+#: cannot drift apart again.
+#: ★ CLAMPED TO >= 1 ON PURPOSE. The defect this replaces was a floor of 0; an
+#: env var able to set it back to 0 would silently restore that defect and the
+#: guard would look configured while detecting nothing.
+def _cadence_floor() -> int:
+    try:
+        return max(1, int(os.environ.get("MEDIA_CADENCE_FLOOR", "2")))
+    except (TypeError, ValueError):
+        return 2
+
+
 def _num(v):
     try:
         return int(v)
@@ -227,8 +241,18 @@ def tier2_score(m: dict) -> dict:
     cv = m.get("citation_velocity_7d") or 0
     # cadence is 70% (2+ posts/24h = full), citation velocity presence is 30%.
     health = round(min(1.0, 0.7 * min(posts, 2) / 2.0 + 0.3 * (1.0 if cv else 0.0)), 3)
-    starved = (posts == 0)
-    return {"media_score": round(100.0 * health, 2), "health": health, "starved": starved}
+    # r-cadence-floor (2026-09-07): this was `posts == 0`. A floor of zero can
+    # only see a feed that has stopped COMPLETELY, so a collapse from ~7/day to
+    # 1/day was invisible: 20 consecutive live ticks read
+    # `posts_24h=1, score=65, starved=False, acted=none` with the reason
+    # "feed not starved (1 posts/24h)", and the lane reported healthy for days
+    # while the analyst voice was effectively silent. One surviving post held
+    # the dead-man above its own floor. Test against the cadence target the
+    # score already uses (2/day) instead.
+    floor = _cadence_floor()
+    starved = (posts < floor)
+    return {"media_score": round(100.0 * health, 2), "health": health,
+            "starved": starved, "cadence_floor": floor}
 
 
 # ── TIER 3 — ACT (publish a number-led evergreen when starved) ────────
@@ -236,10 +260,16 @@ def tier3_act(m: dict, sc: dict) -> dict:
     if _act_disabled():
         return {"action": "none", "reason": "MEDIA_MASTER_ACT_DISABLED (shadow)"}
     if not sc.get("starved"):
-        return {"action": "none", "reason": f"feed not starved ({m.get('posts_24h')} posts/24h)"}
-    # Starved -> fire a fact-checked, number-led evergreen (self-gated; the
-    # showcase publisher enforces its own _factcheck + number-lead). No force
-    # needed: 0 posts/24h means the 12h dedup window is already clear.
+        return {"action": "none",
+                "reason": (f"feed not starved ({m.get('posts_24h')} posts/24h "
+                           f">= floor {sc.get('cadence_floor')})")}
+    # Below floor -> fire a fact-checked, number-led evergreen (self-gated; the
+    # showcase publisher enforces its own _factcheck + number-lead).
+    # ★ Raising the floor above 0 cannot cause a posting flood: showcase_publish
+    # holds its own dedup window (MEDIA_SHOWCASE_DEDUP_HOURS, default 48h) and
+    # answers {published: false, skipped: "deduped_within_window"} inside it. So
+    # at most one evergreen per 48h regardless of how often this lane ticks.
+    # (The previous comment here claimed a 12h window; the code says 48.)
     r = _fire("/api/v1/admin/media/showcase/publish")
     return {"action": "showcase_evergreen_publish", "dispatched": r.get("dispatched"),
             "note": "number-led market-pulse; fact-checked + self-gated"}
