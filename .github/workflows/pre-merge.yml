@@ -268,6 +268,21 @@ jobs:
             echo "advisory: all 4 probes completed"
           fi
 
+      # ── Zone Cache Rule canary ───────────────────────────────────────────
+      # The zone Cache Rule keeping /api/v1/mcp/tools/* out of the edge lives in
+      # the Cloudflare dashboard, NOT in git, and nothing else in CI reads the
+      # zone ruleset. It was silently inverted within an hour of being applied
+      # (moved to first; the cache phase is LAST-match-wins, so that disabled
+      # it) and took three live probes to detect. This step is the only thing
+      # that would notice. Advisory like the rest of this job: it probes
+      # production, so a prod outage must not block an unrelated PR.
+      - name: Zone Cache Rule canary
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          bash scripts/probe_mcp_tools_cache_bypass.sh 2>&1 | tee /tmp/canary.log || rc=$?
+          echo "canary_exit=${rc:-0}"
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
