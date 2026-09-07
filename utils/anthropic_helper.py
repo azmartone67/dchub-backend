@@ -187,8 +187,9 @@ def _smoke():
 _smoke()
 
 def http_error_detail(e, limit: int = 300) -> str:
-    """The response body of a urllib HTTPError, one line, truncated. "" on any
-    problem — NEVER raises, so it is safe to call from inside an except block.
+    """The response body of a urllib HTTPError OR a requests.Response, one
+    line, truncated. "" on any problem — NEVER raises, so it is safe to call
+    from inside an except block.
 
     ★ WHY THIS EXISTS (2026-09-01). Raw Anthropic callers across this tree
     recorded `f"http_{e.code}"` and dropped the body, so three unrelated
@@ -201,7 +202,17 @@ def http_error_detail(e, limit: int = 300) -> str:
     try:
         raw = e.read() or b""
     except Exception:
-        return ""
+        # ★ 2026-09-07 — a requests.Response has NO .read(); its body is
+        # already-decoded text on .text. Before this branch, passing one here
+        # returned "" and dropped the body silently — reintroducing, for every
+        # requests-based caller, exactly the blindness this helper was written
+        # to end. Verified against requests 2.34.2: hasattr(Response, "read")
+        # is False, hasattr(Response, "text") is True.
+        try:
+            txt = getattr(e, "text", "") or ""
+            return " ".join(str(txt).split())[:max(0, int(limit))]
+        except Exception:
+            return ""
     try:
         return " ".join(raw.decode("utf-8", "replace").split())[:max(0, int(limit))]
     except Exception:
