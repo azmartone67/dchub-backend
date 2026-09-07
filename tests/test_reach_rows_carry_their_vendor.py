@@ -111,3 +111,35 @@ def test_it_never_raises_when_the_canon_is_unavailable():
     summary = ns["_stamp_vendor"](rows)
     assert all(r["canonical_vendor"] is None for r in rows)
     assert summary["unrecognised_client_ids"] == len(rows)
+
+
+def test_the_summary_keys_are_assigned_not_dict_updated():
+    """★ out.update(_stamp_vendor(...)) shipped first and FAILED CI.
+
+    scripts/api_response_contract.py resolves this handler by reading the
+    response dict statically. One update() turned /api/v1/ai/reach from
+    "resolved" to "opaque" and dropped 18 keys out of contract coverage — a
+    change whose entire purpose was making the payload more measurable made it
+    invisible to the guard that measures it. Assign key-by-key.
+    """
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "update"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "out"):
+            raise AssertionError(
+                "out.update(...) in routes/ai_reach.py makes the response dict "
+                "opaque to the API response contract guard; assign each key")
+
+
+def test_both_paths_publish_the_summary():
+    """The rollup path and the live-scan path must both stamp — the live 7d
+    payload is served by the rollup, which is the one a reader actually sees."""
+    src = SRC.read_text(encoding="utf-8")
+    assert src.count("_stamp_vendor(") >= 3, (
+        "expected the definition plus a call on BOTH the rollup and live-scan "
+        "paths")
+    assert src.count('out["unrecognised_client_ids"]') == 2, (
+        "the unrecognised summary is published on only one of the two paths")

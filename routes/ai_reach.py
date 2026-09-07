@@ -323,7 +323,17 @@ def _window_reach(period: str):
             rows = [dict(r) for r in cur.fetchall()]
             out["per_platform"] = rows
             out["per_platform_client_ids"] = len(rows)
-            out.update(_stamp_vendor(rows))
+            # ★ Assigned key-by-key, NOT out.update(...). A dict built by
+            # update() is not statically knowable, and
+            # scripts/api_response_contract.py resolves this handler by reading
+            # the literal — one update() turned /api/v1/ai/reach from
+            # "resolved" to "opaque" and dropped 18 keys out of contract
+            # coverage. Making a payload more legible to a human reader is not
+            # worth making it invisible to the guard that watches it.
+            _vsum = _stamp_vendor(rows)
+            out["unrecognised_client_ids"] = _vsum["unrecognised_client_ids"]
+            out["unrecognised_requests"] = _vsum["unrecognised_requests"]
+            out["unrecognised_basis"] = _vsum["unrecognised_basis"]
             out["distinct_platforms"] = (
                 count_platforms(r.get("platform_id") for r in rows)
                 if count_platforms is not None else len(rows))
@@ -532,7 +542,11 @@ def ai_reach():
                 out["distinct_platforms"] = _vendors(best)
                 out["per_platform"] = pp
                 out["per_platform_client_ids"] = len(pp)
-                out.update(_stamp_vendor(pp))
+                # key-by-key, not update() — see the note on the live path
+                _vsum = _stamp_vendor(pp)
+                out["unrecognised_client_ids"] = _vsum["unrecognised_client_ids"]
+                out["unrecognised_requests"] = _vsum["unrecognised_requests"]
+                out["unrecognised_basis"] = _vsum["unrecognised_basis"]
                 out["distinct_platforms_basis"] = (
                     "distinct_platforms counts canonical VENDORS "
                     "(ai_platform_canon.count_platforms over the per_platform "
