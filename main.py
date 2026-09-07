@@ -39637,6 +39637,32 @@ def cf_stub_infrastructure():
     errored or lacked lat/lng columns, which is how this endpoint reported
     "gas_pipelines: 0" and "transmission_lines_eia: 0" near Houston while both
     tables held tens of thousands of rows.
+
+    ★ IT REGRESSED FOR GAS ANYWAY, 2026-09-07, through the column probe rather
+    than the except-clause. The probe took the first (lat_col, lon_col) pair
+    whose query DID NOT RAISE. `gas_pipelines` is the one table of the four
+    carrying a third coordinate column — measured columns are
+    `lat` (real), `lng` (real), `lon` (double precision) — and LON_COLS orders
+    `lon` BEFORE `lng`. `lon` is entirely NULL, so `lat`/`lon` parsed, returned
+    0, and `lat`/`lng` — the pair the working v2 handler
+    (expanded_infrastructure_api.get_hifld_gas_pipelines) uses on this same
+    table — was never reached. Nothing raised, so `unmeasured` stayed empty and
+    the 0 published as a measurement.
+
+    Measured before the fix, against production:
+        /api/v1/infrastructure                      -> gas_pipelines 33,771
+        /api/v1/infrastructure?lat=0&lon=0&radius_km=20000
+            (a bbox covering the whole planet)      -> gas_pipelines 0
+    while substations / transmission_lines_eia / discovered_power_plants each
+    returned their near-total inside that same global box. A count of 0 over
+    every coordinate on earth is a measurement of the schema, not of the world.
+
+    So "the query parsed" is NOT the test. A pair is only the answer if it
+    holds at least one non-null row; a pair that exists and is entirely NULL is
+    skipped and named. When no pair carries data the count is null with a
+    reason, never 0. `geo_columns` publishes the pair each count was measured
+    through, which is what makes a real 0 ("none nearby") distinguishable from
+    a probe that read the wrong column.
     """
     import math as _m
     lat = request.args.get('lat', type=float)
@@ -39660,28 +39686,67 @@ def cf_stub_infrastructure():
         cur = conn.cursor()
         counts = {}
         unmeasured = {}
+        geo_columns = {}
         for table in ['substations', 'transmission_lines_eia', 'gas_pipelines', 'discovered_power_plants']:
             try:
                 if use_geo:
-                    found = False
+                    # Pick the coordinate pair that CARRIES DATA, not merely the
+                    # first pair that parses. "Does this query raise?" was the
+                    # old test, and it is not the same question — see the
+                    # docstring for the gas_pipelines.lon regression it caused.
+                    chosen = None
+                    empty_pairs = []
                     last_err = None
                     for lat_col in LAT_COLS:
-                        if found: break
+                        if chosen: break
                         for lon_col in LON_COLS:
                             try:
                                 cur.execute(
-                                    f"SELECT COUNT(*) FROM {table} "
-                                    f"WHERE {lat_col} BETWEEN %s AND %s AND {lon_col} BETWEEN %s AND %s",
-                                    bbox
+                                    f"SELECT 1 FROM {table} "
+                                    f"WHERE {lat_col} IS NOT NULL AND {lon_col} IS NOT NULL "
+                                    f"LIMIT 1"
                                 )
-                                counts[table] = cur.fetchone()[0]
-                                found = True
-                                break
+                                carries_data = cur.fetchone() is not None
                             except Exception as ce:
+                                # Column pair does not exist on this table.
                                 last_err = ce
                                 try: conn.rollback()
                                 except Exception: pass
-                    if not found:
+                                continue
+                            if carries_data:
+                                chosen = (lat_col, lon_col)
+                                break
+                            # The pair EXISTS and is entirely NULL. Counting a
+                            # bbox through it returns 0 for every point on
+                            # earth. Keep looking; record the rejection so the
+                            # published answer can name what was skipped.
+                            empty_pairs.append('%s/%s' % (lat_col, lon_col))
+                    if chosen:
+                        lat_col, lon_col = chosen
+                        cur.execute(
+                            f"SELECT COUNT(*) FROM {table} "
+                            f"WHERE {lat_col} BETWEEN %s AND %s AND {lon_col} BETWEEN %s AND %s",
+                            bbox
+                        )
+                        counts[table] = cur.fetchone()[0]
+                        # Publish the columns the count came through, so a 0 is
+                        # readable as "none nearby" and not confusable with
+                        # "measured through the wrong column".
+                        geo_columns[table] = {'lat': lat_col, 'lon': lon_col}
+                        if empty_pairs:
+                            geo_columns[table]['skipped_all_null'] = empty_pairs
+                    elif empty_pairs:
+                        # Every coordinate pair on this table is all-NULL. 0
+                        # here would be a measurement of the schema, not of the
+                        # world.
+                        counts[table] = None
+                        unmeasured[table] = (
+                            'coordinate columns exist (%s) but hold no non-null '
+                            'values, so a radius filter cannot be applied — this '
+                            'is NOT a count of zero assets nearby.'
+                            % (', '.join(empty_pairs),)
+                        )
+                    else:
                         # No lat/lng column pair on this table — the radius
                         # filter is not answerable here. 0 would read as "no
                         # assets nearby", which is a different and false claim.
@@ -39710,6 +39775,7 @@ def cf_stub_infrastructure():
             result["unmeasured"] = unmeasured
         if use_geo:
             result["filter"] = {"lat": lat, "lon": lon, "radius_km": radius_km}
+            result["geo_columns"] = geo_columns
         if layer:
             result["layer_note"] = (
                 "the `layer` parameter is accepted for backward compatibility "
