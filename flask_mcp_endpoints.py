@@ -4783,11 +4783,145 @@ def mcp_funnel():
             try:
                 from monthly_quota import wall_stats as _wall_stats
                 out["quota_wall"] = _wall_stats(cur)
+                # r-cap-visible: a reader who lands on this block is almost
+                # always asking "is the paywall firing?" — and this block cannot
+                # answer that. Point at the one that can, in the payload itself,
+                # so the answer does not depend on the reader having read
+                # `not_measured_here` first.
+                if isinstance(out.get("quota_wall"), dict):
+                    out["quota_wall"]["see_instead"] = (
+                        "full_answer_cap — the per-DAY full-answer gate a free caller "
+                        "actually hits. THIS block (the monthly quota) has recorded zero "
+                        "hits in its lifetime; a 0 here is not evidence that callers are "
+                        "not being walled."
+                    )
             except Exception as e:
                 try: conn.rollback()
                 except Exception: pass
                 out["quota_wall"] = None
                 out["quota_wall_error"] = str(e)[:120]
+
+            # ── r-cap-visible (2026-09-07): THE GATE A FREE CALLER ACTUALLY HITS
+            #
+            # `quota_wall` directly above measures the per-MONTH quota
+            # (monthly_quota.py, free=300/mo). Its own `not_measured_here` says
+            # so, and it has never recorded a hit — table_exists=false since it
+            # went enforcing on 2026-08-08. Read alone it invites exactly one
+            # wrong conclusion, and the funnel dashboard published it for a
+            # month: "quota wall hits 0, enforce ON" reads as "nothing is being
+            # walled".
+            #
+            # ★ The gate that actually fires is the mcp-server's per-DAY
+            # full-answer cap (_trialFullCallsExceeded; DCHUB_TRIAL_TOOL_DAILY_FULL,
+            # per-tool AND per-caller since dchub-mcp-server#294 on 2026-09-01).
+            # It labels its own deprivation branch `status='trial_cap_exceeded'`
+            # on the mcp_call_log row — and NOTHING read that column, so the one
+            # branch that means "you were stopped" was invisible to every
+            # surface built to decide whether the paywall works.
+            #
+            # Measured when this block was written (2026-09-07, 45d):
+            #   trial_cap_exceeded  39,344 calls / 10,562 sessions, since 08-06
+            #   steady ~8,400 hits + ~2,300 sessions per week since 08-10
+            # while mcp_upgrade_signals held 2,945 rows for the same 30 days and
+            # ONE checkout_link_issued. The wall is not quiet; it was unread.
+            #
+            # ★ FLOOR, not a silent zero: `sibling_gate_statuses_30d` publishes
+            # every gate-ish status beside the headline. If the mcp-server ever
+            # renames the literal, this block reads 0 while its sibling list
+            # shows where the traffic went — a rename becomes visible instead of
+            # reading as "the wall stopped firing".
+            try:
+                cur.execute(
+                    """
+                    SELECT
+                      count(*) FILTER (WHERE timestamp > now() - interval '7 days')   AS hits_7d,
+                      count(*) FILTER (WHERE timestamp > now() - interval '30 days')  AS hits_30d,
+                      count(DISTINCT session_id) FILTER (WHERE timestamp > now() - interval '7 days')  AS sessions_7d,
+                      count(DISTINCT session_id) FILTER (WHERE timestamp > now() - interval '30 days') AS sessions_30d,
+                      count(DISTINCT api_key) FILTER (WHERE api_key IS NOT NULL
+                            AND timestamp > now() - interval '30 days')               AS keys_30d,
+                      min(timestamp)                                                  AS first_hit_at,
+                      max(timestamp)                                                  AS last_hit_at
+                    FROM mcp_call_log
+                    WHERE status = 'trial_cap_exceeded'
+                      AND timestamp > now() - interval '90 days'
+                    """
+                )
+                _cw = cur.fetchone() or (0, 0, 0, 0, 0, None, None)
+                cur.execute(
+                    """
+                    SELECT date_trunc('week', timestamp)::date AS wk,
+                           count(*) AS hits,
+                           count(DISTINCT session_id) AS sessions
+                    FROM mcp_call_log
+                    WHERE status = 'trial_cap_exceeded'
+                      AND timestamp > now() - interval '9 weeks'
+                    GROUP BY 1 ORDER BY 1
+                    """
+                )
+                _cw_weeks = [
+                    {"week": str(r[0]), "hits": int(r[1] or 0), "sessions": int(r[2] or 0)}
+                    for r in (cur.fetchall() or [])
+                ]
+                cur.execute(
+                    """
+                    SELECT status, count(*) AS n
+                    FROM mcp_call_log
+                    WHERE timestamp > now() - interval '30 days'
+                      AND status IS NOT NULL
+                      AND (status ILIKE '%cap%' OR status ILIKE '%block%'
+                           OR status ILIKE '%limit%' OR status ILIKE '%trial%'
+                           OR status ILIKE '%gate%' OR status ILIKE '%wall%')
+                    GROUP BY 1 ORDER BY n DESC LIMIT 12
+                    """
+                )
+                _cw_sib = [{"status": r[0], "calls": int(r[1] or 0)}
+                           for r in (cur.fetchall() or [])]
+                out["full_answer_cap"] = {
+                    "status_literal": "trial_cap_exceeded",
+                    "hits_7d": int(_cw[0] or 0),
+                    "hits_30d": int(_cw[1] or 0),
+                    "sessions_7d": int(_cw[2] or 0),
+                    "sessions_30d": int(_cw[3] or 0),
+                    "keys_30d": int(_cw[4] or 0),
+                    "first_hit_at": _cw[5].isoformat() if _cw[5] else None,
+                    "last_hit_at": _cw[6].isoformat() if _cw[6] else None,
+                    "by_week": _cw_weeks,
+                    "sibling_gate_statuses_30d": _cw_sib,
+                    "measures": (
+                        "the mcp-server per-DAY full-answer cap "
+                        "(_trialFullCallsExceeded / DCHUB_TRIAL_TOOL_DAILY_FULL; per-tool AND "
+                        "per-caller since dchub-mcp-server#294, 2026-09-01). Counts "
+                        "mcp_call_log rows whose status is the deprivation branch's own "
+                        "label — one row per GATED CALL, not per caller."
+                    ),
+                    "basis": (
+                        "COUNT(*) / COUNT(DISTINCT session_id) FROM mcp_call_log WHERE "
+                        "status = 'trial_cap_exceeded', windows rolling from now(). NOT "
+                        "de-duplicated to real-external: this table is the raw gateway log, "
+                        "so crawlers/probes/self-traffic are INCLUDED here where the agent "
+                        "and call headlines exclude them. It is therefore an UPPER bound on "
+                        "addressable deprivation and must not be divided into "
+                        "real_external_* figures, which count a different population."
+                    ),
+                    "not_measured_here": (
+                        "NOT the monthly quota — that is the `quota_wall` block beside this "
+                        "one, a different gate with a different limit. The two have never "
+                        "agreed and are not meant to: quota_wall has recorded zero hits in "
+                        "its lifetime while this gate fires thousands of times a week."
+                    ),
+                    "sessions_caveat": (
+                        "session_id is gateway-minted and rotates — Grok opens one per tool "
+                        "call. sessions_* is an UPPER bound on distinct humans/agents, never "
+                        "a person count. keys_30d (distinct api_key) is the durable-identity "
+                        "floor and is the number to trend."
+                    ),
+                }
+            except Exception as e:
+                try: conn.rollback()
+                except Exception: pass
+                out["full_answer_cap"] = None
+                out["full_answer_cap_error"] = str(e)[:160]
 
             # ★★2026-07-30: + refunded_at IS NULL. This was the FOURTH conversion
             # surface and the last one still counting refunded sales as revenue.
