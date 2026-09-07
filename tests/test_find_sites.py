@@ -331,3 +331,44 @@ def test_a_broken_layer_is_visible_even_when_no_constraint_asked_for_it():
         {"gas": 0}, {"gas": True})
     assert st["gas"]["answered"] is False              # layer_status does not
     assert "did not answer" in st["gas"]["reason"]
+
+
+# ── reproducibility: the anchor query must have a total order ───────────────
+def _anchor_order_by():
+    """The ORDER BY the anchor query is built with, read out of the source.
+
+    Anchored: the fragment must appear EXACTLY once, so this cannot pass
+    vacuously if the query is rewritten or moved.
+    """
+    import pathlib, re
+    src = pathlib.Path(__file__).resolve().parents[1] / "routes" / "find_sites.py"
+    text = src.read_text(encoding="utf-8")
+    hits = re.findall(r'"\s*ORDER BY ([^"]+?)\s*LIMIT %s"', text)
+    assert len(hits) == 1, (
+        "expected exactly one anchor ORDER BY ... LIMIT in routes/find_sites.py, "
+        "found %d — this guard has lost its anchor and would pass vacuously"
+        % len(hits))
+    return hits[0]
+
+
+def test_anchor_query_orders_on_more_than_voltage():
+    # ★ Substation voltages tie constantly (Virginia alone has many 765 kV
+    # anchors). ORDER BY voltage_kv alone lets Postgres return a different
+    # top-N per call, so two identical requests returned different candidates.
+    # A shortlist a caller cannot reproduce is not a shortlist.
+    keys = [k.strip() for k in _anchor_order_by().split(",")]
+    assert len(keys) >= 2, (
+        "anchor ORDER BY has a single sort key (%r) — ties are resolved "
+        "arbitrarily and identical calls can disagree" % keys)
+    assert keys[0].startswith("voltage_kv"), keys
+    # the tiebreaker must be a column that is actually unique
+    assert any(k.split()[0] == "id" for k in keys[1:]), (
+        "no unique tiebreaker in %r — name/city/state all repeat across rows" % keys)
+
+
+def test_anchor_query_selects_the_column_it_orders_by():
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[1] / "routes" / "find_sites.py"
+    text = src.read_text(encoding="utf-8")
+    assert text.count('"SELECT id, name, city, state, status, voltage_kv, capacity_mva, "') == 1, (
+        "the anchor projection changed — ORDER BY id must stay selectable")
