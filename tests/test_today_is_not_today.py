@@ -102,3 +102,48 @@ def test_the_gap_branch_sets_wow_to_none_not_a_number():
                             "something other than None")
                         found = True
     assert found, "no wow_pct = None inside the prior-window guard"
+
+
+def test_wow_refuses_a_window_that_predates_a_collector():
+    """★ The day-count guard shipped first and was NOT sufficient — the live
+    payload passed it and still published wow_pct = 2472.5.
+
+        current  2026-08-31 .. 09-07   61,353  (8,765/day)
+        prior    2026-08-24 .. 08-30    2,385  (341/day)
+
+    The prior window HAS its seven dates. They predate the instrument: the CF
+    edge beacon began writing 2026-08-29, so six of the seven days were
+    recorded by a collector that did not exist. Absence here is not a missing
+    row, it is a missing COLLECTOR, and no count of dates can see it.
+    """
+    src = _src()
+    assert "_COLLECTOR_STARTED" in src, (
+        "wow_pct does not consult the collector start dates, so it cannot tell "
+        "an instrument coming online from demand growth")
+    assert "_collector_start" in src and "_prior_start" in src, (
+        "no comparison between the prior window start and the collector start")
+
+
+def test_the_collector_check_runs_before_the_day_count_check():
+    """Order matters for the REASON published. A window that both predates a
+    collector and is sparse should say the collector, which is the true cause;
+    reporting sparse dates would send the next reader looking for missing rows
+    that are not missing."""
+    src = _src()
+    i_collector = src.index("if _collector_start and _prior_start < _collector_start:")
+    i_daycount = src.index("elif _prior_day_count < 7:")
+    assert i_collector < i_daycount, (
+        "the day-count branch precedes the collector branch, so a window that "
+        "predates the instrument is reported as merely sparse")
+
+
+def test_the_collector_start_is_not_a_second_copy_of_the_date():
+    """The boundary must be READ from crawler_split, not restated here. A
+    duplicated date is the drift that this whole class of bug is made of."""
+    src = _src()
+    assert "from routes.crawler_split import _COLLECTOR_STARTED" in src, (
+        "the collector start date is not imported from its single source")
+    import re
+    seg = src[src.index("_collector_start = None"):src.index("elif _prior_day_count")]
+    assert not re.search(r"20\d\d-\d\d-\d\d", seg), (
+        f"a literal date is hardcoded in the guard: {seg[:200]!r}")
