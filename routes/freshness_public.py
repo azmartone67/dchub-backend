@@ -368,6 +368,66 @@ _DOMAIN_AGE_TTL = 300  # 5 min
 # passes _INTERMITTENT_MAX_H — otherwise this list would be a place to hide a
 # genuinely dead feed, which is the failure mode the worst-stream rule exists to
 # prevent. Their ages are always reported, never dropped.
+def _eia930_fleet() -> frozenset:
+    """The grid streams fed by EIA-930, READ from the module that owns them.
+
+    ★ 2026-09-07 — MEASURED, NOT ASSUMED. 48 `iso_metric_count_zero_24h`
+      findings stood open, one per ISO, filed 08-14 → 09-03. They are not an
+      outage: EIA-930 publishes ~26-28h behind real time, and this detector
+      asks "any write in the last 24h". Probed EIA v2 live with the prod key:
+
+        respondent   EIA's newest period    age
+        PJM          2026-09-06T03          28.5h
+        MISO         2026-09-06T04          27.5h
+        DUK          2026-09-06T03          28.5h
+        SOCO         2026-09-06T04          27.5h
+        CISO         2026-09-06T06          25.5h
+        ERCO         2026-09-06T04          27.5h
+
+      Our newest PJM row in grid_data is 2026-09-06 03:00:00 — byte-identical
+      to EIA's newest AVAILABLE period. grid_data.timestamp is the EIA period,
+      not our write time, so we are not behind: we are exactly current with a
+      source that publishes a day late. A 24h window on a ~27h-lagged feed
+      regenerates a finding for every EIA-only stream, every day, forever —
+      the same "detector outliving its cause" shape as the ENTSO-E zones above.
+
+      The split confirms one cause, not 48: every RESOLVED row is ENTSO-E /
+      EU_* / BR_* / ONS / ISONE (their own feeds), and every OPEN row is an
+      EIA-930 stream.
+
+    ★ DERIVED, NEVER RESTATED. eia_utility_bas._BAS is the registry that
+      already owns the 43 balancing authorities; typing them again here is the
+      drift this file keeps paying for (see the note on the leash being read
+      from this module rather than copied into the radar). PJM/MISO/TVA/BPA
+      are not utility BAs but their extractors are EIA-930-fed BY DESIGN —
+      iso_miso.py was repointed onto EIA on 2026-05-31 after MISO retired its
+      public RTWD feed, and iso_pjm/iso_tva/iso_bpa document an EIA EBA path.
+
+    ★ STILL A LEASH, NOT IMMUNITY. Past _INTERMITTENT_MAX_H (168h) these are
+      judged like any other stream, so a feed that genuinely dies is caught.
+
+    Fail-soft to EMPTY, matching brain_consistency_radar._intermittent_grid_
+    streams: an unreadable fleet must file findings as before. The failure
+    direction is the whole point — a list that cannot be read must never
+    silence a detector.
+    """
+    try:
+        from routes.eia_utility_bas import _BAS
+        codes = {b["code"] for b in _BAS if b.get("code")}
+    except Exception:  # noqa: BLE001
+        return frozenset()
+    if not codes:                      # a registry that reads empty is a bug,
+        return frozenset()             # not a reason to silence 43 streams
+    # ★ MISO is NOT here. It has its own live 5-minute feed
+    #   (public-api.misoenergy.org, wired in routes/iso_miso.py) and reads
+    #   minutes old, so it stays on the 24h clock — leashing a live stream
+    #   would hide a real MISO outage for the full 168h. PJM/TVA/BPA remain
+    #   EIA-fed by design: PJM by an explicit owner decision (no Data Miner 2
+    #   serving without a PJM Redistribution License), TVA/BPA by their
+    #   adapters' documented EIA EBA path.
+    return frozenset(codes | {"PJM", "TVA", "BPA"})
+
+
 _INTERMITTENT_STREAMS: dict = {
     # ★ 2026-09-03 — FOUR MORE, EACH MEASURED, NOT ASSUMED. The squasher board
     #   carried one `iso_metric_count_zero_24h` row per EU zone for weeks. When
@@ -391,7 +451,8 @@ _INTERMITTENT_STREAMS: dict = {
     #
     #   Still a leash and not immunity: past _INTERMITTENT_MAX_H they are judged
     #   like any other stream, so a zone that genuinely dies is still caught.
-    "grid_data": frozenset({"EU_BG", "EU_DK_1", "EU_DK_2", "EU_GR", "EU_IE_SEM"}),
+    "grid_data": (frozenset({"EU_BG", "EU_DK_1", "EU_DK_2", "EU_GR", "EU_IE_SEM"})
+                  | _eia930_fleet()),
 }
 _INTERMITTENT_MAX_H = 168.0   # 7 days — past this, even "irregular" means dead
 
