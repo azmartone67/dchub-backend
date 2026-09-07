@@ -221,6 +221,53 @@ def route_serving_map(app) -> dict:
             "serving": dict(sorted(out.items()))}
 
 
+def classify_route_map_drift(committed: dict, live: dict) -> tuple[list, list]:
+    """Split route-map drift into what must FAIL and what is merely a note.
+
+    ★ ONLY A MODULE DISAGREEMENT IS A FAILURE, and the first version of this
+    gate got that wrong: it demanded the committed map equal the booted one
+    exactly, and CI went red over two routes it registers and a laptop does
+    not. Route registration here is ENVIRONMENT-DEPENDENT — CI boots
+    "LEGACY ENVIRONMENT ... FAILOVER (Replit-era defaults)" — so exact equality
+    is not achievable by any regeneration, and a gate that demands it is red
+    forever for a reason nobody can fix.
+
+    Only one of the three discrepancies can delete a real key:
+      in app, not in map  -> the extractor finds no entry and keeps the union.
+                             Unattributed, never misattributed. SAFE.
+      in map, not in app  -> the path is not served at all, so there is no live
+                             response whose keys could be lost.
+      DIFFERENT MODULES   -> the map names A, the app serves B; the extractor
+                             keeps A's keys and drops B's. That deletes keys a
+                             live response really produces.
+    """
+    failures: list = []
+    notes: list = []
+    both = set(committed) & set(live)
+    changed = sorted(k for k in both
+                     if committed[k].get("modules") != live[k].get("modules"))
+    if changed:
+        listing = "\n".join(
+            "    %s\n      map says %s\n      app serves %s"
+            % (k, committed[k].get("modules"), live[k].get("modules"))
+            for k in changed[:10])
+        failures.append(
+            "ROUTE SERVING MAP DISAGREES WITH THE APP on %d route(s).\n"
+            "  scripts/api_response_contract.py attributes response keys with "
+            "this map: where it names the wrong module, that extractor drops "
+            "the keys of the handler that actually serves the route.\n"
+            "  Regenerate: python3 scripts/app_contract_gate.py --write-route-map\n"
+            "%s" % (len(changed), listing))
+    missing = sorted(set(live) - set(committed))
+    if missing:
+        notes.append(
+            "note: %d route(s) served here are absent from "
+            "contracts/route_serving_map.json and will not be attributed "
+            "(e.g. %s). Not a failure; regenerate to include them if this "
+            "environment is the canonical one." % (len(missing), missing[:3]))
+    return failures, notes
+
+
 def shadowed(app) -> dict:
     """rule+method pairs served by more than one handler."""
     seen = collections.defaultdict(list)
@@ -338,22 +385,12 @@ def main_() -> int:
             committed = json.load(fh).get("serving")
     except (OSError, ValueError):
         committed = None
-    if committed is not None and committed != rmap["serving"]:
-        only_live = sorted(set(rmap["serving"]) - set(committed))[:5]
-        only_map = sorted(set(committed) - set(rmap["serving"]))[:5]
-        changed = sorted(k for k in set(committed) & set(rmap["serving"])
-                         if committed[k] != rmap["serving"][k])[:5]
-        failures.append(
-            "ROUTE SERVING MAP IS STALE: contracts/route_serving_map.json no "
-            "longer matches the booted app.\n"
-            "  scripts/api_response_contract.py attributes response keys with "
-            "this map; stale entries make it drop the keys of the handler that "
-            "actually serves a route.\n"
-            "  Regenerate: python3 scripts/app_contract_gate.py --write-route-map\n"
-            f"  in app not map: {only_live}\n"
-            f"  in map not app: {only_map}\n"
-            f"  different modules: {changed}"
-        )
+    if committed is not None:
+        drift_failures, drift_notes = classify_route_map_drift(
+            committed, rmap["serving"])
+        failures.extend(drift_failures)
+        for n in drift_notes:
+            print(n)
 
     client = app.test_client()
     for path in base["contract_routes"]:

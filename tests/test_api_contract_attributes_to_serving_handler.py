@@ -261,3 +261,57 @@ def test_the_surface_declares_that_attribution_ran():
         "the committed baseline was generated WITHOUT the url_map, so its "
         "duplicate routes are unattributed unions again")
     assert surface["stats"]["endpoints_attributed_by_url_map"] > 0
+
+
+# ── C6: route-map drift is classified by HARM, not by inequality ─────────────
+# The first version of the gate demanded the committed map equal the booted one
+# exactly. CI went red on it: CI boots "LEGACY ENVIRONMENT ... FAILOVER
+# (Replit-era defaults)" and registers 2 routes a laptop does not, so exact
+# equality is unachievable by any regeneration. Only a MODULE DISAGREEMENT can
+# delete a real key; the other two discrepancies are safe.
+
+def _gate():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import app_contract_gate as g
+    return g
+
+
+def test_a_module_disagreement_fails():
+    """The map names A, the app serves B — the extractor would drop B's keys."""
+    g = _gate()
+    committed = {"GET /api/x": {"modules": ["dead_module"]}}
+    live = {"GET /api/x": {"modules": ["real_module"]}}
+    failures, notes = g.classify_route_map_drift(committed, live)
+    assert len(failures) == 1, failures
+    assert "DISAGREES" in failures[0]
+    assert "dead_module" in failures[0] and "real_module" in failures[0]
+
+
+def test_a_route_the_app_serves_but_the_map_lacks_is_only_a_note():
+    """THE CI CASE. Registration is environment-dependent, so this must never
+    be a failure — the endpoint simply goes unattributed, which is the old
+    union: additive, never a removal."""
+    g = _gate()
+    committed = {"GET /api/x": {"modules": ["m"]}}
+    live = {"GET /api/x": {"modules": ["m"]},
+            "GET /api/v2/scoring/h3-cell": {"modules": ["scoring"]}}
+    failures, notes = g.classify_route_map_drift(committed, live)
+    assert failures == [], (
+        "an environment-only route was treated as a failure — this is the "
+        "defect that made the gate red on a PR nobody could fix: %r" % failures)
+    assert len(notes) == 1 and "not be attributed" in notes[0]
+
+
+def test_a_route_in_the_map_that_the_app_no_longer_serves_is_not_a_failure():
+    g = _gate()
+    committed = {"GET /api/x": {"modules": ["m"]}, "GET /api/gone": {"modules": ["old"]}}
+    live = {"GET /api/x": {"modules": ["m"]}}
+    failures, notes = g.classify_route_map_drift(committed, live)
+    assert failures == [], failures
+
+
+def test_an_identical_map_is_silent():
+    g = _gate()
+    m = {"GET /api/x": {"modules": ["m"]}}
+    failures, notes = g.classify_route_map_drift(dict(m), dict(m))
+    assert failures == [] and notes == []
