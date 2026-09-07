@@ -409,6 +409,47 @@ def _fmt_adoption(calls: int, tool_max: int, platform: str) -> str:
             f"what works and only sharpen clarity.")
 
 
+# ── description length ───────────────────────────────────────────────
+_DESC_MAX = 280
+# Ask the model for less than the hard cap. It routinely overshoots the number
+# in the prompt, and every overshoot used to be resolved by a blind slice — so
+# the ask and the clamp must not be the same number, or the clamp is the normal
+# path rather than the exception.
+_DESC_ASK = 240
+# Below this fraction of the cap, falling back to the last sentence would throw
+# away too much of the description, so we keep more text and end on a word.
+_DESC_SENTENCE_FLOOR = 0.6
+
+
+def _clamp_description(text: str, limit: int = _DESC_MAX) -> str:
+    """Bound a description to `limit` WITHOUT cutting mid-word.
+
+    ★ `text[:280]` guillotined 100 of the 132 stored cells mid-sentence —
+    "Use for single-market b", "to answer investment feasibility questio".
+    These strings are what an agent reads when choosing between tools, so a
+    description that stops mid-word is worse than the generic it replaced: it
+    reads as a broken tool. The cap is real (agent stores enforce it); what was
+    wrong was resolving it with a blind slice.
+
+    Prefer the last complete sentence inside the cap. If that would discard
+    more than 1 - _DESC_SENTENCE_FLOOR of the budget, keep the longer text and
+    end it on a word boundary instead, trimming any dangling punctuation.
+    """
+    t = " ".join((text or "").split())
+    if len(t) <= limit:
+        return t
+    head = t[:limit]
+    if head.endswith((".", "!", "?")):
+        return head
+    cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+    if cut >= limit * _DESC_SENTENCE_FLOOR:
+        return head[:cut + 1]
+    sp = head.rfind(" ")
+    if sp > 0:
+        head = head[:sp]
+    return head.rstrip(" ,;:-\u2014\u2013")
+
+
 def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
                     voice_cue: str, outcome: str = "") -> str | None:
     """Generate a per-platform-tuned tool description via Claude. Returns
@@ -448,7 +489,7 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
         f"PLATFORM VOICE: {voice_cue}\n\n"
         "Constraints:\n"
         "  - 1-2 sentences\n"
-        "  - 280 characters max\n"
+        f"  - {_DESC_ASK} characters max (hard limit {_DESC_MAX})\n"
         "  - Plain text, no markdown, no code fences\n"
         # 2026-07-25: agent stores (Microsoft Copilot Agent Store policy 1140.9)
         # reject tool descriptions containing URLs or emoji. Forbid both so every
@@ -490,7 +531,7 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
                 if block.get("type") == "text":
                     text = (block.get("text") or "").strip().strip('"').strip("'")
                     if text:
-                        return text[:280]
+                        return _clamp_description(text)
             return None
         except urllib.error.HTTPError as e:
             detail = http_error_detail(e)
@@ -773,7 +814,7 @@ def seed_variants():
             # Without Claude, write deterministic light variants so the table is at
             # least populated. Fast — do inline. Re-run once ANTHROPIC_API_KEY is set.
             for canon, tool_name, generic, _voice in jobs:
-                deterministic = f"[{canon}] {generic}"[:280]
+                deterministic = _clamp_description(f"[{canon}] {generic}")
                 _upsert(c, canon, tool_name, deterministic, "deterministic_no_claude")
                 written.append({"platform": canon, "tool": tool_name,
                                 "via": "deterministic"})
@@ -852,8 +893,9 @@ def manual_upsert():
     if not plat or not tool or not desc:
         return jsonify(ok=False, error="missing_field",
                        required=["platform", "tool_name", "description"]), 400
-    if len(desc) > 280:
-        return jsonify(ok=False, error="description_too_long", max=280), 400
+    if len(desc) > _DESC_MAX:
+        return jsonify(ok=False, error="description_too_long",
+                       max=_DESC_MAX), 400
     c = _get_db()
     if c is None:
         return jsonify(ok=False, error="no_db"), 503
