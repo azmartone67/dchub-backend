@@ -123,8 +123,9 @@ def test_the_real_production_shape_is_reported_as_no_usable_records(monkeypatch)
     assert res["peeringdb"]["usable"] == 0
     assert res["status"] == "no_source", (
         "a lane whose only source yielded nothing must not report success")
-    assert res["seeded"] == len(F.MAJOR_ROUTES), (
-        "precondition: the seed still ran — it is what used to mask this")
+    # ★ W4: the hardcoded seed step that used to mask this is GONE — no_source
+    # now stands on the real source alone, with nothing to inflate the result.
+    assert "seeded" not in res and res.get("discovered", 0) == 0
 
 
 def test_a_429_is_not_the_same_as_healthy_and_empty(monkeypatch):
@@ -154,11 +155,26 @@ def test_a_working_source_still_reports_success(monkeypatch):
     assert res["status"] == "success"
 
 
-def test_the_seed_is_published_as_hardcoded_so_callers_need_not_know(monkeypatch):
-    monkeypatch.setattr(F.requests, "get", _get(IX_NO_COORDS))
+def test_the_hardcoded_seed_step_is_gone(monkeypatch):
+    """★ W4: the fabricator was removed. run_fiber_discovery no longer
+    re-upserts MAJOR_ROUTES, so its result carries no seed fields and nothing
+    is written with source='seed'. If the seed is ever restored, `seeded`
+    reappears and a source='seed' write fires — this test then fails."""
+    sources = []
+
+    def _capture(conn, route):
+        sources.append(route.get("source"))
+        return True
+
+    monkeypatch.setattr(F, "_upsert_fiber_route", _capture)
+    monkeypatch.setattr(F.requests, "get", _get(IX_WITH_COORDS))
     res = F.run_fiber_discovery()
-    assert res["seed_is_hardcoded"] is True
-    assert res["seed_row_count"] == len(F.MAJOR_ROUTES)
+    assert "seeded" not in res
+    assert "seed_is_hardcoded" not in res
+    assert "seed_row_count" not in res
+    assert res.get("discovered", 0) > 0, "control: the real source still produced routes"
+    assert "seed" not in sources, (
+        "the fabricator is gone — no route is upserted with source='seed'")
 
 
 def test_a_failed_write_still_reports_partial_not_no_source(monkeypatch):

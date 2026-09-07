@@ -264,16 +264,22 @@ def _discover_peeringdb_fiber():
 
 def run_fiber_discovery():
     """
-    Main fiber discovery function — called by /api/jobs/infrastructure-sync.
-    
+    DEAD DUPLICATE of fiber_network_discovery.run_fiber_discovery. This module's
+    blueprint registration was removed (see main.py: "jobs_api.register_jobs_api
+    was replaced by routes/jobs_routes.py Blueprint") and nothing imports this
+    function; the canonical entry point (with the no_source honesty contract) is
+    fiber_network_discovery. Kept only until this dead module is retired.
+
+    ★2026-09-07 (W4): the hardcoded 20-route seed step was removed here too, so
+    no run_fiber_discovery anywhere can re-stamp a fixed list and report it as
+    work — even if this dead copy is ever resurrected.
+
     1. Ensures fiber_routes table exists
-    2. Seeds 20 major carrier routes
-    3. Discovers additional routes from PeeringDB
-    4. Returns summary stats
+    2. Discovers routes from PeeringDB
+    3. Returns summary stats
     """
     start = time.time()
     results = {
-        'seeded': 0,
         'discovered': 0,
         'errors': 0,
         'total': 0,
@@ -288,19 +294,8 @@ def run_fiber_discovery():
         return {'status': 'error', 'message': 'Database connection failed'}
 
     try:
-        # Step 1: Seed major carrier routes
-        for route in MAJOR_ROUTES:
-            route['source'] = 'seed'
-            route['route_type'] = 'long_haul'
-            if _upsert_fiber_route(conn, route):
-                results['seeded'] += 1
-            else:
-                results['errors'] += 1
-
-        conn.commit()
-        logger.info(f"Fiber seed: {results['seeded']} carrier routes written")
-
-        # Step 2: Discover from PeeringDB
+        # Discover from PeeringDB. (W4: the hardcoded MAJOR_ROUTES seed step was
+        # removed — fabrication, not discovery. This copy is dead anyway.)
         try:
             pdb_routes = _discover_peeringdb_fiber()
             for route in pdb_routes:

@@ -30095,8 +30095,11 @@ def job_fiber_sync():
         fiber_result = run_fiber_discovery()
         results['sources']['fiber_network'] = fiber_result
         if isinstance(fiber_result, dict):
-            results['total_new'] += (fiber_result.get('seeded', 0) +
-                                     fiber_result.get('discovered', 0))
+            # W4: the hardcoded seed step was removed — count only real
+            # discovery. `seeded` re-stamped a fixed 20-route list every run
+            # (0 new rows) and inflated total_new against the honest
+            # rows_persisted delta below.
+            results['total_new'] += fiber_result.get('discovered', 0)
     except Exception as e:
         results['sources']['fiber_network'] = f'error: {e}'
         results['errors'].append(f'fiber_network: {e}')

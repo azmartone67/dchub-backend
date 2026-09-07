@@ -356,28 +356,27 @@ def _discover_peeringdb_fiber():
 def run_fiber_discovery():
     """
     Main fiber discovery function — called by /api/jobs/infrastructure-sync.
-    
+
     1. Ensures fiber_routes table exists
-    2. Seeds 20 major carrier routes
-    3. Discovers additional routes from PeeringDB
-    4. Returns summary stats
+    2. Discovers routes from PeeringDB (the only real source)
+    3. Returns summary stats
+
+    ★2026-09-07 (W4): the hardcoded 20-route SEED STEP was REMOVED. It
+    re-upserted the fixed MAJOR_ROUTES list every run — measured 2026-09-03,
+    exactly 20 fiber_routes rows carried updated_at=today and 0 carried
+    created_at=today, every day — and reported `seeded: 20`, a fabrication that
+    inflated total_new and was never discovery. MAJOR_ROUTES stays as reference
+    data for the read-only FiberProviderAPI, but is no longer written on a
+    schedule. `seeded` / `seed_is_hardcoded` / `seed_row_count` are gone from the
+    result; callers now count only `discovered`.
     """
     start = time.time()
     results = {
-        'seeded': 0,
         'discovered': 0,
         'errors': 0,
         'total': 0,
-        # ★ `seeded` counts a HARDCODED list re-upserted every run. It is not
-        # discovery and it is not evidence of a live source: measured
-        # 2026-09-03, exactly 20 fiber_routes rows carry updated_at=today and
-        # 0 carry created_at=today, every day. Published alongside it so no
-        # caller has to know that by reading this file — the infrastructure-
-        # sync job uses it to keep a hardcoded re-stamp out of its work count.
-        'seed_is_hardcoded': True,
-        'seed_row_count': len(MAJOR_ROUTES),
-        # Set by step 2. Stays at 'not_reached' when the seed step raises
-        # before discovery runs, which is a different state from a source
+        # Set by the discovery step. Stays 'not_reached' if the connection or
+        # table check raises before it runs — a different state from a source
         # that answered and gave nothing.
         'peeringdb': {'status': 'not_reached', 'fetched': 0,
                       'usable': 0, 'detail': None},
@@ -392,19 +391,10 @@ def run_fiber_discovery():
         return {'status': 'error', 'message': 'Database connection failed'}
 
     try:
-        # Step 1: Seed major carrier routes
-        for route in MAJOR_ROUTES:
-            route['source'] = 'seed'
-            route['route_type'] = 'long_haul'
-            if _upsert_fiber_route(conn, route):
-                results['seeded'] += 1
-            else:
-                results['errors'] += 1
-
-        conn.commit()
-        logger.info(f"Fiber seed: {results['seeded']} carrier routes written")
-
-        # Step 2: Discover from PeeringDB
+        # Discover from PeeringDB — the only real source. (The hardcoded
+        # MAJOR_ROUTES seed step was removed in W4: re-upserting a fixed list
+        # is fabrication, not discovery, and it masked a source that had
+        # returned nothing for 73 days.)
         try:
             pdb_routes, pdb_diag = _discover_peeringdb_fiber()
             results['peeringdb'] = pdb_diag
@@ -440,18 +430,17 @@ def run_fiber_discovery():
     # failed row WRITES, so it stayed 0 while the only discovery source
     # returned nothing for 73 days and this reported 'success' every run —
     # the exact "a lane died and every signal stayed green" failure this
-    # program exists to end. The seed step cannot rescue it: re-stamping 20
-    # hardcoded rows is not a source.
+    # program exists to end. The seed step that used to mask this (re-stamping
+    # 20 hardcoded rows — never a source) was removed in W4.
     _pdb = (results.get('peeringdb') or {}).get('status')
     if results['errors']:
         results['status'] = 'partial'
     elif _pdb != 'ok':
         results['status'] = 'no_source'
         results['message'] = (
-            'no working discovery source: peeringdb=%s (%s). The seed step '
-            're-upserts %d hardcoded routes and is not a source.'
-            % (_pdb, (results.get('peeringdb') or {}).get('detail'),
-               len(MAJOR_ROUTES)))
+            'no working discovery source: peeringdb=%s (%s). '
+            '(The hardcoded seed step was removed in W4 — it was never a source.)'
+            % (_pdb, (results.get('peeringdb') or {}).get('detail')))
     else:
         results['status'] = 'success'
     logger.info(f"Fiber discovery complete: {results}")
@@ -692,4 +681,4 @@ def register_fiber_discovery(app):
     print(f"   📡 Providers: /api/fiber/providers (8 carriers, {FiberProviderAPI.get_all_providers()['total_route_miles']:,} route miles)")
     print(f"   🛤️ Routes: /api/fiber/routes ({routes['count']} seed routes, {routes['total_miles']:,} miles)")
     print(f"   💰 BEAD: /api/fiber/bead-allocations ({bead['count']} states, {bead['total_funding_formatted']})")
-    print("   🔍 Discovery: run_fiber_discovery() → seeds Neon + crawls PeeringDB")
+    print("   🔍 Discovery: run_fiber_discovery() → crawls PeeringDB (seed step removed in W4)")
