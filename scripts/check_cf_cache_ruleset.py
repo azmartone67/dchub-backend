@@ -63,6 +63,16 @@ never writes, so do not hand it an Edit-scoped token just to make it work.
 They have different fixes (add a secret vs. re-scope a token) and an earlier
 version of this script collapsed both into one misleading message that blamed
 the missing secret while a present-but-underscoped token was the real cause.
+
+★ THE REFUSED MESSAGE NAMES NO PERMISSION GROUP. It used to say
+"Zone > Config Rules: Read" with full confidence. That was never verified —
+this token cannot enumerate permission groups (403 on /user/tokens and on
+/user/tokens/permission_groups) and three Cloudflare doc pages do not state the
+requirement — and on 2026-09-07 a freshly minted token built on that advice was
+refused, costing a round trip. Remediation text that a reader CANNOT check is
+worse than none: it converts "I do not know" into a confident wrong turn.
+The message now reports what was actually measured and hands over a one-line
+test, because the guard itself is the only reliable oracle for this.
 """
 from __future__ import annotations
 
@@ -244,9 +254,23 @@ def fetch_live_ruleset(zone_id: str, ruleset_id: str) -> tuple[dict | None, str 
         return None, (
             f"CREDENTIAL REFUSED — {source} reached the Cloudflare API and got "
             f"HTTP {resp.status_code}. The variable IS set, so this is a "
-            f"permission problem, not a missing secret: that token lacks "
-            f"'Zone > Config Rules: Read' on dchub.cloud (a Cache Purge token "
-            f"reaches this exact error). API said: {resp.text[:200]!r}"
+            f"permission problem, not a missing secret.\n"
+            f"   The token needs the zone permission group that grants READ on "
+            f"CACHE RULES for dchub.cloud. That group is narrow and is NOT a "
+            f"general zone group — measured against a token that DOES work:\n"
+            f"     GET /zones/<id>/rulesets                     200\n"
+            f"     GET /zones/<id>/rulesets/<cache ruleset>     200\n"
+            f"     GET /zones/<id>/settings                     403\n"
+            f"     GET /zones/<id>/dns_records                  403\n"
+            f"     GET /zones/<id>/rulesets/<firewall ruleset>  403\n"
+            f"   So 'Zone: Read', 'Zone Settings: Read' and a WAF/firewall "
+            f"group are all insufficient, and ruleset access is scoped per "
+            f"PRODUCT rather than per API surface.\n"
+            f"   ★ Do not reason about the dropdown — TEST a candidate token "
+            f"before putting it in CI. exit 0 means the group is right:\n"
+            f"     CF_CACHE_RULES_TOKEN='<token>' python3 "
+            f"scripts/check_cf_cache_ruleset.py\n"
+            f"   API said: {resp.text[:200]!r}"
         )
     if resp.status_code != 200:
         return None, (

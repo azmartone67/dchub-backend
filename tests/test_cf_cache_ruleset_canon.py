@@ -313,3 +313,38 @@ def test_the_drift_alarm_reaches_ci_triage_by_its_EXACT_name():
         f"cf-cache-ruleset-drift.yml declares name {declared_name!r}, which is "
         f"NOT in ci-triage's allowlist {watched!r}. Its failures reach nobody."
     )
+
+
+def test_refused_message_does_not_assert_an_unverified_permission_group(monkeypatch):
+    """★ Regression guard on advice, not on code.
+
+    The refused message used to name "Zone > Config Rules: Read" with full
+    confidence. Nothing verified it — the token cannot enumerate permission
+    groups (403 on /user/tokens/permission_groups) and the Cloudflare docs do
+    not state it — and on 2026-09-07 a token minted from that advice was
+    refused, costing a round trip.
+
+    Remediation text a reader cannot check is worse than none: it turns "I do
+    not know" into a confident wrong turn. The message must carry the measured
+    evidence and a test command instead.
+    """
+    import requests
+
+    class FakeResponse:
+        status_code = 403
+        text = '{"errors":[{"message":"request is not authorized"}]}'
+
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setenv("CF_CACHE_RULES_TOKEN", "pretend-token")
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResponse())
+    _, error = guard.fetch_live_ruleset("zone", "ruleset")
+
+    assert "Config Rules" not in error, (
+        "the refused message names a permission group that was never verified "
+        "and is not the one that works"
+    )
+    # it must hand the reader a way to check for themselves
+    assert "check_cf_cache_ruleset.py" in error
+    assert "403" in error and "200" in error  # the measured evidence table

@@ -73,7 +73,7 @@ jobs:
               echo "::error::The guard's own canon file failed its floor checks (missing, unparseable, truncated below 20 rules, or duplicate ids). The guard did NOT compare anything."
               ;;
             3)
-              echo "::error::COULD NOT CHECK the cache ruleset — this is not a pass. The log line above says which: NO CREDENTIAL PRESENT (add a repo secret named CF_CACHE_RULES_TOKEN) or CREDENTIAL REFUSED (a token IS set but lacks Zone > Config Rules: Read on dchub.cloud — a Cache Purge token gives exactly that error). Read scope is sufficient; this job never writes to Cloudflare."
+              echo "::error::COULD NOT CHECK the cache ruleset — this is not a pass. The log line above says which: NO CREDENTIAL PRESENT (add a repo secret named CF_CACHE_RULES_TOKEN) or CREDENTIAL REFUSED (a token IS set but lacks READ on Cache Rules for dchub.cloud). The log line above carries the measured evidence and a one-line command to test a candidate token BEFORE putting it in CI — do that rather than reasoning about the permission dropdown. Read access is sufficient; this job never writes to Cloudflare."
               ;;
             *)
               echo "::error::guard exited with unexpected status $STATUS"
