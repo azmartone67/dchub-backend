@@ -95,6 +95,16 @@ LEGACY = [
 # discovered.merged_facility_id -> facilities.id, i.e. the drain's own stamp
 DRAIN_LINK = [("007-hebergement-paris-d128fc26", "007-hebergement-paris-a8b78433")]
 
+# ── r-junk-keeper (2026-09-07) ───────────────────────────────────────────
+# A drain fork whose KEEPER wears a junk 'unknown-%' slug. Measured live: 63
+# such pairs, 0 of the keepers published, 60 of the 63 alternates published —
+# so the canonical pointed a PUBLISHED page at an UNADVERTISED slug. The
+# keeper query must refuse it, which leaves the legacy page self-canonical.
+JUNK_KEEPER = ("Shb Lljn Ltby", None, "Taipei", None, "TW",
+               777, "2026-08-20", "unknown-shb-lljn-ltby-9cb60fd9")
+JUNK_ALT = ("Shb Lljn Ltby", "Shb Lljn Ltby", "Taipei", None, "TW",
+            "legacy-shb", "2026-08-20", "shb-lljn-ltby-55880373")
+
 
 class _Cur:
     """Answers only the queries the facility path needs; [] for the rest."""
@@ -521,6 +531,87 @@ def test_the_live_checkers_budget_is_pinned_just_above_the_measured_residual():
     assert budget >= 103, (
         "the budget must sit ABOVE the measured live residual or the guard "
         "cries wolf on every run — which is how a real alarm gets ignored")
+
+
+# ── r-junk-keeper: never canonicalise onto a slug the sitemap will not emit ──
+
+def test_the_junk_slug_predicate_agrees_with_is_junk_slug():
+    """ONE definition, two consumers. The SQL form and the Python form must
+    classify identically, or the sitemap and the rel=canonical disagree about
+    which keeper is eligible — which is how a canonical lands on a URL the
+    sitemap dropped.
+
+    Executed against real Postgres regex semantics via psycopg2's own parser is
+    not possible without a DB, so this pins the two on the SAME corpus using
+    Python's `re` with the POSIX pattern translated only in the ways POSIX and
+    Python actually differ ([0-9] vs \\d, capturing vs non-capturing groups)."""
+    import re
+    from routes.facility_dedup_v4 import is_junk_slug, junk_slug_sql
+    sql = junk_slug_sql("c")
+    # pull the two POSIX patterns straight out of the emitted SQL
+    pats = re.findall(r"!~ '([^']+)'", sql)
+    assert len(pats) == 2, sql
+    rx = [re.compile(p) for p in pats]
+
+    def sql_says_junk(slug):
+        return any(r.search(slug) for r in rx)
+
+    corpus = [
+        "unknown-shb-lljn-ltby-9cb60fd9", "unknown-osm-dc-123-ab12cd34",
+        "data-center-343593591-ab12cd34", "equinix-dc5-ab12cd34",
+        "shb-lljn-ltby-55880373", "cyrusone-inc-cyrusone-florence-d10242a8",
+        "my-unknown-facility-11111111",      # 'unknown' NOT at the start
+        "data-center-12-ab12cd34",           # too few digits
+    ]
+    for slug in corpus:
+        assert sql_says_junk(slug) == is_junk_slug(slug), slug
+    # and the corpus actually exercises BOTH verdicts, or the loop proves nothing
+    assert any(is_junk_slug(s) for s in corpus)
+    assert any(not is_junk_slug(s) for s in corpus)
+
+
+def test_a_junk_slug_keeper_is_refused_and_the_legacy_url_stays():
+    """THE DEFECT, on the artefact. The keeper wears 'unknown-%', which the
+    sitemap never emits. Consolidating there would point a published page at an
+    unadvertised slug. Refusing leaves the legacy URL published."""
+    cur = _Cur(discovered=list(DISCOVERED) + [JUNK_KEEPER],
+               legacy=list(LEGACY) + [JUNK_ALT],
+               drain_link=list(DRAIN_LINK) + [("shb-lljn-ltby-55880373",
+                                               "unknown-shb-lljn-ltby-9cb60fd9")])
+    slugs = _facility_slugs(_run_builder(cur))
+    assert "shb-lljn-ltby-55880373" in slugs, slugs
+    # the junk keeper is excluded from the sitemap at source (r-junk-prune)
+    assert "unknown-shb-lljn-ltby-9cb60fd9" not in slugs, slugs
+
+
+def test_the_builder_query_carries_the_shared_junk_predicate():
+    """A FLOOR on the test above: it also passes if the drain arm silently
+    stopped running. Pins that the keeper query the builder ISSUED contains the
+    predicate, so 'the URL survived' is a verdict and not an absence."""
+    cur = _Cur()
+    _run_builder(cur)
+    keeper_q = [q for q in cur.seen
+                if "join discovered_facilities d on d.merged_facility_id = f.id"
+                in q.lower()]
+    assert keeper_q, "builder never issued the drained-twin lookup"
+    assert "!~ '^unknown-'" in keeper_q[0], keeper_q[0]
+
+
+def test_both_readers_call_the_shared_helper_not_a_copy():
+    """The predicate must have ONE definition. A pasted copy is how the sitemap
+    and the canonical drift apart — asserted on the CALL, via AST, so a literal
+    re-spelling of the same SQL does not satisfy it."""
+    import ast
+    for rel in ("main.py", "routes/facility_profile_page.py"):
+        src = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+        called = any(
+            isinstance(n, ast.Call)
+            and getattr(n.func, "id", getattr(n.func, "attr", None))
+            in ("junk_slug_sql", "_junk_slug_sql")
+            for n in ast.walk(ast.parse(src)))
+        assert called, f"{rel} does not CALL junk_slug_sql"
+        assert "!~ '^unknown-'" not in src, (
+            f"{rel} spells the predicate itself instead of calling the helper")
 
 
 if __name__ == "__main__":
