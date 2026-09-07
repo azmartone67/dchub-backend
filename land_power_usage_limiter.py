@@ -421,7 +421,13 @@ def _get_user_plan_from_request(app):
 
     # Check cookie/session (for web users)
     if not user_id:
-        session_token = request.cookies.get('dchub_session') or request.cookies.get('session')
+        # ★ 2026-09-07 — `dchub_session` removed. It is the anti-scrape browser
+        # attestation (routes/session_cookie.py), issued to every visitor, and
+        # its `<ts>|<ip_prefix>|<hmac>` value can never decode as a JWT — so this
+        # branch resolved no user, no email and no plan on every real browser
+        # while looking like it identified one. `session` is kept: it is last in
+        # the chain, so it shadows nothing.
+        session_token = request.cookies.get('session')
         if session_token:
             try:
                 decode_jwt = app.config.get('DECODE_JWT_FUNC')
