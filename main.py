@@ -25246,6 +25246,7 @@ def ai_tracking_full():
         # ship this-week vs prior-week (ai_daily_stats, junk platforms
         # excluded) alongside it. Fail-soft — hero renders without it.
         requests_7d_daily = requests_prior_7d_daily = wow_pct = None
+        wow_unavailable_reason = None
         try:
             _wcur = conn.cursor()  # main cursor was closed above
             _wcur.execute("""
@@ -25254,20 +25255,44 @@ def ai_tracking_full():
                            WHERE date >= CURRENT_DATE - 7), 0),
                        COALESCE(SUM(request_count) FILTER (
                            WHERE date >= CURRENT_DATE - 14
-                             AND date <  CURRENT_DATE - 7), 0)
+                             AND date <  CURRENT_DATE - 7), 0),
+                       COUNT(DISTINCT date) FILTER (
+                           WHERE date >= CURRENT_DATE - 14
+                             AND date <  CURRENT_DATE - 7)
                 FROM ai_daily_stats
                 WHERE date >= CURRENT_DATE - 14
                 GROUP BY platform
             """)
             _wk = _pw = 0
-            for _p, _a, _b in _wcur.fetchall():
+            _prior_days = set()
+            for _p, _a, _b, _d in _wcur.fetchall():
                 if not _is_real_ai_platform((_p or '').lower()):
                     continue
                 _wk += int(_a or 0)
                 _pw += int(_b or 0)
+                if int(_d or 0):
+                    _prior_days.add((_p, int(_d)))
+            _prior_day_count = max((_d for _, _d in _prior_days), default=0)
             _wcur.close()
             requests_7d_daily, requests_prior_7d_daily = _wk, _pw
-            if _pw:
+            # ★ 2026-09-07 — A GAP IN THE PRIOR WINDOW IS NOT A TROUGH.
+            # This published wow_pct = 2469.9 (61,293 vs 2,385). Over the same
+            # period the 30-day total was 115,141 with 61,293 in the last 7,
+            # leaving 53,848 across the other 23 days — a 341/day week sitting
+            # in the middle of a 3,200/day month is not a real collapse, it is
+            # missing rows. ai_daily_stats is a COUNTER table: a day with no
+            # row is indistinguishable from a day with no traffic, and dividing
+            # by it manufactures four-figure growth.
+            # So the comparison now requires the prior window to actually be
+            # covered. Fewer than 7 distinct dates and we publish null plus the
+            # reason, never a number.
+            if _prior_day_count < 7:
+                wow_pct = None
+                wow_unavailable_reason = (
+                    f"prior window has {_prior_day_count} of 7 days in "
+                    f"ai_daily_stats — absence of rows is not a measured zero, "
+                    f"so this-week-vs-prior-week is not computable")
+            elif _pw:
                 wow_pct = round(100.0 * (_wk - _pw) / _pw, 1)
         except Exception as _wow_err:
             try: conn.rollback()
@@ -25426,11 +25451,24 @@ def ai_tracking_full():
             "success": True,
             "tracking": "persistent",
             "total_requests_all_time": all_time,
+            # ★ 2026-09-07 — THIS FIELD NEVER HELD TODAY'S COUNT. It is
+            # round(total_7d / 7): a 7-day DAILY AVERAGE, published under a key
+            # named "today" and rendered on /ai as "AI crawler & citation
+            # requests · today". Measured this day it read 8,756 = 61,293 / 7,
+            # and it moved +40 while all-time moved +278 over the same 3.5
+            # hours — because an average barely responds to a few hundred
+            # requests, which is exactly what made it look like a stuck counter.
+            # The key is kept (the /ai page and the stats-shape contract both
+            # read it) but it is now published under its real meaning as well,
+            # and the page labels it as an average.
             "total_requests_today": round(total_7d / 7) if total_7d else 0,
+            "requests_daily_avg_7d": round(total_7d / 7) if total_7d else 0,
+            "total_requests_today_is_actually": "7-day daily average (requests_7d / 7)",
             "requests_7d": total_7d,
             "requests_7d_daily": requests_7d_daily,
             "requests_prior_7d_daily": requests_prior_7d_daily,
             "wow_pct": wow_pct,
+            "wow_unavailable_reason": wow_unavailable_reason,
             "platforms_active": active_count,
             "platforms": platforms,
             "chart_data": platforms,
