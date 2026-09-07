@@ -267,6 +267,34 @@ def test_junk_slugs_are_excluded_at_source():
     assert not is_junk_slug("equinix-dc5-ab12cd34")
 
 
+def test_a_real_facility_with_an_all_digit_hash_is_not_junk():
+    """r-junk-hash8 (2026-09-07). is_junk_slug gates `_collect`, so a false
+    positive here does not merely cost a sitemap entry — it keeps the row out
+    of the rendered-identity dedup universe entirely, and PR #4125 refuses to
+    canonicalise onto it.
+
+    The frozen slug is <provider>-<name>-<hash8>. A facility NAMED "… Data
+    Center" produces '…-data-center-<hash8>', and ~2.3% of hash8 values are all
+    decimal digits. These are LIVE slugs, every one serving 200 with a real
+    name and a city."""
+    for slug in ("meta-meta-rosemount-data-center-45882878",
+                 "adobe-data-center-95545925",
+                 "bank-of-america-data-center-96599056",
+                 "ntt-data-ntt-amsterdam-1-data-center-03577682",
+                 "unisys-eagan-data-center-30644257"):
+        assert not is_junk_slug(slug), slug
+
+
+def test_the_osm_node_id_shapes_are_still_junk():
+    """The 674 that must stay out — measured 2026-09-07, every one of them
+    named literally 'Data Center <digits>' and none carrying power_mw. The
+    second shape puts a city between the node id and the hash."""
+    for slug in ("data-center-32538035-fdf34756",
+                 "data-center-1075445245-44ce923f",
+                 "data-center-343593591-west-chicago-ab12cd34"):
+        assert is_junk_slug(slug), slug
+
+
 # ── it never sets the visibility flag ────────────────────────────────────
 
 def _updates(src):

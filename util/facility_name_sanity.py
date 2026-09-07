@@ -38,6 +38,14 @@ center-144841dc, ibm-annapolis-data-center-4498886f);
 tests/test_seo_index_hygiene.py::test_sitemap_junk_guard_spares_real_facilities
 pins them. The signal lives in the NAME, so the predicate lives here.
 
+★ r-junk-hash8 (2026-09-07) — and the 08-09 mitigation was itself incomplete.
+  "the hash merely BEGINS with digits" understates it: ~2.3% of hash8 values
+  are ALL digits, and for those the digit run and the identity hash are the
+  same string. 21 live facilities were being pruned on that alone. The slug
+  clause is now anchored to the trailing hash8 (main._junk_slug_re and its
+  three twins); this file's name-keyed predicate is unchanged and is still the
+  only thing that can see the headline/NER class.
+
 THE TWO PREDICATES
 ------------------
 `headline_reject_reason(name)` — the name reads as a sentence, not a name.

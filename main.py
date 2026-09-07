@@ -33092,9 +33092,41 @@ def _build_sitemap_sections():
     #   path (including the no-canonical_slug fallback SELECTs), and widening
     #   the SQL risks throwing the whole facility query into that fallback.
     # ★ Sitemap EMISSION only. Slugs are FROZEN; these pages still serve 200.
+    # ★★★ r-junk-hash8 (2026-09-07) — THE FILTER'S OWN FALSE POSITIVE.
+    # The 08-09 note below says "the regex anchors the digit run to the NAME,
+    # never to the hash". It does not, and cannot: the frozen slug is
+    # <provider-slug>-<name-slug>-<hash8>, so a facility literally NAMED
+    # "… Data Center" produces '…-data-center-<hash8>', and (10/16)^8 ≈ 2.3% of
+    # hash8 values are all decimal digits. At that point the identity hash IS
+    # the digit run and `data-center-\d{6,}(?:-|$)` cannot tell it from an OSM
+    # node id — so it ate the page.
+    # Measured 2026-09-07 over the 21,068 live discovered slugs:
+    #     old pattern matched       695
+    #     anchored pattern matches  674  — every one named literally
+    #                                     "Data Center <digits>", none with
+    #                                     power_mw. The true positives are intact.
+    #     freed                      21  — real facilities, every one with a
+    #                                     name and a city: 'Meta Rosemount Data
+    #                                     Center' (100 MW), 'Adobe Data Center',
+    #                                     'NTT Amsterdam 1 Data Center'.
+    # ★ The anchor is the TRAILING hash8 — exactly what the two sibling
+    #   alternations already require, and the reason only this one was loose.
+    # ★ The optional group between the digit run and the hash is NOT decoration.
+    #   'Data Center 343593591 — West Chicago' puts a city there, and
+    #   test_sitemap_junk_regex_behavior pins that shape as junk; a bare
+    #   `-[0-9a-f]{8}$` anchor would have freed it along with the real pages.
+    # ★ THE SAME PATTERN LIVES IN THREE OTHER PLACES and all four must agree:
+    #   routes/facility_dedup_v4.is_junk_slug (gates _collect), its SQL twin
+    #   junk_slug_sql (the keeper query below AND _drained_twin_url), and
+    #   facility_profile_page._JUNK_SLUG_RE (robots=noindex). Tightening only
+    #   this one would have advertised 19 pages that still carry noindex.
+    #   test_all_four_spellings_of_the_junk_pattern_agree fails on a partial edit.
+    # ★ Sitemap EMISSION only, same contract as every guard above — no slug is
+    #   rewritten and these pages already serve 200.
     import re as _re_junk
     _junk_slug_re = _re_junk.compile(
-        r'(?:^|-)data-center-\d{6,}(?:-|$)|(?:^|-)\d{8,}-[0-9a-f]{8}$'
+        r'(?:^|-)data-center-\d{6,}-(?:[a-z0-9-]+-)?[0-9a-f]{8}$'
+        r'|(?:^|-)\d{8,}-[0-9a-f]{8}$'
         r'|(?:^|-)unknown-[0-9a-f]{8}$')
     for row in fac_rows:
         name = row[0] if row[0] else ''

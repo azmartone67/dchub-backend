@@ -154,8 +154,14 @@ def test_sitemap_junk_guard_spares_real_facilities():
 
     'data-center-<6+ digits>' looks like OSM junk but matches 25 REAL live
     slugs whose frozen 8-hex identity hash merely BEGINS with 6+ digits
-    (equinix-atlanta-data-center-144841dc). The regex anchors the digit run to
-    the NAME, never to the hash — keep it that way.
+    (equinix-atlanta-data-center-144841dc).
+
+    ★ r-junk-hash8 (2026-09-07): the original wording here — "the regex anchors
+      the digit run to the NAME, never to the hash — keep it that way" — was
+      the bug. When the hash8 is ALL DIGITS the name and the hash are the same
+      string and no amount of anchoring to the name can separate them. The
+      clause is now anchored to the TRAILING hash instead, which is what its
+      two siblings always did. The last block below is the live evidence.
     """
     rx = _junk_rx()
     for s in ("equinix-atlanta-data-center-144841dc",
@@ -166,8 +172,109 @@ def test_sitemap_junk_guard_spares_real_facilities():
               "aws-amazon-web-services-dub105051-1a2b3c4d",
               "flexential-flexential-raleigh-ral010203-1a2b3c4d",
               # 'unknown' elsewhere in the name is NOT the junk shape
-              "acme-unknown-harbor-campus-ab12cd34"):
+              "acme-unknown-harbor-campus-ab12cd34",
+              # ★ r-junk-hash8 (2026-09-07): the class the 08-09 note above
+              #   asserted was impossible — "the regex anchors the digit run to
+              #   the NAME, never to the hash". It does not: when the hash8 is
+              #   ALL DIGITS the two are the same string. These are LIVE slugs,
+              #   serving 200, that the old pattern kept out of the sitemap.
+              "meta-meta-rosemount-data-center-45882878",
+              "adobe-data-center-95545925",
+              "bank-of-america-data-center-96599056",
+              "ntt-data-ntt-amsterdam-1-data-center-03577682",
+              "ntt-communications-tokyo-no-6-data-center-28389752",
+              "siemens-siemens-eagle-data-center-34408941",
+              "cyrusone-north-cincinnati-data-center-10965995"):
         assert not rx.search(s), f"real facility would be dropped: {s}"
+
+
+def test_the_numeric_osm_class_is_still_caught_after_the_hash8_anchor():
+    """The other half of r-junk-hash8 — the anchor must not become a licence to
+    emit the 674 real OSM stubs. Both live shapes stay junk: the node id
+    immediately before the identity hash, and the node id followed by a city.
+
+    ★ Each case is checked against the data-center alternation IN ISOLATION.
+      main.py's regex has a sibling clause, `(?:^|-)\d{8,}-[0-9a-f]{8}$`, that
+      independently matches 'data-center-32538035-fdf34756' — so asserting on
+      the whole pattern would pass even with this clause deleted."""
+    alt = re.compile(_data_center_alternation())
+    for s in ("data-center-32538035-fdf34756",
+              "data-center-1075445245-44ce923f",
+              "data-center-343593591-west-chicago-ab12cd34",
+              "foo-data-center-3435935-ab12cd34"):
+        assert alt.search(s), f"OSM junk no longer caught: {s}"
+
+
+def _data_center_alternation():
+    """The numeric-OSM alternation out of main.py's live `_junk_slug_re`.
+
+    Isolated deliberately: the full pattern has two sibling clauses that
+    independently match some of the same strings, so a behavioural test on the
+    whole regex cannot tell a working clause from a deleted one.
+    """
+    joined = _junk_rx().pattern
+    m = re.search(r"\(\?:\^\|-\)data-center-.*?(?=\|\(\?:|$)", joined)
+    assert m, f"data-center alternation not found in {joined!r}"
+    return m.group(0)
+
+
+def test_all_four_spellings_of_the_junk_pattern_agree():
+    """ONE definition, FOUR consumers — and this is the drift that shipped.
+
+    The pattern exists, by hand, in four places: main.py's sitemap EMISSION
+    filter, routes/facility_dedup_v4.is_junk_slug (which gates `_collect`),
+    its SQL twin junk_slug_sql (which the sitemap keeper query and
+    _drained_twin_url both execute), and facility_profile_page._JUNK_SLUG_RE
+    (which decides robots=noindex). Tightening three of the four would have put
+    19 pages into the sitemap still carrying noindex, or left the canonical
+    pointing at a slug the sitemap now advertises. Compared on BEHAVIOUR, so a
+    legitimate re-spelling passes and a partial edit does not.
+    """
+    from routes.facility_dedup_v4 import junk_slug_sql
+
+    fpp._is_osm_junk("x", "x")                      # force the lazy compile
+    sql_pats = re.findall(r"!~ '([^']+)'", junk_slug_sql("c"))
+    sql_dc = [q for q in sql_pats if "data-center" in q]
+    assert len(sql_dc) == 1, sql_pats
+
+    spellings = {
+        "main._junk_slug_re": re.compile(_data_center_alternation()),
+        "dedup_v4.is_junk_slug": re.compile(_dedup_v4_pattern()),
+        "dedup_v4.junk_slug_sql": re.compile(sql_dc[0]),
+        "profile_page._JUNK_SLUG_RE": fpp._JUNK_SLUG_RE,
+    }
+
+    # 6-7 digit node ids and the city-suffixed shape, so ONLY the data-center
+    # clause can fire — see the sibling note in _data_center_alternation.
+    corpus = (
+        ("data-center-123456-ab12cd34", True),
+        ("foo-data-center-3435935-ab12cd34", True),
+        ("data-center-343593591-west-chicago-ab12cd34", True),
+        ("meta-meta-rosemount-data-center-45882878", False),
+        ("adobe-data-center-95545925", False),
+        ("equinix-atlanta-data-center-144841dc", False),
+        ("data-center-12-ab12cd34", False),
+    )
+    sibling = re.compile(r"(?:^|-)\d{8,}-[0-9a-f]{8}$")
+    for slug, _ in corpus:
+        assert not sibling.search(slug), (
+            f"{slug} is also matched by the sibling clause — it cannot "
+            "discriminate this one and does not belong in the corpus")
+
+    for name, rx in spellings.items():
+        for slug, want_junk in corpus:
+            assert bool(rx.search(slug)) is want_junk, (
+                f"{name} disagrees on {slug}: expected junk={want_junk}")
+
+
+def _dedup_v4_pattern():
+    """is_junk_slug's regex, read out of the shipped source."""
+    src = (ROOT / "routes" / "facility_dedup_v4.py").read_text(
+        encoding="utf-8")
+    body = src[src.index("def is_junk_slug("):]
+    m = re.search(r'_re\.search\(\s*r"([^"]+)"', body)
+    assert m, "is_junk_slug regex not found"
+    return m.group(1)
 
 
 def test_sitemap_emits_only_self_canonical():
