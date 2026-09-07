@@ -104,6 +104,11 @@ _QA_ORIGIN_RE = re.compile(
     r"observed from the \S+ seat on ", re.I)
 _QA_ORIGIN_STATE = "spec_doc_qa_red_ungraded"
 
+# Values written into brain_proposed_code_fixes.merge_outcome. See
+# mark_merge_outcome() for why "ineffective" and not GG#4's "reverted".
+_MO_HEALTHY = "merged_healthy"
+_MO_INEFFECTIVE = "merged_ineffective"
+
 
 def investigation_ref(title: str):
     """The `inv #N` an innovation-drafted spec PR names, or None."""
@@ -413,6 +418,54 @@ def mark_proposal_merged(cur, pid, pr) -> bool:
     return cur.rowcount > 0
 
 
+def mark_merge_outcome(cur, pid, outcome, detail) -> bool:
+    """Persist the verdict this reconciler already computed into the column
+    the L5 confidence calibration actually reads.
+
+    ★ Why this exists (2026-09-07). `_calibration_stats` in brain_v2_layer5
+    self-tunes the auto-PR threshold from
+    `COUNT(*) FILTER (WHERE merge_outcome IS NOT NULL) >= _CALIB_MIN_SAMPLES`,
+    and that count was **0 for every loop_name**, so the threshold had never
+    left `_CALIB_BASE_THRESHOLD` (0.85) since the feature shipped. The only
+    writer was the GG#4 push callback in brain-pr-post-merge-guard.yml, whose
+    job gate needs the `autonomous-brain-layer5` label — last applied to a
+    merged PR on 2026-08-08, so 12 of 12 recent runs were `skipped` and the
+    column stayed NULL on 119 of 119 rows. Meanwhile the opener sends
+    min_confidence=0.85 as a HARD floor and the best pending proposal scores
+    0.83: the bar can only drop on evidence of healthy merges, and that
+    evidence could only be produced by the lane the bar was blocking. A
+    closed deadlock.
+
+    This is the pull-based repair of that push-only edge: the reconciler
+    already walks merged PRs and already decides `still_broken`, so it writes
+    what it knows instead of waiting to be told. A skipped workflow can no
+    longer fail as silence.
+
+    ★ Doc-only PRs cannot reach here and that is not incidental — the caller
+    rewrites `state` away from "outcome" for `_SPEC_PREFIX` branches and for
+    QA-RED-derived specs before this is called, so the 2026-07-11 honesty
+    rule ("grading a standing detector against a document fabricates a fix
+    verdict in BOTH directions") keeps holding for free. Labelling those PRs
+    instead would have recorded `merged_healthy` for a markdown note and
+    taught the threshold to trust a producer that ships nothing.
+
+    outcome ∈ {merged_healthy, merged_ineffective}. NOT `merged_reverted` —
+    the GG#4 vocabulary means "broke prod and was auto-reverted", which is a
+    different event from "the finding re-fired after the merge". The
+    calibration divides healthy/resolved and only reports `reverted`, so a
+    third value scores identically without asserting a revert that did not
+    happen.
+    """
+    cur.execute("""
+        UPDATE brain_proposed_code_fixes
+           SET merge_outcome = %s,
+               merge_outcome_at = NOW(),
+               merge_outcome_detail = %s
+         WHERE id = %s AND merge_outcome IS NULL""",
+        (outcome, (detail or "")[:500], pid))
+    return cur.rowcount > 0
+
+
 def backfill_proposal_row(cur, pr):
     """A merged brain-spec PR that lived only on GitHub — record it as an
     auditable proposal row so it finally counts. loop_name marks provenance;
@@ -617,6 +670,16 @@ def run_reconciliation(dry: bool = False) -> dict:
                         if record_outcome(pid, still_broken, evidence, pr):
                             state = "outcome_recorded"
                             entry["outcome_state"] = state
+                        # Same gate as record_outcome, deliberately: only a
+                        # gradeable code PR reaches "outcome", so spec docs
+                        # stay ungraded here too. Independent of the call
+                        # above — record_outcome returns False on a replay,
+                        # and the column still needs its first value.
+                        if still_broken is not None:
+                            _mo = (_MO_INEFFECTIVE if still_broken
+                                   else _MO_HEALTHY)
+                            if mark_merge_outcome(cur, pid, _mo, evidence):
+                                entry["merge_outcome"] = _mo
                     _upsert_ledger(cur, pr, pid, method, label, state,
                                    still_broken, evidence)
                 (report["pending"] if state == "pending_grace"

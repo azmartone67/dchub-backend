@@ -354,3 +354,108 @@ def test_autofix_pr_outcome_still_recorded(rec, monkeypatch):
     e = rep["reconciled"][0]
     assert e["outcome_state"] == "outcome_recorded"
     assert recorded == {"pid": 482, "broken": True}
+
+
+# ── merge_outcome: the pull-side repair of the GG#4 push callback ──────
+# The L5 confidence calibration self-tunes from
+# COUNT(*) FILTER (WHERE merge_outcome IS NOT NULL) >= _CALIB_MIN_SAMPLES.
+# Measured 2026-09-07: that count was 0 for every loop_name (NULL on 119 of
+# 119 rows), because the only writer was a workflow whose job gate needs the
+# `autonomous-brain-layer5` label — last seen on a merged PR 2026-08-08, so
+# 12 of 12 recent runs were `skipped`. The threshold therefore sat at 0.85
+# forever while the best pending proposal scored 0.83. These pin the
+# reconciler writing what it already decided, and pin the doc-only carve-out
+# holding on THIS path too — labelling spec PRs to fix the same symptom
+# would have recorded merged_healthy for a markdown note.
+
+
+def _autofix_pr():
+    return _pr(number=1700,
+               branch="brain/autofix-interval_literal-901-b7e1f4aa",
+               title="[brain autofix] Brain finding: data_freshness_sla_breach"
+                     " @ routes/example.py")
+
+
+def _wire(rec, monkeypatch, pr, last_seen):
+    """Common harness: one merged PR, all writes stubbed, capture the
+    merge_outcome call."""
+    seen = {}
+    monkeypatch.setattr(rec, "list_merged_brain_prs",
+                        lambda d: {"ok": True, "prs": [pr]})
+    monkeypatch.setattr(rec, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(rec, "_ensure_schema", lambda cur: None)
+    monkeypatch.setattr(rec, "match_proposal",
+                        lambda cur, p: (901, "autofix_branch_id", "embedded"))
+    monkeypatch.setattr(rec, "mark_proposal_merged", lambda cur, pid, p: True)
+    monkeypatch.setattr(rec, "backfill_proposal_row", lambda cur, p: 901)
+    monkeypatch.setattr(rec, "record_review_decision",
+                        lambda pid, label, p: True)
+    monkeypatch.setattr(rec, "_last_seen", lambda cur, label: last_seen)
+    monkeypatch.setattr(rec, "record_outcome", lambda *a, **k: True)
+    monkeypatch.setattr(rec, "_upsert_ledger", lambda *a, **k: None)
+    monkeypatch.setattr(rec, "mark_merge_outcome",
+                        lambda cur, pid, outcome, detail: seen.update(
+                            pid=pid, outcome=outcome) or True)
+    return seen
+
+
+def test_recurrence_writes_merged_ineffective_not_reverted(rec, monkeypatch):
+    """A finding re-seen after the merge is an honest negative — but it is
+    NOT GG#4's `merged_reverted`, which means prod broke and was rolled back.
+    Nothing was reverted here. The calibration divides healthy/resolved, so
+    a distinct value scores identically without asserting a revert."""
+    seen = _wire(rec, monkeypatch, _autofix_pr(),
+                 last_seen=rec._now() - dt.timedelta(hours=1))
+    rep = rec.run_reconciliation(dry=False)
+    assert rep["ok"] is True
+    assert seen == {"pid": 901, "outcome": "merged_ineffective"}
+    assert rep["reconciled"][0]["merge_outcome"] == "merged_ineffective"
+
+
+def test_clean_merge_writes_merged_healthy(rec, monkeypatch):
+    """Live shortly before the merge, quiet since — the fix held."""
+    merged = NOW - dt.timedelta(hours=48)
+    seen = _wire(rec, monkeypatch, _autofix_pr(),
+                 last_seen=merged - dt.timedelta(days=2))
+    rep = rec.run_reconciliation(dry=False)
+    assert rep["ok"] is True
+    assert seen == {"pid": 901, "outcome": "merged_healthy"}
+
+
+def test_spec_doc_pr_never_writes_a_merge_outcome(rec, monkeypatch):
+    """THE regression this change must not cause. A brain-spec PR is a
+    markdown note; crediting it as merged_healthy would teach the threshold
+    to trust a producer that ships nothing, drag the bar toward the 0.70
+    floor, and admit the low-confidence backlog on fabricated evidence.
+    _Boom fails loudly rather than silently recording."""
+    monkeypatch.setattr(rec, "mark_merge_outcome", _Boom())
+    seen = _wire(rec, monkeypatch, _pr(),   # default _pr() is brain-spec/
+                 last_seen=rec._now() - dt.timedelta(hours=1))
+    monkeypatch.setattr(rec, "mark_merge_outcome", _Boom())
+    monkeypatch.setattr(rec, "match_proposal",
+                        lambda cur, p: (4242, "spec", "doc"))
+    rep = rec.run_reconciliation(dry=False)
+    assert rep["ok"] is True
+    e = rep["reconciled"][0]
+    assert e["outcome_state"] == "spec_doc_ungraded"
+    assert "merge_outcome" not in e
+    assert seen == {}
+
+
+def test_mark_merge_outcome_only_fills_a_null(rec):
+    """First verdict wins: a re-reconciliation of the same PR must not
+    overwrite an outcome already on the row (the GG#4 callback may have
+    written it, and a later re-seen finding must not rewrite history)."""
+    captured = {}
+
+    class _Cur:
+        rowcount = 1
+
+        def execute(self, sql, params=None):
+            captured["sql"] = " ".join(sql.split())
+            captured["params"] = params
+
+    assert rec.mark_merge_outcome(_Cur(), 901, "merged_healthy", "ev") is True
+    assert "merge_outcome IS NULL" in captured["sql"]
+    assert captured["params"][0] == "merged_healthy"
+    assert captured["params"][2] == 901
