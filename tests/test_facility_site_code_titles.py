@@ -24,7 +24,7 @@ if "main" not in sys.modules:
 
 from util.facility_site_code import (   # noqa: E402
     detect_site_code, detect_site_designator, site_code_headline,
-    DENY_PREFIXES, DENY_SUFFIX_WORDS)
+    _clean_prefix, DENY_PREFIXES, DENY_SUFFIX_WORDS)
 
 
 POSITIVES = [
@@ -224,6 +224,86 @@ def test_the_rationale_queries_are_byte_identical_to_before():
         "Digital Realty Interxion DUS2 — Düsseldorf Data Center"
 
 
+# ── r-prefix-city-run: the city comes out as a run, not a word at a time ──
+#
+# Measured live 2026-09-07 over all 5,586 rows on this path: removing city
+# words individually, anywhere they appeared, cut 69 prefixes in half. Every
+# `head` below is taken from a real row's name.
+
+# head, city, expected prefix — the city is a REFERENCE here and comes out
+CITY_REMOVED = [
+    ("Digital Realty Copenhagen ", "Copenhagen", "Digital Realty"),
+    ("DataBank Dallas (", "Dallas", "DataBank"),                 # ")" boundary
+    ("365 Data Centers Nashville (", "Nashville", "365"),
+    ("CoreSite Chicago Data Center (", "Chicago", "CoreSite"),   # generic after
+    ("Centersquare Elk Grove Village Data Center Campus ",
+     "Elk Grove Village", "Centersquare"),
+    ("Lewisville, TX, ", "Lewisville", "TX"),                    # comma boundary
+    ("DartPoints Cincinnati, OH - ", "Cincinnati", "DartPoints OH"),
+    ("QTS Irving - Dallas (", "Irving", "QTS Dallas"),           # dash boundary
+    ("Piscataway ", "Piscataway", ""),
+]
+
+# head, city, expected prefix — the city STARTS a longer name, or is not a
+# contiguous run at all. Cutting it out is the defect; the name stays whole.
+CITY_KEPT = [
+    # the reported case: Elk Grove Village is not Elk Grove
+    ("ELK GROVE VILLAGE (", "ELK GROVE", "ELK GROVE VILLAGE"),
+    ("Databank Houston West (", "Houston", "Databank Houston West"),
+    ("Flexential - Las Vegas/Downtown (", "Las Vegas",
+     "Flexential Las Vegas/Downtown"),
+    ("Flexential - Salt Lake City/Cottonwood (", "Salt Lake City",
+     "Flexential Salt Lake City/Cottonwood"),
+    ("Cirion Santiago de Chile - ", "Santiago", "Cirion Santiago de Chile"),
+    ("Brighton Digital Exchange ", "Brighton", "Brighton Digital Exchange"),
+    ("NTT Berlin 1 Data Center (", "Berlin", "NTT Berlin 1"),
+    ("LightEdge San Diego 1 (", "San Diego", "LightEdge San Diego 1"),
+    ("icolo.io Maputo One (", "Maputo", "icolo.io Maputo One"),
+    ("BR.Digital Foz do Iguaçu (", "Foz do Iguacu",   # accent: no run at all
+     "BR.Digital Foz do Iguaçu"),
+    ("CDC Auckland ", "Hobsonville, Auckland", "CDC Auckland"),
+    ("Equinix Frankfurt ", "Frankfurt am Main", "Equinix Frankfurt"),
+]
+
+
+@pytest.mark.parametrize("head,city,want", CITY_REMOVED)
+def test_a_bounded_city_run_comes_out(head, city, want):
+    assert _clean_prefix(head, city) == want
+
+
+@pytest.mark.parametrize("head,city,want", CITY_KEPT)
+def test_a_city_that_starts_a_longer_name_stays_whole(head, city, want):
+    assert _clean_prefix(head, city) == want
+
+
+ELK = "ELK GROVE VILLAGE (CHI10-11-12) DATA CENTER"
+
+
+def test_the_elk_grove_headline_end_to_end():
+    """The reported defect, on the live row's own values: the discovered row
+    carries provider NULL (-> "" here) and the legacy row repeats the name."""
+    for provider in ("", ELK):
+        head = site_code_headline(ELK, provider, "ELK GROVE")
+        assert head == "ELK GROVE VILLAGE CHI10-11-12 — ELK GROVE Data Center", \
+            (provider, head)
+        assert not head.startswith("VILLAGE"), head
+    # a genuinely distinct operator is still prepended (r-geo-facility-title)
+    assert site_code_headline(ELK, "Microsoft", "ELK GROVE") == \
+        "Microsoft ELK GROVE VILLAGE CHI10-11-12 — ELK GROVE Data Center"
+
+
+def test_a_city_word_is_never_removed_from_inside_a_word_run():
+    """The invariant, stated directly: every word of the prefix that survives
+    keeps its neighbours' order, and no run is broken in the middle."""
+    for head, city, want in CITY_KEPT:
+        got = _clean_prefix(head, city)
+        raw = [w.strip(" -–—:,.()[]|/") for w in head.split()]
+        raw = [w for w in raw if w]
+        # nothing was dropped out of the middle: the result is a prefix-run of
+        # the original word order
+        assert got.split() == raw[:len(got.split())], (head, got, raw)
+
+
 # ── the rendered page ────────────────────────────────────────────────
 
 BASE = {
@@ -287,6 +367,12 @@ def test_rendered_page_still_drops_the_location_tail():
     """r-site-code-title's own example — unchanged, byte for byte."""
     html = _render("Equinix FR5 - Frankfurt, KleyerStrasse", "Equinix", "Frankfurt")
     assert _h1(html) == "Equinix FR5 — Frankfurt Data Center"
+
+
+def test_rendered_page_keeps_a_city_that_starts_a_longer_name():
+    html = _render(ELK, None, "ELK GROVE")
+    assert _h1(html) == "ELK GROVE VILLAGE CHI10-11-12 — ELK GROVE Data Center"
+    assert "<h1>VILLAGE" not in html
 
 
 def test_rendered_page_with_two_codes_keeps_the_legacy_title():
