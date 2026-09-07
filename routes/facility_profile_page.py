@@ -1612,7 +1612,14 @@ def _render_profile(fac: dict, slug: str) -> str:
 # today's self-canonical.
 def _drained_twin_url(legacy_id):
     """URL of the discovered_facilities row a legacy `facilities` row was
-    drained from, or None. `legacy_id` is a facilities.id (TEXT)."""
+    drained from, or None. `legacy_id` is a facilities.id (TEXT).
+
+    ★ `ORDER BY d.id ASC` MUST stay identical to main._drained_keeper's, or the
+    sitemap and this canonical can name different keepers and the canonical
+    lands on a URL the sitemap dropped. Measured 2026-09-07: 4,379 of 4,390
+    legacy slugs have one candidate anyway, and adding power_mw to the order
+    changes the pick for none of them.
+    """
     if not legacy_id:
         return None
     try:
@@ -1629,7 +1636,7 @@ def _drained_twin_url(legacy_id):
                     "   AND d.duplicate_of_id IS NULL "
                     "   AND d.canonical_slug IS NOT NULL "
                     "   AND d.canonical_slug <> '' "
-                    " ORDER BY COALESCE(d.power_mw, 0) DESC, d.id ASC "
+                    " ORDER BY d.id ASC "
                     " LIMIT 1",
                     (str(legacy_id),))
                 row = cur.fetchone()

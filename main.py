@@ -32096,6 +32096,14 @@ def _build_sitemap_sections():
         # ★ DISTINCT ON + the same ORDER BY as _drained_twin_url, so the sitemap
         #   and the rel=canonical name the SAME keeper. Two answers here would
         #   put the canonical on a URL the sitemap had dropped.
+        # ★ The tiebreak is `d.id ASC` alone, deliberately NOT the house's usual
+        #   "richest row wins". Measured 2026-09-07: 4,379 of 4,390 legacy slugs
+        #   have exactly ONE candidate keeper, and ordering by power_mw picks a
+        #   different keeper for ZERO of them — the term decides nothing here.
+        #   It also put a power_mw reference inside a builder query, which
+        #   test_sitemap_thin_gate::test_the_gate_is_emission_only correctly
+        #   refuses: capacity must reach this SQL only through _thin_excl, or
+        #   the kill switch and the collapse floor stop governing it.
         # ★ duplicate_of_id IS NULL on the keeper: a keeper that points onward
         #   is not a canonical target (no chains), mirroring _canonical_twin_row.
         # ★ NOT EXISTS: never drop a slug a live discovered row also wears —
@@ -32118,7 +32126,7 @@ def _build_sitemap_sections():
                 "   AND NOT EXISTS (SELECT 1 FROM discovered_facilities s "
                 "                   WHERE COALESCE(s.is_duplicate, 0) = 0 "
                 "                     AND s.canonical_slug = f.canonical_slug) "
-                " ORDER BY f.canonical_slug, COALESCE(d.power_mw, 0) DESC, d.id ASC")
+                " ORDER BY f.canonical_slug, d.id ASC")
             _drained_keeper = {r[0]: r[1] for r in (c.fetchall() or [])
                                if r and r[0] and r[1]}
         except Exception as _dk:
