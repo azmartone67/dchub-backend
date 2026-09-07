@@ -40659,8 +40659,15 @@ def _ap_nei_factor(lat, lon, radius_km=16):
     return score, enriched[:10]
 
 
-def _ap_resolve_state(lat, lon):
-    # smallest-bbox-wins tie-breaker — prevents MI/WI Lake Michigan overlap
+def _ap_resolve_state_bbox(lat, lon):
+    """The original smallest-bbox-wins heuristic, kept ONLY as a fallback.
+
+    It cannot be correct for an irregular state: a bounding box is a rectangle
+    and states are not. Ashburn VA (39.04, -77.48) sits inside BOTH Virginia's
+    and Maryland's boxes, Maryland's is the smaller, so smallest-bbox-wins
+    returns MD for the densest data-center market on earth — and the air
+    permitting answer then cites MDE instead of Virginia DEQ.
+    """
     matches = []
     for state, box in _AP_STATE_BOXES.items():
         if _ap_in_bounds(lat, lon, box):
@@ -40671,6 +40678,73 @@ def _ap_resolve_state(lat, lon):
         return None
     matches.sort()
     return matches[0][1]
+
+
+# How far a substation may be and still be trusted to name the state. Beyond
+# this the point is probably offshore or in genuinely empty country, where the
+# nearest grid asset says less than the rectangle does.
+_AP_SUBSTATION_STATE_MAX_KM = 80.0
+
+
+def _ap_resolve_state_detail(lat, lon):
+    """Resolve a US state from a coordinate. Returns (state, basis).
+
+    ★ Primary signal is the NEAREST SUBSTATION's state. `substations` holds
+    ~127k HIFLD rows carrying real coordinates AND a state, so the closest one
+    to any populated US point is usually within a few km and names the state
+    the point is actually in. It is not a polygon lookup, but unlike a bounding
+    box it cannot be confidently wrong in the middle of a state.
+
+    Measured against the two documented failure modes and four controls
+    (2026-09-07, live substation layer):
+
+        Ashburn VA    bbox MD  -> substations VA   ✓
+        Leesburg VA   bbox MD  -> substations VA   ✓
+        Milwaukee WI  bbox MI  -> substations WI   ✓   (the MI/WI Lake bug)
+        Baltimore MD           -> substations MD   ✓
+        Washington DC          -> substations DC   ✓
+        Chicago IL             -> substations IL   ✓
+
+    Fails SOFT to the bbox heuristic — a DB hiccup must not take the air
+    permitting score down — and the basis is returned either way so callers can
+    publish which signal answered instead of guessing.
+    """
+    try:
+        conn = get_pg_connection()
+        try:
+            cur = conn.cursor()
+            # ~0.75 deg box (~83 km at this latitude) then exact-ish nearest in
+            # Python; the bbox is what the index can serve.
+            d = 0.75
+            cur.execute(
+                "SELECT state, lat, lng FROM substations "
+                "WHERE state IS NOT NULL AND lat IS NOT NULL AND lng IS NOT NULL "
+                "AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s",
+                (lat - d, lat + d, lon - d, lon + d))
+            rows = cur.fetchall()
+        finally:
+            return_pg_connection(conn)
+
+        best_state, best_km = None, None
+        coslat = _ap_math.cos(_ap_math.radians(lat))
+        for st, slat, slon in rows:
+            try:
+                dx = (float(slon) - lon) * 111.32 * coslat
+                dy = (float(slat) - lat) * 110.574
+                km = _ap_math.sqrt(dx * dx + dy * dy)
+            except (TypeError, ValueError):
+                continue
+            if best_km is None or km < best_km:
+                best_state, best_km = (st or "").strip().upper(), km
+        if best_state and best_km is not None and best_km <= _AP_SUBSTATION_STATE_MAX_KM:
+            return best_state, "nearest_substation_%.1fkm" % best_km
+    except Exception:
+        pass
+    return _ap_resolve_state_bbox(lat, lon), "state_bbox_fallback"
+
+
+def _ap_resolve_state(lat, lon):
+    return _ap_resolve_state_detail(lat, lon)[0]
 def _ap_pathway(ozone_na, pm25_na, pm10_na, capacity_mw, genset_mw):
     est_nox_tpy = genset_mw * 0.35
     est_ghg_tpy = capacity_mw * 900
@@ -40880,7 +40954,7 @@ def _ap_score_site(lat, lon, capacity_mw, genset_mw=None):
     monitor_score, near_monitors = _ap_monitor_factor(lat, lon)
     class1_score,  near_class1   = _ap_class1_factor(lat, lon)
     nei_score,     near_nei      = _ap_nei_factor(lat, lon)
-    state = _ap_resolve_state(lat, lon)
+    state, state_basis = _ap_resolve_state_detail(lat, lon)
     ctx = _AP_STATE_CONTEXT.get(state, {}) if state else {}
     state_score = ctx.get("score", 75)
 
@@ -40916,6 +40990,11 @@ def _ap_score_site(lat, lon, capacity_mw, genset_mw=None):
         "nei": [{"n":n["name"],"d":round(n["distance_km"]*0.6214,1)} for n in near_nei],
         "nearest_monitors": near_monitors,
         "state": state,
+        # Which signal named the state. `state` drives state_context (the
+        # agency and its thresholds) and 5% of the composite, so a caller
+        # weighing the regulatory read needs to know whether it came from a
+        # real nearby asset or from a rectangle.
+        "state_basis": state_basis,
         "state_context": ctx.get("description", ""),
         "factors": {
             "ozone": {"score":ozone_score,"in_na":ozone_na["name"] if ozone_na else None},
