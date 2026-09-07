@@ -23,7 +23,28 @@ env:
   # tick anyway, so nothing distinguished the one real outage. Comma-separated
   # feed names from the orchestrator's `families` block (routes/iso_orchestrator
   # .py _FAMILIES); the verdict is derived THERE, this file never asserts one.
-  MUST_HAVE_FAMILIES: iso-eu-entsoe
+  MUST_HAVE_FAMILIES: ""
+  # 2026-09-07: iso-eu-entsoe moved MUST -> SOFT. Not a regression of the D1
+  # gate above — that gate asked "did a whole family go dark unnoticed", and the
+  # answer must stay visible. It did NOT ask "should our CI go red for an outage
+  # we cannot fix".
+  #   Measured 2026-09-07: web-api.tp.entsoe.eu answers HTTP 599 with its OWN
+  #   gateway body {"uuAppErrorMap":{"uu-gateway-router/connectTimeout":...}},
+  #   reproduced from a laptop with NO securityToken — which rules out our token
+  #   (a live service answers 401), our network, our code, and our timeout
+  #   (their gateway self-errors in 6-16s; ours is 15s). 27 consecutive red runs,
+  #   all unactionable, while the ISO orchestrator inside this same job kept
+  #   working and MISO/CAISO ingested normally. A badge that is red for
+  #   something you cannot fix teaches people to ignore the badge, and the next
+  #   red is a real ISO failure.
+  # SOFT IS NOT SILENT. A soft family still prints a ::warning, appears in the
+  #   Pulse Summary, is notified to the brain, heartbeats the source registry,
+  #   and BEATS THE PER-FAMILY DEADMAN with its real `failed` status (verified
+  #   live: /api/v1/ops/deadman row iso-eu-entsoe status=failed rows_inserted=0).
+  #   The 24h iso_metric_count_zero detector catches it independently.
+  # The soft tier is safe ONLY while the deadman beat step stays unconditional.
+  #   tests/test_data_pulse_soft_family.py pins that — do not add an `if:` to it.
+  SOFT_HAVE_FAMILIES: iso-eu-entsoe
 
 jobs:
   pulse:
@@ -64,22 +85,38 @@ jobs:
           print(f"::notice title=ISO Orchestrator::rows={rows} failed={len(failed)} "
                 f"failed_isos={names} no_new_data={quiet}")
           fams = d.get("families") or {}
-          must = [f.strip() for f in os.environ.get("MUST_HAVE_FAMILIES", "").split(",") if f.strip()]
-          bad = []
-          for feed in must:
-              fam = fams.get(feed) or {}
-              st = str(fam.get("status") or "missing")
-              if st not in ("success", "no_new_data"):
-                  bad.append("%s=%s %s" % (feed, st, (fam.get("note") or "")[:120]))
-                  print(f"::error title=must-have feed family {feed}::status={st} "
-                        f"rows={fam.get('rows_inserted')} {fam.get('note')}")
+          def _families(var):
+              return [f.strip() for f in os.environ.get(var, "").split(",") if f.strip()]
+
+          def _check(feeds, level, label):
+              """Same verdict for both tiers — only the annotation level and
+              whether it exits differ. The verdict is derived in
+              routes/iso_orchestrator.summarize_families; this file never
+              asserts one."""
+              out = []
+              for feed in feeds:
+                  fam = fams.get(feed) or {}
+                  st = str(fam.get("status") or "missing")
+                  if st not in ("success", "no_new_data"):
+                      out.append("%s=%s %s" % (feed, st, (fam.get("note") or "")[:120]))
+                      print(f"::{level} title={label} {feed}::status={st} "
+                            f"rows={fam.get('rows_inserted')} {fam.get('note')}")
+              return out
+
+          # MUST reds the job (the failure is ours). SOFT is reported just as
+          # loudly but does not red it (the failure is upstream's).
+          bad = _check(_families("MUST_HAVE_FAMILIES"), "error", "must-have feed family")
+          soft_bad = _check(_families("SOFT_HAVE_FAMILIES"), "warning", "soft feed family")
           # The error text is embedded raw into JSON downstream — keep it plain.
-          err = re.sub(r"[^A-Za-z0-9 _=:;,.()/-]", " ", "; ".join(bad))[:300]
+          def _plain(items):
+              return re.sub(r"[^A-Za-z0-9 _=:;,.()/-]", " ", "; ".join(items))[:300]
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"rows={rows}\n")
               fh.write(f"failed={len(failed)}\n")
               fh.write("must_have_failed=%s\n" % ("1" if bad else "0"))
-              fh.write(f"must_have_error={err}\n")
+              fh.write(f"must_have_error={_plain(bad)}\n")
+              fh.write("soft_have_failed=%s\n" % ("1" if soft_bad else "0"))
+              fh.write(f"soft_have_error={_plain(soft_bad)}\n")
           PY
 
       - name: Scan grid metrics for anomalies (after ISO pull)
@@ -251,6 +288,10 @@ jobs:
           echo "- Total failed: ${{ steps.totals.outputs.total_failed }}"
           echo "- Duration:    ${{ steps.totals.outputs.duration_ms }}ms"
           echo "- Status:      ${{ steps.totals.outputs.status }}"
+          if [ "${{ steps.iso.outputs.soft_have_failed }}" = "1" ]; then
+            echo "- SOFT FAMILY DOWN (does not fail this job): ${{ steps.iso.outputs.soft_have_error }}"
+            echo "  -> aging ledger row at /api/v1/ops/deadman"
+          fi
 
       - name: Fail the job when a must-have feed family failed
         if: steps.iso.outputs.must_have_failed == '1'

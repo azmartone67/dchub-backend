@@ -244,11 +244,12 @@ def _fixture(entsoe_status, entsoe_note="entsoe_live_fetch_failed — all zones 
     }
 
 
-def _run_iso_script(tmp_path, fixture, must="iso-eu-entsoe"):
+def _run_iso_script(tmp_path, fixture, must="iso-eu-entsoe", soft=""):
     (tmp_path / "iso_response.json").write_text(json.dumps(fixture))
     out = tmp_path / "gh_output"
     out.write_text("")
-    env = {**os.environ, "MUST_HAVE_FAMILIES": must, "GITHUB_OUTPUT": str(out)}
+    env = {**os.environ, "MUST_HAVE_FAMILIES": must,
+           "SOFT_HAVE_FAMILIES": soft, "GITHUB_OUTPUT": str(out)}
     proc = subprocess.run([sys.executable, "-"], input=_heredoc(_step("Trigger ISO orchestrator")),
                           cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
@@ -256,9 +257,68 @@ def _run_iso_script(tmp_path, fixture, must="iso-eu-entsoe"):
     return proc.stdout, outputs
 
 
-def test_must_have_family_env_names_entsoe():
+def _tier(d, var):
+    return [f.strip() for f in str(d["env"].get(var) or "").split(",") if f.strip()]
+
+
+def test_entsoe_is_tiered_and_not_forgotten():
+    """★ 2026-09-07 — this asserted MUST_HAVE. It now asserts the invariant D1
+    actually cared about.
+
+    D1 (2026-09-02) added the gate because ENTSO-E answered 503 for >24h while
+    this job stayed green — 50 hours of a whole family dark with nothing saying
+    so. The thing that must never happen is the family being FORGOTTEN. Which
+    tier it sits in is a separate question, and on 2026-09-07 it moved to SOFT:
+    ENTSO-E's own gateway was returning HTTP 599 (reproduced tokenless from a
+    laptop, so provably not our token/network/code/timeout) and 27 consecutive
+    red runs were unactionable while the ISO orchestrator in the same job kept
+    ingesting MISO and CAISO normally.
+
+    Soft is not silent — the warning, the summary, the brain notify, the source
+    heartbeat and the per-family deadman beat all still fire. See
+    tests/test_data_pulse_soft_family.py, which pins the deadman beat staying
+    UNCONDITIONAL; that is what keeps "soft" from decaying into the 50h blind
+    spot this gate was built to close.
+    """
     d, _ = _steps()
-    assert "iso-eu-entsoe" in d["env"]["MUST_HAVE_FAMILIES"].split(",")
+    tiers = _tier(d, "MUST_HAVE_FAMILIES") + _tier(d, "SOFT_HAVE_FAMILIES")
+    assert tiers.count("iso-eu-entsoe") == 1, (
+        f"iso-eu-entsoe must sit in exactly one tier, found: {tiers}")
+    assert "iso-eu-entsoe" in _tier(d, "SOFT_HAVE_FAMILIES"), (
+        "moving it back to MUST_HAVE is allowed, but do it deliberately and "
+        "say why here — the outage that motivated SOFT was upstream's")
+
+
+def test_a_soft_family_failure_warns_and_does_not_fail_the_job(tmp_path):
+    """★ Behavioural, through the workflow's real embedded script."""
+    stdout, outputs = _run_iso_script(tmp_path, _fixture("failed"),
+                                      must="", soft="iso-eu-entsoe")
+    assert outputs["soft_have_failed"] == "1"
+    assert outputs["must_have_failed"] == "0", "a soft family must never red the job"
+    assert "iso-eu-entsoe=failed" in outputs["soft_have_error"]
+    warn = [l for l in stdout.splitlines()
+            if l.startswith("::warning") and "iso-eu-entsoe" in l]
+    assert warn, "soft is not silent — it must still annotate"
+    assert not [l for l in stdout.splitlines() if l.startswith("::error")]
+
+
+@pytest.mark.parametrize("status", ["success", "no_new_data"])
+def test_a_healthy_soft_family_is_quiet(tmp_path, status):
+    stdout, outputs = _run_iso_script(tmp_path, _fixture(status, "ok"),
+                                      must="", soft="iso-eu-entsoe")
+    assert outputs["soft_have_failed"] == "0"
+    assert "::warning title=soft feed family" not in stdout
+
+
+def test_both_tiers_use_the_same_verdict(tmp_path):
+    """The only difference is the annotation level and the exit — never the
+    rule. A looser rule for soft families would let one hide."""
+    _, as_must = _run_iso_script(tmp_path, _fixture("failed"),
+                                 must="iso-eu-entsoe", soft="")
+    _, as_soft = _run_iso_script(tmp_path, _fixture("failed"),
+                                 must="", soft="iso-eu-entsoe")
+    assert as_must["must_have_failed"] == as_soft["soft_have_failed"] == "1"
+    assert as_must["must_have_error"] == as_soft["soft_have_error"]
 
 
 def test_iso_step_names_the_failing_extractors_and_errors_on_a_must_have_failure(tmp_path):
