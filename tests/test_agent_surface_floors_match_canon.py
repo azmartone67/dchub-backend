@@ -149,6 +149,16 @@ def test_every_surface_states_the_facility_floor_the_same_way():
 def test_canon_values_are_what_this_guard_thinks_they_are():
     """If PINNED moves, this file must be re-read rather than silently pinning
     a stale expectation — the failure mode it was written to catch."""
+    # ★2026-09-07: facilities 20,100+ -> 20,700+, following PINNED['public'] onto
+    # the live resolver (/api/v1/canon/phrases facilities = "20,700+" source=
+    # resolve_canon live, /api/v1/stats = 20,840). CANON_DEALS is UNCHANGED at
+    # 2,000+ on purpose: the resolver serves 2,100+, but the ceiling governing a
+    # deals walk is a measured DISTINCT count held independently in
+    # tests/test_media_standing_totals_facility_counts.py (CANON_ERA_DEALS =
+    # 2,069), and it caught a walk to 2,100+ made on the /api/v1/stats ROW basis.
+    # ★ The RETIRED_* lists were re-checked and NOT touched, same reasoning as
+    # below: 20,100+ was canon until today, not a live-wrong floor, and 18,500+
+    # was not added when it retired either.
     # ★2026-09-02: 18,500+ -> 20,100+ and 1,900+ -> 2,000+, following PINNED
     # ['public'] onto the live resolver reading (/api/v1/stats facilities =
     # 20,198, deals = 2,069). These stay LITERALS on purpose: this is the one
@@ -159,7 +169,7 @@ def test_canon_values_are_what_this_guard_thinks_they_are():
     # value collides with them (test_retired_lists_do_not_contain_the_current
     # _canon), and 18,500+/1,900+ were canon until today, not the live-wrong
     # floors of 2026-08-31 that those lists exist to ban.
-    assert CANON_FACILITIES == "20,100+", (
+    assert CANON_FACILITIES == "20,700+", (
         f"PINNED facilities moved to {CANON_FACILITIES}. Update the surfaces "
         f"in SURFACES and the RETIRED_* lists, then this assertion.")
     assert CANON_DEALS == "2,000+", (

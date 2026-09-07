@@ -2928,6 +2928,12 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     flask = pytest.importorskip("flask")
     from routes import agent_capabilities_feed as feed
 
+    # ★2026-09-07: facilities moved with the walk (20,203 -> 20,840, the live
+    # /api/v1/stats reading that day); `deals` stays 2,069 because the deals pin
+    # was NOT walked -- see the note on PINNED['public']['deals']. The
+    # floor overtook the old pair exactly as the note below predicts, and the
+    # symptom was this test failing with `counts.facilities is None` — the feed
+    # OMITTING rather than under-claiming, which is correct behaviour.
     # ★2026-09-02: the injected pair moved with the canon walk (18,603/1,892 ->
     # 20,203/2,069). These are SYNTHETIC — the test's point is that the feed
     # reads facilities_verified rather than the raw COUNT(*) pile — but they must
@@ -2935,7 +2941,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     # it (test_capabilities_omits_rather_than_publishing_below_canon_floor), and
     # an omitted field makes the assertion below fail for the wrong reason.
     live_like = {
-        "facilities_verified": 20203, "markets": 300,
+        "facilities_verified": 20840, "markets": 300,
         "deals": 2069, "countries_verified": 178,
     }
     app = flask.Flask(__name__)
@@ -2953,7 +2959,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     doc = json.loads(body)
     counts, quotable = doc.get("counts", {}), doc.get("agent_quotable")
 
-    assert counts.get("facilities") == 20203, (
+    assert counts.get("facilities") == 20840, (
         f"counts.facilities is {counts.get('facilities')!r}, not the injected "
         "verified count — the feed is not reading facilities_verified. This is "
         "the assertion that would have failed on the raw COUNT(*) basis."
@@ -2962,7 +2968,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
         "agent_quotable absent although every count resolved — the fence below "
         "would pass vacuously."
     )
-    for field, value in (("facilities", 20203), ("markets_scored", 300),
+    for field, value in (("facilities", 20840), ("markets_scored", 300),
                          ("deals_tracked", 2069), ("countries", 178)):
         assert counts.get(field) == value, f"counts.{field} != injected {value}"
         assert f"{value:,}" in quotable or str(value) in quotable, (
