@@ -60,10 +60,25 @@ def _has(v) -> bool:
     return v is not None and str(v).strip() not in ("", "0", "0.0", "None")
 
 
+def is_placeholder_city(value) -> bool:
+    """True when `value` is one of the dataset's not-a-place markers.
+
+    ★ THE SCALAR FORM, so a caller holding a bare city string does not have to
+      build a dict or paste the tuple. Pasting it is what happened: before
+      2026-09-07 three separate places spelled this list — here, the
+      comparables guard in routes/facility_profile_page, and that file's `_has`
+      (which excluded 'Unknown' and not 'Regional') — and the RENDERER consulted
+      none of them, so 727 live pages published "Regional" as a place.
+    ★ Equality, never substring: 'California Regional' / 'Connecticut Regional'
+      (136 rows each) are REAL market labels.
+    """
+    return (value or "").strip().lower() in PLACEHOLDER_CITIES
+
+
 def real_city(fac: dict) -> str:
     """The facility's city, or '' when it is a placeholder rather than a place."""
     c = (fac.get("city") or "").strip()
-    return "" if c.lower() in PLACEHOLDER_CITIES else c
+    return "" if is_placeholder_city(c) else c
 
 
 def evidence(fac: dict) -> dict:

@@ -39,6 +39,66 @@ def _fac(name, provider, slug="testco-test-facility-ab12cd34", **kw):
     return d
 
 
+# ── 0. r-placeholder-city: a non-place is never rendered as a place ──────
+#
+# 727 live rows carry city='Regional' — the marker this dataset writes when the
+# upstream gave no city, ALL of them source 'competitor_gap:cloudscene'.
+# util/thin_content has known that since 2026-08-14 and is_contentless counts
+# them as having NO city. The RENDERER did not ask, so every one of those pages
+# published an asserted location. These render whole pages through the shipped
+# _render_profile, so they fail on behaviour, not on a phrase moving.
+
+_PLACEHOLDER_ROW = dict(city="Regional", state="", country="CN")
+
+
+def test_the_placeholder_city_is_not_rendered_as_a_place():
+    """THE DEFECT, on the artefact — the live shape of
+    china-telecom-shanwei-data-center-85459328."""
+    html = fpp._render_profile(
+        _fac("China Telecom Shanwei Data Center", None, **_PLACEHOLDER_ROW), "x")
+    # the four surfaces that published it, each asserted separately so a fix
+    # to one cannot carry the others
+    assert "— Regional, CN Data Center" not in html, "<title>/h1 location"
+    assert "in Regional" not in html, "meta description prose"
+    assert '"addressLocality": "Regional"' not in html, "schema.org PostalAddress"
+    assert '"Regional"' not in html, "any JSON field"
+    assert ">Regional<" not in html, "the City fact row"
+    # and the word must be gone entirely, not merely re-punctuated
+    assert "Regional" not in html, "placeholder still rendered somewhere"
+
+
+def test_the_country_survives_when_the_city_is_a_placeholder():
+    """A FLOOR on the test above: it also passes if the location vanished
+    altogether. The country is real and must still be published."""
+    html = fpp._render_profile(
+        _fac("China Telecom Shanwei Data Center", None, **_PLACEHOLDER_ROW), "x")
+    assert "— CN Data Center" in html, "country dropped with the placeholder"
+    assert "China Telecom Shanwei Data Center" in html
+
+
+def test_a_real_city_is_still_rendered():
+    """The other floor: this must not become 'drop every city'."""
+    # ★ a name carrying a site code takes the r-site-code-title form, so this
+    #   uses a plain name — otherwise the assertion pins the wrong composition
+    #   and passes for the wrong reason.
+    html = fpp._render_profile(
+        _fac("Telehouse Paris Voltaire", "Telehouse", city="Frankfurt",
+             state="", country="DE"), "x")
+    assert "— Frankfurt, DE Data Center" in html
+    assert '"addressLocality": "Frankfurt"' in html
+    assert "is a data center operated by Telehouse in Frankfurt, DE" in html
+
+
+def test_california_regional_is_a_real_market_label_and_survives():
+    """Equality, never substring. 'California Regional' and 'Connecticut
+    Regional' are 136 real rows each; a substring test loses their content
+    instead of gaining it."""
+    html = fpp._render_profile(
+        _fac("Some Facility", "Op", city="California Regional",
+             state="CA", country="US"), "x")
+    assert "California Regional" in html
+
+
 # ── 1. title operator-duplication ────────────────────────────────────────
 
 def test_title_measured_serp_duplications_gone():

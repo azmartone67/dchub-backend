@@ -63,6 +63,29 @@ def facility_headline(name, provider, city, state, country):
     state = state or ""
     country = country or ""
 
+    # ★★★ r-placeholder-city (2026-09-07) — A NON-PLACE IS NOT A PLACE.
+    # `city` arrives straight off the row, and this dataset writes 'Regional'
+    # when the upstream gave no city: 727 live rows, ALL source
+    # 'competitor_gap:cloudscene'. util/thin_content has known that since
+    # 2026-08-14 (real_city / PLACEHOLDER_CITIES) and `is_contentless` counts
+    # those rows as having NO city — correctly. This function never asked, so
+    # the same row rendered
+    #     <title>China Telecom Shanwei Data Center — Regional, CN Data Center
+    #     "… is a data center in Regional, CN."
+    #     JSON-LD "addressLocality": "Regional"
+    # i.e. an asserted location the upstream never gave, which is exactly what
+    # tests/test_no_fabricated_facility_fields.py exists to forbid at the
+    # WRITER. It leaked at the RENDERER instead.
+    # ★ Treated as ABSENT, not rewritten: the city is unknown, and inferring
+    #   "Shanwei" from the name would be the fabrication, not the fix.
+    # ★ identity_key() rides on this, so the dedup grouping was measured before
+    #   the change: 727 affected rows, every key string moves, and the grouping
+    #   is IDENTICAL — 4,363 groups before and after, 0 added, 0 removed, 0
+    #   keeper changes. See tests/test_thin_content_lanes.py.
+    from util.thin_content import is_placeholder_city as _placeholder
+    if _placeholder(city):
+        city = ""
+
     loc_short = ", ".join([p for p in (city, state, country) if p])
     # r-geo-facility-title (2026-06-24): rich, entity-bearing title/desc/h1
     # instead of city-only "{name} | DC Hub". Prepend the operator unless the
