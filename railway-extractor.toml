@@ -21,11 +21,23 @@
 # ("read=7 | capacity=1 | deals=3"), so this is a start-time flake, not a
 # broken service.
 #
-# NOT VERIFIED IN PRODUCTION: at 1-in-41, a green deploy cannot demonstrate the
-# flake is gone. What a deploy does prove is that the pinned path resolves and
-# the extractor still runs — check `get-service-config` reports this
-# startCommand and that a firing logs its "Done |" line.
-startCommand = "/app/.venv/bin/python extractor_cron.py --limit 50"
+# ★ FALLBACK, NOT A BARE PIN. #4046 shipped a bare `/app/.venv/bin/python`.
+# After it deployed SUCCESS (582c0ba4) `get-service-config` still reported the
+# OLD `python3 extractor_cron.py --limit 50`, so it is not established that this
+# file's startCommand reaches the container at all — the service may carry a
+# dashboard-level override that wins. Until both agree, this form is written so
+# it CANNOT be worse than the status quo under either reading: it prefers the
+# venv interpreter and falls back to exactly the old `python3` when that path is
+# missing or not executable.
+#
+# Verified locally, all four branches: VIRTUAL_ENV set+executable -> venv python;
+# unset with no /app/.venv -> python3; set but not executable -> python3; and
+# `exec` replaces the shell (a trailing echo after the command does not run).
+#
+# NOT VERIFIED IN PRODUCTION: at 1-in-41, no green deploy can demonstrate the
+# flake is gone. Confirm the switch instead — `get-service-config` must report
+# THIS string, and a firing must log its "Done |" line.
+startCommand = "sh -c 'P=\"${VIRTUAL_ENV:-/app/.venv}/bin/python\"; [ -x \"$P\" ] || P=python3; exec \"$P\" extractor_cron.py --limit 50'"
 restartPolicyType = "NEVER"
 
 # No healthcheck for cron jobs — they run, exit, done.
