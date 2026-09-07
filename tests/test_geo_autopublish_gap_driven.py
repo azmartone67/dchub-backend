@@ -167,3 +167,83 @@ def test_publishing_still_requires_the_outer_flag(monkeypatch):
     out = g.autopublish_next(dry=False)
     assert out["acted"] is False
     assert "GEO_AUTOPUBLISH_ENABLED" in out["reason"]
+
+
+# ── physical plausibility ceilings (2026-09-07) ──────────────────────────────
+# queue_by_iso summed queue_capacity_mw over market_power_scores GROUP BY iso and
+# drafted "ERCOT leads with 9,024,200 MW" — 9.02 TW, ~the world's entire installed
+# generating capacity, 40x ERCOT's own published >225 GW large-load queue. The
+# draft was faithful to the row it was handed; the row was wrong. Caught by a dry
+# run one cron tick before it would have published.
+
+def test_the_exact_number_that_almost_shipped_is_refused():
+    """The regression, verbatim, in the type psycopg2 actually returns."""
+    import decimal
+    rows = [{"iso": "ERCOT", "markets": 19,
+             "total_queue_mw": decimal.Decimal("9024200"),
+             "avg_queue_wait_months": decimal.Decimal("69.7")}]
+    bad = g._implausible_facts(rows)
+    assert bad, "the 9.02 TW row passed the ceiling guard"
+    assert bad[0][0] == "total_queue_mw"
+    assert bad[0][1] == 9024200.0
+
+
+def test_guard_sees_decimals_not_just_floats():
+    """★ Decimal is what ::numeric returns and is NOT a numbers.Real. If this
+    guard only inspected int/float it would pass everything on live data while
+    looking correct in a float-only test — a mirror, not a guard."""
+    import decimal
+    assert g._implausible_facts([{"total_queue_mw": decimal.Decimal("9024200")}])
+    assert g._implausible_facts([{"total_queue_mw": 9024200.0}])
+    assert g._implausible_facts([{"total_queue_mw": 9024200}])
+
+
+def test_real_grid_magnitudes_pass():
+    """A ceiling that rejects true values is worse than no ceiling. These are
+    realistic ISO-scale figures and must survive."""
+    import decimal
+    rows = [{"iso": "ERCOT", "projects": 1907,
+             "total_queue_mw": decimal.Decimal("312450"),
+             "avg_project_mw": decimal.Decimal("163.8")},
+            {"iso": "PJM", "projects": 972,
+             "total_queue_mw": decimal.Decimal("289100"),
+             "avg_project_mw": decimal.Decimal("297.4")}]
+    assert g._implausible_facts(rows) == []
+    assert g._implausible_facts([{"excess_power_score": 83.0,
+                                  "time_to_power_months": 10.0}]) == []
+
+
+def test_guard_ignores_non_numeric_and_booleans():
+    assert g._implausible_facts([{"market_name": "Midland-Odessa", "verdict": "BUILD",
+                                  "published_mw": None, "is_live_mw": True}]) == []
+    assert g._implausible_facts([]) == []
+    assert g._implausible_facts([None, "not a row"]) == []
+
+
+def test_implausible_facts_block_the_publish(monkeypatch):
+    """THE WIRE, second half: a pack returning terawatts must be REFUSED with a
+    named reason, not drafted. Without this, the guard exists and nothing calls it."""
+    import decimal
+    monkeypatch.setattr(g, "_gap_enabled", lambda: False)
+    monkeypatch.setattr(g, "_page_exists", lambda slug: False)
+    monkeypatch.setattr(g, "_gather_facts",
+                        lambda item: [{"total_queue_mw": decimal.Decimal("9024200")}])
+    drafted = []
+    monkeypatch.setattr(g, "_llm_draft",
+                        lambda item, rows: drafted.append(item["slug"]) or None)
+
+    out = g.autopublish_next(dry=True)
+    assert drafted == [], f"the LLM was asked to draft implausible facts: {drafted}"
+    skips = {c.get("skip") for c in out["considered"]}
+    assert skips == {"implausible_facts"}, out["considered"]
+    off = out["considered"][0]["offending"][0]
+    assert off["field"] == "total_queue_mw" and off["value"] == 9024200.0
+
+
+def test_queue_pack_no_longer_sums_market_rows():
+    """The repointed SQL must aggregate the per-project queue table, not
+    market_power_scores — that grain is what produced the terawatt."""
+    sql = " ".join(g._FACT_PACKS["queue_by_iso"]["sql"].split())
+    assert "interconnect_queue" in sql
+    assert "market_power_scores" not in sql
+    assert "queue_capacity_mw" not in sql
