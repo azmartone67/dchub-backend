@@ -1,0 +1,401 @@
+{
+  "_comment": "PINNED Cloudflare cache ruleset for dchub.cloud. Regenerate with `python3 scripts/check_cf_cache_ruleset.py --repin` AFTER an intentional rule change, and land the diff in a PR \u2014 this file is the only code review an edge change gets. Rule ORDER is significant: Cache Rules are last-match-wins.",
+  "zone_name": "dchub.cloud",
+  "zone_id": "1cb22dda8d50546d6edf0c09a8be5128",
+  "ruleset_id": "fecada9378704aa395b8f98ecfbdfbf0",
+  "phase": "http_request_cache_settings",
+  "pinned_version": "61",
+  "pinned_at": "2026-09-07T01:25:58Z",
+  "rules": [
+    {
+      "position": 1,
+      "id": "7956219132ac4744ac8b52835dff537b",
+      "description": "No cache auth",
+      "expression": "(http.request.uri.path contains \"/api/auth\") or \n(http.request.uri.path contains \"/api/login\") or \n(http.request.uri.path contains \"/api/register\") or \n(http.request.uri.path contains \"/api/user\") or \n(http.request.uri.path contains \"/api/stripe\") or \n(http.request.uri.path contains \"/api/checkout\") or \n(http.request.uri.path contains \"/mcp\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 2,
+      "id": "ef1b5109ef354d28b31d8b977daae0a1",
+      "description": "Cache Public API (errors no-store, browser respects origin \u2014 2026-07-03 fix-pack)",
+      "expression": "(http.request.uri.path contains \"/api/v1/\") or (http.request.uri.path contains \"/api/rankings/\") or (http.request.uri.path contains \"/api/news/\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "browser_ttl": {
+          "mode": "respect_origin"
+        },
+        "cache": true,
+        "edge_ttl": {
+          "default": 3600,
+          "mode": "override_origin",
+          "status_code_ttl": [
+            {
+              "status_code_range": {
+                "from": 400,
+                "to": 599
+              },
+              "value": -1
+            }
+          ]
+        },
+        "serve_stale": {
+          "disable_stale_while_updating": true
+        }
+      },
+      "enabled": true
+    },
+    {
+      "position": 3,
+      "id": "f2e16953d64248b98f498a0590400216",
+      "description": "Cache Static Assets (browser respects origin so _headers immutable reaches browsers; errors no-store \u2014 2026-07-03)",
+      "expression": "(http.request.uri.path contains \"/js/\") or \n(http.request.uri.path contains \"/css/\") or \n(http.request.uri.path contains \"/images/\") or \n(ends_with(http.request.uri.path, \".png\")) or \n(ends_with(http.request.uri.path, \".jpg\")) or \n(ends_with(http.request.uri.path, \".jpeg\")) or \n(ends_with(http.request.uri.path, \".svg\")) or \n(ends_with(http.request.uri.path, \".ico\")) or \n(ends_with(http.request.uri.path, \".webp\")) or \n(ends_with(http.request.uri.path, \".woff2\")) or \n(ends_with(http.request.uri.path, \".woff\")) or \n(ends_with(http.request.uri.path, \".ttf\"))",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "browser_ttl": {
+          "mode": "respect_origin"
+        },
+        "cache": true,
+        "edge_ttl": {
+          "default": 3600,
+          "mode": "override_origin",
+          "status_code_ttl": [
+            {
+              "status_code_range": {
+                "from": 400,
+                "to": 599
+              },
+              "value": -1
+            }
+          ]
+        },
+        "serve_stale": {
+          "disable_stale_while_updating": true
+        }
+      },
+      "enabled": true
+    },
+    {
+      "position": 4,
+      "id": "756625a0c407440eadd0c07d9048c9b9",
+      "description": "Bypass cache - AI tracking",
+      "expression": "(http.request.uri.path eq \"/api/ai/tracking\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 5,
+      "id": "bbd1c93391ba4b039d6b53fe1e8dba74",
+      "description": "Cache Landing Pages (errors no-store 2026-07-03)",
+      "expression": "(http.request.uri.path eq \"/market-intelligence\") or (http.request.uri.path eq \"/deals\") or (http.request.uri.path eq \"/pipeline\") or (http.request.uri.path eq \"/tax-incentives\") or (http.request.uri.path eq \"/press\") or (http.request.uri.path eq \"/architecture\") or (http.request.uri.path eq \"/markets\") or (http.request.uri.path eq \"/pricing\") or (http.request.uri.path eq \"/news\") or (http.request.uri.path eq \"/about\") or (http.request.uri.path eq \"/ecosystem\") or (http.request.uri.path eq \"/ai-pipeline\") or (http.request.uri.path eq \"/ai-deals\") or (http.request.uri.path eq \"/ai-inventory\") or (http.request.uri.path eq \"/analytics\") or (http.request.uri.path eq \"/connect\") or (http.request.uri.path eq \"/ai-agents\") or (http.request.uri.path eq \"/rankings\") or (http.request.uri.path eq \"/advertise\") or (http.request.uri.path eq \"/transactions\") or (http.request.uri.path eq \"/transaction-comps\") or (http.request.uri.path eq \"/vertex\") or (http.request.uri.path eq \"/partners\") or (http.request.uri.path eq \"/dcpi\") or (http.request.uri.path eq \"/grid\") or (http.request.uri.path eq \"/dcgi\") or (http.request.uri.path eq \"/freshness\") or (http.request.uri.path eq \"/enterprise\") or (http.request.uri.path eq \"/coverage\") or (http.request.uri.path eq \"/transparency\") or (http.request.uri.path eq \"/grid-intelligence\") or (http.request.uri.path eq \"/grid-transition\") or (http.request.uri.path eq \"/site-selection\") or (http.request.uri.path eq \"/deal-autopsy\") or (http.request.uri.path eq \"/pipeline-report\") or (http.request.uri.path eq \"/hyperscaler-deals\") or (http.request.uri.path eq \"/ai-capacity-index\") or (starts_with(http.request.uri.path, \"/partners/\")) or (starts_with(http.request.uri.path, \"/markets/\")) or (starts_with(http.request.uri.path, \"/facility/\")) or (starts_with(http.request.uri.path, \"/facilities/\")) or (starts_with(http.request.uri.path, \"/reports/\")) or (starts_with(http.request.uri.path, \"/dcpi/\")) or (starts_with(http.request.uri.path, \"/grid/\")) or (starts_with(http.request.uri.path, \"/iso/\")) or (starts_with(http.request.uri.path, \"/state-of-power/\")) or (starts_with(http.request.uri.path, \"/sites/\")) or (starts_with(http.request.uri.path, \"/listings/\")) or (starts_with(http.request.uri.path, \"/operators/\"))",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "browser_ttl": {
+          "mode": "respect_origin"
+        },
+        "cache": true,
+        "edge_ttl": {
+          "default": 3600,
+          "mode": "override_origin",
+          "status_code_ttl": [
+            {
+              "status_code_range": {
+                "from": 400,
+                "to": 599
+              },
+              "value": -1
+            }
+          ]
+        },
+        "serve_stale": {
+          "disable_stale_while_updating": true
+        }
+      },
+      "enabled": true
+    },
+    {
+      "position": 6,
+      "id": "7d07633f5a6340daacfde08b81dcc108",
+      "description": "Cache catalog + facility + partner pages",
+      "expression": "(starts_with(http.request.uri.path, \"/partners\") or\n starts_with(http.request.uri.path, \"/markets/\") or\n starts_with(http.request.uri.path, \"/facility/\") or\n starts_with(http.request.uri.path, \"/facilities/\") or\n starts_with(http.request.uri.path, \"/reports/\") or\n starts_with(http.request.uri.path, \"/dcpi/\") or\n starts_with(http.request.uri.path, \"/grid/\") or\n starts_with(http.request.uri.path, \"/iso/\") or\n starts_with(http.request.uri.path, \"/state-of-power/\") or\n starts_with(http.request.uri.path, \"/sites/\") or\n starts_with(http.request.uri.path, \"/listings/\") or\n starts_with(http.request.uri.path, \"/operators/\") or\n starts_with(http.request.uri.path, \"/states/\") or\n starts_with(http.request.uri.path, \"/hyperscalers/\") or\n http.request.uri.path eq \"/dcpi\" or\n http.request.uri.path eq \"/grid\" or\n http.request.uri.path eq \"/dcgi\" or\n http.request.uri.path eq \"/vertex\" or\n http.request.uri.path eq \"/freshness\" or\n http.request.uri.path eq \"/enterprise\" or\n http.request.uri.path eq \"/ai\" or\n http.request.uri.path eq \"/coverage\" or\n http.request.uri.path eq \"/transparency\" or\n http.request.uri.path eq \"/grid-intelligence\" or\n http.request.uri.path eq \"/grid-transition\" or\n http.request.uri.path eq \"/site-selection\" or\n http.request.uri.path eq \"/deal-autopsy\" or\n http.request.uri.path eq \"/pipeline-report\" or\n http.request.uri.path eq \"/hyperscaler-deals\" or\n http.request.uri.path eq \"/ai-capacity-index\")\nand not (starts_with(http.request.uri.path, \"/api/\")\n      or starts_with(http.request.uri.path, \"/sites/value\"))",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": true
+      },
+      "enabled": true
+    },
+    {
+      "position": 7,
+      "id": "c07b6035e1684c19b3d344e12ead0ee9",
+      "description": "Cache Location Pages (errors no-store 2026-07-03)",
+      "expression": "(http.request.uri.path contains \"/locations/\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "browser_ttl": {
+          "default": 3600,
+          "mode": "override_origin"
+        },
+        "cache": true,
+        "edge_ttl": {
+          "default": 3600,
+          "mode": "override_origin",
+          "status_code_ttl": [
+            {
+              "status_code_range": {
+                "from": 400,
+                "to": 599
+              },
+              "value": -1
+            }
+          ]
+        },
+        "serve_stale": {
+          "disable_stale_while_updating": true
+        }
+      },
+      "enabled": true
+    },
+    {
+      "position": 8,
+      "id": "d7db7c6a7815470ca8773480cd25c43b",
+      "description": "Bypass cache for grid cards",
+      "expression": "(http.request.uri.path wildcard r\"/api/v1/grid/*/card.png\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 9,
+      "id": "d5dc944ba3964077aa4575bd2955f95a",
+      "description": "Bypass cache \u2014 gated/tier-varying API",
+      "expression": "(http.request.uri.path contains \"/api/v1/fiber/\") or (http.request.uri.path contains \"/api/v1/search\") or (http.request.uri.path contains \"/api/v1/gas-pipelines\") or (http.request.uri.path contains \"/api/v1/deals\") or (http.request.uri.path contains \"/api/deals\") or (http.request.uri.path contains \"/api/v1/pipeline\") or (http.request.uri.path contains \"/api/v1/markets/list\") or (http.request.uri.path contains \"/api/v1/me/tier\") or (http.request.uri.path contains \"/api/v1/energy/\") or (http.request.uri.path contains \"/api/v1/tax-incentives\") or (lower(http.request.uri.path) contains \"/grid/\" and not lower(http.request.uri.path) contains \"/grid/pjm\" and not lower(http.request.uri.path) contains \"/grid/ercot\") or (http.request.uri.path contains \"/api/v1/dcpi/scores\") or (http.request.uri.path contains \"/api/v1/mcp/funnel\") or (http.request.uri.path contains \"/api/v1/sentinel/scan\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 10,
+      "id": "6407517b2044458bb9e9725bb150b484",
+      "description": "Bypass cache - brain admin/status endpoints (autonomy/automerge state must reflect live origin, not stale edge). Added 2026-06-27.",
+      "expression": "starts_with(http.request.uri.path, \"/api/v1/brain/\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 11,
+      "id": "57a65b77f02a49d1a83d414f67041512",
+      "description": "Bypass cache \u2014 gated DCPI/heatmap/market-brief",
+      "expression": "(starts_with(http.request.uri.path, \"/api/v1/dcpi/\") or starts_with(http.request.uri.path, \"/api/v1/market-brief/\") or http.request.uri.path eq \"/api/v1/capacity/heatmap\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 12,
+      "id": "08a00481cf34426996fa8f5d759221f2",
+      "description": "Bypass cache \u2014 gated tier-varying API, force-origin ratchet 2026-07-01",
+      "expression": "starts_with(http.request.uri.path, \"/api/v1/analytics\") or starts_with(http.request.uri.path, \"/api/v1/capacity/\") or starts_with(http.request.uri.path, \"/api/v1/facilities/search\") or starts_with(http.request.uri.path, \"/api/v1/facilities/stats\") or starts_with(http.request.uri.path, \"/api/v1/grid/\") or starts_with(http.request.uri.path, \"/api/v1/infrastructure/\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 13,
+      "id": "fa27c277de59452ea7417e3c8b7ecdc2",
+      "description": "Bypass cache \u2014 tier-varying API sweep 2026-07-01 (inline-gated routes invisible to decorator ratchet; all confirmed or same-class)",
+      "expression": "starts_with(http.request.uri.path, \"/api/v1/power-plants\") or starts_with(http.request.uri.path, \"/api/v1/transmission-lines\") or starts_with(http.request.uri.path, \"/api/v1/hyperscaler-brief\") or starts_with(http.request.uri.path, \"/api/v1/land-power/\") or starts_with(http.request.uri.path, \"/api/v1/site-planner/\") or starts_with(http.request.uri.path, \"/api/news/archive\") or starts_with(http.request.uri.path, \"/api/v1/grid-intelligence\") or starts_with(http.request.uri.path, \"/api/v1/grid-transition/\") or starts_with(http.request.uri.path, \"/api/v1/listings\") or starts_with(http.request.uri.path, \"/api/v1/transactions\") or starts_with(http.request.uri.path, \"/api/v1/dcgi/scores\") or starts_with(http.request.uri.path, \"/api/v1/pockets\") or starts_with(http.request.uri.path, \"/api/v1/carbon\") or starts_with(http.request.uri.path, \"/api/v1/climate\") or starts_with(http.request.uri.path, \"/api/v1/risk\") or starts_with(http.request.uri.path, \"/api/v1/water/\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 14,
+      "id": "91e17f61d2434815868f690aceca0359",
+      "description": "Bypass cache - real-time LMP feeds 2026-07-02 (iso-lmp + lmp): Cache Public API rule pinned the pre-deploy 404 for 1h after PR #1387 and served hours-stale 5-min LMP prices at max-age=3600",
+      "expression": "(starts_with(http.request.uri.path, \"/api/v1/iso-lmp/\")) or (starts_with(http.request.uri.path, \"/api/v1/lmp/\"))",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 15,
+      "id": "3ce00356846345f2afb61121448933a2",
+      "description": "Cache SEO tail \u2014 facility/market/dcpi HTML 86400 + SWR (2026-07-03 fix-pack; converts 20K-page tail to CDN hits)",
+      "expression": "(starts_with(http.request.uri.path, \"/facility/\") or starts_with(http.request.uri.path, \"/facilities/\") or starts_with(http.request.uri.path, \"/markets/\") or starts_with(http.request.uri.path, \"/dcpi/\")) and not (http.request.uri.path eq \"/markets/registry.json\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "browser_ttl": {
+          "mode": "respect_origin"
+        },
+        "cache": true,
+        "edge_ttl": {
+          "default": 86400,
+          "mode": "override_origin",
+          "status_code_ttl": [
+            {
+              "status_code_range": {
+                "from": 400,
+                "to": 599
+              },
+              "value": -1
+            }
+          ]
+        },
+        "serve_stale": {
+          "disable_stale_while_updating": false
+        }
+      },
+      "enabled": true
+    },
+    {
+      "position": 16,
+      "id": "f8ba423c3f5845e9a54f8a2bdfdc283f",
+      "description": "Cache hot hubs + marketing surfaces 3600 (2026-07-03 fix-pack: facilities hub, sitemap, api-docs, playground, integrations, founders, pockets, partners/feedback, directory+country hubs)",
+      "expression": "(http.request.uri.path in {\"/facilities\" \"/sitemap.xml\" \"/api-docs\" \"/playground\" \"/founders\" \"/pockets\" \"/partners/feedback\" \"/integrations\"}) or (starts_with(http.request.uri.path, \"/integrations/\")) or (starts_with(http.request.uri.path, \"/facilities/directory\")) or (starts_with(http.request.uri.path, \"/facilities/in/\"))",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "browser_ttl": {
+          "mode": "respect_origin"
+        },
+        "cache": true,
+        "edge_ttl": {
+          "default": 3600,
+          "mode": "override_origin",
+          "status_code_ttl": [
+            {
+              "status_code_range": {
+                "from": 400,
+                "to": 599
+              },
+              "value": -1
+            }
+          ]
+        },
+        "serve_stale": {
+          "disable_stale_while_updating": false
+        }
+      },
+      "enabled": true
+    },
+    {
+      "position": 17,
+      "id": "3a4d750911874e4da6f35bbb9a859809",
+      "description": "Bypass cache \u2014 per-user portfolio/state API (lp/* saved sites+alerts, changes/since portfolio overlay) 2026-07-11",
+      "expression": "(starts_with(http.request.uri.path, \"/api/v1/lp/\")) or (starts_with(http.request.uri.path, \"/api/v1/changes/\"))",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 18,
+      "id": "e30fab55cae9463c8ef1445e4540b5ae",
+      "description": "Bypass cache - tier-varying HTML for AUTHED users (dchub_token/dchub_refresh) 2026-07-26 dcpi cross-tier fix",
+      "expression": "(http.request.uri.path eq \"/dcpi\" or starts_with(http.request.uri.path, \"/dcpi/\") or http.request.uri.path eq \"/markets\" or starts_with(http.request.uri.path, \"/markets/\") or starts_with(http.request.uri.path, \"/facility/\") or starts_with(http.request.uri.path, \"/facilities/\") or http.request.uri.path eq \"/transactions\" or http.request.uri.path eq \"/transaction-comps\" or http.request.uri.path eq \"/grid-intelligence\" or http.request.uri.path eq \"/grid-transition\" or http.request.uri.path eq \"/hyperscaler-deals\" or http.request.uri.path eq \"/deal-autopsy\" or starts_with(http.request.uri.path, \"/listings/\") or starts_with(http.request.uri.path, \"/sites/\") or starts_with(http.request.uri.path, \"/reports/\") or http.request.uri.path eq \"/grid\" or starts_with(http.request.uri.path, \"/grid/\") or http.request.uri.path eq \"/dcgi\" or http.request.uri.path eq \"/\") and (http.cookie contains \"dchub_token=\" or http.cookie contains \"dchub_refresh=\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 19,
+      "id": "9cb5cd920d354148aba03329c3cfc7de",
+      "description": "Bypass cache - no-store dashboard aggregates (retention/leadership/utilization/trend/ownership/funnel) 2026-07-27",
+      "expression": "(http.request.uri.path eq \"/api/v1/mcp/retention\") or (http.request.uri.path eq \"/api/v1/mcp/leadership\") or (http.request.uri.path eq \"/api/v1/agents/utilization\") or (http.request.uri.path eq \"/api/v1/engines/trend\") or (http.request.uri.path eq \"/api/v1/brain/ownership\") or (http.request.uri.path eq \"/api/v1/mcp/funnel\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 20,
+      "id": "d71d7b9b51354cdea002997db10097ce",
+      "description": "Bypass cache - QA super-user board (live QA verdicts; Rule #3 override_origin was serving 17-42min stale) 2026-08-04",
+      "expression": "starts_with(http.request.uri.path, \"/api/v1/qa-superuser/\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 21,
+      "id": "8a06794bd8ac4ae2b36b145303e09b9e",
+      "description": "Bypass cache - liveness/ops endpoints (health, deadman, origin-freshness). A cached liveness probe reports the state of a past moment as the present one, which is the exact failure these endpoints exist to prevent. 2026-08-04",
+      "expression": "(http.request.uri.path eq \"/api/v1/health\") or (starts_with(http.request.uri.path, \"/api/v1/ops/\"))",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 22,
+      "id": "862142e500374af48e53935607964c44",
+      "description": "Bypass cache - /grid hub is TIER-VARYING (gates 7 of 9 ISO cards for free callers). Rule 5 Landing Pages cached it with override_origin, bulldozing the origin no-store, and a Pro X-API-Key render was served to anon. 2026-08-04",
+      "expression": "(http.request.uri.path eq \"/grid\") or (http.request.uri.path eq \"/grid/\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 23,
+      "id": "0a63bf041470443faec6546ea380317d",
+      "description": "Bypass cache - /api/v1/admin/* \u2014 Rule 3 (Cache Public API, override_origin) cached an authenticated admin body and served it to an anonymous caller: HTTP 200, cf-cache-status HIT, age 1043. Worker half shipped in dchub-frontend#1176; _worker.js:659 records that both layers are required. 2026-08-12",
+      "expression": "(starts_with(http.request.uri.path, \"/api/v1/admin/\")) or (starts_with(http.request.uri.path, \"/api/admin/\"))",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 24,
+      "id": "b3ce82fb57cc4834b43fb5516b3bdb9e",
+      "description": "Bypass cache for CREDENTIALED /api/v1/* (X-API-Key header or ?api_key=). 2026-09-06: Rule 2 (Cache Public API, override_origin) cached a developer-key 200 under an auth-blind key and served it byte-identical (1,003,630 B) to an anonymous caller the origin answers 401. CF ignores Vary other than Accept-Encoding and override_origin ignores no-store, and the edge cache sits IN FRONT of the Pages worker, so no _worker.js change can stop the HIT. Generic by credential rather than by path: rules 9/11/12/13/17/19/20/21/22/23 are the same class patched one prefix at a time. Worker half: dchub-frontend#1409. Origin gate: dchub-backend#4038.",
+      "expression": "(starts_with(http.request.uri.path, \"/api/v1/\") and (any(http.request.headers[\"x-api-key\"][*] != \"\") or any(http.request.uri.args[\"api_key\"][*] != \"\")))",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    },
+    {
+      "position": 25,
+      "id": "99ac770b63054adebabbc75acebe377d",
+      "description": "Bypass cache \u2014 MCP tool routes",
+      "expression": "starts_with(http.request.uri.path, \"/api/v1/mcp/tools/\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": false
+      },
+      "enabled": true
+    }
+  ]
+}
