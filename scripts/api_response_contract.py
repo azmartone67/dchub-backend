@@ -89,6 +89,10 @@ ROUTE_MAP_PATH = os.path.join(REPO, "contracts", "route_serving_map.json")
 
 SCHEMA_VERSION = 1
 
+# Refuse to drop "unserved" endpoints past this share of the surface: that many
+# is evidence the endpoint-id formats diverged, not that the app serves nothing.
+_UNSERVED_CEILING = 0.25
+
 # ── SCOPE ────────────────────────────────────────────────────────────────────
 # Public JSON surface = routes whose path starts with one of these. Admin and
 # internal-key-gated surfaces are deliberately out of scope: they have no
@@ -454,6 +458,40 @@ def _merge_records(recs: list[dict[str, Any]]) -> dict[str, Any]:
     return keep
 
 
+def _unserved_endpoints(
+    pending: dict[str, list[dict[str, Any]]],
+    serving: dict[str, dict[str, list[str]]] | None,
+) -> frozenset[str]:
+    """Endpoints that url_map does not serve AT ALL — safe to drop entirely.
+
+    The narrowing above answers "which of these candidates serves the route".
+    This answers a different question: "is this route served by anything?" An
+    endpoint absent from url_map has no handler, so it cannot return a key of
+    any shape, and publishing it as contract invites a consumer to code against
+    a response that will never exist. 118 endpoints / 442 keys were in that
+    state when this was added — `GET /api/ai-deals`, `GET /api/companies`, and
+    the rest of the stale-duplicate files (ai_deals_api.py,
+    transactions_news_api.py, deal_scraper.py).
+
+    ★ THE DANGEROUS FAILURE IS A KEY MISMATCH, NOT A MISSING ROUTE. If endpoint
+    ids were ever formatted differently here and in the map, EVERY endpoint
+    would look unserved and the whole contract would evaporate into a green
+    check. So this refuses to act on an implausible answer: past
+    _UNSERVED_CEILING of the surface, it drops nothing and lets the union stand,
+    which is the same "every ambiguous case keeps the union" rule the narrowing
+    follows. Measured 2026-09-07: 118/1907 = 6.2%.
+
+    Returns an empty set when the map is absent — never treat "cannot measure"
+    as "nothing serves it".
+    """
+    if serving is None or not pending:
+        return frozenset()
+    missing = frozenset(eid for eid in pending if eid not in serving)
+    if len(missing) > _UNSERVED_CEILING * len(pending):
+        return frozenset()
+    return missing
+
+
 def attribute_records(
     pending: dict[str, list[dict[str, Any]]],
     serving: dict[str, dict[str, list[str]]] | None,
@@ -470,7 +508,13 @@ def attribute_records(
     """
     endpoints: dict[str, dict[str, Any]] = {}
     narrowed = 0
+    unserved = _unserved_endpoints(pending, serving)
     for eid, recs in pending.items():
+        if eid in unserved:
+            # Nothing in url_map serves this path, so no response of any shape
+            # can be produced at it. Narrowing cannot reach these: they usually
+            # have exactly one candidate, and `len(recs) > 1` skips them.
+            continue
         dropped: list[dict[str, Any]] = []
         if len(recs) > 1 and serving is not None:
             live = serving.get(eid)
