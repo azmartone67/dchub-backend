@@ -105,6 +105,13 @@ def _build_canon_body():
                 "markets": pub.get("markets"),
                 "facilities": pub.get("facilities"),
                 "countries": pub.get("countries"),
+                # ★2026-09-06 r-news-sources. The claim "40+ sources" reached
+                # ~47 files and six live surfaces precisely BECAUSE no endpoint
+                # published it: it could not be checked in either direction, so
+                # nothing could contradict it. Publishing it here is what makes
+                # it falsifiable from outside — the property every sibling key
+                # in this dict already had.
+                "news_sources": pub.get("news_sources"),
             }
     except Exception as e:
         logger.warning("canon_phrases: resolve_canon failed: %s", str(e)[:160])
@@ -123,6 +130,7 @@ def _build_canon_body():
                 "markets": p.get("markets"),
                 "facilities": p.get("facilities"),
                 "countries": p.get("countries"),
+                "news_sources": p.get("news_sources"),
             }
         except Exception as e:
             logger.error("canon_phrases: PINNED fallback failed: %s", str(e)[:120])

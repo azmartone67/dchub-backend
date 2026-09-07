@@ -1120,6 +1120,23 @@ def resolve_canon() -> dict:
         c["public"]["countries"] = _cp
     except Exception as e:
         c["_countries_error"] = str(e)[:120]
+    # ★2026-09-06 r-news-sources: news sources self-heal the same way deals,
+    # facilities, markets and countries do above. Without this block the pin
+    # would be the ONLY publisher — which is the state `countries` was in on
+    # 2026-07-30, described one comment up as "right by luck, not by wiring".
+    # It reads identical to the pin TODAY (live 2,442 and the seed both floor
+    # to "2,000+"), and that is precisely why it is worth wiring now rather
+    # than after the corpus moves: a self-heal that only gets added once the
+    # numbers disagree has already let a surface go stale to prove it.
+    # ★The corpus is PRUNED at 90 days, so this can heal DOWNWARD too — the
+    # direction a max()-against-the-pin would silently refuse.
+    try:
+        from canonical_stats import news_sources_phrase as _news_phrase
+        _np = _news_phrase()
+        c["news_sources_live"] = _np
+        c["public"]["news_sources"] = _np
+    except Exception as e:
+        c["_news_sources_error"] = str(e)[:120]
     # live tool count from the MCP server — override the pinned fallback so
     # every resolve_canon() consumer tracks tools/list and never goes stale.
     try:
