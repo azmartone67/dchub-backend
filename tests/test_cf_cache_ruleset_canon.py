@@ -286,3 +286,30 @@ def test_absent_credential_names_every_variable_it_looked_for(monkeypatch):
     assert error.startswith("NO CREDENTIAL PRESENT")
     for name in guard.TOKEN_ENV_VARS:
         assert name in error
+
+
+# ---------------------------------------------------------------- escalation
+def test_the_drift_alarm_reaches_ci_triage_by_its_EXACT_name():
+    """★ A guard whose alarm reaches nobody is the alarm not existing.
+
+    `workflow_run` matches by the workflow's declared `name:` STRING, so the
+    ci-triage allowlist and the workflow name are coupled by text with nothing
+    enforcing it. Rename the workflow and the entry silently stops matching:
+    the job still runs, still goes red, and simply stops being routed —
+    no error, anywhere.
+
+    ci-triage.yml's own header records this class already ("THE GATING
+    WORKFLOWS WERE NOT ON THIS LIST", 2026-08-30, found cold by hand).
+    """
+    import yaml
+
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    declared_name = yaml.safe_load((root / "cf-cache-ruleset-drift.yml").read_text())["name"]
+    triage = yaml.safe_load((root / "ci-triage.yml").read_text())
+    # PyYAML parses the bare `on:` key as the boolean True.
+    watched = triage[True]["workflow_run"]["workflows"]
+
+    assert declared_name in watched, (
+        f"cf-cache-ruleset-drift.yml declares name {declared_name!r}, which is "
+        f"NOT in ci-triage's allowlist {watched!r}. Its failures reach nobody."
+    )
