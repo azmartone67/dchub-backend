@@ -381,12 +381,22 @@ def test_repo_worker_is_canon_clean_and_current():
     # MCP_SERVER_INFO.description still said "83 tools" — both reconciled to the
     # live tools/list here alongside ai_surface_canon.PINNED (canon PR #4068).
     # ★ PASTE OUTSTANDING — merging does not ship this. Fallback-only: the served
-    # count already derives 85 from origin, so this is degraded-mode correctness,
+    # count already derives from origin, so this is degraded-mode correctness,
     # not a live regression.
-    # Verify with (want 4.9.58):
+    #
+    # 4.9.58 -> 4.9.59-fallback-tools-86 (2026-09-07): mcp-server #373 added
+    # find_sites (85 -> 86). MCP_FALLBACK_TOOLS gained the tool and
+    # MCP_SERVER_INFO.description was reconciled, alongside
+    # ai_surface_canon.PINNED (canon PR #4122). The fallback entry was DERIVED
+    # from POST /mcp tools/list — name, description and inputSchema fetched and
+    # inserted verbatim — because a hand-typed copy is a second source of truth
+    # sitting in the one path that only runs when everything else is down.
+    # ★ Confirmed live before canon moved: /.well-known/mcp.json tools_count=86,
+    # tools/list 86, check-served-manifest.mjs OK.
+    # Verify with (want 4.9.59):
     #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.58-fallback-tools-85'" in src
+    assert "WORKER_VERSION = '4.9.59-fallback-tools-86'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
