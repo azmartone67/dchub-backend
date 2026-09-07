@@ -3386,7 +3386,16 @@ KNOWN_STALE_COUNT_DEBT = {
     # ★2026-09-02: deals_stale_floor DROPPED — this file carries '2,000+ ... deals',
     # which the canon walk made the CURRENT floor. The debt was not paid, it
     # stopped being debt. facilities_stale_floor stands.
-    'dchub-mcp-v2.1/apply_worker_patch.py': {'facilities_stale_floor'},
+    # ★2026-09-07 deals 2,000+ -> 2,100+ adds a second token to both of these.
+    # They are ONE-SHOT MIGRATION SCRIPTS that already ran, and the literal is
+    # the RECORD of what they substituted — mcp_bug_fixes_and_new_tools.py's own
+    # header reads 'BUG-024: list_transactions docstring "$185B+" -> "2,000+
+    # deals"'. Rewriting it would falsify that record and need re-walking on
+    # every future canon move. LEDGERED, not skip-listed: adding them to
+    # STALE_SCAN_SKIP_FILES orphans their existing rows and
+    # test_stale_count_debt_ledger_has_not_rotted catches it — which is how I
+    # learned the difference. The ledger keeps the debt counted; a skip hides it.
+    'dchub-mcp-v2.1/apply_worker_patch.py': {'facilities_stale_floor', 'deals_stale_floor'},
     'dchub_daily_automation.py': {'facilities_bare_int'},
     'dchub_mcp_server.py': {'facilities_stale_floor', 'tool_count_literal'},
     'fix_neon_tables.py': {'tool_count_literal'},
@@ -3402,7 +3411,7 @@ KNOWN_STALE_COUNT_DEBT = {
     # ★2026-09-02: deals_stale_floor DROPPED — this file carries '2,000+ ... deals',
     # which the canon walk made the CURRENT floor. The debt was not paid, it
     # stopped being debt. facilities_stale_floor stands.
-    'mcp_bug_fixes_and_new_tools.py': {'facilities_stale_floor'},
+    'mcp_bug_fixes_and_new_tools.py': {'facilities_stale_floor', 'deals_stale_floor'},
     'mcp_gateway.py': {'facilities_stale_floor'},
     'mcp_qa_fixes_v7.py': {'tool_count_literal'},
     'mcp_server_patch.py': {'tool_count_literal'},
