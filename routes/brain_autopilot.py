@@ -3032,22 +3032,40 @@ def _compute_heartbeat_sync():
                 except Exception:
                     _cats = {}  # table not created until the first block
                 _blocked = sum(_cats.values())
-                _pub = 0
+                # social_media_posts.published_at is TEXT (mixed
+                # 'YYYY-MM-DD HH:MI+00' / 'YYYY-MM-DDTHH:MIZ'), so comparing it
+                # to a timestamptz raises `operator does not exist: text >=
+                # timestamp with time zone` on EVERY call. The old bare
+                # `except: _pub = 0` swallowed that, so this counter had never
+                # once succeeded and reject_rate was pinned at 100% while
+                # LinkedIn was publishing normally. Cast, as
+                # media_master_shell.tier1_measure already does for the same
+                # column. A measurement that could not RUN is reported as None,
+                # never as a real 0 — otherwise a broken query looks like a
+                # dead feed and pages the owner forever.
+                _pub = None
+                _pub_error = None
                 try:
                     cur.execute("""SELECT COUNT(*) FROM social_media_posts
                         WHERE status='published' AND publish_platform='linkedin'
-                          AND published_at >= (NOW() - INTERVAL '7 days')""")
+                          AND NULLIF(published_at, '') IS NOT NULL
+                          AND published_at::timestamptz >= (NOW() - INTERVAL '7 days')""")
                     _pub = int((cur.fetchone() or [0])[0] or 0)
-                except Exception:
-                    _pub = 0
-                _tot = _blocked + _pub
+                except Exception as _pe:
+                    _pub_error = str(_pe)[:160]
+                _tot = _blocked + (_pub or 0)
                 _top = max(_cats.items(), key=lambda x: x[1])[0] if _cats else None
                 _mq = {
                     "blocked_7d": _blocked, "published_7d": _pub,
-                    "reject_rate": round(_blocked / _tot, 3) if _tot else None,
+                    # reject_rate needs BOTH halves. With the publish count
+                    # unmeasurable the ratio is unknowable, not 100%.
+                    "reject_rate": (round(_blocked / _tot, 3)
+                                    if (_pub is not None and _tot) else None),
                     "top_reject_category": _top, "by_category": _cats,
                     "self_critique": "/api/v1/media/self-critique",
                 }
+                if _pub_error:
+                    _mq["published_7d_error"] = _pub_error
                 # A disclaimer-class block is the credibility self-own; a high
                 # reject rate means the generator is producing junk. Either is a
                 # brain-visible alert the autopilot/operator can act on.
@@ -3055,6 +3073,11 @@ def _compute_heartbeat_sync():
                     _mq["status"] = "alert"
                     _mq["alert"] = (f"{_cats['ai_disclaimer']} disclaimer-as-citation "
                                     f"post(s) blocked in 7d — media generator regressing")
+                elif _pub_error:
+                    # Loud, and distinct from a real high-reject verdict.
+                    _mq["status"] = "unknown"
+                    _mq["alert"] = ("media publish count unmeasurable — "
+                                    f"reject rate unknown ({_pub_error})")
                 elif _mq["reject_rate"] is not None and _mq["reject_rate"] >= 0.5 and _blocked >= 3:
                     _mq["status"] = "warn"
                     _mq["alert"] = f"high media reject rate {_mq['reject_rate']:.0%} (top: {_top})"
@@ -3065,17 +3088,22 @@ def _compute_heartbeat_sync():
         out["media_quality"] = {"error": str(e)[:160]}
 
     # ── Layer 5 activity ──
+    # The table is `brain_proposed_code_fixes` and its timestamp column is
+    # `proposed_at`. This probed `brain_proposed_code` / `created_at` — neither
+    # exists — so to_regclass returned NULL, the `if` never fired, and the block
+    # emitted NO key and NO error: the brain's vitals were silently blind to its
+    # own code-proposal arm. A probe that finds nothing must say so out loud.
     try:
         if c:
             with c.cursor() as cur:
                 cur.execute("""
-                    SELECT to_regclass('public.brain_proposed_code')
+                    SELECT to_regclass('public.brain_proposed_code_fixes')
                 """)
                 if (cur.fetchone() or [None])[0]:
                     cur.execute("""
-                        SELECT COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours'),
-                               MAX(created_at)
-                          FROM brain_proposed_code
+                        SELECT COUNT(*) FILTER (WHERE proposed_at >= NOW() - INTERVAL '24 hours'),
+                               MAX(proposed_at)
+                          FROM brain_proposed_code_fixes
                     """)
                     r = cur.fetchone()
                     if r:
@@ -3083,6 +3111,10 @@ def _compute_heartbeat_sync():
                             "proposals_24h":  int(r[0] or 0),
                             "last_proposal":   r[1].isoformat() if r[1] else None,
                         }
+                else:
+                    out["layer5"] = {
+                        "error": "table public.brain_proposed_code_fixes not found",
+                    }
     except Exception as e:
         out["layer5"] = {"error": str(e)[:160]}
 
