@@ -494,12 +494,60 @@ def handoff_funnel():
         # definition installed on the headline before its number has been read
         # against live data.
         _ro_not_self = _deloop_external_session_predicate("ro.session_id")
+        # ★ 2026-09-07 — IDENTITY FALLS BACK TO THE TOKEN. Measured over 30d:
+        # 178 opens, 32 passed the real-UA filter, and 30 of THOSE 32 carried no
+        # session_id — so v6 could count 2. The sid is baked in at MINT time
+        # (`${sessionId || ''}|tool|tier|ts`), so a link minted without a
+        # session is born without one and no read-side change recovers it.
+        # Every link does carry a token unique per mint, now stored hashed on
+        # the open (routes/human_relay._log_open), which gives those rows an
+        # identity, and the unit for them is DISTINCT LINKS OPENED.
+        #
+        # ★★★ WHY THAT IS A SECOND NUMBER AND NOT A WIDER v6.
+        # The first version of this change simply widened v6 to
+        # coalesce(session_id, token_hash) and kept `_ro_not_self`. The
+        # exclusion keys on ro.session_id, and mcp_calls_deloop
+        # .external_session_predicate says in its own docstring: "A NULL/empty
+        # session is KEPT — it is not knowably ours." So for exactly the rows
+        # the widening added — the ones with no session_id — the operator
+        # self-traffic exclusion evaluates COALESCE('','') !~* '^(seed)' and
+        # passes VACUOUSLY. Every token-only row is un-deloopable by
+        # construction, and a real-UA browser open by the operator on a link
+        # minted without a session would land in the count. That is v3's bug
+        # (it counted the operator's own click and published this stage's
+        # first non-zero) arriving through a new door, in the change that
+        # removed the filter which had been closing that door by accident.
+        # tests/test_human_acted_v6_anchor.py::test_v6_requires_a_session_id
+        # caught it; the widening had shipped a test asserting the opposite of
+        # that guard rather than reconciling with it.
+        #
+        # So: v6 keeps the session requirement and stays fully de-loopable, and
+        # the token identity is published BESIDE it as its own number whose
+        # basis states the limitation instead of inheriting a filter that
+        # cannot see it. Same window, same real-UA predicate; the difference
+        # between them IS the un-deloopable population, which is the honest
+        # thing for a reader to see.
+        # ★ The session requirement is INLINE, not behind a named predicate.
+        # tests/test_human_acted_v6_anchor.py::test_v6_requires_a_session_id
+        # greps this assignment for the literal, so hoisting it to a `_v6_sid_ok`
+        # name — which reads better — silently blinds the guard that caught the
+        # regression this comment exists because of. The guard is the point.
+        _v6_id = "coalesce(nullif(ro.session_id,''), ro.token_hash)"
         _v6_body = ("from relay_opens ro "
                     "where ro.ts > now() - interval '%s' "
                     "and " + _ro_real + " "
                     "and coalesce(ro.session_id,'') <> '' "
                     "and " + _ro_not_self)
         opened_v6 = one(("select count(distinct ro.session_id) " + _v6_body) % iv)
+        # The same window and UA filter, identity falling back to the per-mint
+        # token hash, and NO self-traffic exclusion — because none applies. Not
+        # a headline; a floor on how many links were opened at all.
+        _v6_links_body = ("from relay_opens ro "
+                          "where ro.ts > now() - interval '%s' "
+                          "and " + _ro_real + " "
+                          "and " + _v6_id + " is not null")
+        opened_v6_links = one(
+            ("select count(distinct " + _v6_id + ") " + _v6_links_body) % iv)
         opened_v2 = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                         "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         opened_legacy = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
@@ -669,15 +717,41 @@ def handoff_funnel():
                 "wins, and sum to relay_open_provenance.total."),
             "human_acted_v6_from_relay_opens": opened_v6,
             "human_acted_v6_basis": (
-                "COUNT(DISTINCT ro.session_id) FROM relay_opens — the table the "
+                "COUNT(DISTINCT session_id) FROM relay_opens — the table the "
                 "open is written to — with the same real-UA predicate and the "
                 "same declared operator self-traffic exclusion v5 applies. v2..v5 "
                 "count FROM mcp_high_intent_sessions and can only see an open "
                 "whose session reached that table; this one cannot miss those. "
-                "It still cannot see opens with no session_id recorded (30 of "
-                "174 over 30d on 2026-09-07) — that is an instrumentation gap in "
-                "relay_opens, not a definition choice. PUBLISHED ALONGSIDE: "
-                "`human_acted` is still v5."),
+                "It DOES require a session_id, and that requirement is what "
+                "keeps it de-loopable: the self-traffic exclusion keys on "
+                "session_id, so a row without one cannot be tested against it. "
+                "Opens with no session_id are counted separately as "
+                "`human_acted_v6_links_opened` rather than folded in here. "
+                "PUBLISHED ALONGSIDE: `human_acted` is still v5."),
+            "human_acted_v6_links_opened": opened_v6_links,
+            "human_acted_v6_links_opened_basis": (
+                "COUNT(DISTINCT coalesce(nullif(session_id,''), token_hash)) "
+                "FROM relay_opens over the SAME window with the SAME real-UA "
+                "predicate as human_acted_v6 — but with NO session requirement "
+                "and NO operator self-traffic exclusion. The unit is DISTINCT "
+                "LINKS OPENED, not distinct people. Why it exists: the sid is "
+                "baked into the token at mint time (`${sessionId || ''}|tool|"
+                "tier|ts`), so a link minted without a session is born without "
+                "one and nothing at open time recovers it — measured 2026-09-07 "
+                "over 30d, 30 of the 32 real-UA opens had no session_id, so v6 "
+                "could see 2. Every link does carry a per-mint token, hashed "
+                "onto the row, which gives those opens an identity. "
+                "★ WHAT THIS NUMBER CANNOT DO: the operator self-traffic "
+                "exclusion keys on session_id and mcp_calls_deloop."
+                "external_session_predicate KEEPS a null/empty session ('not "
+                "knowably ours'), so it passes vacuously on precisely the rows "
+                "this number adds. Token-only opens are un-deloopable by "
+                "construction — an operator browsing a session-less link is "
+                "counted here and there is no read-side test that separates "
+                "them. Read it as an upper bound on links opened, never as a "
+                "count of humans reached. Rows written BEFORE 2026-09-07 have "
+                "no token_hash and stay uncountable: forward-looking, it does "
+                "not retroactively recover the 30."),
             "human_acted_v2_all_view_opens": opened_v2,
             "human_acted_v3_including_self_traffic": opened_v3,
             "human_acted_v4_before_rotation": opened_v4,
