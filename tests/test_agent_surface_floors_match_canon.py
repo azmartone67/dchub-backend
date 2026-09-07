@@ -68,6 +68,7 @@ RETIRED_FACILITY_FLOORS = ("15,000+", "12,650+")
 RETIRED_DEAL_FLOORS = ("4,000+", "1,600+", "1,400+")
 
 FACILITY_WORDS = ("facilit", "data center", "physical")
+SUBSTATION_WORDS = ("substation",)
 DEAL_WORDS = ("m&a", "transaction", "deal", "acquisition")
 
 
@@ -83,6 +84,7 @@ def _pinned():
 
 PUBLIC = _pinned()["public"]
 CANON_FACILITIES = PUBLIC["facilities"]
+CANON_SUBSTATIONS = PUBLIC["substations"]
 CANON_DEALS = PUBLIC["deals"]
 
 
@@ -121,6 +123,47 @@ def test_no_retired_deal_floor_is_served(rel):
         f"{rel} carries retired deal floor(s) {hits}; canon is {CANON_DEALS}. "
         f"4,000+ in particular was an OVER-claim — the direction that costs "
         f"credibility rather than traffic.")
+
+
+def test_every_surface_states_the_substation_floor_the_same_way():
+    """★2026-09-07 — substations had NO owner in this file, and the reason is
+    one line above: the facility test bands its matches to
+    `5_000 <= v <= 100_000` so it cannot see a six-figure asset count. README.md
+    carried "126,427 substations" against a canon floor of 127,000+ and a live
+    127,288 — an under-claim of ~861 on the one surface in SURFACES that states
+    the figure at all.
+
+    126,427 is not a stale measurement. It is this repo's DB-DOWN SEED, pasted
+    into prose and frozen; ai_surface_canon records the identical literal
+    escaping into /.well-known/mcp.json while the snapshot measured 127,269.
+    """
+    seen = {}
+    for rel in _existing():
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        for line in text.split("\n"):
+            if not any(w in line.lower() for w in SUBSTATION_WORDS):
+                continue
+            for m in re.finditer(r"\b\d{1,3}(?:,\d{3})+\+?", line):
+                v = int(m.group(0).replace(",", "").rstrip("+"))
+                # asset-scale only: above the facility band, below fiber/plant piles
+                if 100_000 <= v <= 1_000_000:
+                    seen.setdefault(m.group(0), set()).add(rel)
+    # ★ FLOOR, and it matters more here than on the facility sibling. Facilities
+    #   are stated on many surfaces, so an empty `seen` is implausible.
+    #   Substations are stated on exactly ONE (README.md), so `seen` is one edit
+    #   away from empty — and `len(seen) <= 1` passes happily on nothing.
+    assert seen, (
+        "no surface in SURFACES states a substation figure, so this whole test "
+        "just passed on an empty set. Either the README line was deleted (decide "
+        "that deliberately) or the match band below no longer fits the number.")
+    assert len(seen) <= 1, (
+        f"substation floor stated {len(seen)} different ways across surfaces: "
+        + "; ".join(f"{k} in {sorted(v)}" for k, v in sorted(seen.items())))
+    if True:
+        assert CANON_SUBSTATIONS in seen, (
+            f"surfaces state {sorted(seen)} but canon is {CANON_SUBSTATIONS}. A "
+            "bare count here is the seed-in-prose shape: publish the canon FLOOR "
+            "so it can never exceed reality.")
 
 
 def test_every_surface_states_the_facility_floor_the_same_way():
