@@ -31828,6 +31828,10 @@ def _build_sitemap_sections():
     # the DB block must leave the emit loop with an empty map (keep every URL),
     # never an unbound name.
     _drained_keeper = {}
+    # r-noindex-coherence (2026-09-07): same pre-bind contract. Empty means
+    # "emit everything", i.e. exactly today's sitemap — a failure building this
+    # set must never be able to shrink the artefact.
+    _contentless_slugs = set()
     try:
         conn = get_read_db()
         c = conn.cursor()
@@ -32366,6 +32370,23 @@ def _build_sitemap_sections():
             except Exception: pass
             logger.warning("sitemap: published-NER slug set unavailable (%s) — "
                            "news-NER facility URLs will be emitted", _ner_e)
+
+        # ★★★ r-noindex-coherence (2026-09-07) — NEVER ADVERTISE A URL WHOSE
+        # PAGE SERVES robots=noindex. 770 of 18,991 published facility URLs did;
+        # all 770 are util.thin_content.is_contentless. The predicate, the query
+        # and the blast-radius cap all live in util/thin_content beside the Lane
+        # 3 verdict itself — see contentless_slug_set for why the query is NOT
+        # inlined here (test_sitemap_thin_gate::test_the_gate_is_emission_only,
+        # which refuses capacity references in builder SQL, and is right to).
+        try:
+            from util.thin_content import contentless_slug_set
+            _contentless_slugs = contentless_slug_set(c)
+        except Exception as _cl_e:
+            try: conn.rollback()
+            except Exception: pass
+            _contentless_slugs = set()
+            logger.warning("sitemap: contentless set unavailable (%s) — "
+                           "noindexed facility URLs will be emitted", _cl_e)
 
         # Get unique country/state combos for location pages
         c.execute("""
@@ -33053,6 +33074,7 @@ def _build_sitemap_sections():
     _noncanon_skipped = 0
     _headline_junk_skipped = 0
     _ner_junk_skipped = 0
+    _contentless_skipped = 0
     try:
         from util.facility_name_sanity import (
             headline_reject_reason as _headline_reject_reason)
@@ -33224,6 +33246,15 @@ def _build_sitemap_sections():
             _ner_junk_skipped += 1
             continue
 
+        # r-noindex-coherence (2026-09-07): the page for this URL serves
+        # robots=noindex (no power, no coordinates, no address, no real city).
+        # Advertising it contradicts the page. EMISSION only — the slug is
+        # frozen and the page still serves 200, exactly as it does today, and
+        # it qualifies again the moment its record gains any one of the four.
+        if full_slug in _contentless_slugs:
+            _contentless_skipped += 1
+            continue
+
         # r-selfcanon (2026-08-01): this URL's page declares a DIFFERENT
         # canonical (resolved duplicate_of_id twin) — sitemap emits only
         # self-canonical URLs; the twin's own row carries this facility.
@@ -33264,7 +33295,8 @@ def _build_sitemap_sections():
         f"{_headline_junk_skipped} news-headline/NER-span names excluded; "
         f"{_ner_junk_skipped} published news-NER slugs excluded; "
         f"{_drain_fork_skipped} drained legacy twins excluded (r-drain-fork); "
-        f"{_noncanon_skipped} alternate-canonical slugs excluded)")
+        f"{_noncanon_skipped} alternate-canonical slugs excluded; "
+        f"{_contentless_skipped} noindexed contentless pages excluded)")
 
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
     # The geography hub (facilities_hub.py) that un-orphans the /facilities/<slug>

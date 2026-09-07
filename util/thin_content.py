@@ -105,6 +105,71 @@ def is_contentless(fac: dict) -> bool:
     return not any(evidence(fac).values())
 
 
+def contentless_slug_set(cursor) -> set:
+    """Frozen slugs whose page will serve robots=noindex on the LANE 3 verdict.
+
+    ★★★ r-noindex-coherence (2026-09-07). Measured against the live sitemap
+    (18,991 facility URLs, each resolved to the row that actually serves it —
+    discovered first then legacy, ORDER BY power_mw DESC, the page's own
+    resolution in _fetch_facility_by_slug):
+
+        770 published URLs serve robots=noindex
+        770 of 770 are is_contentless
+          0 are OSM-junk, NER or headline junk    <- those guards work
+        763 arrive through the UNGATED AI family
+          7 arrive in the GATED shard via the r-proven-exempt readmission
+
+    A sitemap entry says "index this" and the page says "do not". Lane 3
+    noindexes these on evidence, so the sitemap entry is the wrong half. The 7
+    are the sharper case: readmitting a GSC-proven page PAST the capacity gate
+    cannot achieve anything while the page still says noindex.
+
+    ★ THIS QUERY LIVES HERE, NOT IN main._build_sitemap_sections, and that is
+      not cosmetic. tests/test_sitemap_thin_gate::test_the_gate_is_emission_only
+      refuses any `power_mw` reference inside a builder query, because capacity
+      as the THIN GATE must reach SQL only through `_thin_excl` or the kill
+      switch and the collapse floor stop governing it. That guard is right, and
+      it fired on the first draft of this change. Capacity here is one of FOUR
+      evidence fields for a DIFFERENT policy, so the policy moves next to its
+      predicate — the shape util/facility_ner_noindex.refresh_suppressed_slugs
+      already established for the other noindexed class.
+    ★ Deliberately NOT governed by SITEMAP_THIN_GATE_DISABLE. That switch means
+      "publish thin pages", and the ungated AI family sets it — which is where
+      763 of the 770 come from. A coherence invariant is not a tuning knob.
+    ★ A slug carried by SEVERAL rows is kept whenever ANY of them has content:
+      the richest row serves the page, and that page is not noindexed.
+    ★ Returns an EMPTY set on failure or on an implausible result. The caller's
+      contract is "empty means emit everything", i.e. exactly today's sitemap.
+    """
+    # measured rate is ~4% of rows; a quarter of the corpus is ~6x that and
+    # means the evidence columns went missing, not that the corpus went empty
+    _REFUSE_ABOVE = 4
+    try:
+        cursor.execute(
+            "SELECT canonical_slug, city, address, latitude, longitude, "
+            "       power_mw "
+            "  FROM discovered_facilities "
+            " WHERE canonical_slug IS NOT NULL AND canonical_slug <> '' "
+            "   AND COALESCE(is_duplicate, 0) = 0 "
+            " UNION ALL "
+            "SELECT canonical_slug, city, address, latitude, longitude, "
+            "       power_mw "
+            "  FROM facilities "
+            " WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''")
+        rows = cursor.fetchall() or []
+    except Exception:
+        return set()
+    out, has_content = set(), set()
+    for r in rows:
+        fac = {"city": r[1], "address": r[2], "latitude": r[3],
+               "longitude": r[4], "power_mw": r[5]}
+        (out if is_contentless(fac) else has_content).add(r[0])
+    out -= has_content
+    if rows and len(out) > len(rows) // _REFUSE_ABOVE:
+        return set()
+    return out
+
+
 def context_block(fac: dict, dcpi) -> str:
     """LANE 2 (+ LANE 1 when armed). Facts, rendered — never prose.
 

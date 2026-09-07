@@ -131,6 +131,100 @@ def test_the_headline_treats_a_placeholder_city_as_absent():
     # and the real market label survives
     assert "california regional" in identity_key(
         "X", "Y", "California Regional", "CA", "US")[1]
+# ── r-noindex-coherence: the slug set the sitemap consumes ───────────────
+
+class _Cur:
+    """Cursor stub. `rows` is what the evidence query returns; `boom` makes it
+    raise, which is the failure path the caller's contract depends on."""
+
+    def __init__(self, rows, boom=False):
+        self.rows, self.boom, self.sql = rows, boom, None
+
+    def execute(self, sql, params=None):
+        self.sql = " ".join(str(sql).split())
+        if self.boom:
+            raise RuntimeError("column power_mw does not exist")
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+def _row(slug, city=None, addr=None, lat=None, lng=None, mw=None):
+    return (slug, city, addr, lat, lng, mw)
+
+
+def test_contentless_slug_set_selects_only_the_pages_that_noindex():
+    from util.thin_content import contentless_slug_set
+    rows = [_row("nothing-at-all-aaaaaaaa"),
+            _row("placeholder-city-bbbbbbbb", city="Regional"),
+            _row("has-a-city-cccccccc", city="Portland"),
+            _row("has-power-dddddddd", mw=12),
+            _row("has-coords-eeeeeeee", lat=1.5, lng=2.5),
+            _row("has-address-ffffffff", addr="1 Main St"),
+            _row("real-g-11111111", city="Oslo"),
+            _row("real-h-22222222", city="Lima")]
+    got = contentless_slug_set(_Cur(rows))
+    assert got == {"nothing-at-all-aaaaaaaa", "placeholder-city-bbbbbbbb"}, got
+
+
+def test_a_slug_is_kept_when_any_row_carrying_it_has_content():
+    """_fetch_facility_by_slug orders by power_mw DESC, so the richest row
+    serves the page — and that page is not noindexed. Dropping the URL because
+    a POORER row shares the slug would remove a real page."""
+    from util.thin_content import contentless_slug_set
+    rows = [_row("shared-aaaaaaaa"),                       # nothing
+            _row("shared-aaaaaaaa", city="Istanbul"),      # …but this one has a city
+            _row("lonely-bbbbbbbb"),
+            _row("r1-cccccccc", city="A"), _row("r2-dddddddd", city="B"),
+            _row("r3-eeeeeeee", city="C"), _row("r4-ffffffff", city="D"),
+            _row("r5-99999999", city="E")]
+    got = contentless_slug_set(_Cur(rows))
+    assert "shared-aaaaaaaa" not in got, got
+    assert "lonely-bbbbbbbb" in got, got
+
+
+def test_an_implausible_result_is_refused_rather_than_applied():
+    """The blast-radius cap. If the evidence columns go missing every row reads
+    as contentless, and applying that would empty the sitemap. Measured rate is
+    ~4% of rows."""
+    from util.thin_content import contentless_slug_set
+    rows = [_row(f"slug-{i:08d}") for i in range(20)]      # 100% contentless
+    assert contentless_slug_set(_Cur(rows)) == set()
+    # just UNDER the cap, the same machinery still returns a set — so the test
+    # above fails for the cap and not because the function never returns one
+    ok = [_row("dead-aaaaaaaa")] + [_row(f"live-{i:08d}", city="X")
+                                    for i in range(19)]
+    assert contentless_slug_set(_Cur(ok)) == {"dead-aaaaaaaa"}
+
+
+def test_a_failed_query_yields_an_empty_set_not_an_exception():
+    """The caller pre-binds an empty set and treats it as 'emit everything'.
+    Raising here would take the whole sitemap build with it."""
+    from util.thin_content import contentless_slug_set
+    assert contentless_slug_set(_Cur([], boom=True)) == set()
+
+
+def test_the_set_query_reads_both_facility_tables():
+    """The page resolves discovered first, then legacy. A set built from one
+    table would miss every URL the other one serves.
+
+    ★ A STRUCTURAL pin, and it is written as a SHAPE rather than as three
+      substring tests, because those are vacuous here: neutering the second arm
+      with `UNION ALL SELECT NULL … WHERE false --` leaves every one of
+      "union all", "from discovered_facilities" and "from facilities" present
+      in the string, and the mutation survived. Exactly two SELECTs, one per
+      table, and no comment marker to hide a third behind.
+    """
+    from util.thin_content import contentless_slug_set
+    cur = _Cur([_row("x-aaaaaaaa", city="A")])
+    contentless_slug_set(cur)
+    q = cur.sql.lower()
+    assert q.count("select") == 2, f"expected exactly 2 SELECT arms: {cur.sql}"
+    assert q.count("from discovered_facilities") == 1, cur.sql
+    assert q.count("from facilities") == 1, cur.sql
+    assert q.count("union all") == 1, cur.sql
+    assert "--" not in q, f"SQL comment in a built query hides an arm: {cur.sql}"
+    assert "where false" not in q, cur.sql
 
 
 def test_placeholder_city_is_not_a_real_city():
