@@ -1640,6 +1640,17 @@ def _drained_twin_url(legacy_id):
             return None
         try:
             with conn.cursor() as cur:
+                # ★ r-junk-keeper (2026-09-07): a junk-slug keeper is REFUSED.
+                # Measured: 63 legacy pages canonicalised onto an 'unknown-%'
+                # keeper, and NONE of those 63 keepers is in the sitemap while
+                # 60 of the 63 alternates are — so this was pointing a
+                # PUBLISHED page at an UNADVERTISED slug, the "canonical lands
+                # on a URL the sitemap dropped" hazard running in reverse.
+                # ★ Refusing, not re-electing: 0 of the 63 have a non-junk
+                #   candidate, so a preference rule would find nothing to
+                #   prefer. None -> the page stays self-canonical, which is the
+                #   correct answer when there is no better target.
+                from routes.facility_dedup_v4 import junk_slug_sql
                 cur.execute(
                     "SELECT d.canonical_slug FROM discovered_facilities d "
                     " WHERE d.merged_facility_id = %s "
@@ -1647,6 +1658,7 @@ def _drained_twin_url(legacy_id):
                     "   AND d.duplicate_of_id IS NULL "
                     "   AND d.canonical_slug IS NOT NULL "
                     "   AND d.canonical_slug <> '' "
+                    "   AND " + junk_slug_sql("d.canonical_slug") + " "
                     " ORDER BY d.id ASC "
                     " LIMIT 1",
                     (str(legacy_id),))

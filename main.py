@@ -32111,6 +32111,11 @@ def _build_sitemap_sections():
         #   "this URL is redundant".
         # ★ Fail-open like _dupe_slugs / _noncanon_slugs: no map → the old,
         #   bigger sitemap, never a broken one.
+        # ★ r-junk-keeper (2026-09-07): the SAME predicate
+        #   facility_profile_page._drained_twin_url applies, from the SAME
+        #   function — a sitemap and a canonical that disagree about what a junk
+        #   slug is put the canonical on a URL the sitemap never advertised.
+        from routes.facility_dedup_v4 import junk_slug_sql as _junk_slug_sql
         _drained_keeper = {}
         try:
             c.execute(
@@ -32123,6 +32128,7 @@ def _build_sitemap_sections():
                 "   AND d.canonical_slug IS NOT NULL AND d.canonical_slug <> '' "
                 "   AND f.canonical_slug IS NOT NULL AND f.canonical_slug <> '' "
                 "   AND d.canonical_slug <> f.canonical_slug "
+                "   AND " + _junk_slug_sql("d.canonical_slug") + " "
                 "   AND NOT EXISTS (SELECT 1 FROM discovered_facilities s "
                 "                   WHERE COALESCE(s.is_duplicate, 0) = 0 "
                 "                     AND s.canonical_slug = f.canonical_slug) "

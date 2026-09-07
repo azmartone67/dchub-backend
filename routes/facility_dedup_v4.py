@@ -235,6 +235,26 @@ def _conn_diag(c):
         return {"error": str(e)[:120]}
 
 
+# ★★ THE SQL TWIN OF is_junk_slug — ONE spelling, imported by both readers.
+#
+# routes/facility_profile_page._drained_twin_url picks the keeper a legacy page
+# canonicalises to; main._build_sitemap_sections picks the keeper that decides
+# whether the legacy URL is dropped. They already have to agree about ORDER BY;
+# they have to agree about THIS too, because a canonical and a sitemap that
+# disagree about what a junk slug is put the canonical on a URL the sitemap
+# never advertised. Filtering in the SQL (not on the fetched row) matters: the
+# ORDER BY ... LIMIT 1 must choose among ELIGIBLE candidates, not filter after.
+#
+# ★ NO `%` ANYWHERE, deliberately. `LIKE 'unknown-%'` cannot serve both callers:
+#   _drained_twin_url executes WITH params so psycopg2 runs %-substitution and
+#   the literal would have to be '%%', while main's query executes with NO
+#   params, where '%%' stays two characters. A regex has no such split.
+def junk_slug_sql(col: str) -> str:
+    """`col` is not a junk slug — the SQL form of is_junk_slug()."""
+    return (f"{col} !~ '^unknown-' "
+            f"AND {col} !~ '(^|-)data-center-[0-9]{{6,}}(-|$)'")
+
+
 def _column_exists(cur, table, col) -> bool:
     cur.execute("SELECT 1 FROM information_schema.columns "
                 " WHERE table_name = %s AND column_name = %s", (table, col))
