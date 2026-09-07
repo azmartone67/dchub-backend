@@ -165,7 +165,32 @@ def pinned_canon(monkeypatch):
 # refused. `facilities` (the raw pile) is carried over from the 08-23 reading
 # unmeasured: the gate reads it only for claims explicitly qualified as source
 # records, and neither of these surfaces makes one.
-CANON_ERA_DISTINCT, CANON_ERA_DEALS = 20198, 2069
+# ★2026-09-07 — CANON_ERA_DEALS re-measured 2,069 -> 2,118, and the measurement
+# is what makes the walk legal. The pin moved to "2,100+" the same day; an
+# earlier attempt used /api/v1/stats deals as the ceiling and was REVERTED,
+# because that field reads canonical_stats via _canon (main.py:22841) — the same
+# source ai_surface_canon publishes, which is exactly the self-certification the
+# note above forbids.
+#
+# THE INDEPENDENT MEASUREMENT: /transactions publishes 2,118 from its OWN dedup
+# query in routes/transactions_browser.py — SELECT COUNT(*) FROM (SELECT DISTINCT
+# <AUTO-suffix | content-tuple> FROM deals WHERE deals_ok()) — a different module
+# and a separate query, not derived from ai_surface_canon. Its failure path sets
+# total = 0 rather than falling back to COUNT(*) ("visibly wrong rather than
+# plausibly wrong"), so a non-zero reading is a real computed dedup.
+#
+# Cross-checked against the UPPER bound so the direction cannot be wrong:
+# /api/v1/transactions total_tracked = 2,408 = rows WHERE DEALS_OK, explicitly
+# NOT deduped ("treat this as an upper bound"). distinct 2,118 < rows 2,408, as
+# it must be. Floor rounds DOWN to the nearest 100: 2,100 <= 2,118.
+#
+#   curl -s "https://dchub.cloud/transactions" | grep -oE "— [0-9,]+ deals tracked"
+#
+# ★ CANON_ERA_DISTINCT is deliberately NOT moved with it. The facilities ceiling
+# that actually gates this test is check_facility_count_claims', which the
+# 20,700+ walk already clears; these are per-metric measured literals, so moving
+# only the one that was re-measured keeps each honest about its own basis.
+CANON_ERA_DISTINCT, CANON_ERA_DEALS = 20198, 2118
 CANON_ERA = dict(LIVE, facilities_verified=CANON_ERA_DISTINCT,
                  deals=CANON_ERA_DEALS)
 

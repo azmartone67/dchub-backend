@@ -149,6 +149,10 @@ def test_every_surface_states_the_facility_floor_the_same_way():
 def test_canon_values_are_what_this_guard_thinks_they_are():
     """If PINNED moves, this file must be re-read rather than silently pinning
     a stale expectation — the failure mode it was written to catch."""
+    # ★2026-09-07 (later): deals 2,000+ -> 2,100+ as well, once the ceiling that
+    # governs it was RE-MEASURED independently (2,069 -> 2,118 via /transactions'
+    # own dedup query). The earlier same-day note below said deals was NOT walked;
+    # that held only until the measurement existed.
     # ★2026-09-07: facilities 20,100+ -> 20,700+, following PINNED['public'] onto
     # the live resolver (/api/v1/canon/phrases facilities = "20,700+" source=
     # resolve_canon live, /api/v1/stats = 20,840). CANON_DEALS is UNCHANGED at
@@ -172,7 +176,7 @@ def test_canon_values_are_what_this_guard_thinks_they_are():
     assert CANON_FACILITIES == "20,700+", (
         f"PINNED facilities moved to {CANON_FACILITIES}. Update the surfaces "
         f"in SURFACES and the RETIRED_* lists, then this assertion.")
-    assert CANON_DEALS == "2,000+", (
+    assert CANON_DEALS == "2,100+", (
         f"PINNED deals moved to {CANON_DEALS}. Same drill.")
 
 
