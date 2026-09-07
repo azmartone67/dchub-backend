@@ -233,8 +233,19 @@ def test_placeholder_city_is_not_a_real_city():
 
 
 def test_real_regional_market_labels_survive():
-    """136 rows each — equality, never substring."""
-    for c in ("California Regional", "Connecticut Regional"):
+    """1,149 rows across 74 distinct labels — equality, never substring.
+
+    ★ Re-measured 2026-09-07. The 08-14 note said "136 rows each" for the
+      California/Connecticut pair; the population is ~4x that and 37x as many
+      distinct values, so a substring predicate would cost 1,149 real pages
+      their city, not 272. The spread below is the top of that distribution —
+      pinning two labels could not distinguish "equality" from "these two are
+      special-cased".
+    """
+    for c in ("California Regional", "Connecticut Regional",
+              "New York Regional", "Florida Regional", "Ohio Regional",
+              "Texas Regional", "West Virginia Regional",
+              "Illinois Regional", "Arizona Regional"):
         assert real_city({"city": c}) == c, (
             f"{c!r} was swallowed by the placeholder test — a substring match "
             "on 'regional' silently strips 272 REAL pages")

@@ -653,13 +653,15 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
     if not (city or state):
         return ""
     # 'Regional' is a PLACEHOLDER this dataset uses when the real city is
-    # unknown — 314 rows across 30 countries carry it. Same-country matching
+    # unknown — re-measured 2026-09-07, 727 live rows across 35 countries, all
+    # from one upstream ('competitor_gap:cloudscene'). Same-country matching
     # (below) already stops it linking across continents, but two facilities
     # being jointly unlocated is not a reason to call them neighbours, so the
     # city branch does not fire on it. state still can, which is the honest
-    # weaker signal. Measured 2026-08-14; 'California Regional' and
-    # 'Connecticut Regional' (136 rows each) are REAL market labels, not this
-    # placeholder, and are deliberately not matched here.
+    # weaker signal. '<X> Regional' — 1,149 rows across 74 distinct labels,
+    # not just the California/Connecticut pair the 08-14 note named — are REAL
+    # market labels, not this placeholder, and are deliberately not matched
+    # here: the predicate is equality, never substring.
     if _placeholder_city(city):
         city = ""
         if not state:
