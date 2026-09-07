@@ -14,6 +14,7 @@ from routes.find_sites import (
     bbox_for,
     bbox_of_points,
     build_coverage,
+    build_layer_status,
     clean_kv,
     clean_operator,
     cluster_anchors,
@@ -281,3 +282,52 @@ def test_candidate_hands_off_to_the_scoring_tools():
     out = assemble_candidates([_anchor("A")], [], [], {})
     joined = " ".join(out[0]["next_calls"])
     assert "analyze_site" in joined and "get_fiber_readiness" in joined
+
+
+# ── layer status: the hole constraint_coverage left ─────────────────────────
+def test_layer_status_reports_a_healthy_layer_with_its_row_count():
+    st = build_layer_status({"max_gas_km": True}, {}, {"gas": 42},
+                            {"gas": True, "fiber": False, "moratorium": False})
+    assert st["gas"]["answered"] is True
+    assert st["gas"]["rows_in_region"] == 42
+    assert st["gas"]["table"] == "gas_pipelines"
+    assert "reason" not in st["gas"]
+
+
+def test_layer_status_distinguishes_read_but_empty_from_failed():
+    read_empty = build_layer_status({"max_gas_km": True}, {}, {"gas": 0},
+                                    {"gas": True})["gas"]
+    failed = build_layer_status(
+        {"max_gas_km": False},
+        {"max_gas_km": ('column "latitude" does not exist', "call get_infrastructure")},
+        {"gas": 0}, {"gas": True})["gas"]
+    # Both would show gas_distance_km: null on every candidate. `answered` is
+    # the only thing that tells them apart.
+    assert read_empty["answered"] is True and read_empty["rows_in_region"] == 0
+    assert failed["answered"] is False
+    assert "latitude" in failed["reason"]
+    assert failed["instead"]
+    assert failed["rows_in_region"] is None
+
+
+def test_layer_status_marks_an_unqueried_layer_as_neither_ok_nor_broken():
+    st = build_layer_status({}, {}, {}, {"gas": True, "moratorium": False})
+    assert st["moratorium"]["answered"] is None
+    assert "not queried" in st["moratorium"]["note"]
+
+
+def test_a_broken_layer_is_visible_even_when_no_constraint_asked_for_it():
+    # ★ THE REGRESSION. find_sites shipped querying discovered_pipelines for a
+    # `latitude` column that does not exist. With no max_gas_km the failure was
+    # invisible: constraint_coverage reports only REQUESTED arguments, so every
+    # candidate carried gas_distance_km: null and nothing said why. It surfaced
+    # only when a caller happened to pass max_gas_km and read the coverage
+    # block. layer_status must show it with an empty request.
+    coverage, unapplied = build_coverage({}, {"max_gas_km": False}, {})
+    assert coverage == {} and unapplied == []          # coverage stays silent
+    st = build_layer_status(
+        {"max_gas_km": False},
+        {"max_gas_km": ("gas layer (gas_pipelines) did not answer: boom", None)},
+        {"gas": 0}, {"gas": True})
+    assert st["gas"]["answered"] is False              # layer_status does not
+    assert "did not answer" in st["gas"]["reason"]
