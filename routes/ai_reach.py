@@ -203,8 +203,14 @@ def _attach_canonical_7d(cur, out):
 # the observed MIN(created_at) and says so, rather than implying since-launch.
 try:
     from ai_platform_canon import canonical_platform
+    from ai_platform_canon import client_class as _client_class
 except Exception:  # pragma: no cover - canon must never break reach
     canonical_platform = None
+    # ★ Fail to the honest answer, not to a comfortable one. If the canon
+    # cannot be imported, every id is UNCLASSIFIED — never silently "tooling",
+    # which is the reading that makes a real caller disappear.
+    def _client_class(_p):
+        return "unknown"
 
 _SUPPORTED_PERIODS = ("7d", "30d", "all")
 _wcache: dict = {}          # period -> {"ts": float, "data": dict}
@@ -231,6 +237,8 @@ def _stamp_vendor(rows):
     be visible rather than merely absent.
     """
     unrec_ids = 0
+    _by_class_ids: dict = {}
+    _by_class_reqs: dict = {}
     unrec_reqs = 0
     for r in rows:
         if not isinstance(r, dict):
@@ -242,23 +250,53 @@ def _stamp_vendor(rows):
             except Exception:
                 vendor = None
         r["canonical_vendor"] = vendor
+        # ★ Per-row so a reader can re-derive the rollup below instead of
+        # trusting it — same reason canonical_vendor is stamped per row.
+        try:
+            r["client_class"] = _client_class(r.get("platform_id"))
+        except Exception:
+            r["client_class"] = "unknown"
         if vendor is None:
             unrec_ids += 1
             try:
-                unrec_reqs += int(r.get("requests") or 0)
+                n = int(r.get("requests") or 0)
             except Exception:
-                pass
+                n = 0
+            unrec_reqs += n
+            cls = r.get("client_class") or "unknown"
+            _by_class_ids[cls] = _by_class_ids.get(cls, 0) + 1
+            _by_class_reqs[cls] = _by_class_reqs.get(cls, 0) + n
     return {
         "unrecognised_client_ids": unrec_ids,
         "unrecognised_requests": unrec_reqs,
+        "unrecognised_by_class_ids": _by_class_ids,
+        "unrecognised_by_class_requests": _by_class_reqs,
+        "unrecognised_by_class_basis": (
+            "The unrecognised bucket, split by ai_platform_canon.client_class. "
+            "It was one undifferentiated number and that number was 60% of the "
+            "window (345 of 577 requests, 2026-09-07) — a reader could not tell "
+            "hidden adoption from expected tooling, and those imply opposite "
+            "next moves. ★ CLASS IS NAME-BASED AND THEREFORE A HINT: a client "
+            "id is self-declared. Measured over 30d on 2026-09-07, "
+            "`connectors-manager` reads like plumbing and BEHAVES like an agent "
+            "doing work (execute_plan 15, why_dchub 13, then "
+            "site_selection_canvas / rank_markets / analyze_site), while "
+            "`chain-hire` called ONE tool 1,473 times and "
+            "`actionist-apps-verification` swept ~15 tools at 5-15 calls each. "
+            "So `unknown` means UNCLASSIFIED, never 'tooling' — reading it as "
+            "tooling is how a real caller stops being counted. It is the bucket "
+            "to investigate. ★ None of these ids are vendors and none appear in "
+            "the platforms headline: class and vendor are separate questions, "
+            "and _VENDOR_ALIASES is deliberately untouched."),
         "unrecognised_basis": (
             "client ids that collapse to no known vendor under "
             "ai_platform_canon.canonical_platform — MCP tooling, verifiers, "
             "registry simulators and generic clients. Recognition is an "
-            "allowlist, so this is the expected home for non-assistant "
-            "traffic; it is published so the gap between "
-            "per_platform_client_ids and distinct_platforms is readable "
-            "without source access."),
+            "allowlist, so this is where non-assistant traffic lands; it is "
+            "published so the gap between per_platform_client_ids and "
+            "distinct_platforms is readable without source access. See "
+            "unrecognised_by_class_* for what it is actually made of — the "
+            "bare count cannot distinguish a harness from an agent."),
     }
 
 def _window_reach(period: str):
