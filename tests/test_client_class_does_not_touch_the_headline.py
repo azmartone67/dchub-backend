@@ -67,16 +67,27 @@ def test_verifier_ids_are_recognised_as_probes():
         assert canon.client_class(pid) == canon.CLASS_VERIFIER
 
 
-def test_reach_publishes_the_split_and_it_reconciles():
-    """The rollup must be DERIVED from the same rows it is published beside,
-    so a reader can re-add it from per_platform and get the same answer."""
+def test_reach_computes_the_split_per_row():
+    """★ NAMED FOR WHAT IT ACTUALLY CHECKS.
+
+    This was called ...publishes_the_split_and_it_reconciles and asserted the
+    key NAMES appear in routes/ai_reach.py. They did — inside _stamp_vendor's
+    return statement — while both call sites copied keys by name and dropped
+    the new ones. The endpoint shipped without them for ~40 minutes and this
+    test stayed green, because presence in a file is not publication.
+
+    Whether the keys reach the payload is now
+    tests/test_stamp_vendor_keys_reach_the_payload.py, which compares the
+    returned key set to the copied key set per call site via AST. This one
+    keeps the narrower claim it can actually support: the split is computed
+    per row, so it is re-derivable rather than asserted.
+    """
     src = (ROOT / "routes" / "ai_reach.py").read_text(encoding="utf-8")
-    for key in ("unrecognised_by_class_ids", "unrecognised_by_class_requests",
-                "unrecognised_by_class_basis"):
-        assert '"%s"' % key in src, "reach does not publish %s" % key
     assert 'r["client_class"] = _client_class(' in src, (
         "client_class is not stamped per row, so the rollup cannot be "
         "re-derived from the payload it ships in")
+    assert '"unrecognised_by_class_requests": _by_class_reqs' in src, (
+        "the request rollup is not accumulated alongside the id rollup")
 
 
 def test_the_canon_import_fallback_fails_to_unknown():
