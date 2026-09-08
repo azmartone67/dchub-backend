@@ -1311,6 +1311,29 @@ def _upsert_transmission(cur, batch):
 # CRAWLER 4: GAS PIPELINES (EIA Natural Gas API)
 # ─────────────────────────────────────────────────────────────
 
+def crawl_gas_pipelines_geodot(get_db, full_refresh=False):
+    """Run the geodot gas ingest — the producer that actually maintains
+    gas_pipelines (32,851 of its 33,771 rows).
+
+    It lives behind an admin-gated Flask route rather than in this module, so
+    this calls it through the same loopback the other master shells use. The
+    runner exists so the source is REACHABLE, not only observed: a board that
+    watches a job it cannot invoke cannot re-run it after a failure either.
+    """
+    import os as _os
+    import requests as _rq
+    base = (f"http://127.0.0.1:{_os.environ.get('PORT', '8080')}"
+            if (_os.environ.get("RAILWAY_ENVIRONMENT")
+                or _os.environ.get("RAILWAY_PROJECT_ID"))
+            else _os.environ.get("DCHUB_BACKEND_BASE",
+                                 "https://dchub-backend-production.up.railway.app"))
+    key = _os.environ.get("DCHUB_ADMIN_KEY") or _os.environ.get("DCHUB_INTERNAL_KEY")
+    r = _rq.post(f"{base}/api/v1/admin/ingest/gas-pipelines",
+                 headers={"X-Admin-Key": key or ""}, timeout=180)
+    r.raise_for_status()
+    return r.json()
+
+
 def crawl_gas_pipelines(get_db, full_refresh=False):
     """
     Fetch gas pipeline operator/state data from EIA API v2.
@@ -1839,6 +1862,13 @@ def register_land_power_routes(app, get_db, require_admin):
             'hifld-substations': crawl_substations,
             'hifld-transmission': crawl_transmission_lines,
             'eia-ng-pipelines': crawl_gas_pipelines,
+            # ★ 2026-09-07 — the LIVE gas producer must be runnable, not just
+            #   watched. test_every_monitored_source_is_runnable enforces
+            #   `_EXPECTED subset of _RUNNERS`: "no source may be watched by
+            #   /status but unreachable by the job". Adding the geodot feed to
+            #   _EXPECTED without a runner would have made the board monitor
+            #   something this job cannot invoke or re-run.
+            'eia-geodot-pipelines': crawl_gas_pipelines_geodot,
         }
         source = (request.args.get('source') or '').strip()
         if source:
@@ -1970,8 +2000,25 @@ def register_land_power_routes(app, get_db, require_admin):
             # Sources this crawler is SUPPOSED to run. A source that has never
             # logged at all must appear as never_run, not be absent — an absent
             # row is indistinguishable from a healthy one.
-            _EXPECTED = ('eia-860-plants', 'hifld-substations',
-                         'hifld-transmission', 'eia-ng-pipelines')
+            # ★ 2026-09-07 — LIVE PRODUCERS ONLY. This tuple used to name
+            #   'hifld-substations' and 'eia-ng-pipelines', and BOTH were
+            #   superseded producers that no longer run:
+            #     · hifld-substations — the crawler refuses before it fetches
+            #       (SUBSTATION_WRITES_BLOCKED) and every run it ever logged was
+            #       fetched=0 errors=1; the table is maintained by
+            #       hifld_substation_loader.py instead. verdict: never_succeeded.
+            #     · eia-ng-pipelines — a 365-row slice frozen at 2026-03-30;
+            #       gas_pipelines is really fed by the geodot ingest (32,851 of
+            #       33,771 rows). verdict: stale 161 days.
+            #   So the board published `degraded` about two retired jobs while
+            #   BOTH live producers ran unmonitored — if either had died the
+            #   board would have shown the same degraded it already showed.
+            #   A monitor aimed at a retired producer is worse than none: it
+            #   looks like coverage. The bulk-loaded layers are covered by the
+            #   `layers` block below instead, which is the right instrument for
+            #   a producer that is not a cron.
+            _EXPECTED = ('eia-860-plants', 'hifld-transmission',
+                         'eia-geodot-pipelines')
             _STALE_AFTER_DAYS = 7
 
             import datetime as _dt
@@ -2020,12 +2067,65 @@ def register_land_power_routes(app, get_db, require_admin):
                 cur.execute(f"SELECT COUNT(*) FROM {table}")
                 counts[table] = cur.fetchone()[0]
 
+            # ── per-layer freshness, for layers whose producer is a BULK load
+            # ★ MAX(updated_at) IS THE WRONG QUESTION HERE. substations shows
+            #   `today` because 24 rows were touched this month — while the last
+            #   real refresh moved 74,927 rows in August. A single touched row
+            #   makes a frozen layer read fresh, which is the same weakest-link
+            #   mask that hid the ENTSO-E and media outages. So ask when a
+            #   MATERIAL refresh last landed: the newest day on which at least
+            #   `floor` rows changed, floor = 1% of the table (min 100).
+            # ★ RESOLVE THE TIMESTAMP COLUMN, DO NOT ASSUME IT. These tables
+            #   disagree: substations/gas_pipelines have `updated_at`,
+            #   power_plants has `last_updated`. Hardcoding `updated_at` made
+            #   power_plants raise into the except below and publish
+            #   {"error": ...} — a layer reporting an error reads as "watched"
+            #   and is not. Report WHICH column answered, so a schema rename
+            #   shows up as ts_column changing rather than as silence.
+            layers = {}
+            _TS_CANDIDATES = ('updated_at', 'last_updated', 'ingested_at',
+                              'created_at')
+            for table in ('substations', 'power_plants', 'gas_pipelines'):
+                try:
+                    cur.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = %s AND column_name = ANY(%s)",
+                        (table, list(_TS_CANDIDATES)))
+                    present = {r[0] for r in (cur.fetchall() or [])}
+                    col = next((c for c in _TS_CANDIDATES if c in present), None)
+                    if col is None:
+                        layers[table] = {
+                            "rows": counts.get(table),
+                            "error": ("no timestamp column found among "
+                                      + ", ".join(_TS_CANDIDATES))}
+                        continue
+                    total = counts.get(table) or 0
+                    floor = max(100, int(total * 0.01))
+                    cur.execute(
+                        f"SELECT max(d) FROM (SELECT {col}::date AS d, COUNT(*) c "
+                        f"FROM {table} GROUP BY 1) t WHERE c >= %s", (floor,))
+                    last_bulk = (cur.fetchone() or [None])[0]
+                    layers[table] = {
+                        "rows": total,
+                        "last_bulk_refresh": str(last_bulk) if last_bulk else None,
+                        "bulk_age_days": (
+                            (_now.date() - last_bulk).days if last_bulk else None),
+                        "bulk_floor_rows": floor,
+                        "ts_column": col,
+                        "basis": ("newest day on which >= bulk_floor_rows rows "
+                                  "changed — NOT max(updated_at), which one "
+                                  "touched row makes look fresh"),
+                    }
+                except Exception as _le:  # noqa: BLE001
+                    layers[table] = {"error": str(_le)[:160]}
+
             _bad = [x["source"] for x in syncs if x["verdict"] != "ok"]
             overall = "healthy" if not _bad else (
                 "red" if len(_bad) == len(_EXPECTED) else "degraded")
             return jsonify({
                 "status": overall,
                 "unhealthy_sources": _bad,
+                "layers": layers,
                 "stale_after_days": _STALE_AFTER_DAYS,
                 "status_basis": (
                     "computed from the age of each source's last SUCCESSFUL run "

@@ -153,7 +153,7 @@ def test_log_sync_scrubs_url_secret_param_before_insert():
     exec(code, ns)
     key, url = _leaky_url()
     cur = _Cursor([], [])
-    ns["_log_sync"](lambda: _Conn(cur), "eia-ng-pipelines", 0, 0, 0, 1,
+    ns["_log_sync"](lambda: _Conn(cur), "eia-geodot-pipelines", 0, 0, 0, 1,
                     f"Fatal: 400 Client Error: Bad Request for url: {url}",
                     6.8)
     assert len(cur.inserted) == 1
@@ -175,7 +175,7 @@ def test_log_sync_scrubs_bare_env_value_not_just_urls(monkeypatch):
           "logger": logging.getLogger("t")}
     exec(code, ns)
     cur = _Cursor([], [])
-    ns["_log_sync"](lambda: _Conn(cur), "eia-ng-pipelines", 0, 0, 0, 1,
+    ns["_log_sync"](lambda: _Conn(cur), "eia-geodot-pipelines", 0, 0, 0, 1,
                     f"InvalidURL: nonnumeric port: '{secret}@api.eia.gov'",
                     1.0)
     assert secret not in cur.inserted[0][5]
@@ -187,8 +187,8 @@ def test_log_sync_scrubs_bare_env_value_not_just_urls(monkeypatch):
 def _run_status_route(raw_error_detail):
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
-    last_run = [("eia-ng-pipelines", 0, 0, 1, 6.8, now, raw_error_detail)]
-    last_ok = [("eia-ng-pipelines", now, 365)]
+    last_run = [("eia-geodot-pipelines", 0, 0, 1, 6.8, now, raw_error_detail)]
+    last_ok = [("eia-geodot-pipelines", now, 365)]
     cur = _Cursor(last_run, last_ok)
     code = _extract_fn("land_power_status")
     ns = {"get_db": lambda: _Conn(cur), "jsonify": lambda payload: payload,
@@ -197,7 +197,7 @@ def _run_status_route(raw_error_detail):
     resp = ns["land_power_status"]()
     assert not isinstance(resp, tuple), f"route 500'd: {resp}"
     return next(s for s in resp["latest_syncs"]
-                if s["source"] == "eia-ng-pipelines")
+                if s["source"] == "eia-geodot-pipelines")
 
 
 def test_status_route_scrubs_raw_persisted_rows():

@@ -269,7 +269,13 @@ def test_skipped_counts_dropped_records_not_the_units_fold():
 def test_status_is_computed_and_can_say_red():
     _, src = _tree()
     i = src.index("def land_power_status")
-    body = src[i:i + 6000]
+    # ★ 2026-09-07 — was `src[i:i + 6000]`, a FIXED BYTE SLICE. It measured
+    #   LENGTH, not content: adding the per-layer freshness block pushed
+    #   `status_basis` past 6000 chars and this failed with "no basis
+    #   published" while the basis was still very much published. Bind to the
+    #   end of the function instead, so the window tracks the code.
+    _end = src.find("\ndef ", i)
+    body = src[i:_end if _end != -1 else len(src)]
     assert '"status": "healthy",' not in body, (
         "status is still the hardcoded literal 'healthy' — it reported healthy "
         "through a four-month total outage")
@@ -286,7 +292,13 @@ def test_status_is_computed_and_can_say_red():
 def test_a_source_that_never_ran_is_reported_not_omitted():
     _, src = _tree()
     i = src.index("def land_power_status")
-    body = src[i:i + 6000]
+    # ★ 2026-09-07 — was `src[i:i + 6000]`, a FIXED BYTE SLICE. It measured
+    #   LENGTH, not content: adding the per-layer freshness block pushed
+    #   `status_basis` past 6000 chars and this failed with "no basis
+    #   published" while the basis was still very much published. Bind to the
+    #   end of the function instead, so the window tracks the code.
+    _end = src.find("\ndef ", i)
+    body = src[i:_end if _end != -1 else len(src)]
     assert "_EXPECTED" in body, (
         "status iterates only over rows that EXIST in the log — a source that "
         "never ran is then absent, which is indistinguishable from healthy")
