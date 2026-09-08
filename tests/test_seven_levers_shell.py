@@ -458,7 +458,23 @@ def test_repo_worker_is_canon_clean_and_current():
     # Verify with (want 4.9.62-og-card-body-not-spent):
     #   curl -sI "https://dchub.cloud/grid/ERCOT?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.62-og-card-body-not-spent'" in src
+    #
+    # 4.9.62 -> 4.9.63-header-version-single-source (2026-09-08): the file's own
+    # TITLE line said "v4.9.55" while this const said 4.9.62 — the SECOND
+    # recurrence of a drift that line's comment already documented ("read v4.9.30
+    # for EIGHTEEN edits") and asked a human to prevent by hand. A rule with
+    # nothing enforcing it is a wish, so the version was REMOVED from the title
+    # rather than re-synced: one place a version can be wrong instead of two.
+    # Fenced by tests/test_worker_header_version_not_a_second_source.py, which
+    # permits a version there only if it MATCHES this const (mutation-checked
+    # three ways: stale -> fails, correct -> passes, extraction broken -> fails).
+    # Comment-only change to worker.js; the bump exists because
+    # scripts/check_worker_version_bump.sh requires one for ANY edit.
+    # ✓ PASTED AND VERIFIED LIVE 2026-09-08 — see the note in PR #4253.
+    # Verify with (want 4.9.63-header-version-single-source):
+    #   curl -sI "https://dchub.cloud/grid/ERCOT?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.63-header-version-single-source'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
