@@ -112,6 +112,84 @@ def _sitemap_xml(n):
             + locs + "</urlset>")
 
 
+# ── r-placeholder-city-ingest (2026-09-07) ──────────────────────────
+#
+# Cloudscene buckets every facility it has no city for under a literal
+# `/regional/` segment, per country. The slug parser deslugged that into the
+# CITY "Regional" and wrote it as a place: 839 live rows, 35 countries, 839 of
+# 839 with `regional` as the URL segment. Every URL below is a LIVE one.
+
+_CLOUDSCENE_NO_CITY = (
+    "https://cloudscene.com/data-center/united-kingdom/regional/"
+    "custodian-data-centres-custodian-data-centre",
+    "https://cloudscene.com/data-center/mexico/regional/hostdime-com-guadalajara",
+    "https://cloudscene.com/data-center/india/regional/sify-sify-rabale-mumbai-dc-1-2",
+)
+# Cloudscene's REAL state-level labels use their own segment — 1,149 rows
+# across 74 of them. Equality, never substring, is what keeps these.
+_CLOUDSCENE_REAL = (
+    ("https://cloudscene.com/data-center/united-states-of-america/"
+     "connecticut-regional/tierpoint-waterbury", "Connecticut Regional", None),
+    ("https://cloudscene.com/data-center/united-states-of-america/"
+     "columbus-oh/cologix-col1", "Columbus", "OH"),
+    ("https://cloudscene.com/data-center/japan/tokyo/"
+     "ntt-communications-tokyo-no-6-data-center", "Tokyo", None),
+)
+
+
+def _parse_locs(urls):
+    import importlib
+    cg = importlib.import_module("routes.competitor_gap_crawler")
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+           + "".join(f"<url><loc>{u}</loc></url>" for u in urls) + "</urlset>")
+    return cg.parse_competitor_sitemap(
+        "cloudscene", "https://cloudscene.com/sitemap.xml",
+        limit=50, _prefetched_text=xml)["parsed"]
+
+
+def test_the_upstreams_no_city_bucket_is_written_as_null():
+    """THE DEFECT, at the writer. tests/test_no_fabricated_facility_fields.py
+    already states the rule: if the upstream did not say it, we publish NULL.
+    It was enforced on country/status/power_mw and never on city."""
+    rows = _parse_locs(_CLOUDSCENE_NO_CITY)
+    assert len(rows) == len(_CLOUDSCENE_NO_CITY), rows
+    for r in rows:
+        assert r["city"] is None, r
+    # FLOOR: the row is still INGESTED, with its country — nulling the city
+    # must not drop a real facility, and the country is what keeps it
+    # geocodable (_is_geocodable takes city OR state OR country).
+    assert [r["country"] for r in rows] == ["GB", "MX", "IN"], rows
+    assert all(r["name"] for r in rows), rows
+
+
+def test_a_real_city_or_state_label_is_untouched():
+    """The other half. 'Connecticut Regional' is one of 1,149 rows across 74
+    real '<X> Regional' labels; a substring predicate would null every one."""
+    rows = _parse_locs([u for u, _c, _s in _CLOUDSCENE_REAL])
+    assert len(rows) == 3, rows
+    for r, (_u, city, state) in zip(rows, _CLOUDSCENE_REAL):
+        assert r["city"] == city, (r, city)
+        assert r["state"] == state, (r, state)
+
+
+def test_the_normalisation_runs_where_every_parser_converges():
+    """Not inside the cloudscene parser. A per-parser copy is how the junk-slug
+    predicate drifted into four disagreeing spellings (#4133), so this asserts
+    the placeholder is cleared for a candidate that did NOT come from the
+    cloudscene slug parser at all."""
+    import importlib
+    cg = importlib.import_module("routes.competitor_gap_crawler")
+    src = open(CG, encoding="utf-8").read()
+    body = src[src.index("def _parse_cloudscene_dc("):
+               src.index("def parse_competitor_sitemap(")]
+    assert "_is_placeholder_city" not in body, (
+        "the placeholder test belongs at the convergence point, not inside "
+        "one parser — a second copy is the drift this fix exists to end")
+    conv = src[src.index("def parse_competitor_sitemap("):]
+    assert "_is_placeholder_city(cand.get(\"city\"))" in conv, conv[:200]
+
+
 def test_parser_offset_rotates_window():
     import importlib
     cg = importlib.import_module("routes.competitor_gap_crawler")
