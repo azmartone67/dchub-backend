@@ -92,11 +92,19 @@ _FACT_PACKS = {
     # exactly this way (routes/interconnection_queues.py:1194).
     "queue_by_iso": {
         "tools": "get_interconnection_queue",
-        "sql": """SELECT upper(iso) AS iso, COUNT(*) AS projects,
+        # ★2026-09-07 BASIS: `WHERE capacity_mw IS NOT NULL` silently dropped 182
+        # of 5,538 rows, so the draft read "ERCOT (1,826 projects, 455,350 MW)"
+        # when ERCOT has 1,907 queued projects — 81 with no published capacity.
+        # True, but the basis was invisible, which is the 178-vs-186 countries
+        # lesson. The filter now lives in a COUNT FILTER instead of the WHERE, so
+        # BOTH numbers reach the draft; SUM/AVG ignore NULLs on their own.
+        "sql": """SELECT upper(iso) AS iso,
+                      COUNT(*) AS projects_total,
+                      COUNT(capacity_mw) AS projects_with_capacity,
                       ROUND(SUM(capacity_mw)::numeric,0) AS total_queue_mw,
                       ROUND(AVG(capacity_mw)::numeric,1) AS avg_project_mw
                  FROM interconnect_queue
-                WHERE iso IS NOT NULL AND capacity_mw IS NOT NULL
+                WHERE iso IS NOT NULL
                 GROUP BY upper(iso)
                 ORDER BY SUM(capacity_mw) DESC NULLS LAST LIMIT 8""",
     },
@@ -372,7 +380,14 @@ _SYSTEM = (
     "knowledge page about DC Hub (dchub.cloud), the live MCP-native data layer "
     "for data-center / power infrastructure. Answer on DC Hub's own merits ONLY. "
     "Never name or compare competitors. Use NO number that is not in the "
-    "verified facts you are given. Neutral, specific, no hype."
+    "verified facts you are given. Neutral, specific, no hype. "
+    # 2026-09-07: a subset presented as the whole is the quiet way an honest
+    # number becomes a wrong one — see the projects_total / projects_with_capacity
+    # split on queue_by_iso.
+    "STATE THE BASIS: when a row carries both a total and a subset of it "
+    "(e.g. projects_total alongside projects_with_capacity), never present the "
+    "subset as the whole — say what the figure is over, e.g. '1,826 of 1,907 "
+    "projects with a published capacity'."
 )
 
 
