@@ -349,6 +349,120 @@ def _gateway_alert_decision(state, blocked_since, last_notified, now):
     return None, blocked_since, last_notified
 
 
+# ── white-glove escalations nobody has worked ────────────────────────────────
+# ★ 2026-09-07 — MEASURED. /admin/customer-white-glove/state reports 21 payers:
+#   1 healthy, 10 stranded, 6 churned. All 10 stranded show nudged=True,
+#   welcomed=True, total_calls=0 — so the automation RAN and the customer still
+#   never called. That is an OUTCOME failure, not a delivery failure, and the
+#   action text "automated nudge FAILED" misreads as the latter.
+#
+#   routes/brain_escalation_queue.py already handles this correctly and on
+#   purpose: it is NOT A SENDER, because a second email to someone who ignored
+#   the first is the wrong move. It hands off to a human instead. That design
+#   is right.
+#
+# ★ THE BREAK IS THAT THE HANDOFF IS SILENT. brain_escalations holds 10 open
+#   rows, first_seen 2026-08-29, refreshed daily — and contacted_at IS NULL on
+#   ALL TEN, resolved_at on all ten, for 10 straight days. A queue nobody opens
+#   is indistinguishable from no queue. Nothing in the system tells a human it
+#   is there, so the chain is: nudge fires -> nudge fails -> queue fills ->
+#   silence.
+#
+#   This closes that last link, and ONLY that link. It pages the OWNER; it
+#   sends nothing to the customer. No code can make a stranded customer call
+#   the API — but it can stop the ask from being invisible.
+_WG_FLOOR_DAYS = float(os.environ.get("WG_ESCALATION_FLOOR_DAYS", "3"))
+_WG_NAG_S = 86400.0
+_wg_last_notified = 0.0
+
+
+def _white_glove_unworked() -> tuple:
+    """(unworked_count, oldest_days, total_open). (None, None, None) if unknown.
+
+    ★ UNWORKED means status is still open AND contacted_at IS NULL. A row a
+      human has already touched must stop paging, or the nag punishes the
+      person who acted. And a failed read returns None — never 0, which would
+      read as "queue is clear" and silently disarm this alarm.
+    """
+    try:
+        import psycopg2
+        dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if not dsn:
+            return (None, None, None)
+        with psycopg2.connect(dsn, connect_timeout=10) as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FILTER (WHERE contacted_at IS NULL),
+                       EXTRACT(EPOCH FROM (NOW() - MIN(first_seen_at)
+                           FILTER (WHERE contacted_at IS NULL))) / 86400.0,
+                       COUNT(*)
+                  FROM brain_escalations
+                 WHERE status NOT IN ('resolved', 'closed')
+            """)
+            r = cur.fetchone() or (None, None, None)
+            return (int(r[0] or 0), float(r[1]) if r[1] is not None else None,
+                    int(r[2] or 0))
+    except Exception as e:  # noqa: BLE001
+        log.warning("white-glove escalation probe failed: %s", str(e)[:160])
+        return (None, None, None)
+
+
+def _wg_alert_decision(unworked, oldest_days, last_notified, now,
+                       floor_days=None, nag_s=_WG_NAG_S):
+    """Pure transition logic -> (action, last_notified).
+
+    "page"  newly past the floor, or the daily nag while still unworked
+    "clear" the queue was worked or emptied — worth knowing, and it re-arms
+    None    nothing to say
+
+    ★ An UNKNOWN read (None) changes nothing: a probe that could not classify
+      must never clear a live alarm, which is how a mid-outage disarm happens.
+    """
+    floor = _WG_FLOOR_DAYS if floor_days is None else floor_days
+    if unworked is None:
+        return (None, last_notified)
+    if unworked == 0:
+        return (("clear", 0.0) if last_notified else (None, last_notified))
+    if oldest_days is None or oldest_days < floor:
+        return (None, last_notified)          # grace window; do not page instantly
+    if not last_notified or (now - last_notified) >= nag_s:
+        return ("page", now)
+    return (None, last_notified)
+
+
+def _white_glove_loop():
+    global _wg_last_notified
+    time.sleep(_INITIAL_DELAY_S)
+    while True:
+        try:
+            unworked, oldest_days, total_open = _white_glove_unworked()
+            action, _wg_last_notified = _wg_alert_decision(
+                unworked, oldest_days, _wg_last_notified, time.time())
+            if action == "page":
+                _alert("white_glove_unworked",
+                       f"🚨 DC Hub: {unworked} paying customers waiting on a human",
+                       f"<h2>{unworked} white-glove escalations, none contacted</h2>"
+                       f"<p>The activation nudge fired for these customers and they "
+                       f"still made <b>zero</b> API calls, so the brain correctly "
+                       f"handed them to a human rather than sending another email. "
+                       f"Nobody has opened the queue.</p>"
+                       f"<ul><li><b>{unworked}</b> unworked of {total_open} open</li>"
+                       f"<li>oldest waiting <b>{oldest_days:.0f} days</b></li></ul>"
+                       f"<p>Work them at <code>GET /api/v1/brain/escalations</code>; "
+                       f"close one with <code>POST /api/v1/brain/escalations/resolve"
+                       f"</code>. Setting <code>contacted_at</code> stops this nag "
+                       f"for that customer.</p>"
+                       f"<p><i>This pages you, not the customer. Another automated "
+                       f"email is the one thing already known not to work here.</i></p>")
+            elif action == "clear":
+                _alert("white_glove_worked",
+                       "✅ DC Hub: white-glove escalation queue is worked",
+                       "<p>Every open escalation now has a contact recorded. "
+                       "The alarm is re-armed.</p>")
+        except Exception as e:  # noqa: BLE001
+            log.warning("white-glove alerter tick failed: %s", str(e)[:200])
+        time.sleep(3600)
+
+
 def _gateway_spend_loop():
     global _gw_blocked_since, _gw_last_notified
     time.sleep(_INITIAL_DELAY_S)
@@ -408,6 +522,8 @@ def start():
     if _gw_on:
         threading.Thread(target=_gateway_spend_loop, daemon=True,
                          name="gateway-spend-alerter").start()
+        threading.Thread(target=_white_glove_loop, daemon=True,
+                         name="white-glove-escalation-alerter").start()
     log.info("health_alerter: started (pool alert >=%s%% sustained, restart-loop >=%s/%smin, "
              "gateway-spend probe %s, to=%s)",
              _POOL_UTIL_ALERT, _RESTART_THRESHOLD, _RESTART_WINDOW_MIN,
