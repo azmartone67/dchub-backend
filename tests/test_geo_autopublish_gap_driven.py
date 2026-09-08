@@ -247,3 +247,32 @@ def test_queue_pack_no_longer_sums_market_rows():
     assert "interconnect_queue" in sql
     assert "market_power_scores" not in sql
     assert "queue_capacity_mw" not in sql
+
+
+# ── basis, not just the subset (2026-09-07) ──────────────────────────────────
+# 182 of 5,538 queue rows carry no capacity figure. Filtering them in the WHERE
+# made the draft read "ERCOT (1,826 projects, 455,350 MW)" for an ISO that has
+# 1,907 queued projects. True, and its basis invisible — the 178-vs-186 shape.
+
+def test_queue_pack_reports_its_basis_not_just_the_subset():
+    """Both counts must reach the draft.
+
+    Static assertion on the SQL text — the query needs Postgres to execute — so
+    it anchors on the WHERE clause specifically rather than substring-searching
+    the whole blob, where `capacity_mw` appears legitimately several times.
+    """
+    sql = " ".join(g._FACT_PACKS["queue_by_iso"]["sql"].split())
+    assert "projects_total" in sql, "the full project count never reaches the draft"
+    assert "projects_with_capacity" in sql, "the subset is unlabelled"
+    where = sql.split("WHERE", 1)[1].split("GROUP BY", 1)[0]
+    assert "capacity_mw" not in where, (
+        f"WHERE filters capacity_mw ({where.strip()!r}) — both counts collapse to "
+        f"the same number and the basis becomes unstatable")
+
+
+def test_the_draft_prompt_demands_the_basis():
+    """A pin, not a behavioural test: it fails if the instruction is deleted, and
+    cannot tell whether the model actually obeyed it. The output check is the
+    dry run."""
+    assert "STATE THE BASIS" in g._SYSTEM
+    assert "projects_with_capacity" in g._SYSTEM
