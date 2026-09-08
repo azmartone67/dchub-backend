@@ -97,21 +97,35 @@ def _build_canon_body():
         pub = c.get("public", {}) or {}
         tools = c.get("tools_advertised") or c.get("tools_live")
         if tools and pub.get("deals"):
+            # ★2026-09-08 — DERIVED FROM `pub`, not hand-listed. This dict named
+            # five of the eleven keys ai_surface_canon.PINNED["public"] holds, so
+            # `assets`, `substations`, `fiber_routes`, `transmission_lines`,
+            # `dcpi_countries` and `dcpi_regions` were canon that NO endpoint
+            # published — unquotable and, more to the point, unfalsifiable from
+            # outside. That is the exact argument the news_sources note below
+            # makes for itself, and it applied to five more keys the whole time.
+            #
+            # It is also why surfaces hardcoded them: an agent (or our own heal
+            # job) reading this endpoint could not obtain a substation or fiber
+            # floor, so the only way to state one was to type it. Every
+            # hardcoded-infrastructure-count fix of 2026-09-07 traces back here.
+            #
+            # A hand-maintained subset of a canonical set rots by construction —
+            # the six discovery Allow: lines in robots.txt are the same lesson.
+            # Adding a key to PINNED["public"] now publishes it automatically,
+            # and test_canon_phrases_publishes_every_key fails if that stops
+            # being true.
             body = {
                 "ok": True,
                 "source": "resolve_canon (live)",
                 "tools": tools,
-                "deals": pub.get("deals"),
-                "markets": pub.get("markets"),
-                "facilities": pub.get("facilities"),
-                "countries": pub.get("countries"),
-                # ★2026-09-06 r-news-sources. The claim "40+ sources" reached
-                # ~47 files and six live surfaces precisely BECAUSE no endpoint
-                # published it: it could not be checked in either direction, so
-                # nothing could contradict it. Publishing it here is what makes
-                # it falsifiable from outside — the property every sibling key
-                # in this dict already had.
-                "news_sources": pub.get("news_sources"),
+                **{k: v for k, v in pub.items()},
+                # ★2026-09-06 r-news-sources, kept for the reasoning: the claim
+                # "40+ sources" reached ~47 files and six live surfaces precisely
+                # BECAUSE no endpoint published it — it could not be checked in
+                # either direction, so nothing could contradict it. The spread
+                # above now grants that property to every key at once, which is
+                # what this note asked for and could not get one key at a time.
             }
     except Exception as e:
         logger.warning("canon_phrases: resolve_canon failed: %s", str(e)[:160])
@@ -122,15 +136,16 @@ def _build_canon_body():
         try:
             from ai_surface_canon import PINNED
             p = (PINNED.get("public") or {})
+            # Same spread as the live branch on purpose: a fallback that
+            # publishes FEWER keys than the live path is a second shape for
+            # consumers to handle, and the frontend heal is fail-closed on a
+            # missing field — it would silently stop healing whatever the
+            # fallback dropped.
             body = {
                 "ok": True,
                 "source": "PINNED (fallback)",
                 "tools": PINNED.get("tools_advertised"),
-                "deals": p.get("deals"),
-                "markets": p.get("markets"),
-                "facilities": p.get("facilities"),
-                "countries": p.get("countries"),
-                "news_sources": p.get("news_sources"),
+                **{k: v for k, v in p.items()},
             }
         except Exception as e:
             logger.error("canon_phrases: PINNED fallback failed: %s", str(e)[:120])
