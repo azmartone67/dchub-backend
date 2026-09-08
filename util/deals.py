@@ -93,7 +93,32 @@ list of reads that are unguarded on purpose, each with its reason.
 
 from __future__ import annotations
 
-__all__ = ["DEALS_OK", "deals_ok", "DEALS_QUARANTINED", "deals_quarantined"]
+__all__ = ["DEALS_OK", "deals_ok", "DEALS_QUARANTINED", "deals_quarantined",
+           "DEAL_BUSINESS_COLS"]
+
+#: The 19 business columns that identify one deal, as a SQL select-list.
+#: Consumers split on "," — see extractor_cron._DEAL_COLS.
+#:
+#: ★ MOVED HERE 2026-09-08 from routes/graph_spine_master_shell.py. It is a
+#: string constant, but it lived inside a 955-line Flask blueprint, so every
+#: importer paid `import flask` to read it. Two of the four importers are
+#: standalone scripts that need no web framework at all — extractor_cron.py
+#: (the */5 Railway cron) and repair_deals_exact_dupes.py. On 2026-09-06 and
+#: again on 2026-09-08 the cron crashed at start with `ModuleNotFoundError:
+#: No module named 'flask'`, raised on THIS import chain, because a
+#: container-start mise re-install left it running a bare interpreter instead
+#: of /app/.venv. Flask was never the dependency that mattered — it was just
+#: the first non-stdlib name the import graph reached. util/deals.py is
+#: stdlib-only and intends to stay that way; that is the point of putting it
+#: here rather than anywhere importable-but-heavy.
+#:
+#: The interpreter bug is fixed separately in railway-extractor.toml. This
+#: move does not fix it — psycopg2 is still required a few lines later — it
+#: removes a dependency the cron never had a reason to carry.
+DEAL_BUSINESS_COLS = (
+    "date, year, buyer, seller, value, mw, type, region, market, source_url,"
+    " verified, status, notes, assets, deal_date, deal_category, data_flag,"
+    " extraction_confidence, extracted_via")
 
 #: The flag prefix. Eleven characters — which is where the 11 comes from.
 _PREFIX = "quarantine_"

@@ -11,8 +11,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from routes.graph_spine_master_shell import _DEAL_BUSINESS_COLS  # noqa: E402
-from util.deals import deals_ok  # noqa: E402
+from util.deals import DEAL_BUSINESS_COLS, deals_ok  # noqa: E402
 from util.capacity_pipeline import CP_BUSINESS_COLS, cp_classify_arms, cp_ok  # noqa: E402
 
 logging.basicConfig(
@@ -259,7 +258,7 @@ def insert_capacity(conn, signals, announcement_id):
 # restate them. IS NOT DISTINCT FROM mirrors lane 3a's GROUP BY (NULL equals
 # NULL); `=` would never match the NULL-heavy tuple and the probe would be a
 # silent no-op.
-_DEAL_COLS = [c.strip() for c in _DEAL_BUSINESS_COLS.split(",")]
+_DEAL_COLS = [c.strip() for c in DEAL_BUSINESS_COLS.split(",")]
 _TWIN_SQL = (
     "SELECT 1 FROM deals a, deals b WHERE b.id = %s AND a.id <> b.id"
     " AND " + deals_ok("a")

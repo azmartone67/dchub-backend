@@ -18,7 +18,7 @@ Keeper = min(id) per identical group. Content is identical by construction so
 any keeper is equivalent; min(id) is stable across re-runs (idempotent).
 
 The group key and the served predicate are IMPORTED from the modules that own
-them (graph_spine_master_shell._DEAL_BUSINESS_COLS, util.deals.DEALS_OK) —
+them (util.deals.DEAL_BUSINESS_COLS, util.deals.DEALS_OK) —
 mirror the guards of the code under audit exactly, never restate them.
 
 Usage:
@@ -45,7 +45,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from routes.graph_spine_master_shell import _DEAL_BUSINESS_COLS  # noqa: E402
+from util.deals import DEAL_BUSINESS_COLS  # noqa: E402
 from util.deals import DEALS_OK, deals_ok  # noqa: E402
 
 FLAG = "quarantine_duplicate"
@@ -62,7 +62,7 @@ def find_groups(cur):
     cur.execute(
         f"SELECT min(id) AS keep, array_agg(id ORDER BY id) AS ids, count(*) AS n"
         f" FROM deals WHERE {DEALS_OK}"
-        f" GROUP BY {_DEAL_BUSINESS_COLS} HAVING count(*) > 1"
+        f" GROUP BY {DEAL_BUSINESS_COLS} HAVING count(*) > 1"
         f" ORDER BY count(*) DESC")
     return cur.fetchall()
 
@@ -70,8 +70,8 @@ def find_groups(cur):
 def lane_excess(cur):
     """The exact number lane 3a publishes: served dupe rows beyond 1/group."""
     cur.execute(
-        f"WITH b AS (SELECT {_DEAL_BUSINESS_COLS} FROM deals WHERE {DEALS_OK}),"
-        f" g AS (SELECT count(*) AS n FROM b GROUP BY {_DEAL_BUSINESS_COLS})"
+        f"WITH b AS (SELECT {DEAL_BUSINESS_COLS} FROM deals WHERE {DEALS_OK}),"
+        f" g AS (SELECT count(*) AS n FROM b GROUP BY {DEAL_BUSINESS_COLS})"
         f" SELECT (SELECT count(*) FROM b),"
         f"        (SELECT coalesce(sum(n) - count(*), 0) FROM g WHERE n > 1)")
     served, excess = cur.fetchone()
