@@ -78,7 +78,12 @@ jobs:
         id: fetch
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
-          MIN_CONF: ${{ inputs.min_confidence || '0.85' }}
+          # ★ Must stay <= _CALIB_BASE_THRESHOLD. pending-pr computes
+          # effective = max(src_threshold, floor_conf), so a floor
+          # ABOVE the calibration base silently overrides every tuned
+          # value and the self-tuning cannot matter. Pinned by
+          # tests/test_calibration_prior_is_reachable.py.
+          MIN_CONF: ${{ inputs.min_confidence || '0.78' }}
           LIMIT: ${{ inputs.limit || '5' }}
         run: |
           if [ -z "$ADMIN_KEY" ]; then

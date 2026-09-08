@@ -1482,7 +1482,19 @@ def learn_backend_issues():
 # Under 3 resolved outcomes for a source → not enough data → base 0.85.
 # ────────────────────────────────────────────────────────────────────
 
-_CALIB_BASE_THRESHOLD = 0.85
+# ★ 2026-09-07: was 0.85, the same value as _CALIB_CEIL-adjacent
+# 'blocked'. This constant is the COLD-START PRIOR: a loop_name with
+# fewer than _CALIB_MIN_SAMPLES resolved outcomes gets it verbatim.
+# Measured that day: all 37 resolved outcomes belonged to ONE source
+# (autonomy_proactive) which had ZERO pending proposals, while every
+# source that DID have pending work had zero resolved outcomes. With
+# the prior at 0.85 and the best pending proposal at 0.83, an unproven
+# source could never ship — and it needs a shipped outcome to earn a
+# lower bar. A self-tuning threshold whose prior sits above what any
+# candidate scores is not conservative, it is closed. 0.78 sits below
+# the live 0.78-0.83 band so a source can earn its first evidence;
+# calibration then moves it up or down from there on merit.
+_CALIB_BASE_THRESHOLD = 0.78
 _CALIB_ADJ_RANGE = 0.30          # ±0.15 swing around the base
 _CALIB_MIN_SAMPLES = 3           # need ≥3 resolved outcomes to tune
 _CALIB_FLOOR = 0.70              # never auto-PR below this
