@@ -143,7 +143,7 @@ def _measure(cur) -> dict:
                 SELECT {_CLOCK}::date AS d, count(*) AS n
                   FROM news_articles
                  WHERE {_CLOCK} <  NOW() - INTERVAL '%s days'
-                   AND {_CLOCK} >= NOW() - INTERVAL '%s days'
+                   AND {_CLOCK} >= NOW() - %s * INTERVAL '1 day'
                  GROUP BY 1) x"""
         % (_BASELINE_EXCLUDE_RECENT_DAYS, _BASELINE_LOOKBACK_DAYS))
     row = cur.fetchone()
