@@ -61,6 +61,45 @@ FRONTEND_ROOT = Path(os.environ.get(
 ))
 
 
+def repo_relative(path_str: str) -> str:
+    """`/home/runner/work/.../dchub-frontend/about.html` -> `dchub-frontend/about.html`.
+
+    ★ WHY THIS EXISTS. Findings were filed with the absolute path of whatever
+    machine scanned them — in CI that is
+    `/home/runner/work/dchub-backend/dchub-backend/dchub-frontend/about.html`.
+    A path that only resolves on a disposable runner cannot be opened, patched,
+    or matched against a repo by any consumer, which is a large part of why 52
+    open bug_squash findings had never reached the fix pipeline: nothing
+    downstream could tell WHICH REPO they lived in, and every one of them is in
+    dchub-frontend while the code-fix proposer only patches dchub-backend.
+
+    Emits the house form for a code location (`path/file.py:123` — the shape
+    consistency_radar already uses), prefixed with the repo so the repo is data
+    rather than something a reader has to infer from the path.
+
+    ★ FRONTEND IS CHECKED FIRST AND THAT ORDER IS LOAD-BEARING: in CI the
+    frontend is checked out INSIDE the backend workspace, so every frontend file
+    is also under BACKEND_ROOT. Testing backend first would label them all
+    `dchub-backend/dchub-frontend/...` — the more specific root has to win.
+
+    A path under neither root is returned unchanged. Never invent a repo we
+    cannot prove: a wrong repo label is worse than an ugly absolute path,
+    because it routes a fix at the wrong tree.
+    """
+    try:
+        p = Path(path_str).resolve()
+    except Exception:
+        return path_str
+    for root, label in ((FRONTEND_ROOT, "dchub-frontend"),
+                        (BACKEND_ROOT, "dchub-backend")):
+        try:
+            rel = p.relative_to(root.resolve())
+        except Exception:
+            continue
+        return f"{label}/{rel.as_posix()}"
+    return path_str
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Data shapes
 # ──────────────────────────────────────────────────────────────────────
@@ -79,7 +118,7 @@ class Finding:
         """Shape expected by brain_findings table."""
         return {
             "issue": f"bug_squash:{self.pattern_id}",
-            "url": f"{self.file}#L{self.line}",
+            "url": f"{repo_relative(self.file)}:{self.line}",
             "count": 1,
             "detail": (
                 f"{self.why}\n\n"
