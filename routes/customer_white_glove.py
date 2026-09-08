@@ -179,10 +179,37 @@ def _measure():
                        -- nothing left the building" a visible state instead of
                        -- a green tick. Measured on rob@hedmarkholdings.com
                        -- (2026-08-19): 4 rows, 2 of them skipped_duplicate.
+                       -- r-welcome-classes (2026-09-07): `LIKE 'sent%%'` was
+                       -- too narrow. welcome_email_log carries FOUR outcome
+                       -- shapes and this predicate collapsed three of them
+                       -- into one indistinguishable "not welcomed":
+                       --   sent / sent_via_resend    -> delivered
+                       --   seeded_manual_welcome     -> a HUMAN sent the
+                       --      founder note. Delivered, by a person. Two
+                       --      customers read as undelivered purely because
+                       --      the string does not start with "sent".
+                       --   skipped_duplicate         -> benign; they already
+                       --      had one (every such customer also has a sent row)
+                       --   exception:No module named 'sendgrid'  -> GENUINELY
+                       --      broken. Nobody received anything.
+                       -- A real failure looked exactly like a benign skip, so
+                       -- welcome_undelivered counted 2 people who WERE
+                       -- welcomed and missed the one who was not.
                        EXISTS(SELECT 1 FROM welcome_email_log w
                               WHERE lower(w.email)=lower(u.email)
                                 AND COALESCE(w.plan,'') NOT LIKE 'receipt%%'
-                                AND COALESCE(w.status,'') LIKE 'sent%%') AS welcomed,
+                                AND (COALESCE(w.status,'') LIKE 'sent%%'
+                                     OR COALESCE(w.status,'') = 'seeded_manual_welcome'
+                                    )) AS welcomed,
+                       -- A send that RAISED. This is the only shape that means
+                       -- nobody received anything, and it is the one worth
+                       -- paging about — kept separate so it can never again be
+                       -- averaged in with a duplicate-skip.
+                       EXISTS(SELECT 1 FROM welcome_email_log w
+                              WHERE lower(w.email)=lower(u.email)
+                                AND COALESCE(w.plan,'') NOT LIKE 'receipt%%'
+                                AND COALESCE(w.status,'') LIKE 'exception%%'
+                             ) AS welcome_errored,
                        EXISTS(SELECT 1 FROM welcome_email_log w
                               WHERE lower(w.email)=lower(u.email)
                                 AND COALESCE(w.plan,'') NOT LIKE 'receipt%%') AS welcome_attempted,
@@ -334,6 +361,7 @@ def _roster(now=None):
             "welcomed": bool(r.get("welcomed")), "nudged": bool(r.get("nudged")),
             # welcome_attempted && !welcomed = every send logged skipped/failed
             "welcome_attempted": bool(r.get("welcome_attempted")),
+            "welcome_errored": bool(r.get("welcome_errored")),
             "nudge_days": (round(nudge_days, 1) if nudge_days is not None else None),
             # escalate = the automated motion already ran and did NOT work
             "escalate": bool(action.startswith("ESCALATE")),
@@ -656,14 +684,22 @@ def _self_health(roster):
     #                        invisible because `welcomed` did not filter on
     #                        status (skipped_duplicate counted as welcomed).
     needs_human = sum(1 for r in roster if r.get("needs_human"))
+    # r-welcome-classes (2026-09-07): count only sends that actually FAILED.
+    # The old form (attempted AND NOT welcomed) counted seeded_manual_welcome
+    # and skipped_duplicate as undelivered — 2 of the 2 it reported were people
+    # a human had personally written to, while the single real failure
+    # (exception:No module named 'sendgrid', 2026-06-10) sat in the same bucket
+    # and could not be told apart.
     undelivered = sum(1 for r in roster
                       if r.get("welcome_attempted") and not r.get("welcomed"))
+    welcome_errors = sum(1 for r in roster if r.get("welcome_errored"))
     return {
         "loop": "customer_white_glove",
         "payers": total, "engaged": engaged,
         "stranded": stranded, "escalate": escalate,
         "needs_human": needs_human,
         "welcome_undelivered": undelivered,
+        "welcome_errors": welcome_errors,
         "stranded_ratio": ratio,
         # ★ An UNMEASURED board is not a healthy board. When the query fails,
         # every count above is 0 and every ratio is 0.0 — indistinguishable
