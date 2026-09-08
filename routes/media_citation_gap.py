@@ -177,12 +177,34 @@ def _ensure_queue(c) -> bool:
 
 
 # ── find the lost queries ─────────────────────────────────────────────────────
-def _find_lost_queries(c, days: int = 30, limit: int = 25) -> list[dict]:
-    """Lost query = a recent citation probe where DC Hub was NOT mentioned but a
-    competitor WAS. Reads citation_probes (written by citation_hunter). Dedups by
-    query, keeping the most recent observation. Never raises — returns [] on any
-    failure so a run can't crash on a missing/old table."""
+def _find_lost_queries(c, days: int = 30, limit: int = 25,
+                       require_competitor: bool = True) -> list[dict]:
+    """Lost query = a recent citation probe where DC Hub was NOT mentioned.
+
+    `require_competitor=True` (the default, and this module's own semantics)
+    additionally requires that a RECOGNISED competitor was cited.
+
+    ★2026-09-07 — WHY THAT FLAG EXISTS. Recognition is a list of seven regexes
+    in citation_hunter._COMPETITOR_PATTERNS. A query where the model cites a
+    source outside that list, or cites nobody, comes back competitors_mentioned
+    = [] and reads as "not a loss" even though DC Hub is exactly as absent.
+    Measured live 2026-09-07: "What AI tools track data center construction
+    pipeline + capacity?" returned DCHub absent, competitors [], and an excerpt
+    naming **DCMap** — invisible to every consumer of this function. Of the
+    12-query battery only 5 qualified under the strict form.
+    So the instrument was doubly fixed: 12 questions x 7 competitor names.
+    Callers that want COVERAGE (is there an answer we do not own?) rather than
+    HEAD-TO-HEAD (who beat us?) should pass False. Widening the competitor list
+    instead is whack-a-mole — absence is the signal, not who filled the gap.
+
+    Reads citation_probes (written by citation_hunter). Dedups by query, keeping
+    the most recent observation. Never raises — returns [] on any failure so a
+    run can't crash on a missing/old table."""
     out: list[dict] = []
+    _competitor_clause = ("""
+                   AND competitors_mentioned IS NOT NULL
+                   AND competitors_mentioned <> '[]'::jsonb
+    """ if require_competitor else "")
     try:
         import psycopg2.extras
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -192,8 +214,7 @@ def _find_lost_queries(c, days: int = 30, limit: int = 25) -> list[dict]:
                   FROM citation_probes
                  WHERE probe_date >= CURRENT_DATE - (%s * INTERVAL '1 day')
                    AND COALESCE(dchub_mentioned, FALSE) = FALSE
-                   AND competitors_mentioned IS NOT NULL
-                   AND competitors_mentioned <> '[]'::jsonb
+            """ + _competitor_clause + """
                  ORDER BY query, probe_date DESC
             """, (int(days),))
             rows = cur.fetchall() or []
@@ -212,7 +233,13 @@ def _find_lost_queries(c, days: int = 30, limit: int = 25) -> list[dict]:
             comps = []
         # Only keep genuine competitor citations (defensive intersection).
         comps = [x for x in comps if x in _COMPETITORS] or comps
-        if not comps:
+        # ★ This `continue` is the SECOND half of the strict filter and would
+        # have silently undone require_competitor=False — the SQL would return
+        # the wider set and this line would drop every row of it right back out,
+        # leaving the caller with the old numbers and no error. Under the wide
+        # form an empty competitor list is the POINT: DC Hub was absent and
+        # nobody recognised filled the gap.
+        if not comps and require_competitor:
             continue
         out.append({
             "query": (r.get("query") or "").strip(),

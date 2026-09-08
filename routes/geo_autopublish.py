@@ -127,6 +127,19 @@ _FACT_PACKS = {
         "tools": "discover_tools, get_market_dcpi_rank and search_facilities",
         "facts": "canonical",
     },
+    # ★2026-09-07: "How do I research data center M&A transactions and deal flow?"
+    # is a MEASURED loss (cited to DCK, DCD, CBRE, JLL) that had no pack and was
+    # warned about on every run. It grounds in canon, NOT in new SQL over `deals`:
+    # that table carries ~2.9x duplication (the AUTO id embeds the ingest date, so
+    # the same transaction re-ingests daily), and a bare COUNT(*) over it published
+    # 5,222 against a canon of 1,400+ once already. canonical_stats.deals_phrase()
+    # is the deduped, quarantine-filtered, floored figure. util/deals.py exists
+    # because that predicate was hand-copied into seven files — writing an eighth
+    # copy here is exactly what tests/test_deals_guard.py censuses for.
+    "ma_coverage": {
+        "tools": "list_transactions, hyperscaler_deals and deal_autopsy",
+        "facts": "canonical",
+    },
 }
 
 # The original hand-written seed pages, expressed against the packs. Fixed slugs
@@ -192,6 +205,9 @@ _PACK_ROUTER = [
     ("market_ranking",    ("largest data center markets", "biggest data center markets",
                            "growth rates", "compare data center sites", "hyperscale",
                            "market data", "rank", "best data center markets")),
+    ("ma_coverage",       ("m&a", "m and a", "merger", "acquisition", "acquisitions",
+                           "deal flow", "transaction", "transactions", "who bought",
+                           "acquired", "divestiture")),
     ("platform_coverage", ("intelligence platform", "research platform", "which platform",
                            "mcp server", "agent integration", "which companies",
                            "data source", "news", "analytics", "dcpi",
@@ -225,8 +241,19 @@ def _lost_query_plan(limit: int) -> tuple[list, list]:
         if not conn:
             return [], [{"skip": "gap_no_db", "source": "gap"}]
         from routes.media_citation_gap import _find_lost_queries
+        # require_competitor=False on purpose. This caller wants COVERAGE — is
+        # there an answer we do not own? — not head-to-head. Under the strict
+        # form only 5 of the 12-query battery ever qualified, because a loss is
+        # only counted when one of seven hardcoded competitor regexes matches.
+        # Measured 2026-09-07: DCMap took "What AI tools track data center
+        # construction pipeline + capacity?" while we were absent, and the loop
+        # saw no loss at all.
         rows = _find_lost_queries(conn, days=_GAP_LOOKBACK_DAYS,
-                                  limit=max(int(limit) * 3, 12)) or []
+                                  limit=max(int(limit) * 3, 12),
+                                  require_competitor=False) or []
+        # Head-to-head losses first: a query a named rival is winning is a
+        # stronger signal than one nobody owns, and only `limit` get published.
+        rows.sort(key=lambda r: (not (r.get("competitors") or []),))
     except Exception as e:
         logger.warning("geo_autopublish gap plan failed: %s", str(e)[:140])
         return [], [{"skip": f"gap_error:{type(e).__name__}", "source": "gap"}]
@@ -316,7 +343,10 @@ def _canonical_rows() -> list:
         for key, fn in (("facilities_tracked", "facilities_phrase"),
                         ("facilities_verified", "facilities_verified_phrase"),
                         ("countries", "countries_phrase"),
-                        ("markets_scored", "markets_phrase")):
+                        ("markets_scored", "markets_phrase"),
+                        # deduped + quarantine-filtered + floored DOWN. Never
+                        # COUNT(*) FROM deals — see the ma_coverage pack note.
+                        ("ma_deals_tracked", "deals_phrase")):
             try:
                 v = getattr(cs, fn)()
                 if v:

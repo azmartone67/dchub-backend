@@ -94,7 +94,8 @@ def _stub_lost_queries(monkeypatch, rows):
     monkeypatch.setattr(g, "_gap_enabled", lambda: True)
     monkeypatch.setitem(sys.modules, "main", type(sys)("main"))
     sys.modules["main"].get_read_db = lambda: _Conn()
-    monkeypatch.setattr(mcg, "_find_lost_queries", lambda c, days, limit: rows)
+    monkeypatch.setattr(mcg, "_find_lost_queries",
+                        lambda c, days, limit, require_competitor=True: rows)
 
 
 def test_lost_queries_become_plan_items(monkeypatch):
@@ -118,7 +119,7 @@ def test_unroutable_loss_is_reported_not_silently_dropped(monkeypatch):
     """An unroutable loss is the signal that the next fact pack is worth writing.
     Dropping it quietly is how a gap stays invisible."""
     _stub_lost_queries(monkeypatch, [
-        {"query": "How do I research data center M&A transactions and deal flow?",
+        {"query": "What certifications do data center technicians need?",
          "competitors": ["DCD"], "probe_date": "2026-09-07"},
     ])
     items, skipped = g._lost_query_plan(6)
@@ -276,3 +277,109 @@ def test_the_draft_prompt_demands_the_basis():
     dry run."""
     assert "STATE THE BASIS" in g._SYSTEM
     assert "projects_with_capacity" in g._SYSTEM
+
+
+# ── the instrument was doubly fixed (2026-09-07) ─────────────────────────────
+# 12 hardcoded questions x 7 hardcoded competitor regexes. A query where the
+# model cites a source outside those seven — or cites nobody — came back
+# competitors_mentioned=[] and read as "not a loss", though DC Hub was exactly
+# as absent. Measured live: DCMap took "What AI tools track data center
+# construction pipeline + capacity?" and the loop saw nothing.
+
+class _FakeCur:
+    """Captures the SQL so a test can prove the query SHAPE changed, not just
+    that the row count did."""
+    def __init__(self, rows, sink):
+        self._rows, self._sink = rows, sink
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+    def execute(self, sql, params=None):
+        self._sink.append(sql)
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeConn:
+    def __init__(self, rows):
+        self.rows, self.sql = rows, []
+    def cursor(self, **kw):
+        return _FakeCur(self.rows, self.sql)
+    def close(self):
+        pass
+
+
+def _probe(q, comps):
+    return {"query": q, "competitors_mentioned": comps, "probe_date": None}
+
+
+def test_wide_form_keeps_a_loss_nobody_recognised_filled():
+    """The DCMap case: absent, competitors [], and it must still be a loss."""
+    import routes.media_citation_gap as mcg
+    c = _FakeConn([_probe("What AI tools track data center construction pipeline + capacity?", [])])
+    wide = mcg._find_lost_queries(c, days=30, limit=10, require_competitor=False)
+    assert len(wide) == 1, "the unattributed loss was dropped"
+    assert wide[0]["competitors"] == []
+
+
+def test_strict_form_still_drops_it_and_is_the_default():
+    """Default behaviour is unchanged — media_citation_gap's own semantics are
+    head-to-head, and its callers must not silently change meaning."""
+    import routes.media_citation_gap as mcg
+    rows = [_probe("nobody cited here", [])]
+    assert mcg._find_lost_queries(_FakeConn(rows), days=30, limit=10) == []
+    assert mcg._find_lost_queries(_FakeConn(rows), days=30, limit=10,
+                                  require_competitor=True) == []
+
+
+def test_the_competitor_clause_actually_leaves_the_sql():
+    """★ Both halves of the strict filter must lift: the SQL predicate AND the
+    post-loop `continue`. Asserting only on returned rows would pass if the SQL
+    still filtered, because the fake cursor ignores the WHERE."""
+    import routes.media_citation_gap as mcg
+    strict = _FakeConn([])
+    mcg._find_lost_queries(strict, days=30, limit=10, require_competitor=True)
+    assert "competitors_mentioned <> '[]'::jsonb" in strict.sql[0]
+
+    wide = _FakeConn([])
+    mcg._find_lost_queries(wide, days=30, limit=10, require_competitor=False)
+    assert "competitors_mentioned <> '[]'::jsonb" not in wide.sql[0]
+    assert "COALESCE(dchub_mentioned, FALSE) = FALSE" in wide.sql[0]
+
+
+def test_head_to_head_losses_are_published_first(monkeypatch):
+    """Only `limit` items get published, so a query a named rival is winning
+    must outrank one nobody owns."""
+    import routes.media_citation_gap as mcg
+    rows = [_probe("Where can I get free data center industry news + analytics?", []),
+            _probe("How do I research data center M&A transactions and deal flow?", ["DCD"])]
+    monkeypatch.setattr(g, "_gap_enabled", lambda: True)
+    monkeypatch.setitem(sys.modules, "main", type(sys)("main"))
+    sys.modules["main"].get_read_db = lambda: _FakeConn(rows)
+    monkeypatch.setattr(mcg, "_find_lost_queries",
+                        lambda c, days, limit, require_competitor=True: [
+                            {"query": r["query"], "competitors": r["competitors_mentioned"],
+                             "probe_date": None} for r in rows])
+    items, _ = g._lost_query_plan(6)
+    assert items[0]["competitors"] == ["DCD"], [i["query"] for i in items]
+
+
+def test_every_battery_query_now_routes():
+    """The M&A loss warned on every run and had nowhere to go."""
+    unrouted = [q for q in _BATTERY if not g._route_to_pack(q)]
+    assert unrouted == [], unrouted
+    assert g._route_to_pack(
+        "How do I research data center M&A transactions and deal flow?") == "ma_coverage"
+
+
+def test_ma_pack_grounds_in_canon_never_raw_deal_rows():
+    """`deals` carries ~2.9x duplication — a bare COUNT(*) over it once published
+    5,222 against a canon of 1,400+. No pack may read that table directly."""
+    assert g._FACT_PACKS["ma_coverage"].get("facts") == "canonical"
+    assert not g._FACT_PACKS["ma_coverage"].get("sql")
+    for name, pack in g._FACT_PACKS.items():
+        sql = " ".join((pack.get("sql") or "").split()).lower()
+        assert "from deals" not in sql, f"{name} reads the deals table directly"
+    row = g._canonical_rows()[0]
+    assert row.get("ma_deals_tracked"), "no deal figure reaches the M&A draft"
