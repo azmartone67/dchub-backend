@@ -40660,7 +40660,36 @@ def _ap_nei_factor(lat, lon, radius_km=16):
 
 
 def _ap_resolve_state(lat, lon):
-    # smallest-bbox-wins tie-breaker — prevents MI/WI Lake Michigan overlap
+    """The state a coordinate is in. Census polygons first, boxes only on failure.
+
+    ★ The boxes cannot be right for an irregular state, and this is the exact
+    case util/state_polygons.py was written for — its own docstring names
+    "Ashburn, Virginia (39.04, -77.49) -> 'MD'" as the failure it removes.
+    Ashburn is inside BOTH Virginia's and Maryland's box and Maryland's is the
+    smaller, so the smallest-bbox-wins tie-breaker (added to stop Milwaukee
+    resolving to MI across Lake Michigan) returned MD for the densest
+    data-centre market on earth. The air-permitting score then cited MDE and
+    Maryland's NNSR threshold, and the Land & Power map rendered that verbatim.
+
+    _ap_in_us_coverage already resolves through these polygons. This function
+    did not, so coverage and context disagreed about the same point.
+
+    Self-contained on purpose: tests ast-extract this function on its own, so
+    it must not depend on a sibling helper.
+    """
+    try:
+        from util.state_polygons import state_containing, load_error
+        if load_error() is None:
+            st = (state_containing(lat, lon) or "").strip().upper()
+            if st:
+                return st
+            # '' is a real answer from the polygons — offshore, the Great Lakes,
+            # or outside the US. Do NOT fall through to the boxes and invent a
+            # state for a point the geometry deliberately excluded.
+            return None
+    except Exception:
+        pass
+    # Geometry unavailable only. Wrong-but-present beats blanking the country.
     matches = []
     for state, box in _AP_STATE_BOXES.items():
         if _ap_in_bounds(lat, lon, box):
@@ -40671,6 +40700,22 @@ def _ap_resolve_state(lat, lon):
         return None
     matches.sort()
     return matches[0][1]
+
+
+def _ap_state_basis(lat, lon):
+    """Which signal named the state: 'census_polygon' or 'state_bbox_fallback'.
+
+    Separate and self-contained rather than returned as a tuple, because
+    _ap_resolve_state is ast-extracted alone by the existing coverage tests and
+    callers expect a bare string-or-None from it.
+    """
+    try:
+        from util.state_polygons import load_error
+        if load_error() is None:
+            return "census_polygon"
+    except Exception:
+        pass
+    return "state_bbox_fallback"
 def _ap_pathway(ozone_na, pm25_na, pm10_na, capacity_mw, genset_mw):
     est_nox_tpy = genset_mw * 0.35
     est_ghg_tpy = capacity_mw * 900
@@ -40881,6 +40926,7 @@ def _ap_score_site(lat, lon, capacity_mw, genset_mw=None):
     class1_score,  near_class1   = _ap_class1_factor(lat, lon)
     nei_score,     near_nei      = _ap_nei_factor(lat, lon)
     state = _ap_resolve_state(lat, lon)
+    state_basis = _ap_state_basis(lat, lon)
     ctx = _AP_STATE_CONTEXT.get(state, {}) if state else {}
     state_score = ctx.get("score", 75)
 
@@ -40916,6 +40962,11 @@ def _ap_score_site(lat, lon, capacity_mw, genset_mw=None):
         "nei": [{"n":n["name"],"d":round(n["distance_km"]*0.6214,1)} for n in near_nei],
         "nearest_monitors": near_monitors,
         "state": state,
+        # Which signal named the state. `state` picks the agency and its
+        # thresholds and weights 5% of the composite, so a caller weighing the
+        # regulatory read should know whether it came from the Census polygons
+        # or from the box fallback.
+        "state_basis": state_basis,
         "state_context": ctx.get("description", ""),
         "factors": {
             "ozone": {"score":ozone_score,"in_na":ozone_na["name"] if ozone_na else None},
