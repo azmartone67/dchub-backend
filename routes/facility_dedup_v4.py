@@ -359,7 +359,8 @@ def is_junk_slug(slug: str) -> bool:
 
 def _refuse(reason):
     return {"keeper": None, "writes": [], "twin_writes": [], "drain_fork": [],
-            "twin_done": [], "name_mismatch": [], "skip": reason}
+            "twin_done": [], "name_mismatch": [], "mismatch_reason": {},
+            "skip": reason}
 
 
 def has_coords(r) -> bool:
@@ -396,6 +397,89 @@ def has_coords(r) -> bool:
                     and float(la) == 0.0 and float(lo) == 0.0)
     except (TypeError, ValueError):
         return False
+
+
+# ── the SECOND corroboration: co-location ────────────────────────────
+# 200 m. Measured live 2026-09-07 across the 206 alternates the name gate was
+# refusing; 132 carry real coordinates on both sides:
+#
+#     <= 10 m  26      <= 100 m  92      <= 300 m 112
+#     <= 25 m  47      <= 150 m 103      <= 500 m 113
+#     <= 50 m  73      <= 200 m 110      <=  2 km 130
+#
+# The count climbs steadily to 200 m and then flattens — three more pairs in
+# the next 300 m. That flat is where the line goes.
+#
+# ★ The radius is NOT what protects against co-located halls. 'SecureIT DCB1.1'
+#   and 'DCB1.2' are 0.00 km apart; no radius separates them. What separates
+#   them is designators_disagree() below, and (since #4119) the fact that they
+#   no longer render one <h1> and so never reach this gate at all.
+_COLOCATED_KM = 0.2
+
+
+def _haversine_km(a, b):
+    """Great-circle km. NOT the degree box `_COORD_EPS` uses: that box is a
+    coarse VETO where over-refusing is free, this is a positive test where a
+    degree of longitude means 111 km at the equator and 40 km in Helsinki."""
+    import math
+    lat1, lon1 = math.radians(float(a[0])), math.radians(float(a[1]))
+    lat2, lon2 = math.radians(float(b[0])), math.radians(float(b[1]))
+    h = (math.sin((lat2 - lat1) / 2) ** 2
+         + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2)
+    return 2 * 6371.0 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def co_located(a, b) -> bool:
+    """Two rows with REAL coordinates within _COLOCATED_KM of each other.
+
+    ★ This is the one axis that is INDEPENDENT of what the page renders. The
+      obvious alternative — requiring both names to carry the same site
+      designator — is not evidence at all: since #4119 the <h1> CONTAINS the
+      designator, so "same rendered identity" already implies "same
+      designator" for every row on that path. Gating on it would be scoring a
+      mirror of the renderer, which is the failure this module exists to
+      avoid. A coordinate is measured somewhere else, by someone else.
+
+    Both sides must pass has_coords, so the 0.0/0.0 placeholder never reads as
+    "co-located with everything".
+    """
+    if not (has_coords(a) and has_coords(b)):
+        return False
+    if (a.get("latitude") is None or a.get("longitude") is None
+            or b.get("latitude") is None or b.get("longitude") is None):
+        return False
+    try:
+        return _haversine_km((a["latitude"], a["longitude"]),
+                             (b["latitude"], b["longitude"])) <= _COLOCATED_KM
+    except (TypeError, ValueError):
+        return False
+
+
+def designators_disagree(a, b) -> bool:
+    """True when both names carry a site designator and they are DIFFERENT.
+
+    ★ A VETO, never a justification — which is what makes it sound to compute
+      from the same names the <h1> is built from. A mirror of the renderer
+      cannot be used to JUSTIFY a merge (it would only be restating the
+      grouping key), but it can always be used to REFUSE one.
+
+    This is the guard for the class the name gate was written for: 'SecureIT
+    DCB1.1' vs 'DCB1.2', 'noris … ING1 ITA' vs 'ITB', 'RIC1 DC1' vs 'DC2' —
+    co-located halls, 0.00-0.28 km apart, that no radius can separate.
+
+    It fires on NOTHING in the live corpus (measured: 0 of 206) because since
+    #4119 those pairs render different <h1>s and never group together. It is
+    emphatically not decorative for all that: delete it and co_located()
+    merges the DCB1.1/DCB1.2 fixtures, breaking two guards that predate this
+    change (test_the_name_gate_covers_DISCOVERED_pairs_too... and
+    test_the_coordinate_veto_does_not_fire_on_the_class_the_gate_catches).
+    Mutation-checked exactly that way. The live 0 is the renderer currently
+    doing its job, not this veto being unnecessary.
+    """
+    from util.facility_site_code import detect_site_designator
+    da = detect_site_designator(a.get("name"), a.get("city") or "")
+    db = detect_site_designator(b.get("name"), b.get("city") or "")
+    return bool(da and db and da != db)
 
 
 def plan_group(rows):
@@ -441,6 +525,7 @@ def plan_group(rows):
 
     writes, twin_writes = [], []
     drain_fork, twin_done, name_mismatch = [], [], []
+    mismatch_reason = {}
     for r in rows:
         if r["canonical_slug"] == keeper["canonical_slug"]:
             continue
@@ -482,8 +567,24 @@ def plan_group(rows):
         #     'Equinix PA2 - Paris, Saint-Denis' -> 'Equinix PA2'. Nothing in
         #     the data separates those from DCB1.1/DCB1.2, so they go together.
         #     A missed duplicate is safe; a false merge hides a real site.
-        if not same_name(keeper.get("name"), r.get("name")):
+        # ★★ CORROBORATION, and it must be INDEPENDENT of the rendered
+        #    identity that grouped these rows. Two admissible kinds:
+        #      same_name    — the original gate, unchanged.
+        #      co_located   — real coordinates within _COLOCATED_KM, measured
+        #                     off-page by someone else. 92 of the 206 URLs the
+        #                     name gate refused sit within 100 m of their
+        #                     keeper and are the same building spelt two ways
+        #                     ('NTT Ashburn VA8 Data Centre' / 'Data Center').
+        #    And one veto that outranks both: a DISAGREEING site designator.
+        if designators_disagree(keeper, r):
             name_mismatch.append(r["canonical_slug"])
+            mismatch_reason[r["canonical_slug"]] = "designator_conflict"
+        elif not (same_name(keeper.get("name"), r.get("name"))
+                  or co_located(keeper, r)):
+            name_mismatch.append(r["canonical_slug"])
+            mismatch_reason[r["canonical_slug"]] = (
+                "no_coords" if not (has_coords(keeper) and has_coords(r))
+                else "too_far")
         elif r["table"] == "discovered_facilities":
             writes.append(r["id"])
         else:
@@ -496,7 +597,8 @@ def plan_group(rows):
         return _refuse("nothing_to_do")
     return {"keeper": keeper, "writes": writes, "twin_writes": twin_writes,
             "drain_fork": drain_fork, "twin_done": twin_done,
-            "name_mismatch": name_mismatch, "skip": None}
+            "name_mismatch": name_mismatch,
+            "mismatch_reason": mismatch_reason, "skip": None}
 
 
 # ★ The publishable universe, both tables. A SUPERSET of what the sitemap emits
@@ -574,6 +676,11 @@ def _collect(cur, limit=None):
             stats["twin_pointer_already_set"] = stats.get("twin_pointer_already_set", 0) + 1
         if p["name_mismatch"]:
             stats["refused_name_mismatch"] = stats.get("refused_name_mismatch", 0) + 1
+            # ★ split by WHY, so the residual is actionable instead of a lump:
+            #   `refused_no_coords` is a geocoding backfill, not a dedup job.
+            for _why in set((p.get("mismatch_reason") or {}).values()):
+                _k = "refused_" + _why
+                stats[_k] = stats.get(_k, 0) + 1
         plans.append({"h1": key[0], "keeper_id": p["keeper"]["id"],
                       "keeper_slug": p["keeper"]["canonical_slug"],
                       "writes": p["writes"], "twin_writes": p["twin_writes"],
