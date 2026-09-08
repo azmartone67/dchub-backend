@@ -521,7 +521,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.60-fallback-tools-88';
+const WORKER_VERSION = '4.9.61-hf-space-discovery';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -2457,6 +2457,25 @@ async function wellKnownResponse(pathname, kv, env) {
       starter_url:   'https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g',
       developer_url: 'https://buy.stripe.com/7sY5kE8F4fs13mI0PEaZi0c',
       cited_by:      ['ChatGPT', 'Claude', 'Gemini', 'Perplexity', 'Groq'],
+      // r-hf-discovery (2026-09-08): the Hugging Face Space is public, RUNNING,
+      // and serves 7 DC Hub tools over its own Gradio MCP endpoint — and NOTHING
+      // in our machine-readable discovery surfaces said so. Measured the same
+      // day: /llms.txt and this document both mentioned Hugging Face ZERO times,
+      // and HF appears nowhere in the AI platform census (Claude 202K, ChatGPT
+      // 71K, ... You.com 2,195, Cursor 601 — no HF at all). An agent reading our
+      // own discovery documents had no way to learn the Space exists.
+      // It is a SECONDARY surface, named as such: 7 curated tools against 88
+      // here, so a client that can reach `url` should always prefer it.
+      hosted_demo: {
+        platform:     'huggingface-space',
+        url:          'https://huggingface.co/spaces/dchubcloud/dchub',
+        app_url:      'https://dchubcloud-dchub.hf.space',
+        mcp_endpoint: 'https://dchubcloud-dchub.hf.space/gradio_api/mcp/sse',
+        transport:    'sse',
+        tools_count:  7,
+        note:         'Curated subset for Hugging Face agents / smolagents. The '
+                    + 'full server is `url` above (streamable-http, 88 tools).',
+      },
       contact:       MCP_SERVER_INFO.contact,
       documentation: MCP_SERVER_INFO.documentation,
       signup_url:    MCP_SERVER_INFO.signup_url,

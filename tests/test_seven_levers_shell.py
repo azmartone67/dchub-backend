@@ -400,7 +400,25 @@ def test_repo_worker_is_canon_clean_and_current():
     # Verify with (want 4.9.59):
     #   curl -sI "https://dchub.cloud/.well-known/ai-plugin.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.60-fallback-tools-88'" in src
+    #
+    # 4.9.60 -> 4.9.61-hf-space-discovery (2026-09-08): .well-known/mcp.json
+    # gained a `hosted_demo` block naming the Hugging Face Space. The Space
+    # (dchubcloud/dchub) has been public and RUNNING since 09-05 serving 7 DC Hub
+    # tools over its own Gradio MCP endpoint, and BOTH our machine-readable
+    # discovery surfaces named it ZERO times — mcp.json and /llms.txt — while HF
+    # appears nowhere in the AI platform census. An agent reading our own
+    # discovery documents could not learn the Space existed. Labelled a SECONDARY
+    # surface in the payload: 7 curated tools against 88 on `url`.
+    # ★ PASTE STILL OUTSTANDING at time of writing. Sibling: /llms.txt entry is
+    # dchub-frontend#1423 (CF Pages, deploys on merge — so the two surfaces will
+    # disagree until the paste happens; llms.txt will name the Space first).
+    # Verify with (want 4.9.61-hf-space-discovery):
+    #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    # ★ Read that header PER PATH: /mcp and /.well-known/mcp.json are served by
+    # THIS worker, while /dcpi reports 4.96.0-beacon-sees-bingbot — a different
+    # worker on the same zone. Measured 2026-09-08, same minute.
+    assert "WORKER_VERSION = '4.9.61-hf-space-discovery'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

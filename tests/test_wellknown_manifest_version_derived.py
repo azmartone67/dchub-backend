@@ -306,12 +306,22 @@ def test_worker_derives_version_and_description_from_origin():
     assert {"version", "description"} <= keys, keys
 
 
+def _route_block(worker_src, marker):
+    """The route's OWN text: from its `if (pathname === ...)` to the start of the
+    next route. A fixed character window measures the block's LENGTH, not its
+    content — adding a field to the handler pushed `...mcpExtras` past a magic
+    4000 and this guard failed on a change it has no opinion about (2026-09-08).
+    """
+    i = worker_src.index(marker)
+    nxt = worker_src.find("if (pathname === ", i + len(marker))
+    return worker_src[i:nxt if nxt != -1 else len(worker_src)]
+
+
 def test_worker_extras_spread_stays_last_in_mcp_json():
     """Ordering IS the behaviour: mcpExtras must be spread AFTER the
     MCP_SERVER_INFO literals or the hand-typed values silently win again."""
     w = _WORKER.read_text()
-    i = w.index("if (pathname === '/.well-known/mcp.json')")
-    block = w[i:i + 4000]
+    block = _route_block(w, "if (pathname === '/.well-known/mcp.json')")
     v_at = block.index("version:")
     x_at = block.index("...mcpExtras")
     assert x_at > v_at, "...mcpExtras must come AFTER version: in the mcp.json object"
