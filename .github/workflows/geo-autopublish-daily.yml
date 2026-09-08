@@ -122,3 +122,40 @@ jobs:
                         f"{o.get('field')}={o.get('value')} (ceiling: {o.get('ceiling')}) "
                         f"— {c.get('slug')} was REFUSED, fix the pack's SQL")
           PY
+
+      # Did any of this work? Publishing pages nobody asked to measure is how a
+      # loop stays busy without moving. Public read, no key needed.
+      - name: Outcome of pages already published
+        if: always()
+        run: |
+          set -o pipefail
+          curl -sS --max-time 40 \
+            "$BASE/api/v1/media/geo/outcomes?limit=50&cb=${GITHUB_RUN_ID}" \
+            -o /tmp/outcomes.json || { echo "::warning::outcomes read failed"; exit 0; }
+          python3 - <<'PY'
+          import json
+          try:
+              d = json.load(open('/tmp/outcomes.json'))
+          except Exception as e:
+              print(f"::warning::outcomes parse: {e}")
+              raise SystemExit(0)
+          pages = d.get('pages') or []
+          if not pages:
+              print(f"::notice::no published pages tracked yet ({d.get('note','')})")
+              raise SystemExit(0)
+          # None means NOT PROBED. Never render it as 0% — that is a measured
+          # failure, and this is an absence.
+          def pct(v):
+              return "not probed" if v is None else f"{v}%"
+          moved = 0
+          for p in pages:
+              b, a = p.get('rate_before_pct'), p.get('rate_after_pct')
+              if b is not None and a is not None and a > b:
+                  moved += 1
+              print(f"::notice::{p['slug']} [{p.get('pack')}] "
+                    f"before {pct(b)} (n={p.get('probes_before')}) -> "
+                    f"after {pct(a)} (n={p.get('probes_after')})")
+          print(f"::notice::{moved} of {len(pages)} tracked pages have a higher "
+                f"citation rate since publishing — OBSERVATIONAL, small n, not a "
+                f"causal claim")
+          PY

@@ -383,3 +383,98 @@ def test_ma_pack_grounds_in_canon_never_raw_deal_rows():
         assert "from deals" not in sql, f"{name} reads the deals table directly"
     row = g._canonical_rows()[0]
     assert row.get("ma_deals_tracked"), "no deal figure reaches the M&A draft"
+# ── did publishing do anything? (2026-09-07) ─────────────────────────────────
+# Nothing linked a published page back to the query it was written to win, so
+# nothing could say whether any of this moves the 3.9%. The ledger records what
+# was published; the measurement is a JOIN against citation_probes, which the
+# daily hunt already fills — no second prober.
+
+def test_unprobed_page_has_no_rate_not_a_zero():
+    """★ 0.0 would put an unprobed page on the board as a measured failure, next
+    to pages really probed and really never cited. Absence is not a zero — the
+    confusion this whole loop keeps tripping over."""
+    assert g._cite_rate_pct(0, 0) is None
+    assert g._cite_rate_pct(0, 12) == 0.0      # probed 12x, never cited: a real 0
+    assert g._cite_rate_pct(3, 12) == 25.0
+    assert g._cite_rate_pct(12, 12) == 100.0
+
+
+def test_publish_writes_the_ledger(monkeypatch):
+    """A page published without a ledger row is unmeasurable forever."""
+    calls = []
+    monkeypatch.setattr(g, "_gap_enabled", lambda: False)
+    monkeypatch.setattr(g, "_page_exists", lambda slug: False)
+    monkeypatch.setattr(g, "_gather_facts", lambda item: [{"markets_scored": "300+"}])
+    monkeypatch.setattr(g, "_llm_draft", lambda item, rows: {
+        "slug": item["slug"], "title": "T", "short_answer": "S", "lede": "L",
+        "meta_description": "M", "sections": [{"h": "h", "p": "p"}]})
+    monkeypatch.setattr(g, "_record_publish",
+                        lambda *a: calls.append(a))
+    pub = type(sys)("routes.geo_answer_publisher")
+    pub.publish_answer = lambda draft, overwrite=False: {"ok": True, "slug": draft["slug"]}
+    monkeypatch.setitem(sys.modules, "routes.geo_answer_publisher", pub)
+    monkeypatch.setattr(g, "_enabled", lambda: True)
+
+    out = g.autopublish_next(dry=False)
+    assert out["acted"] is True
+    assert len(calls) == 1, "publish did not write the outcome ledger"
+    slug, query, pack, source = calls[0]
+    assert slug == g._QUERY_PLAN[0]["slug"]
+    assert query and pack and source == "seed"
+
+
+def test_a_failed_publish_writes_no_ledger_row(monkeypatch):
+    """A row for a page that never went up would poison the before/after read."""
+    calls = []
+    monkeypatch.setattr(g, "_gap_enabled", lambda: False)
+    monkeypatch.setattr(g, "_page_exists", lambda slug: False)
+    monkeypatch.setattr(g, "_gather_facts", lambda item: [{"markets_scored": "300+"}])
+    monkeypatch.setattr(g, "_llm_draft", lambda item, rows: {
+        "slug": item["slug"], "title": "T", "short_answer": "S", "lede": "L",
+        "meta_description": "M", "sections": [{"h": "h", "p": "p"}]})
+    monkeypatch.setattr(g, "_record_publish", lambda *a: calls.append(a))
+    pub = type(sys)("routes.geo_answer_publisher")
+    pub.publish_answer = lambda draft, overwrite=False: {"ok": False, "error": "boom"}
+    monkeypatch.setitem(sys.modules, "routes.geo_answer_publisher", pub)
+    monkeypatch.setattr(g, "_enabled", lambda: True)
+
+    out = g.autopublish_next(dry=False)
+    assert out["acted"] is False
+    assert calls == [], "a failed publish still wrote a ledger row"
+
+
+def test_dry_run_writes_no_ledger_row(monkeypatch):
+    calls = []
+    monkeypatch.setattr(g, "_gap_enabled", lambda: False)
+    monkeypatch.setattr(g, "_page_exists", lambda slug: False)
+    monkeypatch.setattr(g, "_gather_facts", lambda item: [{"markets_scored": "300+"}])
+    monkeypatch.setattr(g, "_llm_draft", lambda item, rows: {
+        "slug": item["slug"], "title": "T", "short_answer": "S", "lede": "L",
+        "meta_description": "M", "sections": [{"h": "h", "p": "p"}]})
+    monkeypatch.setattr(g, "_record_publish", lambda *a: calls.append(a))
+    g.autopublish_next(dry=True)
+    assert calls == []
+
+
+def test_outcomes_fail_soft_and_never_raise(monkeypatch):
+    """This read sits in a daily workflow. It must degrade to an empty board, not
+    a red run that says nothing about the pages."""
+    broken = type(sys)("main")
+    def _boom():
+        raise RuntimeError("db down")
+    broken.get_read_db = _boom
+    monkeypatch.setitem(sys.modules, "main", broken)
+    out = g.page_outcomes()
+    assert out["ok"] is True and out["pages"] == []
+    assert "unavailable" in out["note"] or out["note"] == "no_db"
+
+
+def test_ledger_write_never_breaks_a_publish(monkeypatch):
+    """The page is already live when this runs — losing the row costs the
+    measurement, not the page."""
+    broken = type(sys)("main")
+    def _boom():
+        raise RuntimeError("db down")
+    broken.get_db = _boom
+    monkeypatch.setitem(sys.modules, "main", broken)
+    g._record_publish("some-slug", "some query", "pack", "gap")  # must not raise
