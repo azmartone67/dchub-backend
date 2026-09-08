@@ -495,6 +495,23 @@ def _run_master_tick(dry: bool, tiers: set) -> dict:
                 report["steps"].append({"step": "tier2.approved_without_pr_redrive",
                                         "ok": False, "error": str(_rd_e)[:160]})
 
+            # 2026-09-08: status='pr_opened' was a terminal trap — 52 rows,
+            # oldest since 2026-05-31, all skipped by the drafter as
+            # already-PR'd while their PR was long closed or long merged.
+            # list_merged_brain_prs walks a 30-day window and only lists
+            # MERGED PRs, so neither half could ever be reached. This pass
+            # runs DB-outward instead, so it has no lookback.
+            try:
+                from routes.brain_merge_reconciler import (
+                    settle_orphaned_pr_opened as _settle)
+                _st = _settle() or {}
+                report["steps"].append({"step": "tier2.settle_orphaned_pr_opened",
+                                        "ok": bool(_st.get("ok")),
+                                        "detail": _st})
+            except Exception as _st_e:
+                report["steps"].append({"step": "tier2.settle_orphaned_pr_opened",
+                                        "ok": False, "error": str(_st_e)[:160]})
+
     # ── Tier 3 — HUMAN-GATED (propose only) ─────────────────────────
     if "3" in tiers:
         report["tiers_run"].append("3")
