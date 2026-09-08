@@ -21,11 +21,25 @@ they are Google's AI-side agents, and neither substring occurs in a plain
 Googlebot UA, so real Gemini traffic is still attributable the moment it appears.
 Only the Search crawler leaves.
 
-★ COPILOT IS NOT THE SAME CASE, and this file pins that too. Its bucket is
-mostly BingBot — but Copilot crawls as Bingbot and has NO other surface;
-robots.txt reopened /api/ to Bingbot on 2026-08-31 precisely because "Copilot is
-the point". The same edit there would zero a real channel rather than narrow a
-mislabelled one. Symmetry would be the wrong instinct.
+★ COPILOT WAS NOT THE SAME CASE, AND THEN THE REQUIREMENT CHANGED (2026-09-08).
+This file used to pin BingBot INSIDE copilot, on the reasoning that Copilot
+crawls as Bingbot and has no other surface, so narrowing it would zero a real
+channel rather than narrow a mislabelled one. That reasoning still holds on its
+own terms and is why the split below is a RENAME of the only Copilot-adjacent
+signal, not a discovery of a hidden one — Microsoft publishes no Bing-side AI
+token, unlike Google-Extended.
+
+What changed: the edge beacon now records Bingbot on CONTENT pages, thousands of
+page fetches a day against the ~12/day of /api traffic the Flask hook saw.
+Pouring a search-index crawl of that size into an assistant's bar is the gemini
+failure at ~100x the volume, so measuring Bing and publishing "Copilot reach"
+stopped being compatible. Bingbot now resolves to its own `bing` bucket;
+`copilot` keeps its Copilot marker so a real Copilot UA still attributes.
+
+★ THE ASYMMETRY IS STILL THE POINT, just resolved the other way: gemini's
+narrowing REVEALED that a bar was mislabelled (837 Googlebot / 0
+Google-Extended). This one does not reveal anything — it separates two uses of
+one UA so a volume change in the crawl cannot be read as demand.
 """
 import os
 import sys
@@ -70,16 +84,43 @@ def test_the_roster_entry_kept_the_ai_tokens():
             % keep)
 
 
-def test_copilot_is_deliberately_left_alone():
-    """★ Not an oversight. Removing BingBot would zero the channel."""
+def test_bingbot_is_its_own_bucket_not_copilot():
+    """★2026-09-08 — this assertion is the REVERSE of what stood here.
+
+    It previously required `bingbot in copilot.agents`, with the reason quoted in
+    the docstring above. The split is deliberate and its cost is published in
+    main.py's reach_definition, the same standard the gemini narrowing was held
+    to. Do not "restore symmetry" without reading both notes.
+    """
     from ai_tracking import AI_PLATFORMS, detect_platform
-    agents = [a.lower() for a in AI_PLATFORMS["copilot"]["agents"]]
-    assert "bingbot" in agents, (
-        "BingBot was removed from copilot by symmetry with the gemini fix. "
-        "Copilot has no other surface — robots.txt reopened /api/ to Bingbot "
-        "on 2026-08-31 because Copilot is the point. That edit zeroes a real "
-        "channel instead of narrowing a mislabelled one")
-    assert detect_platform("Mozilla/5.0 (compatible; bingbot/2.0)", "") == "copilot"
+    cop = [a.lower() for a in AI_PLATFORMS["copilot"]["agents"]]
+    assert "bingbot" not in cop, (
+        "BingBot is back inside copilot. Its content-page crawl is ~100x the "
+        "/api volume, so it would publish a search-index crawl as assistant "
+        "reach — the gemini failure at scale.")
+    assert detect_platform("Mozilla/5.0 (compatible; bingbot/2.0)", "") == "bing"
+
+
+def test_copilot_is_narrowed_not_deleted():
+    """A real Copilot UA must still attribute, or this was a deletion."""
+    from ai_tracking import AI_PLATFORMS, detect_platform
+    assert "copilot" in [a.lower() for a in AI_PLATFORMS["copilot"]["agents"]], (
+        "copilot lost its own marker — the bucket is now unreachable and the "
+        "channel is deleted rather than narrowed")
+    assert detect_platform("Mozilla/5.0 Copilot", "") == "copilot"
+
+
+def test_bing_is_measured_but_not_counted_as_an_ai_platform():
+    """The whole point of the separate id: measured, not promoted."""
+    from ai_platform_canon import canonical_platform, count_platforms
+    assert canonical_platform("bing") is None, (
+        "bing became a canonical vendor — a search crawler would now inflate "
+        "the published 'N AI platforms' count.")
+    assert count_platforms(["bing", "copilot", "claude"]) == 2, (
+        "count_platforms counts bing; it must drop it as unrecognized.")
+    from ai_tracking import AI_PLATFORMS
+    assert "bing" in AI_PLATFORMS, (
+        "the bing bucket is gone, so Bingbot traffic falls somewhere unnamed")
 
 
 def test_the_discontinuity_is_published_not_silent():

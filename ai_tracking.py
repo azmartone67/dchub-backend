@@ -103,15 +103,43 @@ AI_PLATFORMS = {
     # returns "seo_bot", which _log_ai_request already drops — so these rows
     # stop being written rather than being written to another bucket.
     #
-    # ★ COPILOT IS DELIBERATELY LEFT ALONE despite being the same shape
-    # (its bucket is mostly BingBot). Copilot crawls as Bingbot and has NO
-    # other surface — robots.txt reopened /api/ to Bingbot on 2026-08-31
-    # precisely because "Copilot is the point". Removing it would zero the
-    # channel rather than narrow it. Gemini is different: Google-Extended
-    # exists as a distinct token and is simply not being used on us.
+    # ★★ 2026-09-08 — COPILOT IS NOW NARROWED, REVERSING THE NOTE THAT STOOD
+    # HERE. It read "COPILOT IS DELIBERATELY LEFT ALONE... Removing it would
+    # zero the channel rather than narrow it", and that reasoning was sound on
+    # its own terms. What changed is the requirement, not the facts.
+    #
+    # THE ASYMMETRY THAT NOTE PROTECTED IS REAL and is recorded here so nobody
+    # thinks it was overlooked: Google publishes Google-Extended as a distinct
+    # AI-side token (measured 2026-09-05: 0 requests, while plain Googlebot had
+    # 837), so narrowing `gemini` revealed a mislabelling. Microsoft publishes
+    # NO Bing-side AI token — Copilot grounds on the Bing index and crawls as
+    # Bingbot, full stop. So this split does not uncover a hidden truth; it
+    # renames the only Copilot-adjacent signal that can exist.
+    #
+    # WHY DO IT ANYWAY. The edge beacon now records Bingbot on CONTENT pages
+    # (dchub-frontend AI_CRAWLER_UA_RE), which is thousands of page fetches a
+    # day rather than the ~12/day of /api traffic the Flask hook saw. Pouring
+    # that into `copilot` would have made a search-index crawl read as assistant
+    # demand — the exact failure the gemini narrowing exists to prevent, at
+    # ~100x the volume. Measuring Bing's crawl and publishing "Copilot reach"
+    # became incompatible, so they are now two names.
+    #
+    # ★ CONSEQUENCE, PUBLISHED NOT SILENT (see the reach_definition block in
+    # main.py, same standard the gemini change was held to): `copilot` forward
+    # reach falls to ~0 while its historical rows keep the OLD basis. A drop
+    # there is this attribution change, NOT Microsoft leaving. And `copilot`
+    # keeps its "Copilot" marker, so a real Copilot-branded UA still attributes
+    # the moment one appears — this narrows the bucket, it does not delete it.
+    #
+    # ★ `bing` is deliberately NOT added to ai_platform_canon._VENDOR_ALIASES,
+    # so canonical_platform("bing") stays None and count_platforms() does not
+    # count a search crawler as an AI platform. It is measured, not promoted.
     "gemini":     {"name": "Gemini",     "color": "#4285f4", "company": "Google",     "agents": ["Google-Extended", "GoogleOther", "Gemini"]},
     "perplexity": {"name": "Perplexity", "color": "#1fb8cd", "company": "Perplexity", "agents": ["PerplexityBot"]},
-    "copilot":    {"name": "Copilot",    "color": "#0078d4", "company": "Microsoft",  "agents": ["Copilot", "BingBot", "bingbot"]},
+    "copilot":    {"name": "Copilot",    "color": "#0078d4", "company": "Microsoft",  "agents": ["Copilot"]},
+    # Search crawler, not an assistant. Its own bucket so Bing's page-crawl
+    # volume can be measured without being published as Copilot reach.
+    "bing":       {"name": "Bing",       "color": "#737373", "company": "Microsoft",  "agents": ["BingBot", "bingbot", "BingPreview"]},
     "grok":       {"name": "Grok",       "color": "#1d9bf0", "company": "xAI",        "agents": ["Grok", "xAI"]},
     "deepseek":   {"name": "DeepSeek",   "color": "#0066ff", "company": "DeepSeek",   "agents": ["DeepSeek"]},
     "cursor":     {"name": "Cursor",     "color": "#00e5a0", "company": "Cursor",     "agents": ["Cursor"]},
