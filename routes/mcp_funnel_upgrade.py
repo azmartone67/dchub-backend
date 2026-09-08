@@ -307,10 +307,10 @@ def upgrade_hint():
     # VALUES from canon; keep the SHAPE where the guard can read it.
     tiers = {
         "anonymous":  {"calls_per_day": _hn("anonymous"),  "results_per_call": _res("anonymous", 1),
-                       "price_usd_month": 0, "needs_key": False,
+                       "price_usd_month": _hp("anonymous"), "needs_key": False,
                        "label": f"No signup, {_hn('anonymous')}/day"},
         "free":       {"calls_per_day": _hn("free"),       "results_per_call": _res("free", 5),
-                       "price_usd_month": 0, "needs_key": "email signup",
+                       "price_usd_month": _hp("free"), "needs_key": "email signup",
                        "label": f"Free dev key — {_hn('free')}/day",
                        "signup_url": "https://dchub.cloud/signup"},
         "starter":    {"calls_per_day": _hn("starter"),    "results_per_call": _res("starter", 50),
