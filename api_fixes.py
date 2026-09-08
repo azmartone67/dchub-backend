@@ -161,12 +161,9 @@ def get_news():
     # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     cursor = conn.cursor()
     
-    # Check if news_articles table exists
-    cursor.execute("""
-        SELECT name FROM sqlite_master 
-        WHERE type='table' AND name='news_articles'
-    """)
-    if not cursor.fetchone():
+        # Check if news_articles table exists
+    cursor.execute("SELECT to_regclass('public.news_articles')")
+    if not cursor.fetchone()[0]:
         conn.close()
         return jsonify({
             'success': False,
