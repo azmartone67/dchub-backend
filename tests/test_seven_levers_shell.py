@@ -409,9 +409,23 @@ def test_repo_worker_is_canon_clean_and_current():
     # appears nowhere in the AI platform census. An agent reading our own
     # discovery documents could not learn the Space existed. Labelled a SECONDARY
     # surface in the payload: 7 curated tools against 88 on `url`.
-    # ★ PASTE STILL OUTSTANDING at time of writing. Sibling: /llms.txt entry is
-    # dchub-frontend#1423 (CF Pages, deploys on merge — so the two surfaces will
-    # disagree until the paste happens; llms.txt will name the Space first).
+    # ★ PASTE STILL OUTSTANDING at time of writing — live served
+    # 4.9.60-fallback-tools-88 at 2026-09-08 09:45Z.
+    # Sibling: the /llms.txt entry is dchub-backend#4237, which edits the real
+    # renderer — ai_discovery_routes.serve_llms_txt(), the one worker.js proxies
+    # to Railway ("Discovery paths → Railway", DISCOVERY_PATHS) — and adds a
+    # guard pinning the entry there.
+    # ★ DECOY TRAP: five llms*.txt files exist across the two repos and not one
+    # of them is what serves, so dchub-frontend#1423 merged and changed the
+    # served document by exactly nothing. (Proof the renderer is what serves:
+    # the live body carries "# Last-Updated: <today>", built by utc_now() inside
+    # serve_llms_txt(); no static file has that line.)
+    # Measured 2026-09-08 09:45Z, no cache-buster — a unique `?_=` is a
+    # different cache key and answers a question nobody asked:
+    #   curl -sS https://dchub.cloud/llms.txt | grep -ci huggingface   -> 0
+    # #4237 was OPEN with auto-merge armed when this was written; re-run that
+    # curl before trusting the 0 — like the 4.9.42 note above, this line goes
+    # stale by merging, and the live document is the authority, not this comment.
     # Verify with (want 4.9.61-hf-space-discovery):
     #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
