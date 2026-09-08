@@ -180,6 +180,116 @@ def client_class(platform: str | None) -> str:
     return CLASS_UNKNOWN
 
 
+# ── CALL SHAPE (2026-09-08) ──────────────────────────────────────────────
+# client_class reads the NAME a caller declares. This reads what it DID, which
+# is the stronger signal and the one that settled the question client_class
+# could not: `connectors-manager` reads like plumbing and behaves like an agent
+# doing work.
+#
+# THRESHOLDS ARE MEASURED, NOT CHOSEN. Every distinct client in mcp_call_log
+# over 30d to 2026-09-08, sorted by max/median of its per-tool call counts:
+#
+#   mcp-reputation-scanner      1.00   (5 tools, all 7 calls)
+#   mcphub                      1.00   (5 tools, all 3 calls)
+#   unknown                     1.50
+#   actionist-apps-verification 2.50   (top counts 15,9,6,6,6,6)
+#   smithery                    3.52   (190,189,118,105,88,87 over 37 tools)
+#   ------------------------------- the gap -------------------------------
+#   connectors-manager          5.00   (15,15,13,6,5,5 over 23 tools)
+#   grok                        5.54
+#   anthropicapi                9.33
+#   curl                       16.67
+#   mcp                       200.97   (6632, then 784,452,402...)
+#   claude                    371.50   (1486, then 53,30,29...)
+#   dchub-internal           1165.15
+#
+# A harness enumerating a catalogue is FLAT. A real workload is steep: it has a
+# few tools it leans on and a long thin tail. _FLAT_MAX_OVER_MEDIAN sits at 4.0,
+# inside the observed gap — the two nearest points are smithery 3.52 and
+# connectors-manager 5.00, and both are named here so a reader can judge the
+# margin rather than take the constant on faith. Two samples either side is a
+# thin basis; re-measure before treating this as settled.
+#
+# top_share catches the other shape — one tool hammered:
+#   chain-hire 0.999 (search x1473, everything else x2), mcp-spec-study 1.000,
+#   fabrique-c3-idempotency 1.000. claude sits at 0.813 and stays VARIED, which
+#   is the closest real call and worth knowing: an assistant can be
+#   single-tool-dominant without being a scraper.
+#
+# ★ TOO FEW CALLS IS ITS OWN ANSWER. Below _SHAPE_MIN_CALLS the shape of 4
+# calls is noise, and forcing it into a bucket would manufacture a verdict from
+# nothing — the same failure as reading `unknown` as `tooling`. Those return
+# INSUFFICIENT_DATA, which is not a shape and must never be counted as one.
+SHAPE_SINGLE_TOOL  = "single_tool"    # one tool hammered
+SHAPE_SWEEP        = "sweep"          # flat across many tools: a harness
+SHAPE_VARIED       = "varied"         # steep: a real workload
+SHAPE_INSUFFICIENT = "insufficient_data"
+
+_SHAPE_MIN_CALLS = 10
+_SINGLE_TOOL_SHARE = 0.90
+_FLAT_MAX_OVER_MEDIAN = 4.0
+_SWEEP_MIN_TOOLS = 5
+
+
+def call_shape(tool_counts) -> str:
+    """Classify a caller by the SHAPE of its per-tool call distribution.
+
+    `tool_counts` maps tool name -> call count (or is an iterable of counts).
+    Returns one of the SHAPE_* constants. Orthogonal to both
+    canonical_platform and client_class: a recognised assistant still has a
+    shape, and that is often the interesting part.
+    """
+    try:
+        counts = sorted(
+            (int(n) for n in (tool_counts.values()
+                              if hasattr(tool_counts, "values") else tool_counts)
+             if n is not None), reverse=True)
+    except Exception:
+        return SHAPE_INSUFFICIENT
+    counts = [n for n in counts if n > 0]
+    total = sum(counts)
+    if not counts or total < _SHAPE_MIN_CALLS:
+        return SHAPE_INSUFFICIENT
+    if counts[0] / total >= _SINGLE_TOOL_SHARE:
+        return SHAPE_SINGLE_TOOL
+    mid = len(counts) // 2
+    median = (counts[mid] if len(counts) % 2
+              else (counts[mid - 1] + counts[mid]) / 2.0)
+    if (len(counts) >= _SWEEP_MIN_TOOLS and median > 0
+            and counts[0] / median <= _FLAT_MAX_OVER_MEDIAN):
+        return SHAPE_SWEEP
+    return SHAPE_VARIED
+
+
+def shape_stats(tool_counts) -> dict:
+    """The numbers call_shape decided on, so a reader can disagree with it.
+
+    Published alongside the verdict rather than instead of it — a classifier
+    that shows only its answer cannot be argued with, and these thresholds sit
+    in a two-sample gap.
+    """
+    try:
+        counts = sorted(
+            (int(n) for n in (tool_counts.values()
+                              if hasattr(tool_counts, "values") else tool_counts)
+             if n is not None), reverse=True)
+    except Exception:
+        counts = []
+    counts = [n for n in counts if n > 0]
+    total = sum(counts)
+    mid = len(counts) // 2
+    median = ((counts[mid] if len(counts) % 2
+               else (counts[mid - 1] + counts[mid]) / 2.0) if counts else 0)
+    return {
+        "calls": total,
+        "distinct_tools": len(counts),
+        "top_share": round(counts[0] / total, 3) if total else None,
+        "max_over_median": (round(counts[0] / median, 2)
+                            if median else None),
+        "shape": call_shape(counts),
+    }
+
+
 def classify_clients(platforms) -> dict:
     """{class: count of DISTINCT client ids} over an iterable of raw ids."""
     seen, out = set(), {}
