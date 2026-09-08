@@ -246,7 +246,11 @@ def test_the_pinned_rolling_mirror_matches_the_shipped_arithmetic():
 
 def test_a_clean_post_correction_pair_is_left_alone():
     """★ THE FALSE BRANCH. If this withheld too, no trend could ever ship."""
-    spans = _week_spans([_dt.date(2026, 9, 7), _dt.date(2026, 9, 14)])
+    # ★2026-09-07: the clean pair moved W37/W38 -> W38/W39. dchub-mcp-server#382
+    # is registered at 2026-09-07T23:00Z (the cap wall finally writes an
+    # mcp_upgrade_signals row), which lands inside W37. Third move of this
+    # fixture — it moves with every new marker, by design.
+    spans = _week_spans([_dt.date(2026, 9, 14), _dt.date(2026, 9, 21)])
     out = {_AGENTS: 12.5}
     _mark(out, spans, (_AGENTS,), "real_external_complete_wk")
     assert out[_AGENTS] == 12.5, "an unaffected delta must publish unchanged"
