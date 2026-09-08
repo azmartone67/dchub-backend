@@ -3374,6 +3374,21 @@ try:
     except Exception as _relay:
         import logging
         logging.getLogger(__name__).warning('relay_conversion_watch wiring failed: %s', _relay)
+    # 2026-09-08: blocked-demand profile — what agents are refused and how
+    # deep the refusal runs, WITHOUT any caller identity. Exists because the
+    # obvious next move off that finding (work the repeat-hitters as a lead
+    # list) is not available: caller_id is a rotating/IP-shaped bucket, and
+    # the endpoint publishes `contactability.mailable` live so the idea is
+    # answered by a number rather than re-argued. GET
+    # /api/v1/admin/blocked-demand-profile
+    try:
+        from routes.blocked_demand_profile import register_blocked_demand_profile
+        register_blocked_demand_profile(app)
+        print("[main] blocked_demand_profile registered: "
+              "GET /api/v1/admin/blocked-demand-profile", flush=True)
+    except Exception as _bdp:
+        import logging
+        logging.getLogger(__name__).warning('blocked_demand_profile wiring failed: %s', _bdp)
     # 2026-07-29: Registry surface shell (#42) — what an agent sees BEFORE it
     # reaches us. Glama served 33 tools / 21,000+ facilities with an EMPTY tool
     # array for 25 days. GET /api/v1/admin/registry-surface-shell
