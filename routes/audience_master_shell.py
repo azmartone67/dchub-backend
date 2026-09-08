@@ -359,7 +359,7 @@ def _persist(m: dict, geo: dict) -> bool:
                    probe_calls_7d, probe_ratio,
                    claude_share, new_agents_7d, upgrade_signals_7d,
                    geo_surface_health, geo_query_coverage, geo_gaps, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 m.get("real_agents_7d"), m.get("real_agents_7d_loose"),
                 m.get("real_calls_7d"), m.get("probe_calls_7d"),
