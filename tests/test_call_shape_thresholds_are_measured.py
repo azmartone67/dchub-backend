@@ -4,9 +4,22 @@ client_class reads the self-declared name. That could not settle the question
 it was built for: `connectors-manager` reads like plumbing and behaves like an
 agent doing real work. Shape is the stronger signal.
 
-These tests pin the MEASURED cases — real per-tool distributions from
-mcp_call_log over 30d to 2026-09-08 — so a threshold cannot be nudged without
-a case that actually moves proving it.
+These tests pin the MEASURED cases — real per-tool distributions over 30d to
+2026-09-08 — so a threshold cannot be nudged without a case that actually moves
+proving it.
+
+★ PROVENANCE. The vectors below were first measured on mcp_call_log. The
+endpoint now derives shapes from mcp_calls_identity with PLATFORM_CASE, because
+that is the table and classifier per_platform.platform_id comes from and
+matching two id spaces by string equality left 6 of 16 rows unshaped. The
+boundary cases SURVIVED that change, which is the real check on the threshold:
+
+    smithery connect      max/median 3.58   (was 3.52 on mcp_call_log)
+    connectors-manager    max/median 5.00   (unchanged)
+
+Still either side of 4.0 under a different table, a different classifier and a
+different traffic filter. `chatgpt` lands on exactly 4.00 and is a SWEEP by the
+<= boundary — a genuine tie, recorded rather than tuned away.
 """
 from __future__ import annotations
 
@@ -151,9 +164,19 @@ def test_the_shape_query_is_isolated_from_the_main_transaction():
         "_call_shapes can leak its connection on the error path")
 
 
-def test_the_shape_sql_carries_no_literal_percent():
-    """This module builds SQL with %-formatting and has been taken down by a
-    literal % before. Only the window's own placeholder may appear."""
+def test_the_shape_sql_uses_no_percent_formatting_at_all():
+    """★ PLATFORM_CASE CARRIES LITERAL % AND IS NOW INLINED HERE.
+
+    Its ILIKE patterns contain %, so ANY `sql % value` over a string holding it
+    raises "unsupported format character" and takes the endpoint down — the
+    exact outage this repo has already had twice. The window is concatenated as
+    a validated int instead.
+
+    Checking string CONSTANTS is not enough any more: PLATFORM_CASE arrives at
+    runtime via _PC.strip(), so a literal-scan sees a clean query and the real
+    SQL still carries %. This asserts the stronger, checkable property — no
+    %-formatting operator anywhere in the function.
+    """
     import ast
     import pathlib
     src = (pathlib.Path(__file__).resolve().parents[1]
@@ -162,8 +185,48 @@ def test_the_shape_sql_carries_no_literal_percent():
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == "_call_shapes")
     for node in ast.walk(fn):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if "SELECT" in node.value.upper() or "interval" in node.value:
-                stripped = node.value.replace("%d", "")
-                assert "%" not in stripped, (
-                    "literal %% in the shape SQL: %r" % node.value)
+        assert not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)), (
+            "%-formatting inside _call_shapes: PLATFORM_CASE contains literal %% "
+            "and this raises at request time. Concatenate a validated int.")
+    assert "PLATFORM_CASE" in src, "the shape query no longer uses the canon classifier"
+
+
+def test_the_shape_query_reads_the_same_table_and_classifier_as_per_platform():
+    """★ ONE ID SPACE, OR THE COLUMN IS DECORATION.
+
+    per_platform.platform_id is PLATFORM_CASE over mcp_calls_identity. The
+    first version of the shape query read mcp_call_log.platform — the raw
+    self-declared string — and matched the two by string equality. 6 of 16 rows
+    found nothing and published insufficient_data with calls=None, which reads
+    as "too few calls to judge" and meant "no such id in this table":
+    anthropic/api had 165 calls over 27 tools, claude-ai 68, claude-code 31.
+    """
+    import ast
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1]
+           / "routes" / "ai_reach.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_call_shapes")
+    # ★ Inspect the SQL, not the prose. The comment above the query names
+    # mcp_call_log on purpose — it records why the table changed — and a guard
+    # that reads comments would force that explanation to be deleted to stay
+    # green. Only string constants that look like SQL are examined.
+    sql = " ".join(
+        n.value for n in ast.walk(fn)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        and ("SELECT" in n.value.upper() or "FROM " in n.value.upper()
+             or "WHERE" in n.value.upper()))
+    assert sql.strip(), "no SQL string found in _call_shapes"
+    assert "mcp_calls_identity" in sql, (
+        "the shape query reads a different table from the one platform_id is "
+        "derived from, so the two id spaces cannot be matched")
+    assert "mcp_call_log" not in sql, (
+        "the shape SQL still reads mcp_call_log — that is the other id space")
+    assert "is_real_external" in sql, (
+        "the shape query does not apply the same real-traffic filter as the "
+        "rows it stamps, so a shape would describe a different population")
+    body = ast.get_source_segment(src, fn) or ""
+    assert "PLATFORM_CASE" in body, (
+        "the shape query does not apply the canonical classifier, so its ids "
+        "are raw strings while platform_id is classified")
