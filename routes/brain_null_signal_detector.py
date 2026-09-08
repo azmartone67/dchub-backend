@@ -145,6 +145,122 @@ def live_relations(cur) -> set[str]:
     return {r[0] for r in cur.fetchall() if r and r[0]}
 
 
+# ── Suppression ──────────────────────────────────────────────────────
+#
+# 2026-09-08. The first run reported 12 dead probes of which 2 were real
+# defects. A sensor that fires on healthy input is not a sensor — the same
+# failure as the corpora_missing sensor that fired on ~100% of healthy
+# traffic. These three rules are the ones earned by hand-triaging that run.
+#
+# Only STRUCTURAL facts are inferred. Rule 2 and rule 3 are decidable from
+# the tree. Anything that needs a human's judgement about intent must be
+# written down as rule 1 rather than guessed at, because the guess this
+# detector most wants to make is exactly the one that already misfired:
+# "its else-branch logs an error, so it must be live". A dead module logs
+# too. An error message proves someone anticipated the failure, not that
+# the code runs — free_tier_limiter.py is 744 lines of never-executed
+# proof of that.
+
+_ANNOT_RE = re.compile(r"#\s*null-signal:\s*(\S.*?)\s*$")
+
+# How far above a probe site to look for its annotation.
+_ANNOT_LOOKBACK = 3
+
+
+def _file_lines(root: Path, rel: str) -> list[str]:
+    try:
+        return (root / rel).read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return []
+
+
+def _annotation_for(root: Path, site: str) -> str | None:
+    """rule 1 — an explicit `# null-signal: <reason>` at or just above the site.
+
+    Deliberate opt-out, written by whoever knows the intent, and greppable:
+    `grep -rn "null-signal:"` lists every suppression in the tree.
+    """
+    rel, _, lineno = site.rpartition(":")
+    if not lineno.isdigit():
+        return None
+    lines = _file_lines(root, rel)
+    i = int(lineno) - 1
+    for j in range(i, max(-1, i - _ANNOT_LOOKBACK - 1), -1):
+        if 0 <= j < len(lines):
+            m = _ANNOT_RE.search(lines[j])
+            if m:
+                return m.group(1)
+    return None
+
+
+def _creates_it(root: Path, rel: str, bare: str) -> bool:
+    """rule 2 — lazy-create: the same file CREATEs the table it probes.
+
+    `if to_regclass(...) is None: CREATE TABLE IF NOT EXISTS ...` is the
+    idiom for a table that is supposed to be absent until first use. The
+    probe returning NULL is the designed path, not a defect.
+    """
+    text = "\n".join(_file_lines(root, rel))
+    return bool(re.search(
+        r"CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?(public\.)?" + re.escape(bare) + r"\b",
+        text, re.I))
+
+
+def _is_unreachable_module(root: Path, rel: str) -> bool:
+    """rule 3 — nothing outside this file mentions the module at all.
+
+    A probe inside code that never executes cannot be a live defect. The
+    check is deliberately blunt: ANY mention of the module stem anywhere
+    else in the tree (import, string, blueprint registration, dynamic
+    loader) disqualifies it, so a module reached by a route this scan does
+    not understand is never suppressed by mistake.
+    """
+    stem = Path(rel).stem
+    if not stem:
+        return False
+    for path in root.rglob("*.py"):
+        if any(part in _SKIP_DIRS for part in path.parts):
+            continue
+        if str(path.relative_to(root)) == rel:
+            continue
+        try:
+            if re.search(r"\b" + re.escape(stem) + r"\b",
+                         path.read_text(encoding="utf-8", errors="ignore")):
+                return False
+        except OSError:
+            continue
+    return True
+
+
+def classify(root: Path, probed: str, sites: list[str]) -> dict | None:
+    """None => report it. Otherwise the reason it is suppressed.
+
+    Every site must be suppressed for the probe to be suppressed: one live
+    call site reading a table that does not exist is still a real defect,
+    however many dead ones sit beside it.
+    """
+    bare = probed.split(".")[-1]
+    reasons = []
+    for site in sites:
+        rel = site.rpartition(":")[0]
+        note = _annotation_for(root, site)
+        if note:
+            reasons.append({"site": site, "rule": "annotated", "why": note})
+            continue
+        if _creates_it(root, rel, bare):
+            reasons.append({"site": site, "rule": "lazy_create",
+                            "why": f"{rel} creates {bare} when the probe "
+                                   f"returns NULL"})
+            continue
+        if _is_unreachable_module(root, rel):
+            reasons.append({"site": site, "rule": "unreachable_module",
+                            "why": f"nothing outside {rel} mentions "
+                                   f"{Path(rel).stem} — the probe cannot run"})
+            continue
+        return None
+    return {"rules": sorted({r["rule"] for r in reasons}), "sites": reasons}
+
+
 def dead_probes(probes: dict, live: set[str]) -> list[dict]:
     """Probed names with no matching relation. `public.x` and `x` both match
     the bare relation name — to_regclass resolves through search_path."""
@@ -154,6 +270,24 @@ def dead_probes(probes: dict, live: set[str]) -> list[dict]:
             out.append({"probed": name, "sites": sorted(probes[name])[:6],
                         "site_count": len(probes[name])})
     return out
+
+
+def split_dead(dead: list[dict], root: Path | None = None) -> dict:
+    """Partition dead probes into what to report and what is by design.
+
+    Both halves are returned. The suppressed list is not swallowed — it is
+    published with the rule that suppressed each one, so a wrong suppression
+    is visible in the same response rather than silently absent.
+    """
+    root = Path(root or _ROOT)
+    reported, suppressed = [], []
+    for d in dead:
+        why = classify(root, d["probed"], d["sites"])
+        if why is None:
+            reported.append(d)
+        else:
+            suppressed.append({**d, "suppressed_by": why})
+    return {"reported": reported, "suppressed": suppressed}
 
 
 def _self_test(probes: dict, live: set[str]) -> dict:
@@ -224,9 +358,21 @@ def null_signals():
         return jsonify(body), 200
 
     dead = dead_probes(probes, live)
-    body["dead_probe_count"] = len(dead)
-    body["dead_probes"] = dead
+    split = split_dead(dead)
+    body["dead_probe_count"] = len(split["reported"])
+    body["dead_probes"] = split["reported"]
+    # Published, not swallowed: a wrong suppression has to be visible in the
+    # same response, or this becomes a way to hide findings instead of rank
+    # them.
+    body["suppressed_count"] = len(split["suppressed"])
+    body["suppressed"] = split["suppressed"]
+    body["dead_probe_count_unsuppressed"] = len(dead)
     body["note"] = ("each dead probe is an `if to_regclass(...)` branch that "
                     "never runs and emits no error — a feature that is off "
-                    "with nothing anywhere saying so")
+                    "with nothing anywhere saying so. `suppressed` lists the "
+                    "ones that are by design, each with the rule that "
+                    "suppressed it: annotated (an explicit `# null-signal:` "
+                    "comment), lazy_create (the file creates the table it "
+                    "probes), unreachable_module (nothing else in the tree "
+                    "mentions the module).")
     return jsonify(body), 200
