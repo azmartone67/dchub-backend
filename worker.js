@@ -1,14 +1,32 @@
 
 /**
- * DC Hub API Proxy Worker v4.9.55 — MCP surfaces name their tools (2026-09-05)
+ * DC Hub API Proxy Worker — Cloudflare zone worker for api.dchub.cloud
  *
- * ★ THIS TITLE LINE READ v4.9.30 FOR EIGHTEEN EDITS. The version this worker
- * actually reports — `const WORKER_VERSION` below, and the X-DC-Worker-Version
- * header it stamps on every response — was already 4.9.48 while this line said
- * 4.9.30 and the block directly beneath it was headed "v4.9.47 CHANGES".
- * Anyone comparing the dashboard's title against a file they were handed would
- * conclude they were looking at the same code. Keep this in step with
- * WORKER_VERSION, or delete it.
+ * ★ THE VERSION IS DELIBERATELY NOT WRITTEN ON THE LINE ABOVE. `const
+ * WORKER_VERSION` (below) is the single source in this file, and the
+ * X-DC-Worker-Version header it stamps on every response is the only authority
+ * for what is actually LIVE.
+ * This title line used to carry a version, and it drifted TWICE: it read
+ * v4.9.30 for EIGHTEEN edits while the const was already 4.9.48, then it read
+ * v4.9.55 while the const was 4.9.62. Both times, anyone comparing the
+ * dashboard's title against a file they were handed would have concluded they
+ * were looking at the same code. The note that used to sit here said "keep this
+ * in step with WORKER_VERSION, or delete it" — a rule with nothing enforcing
+ * it, which is precisely why it drifted a second time. Taken out, and fenced:
+ * tests/test_worker_header_version_not_a_second_source.py FAILS if a version
+ * literal reappears on this line disagreeing with the const.
+ * ★ The CHANGES blocks below KEEP their versions — those are history, and a
+ * historical entry should name the version it shipped in. Only the title line,
+ * which claims to describe the file as it stands, was the lie.
+ * ================================================================================
+ * v4.9.63 CHANGES (Sep 08 2026) — Phase header-version-single-source:
+ *   - FIX: the title line said v4.9.55 while WORKER_VERSION said 4.9.62 — the
+ *          second recurrence of a drift the line's own comment documented and
+ *          asked a human to prevent by hand. Removed rather than re-synced, so
+ *          there is one place a version can be wrong instead of two, and added
+ *          the guard named above. No behaviour change; comment-only, plus the
+ *          const bump that scripts/check_worker_version_bump.sh requires of
+ *          ANY worker.js edit.
  * ================================================================================
  * v4.9.55 CHANGES (Sep 05 2026) — Phase mcp-surfaces-name-their-tools:
  *   - FIX: GET /mcp declared `tools: 83` and named NONE of them. The comment
@@ -521,7 +539,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.62-og-card-body-not-spent';
+const WORKER_VERSION = '4.9.63-header-version-single-source';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
