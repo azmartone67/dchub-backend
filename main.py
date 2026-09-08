@@ -17326,9 +17326,6 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
                 _log_welcome_email(to_email, plan_name, status='failed_no_sendgrid_key',
                                    claim_id=claim_id)
                 return
-            from sendgrid import SendGridAPIClient
-            from sendgrid.helpers.mail import Mail, Email, To, Content, HtmlContent
-
             plan_display = plan_name.replace('_', ' ').title()
             subject = f"Welcome to DC Hub {plan_display} - Your API Key Inside"
             # r-onboarding-fix (2026-07-03, defect #6): lead with the Claude connector.
@@ -17456,19 +17453,27 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 </body>
 </html>"""
 
-            from sendgrid.helpers.mail import Cc
-            message = Mail(
-                from_email=Email('alerts@dchub.cloud', 'DC Hub'),
-                to_emails=To(to_email),
-                subject=subject,
-                html_content=HtmlContent(html)
-            )
-            message.add_cc(Cc('jonathan@dchub.cloud'))
-            sg = SendGridAPIClient(sg_key)
-            response = sg.send(message)
-            print(f"📧 Welcome email sent to {to_email} CC jonathan@dchub.cloud (status: {response.status_code})")
+            # r-sendgrid-dead (2026-09-07): the `sendgrid` package is NOT in
+            # requirements, so the import above raised on EVERY send.
+            # SENDGRID_API_KEY *is* set, so the key guard passed and each
+            # welcome fell into the except below and was rescued by Resend:
+            # 16 of 16 logged rows read sent_via_resend, while the console
+            # printed "Welcome email failed" every time. Customers were fine;
+            # observability was not, because a REAL failure looked exactly like
+            # the routine one. Send the rich HTML through Resend directly.
+            _ok = bool(_resend_email(to_email, subject, html,
+                                     from_email='alerts@dchub.cloud',
+                                     from_name='DC Hub'))
+            if _ok:
+                # The SDK's add_cc has no Resend equivalent; the owner copy is
+                # a second send so losing it can never fail the customer's.
+                try:
+                    _resend_email('jonathan@dchub.cloud', f"[copy] {subject}", html,
+                                  from_email='alerts@dchub.cloud', from_name='DC Hub')
+                except Exception:
+                    pass
+            print(f"📧 Welcome email sent to {to_email} (resend ok={_ok})")
             # r43-H: record outcome so the daily audit can reconcile.
-            _ok = 200 <= int(getattr(response, 'status_code', 0) or 0) < 300
             if not _ok:
                 _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name,
                                                   reset_url=reset_url)
@@ -17478,7 +17483,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
                                        claim_id=claim_id)
                     return
             _log_welcome_email(to_email, plan_name,
-                               status=('sent' if _ok else f'sendgrid_{response.status_code}'),
+                               status=('sent' if _ok else 'resend_failed'),
                                claim_id=claim_id)
         except Exception as e:
             print(f"❌ Welcome email failed for {to_email}: {e}")
@@ -17550,8 +17555,6 @@ def send_free_welcome_email_sendgrid(to_email, name=''):
             if not sg_key:
                 print(f"⚠️ SENDGRID_API_KEY not set, skipping free welcome email for {to_email}")
                 return
-            from sendgrid import SendGridAPIClient
-            from sendgrid.helpers.mail import Mail, Email, To, Content, HtmlContent, Cc
 
             display_name = name if name else to_email.split('@')[0]
             subject = "Welcome to DC Hub - Your Free Account is Active"
@@ -17632,22 +17635,26 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 </body>
 </html>"""
 
-            message = Mail(
-                from_email=Email('alerts@dchub.cloud', 'DC Hub'),
-                to_emails=To(to_email),
-                subject=subject,
-                html_content=HtmlContent(html)
-            )
-            message.add_cc(Cc('jonathan@dchub.cloud'))
-            sg = SendGridAPIClient(sg_key)
-            response = sg.send(message)
-            print(f"📧 Free welcome email sent to {to_email} CC jonathan@dchub.cloud (status: {response.status_code})")
+            # r-sendgrid-dead (2026-09-07): the `sendgrid` package is not in
+            # requirements, so the import raised on every send and this landed
+            # in the except below to be rescued by Resend. Send via Resend
+            # directly; the CC becomes a second send so losing the owner copy
+            # can never fail the customer's.
+            _ok = bool(_resend_email(to_email, subject, html,
+                                     from_email='alerts@dchub.cloud',
+                                     from_name='DC Hub'))
+            if _ok:
+                try:
+                    _resend_email('jonathan@dchub.cloud', f"[copy] {subject}", html,
+                                  from_email='alerts@dchub.cloud', from_name='DC Hub')
+                except Exception:
+                    pass
+            print(f"📧 Free welcome email sent to {to_email} (resend ok={_ok})")
             # r-resend-port (2026-06-16): SendGrid out of credits ("Maximum
             # credits exceeded" 401) → fall back to Resend so free signups
             # still get their welcome.
-            _ok = 200 <= int(getattr(response, 'status_code', 0) or 0) < 300
-            if not _ok and _resend_email(to_email, subject, html):
-                print(f"📧 Free welcome email sent to {to_email} via Resend fallback")
+            if not _ok:
+                print(f"❌ Free welcome email NOT sent to {to_email}")
                 return
         except Exception as e:
             print(f"❌ Free welcome email failed for {to_email}: {e}")
@@ -17675,8 +17682,6 @@ def send_pro_welcome_email_sendgrid(to_email, name=''):
             if not sg_key:
                 print(f"⚠️ SENDGRID_API_KEY not set, skipping Pro welcome email for {to_email}")
                 return
-            from sendgrid import SendGridAPIClient
-            from sendgrid.helpers.mail import Mail, Email, To, Content
             display_name = name if name else to_email.split('@')[0]
             subject = "🎉 Welcome to DC Hub Pro - Your Upgrade is Active"
             # This body is an f-STRING, so a {canon_*} placeholder would be read
@@ -17757,21 +17762,20 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 </div>
 </body>
 </html>"""
-            message = Mail(
-                from_email=Email("noreply@dchub.cloud", "DC Hub"),
-                to_emails=To(to_email),
-                subject=subject,
-                html_content=html
-            )
-            sg = SendGridAPIClient(sg_key)
-            response = sg.send(message)
-            print(f"📧 Pro welcome email sent to {to_email} (status: {getattr(response, 'status_code', '?')})")
+            # r-sendgrid-dead (2026-09-07): the `sendgrid` package is not in
+            # requirements, so the import raised on every send and this landed
+            # in the except below to be rescued by Resend. Send via Resend
+            # directly; the CC becomes a second send so losing the owner copy
+            # can never fail the customer's.
+            _ok = bool(_resend_email(to_email, subject, html,
+                                     from_email='noreply@dchub.cloud',
+                                     from_name='DC Hub'))
+            print(f"📧 Pro welcome email sent to {to_email} (resend ok={_ok})")
             # r-resend-port (2026-06-16): SendGrid out of credits ("Maximum
             # credits exceeded" 401) → fall back to Resend so Pro upgrades
             # still get their welcome.
-            _ok = 200 <= int(getattr(response, 'status_code', 0) or 0) < 300
-            if not _ok and _resend_email(to_email, subject, html):
-                print(f"📧 Pro welcome email sent to {to_email} via Resend fallback")
+            if not _ok:
+                print(f"⚠️ Pro welcome email NOT sent to {to_email}")
                 return
         except Exception as e:
             print(f"⚠️ Pro welcome email failed for {to_email}: {e}")
