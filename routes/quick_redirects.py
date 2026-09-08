@@ -98,7 +98,7 @@ integrate via MCP (Model Context Protocol) or direct REST.
 - {canon_deals} tracked M&A deals (live + autopilot-curated)
 - DCPI scores: BUILD/CAUTION/AVOID verdicts for 300+ markets
 - Live grid telemetry: 10 grid operators (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE, IESO, BPA, TVA) + 43 US utility balancing authorities
-- 50,000+ fiber routes, {canon_substations} substations, 52,000 transmission lines
+- {canon_fiber_routes} fiber routes, {canon_substations} substations, {canon_transmission_lines} transmission lines
 - 1,000+ active DC pipeline projects
 
 ## Competitive positioning

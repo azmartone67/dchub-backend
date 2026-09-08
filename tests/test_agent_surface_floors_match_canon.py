@@ -105,7 +105,8 @@ def test_no_retired_facility_floor_is_served(rel):
     if not p.exists():
         pytest.skip(f"{rel} absent")
     text = p.read_text(encoding="utf-8")
-    hits = [f for f in RETIRED_FACILITY_FLOORS if f in text]
+    hits = [f for f in RETIRED_FACILITY_FLOORS
+            if re.search(r'(?<![\d,])' + re.escape(f), text)]  # ★anchored, see above
     assert not hits, (
         f"{rel} carries retired facility floor(s) {hits}; canon is "
         f"{CANON_FACILITIES}. These files are hand-maintained — no heal job "
@@ -118,7 +119,13 @@ def test_no_retired_deal_floor_is_served(rel):
     if not p.exists():
         pytest.skip(f"{rel} absent")
     text = p.read_text(encoding="utf-8")
-    hits = [f for f in RETIRED_DEAL_FLOORS if f in text]
+    # ★2026-09-07 — ANCHORED. This was a bare `f in text`, which false-positives
+    #   as soon as a legitimate figure ends in a retired floor: "4,000+" is a
+    #   substring of "94,000+" (the transmission count canon now publishes),
+    #   "1,600+" of "21,600+", "1,400+" of "21,400+". A digit or comma directly
+    #   before the match means it is the tail of a bigger number.
+    hits = [f for f in RETIRED_DEAL_FLOORS
+            if re.search(r'(?<![\d,])' + re.escape(f), text)]
     assert not hits, (
         f"{rel} carries retired deal floor(s) {hits}; canon is {CANON_DEALS}. "
         f"4,000+ in particular was an OVER-claim — the direction that costs "
