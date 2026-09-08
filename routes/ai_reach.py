@@ -204,6 +204,7 @@ def _attach_canonical_7d(cur, out):
 try:
     from ai_platform_canon import canonical_platform
     from ai_platform_canon import client_class as _client_class
+    from ai_platform_canon import shape_stats as _shape_stats
 except Exception:  # pragma: no cover - canon must never break reach
     canonical_platform = None
     # ★ Fail to the honest answer, not to a comfortable one. If the canon
@@ -212,13 +213,62 @@ except Exception:  # pragma: no cover - canon must never break reach
     def _client_class(_p):
         return "unknown"
 
+    def _shape_stats(_d):
+        return {"shape": "insufficient_data"}
+
 _SUPPORTED_PERIODS = ("7d", "30d", "all")
 _wcache: dict = {}          # period -> {"ts": float, "data": dict}
 _WTTL = 1800
 
 
 
-def _stamp_vendor(rows):
+def _call_shapes(window_days: int = 30):
+    """{platform: shape_stats} over mcp_call_log, or ({}, reason) on failure.
+
+    ★ ITS OWN CONNECTION, ON PURPOSE. The main cursor sets a statement_timeout
+    and forbids bound params (PLATFORM_CASE carries a literal % that psycopg2
+    would try to interpolate). A GROUP BY over 30 days of mcp_call_log is the
+    heaviest read on this endpoint, and in Postgres a timed-out statement
+    aborts the whole transaction — every query after it in that block would
+    fail too. Isolating it means the worst case is "no shapes", never a
+    degraded payload for everything else.
+
+    ★ FAILS TO A REASON, NOT TO SILENCE. An empty dict and a broken query must
+    not look alike: this endpoint published an empty UA histogram beside a
+    count of 178 for an hour because a NameError was swallowed, and "measured,
+    and there is nothing there" is the worst thing a payload can say by
+    accident.
+    """
+    conn = None
+    try:
+        db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_REPLICA_URL")
+        if not db:
+            return {}, "no DATABASE_URL"
+        conn = psycopg2.connect(db, sslmode="require", connect_timeout=5)
+        conn.set_session(readonly=True, autocommit=True)
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = '6000'")
+            # No bound params and no literal % — same discipline as the caller.
+            cur.execute(
+                "SELECT platform, tool, COUNT(*) FROM mcp_call_log "
+                "WHERE timestamp > now() - interval '%d days' "
+                "AND COALESCE(platform,'') <> '' AND COALESCE(tool,'') <> '' "
+                "GROUP BY 1,2" % int(window_days))
+            by: dict = {}
+            for platform, tool, n in cur.fetchall():
+                by.setdefault(platform, {})[tool] = int(n or 0)
+        return {p: _shape_stats(d) for p, d in by.items()}, None
+    except Exception as e:  # noqa: BLE001
+        return {}, type(e).__name__ + ": " + str(e)[:160]
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _stamp_vendor(rows, shapes=None):
     """Attach each row's canonical vendor, and summarise what was not counted.
 
     ★ distinct_platforms_basis already tells the reader to "recompute either
@@ -239,6 +289,8 @@ def _stamp_vendor(rows):
     unrec_ids = 0
     _by_class_ids: dict = {}
     _by_class_reqs: dict = {}
+    _by_shape_ids: dict = {}
+    _by_shape_reqs: dict = {}
     unrec_reqs = 0
     for r in rows:
         if not isinstance(r, dict):
@@ -256,6 +308,11 @@ def _stamp_vendor(rows):
             r["client_class"] = _client_class(r.get("platform_id"))
         except Exception:
             r["client_class"] = "unknown"
+        # Shape is what the caller DID; class is what it calls itself. Stamped
+        # per row so the rollup below is re-derivable rather than trusted.
+        st = (shapes or {}).get(r.get("platform_id"))
+        r["call_shape"] = (st or {}).get("shape", "insufficient_data")
+        r["call_shape_stats"] = st
         if vendor is None:
             unrec_ids += 1
             try:
@@ -266,9 +323,32 @@ def _stamp_vendor(rows):
             cls = r.get("client_class") or "unknown"
             _by_class_ids[cls] = _by_class_ids.get(cls, 0) + 1
             _by_class_reqs[cls] = _by_class_reqs.get(cls, 0) + n
+            sh = r.get("call_shape") or "insufficient_data"
+            _by_shape_ids[sh] = _by_shape_ids.get(sh, 0) + 1
+            _by_shape_reqs[sh] = _by_shape_reqs.get(sh, 0) + n
     return {
         "unrecognised_client_ids": unrec_ids,
         "unrecognised_requests": unrec_reqs,
+        "unrecognised_by_shape_ids": _by_shape_ids,
+        "unrecognised_by_shape_requests": _by_shape_reqs,
+        "unrecognised_by_shape_basis": (
+            "The same unrecognised bucket split by ai_platform_canon.call_shape "
+            "— what each caller DID, not what it calls itself. This is the "
+            "stronger signal and the one that settled a case class could not: "
+            "`connectors-manager` reads like plumbing and behaves like an agent "
+            "(execute_plan, why_dchub, site_selection_canvas, rank_markets). "
+            "single_tool = one tool takes 90%+ of calls; sweep = flat across 5+ "
+            "tools (a harness walking the catalogue); varied = a steep, "
+            "real-looking workload. Thresholds were measured, not chosen: over "
+            "30d the flattest arguable-tooling caller and the steepest "
+            "arguable-agent caller sit either side of max/median 4.0, and both "
+            "boundary cases are pinned in "
+            "tests/test_call_shape_thresholds_are_measured.py. "
+            "★ insufficient_data is NOT a shape — below a 10-call floor the "
+            "distribution is noise, and forcing a verdict there would "
+            "manufacture one. Read `varied` under `unknown` as the honest "
+            "estimate of real adoption we cannot yet name. Per-row "
+            "call_shape_stats carries the numbers each verdict rests on."),
         "unrecognised_by_class_ids": _by_class_ids,
         "unrecognised_by_class_requests": _by_class_reqs,
         "unrecognised_by_class_basis": (
@@ -369,13 +449,18 @@ def _window_reach(period: str):
             # "resolved" to "opaque" and dropped 18 keys out of contract
             # coverage. Making a payload more legible to a human reader is not
             # worth making it invisible to the guard that watches it.
-            _vsum = _stamp_vendor(rows)
+            _shapes, _shape_err = _call_shapes()
+            out["call_shape_error"] = _shape_err
+            _vsum = _stamp_vendor(rows, _shapes)
             out["unrecognised_client_ids"] = _vsum["unrecognised_client_ids"]
             out["unrecognised_requests"] = _vsum["unrecognised_requests"]
             out["unrecognised_basis"] = _vsum["unrecognised_basis"]
             out["unrecognised_by_class_ids"] = _vsum["unrecognised_by_class_ids"]
             out["unrecognised_by_class_requests"] = _vsum["unrecognised_by_class_requests"]
             out["unrecognised_by_class_basis"] = _vsum["unrecognised_by_class_basis"]
+            out["unrecognised_by_shape_ids"] = _vsum["unrecognised_by_shape_ids"]
+            out["unrecognised_by_shape_requests"] = _vsum["unrecognised_by_shape_requests"]
+            out["unrecognised_by_shape_basis"] = _vsum["unrecognised_by_shape_basis"]
             out["distinct_platforms"] = (
                 count_platforms(r.get("platform_id") for r in rows)
                 if count_platforms is not None else len(rows))
@@ -585,13 +670,18 @@ def ai_reach():
                 out["per_platform"] = pp
                 out["per_platform_client_ids"] = len(pp)
                 # key-by-key, not update() — see the note on the live path
-                _vsum = _stamp_vendor(pp)
+                _shapes, _shape_err = _call_shapes()
+                out["call_shape_error"] = _shape_err
+                _vsum = _stamp_vendor(pp, _shapes)
                 out["unrecognised_client_ids"] = _vsum["unrecognised_client_ids"]
                 out["unrecognised_requests"] = _vsum["unrecognised_requests"]
                 out["unrecognised_basis"] = _vsum["unrecognised_basis"]
                 out["unrecognised_by_class_ids"] = _vsum["unrecognised_by_class_ids"]
                 out["unrecognised_by_class_requests"] = _vsum["unrecognised_by_class_requests"]
                 out["unrecognised_by_class_basis"] = _vsum["unrecognised_by_class_basis"]
+                out["unrecognised_by_shape_ids"] = _vsum["unrecognised_by_shape_ids"]
+                out["unrecognised_by_shape_requests"] = _vsum["unrecognised_by_shape_requests"]
+                out["unrecognised_by_shape_basis"] = _vsum["unrecognised_by_shape_basis"]
                 out["distinct_platforms_basis"] = (
                     "distinct_platforms counts canonical VENDORS "
                     "(ai_platform_canon.count_platforms over the per_platform "
