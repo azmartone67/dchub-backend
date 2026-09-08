@@ -3400,12 +3400,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'dchub_mcp_server.py': {'facilities_stale_floor', 'tool_count_literal'},
     'fix_neon_tables.py': {'tool_count_literal'},
     'google_meta_integration.py': {'facilities_bare_int'},
-    # ★2026-09-02: facilities_stale_floor DROPPED — the Space no longer bakes
-    # 21,900+ (a retired PRE-DEDUP over-claim it was serving LIVE); it fetches
-    # /api/v1/canon/phrases at import and degrades COUNT-FREE. tool_count_literal
-    # STAYS and is a scanner false positive of the honest kind: the Space really
-    # does expose 7 tools of its own, a different quantity from DC Hub's 83.
-    'integrations/huggingface-space/app.py': {'tool_count_literal'},
     'intelligence_index.py': {'facilities_bare_int'},
     'main.py': {'facilities_bare_int'},
     # ★2026-09-02: deals_stale_floor DROPPED — this file carries '2,000+ ... deals',
@@ -3702,7 +3696,14 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # stale prices, which is why a mail quoting double the real price passed it
     # for months. Lowered in the SAME commit that drains it, exactly as this
     # assertion's message asks.
-    assert len(outside) >= 76, (
+    # ★2026-09-08: 76 -> 75. integrations/huggingface-space/app.py left the
+    # ledger because the FILE left the repo. It was a vendored copy of the
+    # Hugging Face Space that cannot deploy from here, so every guard written
+    # against it measured something no reader could fetch (see the tripwire at
+    # the foot of this file). This is drainage by DELETION, not by fixing a
+    # literal: the served Space still derives its published numbers from
+    # /api/v1/canon/phrases, and is now verified from the outside instead.
+    assert len(outside) >= 75, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
@@ -3936,100 +3937,49 @@ def test_the_retired_deal_row_counts_are_still_denylisted():
         assert m in markers, f"{m!r} must stay retired — it floors duplicate rows"
 
 
-# ── ★2026-09-02 — THE HUGGING FACE SPACE (integrations/huggingface-space) ────
+# ── ★2026-09-08 — THE SPACE IS NOT VENDORED HERE, DELIBERATELY ──────────────
 #
-# It shipped FOUR wrong numbers at once and was LIVE-SERVING all four (probed
-# https://dchubcloud-dchub.hf.space, 2026-09-02):
+# What stood here guarded integrations/huggingface-space/app.py — a copy of the
+# Hugging Face Space that CANNOT DEPLOY. The block's own header diagnosed the
+# trap exactly right: "The Space deploys from the Hugging Face git remote, NOT
+# with this repo — there is no workflow under .github/ that pushes it." Then
+# _hf_src() read the repo copy anyway, so the guard watched the one file whose
+# contents can never reach a reader.
 #
-#   "21,900+ facilities"    canon 20,100+  OVER-claim, and a retired PRE-DEDUP
-#                                          floor sitting on stale_markers
-#   "4,900+ verified"       no canon source at all
-#   "1,400+ tracked deals"  canon 2,000+   stale under-claim
-#   "79 tools"              canon 83       stale under-claim
-#   "311 markets"           canon 300+     311 counts score ROWS, not markets
+# Measured 2026-09-08, comparing the SERVED file
+# (huggingface.co/spaces/dchubcloud/dchub/raw/main/app.py, md5 249c0083…)
+# against the vendored one (md5 e55eae65…): divergent since a shared 2026-07-19
+# ancestor, each side carrying edits the other never got. The old guard
+# required a `_fetch_canon` function and the constants FACILITIES / DEALS /
+# MARKETS / COUNTRIES / TOOLS. The served file contains NONE of those names —
+# it derives the same values through `_canon()` — so the live Space would have
+# FAILED this guard. It passed only because it was reading the decoy.
 #
-# ★ WHY IT ROTTED AND NOTHING SAW IT. The Space deploys from the Hugging Face
-#   git remote, NOT with this repo — there is no workflow under .github/ that
-#   pushes it — so a literal baked here goes public on its own cadence and stays
-#   until someone re-reads the file. That is the same "deploys separately" trap
-#   as the CF zone worker, and it is why the fix is derivation, not new literals:
-#   app.py fetches /api/v1/canon/phrases at import and degrades COUNT-FREE.
-_HF_APP = os.path.join("integrations", "huggingface-space", "app.py")
-_HF_README = os.path.join("integrations", "huggingface-space", "README.md")
+# A guard that cannot see its artifact is worse than no guard: it reads as
+# coverage and provides none. Deleting the copy is the fix; this tripwire keeps
+# it from coming back. Verify the Space from the outside instead:
+#
+#   curl -sS https://huggingface.co/spaces/dchubcloud/dchub/raw/main/app.py
+#
+# Same shape as the five llms.txt files (see tests/
+# test_llms_txt_hf_space_is_in_the_served_source.py) and the CF zone worker:
+# when an artifact deploys on its own cadence, the repo copy is not the source
+# of truth and must not be dressed up as one.
+
+_HF_VENDORED = os.path.join("integrations", "huggingface-space")
 
 
-def _hf_src() -> str:
-    path = REPO_ROOT / _HF_APP
-    assert path.is_file(), f"{_HF_APP} is gone — update or delete this guard ({FIXWAVE})"
-    return path.read_text(encoding="utf-8", errors="ignore")
+def test_the_hugging_face_space_is_not_vendored_into_this_repo():
+    """A re-vendored Space is a decoy the moment it lands.
 
-
-def test_hf_space_fetches_canon_rather_than_baking_it():
-    """★ WIRING, not presence. The revert that matters is one line — binding a
-    published constant to a literal while leaving the fetch helper in place —
-    and a "is _fetch_canon in the file" check stays green straight through it.
-    So walk the AST and require the fetch RESULT to reach every published name.
+    It cannot deploy from here, nothing under .github/ pushes it, and every
+    guard written against it measures a file no reader can fetch. If you need
+    to change the Space, push to its own remote and verify the served copy.
     """
-    tree = ast.parse(_hf_src())
-    fetch = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
-                  and n.name == "_fetch_canon"), None)
-    assert fetch is not None, "the Space no longer fetches canon at all"
-    assert any(isinstance(n, ast.Try) for n in ast.walk(fetch)), (
-        "_fetch_canon is not fail-soft — a Space that cannot boot because canon "
-        "is unreachable is worse than one that says less"
-    )
-    # the name _fetch_canon()'s result is bound to
-    holder = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
-              for t in n.targets if isinstance(t, ast.Name)
-              for sub in ast.walk(n.value)
-              if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-              and sub.func.id == "_fetch_canon"}
-    assert holder, "_fetch_canon() is defined but never called"
-
-    published = {"FACILITIES", "DEALS", "MARKETS", "COUNTRIES", "TOOLS"}
-    wired = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        names = {t.id for t in node.targets if isinstance(t, ast.Name)} & published
-        if not names:
-            continue
-        for sub in ast.walk(node.value):
-            if isinstance(sub, ast.Name) and sub.id in holder:
-                wired |= names
-    missing = sorted(published - wired)
-    assert not missing, (
-        f"{missing} no longer read the fetched canon — they are baked again. "
-        f"This Space deploys separately from the repo, so a baked count goes "
-        f"public and stays there ({FIXWAVE})."
-    )
-
-
-def test_hf_space_bakes_no_population_count():
-    """No comma-grouped magnitude in code or in the README.
-
-    Comments are exempt — the file documents the four retired values on purpose,
-    the same carve-out every other scan in this module makes. Docstrings are NOT
-    exempt here and that is deliberate: a docstring in this file IS the MCP tool
-    schema, it cannot interpolate, and "79 tools across 21,900+ facilities" sat
-    in the module docstring for exactly that reason.
-    """
-    for label, text in ((_HF_APP, _hf_src()),
-                        (_HF_README, (REPO_ROOT / _HF_README).read_text(encoding="utf-8"))):
-        hits = []
-        for i, line in enumerate(text.split("\n"), 1):
-            stripped = line.lstrip()
-            if stripped.startswith("#"):
-                continue
-            for m in re.finditer(r"(?<![\d,])\d{1,3}(?:,\d{3})+\+?", line):
-                hits.append(f"  {label}:{i}: {m.group(0)!r} -> {line.strip()[:80]!r}")
-        assert not hits, (
-            "the Hugging Face Space states a population count again. It deploys "
-            "on its own cadence, so the literal goes public and stays; fetch it "
-            f"from /api/v1/canon/phrases or say less ({FIXWAVE}):\n" + "\n".join(hits)
-        )
-    readme = (REPO_ROOT / _HF_README).read_text(encoding="utf-8")
-    assert "canon/phrases" in readme, (
-        "the README states no counts AND links no canonical source — a reader "
-        "now has nowhere to get them"
-    )
+    path = REPO_ROOT / _HF_VENDORED
+    assert not path.exists(), (
+        f"{_HF_VENDORED} is back. Nothing in this repo deploys it, so whatever "
+        "is in it is invisible to every reader while looking authoritative to "
+        "every editor. The Space lives at its own Hugging Face git remote — "
+        "push there and verify with a fetch of the served app.py. "
+        f"({FIXWAVE})")
