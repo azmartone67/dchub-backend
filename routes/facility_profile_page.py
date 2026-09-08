@@ -155,7 +155,23 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                                                  sb=_sb[_tbl],
                                                  src="'" + _tbl + "'") +
                         f" FROM {_tbl} WHERE canonical_slug = %s"
-                        " ORDER BY COALESCE(power_mw, 0) DESC, id ASC LIMIT 1",
+                        # ★ r-slug-live-row (2026-09-08): SUPPRESSED LAST.
+                        # is_duplicate is a VISIBILITY flag — a row carrying it
+                        # is one we decided not to show — but this lookup did
+                        # not order on it, so when two rows share a frozen slug
+                        # and neither has power_mw, `id ASC` handed the page to
+                        # whichever was ingested first. Measured live
+                        # 2026-09-08: 1,366 slugs served their page from a
+                        # SUPPRESSED row while a live row sat on the same slug.
+                        # The page is then built from the wrong row entirely —
+                        # name, provider, coordinates, and (the way this was
+                        # found) duplicate_of_id, so 'CoreSite SV3' rendered a
+                        # self-canonical because the row being served carried
+                        # no pointer while the live one pointed at the keeper.
+                        # ★ An ORDER, not a WHERE: 47 slugs are served ONLY by
+                        # suppressed rows, and filtering would 404 them.
+                        " ORDER BY COALESCE(is_duplicate, 0) ASC,"
+                        "          COALESCE(power_mw, 0) DESC, id ASC LIMIT 1",
                         (slug,))
                     row = c.fetchone()
                     if row:
