@@ -223,12 +223,12 @@ _WTTL = 1800
 
 
 def _call_shapes(window_days: int = 30):
-    """{platform: shape_stats} over mcp_call_log, or ({}, reason) on failure.
+    """{platform_id: shape_stats} over mcp_calls_identity, or ({}, reason).
 
     ★ ITS OWN CONNECTION, ON PURPOSE. The main cursor sets a statement_timeout
     and forbids bound params (PLATFORM_CASE carries a literal % that psycopg2
-    would try to interpolate). A GROUP BY over 30 days of mcp_call_log is the
-    heaviest read on this endpoint, and in Postgres a timed-out statement
+    would try to interpolate). A GROUP BY over 30 days of mcp_calls_identity is
+    the heaviest read on this endpoint, and in Postgres a timed-out statement
     aborts the whole transaction — every query after it in that block would
     fail too. Isolating it means the worst case is "no shapes", never a
     degraded payload for everything else.
@@ -244,16 +244,38 @@ def _call_shapes(window_days: int = 30):
         db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_REPLICA_URL")
         if not db:
             return {}, "no DATABASE_URL"
+        from mcp_calls_deloop import PLATFORM_CASE as _PC
         conn = psycopg2.connect(db, sslmode="require", connect_timeout=5)
         conn.set_session(readonly=True, autocommit=True)
         with conn.cursor() as cur:
             cur.execute("SET statement_timeout = '6000'")
-            # No bound params and no literal % — same discipline as the caller.
+            # ★ SAME TABLE AND SAME CLASSIFIER AS per_platform, SO THERE IS ONE
+            # ID SPACE. The first version read mcp_call_log.platform — the raw
+            # string a client declares — while per_platform.platform_id is
+            # PLATFORM_CASE applied over mcp_calls_identity. Two derivations,
+            # two id spaces, matched by string equality: 6 of 16 rows found no
+            # shape and reported insufficient_data with calls=None. That reads
+            # as "too few calls to judge" and actually meant "no such id here",
+            # which is the absence-rendered-as-measurement failure this file
+            # keeps having to unlearn. anthropic/api (165 calls, 27 tools),
+            # claude-ai (68) and claude-code (31) all had ample data.
+            #
+            # mcp_calls_identity carries tool_name, so the shape can be derived
+            # from the SAME rows and the SAME classifier the platform_id comes
+            # from. No mapping table, nothing to drift.
+            #
+            # ★ NO %-FORMATTING ANYWHERE IN THIS STATEMENT. PLATFORM_CASE
+            # carries literal % in its ILIKE patterns; one `... % int(days)`
+            # over a string containing it raises "unsupported format character"
+            # and would take the whole endpoint down. The window is
+            # concatenated as a validated int instead.
+            _win = str(int(window_days))
             cur.execute(
-                "SELECT platform, tool, COUNT(*) FROM mcp_call_log "
-                "WHERE timestamp > now() - interval '%d days' "
-                "AND COALESCE(platform,'') <> '' AND COALESCE(tool,'') <> '' "
-                "GROUP BY 1,2" % int(window_days))
+                "SELECT (" + _PC.strip() + ") AS platform_id, tool_name, "
+                "COUNT(*) FROM mcp_calls_identity "
+                "WHERE is_public_ip AND is_real_external "
+                "AND created_at >= now() - interval '" + _win + " days' "
+                "AND COALESCE(tool_name,'') <> '' GROUP BY 1,2")
             by: dict = {}
             for platform, tool, n in cur.fetchall():
                 by.setdefault(platform, {})[tool] = int(n or 0)
