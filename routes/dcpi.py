@@ -716,6 +716,115 @@ def _reserve_margin_with_live(modeled_anchor: Optional[float],
 # that this page "does not expose the numeric composite scores".
 _FREE_SCORED_ROWS = 10
 
+# ── r-citable-rows (2026-09-08): a score with no as_of beside it cannot tell a
+# crawler its cached copy is stale ────────────────────────────────────────────
+# r-citable-top10 freed the top-10 numbers so a model would have something to
+# quote. It worked — Perplexity re-fetched and quoted them. It quoted them
+# WRONG: "Midland–Odessa at 81.0" against a live page rendering 85.7, citing
+# method_version 2.0.1 against a live 2.3.0, while stating it had just
+# re-fetched. Two independent staleness tells in one published citation.
+#
+# Nothing on the page let it know. /dcpi carried exactly ONE ld+json block —
+# @type Dataset, describing the dataset — and zero per-row structure, so every
+# score was HTML text with no as_of, no method version, and no statement of
+# what the number is over. The API has had all of it since 2.3.0; it just never
+# reached the surface that gets crawled.
+#
+# ★ as_of COMES FROM THE ROW, never from now(). A render-time timestamp beside
+# a cached score certifies a stale number as fresh — strictly worse than no
+# timestamp at all.
+#
+# ★ signal_tier IS NOT PUBLISHED BARE. The methodology is explicit that "full"
+# means every LIVE-CAPABLE adapter returned data — NOT that every input is
+# measured. Six inputs are always modeled and emergency_count_30d is never
+# populated. A bare "full" next to a number reads as a measurement guarantee,
+# which would make citation integrity worse, not better. It ships as an object
+# that carries its own caveat, or it does not ship.
+_ALWAYS_MODELED_INPUTS = ["curtailment_pct", "queue_approval_rate_pct",
+                          "btm_headroom_mw", "stranded_capacity_mw",
+                          "demand_growth_yoy_pct", "emergency_count_30d"]
+_NEVER_POPULATED_INPUTS = ["emergency_count_30d"]
+_METHODOLOGY_URL = "https://dchub.cloud/api/v1/dcpi/methodology"
+
+
+def _row_as_of(row):
+    """The row's OWN computed_at, ISO-8601, or None. Never a render clock."""
+    v = row.get("computed_at")
+    if not v:
+        return None
+    try:
+        return v.isoformat()
+    except AttributeError:
+        return str(v)
+
+
+def _citation_itemlist(rows, free_n):
+    """schema.org ItemList of the rows whose numbers are actually published.
+
+    Emitted ALONGSIDE the Dataset block, not inside it — Dataset has no
+    itemListElement, and a schema-invalid graph is worse than none.
+    Returns None when nothing is quotable, so the template can omit the block
+    rather than publish an empty list that reads as "no markets scored".
+    """
+    items = []
+    for i, r in enumerate(rows or []):
+        if i >= int(free_n or 0):
+            break
+        score = r.get("excess_power_score")
+        if score is None:
+            continue          # masked or unmeasured — nothing to cite
+        name = r.get("market_name") or r.get("market_slug")
+        slug = r.get("market_slug")
+        if not name or not slug:
+            continue
+        url = f"https://dchub.cloud/dcpi/{slug}"
+        tier = r.get("signal_tier")
+        items.append({
+            "@type": "ListItem",
+            "position": len(items) + 1,
+            "item": {
+                "@type": "Observation",
+                "name": f"{name} — DCPI excess power score",
+                "url": url,
+                "measuredProperty": "excess_power_score",
+                "measuredValue": score,
+                "observationDate": _row_as_of(r),
+                "observationAbout": {"@type": "Place", "name": name,
+                                     "identifier": slug},
+                "additionalProperty": [
+                    {"@type": "PropertyValue", "name": "verdict",
+                     "value": r.get("verdict")},
+                    {"@type": "PropertyValue", "name": "constraint_score",
+                     "value": r.get("constraint_score")},
+                    {"@type": "PropertyValue", "name": "time_to_power_months",
+                     "value": r.get("time_to_power_months")},
+                    {"@type": "PropertyValue", "name": "iso", "value": r.get("iso")},
+                    {"@type": "PropertyValue", "name": "method_version",
+                     "value": r.get("method_version")},
+                    # ★ the caveat travels WITH the tier, never without it
+                    {"@type": "PropertyValue", "name": "signal_tier",
+                     "value": tier,
+                     "description": (
+                         "'full' means every live-capable adapter returned data; "
+                         "it does NOT mean every score input is measured. "
+                         f"{len(_ALWAYS_MODELED_INPUTS)} inputs are always modeled "
+                         f"({', '.join(_ALWAYS_MODELED_INPUTS)}) and "
+                         f"{', '.join(_NEVER_POPULATED_INPUTS)} is never populated.")},
+                ],
+                "isBasedOn": _METHODOLOGY_URL,
+                "citation": (f"DC Hub DCPI ranks {name} at {score} on its "
+                             f"excess-power score. {url}"),
+            },
+        })
+    if not items:
+        return None
+    return {"@context": "https://schema.org", "@type": "ItemList",
+            "name": "DCPI — published market scores",
+            "description": ("Markets whose numeric scores are published free. "
+                            "DCPI is an indicator, not a guarantee of deliverable "
+                            "power — see isBasedOn for what is measured vs modeled."),
+            "numberOfItems": len(items), "itemListElement": items}
+
 _DCPI_SNAPSHOT_LOCK_ID = 268052901  # arbitrary stable int for advisory lock
 _DCPI_BACKFILL_LOCK_ID = 268052902
 
@@ -6571,6 +6680,9 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
   "citation": "DC Hub Data Center Power Index. https://dchub.cloud/dcpi"
 }
 </script>
+{% if citation_itemlist %}
+<script type="application/ld+json">{{ citation_itemlist|tojson }}</script>
+{% endif %}
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -8388,6 +8500,9 @@ def public_dashboard():
         count_low_signal=count_low_signal,
         gated_to_anon=_gated_to_anon,
         free_scored_rows=_FREE_SCORED_ROWS,
+        # r-citable-rows: built from `rows` AFTER masking, so the block can only
+        # ever describe numbers this same render actually published.
+        citation_itemlist=_citation_itemlist(rows, _FREE_SCORED_ROWS),
         total_rows=_total_rows,
         all_market_links=all_market_links,
         tier_state=_tier_state,
