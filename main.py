@@ -4365,6 +4365,14 @@ try:
     except Exception as _nse:
         import logging
         logging.getLogger(__name__).warning('brain_null_signal wiring failed: %s', _nse)
+    # Product-lead ranker (2026-09-08): every queue already has an exit verb;
+    # nothing decides which item to take. Ranks and routes, never actuates.
+    try:
+        from routes.brain_product_lead import brain_product_lead_bp
+        app.register_blueprint(brain_product_lead_bp)
+    except Exception as _ple:
+        import logging
+        logging.getLogger(__name__).warning('brain_product_lead wiring failed: %s', _ple)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the
