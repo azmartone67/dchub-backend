@@ -222,3 +222,135 @@ def test_funnel_publishes_relay_open_provenance_and_gap():
     assert '"basis"' in prov, "relay_open_provenance ships without a basis"
     gap = src.split('"human_acted_denominator_gap"', 1)[1][:2000]
     assert '"basis"' in gap, "human_acted_denominator_gap ships without a basis"
+
+
+# ── 5. r-relay-validity (2026-09-08): the token-validity split ──────────────
+#
+# `relay_opens.valid` is written on every open (`valid = info is not None` —
+# true exactly when the token decoded AND its HMAC verified) and, until this
+# change, was read by NOTHING: every funnel query aliases `from relay_opens ro`
+# and `ro.valid` appeared nowhere in flask_mcp_endpoints.py. It is the only
+# non-heuristic answer to the question relay_open_ua_families_basis poses and
+# answers by UA string — did a human open a link an agent relayed, or did a
+# scanner hit /upgrade/h/<junk>? A scanner cannot forge the HMAC.
+#
+# ★ THESE GUARDS WALK THE AST, NEVER THE SOURCE TEXT. The block that publishes
+# these fields also DOCUMENTS them in a comment naming every field, so a
+# substring check stays green after the fields are deleted — the exact defect
+# banked in tests elsewhere in this repo (a comment satisfies grep). The dict
+# keys and the variables they are bound to are structural; the prose is not.
+
+import ast  # noqa: E402
+
+_PROV_FIELDS = {
+    "minted_link_opens": "prov_minted",
+    "minted_link_opens_no_session_id": "prov_minted_nosid",
+    "junk_token_opens": "prov_junk",
+}
+
+
+def _funnel_tree():
+    return ast.parse(_read("flask_mcp_endpoints.py"))
+
+
+def _provenance_dict(tree):
+    """The dict literal published as `relay_open_provenance`."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for k, v in zip(node.keys, node.values):
+            if (isinstance(k, ast.Constant) and k.value == "relay_open_provenance"
+                    and isinstance(v, ast.Dict)):
+                return v
+    return None
+
+
+def test_provenance_publishes_the_token_validity_split():
+    """The three fields must be PUBLISHED and bound to their own queries.
+
+    Asserted on the AST: a key present in the payload dict, whose value is the
+    Name of the variable that ran the query. Pointing a field at a different
+    count (prov_total, say) is the cheap way to make this block look alive
+    while it reports something else, and a name check catches it.
+    """
+    prov = _provenance_dict(_funnel_tree())
+    assert prov is not None, "relay_open_provenance is no longer a dict literal"
+    published = {
+        k.value: v for k, v in zip(prov.keys, prov.values)
+        if isinstance(k, ast.Constant)
+    }
+    for field, var in _PROV_FIELDS.items():
+        assert field in published, (
+            "relay_open_provenance no longer publishes %r — the token-validity "
+            "split is what makes a 0 on human_acted readable" % field)
+        val = published[field]
+        assert isinstance(val, ast.Name) and val.id == var, (
+            "%r is published from %r, not the %r query it names"
+            % (field, ast.dump(val)[:60], var))
+
+
+def test_the_split_actually_reads_the_valid_column():
+    """`ro.valid` must reach SQL, not just a comment.
+
+    The predicate is bound to `_valid_ok` and every query that uses it is a
+    call to one(). Dropping the column from the predicate — leaving three
+    fields that count something else entirely — is the failure this pins.
+    """
+    tree = _funnel_tree()
+    src = _read("flask_mcp_endpoints.py")
+
+    valid_ok = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_valid_ok" for t in n.targets)
+    ]
+    assert len(valid_ok) == 1, "_valid_ok is assigned %d times" % len(valid_ok)
+    pred = valid_ok[0].value
+    assert isinstance(pred, ast.Constant) and isinstance(pred.value, str)
+    assert "ro.valid" in pred.value, (
+        "_valid_ok no longer reads relay_opens.valid: %r" % (pred.value,))
+    assert "%" not in pred.value, (
+        "literal %% in a predicate embedded in `sql %% iv` — the defect that "
+        "took the live handoff-funnel endpoint down inside one deploy")
+
+    for var in _PROV_FIELDS.values():
+        assigns = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == var for t in n.targets)
+        ]
+        assert len(assigns) == 1, "%s is assigned %d times" % (var, len(assigns))
+        call = assigns[0].value
+        assert isinstance(call, ast.Call) and getattr(call.func, "id", "") == "one", (
+            "%s is not the result of a one() query" % var)
+        seg = ast.get_source_segment(src, call) or ""
+        assert "_valid_ok" in seg, (
+            "%s runs a query that does not apply the validity predicate" % var)
+        assert "_ro_real" in seg, (
+            "%s does not apply the real-UA predicate, so its count is not "
+            "comparable with probe_ua and the published identity breaks" % var)
+
+
+def test_orthogonality_is_declared():
+    """Two splits of one population is a summing trap; say so in the payload.
+
+    probe_ua/no_session_id/countable_opens partition relay_opens by
+    JOINABILITY; minted/junk partition the same rows by whether we minted the
+    token. Adding a field from each double-counts.
+    """
+    prov = _provenance_dict(_funnel_tree())
+    published = {
+        k.value: v for k, v in zip(prov.keys, prov.values)
+        if isinstance(k, ast.Constant)
+    }
+    assert "token_validity_basis" in published, (
+        "the validity split ships without a basis a reader can check")
+    node = published["token_validity_basis"]
+    text = "".join(
+        n.value for n in ast.walk(node)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    assert "ORTHOGONAL" in text.upper(), (
+        "token_validity_basis must warn that this split is orthogonal to the "
+        "joinability split, or the two get summed")
+    assert "relay_opens.valid" in text, (
+        "the basis must name the column it reads")
