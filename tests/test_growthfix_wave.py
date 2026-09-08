@@ -112,6 +112,101 @@ def _sitemap_xml(n):
             + locs + "</urlset>")
 
 
+# ── r-sweep-commit (2026-09-08) ─────────────────────────────────────
+#
+# competitor_gap_sweeps held ONE row, stamped 2026-07-29, while 1,744
+# competitor_gap facility rows were ingested in the last 7 days. record_sweep
+# never had a commit of its own: #1896 called it on the success path BEFORE
+# persist_coverage_gaps, so its INSERT rode along on that function's commit;
+# #1900 moved it into `finally`, which runs after every commit, and the call
+# site closes the connection immediately afterwards.
+#
+# ★ The stub below models the ONE property that broke this — uncommitted work
+#   is DISCARDED on close. A test that read the row back on the writing
+#   connection would see it and pass, which is the bug itself.
+
+
+class _FakeCursor:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def execute(self, sql, params=None):
+        self.conn.pending.append(" ".join(str(sql).split()))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _FakeConn:
+    """psycopg2 semantics, reduced to what this bug turns on."""
+
+    def __init__(self, commit_raises=False):
+        self.pending, self.committed = [], []
+        self.commit_raises = commit_raises
+        self.closed = False
+
+    def cursor(self):
+        return _FakeCursor(self)
+
+    def commit(self):
+        if self.commit_raises:
+            raise RuntimeError("connection already closed")
+        self.committed.extend(self.pending)
+        self.pending = []
+
+    def rollback(self):
+        self.pending = []
+
+    def close(self):
+        self.pending = []          # ★ uncommitted work is LOST
+        self.closed = True
+
+
+_SREC = {"parsed": 42, "true_gaps": 0, "gap_only": 0, "inserted": 0, "dup": 0,
+         "status": 200, "error": None,
+         "drops": {"dropped_existing": 40, "dropped_not_facility": 2}}
+_P = {"locs_seen": 11859, "window_offset": 4321}
+
+
+def _record(conn):
+    import importlib
+    cg = importlib.import_module("routes.competitor_gap_crawler")
+    cg.record_sweep(conn, "cloudscene", _SREC, _P, window_size=500)
+
+
+def test_the_sweep_row_survives_the_connection_close():
+    """THE DEFECT. The call site records from `finally` and closes the
+    connection on the next line, so a row that is merely INSERTed is gone."""
+    conn = _FakeConn()
+    _record(conn)
+    conn.close()                       # exactly what the call site does next
+    assert conn.committed, (
+        "the sweep row was discarded on close — record_sweep did not commit, "
+        "which is how competitor_gap_sweeps went 40 days without a row")
+    assert any("competitor_gap_sweeps" in q for q in conn.committed), \
+        conn.committed
+
+
+def test_the_commit_lands_after_the_insert_not_before():
+    """A FLOOR: a commit placed above the INSERT would leave the row pending
+    and lose it just the same, so 'it calls commit' is not the assertion."""
+    conn = _FakeConn()
+    _record(conn)
+    assert not conn.pending, f"work left uncommitted before close: {conn.pending}"
+    assert len(conn.committed) >= 1, conn.committed
+
+
+def test_a_failing_commit_still_never_costs_the_crawl():
+    """The fail-soft contract the docstring promises is unchanged: a lost
+    metric row is trivial, a lost crawl run is not."""
+    conn = _FakeConn(commit_raises=True)
+    _record(conn)                      # must not raise
+    assert conn.committed == []
+
+
 # ── r-placeholder-city-ingest (2026-09-07) ──────────────────────────
 #
 # Cloudscene buckets every facility it has no city for under a literal

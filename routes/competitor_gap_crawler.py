@@ -691,9 +691,34 @@ def record_sweep(conn, slug: str, srec: dict, p: dict,
                  int(srec.get("dup") or 0),
                  int(srec.get("status") or 0),
                  (srec.get("error") or None)))
+        # ★★★ r-sweep-commit (2026-09-08) — THIS ROW HAS TO COMMIT ITSELF.
+        # It never did, and for 22 minutes that was survivable. #1896 called
+        # record_sweep on the SUCCESS path, positioned BEFORE
+        # persist_coverage_gaps — so this INSERT rode along on that function's
+        # conn.commit(). #1900 (24 minutes later) moved the call into `finally`
+        # so an erroring source could no longer look like one that never ran.
+        # `finally` runs AFTER every commit, and the call site closes the
+        # connection immediately afterwards, so from that commit onward every
+        # sweep row was rolled back on close.
+        #
+        # Measured 2026-09-08: competitor_gap_sweeps holds ONE row, stamped
+        # 2026-07-29 06:40:32Z — two minutes after #1896 merged and twenty-two
+        # minutes before #1900 shipped — while 1,744 competitor_gap facility
+        # rows were ingested in the last 7 days alone. Reproduced directly:
+        # with autocommit=False (the pooled default) this call persists 0 rows
+        # and raises NOTHING; with autocommit=True the identical call persists 1.
+        #
+        # ★ Nothing threw, so the handler below never fired — and it logged at
+        #   DEBUG, which production does not emit. The failure was invisible by
+        #   construction, which is exactly what #1900 set out to end. It is
+        #   WARNING now: a lost metric row is still cheap, but it must be SEEN.
+        # ★ Safe on the shared connection: the caller's `except` already calls
+        #   conn.rollback() before `finally`, so there is no pending work here
+        #   to sweep in — only this row.
+        conn.commit()
     except Exception as e:  # noqa: BLE001
-        logger.debug("[competitor-gap] sweep record failed (non-fatal): %s",
-                     str(e)[:160])
+        logger.warning("[competitor-gap] sweep record failed (non-fatal): %s",
+                       str(e)[:160])
 
 
 def _insert_true_gaps(conn, slug: str, true_gaps: list[dict],
