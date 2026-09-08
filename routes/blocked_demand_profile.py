@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from flask import Blueprint, jsonify, request
 
@@ -109,8 +110,20 @@ def _int(v):
     tests/test_blocked_demand_profile.py::test_payload_carries_no_caller_identity
     drives exactly that case, so the guard tests behaviour rather than a
     promise.
+
+    ★ Decimal is IN the whitelist and must stay. psycopg2 maps PostgreSQL
+    `numeric` to decimal.Decimal, and SUM(bigint) is numeric — so the depth
+    query's SUM(hits) arrives as a Decimal, not an int. Whitelisting only
+    (int, float) made this return None, which `or 0` then published as a
+    hard 0: every caller_depth bucket read `signals: 0` and every
+    `signal_share_pct` read null on the live endpoint, while `callers`
+    (a COUNT(*), which psycopg2 hands back as int) was correct. The guard
+    exists to reject IDENTITY in a count position; a Decimal is a number,
+    not an identity, so admitting it costs the guard nothing.
+    tests/test_blocked_demand_profile.py::test_sum_positions_survive_the_driver_type
+    drives the real driver type.
     """
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
+    if isinstance(v, bool) or not isinstance(v, (int, float, Decimal)):
         return None
     return int(v)
 

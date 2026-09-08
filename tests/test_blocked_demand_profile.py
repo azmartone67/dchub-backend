@@ -23,6 +23,7 @@ import ast
 import json
 import os
 import sys
+from decimal import Decimal
 
 import pytest
 
@@ -87,8 +88,14 @@ def _rows():
     return [
         # totals
         [(1234, 172, 400, 9)],
-        # depth: only two buckets came back; the other three must still print
-        [("3-9", 266, 900, 5), ("10-19", 59, 334, 1)],
+        # depth: only two buckets came back; the other three must still print.
+        # ★ SUM(hits) is position 2 and it is a Decimal, NOT an int —
+        # psycopg2 maps PostgreSQL numeric (what SUM(bigint) returns) to
+        # decimal.Decimal. This fixture handed back ints for the first three
+        # days of this endpoint's life, which is why the whole depth suite
+        # was green while the live response published `signals: 0` in every
+        # bucket. COUNT(*) positions stay int — that is what the driver does.
+        [("3-9", 266, Decimal("900"), 5), ("10-19", 59, Decimal("334"), 1)],
         # by_tool basic
         [("get_interconnection_queue", 922, 219, 300),
          ("get_renewable_energy", 441, 279, 288)],
@@ -155,6 +162,38 @@ def test_all_depth_buckets_are_published_even_when_empty(monkeypatch):
     deep = [b for b in out["caller_depth"] if b["bucket"] == "10-19"][0]
     assert deep["callers"] == 59 and deep["signals"] == 334
     assert deep["signal_share_pct"] == pytest.approx(27.1, abs=0.2)
+
+
+def test_sum_positions_survive_the_driver_type(monkeypatch):
+    """A Decimal in a SUM position must publish as a number, not as 0.
+
+    ★ THE REGRESSION THIS PINS shipped live: `_int` whitelisted (int, float),
+    psycopg2 returns decimal.Decimal for numeric, so SUM(hits) coerced to
+    None and `or 0` published a hard 0 in every depth bucket — with
+    signal_share_pct null on top of it, because the denominator was the sum
+    of those zeros. `callers` was right throughout (COUNT(*) is an int), so
+    the response looked structurally perfect and was silently wrong in one
+    column. Asserting on _int directly is not enough: the defect was the
+    combination of the coercion and the `or 0` that consumes it, so this
+    drives the assembled payload.
+    """
+    assert bdp._int(Decimal("334")) == 334, (
+        "_int dropped a Decimal — psycopg2 hands back Decimal for every "
+        "numeric column, so this republishes the live zeros"
+    )
+    out, _ = _run(monkeypatch)
+    depth = {b["bucket"]: b for b in out["caller_depth"]}
+    assert depth["10-19"]["signals"] == 334
+    assert depth["3-9"]["signals"] == 900
+    assert sum(b["signals"] for b in out["caller_depth"]) == 1234, (
+        "the depth signal total collapsed — a Decimal is being dropped "
+        "somewhere between the cursor and the payload"
+    )
+    assert all(b["signal_share_pct"] is not None
+               for b in out["caller_depth"] if b["signals"]), (
+        "a non-empty bucket published a null share, which means the "
+        "denominator summed to zero"
+    )
 
 
 def test_share_is_none_not_zero_on_an_empty_window(monkeypatch):
