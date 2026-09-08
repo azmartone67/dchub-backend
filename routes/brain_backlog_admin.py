@@ -81,6 +81,60 @@ _RAILWAY_BASE = "https://dchub-backend-production.up.railway.app"
 # The label brain-pr-post-merge-guard.yml gates its job on. Changing it
 # here without changing the workflow silently re-opens the 2026-09-08 gap.
 _OUTCOME_LABEL = "autonomous-brain-layer5"
+_REALIGN_NOTE = ("Indent realigned: the replacement carried leading "
+                 "whitespace the search text did not; the first line "
+                 "was dedented to match before applying.\n\n")
+_REALIGN_PR_NOTE = ("**Indent realigned.** The replacement carried "
+                    "leading whitespace the search text did not, which "
+                    "would have doubled the file's own indentation. The "
+                    "first line was dedented; the body was left "
+                    "untouched. Verify the diff.\n\n")
+
+
+def _realign_replacement(search: str, replace: str) -> str:
+    """Drop leading indent the replacement adds that the search does not have.
+
+    WHY (2026-09-08). The L5 proposer captures `search_text` starting at the
+    first non-space character of a line, so the file's own indentation stays
+    OUTSIDE the match -- but it emits `replace_text` WITH that indentation on
+    the first line. `content.replace(search, replace)` then leaves the file's
+    indent in place and prepends the replacement's, doubling it.
+
+    Measured on the three proposals blocking the queue that day, reproduced
+    against the real files on main:
+
+        id      file                          lead(search)  lead(replace)
+        265     infrastructure_discovery.py              0             4
+        100589  dchub_daily_automation.py                0            12
+        100833  api_server.py                            0             8
+
+    All three failed ast.parse with "unexpected indent" as-is and parse
+    cleanly realigned. They sat at draft_skips=2 of ROTTEN_SKIP_THRESHOLD=3,
+    one run from being expired as `stale` -- good fixes discarded over
+    whitespace.
+
+    ONLY the first line is adjusted. The body lines of both texts already
+    agree (16 spaces in every case above); dedenting all of them by the
+    first-line delta would break the block instead of fixing it.
+
+    It never ADDS indentation. A replacement less indented than the search may
+    be a deliberate dedent, and guessing there would corrupt a valid patch.
+    The caller's ast.parse gate still runs afterwards, so this can only turn a
+    reject into a verified pass -- never the reverse.
+    """
+    if not search or not replace:
+        return replace
+
+    def _lead(text):
+        first = text.split("\n", 1)[0]
+        return len(first) - len(first.lstrip())
+
+    delta = _lead(replace) - _lead(search)
+    if delta <= 0:
+        return replace
+    head, sep, rest = replace.partition("\n")
+    return head[delta:] + sep + rest
+
 
 
 # ── Config ───────────────────────────────────────────────────────────
@@ -319,8 +373,10 @@ def _open_draft_pr_for_proposal(prop: dict) -> dict:
         return {"ok": False,
                 "skipped": f"search text appears {n}× in {cf} (ambiguous)"}
 
-    # 3. Apply
-    new_content = content.replace(cs, cr, 1)
+    # 3. Apply. Realign first -- see _realign_replacement.
+    cr_aligned = _realign_replacement(cs, cr)
+    realigned = cr_aligned != cr
+    new_content = content.replace(cs, cr_aligned, 1)
     if new_content == content:
         return {"ok": False, "skipped": "no-op edit"}
 
@@ -364,6 +420,7 @@ def _open_draft_pr_for_proposal(prop: dict) -> dict:
         f"(proposal #{pid}, conf {confidence:.2f}).\n"
         f"Opened as a DRAFT PR by /api/v1/admin/brain/draft-prs/run.\n"
         f"Syntax gate: passed (ast.parse OK on patched {cf}).\n\n"
+        f"{_REALIGN_NOTE if realigned else ''}"
         f"Rationale: {rationale}\n\n"
         f"This PR is a DRAFT. A human must review the diff + un-draft + "
         f"merge. No auto-merge by design."
@@ -389,6 +446,7 @@ def _open_draft_pr_for_proposal(prop: dict) -> dict:
         f"**Loop:** `{prop.get('loop_name', '?')}`\n"
         f"**Confidence:** {confidence:.2f} (threshold ≥{_min_conf():.2f})\n"
         f"**File:** `{cf}` ({len(cs)}→{len(cr)} chars)\n\n"
+        f"{_REALIGN_PR_NOTE if realigned else ''}"
         f"### Rationale\n\n{rationale}\n\n"
         f"### Syntax check\n\nPatched file passes `ast.parse()`. "
         f"This does NOT mean it's semantically correct — tests still "
