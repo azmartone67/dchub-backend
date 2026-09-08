@@ -106,7 +106,7 @@ def _domain_media() -> dict:
         "goal": "broadcast every shipped win; grow distinct-agent reach",
         "current": {"vitality": o.get("vitality_score"), "weakest_channel": weakest,
                     "press_7d": (p.get("press") or {}).get("count_7d"),
-                    "linkedin_7d": (p.get("linkedin") or {}).get("sent_7d")},
+                    "linkedin_7d": (p.get("linkedin") or {}).get("published_7d")},
         "proposed_next_move": [
             f"strengthen weakest channel: {weakest}",
             "broadcast the latest brain-shipped win",
