@@ -507,6 +507,20 @@ def oauth_identity_resolve():
             "ON CONFLICT (api_key) DO NOTHING",
             (api_key, developer_id, email, _json.dumps(metadata)),
         )
+        # r-oauth-created (2026-09-07): DID THIS RESOLVE MINT A NEW IDENTITY?
+        #
+        # ON CONFLICT DO NOTHING makes rowcount exactly the answer: 1 = the row
+        # was inserted here, 0 = it already existed and this is a returning
+        # identity. Read immediately — any later execute() on this cursor
+        # overwrites it.
+        #
+        # ★ WHY IT MATTERS BEYOND THIS RESPONSE. The gateway's identity_created
+        # stage counter (server.mjs _CH_KINDS) fires on the WorkOS path only
+        # when this endpoint reports created:true, and it never has — the
+        # gateway comment says so in as many words: "a backend follow-up; today
+        # it reports neither". So the last stage of the OAuth funnel had no
+        # emitter on the live path. This is that follow-up.
+        created = (cur.rowcount == 1)
         # Stamp last_used_at on EVERY resolve (create OR return) so OAuth
         # retention is measurable (created_at vs last_used_at).
         cur.execute("UPDATE mcp_dev_keys SET last_used_at = NOW() WHERE api_key = %s", (api_key,))
@@ -529,6 +543,9 @@ def oauth_identity_resolve():
             "tier": tier,
             "developer_id": developer_id,
             "source": "workos_oauth",
+            # True only on the resolve that actually minted the row. Additive:
+            # a gateway that does not read it is unaffected.
+            "created": created,
         }), 200
     except Exception as e:
         try:
