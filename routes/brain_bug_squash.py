@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import psycopg2
@@ -287,3 +288,170 @@ def register_brain_bug_squash(app):
         app.register_blueprint(brain_bug_squash_bp)
     except Exception as e:
         log.warning("brain_bug_squash already registered or failed: %s", e)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Addressability — where the 52 open findings went to die
+# ──────────────────────────────────────────────────────────────────────
+# The squasher has been a healthy SENSOR and a dead END. Measured 2026-09-08:
+# 52 open findings, re-detected every night (last_seen current, 52 rows
+# refreshed inside 36h) — and **0 of them carried a code-fix proposal**, while
+# consistency_radar had 48 of its 129. The join is sound; the zero is real.
+#
+# Two reasons, and neither is "the pipeline forgot":
+#   1. Every open finding was filed under the scanning machine's ABSOLUTE path
+#      (`/home/runner/work/dchub-backend/dchub-backend/dchub-frontend/...`).
+#      Nothing downstream can open, patch or repo-match that.
+#   2. **All 52 are dchub-frontend files** and the code-fix proposer only
+#      patches dchub-backend. Wiring them into it unchanged would manufacture
+#      PRs that can never apply — precisely the class retired in #4231.
+#
+# So this does NOT force them into the backend proposer. It makes them
+# ADDRESSABLE — repo, path, line, count — so a human or a closer can route them
+# to the right tree, and it says out loud which repo each one needs.
+
+# ★ THE PREFIX IS GREEDY ON PURPOSE. In CI the frontend is checked out INSIDE
+# the backend workspace, so a real path reads
+# `/home/runner/work/dchub-backend/dchub-backend/dchub-frontend/about.html`.
+# A NON-greedy `.*?` binds the FIRST `dchub-backend` and yields
+# `dchub-backend/dchub-backend/dchub-frontend/about.html` — a path that exists
+# nowhere, labelled with the wrong repo. Greedy takes the RIGHTMOST marker,
+# which is the innermost checkout and the only correct answer. Same
+# most-specific-root-wins rule as scripts/bug_squash.repo_relative.
+_OLD_PATH_RE = re.compile(r"^.*/(dchub-frontend|dchub-backend)/(.+?)#L(\d+)$")
+
+
+def _normalise_url(u: str):
+    """Old absolute `.../<repo>/<path>#L<n>` -> `<repo>/<path>:<n>`.
+
+    Returns None when the row is already in the new form or does not match, so
+    the caller can tell "nothing to do" from "rewritten" instead of counting a
+    no-op as a migration.
+    """
+    m = _OLD_PATH_RE.match(u or "")
+    if not m:
+        return None
+    return f"{m.group(1)}/{m.group(2)}:{m.group(3)}"
+
+
+@brain_bug_squash_bp.route("/api/v1/admin/brain/bug-squash/normalise-paths",
+                           methods=["POST"])
+def normalise_paths():
+    """Rewrite legacy runner-absolute finding URLs in place.
+
+    In place, deliberately: re-filing under the new key would orphan the
+    existing rows' seen_count/first_seen history and present 52 long-standing
+    findings as brand new. cf the 2026-08-22 duplicate-row incident, where a
+    changed finding key inserted a fresh row on every re-file.
+
+    `?apply=1` to write; dry-run otherwise. A rewrite whose target already
+    exists is SKIPPED and counted, never merged — collapsing two rows would
+    silently discard one finding's history.
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin key required"), 401
+    apply = request.args.get("apply") in ("1", "true")
+
+    dsn = _dsn()
+    if not dsn:
+        return jsonify(ok=False, error="DATABASE_URL not set"), 200
+
+    rewritten, skipped_collision, untouched = [], [], 0
+    try:
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT id, issue, url FROM brain_findings "
+                    "WHERE detector = 'brain_bug_squash'")
+                rows = cur.fetchall()
+                for fid, issue, url in rows:
+                    new = _normalise_url(url)
+                    if new is None:
+                        untouched += 1
+                        continue
+                    cur.execute(
+                        "SELECT 1 FROM brain_findings "
+                        "WHERE detector='brain_bug_squash' AND issue=%s AND url=%s "
+                        "AND id <> %s LIMIT 1", (issue, new, fid))
+                    if cur.fetchone():
+                        skipped_collision.append({"id": fid, "from": url, "to": new})
+                        continue
+                    if apply:
+                        cur.execute("UPDATE brain_findings SET url=%s WHERE id=%s",
+                                    (new, fid))
+                    rewritten.append({"id": fid, "from": url, "to": new})
+            if apply:
+                c.commit()
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:200]}"), 200
+
+    return jsonify(ok=True, applied=apply,
+                   rewritten=len(rewritten),
+                   skipped_collision=len(skipped_collision),
+                   already_current_or_unmatched=untouched,
+                   sample=rewritten[:5],
+                   collisions=skipped_collision[:5]), 200
+
+
+@brain_bug_squash_bp.route("/api/v1/admin/brain/bug-squash/actionable",
+                           methods=["GET"])
+def actionable():
+    """The open queue, grouped by the repo that would have to change.
+
+    Publishes the routing fact the pipeline was missing — `needs_repo` — rather
+    than leaving every consumer to re-derive it from a path. `unrouted` counts
+    rows whose repo still cannot be proved; they are reported, never guessed at.
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin key required"), 401
+    dsn = _dsn()
+    if not dsn:
+        return jsonify(ok=False, error="DATABASE_URL not set"), 200
+    try:
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT issue, url, seen_count, first_seen, last_seen
+                      FROM brain_findings
+                     WHERE detector = 'brain_bug_squash' AND status = 'open'
+                     ORDER BY seen_count DESC NULLS LAST, first_seen ASC
+                """)
+                rows = cur.fetchall()
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:200]}"), 200
+
+    by_repo, items, unrouted = {}, [], 0
+    for issue, url, seen, first, last in rows:
+        u = url or ""
+        repo = None
+        for label in ("dchub-frontend", "dchub-backend"):
+            if u.startswith(label + "/") or ("/" + label + "/") in u:
+                repo = label
+                break
+        if repo is None:
+            unrouted += 1
+        by_repo[repo or "unrouted"] = by_repo.get(repo or "unrouted", 0) + 1
+        items.append({
+            "issue": issue,
+            "location": u,
+            "needs_repo": repo,
+            "seen_count": seen,
+            "first_seen": first.isoformat() if first else None,
+            "last_seen": last.isoformat() if last else None,
+        })
+
+    by_pattern = {}
+    for it in items:
+        by_pattern[it["issue"]] = by_pattern.get(it["issue"], 0) + 1
+
+    return jsonify(
+        ok=True,
+        open_total=len(items),
+        by_repo=by_repo,
+        by_pattern=by_pattern,
+        unrouted=unrouted,
+        note=("`needs_repo` is the routing fact the code-fix proposer never had. "
+              "It patches dchub-backend only, so dchub-frontend rows must not be "
+              "fed to it — that manufactures PRs that cannot apply (#4231)."),
+        items=items[:200],
+    ), 200
