@@ -22,11 +22,40 @@ name: Brain v2 Layer 5 — PR opener (Phase GG)
 #                      PRs across protected branches; otherwise the
 #                      workflow's own GITHUB_TOKEN is used.
 
+# ★ SCHEDULE RETIRED 2026-09-08 — this opener is SUPERSEDED and its PRs
+# cannot merge. Keep workflow_dispatch for manual/debug use only.
+#
+# Measured, not inferred:
+#   * PR #4203 was opened by this workflow on 2026-09-08T04:38Z. Its author is
+#     `app/github-actions`, i.e. GITHUB_TOKEN — `secrets.GH_PAT` is NOT set on
+#     this repo (`gh secret list` has no GH_PAT), so the `GH_PAT || GITHUB_TOKEN`
+#     fallback below always resolves to GITHUB_TOKEN.
+#   * A PR opened with GITHUB_TOKEN does not trigger `pull_request` workflows.
+#     #4203 has 1 of 6 required checks (`enable` only, which is
+#     pull_request_target). main requires substance-gate, syntax-check,
+#     unit-tests, regression-lint, db-parity, app-contract-gate. It is
+#     mergeStateStatus=BLOCKED with auto-merge armed since 04:51Z and can
+#     never satisfy them. Compare #4220 (author azmartone67, via the backend
+#     route): all checks ran, merged 07:52Z, merge_outcome=merged_healthy.
+#   * Worse than idle: step 4 calls mark-pr, so a proposal this workflow
+#     captures is flipped to status='pr_opened' with pr_url set — and the
+#     backend route then SKIPS it as already-PR'd. Proposal #25 (confidence
+#     0.80, proposed 2026-05-31) has been stranded on #4203 this way.
+#     52 rows are currently status='pr_opened' AND merge_outcome IS NULL.
+#   * It is redundant by design. routes/brain_backlog_admin.py:20 says
+#     POST /api/v1/admin/brain/draft-prs/run exists to "bypass the broken GH
+#     Actions workflow" and reads THE SAME pending-pr queue. That route is
+#     driven every 2h by brain-master-tick (tier2.l22_draft_prs) and is what
+#     produced the three merged_healthy PRs #4220/#4221/#4222.
+#   * Its min_confidence default (0.85) is also stale: calibration has run at
+#     _CALIB_BASE_THRESHOLD 0.78 since #4186, so this caller re-imposes a
+#     floor the tuner was changed to lower — the same "caller hardcodes the
+#     base" defect #4186 fixed elsewhere.
+#
+# To re-arm: set a real GH_PAT secret first, otherwise every PR it opens is
+# dead on arrival. Prefer deleting this file and keeping the backend route as
+# the single opener.
 on:
-  schedule:
-    # Every 4 hours, offset by 23 min so it doesn't collide with the
-    # brain_learn hourly cron or the dcpi 06:00 UTC cron.
-    - cron: '23 */4 * * *'
   workflow_dispatch:
     inputs:
       min_confidence:
