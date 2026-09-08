@@ -78,6 +78,17 @@ ROLLBACK_SUFFIX = ":rollback"
 DEALS_VICTIM_CAP = 200          # rows one deals fire may quarantine
 TRIAGE_MOVES_CAP = 60           # status flips one triage pass may make
 QUEUE_SIZE = 3
+# 2026-09-08. The queue had a promotion rule and no exit. The three rows at
+# status='queued' had been there 49, 46 and 30 days, and the pipeline check
+# read GREEN the whole time, because it asserted `queued == QUEUE_SIZE` — a
+# condition three permanently-stuck rows satisfy perfectly. A check that
+# cannot tell "flowing" from "stuck" is not measuring the thing it names.
+# Past this age the queue is stagnant, not full.
+QUEUE_STALE_DAYS = 14
+# The terminal statuses. The triage cycle only ever moves rows between
+# 'proposed' and 'queued', so anything settled here is permanently out of
+# the ring — that is the whole point.
+TERMINAL_STATUSES = ("shipped", "rejected")
 
 _JOB_NAME = "brain_autonomy_tick"
 _JOB_INTERVAL_S = 86400
@@ -122,6 +133,21 @@ def _row(cur, sql, args=None):
 def _check(cid, name, passed, detail, critical=False):
     return {"id": cid, "name": name, "pass": passed,
             "detail": detail, "critical": critical}
+
+
+def queue_is_stagnant(oldest_queued_days) -> bool:
+    """True when the top-N queue is a parking space rather than a queue.
+
+    None (nothing queued, or the age could not be read) is NOT stagnant —
+    an unknown must not be reported as a failure, which is the mistake the
+    detector class this repo keeps finding is made of.
+    """
+    if oldest_queued_days is None:
+        return False
+    try:
+        return float(oldest_queued_days) > QUEUE_STALE_DAYS
+    except (TypeError, ValueError):
+        return False
 
 
 def _lane_pass(checks):
@@ -433,13 +459,19 @@ def _lane_proposals(conn, act: bool):
                GROUP BY fingerprint HAVING COUNT(*) > 1) d""")
         dup_pending = int(dup_pending[0] or 0) if dup_pending else None
         queued = []
+        oldest_queued_days = None
         try:
             cur.execute("""SELECT id, LEFT(COALESCE(title,'?'), 80),
-                                  ROUND(COALESCE(leverage_rank,0)::numeric, 2)
+                                  ROUND(COALESCE(leverage_rank,0)::numeric, 2),
+                                  EXTRACT(EPOCH FROM (NOW() - created_at))/86400
                              FROM brain_enhancement_proposals
                             WHERE status='queued'
                             ORDER BY leverage_rank DESC NULLS LAST LIMIT 5""")
-            queued = [f"#{r[0]} {r[1]} (lev {r[2]})" for r in cur.fetchall()]
+            rows = cur.fetchall()
+            queued = [f"#{r[0]} {r[1]} (lev {r[2]}, {int(r[3] or 0)}d)"
+                      for r in rows]
+            ages = [float(r[3] or 0) for r in rows]
+            oldest_queued_days = int(max(ages)) if ages else None
         except Exception:
             pass
     out.append(_check(
@@ -450,9 +482,22 @@ def _lane_proposals(conn, act: bool):
         f" moved this pass: {moved_dup} → duplicate, {moved_queue} queue"
         f" swap(s) (cap {TRIAGE_MOVES_CAP}/pass; statuses only, this lane"
         f" NEVER deletes)", critical=True))
+    # ★ Was `passed=None` with the detail "await the L22 handoff". Nothing
+    # reads status='queued' — grep the tree: every other 'queued' hit is a
+    # different table. There is no L22 handoff, so "awaiting" it is a state
+    # a row can occupy forever. This now fails on age, which is the only
+    # signal that separates a queue from a parking space.
+    stale = queue_is_stagnant(oldest_queued_days)
     out.append(_check(
-        "queued_top3", f"top {QUEUE_SIZE} await the L22 handoff", None,
-        " · ".join(queued) if queued else "queue empty"))
+        "queued_top3",
+        f"top {QUEUE_SIZE} move through the queue",
+        (not stale) if oldest_queued_days is not None else None,
+        (" · ".join(queued) if queued else "queue empty")
+        + (f" — STAGNANT: oldest has been queued {oldest_queued_days}d"
+           f" (>{QUEUE_STALE_DAYS}d). Nothing consumes status='queued';"
+           f" settle these via POST /api/v1/admin/brain/proposals/<id>/settle"
+           if stale else ""),
+        critical=False))
     return out
 
 
@@ -631,3 +676,65 @@ def brain_autonomy_page():
             "budget (CF DEFAULT 15s, measured cut ~12.2s)</p><table>"
             + "".join(rows) + "</table></body></html>")
     return Response(html, mimetype="text/html")
+
+
+@brain_autonomy_master_shell_bp.route(
+    "/api/v1/admin/brain/proposals/<int:pid>/settle", methods=["POST"])
+def settle_proposal(pid: int):
+    """Give the proposal book a terminal state — the exit it never had.
+
+    Before this, brain_enhancement_proposals could only ever hold
+    'proposed', 'duplicate' or 'queued'. Across 201 rows and eleven weeks
+    there was no shipped/implemented/rejected value in the table's entire
+    history, because no code path could write one: the triage pass promotes
+    the top-N to 'queued' and demotes the rest back to 'proposed', forever.
+    A ring by construction.
+
+    The triage cycle only moves rows between 'proposed' and 'queued', so a
+    row settled here is permanently out of the ring without any change to
+    that query.
+
+    Deliberately human-driven. "Did this idea actually ship?" is not
+    decidable from the tree — inferring it would fabricate exactly the kind
+    of oracle the merge reconciler refuses to invent when it returns
+    no_evidence rather than guessing a verdict.
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin key required"), 401
+    body = request.get_json(silent=True) or {}
+    status = str(body.get("status") or "").strip().lower()
+    note = str(body.get("note") or "").strip()[:500]
+    if status not in TERMINAL_STATUSES:
+        return jsonify(ok=False,
+                       error=f"status must be one of {list(TERMINAL_STATUSES)}",
+                       got=status or None), 400
+    c = None
+    try:
+        c = _conn()
+        if c is None:
+            return jsonify(ok=False, error="no DATABASE_URL"), 200
+        with c.cursor() as cur:
+            cur.execute(
+                """UPDATE brain_enhancement_proposals
+                      SET status = %s,
+                          grade  = COALESCE(NULLIF(%s,''), grade)
+                    WHERE id = %s
+                      AND status NOT IN %s
+                RETURNING id, LEFT(COALESCE(title,'?'), 120), status""",
+                (status, note, pid, tuple(TERMINAL_STATUSES)))
+            row = cur.fetchone()
+            c.commit()
+        if not row:
+            return jsonify(ok=False, error="not found, or already settled",
+                           id=pid), 404
+        return jsonify(ok=True, id=row[0], title=row[1], status=row[2],
+                       note=note or None), 200
+    except Exception as e:
+        return jsonify(ok=False,
+                       error=f"{type(e).__name__}: {str(e)[:160]}"), 200
+    finally:
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
