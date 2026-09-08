@@ -1703,6 +1703,25 @@ Allow: /
 # triggered the 2026-07-28 close, close it again — and this time record the
 # organic number on both sides of the change.
 User-agent: Bingbot
+# ★ 2026-09-08 — `Copilot` STACKED ONTO THIS GROUP, and BELOW the Bingbot line on
+#   purpose. ai_tracking's copilot bucket was narrowed to the literal "Copilot"
+#   token that day (Bingbot moved to its own `bing` platform so a search-index
+#   crawl stops publishing as assistant reach). That left "Copilot" recognised as
+#   a platform but named in NO robots group, so it fell to `User-agent: *` and was
+#   served a STRICTER policy than every named peer — caught by
+#   tests/test_robots_platform_parity.py within the hour.
+#
+#   Per RFC 9309 consecutive User-agent lines share the rules that follow, so
+#   Copilot gets Bingbot's policy exactly — the honest pairing, since the note
+#   below already says Copilot grounds its answers via this UA.
+#
+# ★ PLACEMENT IS LOAD-BEARING. Putting it ABOVE `User-agent: Bingbot` moved the
+#   slice boundary in tests/test_robots_ai_group_intact._ai_group(), which reads
+#   from "User-agent: GPTBot" up to "User-agent: Bingbot" — Copilot then read as
+#   an orphaned UA appended to the ASSISTANT group, below its directives,
+#   inheriting nothing. Same directives, same crawler behaviour, and the guard
+#   was right to refuse it. Below the Bingbot line, the boundary is unchanged.
+User-agent: Copilot
 # ★ 2026-08-08 — repeat the /*? and /admin hygiene (void here otherwise, per the
 #   note on the group above).
 # ★ Content Signals likewise repeated — Copilot grounds answers via this UA.
