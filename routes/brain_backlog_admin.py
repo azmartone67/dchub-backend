@@ -78,6 +78,10 @@ _INTERNAL_BASE = (os.environ.get("INTERNAL_BASE_URL")
                   or "http://localhost:8080").rstrip("/")
 _RAILWAY_BASE = "https://dchub-backend-production.up.railway.app"
 
+# The label brain-pr-post-merge-guard.yml gates its job on. Changing it
+# here without changing the workflow silently re-opens the 2026-09-08 gap.
+_OUTCOME_LABEL = "autonomous-brain-layer5"
+
 
 # ── Config ───────────────────────────────────────────────────────────
 
@@ -337,7 +341,18 @@ def _open_draft_pr_for_proposal(prop: dict) -> dict:
     loop_name = (prop.get("loop_name") or "unknown")[:30].replace("/", "-")
     loop_safe = "".join(c if c.isalnum() or c in "-_" else "-"
                         for c in loop_name)
-    branch = f"brain-v2/auto-{loop_safe}-{pid}-{ts}"
+    # ★ 2026-09-08: the timestamp goes BEFORE the id, not after.
+    # brain-pr-post-merge-guard.yml parses the proposal id as the
+    # TRAILING digits of the head ref (`grep -oE '[0-9]+$'`). With
+    # `-{pid}-{ts}` it parsed the unix timestamp instead: live on
+    # 2026-09-08, PR #4202 on branch
+    # brain-v2/auto-cache_rate-24-67--100789-1788841887 yielded
+    # PID=1788841887 — a proposal that does not exist — so the
+    # mark-merge-outcome callback would have written nothing and
+    # said nothing. The workflow-side opener already ends its branch
+    # with the bare id (brain-layer5-pr-opener.yml:269); this matches
+    # it. ts still guarantees uniqueness, just earlier in the name.
+    branch = f"brain-v2/auto-{loop_safe}-{ts}-{pid}"
     if not _create_branch(branch, base_sha):
         return {"ok": False, "error": f"branch create failed: {branch}"}
 
@@ -404,6 +419,28 @@ def _open_draft_pr_for_proposal(prop: dict) -> dict:
     pr = r.json()
     pr_url = pr.get("html_url")
     pr_number = pr.get("number")
+
+    # ★ 2026-09-08: label it, or the outcome loop never closes.
+    # brain-pr-post-merge-guard.yml gates its whole job on
+    #   contains(labels.*.name, 'autonomous-brain-layer5')
+    # and this producer never applied it, so every PR it opened merged
+    # with the guard `skipped` — neutral grey, no error. Live proof: of the
+    # two brain PRs opened 2026-09-08, #4203 (workflow opener) carried the
+    # label and #4202 (this route) did not. That gap is why merge_outcome
+    # sat NULL on 119 of 119 rows and the L5 confidence calibration had no
+    # signal to tune on. Best-effort: a labelling failure must not orphan a
+    # PR that already exists, but it is logged rather than swallowed.
+    try:
+        _lr = _gh("POST",
+                  f"/repos/{_GITHUB_REPO}/issues/{pr_number}/labels",
+                  {"labels": [_OUTCOME_LABEL]})
+        if _lr.status_code not in (200, 201):
+            logger.warning("label %s failed on PR #%s: %s %s",
+                           _OUTCOME_LABEL, pr_number, _lr.status_code,
+                           _lr.text[:120])
+    except Exception as _le:
+        logger.warning("label %s errored on PR #%s: %s",
+                       _OUTCOME_LABEL, pr_number, _le)
 
     # 7. Mark in DB so the GH Actions workflow doesn't try again
     try:
