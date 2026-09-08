@@ -5864,15 +5864,22 @@ def phase14c_health_aggregate():
         except Exception as e:
             out['checks']['user_acquisition'] = {'status': 'unknown', 'error': str(e)[:200]}
         out['checks']['database'] = {'status': 'green', 'note': 'connection ok'}
-        # Check 4: funnel leak — many signals, zero conversions = yellow
+                # Check 4: funnel leak — many signals, zero conversions = yellow
         try:
-            cur.execute("""
-                SELECT
-                  (SELECT COUNT(*) FROM mcp_upgrade_signals
-                     WHERE created_at >= CURRENT_DATE - INTERVAL '7 days') AS signals_7d,
-                  (SELECT COUNT(*) FROM mcp_upgrade_signals
-                     WHERE created_at >= CURRENT_DATE - INTERVAL '30 days') AS signals_30d
-            """)
+            # First verify the mcp_upgrade_signals table exists
+            cur.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'mcp_upgrade_signals'")
+            table_exists = (cur.fetchone() or {}).get('count', 0) > 0
+            
+            if not table_exists:
+                out['checks']['funnel'] = {'status': 'yellow', 'error': 'mcp_upgrade_signals table not found'}
+            else:
+                cur.execute("""
+                    SELECT
+                      (SELECT COUNT(*) FROM mcp_upgrade_signals
+                         WHERE created_at >= CURRENT_DATE - INTERVAL '7 days') AS signals_7d,
+                      (SELECT COUNT(*) FROM mcp_upgrade_signals
+                         WHERE created_at >= CURRENT_DATE - INTERVAL '30 days') AS signals_30d
+                """)
             row = cur.fetchone() or {}
             signals_7d = int(row.get('signals_7d') or 0)
             signals_30d = int(row.get('signals_30d') or 0)
