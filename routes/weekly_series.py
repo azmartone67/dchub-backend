@@ -248,21 +248,25 @@ _DEFINITION_CHANGES = [
         "change": (
             "the per-day full-answer cap's deprivation branch now writes an "
             "mcp_upgrade_signals row (signal_type 'trial_cap_exceeded'). It "
-            "has fired since 2026-08-06 — 39,344 gated calls / 10,562 "
-            "sessions by 2026-09-07, a steady ~8,400/week — and wrote NO "
-            "signal, so every signal series before this timestamp omits the "
-            "single largest deprivation event in the funnel"
+            "has fired since 2026-08-06 and wrote NO signal, so every signal "
+            "series before this timestamp omits that branch entirely. ★The raw "
+            "hit count (39,344 by 2026-09-07) is 99.25% our own harness — the "
+            "REAL deprivation it adds is ~267 rows per 30d"
         ),
         "direction": "INCREASES signals sharply; no effect on calls or agents",
         "is_correction": True,
         "measured_effect": (
-            "not yet measurable at registration. The expected step is ~2,900 "
-            "-> ~38,000 mcp_upgrade_signals rows per 30d (~13x): the 30d "
-            "table held trial_preview 2,054 + paid_tool_blocked 890 + "
-            "checkout_link_issued 1 = 2,945, beside 35,827 cap hits on "
-            "mcp_call_log for the same window. The published upgrade_signals_7d "
-            "of 366 sat beside 8,442 cap hits in the same 7d — a 23x "
-            "understatement that this change removes"
+            "★CORRECTED 2026-09-08, hours after registration. The original entry "
+            "predicted ~2,900 -> ~38,000 rows per 30d (~13x). THAT WAS WRONG: it "
+            "compared mcp_upgrade_signals, which EXCLUDES synthetic clients "
+            "(fire_upgrade_signal short-circuits on _SYNTHETIC_CLIENT_PREFIXES), "
+            "against mcp_call_log cap hits, which do not. Measured on the split: "
+            "of 35,817 cap hits in 30d, 35,550 (99.25%) are our own dchub-internal "
+            "harness and only 267 are real; over 7d it is 7 of 8,349. The real "
+            "step is therefore ~2,945 -> ~3,210 rows per 30d (~+9%), not 13x. "
+            "The marker is KEPT — a 9% step in a signal series is still a "
+            "definition change and still must not be read as demand — but it is "
+            "a much smaller hazard than first registered"
         ),
         "means": (
             "weeks on opposite sides of this timestamp count signals under "

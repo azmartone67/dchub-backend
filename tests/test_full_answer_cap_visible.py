@@ -66,8 +66,8 @@ def _block() -> str:
 # The counts deliberately include the `basis` string, which quotes the same
 # table and predicate the SQL runs. That makes the published basis and the
 # executed query ONE fact: change either alone and the count moves.
-_EXPECT_CALL_LOG_READS = 4  # 3 executed queries + the published `basis` string
-_EXPECT_GATE_FILTERS = 3  # headline SQL + by_week SQL + the published `basis`
+_EXPECT_CALL_LOG_READS = 6  # 5 executed queries + the published `basis` string
+_EXPECT_GATE_FILTERS = 5  # headline + real_* + by_week + platform SQL + `basis`
 
 
 def test_every_query_in_the_block_reads_the_call_log():
@@ -135,4 +135,59 @@ def test_quota_wall_points_at_the_gate_that_actually_fires():
     m = re.search(r'out\["quota_wall"\]\["see_instead"\] = \(\s*\n\s*"([^"]+)"', s)
     assert m and "full_answer_cap" in m.group(1), (
         "see_instead no longer names full_answer_cap"
+    )
+
+
+# ── r-cap-real (2026-09-08): the raw counts are 99% our own harness ──────────
+#
+# The block first shipped publishing hits_7d as its headline. Measured hours
+# later: dchub-internal was 35,550 of 35,817 cap hits over 30d (99.25%), and
+# 8,342 of 8,349 over 7d — so "hits_7d 8,384" read as 8,400 walled callers when
+# the real number was SEVEN. A basis string saying "upper bound" was not enough;
+# the headline is what gets quoted.
+
+def test_real_split_is_published_and_leads():
+    b = _block()
+    for key in ("real_hits_7d", "real_hits_30d", "real_sessions_7d",
+                "real_sessions_30d", "real_basis", "synthetic_share_pct_30d",
+                "hits_by_platform_30d"):
+        assert '"%s"' % key in b, "full_answer_cap lost %r" % key
+    # The real figures must come BEFORE the raw ones in the payload, so a
+    # reader scanning top-down meets the addressable number first.
+    assert b.index('"real_hits_7d"') < b.index('"hits_7d": int(_cw[0]'), (
+        "the raw hits_7d is emitted before real_hits_7d — the misleading number "
+        "regains the headline position"
+    )
+
+
+def test_synthetic_predicate_is_imported_never_copied():
+    """One source of truth for who counts as synthetic.
+
+    fire_upgrade_signal() skips these clients before any DB write. If this
+    block copied the prefix list instead of importing it, real_* would drift
+    away from the population the signal writer actually excludes, and the two
+    surfaces would disagree about the same callers.
+    """
+    b = _block()
+    assert "from mcp_upgrade_gate import _SYNTHETIC_CLIENT_PREFIXES" in b, (
+        "the synthetic predicate is no longer imported from the module that "
+        "owns it — a copied list drifts"
+    )
+    for lit in ("'dchub-'", '"dchub-"', "'qa-'", '"qa-"'):
+        assert lit not in b, (
+            "a synthetic prefix (%s) is hardcoded in this block; import the "
+            "tuple instead" % lit
+        )
+
+
+def test_unknown_split_is_none_never_zero():
+    """If the import fails the split is UNKNOWN. Publishing 0 would assert that
+    none of the traffic is ours — the exact error this whole block corrects."""
+    b = _block()
+    assert '_SYN, _syn_src = (), "UNAVAILABLE' in b, (
+        "the import fallback no longer marks the split unavailable"
+    )
+    assert '(int(_rh7) if _rh7 is not None else None)' in b, (
+        "real_hits_7d no longer degrades to None — a 0 here would claim all "
+        "traffic is real"
     )
