@@ -749,3 +749,137 @@ def merge_reconciler_run():
     if not dry and rep.get("ok"):
         _LAST_RUN_TS = _t.time()
     return jsonify(rep), 200
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Orphaned `pr_opened` proposals — 2026-09-08.
+#
+# `status='pr_opened'` was a terminal trap. 52 rows sat in it, the oldest
+# since 2026-05-31. Resolving each row's PR against GitHub:
+#
+#     38 CLOSED (never merged)   13 MERGED   1 OPEN
+#
+# Two independent reasons nothing ever settled them:
+#
+#   1. list_merged_brain_prs() walks a TIME WINDOW —
+#      BRAIN_MERGE_RECONCILER_LOOKBACK_DAYS, default 30. Those PRs are from
+#      June. They aged out of the window and can never re-enter it, so the
+#      13 merged ones will never be seen by the walk no matter how often
+#      it runs.
+#   2. The walk only lists MERGED PRs. A PR that is CLOSED without merging
+#      is never enumerated at all, so the 38 closed ones had no code path
+#      that could ever look at them.
+#
+# The cost is not cosmetic: the drafter treats a row with pr_url set as
+# already-PR'd and skips it, so every one of these proposals is out of the
+# queue permanently while presenting as in-flight work.
+#
+# This pass is driven from the DB rows OUTWARD to GitHub instead of from a
+# GitHub time window inward, so it has no lookback and cannot develop the
+# same blind spot.
+#
+# ★ It deliberately does NOT stamp merge_outcome on the merged rows.
+# Calibration divides healthy/resolved and counts `merge_outcome IS NOT
+# NULL` as resolved (brain_v2_layer5.py:1550-1552), so writing any non-
+# healthy value here would quietly LOWER the trust ratio and raise the
+# threshold — on no evidence. Whether a June merge was healthy is not
+# knowable today; the honest record is "merged, never graded", which is
+# status='merged' with merge_outcome left NULL.
+# ─────────────────────────────────────────────────────────────────────
+
+_SETTLE_MAX_PER_RUN = 40
+
+
+def _pr_number_from_url(url: str):
+    """Trailing /pull/<n> → int, else None."""
+    m = re.search(r"/pull/(\d+)\s*$", (url or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def settle_orphaned_pr_opened(limit: int = _SETTLE_MAX_PER_RUN) -> dict:
+    """Settle proposals parked at pr_opened whose PR is no longer open.
+
+    MERGED → status='merged' (factual; merge_outcome untouched — see above).
+    CLOSED → status='rejected' (a human closed the PR without merging).
+    OPEN   → left exactly as it is.
+
+    Returns a per-outcome count. Never raises; a GitHub hiccup on one row
+    leaves that row untouched for the next tick.
+    """
+    out = {"ok": True, "scanned": 0, "merged": 0, "rejected": 0,
+           "still_open": 0, "unresolved": 0}
+    conn = _conn()
+    if conn is None:
+        return {"ok": False, "error": "no_database_url"}
+    try:
+        from routes.brain_pr_opener import _gh, _GITHUB_REPO
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, pr_url
+                  FROM brain_proposed_code_fixes
+                 WHERE status = 'pr_opened'
+                   AND merge_outcome IS NULL
+                   AND pr_url IS NOT NULL
+                 ORDER BY id
+                 LIMIT %s""", (limit,))
+            rows = cur.fetchall()
+            for pid, pr_url in rows:
+                out["scanned"] += 1
+                number = _pr_number_from_url(pr_url)
+                if number is None:
+                    out["unresolved"] += 1
+                    continue
+                try:
+                    r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls/{number}")
+                    if r.status_code != 200:
+                        out["unresolved"] += 1
+                        continue
+                    pr = r.json() or {}
+                except Exception:
+                    out["unresolved"] += 1
+                    continue
+
+                state = (pr.get("state") or "").lower()
+                merged = bool(pr.get("merged_at"))
+                if state == "open":
+                    out["still_open"] += 1
+                    continue
+
+                if merged:
+                    note = (f"settled {_now().date()}: PR #{number} merged "
+                            f"{str(pr.get('merged_at'))[:10]}. Outcome never "
+                            f"graded — the merge predates the reconciler "
+                            f"lookback window, and grading it now would "
+                            f"invent a verdict. merge_outcome left NULL on "
+                            f"purpose.")
+                    new_status = "merged"
+                    out["merged"] += 1
+                else:
+                    note = (f"settled {_now().date()}: PR #{number} closed "
+                            f"{str(pr.get('closed_at'))[:10]} without "
+                            f"merging. Releasing the row from pr_opened; if "
+                            f"the underlying finding recurs the normal "
+                            f"detect→propose path will re-file it.")
+                    new_status = "rejected"
+                    out["rejected"] += 1
+
+                cur.execute("""
+                    UPDATE brain_proposed_code_fixes
+                       SET status = %s,
+                           reviewer_note = %s,
+                           reviewed_at = COALESCE(reviewed_at, NOW())
+                     WHERE id = %s
+                       AND status = 'pr_opened'
+                       AND merge_outcome IS NULL""",
+                    (new_status, note[:500], pid))
+    except Exception as e:
+        logger.warning("brain_merge_reconciler: settle_orphaned_pr_opened "
+                       "failed: %s", e)
+        out["ok"] = False
+        out["error"] = str(e)[:200]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return out
