@@ -194,3 +194,48 @@ def test_the_rendered_pages_state_canonical_tools_and_markets():
     assert checked >= 3, (
         f"only {checked} of 3 constants found — they were renamed and this "
         "guard just checked almost nothing.")
+
+
+# ── substations, added 2026-09-07 (third pass on the same page) ─────────────
+
+TYPED_SUBSTATIONS = re.compile(r'\b([\d,]{5,})\+?\s*substations?\b', re.I)
+
+
+def test_no_typed_substation_count_in_the_integrations_copy():
+    """126,427 was this repo's DB-DOWN SEED, pasted into prose and frozen.
+
+    ai_surface_canon's own note records the identical literal escaping into
+    /.well-known/mcp.json while the live snapshot measured 127,269 — so this is
+    the second surface to carry the same frozen seed, and the reason the fix is
+    {canon_substations} rather than a corrected number.
+    """
+    hits = TYPED_SUBSTATIONS.findall(_code_only(SRC))
+    assert not hits, (
+        f"{SRC_PATH} types its own substation count: {sorted(set(hits))}. "
+        "Render it from canon with {canon_substations} — the literal 126,427 is "
+        "this module's DB-down seed, not a measurement.")
+
+
+def test_the_rendered_pages_state_the_canonical_substation_figure():
+    pytest.importorskip("flask")
+    import ai_surface_canon as canon
+    import routes.integrations_landing as il
+
+    want = canon.canon_nums().get("{canon_substations}")
+    assert want, "canon publishes no substations phrase"
+
+    seen_any = False
+    for name in ("MCP_LANDING_HTML", "MCP_SEO_PAGE_HTML", "META_LANDING_HTML"):
+        html = getattr(il, name, None)
+        if not html:
+            continue
+        figures = set(TYPED_SUBSTATIONS.findall(html))
+        if figures:
+            seen_any = True
+        assert figures <= {want.rstrip("+")}, (
+            f"{name} states substation count(s) "
+            f"{sorted(figures - {want.rstrip('+')})} but canon says {want!r}")
+    assert seen_any, (
+        "no constant states a substation count any more. Floor: this assertion "
+        "is a scan, and a page that dropped the claim entirely would pass it "
+        "vacuously while quietly losing a coverage figure agents cite.")
