@@ -418,8 +418,8 @@ def _gather_media() -> dict:
         "verdict":          d.get("verdict") or "—",
         "press_24h":        int(press.get("count_24h") or 0),
         "press_7d":         int(press.get("count_7d") or 0),
-        "linkedin_24h":     int(linkedin.get("count_24h") or 0),
-        "linkedin_7d":      int(linkedin.get("count_7d") or 0),
+        "linkedin_24h":     int(linkedin.get("published_24h") or 0),
+        "linkedin_7d":      int(linkedin.get("published_7d") or 0),
         "top_topic":        top_topic,
         "spike_count_24h":  0,  # spike responder writes elsewhere; best-effort
     }

@@ -199,7 +199,13 @@ def media_organism():
         components["linkedin"] = {"score": None, "verdict": "unreachable"}
     else:
         li = (body.get("components") or {}).get("linkedin") or {}
-        li_7d = int(li.get("sent_7d") or 0)
+        # ★ The producer (dchub_media_revival.linkedin_publisher_verdict)
+        # emits published_7d / published_24h. It was renamed to those on
+        # 2026-08-15 when the counter moved off auto_press_releases onto
+        # linkedin_quad_posts; this reader was never updated, so sent_7d
+        # resolved to None -> 0 -> score 0.0 -> verdict "quiet" for a
+        # channel that was publishing. Read the key the writer emits.
+        li_7d = int(li.get("published_7d") or 0)
         # 2026-05-29: max_value 14 → 7. The 14 came from a 2-per-day
         # aspirational cadence, but the actual auto-publisher fires
         # ONCE per day (auto_press_daily cron at 13:00 UTC), so a
@@ -212,7 +218,7 @@ def media_organism():
         score, verdict = _score_component(li_7d, 70, 35, max_value=7)
         components["linkedin"] = {
             "score": score, "verdict": verdict,
-            "sent_7d": li_7d, "sent_24h": int(li.get("sent_24h") or 0),
+            "sent_7d": li_7d, "sent_24h": int(li.get("published_24h") or 0),
             "target_cadence_per_week": 7,
         }
 
