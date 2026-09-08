@@ -11194,6 +11194,7 @@ def check_package_metadata_freshness() -> list[dict]:
             return findings
         try:
             with _gc.cursor() as _gcur:
+                # null-signal: feature not built yet — absence is the designed state
                 _gcur.execute(
                     "SELECT to_regclass('public.public_install_counts'), "
                     "to_regclass('public.package_metadata')")
