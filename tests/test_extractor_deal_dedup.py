@@ -10,9 +10,14 @@ quarantined the stock; the writer-side twin probe stops the regrowth. These
 guards pin the properties that make the probe real:
 
   1. IMPORTED, NOT RESTATED — the group key and served predicate come from
-     the modules that own them (graph_spine_master_shell._DEAL_BUSINESS_COLS,
+     the module that owns them (util.deals.DEAL_BUSINESS_COLS,
      util.deals.deals_ok). A hand-copy is how the probe and lane 3a drift
      apart, which is the exact defect that produced the AUTO- era dupes.
+     ★ 2026-09-08: the group key MOVED from graph_spine_master_shell to
+     util.deals. This guard pins "imported, not restated", not a street
+     address — importing it through the Flask blueprint is what put flask
+     in a cron's import graph and crashed it twice. The pin follows the
+     owner; what it must never allow is a private copy in this file.
   2. NULL-SAFE — the tuple comparison is IS NOT DISTINCT FROM. Lane 3a's
      GROUP BY treats NULLs as equal, and most of the 19 columns are NULL on
      every extractor row, so `=` would match nothing and the probe would be
@@ -65,10 +70,11 @@ def test_twin_key_and_predicate_are_imported_not_restated():
     imports = {(n.module, a.name) for n in ast.walk(tree)
                if isinstance(n, ast.ImportFrom) and n.module
                for a in n.names}
-    assert ("routes.graph_spine_master_shell", "_DEAL_BUSINESS_COLS") in imports, (
+    assert ("util.deals", "DEAL_BUSINESS_COLS") in imports, (
         "insert_deal's twin probe no longer imports the 19-column group key "
-        "from the shell that audits it — a private copy drifts the moment "
-        "lane 3a's definition moves")
+        "from util.deals, which owns it — a private copy drifts the moment "
+        "lane 3a's definition moves. If the key moved again, repoint this "
+        "pin; do not satisfy it by restating the columns here.")
     assert ("util.deals", "deals_ok") in imports, (
         "the twin probe no longer imports the served predicate from "
         "util.deals — the census in tests/test_deals_guard.py cannot see "
@@ -76,9 +82,9 @@ def test_twin_key_and_predicate_are_imported_not_restated():
 
     # The probe must actually DERIVE from those imports, not just carry them.
     cols = _assign(tree, "_DEAL_COLS")
-    assert any(isinstance(n, ast.Name) and n.id == "_DEAL_BUSINESS_COLS"
+    assert any(isinstance(n, ast.Name) and n.id == "DEAL_BUSINESS_COLS"
                for n in ast.walk(cols.value)), (
-        "_DEAL_COLS is no longer split from the imported _DEAL_BUSINESS_COLS")
+        "_DEAL_COLS is no longer split from the imported DEAL_BUSINESS_COLS")
     twin = _assign(tree, "_TWIN_SQL")
     assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                and n.func.id == "deals_ok" for n in ast.walk(twin.value)), (
@@ -88,7 +94,7 @@ def test_twin_key_and_predicate_are_imported_not_restated():
 
     # A restated copy of the key would carry this distinctive column name as
     # a string literal somewhere in the module; the only place it may live is
-    # routes/graph_spine_master_shell.py, where the import points.
+    # util/deals.py, where the import points.
     offenders = [s for s in _strings(tree) if "deal_category" in s]
     assert not offenders, (
         "extractor_cron.py restates the deal business-column list instead of "

@@ -1,43 +1,64 @@
 [deploy]
-# ★2026-09-06: run the venv interpreter by PATH-independent absolute path, not
-# `python3`. Railpack builds this service as `python -m venv /app/.venv` →
-# `pip install -r requirements.txt` → `copy /app/.venv` into the runtime image,
-# so EVERY third-party package lives in that venv and nowhere else.
+# ★2026-09-08 — SECOND occurrence of the same start-time crash, and the guard
+# written for the FIRST one was live when it happened.
 #
-# On deployment 8c643bec (2026-09-06T23:05Z) the container ran
-# `mise python@3.13.14 [1/3] install / download / verify GitHub artifact
-# attestations` at START and the cron then executed against that freshly
-# installed bare interpreter instead of /app/.venv. Nothing third-party was
-# importable, and the run died at extractor_cron.py:14 with
-# `ModuleNotFoundError: No module named 'flask'` — flask only because lines
-# 1-13 are pure stdlib and line 14 is the first import that leaves it. The next
-# one would have been `import psycopg2` at line 159. The dependency set was
-# never the problem: requirements.txt:5 pins Flask==3.0.0 and that same
-# deployment's build log says "Successfully installed ... Flask-3.0.0 ...".
+# THE FLAKE. Railpack builds this service as `python -m venv /app/.venv` ->
+# `pip install -r requirements.txt` -> copy `/app/.venv` into the runtime
+# image, so every third-party package lives in that venv and nowhere else.
+# Occasionally a container starts with mise re-installing the interpreter from
+# scratch — `mise python@3.13.14 [1/3] install / download / verify GitHub
+# artifact attestations / extract` — and the job then runs against that bare
+# interpreter, which has never seen a `pip install`.
 #
-# Rate: 1 crash in 41 firings over 20:01-23:25 that day, and it was the ONLY
-# container of 7 deployments sampled that ran mise-install-at-start. The other
-# 40 firings succeeded, including real work at 21:35:32
-# ("read=7 | capacity=1 | deals=3"), so this is a start-time flake, not a
-# broken service.
+#   2026-09-06  deployment 8c643bec   ModuleNotFoundError: No module named 'flask'
+#   2026-09-08  deployment 7dfd3fe1   ModuleNotFoundError: No module named 'flask'
 #
-# ★ FALLBACK, NOT A BARE PIN. #4046 shipped a bare `/app/.venv/bin/python`.
-# After it deployed SUCCESS (582c0ba4) `get-service-config` still reported the
-# OLD `python3 extractor_cron.py --limit 50`, so it is not established that this
-# file's startCommand reaches the container at all — the service may carry a
-# dashboard-level override that wins. Until both agree, this form is written so
-# it CANNOT be worse than the status quo under either reading: it prefers the
-# venv interpreter and falls back to exactly the old `python3` when that path is
-# missing or not executable.
+# Measured on 7dfd3fe1: container start 17:45:19.292Z, mise install 17:45:19.957
+# -> 17:45:22.607 (3.3s, of which ~2.3s was attestation verification), traceback
+# 17:45:22.902. The SAME commit (ddd763bf) redeployed 9 minutes later as
+# a2cf5c94 and has run clean every 5 minutes since; healthy containers show NO
+# mise lines between "Starting Container" and "INFO Starting | model=...".
+# The mise-install-at-start IS the differentiator, confirmed on both dates.
 #
-# Verified locally, all four branches: VIRTUAL_ENV set+executable -> venv python;
-# unset with no /app/.venv -> python3; set but not executable -> python3; and
-# `exec` replaces the shell (a trailing echo after the command does not run).
+# ★ WHY #4046/#4050's GUARD DID NOT FIRE. It shipped
+#     P="${VIRTUAL_ENV:-/app/.venv}/bin/python"; [ -x "$P" ] || P=python3
+# and `get-service-config` confirms that exact string was LIVE on 09-08 — so
+# the open question in the previous version of this comment ("it is not
+# established that this file's startCommand reaches the container at all") is
+# now answered: it does. The guard is simply inverted for the one failure it
+# exists for. `/app/.venv/bin/python` is a symlink into the mise-managed
+# interpreter tree and `test -x` FOLLOWS symlinks, so in the exact scenario
+# where mise has not yet materialised that tree the symlink dangles, the test
+# goes false, and the fallback selects `python3` — precisely the bare
+# interpreter with no site-packages. Whichever branch ran on 09-08, the
+# command could not have survived: the venv branch crashes because the
+# interpreter is broken, and the fallback branch crashes because it is bare.
+# It also printed nothing about which branch it took, so the crash log cannot
+# distinguish them. That is why the replacement is loud.
 #
-# NOT VERIFIED IN PRODUCTION: at 1-in-41, no green deploy can demonstrate the
-# flake is gone. Confirm the switch instead — `get-service-config` must report
-# THIS string, and a firing must log its "Done |" line.
-startCommand = "sh -c 'P=\"${VIRTUAL_ENV:-/app/.venv}/bin/python\"; [ -x \"$P\" ] || P=python3; exec \"$P\" extractor_cron.py --limit 50'"
+# ★ THE REPLACEMENT. Probe the PROPERTY that has to hold — "this interpreter
+# can import our third-party deps" — instead of `-x`, which is a proxy for it
+# and, as above, the wrong proxy. Retry across the ~3.3s mise window; on
+# 7dfd3fe1 the interpreter became usable 0.3s BEFORE the traceback, so one
+# 3s retry would have turned that crash into a completed run. Then fail loudly
+# rather than falling back: there is no second interpreter on this container
+# that has the packages, so a fallback can only reproduce the crash with a
+# worse error. `psycopg2, anthropic` are the probe because they are what the
+# cron actually needs — flask is no longer in its import graph at all as of
+# this PR, and was only ever the first non-stdlib name the chain reached.
+#
+# VERIFIED LOCALLY, all four branches, against this exact string:
+#   healthy venv                 -> runs immediately, exec passes args through
+#   venv path missing            -> 5 tries, FATAL, exit 1, NO python3 fallback
+#   interpreter present but bare -> 5 tries, FATAL, exit 1, NO python3 fallback
+#   deps land on try 3           -> recovers and runs   <- the flake case
+#
+# NOT VERIFIED IN PRODUCTION, and cannot be by a green deploy: at roughly 1
+# crash per 40 firings, success proves nothing. Confirm the SWITCH instead —
+# `get-service-config` must report this string, and a firing must log its
+# "[extractor] interpreter=..." line. The next crash, if the class survives,
+# will now say which interpreter it chose and why it refused.
+startCommand = "sh -c 'P=\"${VIRTUAL_ENV:-/app/.venv}/bin/python\"; i=0; until \"$P\" -c \"import psycopg2, anthropic\" 2>/dev/null; do i=$((i+1)); if [ \"$i\" -ge 5 ]; then echo \"[extractor] FATAL: psycopg2/anthropic still unimportable via $P after ${i} tries; refusing to fall back to a bare interpreter\"; exit 1; fi; echo \"[extractor] deps unimportable via $P (try $i) - waiting for the runtime to settle\"; sleep 3; done; echo \"[extractor] interpreter=$P\"; exec \"$P\" extractor_cron.py --limit 50'"
 restartPolicyType = "NEVER"
 
 # No healthcheck for cron jobs — they run, exit, done.

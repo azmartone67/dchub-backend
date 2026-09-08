@@ -95,7 +95,8 @@ from html import escape as _esc
 
 from flask import Blueprint, Response, jsonify, request
 
-from util.deals import DEALS_OK, deals_ok, deals_quarantined
+from util.deals import (DEAL_BUSINESS_COLS, DEALS_OK, deals_ok,
+                        deals_quarantined)
 
 logger = logging.getLogger(__name__)
 
@@ -387,10 +388,14 @@ def _lane_pdb_bridge(c, ctx) -> list[dict]:
 
 # ── lane 3 · deals identity ───────────────────────────────────────────
 
-_DEAL_BUSINESS_COLS = (
-    "date, year, buyer, seller, value, mw, type, region, market, source_url,"
-    " verified, status, notes, assets, deal_date, deal_category, data_flag,"
-    " extraction_confidence, extracted_via")
+# ★ 2026-09-08: the literal moved to util/deals.py (stdlib-only). It is
+# re-exported here under its original private name because lane 3a below and
+# routes/brain_autonomy_master_shell.py both read it from this module, and
+# both already import flask for other reasons. New consumers — especially
+# standalone scripts — should import DEAL_BUSINESS_COLS from util.deals
+# directly: reaching it through this module drags a Flask blueprint in with
+# it, which is what crashed the extractor cron on 09-06 and 09-08.
+_DEAL_BUSINESS_COLS = DEAL_BUSINESS_COLS
 
 # ★ THE QUARANTINE PREDICATE. `deals` is not deduped by DELETE — the 07-17
 # integrity wave flagged 2,868 redundant/garbage rows with data_flag and taught
