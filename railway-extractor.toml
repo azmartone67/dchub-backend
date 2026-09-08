@@ -1,3 +1,23 @@
+[build]
+# ★2026-09-08 — DOCKERFILE, to delete the failure class rather than survive it.
+#
+# Under RAILPACK the interpreter is materialised by mise at CONTAINER START, and
+# twice (8c643bec 09-06, 7dfd3fe1 09-08) a container started mid-reinstall and
+# ran the job against a bare interpreter. The startCommand below now survives
+# that; this makes it unreachable — Dockerfile.extractor bakes the interpreter
+# and every package into image layers, so there is nothing to install at start.
+#
+# ★ dockerfilePath is REQUIRED here, and the file is deliberately NOT named
+# `Dockerfile`. Railway: "Railway will always build with a Dockerfile if it
+# finds one." dchub-backend (web) and dchub-worker both build from the ROOT of
+# this repo on RAILPACK, so a root-level `Dockerfile` would switch their builder
+# too. The suffixed name is not auto-detected, which scopes this to one service.
+#
+# ★ ROLLBACK is this block alone: delete it and the next deploy is Railpack
+# again, with the startCommand unchanged and still correct under either builder.
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.extractor"
+
 [deploy]
 # ★2026-09-08 — SECOND occurrence of the same start-time crash, and the guard
 # written for the FIRST one was live when it happened.
@@ -53,11 +73,40 @@
 #   interpreter present but bare -> 5 tries, FATAL, exit 1, NO python3 fallback
 #   deps land on try 3           -> recovers and runs   <- the flake case
 #
-# NOT VERIFIED IN PRODUCTION, and cannot be by a green deploy: at roughly 1
-# crash per 40 firings, success proves nothing. Confirm the SWITCH instead —
-# `get-service-config` must report this string, and a firing must log its
-# "[extractor] interpreter=..." line. The next crash, if the class survives,
-# will now say which interpreter it chose and why it refused.
+# ★★★ HOW TO VERIFY — AND THE CRITERION THAT IS A TRAP.
+#
+# `get-service-config` DOES NOT and WILL NOT report this string, and that is not
+# a lag or a bug. Railway's config-as-code docs: "Configuration defined in code
+# will always override values from the dashboard", but "The settings in the
+# dashboard will not be updated with the settings defined in code" — the file
+# wins per-deployment and never writes back. get-service-config reads the
+# DASHBOARD settings, so it shows a startCommand this service has not run for
+# some time. Measured 2026-09-08: 45+ minutes after deployment 3cea948b went
+# SUCCESS on the new command, that API still returned the previous one while the
+# container was demonstrably running the new one. The same is true of `builder`,
+# which will keep saying RAILPACK after the Dockerfile switch above.
+#
+# An earlier version of this comment said the opposite, and #4046/#4050 reasoned
+# FROM that mistake: seeing a stale value, its author concluded "it is not
+# established that this file's startCommand reaches the container at all" and
+# wrote a `|| P=python3` fallback to be safe under either reading — a fallback
+# that then selected the exact bare interpreter that crashes. A misread control
+# plane produced a defensive design that reproduced the bug.
+#
+# VERIFY BY WHAT THE RUNNING CODE EMITS:
+#   start command — a firing logs "[extractor] interpreter=/app/.venv/bin/python"
+#                   (confirmed live 2026-09-08 20:15:19Z on deployment 3cea948b)
+#   builder       — the BUILD log shows Docker stages, not `mise python@... install`
+#
+# And note the flake itself stays unproven either way: at ~1 crash per 40
+# firings no green deploy is evidence. The next crash, if the class survives,
+# will at least say which interpreter it chose and why it refused.
+#
+# ★ EXPIRY: this whole file is legacy. Railway has deprecated config-as-code in
+# favour of Infrastructure as Code and keeps these files working for existing
+# services only until 2026-12-01. Migrate before then or these settings — cron
+# schedule, restart policy, builder and start command alike — silently revert to
+# whatever the dashboard holds, which is the stale command described above.
 startCommand = "sh -c 'P=\"${VIRTUAL_ENV:-/app/.venv}/bin/python\"; i=0; until \"$P\" -c \"import psycopg2, anthropic\" 2>/dev/null; do i=$((i+1)); if [ \"$i\" -ge 5 ]; then echo \"[extractor] FATAL: psycopg2/anthropic still unimportable via $P after ${i} tries; refusing to fall back to a bare interpreter\"; exit 1; fi; echo \"[extractor] deps unimportable via $P (try $i) - waiting for the runtime to settle\"; sleep 3; done; echo \"[extractor] interpreter=$P\"; exec \"$P\" extractor_cron.py --limit 50'"
 restartPolicyType = "NEVER"
 

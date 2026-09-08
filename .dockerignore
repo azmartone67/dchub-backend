@@ -1,11 +1,25 @@
-venv/
-.env
+# Build context for Dockerfile.extractor. Kept CONSERVATIVE on purpose: this
+# excludes only things that are large and provably not imported at runtime.
+# Trimming to "what the cron needs" would be guessing at an import graph, and a
+# wrong guess here is a crashed cron, not a slow build.
+#
+# Sizes measured 2026-09-08 in the repo root.
+
 .git/
+.venv/
 __pycache__/
 *.pyc
-*.pyo
+
+# 103M of generated GIS/infra artefacts — written by scripts, never imported.
+infrastructure_output/
+backups/
+kmz_output/
+
+# The frontend is its own repo and its own deploy target (Cloudflare Pages).
+dchub-frontend/
 node_modules/
-.replit
-replit.nix
-.cache/
-*.log
+package.json
+package-lock.json
+
+# 14M of test corpus; CI runs the suite, the container never does.
+tests/

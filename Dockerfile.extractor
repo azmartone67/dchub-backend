@@ -1,0 +1,75 @@
+# Dockerfile for the extractor cron (Railway service `desirable-playfulness`).
+#
+# ★ WHY THIS EXISTS. Under Railpack the interpreter is materialised by mise at
+# CONTAINER START, not baked into the image, and twice — 2026-09-06 (8c643bec)
+# and 2026-09-08 (7dfd3fe1) — a container started with mise re-installing
+# python from scratch and the job ran against that bare interpreter:
+# `ModuleNotFoundError: No module named 'flask'`, then psycopg2 behind it.
+# #4251 made that survivable (probe the interpreter, retry, refuse to fall back
+# to a bare one). This deletes the failure class instead: the interpreter and
+# every package live in an image layer, so there is nothing left to install at
+# start and no window in which the venv can be missing.
+#
+# ★ NOT NAMED `Dockerfile`, DELIBERATELY. Railway's docs are explicit: "Railway
+# will always build with a Dockerfile if it finds one." `dchub-backend` (web)
+# and `dchub-worker` both build from the ROOT of this same repo on RAILPACK, so
+# a root-level `Dockerfile` would silently switch THEIR builder too. The
+# suffixed name is not auto-detected; railway-extractor.toml points at it by
+# `dockerfilePath`, which scopes the change to this one service.
+# (`dchub-daily` is unaffected either way — it builds from services/daily.)
+#
+# ★ THE VENV PATH IS LOAD-BEARING. Railpack built to /app/.venv and the start
+# command in railway-extractor.toml probes exactly that path. Keeping the same
+# layout means the start command is UNCHANGED by this switch — one variable
+# moves, not two — and its "[extractor] interpreter=/app/.venv/bin/python" line
+# stays the verification signal for both builders.
+
+# ── build ────────────────────────────────────────────────────────────────
+FROM python:3.13.14-slim AS build
+
+# Pinned to runtime.txt (python-3.13.14) — the same version Railpack resolved,
+# so this is a change of WHERE the interpreter comes from, not WHICH one.
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Every compiled dependency in requirements.txt resolves to a cp313
+# manylinux_2_17_x86_64 wheel (verified 2026-09-08 with `pip download
+# --only-binary=:all: --platform manylinux2014_x86_64 --python-version 3.13`
+# for lxml, psycopg2-binary, psycopg[binary], Pillow, matplotlib, h3,
+# google-crc32c, weasyprint, reportlab), so nothing here needs to compile.
+# build-essential is carried anyway as insurance for a TRANSITIVE dep that
+# ships no wheel: it lives only in this stage and never reaches the runtime
+# image, so the cost is build seconds, not image bytes.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
+
+# ── runtime ──────────────────────────────────────────────────────────────
+FROM python:3.13.14-slim
+
+# Same base image as the build stage, which is what makes the copied venv
+# valid: its bin/python symlink and pyvenv.cfg point at /usr/local/bin/python
+# 3.13, and that interpreter is present here because it is the SAME image.
+# This is the whole fix — the interpreter is a layer, not a start-time download.
+
+ENV VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+COPY --from=build /app/.venv /app/.venv
+
+WORKDIR /app
+COPY . /app
+
+# Railway's startCommand (railway-extractor.toml) overrides this. It is here so
+# the image is runnable on its own, and so the two cannot silently disagree
+# about which interpreter runs.
+CMD ["/app/.venv/bin/python", "extractor_cron.py", "--limit", "50"]
