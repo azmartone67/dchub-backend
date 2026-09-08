@@ -745,6 +745,29 @@ def _self_health(roster):
     undelivered = sum(1 for r in roster
                       if r.get("welcome_attempted") and not r.get("welcomed"))
     welcome_errors = sum(1 for r in roster if r.get("welcome_errored"))
+    # ★ 2026-09-08 — the automated activation motion is a ONE-SHOT, and when it
+    # is spent the board still reads "armed".
+    #
+    # stranded_candidates() excludes anyone with `nudged` set, permanently. The
+    # tick therefore reports acted={"activation_armed": true,
+    # "stranded_routed_to_activation": 0} — armed and doing nothing — while
+    # systemic_activation_failure stays true. Measured 2026-09-08: 9 of 9
+    # stranded payers were nudged once, seven of them ~50 days ago, all still
+    # at zero calls, joined 22-214 days ago.
+    #
+    # That exclusion is DELIBERATE and correct: _classify already decides
+    # "nudged, still zero calls -> the automated nudge FAILED; human touch,
+    # not another email into the void". The defect is that the exhaustion was
+    # invisible — nothing distinguished "0 sent because everyone is healthy"
+    # from "0 sent because every candidate is permanently disqualified".
+    #
+    # nudge_exhausted is that number: stranded payers no automated motion can
+    # ever reach again. It is the queue for a human, and while it is non-zero
+    # a zero send count is expected rather than alarming.
+    nudge_exhausted = sum(1 for r in roster
+                          if r.get("stage") == "stranded" and r.get("nudged"))
+    reachable = sum(1 for r in roster
+                    if r.get("stage") == "stranded" and not r.get("nudged"))
     return {
         "loop": "customer_white_glove",
         "payers": total, "engaged": engaged,
@@ -767,6 +790,12 @@ def _self_health(roster):
         # built to stop being blind to — say it out loud rather than implying
         # it from a count of zero.
         "human_touch_gap": needs_human > 0,
+        # Splits the stranded count into who a machine can still reach and who
+        # only a person can. `automation_exhausted` true means a 0-send tick is
+        # the designed outcome, not a broken sender.
+        "nudge_exhausted": nudge_exhausted,
+        "stranded_reachable_by_automation": reachable,
+        "automation_exhausted": (stranded > 0 and reachable == 0),
         **fresh,
     }
 
