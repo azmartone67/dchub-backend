@@ -373,6 +373,9 @@ def _window_reach(period: str):
             out["unrecognised_client_ids"] = _vsum["unrecognised_client_ids"]
             out["unrecognised_requests"] = _vsum["unrecognised_requests"]
             out["unrecognised_basis"] = _vsum["unrecognised_basis"]
+            out["unrecognised_by_class_ids"] = _vsum["unrecognised_by_class_ids"]
+            out["unrecognised_by_class_requests"] = _vsum["unrecognised_by_class_requests"]
+            out["unrecognised_by_class_basis"] = _vsum["unrecognised_by_class_basis"]
             out["distinct_platforms"] = (
                 count_platforms(r.get("platform_id") for r in rows)
                 if count_platforms is not None else len(rows))
@@ -586,6 +589,9 @@ def ai_reach():
                 out["unrecognised_client_ids"] = _vsum["unrecognised_client_ids"]
                 out["unrecognised_requests"] = _vsum["unrecognised_requests"]
                 out["unrecognised_basis"] = _vsum["unrecognised_basis"]
+                out["unrecognised_by_class_ids"] = _vsum["unrecognised_by_class_ids"]
+                out["unrecognised_by_class_requests"] = _vsum["unrecognised_by_class_requests"]
+                out["unrecognised_by_class_basis"] = _vsum["unrecognised_by_class_basis"]
                 out["distinct_platforms_basis"] = (
                     "distinct_platforms counts canonical VENDORS "
                     "(ai_platform_canon.count_platforms over the per_platform "
