@@ -88,3 +88,56 @@ def test_the_module_still_imports():
     m = importlib.import_module("routes.gas_pipeline_ingest")
     for name in ("_SVC", "_SRC", "_SYNC_SOURCE"):
         assert hasattr(m, name), f"{name} missing from the imported module"
+
+
+# ── the second self-inflicted break, 2026-09-07 ──────────────────────────────
+
+def test_no_exception_variable_is_read_outside_its_handler():
+    """★ Python 3 UNBINDS `e` at the end of an `except ... as e` block.
+
+    Inserting a _log_sync call above the fetch handler's `return` left the
+    return at try/except level instead of inside the handler. Two faults from
+    one dedent:
+      · `e` is unbound there -> "cannot access local variable 'e'";
+      · the return ran on the SUCCESS path too, so every call answered 502.
+
+    Indentation is control flow. A patch that adds a line above a return must
+    keep the return in its block, and `ast.parse` will not tell you it did not
+    — the file stays perfectly valid Python.
+    """
+    _, tree = _tree()
+
+    class V(ast.NodeVisitor):
+        def __init__(self):
+            self.bound, self.bad = [], []
+
+        def visit_ExceptHandler(self, n):
+            self.bound.append(n.name)
+            self.generic_visit(n)
+            self.bound.pop()
+
+        def visit_Name(self, n):
+            if (isinstance(n.ctx, ast.Load) and n.id in ("e", "exc", "err")
+                    and n.id not in self.bound):
+                self.bad.append((n.lineno, n.id))
+            self.generic_visit(n)
+
+    v = V()
+    v.visit(tree)
+    assert not v.bad, (
+        f"exception variable read outside its handler at {v.bad} — unbound at "
+        f"runtime, and a sign a return escaped its except block")
+
+
+def test_the_fetch_handler_returns_inside_itself():
+    """The success path must not fall into the failure return."""
+    _, tree = _tree()
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "ingest_gas_pipelines")
+    handlers = [h for t in ast.walk(fn) if isinstance(t, ast.Try) for h in t.handlers
+                if h.name == "e"]
+    assert handlers, "the fetch try/except is gone"
+    for h in handlers:
+        assert any(isinstance(x, ast.Return) for x in ast.walk(h)), (
+            "an `except ... as e` handler with no return of its own means the "
+            "failure return sits outside and fires on success too")
