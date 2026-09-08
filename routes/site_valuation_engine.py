@@ -2609,7 +2609,8 @@ function methCard(d){
         <li>Ceilings ($0.8M raw / $1.2M entitled / $1.6M powered per MW) are assumed caps, not observed prices</li>
         <li>LCOE = energy + capex floor (excl. O&amp;M ~$3–5/MWh); capex screening-grade</li>
         <li>Tax abatement is the <b>state</b> record — confirm the parcel's actual term</li>
-        <li>Land fit assumes ${stories} building stor${stories==1?'y':'ies'}</li></ul></div>
+        <li>Land fit assumes ${stories} building stor${stories==1?'y':'ies'}</li>
+        ${(v.power_delivery||{}).applied?`<li><b>Delivery schedule</b> — MW are discounted to present value by when they energize; confirm the utility's committed dates</li>`:`<li><b>No delivery schedule given</b> — every MW is valued as if energized today</li>`}</ul></div>
     </div>
     <div class="disc" style="margin-top:6px;border-top:1px solid rgba(255,255,255,.1);padding-top:6px"><b>How to use:</b> a screening range &amp; negotiating anchor. For a term-sheet number, corroborate with 1–2 broker/appraiser comparables.</div>
   </div>`; }
@@ -2623,6 +2624,28 @@ function shell(title, tag, bodyHtml, withPrint){
     ${bodyHtml}
     ${withPrint?'<div class="pbar"><button class="pbtn" onclick="window.print()">🖨 Print / Save as PDF</button></div>':''}
   </div></body></html>`; }
+
+// r-pdf-pv (2026-09-08): v2.3 made site_value_usd_mid a PV-weighted figure,
+// but these builders still printed "$X/MW x N MW" beside it. With a delivery
+// schedule those stop being the same number — a two-tier sheet went out reading
+// "$337,155/MW x 1800 MW" (= $606.9M) above a stated $451.3M, an 0.7436 factor
+// the page never named. Print the factor that is actually in the arithmetic.
+function dcPerMwLine(v, mw){
+  const pd = v.power_delivery || {};
+  const base = `${dcD0(v['$/mw_mid'])}/MW × ${mw} MW`;
+  if (!pd.applied || !(Number(pd.pv_factor) < 1)) return base;
+  return `${base} × ${Number(pd.pv_factor).toFixed(3)} delivery PV`;
+}
+// Months to the LAST MW. The grid scenario's time_to_power is time to the FIRST
+// firm MW (v2.3 sets it from the schedule), so labelling it "time to full N MW"
+// understated a six-year ramp as a two-year one.
+function dcTimeToFull(v, sc, bf){
+  const pd = v.power_delivery || {};
+  if (pd.applied && pd.months_to_full_mw != null)
+    return { mo: Math.round(pd.months_to_full_mw), label: 'Time to full', phased: true };
+  const s = (sc || {})[bf] || (sc || {}).grid_only || {};
+  return { mo: Math.round(s.time_to_power_months || 0), label: 'Time to power', phased: false };
+}
 
 function dcOnePager(d, title){
   const v=d.valuation||{}, mc=d.market_context||{}, dcpi=d.dcpi_context||{}, sc=d.scenarios||{}, inp=d.input||{};
@@ -2642,6 +2665,10 @@ function dcOnePager(d, title){
   build.push(`<div><span>${entLift>0?'Raw-land value (capped $800K/MW)':('Powered raw-land ('+dcD0(v['$/mw_mid'])+'/MW)')}</span><b>${dcMoney(rawLand)}</b></div>`);
   if (entLift>0) build.push(`<div class="subk"><span>+ Entitlement${ent.firm_powered?' + firm power':''} → ${dcD0(v['$/mw_mid'])}/MW</span><b class="up">+${dcMoney(entLift)}</b></div>`);
   if (abPrem>0) build.push(`<div><span>+ Tax abatement (+${abPct}%)</span><b class="up">+${dcMoney(abPrem)}</b></div>`);
+  const pdOP = v.power_delivery || {};
+  if (pdOP.applied && Number(pdOP.pv_factor) < 1) {
+    build.push(`<div class="subk"><span>Phased delivery — ${pdOP.nameplate_mw} MW over months ${Math.round(pdOP.months_to_first_mw)}–${Math.round(pdOP.months_to_full_mw)} = ${pdOP.pv_equivalent_mw} MW in PV terms</span><b>×${Number(pdOP.pv_factor).toFixed(3)}</b></div>`);
+  }
   build.push(`<div class="tot"><span>Indicative midpoint</span><b>${dcMoney(v.site_value_usd_mid)}</b></div>`);
   const whyMoat = mm.moat_flags_active>=2 ? ` A constraint <b>moat</b> (shovel-ready in a saturated cluster) lifts the verdict multiplier to ${(mm.verdict_mult||1).toFixed(2)}×.` : '';
   const body = `
@@ -2649,11 +2676,11 @@ function dcOnePager(d, title){
   <div class="sub">${mw} MW · ${suf.effective_acres_per_mw||''} eff. ac/MW · ${esc(titleCase(mc.nearest_market_slug||''))} · ${esc(mc.site_state||'')} ${pills.join(' ')}</div>
   <div class="hero">
     <div class="range">${dcMoney(v.site_value_usd_low)} – ${dcMoney(v.site_value_usd_high)} <small>indicative range · ${mw} MW</small></div>
-    <div class="mid">midpoint <b>${dcMoney(v.site_value_usd_mid)}</b> · ${dcD0(v['$/mw_mid'])}/MW × ${mw} MW · ±50% envelope</div>
+    <div class="mid">midpoint <b>${dcMoney(v.site_value_usd_mid)}</b> · ${dcPerMwLine(v, mw)} · ±50% envelope</div>
     <div class="bar">
       <div class="chip">Market<b>${esc(titleCase(mc.nearest_market_slug||''))} · ${esc(mc.site_state||'')}</b></div>
       <div class="chip">Power (large-load)<b>$${mc.power_cost_usd_mwh||'—'}/MWh</b></div>
-      <div class="chip">Best path<b>${esc(titleCase(bf))} · ${Math.round((sc[bf]||{}).time_to_power_months||0)} mo</b></div>
+      <div class="chip">Best path<b>${esc(titleCase(bf))} · ${dcTimeToFull(v, sc, bf).mo} mo ${dcTimeToFull(v, sc, bf).phased?'to full':'to power'}</b></div>
       <div class="chip">Land fit<b>${esc(titleCase(suf.category||''))} (${suf.effective_acres_per_mw||''} ac/MW)</b></div>
     </div>
   </div>
@@ -2689,7 +2716,7 @@ function dcTwoTier(rawD, entD, title){
       <div class="tlabel">Tier A · Pre-development (as-is, not zoned)</div>
       <div class="big">${dcMoney(va.site_value_usd_mid)}</div>
       <div class="rng">range ${dcMoney(va.site_value_usd_low)} – ${dcMoney(va.site_value_usd_high)}</div>
-      <div class="perm">${dcD0(va['$/mw_mid'])}/MW × ${mw} MW</div>
+      <div class="perm">${dcPerMwLine(va, mw)}</div>
       <div class="bd">
         <div><span>Powered raw-land</span><b>${dcMoney(aLand)}</b></div>
         ${aAb>0?`<div><span>+ Tax abatement</span><b>+${dcMoney(aAb)}</b></div>`:''}
@@ -2700,7 +2727,7 @@ function dcTwoTier(rawD, entD, title){
       <div class="tlabel">Tier B · Fully zoned, entitled &amp; permitted</div>
       <div class="big">${dcMoney(vb.site_value_usd_mid)}</div>
       <div class="rng">range ${dcMoney(vb.site_value_usd_low)} – ${dcMoney(vb.site_value_usd_high)}</div>
-      <div class="perm">${dcD0(vb['$/mw_mid'])}/MW × ${mw} MW</div>
+      <div class="perm">${dcPerMwLine(vb, mw)}</div>
       <div class="bd">
         <div><span>Raw-land (capped $800K/MW)</span><b>${dcMoney(bLand)}</b></div>
         ${bLift>0?`<div><span>+ Entitlement (→${dcD0(vb['$/mw_mid'])}/MW)</span><b class="up">+${dcMoney(bLift)}</b></div>`:''}
@@ -2716,7 +2743,7 @@ function dcTwoTier(rawD, entD, title){
   <div class="card"><h3>Power basis — ${esc(powerLabel)}</h3>
     <div class="bar">
       <div class="chip">Levelized energy<b>${dcD0(g.levelized_usd_per_mwh)}/MWh</b></div>
-      <div class="chip">Time to full ${mw} MW<b>${Math.round(g.time_to_power_months||0)} mo</b></div>
+      <div class="chip">${dcTimeToFull(vb, sc, bf).phased?('Time to full '+mw+' MW'):('Time to power ('+mw+' MW)')}<b>${dcTimeToFull(vb, sc, bf).mo} mo</b></div>
       <div class="chip">Interconnect capex<b>${dcMoney(g.capex_usd)}</b></div>
       <div class="chip">Large-load power<b>$${mc.power_cost_usd_mwh||'—'}/MWh</b></div>
     </div>
@@ -2737,9 +2764,16 @@ function dcTitle(d){
   var el = document.getElementById('site_label');
   var lbl = (el && el.value) ? el.value.trim() : '';
   if(lbl) return lbl;
+  // r-pdf-title: this used to fall back to the NEAREST MARKET, which can be a
+  // different metro 45+ miles away — a Plains Township PA campus went out to a
+  // client titled "Bethlehem, PA". The site's own state is safe; its market is
+  // not. Coordinates identify the parcel without naming the wrong city.
   var mc = (d && d.market_context) || {};
-  var mk = titleCase(mc.nearest_market_slug || 'Site');
-  return 'Powered-Land Site — ' + mk + (mc.site_state ? ', ' + mc.site_state : '');
+  var inp = (d && d.input) || {};
+  var st = mc.site_state ? ', ' + mc.site_state : '';
+  if (inp.lat != null && inp.lon != null)
+    return 'Powered-Land Site — ' + Number(inp.lat).toFixed(4) + ', ' + Number(inp.lon).toFixed(4) + st;
+  return 'Powered-Land Site' + st;
 }
 function dcExportOnePager(){
   var d = window.__dcLast;
