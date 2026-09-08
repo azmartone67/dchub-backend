@@ -189,9 +189,17 @@ def ingest_gas_pipelines():
         try:
             rows = _fetch(cap)
         except Exception as e:
+            # ★ BOTH LINES BELONG TO THE except. When _log_sync was inserted
+            #   here the `return` was left at try/except level, so it ran on
+            #   the SUCCESS path too — every call answered 502 — and `e` is
+            #   unbound outside the handler in Python 3, giving
+            #   "cannot access local variable 'e'". Indentation is control
+            #   flow; a patch that adds a line above a return must keep the
+            #   return's block.
             _log_sync(0, 0, 1, f"source fetch failed: {str(e)[:200]}",
-                  time.time() - _started)
-        return jsonify(ok=False, error=f"source fetch failed: {str(e)[:160]}"), 502
+                      time.time() - _started)
+            return jsonify(ok=False,
+                           error=f"source fetch failed: {str(e)[:160]}"), 502
 
     if dry:
         return jsonify(ok=True, dry_run=True, fetched=len(rows), sample=rows[:3])
