@@ -113,6 +113,86 @@ _VENDOR_ALIASES = (
 )
 
 
+# ── CLIENT CLASS (2026-09-07) ────────────────────────────────────────────
+# `canonical_platform` answers "which VENDOR is this" and returns None for
+# everything else. Measured live on 2026-09-07, that None bucket was 345 of 577
+# MCP requests in the window — 60% — published as a single undifferentiated
+# `unrecognised_requests` count. A reader could not tell whether that was
+# hidden adoption or expected tooling, and those imply opposite next moves.
+#
+# ★ THIS DOES NOT ASSIGN VENDORS, AND MUST NOT. Nothing here may be added to
+# _VENDOR_ALIASES: that tuple feeds the published "N platforms calling MCP
+# tools" headline, and promoting a verification harness or a generic client id
+# into it would inflate the one number the site asks people to trust. The two
+# classifications answer different questions and stay separate.
+#
+# ★ NAME-BASED, THEREFORE A HINT. A client id is self-declared — the caller
+# chooses it — so this is weaker evidence than behaviour. What the DB actually
+# showed for these ids on 2026-09-07 over 30d:
+#
+#   chain-hire                    search x1473, everything else x2   ONE tool
+#   actionist-apps-verification   ~15 tools at 5-15 calls each, flat  SWEEP
+#   connectors-manager            execute_plan 15, why_dchub 13, then
+#                                 site_selection_canvas / rank_markets /
+#                                 analyze_site — a VARIED real workload
+#   mcp                           get_grid_scoreboard 6615 + a wide tail — BOTH
+#
+# So the names are not reliable: `connectors-manager` reads like plumbing and
+# behaves like an agent doing work. That is why UNKNOWN is a real class here
+# and not a synonym for "tooling" — treating unknown as tooling is how a
+# genuine caller stops being counted. Anything not matched stays UNKNOWN, and
+# UNKNOWN is the bucket that deserves investigation, never dismissal.
+CLASS_ASSISTANT = "assistant"          # resolves to a vendor via canonical_platform
+CLASS_VERIFIER  = "verifier_or_probe"  # conformance harness / listing checker
+CLASS_REGISTRY  = "registry_or_tooling"  # a directory or SDK, not an end agent
+CLASS_UNKNOWN   = "unknown"            # not classifiable — NOT a synonym for tooling
+
+# Substring -> class. First match wins; keep the more specific token first.
+_CLIENT_CLASS_TOKENS = (
+    ("verification", CLASS_VERIFIER),
+    ("verifier",     CLASS_VERIFIER),
+    ("-sim",         CLASS_VERIFIER),   # reviewer-sim, registry-sim
+    ("spec-study",   CLASS_VERIFIER),
+    ("conformance",  CLASS_VERIFIER),
+    ("smithery",     CLASS_REGISTRY),
+    ("glama",        CLASS_REGISTRY),
+    ("pulsemcp",     CLASS_REGISTRY),
+    ("mcp.so",       CLASS_REGISTRY),
+    ("toolplex",     CLASS_REGISTRY),
+)
+
+
+def client_class(platform: str | None) -> str:
+    """Classify a raw client id: assistant / verifier / registry / unknown.
+
+    Orthogonal to canonical_platform, and deliberately conservative — an id we
+    cannot place is UNKNOWN, never assumed to be tooling. See the note above
+    for why the name alone is only a hint.
+    """
+    if canonical_platform(platform):
+        return CLASS_ASSISTANT
+    if not platform:
+        return CLASS_UNKNOWN
+    p = platform.lower()
+    for tok, cls in _CLIENT_CLASS_TOKENS:
+        if tok in p:
+            return cls
+    return CLASS_UNKNOWN
+
+
+def classify_clients(platforms) -> dict:
+    """{class: count of DISTINCT client ids} over an iterable of raw ids."""
+    seen, out = set(), {}
+    for p in platforms:
+        key = (p or "").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        c = client_class(p)
+        out[c] = out.get(c, 0) + 1
+    return out
+
+
 def is_recognized(platform: str | None) -> bool:
     """True if `platform` names a known external AI platform."""
     if not platform:
