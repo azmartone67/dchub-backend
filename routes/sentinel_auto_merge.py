@@ -998,10 +998,48 @@ def run_auto_merge_sweep(force_log_all: bool = True) -> dict:
                                   "(SENTINEL_AUTO_MERGE_DISABLE=1)")
         return out
 
-    prs = _list_brain_draft_prs()
-    prs += _list_l22_alias_prs()   # C1: returns [] unless L22_AUTO_MERGE_ENABLE=1
-    prs += _list_l22_cron_prs()    # C1 #2: cron-stagger; same master flag
+    _l5 = _list_brain_draft_prs()
+    _alias = _list_l22_alias_prs()   # C1: [] unless L22_AUTO_MERGE_ENABLE=1
+    _cron = _list_l22_cron_prs()     # C1 #2: cron-stagger; same master flag
+    prs = _l5 + _alias + _cron
     out["scanned"] = len(prs)
+
+    # ★ 2026-09-08 — WHY scanned is 0, not just THAT it is.
+    #
+    # This lane has never fired, and it has now cost three separate audit
+    # sessions (2026-07-31, 09-07, 09-08) to re-derive the same conclusion,
+    # because "scanned=0 allowed=0 rejected=0 merged=0" is indistinguishable
+    # from "the gate is being conservative". It is neither: there is nothing
+    # to scan.
+    #
+    # Measured 2026-09-08, and this is the honest state of the lane:
+    #   * `page_persistent_5xx:%` findings in brain_findings, all time: 0.
+    #     The upstream event has not happened. The site is not throwing
+    #     persistent 5xx, so no finding exists, so no proposal carries the
+    #     issue key, so GATE_SENTINEL_DERIVED has nothing to accept.
+    #     brain_proposed_code_fixes.issue_key LIKE 'page_persistent_5xx%'
+    #     is likewise 0 of 585.
+    #   * The L5 candidate query itself is FINE — `draft:true "brain-l5"
+    #     in:title` matches 14 PRs over the last 30 days. They are simply
+    #     merged by a human within the hour, and this sweep runs twice a
+    #     day, so it arrives after the queue is already empty.
+    #
+    # So an empty result here is the lane being correctly idle on a healthy
+    # site, NOT a throttle and NOT a broken gate. Publishing the per-source
+    # counts makes that readable without another archaeology session.
+    out["inputs"] = {
+        "l5_draft_prs": len(_l5),
+        "l22_alias_prs": len(_alias),
+        "l22_cron_prs": len(_cron),
+    }
+    if not prs:
+        out["starved_because"] = (
+            "no candidate PRs existed at sweep time — this is an EMPTY INPUT, "
+            "not a rejection. Read out['inputs'] for the per-source counts. "
+            "The L5 source is open+draft brain-l5 PRs, which a human "
+            "typically merges within the hour while this sweep runs twice a "
+            "day; the L22 sources return [] unless L22_AUTO_MERGE_ENABLE=1. "
+            "A rejection would appear as rejected>0 with a gate reason.")
 
     for pr in prs:
         pr_number = int(pr.get("number") or 0)
