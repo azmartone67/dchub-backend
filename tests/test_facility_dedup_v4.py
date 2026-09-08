@@ -26,7 +26,7 @@ if ROOT not in sys.path:
 
 from routes.facility_dedup_v4 import (      # noqa: E402
     DEDUP_METHOD, MAX_GROUP, TWIN_COL, plan_group, is_junk_slug, same_name,
-    has_coords, _collect)
+    has_coords, co_located, designators_disagree, _haversine_km, _collect)
 
 
 def _df(i, slug, provider=None, lat=None, lon=None, pw=None,
@@ -278,6 +278,101 @@ def test_a_real_coordinate_at_zero_still_counts():
     p = plan_group([_df(1, "a-11111111", lat=0.0, lon=-70.0),
                     _df(2, "a-22222222", lat=0.05, lon=-70.0)])
     assert p["skip"] == "coords_far_apart"
+
+
+# ── the SECOND corroboration: co-location ────────────────────────────
+
+def test_co_location_corroborates_a_name_the_gate_would_refuse():
+    """★ 92 of the 206 URLs the name gate refused sit within 100 m of their
+    keeper and are the same building spelt two ways — 'NTT Ashburn VA8 Data
+    Centre' vs 'Data Center', 'Equinix SG3 - Singapore' vs 'Equinix Data
+    Center SG3'. A coordinate is measured off-page, so it is evidence the
+    renderer cannot manufacture."""
+    p = plan_group([_df(1, "a-11111111", lat=39.0000, lon=-77.4000,
+                        name="NTT Ashburn VA8 Data Centre"),
+                    _df(2, "a-22222222", lat=39.0010, lon=-77.4000,
+                        name="NTT Ashburn VA8 Data Center")])
+    assert p["skip"] is None
+    assert p["writes"] == [2] and p["name_mismatch"] == []
+
+
+def test_co_location_is_metres_not_degrees():
+    """★ The veto's degree box is fine as a coarse refusal; a positive test
+    needs real distance. 0.002 degrees of longitude is 171 m at the equator and
+    77 m in Helsinki — the same number, two different answers."""
+    assert 217 < _haversine_km((0.0, 0.0), (0.0, 0.002)) * 1000 < 227
+    assert 106 < _haversine_km((60.17, 24.94), (60.17, 24.942)) * 1000 < 116
+    # equator: 0.002 deg apart is OUTSIDE 200 m ... and Helsinki is inside
+    assert co_located({"latitude": 0.0, "longitude": 0.0},
+                      {"latitude": 0.0, "longitude": 0.002}) is False
+    assert co_located({"latitude": 60.17, "longitude": 24.94},
+                      {"latitude": 60.17, "longitude": 24.942}) is True
+
+
+def test_co_location_needs_real_coordinates_on_both_sides():
+    """The 0.0/0.0 placeholder must never read as 'co-located with everything'
+    — 920 publishable rows carry it."""
+    assert co_located({"latitude": 0.0, "longitude": 0.0},
+                      {"latitude": 0.0, "longitude": 0.0}) is False
+    assert co_located({"latitude": 39.0, "longitude": -77.4},
+                      {"latitude": 0.0, "longitude": 0.0}) is False
+    assert co_located({"latitude": 39.0, "longitude": -77.4},
+                      {"latitude": None, "longitude": None}) is False
+    # ... and a differing name with no coordinates is still refused
+    p = plan_group([_df(1, "a-11111111", name="Equinix SG3 - Singapore"),
+                    _df(2, "a-22222222", name="Equinix Data Center SG3")])
+    assert p["writes"] == [] and p["name_mismatch"] == ["a-22222222"]
+    assert p["mismatch_reason"] == {"a-22222222": "no_coords"}
+
+
+def test_a_differing_name_beyond_the_radius_is_still_refused():
+    """★ The radius is a LITERAL here, not _COLOCATED_KM. Written the obvious
+    way this test reads the module's own tunable, so widening the tunable moves
+    the fixture with it and the mutation survives."""
+    p = plan_group([_df(1, "a-11111111", lat=39.0, lon=-77.4, name="Equinix LD6"),
+                    _df(2, "a-22222222", lat=39.0, lon=-77.39,
+                        name="Equinix LD6 - London, Slough")])   # ~865 m
+    assert p["writes"] == [] and p["name_mismatch"] == ["a-22222222"]
+    assert p["mismatch_reason"] == {"a-22222222": "too_far"}
+
+
+def test_a_disagreeing_designator_outranks_co_location():
+    """★★★ THE GUARD FOR THE CLASS THE NAME GATE WAS WRITTEN FOR. 'SecureIT
+    DCB1.1' and 'DCB1.2' are 0.00 km apart — no radius separates two halls of
+    one building. Since #4119 they render different <h1>s and never reach this
+    gate, so this fires on NOTHING live (0 of 206). It is here so a renderer
+    regression cannot turn co-location into a false merge, and it is tested
+    with the historical pair precisely because live data no longer produces
+    one."""
+    p = plan_group([_df(1, "a-11111111", lat=49.505196, lon=6.113479,
+                        name="SecureIT DCB1.1"),
+                    _df(2, "a-22222222", lat=49.505196, lon=6.113479,
+                        name="SecureIT DCB1.2")])
+    assert p["writes"] == [], "two halls of one building were merged"
+    assert p["mismatch_reason"] == {"a-22222222": "designator_conflict"}
+
+    assert designators_disagree({"name": "SecureIT DCB1.1", "city": "Bettembourg"},
+                                {"name": "SecureIT DCB1.2", "city": "Bettembourg"}) is True
+    assert designators_disagree({"name": "noris network AG ING1 ITA", "city": "Ingolstadt"},
+                                {"name": "noris network AG ING1 ITB", "city": "Ingolstadt"}) is True
+    # the same designator spelt differently is NOT a conflict
+    assert designators_disagree({"name": "Equinix SG3 - Singapore", "city": "Singapore"},
+                                {"name": "Equinix Data Center SG3", "city": "Singapore"}) is False
+    # a name with no designator cannot conflict with anything
+    assert designators_disagree({"name": "Frontier Campus", "city": "Ashburn"},
+                                {"name": "Vantage Frontier Campus", "city": "Ashburn"}) is False
+
+
+def test_the_residual_is_reported_by_reason_not_as_a_lump():
+    """`refused_no_coords` is a geocoding backfill, `refused_too_far` is a real
+    dedup question, `designator_conflict` is a correct refusal. One counter for
+    all three hides which is which."""
+    p = plan_group([_df(1, "a-11111111", lat=39.0, lon=-77.4, name="Equinix LD6"),
+                    _df(2, "a-22222222", name="Equinix LD6 Slough"),
+                    _df(3, "a-33333333", lat=39.0, lon=-77.39,
+                        name="Equinix LD6 - London, Slough")])
+    assert p["mismatch_reason"] == {"a-22222222": "no_coords",
+                                    "a-33333333": "too_far"}
 
 
 def test_a_group_larger_than_the_cap_is_refused():
