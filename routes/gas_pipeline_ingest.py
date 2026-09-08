@@ -29,6 +29,20 @@ gas_ingest_bp = Blueprint("gas_pipeline_ingest", __name__)
 
 _SRC = "eia_geodot_lines"
 
+# geo.dot.gov died 2026-06 (backend DB refuses conns). Live replacement =
+# the EIA national interstate+intrastate service. NOTE: the daily refresh
+# now feeds rows from the GitHub runner (tools/infra_fetch.py) since Railway
+# egress to ArcGIS is unreliable; this _SVC is only the server-side fallback.
+#
+# ★ RESTORED 2026-09-07. I deleted this by accident: rewriting _log_sync with
+#   a regex `def _log_sync\(...\).*?(?=\n\ndef |\n\n@)` spanned to the NEXT
+#   top-level def and swallowed everything in between — including this
+#   constant. A splice bounded by "the next thing that looks like an end"
+#   eats whatever sits in the middle. Every ingest run then died with
+#   `name '_SVC' is not defined`.
+_SVC = ("https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
+        "Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0/query")
+
 #: The name this producer reports under on /api/land-power/status.
 #: ★ 2026-09-07 — this ingest maintains 32,851 of the 33,771 rows in
 #: gas_pipelines and logged NOTHING, while the status board watched
