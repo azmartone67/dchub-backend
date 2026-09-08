@@ -39,6 +39,17 @@ jobs:
           PERSISTED=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('stages_persisted',0))" 2>/dev/null || echo "0")
           LOGGED=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('transitions_logged',0))" 2>/dev/null || echo "0")
           echo "═══════════════════════════════════════════════"
+          ROUTED=$(echo "${RESPONSE}" | python3 -c "import sys,json; print(((json.load(sys.stdin) or {}).get('acted') or {}).get('stranded_routed_to_activation',0))" 2>/dev/null || echo "0")
+          EXHAUSTED=$(echo "${RESPONSE}" | python3 -c "import sys,json; print(((json.load(sys.stdin) or {}).get('health') or {}).get('nudge_exhausted','?'))" 2>/dev/null || echo "?")
+          REACHABLE=$(echo "${RESPONSE}" | python3 -c "import sys,json; print(((json.load(sys.stdin) or {}).get('health') or {}).get('stranded_reachable_by_automation','?'))" 2>/dev/null || echo "?")
           echo "Roster: ${TOTAL}   Stages persisted: ${PERSISTED}   Transitions logged: ${LOGGED}"
-          echo "::notice::White-glove tick ran — measure/classify only, no customer email sent."
+          # ★ This line used to be a fixed string reading "no customer email
+          # sent" — printed identically whether the tick routed nobody or
+          # routed 25 people into the armed sender. It asserted an outcome it
+          # never read. It now reports what the response actually said.
+          if [ "${ROUTED}" = "0" ]; then
+            echo "::notice::White-glove tick: 0 routed to the activation sender. ${EXHAUSTED} stranded payer(s) are nudge-exhausted (no automated motion can reach them again — human touch); ${REACHABLE} still reachable by automation."
+          else
+            echo "::notice::White-glove tick: ${ROUTED} stranded payer(s) ROUTED into the activation sender (ACTIVATION_NUDGE_ARM decides whether that sent). ${EXHAUSTED} nudge-exhausted."
+          fi
           echo "═══════════════════════════════════════════════"
