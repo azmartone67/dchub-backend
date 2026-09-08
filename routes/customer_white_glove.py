@@ -116,6 +116,32 @@ def _is_internal(email: str) -> bool:
 _MEASURE_ERROR = {"last": None, "at": None}
 
 
+def _max_ts(*values):
+    """Latest of several optional timestamps, or None.
+
+    ★ Mixed awareness is the hazard here, not the None handling: last_mcp and
+      last_key_used come back tz-aware from timestamptz columns while
+      last_login can be naive, and comparing the two raises
+      "can't compare offset-naive and offset-aware datetimes" — which the
+      caller's except would swallow into an empty board. Normalise to UTC
+      before comparing, and return the value in its original form.
+    """
+    import datetime as _dt
+    best, best_key = None, None
+    for v in values:
+        if v is None:
+            continue
+        k = v
+        if isinstance(v, _dt.datetime) and v.tzinfo is None:
+            k = v.replace(tzinfo=_dt.timezone.utc)
+        try:
+            if best_key is None or k > best_key:
+                best, best_key = v, k
+        except TypeError:
+            continue
+    return best
+
+
 def _measure():
     """Real PAYING customers only (Stripe customer + a paid invoice — excludes
     the BD-outreach seeds and comped rows that share the 'developer'/'founding'
@@ -158,6 +184,23 @@ def _measure():
                        (SELECT MAX(ml.timestamp) FROM mcp_call_log ml
                         JOIN mcp_dev_keys dk ON dk.api_key = ml.api_key
                         WHERE lower(dk.email) = lower(u.email)) AS last_mcp,
+                       -- r-third-surface (2026-09-07): THE BLIND SPOT. Calls
+                       -- made with a dashboard-issued REST key land in
+                       -- api_keys.calls_total and were counted NOWHERE. This
+                       -- board asks one question — "has this customer ever
+                       -- called?" — and was answering it from two of the three
+                       -- surfaces. Measured: 14 users with 3,656 invisible
+                       -- calls, 7 of them ACTIVE subscribers, and one
+                       -- (marvinvitcu, 1,340 calls, key last used 2026-08-08)
+                       -- sitting in the escalation queue as "still zero calls"
+                       -- with a human about to be asked to phone him about it.
+                       -- Safe to ADD, not double-count: api_keys never overlaps
+                       -- mcp_dev_keys (0 rows join), and the only account with
+                       -- both web and key calls is the owner's own.
+                       COALESCE((SELECT SUM(k.calls_total) FROM api_keys k
+                                 WHERE k.user_id = u.id), 0) AS key_calls,
+                       (SELECT MAX(k.last_used_at) FROM api_keys k
+                        WHERE k.user_id = u.id) AS last_key_used,
                        EXISTS(SELECT 1 FROM email_drip_log d
                               WHERE lower(d.user_email)=lower(u.email)
                                 AND d.email_key='activation_nudge') AS nudged,
@@ -239,9 +282,17 @@ def _measure():
             rows = []
             for r in cur.fetchall():
                 d = dict(r)
-                d["total_calls"] = int(d.get("web_calls") or 0) + int(d.get("mcp_calls") or 0)
-                # recency = most recent of MCP activity or web login
-                d["last_used_at"] = d.get("last_mcp") or d.get("last_login")
+                d["total_calls"] = (int(d.get("web_calls") or 0)
+                                    + int(d.get("mcp_calls") or 0)
+                                    + int(d.get("key_calls") or 0))
+                # recency = the most recent of ALL THREE surfaces plus login.
+                # last_key_used was missing for the same reason key_calls was:
+                # a customer whose only activity is a REST key read as idle
+                # since their last LOGIN, which inflated idle_days on exactly
+                # the people the board then called stranded.
+                d["last_used_at"] = _max_ts(d.get("last_mcp"),
+                                            d.get("last_key_used"),
+                                            d.get("last_login"))
                 rows.append(d)
     except Exception as e:
         # ★ r-truth-2 (2026-08-19): this used to swallow and return [], full
@@ -350,6 +401,7 @@ def _roster(now=None):
             "stage": stage, "action": action, "priority": prio,
             "total_calls": int(r.get("total_calls") or 0),
             "mcp_calls": int(r.get("mcp_calls") or 0),
+            "key_calls": int(r.get("key_calls") or 0),
             "web_calls": int(r.get("web_calls") or 0),
             "joined_days": round(_age_days(r.get("created_at"), now) or 0, 1),
             # Days since they PAID — the grace basis. None = no payment date
