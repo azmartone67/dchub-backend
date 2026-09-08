@@ -453,19 +453,53 @@ def mcp_retention():
                     # ★QA sweep F2 (2026-09-02): challenge_issued -> authorize_
                     # started -> identity_created. Before this only the two ENDS
                     # were measured (connector_* and new_identities_30d); the
-                    # middle names WHERE the loss is: a low authorize_started
-                    # against a high connector_call means the 401 never turns
-                    # into a browser hop; a high one against low new_identities
-                    # means the WorkOS page loses them.
+                    # middle was meant to name WHERE the loss is.
+                    #
+                    # ★★2026-09-07 — IT CANNOT. THIS COUNTER IS STRUCTURALLY
+                    # BLIND ON THE LIVE PATH, and the guidance that used to sit
+                    # here ("a low authorize_started against a high
+                    # connector_call means the 401 never turns into a browser
+                    # hop") told readers to draw a conclusion the number cannot
+                    # support. Measured on production 2026-09-07:
+                    #
+                    #   /.well-known/oauth-protected-resource advertises
+                    #       authorization_servers: [beloved-stream-52.authkit.app]
+                    #   i.e. the LIVE authorization server is WorkOS AuthKit.
+                    #   oauth_authorize_started is emitted ONLY by the built-in
+                    #   AS in the gateway's oauth.mjs (its own comment says so),
+                    #   and https://dchub.cloud/oauth/authorize answers 404 —
+                    #   that AS is not mounted and nothing advertises it.
+                    #
+                    # So authorize_started_30d cannot become non-zero no matter
+                    # what any caller does. A consent page rendered at
+                    # authkit.app is invisible to us; we do not own that domain
+                    # and get no callback until the token is exchanged. Read the
+                    # 0 as UNOBSERVED, never as "nobody started".
                     "authorize_started_30d": int(ch.get("authorize_started") or 0),
                     "authorize_started_instrumented_since": "2026-09-02",
+                    # ★ DATA, not prose — a consumer can branch on this. The
+                    # house rule from _DEFINITION_CHANGES applies here too:
+                    # prose gets skimmed, a boolean gets handled.
+                    "authorize_started_blind_on_live_path": True,
+                    "authorize_started_blind_reason": (
+                        "emitted only by the built-in AS in oauth.mjs, which is NOT the "
+                        "authorization server the protected-resource document advertises "
+                        "(that is WorkOS AuthKit) and which answers 404 in production. "
+                        "The counter cannot move; 0 means UNOBSERVED, not 'nobody started'. "
+                        "To make this stage measurable, either mount and advertise the "
+                        "built-in AS, or measure the WorkOS path from its outcome — the "
+                        "durable_identities block below, which counts ROWS, not events."
+                    ),
                     "authorize_started_note": (
                         "★READ authorize_started_instrumented_since BEFORE trending. The "
                         "counter did not exist before 2026-09-02 (backend whitelist + "
                         "gateway emit shipped together), so every earlier day reads 0 "
                         "because there was NO INSTRUMENT. Events, not people: one client "
                         "can start authorize several times. Same population rule as the "
-                        "rest of this block: never divide it into arrivals_*."
+                        "rest of this block: never divide it into arrivals_*. "
+                        "★AND SEE authorize_started_blind_on_live_path — since 2026-09-07 "
+                        "we know the counter is blind on the path real clients take, so a "
+                        "0 here is not evidence about caller behaviour at all."
                     ),
                     "gateway_reporting": bool(beats),
                     "method_switched_at": "2026-08-15",
@@ -512,6 +546,94 @@ def mcp_retention():
                 # Table absent until the gateway first flushes => dormant, not broken.
                 ib["challenge_side_error"] = True
                 out["summary"]["oauth_funnel_gateway_reporting"] = False
+
+            # ── r-oauth-rows-not-events (2026-09-07) ─────────────────────────
+            #
+            # Every counter in challenge_side above is an EVENT emitted by our
+            # own gateway, and the middle stage of that funnel turned out to be
+            # blind on the live path (see authorize_started_blind_on_live_path).
+            # An event counter can only see what our code executes; the WorkOS
+            # consent page is not our code.
+            #
+            # ★ The OUTCOME is not blind. A completed OAuth sign-in leaves a ROW
+            # — /api/v1/oauth/identity get-or-creates one in mcp_dev_keys with a
+            # deterministic dch_oauth_ key. Rows survive replica restarts,
+            # gateway dormancy and every counter we forget to emit. So this
+            # block measures the rung from its artifact.
+            #
+            # Both predicates were cross-checked on production 2026-09-07 and
+            # agree EXACTLY — 9 by key prefix, 9 by metadata source, zero rows
+            # in either symmetric difference. The prefix is used here because it
+            # is what oauth_new_identities_30d already counts, so the two cannot
+            # drift apart silently.
+            #
+            # What it said at time of writing: 9 identities all-time, 0 created
+            # in 30d, 3 active in the last 7d, most recent created in the week
+            # of 2026-08-03. Small n — every rate below is descriptive, not
+            # inferential, and `n` is published beside each so a reader cannot
+            # quote a percentage without it.
+            try:
+                cur.execute("""
+                    SELECT
+                      COUNT(*)                                                   AS all_time,
+                      COUNT(*) FILTER (WHERE created_at >= NOW() - interval '30 days')   AS created_30d,
+                      COUNT(*) FILTER (WHERE last_used_at >= NOW() - interval '7 days')  AS active_7d,
+                      COUNT(*) FILTER (WHERE last_used_at >= NOW() - interval '30 days') AS active_30d,
+                      COUNT(*) FILTER (WHERE email IS NOT NULL AND email <> '')  AS contactable,
+                      COUNT(*) FILTER (WHERE last_used_at::date > created_at::date) AS returned_after_first_day,
+                      MAX(created_at)                                            AS most_recent_created_at
+                    FROM mcp_dev_keys
+                    WHERE api_key LIKE 'dch_oauth_%'
+                """)
+                _oi = cur.fetchone() or {}
+                _mrc = _oi.get("most_recent_created_at")
+                ib["durable_identities"] = {
+                    "basis": (
+                        "COUNT over mcp_dev_keys WHERE api_key LIKE 'dch_oauth_%' — the "
+                        "deterministic key /api/v1/oauth/identity mints per WorkOS `sub`. "
+                        "ROWS, not events: this is the only OAuth rung that is not "
+                        "dependent on a counter our gateway remembers to emit. Verified "
+                        "2026-09-07 to select exactly the same 9 rows as the "
+                        "metadata->>'source' = 'workos_oauth' predicate."
+                    ),
+                    "all_time": int(_oi.get("all_time") or 0),
+                    "created_30d": int(_oi.get("created_30d") or 0),
+                    "active_7d": int(_oi.get("active_7d") or 0),
+                    "active_30d": int(_oi.get("active_30d") or 0),
+                    "contactable": int(_oi.get("contactable") or 0),
+                    "returned_after_first_day": int(_oi.get("returned_after_first_day") or 0),
+                    "most_recent_created_at": (
+                        _mrc.isoformat() if hasattr(_mrc, "isoformat") else None),
+                    "small_n": int(_oi.get("all_time") or 0) < 30,
+                    "reading": (
+                        "created_30d is the rung that is failing and it is measured "
+                        "HONESTLY — unlike authorize_started_30d beside it, a 0 here "
+                        "means no OAuth identity was minted, not that we could not see "
+                        "one. ★small_n: with an all-time population under 30, quote the "
+                        "COUNTS and never a percentage; the durable-vs-key-only return "
+                        "comparison this cohort is usually cited for rests on single "
+                        "digits."
+                    ),
+                    "the_obvious_hypothesis_is_REFUTED": (
+                        "★ 'New identities stopped because we stopped challenging on "
+                        "`initialize` (2026-08-15)' is the natural reading of these two "
+                        "series side by side, and it is WRONG — recorded here so it is "
+                        "not rediscovered and acted on. Measured 2026-09-07 against "
+                        "mcp_oauth_challenges: the claude_connector/initialize challenge "
+                        "ran 2026-08-09..2026-08-15 and issued 994 of them. The most "
+                        "recent durable identity was created 2026-08-08 — BEFORE that "
+                        "window opened. So 994 initialize challenges produced ZERO "
+                        "identities while they were live; switching them off cannot be "
+                        "what stopped a flow that had already stopped. Whatever the "
+                        "constraint is, it is downstream of being challenged: clients "
+                        "are challenged and do not complete. Most MCP clients (Claude "
+                        "Code, Claude Desktop, Cursor, ChatGPT) do not implement the "
+                        "browser hop at all, which fits, but n=9 does not establish it "
+                        "either."
+                    ),
+                }
+            except Exception:
+                ib["durable_identities_error"] = True
 
             out["identity_breakdown"] = ib
     except Exception as e:
