@@ -745,6 +745,7 @@ def _log_linkedin_post(post_type, text, post_id):
                 "VALUES (%s, %s, %s, NOW())",
                 (post_type, text[:2000], post_id)
             )
+            conn.commit()
         else:
             # Local sqlite dev fallback — a separate file DB, not the shared Neon
             # log, so it keeps its own minimal table here.
