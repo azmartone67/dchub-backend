@@ -701,7 +701,7 @@ def _enqueue_post(content: str, platform: str, og_image: str | None = None,
                 INSERT INTO social_media_posts
                        (content, platform, status, created_at, og_image,
                         lead_kind, lead_entity)
-                VALUES (%s, %s, 'approved', NOW(), %s, %s, %s)
+                VALUES (%s, %s, 'approved', NOW() ON CONFLICT DO NOTHING, %s, %s, %s)
                 RETURNING id
             """, (content, platform, og_image,
                    (lead_kind or None), (lead_entity or None)))

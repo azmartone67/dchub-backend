@@ -226,7 +226,7 @@ def test_a_multi_statement_blob_is_split():
 def test_plain_dml_is_left_alone():
     src = ("from db_utils import get_db\n"
            "def w():\n"
-           "    get_db().cursor().execute('INSERT INTO t (id) VALUES (1)')\n")
+           "    get_db().cursor().execute('INSERT INTO t (id) VALUES (1) ON CONFLICT DO NOTHING')\n")
     assert _offences(src) == []
 
 

@@ -506,7 +506,7 @@ def run_scan() -> dict:
                           (name, home_url, probe_url, submit_url, verdict,
                            reason, home_status, probe_status, checked_at,
                            first_absent_at)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING,
                                 CASE WHEN %s THEN NOW() END)
                         ON CONFLICT (name) DO UPDATE SET
                           verdict=EXCLUDED.verdict, reason=EXCLUDED.reason,
