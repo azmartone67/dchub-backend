@@ -82,8 +82,12 @@ def test_the_harvester_hazard_ALONE_flips_quotability():
     pair postdates every registered change, so the harvester share is the only
     thing that can refuse it.
     """
-    dirty = _week("2026-09-07", 1800, 35, harvester_calls=1470)   # 81.7%
-    clean = _week("2026-09-14", 340, 30, harvester_calls=0)
+    # ★2026-09-07: the clean pair moved W37/W38 -> W38/W39. dchub-mcp-server#382
+    # is registered at 2026-09-07T23:00Z (the cap wall finally writes an
+    # mcp_upgrade_signals row), which lands inside W37. Third move of this
+    # fixture — it moves with every new marker, by design.
+    dirty = _week("2026-09-14", 1800, 35, harvester_calls=1470)   # 81.7%
+    clean = _week("2026-09-21", 340, 30, harvester_calls=0)
     comp = _wow([dirty, clean])["comparability"]
     assert comp["crosses_definition_change"] is False, "pair must be otherwise clean"
     assert comp["superseded_by_correction"] is False, "pair must be otherwise clean"
@@ -100,8 +104,12 @@ def test_a_clean_pair_stays_quotable():
     # 2026-09-01, and EVERY week before the later of those is
     # superseded_by_correction — so no pair of past weeks is quotable at all
     # today. A quotable pair has to postdate both corrections.
-    a = _week("2026-09-07", 2100, 72)
-    b = _week("2026-09-14", 2200, 70)
+    # ★2026-09-07: the clean pair moved W37/W38 -> W38/W39. dchub-mcp-server#382
+    # is registered at 2026-09-07T23:00Z (the cap wall finally writes an
+    # mcp_upgrade_signals row), which lands inside W37. Third move of this
+    # fixture — it moves with every new marker, by design.
+    a = _week("2026-09-14", 2100, 72)
+    b = _week("2026-09-21", 2200, 70)
     comp = _wow([a, b])["comparability"]
     assert comp["crosses_definition_change"] is False
     assert comp["superseded_by_correction"] is False

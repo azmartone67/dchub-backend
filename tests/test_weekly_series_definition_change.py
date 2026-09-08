@@ -193,7 +193,11 @@ def test_a_change_anywhere_in_the_median_baseline_counts():
     """Not just the current week — a tainted baseline week breaks it too."""
     got = _comparability(["2026-08-17", "2026-09-07"])
     assert got["crosses_definition_change"] is True
-    assert len(got["changes"]) == 1, "deduped on effective_at"
+    # ★ 2026-09-07: was 1. dchub-mcp-server#382 (the cap wall finally writes an
+    # mcp_upgrade_signals row) is registered at 2026-09-07T23:00Z, which lands
+    # inside the 09-07 week this span touches. Two distinct effective_at dates
+    # in the span now, so two changes survive the dedupe.
+    assert len(got["changes"]) == 2, "deduped on effective_at"
 
 
 def test_every_registered_change_declares_what_a_reader_needs():
@@ -261,9 +265,15 @@ def test_weeks_after_the_correction_stay_quotable():
     # ★ 2026-09-02: the first clean pair MOVED. 2026-W36 (08-31..09-07)
     # contains dchub-mcp-server#294 and #302, so the 08-24/08-31 pair this
     # test used to pin is now CROSSING — see
-    # test_the_W35_to_W36_delta_is_withheld_by_both_markers. The first pair
-    # after every registered marker is W37/W38.
-    got = _comparability(["2026-09-07", "2026-09-14"])
+    # test_the_W35_to_W36_delta_is_withheld_by_both_markers.
+    # ★ 2026-09-07: it MOVED AGAIN, for the same reason and by the same rule.
+    # dchub-mcp-server#382 is registered at 2026-09-07T23:00Z, inside W37
+    # (09-07..09-14), so the W37/W38 pair this test pinned is now crossing.
+    # The first clean pair is W38/W39. This is the second time this fixture
+    # has moved; it will move every time a marker is added, and that is the
+    # guard working — the alternative is a test that pins a week which is no
+    # longer clean and quietly asserts the wrong world.
+    got = _comparability(["2026-09-14", "2026-09-21"])
     assert got[_SUP] is False
     assert got["superseded_by"] == []
     assert got["quotable_as_trend"] is True
@@ -334,7 +344,10 @@ def test_quotable_as_trend_is_false_when_either_hazard_fires():
     """The one boolean consumers branch on."""
     assert _comparability(["2026-08-03", "2026-08-10"])["quotable_as_trend"] is False
     assert _comparability(["2026-08-10", "2026-08-17"])["quotable_as_trend"] is False
-    assert _comparability(["2026-09-07", "2026-09-14"])["quotable_as_trend"] is True
+    # ★ 2026-09-07: W37/W38 now crosses dchub-mcp-server#382 — first clean
+    # pair is W38/W39 (see test_weeks_after_the_correction_stay_quotable).
+    assert _comparability(["2026-09-07", "2026-09-14"])["quotable_as_trend"] is False
+    assert _comparability(["2026-09-14", "2026-09-21"])["quotable_as_trend"] is True
 
 
 # ── 2026-09-02: the two enforcement changes inside W36 ───────────────────────

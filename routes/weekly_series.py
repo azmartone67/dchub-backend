@@ -232,6 +232,48 @@ _DEFINITION_CHANGES = [
         ),
         "ref": "dchub-mcp-server#302",
     },
+    # ★ 2026-09-07 — PRE-REGISTERED, before the change it describes has merged.
+    # #294 and #302 were both registered AFTER the fact, on 2026-09-02, and the
+    # comment above records what that cost: comparability_for_spans had already
+    # declared the W36 delta quotable. This one is filed with its PR.
+    {
+        # The mcp-server change is dchub-mcp-server#382, open at time of
+        # writing. `effective_at` is deliberately the PR-OPEN time, not the
+        # merge time, because it is unknown here and the error directions are
+        # not symmetric: an EARLY marker over-warns (a comparable week is
+        # called incomparable — a lost delta), a LATE one under-warns (an
+        # incomparable week is quoted as a trend — a wrong number published).
+        # Conservative is early.
+        "effective_at": "2026-09-07T23:00:00+00:00",
+        "change": (
+            "the per-day full-answer cap's deprivation branch now writes an "
+            "mcp_upgrade_signals row (signal_type 'trial_cap_exceeded'). It "
+            "has fired since 2026-08-06 — 39,344 gated calls / 10,562 "
+            "sessions by 2026-09-07, a steady ~8,400/week — and wrote NO "
+            "signal, so every signal series before this timestamp omits the "
+            "single largest deprivation event in the funnel"
+        ),
+        "direction": "INCREASES signals sharply; no effect on calls or agents",
+        "is_correction": True,
+        "measured_effect": (
+            "not yet measurable at registration. The expected step is ~2,900 "
+            "-> ~38,000 mcp_upgrade_signals rows per 30d (~13x): the 30d "
+            "table held trial_preview 2,054 + paid_tool_blocked 890 + "
+            "checkout_link_issued 1 = 2,945, beside 35,827 cap hits on "
+            "mcp_call_log for the same window. The published upgrade_signals_7d "
+            "of 366 sat beside 8,442 cap hits in the same 7d — a 23x "
+            "understatement that this change removes"
+        ),
+        "means": (
+            "weeks on opposite sides of this timestamp count signals under "
+            "DIFFERENT rules: before it the largest wall in the product wrote "
+            "nothing, so every earlier signal count is an undercount we have "
+            "since declared wrong. A week-over-week signal percentage across "
+            "it is not a trend, and the jump is instrumentation, NOT demand "
+            "and NOT the paywall starting to work"
+        ),
+        "ref": "dchub-mcp-server#382",
+    },
 ]
 
 
