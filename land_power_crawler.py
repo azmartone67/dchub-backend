@@ -1311,6 +1311,29 @@ def _upsert_transmission(cur, batch):
 # CRAWLER 4: GAS PIPELINES (EIA Natural Gas API)
 # ─────────────────────────────────────────────────────────────
 
+def crawl_gas_pipelines_geodot(get_db, full_refresh=False):
+    """Run the geodot gas ingest — the producer that actually maintains
+    gas_pipelines (32,851 of its 33,771 rows).
+
+    It lives behind an admin-gated Flask route rather than in this module, so
+    this calls it through the same loopback the other master shells use. The
+    runner exists so the source is REACHABLE, not only observed: a board that
+    watches a job it cannot invoke cannot re-run it after a failure either.
+    """
+    import os as _os
+    import requests as _rq
+    base = (f"http://127.0.0.1:{_os.environ.get('PORT', '8080')}"
+            if (_os.environ.get("RAILWAY_ENVIRONMENT")
+                or _os.environ.get("RAILWAY_PROJECT_ID"))
+            else _os.environ.get("DCHUB_BACKEND_BASE",
+                                 "https://dchub-backend-production.up.railway.app"))
+    key = _os.environ.get("DCHUB_ADMIN_KEY") or _os.environ.get("DCHUB_INTERNAL_KEY")
+    r = _rq.post(f"{base}/api/v1/admin/ingest/gas-pipelines",
+                 headers={"X-Admin-Key": key or ""}, timeout=180)
+    r.raise_for_status()
+    return r.json()
+
+
 def crawl_gas_pipelines(get_db, full_refresh=False):
     """
     Fetch gas pipeline operator/state data from EIA API v2.
@@ -1839,6 +1862,13 @@ def register_land_power_routes(app, get_db, require_admin):
             'hifld-substations': crawl_substations,
             'hifld-transmission': crawl_transmission_lines,
             'eia-ng-pipelines': crawl_gas_pipelines,
+            # ★ 2026-09-07 — the LIVE gas producer must be runnable, not just
+            #   watched. test_every_monitored_source_is_runnable enforces
+            #   `_EXPECTED subset of _RUNNERS`: "no source may be watched by
+            #   /status but unreachable by the job". Adding the geodot feed to
+            #   _EXPECTED without a runner would have made the board monitor
+            #   something this job cannot invoke or re-run.
+            'eia-geodot-pipelines': crawl_gas_pipelines_geodot,
         }
         source = (request.args.get('source') or '').strip()
         if source:
