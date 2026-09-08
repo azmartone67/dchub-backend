@@ -1792,7 +1792,7 @@ def site_value():
     # r-ramp (v2.3): phased energization. `power_ramp` / `power_schedule` state
     # WHEN the MW show up; target_mw still states HOW MANY. Absent both, the
     # delivery block is None and valuation is bit-identical to v2.2.
-    _as_of_date = _dt.datetime.utcnow().date()
+    _as_of_date = _dt.datetime.now(_dt.timezone.utc).date()
     _tranches, _delivery_warnings = _build_power_schedule(
         payload, float(target_mw), _as_of_date)
     try:
