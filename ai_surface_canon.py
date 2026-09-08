@@ -311,6 +311,19 @@ PINNED = {
         # because a floor above reality is the defect this block's own history
         # records three times.
         "substations": "127,000+",
+        # ★2026-09-07 — fiber + transmission cold-start floors. Added so the
+        #  surfaces that were typing these numbers have a placeholder to reach:
+        #  routes/quick_redirects.py carried "50,000+ fiber routes, 52,000
+        #  transmission lines" against a live 66,699 / 94,633, and the 52,000 is
+        #  the SUPERSEDED services1 ArcGIS layer — the literal had drifted in
+        #  WHICH POPULATION it named, not merely in freshness.
+        #  Floored DOWN from the measured pair, same as `substations` above:
+        #  66,699 -> 66,000+ and 94,633 -> 94,000+. canonical_stats now queries
+        #  BOTH tables in _query_live, so these are genuine cold-start floors and
+        #  not the permanent answer — which is what `substations` silently was
+        #  until today, its floor spec having never fired for want of a query.
+        "fiber_routes": "66,000+",
+        "transmission_lines": "94,000+",
         # ── DCPI scoring-universe span (r-dcpi-regions, 2026-09-03) ──
         # Cold-start floors ONLY; canonical_stats' derivation publishes.
         # ★ Verified against
@@ -935,6 +948,11 @@ def canon_nums() -> dict:
         # hardcoded "126,427 substations" — this module's own DB-DOWN seed, pasted
         # into prose and frozen while the snapshot measured 127,269.
         '{canon_substations}': _live.get('substations') or _pub.get('substations') or '',
+        # ★2026-09-07 r-fiber-tx-keys. Same shape as every sibling: live floor
+        # first, pin only at cold start. Before these existed, a surface naming a
+        # fiber or transmission count had no way to derive one.
+        '{canon_fiber_routes}': _live.get('fiber_routes') or _pub.get('fiber_routes') or '',
+        '{canon_transmission_lines}': _live.get('transmission_lines') or _pub.get('transmission_lines') or '',
         '{canon_deals}':      _live.get('deals')      or _pub.get('deals') or '',
         # ★2026-09-06 r-news-sources. See PINNED['public']['news_sources'] for
         # why this is named for NEWS and not the bare `sources` the surfaces

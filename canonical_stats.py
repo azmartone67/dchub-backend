@@ -86,7 +86,20 @@ _FALLBACK = {
     # June 2026, and a rolling window is the one metric here that can shrink.
     # Re-floor DOWNWARD if the live corpus ever drops below 2,000.
     "news_sources": 2000,
-    "substations": 126427,    # HIFLD substations (had no SoT home before)
+    # ★2026-09-07 — 126427 -> 127289. This seed is the ORIGINAL sin: the
+    #  _PUBLIC_FLOOR_SPECS note above records it being "pasted into prose and
+    #  then frozen" on /.well-known/mcp.json. It also sat BELOW the pin it is
+    #  supposed to floor — ai_surface_canon published "127,000+" against this
+    #  126,427, so a cold start claimed 573 more substations than the module
+    #  itself believed it had. Caught by
+    #  tests/test_public_floor_specs_are_queried.py::test_the_pins_do_not_exceed_their_seeds
+    #  on the day that guard was written. Re-measured live: 127,289.
+    "substations": 127289,    # COUNT(*) FROM substations, measured 2026-09-07
+    # ★2026-09-07 seeds for the two new floor specs. Raw measured ints, same
+    # convention as `substations` above; _floor_phrase(step=1000) is what turns
+    # them into publishable floors (66,699 -> "66,000+", 94,633 -> "94,000+").
+    "fiber_routes": 66699,          # COUNT(*) FROM fiber_routes, measured 2026-09-07
+    "transmission_lines": 94633,    # COUNT(*) FROM transmission_lines (EIA population)
     "pipeline_gw": 369,       # construction pipeline GW (had no SoT home before)
 }
 
@@ -499,6 +512,55 @@ def _query_live() -> dict:
                 _live_keys.add("news_sources")
         except Exception:
             pass
+        # ── infrastructure-asset counts ────────────────────────────────────
+        # ★2026-09-07 — `substations` has had a _PUBLIC_FLOOR_SPECS entry since
+        #   2026-09-02 but was NEVER QUERIED HERE, so stat_is_live("substations")
+        #   was permanently False, live_public_floors() skipped it, and
+        #   {canon_substations} resolved to the PIN every time. The spec has
+        #   never once fired. Adding the query is what makes it real; the two new
+        #   keys beside it exist so fiber and transmission surfaces stop having to
+        #   hardcode, the same reason substations/dcpi_countries/news_sources were
+        #   each added in turn.
+        #
+        # ★ ROLLBACK BETWEEN COUNTS, unlike the blocks above. psycopg2 aborts the
+        #   whole transaction on a failed statement, so a missing table in the
+        #   first of these would make the other two fail too and silently publish
+        #   the pin for all three — the "cascade into a row of zeros" that
+        #   fiber_integration.py documents at length. Each count is independent.
+        for _pub_key, _sql in (
+            ("substations",        "SELECT COUNT(*) FROM substations"),
+            # ★ fiber: COUNT(*) FROM fiber_routes is the DOCUMENTED canonical
+            #   count — "the one /api/v1/stats publishes and every agent surface
+            #   advertises" (fiber_integration.py). NOT fiber_route_geometry,
+            #   which is the wrong-table bug that note exists to record.
+            ("fiber_routes",       "SELECT COUNT(*) FROM fiber_routes"),
+            # ★ transmission: the `transmission_lines` TABLE, which is the
+            #   published inventory /api/v1/stats already serves under this exact
+            #   name. Deliberately NOT one of the three ArcGIS
+            #   Electric_Power_Transmission_Lines layers (services5 ~89.7k
+            #   canonical-for-spatial-queries, services1 52.2k SUPERSEDED,
+            #   services2/EIA ~94.6k which feeds this table). Those are spatial
+            #   query layers with different roles and id spaces, not competing
+            #   totals — see the tx-layer note. The floor rounds DOWN, so a
+            #   reader who means the services5 population is not over-claimed by
+            #   more than the gap between them; if that ever matters, split the
+            #   key rather than re-point this count.
+            ("transmission_lines", "SELECT COUNT(*) FROM transmission_lines"),
+        ):
+            try:
+                cur.execute(_sql)
+                n = int((cur.fetchone() or [0])[0] or 0)
+                if n > 0:
+                    out[_pub_key] = n
+                    _live_keys.add(_pub_key)
+            except Exception:
+                # An absent count must stay ABSENT, never 0 — a zero is a
+                # measurement. Roll back so the next count still has a usable
+                # transaction.
+                try:
+                    c.rollback()
+                except Exception:
+                    pass
     finally:
         try:
             c.close()
@@ -763,6 +825,19 @@ _PUBLIC_FLOOR_SPECS = {
     # Same callable as news_sources_phrase() above, so the floor here and the
     # phrase there can never round the same number two different ways.
     "news_sources": ("news_sources",      lambda n: _floor_phrase(n, step=1000)),
+    # ★2026-09-07 — the FOURTH and FIFTH additions for the reason stated three
+    # times above: a surface that needs a number and has no {canon_*} placeholder
+    # to reach it HAS to hardcode. These two proved it the same way "40+ sources"
+    # did. routes/quick_redirects.py typed "50,000+ fiber routes, 52,000
+    # transmission lines" against a live 66,699 / 94,633 — and the 52,000 is the
+    # SUPERSEDED services1 layer, i.e. the literal had drifted not just in
+    # freshness but in which population it described.
+    #
+    # step=1000 matches the sibling infrastructure floors. Both counts are now
+    # queried in _query_live above, so unlike `substations` before today these
+    # specs can actually fire.
+    "fiber_routes":       ("fiber_routes",       lambda n: _floor_phrase(n, step=1000)),
+    "transmission_lines": ("transmission_lines", lambda n: _floor_phrase(n, step=1000)),
 }
 
 
