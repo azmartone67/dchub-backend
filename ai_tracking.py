@@ -158,6 +158,28 @@ AI_ENDPOINT_PATTERNS = [
     r"^/api/market",
     r"^/api/grid",
     r"^/api/site-score",
+    # ★2026-09-08 — THREE ADVERTISED URLS WERE INVISIBLE TO THIS LIST.
+    #   llms.txt and llms-full.txt advertise 14 worked examples carrying a query
+    #   string, and #4052/#4090 exist entirely to let crawlers fetch them. But
+    #   is_ai_endpoint() matched only 11 of the 14: /api/ai/query,
+    #   /api/renewable/solar and /api/energy/prices had no pattern, so a crawler
+    #   fetching them was recorded by NOBODY — not here, and not by the edge
+    #   beacon either (ORGANIC_CONTENT_PREFIXES is content pages only).
+    #
+    #   That made the post-#4090 question unanswerable in the direction that
+    #   mattered. Measured 2026-09-08: copilot (the Bingbot bucket) sat flat at
+    #   ~12/day of `ambiguous_data_api` across the deploy, while claude went
+    #   134 -> 7,437 the same day. "Bingbot did not move" was a claim about 11
+    #   of the 14 URLs, and nobody could have known which 11.
+    #
+    # ★ THE STEP THIS CREATES IS INSTRUMENTATION, NOT DEMAND. When this deploys,
+    #   ai_requests gains a class of row it never held, so the series steps up on
+    #   that date. It is the same shape as the 2026-09-05 beacon switch-on and the
+    #   /daily table repoint — read the step as coverage, never as growth, and do
+    #   not compare across it without saying so.
+    r"^/api/ai/",
+    r"^/api/renewable/",
+    r"^/api/energy/",
     r"^/\.well-known/",
     r"^/llms\.txt",
     r"^/ai-agents\.json",
