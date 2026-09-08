@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Optional
@@ -693,7 +694,8 @@ def _validate_and_store_proposal(source_name: str, prop: dict,
                                                 brain_proposed_code_fixes.issue_key),
                       last_seen_at   = NOW()
                 RETURNING id, approval_count, cycles_seen
-            """, (source_name, primary["file"], primary["search"],
+            """, (_stable_loop_name(source_name),
+                  primary["file"], primary["search"],
                   primary["replace"], rationale, confidence, BRAIN_MODEL,
                   json.dumps(changes), _rkey, _finding_class,
                   new_approval, new_cycles,
@@ -1495,6 +1497,44 @@ def learn_backend_issues():
 # the live 0.78-0.83 band so a source can earn its first evidence;
 # calibration then moves it up or down from there on merit.
 _CALIB_BASE_THRESHOLD = 0.78
+
+
+# ── stable loop_name ─────────────────────────────────────────────────
+# ★ 2026-09-08. The (loop_name, file_path, search_text) UNIQUE index is the
+# dedupe for this table, and its ON CONFLICT ... DO UPDATE is what bumps
+# approval_count/cycles_seen when a proposal recurs. It had never fired for
+# some producers, because they put a MEASURED VALUE in loop_name — every
+# observation minted a new key. Live that day: 17 pending proposals with
+# byte-identical search_text on api_fixes.py, under loop_names
+# cache_rate:24.41% ... cache_rate:24.97%. The opener would have drafted the
+# same one-line fix five times per run.
+#
+# A trailing numeric segment is a MEASUREMENT, not an identity, so it is
+# stripped. A non-numeric one is an identity and is kept — `table:press_releases`
+# and `table:linkedin_posts` are genuinely different sources, and the
+# /api/...?country=XX family must not collapse to one. Validated against all
+# 93 distinct live loop_names: 18 normalize (cache_rate:24.42% -> cache_rate,
+# agent_hub.py:909 -> agent_hub.py, a line number being positional too),
+# 75 unchanged.
+#
+# It also pools calibration samples, which is the second half of the win:
+# _calibration_stats groups by loop_name and needs _CALIB_MIN_SAMPLES (3) to
+# tune, and a key that is unique per observation can never reach 3. The
+# docstring at the calibration query already called this a "loop_name prefix";
+# this makes the stored value match that intent.
+_MEASURED_SEGMENT_RE = re.compile(r":\s*-?\d+(?:\.\d+)?\s*%?\s*$")
+
+
+def _stable_loop_name(name):
+    """Strip a trailing measured value so the UNIQUE index can dedupe.
+
+    Never returns empty: a name that is ENTIRELY a measurement keeps its
+    original text rather than collapsing every such row onto one key.
+    """
+    if not name:
+        return name
+    stripped = _MEASURED_SEGMENT_RE.sub("", name).strip()
+    return stripped or name
 _CALIB_ADJ_RANGE = 0.30          # ±0.15 swing around the base
 _CALIB_MIN_SAMPLES = 3           # need ≥3 resolved outcomes to tune
 _CALIB_FLOOR = 0.70              # never auto-PR below this
