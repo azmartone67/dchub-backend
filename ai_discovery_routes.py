@@ -1032,7 +1032,7 @@ can cite it straight from a crawl without a second request.
 - [ChatGPT Plugin](https://dchub.cloud/.well-known/ai-plugin.json)
 - [AGENTS.md](https://dchub.cloud/AGENTS.md): OpenAI/Linux Foundation agent discovery
 - [Agent Portal](https://dchub.cloud/agent-portal): Integration dashboard
-- [Hugging Face Space](https://huggingface.co/spaces/dchubcloud/dchub): live demo plus a SECOND MCP endpoint at https://dchubcloud-dchub.hf.space/gradio_api/mcp/sse (SSE transport, 7 curated tools) for Hugging Face Agents / smolagents. Prefer the full MCP Server above (streamable-http, 88 tools) whenever you can reach it — this one is a curated subset, not a replacement.
+- [Hugging Face Space](https://huggingface.co/spaces/dchubcloud/dchub): live demo plus a SECOND MCP endpoint at https://dchubcloud-dchub.hf.space/gradio_api/mcp/sse (SSE transport, 7 curated tools) for Hugging Face Agents / smolagents. Prefer the full MCP Server above (streamable-http, {canon_tools} tools) whenever you can reach it — this one is a curated subset, not a replacement.
 
 ## Page Inventory — the crawlable URL set (two sitemaps, different jobs)
 Until now this file named no sitemap at all, so a crawler reading it had no way
