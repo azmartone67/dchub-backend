@@ -28,6 +28,14 @@ Endpoints:
 import logging
 from routes.url_registry import build_public_url
 from flask import Blueprint, jsonify, request, Response
+
+# ★ Prices are READ from tier_registry, never restated. These three unlock
+# blocks carried a literal pro_usd_month: 199 through TWO repricings
+# (199 -> 299 at r-reprice 2026-06-19, 299 -> 99 at r-price-collapse
+# 2026-09-05) and were quoting $199 live on 2026-09-08. A restated
+# number is a second source of truth; this import is the fix for the
+# class, not just for the value.
+from tier_registry import price as _canon_price
 try:
     from util.constraint_coverage_shape import annotate as _cc_annotate
 except Exception:                                    # pragma: no cover
@@ -355,9 +363,10 @@ def _teaser(shortlist):
                     f"build sequence, and the risk flags for {top_name}) is the paid layer."),
         "unlock": {
             "url": _UPGRADE_URL,
-            "developer_usd_month": 49,
-            "pro_usd_month": 199,
-            "pitch": "Developer ($49/mo) unlocks the full Site Selection Canvas synthesis + the MCP decision tools.",
+            "developer_usd_month": _canon_price("developer"),
+            "pro_usd_month": _canon_price("pro"),
+            "pitch": (f"Developer (${_canon_price('developer')}/mo) unlocks the full "
+                      "Site Selection Canvas synthesis + the MCP decision tools."),
         },
     }
 

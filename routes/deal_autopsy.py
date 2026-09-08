@@ -29,6 +29,14 @@ from routes.url_registry import build_public_url
 import logging
 from flask import Blueprint, jsonify, request, Response
 
+# ★ Prices are READ from tier_registry, never restated. These three unlock
+# blocks carried a literal pro_usd_month: 199 through TWO repricings
+# (199 -> 299 at r-reprice 2026-06-19, 299 -> 99 at r-price-collapse
+# 2026-09-05) and were quoting $199 live on 2026-09-08. A restated
+# number is a second source of truth; this import is the fix for the
+# class, not just for the value.
+from tier_registry import price as _canon_price
+
 logger = logging.getLogger(__name__)
 deal_autopsy_bp = Blueprint("deal_autopsy", __name__)
 
@@ -394,7 +402,9 @@ def autopsy():
             "message": ("🎯 The autopsy read is the paid layer. The deal flow + each market's DCPI "
                         "verdict above are free — but the 'what's the REAL play' call (long-dated "
                         "option vs near-term build vs queue gamble) on each deal is Developer/Pro."),
-            "unlock": {"url": _UPGRADE_URL, "developer_usd_month": 49, "pro_usd_month": 199},
+            "unlock": {"url": _UPGRADE_URL,
+                       "developer_usd_month": _canon_price("developer"),
+                       "pro_usd_month": _canon_price("pro")},
         }
 
     # Store in the tier-aware exact-key cache (never the 503 path).
