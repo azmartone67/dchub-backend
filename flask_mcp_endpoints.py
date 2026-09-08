@@ -609,6 +609,54 @@ def handoff_funnel():
                          + " and " + _ro_real + " and " + _sid_ok) % iv)
         prov_real_sids = one(("select count(distinct ro.session_id) " + _ro_win
                               + " and " + _ro_real + " and " + _sid_ok) % iv)
+        # ── r-relay-validity (2026-09-08) — THE COLUMN THAT WAS ALREADY
+        # THERE. `relay_opens.valid` is written on EVERY open by
+        # routes/human_relay._log_open as `valid = info is not None`, i.e. it
+        # is true exactly when the token DECODED AND ITS HMAC VERIFIED — when
+        # the link is one we actually minted and signed. It has been written
+        # since the table was created and no read path has ever used it:
+        # every query in this endpoint aliases `from relay_opens ro` and
+        # `ro.valid` appeared nowhere in this file until this block.
+        #
+        # ★★★ WHY IT IS THE ONE FIELD THIS SPLIT WAS MISSING. The comment
+        # below already states that the filtered opens have two readings
+        # implying OPPOSITE next moves — a link-unfurl bot means a URL landed
+        # somewhere a human reads, a scanner means nobody received it — and
+        # answers it by UA family, which is a heuristic over a self-declared
+        # string. Token validity is not a heuristic: a scanner walking
+        # /upgrade/h/<junk> cannot forge the HMAC, so it can never land a
+        # `valid` row, and a caller who opened a link an agent relayed always
+        # does. The question the whole block exists to ask was answerable off
+        # a column already on disk, retroactively, with no deploy.
+        #
+        # Measured 2026-09-08, 7d: 82 opens = 53 probe_ua + 29 no_session_id
+        # + 0 countable, and the 29 are EXACTLY the rows passing the real-UA
+        # predicate — so every real-looking open in the window is unjoinable
+        # and `human_acted` had zero eligible rows, not zero humans. Whether
+        # any of those 29 carry a valid token is the difference between "a
+        # human opened a relayed link and we discarded the row" and "nobody
+        # received one". This publishes it instead of arguing it.
+        #
+        # ★ NULL COUNTS AS NOT-MINTED, deliberately. `is true` / `not (is
+        # true)` partitions the real-UA population exhaustively including
+        # NULLs, and groups an unconfirmable row with the junk. For a
+        # discriminator whose only job is to avoid announcing a conversion
+        # that was not one, the conservative side is the correct side —
+        # cf. the v3 stage that published its first non-zero and it was us.
+        #
+        # ★ FLAT SCALARS, not a nested object. Shell #54 lane G failed for
+        # ~7 days against a payload that satisfied its invariant under a new
+        # name AND a new shape, because `_num()` returns None for a dict. A
+        # reader or guard doing _num(payload[...]) works on these.
+        _valid_ok = "ro.valid is true"
+        prov_minted = one(("select count(*) " + _ro_win
+                           + " and " + _ro_real + " and " + _valid_ok) % iv)
+        prov_minted_nosid = one(("select count(*) " + _ro_win
+                                 + " and " + _ro_real + " and " + _valid_ok
+                                 + " and not " + _sid_ok) % iv)
+        prov_junk = one(("select count(*) " + _ro_win
+                         + " and " + _ro_real
+                         + " and not (" + _valid_ok + ")") % iv)
         # ── WHAT THE FILTERED OPENS ACTUALLY ARE ─────────────────────────
         # prov_probe says 142 of 174 opens (30d, 2026-09-07) fail the real-UA
         # predicate. That single number cannot answer the question it raises,
@@ -763,6 +811,38 @@ def handoff_funnel():
                 "no_session_id": prov_nosid,
                 "countable_opens": prov_real,
                 "countable_sessions": prov_real_sids,
+                # ★ r-relay-validity: the SECOND, orthogonal split of the same
+                # real-UA population — by whether we minted the token, not by
+                # whether the row can join. Do not sum across the two.
+                "minted_link_opens": prov_minted,
+                "minted_link_opens_no_session_id": prov_minted_nosid,
+                "junk_token_opens": prov_junk,
+                "token_validity_basis": (
+                    "reads relay_opens.valid, written on every open by "
+                    "routes/human_relay._log_open as `valid = info is not "
+                    "None` — true exactly when the token decoded AND its HMAC "
+                    "verified, i.e. the link is one WE minted. A scanner "
+                    "walking /upgrade/h/<junk> cannot forge the signature, so "
+                    "it can never land a valid row; a caller opening a link an "
+                    "agent relayed always does. minted_link_opens and "
+                    "junk_token_opens partition the real-UA population "
+                    "(probe_ua + minted_link_opens + junk_token_opens == "
+                    "total), and NULL valid is grouped with junk on purpose — "
+                    "the conservative side is the correct side for a field "
+                    "whose job is to avoid announcing a conversion that was "
+                    "not one. ★ THIS SPLIT IS ORTHOGONAL to "
+                    "probe_ua/no_session_id/countable_opens, which partition "
+                    "the same rows by JOINABILITY: do not add fields across "
+                    "the two. minted_link_opens_no_session_id is the one to "
+                    "read — those are opens on links we really minted that "
+                    "human_acted can never count, because the sid is baked "
+                    "into the token at mint time (`${sessionId || \'\'}|tool|"
+                    "tier|ts`, server.mjs buildHumanRelay) and a link minted "
+                    "without a session is born unjoinable. A non-zero there "
+                    "means the stage is discarding real evidence; a zero "
+                    "means no relayed link was opened at all and the problem "
+                    "is delivery, not measurement. Both readings were "
+                    "previously unavailable from this endpoint."),
                 "basis": (
                     "relay_opens rows in the window, split by whether the row "
                     "can reach human_acted at all. probe_ua = fails "
