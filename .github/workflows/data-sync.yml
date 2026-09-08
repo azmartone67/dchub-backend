@@ -168,6 +168,48 @@ jobs:
           fi
           python3 -c "import json;d=json.load(open('/tmp/news.json'));print('success=',d.get('success'),'new_articles=',d.get('new_articles'),'result=',str(d.get('result',''))[:200])"
 
+      - name: Assert news ingestion actually ADDED rows
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          BACKEND_URL: ${{ secrets.RAILWAY_BACKEND_URL }}
+        run: |
+          set -uo pipefail
+          # ★ WHY THIS STEP EXISTS. The step above judges the refresh by the
+          # cron_last_run WATERMARK — "did the job complete" — and says so
+          # itself: `new_articles UNKNOWN (a relayed 202 carries none)`. Between
+          # 2026-09-03 and 2026-09-07 intake fell ~180 -> ~15 rows/day and this
+          # workflow reported SUCCESS on every run, because a completed sync
+          # that inserts nothing is identical to a healthy one on that signal.
+          # Freshness checks stayed green too: one article a day keeps "newest
+          # story is 1 day old" true forever. Volume is the only thing that
+          # separates them, so this asserts volume.
+          RAILWAY="${BACKEND_URL:-https://dchub-backend-production.up.railway.app}"
+          CODE=$(curl -sS --max-time 60 -o /tmp/ingest.json -w '%{http_code}' \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY/api/v1/admin/news/ingest-health?_=$(date +%s)") || CODE=000
+          if [ "$CODE" != "200" ]; then
+            echo "::error::news ingest-health returned HTTP $CODE — the volume guard could not be read, which is how the 5-day collapse stayed invisible. NOT swallowed."
+            head -c 400 /tmp/ingest.json; exit 1
+          fi
+          # Single-line python + bash control flow: inside a YAML block scalar
+          # every line carries the block's indentation, so a multi-line python
+          # heredoc is an IndentationError and a dedented one ends the scalar.
+          V=$(python3 -c "import json;d=json.load(open('/tmp/ingest.json'));m=d.get('measurements') or {};print('%s|%s|%s|%s|%s|%s' % (d.get('verdict'),m.get('rows_24h'),m.get('distinct_sources_24h'),m.get('broad_sweeps_24h'),m.get('baseline_median_rows_per_day'),d.get('why')))")
+          VERDICT=$(printf '%s' "$V" | cut -d'|' -f1)
+          WHY=$(printf '%s' "$V" | cut -d'|' -f6-)
+          echo "verdict=$VERDICT rows_24h=$(printf '%s' "$V" | cut -d'|' -f2) sources_24h=$(printf '%s' "$V" | cut -d'|' -f3) broad_sweeps_24h=$(printf '%s' "$V" | cut -d'|' -f4) baseline=$(printf '%s' "$V" | cut -d'|' -f5)/day"
+          case "$VERDICT" in
+            ok)
+              echo "::notice::news ingestion ok - $WHY" ;;
+            degraded)
+              # Visible, not fatal: a recovering backlog crosses this on the way
+              # up, and a flapping red trains people to ignore it.
+              echo "::warning::news ingestion DEGRADED - $WHY" ;;
+            *)
+              echo "::error::news ingestion $VERDICT - $WHY"
+              exit 1 ;;
+          esac
+
       - name: Notify on workflow failure
         if: failure()
         env:

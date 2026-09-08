@@ -4373,6 +4373,15 @@ try:
     except Exception as _ple:
         import logging
         logging.getLogger(__name__).warning('brain_product_lead wiring failed: %s', _ple)
+    # News ingest volume guard (2026-09-08): intake fell ~180 -> ~15 rows/day
+    # for five days while every freshness check stayed green. Freshness is not
+    # volume; this measures rows ADDED against the platform's own baseline.
+    try:
+        from routes.news_ingest_health import news_ingest_health_bp
+        app.register_blueprint(news_ingest_health_bp)
+    except Exception as _nih:
+        import logging
+        logging.getLogger(__name__).warning('news_ingest_health wiring failed: %s', _nih)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the

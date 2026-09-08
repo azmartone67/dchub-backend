@@ -190,7 +190,11 @@ def _exec(block, run_body, run_code, status_before="", status_after="",
 
 def test_extraction_is_not_vacuous():
     blocks = _run_blocks()
-    assert len(blocks) == 12, f"expected 12 run blocks, got {len(blocks)}"
+    # 12 -> 13 on 2026-09-08: the "Assert news ingestion actually ADDED rows"
+    # step. Kept as an EXACT pin rather than relaxed to >=: the point of this
+    # assertion is that a broken extractor finding zero blocks cannot pass
+    # silently, and >= would also stop noticing a step that was deleted.
+    assert len(blocks) == 13, f"expected 13 run blocks, got {len(blocks)}"
     for b in (_news_block(), _kmz_block(), _evo_block()):
         assert len(b) > 400, "run block looks truncated"
         assert "%{http_code}" in b, (
