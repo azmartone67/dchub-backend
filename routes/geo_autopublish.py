@@ -481,6 +481,152 @@ def _llm_draft(item: dict, rows: list) -> dict | None:
         return None
 
 
+# ── did publishing the page do anything? (2026-09-07) ────────────────────────
+# Nothing linked a published page back to the query it was written to win, so
+# nothing could say whether any of this moves the 3.9% citation rate. This
+# ledger records what was published against which query; the MEASUREMENT is then
+# free, because citation_hunter already probes those exact queries daily — the
+# outcome read is a JOIN against citation_probes on probe_date > published_at,
+# not a second prober.
+_OUTCOME_DDL = """
+CREATE TABLE IF NOT EXISTS geo_page_outcomes (
+    slug         TEXT PRIMARY KEY,
+    query        TEXT NOT NULL,
+    pack         TEXT,
+    source       TEXT,
+    published_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+"""
+
+
+def _record_publish(slug: str, query: str, pack: str, source: str) -> None:
+    """Best-effort ledger write. NEVER raises and never blocks a publish — the
+    page is already live by the time this runs; losing the row costs us the
+    measurement, not the page."""
+    conn = None
+    try:
+        from main import get_db
+        conn = get_db()
+        if not conn:
+            return
+        with conn.cursor() as cur:
+            cur.execute(_OUTCOME_DDL)
+            # ★ ONE string literal, not two adjacent ones. regression_lint's
+            # insert-no-on-conflict rule matches `INSERT INTO \w+[^;"']*`, which
+            # stops dead at the first quote — so an ON CONFLICT living in the
+            # SECOND literal is invisible to it and the INSERT reads as unguarded.
+            # Keep the clause inside the same literal so the guard can see it.
+            # DO NOTHING (not DO UPDATE) on purpose: a slug is published once, and
+            # a re-publish must not reset published_at — that timestamp is the
+            # split point for every before/after rate on the board.
+            cur.execute("""
+                INSERT INTO geo_page_outcomes (slug, query, pack, source)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (slug) DO NOTHING
+            """, (slug[:200], (query or "")[:500], (pack or "")[:60], (source or "")[:20]))
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning("geo_autopublish outcome ledger write failed for %s: %s",
+                       slug, str(e)[:140])
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _cite_rate_pct(cited: int, n: int):
+    """None, not 0.0, when nothing was probed.
+
+    ★ An unprobed page has NO rate. Returning 0.0 would put it on the board as a
+    measured failure next to pages that really were probed and really were never
+    cited — absence rendered as a zero, which is the confusion this whole loop
+    keeps tripping over."""
+    return round(100.0 * cited / n, 1) if n else None
+
+
+def page_outcomes(limit: int = 50) -> dict:
+    """Per published page: how the query it targeted has scored SINCE it went up.
+
+    ★ This is an OBSERVATION, not an attribution. The battery probes 5 of 12
+    queries a day, so n is small per page, and a query can start being cited for
+    reasons that have nothing to do with the page. It reports before/after rates
+    and the sample sizes they rest on; it does not claim the page caused the
+    change, and no caller should phrase it that way.
+    """
+    out = {"ok": True, "pages": [], "note": (
+        "before/after citation rate for the query each page targets. "
+        "OBSERVATIONAL — small n, no causal claim.")}
+    conn = None
+    try:
+        import psycopg2.extras
+        from main import get_read_db
+        conn = get_read_db()
+        if not conn:
+            return {"ok": True, "pages": [], "note": "no_db"}
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT o.slug, o.query, o.pack, o.source, o.published_at,
+                       COUNT(p.*) FILTER (
+                           WHERE p.probe_date > o.published_at::date)  AS probes_after,
+                       COUNT(p.*) FILTER (
+                           WHERE p.probe_date > o.published_at::date
+                             AND COALESCE(p.dchub_mentioned, FALSE))   AS cited_after,
+                       COUNT(p.*) FILTER (
+                           WHERE p.probe_date <= o.published_at::date) AS probes_before,
+                       COUNT(p.*) FILTER (
+                           WHERE p.probe_date <= o.published_at::date
+                             AND COALESCE(p.dchub_mentioned, FALSE))   AS cited_before
+                  FROM geo_page_outcomes o
+                  LEFT JOIN citation_probes p ON p.query = o.query
+                 GROUP BY o.slug, o.query, o.pack, o.source, o.published_at
+                 ORDER BY o.published_at DESC
+                 LIMIT %s
+            """, (int(limit),))
+            rows = cur.fetchall() or []
+    except Exception as e:
+        logger.warning("geo page_outcomes failed: %s", str(e)[:160])
+        return {"ok": True, "pages": [], "note": f"unavailable: {type(e).__name__}"}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    for r in rows:
+        pa, ca = int(r["probes_after"] or 0), int(r["cited_after"] or 0)
+        pb, cb = int(r["probes_before"] or 0), int(r["cited_before"] or 0)
+        out["pages"].append({
+            "slug": r["slug"], "query": r["query"], "pack": r["pack"],
+            "source": r["source"],
+            "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+            "probes_before": pb, "cited_before": cb, "rate_before_pct": _cite_rate_pct(cb, pb),
+            "probes_after": pa, "cited_after": ca, "rate_after_pct": _cite_rate_pct(ca, pa),
+        })
+    return out
+
+
+@geo_autopublish_bp.route("/api/v1/media/geo/outcomes", methods=["GET"])
+# ★ EDGE-CACHED. There is no CF bypass rule for /api/v1/media/; the catch-all
+# `path contains "/api/v1/"` rule (#1 of 25, last-match-wins) applies, and it
+# sets mode override_origin — so any Cache-Control we send here is ignored.
+# The daily workflow reads this with a unique ?cb=<run id>, which is a distinct
+# cache key and therefore always reaches origin. A HUMAN opening the bare URL
+# can get a stale board. Not worth a live ruleset change plus a canon repin for
+# a board that moves once a day; documented instead of silently shipped.
+def page_outcomes_endpoint():
+    try:
+        limit = max(1, min(int(request.args.get("limit") or 50), 200))
+    except Exception:
+        limit = 50
+    return jsonify(page_outcomes(limit=limit)), 200
+
+
 def autopublish_next(dry: bool = False) -> dict:
     """Publish (or preview) the next uncovered high-intent GEO page. One per call.
 
@@ -533,6 +679,9 @@ def autopublish_next(dry: bool = False) -> dict:
             res = publish_answer(draft, overwrite=False)
         except Exception as e:
             return {"ok": False, "error": f"publish:{str(e)[:120]}", "considered": considered}
+        if res.get("ok"):
+            _record_publish(item["slug"], item.get("query") or "",
+                            item.get("pack") or "", src)
         return {"ok": bool(res.get("ok")), "acted": bool(res.get("ok")),
                 "source": src, "pack": item.get("pack"), "question": item.get("query"),
                 "published": res, "gap_candidates": len(gap_items),
