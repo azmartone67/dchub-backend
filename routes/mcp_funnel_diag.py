@@ -31,6 +31,67 @@ except Exception:
 mcp_funnel_bp = Blueprint("mcp_funnel", __name__,
                            url_prefix="/api/v1/mcp")
 
+# Thresholds for the three all-time leaks. Named, not inlined, so a future
+# reader can see what "stale" means without reading the branch.
+_DRAFT_STALE_DAYS = 7        # a draft older than a week is a queue with no owner
+_UNCONTACTED_ALERT = 25      # identified signals never contacted, all time
+_IDENTITY_FLOOR = 0.05       # <5% of signals carrying an identity is a ceiling,
+                             # not a conversion problem
+_IDENTITY_MIN_VOLUME = 1000  # below this volume the rate is noise, not a ceiling
+
+
+def evaluate_stall_leaks(stages: dict) -> list[dict]:
+    """The leaks a 7-day window structurally cannot see.
+
+    Every other check in this endpoint is scoped to 24h or 7d. A backlog that
+    stopped GROWING months ago therefore produces a perfectly quiet week, and
+    a quiet week reads as health — which is how 4 outreach drafts sat at
+    status='drafted' for 80 days without any surface saying so.
+
+    Pure: takes the stages dict, returns leaks. No I/O, so both the firing and
+    the NOT-firing case are directly testable.
+    """
+    leaks = []
+    drafts = stages.get("4c_drafts_awaiting_approval")
+    if isinstance(drafts, dict) and int(drafts.get("count") or 0) > 0 \
+            and int(drafts.get("oldest_days") or 0) >= _DRAFT_STALE_DAYS:
+        leaks.append({
+            "name": "drafts_never_approved",
+            "severity": "high",
+            "detail": (f"{drafts['count']} outreach draft(s) at status='drafted',"
+                       f" oldest {drafts['oldest_days']}d. Written, never sent."),
+            "likely_cause": ("the approve step is manual and nobody ran it —"
+                             " this is a queue with no owner, not a bug"),
+        })
+    never = stages.get("4b_identified_never_contacted")
+    if isinstance(never, int) and never >= _UNCONTACTED_ALERT:
+        leaks.append({
+            "name": "identified_never_contacted",
+            "severity": "medium",
+            "detail": (f"{never} signals carry an email and have never received"
+                       f" outreach (all time, not a 7d window)"),
+            "likely_cause": ("no lane consumes the identified-but-uncontacted"
+                             " backlog; the weekly senders resolve 0 eligible"),
+        })
+    cap = stages.get("1b_identity_capture")
+    # ★ The volume floor is load-bearing. Without it a brand-new install with
+    # 3 signals and no emails reports a CRITICAL ceiling — a sensor that fires
+    # on healthy input is not a sensor.
+    if isinstance(cap, dict) and isinstance(cap.get("capture_rate"), float) \
+            and cap["capture_rate"] < _IDENTITY_FLOOR \
+            and int(cap.get("signals_all_time") or 0) >= _IDENTITY_MIN_VOLUME:
+        leaks.append({
+            "name": "identity_capture_is_the_ceiling",
+            "severity": "critical",
+            "detail": (f"{cap['with_identity']} of {cap['signals_all_time']}"
+                       f" signals carry an identity"
+                       f" ({cap['capture_rate']*100:.1f}%)"),
+            "likely_cause": ("demand is being captured without an identity, so"
+                             " it is unreachable by any outreach lane. Growing"
+                             " the sender cannot move a number gated here."),
+        })
+    return leaks
+
 
 def _dsn():
     return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
@@ -160,6 +221,60 @@ def funnel_diag():
     except Exception as e:
         out["top_tools_blocked_7d"] = {"_error": type(e).__name__}
 
+    # ── The three numbers this funnel could not previously report ────────
+    #
+    # 2026-09-08. Measured live: 33,682 upgrade signals all time, of which 127
+    # carry an email and 63 ever received outreach. 31 conversions, $2,359 MRR.
+    # Meanwhile outreach_drafts held 4 rows at status='drafted' created
+    # 2026-06-20 — 80 days unapproved, three of them the same paying customers
+    # the white-glove board lists as stranded.
+    #
+    # None of that was visible here, because every existing stage and leak is
+    # scoped to a 7-day window. A backlog that stopped growing 80 days ago
+    # reads as a perfectly quiet week.
+    #
+    # identity_capture_rate is the one that reframes the funnel: 0.4% of
+    # signals carry an identity, so 99.6% of demand is unreachable by ANY
+    # outreach lane, however well armed. Building a bigger sender does not
+    # move a number that is gated on identity capture.
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*)::int, "
+                "       COUNT(*) FILTER (WHERE COALESCE(user_email,'') <> '')::int, "
+                "       COUNT(*) FILTER (WHERE outreach_sent)::int "
+                "  FROM mcp_upgrade_signals")
+            tot, ident_all, outr_all = cur.fetchone()
+            out["stages"]["1b_identity_capture"] = {
+                "signals_all_time": tot,
+                "with_identity": ident_all,
+                "capture_rate": (round(ident_all / tot, 4) if tot else None),
+                "note": ("signals carrying an email. Everything below is "
+                         "capped by this number — an outreach lane cannot "
+                         "reach a signal with no identity."),
+            }
+            out["stages"]["4b_identified_never_contacted"] = max(
+                0, int(ident_all or 0) - int(outr_all or 0))
+    except Exception as e:
+        out["stages"]["1b_identity_capture"] = {"_error": type(e).__name__}
+
+    # Drafts that were written and never approved. The approve step is manual
+    # by design; what was missing is any surface that says how long the queue
+    # has been waiting.
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*)::int, "
+                "       COALESCE(MAX(EXTRACT(EPOCH FROM (NOW()-created_at))/86400),0)::int "
+                "  FROM outreach_drafts WHERE status = 'drafted'")
+            n_draft, oldest_days = cur.fetchone()
+            out["stages"]["4c_drafts_awaiting_approval"] = {
+                "count": int(n_draft or 0),
+                "oldest_days": int(oldest_days or 0),
+            }
+    except Exception as e:
+        out["stages"]["4c_drafts_awaiting_approval"] = {"_error": type(e).__name__}
+
     # Leak detection
     s = out["stages"]
     sig_24h = s.get("2_paywall_signals_24h", {})
@@ -182,6 +297,8 @@ def funnel_diag():
                 "detail": f"{ident} users left email, 0 received outreach in 7d",
                 "likely_cause": "Outreach cron disabled or SENDGRID/RESEND env vars unset",
             })
+
+    out["leaks"].extend(evaluate_stall_leaks(s))
 
     return jsonify(out), 200
 
