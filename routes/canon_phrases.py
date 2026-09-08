@@ -90,45 +90,89 @@ def canon_phrases():
 
 
 def _build_canon_body():
+    """Build the canon payload, and SAY which origin supplied each number.
+
+    ★2026-09-08 — this called resolve_canon() directly and hardcoded
+    "source": "resolve_canon (live)". Both were wrong, and the second hid the
+    first.
+
+    resolve_public_floors()'s docstring says it outright: "every consumer must go
+    through here rather than calling resolve_canon() directly", because
+    resolve_canon DEGRADES rather than raising. Reproduced 2026-09-08 with no
+    DATABASE_URL:
+
+        key            PINNED     resolve_canon   resolve_public_floors
+        facilities    20,700+          400+              20,700+
+        deals          2,100+        1,400+               2,100+
+
+    A 52x UNDER-claim, served with no error marker in the payload and labelled
+    "live". This endpoint is the ONE source the nightly frontend heal, llms.txt,
+    the registry manifests and the CF zone worker read, so a DB blip during a
+    refresh does not just serve a bad number — it WRITES it onto surfaces.
+
+    ★ canon_is_live() DOES NOT CATCH THIS, and I checked rather than assumed: it
+    returned True for all five witnesses while facilities was "400+". It answers
+    "was this measured", not "is this sane" — 400 is a positive measurement. Only
+    the floor comparison catches it, which is exactly what
+    resolve_public_floors() does and why the label has to come from ITS verdict
+    rather than from a constant string.
+
+    The floors path is also the cached one, so this stops paying resolve_canon's
+    measured 7.6-15.5s on a cold memo for the public numbers.
+    """
     body = None
     try:
-        from ai_surface_canon import resolve_canon
-        c = resolve_canon() or {}
-        pub = c.get("public", {}) or {}
-        tools = c.get("tools_advertised") or c.get("tools_live")
+        from ai_surface_canon import (PINNED, resolve_canon,
+                                      resolve_public_floors_cached)
+
+        # ★ COPY. resolve_public_floors_cached() returns the cache object itself;
+        #   popping the private keys off it in place would corrupt the cache for
+        #   every later caller in this process.
+        floors = dict(resolve_public_floors_cached() or {})
+        src_map = dict(floors.get("_source") or {})
+        rejected = list(floors.get("_rejected") or [])
+        cold = bool(floors.get("_cold"))
+        pub = {k: v for k, v in floors.items() if not k.startswith("_")}
+
+        # tools is not a public FLOOR key, so it still comes from resolve_canon.
+        tools = None
+        try:
+            c = resolve_canon() or {}
+            tools = c.get("tools_advertised") or c.get("tools_live")
+        except Exception as e:
+            logger.warning("canon_phrases: tools resolve failed: %s", str(e)[:120])
+        if not tools:
+            tools = PINNED.get("tools_advertised")
+
         if tools and pub.get("deals"):
-            # ★2026-09-08 — DERIVED FROM `pub`, not hand-listed. This dict named
-            # five of the eleven keys ai_surface_canon.PINNED["public"] holds, so
-            # `assets`, `substations`, `fiber_routes`, `transmission_lines`,
-            # `dcpi_countries` and `dcpi_regions` were canon that NO endpoint
-            # published — unquotable and, more to the point, unfalsifiable from
-            # outside. That is the exact argument the news_sources note below
-            # makes for itself, and it applied to five more keys the whole time.
-            #
-            # It is also why surfaces hardcoded them: an agent (or our own heal
-            # job) reading this endpoint could not obtain a substation or fiber
-            # floor, so the only way to state one was to type it. Every
-            # hardcoded-infrastructure-count fix of 2026-09-07 traces back here.
-            #
-            # A hand-maintained subset of a canonical set rots by construction —
-            # the six discovery Allow: lines in robots.txt are the same lesson.
-            # Adding a key to PINNED["public"] now publishes it automatically,
-            # and test_canon_phrases_publishes_every_key fails if that stops
-            # being true.
+            live_n = sum(1 for v in src_map.values() if v == "live")
+            if cold:
+                # A cold process serves PINNED floors for a few seconds by
+                # design. Under-stated, never wrong-direction — but say so.
+                source = "resolve_public_floors (cold: PINNED floors)"
+            elif rejected:
+                source = ("resolve_public_floors (DEGRADED: %s)"
+                          % ", ".join(rejected))
+            elif live_n:
+                source = "resolve_public_floors (live)"
+            else:
+                source = "resolve_public_floors (PINNED floors)"
             body = {
                 "ok": True,
-                "source": "resolve_canon (live)",
+                "source": source,
                 "tools": tools,
-                **{k: v for k, v in pub.items()},
-                # ★2026-09-06 r-news-sources, kept for the reasoning: the claim
-                # "40+ sources" reached ~47 files and six live surfaces precisely
-                # BECAUSE no endpoint published it — it could not be checked in
-                # either direction, so nothing could contradict it. The spread
-                # above now grants that property to every key at once, which is
-                # what this note asked for and could not get one key at a time.
+                **pub,
+                # ★ Publish the provenance, not just the numbers. A consumer that
+                #   must not write a pinned value onto a surface can now tell,
+                #   per key, instead of trusting one flat label — the same reason
+                #   the MCP tools publish a constraint_coverage block naming what
+                #   an answer does NOT cover.
+                "value_source": src_map,
+                "degraded": rejected,
+                "cold": cold,
             }
     except Exception as e:
-        logger.warning("canon_phrases: resolve_canon failed: %s", str(e)[:160])
+        logger.warning("canon_phrases: build failed: %s", str(e)[:160])
 
     if body is None:
         # PINNED fallback — never serve nothing (the frontend heal is fail-closed
@@ -136,16 +180,16 @@ def _build_canon_body():
         try:
             from ai_surface_canon import PINNED
             p = (PINNED.get("public") or {})
-            # Same spread as the live branch on purpose: a fallback that
-            # publishes FEWER keys than the live path is a second shape for
-            # consumers to handle, and the frontend heal is fail-closed on a
-            # missing field — it would silently stop healing whatever the
-            # fallback dropped.
+            # Same spread as above on purpose: a fallback publishing FEWER keys
+            # than the live path is a second shape for consumers to handle.
             body = {
                 "ok": True,
                 "source": "PINNED (fallback)",
                 "tools": PINNED.get("tools_advertised"),
                 **{k: v for k, v in p.items()},
+                "value_source": {k: "pinned" for k in p},
+                "degraded": [],
+                "cold": False,
             }
         except Exception as e:
             logger.error("canon_phrases: PINNED fallback failed: %s", str(e)[:120])
