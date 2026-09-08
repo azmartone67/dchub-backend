@@ -146,17 +146,61 @@ def test_quota_wall_points_at_the_gate_that_actually_fires():
 # the real number was SEVEN. A basis string saying "upper bound" was not enough;
 # the headline is what gets quoted.
 
-def test_real_split_is_published_and_leads():
+def _emitted_keys():
+    """The keys full_answer_cap emits, in the order Flask will SERVE them.
+
+    ★ Flask's jsonify SORTS keys. An assertion about the order of a Python dict
+    literal says nothing about the document a client receives — the previous
+    cut of this test asserted exactly that and passed while the served payload
+    put hits_7d at index 4 and real_hits_7d at index 12. Sorting here reproduces
+    the artifact instead of the source.
+    """
+    b = _block()
+    lit = b[b.index('out["full_answer_cap"] = {'):]
+    return sorted(re.findall(r'^\s{20}"([a-z0-9_]+)":', lit, re.M))
+
+
+def test_real_split_is_published():
     b = _block()
     for key in ("real_hits_7d", "real_hits_30d", "real_sessions_7d",
                 "real_sessions_30d", "real_basis", "synthetic_share_pct_30d",
                 "hits_by_platform_30d"):
         assert '"%s"' % key in b, "full_answer_cap lost %r" % key
-    # The real figures must come BEFORE the raw ones in the payload, so a
-    # reader scanning top-down meets the addressable number first.
-    assert b.index('"real_hits_7d"') < b.index('"hits_7d": int(_cw[0]'), (
-        "the raw hits_7d is emitted before real_hits_7d — the misleading number "
-        "regains the headline position"
+
+
+def test_every_raw_number_carries_its_caveat_adjacently():
+    """Key ORDER is not durable; adjacency under the serializer's sort is.
+
+    Each raw field must have a `<field>_caveat` sibling, and because jsonify
+    sorts alphabetically, `hits_7d_caveat` lands immediately after `hits_7d`.
+    A reader meeting the misleading number meets its warning in the same
+    breath, wherever the field ends up in the document.
+    """
+    keys = _emitted_keys()
+    for raw in ("hits_7d", "hits_30d", "sessions_7d", "sessions_30d"):
+        cav = raw + "_caveat"
+        assert raw in keys, "raw field %r disappeared" % raw
+        assert cav in keys, (
+            "%r has no adjacent caveat. Ordering cannot be relied on — Flask "
+            "sorts keys — so the warning must ride the value." % raw
+        )
+        assert keys.index(cav) == keys.index(raw) + 1, (
+            "%r does not sort immediately after %r (got index %d vs %d); the "
+            "caveat has drifted away from the number it qualifies"
+            % (cav, raw, keys.index(cav), keys.index(raw))
+        )
+
+
+def test_caveat_text_is_derived_not_hardcoded():
+    """A hardcoded percentage goes stale silently the moment the mix changes."""
+    b = _block()
+    assert "_syn_pct" in b and '%.2f%%' in b, (
+        "the caveat no longer interpolates the measured share — a literal "
+        "figure in this string would be a frozen claim"
+    )
+    assert 'UNKNOWN, not zero' in b, (
+        "the null-split branch lost its wording; a missing split must read as "
+        "unknown, never as 'none of this is ours'"
     )
 
 

@@ -4940,6 +4940,20 @@ def mcp_funnel():
                 _cw_sib = [{"status": r[0], "calls": int(r[1] or 0)}
                            for r in (cur.fetchall() or [])]
                 _rh7, _rh30, _rs7, _rs30 = _cw_real
+                # Derived from the measurement, never hardcoded — if the mix
+                # changes, the sentence changes with it.
+                _syn_pct = (round(100.0 * (int(_cw[1] or 0) - int(_rh30)) / int(_cw[1]), 2)
+                            if (_rh30 is not None and int(_cw[1] or 0) > 0) else None)
+                _cw_caveat = (
+                    ("RAW — includes our own harness, which was %.2f%% of the 30d "
+                     "count when this response was built. This is NOT a count of "
+                     "callers walled; read real_hits_*/real_sessions_* for that, "
+                     "and hits_by_platform_30d for the split." % _syn_pct)
+                    if _syn_pct is not None else
+                    "RAW — includes synthetic/self-traffic. The split could not be "
+                    "computed for this response (real_* are null), so the share of "
+                    "this number that is ours is UNKNOWN, not zero."
+                )
                 out["full_answer_cap"] = {
                     "status_literal": "trial_cap_exceeded",
                     # ★★ READ THESE FIRST. The raw hits_*/sessions_* below count
@@ -4956,10 +4970,29 @@ def mcp_funnel():
                         "than copied so the two cannot drift. None means the import "
                         "failed and the split is UNKNOWN, never 0."
                     ),
-                    "synthetic_share_pct_30d": (
-                        round(100.0 * (int(_cw[1] or 0) - int(_rh30)) / int(_cw[1]), 2)
-                        if (_rh30 is not None and int(_cw[1] or 0) > 0) else None),
+                    "synthetic_share_pct_30d": _syn_pct,
                     "hits_by_platform_30d": _cw_plat,
+                    # ── r-caveat-rides (2026-09-08) ─────────────────────────
+                    # The previous PR ordered real_* before the raw pair in the
+                    # dict literal and claimed they "lead the payload". They do
+                    # not: Flask's jsonify SORTS keys, so the served document
+                    # reads basis, by_week, first_hit_at, hits_30d, hits_7d, …
+                    # with real_hits_7d at index 12. `hits_7d` is still the
+                    # first number a reader meets, and the source test that
+                    # asserted the ordering was vacuous for the artifact —
+                    # it checked a dict literal the serializer discards.
+                    #
+                    # ★ Key ORDER is not a durable property of a JSON object.
+                    # The caveat has to travel WITH the value. These *_caveat
+                    # keys sort immediately after the field they qualify
+                    # (hits_30d, hits_30d_caveat, hits_7d, hits_7d_caveat …),
+                    # so alphabetical serialization places each warning next to
+                    # its number instead of pages away. Working WITH the sort
+                    # rather than against it.
+                    "hits_7d_caveat": _cw_caveat,
+                    "hits_30d_caveat": _cw_caveat,
+                    "sessions_7d_caveat": _cw_caveat,
+                    "sessions_30d_caveat": _cw_caveat,
                     "hits_7d": int(_cw[0] or 0),
                     "hits_30d": int(_cw[1] or 0),
                     "sessions_7d": int(_cw[2] or 0),
