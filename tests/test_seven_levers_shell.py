@@ -432,7 +432,33 @@ def test_repo_worker_is_canon_clean_and_current():
     # ★ Read that header PER PATH: /mcp and /.well-known/mcp.json are served by
     # THIS worker, while /dcpi reports 4.96.0-beacon-sees-bingbot — a different
     # worker on the same zone. Measured 2026-09-08, same minute.
-    assert "WORKER_VERSION = '4.9.61-hf-space-discovery'" in src
+    #
+    # 4.9.61 -> 4.9.62-og-card-body-not-spent (2026-09-08): every OG card on
+    # dchub.cloud rendered BLANK for ~2d18h. STEP 2 handed the origin PNG stream
+    # to the client with `new Response(resp.body, resp)` and then handed the same
+    # spent `resp` to assetCachePut to clone — CF answered 500 / error 1101,
+    # worker tail `TypeError: Body has already been used`. assetCachePut's
+    # try/catch could not contain it: the failure is a REJECTED promise inside
+    # ctx.waitUntil, which try/catch cannot see, and an unhandled waitUntil
+    # rejection fails the whole request.
+    # ★ INVISIBLE TO EVERY MONITOR. `_pkc` is cleared by `hasApiKey`, so the
+    # broken branch ran for anonymous callers ONLY. Same URL, one header apart:
+    # anonymous -> 500, `+X-API-Key: <anything>` -> 200 275KB PNG, Railway origin
+    # -> 200. 15/15 uncached anonymous probes were 500 while the origin was
+    # healthy throughout.
+    # ✓ PASTED AND VERIFIED LIVE 2026-09-08 19:30Z + 19:55Z. This deploy also
+    # carried 4.9.61-hf-space-discovery, whose paste was still outstanding: live
+    # was on 4.9.60 while main said 4.9.61, so the repo script was byte-identical
+    # to live only up to #4237. `hosted_demo` now serves.
+    # After the paste: 15/15 anonymous uncached -> 200 image/png; same URL
+    # MISS 1399ms (railway) -> HIT 8ms (edge-asset-cache); 7/7 cards on
+    # /dc-hub-media/ load at 1200x630. Guard: PR #4252 adds
+    # tests/test_worker_og_body_survives_edge_cache.py, which EXECUTES the
+    # extracted STEP-2 sequence instead of grepping it.
+    # Verify with (want 4.9.62-og-card-body-not-spent):
+    #   curl -sI "https://dchub.cloud/grid/ERCOT?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.62-og-card-body-not-spent'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
