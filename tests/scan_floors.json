@@ -169,6 +169,9 @@
     "test_no_provider_key_in_url.py": {
       "pglob": 1950
     },
+    "test_null_signal_detector.py": {
+      "pglob": 2020
+    },
     "test_outbound_claims_are_substantiated.py": {
       "glob": 4
     },
