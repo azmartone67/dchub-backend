@@ -4831,6 +4831,39 @@ def mcp_funnel():
             # shows where the traffic went — a rename becomes visible instead of
             # reading as "the wall stopped firing".
             try:
+                # ★★ r-cap-real (2026-09-08, SAME DAY CORRECTION): the block below
+                # first shipped publishing the RAW counts as its headline. They are
+                # 99.25% our own smoke harness:
+                #
+                #   cap hits by platform, 30d
+                #     dchub-internal  35,550     <- ours
+                #     smithery           248
+                #     claude               9 · mcp 3 · chatgpt 1 · others 6
+                #   real (non-synthetic): 267 of 35,817 (0.75%) over 30d
+                #                           7 of  8,349 (0.08%) over 7d
+                #
+                # So "hits_7d 8,384" read as 8,400 walled callers when the real
+                # figure was SEVEN. The basis string did say it was an upper bound
+                # including self-traffic, and that was not enough: the headline is
+                # what gets quoted. This is lane A of published_truth_shell_54
+                # (withholding the delta and publishing the LEVEL) reproduced, and
+                # the same shape as dchub-mcp-server#202, where GitHub Actions were
+                # 80.4% of "real external" calls.
+                #
+                # ★ The synthetic predicate is IMPORTED from the module that owns
+                # it — mcp_upgrade_gate._SYNTHETIC_CLIENT_PREFIXES, the same tuple
+                # fire_upgrade_signal() short-circuits on. Duplicating the list
+                # here would let the two drift, and then real_* would silently stop
+                # matching the population the signal writer actually skips.
+                try:
+                    from mcp_upgrade_gate import _SYNTHETIC_CLIENT_PREFIXES as _SYN
+                    _syn_src = "mcp_upgrade_gate._SYNTHETIC_CLIENT_PREFIXES"
+                except Exception:
+                    _SYN, _syn_src = (), "UNAVAILABLE — real_* fields withheld"
+                # LIKE patterns, escaping the SQL wildcards a prefix may contain.
+                _syn_pats = [p.lower().replace("\\", "\\\\")
+                              .replace("%", "\\%").replace("_", "\\_") + "%"
+                             for p in _SYN]
                 cur.execute(
                     """
                     SELECT
@@ -4848,6 +4881,35 @@ def mcp_funnel():
                     """
                 )
                 _cw = cur.fetchone() or (0, 0, 0, 0, 0, None, None)
+                # The SAME windows, restricted to non-synthetic callers.
+                _cw_real = (None, None, None, None)
+                if _syn_pats:
+                    cur.execute(
+                        """
+                        SELECT
+                          count(*) FILTER (WHERE timestamp > now() - interval '7 days')  AS real_hits_7d,
+                          count(*) FILTER (WHERE timestamp > now() - interval '30 days') AS real_hits_30d,
+                          count(DISTINCT session_id) FILTER (WHERE timestamp > now() - interval '7 days')  AS real_sessions_7d,
+                          count(DISTINCT session_id) FILTER (WHERE timestamp > now() - interval '30 days') AS real_sessions_30d
+                        FROM mcp_call_log
+                        WHERE status = 'trial_cap_exceeded'
+                          AND timestamp > now() - interval '90 days'
+                          AND NOT (lower(coalesce(platform, '')) LIKE ANY (%s))
+                        """,
+                        (_syn_pats,),
+                    )
+                    _cw_real = cur.fetchone() or (None, None, None, None)
+                cur.execute(
+                    """
+                    SELECT coalesce(platform, '(null)') AS platform, count(*) AS hits
+                    FROM mcp_call_log
+                    WHERE status = 'trial_cap_exceeded'
+                      AND timestamp > now() - interval '30 days'
+                    GROUP BY 1 ORDER BY hits DESC LIMIT 10
+                    """
+                )
+                _cw_plat = [{"platform": r[0], "hits": int(r[1] or 0)}
+                            for r in (cur.fetchall() or [])]
                 cur.execute(
                     """
                     SELECT date_trunc('week', timestamp)::date AS wk,
@@ -4877,8 +4939,27 @@ def mcp_funnel():
                 )
                 _cw_sib = [{"status": r[0], "calls": int(r[1] or 0)}
                            for r in (cur.fetchall() or [])]
+                _rh7, _rh30, _rs7, _rs30 = _cw_real
                 out["full_answer_cap"] = {
                     "status_literal": "trial_cap_exceeded",
+                    # ★★ READ THESE FIRST. The raw hits_*/sessions_* below count
+                    # OUR OWN smoke harness — 99.25% of them over 30d. These are
+                    # the addressable figures.
+                    "real_hits_7d": (int(_rh7) if _rh7 is not None else None),
+                    "real_hits_30d": (int(_rh30) if _rh30 is not None else None),
+                    "real_sessions_7d": (int(_rs7) if _rs7 is not None else None),
+                    "real_sessions_30d": (int(_rs30) if _rs30 is not None else None),
+                    "real_basis": (
+                        "the same query and windows as hits_*, MINUS callers whose "
+                        "platform matches " + _syn_src + " — the identical tuple "
+                        "fire_upgrade_signal() short-circuits on, imported rather "
+                        "than copied so the two cannot drift. None means the import "
+                        "failed and the split is UNKNOWN, never 0."
+                    ),
+                    "synthetic_share_pct_30d": (
+                        round(100.0 * (int(_cw[1] or 0) - int(_rh30)) / int(_cw[1]), 2)
+                        if (_rh30 is not None and int(_cw[1] or 0) > 0) else None),
+                    "hits_by_platform_30d": _cw_plat,
                     "hits_7d": int(_cw[0] or 0),
                     "hits_30d": int(_cw[1] or 0),
                     "sessions_7d": int(_cw[2] or 0),
@@ -4897,12 +4978,14 @@ def mcp_funnel():
                     ),
                     "basis": (
                         "COUNT(*) / COUNT(DISTINCT session_id) FROM mcp_call_log WHERE "
-                        "status = 'trial_cap_exceeded', windows rolling from now(). NOT "
-                        "de-duplicated to real-external: this table is the raw gateway log, "
-                        "so crawlers/probes/self-traffic are INCLUDED here where the agent "
-                        "and call headlines exclude them. It is therefore an UPPER bound on "
-                        "addressable deprivation and must not be divided into "
-                        "real_external_* figures, which count a different population."
+                        "status = 'trial_cap_exceeded', windows rolling from now(). "
+                        "★hits_*/sessions_* are the RAW gateway log and include our own "
+                        "harness: measured 2026-09-08, dchub-internal was 35,550 of 35,817 "
+                        "hits over 30d (99.25%), leaving 267 real — and 7 of 8,349 over 7d. "
+                        "Read real_hits_*/real_sessions_* for addressable deprivation; the "
+                        "raw pair is kept only so the split is auditable and is NOT a "
+                        "demand figure. Neither pair may be divided into real_external_*, "
+                        "which counts a different population again."
                     ),
                     "not_measured_here": (
                         "NOT the monthly quota — that is the `quota_wall` block beside this "
