@@ -306,6 +306,31 @@
                     <span class="picker-how">One terminal command</span>
                     <span class="picker-badge">1 command</span>
                 </a>
+                <a class="picker-card" href="/install/claude-desktop">
+                    <span class="picker-name">Claude Desktop</span>
+                    <span class="picker-how">One JSON block in claude_desktop_config.json</span>
+                    <span class="picker-badge">1 paste</span>
+                </a>
+                <a class="picker-card" href="/install/windsurf">
+                    <span class="picker-name">Windsurf</span>
+                    <span class="picker-how">One JSON block in ~/.codeium/windsurf/mcp_config.json</span>
+                    <span class="picker-badge">1 paste</span>
+                </a>
+                <a class="picker-card" href="/install/cline">
+                    <span class="picker-name">Cline</span>
+                    <span class="picker-how">One JSON block in the Cline MCP settings</span>
+                    <span class="picker-badge">1 paste</span>
+                </a>
+                <a class="picker-card" href="/install/gemini-cli">
+                    <span class="picker-name">Gemini CLI</span>
+                    <span class="picker-how">One JSON block in ~/.gemini/settings.json</span>
+                    <span class="picker-badge">1 paste</span>
+                </a>
+                <a class="picker-card" href="/install/antigravity">
+                    <span class="picker-name">Antigravity</span>
+                    <span class="picker-how">One JSON block in the Antigravity MCP config</span>
+                    <span class="picker-badge">1 paste</span>
+                </a>
                 <a class="picker-card" href="#mcp-endpoint">
                     <span class="picker-name">Any other agent</span>
                     <span class="picker-how">Point any MCP-capable agent at https://dchub.cloud/mcp</span>
@@ -378,34 +403,20 @@
             <p class="path">In Claude.ai → <strong>Settings → Connectors → Add custom connector</strong>. Name it <strong>DC Hub</strong>, paste the URL below, click <strong>Add</strong>, then <strong>Connect</strong> and <strong>sign in</strong> when prompted.</p>
             <pre><code>https://dchub.cloud/mcp</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
             <p class="tier-desc">Signing in makes the connection <strong>durable</strong> via standard <strong>OAuth&nbsp;2.1</strong> — you're recognized every session, on any device, with no API key to copy or re-paste, and you never restart as anonymous. The same one-click sign-in works for <strong>ChatGPT</strong> and other hosted web connectors that can't hold a key header. Signed-in sessions get the full toolset. (Config-file / CLI clients below paste a durable key instead — see 🔑 above.)</p>
+            <p class="tier-desc"><a href="/install/claude" style="color:#00d4ff;text-decoration:none;font-weight:600">/install/claude &rarr;</a> walks the same steps and mints a keyed connector URL.</p>
         </div>
 
         <div class="platform-card" id="claude-desktop" style="scroll-margin-top: 90px;">
             <h3>Claude Desktop</h3>
             <p class="path">macOS: ~/Library/Application Support/Claude/claude_desktop_config.json<br>
             Windows: %APPDATA%\Claude\claude_desktop_config.json</p>
-            <pre><code>{
-  "mcpServers": {
-    "dchub": {
-      "url": "https://dchub.cloud/mcp",
-      "transport": "streamable-http"
-    }
-  }
-}</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+            <p class="tier-desc"><a href="/install/claude-desktop" style="color:#00d4ff;text-decoration:none;font-weight:600">Open /install/claude-desktop &rarr;</a> for the config block, and to mint a keyed URL so the connection is durable.</p>
         </div>
 
         <div class="platform-card" id="cursor" style="scroll-margin-top: 90px;">
             <h3>Cursor</h3>
             <p class="path"><a href="cursor://anysphere.cursor-deeplink/mcp/install?name=dchub&amp;config=eyJ1cmwiOiJodHRwczovL2RjaHViLmNsb3VkL21jcCJ9" style="display:inline-block;background:#6366f1;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:600">➕ Add DC Hub to Cursor (one click)</a></p>
-            <p class="path">Or paste into .cursor/mcp.json (project or global):</p>
-            <pre><code>{
-  "mcpServers": {
-    "dchub": {
-      "url": "https://dchub.cloud/mcp",
-      "transport": "streamable-http"
-    }
-  }
-}</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+            <p class="path">Prefer to paste it yourself, or want a keyed URL that survives a restart? <a href="/install/cursor" style="color:#00d4ff;text-decoration:none;font-weight:600">/install/cursor &rarr;</a></p>
         </div>
 
         <div class="platform-card" id="vscode" style="scroll-margin-top: 90px;">
@@ -413,11 +424,13 @@
             <p class="path"><a href="vscode:mcp/install?%7B%22name%22%3A%22dchub%22%2C%22url%22%3A%22https%3A//dchub.cloud/mcp%22%7D" style="display:inline-block;background:#6366f1;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:600">➕ Add DC Hub to VS Code (one click)</a></p>
             <p class="path">Requires VS Code 1.101+ with MCP enabled. Or run:</p>
             <pre><code>code --add-mcp '{"name":"dchub","url":"https://dchub.cloud/mcp"}'</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+            <p class="tier-desc"><a href="/install/vscode" style="color:#00d4ff;text-decoration:none;font-weight:600">/install/vscode &rarr;</a> for the keyed form.</p>
         </div>
 
         <div class="platform-card" id="claude-code" style="scroll-margin-top: 90px;">
             <h3>Claude Code</h3>
-            <pre><code>claude mcp add dchub --transport streamable-http https://dchub.cloud/mcp</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+            <pre><code>claude mcp add dchub --transport http https://dchub.cloud/mcp</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+            <p class="tier-desc"><a href="/install/claude-code" style="color:#00d4ff;text-decoration:none;font-weight:600">/install/claude-code &rarr;</a> adds the <code>--header X-API-Key</code> form, which keeps the tier across restarts.</p>
         </div>
 
         <div class="platform-card">
