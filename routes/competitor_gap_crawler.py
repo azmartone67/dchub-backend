@@ -61,6 +61,11 @@ import logging
 import datetime
 from urllib.parse import urlsplit
 from utc_clock import utc_now
+# r-placeholder-city-ingest (2026-09-07): ONE definition of "this city value is
+# not a place", owned by util/thin_content beside the list itself. That module
+# imports nothing but `os`, so this file stays stdlib-only —
+# tests/test_growthfix_wave.py imports it directly, without flask.
+from util.thin_content import is_placeholder_city as _is_placeholder_city
 
 logger = logging.getLogger(__name__)
 
@@ -436,6 +441,39 @@ def parse_competitor_sitemap(slug: str, url: str,
                     "city": None, "state": None, "country": None,
                     "source_url": loc, "_editorial": True}
         if cand:
+            # ★★★ r-placeholder-city-ingest (2026-09-07) — ABSENT DATA IS NULL,
+            # AT THE WRITER.
+            #
+            # Cloudscene buckets every facility it has no city for under a
+            # literal `/regional/` path segment, per country:
+            #     /data-center/united-kingdom/regional/custodian-data-centres-…
+            #     /data-center/mexico/regional/hostdime-com-guadalajara
+            #     /data-center/india/regional/sify-sify-rabale-mumbai-dc-1-2
+            # The slug parser deslugged that to the CITY "Regional" and wrote it
+            # as a place. Measured 2026-09-07: 839 live rows, 35 countries, and
+            # 839 of 839 have `regional` as the URL segment — it is the
+            # upstream's marker for "no city", not a city.
+            #
+            # tests/test_no_fabricated_facility_fields.py already states the
+            # rule this breaks: "if the upstream did not say it, we publish NULL
+            # and report it as not measured". It was enforced on country/status/
+            # power_mw and never on city. Downstream, /api/v1/facilities and the
+            # MCP record still serve `"city": "Regional"` — PR #4149 stopped the
+            # PAGE rendering it, one layer above this one.
+            #
+            # ★ Applied HERE, at the point every parser converges, not inside
+            #   _parse_cloudscene_dc: a per-parser copy is how the junk-slug
+            #   predicate drifted into four disagreeing spellings (#4133).
+            # ★ The predicate is util.thin_content.is_placeholder_city — the
+            #   SAME one the renderer, the headline and the sitemap use. It
+            #   tests EQUALITY, so Cloudscene's real state labels
+            #   ('connecticut-regional' → "Connecticut Regional", 1,149 rows
+            #   across 74 such labels) are untouched.
+            # ★ Nulling the city cannot mint a duplicate: _is_existing falls
+            #   from its `name AND city` branch to the BROADER `name`-only
+            #   branch, and _is_geocodable still passes on country.
+            if _is_placeholder_city(cand.get("city")):
+                cand["city"] = None
             rows.append(cand)
     out["parsed"] = rows
     return out
