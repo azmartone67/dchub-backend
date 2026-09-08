@@ -4342,6 +4342,14 @@ try:
     except Exception as _mre:
         import logging
         logging.getLogger(__name__).warning('brain_merge_reconciler wiring failed: %s', _mre)
+    # Null-signal detector (2026-09-08): finds signals that CANNOT fire.
+    # Read-only; self-tests before its findings are allowed to mean anything.
+    try:
+        from routes.brain_null_signal_detector import brain_null_signal_bp
+        app.register_blueprint(brain_null_signal_bp)
+    except Exception as _nse:
+        import logging
+        logging.getLogger(__name__).warning('brain_null_signal wiring failed: %s', _nse)
     # Phase RRR-newsletter-hotfix3 (2026-05-18): registering via a
     # routes/*.py module silently failed for reasons we couldn't
     # diagnose live. Switching to inline-route definitions on the
