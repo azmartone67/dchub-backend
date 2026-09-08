@@ -521,7 +521,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.61-hf-space-discovery';
+const WORKER_VERSION = '4.9.62-og-card-body-not-spent';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -2054,16 +2054,25 @@ async function assetCacheMatch(url) {
   } catch (e) { return null; }
 }
 
+// ★★★ `resp` MUST be a body-unused clone that this function OWNS. The caller
+// clones before handing the original stream to the client response; this function
+// spends the clone. Passing the client's own `resp` here is the 2026-09-08 outage:
+// every anonymous GET of an OG card answered 500 (CF 1101, "Body has already been
+// used"), so every card on the site rendered blank while API-key callers — and so
+// every monitor — still saw 200.
 function assetCachePut(ctx, url, resp, ttl) {
   try {
-    if (!ctx || !resp || resp.status !== 200) return;
-    const body = resp.clone();
-    const store = new Response(body.body, body);
+    if (!ctx || !resp || resp.status !== 200 || !resp.body || resp.bodyUsed) return;
+    const store = new Response(resp.body, resp);
     // The stored copy carries its OWN lifetime; the client-facing header is set
     // separately by cacheControlFor().
     store.headers.set('Cache-Control', `public, max-age=${ttl}`);
     store.headers.delete('Set-Cookie');
-    ctx.waitUntil(caches.default.put(_assetCacheKey(url), store));
+    // ★ `.catch` is load-bearing, not defensiveness: the try/catch cannot see a
+    // REJECTED promise handed to waitUntil, and an unhandled waitUntil rejection
+    // fails the whole request. That is why a function documented "never fail the
+    // request" took the route down for three days.
+    ctx.waitUntil(Promise.resolve(caches.default.put(_assetCacheKey(url), store)).catch(() => {}));
   } catch (e) { /* caching is best-effort; never fail the request for it */ }
 }
 
@@ -4086,6 +4095,12 @@ export default {
     if (resp && resp.status < 500) {
       let cacheClone = null;
       if (isGet && resp.status === 200 && env.DCHUB_CACHE && kvIsCacheable(pathname)) cacheClone = resp.clone();
+      // ★★★ CLONE BEFORE THE BODY IS SPENT. `new Response(resp.body, resp)` below
+      // hands the origin stream to the client, after which `resp` has no body left
+      // to give. Cloning here (like cacheClone above) is what makes the asset-cache
+      // copy independent. Doing it after cost every anonymous OG card a 1101 — see
+      // assetCachePut.
+      const assetClone = (_pkc && resp.status === 200) ? resp.clone() : null;
       const result = addCORS(new Response(resp.body, resp), request);
       result.headers.set('x-dc-hub-backend', 'railway');
       result.headers.set('X-DC-Worker-Version', WORKER_VERSION);
@@ -4096,7 +4111,7 @@ export default {
         if (_cc) result.headers.set('Cache-Control', _cc);
       }
       if (cacheClone) ctx.waitUntil((async () => { const body = await cacheClone.text(); await kvCacheStore(env.DCHUB_CACHE, kvCacheKey(url.toString()), body, cacheClone.headers.get('content-type') || 'application/json', tier.kvStaleTtl); })());
-      if (_pkc) assetCachePut(ctx, url, resp, tier.edgeTtl);
+      if (assetClone) assetCachePut(ctx, url, assetClone, tier.edgeTtl);
       return result;
     }
 

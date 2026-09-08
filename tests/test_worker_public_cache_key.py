@@ -111,10 +111,23 @@ def test_the_proxy_is_told_not_to_double_cache_under_the_origin_key():
 
 
 def test_the_asset_cache_is_actually_consulted_and_filled():
+    """★ This assertion used to pin the literal call `assetCachePut(ctx, url,
+    resp, tier.edgeTtl)`. That spelling WAS the 2026-09-08 outage — passing the
+    same `resp` whose body had already been handed to the client — so this guard
+    was green for the whole outage and then failed on the fix. It now asserts
+    that the write happens at all; that it hands over a body the client has not
+    already spent is behaviour, and is fenced by EXECUTION in
+    tests/test_worker_og_body_survives_edge_cache.py."""
     src = open(WORKER, encoding="utf-8").read()
     assert "await assetCacheMatch(url)" in src, "nothing reads the public-key cache"
-    assert "assetCachePut(ctx, url, resp, tier.edgeTtl)" in src, \
-        "nothing writes the public-key cache — it would miss forever"
+    call = next((l for l in src.splitlines()
+                 if "assetCachePut(ctx, url" in l
+                 and not l.lstrip().startswith("function")), None)
+    assert call, "nothing writes the public-key cache — it would miss forever"
+    assert "resp," not in call.split("url,")[1], (
+        f"assetCachePut is handed the client's own response again: {call.strip()} — "
+        "that response's body is spent by `new Response(resp.body, resp)`, which is "
+        "the 2026-09-08 blank-card outage. Pass a clone taken BEFORE that line.")
     assert "x-dc-hub-backend', 'edge-asset-cache'" in src, \
         "a hit from this cache is indistinguishable from an origin fetch"
 
