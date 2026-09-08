@@ -389,13 +389,13 @@ def test_l6_does_not_flag_the_fail_closed_control_or_ordinary_post():
         "        return jsonify(error='not configured'), 500\n"
         "    sig = request.headers.get('Stripe-Signature')\n"
         "    event = stripe.Webhook.construct_event(request.data, sig, secret)\n"
-        "    cur.execute('INSERT INTO stripe_events (id) VALUES (1)')\n"
+        "    cur.execute('INSERT INTO stripe_events (id) VALUES (1) ON CONFLICT DO NOTHING')\n"
         "    return jsonify(ok=True)\n", "verified.py")
     ordinary = _rec_from_src(
         "@bp.route('/api/save-note', methods=['POST'])\n"
         "def save_note():\n"
         "    d = request.get_json() or {}\n"
-        "    cur.execute('INSERT INTO notes (body) VALUES (%s)', (d.get('body'),))\n"
+        "    cur.execute('INSERT INTO notes (body) VALUES (%s) ON CONFLICT DO NOTHING', (d.get('body'),))\n"
         "    return jsonify(ok=True)\n", "ordinary.py")
     off = _detect_l6_webhook_sig(
         [_rec_from_file("paywall_middleware.py"), verified, ordinary])
