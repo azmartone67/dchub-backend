@@ -344,6 +344,12 @@ def init_infrastructure_tables():
             WHERE source_id IS NOT NULL
         """)
         logger.info("[infra] gas_pipelines source_id UNIQUE index ensured")
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS gas_pipelines_name_operator_uniq
+              ON gas_pipelines (name, operator)
+            WHERE name IS NOT NULL AND operator IS NOT NULL
+        """)
+        logger.info("[infra] gas_pipelines (name, operator) UNIQUE index ensured")
     except Exception as _idx_err:
         logger.warning(
             f"[infra] gas_pipelines UNIQUE index NOT created "
