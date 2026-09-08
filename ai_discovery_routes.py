@@ -722,7 +722,10 @@ def register_discovery_routes(app):
                     "facilities_tracked":  _canon_int("{canon_facilities}", 18000),
                     "countries_covered":   _canon_int("{canon_countries}", 170),
                     "dcpi_markets":        _canon_int("{canon_markets}", 300),
-                    "substations_tracked": 126427,
+                    # ★2026-09-07 — the one bare literal in a dict where every
+                    #  sibling derives, and it was the 126,427 DB-down seed again.
+                    #  {canon_substations} did not exist until today; now it does.
+                    "substations_tracked": _canon_int("{canon_substations}", 127000),
                     "isos_covered":        _canon_int("{canon_isos}", 7),
                     "mna_tracked_usd":     canon_text("{canon_deals} deals"),
                     "pipeline_gw":         369,
