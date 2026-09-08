@@ -6040,6 +6040,35 @@ def check_render_flapping() -> list[dict]:
 # ──────────────────────────────────────────────────────────────────
 
 
+def _source_missing(detector: str, tables: str, what: str) -> dict:
+    """A finding that says a detector could not run.
+
+    ★ WHY (2026-09-08). A detector whose source table is absent used to
+    `return findings` — an empty list, which the radar cannot tell apart from
+    "scanned fine, found nothing". Two registered detectors had been doing
+    that on every scan since they shipped: check_404_spike (neither
+    request_log_404 nor request_log exists) and check_signup_drop_off_step
+    (signup_events does not exist). Both were surfaced by the null-signal
+    detector, whose whole premise is that this shape is invisible.
+
+    An unrunnable detector is a real finding about the radar, not a quiet
+    pass. Emitting it costs one row per scan and dedupes on `issue`, and the
+    two honest resolutions are named in the detail so it does not sit open
+    forever with nobody knowing what would close it: build the source, or
+    retire the detector. Leaving it silent is the one option this removes.
+    """
+    return {
+        "issue": f"detector_source_missing:{detector}",
+        "count": 1,
+        "detail": (
+            f"{detector} cannot run: {tables} absent from public, so "
+            f"{what} has returned an empty result on every scan since it "
+            f"shipped — indistinguishable from 'nothing found'. Resolve by "
+            f"creating the source, or by retiring the detector from the "
+            f"registry. Do not restore the silent return."),
+    }
+
+
 def check_404_spike() -> list[dict]:
     """Burst-detect 404s. Different from check_repeated_404_patterns
     (which catches sustained patterns over hours); this catches
@@ -6067,6 +6096,16 @@ def check_404_spike() -> list[dict]:
             else:
                 cur.execute("SELECT to_regclass('public.request_log')")
                 if not (cur.fetchone() or [None])[0]:
+                    # ★ 2026-09-08: say so instead of returning []. Neither
+                    # source exists, so this detector has produced an empty
+                    # list on EVERY scan since it shipped — and an empty list
+                    # is indistinguishable from "no 404 bursts". That is the
+                    # failure mode the whole 09-07 sweep was about: absence
+                    # reported as health. Found by the null-signal detector.
+                    findings.append(_source_missing(
+                        "check_404_spike",
+                        "request_log_404, request_log",
+                        "404 burst detection"))
                     return findings
                 src_tbl  = "request_log"
                 path_col = "path"
@@ -6211,6 +6250,13 @@ def check_signup_drop_off_step() -> list[dict]:
         with c.cursor() as cur:
             cur.execute("SELECT to_regclass('public.signup_events')")
             if not (cur.fetchone() or [None])[0]:
+                # ★ 2026-09-08: see _source_missing. The docstring above says
+                # "skip silently"; silence is exactly what hid this. The
+                # signup funnel has been unmonitored since this shipped.
+                findings.append(_source_missing(
+                    "check_signup_drop_off_step",
+                    "signup_events",
+                    "signup funnel step drop-off"))
                 return findings
             cur.execute("""
                 SELECT step,
