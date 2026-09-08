@@ -1263,9 +1263,9 @@ def list_markets():
         params = []
         for city in cities:
             if len(city) == 2 and city.isupper():
-                conditions.append('state = ?')
+                conditions.append('state = %s')
             else:
-                conditions.append('city LIKE ?')
+                conditions.append('city LIKE %s')
             params.append(f'%{city}%' if len(city) > 2 else city)
         
         where_clause = ' OR '.join(conditions)
