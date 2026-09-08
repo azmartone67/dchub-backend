@@ -470,7 +470,7 @@ def test_repo_worker_is_canon_clean_and_current():
     # three ways: stale -> fails, correct -> passes, extraction broken -> fails).
     # Comment-only change to worker.js; the bump exists because
     # scripts/check_worker_version_bump.sh requires one for ANY edit.
-    # ✓ PASTED AND VERIFIED LIVE 2026-09-08 — see the note in PR #4253.
+    # ✓ PASTED AND VERIFIED LIVE 2026-09-08 — see the note in PR #4258.
     # Verify with (want 4.9.63-header-version-single-source):
     #   curl -sI "https://dchub.cloud/grid/ERCOT?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
