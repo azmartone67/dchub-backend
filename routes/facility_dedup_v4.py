@@ -108,7 +108,10 @@ SAFETY RULES (each one is a measured lesson, not a precaution)
   work is the IDENTICAL-NAME gate below; the veto has never once fired on this
   class. Rows without coordinates do not block (a missing coordinate is not
   evidence of distance); two KNOWN coordinates more than _COORD_EPS apart stop
-  the group.
+  the group. ★ "Without" INCLUDES the 0.0/0.0 placeholder, which 920
+  publishable rows carry — see has_coords. Reading Null Island as a location
+  made 6 groups report `coords_far_apart` when the real blocker was something
+  else; it changed no pointer, only the reason given for refusing one.
 ★ A row must have a real name. `_render_profile` defaults a NULL name to "Data
   Center", so nameless rows would all group into one enormous false cluster.
 ★ Junk slugs ('unknown-%', numeric-OSM) are excluded at source — they are
@@ -359,6 +362,42 @@ def _refuse(reason):
             "twin_done": [], "name_mismatch": [], "skip": reason}
 
 
+def has_coords(r) -> bool:
+    """Does this row actually carry a location?
+
+    ★ (0.0, 0.0) is a PLACEHOLDER, not a coordinate. The veto below rests on
+      "a missing coordinate is not evidence of distance", and Null Island —
+      open ocean in the Gulf of Guinea — defeats that premise: a row that
+      never had a location vetoes a group it should have abstained from, and
+      the group is then reported as `coords_far_apart`, which is not true.
+
+    Measured live 2026-09-07 across the publishable universe (39,724 rows in
+    both tables, junk slugs excluded):
+
+        real coordinates      21,701
+        both NULL             17,562
+        0.0/0.0 placeholder      920      <- read as a location today
+        exactly one NULL           2
+
+    Nothing else sits near zero: no row has |lat| and |lon| both under 1e-6
+    without being exactly 0.0, and no row pairs a 0.0 with a real ordinate. So
+    the test is exact equality on BOTH ordinates — a tolerance would be
+    inventing a shape the data does not have, and a per-ordinate test would
+    throw away real facilities on the equator or the Greenwich meridian.
+
+    A row with exactly one NULL ordinate keeps today's behaviour: the ordinate
+    it does have still participates in the veto.
+    """
+    la, lo = r.get("latitude"), r.get("longitude")
+    if la is None and lo is None:
+        return False
+    try:
+        return not (la is not None and lo is not None
+                    and float(la) == 0.0 and float(lo) == 0.0)
+    except (TypeError, ValueError):
+        return False
+
+
 def plan_group(rows):
     """Decide ONE rendered-identity group. PURE — no I/O, unit-tested.
 
@@ -376,9 +415,11 @@ def plan_group(rows):
     if len(slugs) > MAX_GROUP:
         return _refuse("group_too_large")
 
-    # ★ Coordinates VETO. Known coordinates only; a missing one does not block.
-    lats = [r["latitude"] for r in rows if r.get("latitude") is not None]
-    lons = [r["longitude"] for r in rows if r.get("longitude") is not None]
+    # ★ Coordinates VETO. Known coordinates only; a missing one does not block
+    #   — and the 0.0/0.0 placeholder is missing, not known (see has_coords).
+    located = [r for r in rows if has_coords(r)]
+    lats = [r["latitude"] for r in located if r.get("latitude") is not None]
+    lons = [r["longitude"] for r in located if r.get("longitude") is not None]
     if lats and (max(lats) - min(lats)) > _COORD_EPS:
         return _refuse("coords_far_apart")
     if lons and (max(lons) - min(lons)) > _COORD_EPS:
