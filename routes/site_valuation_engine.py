@@ -23,7 +23,19 @@ Inputs:
     "acres": 50,                              # required
     "target_mw": 100,                         # required
     "deadline_months": 24,                    # optional (default 24)
-    "gas_distance_miles": null                # optional (auto-detected if null)
+    "gas_distance_miles": null,               # optional (auto-detected if null)
+
+    # v2.3 — phased energization. State WHEN the MW arrive; target_mw still
+    # states HOW MANY. Omit both and the valuation is unchanged from v2.2.
+    "power_ramp": {                           # optional · ramp shorthand
+        "first_mw": 300, "first_date": "2028-Q2",
+        "ramp_mw_per_month": 18.75,           # ...or "final_date": "2034-Q2"
+    },
+    "power_schedule": [                       # optional · explicit tranches
+        {"mw": 300, "date": "2028-Q2"},       # (wins over power_ramp)
+        {"mw": 450, "month": 43}
+    ],
+    "powered_land_escalation_pct": 0          # optional · real $/MW growth
   }
 
 Outputs (PRO tier, full payload):
@@ -290,6 +302,305 @@ def _coerce_ttp_months(raw) -> Optional[int]:
         return max(0, int(raw))
     except (TypeError, ValueError):
         return None
+
+
+# ── Phased power delivery (v2.3) ──────────────────────────────────
+#
+# r-ramp (2026-09-08): the engine valued MW as if every MW arrived at once,
+# on the valuation date. `grid_ttp_months` moved only the CEILING switch
+# (<=18mo unlocks the powered-land cap) and never the value, so a 1,800 MW
+# campus priced IDENTICALLY whether it energized in 6 months or 99 — verified
+# live against /api/v1/site/value: $939.2M at ttp=6, 18, 24, 60 and 99.
+# Real utility commitments land in tranches over years (PPL's Plains campus:
+# 300 MW Q2 2028, then +18.75 MW/month). A MW energized in 2034 is not worth
+# a MW energized today, and no amount of readiness toggling expressed that.
+#
+# The schedule sets the SHAPE (when MW show up); `target_mw` still sets the
+# SCALE (how many). That split keeps a schedule that doesn't sum to target_mw
+# from silently moving the headline MW count.
+
+_DELIVERY_MAX_TRANCHES = 600          # 50 years of monthly tranches
+_DELIVERY_MAX_MONTHS   = 600
+
+
+def _parse_delivery_month(raw, as_of: _dt.date) -> Optional[float]:
+    """Months from `as_of` to a delivery date.
+
+    Accepts an integer/float month offset (12), or a calendar string:
+    "2028-Q2" / "2028Q2", "2028-04", "2028-04-15". Quarters and bare months
+    resolve to the START of the period — the conservative reading of "power
+    from Q2 2028" is the first day it could flow, which is the reading that
+    OVERSTATES value, so it is the one a seller cannot accuse us of shading.
+    Returns None when unparseable.
+    """
+    if raw is None or raw == "" or isinstance(raw, bool):
+        return None
+    # Numeric month offset
+    if isinstance(raw, (int, float)):
+        return max(0.0, min(float(_DELIVERY_MAX_MONTHS), float(raw)))
+    s = str(raw).strip().upper().replace("/", "-")
+    if not s:
+        return None
+    # Plain number as a string ("24")
+    try:
+        return max(0.0, min(float(_DELIVERY_MAX_MONTHS), float(s)))
+    except ValueError:
+        pass
+    y = mth = None
+    # "2028-Q2" / "2028Q2"
+    if "Q" in s:
+        try:
+            head, q = s.split("Q", 1)
+            y = int(head.strip("-").strip())
+            mth = {1: 1, 2: 4, 3: 7, 4: 10}[int(q.strip()[0])]
+        except (ValueError, KeyError, IndexError):
+            return None
+    else:
+        parts = [p for p in s.split("-") if p]
+        try:
+            y = int(parts[0])
+            mth = int(parts[1]) if len(parts) > 1 else 1
+        except (ValueError, IndexError):
+            return None
+        if not (1 <= mth <= 12):
+            return None
+    if not (1900 <= y <= 2200):
+        return None
+    months = (y - as_of.year) * 12 + (mth - as_of.month)
+    # Day-of-month refinement: partial month already elapsed.
+    months -= (as_of.day - 1) / 30.44
+    return max(0.0, min(float(_DELIVERY_MAX_MONTHS), months))
+
+
+def _build_power_schedule(payload: dict, target_mw: float,
+                          as_of: _dt.date) -> Tuple[list, list]:
+    """Normalize the caller's delivery statement into [(mw, month), ...].
+
+    Two accepted forms (explicit tranches win if both are present):
+      power_schedule: [{"mw": 300, "date": "2028-Q2"}, {"mw": 450, "month": 43}]
+      power_ramp:     {"first_mw": 300, "first_date": "2028-Q2",
+                       "ramp_mw_per_month": 18.75, "final_date": "2034-Q2"}
+
+    In the ramp form, `ramp_mw_per_month` and `final_date` are alternative ways
+    to state the same slope. If BOTH are given they are cross-checked and the
+    disagreement is reported rather than silently resolved — the Plains deal
+    brief states both (+18.75 MW/mo AND "through Q2 2034") and they do not
+    agree, which is exactly the error this check exists to surface.
+
+    Returns (tranches, warnings).
+    """
+    warnings: list = []
+
+    raw_sched = payload.get("power_schedule")
+    if isinstance(raw_sched, list) and raw_sched:
+        tranches = []
+        for i, t in enumerate(raw_sched[:_DELIVERY_MAX_TRANCHES]):
+            if not isinstance(t, dict):
+                warnings.append(f"tranche[{i}] ignored: not an object")
+                continue
+            try:
+                mw = float(t.get("mw") or 0)
+            except (TypeError, ValueError):
+                mw = 0.0
+            when = _parse_delivery_month(
+                t.get("month") if t.get("month") is not None else t.get("date"),
+                as_of)
+            if mw <= 0 or when is None:
+                warnings.append(
+                    f"tranche[{i}] ignored: needs mw > 0 and a parseable "
+                    f"month/date (got mw={t.get('mw')!r}, "
+                    f"when={(t.get('month') or t.get('date'))!r})")
+                continue
+            tranches.append((mw, when))
+        if tranches:
+            tranches.sort(key=lambda x: x[1])
+            return tranches, warnings
+        warnings.append("power_schedule had no usable tranches; ignored")
+        return [], warnings
+
+    ramp = payload.get("power_ramp")
+    if not isinstance(ramp, dict) or not ramp:
+        return [], warnings
+
+    first_month = _parse_delivery_month(
+        ramp.get("first_month") if ramp.get("first_month") is not None
+        else ramp.get("first_date"), as_of)
+    if first_month is None:
+        warnings.append("power_ramp ignored: first_date/first_month unparseable")
+        return [], warnings
+    try:
+        first_mw = float(ramp.get("first_mw") or 0)
+    except (TypeError, ValueError):
+        first_mw = 0.0
+    first_mw = max(0.0, min(float(target_mw), first_mw))
+
+    remaining = max(0.0, float(target_mw) - first_mw)
+    tranches = []
+    if first_mw > 0:
+        tranches.append((first_mw, first_month))
+    if remaining <= 0:
+        return tranches, warnings
+
+    try:
+        rate = float(ramp.get("ramp_mw_per_month") or 0)
+    except (TypeError, ValueError):
+        rate = 0.0
+    final_month = _parse_delivery_month(
+        ramp.get("final_month") if ramp.get("final_month") is not None
+        else ramp.get("final_date"), as_of)
+
+    span_from_final = None
+    if final_month is not None and final_month > first_month:
+        span_from_final = final_month - first_month
+    elif final_month is not None:
+        warnings.append(
+            f"power_ramp final date is not after first delivery "
+            f"({final_month:.0f} <= {first_month:.0f} months); ignored")
+        final_month = None
+
+    if rate > 0 and span_from_final:
+        implied_end = first_month + (remaining / rate)
+        # >1 month apart is a real disagreement, not rounding.
+        if abs(implied_end - final_month) > 1.0:
+            need = remaining / span_from_final
+            warnings.append(
+                f"ramp rate and final date disagree: {rate:g} MW/mo from "
+                f"month {first_month:.0f} delivers the remaining "
+                f"{remaining:,.0f} MW by month {implied_end:.0f}, but the "
+                f"stated final delivery is month {final_month:.0f} "
+                f"({need:.2f} MW/mo would be required). Used the stated "
+                f"final date; set only one of the two to silence this.")
+        rate = remaining / span_from_final
+    elif span_from_final:
+        rate = remaining / span_from_final
+    elif rate <= 0:
+        # r-ramp-partial: returning JUST the first tranche here would schedule
+        # the whole campus at the first delivery date — the most optimistic
+        # possible reading of an incomplete statement, and it contradicted the
+        # word "ignored" in this very warning. An unschedulable balance means
+        # no usable schedule, so the caller keeps the flat v2.2 valuation.
+        warnings.append(
+            f"power_ramp ignored: {remaining:,.0f} of {float(target_mw):,.0f} MW "
+            f"have no delivery date — needs ramp_mw_per_month > 0 or a "
+            f"final_date. Valued as unphased; the first tranche alone was NOT "
+            f"used, because that would price all {float(target_mw):,.0f} MW as "
+            f"arriving with the first {first_mw:,.0f} MW.")
+        return [], warnings
+
+    n = int(math.ceil(remaining / rate))
+    if n > _DELIVERY_MAX_TRANCHES:
+        # Collapse to quarterly steps rather than refusing a long ramp.
+        step_months = max(1.0, (remaining / rate) / _DELIVERY_MAX_TRANCHES)
+        n = int(math.ceil((remaining / rate) / step_months))
+    else:
+        step_months = 1.0
+    per_step = remaining / n if n else 0.0
+    for i in range(1, n + 1):
+        tranches.append((per_step, first_month + i * step_months))
+    tranches.sort(key=lambda x: x[1])
+    return tranches, warnings
+
+
+def _delivery_pv(tranches: list, target_mw: float, deadline_months: float,
+                 discount_rate: float,
+                 escalation_rate: float = 0.0) -> Optional[dict]:
+    """Present-value weighting of a phased energization schedule.
+
+    A MW that energizes in year 8 is worth what powered land is worth then,
+    discounted back — so the site's MW contribution is scaled by
+
+        pv_factor = Σ(mw_i · (1+net)^(-t_i/12)) / Σ(mw_i)
+
+    where `net` is the discount rate net of any real escalation in powered-land
+    value ((1+r)/(1+g)-1). Escalation is clamped BELOW the discount rate: if
+    powered land were assumed to appreciate faster than the buyer discounts,
+    the model would pay MORE for later power, which is not a claim this engine
+    will make. pv_factor is likewise capped at 1.0 — delivery delay can only
+    reduce present value here, never add to it.
+
+    Returns None when there is no usable schedule (caller keeps v2.2 behavior).
+    """
+    if not tranches:
+        return None
+    sched_mw = sum(mw for mw, _ in tranches)
+    if sched_mw <= 0:
+        return None
+
+    r = float(discount_rate or 0.0)
+    if not (0.0 < r < 1.0):
+        r = _DISCOUNT_RATE
+    g = max(0.0, float(escalation_rate or 0.0))
+    escalation_clamped = False
+    if g >= r:
+        g = max(0.0, r - 1e-9)
+        escalation_clamped = True
+    net = ((1.0 + r) / (1.0 + g)) - 1.0
+
+    pv_weighted = sum(mw / ((1.0 + net) ** (t / 12.0)) for mw, t in tranches)
+    pv_factor = min(1.0, pv_weighted / sched_mw)
+
+    months_first = min(t for _, t in tranches)
+    months_full = max(t for _, t in tranches)
+    wavg_months = sum(mw * t for mw, t in tranches) / sched_mw
+
+    # MW energized by the buyer's own deadline, at target_mw scale.
+    scale = (float(target_mw) / sched_mw) if sched_mw > 0 else 1.0
+    mw_by_deadline = sum(mw for mw, t in tranches
+                         if t <= float(deadline_months)) * scale
+    mw_after_deadline = max(0.0, float(target_mw) - mw_by_deadline)
+
+    # Equivalent single-delivery delay: the flat time-to-power that would
+    # produce this same pv_factor. Gives the ramp one comparable number.
+    equiv_months = (math.log(1.0 / pv_factor) / math.log(1.0 + net) * 12.0
+                    if pv_factor > 0 and net > 0 else 0.0)
+
+    warnings = []
+    mismatch_pct = ((sched_mw - float(target_mw)) / float(target_mw) * 100.0
+                    if target_mw else 0.0)
+    if abs(mismatch_pct) > 1.0:
+        warnings.append(
+            f"schedule totals {sched_mw:,.0f} MW but target_mw is "
+            f"{float(target_mw):,.0f} MW ({mismatch_pct:+.1f}%). The schedule "
+            f"set the timing shape; target_mw set the scale. Reconcile them "
+            f"if the difference is not intentional.")
+    if escalation_clamped:
+        warnings.append(
+            f"powered-land escalation clamped below the {r*100:.2f}% discount "
+            f"rate — the model will not price later MW above earlier MW.")
+
+    return {
+        "applied":              True,
+        "pv_factor":            round(pv_factor, 4),
+        "pv_equivalent_mw":     round(float(target_mw) * pv_factor, 1),
+        "nameplate_mw":         round(float(target_mw), 1),
+        "schedule_total_mw":    round(sched_mw, 1),
+        "months_to_first_mw":   round(months_first, 1),
+        "months_to_full_mw":    round(months_full, 1),
+        "weighted_avg_months":  round(wavg_months, 1),
+        "equivalent_flat_ttp_months": round(equiv_months, 1),
+        "mw_by_deadline":       round(mw_by_deadline, 1),
+        "mw_after_deadline":    round(mw_after_deadline, 1),
+        "deadline_months":      float(deadline_months),
+        "discount_rate":        round(r, 4),
+        "escalation_rate":      round(g, 4),
+        "net_rate":             round(net, 4),
+        "tranche_count":        len(tranches),
+        "tranches":             [{"mw": round(mw, 2), "month": round(t, 1)}
+                                 for mw, t in tranches[:120]],
+        "tranches_truncated":   max(0, len(tranches) - 120),
+        "warnings":             warnings,
+        "note": (f"{float(target_mw):,.0f} MW nameplate delivered over "
+                 f"{months_full - months_first:.0f} months "
+                 f"(first MW at month {months_first:.0f}, full at month "
+                 f"{months_full:.0f}) is worth {pv_factor*100:.1f}% of the "
+                 f"same MW delivered today at a {r*100:.2f}% discount rate — "
+                 f"a present-value equivalent of "
+                 f"{float(target_mw) * pv_factor:,.0f} MW."),
+        "_methodology": ("pv_factor = Σ(mw·(1+net)^(-t/12)) / Σ(mw), "
+                         "net = (1+discount)/(1+escalation)-1. Applied to the "
+                         "$/MW × MW contribution only; tax abatement and "
+                         "surplus-land residual are not re-discounted."),
+    }
 
 
 def _haversine_miles(lat1, lon1, lat2, lon2) -> float:
@@ -1144,7 +1455,8 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
                         readiness: dict = None,
                         market_baseline: dict = None,
                         stories: int = 1,
-                        abatement: dict = None) -> dict:
+                        abatement: dict = None,
+                        delivery: dict = None) -> dict:
     """Compute $-range valuation. v2.0 (2026-06-04) recalibrated to the
     user-supplied $150K-$800K/MW industry range. Uses:
       - $475K/MW baseline (midpoint of industry range)
@@ -1262,6 +1574,13 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
     # near-firm MW, not a multi-year queue) on an entitled site lifts the ceiling
     # again (powered land is the scarcest asset).
     _grid_ttp = (scenarios.get("grid_only") or {}).get("time_to_power_months") or 99
+    # r-ramp: with a delivery schedule, "is this powered land?" is answered by
+    # when the FIRST firm MW flows — that is the day the parcel stops being a
+    # queue position. How the REST of the MW arrive is priced by the schedule's
+    # pv_factor below, so reading the ceiling off the full-delivery date would
+    # charge the ramp twice.
+    if delivery and delivery.get("applied"):
+        _grid_ttp = float(delivery.get("months_to_first_mw") or _grid_ttp)
     _firm_powered = bool(_entitled and _grid_ttp <= 18)
     if _firm_powered:
         per_mw_ceiling = _VALUE_PER_MW_CEIL_POWERED_USD
@@ -1298,7 +1617,15 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
     # not eaten by the ceiling), surfaced as its own line.
     _abate = abatement or {}
     _abate_factor = float(_abate.get("factor") or 1.0)
-    _mw_value = per_mw_mid * target_mw
+    # r-ramp: MW that energize years out are not worth MW energized today.
+    # pv_factor is 1.0 (no-op) when no schedule was supplied, so a caller who
+    # states only target_mw gets exactly the v2.2 number.
+    _pv_factor = 1.0
+    if delivery and delivery.get("applied"):
+        _pv_factor = float(delivery.get("pv_factor") or 1.0)
+    _mw_value_nameplate = per_mw_mid * target_mw
+    _mw_value = _mw_value_nameplate * _pv_factor
+    _ramp_discount = round(_mw_value_nameplate - _mw_value, 0)
     _abate_premium = round(_mw_value * (_abate_factor - 1.0), 0)
     site_value_mid = _mw_value * _abate_factor + surplus_residual
 
@@ -1347,8 +1674,18 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         "site_value_usd_low":  round(site_value_mid * (1 - spread), 0),
         "site_value_usd_mid":  round(site_value_mid, 0),
         "site_value_usd_high": round(site_value_mid * (1 + spread), 0),
+        "power_delivery":      delivery or {
+            "applied": False,
+            "pv_factor": 1.0,
+            "note": ("No delivery schedule supplied — all target MW valued as "
+                     "energized on the valuation date. Send power_ramp or "
+                     "power_schedule to price a phased energization."),
+        },
         "site_value_breakdown": {
-            "mw_contribution_usd":      round(per_mw_mid * target_mw, 0),
+            "mw_contribution_usd":      round(_mw_value, 0),
+            "mw_contribution_nameplate_usd": round(_mw_value_nameplate, 0),
+            "ramp_pv_discount_usd":     _ramp_discount,
+            "delivery_pv_factor":       round(_pv_factor, 4),
             "surplus_land_residual_usd": round(surplus_residual, 0),
             "depiction":                ("Site trades by MW. Land cost is "
                                             "implicit in the $/MW comp. Surplus "
@@ -1382,7 +1719,7 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
                  if verdict_raw == "AVOID" and subtype == "constrained"
                  else None)),
         },
-        "_methodology":        ("v2.2: $/MW × MW only (sites trade by the MW; "
+        "_methodology":        ("v2.3: $/MW × MW × delivery-PV (sites trade by the MW; "
                                   "land cost is implicit in every $/MW comp). "
                                   "Surplus acres above 3× target_mw add small "
                                   "residual land value at $8K/acre. Verdict "
@@ -1390,7 +1727,11 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
                                   "premiums (grid/sub/water/fiber/zoning/permits) "
                                   "stack multiplicatively to ~3.35× for "
                                   "shovel-ready. Per-MW clamped to industry "
-                                  "$150K-$800K band. ±50% envelope."),
+                                  "$150K-$800K band. A phased energization "
+                                  "schedule (power_ramp / power_schedule) "
+                                  "PV-weights the MW contribution — MW that "
+                                  "energize in year 8 are not priced as MW "
+                                  "energized today. ±50% envelope."),
     }
 
 
@@ -1438,10 +1779,40 @@ def site_value():
     # v2.1b — new tunables surfaced in the "Adjust assumptions" panel
     user_grid_lmp       = payload.get("grid_lmp_usd_per_mwh")   # $/MWh
     user_discount_rate  = payload.get("discount_rate")          # 0.0-1.0
+    try:
+        user_discount_rate_raw = (float(user_discount_rate)
+                                  if user_discount_rate else None)
+    except (TypeError, ValueError):
+        user_discount_rate_raw = None
     # r-powered: months until the site's target MW is firm/delivered. Overrides
     # the DCPI/queue grid time-to-power — a POWERED site (firm near-term MW) is
     # NOT a multi-year-queue site, and short TTP unlocks the powered-land ceiling.
     user_grid_ttp = _coerce_ttp_months(payload.get("grid_ttp_months"))
+
+    # r-ramp (v2.3): phased energization. `power_ramp` / `power_schedule` state
+    # WHEN the MW show up; target_mw still states HOW MANY. Absent both, the
+    # delivery block is None and valuation is bit-identical to v2.2.
+    _as_of_date = _dt.datetime.now(_dt.timezone.utc).date()
+    _tranches, _delivery_warnings = _build_power_schedule(
+        payload, float(target_mw), _as_of_date)
+    try:
+        _escalation = float(payload.get("powered_land_escalation_pct") or 0) / 100.0
+    except (TypeError, ValueError):
+        _escalation = 0.0
+    delivery = _delivery_pv(
+        _tranches, float(target_mw), float(deadline_months),
+        float(user_discount_rate_raw or _DISCOUNT_RATE), _escalation)
+    if delivery and _delivery_warnings:
+        delivery["warnings"] = _delivery_warnings + delivery.get("warnings", [])
+    elif delivery is None and _delivery_warnings:
+        delivery = {"applied": False, "pv_factor": 1.0,
+                    "warnings": _delivery_warnings,
+                    "note": ("A delivery schedule was supplied but could not be "
+                             "used; all target MW valued as energized today.")}
+    # A stated utility delivery schedule IS a time-to-power statement: let it
+    # drive the grid scenario when the caller did not override ttp directly.
+    if user_grid_ttp is None and delivery and delivery.get("applied"):
+        user_grid_ttp = int(round(float(delivery["months_to_first_mw"])))
 
     # power_source: how to value the site's power path. "auto" (default) lets the
     # engine pick lowest-cost/feasible; "grid" values on the actual firm grid
@@ -1499,17 +1870,20 @@ def site_value():
     valuation = _compute_valuation(target_mw, acres, dcpi, best_fit,
                                      scenarios, readiness=readiness,
                                      market_baseline=market_baseline,
-                                     stories=stories, abatement=abatement)
+                                     stories=stories, abatement=abatement,
+                                     delivery=delivery)
     comps = _fetch_comparable_sales(slug, state)
 
     base = {
         "ok":            True,
-        "engine_version": "v2.2",
+        "engine_version": "v2.3",
         "as_of":         _dt.datetime.utcnow().isoformat() + "Z",
         "input":         {"lat": lat, "lon": lon, "acres": acres,
                           "target_mw": target_mw,
                           "deadline_months": deadline_months,
                           "readiness": readiness,
+                          "power_delivery_supplied": bool(_tranches),
+                          "powered_land_escalation_pct": round(_escalation * 100, 4),
                           "heat_rate_ccgt": user_heat_rate_ccgt,
                           "utility_gas_usd_mmbtu": user_gas_mmbtu},
         "phase_3_inputs": {
@@ -1579,6 +1953,10 @@ def site_value():
             # even free visitors see the breakdown + sufficiency.
             "site_value_breakdown":   valuation.get("site_value_breakdown"),
             "site_sufficiency":       valuation.get("site_sufficiency"),
+            # r-ramp: site_value_usd_mid above is pv-adjusted for the delivery
+            # schedule. Gating the factor that moved it would leave a free-tier
+            # caller unable to explain their own number.
+            "power_delivery":         valuation.get("power_delivery"),
             # v2.1b — band-clamp metadata is methodology, not gated data.
             # Surfacing on teaser lets free visitors + tests see the
             # clamp behavior (in_band / ceiling_saturated / floor_saturated)
@@ -1627,12 +2005,35 @@ def site_value():
 def site_value_methodology():
     return jsonify({
         "ok":           True,
-        "version":      "v2.2 (2026-06-04)",
+        "version":      "v2.3 (2026-09-08)",
         "summary":      ("Three-scenario NPV comparison for a (lat, lon, "
                           "acres, target_mw, readiness flags + optional "
                           "heat-rate + utility-gas-tariff) tuple. v2.1 adds "
                           "5 Phase-3 live-data overrides with graceful "
                           "fallback to v2.0 constants when upstream is missing."),
+        "v2_3_changelog": [
+            "Phased power delivery — a stated energization schedule "
+              "(power_ramp or power_schedule) PV-weights the MW contribution: "
+              "site_value = $/MW × MW × pv_factor, where pv_factor = "
+              "Σ(mw·(1+net)^(-t/12)) / Σ(mw) and net = "
+              "(1+discount)/(1+escalation)-1. Before v2.3 the valuation was "
+              "delivery-blind: measured live 2026-09-08, a 1,800 MW site "
+              "returned the same $939.2M at grid_ttp_months of 6, 18, 24, 60 "
+              "and 99 — time-to-power moved only the ceiling, which is inert "
+              "whenever the computed $/MW sits below it.",
+            "Delivery schedule sets the SHAPE, target_mw sets the SCALE — a "
+              "schedule that does not sum to target_mw moves the timing, not "
+              "the MW count, and says so in power_delivery.warnings.",
+            "Powered-land ceiling now reads months-to-FIRST-MW, not "
+              "full-delivery: the parcel becomes powered land the day firm "
+              "power flows, and the rest of the ramp is priced by pv_factor. "
+              "Reading it off full delivery would charge the ramp twice.",
+            "pv_factor is capped at 1.0 and escalation clamped below the "
+              "discount rate — delivery delay can only reduce present value.",
+            "New reported fields: pv_equivalent_mw, months_to_first_mw, "
+              "months_to_full_mw, weighted_avg_months, "
+              "equivalent_flat_ttp_months, mw_by_deadline, mw_after_deadline.",
+        ],
         "v2_2_changelog": [
             "MW-only depiction — site_value_usd_mid = $/MW × MW. The "
               "$/acre line was being SUMMED on top, double-counting land "
@@ -1827,6 +2228,10 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
     <label>Deadline (months)<br><input id="deadline_months" type="number" step="1" min="1" max="120" value="24"></label>
     <label>Building stories &nbsp;<span style="color:var(--accent2);font-size:11px">1 = single-story · 2-3 = AI hall</span><br><input id="stories" type="number" step="1" min="1" max="6" value="1"></label>
     <label>Firm power (months) &nbsp;<span style="color:var(--accent2);font-size:11px">months to firm/delivered MW · blank = market queue</span><br><input id="grid_ttp_months" type="number" step="1" min="0" max="120" placeholder="e.g. 12" inputmode="numeric"></label>
+    <label>First delivery MW &nbsp;<span style="color:var(--accent2);font-size:11px">phased? MW in the first tranche</span><br><input id="pd_first_mw" type="number" step="any" min="0" placeholder="e.g. 300" inputmode="decimal"></label>
+    <label>First delivery date &nbsp;<span style="color:var(--accent2);font-size:11px">2028-Q2 · 2028-04 · or months</span><br><input id="pd_first_date" type="text" maxlength="12" placeholder="2028-Q2"></label>
+    <label>Ramp (MW / month) &nbsp;<span style="color:var(--accent2);font-size:11px">rate after first tranche</span><br><input id="pd_rate" type="number" step="any" min="0" placeholder="e.g. 18.75" inputmode="decimal"></label>
+    <label>Full delivery date &nbsp;<span style="color:var(--accent2);font-size:11px">when ALL target MW are energized</span><br><input id="pd_final_date" type="text" maxlength="12" placeholder="2034-Q2"></label>
     <label>Power basis &nbsp;<span style="color:var(--accent2);font-size:11px">how to value the power path</span><br><select id="power_source"><option value="auto">Auto (lowest-cost)</option><option value="grid">Grid only (no gas)</option><option value="gas">Gas-BTM</option></select></label>
     <label>CCGT heat rate (Btu/kWh) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default 6800</span><br><input id="heat_rate_ccgt" type="number" step="50" min="5500" max="12000" placeholder="6800"></label>
     <label>Utility gas tariff ($/MMBtu) &nbsp;<span style="color:var(--accent2);font-size:11px">optional · default = state avg</span><br><input id="utility_gas_usd_mmbtu" type="number" step="0.05" min="0" max="40" placeholder="3.50"></label>
@@ -1900,7 +2305,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   <div id="results" class="hidden"></div>
 
   <p style="font-size:12px;color:var(--muted);margin-top:32px;">
-    Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Engine v2.2 (2026-06-30) — per-MW clamped to a $150K raw floor and an $800K industry ceiling that <b>lifts to $1.2M for a fully entitled site</b> (zoned + permitted — de-risking prices above raw land); <b>verdict subtype</b> (constrained / weak_demand / developing) distinguishes Ashburn-class AVOID from rust-belt AVOID; <b>constraint-moat attenuation</b> lifts AVOID-by-constraint sites with grid+sub+permits in hand; <b>multi-story density</b> factor judges land sufficiency at ~stories×; 4 editable assumptions via the ⚙ panel; 6 site-readiness premiums; ±50% envelope.
+    Methodology: <a href="/api/v1/site/value/methodology" style="color:var(--accent2)">/api/v1/site/value/methodology</a> · Engine v2.3 (2026-09-08) — <b>phased power delivery</b>: a stated energization schedule (300 MW in Q2 2028, then +18.75 MW/mo) PV-weights the MW contribution, so MW delivered in year 8 no longer price as MW delivered today; per-MW clamped to a $150K raw floor and an $800K industry ceiling that <b>lifts to $1.2M for a fully entitled site</b> (zoned + permitted — de-risking prices above raw land); <b>verdict subtype</b> (constrained / weak_demand / developing) distinguishes Ashburn-class AVOID from rust-belt AVOID; <b>constraint-moat attenuation</b> lifts AVOID-by-constraint sites with grid+sub+permits in hand; <b>multi-story density</b> factor judges land sufficiency at ~stories×; 4 editable assumptions via the ⚙ panel; 6 site-readiness premiums; ±50% envelope.
   </p>
 </div>
 
@@ -2038,6 +2443,22 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
     power_source: (document.getElementById('power_source') || {}).value || 'auto',
     readiness: readiness,
   };
+  /* v2.3 phased delivery: MW that energize years out are not worth MW today.
+     Only sent when a first-delivery date is actually stated — absent it the
+     engine keeps the flat single-delivery valuation. */
+  (function(){
+    const gv = id => (document.getElementById(id) || {}).value;
+    const fMw   = parseFloat(gv('pd_first_mw'));
+    const fDate = (gv('pd_first_date') || '').trim();
+    const rate  = parseFloat(gv('pd_rate'));
+    const fin   = (gv('pd_final_date') || '').trim();
+    if (!fDate) return;
+    const ramp = { first_date: fDate,
+                   first_mw: (Number.isFinite(fMw) && fMw > 0) ? fMw : 0 };
+    if (Number.isFinite(rate) && rate > 0) ramp.ramp_mw_per_month = rate;
+    if (fin) ramp.final_date = fin;
+    if (ramp.ramp_mw_per_month || ramp.final_date) body.power_ramp = ramp;
+  })();
   if (Number.isFinite(hr) && hr > 0)  body.heat_rate_ccgt        = hr;
   if (Number.isFinite(tar) && tar > 0) body.utility_gas_usd_mmbtu = tar;
   // v2.1b — new assumption overrides from the "Adjust assumptions" panel
@@ -2426,6 +2847,30 @@ function renderResults(d) {
         <b>Tax-abatement premium: +${fmtM$(ta.premium_usd)}</b> — ${ta.note}
       </div>`;
     }
+    // v2.3 — phased power delivery. When the caller stated an energization
+    // schedule, the headline MW contribution is PV-weighted; show the factor
+    // and the dollars it removed rather than leaving an unexplained gap.
+    const pd = d.valuation.power_delivery || {};
+    let pdNote = '';
+    if (pd.applied) {
+      const yrs = (m2 => m2 > 0 ? (m2 / 12).toFixed(1) : '0') ;
+      pdNote = `<div style="margin-top:12px;background:rgba(139,92,246,0.10);border:1px solid #8b5cf6;border-radius:6px;padding:10px 12px;font-size:12.5px;color:#c4b5fd">
+        <b>Phased delivery: ×${(pd.pv_factor||1).toFixed(3)}</b> &nbsp;—&nbsp;
+        <b>${pd.nameplate_mw} MW</b> nameplate arrives over
+        <b>${Math.round(pd.months_to_first_mw)}–${Math.round(pd.months_to_full_mw)} months</b>
+        (${yrs(pd.months_to_first_mw)}–${yrs(pd.months_to_full_mw)} yrs), which is
+        <b>${pd.pv_equivalent_mw} MW</b> in present-value terms at
+        ${((pd.discount_rate||0)*100).toFixed(2)}%.
+        <div style="margin-top:6px;opacity:0.9;color:#a78bfa">
+          Ramp discount: <b>−${fmtM$(d.valuation.site_value_breakdown ? (d.valuation.site_value_breakdown.ramp_pv_discount_usd||0) : 0)}</b>
+          &nbsp;·&nbsp; equivalent to a flat <b>${Math.round(pd.equivalent_flat_ttp_months)}-month</b> time-to-power
+          &nbsp;·&nbsp; <b>${pd.mw_by_deadline} MW</b> energized by the ${Math.round(pd.deadline_months)}-mo deadline${pd.mw_after_deadline > 0 ? `, <b>${pd.mw_after_deadline} MW</b> after it` : ''}
+        </div>
+        ${(pd.warnings||[]).length ? `<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(139,92,246,0.35);color:var(--warn);font-size:11.5px;line-height:1.5">${(pd.warnings||[]).map(w=>'⚠ '+w).join('<br>')}</div>` : ''}
+      </div>`;
+    } else if ((pd.warnings || []).length) {
+      pdNote = `<div style="margin-top:12px;background:rgba(245,158,11,0.08);border:1px solid var(--warn);border-radius:6px;padding:9px 11px;font-size:11.5px;color:var(--warn);line-height:1.5">${(pd.warnings||[]).map(w=>'⚠ '+w).join('<br>')}</div>`;
+    }
     // v2.2 — site sufficiency block + MW-only breakdown
     const bd = d.valuation.site_value_breakdown || {};
     const suff = d.valuation.site_sufficiency || {};
@@ -2441,7 +2886,7 @@ function renderResults(d) {
         <div style="margin-top:14px;font-size:14px;color:var(--fg)">
           <b style="font-size:18px;color:var(--accent2)">${fmt$(d.valuation['$/mw_mid'])}</b> <span style="color:var(--muted);font-size:12px">per MW</span>
           &nbsp;×&nbsp;
-          <b>${d.input.target_mw} MW</b>
+          <b>${d.input.target_mw} MW</b>${pd.applied ? ` <span style="color:#a78bfa;font-size:12px">× ${(pd.pv_factor||1).toFixed(3)} delivery PV</span>` : ''}
           &nbsp;=&nbsp;
           <b>${fmtM$(bd.mw_contribution_usd || 0)}</b>
         </div>
@@ -2450,6 +2895,7 @@ function renderResults(d) {
           + surplus land residual: <b style="color:var(--fg)">${fmtM$(bd.surplus_land_residual_usd)}</b>
           <span style="opacity:0.7"> · ${suff.surplus_acres} acres × $${(8000).toLocaleString()}/ac</span>
         </div>` : ''}
+        ${pdNote}
         ${bandNote}
         ${suff.category && suff.category !== 'invalid' ? `
         <div style="margin-top:14px;background:var(--panel2);border:1px solid var(--border);border-left:3px solid ${suffColor};padding:10px 12px;border-radius:4px;font-size:12.5px">
@@ -2589,7 +3035,7 @@ function renderResults(d) {
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin:12px 0 0;border-top:1px solid var(--border);padding-top:10px">
         <b>How to use:</b> a screening range + negotiating anchor. For a term-sheet number, corroborate with 1–2 broker/appraiser comparables.
-        &nbsp;·&nbsp; Source: DC Hub · Engine ${d.engine_version || 'v2.2'} · ${(d.as_of || '').slice(0, 10)} · DCPI, EIA, tax-incentives, deals (M&A context).
+        &nbsp;·&nbsp; Source: DC Hub · Engine ${d.engine_version || 'v2.3'} · ${(d.as_of || '').slice(0, 10)} · DCPI, EIA, tax-incentives, deals (M&A context).
       </p>
     </div>`;
 
