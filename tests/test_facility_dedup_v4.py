@@ -26,7 +26,7 @@ if ROOT not in sys.path:
 
 from routes.facility_dedup_v4 import (      # noqa: E402
     DEDUP_METHOD, MAX_GROUP, TWIN_COL, plan_group, is_junk_slug, same_name,
-    _collect)
+    has_coords, _collect)
 
 
 def _df(i, slug, provider=None, lat=None, lon=None, pw=None,
@@ -224,6 +224,60 @@ def test_a_missing_coordinate_does_not_block():
     p = plan_group([_df(1, "a-11111111", lat=40.0, lon=-70.0),
                     _df(2, "a-22222222")])
     assert p["skip"] is None and p["writes"] == [2]
+
+
+def test_null_island_is_not_a_location():
+    """★ (0.0, 0.0) is the placeholder 920 publishable rows carry, not a point
+    in the Gulf of Guinea. Read as a location it vetoes a group it should have
+    abstained from, and the group is then reported `coords_far_apart` — a
+    reason that is simply false.
+
+    Measured live 2026-09-07: 6 of the 75 coords_far_apart groups were this,
+    including 'Cincinnati, OH, CIN2' (0.0, 0.0) against 'CyrusOne CIN2'
+    (39.102695, -84.5179) — the same building ingested twice."""
+    p = plan_group([_df(1, "a-11111111", lat=39.102695, lon=-84.5179),
+                    _df(2, "a-22222222", lat=0.0, lon=0.0)])
+    assert p["skip"] != "coords_far_apart", p["skip"]
+    assert p["skip"] is None and p["writes"] == [2]
+
+
+def test_null_island_abstains_it_does_not_justify():
+    """Dropping out of the veto is NOT permission to merge: the placeholder row
+    still has to clear every other gate. Same coordinates as above, different
+    names -> the name gate refuses it, exactly as a coordinate-less row would
+    be refused."""
+    p = plan_group([_df(1, "a-11111111", lat=39.102695, lon=-84.5179,
+                        name="CyrusOne CIN2"),
+                    _df(2, "a-22222222", lat=0.0, lon=0.0,
+                        name="Cincinnati, OH, CIN2")])
+    assert p["writes"] == []
+    assert p["name_mismatch"] == ["a-22222222"]
+
+
+def test_a_real_coordinate_at_zero_still_counts():
+    """★ The test is BOTH ordinates, not either. A facility on the equator or
+    on the Greenwich meridian has a real coordinate with a 0.0 in it, and
+    throwing that away would stop the veto protecting it.
+
+    Live corpus check behind this: 0 rows pair a 0.0 ordinate with a real one,
+    and 0 sit near zero without being exactly zero — so the exact-equality
+    pair test is what the data supports, and nothing wider."""
+    assert has_coords({"latitude": 0.0, "longitude": -70.0}) is True
+    assert has_coords({"latitude": 51.4778, "longitude": 0.0}) is True
+    assert has_coords({"latitude": 0.0, "longitude": 0.0}) is False
+    assert has_coords({"latitude": None, "longitude": None}) is False
+    # a near-zero pair is a REAL location off the coast, not the placeholder
+    assert has_coords({"latitude": 0.0001, "longitude": 0.0001}) is True
+    # one NULL ordinate keeps today's behaviour: what it has still counts
+    assert has_coords({"latitude": 40.0, "longitude": None}) is True
+    assert has_coords({"latitude": None, "longitude": -70.0}) is True
+    # a lat/lon that cannot be read as a number is not a location
+    assert has_coords({"latitude": "n/a", "longitude": "n/a"}) is False
+
+    # and the veto still fires when a real 0.0-bearing coordinate is far away
+    p = plan_group([_df(1, "a-11111111", lat=0.0, lon=-70.0),
+                    _df(2, "a-22222222", lat=0.05, lon=-70.0)])
+    assert p["skip"] == "coords_far_apart"
 
 
 def test_a_group_larger_than_the_cap_is_refused():
