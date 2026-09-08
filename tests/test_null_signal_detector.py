@@ -121,3 +121,42 @@ def test_the_present_canary_is_a_table_that_really_exists():
 
 def test_the_absent_canary_cannot_collide_with_a_real_table():
     assert d._CANARY_MISSING.split(".")[-1].startswith("__")
+
+
+# ── it must not read its own prose as evidence (2026-09-08) ───────────
+# Its FIRST live run reported three findings -- `public.X`, `public.foo`
+# and `foo` -- every one from its own docstring and the comment above
+# _PROBE_RE, where the idiom is spelled out to explain it. 3 of 12
+# findings were noise it manufactured about itself. A scanner that cites
+# its own documentation is the same class of defect it exists to hunt.
+
+def test_it_does_not_scan_its_own_module():
+    """The three placeholder names from its docstring must not appear."""
+    probes = d.scan_table_probes()
+    for placeholder in ("foo", "public.foo", "public.X"):
+        assert placeholder not in probes, (
+            f"{placeholder!r} came from this detector's own prose — it is "
+            f"reading its documentation as evidence")
+
+
+def test_comment_lines_are_not_probes(tmp_path):
+    (tmp_path / "m.py").write_text(
+        "# to_regclass('public.explained_in_a_comment')\n"
+        "cur.execute(\"SELECT to_regclass('public.real_one')\")\n")
+    probes = d.scan_table_probes(tmp_path)
+    assert "public.real_one" in probes
+    assert "public.explained_in_a_comment" not in probes
+
+
+def test_an_indented_comment_is_also_skipped(tmp_path):
+    (tmp_path / "m.py").write_text(
+        "def f():\n    # to_regclass('public.indented_comment')\n    pass\n")
+    assert "public.indented_comment" not in d.scan_table_probes(tmp_path)
+
+
+def test_skipping_itself_does_not_collapse_the_scan():
+    """Excluding one file must not take the scan under its floor — that
+    would trade a noise bug for a silent one."""
+    probes = d.scan_table_probes()
+    assert len(probes) >= d._MIN_PROBES, (
+        f"{len(probes)} probes after self-exclusion, floor {d._MIN_PROBES}")

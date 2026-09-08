@@ -103,8 +103,18 @@ def scan_table_probes(root: Path | None = None) -> dict:
     """
     root = Path(root or _ROOT)
     found: dict[str, list[str]] = {}
+    _self = Path(__file__).name
     for path in root.rglob("*.py"):
         if any(part in _SKIP_DIRS for part in path.parts):
+            continue
+        # ★ 2026-09-08: skip THIS module. Its first live run reported three
+        # findings -- `public.X`, `public.foo`, `foo` -- all from its own
+        # docstring and the comment above _PROBE_RE, where the idiom is
+        # written out to explain it. A scanner that reads its own prose as
+        # evidence is the same class of defect it hunts: 3 of 12 findings
+        # were noise it manufactured. cf the corpora_missing sensor that
+        # fired on ~100% of healthy traffic.
+        if path.name == _self:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
@@ -113,6 +123,12 @@ def scan_table_probes(root: Path | None = None) -> dict:
         if "to_regclass" not in text:
             continue
         for i, line in enumerate(text.splitlines(), 1):
+            # A comment is documentation, not a probe. Handles the common
+            # case; a docstring EXAMPLE in another module would still be
+            # read as real, which is why the finding carries file:line --
+            # a human triaging it can see prose at a glance.
+            if line.lstrip().startswith("#"):
+                continue
             for m in _PROBE_RE.finditer(line):
                 rel = str(path.relative_to(root))
                 found.setdefault(m.group(1), []).append(f"{rel}:{i}")
