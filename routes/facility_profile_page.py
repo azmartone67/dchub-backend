@@ -1348,7 +1348,12 @@ def _render_profile(fac: dict, slug: str) -> str:
         # operator — a bare truthy test put "UNK grid" in the <title> of every
         # page resolving to barueri/bologna/midrand/osasco.
         if _is_registered_label(_dcpi.get("iso")):
-            title = title.replace(" | DC Hub", f" | {_dcpi['iso']} grid | DC Hub")
+            # r-title-template (2026-09-09): the ISO joins the title in the
+            # template's own separator — "· ERCOT |" not "| ERCOT grid |".
+            # The word "grid" was 5 chars of the tail that Google was cutting
+            # off anyway; the ISO token itself is the retrieval key r-geo-
+            # headers added, and it is preserved exactly.
+            title = title.replace(" | DC Hub", f" · {_dcpi['iso']} | DC Hub")
         _chips = []
         if _is_registered_label(_dcpi.get("iso")):         _chips.append(("ISO", _esc(_dcpi.get("iso"))))
         if _dcpi.get("excess_power_score") is not None:   _chips.append(("Excess-power", _esc(_dcpi.get("excess_power_score"))))

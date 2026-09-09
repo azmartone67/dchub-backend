@@ -5,9 +5,14 @@ operator site-code queries — "interxion mad1" (pos 7.4), "iad14 data center"
 (10.2), "fra28 data center" (10.4), "htl05" (10.7), "digitalrealty ewr12
 piscataway" (10.9), "ewr10" (7.7), "dus2" (12.5) — sitting at position 6–13
 with 13–37 impressions each and ZERO clicks. The pages exist; their titles
-bury the code inside a long name ("Equinix FR5 - Frankfurt, KleyerStrasse —
-Frankfurt, DE Data Center | ENTSOE-DE grid | DC Hub"). The searcher's own
-words, `<Operator> <CODE>`, should lead the title.
+bury the code inside a long name (as of 2026-09-02, "Equinix FR5 - Frankfurt,
+KleyerStrasse — Frankfurt, DE Data Center | ENTSOE-DE grid | DC Hub"). The
+searcher's own words, `<Operator> <CODE>`, should lead the title.
+
+★ That quoted example is the PRE-2026-09-09 title shape, kept because it is the
+evidence for this module's existence. r-title-template has since reshaped the
+title to `{Operator} {Site} · {City} · {Grid} | DC Hub`; this module still
+supplies the LEAD, which is the part that mattered here.
 
 There is no site-code column in the DB (checked 2026-09-02: no `site_code` /
 `building_code` anywhere in the schema or the routes), so the code is read

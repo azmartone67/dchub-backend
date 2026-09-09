@@ -95,8 +95,32 @@ def facility_headline(name, provider, city, state, country):
     op = "" if (not provider or provider == "Operator"
                 or brand_already_in_name(provider, name)) else f"{provider} "
     disp = f"{op}{name}".strip()
-    title = (f"{disp} — {loc_short} Data Center | DC Hub" if loc_short
-             else f"{disp} Data Center | DC Hub")
+    # r-title-template (2026-09-09): `{Operator} {Site} · {City} · {Grid} |
+    # DC Hub`. The old shape spent its budget on words that carry no query:
+    #     Spectrum Charlotte National Data Center — Charlotte, NC, US Data
+    #     Center | SERC grid | DC Hub                              (94 chars)
+    # Measured live the same day over 10 facility pages, 6 of 10 titles ran
+    # past Google's ~60-char SERP cut, and what fell off the end was the TAIL —
+    # the grid token and the brand, i.e. the two things the title was extended
+    # to carry. Dropping the literal "Data Center" (the <h1>, the description
+    # and the JSON-LD all still say it), the ", ST, CC" tail and the word
+    # "grid" returns ~27 chars per title.
+    # ★ THIS IS A DISPLAY CHANGE ONLY. identity_key() — the grouping key
+    #   routes/facility_dedup_v4.py uses to decide "these two URLs render the
+    #   same page" — reads `dedup_title` below, which is the PRE-CHANGE string,
+    #   byte for byte. Re-keying dedup on a prettier title would have silently
+    #   re-grouped 20k pages as a side effect of an SEO edit; the r-placeholder-
+    #   city note above is there because that grouping is measured, not assumed.
+    legacy_title = (f"{disp} — {loc_short} Data Center | DC Hub" if loc_short
+                    else f"{disp} Data Center | DC Hub")
+    # ★ THE LOCATION SLOT IS "the most specific place we actually have", not
+    #   "city". tests/test_seo_index_hygiene.py holds a FLOOR on this —
+    #   test_the_country_survives_when_the_city_is_a_placeholder — because the
+    #   fix for the 'Regional' placeholder rows could otherwise be satisfied by
+    #   dropping the location ENTIRELY, and the country is real. A first cut of
+    #   this template did exactly that and the floor caught it.
+    loc = city or ", ".join([p for p in (state, country) if p])
+    title = f"{disp} · {loc} | DC Hub" if loc else f"{disp} | DC Hub"
     # r-site-code-title (2026-09-02): operator site-code queries ("interxion
     # mad1", "iad14 data center", "fra28", "htl05", "dus2") sit at pos 6-13
     # with 0 clicks — the code is buried mid-title. When the NAME carries one
@@ -107,11 +131,18 @@ def facility_headline(name, provider, city, state, country):
     h1 = disp
     og_title = f"{disp} — Data Center"
     if sc_head:
-        title = f"{sc_head} | DC Hub"
+        # sc_head is "<Operator> <CODE> — <City> Data Center". The template
+        # wants its LEAD ("<Operator> <CODE>"); the city is re-appended in the
+        # template's own separator, so it is not dropped, only moved. If that
+        # module ever stops emitting the em-dash, fall back to the whole string
+        # rather than mangling it.
+        legacy_title = f"{sc_head} | DC Hub"
+        lead = sc_head.split(" — ", 1)[0] if " — " in sc_head else sc_head
+        title = f"{lead} · {loc} | DC Hub" if loc else f"{lead} | DC Hub"
         h1 = sc_head
         og_title = sc_head
     return {"op": op, "disp": disp, "loc_short": loc_short, "title": title,
-            "h1": h1, "og_title": og_title}
+            "h1": h1, "og_title": og_title, "dedup_title": legacy_title}
 
 
 def identity_key(name, provider, city, state, country):
@@ -122,5 +153,10 @@ def identity_key(name, provider, city, state, country):
     detector that treated them as two would leave the duplicate published.
     """
     hl = facility_headline(name, provider, city, state, country)
+    # ★ `dedup_title`, NOT `title`. r-title-template (2026-09-09) reshaped the
+    # DISPLAYED title; this key must not move with it. facility_dedup_v4 groups
+    # on this value and check_sitemap_selfcanon counts the groups, so a change
+    # here re-partitions ~20k pages — a dedup decision, never a side effect of
+    # an SEO copy edit. dedup_title is the pre-change string byte for byte.
     return (" ".join(hl["h1"].split()).lower(),
-            " ".join(hl["title"].split()).lower())
+            " ".join(hl["dedup_title"].split()).lower())

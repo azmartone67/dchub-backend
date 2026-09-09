@@ -428,7 +428,11 @@ def _og(html):
 
 def test_rendered_page_leads_with_operator_and_code():
     html = _render("Equinix FR5 - Frankfurt, KleyerStrasse", "Equinix", "Frankfurt")
-    assert _title(html).startswith("Equinix FR5 — Frankfurt Data Center | "), _title(html)
+    # r-title-template (2026-09-09): the title carries the site-code LEAD and
+    # the city in the template's separator ("Equinix FR5 · Frankfurt"); the
+    # <h1> below still carries the full em-dash headline, which is what this
+    # test is really about — the code must LEAD, wherever it is rendered.
+    assert _title(html).startswith("Equinix FR5 · Frankfurt"), _title(html)
     assert _title(html).endswith("| DC Hub")
     assert _h1(html) == "Equinix FR5 — Frankfurt Data Center"
     assert _og(html) == "Equinix FR5 — Frankfurt Data Center"
@@ -438,10 +442,14 @@ def test_rendered_page_leads_with_operator_and_code():
     assert '"name": "Equinix FR5 - Frankfurt, KleyerStrasse"' in html
 
 
-def test_rendered_page_without_a_code_is_byte_identical_to_the_legacy_title():
+def test_rendered_page_without_a_code_uses_the_plain_template():
+    """Was `..._is_byte_identical_to_the_legacy_title`. r-title-template
+    (2026-09-09) retired the legacy shape for DISPLAY; the invariant this test
+    actually holds is that a name carrying no site code takes the ordinary
+    path, not the code path — so it leads with the name, not a code."""
     html = _render("Google Data Center Council Bluffs", "Google", "Council Bluffs")
     assert _title(html).startswith(
-        "Google Data Center Council Bluffs — Council Bluffs, DE Data Center | ")
+        "Google Data Center Council Bluffs · Council Bluffs | ")
     assert _h1(html) == "Google Data Center Council Bluffs"
     assert _og(html) == "Google Data Center Council Bluffs — Data Center"
 
