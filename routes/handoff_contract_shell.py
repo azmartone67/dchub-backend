@@ -108,7 +108,9 @@ def _conn():
            or os.environ.get("NEON_DATABASE_URL"))
     if not dsn:
         return None
-    c = psycopg2.connect(dsn)
+    # Pooler-safe: session-scoped readonly must not land on a SHARED backend.
+    from routes._session_dsn import direct_dsn
+    c = psycopg2.connect(direct_dsn(dsn))
     c.set_session(readonly=True, autocommit=True)
     return c
 

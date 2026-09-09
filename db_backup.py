@@ -58,7 +58,9 @@ def get_neon_connection():
     db_url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
     if not db_url:
         raise RuntimeError("No database URL configured (NEON_DATABASE_URL or DATABASE_URL)")
-    conn = psycopg2.connect(db_url, connect_timeout=30)
+    # Pooler-safe: session-scoped readonly must not land on a SHARED backend.
+    from routes._session_dsn import direct_dsn
+    conn = psycopg2.connect(direct_dsn(db_url), connect_timeout=30)
     conn.set_session(readonly=True)
     return conn
 

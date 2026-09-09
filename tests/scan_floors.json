@@ -196,6 +196,9 @@
     "test_qa_smoke_ua_exclusion.py": {
       "pglob": 6
     },
+    "test_readonly_session_never_on_a_pooled_dsn.py": {
+      "walk": 70
+    },
     "test_resend_webhook_single_registration.py": {
       "walk": 80
     },

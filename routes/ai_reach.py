@@ -245,7 +245,9 @@ def _call_shapes(window_days: int = 30):
         if not db:
             return {}, "no DATABASE_URL"
         from mcp_calls_deloop import PLATFORM_CASE as _PC
-        conn = psycopg2.connect(db, sslmode="require", connect_timeout=5)
+        # Pooler-safe: session-scoped readonly must not land on a SHARED backend.
+        from routes._session_dsn import direct_dsn
+        conn = psycopg2.connect(direct_dsn(db), sslmode="require", connect_timeout=5)
         conn.set_session(readonly=True, autocommit=True)
         with conn.cursor() as cur:
             cur.execute("SET statement_timeout = '6000'")
