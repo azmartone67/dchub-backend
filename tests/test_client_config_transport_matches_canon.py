@@ -116,6 +116,33 @@ CONFIG_MARKERS = ("mcpServers", '"servers"', "'servers'")
 # written put the marker 1-6 lines above; 10 is slack.
 WINDOW = 10
 
+# ★ ...and the window must not CROSS A FENCE. A doc that lists several clients
+# in sequence puts one fenced block per client, so a backward window of 10 lines
+# reaches into the PREVIOUS client's block and borrows its marker.
+#
+# Found against dchub-mcp-server docs/one-click-install.md:52, which is CORRECT:
+#
+#     **Cursor** (manual) — `~/.cursor/mcp.json`:
+#     ```json
+#     { "mcpServers": { "dchub": { "url": "..." } } }      <- marker, line 47
+#     ```
+#     **Continue.dev** — `config.json` → `experimental.…Servers`:
+#     ```json
+#     { "transport": { "type": "streamable-http", "url": "..." } }   <- line 52
+#     ```
+#
+# Continue.dev nests a TRANSPORT OBJECT (`transport: {type: …}`) rather than
+# keying a server entry, so `streamable-http` is its right value — a different
+# schema, not a client config in the `mcpServers` sense. The marker that flagged
+# it belonged to Cursor's block, five lines and one fence away.
+#
+# Clipping the window at the nearest fence delimiter keeps a marker and its
+# match in the SAME block. Verified against the 32 defects this guard was
+# written for: fence-aware detects 32 of 32 — no detection is traded away.
+# Files with no fences at all (the .json configs) are unaffected: with no
+# delimiter in the window, the full backward window is used, unchanged.
+FENCE = "```"
+
 
 def _files():
     seen, out = set(), []
@@ -128,6 +155,17 @@ def _files():
                 seen.add(rel)
                 out.append(p)
     return out
+
+
+def _window_has_marker(lines, i):
+    """Is there a config marker in the same block, at or above line i?"""
+    window = lines[max(0, i - WINDOW):i + 1]
+    fences = [k for k, l in enumerate(window) if l.lstrip().startswith(FENCE)]
+    if fences:
+        # Keep only what follows the last fence delimiter — the block this
+        # match actually sits in.
+        window = window[fences[-1]:]
+    return any(m in "\n".join(window) for m in CONFIG_MARKERS)
 
 
 def _violations():
@@ -144,10 +182,11 @@ def _violations():
                 continue
             if not FORBIDDEN.search(line):
                 continue
-            # ★ BACKWARD only. A symmetric window flags the correct
-            # self-description in static/.well-known/ai-agents.json:18.
-            window = "\n".join(lines[max(0, i - WINDOW):i + 1])
-            if any(m in window for m in CONFIG_MARKERS):
+            # ★ BACKWARD only, and clipped at the nearest fence. A symmetric
+            # window flags the correct self-description in
+            # static/.well-known/ai-agents.json:18; a fence-blind one borrows
+            # the previous client's marker in a multi-client doc.
+            if _window_has_marker(lines, i):
                 bad.append(
                     f"{path.relative_to(REPO)}:{i + 1}: {line.strip()[:120]}")
     return bad
@@ -247,8 +286,7 @@ def test_self_description_occurrences_are_still_present_and_allowed():
         for i, line in enumerate(lines):
             if not FORBIDDEN.search(line):
                 continue
-            window = "\n".join(lines[max(0, i - WINDOW):i + 1])
-            if not any(m in window for m in CONFIG_MARKERS):
+            if not _window_has_marker(lines, i):
                 total += 1
     assert total >= 20, (
         f"only {total} self-description occurrences left in the scanned set "
@@ -306,6 +344,109 @@ def test_the_window_is_directional_not_symmetric():
             "it would pass even with the bug present — rebuild the probe")
     finally:
         probe.unlink(missing_ok=True)
+
+
+def test_the_window_does_not_cross_a_fence_into_the_previous_block():
+    """★REGRESSION. A multi-client doc puts one fenced block per client.
+
+    A backward window of 10 lines reaches into the PREVIOUS client's block and
+    borrows its `mcpServers` marker. Found against dchub-mcp-server
+    `docs/one-click-install.md:52`, which is CORRECT: Continue.dev nests a
+    TRANSPORT OBJECT (`transport: {type: "streamable-http"}`) rather than keying
+    a server entry, so that spelling is right for its schema — and the marker
+    that flagged it belonged to Cursor's block, five lines and one fence away.
+
+    A false positive here is not a harmless extra line of output: this guard's
+    remedy is "change the value", so it walks the next person into breaking a
+    correct config. Same cost as the symmetric-window bug above.
+    """
+    probe = REPO / "static" / "_fence_window_probe.md"
+    probe.write_text(
+        "**Cursor** (manual) — `~/.cursor/mcp.json`:\n"
+        "```json\n"
+        '{ "mcpServers": { "dchub": { "url": "https://dchub.cloud/mcp" } } }\n'
+        "```\n"
+        "\n"
+        "**Continue.dev** — `config.json`:\n"
+        "```json\n"
+        '{ "transport": { "type": "streamable-http", "url": "…" } }\n'
+        "```\n", encoding="utf-8")
+    try:
+        flagged = [v for v in _violations() if probe.name in v]
+        assert not flagged, (
+            "the scanner reached across a fence into the previous client's "
+            "block and borrowed its marker, flagging a correct value:\n  "
+            + "\n  ".join(flagged))
+
+        # The probe must actually be exercising the fence clip: a FENCE-BLIND
+        # backward window has to find the marker, or this passes for free.
+        lines = probe.read_text(encoding="utf-8").splitlines()
+        hit = next(i for i, l in enumerate(lines) if FORBIDDEN.search(l))
+        blind = "\n".join(lines[max(0, hit - WINDOW):hit + 1])
+        assert any(m in blind for m in CONFIG_MARKERS), (
+            "the probe no longer puts a marker within a fence-blind backward "
+            "window, so it would pass even with the bug present — rebuild it")
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def test_a_known_bad_client_config_is_actually_detected():
+    """★ THE POSITIVE PROBE. Everything else here asserts ABSENCE.
+
+    Once the repo is clean, "no violations" is what a working guard AND a
+    completely broken one both print. Mutation-proved: making
+    `_window_has_marker` return a bare `False` — so nothing is ever a client
+    config — left the whole file GREEN. Five tests, none of them noticed that
+    detection had been switched off.
+
+    Absence tests cannot cover this because the thing they measure is already
+    zero. Only feeding the scanner a KNOWN-BAD input proves it can still say so.
+    Both spellings, in both file types the defect actually shipped in.
+    """
+    cases = {
+        "_positive_probe.json": (
+            '{\n'
+            '  "mcpServers": {\n'
+            '    "dchub": {\n'
+            '      "url": "https://dchub.cloud/mcp",\n'
+            '      "transport": "streamable-http"\n'
+            '    }\n'
+            '  }\n'
+            '}\n'),
+        "_positive_probe_vscode.json": (
+            '{\n'
+            '  "servers": {\n'
+            '    "dchub": {"type": "streamable-http", "url": "…"}\n'
+            '  }\n'
+            '}\n'),
+        "_positive_probe.md": (
+            "**Claude Desktop**:\n"
+            "```json\n"
+            '{ "mcpServers": { "dchub": { "transport": "streamable-http" } } }\n'
+            "```\n"),
+        "_positive_probe_cli.md": (
+            "Install:\n"
+            "```bash\n"
+            "claude mcp add dchub --transport streamable-http https://dchub.cloud/mcp\n"
+            "```\n"),
+    }
+    written = []
+    try:
+        for name, body in cases.items():
+            path = REPO / "static" / name
+            path.write_text(body, encoding="utf-8")
+            written.append((name, path))
+        found = _violations()
+        for name, _ in written:
+            assert any(name in v for v in found), (
+                f"the scanner did NOT flag {name}, which is a client config "
+                f"naming streamable-http as its transport. Detection is off — "
+                f"every other test in this file passes on an empty result, so "
+                f"this is the only one that can tell you.\n"
+                f"got: {found}")
+    finally:
+        for _name, path in written:
+            path.unlink(missing_ok=True)
 
 
 # ── THE GUARD ────────────────────────────────────────────────────────────────
