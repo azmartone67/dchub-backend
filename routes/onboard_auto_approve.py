@@ -322,6 +322,15 @@ def _ensure_stub_table(c) -> None:
 
 def store_stub_page(c, slug: str, platform_name: str, html: str,
                     submission_id: int | None) -> bool:
+    """Record the approved platform under its slug.
+
+    `platform_name` is the row that matters: `load_stub_html` re-renders
+    the page from it on every request. `html` is kept as an audit
+    snapshot of what the template produced on the approval date (and to
+    satisfy the column's NOT NULL on tables created by earlier deploys)
+    — it is NOT the serving path. Do not reintroduce a read of it: that
+    is what turned a template fix into a hand-run backfill.
+    """
     try:
         _ensure_stub_table(c)
         with c.cursor() as cur:
@@ -349,9 +358,10 @@ def store_stub_page(c, slug: str, platform_name: str, html: str,
         return False
 
 
-def load_stub_html(slug: str):
-    """DB lookup for the public route. None when missing/unavailable.
-    Split out so tests can monkeypatch it."""
+def load_stub_platform_name(slug: str):
+    """DB lookup of the stored PLATFORM NAME for a slug. None when
+    missing/unavailable. Split out so tests can monkeypatch the DB read
+    without importing main."""
     c = None
     try:
         from main import get_db
@@ -359,7 +369,7 @@ def load_stub_html(slug: str):
         if c is None:
             return None
         with c.cursor() as cur:
-            cur.execute("SELECT html FROM integration_stub_pages "
+            cur.execute("SELECT platform_name FROM integration_stub_pages "
                         "WHERE slug = %s", (slug,))
             row = cur.fetchone()
         return row[0] if row else None
@@ -376,6 +386,30 @@ def load_stub_html(slug: str):
                 c.close()
         except Exception:
             pass
+
+
+def load_stub_html(slug: str):
+    """HTML for the public route. None when missing/unavailable.
+    Split out so tests can monkeypatch it.
+
+    Renders at REQUEST time from the stored platform_name instead of
+    returning the HTML snapshot stored at approve time. The stored copy
+    froze the template as it was on the approval date, so a template fix
+    reached only pages approved after it — every earlier row kept serving
+    the old markup until someone backfilled the table by hand. That is
+    how a wrong `"transport": "streamable-http"` client-config block
+    (PR #4282: a value appearing zero times in canon, and a connector
+    that silently does not load) would have outlived its own fix. It
+    also means today's escaping applies to every page, not the escaping
+    that happened to ship on the approval date.
+    """
+    name = load_stub_platform_name(slug)
+    if not name:
+        return None
+    try:
+        return build_stub_html(name, slug)
+    except Exception:
+        return None
 
 
 # ── Tool-tuner seed proposal row ─────────────────────────────────────
