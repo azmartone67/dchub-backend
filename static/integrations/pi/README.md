@@ -63,16 +63,23 @@ curl -H "X-API-Key: YOUR_DCHUB_KEY" \
 
 Transport: Streamable HTTP (SSE fallback supported)
 
-```json
-{
-  "mcpServers": {
-    "dchub-nexus": {
-      "url": "https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp",
-      "transport": "streamable-http"
-    }
-  }
-}
-```
+> **This platform is not an MCP client.** It has no field for a custom MCP
+> server, so no config block applies here.
+>
+> **Install:** reach DC Hub over the REST API —
+> `curl https://dchub.cloud/api/agent/facilities?q=Equinix&country=US`
+> (keyless at free-tier depth; send `X-API-Key` for a higher allowance).
+> Full reference: <https://dchub.cloud/api-docs>
+>
+> Clients that *do* take an MCP config file, each generated from canon:
+> [Claude Desktop](https://dchub.cloud/install/claude-desktop) ·
+> [Claude Code](https://dchub.cloud/install/claude-code) ·
+> [Cursor](https://dchub.cloud/install/cursor) ·
+> [Cline](https://dchub.cloud/install/cline) ·
+> [VS Code](https://dchub.cloud/install/vscode) ·
+> [Windsurf](https://dchub.cloud/install/windsurf) ·
+> [Gemini CLI](https://dchub.cloud/install/gemini-cli) ·
+> [Antigravity](https://dchub.cloud/install/antigravity)
 
 ---
 

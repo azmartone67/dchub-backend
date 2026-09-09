@@ -1,30 +1,14 @@
 {
+  "_client": "Claude Desktop",
+  "_file": "~/Library/Application Support/Claude/claude_desktop_config.json (macOS) · %APPDATA%\\Claude\\claude_desktop_config.json (Windows)",
+  "_canonical_page": "https://dchub.cloud/install/claude-desktop",
+  "_note": "Claude.ai on the WEB takes no config file — it has a connector URL box. Paste https://dchub.cloud/mcp there instead. This file is for the DESKTOP app.",
   "mcpServers": {
-    "dchub-nexus": {
+    "dchub": {
       "url": "https://dchub.cloud/mcp",
-      "transport": "streamable-http",
+      "transport": "http",
       "headers": {
-        "X-API-Key": "YOUR_DCHUB_KEY",
-        "User-Agent": "Claude-DC-Hub/1.0"
-      },
-      "description": "DC Hub — 10,706+ data centers, $185B+ M&A, 7 ISO energy markets",
-      "tools": [
-        "search_facilities",
-        "get_facility",
-        "get_market_data",
-        "search_deals",
-        "get_news",
-        "analyze_site"
-      ],
-      "metadata": {
-        "provider": "DC Hub",
-        "version": "2.1.0",
-        "tier": "pro",
-        "rate_limit": "300 req/min",
-        "platform": "claude",
-        "mcp_native": true,
-        "claude_desktop_compatible": true,
-        "claude_code_compatible": true
+        "X-API-Key": "YOUR_DCHUB_KEY"
       }
     }
   }

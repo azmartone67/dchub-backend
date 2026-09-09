@@ -27,12 +27,19 @@ curl "https://dchub.cloud/api/agent/stats?api_key=YOUR_DCHUB_KEY"
 {
   "mcpServers": {
     "dchub": {
-      "type": "streamable-http",
-      "url": "https://dchub.cloud/mcp"
+      "httpUrl": "https://dchub.cloud/mcp",
+      "headers": {
+        "X-API-Key": "YOUR_DCHUB_KEY"
+      }
     }
   }
 }
 ```
+
+The field is `httpUrl`, not `url` — `url` is the SSE form, and a Streamable-HTTP
+server under `url` is dialled with the wrong transport and never connects.
+Generated from canon at **<https://dchub.cloud/install/gemini-cli>**; prefer that
+page over this snippet. The consumer Gemini app has no custom-MCP field at all.
 
 ---
 

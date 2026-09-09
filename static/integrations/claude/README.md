@@ -18,7 +18,7 @@ Add to your Claude Desktop `claude_desktop_config.json`:
   "mcpServers": {
     "dchub": {
       "url": "https://dchub.cloud/mcp",
-      "transport": "streamable-http",
+      "transport": "http",
       "headers": {
         "X-API-Key": "YOUR_DCHUB_KEY"
       }
@@ -26,6 +26,13 @@ Add to your Claude Desktop `claude_desktop_config.json`:
   }
 }
 ```
+
+The exact file path and block for every client that takes one is generated from
+canon at **<https://dchub.cloud/install/claude-desktop>** (and `/install/claude-code`
+for the CLI). Prefer that page over this snippet — it cannot drift.
+
+**Claude.ai on the web** takes no config file: Settings → Connectors →
+*Add custom connector* → paste `https://dchub.cloud/mcp`, auth blank.
 
 Once configured, Claude can directly call DC Hub tools:
 - "Search for Equinix data centers in Northern Virginia"

@@ -1,28 +1,14 @@
 {
-  "mcpServers": {
-    "dchub-nexus": {
+  "_client": "VS Code (GitHub Copilot agent mode)",
+  "_file": ".vscode/mcp.json in the workspace · or the user profile via the \"MCP: Open User Configuration\" command",
+  "_canonical_page": "https://dchub.cloud/install/vscode",
+  "_note": "The top-level key is `servers`, NOT `mcpServers`. A block copied from Claude Desktop or Cursor parses as JSON and registers nothing.",
+  "servers": {
+    "dchub": {
+      "type": "http",
       "url": "https://dchub.cloud/mcp",
-      "transport": "streamable-http",
       "headers": {
-        "X-API-Key": "YOUR_DCHUB_KEY",
-        "User-Agent": "Copilot-DC-Hub/1.0"
-      },
-      "description": "DC Hub — 10,706+ data centers, $185B+ M&A, 7 ISO energy markets",
-      "tools": [
-        "search_facilities",
-        "get_facility",
-        "get_market_data",
-        "search_deals",
-        "get_news",
-        "analyze_site"
-      ],
-      "metadata": {
-        "provider": "DC Hub",
-        "version": "2.1.0",
-        "tier": "pro",
-        "rate_limit": "300 req/min",
-        "platform": "copilot",
-        "function_calling": true
+        "X-API-Key": "YOUR_DCHUB_KEY"
       }
     }
   }

@@ -16,6 +16,11 @@ Transport: **Streamable HTTP** (MCP spec 2025-03-26)
 | 5 | `get_news` | Get latest data center industry news aggregated from 2,000+ sources |
 | 6 | `analyze_site` | Evaluate a location for data center suitability using DC Hub's scoring engine |
 ## Installation
+> Every client spells the server block differently. These are generated from
+> canon at `https://dchub.cloud/install/<client>` — open yours rather than
+> copying a block from another client, which parses as JSON and registers
+> nothing.
+
 ### Claude Desktop
 Add to your Claude Desktop config file:
 **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -25,27 +30,29 @@ Add to your Claude Desktop config file:
   "mcpServers": {
     "dchub": {
       "url": "https://dchub.cloud/mcp",
-      "transport": "streamable-http"
+      "transport": "http"
     }
   }
 }
 ```
+[/install/claude-desktop](https://dchub.cloud/install/claude-desktop)
 ### Cursor
 Add to your Cursor MCP settings (`.cursor/mcp.json` in your project or global config):
 ```json
 {
   "mcpServers": {
     "dchub": {
-      "url": "https://dchub.cloud/mcp",
-      "transport": "streamable-http"
+      "url": "https://dchub.cloud/mcp"
     }
   }
 }
 ```
+Cursor takes **no** transport key — [/install/cursor](https://dchub.cloud/install/cursor)
 ### Claude Code
 ```bash
-claude mcp add dchub --transport streamable-http https://dchub.cloud/mcp
+claude mcp add dchub --transport http https://dchub.cloud/mcp
 ```
+[/install/claude-code](https://dchub.cloud/install/claude-code)
 ### Run Locally (optional)
 If you want to run your own instance:
 ```bash
