@@ -127,7 +127,9 @@ def test_the_headline_treats_a_placeholder_city_as_absent():
     # segment at all. ★ The dedup basis is UNMOVED — identity_key reads
     # dedup_title, which is still the pre-template string byte for byte, so the
     # 4,363-group measurement quoted above still describes today's grouping.
-    assert hl["title"] == "China Telecom Shanwei Data Center | DC Hub", hl["title"]
+    # the placeholder city is absent, but CN is real and still publishes —
+    # see the floor in tests/test_seo_index_hygiene.py
+    assert hl["title"] == "China Telecom Shanwei Data Center · CN | DC Hub", hl["title"]
     assert hl["dedup_title"] == ("China Telecom Shanwei Data Center — CN "
                                  "Data Center | DC Hub"), hl["dedup_title"]
     assert "regional" not in identity_key(

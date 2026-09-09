@@ -140,12 +140,14 @@ def test_title_is_composed_from_the_template_not_the_old_shape():
         t, city = h["title"], (row[2] or "")
         if is_placeholder_city(city):
             city = ""
+        # the slot is the most specific place we HAVE — city, else state/country
+        loc = city or ", ".join([p for p in (row[3] or "", row[4] or "") if p])
         assert t.endswith(" | DC Hub"), f"{t!r} lost the brand"
         body = t[: -len(" | DC Hub")]
-        if city:
-            assert body.endswith(f" · {city}"), (
-                f"{t!r} does not end in the template's ' · {{City}}'")
-            lead = body[: -len(f" · {city}")]
+        if loc:
+            assert body.endswith(f" · {loc}"), (
+                f"{t!r} does not end in the template's ' · {{Location}}'")
+            lead = body[: -len(f" · {loc}")]
         else:
             lead = body
         assert " — " not in lead, f"old em-dash shape survived in {t!r}"
@@ -175,7 +177,13 @@ def test_site_code_lead_is_kept_and_city_is_not_lost():
     assert h["h1"] == "Amazon Web Services IAD86 — Chantilly Data Center"
 
 
-def test_placeholder_city_is_still_absent_from_the_title():
+def test_placeholder_city_is_absent_but_the_country_still_publishes():
+    """The floor tests/test_seo_index_hygiene.py holds, asserted here too.
+
+    A first cut of this template keyed the slot on `city` alone, so a
+    placeholder-city row rendered with NO location. The country is real.
+    """
     h = facility_headline("Shanwei Data Center", "China Telecom", "Regional",
                           None, "CN")
     assert "Regional" not in h["title"]
+    assert h["title"].endswith(" · CN | DC Hub"), h["title"]

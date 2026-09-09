@@ -67,12 +67,30 @@ def test_the_placeholder_city_is_not_rendered_as_a_place():
     assert "Regional" not in html, "placeholder still rendered somewhere"
 
 
+def _page_title(html):
+    """The <title> only. Asserting on the whole page let a location 'survive'
+    because it appeared in the description or a fact row while the TITLE had
+    dropped it — narrow the floor to the surface it is about."""
+    m = re.search(r"<title>(.*?)</title>", html, re.S)
+    assert m, "no <title> rendered"
+    return m.group(1)
+
+
 def test_the_country_survives_when_the_city_is_a_placeholder():
     """A FLOOR on the test above: it also passes if the location vanished
-    altogether. The country is real and must still be published."""
+    altogether. The country is real and must still be published.
+
+    r-title-template (2026-09-09) changed the SHAPE (`… · CN | DC Hub`, was
+    `… — CN Data Center | DC Hub`) and this floor did its job during that
+    change: the first cut keyed the template's location slot on `city` alone,
+    so these rows — whose city is a placeholder and therefore absent — rendered
+    with no location at all, and this test caught it. The slot is now "the most
+    specific place we actually have"."""
     html = fpp._render_profile(
         _fac("China Telecom Shanwei Data Center", None, **_PLACEHOLDER_ROW), "x")
-    assert "— CN Data Center" in html, "country dropped with the placeholder"
+    title = _page_title(html)
+    assert "CN" in title, f"country dropped with the placeholder: {title!r}"
+    assert "Regional" not in title, title
     assert "China Telecom Shanwei Data Center" in html
 
 
@@ -84,7 +102,10 @@ def test_a_real_city_is_still_rendered():
     html = fpp._render_profile(
         _fac("Telehouse Paris Voltaire", "Telehouse", city="Frankfurt",
              state="", country="DE"), "x")
-    assert "— Frankfurt, DE Data Center" in html
+    # r-title-template (2026-09-09): the title carries the city in the
+    # template's separator. The floor is "a real city IS published", not the
+    # punctuation around it — the two assertions below hold the other surfaces.
+    assert "Frankfurt" in _page_title(html), _page_title(html)
     assert '"addressLocality": "Frankfurt"' in html
     assert "is a data center operated by Telehouse in Frankfurt, DE" in html
 

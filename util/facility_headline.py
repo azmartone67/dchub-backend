@@ -113,7 +113,14 @@ def facility_headline(name, provider, city, state, country):
     #   city note above is there because that grouping is measured, not assumed.
     legacy_title = (f"{disp} — {loc_short} Data Center | DC Hub" if loc_short
                     else f"{disp} Data Center | DC Hub")
-    title = f"{disp} · {city} | DC Hub" if city else f"{disp} | DC Hub"
+    # ★ THE LOCATION SLOT IS "the most specific place we actually have", not
+    #   "city". tests/test_seo_index_hygiene.py holds a FLOOR on this —
+    #   test_the_country_survives_when_the_city_is_a_placeholder — because the
+    #   fix for the 'Regional' placeholder rows could otherwise be satisfied by
+    #   dropping the location ENTIRELY, and the country is real. A first cut of
+    #   this template did exactly that and the floor caught it.
+    loc = city or ", ".join([p for p in (state, country) if p])
+    title = f"{disp} · {loc} | DC Hub" if loc else f"{disp} | DC Hub"
     # r-site-code-title (2026-09-02): operator site-code queries ("interxion
     # mad1", "iad14 data center", "fra28", "htl05", "dus2") sit at pos 6-13
     # with 0 clicks — the code is buried mid-title. When the NAME carries one
@@ -131,7 +138,7 @@ def facility_headline(name, provider, city, state, country):
         # rather than mangling it.
         legacy_title = f"{sc_head} | DC Hub"
         lead = sc_head.split(" — ", 1)[0] if " — " in sc_head else sc_head
-        title = f"{lead} · {city} | DC Hub" if city else f"{lead} | DC Hub"
+        title = f"{lead} · {loc} | DC Hub" if loc else f"{lead} | DC Hub"
         h1 = sc_head
         og_title = sc_head
     return {"op": op, "disp": disp, "loc_short": loc_short, "title": title,
