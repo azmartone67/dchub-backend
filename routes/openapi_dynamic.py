@@ -116,7 +116,18 @@ def openapi_live():
             "freshness_proof": "https://dchub.cloud/freshness",
         },
         "paths": {
-            "/api/v1/search/facilities": {"get": {"summary": "Search facilities",
+            # r-phantom-endpoint (2026-09-09): this key used to carry an
+            # extra "search/" segment before "facilities" — a path that has
+            # NEVER existed and 404s with and without a key. It reads like a
+            # conflation of the two REAL routes: /api/search/facilities (no
+            # v1, powers site search) and this one (the v1 REST surface, which
+            # already takes ?q=). The same phantom sat in the welcome email, so
+            # a new Pro customer's first copy-paste 404'd.
+            # ★ The dead path is described, not spelled, on purpose: quoting a
+            # bad literal in the comment that fixes it re-trips every scanner
+            # aimed at that literal. Verified live 2026-09-09 —
+            # /api/v1/facilities?limit=25 -> 200, 25 rows, 51 fields per row.
+            "/api/v1/facilities": {"get": {"summary": "Search facilities",
                 "description": (f"Search {_fac_s} facilities by city/state/operator/MW."
                                 if _fac_s else "Search facilities by city/state/operator/MW."),
                 "responses": {"200": {"description": "OK"}}}},

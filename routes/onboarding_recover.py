@@ -52,7 +52,7 @@ def _welcome_html(name: str, plan: str, email: str) -> str:
   <p style="color:#444;font-size:14px">Sign in with <b>{email}</b> to open your dashboard, copy your API key, and see your usage.</p>
   <h3 style="font-size:15px;margin:22px 0 6px">Quick start</h3>
   <ul style="color:#444;font-size:14px;padding-left:18px;margin:0 0 16px">
-    <li><b>REST API:</b> <code>curl https://dchub.cloud/api/v1/search/facilities -H "X-API-Key: &lt;your-key&gt;"</code></li>
+    <li><b>REST API:</b> <code>curl -H "X-API-Key: &lt;your-key&gt;" "https://dchub.cloud/api/v1/facilities?limit=5"</code></li>
     <li><b>MCP (for AI agents):</b> add <code>https://dchub.cloud/mcp</code> with header <code>X-API-Key: &lt;your-key&gt;</code></li>
     <li><b>Playground:</b> <a href="https://dchub.cloud/playground">dchub.cloud/playground</a> — try queries in the browser.</li>
   </ul>
