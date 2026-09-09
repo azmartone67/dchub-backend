@@ -1921,6 +1921,74 @@ def _twin_redirect_target(fac, slug):
     return kslug
 
 
+# ── r-facility-hop-collapse (2026-09-09) ────────────────────────────
+# The comment at the alias branch below has claimed "a deterministic single-hop
+# 301, killing the multi-hop chains" since 2026-07-03. It was true of THAT
+# branch and false of the route as a whole: /facility/<id> (seo_pages) 301s to
+# discovered_facilities.canonical_slug, and that stored slug is not always the
+# slug this route terminates on — the two tables disagree. Measured live
+# 2026-09-09 over a 28-id sample of the 18.6k–21.4k range: 5 ids (18%) took
+# TWO hops, e.g.
+#     /facility/19409
+#       → /facilities/unknown-spectrum-charlotte-national-data-center-2336914d
+#       → /facilities/spectrum-charlotte-national-data-center-00f9c9ee
+# Both hops are 301s the origin generates (cf-cache-status: MISS), so this is
+# not a stale edge entry — it is what Googlebot gets.
+#
+# This resolver replays the SAME ladder render_facility_profile walks, without
+# rendering, so a caller can emit one 301 straight to the terminal slug. It
+# does NOT change any slug and does not move any page — the freeze doctrine in
+# facility_slug_freeze.build_canonical_slug still holds: an ugly stable URL
+# beats a pretty one that moves. It only removes the intermediate hop.
+#
+# BOUNDED AND CYCLE-SAFE ON PURPOSE. A 301 loop satisfies every status-code
+# check (each hop is a valid 301), so a resolver that trusted the data to
+# terminate would be the one thing worse than the chain. On a cycle, an
+# over-long chain, or ANY error, it returns the slug it was handed — i.e. the
+# behaviour callers already had.
+def resolve_final_slug(slug: str, max_hops: int = 3) -> str:
+    """Terminal /facilities/<slug> a request for `slug` lands on.
+
+    Returns `slug` unchanged when it already terminates (200 or 404), when the
+    chain cycles, when it is longer than max_hops, or on any failure. Never
+    raises — callers use it to pick a redirect target and must keep working
+    when the DB is unavailable."""
+    start = str(slug or "").strip()
+    if not start:
+        return start
+    seen = {start}
+    cur = start
+    for _ in range(max_hops):
+        try:
+            fac = _fetch_facility_by_slug(cur)
+        except Exception:
+            return start
+        nxt = None
+        if fac:
+            try:
+                nxt = _twin_redirect_target(fac, cur)
+            except Exception:
+                return start
+        else:
+            try:
+                from routes.facility_slug_freeze import resolve_alias
+                nxt = resolve_alias(cur)
+            except Exception:
+                nxt = None
+            if not nxt:
+                try:
+                    nxt = _resolve_legacy_slug(cur)
+                except Exception:
+                    return start
+        if not nxt or nxt == cur:
+            return cur                    # terminal — this slug is served
+        if nxt in seen:
+            return start                  # cycle — hand back the original
+        seen.add(nxt)
+        cur = nxt
+    return start                          # longer than max_hops — don't guess
+
+
 # ── r-facility-entity (2026-09-03) — the machine-readable twin ───────────────
 # Markets got a .json twin; facilities are 20,300+ pages against 249 and had
 # none (/facilities/<slug>.json returned 404). Werkzeug ranks this rule above

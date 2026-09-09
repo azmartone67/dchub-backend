@@ -489,6 +489,26 @@ def facility_page(id_or_slug: str):
         # only for un-backfilled rows (name-too-short still returns None → render).
         _stored_slug = row.get('canonical_slug')
         _canon_slug = _stored_slug if _stored_slug else _canonical_facility_slug(row.get('provider'), row.get('name'))
+        # r-facility-hop-collapse (2026-09-09): the STORED slug is not always the
+        # slug /facilities/<slug> terminates on — discovered_facilities and the
+        # profile route's own twin/alias resolution disagree for ~18% of the
+        # high-id range, so this 301 landed on a slug that 301'd again:
+        #   /facility/19409 → /facilities/unknown-spectrum-…-2336914d
+        #                   → /facilities/spectrum-…-00f9c9ee
+        # Two origin-generated hops (both cf-cache-status: MISS), which is what
+        # GSC files as "Redirect error" and what dilutes the consolidation this
+        # 301 exists to perform. Ask the profile route where the slug actually
+        # terminates and go straight there — ONE hop.
+        # This moves no page: the target is the slug that was already being
+        # served at the end of the chain. resolve_final_slug returns its input
+        # on a cycle, an over-long chain, or any DB failure, so the worst case
+        # here is exactly the behaviour that shipped before.
+        if _canon_slug:
+            try:
+                from routes.facility_profile_page import resolve_final_slug
+                _canon_slug = resolve_final_slug(_canon_slug) or _canon_slug
+            except Exception:
+                pass
         if _canon_slug:
             _resp = redirect(f"https://dchub.cloud/facilities/{_canon_slug}", code=301)
             _resp.headers['Cache-Control'] = 'public, max-age=86400'
