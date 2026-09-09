@@ -391,10 +391,18 @@ _GW_PROBE_MODEL    = os.environ.get("GATEWAY_SPEND_PROBE_MODEL", "claude-haiku-4
 # ONE fleet, not every process. main.py starts health_alerter wherever it is
 # imported, and BOTH services import it (dchub-backend DCHUB_ROLE=web,
 # dchub-worker DCHUB_ROLE=worker, and the worker runs more than one process) —
-# measured 2026-09-01. The pool/restart alerts are about PER-PROCESS state so
-# duplicates there are information; a gateway spend block is GLOBAL, so every
-# process would report the same outage. Probe only from the background role,
-# where the brain actually runs and where the outage bites.
+# measured 2026-09-01. The pool/restart alerts read PER-PROCESS state; a gateway
+# spend block is GLOBAL, so every process would report the same outage. Probe
+# only from the background role, where the brain actually runs and where the
+# outage bites.
+#
+# ★ This comment used to add "so duplicates there are information". That was
+# the reasoning that let one alert reach one person 154 times on 2026-09-08:
+# a duplicate is only information if somebody can still read the mailbox. As
+# of 2026-09-09 EVERY _alert() kind is de-duplicated fleet-wide through the
+# alert_state row, so a fleet-wide pool problem pages once per window instead
+# of once per window per process. The per-process utilisation numbers were
+# never the actionable part of that email; the page was.
 #
 # ★ Deliberately NOT gated on the leader lock. Leadership is unheld for minutes
 # after every worker redeploy (48+ minutes observed 2026-08-22, see
