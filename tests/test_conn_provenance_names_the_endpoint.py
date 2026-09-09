@@ -82,8 +82,8 @@ def test_a_captured_host_string_passes_through():
 
 # ── the verdict has to distinguish the two computes ─────────────────────────
 def test_classify_separates_primary_from_replica(monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", f"postgresql://u:p@{PRIMARY}/neondb")
-    monkeypatch.setenv("NEON_REPLICA_URL", f"postgresql://u:p@{REPLICA}/neondb")
+    monkeypatch.setenv("DATABASE_URL", f"postgresql://{PRIMARY}/neondb")
+    monkeypatch.setenv("NEON_REPLICA_URL", f"postgresql://{REPLICA}/neondb")
     assert classify(PRIMARY) == "primary"
     assert classify(REPLICA) == "replica"
     assert classify("somewhere.else") == "other:somewhere.else"
@@ -109,8 +109,8 @@ def test_note_failed_write_never_raises():
 
 
 def test_the_log_line_carries_host_and_verdict(monkeypatch, caplog):
-    monkeypatch.setenv("DATABASE_URL", f"postgresql://u:p@{PRIMARY}/neondb")
-    monkeypatch.setenv("NEON_REPLICA_URL", f"postgresql://u:p@{REPLICA}/neondb")
+    monkeypatch.setenv("DATABASE_URL", f"postgresql://{PRIMARY}/neondb")
+    monkeypatch.setenv("NEON_REPLICA_URL", f"postgresql://{REPLICA}/neondb")
     with caplog.at_level(logging.WARNING, logger="conn_provenance"):
         note_failed_write(REPLICA, "surface_telemetry", "probe", RuntimeError("ro"))
     line = "\n".join(r.getMessage() for r in caplog.records)
@@ -144,8 +144,8 @@ def test_auto_log_reports_the_real_endpoint_not_unknown(monkeypatch, caplog):
 
     monkeypatch.setattr(surface_brain, "_conn", lambda: conn)
     monkeypatch.setattr(surface_brain, "_rate_limited", lambda _h: False)
-    monkeypatch.setenv("DATABASE_URL", f"postgresql://u:p@{PRIMARY}/neondb")
-    monkeypatch.setenv("NEON_REPLICA_URL", f"postgresql://u:p@{REPLICA}/neondb")
+    monkeypatch.setenv("DATABASE_URL", f"postgresql://{PRIMARY}/neondb")
+    monkeypatch.setenv("NEON_REPLICA_URL", f"postgresql://{REPLICA}/neondb")
 
     app = flask.Flask(__name__)
     with app.test_request_context("/", headers={"User-Agent": "probe"}):
