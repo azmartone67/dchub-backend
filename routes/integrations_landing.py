@@ -112,16 +112,17 @@ MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
   <h2>Step 2 — Add to your agent</h2>
   <ol>
     <li><b>Claude.ai</b>: settings → connectors → <b>+ Add custom connector</b> → name <code>DC Hub</code>, URL paste above, auth blank.</li>
-    <li><b>Claude Desktop</b>: add to <code>claude_desktop_config.json</code>:
-      <pre>"dchub": {
-  "command": "npx",
-  "args": ["-y", "mcp-remote", "https://dchub.cloud/mcp"]
-}</pre></li>
-    <li><b>Cursor / Cline / Continue</b>: streamable-http MCP config:
-      <pre>"dchub": {
-  "transport": "streamable-http",
-  "url": "https://dchub.cloud/mcp"
-}</pre></li>
+    <li><b>Everything with a config file</b> — each client spells the server block differently, so use the
+      page for yours rather than a generic snippet:
+      <a href="/install/claude-desktop">Claude Desktop</a> ·
+      <a href="/install/claude-code">Claude Code</a> ·
+      <a href="/install/cursor">Cursor</a> ·
+      <a href="/install/cline">Cline</a> ·
+      <a href="/install/vscode">VS Code</a> ·
+      <a href="/install/windsurf">Windsurf</a> ·
+      <a href="/install/gemini-cli">Gemini CLI</a> ·
+      <a href="/install/antigravity">Antigravity</a>.
+      Each page carries that client's exact config file path and block, and can mint a free key into it.</li>
   </ol>
 </div>
 
@@ -488,11 +489,15 @@ DC Hub is that server: ask <code>get_grid_intelligence region_id="PJM"</code> or
 
 <h2>Connect in 30 seconds</h2>
 <p><b>Claude.ai:</b> Settings → Connectors → <b>+ Add custom connector</b> → paste <code>https://dchub.cloud/mcp</code>, auth blank.</p>
-<p><b>Cursor / Cline / Continue:</b></p>
-<pre>"dchub": {
-  "transport": "streamable-http",
-  "url": "https://dchub.cloud/mcp"
-}</pre>
+<p><b>Cursor, Cline, VS Code, Windsurf, Claude Desktop/Code, Gemini CLI, Antigravity:</b> each one spells the
+server block differently — <a href="https://dchub.cloud/install/cursor">Cursor</a>,
+<a href="https://dchub.cloud/install/cline">Cline</a>,
+<a href="https://dchub.cloud/install/vscode">VS Code</a>,
+<a href="https://dchub.cloud/install/windsurf">Windsurf</a>,
+<a href="https://dchub.cloud/install/claude-desktop">Claude Desktop</a>,
+<a href="https://dchub.cloud/install/claude-code">Claude Code</a>,
+<a href="https://dchub.cloud/install/gemini-cli">Gemini CLI</a>,
+<a href="https://dchub.cloud/install/antigravity">Antigravity</a> — open yours for its exact file path and block.</p>
 <p>Full per-platform guides on the <a href="https://dchub.cloud/integrations/mcp">connect page</a>.</p>
 
 <h2>Frequently asked</h2>

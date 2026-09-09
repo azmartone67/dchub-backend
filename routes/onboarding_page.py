@@ -64,14 +64,15 @@ pre{background:#0f172a;color:#fff;padding:14px 18px;border-radius:8px;overflow-x
     }
   }
 }</code></pre>
-<p style="margin-top:14px"><strong>Cursor / Cline / Continue.dev</strong>:</p>
-<pre><button onclick="copyPre(this)">copy</button><code>{
-  "dchub": {
-    "transport": "streamable-http",
-    "url": "https://dchub.cloud/mcp",
-    "headers": { "X-API-Key": "__API_KEY__" }
-  }
-}</code></pre>
+<p style="margin-top:14px"><strong>Cursor · Cline · VS Code · Windsurf · Gemini CLI · Antigravity</strong> —
+these do <em>not</em> share one config shape (Cursor takes no transport key, Cline needs
+<code>"type": "streamableHttp"</code>, VS Code nests under <code>servers</code>, Windsurf and Antigravity
+spell the URL <code>serverUrl</code>, Gemini CLI spells it <code>httpUrl</code>), so open the page for yours
+and paste the block it shows, with the key above as the <code>X-API-Key</code> header:</p>
+<p><a href="/install/cursor">Cursor</a> · <a href="/install/cline">Cline</a> ·
+<a href="/install/vscode">VS Code</a> · <a href="/install/windsurf">Windsurf</a> ·
+<a href="/install/gemini-cli">Gemini CLI</a> · <a href="/install/antigravity">Antigravity</a> ·
+<a href="/install/claude-code">Claude Code</a></p>
 <p style="margin-top:14px"><strong>Claude.ai (web)</strong> — Settings → Connectors → + Add custom — URL <code>https://dchub.cloud/mcp</code> — Header <code>X-API-Key: __API_KEY__</code></p></div>
 
 <div class="step"><h2><span class="step-num">3</span> Test it works</h2>

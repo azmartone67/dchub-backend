@@ -555,7 +555,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.64-pro-price-99';
+const WORKER_VERSION = '4.9.65-install-links';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -874,11 +874,18 @@ const MCP_LANDING_HTML_V1 = `<!DOCTYPE html>
   "command": "npx",
   "args": ["-y", "mcp-remote", "https://dchub.cloud/mcp"]
 }</code></pre>
-  <p style="margin-top:18px"><strong>Cursor / Cline / Continue.dev</strong> — streamable-http MCP config:</p>
-  <pre><button class="copybtn" onclick="copyPre(this)">copy</button><code>"dchub": {
-  "transport": "streamable-http",
-  "url": "https://dchub.cloud/mcp"
-}</code></pre>
+  <p style="margin-top:18px"><strong>Cursor / Cline / VS Code / Windsurf / Gemini CLI / Antigravity</strong> &mdash;
+  these do <em>not</em> share one config shape (Cursor takes no transport key, Cline needs
+  <code>"type": "streamableHttp"</code>, VS Code nests under <code>servers</code>, Windsurf and Antigravity
+  spell the URL <code>serverUrl</code>, Gemini CLI spells it <code>httpUrl</code>), so open the page for yours:</p>
+  <p><a href="https://dchub.cloud/install/cursor">Cursor</a> &middot;
+  <a href="https://dchub.cloud/install/cline">Cline</a> &middot;
+  <a href="https://dchub.cloud/install/vscode">VS Code</a> &middot;
+  <a href="https://dchub.cloud/install/windsurf">Windsurf</a> &middot;
+  <a href="https://dchub.cloud/install/gemini-cli">Gemini CLI</a> &middot;
+  <a href="https://dchub.cloud/install/antigravity">Antigravity</a> &middot;
+  <a href="https://dchub.cloud/install/claude-desktop">Claude Desktop</a> &middot;
+  <a href="https://dchub.cloud/install/claude-code">Claude Code</a></p>
 </div>
 
 <footer>
