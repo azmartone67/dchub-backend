@@ -121,8 +121,15 @@ def test_the_headline_treats_a_placeholder_city_as_absent():
     hl = facility_headline("China Telecom Shanwei Data Center", None,
                            "Regional", None, "CN")
     assert hl["loc_short"] == "CN", hl["loc_short"]
-    assert hl["title"] == ("China Telecom Shanwei Data Center — CN "
-                           "Data Center | DC Hub"), hl["title"]
+    # r-title-template (2026-09-09): the DISPLAY title is now
+    # `{Operator} {Site} · {City} · {Grid} | DC Hub`, and this row has no city
+    # (that is the whole point of the lane), so it renders with no location
+    # segment at all. ★ The dedup basis is UNMOVED — identity_key reads
+    # dedup_title, which is still the pre-template string byte for byte, so the
+    # 4,363-group measurement quoted above still describes today's grouping.
+    assert hl["title"] == "China Telecom Shanwei Data Center | DC Hub", hl["title"]
+    assert hl["dedup_title"] == ("China Telecom Shanwei Data Center — CN "
+                                 "Data Center | DC Hub"), hl["dedup_title"]
     assert "regional" not in identity_key(
         "China Telecom Shanwei Data Center", None, "Regional", None, "CN")[1]
     # a real city is untouched
