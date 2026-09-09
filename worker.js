@@ -19,6 +19,22 @@
  * historical entry should name the version it shipped in. Only the title line,
  * which claims to describe the file as it stands, was the lie.
  * ================================================================================
+ * v4.9.64 CHANGES (Sep 08 2026) — Phase pro-price-99:
+ *   - FIX: SIX statements said Pro is $299/mo. Pro has been $99 since
+ *          r-price-collapse (owner call, 2026-09-05). Measured live AFTER the
+ *          Python surfaces were all corrected and deployed, the edge was still
+ *          serving the old price on /.well-known/mcp.json — the manifest agents
+ *          and registries scrape:
+ *              "pro": "$299/mo — 2,000 calls/day + Pro tools (…)"
+ *          worker.js cannot import tier_registry, so it restates prices; the
+ *          surface nobody remembers is the one that stays wrong longest.
+ *          All six now read $99: the HTML tier card, the upgrade button, the
+ *          unlock_more_data description and three pricing maps.
+ *          FENCED by tests/test_worker_prices_match_tier_registry.py, which
+ *          reads BOTH this file and tier_registry.price() and fails on any
+ *          disagreement. Dated CHANGES entries naming $199/$299 are exempt —
+ *          history stays true.
+ * ================================================================================
  * v4.9.63 CHANGES (Sep 08 2026) — Phase header-version-single-source:
  *   - FIX: the title line said v4.9.55 while WORKER_VERSION said 4.9.62 — the
  *          second recurrence of a drift the line's own comment documented and
@@ -539,7 +555,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.63-header-version-single-source';
+const WORKER_VERSION = '4.9.64-pro-price-99';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
