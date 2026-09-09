@@ -49,7 +49,9 @@ def main(argv):
     import psycopg2  # imported late so --help works without the driver
 
     all_tables = '--all-tables' in argv
-    conn = psycopg2.connect(dsn)
+    # Pooler-safe: session-scoped readonly must not land on a SHARED backend.
+    from routes._session_dsn import direct_dsn
+    conn = psycopg2.connect(direct_dsn(dsn))
     conn.set_session(readonly=True, autocommit=True)
     cur = conn.cursor()
 

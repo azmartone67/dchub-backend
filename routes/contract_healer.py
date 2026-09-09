@@ -774,7 +774,9 @@ def _ro_conn():
     if not dsn:
         return None
     try:
-        c = psycopg2.connect(dsn, connect_timeout=8)
+        # Pooler-safe: session-scoped readonly must not land on a SHARED backend.
+        from routes._session_dsn import direct_dsn
+        c = psycopg2.connect(direct_dsn(dsn), connect_timeout=8)
         c.set_session(readonly=True, autocommit=True)
         return c
     except Exception:
