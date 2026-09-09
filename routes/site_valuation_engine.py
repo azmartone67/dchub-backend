@@ -2205,7 +2205,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 </head>
 <body>
 <div class="wrap">
-  <div class="kicker">⌖  Site Valuation Engine  ·  <span style="background:#0EA5E9;color:#000;padding:2px 8px;border-radius:4px;font-weight:800">PRO+ PREMIUM</span></div>
+  <div class="kicker">⌖  Site Valuation Engine  ·  <span style="background:rgba(14,165,233,0.12);color:#0EA5E9;border:1px solid rgba(14,165,233,0.55);padding:2px 8px;border-radius:3px;font-weight:800;cursor:default">PRO+ PREMIUM</span></div>
   <h1>What is your site worth?</h1>
   <p class="tagline">3-scenario NPV: <b>Grid</b> vs <b>Gas BTM</b> vs <b>Gas-to-Grid Hybrid</b>. Built for sellers, landowners, and developers pricing power-ready parcels. Powered by DCPI verdicts across 234+ markets and live gas hub pricing.</p>
 
@@ -3108,8 +3108,8 @@ _PRO_HERO_BANNER = """
             box-shadow:0 10px 40px rgba(14,165,233,0.35);position:relative;overflow:hidden;">
   <div style="display:inline-block;background:rgba(0,0,0,0.35);color:#fff;
               font-size:11px;font-weight:800;letter-spacing:0.18em;
-              padding:6px 12px;border-radius:999px;text-transform:uppercase;
-              margin-bottom:14px;">
+              padding:6px 12px;border-radius:3px;text-transform:uppercase;
+              margin-bottom:14px;cursor:default;">
     🔒 &nbsp; PRO + DEVELOPER + ENTERPRISE ONLY
   </div>
   <h2 style="margin:0 0 8px;color:#fff;font-size:30px;font-weight:800;letter-spacing:-0.01em;">
