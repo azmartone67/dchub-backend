@@ -35,6 +35,7 @@ from flask import Blueprint, jsonify, request
 import psycopg2
 import psycopg2.extras
 from routes._swallowed_writes import note_swallowed_write
+from routes._conn_provenance import conn_host, note_failed_write
 from util.json_column import json_for_column
 
 
@@ -563,6 +564,7 @@ def auto_log(surface_id: str, event_type: str = "view",
              target: Optional[str] = None, outcome: str = "ok"):
     """Fire-and-forget log from a Flask handler. Safe to call from any
     route — DB errors are swallowed."""
+    c_host = None   # captured while OPEN: a closed conn cannot report its host
     try:
         raw_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
                   or request.remote_addr or "")
@@ -572,6 +574,7 @@ def auto_log(surface_id: str, event_type: str = "view",
             return
         c = _conn()
         if c is None: return
+        c_host = conn_host(c)   # must happen before the finally closes it
         try:
             with c.cursor() as cur:
                 cur.execute("""
@@ -584,6 +587,7 @@ def auto_log(surface_id: str, event_type: str = "view",
         finally:
             try: c.close()
             except Exception: pass
-    except Exception:
+    except Exception as e:
         note_swallowed_write("surface_telemetry", where="surface_brain.auto_log")
+        note_failed_write(c_host, "surface_telemetry", "surface_brain.auto_log", e)
         pass   # never crash a request from instrumentation
