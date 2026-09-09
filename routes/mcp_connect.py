@@ -815,8 +815,12 @@ def connect_kimi():
 #
 # ★ ALIASES, NOT NEW CARDS, and that is the point. Writing five fresh cards
 #   would mean a SECOND copy of each config snippet and each count — which is
-#   exactly how the published facility figure sat at 20,900+ in 34 places while
-#   canon moved on. One source, many doors.
+#   exactly how the published facility figure went stale in 34 files at once
+#   while canon moved on (dchub-mcp-server#394). One source, many doors.
+#
+#   ★ And no, the figure is deliberately not quoted here. A comment that spells
+#     out the stale literal re-trips the very scanner that catches it —
+#     tests/test_canonical_counts_drift.py flagged exactly that on this line.
 #
 # ★ 302, NOT 301. These are provisional: any of them may later become a real
 #   _CLIENTS card with its own trial-key mint. A permanently-cached redirect
