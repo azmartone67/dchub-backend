@@ -104,8 +104,13 @@ SEED_REGISTRIES: list[dict] = [
         # abandoned for new listings; we fall back to crawling the
         # directory home and flag with notes.submission_backend_404
         # so the auto-submitter skips it.
+        # ★2026-09-09: the tracked URL was mcphive.com — the WRONG DOMAIN
+        # (the live site is mcp-hive.com, hyphenated) AND a bare homepage.
+        # It could never carry a verdict, which is why this row sat red for
+        # months describing nothing. Now the provider listing that actually
+        # contains our row. Probed before recording: 200, DC Hub present.
         "registry_name": "mcphive",
-        "listing_url":   "https://mcphive.com/",
+        "listing_url":   "https://mcp-hive.com/explore?provider=0f32e358-d410-4e19-9e77-e6dd91150386",
         "submit_url":    None,
         "notes":         {"submission_backend_404": True},
     },
@@ -451,19 +456,51 @@ def _extractor_smithery(html: str) -> dict | None:
 
 
 def _extractor_mcphive(html: str) -> dict | None:
-    """MCPHive lists tool count in a stats grid and shows a 'Last updated'
-    timestamp in the sidebar."""
+    r"""MCPHive's tracked page is a PROVIDER LISTING carrying many servers.
+
+    ★2026-09-09 — THE FIRST-MATCH BUG, AGAIN. This read
+    `re.search(r"(\d+)\s*tools?")` over the WHOLE page. The tracked URL now
+    resolves to a listing with 67 SoftwareApplication entries (DC Hub at
+    index 41), so the first match belonged to whatever server sorted first —
+    measured 2026-09-09: it returned tools=3 (Weather API) while our own row
+    said 82. The page carries 3, 5, 6, 9 and 82. A count scraped off someone
+    else's row is worse than no count: it reads as OUR drift and sends the
+    board chasing a number we never published.
+
+    This is the same defect the classifier already fixed once (mcp.so carried
+    "79 tools" x6 and "55 tools" x1, and first-match made the verdict depend
+    on page order). Fixing it in the classifier did not fix it here.
+
+    So: find OUR entry in the JSON-LD ItemList by name, and read the count out
+    of THAT entry only. No DC Hub entry -> `None`, which is UNVERIFIED, not a
+    zero. An absent row and a row we cannot parse must never look like a
+    measured result.
+    """
     try:
+        # Our row, scoped. The listing embeds one JSON object per server; take
+        # the slice that starts at our name and stops at the next entry.
+        m = re.search(r'"name":"(DC Hub[^"]*)"(.{0,1200}?)(?:\}\}|"@type":"ListItem")',
+                      html, re.S)
+        if not m:
+            return None
+        name, blob = m.group(1), m.group(2)
+
         tools = None
-        m = re.search(r"(\d+)\s*tools?\s*(?:available|exposed|listed)?", html, re.I)
-        if m:
-            tools = _safe_int(m.group(1))
+        counts = {_safe_int(x) for x in re.findall(r"(\d+)\s*tools?\b", blob, re.I)}
+        counts.discard(None)
+        if len(counts) == 1:
+            tools = counts.pop()
+        elif len(counts) > 1:
+            # Disagreement INSIDE our own row is surfaced, never averaged away.
+            tools = max(counts)
+
         last_updated = None
-        m = re.search(r"last\s*updated[^<]{0,4}<[^>]+>([^<]+)<", html, re.I)
-        if m:
-            last_updated = m.group(1).strip()
+        m2 = re.search(r"last\s*updated[^<]{0,4}<[^>]+>([^<]+)<", html, re.I)
+        if m2:
+            last_updated = m2.group(1).strip()
         return {"tools": tools, "uptime": None,
-                "last_updated": last_updated, "status": "ok"}
+                "last_updated": last_updated, "status": "ok",
+                "listing_title": name}
     except Exception:
         return None
 
@@ -1512,7 +1549,7 @@ def discover_endpoint():
 RESEED_BROKEN_REGISTRIES: list[dict] = [
     {
         "registry_name": "mcphive",
-        "listing_url":   "https://mcphive.com/",
+        "listing_url":   "https://mcp-hive.com/explore?provider=0f32e358-d410-4e19-9e77-e6dd91150386",
         "submit_url":    None,
         "notes_patch":   {"submission_backend_404": True,
                           "reseed_reason": "POST /scripts/save_submission.php "
