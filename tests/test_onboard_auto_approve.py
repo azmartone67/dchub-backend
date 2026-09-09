@@ -271,6 +271,39 @@ def test_build_stub_html_escapes_name():
     assert "<script>alert(1)</script>" not in html
 
 
+def test_load_stub_html_renders_at_request_time_not_stored_bytes(monkeypatch):
+    """The stub is RE-RENDERED from platform_name on every request.
+
+    It used to return the HTML snapshot stored at approve time, which
+    froze the template as of the approval date: a template fix reached
+    only pages approved after it, and every earlier row kept serving the
+    old markup until the table was backfilled by hand. If this ever goes
+    back to reading the stored `html` column, the sentinel below stops
+    coming through and this test fails.
+    """
+    monkeypatch.setattr(oaa, "load_stub_platform_name",
+                        lambda slug: "Acme Agent Cloud")
+    monkeypatch.setattr(
+        oaa, "build_stub_html",
+        lambda name, slug: f"<html>FRESH {name} {slug}</html>")
+    assert oaa.load_stub_html("acme-agent-cloud") == \
+        "<html>FRESH Acme Agent Cloud acme-agent-cloud</html>"
+
+
+def test_load_stub_html_none_when_slug_absent(monkeypatch):
+    monkeypatch.setattr(oaa, "load_stub_platform_name", lambda slug: None)
+    assert oaa.load_stub_html("nope") is None
+
+
+def test_served_stub_carries_current_template_not_a_snapshot(monkeypatch):
+    """End-to-end of the same property: what the route serves is exactly
+    what today's build_stub_html emits for that platform."""
+    monkeypatch.setattr(oaa, "load_stub_platform_name",
+                        lambda slug: "Acme Agent Cloud")
+    assert oaa.load_stub_html("acme-agent-cloud") == \
+        oaa.build_stub_html("Acme Agent Cloud", "acme-agent-cloud")
+
+
 def test_slugify():
     assert slugify("Acme Agent Cloud") == "acme-agent-cloud"
     assert slugify("  Émile & Co!  ") == "mile-co"
