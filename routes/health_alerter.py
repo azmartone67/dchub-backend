@@ -53,7 +53,7 @@ _AUTORESET_PCT     = float(os.environ.get("HEALTH_AUTORESET_PCT", "95"))
 _AUTORESET_ENABLE  = str(os.environ.get("HEALTH_AUTORESET_ENABLE", "")).lower() in ("1", "true", "yes")
 _AUTORESET_GAP_S   = int(os.environ.get("HEALTH_AUTORESET_GAP_S", "300"))  # ≥5 min between auto-resets
 
-_last_sent = {}        # in-process rate limit: kind -> ts
+_last_sent = {}        # in-process PRE-filter only; the real gate is alert_state in Postgres
 _consec_high = 0       # consecutive high-pool readings (require 2 → ignore brief spikes)
 _last_reclaims = None  # forced_reclaims at last check (rise = stuck/leaked conns)
 _last_reset = 0.0      # ts of the last auto-reset (rate limit)
@@ -73,13 +73,146 @@ def _send_email(subject: str, html: str) -> bool:
         return False
 
 
-def _alert(kind: str, subject: str, html: str):
+# ── de-duplication across the whole fleet ────────────────────────────────────
+# ★ WHY THIS IS IN POSTGRES AND NOT A MODULE GLOBAL.
+# Every de-dup timer here used to live in process memory (_last_sent below,
+# _wg_last_notified further down). main.py starts this alerter wherever it is
+# imported, both services import it, and each service runs several gunicorn
+# workers — so "one page per day" was one page per day PER PROCESS, and a fresh
+# process starts at zero and pages on its first tick.
+#
+# Measured 2026-09-08 (email_events, Svix-verified webhooks, distinct message
+# ids) against app_health_boots for the same hours:
+#
+#     hour (UTC)     boots   "waiting on a human" emails
+#     09-08 04:00      43       25
+#     09-08 09:00      35       19
+#     09-08 06:00      44       17
+#     09-09 01:00      20       11
+#
+# The alert count tracks PROCESS BOOTS, not elapsed days. 154 copies of one
+# alert reached one person in a day; the ratio sits under 1.0 only because a
+# process that dies inside _INITIAL_DELAY_S never gets to send. That storm ate
+# the Resend free-tier daily quota (100), the account started returning 429,
+# and a customer who paid at 23:52 UTC got no welcome, no key and no receipt.
+# The alarm about stranded customers stranded a customer.
+#
+# So the window is claimed in ONE row, atomically, by whichever process gets
+# there first. The unique index on kind is what serializes it: a bare
+# "SELECT ... WHERE NOT EXISTS" would let two processes both see an empty
+# window and both send.
+_ALERT_STATE_DDL_DONE = False
+
+
+def _alert_conn():
+    """DIRECT connection — never the (possibly exhausted) pool this alerter watches."""
+    import psycopg2
+    url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not url:
+        return None
+    return psycopg2.connect(url, connect_timeout=10)
+
+
+def _claim_alert_window(kind: str, min_interval_s: float):
+    """Try to become the one process that sends `kind` in this window.
+
+    Returns ("claimed", prev_ts | None) — we own it, send;
+            ("suppressed", None)        — someone else already sent, stay quiet;
+            ("nodb", None)              — could not reach Postgres at all.
+
+    ★ "nodb" is deliberately NOT "suppressed". This alerter exists to report DB
+      and pool failure; a gate that fails CLOSED would go silent in exactly the
+      outage it was built for. On a DB error we fall back to the in-process
+      floor and send — noisier, but never silent. See _alert().
+    """
+    global _ALERT_STATE_DDL_DONE
+    c = None
+    try:
+        c = _alert_conn()
+        if c is None:
+            return ("nodb", None)
+        with c:
+            with c.cursor() as cur:
+                # Bounded: this must never park behind another session's lock.
+                # SET LOCAL needs a transaction, and psycopg2 gives us one here
+                # (autocommit is left off on purpose).
+                cur.execute("SET LOCAL lock_timeout = '5s'")
+                cur.execute("SET LOCAL statement_timeout = '10s'")
+                if not _ALERT_STATE_DDL_DONE:
+                    cur.execute("CREATE TABLE IF NOT EXISTS alert_state ("
+                                "kind TEXT PRIMARY KEY, "
+                                "last_sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+                    _ALERT_STATE_DDL_DONE = True
+                cur.execute(
+                    """WITH prev AS (SELECT last_sent_at FROM alert_state WHERE kind = %s)
+                       INSERT INTO alert_state (kind, last_sent_at) VALUES (%s, NOW())
+                       ON CONFLICT (kind) DO UPDATE SET last_sent_at = NOW()
+                        WHERE alert_state.last_sent_at < NOW() - make_interval(secs => %s)
+                       RETURNING (SELECT last_sent_at FROM prev)""",
+                    (kind, kind, float(min_interval_s)))
+                row = cur.fetchone()
+                if row is None:
+                    return ("suppressed", None)   # inside the window; another process has it
+                return ("claimed", row[0])        # row[0] is NULL for a brand-new kind
+    except Exception as e:  # noqa: BLE001
+        log.warning("health_alerter: alert-window claim failed (%s): %s", kind, str(e)[:160])
+        return ("nodb", None)
+    finally:
+        # psycopg2's context manager ends the TRANSACTION, not the connection.
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+
+def _release_alert_window(kind: str, prev):
+    """Give the window back after a FAILED send, so the next tick may retry.
+
+    Without this a send that never landed would still buy a full day of silence
+    — the failure mode that makes an alarm worse than no alarm.
+    """
+    c = None
+    try:
+        c = _alert_conn()
+        if c is None:
+            return
+        with c:
+            with c.cursor() as cur:
+                cur.execute("SET LOCAL lock_timeout = '5s'")
+                if prev is None:
+                    cur.execute("DELETE FROM alert_state WHERE kind = %s", (kind,))
+                else:
+                    cur.execute("UPDATE alert_state SET last_sent_at = %s WHERE kind = %s",
+                                (prev, kind))
+    except Exception as e:  # noqa: BLE001
+        log.warning("health_alerter: alert-window release failed (%s): %s", kind, str(e)[:160])
+    finally:
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+
+def _alert(kind: str, subject: str, html: str, min_interval_s: float = None):
+    """Send at most one `kind` per min_interval_s ACROSS THE FLEET."""
+    interval = _RATE_LIMIT_S if min_interval_s is None else min_interval_s
     now = time.time()
-    if now - _last_sent.get(kind, 0) < _RATE_LIMIT_S:
+    # Cheap local pre-filter. Strictly narrower than the shared gate (same
+    # interval), so it can only ever save a round trip, never widen the window.
+    if now - _last_sent.get(kind, 0) < interval:
+        return
+    state, prev = _claim_alert_window(kind, interval)
+    if state == "suppressed":
+        _last_sent[kind] = now   # remember the fleet's decision; skip the next round trip
+        log.info("health_alerter: alert [%s] suppressed — another process holds the window", kind)
         return
     if _send_email(subject, html):
         _last_sent[kind] = now
         log.warning("health_alerter: ALERT sent [%s] %s", kind, subject)
+    elif state == "claimed":
+        _release_alert_window(kind, prev)
 
 
 # ── 1) pool / circuit-breaker monitor (in-process, in-memory reads) ──────────
@@ -373,6 +506,10 @@ def _gateway_alert_decision(state, blocked_since, last_notified, now):
 #   the API — but it can stop the ask from being invisible.
 _WG_FLOOR_DAYS = float(os.environ.get("WG_ESCALATION_FLOOR_DAYS", "3"))
 _WG_NAG_S = 86400.0
+# ★ Per-process PRE-filter only. It starts at 0.0 in every new process, which is
+# precisely how one alert reached one person 154 times in a day (see the note on
+# _claim_alert_window). The authoritative daily gate is the alert_state row,
+# which _alert() claims with min_interval_s=_WG_NAG_S below.
 _wg_last_notified = 0.0
 
 
@@ -389,18 +526,29 @@ def _white_glove_unworked() -> tuple:
         dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
         if not dsn:
             return (None, None, None)
-        with psycopg2.connect(dsn, connect_timeout=10) as c, c.cursor() as cur:
-            cur.execute("""
-                SELECT COUNT(*) FILTER (WHERE contacted_at IS NULL),
-                       EXTRACT(EPOCH FROM (NOW() - MIN(first_seen_at)
-                           FILTER (WHERE contacted_at IS NULL))) / 86400.0,
-                       COUNT(*)
-                  FROM brain_escalations
-                 WHERE status NOT IN ('resolved', 'closed')
-            """)
-            r = cur.fetchone() or (None, None, None)
-            return (int(r[0] or 0), float(r[1]) if r[1] is not None else None,
-                    int(r[2] or 0))
+        # psycopg2's connection context manager ends the TRANSACTION, not the
+        # connection — "with psycopg2.connect(...)" leaks the socket. This loop
+        # runs hourly in every process, so that leaked a direct Neon connection
+        # per tick, against the very resource this module alarms on.
+        c = psycopg2.connect(dsn, connect_timeout=10)
+        try:
+            with c, c.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) FILTER (WHERE contacted_at IS NULL),
+                           EXTRACT(EPOCH FROM (NOW() - MIN(first_seen_at)
+                               FILTER (WHERE contacted_at IS NULL))) / 86400.0,
+                           COUNT(*)
+                      FROM brain_escalations
+                     WHERE status NOT IN ('resolved', 'closed')
+                """)
+                r = cur.fetchone() or (None, None, None)
+                return (int(r[0] or 0), float(r[1]) if r[1] is not None else None,
+                        int(r[2] or 0))
+        finally:
+            try:
+                c.close()
+            except Exception:
+                pass
     except Exception as e:  # noqa: BLE001
         log.warning("white-glove escalation probe failed: %s", str(e)[:160])
         return (None, None, None)
@@ -452,7 +600,8 @@ def _white_glove_loop():
                        f"</code>. Setting <code>contacted_at</code> stops this nag "
                        f"for that customer.</p>"
                        f"<p><i>This pages you, not the customer. Another automated "
-                       f"email is the one thing already known not to work here.</i></p>")
+                       f"email is the one thing already known not to work here.</i></p>",
+                       min_interval_s=_WG_NAG_S)
             elif action == "clear":
                 _alert("white_glove_worked",
                        "✅ DC Hub: white-glove escalation queue is worked",
