@@ -14,6 +14,7 @@ endpoint the failing ones were on. Every theory fit the evidence equally.
   true, which is worse than no probe because it looks like an answer.
 """
 import logging
+import os
 
 import pytest
 
@@ -54,6 +55,34 @@ class InnerWrapper:
     def __init__(self, raw):
         self._raw = raw
 
+
+def _load_real_surface_brain():
+    """Load routes/surface_brain.py FROM DISK, bypassing sys.modules.
+
+    ★ `import routes.surface_brain` is NOT safe in a full-suite run.
+      tests/test_market_brief_guard.py and tests/test_market_rotation_
+      reachability.py each do
+
+          sys.modules.setdefault("routes.surface_brain",
+                                 types.ModuleType("routes.surface_brain"))
+
+      to keep their own imports cheap. Whichever is collected first installs a
+      STUB carrying only `auto_log` for the rest of the process. Running this
+      file alone gets the real module and passes; `pytest tests/` gets the stub
+      and this test would either error on the missing attribute or — far worse
+      — silently exercise a stub and report green. Load by path so the answer
+      does not depend on collection order.
+    """
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "routes", "surface_brain.py")
+    spec = importlib.util.spec_from_file_location("_real_surface_brain_probe", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # Non-vacuity: if this ever hands back something stub-shaped, fail loudly
+    # rather than skip — a skipped guard reads the same as a passing one.
+    assert hasattr(mod, "_conn"), "loaded a stub, not routes/surface_brain.py"
+    return mod
 
 # ── the host must survive two layers of wrapper ──────────────────────────────
 def test_walks_nested_wrappers_to_the_real_connection():
@@ -126,7 +155,7 @@ def test_the_log_line_carries_host_and_verdict(monkeypatch, caplog):
 # passing the CONNECTION instead of the captured host logs 'unknown' forever.
 def test_auto_log_reports_the_real_endpoint_not_unknown(monkeypatch, caplog):
     flask = pytest.importorskip("flask")
-    surface_brain = pytest.importorskip("routes.surface_brain")
+    surface_brain = _load_real_surface_brain()
 
     conn = FakeConn(REPLICA)
 
