@@ -22,10 +22,11 @@
     "resources_count": 2,
     "prompts_count": 2,
     "client_config": {
+      "_note": "Claude Desktop shape. Every client spells this differently — the per-client block is generated from canon at https://dchub.cloud/install/<client> (claude-desktop, claude-code, cursor, cline, vscode, windsurf, gemini-cli, antigravity). Do not copy this block to a different client.",
       "mcpServers": {
         "dchub": {
           "url": "https://dchub.cloud/mcp",
-          "transport": "streamable-http"
+          "transport": "http"
         }
       }
     },

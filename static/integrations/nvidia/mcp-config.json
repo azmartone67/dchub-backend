@@ -1,32 +1,13 @@
 {
-  "mcpServers": {
-    "dchub": {
-      "type": "streamable-http",
-      "url": "https://dchub.cloud/mcp",
-      "headers": {
-        "X-API-Key": "YOUR_DCHUB_KEY"
-      },
-      "tools": [
-        "search_facilities",
-        "get_facility",
-        "get_market_data",
-        "search_deals",
-        "get_news",
-        "analyze_site"
-      ],
-      "metadata": {
-        "provider": "DC Hub",
-        "version": "2.1.0",
-        "tier": "pro",
-        "rate_limit": "300 req/min",
-        "max_results": 100,
-        "docs": "https://dchub.cloud/api-docs",
-        "nim_compatible": true,
-        "nim_models": [
-          "nvidia/llama-3.1-nemotron-70b",
-          "nvidia/llama-3.1-nemotron-8b"
-        ]
-      }
-    }
-  }
+  "_client": "NVIDIA NIM",
+  "_takes_config_file": false,
+  "_why": "This platform is not an MCP client — it has no field for a custom MCP server, so no config file applies. Reach DC Hub over the REST API (or through an MCP client that does take one).",
+  "install": {
+    "method": "rest-api",
+    "base_url": "https://dchub.cloud/api",
+    "example": "curl https://dchub.cloud/api/agent/facilities?q=Equinix&country=US",
+    "auth": "Keyless at free-tier depth. Send `X-API-Key: <key>` for a higher allowance — https://dchub.cloud/api-docs"
+  },
+  "_canonical_page": "https://dchub.cloud/api-docs",
+  "_clients_that_do_take_a_config_file": "https://dchub.cloud/install/claude-desktop · /install/claude-code · /install/cursor · /install/cline · /install/vscode · /install/windsurf · /install/gemini-cli · /install/antigravity"
 }

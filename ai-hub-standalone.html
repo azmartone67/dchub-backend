@@ -650,8 +650,8 @@ var platforms = [
 ];
 
 var connectionConfigs = [
-    { name: 'Claude Desktop', icon: '🟣', sub: 'claude_desktop_config.json', lang: 'json', code: '{\n  "mcpServers": {\n    "dchub": {\n      "type": "streamable-http",\n      "url": "https://dchub.cloud/mcp"\n    }\n  }\n}' },
-    { name: 'Cursor', icon: '▶️', sub: 'MCP Servers → Add Server → streamable-http', lang: 'json', code: '{\n  "mcpServers": {\n    "dchub": {\n      "type": "streamable-http",\n      "url": "https://dchub.cloud/mcp"\n    }\n  }\n}' },
+    { name: 'Claude Desktop', icon: '🟣', sub: 'claude_desktop_config.json · dchub.cloud/install/claude-desktop', lang: 'json', code: '{\n  "mcpServers": {\n    "dchub": {\n      "url": "https://dchub.cloud/mcp",\n      "transport": "http"\n    }\n  }\n}' },
+    { name: 'Cursor', icon: '▶️', sub: '~/.cursor/mcp.json · dchub.cloud/install/cursor', lang: 'json', code: '{\n  "mcpServers": {\n    "dchub": {\n      "url": "https://dchub.cloud/mcp"\n    }\n  }\n}' },
     { name: 'VS Code (Copilot Agent Mode)', icon: '🤖', sub: '.vscode/mcp.json', lang: 'json', code: '{\n  "servers": {\n    "dchub": {\n      "type": "http",\n      "url": "https://dchub.cloud/mcp"\n    }\n  }\n}' },
     { name: 'Windsurf', icon: '🏄', sub: '~/.codeium/windsurf/mcp_config.json', lang: 'json', code: '{\n  "mcpServers": {\n    "dchub": {\n      "serverUrl": "https://dchub.cloud/mcp"\n    }\n  }\n}' },
     { name: 'Claude Code', icon: '⌨️', sub: 'Terminal', lang: 'bash', code: 'claude mcp add dchub --transport http https://dchub.cloud/mcp' },

@@ -1,26 +1,13 @@
 {
+  "_client": "Gemini CLI",
+  "_file": "~/.gemini/settings.json · or .gemini/settings.json in a project · or one command: gemini mcp add --transport http dchub https://dchub.cloud/mcp",
+  "_canonical_page": "https://dchub.cloud/install/gemini-cli",
+  "_note": "The field is `httpUrl`. `url` is the SSE form — a Streamable-HTTP server under `url` is dialled with the wrong transport and never connects. The consumer Gemini app has no custom-MCP field at all.",
   "mcpServers": {
     "dchub": {
-      "type": "streamable-http",
-      "url": "https://dchub.cloud/mcp",
+      "httpUrl": "https://dchub.cloud/mcp",
       "headers": {
         "X-API-Key": "YOUR_DCHUB_KEY"
-      },
-      "tools": [
-        "search_facilities",
-        "get_facility",
-        "get_market_data",
-        "search_deals",
-        "get_news",
-        "analyze_site"
-      ],
-      "metadata": {
-        "provider": "DC Hub",
-        "version": "2.1.0",
-        "tier": "pro",
-        "rate_limit": "300 req/min",
-        "max_results": 100,
-        "docs": "https://dchub.cloud/api-docs"
       }
     }
   }

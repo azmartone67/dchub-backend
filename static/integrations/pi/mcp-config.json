@@ -1,14 +1,13 @@
 {
-  "mcpServers": {
-    "dchub-nexus": {
-      "url": "https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp",
-      "transport": "streamable-http",
-      "description": "DC Hub \u2014 10,706+ data centers, M&A transactions, energy markets, site scoring",
-      "authentication": {
-        "type": "api-key",
-        "header": "X-API-Key",
-        "key": "YOUR_DCHUB_KEY"
-      }
-    }
-  }
+  "_client": "Pi (Inflection AI)",
+  "_takes_config_file": false,
+  "_why": "This platform is not an MCP client — it has no field for a custom MCP server, so no config file applies. Reach DC Hub over the REST API (or through an MCP client that does take one).",
+  "install": {
+    "method": "rest-api",
+    "base_url": "https://dchub.cloud/api",
+    "example": "curl https://dchub.cloud/api/agent/facilities?q=Equinix&country=US",
+    "auth": "Keyless at free-tier depth. Send `X-API-Key: <key>` for a higher allowance — https://dchub.cloud/api-docs"
+  },
+  "_canonical_page": "https://dchub.cloud/api-docs",
+  "_clients_that_do_take_a_config_file": "https://dchub.cloud/install/claude-desktop · /install/claude-code · /install/cursor · /install/cline · /install/vscode · /install/windsurf · /install/gemini-cli · /install/antigravity"
 }

@@ -1,28 +1,13 @@
 {
-  "mcpServers": {
-    "dchub-nexus": {
-      "url": "https://dchub.cloud/mcp",
-      "transport": "streamable-http",
-      "headers": {
-        "X-API-Key": "YOUR_DCHUB_KEY",
-        "User-Agent": "Perplexity-DC-Hub/1.0"
-      },
-      "description": "DC Hub — 10,706+ data centers, $185B+ M&A, 7 ISO energy markets",
-      "tools": [
-        "search_facilities",
-        "get_facility",
-        "get_market_data",
-        "search_deals",
-        "get_news",
-        "analyze_site"
-      ],
-      "metadata": {
-        "provider": "DC Hub",
-        "version": "2.1.0",
-        "tier": "pro",
-        "rate_limit": "300 req/min",
-        "platform": "perplexity"
-      }
-    }
-  }
+  "_client": "Perplexity (Settings → Connectors → Add custom connector)",
+  "_takes_config_file": false,
+  "_why": "This client runs MCP server-side and exposes a connector URL field with no header field. There is no config file to paste, so this endpoint returns the install path instead of a config block.",
+  "install": {
+    "method": "paste-a-url",
+    "server_url": "https://dchub.cloud/mcp",
+    "instruction": "Open the DC Hub connector settings and paste the server URL above. That is the whole install — no config file, no header, no restart beyond reconnecting the connector.",
+    "auth": "Leave auth blank — DC Hub answers keyless at free-tier depth. For a higher allowance, call the `claim_free_key` tool once connected; it returns a `connect_url` that carries the key in the URL, which is the only durable state on this kind of client."
+  },
+  "_canonical_page": "https://dchub.cloud/integrations/mcp",
+  "_clients_that_do_take_a_config_file": "https://dchub.cloud/install/claude-desktop · /install/claude-code · /install/cursor · /install/cline · /install/vscode · /install/windsurf · /install/gemini-cli · /install/antigravity"
 }

@@ -20,17 +20,25 @@
 
 ### Option B: MCP (Streamable-HTTP)
 
-```json
-{
-  "mcpServers": {
-    "dchub": {
-      "url": "https://dchub.cloud/mcp",
-      "transport": "streamable-http",
-      "headers": {"X-API-Key": "YOUR_DCHUB_KEY"}
-    }
-  }
-}
-```
+> **This platform takes no MCP config file.** It runs MCP server-side and
+> exposes a connector **URL field with no header field**, so there is nothing to
+> paste a JSON block into.
+>
+> **Install:** open the DC Hub connector settings and paste
+> `https://dchub.cloud/mcp` as the server URL. Auth blank — DC Hub answers
+> keyless at free-tier depth. For a higher allowance call the `claim_free_key`
+> tool once connected; it returns a `connect_url` carrying the key in the URL,
+> which is the only durable state on this kind of client.
+>
+> Clients that *do* take a config file, each generated from canon:
+> [Claude Desktop](https://dchub.cloud/install/claude-desktop) ·
+> [Claude Code](https://dchub.cloud/install/claude-code) ·
+> [Cursor](https://dchub.cloud/install/cursor) ·
+> [Cline](https://dchub.cloud/install/cline) ·
+> [VS Code](https://dchub.cloud/install/vscode) ·
+> [Windsurf](https://dchub.cloud/install/windsurf) ·
+> [Gemini CLI](https://dchub.cloud/install/gemini-cli) ·
+> [Antigravity](https://dchub.cloud/install/antigravity)
 
 ### Option C: Direct REST
 

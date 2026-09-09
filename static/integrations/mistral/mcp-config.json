@@ -1,14 +1,13 @@
 {
-  "mcpServers": {
-    "dchub-nexus": {
-      "url": "https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp",
-      "transport": "streamable-http",
-      "description": "DC Hub \u2014 10,706+ data centers, M&A transactions, energy markets, site scoring",
-      "authentication": {
-        "type": "api-key",
-        "header": "X-API-Key",
-        "key": "YOUR_DCHUB_KEY"
-      }
-    }
-  }
+  "_client": "Mistral Le Chat (Custom MCP Connector)",
+  "_takes_config_file": false,
+  "_why": "This client runs MCP server-side and exposes a connector URL field with no header field. There is no config file to paste, so this endpoint returns the install path instead of a config block.",
+  "install": {
+    "method": "paste-a-url",
+    "server_url": "https://dchub.cloud/mcp",
+    "instruction": "Open the DC Hub connector settings and paste the server URL above. That is the whole install — no config file, no header, no restart beyond reconnecting the connector.",
+    "auth": "Leave auth blank — DC Hub answers keyless at free-tier depth. For a higher allowance, call the `claim_free_key` tool once connected; it returns a `connect_url` that carries the key in the URL, which is the only durable state on this kind of client."
+  },
+  "_canonical_page": "https://dchub.cloud/integrations/mcp",
+  "_clients_that_do_take_a_config_file": "https://dchub.cloud/install/claude-desktop · /install/claude-code · /install/cursor · /install/cline · /install/vscode · /install/windsurf · /install/gemini-cli · /install/antigravity"
 }

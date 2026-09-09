@@ -74,7 +74,7 @@
       "walk": 70
     },
     "test_client_config_transport_matches_canon.py": {
-      "pglob": 660
+      "pglob": 670
     },
     "test_continuation_compliance.py": {
       "pglob": 6

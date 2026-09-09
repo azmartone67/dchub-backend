@@ -129,16 +129,34 @@ facilities = r.json()
 ```
 
 ### MCP Client
+
+Every client spells the server block differently, and a block copied from the
+wrong one parses as JSON and registers nothing. Open yours for its exact file
+path and block — each page is generated from canon:
+[Claude Desktop](https://dchub.cloud/install/claude-desktop) ·
+[Claude Code](https://dchub.cloud/install/claude-code) ·
+[Cursor](https://dchub.cloud/install/cursor) ·
+[Cline](https://dchub.cloud/install/cline) ·
+[VS Code](https://dchub.cloud/install/vscode) ·
+[Windsurf](https://dchub.cloud/install/windsurf) ·
+[Gemini CLI](https://dchub.cloud/install/gemini-cli) ·
+[Antigravity](https://dchub.cloud/install/antigravity)
+
+Claude Desktop, for reference:
+
 ```json
 {
   "mcpServers": {
     "dchub": {
       "url": "https://dchub.cloud/mcp",
-      "transport": "streamable-http"
+      "transport": "http"
     }
   }
 }
 ```
+
+Paste-a-URL clients (Claude.ai web, ChatGPT, Grok, Perplexity) have no config
+file — paste `https://dchub.cloud/mcp` into the connector URL box instead.
 
 ## Attribution
 

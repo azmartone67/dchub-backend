@@ -145,13 +145,19 @@ Snippet for the "config snippet for users" section:
 {
   "mcpServers": {
     "dchub": {
-      "transport": "streamable-http",
+      "transport": "http",
       "url": "https://dchub.cloud/mcp",
       "headers": { "X-API-Key": "${DCHUB_API_KEY}" }
     }
   }
 }
 ```
+
+`streamable-http` is DC Hub's own transport in `server.json` / `mcp-server.json`,
+but it is NOT a client-config value — it appears zero times in canon
+(dchub-mcp-server `persist_config.clients`). If the form asks for a per-client
+block, link the generated page instead of pasting this one:
+https://dchub.cloud/install/<client>
 
 ═══════════════════════════════════════════════════════════════════
 ## 6. agent.ai — listing form
