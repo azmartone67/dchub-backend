@@ -288,14 +288,18 @@ def build_stub_html(platform_name: str, slug: str) -> str:
     <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
     <li>In {name}, open the MCP / connector / integrations settings and add a <b>remote MCP server</b> (transport: streamable HTTP).</li>
     <li>Paste the URL. Auth is optional — leave it blank for the keyless free tier, or send <code>Authorization: Bearer &lt;your-dchub-key&gt;</code>.</li>
-    <li>If {name} uses a JSON config file, this block works verbatim:</li>
+    <li>If {name} uses a JSON config file, use the install page for it — MCP clients do <b>not</b>
+        share one config shape, so a generic block is how a connector silently fails to load.
+        We publish a per-client page with the exact file path and block:
+        <a href="https://dchub.cloud/install/cursor">Cursor</a>,
+        <a href="https://dchub.cloud/install/cline">Cline</a>,
+        <a href="https://dchub.cloud/install/vscode">VS Code</a>,
+        <a href="https://dchub.cloud/install/windsurf">Windsurf</a>,
+        <a href="https://dchub.cloud/install/claude-desktop">Claude Desktop</a>,
+        <a href="https://dchub.cloud/install/claude-code">Claude Code</a>,
+        <a href="https://dchub.cloud/install/gemini-cli">Gemini CLI</a>,
+        <a href="https://dchub.cloud/install/antigravity">Antigravity</a>.</li>
   </ol>
-  <pre>{{
-  "dchub": {{
-    "transport": "streamable-http",
-    "url": "https://dchub.cloud/mcp"
-  }}
-}}</pre>
   <p>Then ask the assistant: <i>"Use DC Hub — which US grid has the most headroom right now?"</i> and confirm a <code>get_grid_scoreboard</code> call fires.</p>""",
         auth_html="""<div class="pane">
   <h2>Authentication</h2>

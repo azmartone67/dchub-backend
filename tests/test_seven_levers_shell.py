@@ -490,10 +490,26 @@ def test_repo_worker_is_canon_clean_and_current():
     # 4.9.63, each with the price that matched its own version. A single probe
     # during that window would have "confirmed" either answer. Confirmed only
     # after 12/12 probes agreed, then 6/6 HEAD-vs-GET pairs agreed.
-    # Verify with (want 4.9.64-pro-price-99):
+    #
+    # 4.9.64 -> 4.9.65-install-links (2026-09-09): the MCP_LANDING_HTML_V1 page
+    # served on GET /mcp with Accept: text/html — what a human sees when they
+    # paste the MCP URL into a browser — handed out
+    #     "dchub": { "transport": "streamable-http", "url": ... }
+    # under the heading "Cursor / Cline / Continue.dev". That transport value
+    # appears ZERO times in canon (dchub-mcp-server persist_config.clients):
+    # Cursor takes no transport key, Cline takes `type: "streamableHttp"`,
+    # Claude Desktop takes `transport: "http"`. One block cannot serve three
+    # clients whose shapes disagree, so it linked the per-client /install pages
+    # instead. Same defect and same fix as dchub-backend #4264 (/connect) and
+    # the five Flask surfaces in this PR.
+    # ⚠ PASTE STILL OUTSTANDING as of this commit. Until someone pastes
+    # worker.js into the Cloudflare dashboard, GET /mcp KEEPS SERVING THE WRONG
+    # BLOCK and the live header still reads 4.9.64-pro-price-99. Everything
+    # else in #4282 is Flask and went live on merge; this one did not.
+    # Verify with (want 4.9.65-install-links):
     #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.64-pro-price-99'" in src
+    assert "WORKER_VERSION = '4.9.65-install-links'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

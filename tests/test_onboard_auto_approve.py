@@ -260,7 +260,18 @@ def test_build_stub_html_generic_recipe():
     html = oaa.build_stub_html("Acme Agent Cloud", "acme-agent-cloud")
     assert "Acme Agent Cloud" in html
     assert "https://dchub.cloud/mcp" in html
-    assert "streamable-http" in html
+    # The stub describes the SERVER's transport in prose ("Streamable HTTP"),
+    # which is correct — but it must NOT hand out a client config block. It used
+    # to publish `{"dchub": {"transport": "streamable-http", ...}}` as working
+    # "verbatim" for an ARBITRARY platform name; that value appears zero times in
+    # canon (dchub-mcp-server persist_config.clients) and MCP clients do not
+    # share one shape, so it was a connector that silently does not load.
+    assert "streamable HTTP" in html, "server transport prose dropped"
+    assert '"transport": "streamable-http"' not in html
+    assert '"type": "streamable-http"' not in html
+    # It links the generated per-client pages, which ARE derived from canon.
+    for slug in ("cursor", "cline", "vscode", "claude-desktop"):
+        assert f"/install/{slug}" in html, f"stub does not link /install/{slug}"
     assert "/integrations/acme-agent-cloud" in html   # canonical + og url
     assert "__" not in re.sub(r"__proto__", "", html), \
         "unfilled __SLOT__ placeholders left in stub page"

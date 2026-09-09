@@ -922,11 +922,24 @@ def _issue_body(drifts_by_registry: dict, listings_by_name: dict,
         f"`{(canon.get('markets_floor') or 0):,}+ markets` · "
         f"endpoint `{canon.get('endpoint')}`",
         "",
-        "**Canonical MCP config block (universal copy-paste):**",
-        "```json",
-        json.dumps({"dchub": {"transport": "streamable-http",
-                              "url": canon.get("endpoint")}}, indent=2),
-        "```",
+        # There is NO universal client config block, and this used to publish one
+        # as "canonical". MCP clients disagree on the shape — Cursor takes no
+        # transport key, Cline needs `type: "streamableHttp"`, Claude Desktop
+        # `transport: "http"`, VS Code nests under `servers`, Windsurf and
+        # Antigravity spell the URL `serverUrl`, Gemini CLI `httpUrl` — and this
+        # repo holds no copy of that canon to check a block against (it lives in
+        # dchub-mcp-server `persist_config.clients`). So point the human at the
+        # generated per-client pages, which ARE derived from it, instead of
+        # pasting a hand-written block into registry listings.
+        "**Endpoint to publish:** `" + str(canon.get("endpoint")) + "` "
+        "(transport: Streamable HTTP).",
+        "",
+        "If a listing asks for a client config block, do NOT paste a generic one — "
+        "MCP clients do not share a config shape, and a wrong one is a connector "
+        "that silently does not load. Link the per-client page instead: "
+        "https://dchub.cloud/install/cursor · /install/cline · /install/vscode · "
+        "/install/windsurf · /install/claude-desktop · /install/claude-code · "
+        "/install/gemini-cli · /install/antigravity",
         "",
     ]
     sections = [
