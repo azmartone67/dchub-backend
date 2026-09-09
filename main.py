@@ -14905,8 +14905,29 @@ except Exception as e:
                 if p: request.user = p
             return f(*a, **k)
         return d
-    def send_password_reset_email(*a, **k): pass
-    def send_admin_alert_email(*a, **k): pass
+    # ★ r-welcome-429 (2026-09-09): these were bare `pass`. When the
+    # routes.auth_routes import fails, every password-reset email and every
+    # admin alert became a SILENT no-op — including the 🚨 that tells us a
+    # paying customer never got their key. A stub that swallows the alarm is
+    # worse than no stub: the caller's `try/except` sees success. Fail LOUD.
+    def send_password_reset_email(*a, **k):
+        _t = (a[0] if a else k.get('email')) or '(unknown)'
+        print(f"🚨 send_password_reset_email STUB HIT for {_t} — "
+              f"routes.auth_routes failed to import; NO RESET EMAIL WAS SENT")
+        return False
+
+    def send_admin_alert_email(subject='', body_text='', *a, **k):
+        # Route through the resilient sender rather than dropping the alert.
+        print(f"🚨 ADMIN ALERT (auth_routes import failed): {subject} :: "
+              f"{str(body_text)[:400]}")
+        try:
+            from email_fallback import send_email_resilient
+            _to = (os.environ.get('DCHUB_ADMIN_EMAIL') or 'jonathan@dchub.cloud').strip()
+            return bool(send_email_resilient(_to, subject or 'DC Hub admin alert',
+                                             html_content=body_text))
+        except Exception as _se:
+            print(f"⚠️ admin alert fallback transport failed: {str(_se)[:120]}")
+            return False
 
 
 # =============================================================================
@@ -17079,24 +17100,74 @@ def _detect_duplicate_active_subs(customer_id):
         print(f"[dup-sub-detect] non-fatal: {str(_e)[:160]}")
 
 
+# r-welcome-429 (2026-09-09): Resend rate-limits at ~2 req/s. The checkout
+# webhook fires three emails inside ~440ms, across 2 replicas — so we generated
+# our own 429 and then treated it as a permanent failure. lbthrall@gmail.com
+# paid $99 and received NOTHING: api key, welcome and receipt all died on
+# "HTTP Error 429: Too Many Requests" at 23:52:12-13 UTC on 2026-09-08.
+# Two defenses, both here so every caller inherits them:
+#   1. PACE — serialize sends process-wide to >= _RESEND_MIN_GAP_S apart.
+#   2. RETRY — a 429/5xx is TRANSIENT; honour Retry-After and try again.
+# The pacing lock is per-process, so with N replicas the floor is N/gap; the
+# retry is what actually closes the cross-replica race.
+_RESEND_MIN_GAP_S = 0.6
+_RESEND_MAX_ATTEMPTS = 4
+_RESEND_PACE_LOCK = threading.Lock()
+_RESEND_LAST_SEND = [0.0]
+
+
+def _resend_pace():
+    """Block until at least _RESEND_MIN_GAP_S has passed since the last send."""
+    with _RESEND_PACE_LOCK:
+        gap = time.time() - _RESEND_LAST_SEND[0]
+        if gap < _RESEND_MIN_GAP_S:
+            time.sleep(_RESEND_MIN_GAP_S - gap)
+        _RESEND_LAST_SEND[0] = time.time()
+
+
 def _resend_email(to_email, subject, html, from_email="alerts@dchub.cloud", from_name="DC Hub"):
-    """General Resend send (fallback when SendGrid fails). Light urllib, no SDK.
-    Returns True on 2xx. r-resend-port 2026-06-16."""
-    import os as _os, json as _json, urllib.request as _u
+    """General Resend send. Light urllib, no SDK. Returns True on 2xx.
+
+    r-resend-port 2026-06-16. r-welcome-429 2026-09-09: paced + retried, because
+    a 429 here used to strand a paying customer with no key and no alarm."""
+    import os as _os, json as _json, urllib.request as _u, urllib.error as _ue
     rk = _os.environ.get('DCHUB_RESEND_API_KEY', '') or _os.environ.get('RESEND_API_KEY', '')
     if not rk or not to_email:
         return False
-    try:
-        payload = _json.dumps({"from": f"{from_name} <{from_email}>", "to": [to_email],
-                               "subject": subject, "html": html}).encode()
-        req = _u.Request("https://api.resend.com/emails", data=payload, method="POST",
-                         headers={"Authorization": "Bearer " + rk, "Content-Type": "application/json",
-                                  "User-Agent": "dchub/1.0"})
-        r = _u.urlopen(req, timeout=20)
-        return 200 <= getattr(r, 'status', 0) < 300
-    except Exception as _e:
-        print(f"⚠️ Resend send failed for {to_email}: {str(_e)[:120]}")
-        return False
+    payload = _json.dumps({"from": f"{from_name} <{from_email}>", "to": [to_email],
+                           "subject": subject, "html": html}).encode()
+    for attempt in range(1, _RESEND_MAX_ATTEMPTS + 1):
+        _resend_pace()
+        try:
+            req = _u.Request("https://api.resend.com/emails", data=payload, method="POST",
+                             headers={"Authorization": "Bearer " + rk, "Content-Type": "application/json",
+                                      "User-Agent": "dchub/1.0"})
+            r = _u.urlopen(req, timeout=20)
+            return 200 <= getattr(r, 'status', 0) < 300
+        except _ue.HTTPError as _he:
+            # 429 = rate limit, 5xx = Resend-side blip. Both are RETRYABLE.
+            # A 4xx that is not 429 (bad address, unverified sender) is not —
+            # retrying it just burns the window before the operator is told.
+            retryable = (_he.code == 429 or 500 <= _he.code < 600)
+            if not retryable or attempt == _RESEND_MAX_ATTEMPTS:
+                print(f"⚠️ Resend send failed for {to_email} "
+                      f"(HTTP {_he.code}, attempt {attempt}/{_RESEND_MAX_ATTEMPTS}): "
+                      f"{str(_he)[:120]}")
+                return False
+            try:
+                wait = float(_he.headers.get('Retry-After') or 0) or (0.5 * (2 ** (attempt - 1)))
+            except Exception:
+                wait = 0.5 * (2 ** (attempt - 1))
+            wait = min(wait, 8.0)
+            print(f"↻ Resend {_he.code} for {to_email} — retrying in {wait:.1f}s "
+                  f"(attempt {attempt}/{_RESEND_MAX_ATTEMPTS})")
+            time.sleep(wait)
+        except Exception as _e:
+            if attempt == _RESEND_MAX_ATTEMPTS:
+                print(f"⚠️ Resend send failed for {to_email}: {str(_e)[:120]}")
+                return False
+            time.sleep(0.5 * (2 ** (attempt - 1)))
+    return False
 
 
 def _welcome_recently_sent(to_email):
@@ -17296,6 +17367,43 @@ def _welcome_mcp_connector_html(to_email, raw_api_key):
     <h2 style="margin-top: 32px;">Connect to Claude (or Cursor / Cline)</h2>
     <p>DC Hub is a Model Context Protocol server. Grab your connector URL on your dashboard, then in <strong>Claude.ai &rarr; Settings &rarr; Connectors &rarr; Add custom connector</strong> paste it — full guide at <a href="https://dchub.cloud/mcp" style="color:#00d4ff;">dchub.cloud/mcp</a>.</p>
 """
+
+
+def _alert_welcome_failure(to_email, plan_name, raw_api_key, reset_url, reason=''):
+    """Page the operator when a PAYING customer's welcome did not go out.
+
+    r-welcome-429 (2026-09-09). Deliberately does NOT go through
+    send_admin_alert_email: that name resolves to a `pass` stub whenever the
+    routes.auth_routes import fails (main.py, the ImportError fallback block),
+    so the one alert that mattered could be a silent no-op. This uses the
+    resilient sender directly and, if even that fails, prints the recovery
+    payload to the log so it is recoverable from `railway logs`.
+
+    The body carries what hand-recovery actually needs: the API key and the
+    set-password link. Without the link, "sign in to get your key" is a dead end
+    for a Stripe-created account that has never had a password.
+    """
+    admin_to = (os.environ.get('DCHUB_ADMIN_EMAIL') or 'jonathan@dchub.cloud').strip()
+    subject = f'🚨 Welcome email FAILED for paying customer {to_email}'
+    html = (f'<p><b>{to_email}</b> ({plan_name}) paid and did NOT receive their '
+            f'onboarding email.</p>'
+            f'<p><b>Reason:</b> {reason or "unknown"}</p>'
+            f'<p><b>API key:</b> <code>{raw_api_key}</code></p>'
+            f'<p><b>Set-password link (72h):</b> <code>{reset_url or "(none minted)"}</code></p>'
+            f'<p>Recover with <code>POST /api/v1/admin/resend-welcome</code>, and send the '
+            f'set-password link too — the welcome email never contains the key.</p>')
+    delivered = False
+    try:
+        from email_fallback import send_email_resilient
+        delivered = bool(send_email_resilient(admin_to, subject, html_content=html))
+    except Exception as _ae:
+        print(f"⚠️ welcome-failure alert transport error: {str(_ae)[:120]}")
+    if not delivered:
+        # Last resort: the log IS the alert. Never lose the recovery payload.
+        print(f"🚨 WELCOME FAILURE (alert undeliverable) email={to_email} "
+              f"plan={plan_name} reason={reason} key={raw_api_key} "
+              f"reset_url={reset_url or '(none)'}")
+    return delivered
 
 
 def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_password=None, reset_url=None):
@@ -17512,7 +17620,10 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
                                   from_email='alerts@dchub.cloud', from_name='DC Hub')
                 except Exception:
                     pass
-            print(f"📧 Welcome email sent to {to_email} (resend ok={_ok})")
+            # r-welcome-429 (2026-09-09): this used to print "Welcome email sent"
+            # with ok=False on the same line. The log then read as a success for
+            # a customer who got nothing. Say what actually happened.
+            print(f"📧 Welcome email to {to_email}: {'SENT' if _ok else 'NOT SENT'}")
             # r43-H: record outcome so the daily audit can reconcile.
             if not _ok:
                 _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name,
@@ -17525,6 +17636,16 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             _log_welcome_email(to_email, plan_name,
                                status=('sent' if _ok else 'resend_failed'),
                                claim_id=claim_id)
+            # ★ r-welcome-429 (2026-09-09): THE ALARM GOES ON THE OUTCOME, NOT
+            # THE EXCEPTION. _resend_email swallows its own error and returns
+            # False, so a 429 never raises and never reached the 🚨 alert in the
+            # `except` block below. Three sends failed for lbthrall@gmail.com and
+            # NOTHING was paged — the status column said `resend_failed` and no
+            # one read it. Any terminal non-sent outcome now alerts, however it
+            # got there.
+            if not _ok:
+                _alert_welcome_failure(to_email, plan_name, raw_api_key, reset_url,
+                                       reason='resend_failed (no transport accepted the message)')
         except Exception as e:
             print(f"❌ Welcome email failed for {to_email}: {e}")
             # r-resend-fallback (2026-06-16): SendGrid out of credits ("Maximum
@@ -17541,16 +17662,13 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             # have their credentials. Record it + alert so we can recover.
             _log_welcome_email(to_email, plan_name, status=f'exception:{str(e)[:80]}',
                                claim_id=claim_id)
+            # r-welcome-429 (2026-09-09): routed through the same helper as the
+            # non-exception path so BOTH failure shapes page the operator, and
+            # neither depends on the send_admin_alert_email no-op stub. The old
+            # copy blamed SendGrid; the transport is Resend.
             try:
-                send_admin_alert_email(
-                    f'🚨 Welcome email FAILED to send to {to_email}',
-                    f'<p>SendGrid threw on welcome email for paying customer '
-                    f'<b>{to_email}</b> ({plan_name}).</p>'
-                    f'<p><b>API key:</b> <code>{raw_api_key}</code></p>'
-                    f'<p><b>Set-password link (72h):</b> <code>{reset_url or "(none)"}</code></p>'
-                    f'<p><b>Error:</b> {str(e)}</p>'
-                    f'<p>Deliver the link/key to the customer by hand.</p>'
-                )
+                _alert_welcome_failure(to_email, plan_name, raw_api_key, reset_url,
+                                       reason=f'exception: {str(e)[:160]}')
             except Exception:
                 pass
     threading.Thread(target=_send, daemon=True).start()
@@ -38830,6 +38948,20 @@ try:
           "(POST /api/v1/admin/resend-welcome · GET /api/v1/admin/welcome-log)")
 except Exception as e:
     print(f"📨 Onboarding Recover: ⚠️ Failed to load: {e}")
+
+# Welcome-delivery reconciler (r-welcome-429, 2026-09-09) — the independent
+# cross-check. Finds paid conversions with no successful welcome email beside
+# them, whatever the cause. Born from lbthrall@gmail.com: three sends died on a
+# Resend 429, `welcome_email_log` said `resend_failed`, and nobody was told.
+# Lives under /api/jobs/* so jobs_routes auto-stamps cron_last_run and the
+# platform's external dead-man watches the loop itself.
+try:
+    from routes.welcome_delivery_reconciler import register_welcome_reconciler
+    register_welcome_reconciler(app)
+    print("📬 Welcome Reconciler: ✅ Registered "
+          "(GET/POST /api/jobs/welcome-delivery-reconcile)")
+except Exception as e:
+    print(f"📬 Welcome Reconciler: ⚠️ Failed to load: {e}")
 
 # Key recovery (2026-06-18) — transactional self-serve key-recovery flow so a
 # user who lost their MCP key can recover it by email (key recovery is one of
