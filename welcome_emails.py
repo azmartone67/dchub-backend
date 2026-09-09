@@ -104,14 +104,14 @@ def _billing_vars():
 def _render(template_str, **kwargs):
     """Fill a template, always injecting the canonical billing vars.
 
-    r-substation-canon (2026-09-09): canon_substations is injected HERE rather
-    than left to canon_text(), because only `day0_welcome` wraps its html in
-    canon_text — `day3_value` and `day7_offer` are plain strings that go
-    straight to .format(). A {canon_substations} token in either of those
-    would raise KeyError at send time, not merely render stale."""
-    return template_str.format(**_billing_vars(),
-                               canon_substations=_CANON_SUBSTATIONS,
-                               **kwargs)
+    r-substation-canon (2026-09-09): the substation count is NOT injected here.
+    day3_value's html is wrapped in canon_text() instead, matching day0 — the
+    repo guard tests/test_canon_placeholders_resolved.py requires every
+    placeholder-bearing string to sit inside a resolver call, and it is right
+    to: a raw {canon_*} reaching a customer is worse than a stale number.
+    Subjects are the exception — canon_text never touches them — so the day-3
+    subject interpolates _CANON_SUBSTATIONS at import instead."""
+    return template_str.format(**_billing_vars(), **kwargs)
 
 
 # ─── Email Templates ──────────────────────────────────────
@@ -189,7 +189,7 @@ EMAILS = {
     'day3_value': {
         'subject': f'Did You Know? DC Hub Tracks {_CANON_SUBSTATIONS} Substations Near Data Centers',
         'delay_days': 3,
-        'html': '''
+        'html': canon_text('''
 <!DOCTYPE html>
 <html>
 <head>
@@ -253,7 +253,7 @@ EMAILS = {
 </div>
 </body>
 </html>
-'''
+''')
     },
 
     'day7_convert': {
