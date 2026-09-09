@@ -138,13 +138,25 @@ def session_state(conn):
             target.rollback()   # 25P02 otherwise: the tx is already aborted
         except Exception:  # noqa: BLE001
             pass
-        with target.cursor() as cur:
+        # ★ NOT `with target.cursor() as cur`. db_utils.PGCursorWrapper — what
+        #   the pooled wrappers hand back — implements execute/fetchone/close
+        #   and NO __enter__/__exit__, so `with` raises AttributeError, the
+        #   broad except below swallows it, and this returns None while looking
+        #   like it ran. That shipped in #4287 and produced zero SESSION lines
+        #   in production against a live connection.
+        cur = target.cursor()
+        try:
             cur.execute(
                 "SELECT current_setting('transaction_read_only'),"
                 "       current_setting('default_transaction_read_only'),"
                 "       current_user, current_database(), pg_backend_pid(),"
                 "       pg_is_in_recovery()")
             row = cur.fetchone()
+        finally:
+            try:
+                cur.close()
+            except Exception:  # noqa: BLE001
+                pass
         params = {}
         try:
             params = target.get_dsn_parameters() or {}

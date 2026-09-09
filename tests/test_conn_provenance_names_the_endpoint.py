@@ -198,21 +198,30 @@ from routes._conn_provenance import session_state  # noqa: E402
 
 
 class _SessionCur:
+    """★ MIRRORS db_utils.PGCursorWrapper — execute/fetchone/close and NO
+    __enter__/__exit__.
+
+    The first version of this fixture implemented the context-manager protocol.
+    That made it MORE capable than the real object, so `with conn.cursor()`
+    passed here and raised AttributeError in production — swallowed by the broad
+    except, producing zero SESSION lines against a live connection while every
+    test stayed green. A fixture may never be able to do something the real
+    thing cannot.
+    """
+
     def __init__(self, row, log):
         self._row = row
         self._log = log
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
+        self.closed = False
 
     def execute(self, sql, *a):
         self._log.append(sql)
 
     def fetchone(self):
         return self._row
+
+    def close(self):
+        self.closed = True
 
 
 class SessionConn:
@@ -222,12 +231,14 @@ class SessionConn:
         self._row = row
         self.rolled_back = False
         self.sql = []
+        self.last_cursor = None
 
     def rollback(self):
         self.rolled_back = True
 
     def cursor(self):
-        return _SessionCur(self._row, self.sql)
+        self.last_cursor = _SessionCur(self._row, self.sql)
+        return self.last_cursor
 
     def get_dsn_parameters(self):
         return {"host": REPLICA, "user": "neondb_owner", "dbname": "neondb",
@@ -282,3 +293,26 @@ def test_note_failed_write_emits_the_session_line(monkeypatch, caplog):
     assert "conn-provenance: SESSION" in line
     assert "tx_read_only=on" in line and "pid=4242" in line
     assert "tx_read_only=off" not in line   # control: the assertion can fail
+
+
+def test_session_state_does_not_need_a_context_manager_cursor():
+    """THE #4287 regression, stated directly: PGCursorWrapper has no __enter__.
+
+    Asserted structurally as well as behaviourally — if a future fixture grows
+    __enter__ this test would start passing for the wrong reason.
+    """
+    assert not hasattr(_SessionCur(_ROW, []), "__enter__"), \
+        "fixture drifted from PGCursorWrapper — it must NOT be a context manager"
+    from db_utils import PGCursorWrapper
+    assert not hasattr(PGCursorWrapper, "__enter__"), \
+        "PGCursorWrapper gained __enter__; re-check what session_state relies on"
+    st = session_state(SessionConn(_ROW))
+    assert st is not None, "session_state needed `with cursor()` — it must not"
+    assert st["pid"] == 4242
+
+
+def test_session_state_closes_the_cursor_it_opened():
+    c = SessionConn(_ROW)
+    session_state(c)
+    assert c.last_cursor is not None and c.last_cursor.closed, \
+        "leaked a cursor on a pooled connection"
