@@ -46,8 +46,60 @@ canon_phrases_bp = Blueprint("canon_phrases", __name__)
 #    good body in place (stale beats nothing, and the value is an hour-stable
 #    floor), and a cold cache computes inline exactly as before.
 _CACHE_TTL_S = 300
+
+# ── ★2026-09-09: A PROVISIONAL BODY MUST NOT BE MEMOIZED FOR THE FULL TTL.
+#
+#    resolve_public_floors_cached() answers immediately with PINNED floors on a
+#    cold process and warms in the background — MEASURED at 7.6-15.5s. So the
+#    cold window at its source is seconds. This memo then held that cold body
+#    for the whole 300s, turning a ~10s condition into a 5-minute one.
+#
+#    That matters because of what sits downstream. Every edge MISS inside the
+#    window re-caches a cold, under-stated body at Cloudflare — observed
+#    2026-09-09: cf-cache-status HIT, age 1741, serving facilities "20,700+"
+#    while this origin was already warm at "21,200+". A 5-minute origin window
+#    is 30x more chances to be snapshotted for an hour than a 10s one.
+#
+#    ★ THIS IS THE LEVER THAT ACTUALLY MOVES, and the note is here so nobody
+#    "fixes" it at the wrong layer. Shortening Cache-Control does NOT work: the
+#    zone Cache Rule for /api/v1/ is override_origin, and the response reaching
+#    a client carries `private, max-age=0, must-revalidate` rather than the
+#    `public, max-age=3600` set below — CF rewrites it and caches anyway. Only
+#    the zone rule (dashboard) or a purge can change EDGE behaviour. What the
+#    origin controls is how long it keeps ANSWERING cold, which is this.
+#
+#    Deliberately not zero: a provisional body still costs a full rebuild
+#    (resolve_canon's tools probe alone is seconds), so retrying every request
+#    would hammer the origin exactly when it is already unhealthy.
+_PROVISIONAL_TTL_S = 20
 _cache_lock = threading.Lock()
-_cache = {"at": 0.0, "body": None}
+_cache = {"at": 0.0, "body": None, "ttl": _CACHE_TTL_S}
+
+
+def _is_provisional(body):
+    """True when `body` carries PINNED floors rather than measurements.
+
+    Same discriminator, and for the same reason, as the frontend heal that
+    consumes this endpoint (dchub-frontend#1424): `cold` alone is not enough,
+    because the PINNED-fallback path sets cold=False while every floor key is
+    pinned, and a DEGRADED body is live for its siblings and pinned for the one
+    rejected key.
+
+    Reads ONLY the floor keys. `substations`, `fiber_routes`,
+    `transmission_lines` and `assets` are "pinned" on a perfectly warm bundle by
+    design — they are not in _PUBLIC_FLOOR_KEYS, so the overlay can never mark
+    them live, and treating them as evidence would make EVERY body look
+    provisional and pin the TTL to 20s forever."""
+    if not isinstance(body, dict):
+        return True
+    if body.get("cold") or body.get("degraded"):
+        return True
+    try:
+        from ai_surface_canon import _PUBLIC_FLOOR_KEYS as floor_keys
+    except Exception:
+        floor_keys = ("facilities", "deals", "markets", "countries")
+    src = body.get("value_source") or {}
+    return not any(src.get(k) == "live" for k in floor_keys)
 
 
 def _cached_body(builder):
@@ -60,7 +112,7 @@ def _cached_body(builder):
     """
     now = time.time()
     with _cache_lock:
-        if _cache["body"] is not None and (now - _cache["at"]) < _CACHE_TTL_S:
+        if _cache["body"] is not None and (now - _cache["at"]) < _cache["ttl"]:
             return _cache["body"], True
         try:
             body = builder()
@@ -72,6 +124,9 @@ def _cached_body(builder):
         if body is not None:
             _cache["at"] = time.time()
             _cache["body"] = body
+            # A provisional body is held only long enough to keep a stampede off
+            # a sick origin; a good one keeps the full TTL.
+            _cache["ttl"] = _PROVISIONAL_TTL_S if _is_provisional(body) else _CACHE_TTL_S
         return body, False
 
 
