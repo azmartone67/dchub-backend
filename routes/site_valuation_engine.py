@@ -2146,7 +2146,14 @@ h1 { font-size: 36px; font-weight: 700; margin: 0 0 8px; }
 form { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin: 24px 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
 form label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
 form input { background: #0a0a0a; border: 1px solid var(--border); color: var(--fg); padding: 10px 12px; border-radius: 6px; font-size: 14px; font-family: inherit; }
-form input:focus { outline: none; border-color: var(--accent); }
+form input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-color: var(--accent); }
+    form input:focus { border-color: var(--accent); }
+    /* Clicking the LABEL text focuses the input (implicit association), but a
+       1px border tint is below the threshold at which a person registers that
+       anything happened — which is why Clarity scored those clicks dead. Tint
+       the whole label so the click has a visible consequence where the cursor
+       actually is. */
+    form label:focus-within { color: var(--accent); }
 form button { grid-column: 1 / -1; background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 12px 24px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; }
 form button:hover { background: var(--accent2); }
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin: 16px 0; }
@@ -2220,7 +2227,7 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   </div>
 
   <form id="valForm">
-    <label>Site label &nbsp;<span style="color:var(--accent2);font-size:11px">optional · PDF title, e.g. "A1 Campus — Millville NJ"</span><br><input id="site_label" type="text" maxlength="80" placeholder="Powered-Land Site"></label>
+    <label>Site label &nbsp;<span style="color:var(--accent2);font-size:11px">optional · titles the report, e.g. "A1 Campus — Millville NJ"</span><br><input id="site_label" type="text" maxlength="80" placeholder="Powered-Land Site"></label>
     <label>Lat &nbsp;<span style="color:var(--accent2);font-size:11px">[-90 → 90]</span><br><input id="lat" type="number" step="any" min="-90" max="90" value="33.45" inputmode="decimal" required></label>
     <label>Lon &nbsp;<span style="color:var(--accent2);font-size:11px">[-180 → 180, W is negative]</span><br><input id="lon" type="number" step="any" min="-180" max="180" value="-112.07" inputmode="decimal" required></label>
     <label>Acres &nbsp;<span style="color:var(--accent2);font-size:11px">> 0</span><br><input id="acres" type="number" step="any" min="0.1" value="50" inputmode="decimal" required></label>
@@ -3132,8 +3139,9 @@ _PRO_HERO_BANNER = """
 
 # Minimal PRO+ confirmation banner (so paid users see something too)
 _PRO_OK_BANNER = """
-<div style="background:rgba(16,185,129,0.08);border:1px solid #10b981;
-            border-radius:12px;padding:14px 18px;margin:0 0 24px;
+<div style="background:rgba(16,185,129,0.06);
+            border-left:3px solid #10b981;border-radius:0 6px 6px 0;
+            padding:12px 16px;margin:0 0 24px;
             color:#10b981;font-size:13px;font-weight:600;
             display:flex;align-items:center;gap:10px;">
   <span style="font-size:16px">✓</span>
