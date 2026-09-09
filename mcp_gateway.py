@@ -44,6 +44,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, make_response
 from internal_auth import is_valid_internal_key
 from db_utils import get_db, try_get_db
+from routes._conn_provenance import note_failed_write
 from ai_surface_canon import canon_text
 
 # r-failover-guard (2026-07-14): on the Render failover STANDBY (read-only Neon
@@ -607,6 +608,7 @@ class GatewayDB:
                 except Exception:
                     pass
             logger.error(f"Failed to log discovery hit: {e}")
+            note_failed_write(conn, "discovery_hits", "mcp_gateway.log_discovery_hit", e)
         finally:
             if conn:
                 try:
@@ -667,6 +669,7 @@ class GatewayDB:
                 except Exception:
                     pass
             logger.error(f"Failed to log discovered platform: {e}")
+            note_failed_write(conn, "discovered_platforms", "mcp_gateway.log_discovered_platform", e)
         finally:
             if conn:
                 try:

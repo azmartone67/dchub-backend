@@ -237,6 +237,8 @@ def _flush_once():
         dead = _requeue(entries, count_try=reached_db)
         log.warning("agent_requests flush failed; %d rows re-queued, %d quarantined "
                     "after %d attempts: %s", len(entries) - dead, dead, _MAX_TRIES, e)
+        from routes._conn_provenance import note_failed_write   # lazy: avoids a cycle
+        note_failed_write(conn, "agent_requests", "agent_request_writer._flush", e)
     finally:
         if conn is not None:
             try:
