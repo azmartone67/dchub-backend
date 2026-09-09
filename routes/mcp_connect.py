@@ -805,6 +805,48 @@ def connect_kimi():
     return _serve("kimi")
 
 
+# ── Deep links onto content we ALREADY publish ──────────────────────────────
+# MEASURED 2026-09-09, at the edge and on this origin: /connect/{claude,
+# perplexity, copilot, grok, windsurf} were 404 while nine siblings answered
+# 200. Every one of the five already has VERIFIED setup instructions live
+# somewhere else — the first four as sections of static/connect.html
+# (id="claude-ai", "perplexity", "copilot", "grok"), Windsurf as the live
+# /install/windsurf page carrying ~/.codeium/windsurf/mcp_config.json.
+#
+# ★ ALIASES, NOT NEW CARDS, and that is the point. Writing five fresh cards
+#   would mean a SECOND copy of each config snippet and each count — which is
+#   exactly how the published facility figure sat at 20,900+ in 34 places while
+#   canon moved on. One source, many doors.
+#
+# ★ 302, NOT 301. These are provisional: any of them may later become a real
+#   _CLIENTS card with its own trial-key mint. A permanently-cached redirect
+#   would outlive that decision in browsers we cannot reach — and _worker.js
+#   already carries the scar of a 301 that pointed into a 404
+#   (/connect/mcp.html -> /connect/mcp).
+_CONNECT_ALIASES = {
+    "claude":     "/connect#claude-ai",
+    "perplexity": "/connect#perplexity",
+    "copilot":    "/connect#copilot",
+    "grok":       "/connect#grok",
+    "windsurf":   "/install/windsurf",
+}
+
+
+def _alias_view(target):
+    def _view():
+        return redirect(target, code=302)
+    return _view
+
+
+for _slug, _target in _CONNECT_ALIASES.items():
+    mcp_connect_bp.add_url_rule(
+        "/connect/" + _slug,
+        endpoint="connect_alias_" + _slug.replace("-", "_"),
+        view_func=_alias_view(_target),
+        methods=["GET"],
+    )
+
+
 # Best-effort "this view's key" hook the JS calls after a successful mint.
 # Updates the connect_landing_views row with key_minted_for so the funnel
 # can attribute trial keys -> page that minted them.
