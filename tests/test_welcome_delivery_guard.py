@@ -124,3 +124,27 @@ def test_resend_pacing_uses_the_shared_lock():
         "_resend_pace does not delegate to email_fallback's shared pacer — "
         "two locks means two independent rates against one API limit."
     )
+
+
+# ── 6. retry the transient, fail fast on the terminal ────────────────────
+@pytest.mark.parametrize("status,retryable", [
+    (429, True),     # the exact status that stranded lbthrall@gmail.com
+    (500, True),
+    (503, True),
+    (200, False),
+    (401, False),    # bad key — retrying hides it from the operator
+    (422, False),    # unverified sender / bad address — never self-heals
+])
+def test_resend_retry_wait_classifies_status(status, retryable):
+    from email_fallback import resend_retry_wait
+    wait = resend_retry_wait(status, {}, 1)
+    assert (wait is not None) is retryable, f"status {status} -> {wait}"
+
+
+def test_resend_retry_wait_honours_retry_after_and_caps_it():
+    from email_fallback import resend_retry_wait
+    assert resend_retry_wait(429, {"Retry-After": "3"}, 1) == 3.0
+    # A hostile/broken header must not park the worker for an hour.
+    assert resend_retry_wait(429, {"Retry-After": "9999"}, 1) == 8.0
+    # Unparseable header falls back to backoff rather than raising.
+    assert resend_retry_wait(429, {"Retry-After": "soon"}, 1) == 0.5
