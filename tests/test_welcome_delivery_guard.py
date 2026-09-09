@@ -110,3 +110,17 @@ def test_reconcile_verdict_zero_is_not_health(considered, stranded, healthy):
     assert ok is healthy, f"considered={considered} stranded={stranded} -> {verdict}"
     if considered == 0:
         assert "NO_DATA" in verdict
+
+
+# ── 5. one pacer, one rate ───────────────────────────────────────────────
+def test_resend_pacing_uses_the_shared_lock():
+    """main and email_fallback both POST api.resend.com. Two independent
+    pacers would each look correct and together permit twice Resend's limit —
+    the same shape of error as a fallback that reuses its primary's provider."""
+    fn = _func(_tree(), "_resend_pace")
+    names = {n.module for n in ast.walk(fn) if isinstance(n, ast.ImportFrom)}
+    names |= {a.name for n in ast.walk(fn) if isinstance(n, ast.Import) for a in n.names}
+    assert "email_fallback" in names, (
+        "_resend_pace does not delegate to email_fallback's shared pacer — "
+        "two locks means two independent rates against one API limit."
+    )

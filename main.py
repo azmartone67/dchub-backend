@@ -17110,19 +17110,29 @@ def _detect_duplicate_active_subs(customer_id):
 #   2. RETRY — a 429/5xx is TRANSIENT; honour Retry-After and try again.
 # The pacing lock is per-process, so with N replicas the floor is N/gap; the
 # retry is what actually closes the cross-replica race.
-_RESEND_MIN_GAP_S = 0.6
 _RESEND_MAX_ATTEMPTS = 4
-_RESEND_PACE_LOCK = threading.Lock()
+# ★ The pacer lives in email_fallback (a LEAF module — main imports it, never the
+# reverse) so BOTH Resend call paths share ONE lock and therefore one rate. Two
+# independent pacers would each look correct and together permit twice the
+# limit — which is the same shape of mistake as a fallback that reuses its
+# primary's provider.
+_RESEND_PACE_FALLBACK_LOCK = threading.Lock()
 _RESEND_LAST_SEND = [0.0]
 
 
 def _resend_pace():
-    """Block until at least _RESEND_MIN_GAP_S has passed since the last send."""
-    with _RESEND_PACE_LOCK:
-        gap = time.time() - _RESEND_LAST_SEND[0]
-        if gap < _RESEND_MIN_GAP_S:
-            time.sleep(_RESEND_MIN_GAP_S - gap)
-        _RESEND_LAST_SEND[0] = time.time()
+    """Block until the shared Resend gap has elapsed. Delegates to
+    email_fallback so every send in this process queues on one lock."""
+    try:
+        from email_fallback import resend_pace as _shared_pace
+        return _shared_pace()
+    except Exception:
+        # email_fallback unimportable: pace locally rather than not at all.
+        with _RESEND_PACE_FALLBACK_LOCK:
+            gap = time.time() - _RESEND_LAST_SEND[0]
+            if gap < 0.6:
+                time.sleep(0.6 - gap)
+            _RESEND_LAST_SEND[0] = time.time()
 
 
 def _resend_email(to_email, subject, html, from_email="alerts@dchub.cloud", from_name="DC Hub"):
