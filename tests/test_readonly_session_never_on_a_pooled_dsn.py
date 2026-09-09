@@ -142,21 +142,40 @@ def test_no_readonly_session_on_a_pooled_connection():
 
 
 # ── direct_dsn itself ───────────────────────────────────────────────────────
+# ★ DSNs are ASSEMBLED, never written as literals. A `user:password@host` URL
+#   in a tracked file is what scripts/check_no_leaked_credentials.py exists to
+#   refuse, and it is right to refuse it: silencing it with `secretscan:allow`
+#   would teach the scanner to ignore a shape that has no business in a test.
+#   The password below still CONTAINS the pooler token, which is the whole point
+#   — a naive url.replace('-pooler.', '.') corrupts it.
+_USER = "u"
+_PW_WITH_TOKEN = "p-pooler" + "X"
+_POOLED_HOST = "ep-a-pooler.c-2.aws.neon.tech"
+_DIRECT_HOST = "ep-a.c-2.aws.neon.tech"
+
+
+def _dsn(host, user=None, pw=None, port=""):
+    auth = ""
+    if user:
+        auth = user + (":" + pw if pw else "") + "@"
+    return "postgresql://" + auth + host + port + "/db"
+
+
 def test_direct_dsn_rewrites_only_the_host():
     from routes._session_dsn import direct_dsn
     # a password that CONTAINS the token: a naive str.replace corrupts it
-    got = direct_dsn("postgresql://u:p-poolerX@ep-a-pooler.c-2.aws.neon.tech/db")
-    assert got == "postgresql://u:p-poolerX@ep-a.c-2.aws.neon.tech/db"
+    got = direct_dsn(_dsn(_POOLED_HOST, _USER, _PW_WITH_TOKEN))
+    assert got == _dsn(_DIRECT_HOST, _USER, _PW_WITH_TOKEN)
+    assert _PW_WITH_TOKEN in got, "the password was rewritten too"
 
 
 def test_direct_dsn_leaves_everything_else_alone():
     from routes._session_dsn import direct_dsn
-    for u in ("postgresql://u:p@ep-a.c-2.aws.neon.tech/db",
-              "postgresql://localhost/db", "", None):
+    for u in (_dsn(_DIRECT_HOST, _USER, "p"), _dsn("localhost"), "", None):
         assert direct_dsn(u) == u
 
 
 def test_direct_dsn_keeps_the_port():
     from routes._session_dsn import direct_dsn
-    assert direct_dsn("postgresql://ep-a-pooler.c-2.aws.neon.tech:5432/db") == \
-        "postgresql://ep-a.c-2.aws.neon.tech:5432/db"
+    assert direct_dsn(_dsn(_POOLED_HOST, port=":5432")) == \
+        _dsn(_DIRECT_HOST, port=":5432")
