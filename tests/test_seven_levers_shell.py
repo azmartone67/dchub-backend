@@ -474,7 +474,26 @@ def test_repo_worker_is_canon_clean_and_current():
     # Verify with (want 4.9.63-header-version-single-source):
     #   curl -sI "https://dchub.cloud/grid/ERCOT?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.63-header-version-single-source'" in src
+    #
+    # 4.9.63 -> 4.9.64-pro-price-99 (2026-09-08): SIX statements in worker.js
+    # said Pro is $299/mo. Pro has been $99 since r-price-collapse (owner call,
+    # 2026-09-05). Measured live AFTER every Python surface had been corrected
+    # and deployed, the edge was still serving the old price on
+    # /.well-known/mcp.json — the manifest agents and registries scrape:
+    #     "pro": "$299/mo — 2,000 calls/day + Pro tools (…)"
+    # worker.js cannot import tier_registry, so it restates prices; the surface
+    # nobody remembers is the one that stays wrong longest. Fenced by
+    # tests/test_worker_prices_match_tier_registry.py, which reads BOTH this
+    # file and tier_registry.price() and fails on any disagreement.
+    # ✓ PASTED AND VERIFIED LIVE 2026-09-08. Propagation was SPLIT for about a
+    # minute — 2 of 8 probes returned 4.9.64 while the rest still returned
+    # 4.9.63, each with the price that matched its own version. A single probe
+    # during that window would have "confirmed" either answer. Confirmed only
+    # after 12/12 probes agreed, then 6/6 HEAD-vs-GET pairs agreed.
+    # Verify with (want 4.9.64-pro-price-99):
+    #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.64-pro-price-99'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
