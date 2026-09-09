@@ -106,6 +106,61 @@ def classify(host):
     return "other:" + host
 
 
+def session_state(conn):
+    """What the SERVER says about this very connection, or None.
+
+    ★ Round 1 answered "which endpoint" — every failing write was on the
+      PRIMARY (endpoint=primary, sqlstate=25006), which exonerated the read
+      replica entirely. That leaves the harder question: a session on a
+      WRITABLE primary refusing writes. The distinguishing facts all live on
+      the server side, so ask the server rather than infer.
+
+    The connection has an ABORTED transaction at this point — the failed write
+    is what brought us here — so roll back first or every query returns 25P02.
+    """
+    if isinstance(conn, str) or conn is None:
+        return None
+    target = conn
+    for _ in range(6):
+        if hasattr(target, "cursor"):
+            break
+        nxt = None
+        for attr in ("_raw", "_conn", "conn", "connection"):
+            nxt = getattr(target, attr, None)
+            if nxt is not None and nxt is not target:
+                break
+            nxt = None
+        if nxt is None:
+            return None
+        target = nxt
+    try:
+        try:
+            target.rollback()   # 25P02 otherwise: the tx is already aborted
+        except Exception:  # noqa: BLE001
+            pass
+        with target.cursor() as cur:
+            cur.execute(
+                "SELECT current_setting('transaction_read_only'),"
+                "       current_setting('default_transaction_read_only'),"
+                "       current_user, current_database(), pg_backend_pid(),"
+                "       pg_is_in_recovery()")
+            row = cur.fetchone()
+        params = {}
+        try:
+            params = target.get_dsn_parameters() or {}
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "tx_read_only": row[0], "default_read_only": row[1],
+            "user": row[2], "db": row[3], "pid": row[4], "in_recovery": row[5],
+            "dsn_options": params.get("options") or "",
+            "dsn_user": params.get("user") or "",
+            "dsn_db": params.get("dbname") or "",
+        }
+    except Exception:  # noqa: BLE001
+        return None
+
+
 _ENDPOINTS_LOGGED = False
 
 
@@ -125,6 +180,14 @@ def note_failed_write(conn, table, where, exc=None):
             table, where, verdict, host or _UNKNOWN, code,
             (str(exc)[:120] if exc is not None else ""),
         )
+        st = session_state(conn)
+        if st:
+            log.warning("conn-provenance: SESSION table=%s tx_read_only=%s "
+                        "default_read_only=%s user=%s db=%s pid=%s "
+                        "in_recovery=%s dsn_options=%r dsn_user=%s dsn_db=%s",
+                        table, st["tx_read_only"], st["default_read_only"],
+                        st["user"], st["db"], st["pid"], st["in_recovery"],
+                        st["dsn_options"], st["dsn_user"], st["dsn_db"])
     except Exception:  # noqa: BLE001 — instrumentation must never break a caller
         pass
 

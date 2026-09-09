@@ -188,3 +188,97 @@ def test_auto_log_reports_the_real_endpoint_not_unknown(monkeypatch, caplog):
     assert "host=unknown" not in line, \
         "reported 'unknown': the host was read AFTER close instead of captured while open"
     assert REPLICA in line and "endpoint=replica" in line
+
+
+# ── round 2: what the SERVER says about the failing connection ──────────────
+# Round 1 returned endpoint=primary for every failure, which exonerated the read
+# replica and left "a session on a writable primary refusing writes". These
+# facts only exist server-side, so they have to be asked for, not inferred.
+from routes._conn_provenance import session_state  # noqa: E402
+
+
+class _SessionCur:
+    def __init__(self, row, log):
+        self._row = row
+        self._log = log
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, *a):
+        self._log.append(sql)
+
+    def fetchone(self):
+        return self._row
+
+
+class SessionConn:
+    """A connection whose transaction is ABORTED, as it is after a failed write."""
+
+    def __init__(self, row):
+        self._row = row
+        self.rolled_back = False
+        self.sql = []
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def cursor(self):
+        return _SessionCur(self._row, self.sql)
+
+    def get_dsn_parameters(self):
+        return {"host": REPLICA, "user": "neondb_owner", "dbname": "neondb",
+                "options": "-c default_transaction_read_only=on"}
+
+
+_ROW = ("on", "on", "neondb_owner", "neondb", 4242, False)
+
+
+def test_session_state_reports_what_the_server_says():
+    st = session_state(SessionConn(_ROW))
+    assert st is not None
+    assert st["tx_read_only"] == "on"
+    assert st["default_read_only"] == "on"
+    assert st["user"] == "neondb_owner" and st["pid"] == 4242
+    assert st["dsn_options"] == "-c default_transaction_read_only=on"
+
+
+def test_session_state_rolls_back_first():
+    """Without this every query returns 25P02 and the probe learns nothing."""
+    c = SessionConn(_ROW)
+    session_state(c)
+    assert c.rolled_back, "did not roll back — an aborted tx answers 25P02, not facts"
+
+
+def test_session_state_finds_the_connection_through_wrappers():
+    assert session_state(OuterWrapper(InnerWrapper(SessionConn(_ROW)))) is not None
+
+
+def test_session_state_is_none_for_a_captured_host_string():
+    """surface_brain hands in a string; there is no live session to ask."""
+    assert session_state(PRIMARY) is None
+    assert session_state(None) is None
+
+
+def test_session_state_never_raises():
+    class Exploding:
+        def cursor(self):
+            raise ValueError("boom")
+
+        def rollback(self):
+            raise ValueError("boom")
+
+    assert session_state(Exploding()) is None
+
+
+def test_note_failed_write_emits_the_session_line(monkeypatch, caplog):
+    monkeypatch.setenv("DATABASE_URL", f"postgresql://{PRIMARY}/neondb")
+    with caplog.at_level(logging.WARNING, logger="conn_provenance"):
+        note_failed_write(SessionConn(_ROW), "agent_requests", "probe", RuntimeError("ro"))
+    line = "\n".join(r.getMessage() for r in caplog.records)
+    assert "conn-provenance: SESSION" in line
+    assert "tx_read_only=on" in line and "pid=4242" in line
+    assert "tx_read_only=off" not in line   # control: the assertion can fail
