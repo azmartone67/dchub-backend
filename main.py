@@ -17600,6 +17600,23 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 
     <p>Manage your API keys, view usage, and billing: <a href="https://dchub.cloud/dashboard" style="color: #00d4ff;">dchub.cloud/dashboard</a></p>
     <p>Full API docs: <a href="https://dchub.cloud/api" style="color: #00d4ff;">dchub.cloud/api</a></p>
+
+    <!-- r-welcome-links (2026-09-09): before this, the paid welcome email
+         linked only the dashboard and the API docs. A buyer who is not a
+         developer had nothing to click. Measured: of the 10 most recent
+         paying customers, 9 have made ZERO API calls, several for 200+ days.
+         These three are the non-developer on-ramps, and all three were
+         probed live (200, cache-busted, redirects followed) on 2026-09-09. -->
+    <p style="margin-top:22px;"><strong>Three places to start:</strong></p>
+    <ul style="padding-left:18px;">
+      <li><a href="https://dchub.cloud/playground" style="color: #00d4ff;">Playground</a>
+          &mdash; run real queries in your browser, no setup and no key needed.</li>
+      <li><a href="https://dchub.cloud/guide" style="color: #00d4ff;">Getting Started guide</a>
+          &mdash; connect DC Hub to Claude in about five minutes, copy-paste only.</li>
+      <li><a href="https://dchub.cloud/land-power-map" style="color: #00d4ff;">Land &amp; Power map</a>
+          &mdash; substations, transmission, fiber and gas on one map for site selection.</li>
+    </ul>
+
     <p>Questions? Just reply to this email.</p>
     <p>-- The DC Hub Team</p>
   </div>

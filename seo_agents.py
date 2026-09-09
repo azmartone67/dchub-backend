@@ -113,7 +113,7 @@ SOCIAL_TEMPLATES = [
                    "• 170+ countries covered\n"
                    "• 787 M&A deals ($10.6B value)\n"
                    "• 7.8 GW under construction\n"
-                   "• 612+ substations mapped\n\n"
+                   "• {canon_substations} substations mapped\n\n"
                    "The most comprehensive data center intelligence platform:\n"
                    "👉 {url}\n\n"
                    "{hashtags}"),

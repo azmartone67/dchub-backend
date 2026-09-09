@@ -23,6 +23,18 @@ from utc_clock import utc_now
 
 logger = logging.getLogger('welcome_emails')
 
+# r-substation-canon (2026-09-09): the day-3 subject and stat box both
+# hardcoded a three-digit substation count. Live COUNT(*) FROM substations is 127,293 — the literal was
+# wrong by ~208x, on a claim sent to every new signup.
+#
+# ★ Resolved HERE, at import, and interpolated with an f-string — NOT left as
+# a {canon_substations} token in the subject. Subjects are the one part of
+# these templates canon_text() never touches (only `html` is wrapped), and
+# _send_drip does template['subject'].format(name=name) at the send site. A
+# token in the subject would therefore raise KeyError: 'canon_substations'
+# and break the send outright, rather than merely shipping stale text.
+_CANON_SUBSTATIONS = canon_text("{canon_substations}") or "127,000+"
+
 # ─── Billing copy (canonical — never hardcode) ────────────
 # Dollar price comes from tier_registry.TIER_PRICE_USD_MONTH; the checkout URL
 # comes from routes/_stripe_links.py. Templates carry {pro_price}/{pro_url}
@@ -90,8 +102,16 @@ def _billing_vars():
 
 
 def _render(template_str, **kwargs):
-    """Fill a template, always injecting the canonical billing vars."""
-    return template_str.format(**_billing_vars(), **kwargs)
+    """Fill a template, always injecting the canonical billing vars.
+
+    r-substation-canon (2026-09-09): canon_substations is injected HERE rather
+    than left to canon_text(), because only `day0_welcome` wraps its html in
+    canon_text — `day3_value` and `day7_offer` are plain strings that go
+    straight to .format(). A {canon_substations} token in either of those
+    would raise KeyError at send time, not merely render stale."""
+    return template_str.format(**_billing_vars(),
+                               canon_substations=_CANON_SUBSTATIONS,
+                               **kwargs)
 
 
 # ─── Email Templates ──────────────────────────────────────
@@ -167,7 +187,7 @@ EMAILS = {
     },
 
     'day3_value': {
-        'subject': 'Did You Know? DC Hub Tracks 612+ Substations Near Data Centers',
+        'subject': f'Did You Know? DC Hub Tracks {_CANON_SUBSTATIONS} Substations Near Data Centers',
         'delay_days': 3,
         'html': '''
 <!DOCTYPE html>
@@ -203,7 +223,7 @@ EMAILS = {
 
   <div class="stat-row">
     <div class="stat-box">
-      <div class="stat-num">612+</div>
+      <div class="stat-num">{canon_substations}</div>
       <div class="stat-label">Substations</div>
     </div>
     <div class="stat-box">
