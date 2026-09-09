@@ -153,6 +153,34 @@ def get_auth_context(request=None) -> AuthContext:
 
     if api_key:
         ctx = _resolve_via_mcp_gatekeeper(api_key)
+        # ★ r-whoami-promote (2026-09-09): PROMOTE-ONLY MERGE. This used to be
+        # `if ctx is not None: return ctx`, which reads like a fallthrough and
+        # is actually terminal — mcp_gatekeeper.resolve_tier NEVER returns
+        # None, it returns Tier.FREE. So every resolver below was unreachable
+        # for ANY request carrying an X-API-Key.
+        #
+        # Consequence, measured 2026-09-08: lbthrall@gmail.com paid $99, and
+        # /api/v1/whoami reported {"tier":"free","is_paid":false} for his
+        # working key — byte-identical to the answer for a garbage key. The
+        # data endpoints were right (they call util.tier_gate directly); only
+        # this resolver was blind, so the one endpoint a customer is told to
+        # use to CHECK their key was the one that lied.
+        #
+        # Why the merge is promote-ONLY: the canonical resolver is consulted
+        # to RAISE a tier, never to lower one. A DB hiccup inside it therefore
+        # cannot demote a caller the gatekeeper already recognised.
+        #
+        # ★ What this deliberately does NOT do: add a `dch_live_` branch to
+        # mcp_gatekeeper.resolve_tier. That prefix is a MINT CHANNEL, not a
+        # tier — flask_mcp_endpoints.py:2247 mints FREE claim_free_key keys
+        # with the identical prefix. Mapping it to PRO would hand paid data to
+        # every free key ever claimed.
+        if ctx is not None and _rank(ctx.tier) > _rank(TIER_FREE):
+            return ctx
+        promoted = _resolve_via_canonical(request)
+        if promoted is not None and _rank(promoted.tier) > _rank(
+                ctx.tier if ctx is not None else TIER_ANONYMOUS):
+            return promoted
         if ctx is not None:
             return ctx
 
@@ -216,6 +244,40 @@ def _resolve_via_mcp_gatekeeper(api_key: str) -> Optional[AuthContext]:
     except Exception as e:
         print(f"[auth_context] mcp_gatekeeper resolve failed: {e}",
               file=sys.stderr)
+        return None
+
+
+def _rank(tier: Optional[str]) -> int:
+    """Numeric rank for a tier string. Unknown tiers rank 0, never negative."""
+    return _TIER_RANK.get((tier or "").lower(), 0)
+
+
+def _resolve_via_canonical(request) -> Optional[AuthContext]:
+    """util.tier_gate.resolve_tier — the cross-table resolver the DATA paths
+    already use (api_keys dual-hash + users.plan + raw mcp_dev_keys lookup +
+    session cookie). It is the only one that sees a dch_live_ key, because
+    mcp_gatekeeper fences its DB lookup behind `startswith("dchub_")`.
+
+    Returns None on any failure so the caller keeps whatever it already had —
+    this resolver may only PROMOTE.
+    """
+    try:
+        from util.tier_gate import resolve_tier as _canonical_resolve
+        tier_obj, ctx = _canonical_resolve(request)
+        if tier_obj is None:
+            return None
+        tier_name = (tier_obj.name.lower() if hasattr(tier_obj, "name")
+                     else str(tier_obj).lower())
+        ctx = ctx or {}
+        return AuthContext(
+            tier=tier_name,
+            user_id=ctx.get("developer_id") or ctx.get("user_id"),
+            email=ctx.get("email"),
+            api_key=None,          # never echo the key back out of here
+            source="x-api-key",
+        )
+    except Exception as e:
+        print(f"[auth_context] canonical resolve failed: {e}", file=sys.stderr)
         return None
 
 
