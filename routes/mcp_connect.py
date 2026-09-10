@@ -316,6 +316,89 @@ kimi mcp add --transport http dchub https://dchub.cloud/mcp --header "X-API-Key:
             "Compare interconnection-queue depth for ERCOT vs PJM this quarter.",
         ],
     },
+    # ── r-connect-qwen (2026-09-09) ──────────────────────────────────────
+    # A CARD, not an alias, because the alias doctrine below has a
+    # precondition this fails: an alias points at instructions we ALREADY
+    # publish. Nothing on this site documents Qwen Code — grep for it and the
+    # only hits are outreach shells listing it as a platform that "awaits first
+    # request". There is no door to point at, so this builds one.
+    #
+    # ★ `httpUrl`, NOT `url`. Qwen Code reserves plain `url` for SSE and uses
+    #   `httpUrl` for streamable HTTP; pasting `url` here yields a server that
+    #   registers and never answers. Verified against Qwen's own MCP docs
+    #   2026-09-09, not inferred from the shape other clients use — this is the
+    #   one field where the usual mcpServers muscle-memory is wrong.
+    "qwen": {
+        "name":           "Qwen Code",
+        "tagline":        "Alibaba's Qwen Code CLI — add DC Hub MCP in one line",
+        "install_path":   "~/.qwen/settings.json",
+        "install_path_win": "%USERPROFILE%\\.qwen\\settings.json",
+        "snippet_lang":   "text",
+        "snippet":        """# One line, from your shell:
+qwen mcp add --transport http dchub https://dchub.cloud/mcp --header "X-API-Key: {{TRIAL_KEY}}"
+
+# Or edit ~/.qwen/settings.json directly.
+# NOTE the key: Qwen uses "httpUrl" for streamable HTTP. Plain "url" is the
+# SSE field — it will register but never answer.
+{
+  "mcpServers": {
+    "dchub": {
+      "httpUrl": "https://dchub.cloud/mcp",
+      "headers": { "X-API-Key": "{{TRIAL_KEY}}" },
+      "timeout": 30000
+    }
+  }
+}
+
+# Repo-scoped instead of global? Same block in .qwen/settings.json at the
+# project root. Inside a Qwen Code session, /mcp shows connection status.""",
+        "deep_link":      "",
+        "deep_link_label": "",
+        "examples": [
+            "Which US markets have the most interconnection headroom for a 200MW AI campus?",
+            "get_grid_scoreboard — compare ERCOT and PJM renewable headroom right now.",
+            "What is the fiber lead-in situation for a site at 32.78, -96.80?",
+        ],
+    },
+    # ── r-connect-zai (2026-09-09) ───────────────────────────────────────
+    # ★ THIS CARD DELIBERATELY DOES NOT PRINT A REMOTE-SERVER JSON BLOCK.
+    #   Z.ai's ZCode documents the config LOCATION and the nested shape
+    #   (`mcp.servers`, NOT a top-level `mcpServers` map — the one thing most
+    #   people get wrong by analogy), and it documents adding a remote service
+    #   through the UI form. It does NOT document the JSON key names for a
+    #   remote HTTP entry. Guessing them ("url"? "httpUrl"? "type":
+    #   "streamableHttp"?) would publish a snippet that silently fails, which
+    #   is worse than the 404 this replaces — and the Qwen note above is the
+    #   proof that these keys genuinely differ per client.
+    #   So: the documented UI path, and the parts of the file format that ARE
+    #   documented. If someone confirms the remote key, this becomes a snippet.
+    "zai": {
+        "name":           "Z.ai (ZCode)",
+        "tagline":        "Zhipu's ZCode CLI — add DC Hub as a remote MCP service",
+        "install_path":   "~/.zcode/cli/config.json",
+        "install_path_win": "%USERPROFILE%\\.zcode\\cli\\config.json",
+        "snippet_lang":   "text",
+        "snippet":        """In ZCode: open the MCP panel -> Add -> choose HTTP
+  Service URL:  https://dchub.cloud/mcp
+  Expand "Headers (optional)" and add:
+      X-API-Key: {{TRIAL_KEY}}
+
+Config file, if you prefer to look: ~/.zcode/cli/config.json
+Workspace scope instead: <project root>/.zcode/config.json
+
+★ ZCode nests MCP under "mcp": { "servers": { ... } } — it is NOT the
+  top-level "mcpServers" map that Claude/Cursor/Qwen use. We publish the UI
+  path above rather than a hand-written remote block because Z.ai's own docs
+  specify the form, not the JSON key names for a remote HTTP entry, and a
+  guessed key connects to nothing.""",
+        "deep_link":      "",
+        "deep_link_label": "",
+        "examples": [
+            "Rank the top 10 global markets by DCPI for 2026 build readiness.",
+            "Which grid regions have the shortest time-to-power for 100MW?",
+            "Show the latest hyperscaler data-center M&A deals this quarter.",
+        ],
+    },
 }
 
 
@@ -805,6 +888,16 @@ def connect_kimi():
     return _serve("kimi")
 
 
+@mcp_connect_bp.route("/connect/qwen", methods=["GET"])
+def connect_qwen():
+    return _serve("qwen")
+
+
+@mcp_connect_bp.route("/connect/zai", methods=["GET"])
+def connect_zai():
+    return _serve("zai")
+
+
 # ── Deep links onto content we ALREADY publish ──────────────────────────────
 # MEASURED 2026-09-09, at the edge and on this origin: /connect/{claude,
 # perplexity, copilot, grok, windsurf} were 404 while nine siblings answered
@@ -833,6 +926,18 @@ _CONNECT_ALIASES = {
     "copilot":    "/connect#copilot",
     "grok":       "/connect#grok",
     "windsurf":   "/install/windsurf",
+    # ★ r-connect-minimax (2026-09-09) — an alias to the generic start block,
+    #   and NOT a card, because MiniMax could not be verified as an MCP CLIENT
+    #   at all. Every MiniMax MCP artifact findable 2026-09-09 is MiniMax
+    #   acting as a SERVER (MiniMax-MCP and MiniMax-Coding-Plan-MCP publish
+    #   TTS / image / video / search tools for other clients to consume).
+    #   Nothing documents MiniMax consuming a remote MCP endpoint.
+    #   Writing a MiniMax card would therefore have asserted a capability we
+    #   have no evidence exists — the failure mode the agent-instructions block
+    #   on /connect names outright ("never invent tool names"), applied to a
+    #   product instead of a tool. This kills the 404 and hands over the
+    #   endpoint without claiming MiniMax can use it.
+    "minimax":    "/connect#start",
 }
 
 
