@@ -114,8 +114,26 @@ def test_subject_matches_the_lane():
     assert mcr.subject_for(_row(ok_calls=0), 2026, 8).startswith("A question")
 
 
-def test_first_name_prefers_the_registered_name_then_the_local_part():
-    assert mcr._first_name("Theodore Karklins", "tj@karklins.com") == "Theodore"
+def test_a_preferred_name_beats_the_registered_one(monkeypatch):
+    """users.name holds the signup name — tj@karklins.com registered as
+    "Theodore Karklins" but is called TJ. A nickname is not derivable from any
+    column, so it is stated explicitly and must WIN over users.name."""
+    monkeypatch.delenv("DCHUB_PREFERRED_NAMES", raising=False)
+    assert mcr._first_name("Theodore Karklins", "tj@karklins.com") == "TJ"
+    assert mcr._first_name("Theodore Karklins", "TJ@Karklins.com ") == "TJ", \
+        "lookup must be case- and whitespace-insensitive"
+
+
+def test_env_can_add_a_preferred_name_without_a_deploy(monkeypatch):
+    monkeypatch.setenv("DCHUB_PREFERRED_NAMES", "Bob@Example.com: Bobby ,junk")
+    assert mcr._first_name("Robert Tables", "bob@example.com") == "Bobby"
+    # A malformed entry must not take the whole map down with it.
+    assert mcr._first_name("Theodore Karklins", "tj@karklins.com") == "TJ"
+
+
+def test_first_name_falls_back_to_registered_name_then_local_part(monkeypatch):
+    monkeypatch.delenv("DCHUB_PREFERRED_NAMES", raising=False)
+    assert mcr._first_name("Eren Ozmen", "eren@globeholder.ai") == "Eren"
     assert mcr._first_name("", "seydi.sokhona@gmail.com") == "Seydi"
     assert mcr._first_name("", "") == "there"
 

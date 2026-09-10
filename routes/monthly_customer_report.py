@@ -419,7 +419,33 @@ _BODY = (f"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
          f"color:{_INK};line-height:1.6;font-size:16px;")
 
 
+# What a customer is actually CALLED, where it differs from what they
+# registered as. Not derivable from any column — users.name holds the legal/
+# signup name, so tj@karklins.com renders as "Theodore" unless it is stated
+# here. Hand-curated on purpose; a wrong guess at a nickname is worse than the
+# formal name. Overridable per-deploy with DCHUB_PREFERRED_NAMES, formatted
+# "email:Name,email:Name", so adding one does not need a deploy.
+PREFERRED_FIRST_NAMES = {
+    "tj@karklins.com": "TJ",
+}
+
+
+def _preferred_names() -> dict[str, str]:
+    out = dict(PREFERRED_FIRST_NAMES)
+    raw = os.environ.get("DCHUB_PREFERRED_NAMES", "")
+    for pair in raw.split(","):
+        if ":" in pair:
+            em, nm = pair.split(":", 1)
+            em, nm = em.strip().lower(), nm.strip()
+            if em and nm:
+                out[em] = nm
+    return out
+
+
 def _first_name(name: str, email: str) -> str:
+    preferred = _preferred_names().get((email or "").strip().lower())
+    if preferred:
+        return preferred
     n = (name or "").strip()
     if n:
         return n.split()[0]
