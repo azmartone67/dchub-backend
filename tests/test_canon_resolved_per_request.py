@@ -136,3 +136,81 @@ def test_register_only_shrinks():
         "these modules no longer latch canon at import — delete their register "
         "entries in the same commit as the fix:\n  " + "\n  ".join(stale)
     )
+
+
+def test_registered_names_only_shrink():
+    """★ A registered FILE may not grow NEW latched names under its entry.
+
+    The two tests above leave a hole between them. The first only looks at
+    files ABSENT from the register; the second only asks whether a registered
+    file still latches SOMETHING. Neither compares the NAMES, so once a file
+    is listed, a new module-scope canon_text() added beside the registered one
+    inherits the exemption and no guard fires — the entry reads as one unit of
+    debt while carrying two.
+
+    That is not hypothetical. Measured 2026-09-10 on origin/main, this file
+    listed ai_outreach_agent.py as ['_CANON_FAC'] while the module latched
+    ['_CANON_FAC', '_CANON_NEWS_SOURCES']; _CANON_NEWS_SOURCES was added under
+    cover of the existing entry and drained no ledger. Every other one of the
+    25 entries matched its live names exactly.
+
+    Requiring live ⊆ registered makes the register name-level: fixing one latch
+    means deleting its NAME in the same commit, and adding one fails here until
+    it is written down deliberately.
+    """
+    live = _latched_modules()
+    # Floor: an empty scan would satisfy the subset check vacuously for every
+    # entry. test_register_only_shrinks would also fail in that case, but this
+    # test must not depend on a sibling to avoid a silent green.
+    assert live, (
+        "the scanner found NO import-time latches anywhere — it is broken, "
+        "not the tree clean (the register below lists 25 known latches)"
+    )
+    grew = {
+        f: sorted(set(live.get(f, ())) - set(registered))
+        for f, registered in _KNOWN_LATCHED.items()
+        if set(live.get(f, ())) - set(registered)
+    }
+    assert not grew, (
+        "registered file(s) grew a NEW import-time canon latch — the register "
+        "entry exempts the FILE, not any name someone adds to it later:\n"
+        + "\n".join(
+            f"  {f}: {', '.join(n)}\n"
+            f"      registered: {', '.join(_KNOWN_LATCHED[f])}"
+            for f, n in sorted(grew.items())
+        )
+        + "\n\nResolve it inside the render/response path (see "
+          "canonical_stats.news_sources_phrase() and "
+          "routes/partner_landing.py::_canon_values), or add the name to its "
+          "register entry with a dated comment saying why it cannot move."
+    )
+
+
+def test_registered_names_are_not_stale():
+    """The other half of the ratchet: a FIXED name must leave the register.
+
+    test_registered_names_only_shrink above fails when a file grows a name.
+    On its own that still permits the mirror defect test_register_only_shrinks
+    closes at file level — a name that has been resolved per request but left
+    written down. A stale NAME is indistinguishable from unfixed debt and it
+    silently re-exempts that exact identifier if the latch ever comes back.
+
+    Only files that still latch something are checked here; a file that latches
+    nothing at all is test_register_only_shrinks' case, and reporting it twice
+    would just make one deletion look like two failures.
+    """
+    live = _latched_modules()
+    stale = {
+        f: sorted(set(registered) - set(live[f]))
+        for f, registered in _KNOWN_LATCHED.items()
+        if f in live and set(registered) - set(live[f])
+    }
+    assert not stale, (
+        "register lists name(s) that no longer latch canon at import — delete "
+        "the NAME in the same commit as the fix:\n"
+        + "\n".join(
+            f"  {f}: {', '.join(n)}\n"
+            f"      still latching: {', '.join(live[f])}"
+            for f, n in sorted(stale.items())
+        )
+    )
