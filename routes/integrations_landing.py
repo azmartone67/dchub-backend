@@ -23,7 +23,23 @@ except Exception:  # pragma: no cover - defensive
 
 integrations_landing_bp = Blueprint("integrations_landing", __name__)
 
-MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
+# ★2026-09-10 — THE THIRD TIME THIS EXACT PAIR HAS SHIPPED ON A PUBLIC PAGE.
+# #4320 fixed both on /connect/* and routes/agent_concierge.py had the canon
+# half on /agent. This module had both and was missed by the sweep, so measured
+# live on 2026-09-10 /integrations/mcp served "$199/mo" for Pro (the button
+# beside it charges $99, and tier_registry has said 99 since r-price-collapse
+# on 2026-09-05) and "20,700+" facilities six times.
+#
+#   (a) canon_text() AT IMPORT freezes canon for the life of the process. The
+#       floor is walked by healers between deploys, so the page serves whatever
+#       canon said when the worker booted. Resolved PER REQUEST below.
+#   (b) A RETYPED PRICE cannot track the SSOT. Derived from tier_registry.
+#
+# ★ REPLACE-TOKENS, NOT .format(). The template is ~1,600 lines of HTML with a
+# full CSS block in it; every `{` in that CSS would have to be doubled for
+# .format() to run, which is a large silent-breakage surface for two numbers.
+# `__SCOPE_PANE__` below is the idiom this file already uses.
+_MCP_LANDING_TEMPLATE = ("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline, Continue</title>
@@ -298,9 +314,9 @@ Footer: the sources that actually contributed, e.g.
 
 <div class="pane">
   <h2>Tiers</h2>
-  <p><b>Free</b>: 10 calls/day, top-5 result truncation. No signup.<br>
-  <b>Developer ($49/mo)</b>: 500 calls/day, full data, exports.<br>
-  <b>Pro ($199/mo)</b>: 2,000 calls/day, gated tools unlocked.<br>
+  <p><b>Free</b>: __FREE_CALLS__ calls/day, top-5 result truncation. No signup.<br>
+  <b>Developer__DEV_PRICE__</b>: __DEV_CALLS__ calls/day, full data, exports.<br>
+  <b>Pro__PRO_PRICE__</b>: __PRO_CALLS__ calls/day, gated tools unlocked.<br>
   <b>Enterprise</b>: SLA, dedicated capacity, MCP 2025-06-18 OAuth. <a href="https://dchub.cloud/enterprise">Talk to sales</a>.</p>
 </div>
 
@@ -376,7 +392,15 @@ function copyUrl(){
 # comparison table, FAQ. Conversion CTA points at the /integrations/mcp connect
 # page. Numbers re-verified live 2026-07-18: 80 tools, /api/v1/tiers (anon 10/day,
 # email key 50/day), honest-numbers canonical (facilities 15,000+ distinct, markets 311).
-MCP_SEO_PAGE_HTML = canon_text("""<!DOCTYPE html>
+# ★2026-09-10 — THE SIBLING OF _MCP_LANDING_TEMPLATE, same two defects.
+# Left out of the change above deliberately; this is that change applied here.
+#   (a) canon_text() AT IMPORT froze canon for the life of the worker.
+#   (b) A RETYPED ENTRY PRICE cannot track the SSOT. It read "$9/mo", which was
+#       CORRECT — and that is the whole trap: the Pro price was correct in
+#       exactly this way until r-price-collapse (2026-09-05) moved it and left
+#       the page advertising the old number. Derived from tier_registry now.
+# Resolved per request in render_mcp_seo_page().
+_MCP_SEO_PAGE_TEMPLATE = ("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Data Center MCP Server — DC Hub | live grid, facilities &amp; deals for AI agents</title>
@@ -391,7 +415,7 @@ MCP_SEO_PAGE_HTML = canon_text("""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://dchub.cloud/static/dchub-brand.css">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","applicationSubCategory":"Model Context Protocol (MCP) server","operatingSystem":"Any (remote streamable-http)","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier — 10 calls/day with no signup, 50/day with a free email key. Paid from $9/mo."},"url":"https://dchub.cloud/mcp","featureList":["{canon_tools} MCP tools","{canon_facilities} distinct data-center sites across 170+ countries","Live grid intelligence for the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)","{canon_deals} tracked transactions","Fiber routes, tax incentives, water risk, interconnection queue","DCPI BUILD/CAUTION/AVOID verdicts across {canon_markets} markets"],"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","applicationSubCategory":"Model Context Protocol (MCP) server","operatingSystem":"Any (remote streamable-http)","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier — 10 calls/day with no signup, 50/day with a free email key. Paid plans__PAID_FROM__ raise the limits and return full result sizes."},"url":"https://dchub.cloud/mcp","featureList":["{canon_tools} MCP tools","{canon_facilities} distinct data-center sites across 170+ countries","Live grid intelligence for the 7 US ISOs + modeled baselines (Hydro-Québec, AESO, Nord Pool)","{canon_deals} tracked transactions","Fiber routes, tax incentives, water risk, interconnection queue","DCPI BUILD/CAUTION/AVOID verdicts across {canon_markets} markets"],"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"}}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"TechArticle","headline":"What is a data center MCP server?","about":"Model Context Protocol server for data center, power-grid and infrastructure intelligence","author":{"@type":"Organization","name":"DC Hub"},"publisher":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"mainEntityOfPage":"https://dchub.cloud/integrations/mcp/data-center-mcp-server"}
@@ -400,7 +424,7 @@ MCP_SEO_PAGE_HTML = canon_text("""<!DOCTYPE html>
 {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
 {"@type":"Question","name":"What is a data center MCP server?","acceptedAnswer":{"@type":"Answer","text":"A Model Context Protocol (MCP) server that gives an AI agent live, structured data-center intelligence as callable tools — facilities, power-grid headroom, fiber, deals and site scoring — so the model can query real data and cite the source instead of guessing. DC Hub exposes {canon_tools} such tools at https://dchub.cloud/mcp."}},
 {"@type":"Question","name":"How do I connect DC Hub to Claude, Cursor or Cline?","acceptedAnswer":{"@type":"Answer","text":"Add the streamable-http URL https://dchub.cloud/mcp as a custom MCP connector. In Claude.ai: Settings → Connectors → Add custom connector, paste the URL, leave auth blank. Cursor/Cline/Continue accept the same URL as a streamable-http server."}},
-{"@type":"Question","name":"Is the DC Hub MCP server free?","acceptedAnswer":{"@type":"Answer","text":"Yes. 10 calls/day with no signup at all, 50/day with a free email-bound key. Paid tiers start at $9/mo for higher limits and full result sizes."}},
+{"@type":"Question","name":"Is the DC Hub MCP server free?","acceptedAnswer":{"@type":"Answer","text":"Yes. 10 calls/day with no signup at all, 50/day with a free email-bound key. Paid tiers__PAID_FROM__ raise the limits and return full result sizes."}},
 {"@type":"Question","name":"What data does it cover?","acceptedAnswer":{"@type":"Answer","text":"{canon_facilities} distinct data-center sites across 170+ countries, {canon_substations} substations, live grid data for 10 ISOs, {canon_deals} tracked transactions, a 369 GW capacity pipeline, fiber routes, tax incentives, water risk, and daily DCPI suitability verdicts across {canon_markets} markets."}},
 {"@type":"Question","name":"Which AI agents work with it?","acceptedAnswer":{"@type":"Answer","text":"Any MCP-capable client: Claude (web and desktop), Cursor, Cline, Continue, Windsurf, Zed, plus REST tool-use for ChatGPT, Gemini and others."}},
 {"@type":"Question","name":"Can the answers be cited?","acceptedAnswer":{"@type":"Answer","text":"Yes — every full-data response carries a citation back to dchub.cloud (CC-BY-4.0), so an agent can attribute its source."}}
@@ -503,7 +527,7 @@ server block differently — <a href="https://dchub.cloud/install/cursor">Cursor
 <h2>Frequently asked</h2>
 <div class="faq">
   <h3>Is it free?</h3>
-  <p>Yes — 10 calls/day with no signup, 50/day with a free email key. Paid tiers from $9/mo for higher limits and full result sizes.</p>
+  <p>Yes — 10 calls/day with no signup, 50/day with a free email key. Paid tiers__PAID_FROM__ raise the limits and return full result sizes.</p>
   <h3>Which agents work with it?</h3>
   <p>Any MCP client — Claude (web + desktop), Cursor, Cline, Continue, Windsurf, Zed — plus REST tool-use for ChatGPT, Gemini and others.</p>
   <h3>How current is the data?</h3>
@@ -613,20 +637,106 @@ try:
 except Exception:  # pragma: no cover - defensive
     _FRONT_DOOR_HTML = _FRONT_DOOR_HTML.replace("__SCOPE_BLOCK__", "")
 
-# ★★ MCP_LANDING_HTML (/integrations + /integrations/mcp) does NOT embed
+# ★★ _MCP_LANDING_TEMPLATE (/integrations + /integrations/mcp) does NOT embed
 # _FRONT_DOOR_HTML (that pane goes to the recipe pages + /integrations/meta),
 # so the landing gets its own scope pane from the same canonical module —
 # live-verified 2026-07-31 that without this, the one page the round-10 spec
 # names first carried neither list. Same fail-open contract.
 try:
     from routes.problem_taxonomy import render_scope_html as _scope_pane_html
-    MCP_LANDING_HTML = MCP_LANDING_HTML.replace(
+    _MCP_LANDING_TEMPLATE = _MCP_LANDING_TEMPLATE.replace(
         "__SCOPE_PANE__",
         '<div class="pane" id="scope">\n'
         '  <h2>What to ask DC Hub &mdash; and what not to</h2>\n  '
         + _scope_pane_html() + '\n</div>')
 except Exception:  # pragma: no cover - defensive
-    MCP_LANDING_HTML = MCP_LANDING_HTML.replace("__SCOPE_PANE__", "")
+    _MCP_LANDING_TEMPLATE = _MCP_LANDING_TEMPLATE.replace("__SCOPE_PANE__", "")
+
+
+# ── the tier pane, DERIVED ──────────────────────────────────────────────────
+# tier_registry is the SSOT for both the price and the daily call allowance.
+# FAIL-OPEN ASYMMETRICALLY: an unreadable price renders the tier with NO
+# parenthetical rather than a guessed one, and an unreadable allowance renders
+# the word "metered". A page that omits a number costs a reader one click; a
+# page that states the wrong one is what this change exists to stop, and it is
+# the version a partner quotes back.
+def _tier_pane_tokens() -> dict:
+    def _price_paren(tier: str) -> str:
+        try:
+            from tier_registry import price as _price
+            usd = int(_price(tier) or 0)
+        except Exception:  # pragma: no cover - defensive
+            return ""
+        return (" ($%d/mo)" % usd) if usd > 0 else ""
+
+    def _calls(tier: str) -> str:
+        try:
+            from tier_registry import calls_per_day as _cpd
+            n = int(_cpd(tier) or 0)
+        except Exception:  # pragma: no cover - defensive
+            return "metered"
+        return ("{:,}".format(n)) if n > 0 else "metered"
+
+    return {
+        "__FREE_CALLS__": _calls("free"),
+        "__DEV_PRICE__": _price_paren("developer"),
+        "__DEV_CALLS__": _calls("developer"),
+        "__PRO_PRICE__": _price_paren("pro"),
+        "__PRO_CALLS__": _calls("pro"),
+    }
+
+
+def render_mcp_landing() -> str:
+    """The page, canon resolved and tiers derived AT REQUEST TIME.
+
+    ★ canon_text() BEFORE the token replaces, matching routes/mcp_connect: the
+    canon pass owns the `{canon_*}` placeholders and the token pass owns the
+    `__NAME__` ones, so neither can consume the other's markers.
+    """
+    html = canon_text(_MCP_LANDING_TEMPLATE)
+    for token, value in _tier_pane_tokens().items():
+        html = html.replace(token, value)
+    return html
+
+
+# ── the entry paid price, DERIVED ───────────────────────────────────────────
+# Both sibling pages say "paid tiers start at $N" — a claim about the CHEAPEST
+# paid plan, not about one named tier. So it is derived as the minimum positive
+# price tier_registry publishes rather than by reading price('starter') and
+# assuming starter stays the floor: `starter` is already marked "retired from
+# the public page, tier kept" in the registry, and a retired tier is exactly
+# the kind that gets repriced or dropped without anyone re-reading this page.
+#
+# Same fail-open asymmetry as _tier_pane_tokens(): an unreadable registry
+# renders the sentence with NO price rather than a guessed one. A page that
+# omits a price costs a reader one click; a page that states the wrong one is
+# the version a partner quotes back.
+def _entry_price_token() -> str:
+    """The `__PAID_FROM__` fragment, e.g. " from $N/mo" — or "" if unreadable."""
+    try:
+        from tier_registry import paid_plans, price
+        cheapest = min((p for p in (int(price(t) or 0) for t in paid_plans())
+                        if p > 0), default=0)
+    except Exception:  # pragma: no cover - defensive
+        return ""
+    return (" from $%d/mo" % cheapest) if cheapest > 0 else ""
+
+
+def render_mcp_seo_page() -> str:
+    """The "data center MCP server" capture page, resolved AT REQUEST TIME.
+
+    ★ canon_text() BEFORE the token replace, same ordering rule as
+    render_mcp_landing(): the canon pass owns the `{canon_*}` markers and the
+    token pass owns the `__NAME__` ones, so neither can consume the other's.
+    """
+    return canon_text(_MCP_SEO_PAGE_TEMPLATE).replace(
+        "__PAID_FROM__", _entry_price_token())
+
+
+def render_meta_landing() -> str:
+    """/integrations/meta, resolved AT REQUEST TIME. Canon first, tokens after."""
+    return canon_text(_META_LANDING_TEMPLATE).replace(
+        "__PAID_FROM__", _entry_price_token())
 
 _RECIPE_PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
 <html lang="en"><head>
@@ -1075,7 +1185,9 @@ PERPLEXITY_RECIPE_HTML = _recipe_page(
 # _RECIPE_PAGE_TEMPLATE (whose spine is "paste the MCP URL"); it's a
 # prompt-first + REST page in the same house style. The three copy-paste
 # prompts are the exact strings Meta suggested — do not rephrase them.
-META_LANDING_HTML = canon_text("""<!DOCTYPE html>
+# ★2026-09-10 — same pair as _MCP_SEO_PAGE_TEMPLATE above; see that note.
+# Resolved per request in render_meta_landing().
+_META_LANDING_TEMPLATE = ("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>How to use DC Hub on Meta AI</title>
@@ -1214,7 +1326,7 @@ __META_REPLAYS_HTML__
 <div class="pane">
   <h2>Free tier</h2>
   <p>The REST API and web surfaces are free to read: <b>10 calls/day, no signup</b>. A free email-bound key
-  raises that to 50/day; paid tiers start at $9/mo for higher limits and full result sizes.
+  raises that to 50/day; paid tiers__PAID_FROM__ raise the limits and return full result sizes.
   See <a href="https://dchub.cloud/pricing">pricing</a>.</p>
 </div>
 
@@ -1228,22 +1340,22 @@ __META_REPLAYS_HTML__
 </body></html>""")
 
 # Same rule as _recipe_page: the front door is substituted in, never hand-copied.
-META_LANDING_HTML = META_LANDING_HTML.replace("__FRONT_DOOR_HTML__", _FRONT_DOOR_HTML)
+_META_LANDING_TEMPLATE = _META_LANDING_TEMPLATE.replace("__FRONT_DOOR_HTML__", _FRONT_DOOR_HTML)
 
 # Rendered execute_plan replays (Meta's #2 ask). Import-time substitution, same
 # rule again: composed once, never hand-copied. Fail-open — if the renderer is
 # unavailable the page loses the section rather than 500ing.
 try:
     from routes.meta_replays import render_meta_replays as _render_meta_replays
-    META_LANDING_HTML = META_LANDING_HTML.replace("__META_REPLAYS_HTML__",
-                                                  _render_meta_replays())
+    _META_LANDING_TEMPLATE = _META_LANDING_TEMPLATE.replace(
+        "__META_REPLAYS_HTML__", _render_meta_replays())
 except Exception:  # pragma: no cover - defensive
-    META_LANDING_HTML = META_LANDING_HTML.replace("__META_REPLAYS_HTML__", "")
+    _META_LANDING_TEMPLATE = _META_LANDING_TEMPLATE.replace("__META_REPLAYS_HTML__", "")
 
 
 @integrations_landing_bp.route("/integrations/meta", strict_slashes=False, methods=["GET"])
 def integrations_meta():
-    return META_LANDING_HTML, 200, {
+    return render_meta_landing(), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1604,7 +1716,7 @@ def integrations_perplexity():
 
 @integrations_landing_bp.route("/integrations/mcp/data-center-mcp-server", strict_slashes=False, methods=["GET"])
 def integrations_mcp_seo():
-    return MCP_SEO_PAGE_HTML, 200, {
+    return render_mcp_seo_page(), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1659,7 +1771,7 @@ _WEBMCP_TOOLS = [
 @integrations_landing_bp.route("/integrations/mcp", strict_slashes=False, methods=["GET"])
 @integrations_landing_bp.route("/integrations", strict_slashes=False, methods=["GET"])
 def integrations_mcp():
-    return _webmcp_inject(MCP_LANDING_HTML, _WEBMCP_TOOLS), 200, {
+    return _webmcp_inject(render_mcp_landing(), _WEBMCP_TOOLS), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }

@@ -53,6 +53,31 @@ import pytest
 SRC_PATH = "routes/integrations_landing.py"
 SRC = open(SRC_PATH, encoding="utf-8").read()
 
+#: The three pages this module serves, as PER-REQUEST RENDER FUNCTIONS.
+#:
+#: ★2026-09-10 — these used to be module constants read with getattr(). All
+#: three are now raw templates resolved per request (canon_text() at import
+#: froze the numbers for the life of the worker), so a getattr() here would
+#: hand this guard the UNRESOLVED template: "{canon_deals}" instead of a deal
+#: figure, which every findall() below silently reads as "states no figure" —
+#: vacuous green over a page that could be serving anything. Render, then
+#: assert on what the reader actually gets.
+RENDERERS = ("render_mcp_landing", "render_mcp_seo_page", "render_meta_landing")
+
+
+def _rendered_pages():
+    """{renderer name: html}. A missing renderer FAILS, it does not skip."""
+    import routes.integrations_landing as il
+
+    out = {}
+    for name in RENDERERS:
+        fn = getattr(il, name, None)
+        assert callable(fn), (
+            f"{SRC_PATH}.{name}() is gone — it was renamed and this guard "
+            "would otherwise have checked one page fewer without saying so.")
+        out[name] = fn()
+    return out
+
 #: A deal figure typed as a literal, e.g. "1,500+ tracked transactions".
 TYPED_DEALS = re.compile(
     r'[0-9],[0-9]{3}\+\s*(?:</b>\s*<span>)?\s*tracked\s+(?:transactions|deals)',
@@ -95,30 +120,22 @@ def test_the_rendered_pages_state_the_canonical_deal_figure():
     """
     pytest.importorskip("flask")
     import ai_surface_canon as canon
-    import routes.integrations_landing as il
 
     expected = canon.canon_nums().get("{canon_deals}")
     assert expected, "canon publishes no deals phrase — cannot assert derivation"
 
-    checked = 0
-    for name in ("MCP_LANDING_HTML", "MCP_SEO_PAGE_HTML", "META_LANDING_HTML"):
-        html = getattr(il, name, None)
-        if not html:
-            continue
-        checked += 1
+    pages = _rendered_pages()
+    assert len(pages) >= 3, sorted(pages)
+    for name, html in sorted(pages.items()):
         assert "{canon_" not in html, (
-            f"{name} serves an UNRESOLVED canon placeholder — worse than the "
-            "stale number it replaced. Wrap the string in canon_text().")
+            f"{name}() serves an UNRESOLVED canon placeholder — worse than the "
+            "stale number it replaced. canon_text() the template it renders.")
         figures = set(re.findall(
             r'([0-9],[0-9]{3}\+)\s*(?:</b>\s*<span>)?\s*tracked\s+'
             r'(?:transactions|deals)', html, re.I))
         assert figures <= {expected}, (
-            f"{name} states deal figure(s) {sorted(figures - {expected})} but "
+            f"{name}() states deal figure(s) {sorted(figures - {expected})} but "
             f"canon says {expected!r}")
-    assert checked >= 3, (
-        f"only {checked} of the 3 named constants were found in "
-        "routes/integrations_landing.py — they were renamed, and this guard "
-        "just checked almost nothing.")
 
 
 # ── tools and markets: same contract, added 2026-09-07 ─────────────────────
@@ -170,30 +187,23 @@ def test_the_rendered_pages_state_canonical_tools_and_markets():
     """Behaviour, against canon rather than a pinned literal."""
     pytest.importorskip("flask")
     import ai_surface_canon as canon
-    import routes.integrations_landing as il
 
     nums = canon.canon_nums()
     want_tools, want_markets = nums.get("{canon_tools}"), nums.get("{canon_markets}")
     assert want_tools and want_markets, "canon publishes no tools/markets phrase"
 
-    checked = 0
-    for name in ("MCP_LANDING_HTML", "MCP_SEO_PAGE_HTML", "META_LANDING_HTML"):
-        html = getattr(il, name, None)
-        if not html:
-            continue
-        checked += 1
+    pages = _rendered_pages()
+    assert len(pages) >= 3, sorted(pages)
+    for name, html in sorted(pages.items()):
         tools = {t for t in TYPED_TOOLS.findall(html) if t != "10"}
         assert tools <= {want_tools}, (
-            f"{name} states tool count(s) {sorted(tools - {want_tools})} but "
+            f"{name}() states tool count(s) {sorted(tools - {want_tools})} but "
             f"canon says {want_tools!r}")
         markets = set(TYPED_MARKETS.findall(html))
         bare = want_markets.rstrip("+")
         assert markets <= {bare}, (
-            f"{name} states market count(s) {sorted(markets - {bare})} but "
+            f"{name}() states market count(s) {sorted(markets - {bare})} but "
             f"canon says {want_markets!r}")
-    assert checked >= 3, (
-        f"only {checked} of 3 constants found — they were renamed and this "
-        "guard just checked almost nothing.")
 
 
 # ── substations, added 2026-09-07 (third pass on the same page) ─────────────
@@ -219,21 +229,17 @@ def test_no_typed_substation_count_in_the_integrations_copy():
 def test_the_rendered_pages_state_the_canonical_substation_figure():
     pytest.importorskip("flask")
     import ai_surface_canon as canon
-    import routes.integrations_landing as il
 
     want = canon.canon_nums().get("{canon_substations}")
     assert want, "canon publishes no substations phrase"
 
     seen_any = False
-    for name in ("MCP_LANDING_HTML", "MCP_SEO_PAGE_HTML", "META_LANDING_HTML"):
-        html = getattr(il, name, None)
-        if not html:
-            continue
+    for name, html in sorted(_rendered_pages().items()):
         figures = set(TYPED_SUBSTATIONS.findall(html))
         if figures:
             seen_any = True
         assert figures <= {want.rstrip("+")}, (
-            f"{name} states substation count(s) "
+            f"{name}() states substation count(s) "
             f"{sorted(figures - {want.rstrip('+')})} but canon says {want!r}")
     assert seen_any, (
         "no constant states a substation count any more. Floor: this assertion "
