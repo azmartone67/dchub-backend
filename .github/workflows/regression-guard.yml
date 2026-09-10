@@ -21,6 +21,12 @@
 name: Regression Guard
 
 on:
+  # ★ 2026-09-10 — this guard ran ONLY on push-to-main, so it could not stop
+  # anything: it failed 40 of 40 runs from 09-08 to 09-10 while ~100 PRs
+  # merged past it. A post-merge alarm nobody is paged by is not a guard.
+  # On pull_request it blocks the diff that breaks it, which is the job.
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   workflow_dispatch: {}
