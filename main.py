@@ -16114,6 +16114,10 @@ def stripe_webhook():
                 _pack_credits = PACK10_CREDITS if _p10 else PACK5_CREDITS
                 _pack_src = 'pack10' if _p10 else 'pack5'
                 _pack_expiry = PACK10_EXPIRY_DAYS if _p10 else PACK5_EXPIRY_DAYS
+                # ★ …and the PRICE, which was the one member of this set that
+                # was not per-pack. grant_credit_pack hardcoded
+                # PACK5_PRICE_CENTS, so a $10 sale recorded as $5.
+                _pack_price = PACK10_PRICE_CENTS if _p10 else PACK5_PRICE_CENTS
                 if (_p5_mode == 'payment'
                         and (PACK5_PRICE_CENTS in (_p5_sub, _p5_amt) or _p10)
                         and not _p5_reserved):
@@ -16143,7 +16147,7 @@ def stripe_webhook():
                     _p5_grant = grant_credit_pack(
                         _p5_key, _p5_sess or None, _pack_credits,
                         stripe_session_id=data.get('id'), source=_pack_src,
-                        expires_days=_pack_expiry)
+                        expires_days=_pack_expiry, price_cents=_pack_price)
                     print(f"💳 Pack grant ({_pack_src}): key={_p5_key[:14]}… email={_p5_email or '(none)'} "
                           f"newmint={_p5_newmint} grant={_p5_grant}")
                     # r-pack5-conv (2026-06-17): RECORD the pack sale as an
