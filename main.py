@@ -42742,6 +42742,19 @@ try:
 except Exception as _sr_e:
     print(f"[main] site_report_bp register failed: {_sr_e}", flush=True)
 
+# Deal Desk Brief (2026-09-10): one execute_plan run → a branded, print-ready
+# brief at a no-login link. POST /api/v1/deal-desk (PRO+) mints it; the reader
+# surfaces are /reports/deal-desk/<token>{,.pdf}. Rendered through the same
+# Gotenberg chromium service as the premium Site Analysis, and it prints the
+# run's published LIMITS — constraint_coverage, tier-withheld fields, steps that
+# did not run — as their own section rather than shipping only the verdicts.
+try:
+    from routes.deal_desk import deal_desk_bp
+    app.register_blueprint(deal_desk_bp)
+    print("[main] deal_desk_bp registered: /api/v1/deal-desk + /reports/deal-desk/<token>", flush=True)
+except Exception as _dd_e:
+    print(f"[main] deal_desk_bp register failed: {_dd_e}", flush=True)
+
 # Hyperscaler Brief (2026-06-06): per-hyperscaler full-pipeline view at
 # /hyperscalers/<slug>/brief — built for M&A bankers, PE deal teams, and
 # hedge funds tracking AWS / Azure / Google / Meta / Apple / Oracle /
