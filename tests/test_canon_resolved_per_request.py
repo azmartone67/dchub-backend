@@ -64,7 +64,11 @@ _KNOWN_LATCHED = {
     'routes/dchub_media_hub.py': ['_CANON_FAC'],
     'routes/demo.py': ['DEMO_SYSTEM_PROMPT'],
     'routes/integrations_landing.py': ['MCP_LANDING_HTML', 'MCP_SEO_PAGE_HTML', 'META_LANDING_HTML', '_RECIPE_PAGE_TEMPLATE'],
-    'routes/mcp_connect.py': ['_PAGE_TEMPLATE'],
+    # routes/mcp_connect.py came off 2026-09-10. Its _PAGE_TEMPLATE was the
+    # LATCH THAT SHIPPED: the install pages served the cold-start pinned floor
+    # while /api/v1/canon/phrases in the same process served the live one. The
+    # template is now a raw constant resolved per request in _render_page(), and
+    # tests/test_connect_install_pages_derive_canon.py renders it to prove it.
     'routes/media_editorial.py': ['ANALYST_VOICE'],
     'routes/media_outreach.py': ['_CANON_FAC'],
     'routes/onboard_auto_approve.py': ['_CANON_FAC'],
