@@ -580,6 +580,34 @@ def relayed_checkout_provenance_branches() -> tuple:
     )
 
 
+def relayed_checkout_provenance_subsets() -> tuple:
+    """Named SUBSETS of minted_link_clicks, as ((name, condition_sql), ...).
+
+    Separate from the branches on purpose: these partition the same rows by a
+    DIFFERENT question (can the exclusion bind? does the row carry an identity
+    at all?), so a reader who adds one of these to a branch double-counts. The
+    basis says so and test_provenance_names_the_subset_as_a_subset holds it.
+    """
+    minted = "(" + relayed_checkout_real_ua() + ") and (" + \
+        relayed_checkout_signed() + ")"
+    return (
+        ("minted_link_clicks_deloopable",
+         minted + " and cc.ref_kind = '"
+         + RELAYED_CHECKOUT_DELOOPABLE_REF_KIND + "'"),
+        # ★ 2026-09-10, the FIRST live read of this block: 30d showed
+        # minted_link_clicks 1 beside human_acted_v7_links_clicked 0, and
+        # nothing published said why. The ceiling counts DISTINCT refs and a
+        # ref is the only identity a /go/c row has — routes/human_relay stores
+        # a token hash as a fallback, checkout_click_tracker stores none — so a
+        # signed click minted with an empty ref is real and permanently
+        # uncountable. Unnamed, that pair reads as an arithmetic bug in the
+        # split. This is the /go/c analogue of
+        # relay_open_provenance.minted_link_opens_no_session_id, which exists
+        # for exactly this reason one table over.
+        ("minted_link_clicks_no_ref", minted + " and coalesce(cc.ref,'') = ''"),
+    )
+
+
 def relayed_checkout_provenance_sql(interval_sql: str) -> str:
     """total + the three-way split + the de-loopable subset, in one pass.
 
@@ -593,11 +621,8 @@ def relayed_checkout_provenance_sql(interval_sql: str) -> str:
     parts = ["count(*) as total"]
     for name, cond in relayed_checkout_provenance_branches():
         parts.append("count(*) filter (where " + cond + ") as " + name)
-    parts.append(
-        "count(*) filter (where (" + relayed_checkout_real_ua() + ")"
-        " and (" + relayed_checkout_signed() + ")"
-        " and cc.ref_kind = '" + RELAYED_CHECKOUT_DELOOPABLE_REF_KIND + "')"
-        " as minted_link_clicks_deloopable")
+    for name, cond in relayed_checkout_provenance_subsets():
+        parts.append("count(*) filter (where " + cond + ") as " + name)
     return ("select " + ", ".join(parts) + " "
             + _relayed_checkout_window(interval_sql))
 
@@ -632,7 +657,14 @@ HUMAN_ACTED_V7_LINKS_BASIS = (
     "routes/checkout_click_tracker mints one ref per identity, not per click, "
     "and the table is append-only, so one human clicking twice is one ref and "
     "two rows. Read it as a ceiling on how many relayed checkout links were "
-    "opened at all, never as a count of humans reached.")
+    "opened at all, never as a count of humans reached. "
+    "\u2605 IT REQUIRES A REF, and the ref is the ONLY identity a /go/c row "
+    "carries — routes/human_relay stores a per-mint token hash as a fallback, "
+    "routes/checkout_click_tracker stores none — so a signed click minted with "
+    "an empty ref is real and permanently uncountable here. When this number "
+    "is below relayed_checkout_provenance.minted_link_clicks the difference is "
+    "published as minted_link_clicks_no_ref; measured on the first live read, "
+    "2026-09-10 over 30d, that difference was the whole of it (1 and 0).")
 
 RELAYED_CHECKOUT_PROVENANCE_BASIS = (
     "mcp_checkout_clicks rows in the window, split by whether they can reach "
@@ -648,4 +680,12 @@ RELAYED_CHECKOUT_PROVENANCE_BASIS = (
     "AGAINST THE PUBLISHED STAGE: a non-zero there while the stage reads 0 "
     "means humans are clicking the link agents actually relay and the funnel "
     "was not looking; a zero means no relayed checkout link was opened, and "
-    "the constraint is delivery rather than measurement.")
+    "the constraint is delivery rather than measurement. "
+    "\u2605 minted_link_clicks_no_ref is the SECOND subset and it is the one "
+    "that reconciles this block with human_acted_v7_links_clicked: the ceiling "
+    "counts DISTINCT refs, so a signed click carrying no ref is counted here "
+    "and can never be counted there. minted_link_clicks minus "
+    "minted_link_clicks_no_ref is the population the ceiling can see. Without "
+    "this field the pair (minted_link_clicks 1, links_clicked 0) reads as an "
+    "arithmetic error in the split, which is what it looked like on the first "
+    "live read of this block.")
