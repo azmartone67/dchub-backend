@@ -195,6 +195,10 @@ def silent_pipelines() -> dict:
                 "reasons": verdict.get("reasons") or [],
                 "actuator": LANE_ACTUATORS.get(
                     spec["key"], f"{_DASH}#{spec['key']}"),
+                # Declared in cadence_sentinel.LANES. Carried, not inferred:
+                # folding on "same age_hours" would merge two genuinely
+                # independent stalls that happened to coincide.
+                "subset_of": spec.get("subset_of"),
             }
             if verdict.get("stalled"):
                 out["stalled"].append(entry)
@@ -336,11 +340,30 @@ def compose_daily_callout() -> dict:
         "flow": flow_24h(),
         "human": human_gated(),
     }
-    n_silent = len(stale_pages) + len(lanes.get("stalled") or [])
+    # ★ 2026-09-10 — COUNT CAUSES, NOT SURFACES. On 2026-09-09 this subject
+    # line read "4 silent pipelines" for TWO causes: /press and
+    # /dc-hub-media/ are one static bake reported twice, and bluesky_publish
+    # is a strict subset of smp_other_publish, so both read the same row and
+    # both said 110.3h. An alarm that inflates its own count is an alarm
+    # people learn to discount. Every surface is still listed below; only the
+    # HEADLINE is deduplicated, and the fold is by DECLARED containment.
+    _stalled = lanes.get("stalled") or []
+    _stalled_keys = {e.get("key") for e in _stalled}
+    folded_lanes = [e for e in _stalled
+                    if not (e.get("subset_of") in _stalled_keys)]
+    digest["folded_lanes"] = folded_lanes
+    # The press pages share one generator; a lag they both report is one bake.
+    _page_causes = len({p.get("lag_days") for p in stale_pages}) if stale_pages else 0
+    digest["page_causes"] = _page_causes
+    n_silent = _page_causes + len(folded_lanes)
+    digest["n_surfaces"] = len(stale_pages) + len(_stalled)
+    _surface_suffix = (f" ({digest['n_surfaces']} surfaces)"
+                       if digest["n_surfaces"] > n_silent else "")
     flow = digest["flow"] or {}
     digest["subject"] = (
         f"[DC Hub brain] daily callout — "
-        f"{n_silent} silent pipeline{'s' if n_silent != 1 else ''}, "
+        f"{n_silent} silent pipeline{'s' if n_silent != 1 else ''}"
+        f"{_surface_suffix}, "
         f"{flow.get('open_now', '?')} open findings")
     return digest
 
@@ -377,9 +400,15 @@ def render_text(d: dict) -> str:
                  f"page HTML + pushes → Pages deploy purges the URL); still "
                  f"stale after a green run → `gh workflow run cf-purge.yml "
                  f"-f urls={p['url']}`, then re-check {p['url']}")
+    _by_key = {e.get("key"): e for e in stalled}
     for e in stalled:
         why = "; ".join(e.get("reasons") or []) or "stalled"
-        L.append(f"• {e['label']}: {why} → {e['actuator']}")
+        # Still listed — a folded lane is not a hidden one. It is marked so a
+        # reader does not chase two investigations for one stall.
+        _sup = _by_key.get(e.get("subset_of"))
+        _same = (f" [same rows as {_sup['label']} — one cause, not two]"
+                 if _sup is not None else "")
+        L.append(f"• {e['label']}: {why}{_same} → {e['actuator']}")
     for e in (lanes.get("unknown") or []):
         L.append(f"• {e['label']}: probe UNKNOWN (broken monitor is a bug "
                  f"too) → {e['actuator']}")

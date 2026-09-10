@@ -137,6 +137,19 @@ LANES = [
     {
         "key": "bluesky_publish",
         "label": "Bluesky publishes (social_media_posts)",
+        # ★ 2026-09-10 — DECLARED CONTAINMENT. This lane's rows are a strict
+        # subset of smp_other_publish's: same table, same status='published',
+        # and _SMP_BLUESKY narrows what that lane already matches with
+        # `platform <> 'linkedin'`. So whenever Bluesky holds the newest
+        # non-LinkedIn row, the two lanes read the SAME row and report the
+        # SAME gap — two alarms carrying one bit. On 2026-09-09 both reported
+        # 110.3h and the daily callout counted them as two of its "4 silent
+        # pipelines". The subject line of the brain's primary alarm should
+        # count CAUSES, not surfaces. brain_daily_callout folds a subset lane
+        # into its superset when both are stalled; it stays a lane of its own
+        # because Twitter or Mastodon can keep smp_other_publish fresh while
+        # Bluesky alone is dark, and that case must still fire.
+        "subset_of": "smp_other_publish",
         "why": "07-10 stall: publisher dark 29h with 50 approved posts "
                "queued and nothing alerting",
         "text_ts_sql": (
