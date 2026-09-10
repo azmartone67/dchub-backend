@@ -21,6 +21,8 @@ and /agent is a hot path. That reason is gone — canon_nums() derives from
 canonical_stats' cache via live_public_floors(), which is PEEK-ONLY and never
 triggers a query.
 """
+import re
+
 import pytest
 
 import ai_surface_canon as asc
@@ -75,7 +77,17 @@ def test_a_cold_cache_still_renders_the_pin_not_the_seed(stats_state):
     assert asc.PINNED["public"]["facilities"] in body
     seed = cs._floor_phrase(cs._FALLBACK["facilities_verified"], step=100)
     assert seed != asc.PINNED["public"]["facilities"], "guard-the-guard: seed == pin"
-    assert seed not in body
+    # ★2026-09-09: ANCHORED, was `seed not in body`. The seed floors to "400+",
+    # and the pin walked to "21,400+" — which CONTAINS "400+" as a suffix, so a
+    # plain substring test failed on a page that was in fact rendering the pin
+    # correctly. The guard was right about what it wanted and wrong about how it
+    # looked: it must match the seed as a STANDALONE figure, not as the tail of a
+    # larger one. Rejecting a digit-or-comma immediately before it does that, and
+    # keeps working for whatever the pin walks to next — this would have
+    # mis-fired on any future value ending in 400+.
+    assert not re.search(rf"(?<![\d,]){re.escape(seed)}", body), (
+        f"the citation seed {seed!r} is published on a cold cache — the pin "
+        f"{asc.PINNED['public']['facilities']!r} must be what renders")
 
 
 @pytest.mark.parametrize("mode", ["cold", "warm"])
@@ -103,3 +115,22 @@ def test_the_derivation_costs_no_query_on_this_hot_path(stats_state, monkeypatch
     cs._live_keys.clear()
     _body()
     assert calls == [], "rendering /agent triggered a canonical_stats query"
+
+
+def test_the_anchored_ban_is_not_vacuous():
+    """Guard-the-guard for the ★2026-09-09 anchoring above.
+
+    Anchoring a substring ban is how you stop it false-firing on a legitimate
+    larger number — and also how you accidentally make it match nothing at all.
+    These four cases pin both directions, so the next person to widen or narrow
+    the lookbehind finds out here instead of in production.
+    """
+    def banned(bad, text):
+        return re.search(rf"(?<![\d,]){re.escape(bad)}", text) is not None
+    # the collision that prompted the change: a legitimate figure ENDING in the
+    # banned digits must pass
+    assert not banned("400+", "covering 21,400+ distinct facilities")
+    assert not banned("1,400+", "covering 21,400+ distinct facilities")
+    # the thing the ban exists for must still fail
+    assert banned("400+", "covering 400+ distinct facilities")
+    assert banned("1,400+", "1,400+ tracked deals")

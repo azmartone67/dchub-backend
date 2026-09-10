@@ -223,7 +223,16 @@ def test_canon_values_are_what_this_guard_thinks_they_are():
     # value collides with them (test_retired_lists_do_not_contain_the_current
     # _canon), and 18,500+/1,900+ were canon until today, not the live-wrong
     # floors of 2026-08-31 that those lists exist to ban.
-    assert CANON_FACILITIES == "20,700+", (
+    # ★2026-09-09: facilities 20,700+ -> 21,400+, the seventh walk, following
+    # PINNED['public'] onto the live resolver exactly as the 09-07 note above
+    # describes. Probed live, cache-busted: /api/v1/canon/phrases facilities =
+    # "21,400+" (source=resolve_public_floors live) and /api/v1/stats
+    # facilities = 21,487 — floor rounds DOWN and never exceeds the resolver.
+    # ★ The pin is what a COLD canon publishes, and canon was measured COLD on
+    #   three consecutive probes the same day ("source=resolve_public_floors
+    #   (cold: PINNED floors)"). So this is not cosmetic: during every cold
+    #   window the old pin was under-reporting the fleet by ~800.
+    assert CANON_FACILITIES == "21,400+", (
         f"PINNED facilities moved to {CANON_FACILITIES}. Update the surfaces "
         f"in SURFACES and the RETIRED_* lists, then this assertion.")
     assert CANON_DEALS == "2,100+", (
