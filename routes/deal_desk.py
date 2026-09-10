@@ -367,7 +367,18 @@ def limits_from_envelope(env):
         if not isinstance(step, dict):
             continue
         tool = step.get("tool") or "step"
-        where = f"Step {step.get('step', '?')} · {tool}"
+        # ★ The step NUMBER is not a unique key, by the planner's design. One
+        # planned step fans out across several targets and every variant is
+        # pushed under the SAME step number (server.mjs: `variants` ->
+        # doable.push({ s, args })), so a plan that ranks two markets emits two
+        # entries reading `Step 2 · get_market_dcpi_rank`. Labelled by number
+        # and tool alone, their limits render byte-identical: the honesty page
+        # prints what looks like a duplicated line and no reader can tell which
+        # market it belongs to. The findings section already disambiguates
+        # these with _arg_summary — the limits section reuses THAT function
+        # rather than formatting its own, so the two labels cannot drift apart.
+        _args = _arg_summary(step.get("args"))
+        where = f"Step {step.get('step', '?')} · {tool}" + (f" · {_args}" if _args else "")
         status = str(step.get("status") or "")
         if status and status != "executed":
             add("status", where, _STATUS_MEANING.get(status, f"status: {status}"))

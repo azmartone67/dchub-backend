@@ -148,7 +148,11 @@ def test_the_real_runs_unapplied_argument_reaches_the_rendered_brief(model, html
     not apply it, and the reader must be told — in the model AND on the page."""
     coverage = [lm for lm in model["limits"] if lm["kind"] == "coverage"]
     assert len(coverage) == 1, [lm["text"] for lm in coverage]
-    assert coverage[0]["source"] == "Step 1 · site_selection_canvas"
+    # startswith, not ==: the label also carries the step's arguments, because a
+    # step number alone does not identify a step the planner fanned out (see
+    # test_two_fanned_steps_do_not_publish_identical_limits). What this test is
+    # named for is that the limit is attributed to THIS step, which it still is.
+    assert coverage[0]["source"].startswith("Step 1 · site_selection_canvas")
     assert "capacity_mw" in coverage[0]["text"] and "NOT applied" in coverage[0]["text"]
     assert "The shortlist is NOT sized to this target" in html
     assert "NOT applied" in html
@@ -377,3 +381,91 @@ def test_the_mint_response_never_claims_a_page_count():
     src = open(dd.__file__).read()
     assert re.search(r"\d+\s*-?\s*page\b", src, re.I) is None, (
         "an authored page count reappeared in deal_desk.py")
+
+
+# ── fan-out: a step NUMBER is not a unique key ──────────────────────────────
+# The sibling fixture is trimmed to steps that each appear once, so it cannot
+# see this shape at all. This one is a REAL envelope captured live 2026-09-10
+# (same intent), trimmed to a step that ran once plus a step the planner fanned
+# across two markets, and otherwise verbatim.
+
+FANOUT_FIXTURE = os.path.join(HERE, "fixtures", "deal_desk_plan_fanout.json")
+
+
+@pytest.fixture(scope="module")
+def fanout_env():
+    with open(FANOUT_FIXTURE) as fh:
+        return json.load(fh)
+
+
+def test_the_fanout_fixture_really_does_reuse_one_step_number(fanout_env):
+    """The premise the two tests below rest on, pinned so they cannot go quietly
+    vacuous. If this fixture were ever re-captured from a plan that happened not
+    to fan out, both tests would keep passing while proving nothing."""
+    steps = fanout_env["executed"]
+    numbers = [s["step"] for s in steps]
+    fanned = [s for s in steps if numbers.count(s["step"]) > 1]
+    assert len(fanned) >= 2, "fixture no longer carries a fanned-out step number"
+    assert len({s["tool"] for s in fanned}) == 1, "the fanned steps share a tool"
+    args = [json.dumps(s.get("args"), sort_keys=True) for s in fanned]
+    assert len(set(args)) == len(args), (
+        "the fanned steps must differ by ARGUMENTS — the arguments are the only "
+        "thing that tells them apart")
+
+
+def test_two_fanned_steps_do_not_publish_identical_limits(fanout_env):
+    """A limit the reader cannot attribute is worse than one that is missing.
+
+    Labelled by step number and tool alone, the two markets in this envelope
+    both render `Step 2 · get_market_dcpi_rank` and their limits come out
+    byte-identical — the honesty page prints the same sentence twice and the
+    reader has no way to learn which market each belongs to. Live on 2026-09-10
+    a 5-step plan published 17 limits of which only 14 were distinct.
+    """
+    limits = limits_from_envelope(fanout_env)
+    assert len(limits) >= 4, (
+        "floor: with no limits at all the distinctness assertion below is "
+        "vacuously true")
+    seen = [(lim["kind"], lim["source"], lim["text"]) for lim in limits]
+    dupes = sorted({s for s in seen if seen.count(s) > 1})
+    assert not dupes, (
+        f"{len(dupes)} limit(s) render identically and cannot be attributed to "
+        f"the step that produced them: {dupes[:2]}")
+
+
+def test_each_fanned_limit_names_the_target_it_came_from(fanout_env):
+    """Distinctness alone would be satisfied by any arbitrary discriminator —
+    a counter, a hash. The label has to carry the ARGUMENT, because that is
+    what a reader needs to act on the limit."""
+    steps = fanout_env["executed"]
+    numbers = [s["step"] for s in steps]
+    fanned = [s for s in steps if numbers.count(s["step"]) > 1]
+    sources = {lim["source"] for lim in limits_from_envelope(fanout_env)}
+    assert sources, "floor: no limits, nothing to attribute"
+    for s in fanned:
+        val = str(list(s["args"].values())[0])
+        assert any(val in src for src in sources), (
+            f"no limit is attributed to the branch that ran with {val!r}; "
+            f"sources were {sorted(sources)}")
+
+
+def test_the_rendered_brief_keeps_the_fanned_limits_apart(fanout_env):
+    """Wiring, not the unit. Every assertion above stays green if the renderer
+    stops printing `source` at all — the limits section would collapse to bare
+    sentences and the model layer would never notice."""
+    page = render_brief_html(brief_model(fanout_env, prepared_for="",
+                                         prepared_by="DC Hub"))
+    # Scoped to the limits markup, NOT to the whole document. Every one of these
+    # market slugs also appears in the findings section and inside the step
+    # payloads, so a page-wide substring search is satisfied without the limits
+    # section printing anything at all — it stayed green against a mutation that
+    # dropped `source` from this very markup.
+    attributions = re.findall(r'<div class="limit[^"]*"><div class="who">(.*?)</div>', page)
+    assert attributions, "floor: the limits section rendered no attribution line"
+    steps = fanout_env["executed"]
+    numbers = [s["step"] for s in steps]
+    for s in [s for s in steps if numbers.count(s["step"]) > 1]:
+        val = str(list(s["args"].values())[0])
+        assert any(val in a for a in attributions), (
+            f"{val!r} reaches the findings section but no limit on the page is "
+            f"attributed to it; the page said {attributions!r}")
