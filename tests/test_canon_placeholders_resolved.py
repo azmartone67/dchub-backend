@@ -122,7 +122,18 @@ _SWEPT = [
     "routes/hyperscaler_deals.py",
     "routes/integrations_landing.py",
     "routes/mcp_citation.py",
-    "routes/mcp_connect.py",
+    # ★2026-09-10: routes/mcp_connect.py was listed here and no longer belongs,
+    # for the SAME reason agent_concierge.py does not (see the note above). Its
+    # template was `_PAGE_TEMPLATE = canon_text("""...""")` — which satisfied
+    # this lexical scan perfectly while resolving the canon ONCE at module
+    # import, so /connect/{chatgpt,gemini,...} served the cold-start PINNED
+    # floor (20,700+) against a live resolver saying 21,400+. This guard was
+    # GREEN throughout: it asks "is the string inside a canon_text() call",
+    # which was true, and never "did the value that shipped come from the
+    # resolver", which was false. The template is now a raw module constant
+    # resolved per request, which this lexical scan cannot see.
+    # Covered instead by tests/test_connect_install_pages_derive_canon.py,
+    # which RENDERS the page and asserts both halves.
     "routes/mcp_outreach_drafts.py",
     "routes/mcp_registry_outreach.py",
     "routes/mcp_tool_catalog.py",

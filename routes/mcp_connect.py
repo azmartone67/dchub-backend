@@ -406,8 +406,51 @@ Workspace scope instead: <project root>/.zcode/config.json
 # routes/_stripe_links.py). client_reference_id={trial_key} attributes
 # the conversion back to the page that minted the key (Fix E pattern).
 from routes._stripe_links import STRIPE_LINKS as _CANON_LINKS
-_STRIPE_MONTHLY = _CANON_LINKS["pro"]         # $299/mo (canon; pre-reprice literal retired 2026-08-21)
-_STRIPE_ANNUAL  = _CANON_LINKS["pro_annual"]  # $1,188/yr
+# ★2026-09-10: this comment used to read "$299/mo (canon; ...)" beside a link
+# that has charged $99 since r-price-collapse (2026-09-05). The comment was not
+# describing the link, it was quoting the drift — and the page below rendered
+# the same retired 299 as its VISIBLE price, so /connect/{chatgpt,gemini,...}
+# advertised $299 while the button beside it charged $99. Do not re-type a price
+# here; _pro_price_usd() derives it from tier_registry, which is the SSOT
+# main._canonical_pricing() already reads.
+_STRIPE_MONTHLY = _CANON_LINKS["pro"]         # canonical Pro link; price via _pro_price_usd()
+_STRIPE_ANNUAL  = _CANON_LINKS["pro_annual"]  # $1,188/yr one-time (see _annual_save_html)
+
+
+def _pro_price_usd() -> int:
+    """Canonical Pro monthly price, DERIVED. 0 when unavailable (fail-open to a
+    price-free tile rather than a wrong number — same asymmetry canon_text uses).
+    """
+    try:
+        from tier_registry import price as _price
+        return int(_price("pro") or 0)
+    except Exception:
+        return 0
+
+
+# The annual Payment Link is a fixed $1,188/yr one-time. There is no annual SSOT
+# in tier_registry (it prices MONTHLY tiers only), so the yearly figure is bound
+# to the link it opens and stated here once.
+_ANNUAL_PRICE_USD = 1188
+
+
+def _annual_save_html() -> str:
+    """The 'N% off' badge, COMPUTED against the live monthly price.
+
+    ★ Why this is not a literal: the badge said "50% off" — true when Pro was
+    $199/mo, and false the moment r-price-collapse made Pro $99. At $99/mo the
+    annual link is 12 x 99 = $1,188, i.e. EXACTLY the monthly cost and a 0%
+    discount, so the page was making a discount claim its own two tiles
+    disproved. Renders nothing when there is no saving.
+    """
+    monthly = _pro_price_usd()
+    if not monthly:
+        return ""
+    full_year = monthly * 12
+    if _ANNUAL_PRICE_USD >= full_year:
+        return ""
+    pct = int(round((full_year - _ANNUAL_PRICE_USD) * 100.0 / full_year))
+    return f' <span class="save">{pct}% off</span>' if pct >= 1 else ""
 
 
 # ── Telemetry: best-effort DB write ──────────────────────────────────────
@@ -492,7 +535,42 @@ def _record_page_onramp_view():
 
 
 # ── Page render ─────────────────────────────────────────────────────────
-_PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
+# ★2026-09-10 — THE STALE-FLOOR BUG, and why this is no longer canon_text()'d
+# here. This was `_PAGE_TEMPLATE = canon_text("""...""")`, which resolves every
+# {canon_*} ONCE, at MODULE IMPORT. canon_nums() reads canonical_stats' cache;
+# during app boot that cache is cold, so the placeholders froze at the PINNED
+# cold-start floor and stayed frozen for the life of the process.
+#
+# Measured 2026-09-10, same process, same second: /api/v1/canon/phrases served
+# the LIVE facility floor (source=resolve_public_floors, cold=false) while
+# /connect/chatgpt and /connect/gemini both served the PINNED cold-start floor,
+# seven hundred behind it. The resolver was working. The install pages had
+# simply stopped asking it.
+#
+# ★ The digits of that divergence are deliberately NOT written here.
+# tests/test_canonical_counts_drift.py scans this file for facility-floor
+# literals and judges them against PINNED, so a comment quoting the live value
+# fails CI — and a comment quoting the stale value is how a fix note turns into
+# the next surface that lies. The dated numbers live in the guard's docstring,
+# which is a point-in-time record; this file states the SHAPE.
+#
+# So the template keeps its placeholders and _render_page() resolves them per
+# request — the same repair routes/agent_concierge.py made on 2026-08-25 when
+# /agent alone served 18,500+ against a live 18,800+. This is cheap: canon_nums
+# derives from canonical_stats' PEEK-ONLY cache and never triggers a query, and
+# the page is edge-cached 300s besides.
+#
+# ★ ORDER MATTERS: canon_text() must run BEFORE .format(). The template is full
+# of literal CSS/JS braces escaped as {{ }} for .format(); a {canon_*} left in
+# place when .format() runs raises KeyError. Resolve canon first, format second.
+#
+# ★ routes/mcp_connect.py is deliberately NOT in test_canon_placeholders_resolved
+# ._SWEPT any more — that lexical AST scan cannot tie a module-level raw constant
+# to a canon_text() call in another function, exactly as documented there for
+# agent_concierge. The stronger replacement is
+# tests/test_connect_install_pages_derive_canon.py, which RENDERS the page and
+# asserts no placeholder survives and the resolver beat the pin.
+_PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DC Hub for {NAME} — {canon_tools} MCP tools, free tier, 30s to install</title>
@@ -632,13 +710,13 @@ _PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
          it through as client_reference_id. -->
     <a id="upg-monthly" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pro_monthly&view_id={VIEW_ID}">
       <h3>Pro Monthly</h3>
-      <div class="price">$299<span style="font-size:.7em;color:var(--muted)">/mo</span></div>
+      <div class="price">${PRO_PRICE}<span style="font-size:.7em;color:var(--muted)">/mo</span></div>
       <div class="desc">Cancel anytime. Same unlimited access, monthly billing.</div>
     </a>
     <a id="upg-annual" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pro_annual&view_id={VIEW_ID}">
-      <h3>Pro Annual <span class="save">50% off</span></h3>
-      <div class="price">$1,188<span style="font-size:.7em;color:var(--muted)">/yr</span></div>
-      <div class="desc">One-time payment, 365 days of Pro. Best value.</div>
+      <h3>Pro Annual{ANNUAL_SAVE_HTML}</h3>
+      <div class="price">${ANNUAL_PRICE}<span style="font-size:.7em;color:var(--muted)">/yr</span></div>
+      <div class="desc">{ANNUAL_DESC}</div>
     </a>
   </div>
   <p class="upgrade-note" id="ref-note" style="display:none">
@@ -777,9 +855,11 @@ function copySnippet() {{
 # template boundary and every pattern read clean. Same structural blind spot
 # as "Available Tools — 73 live" on /connect (#2959), one level up.
 #
-# The template is already wrapped in canon_text() at import, so the fix is to
-# let {canon_tools} resolve there like {canon_facilities} beside it always
-# has. No literal to go stale, and nothing left for .format() to fill.
+# The template carries {canon_tools} as a placeholder like {canon_facilities}
+# beside it always has. No literal to go stale, and nothing left for .format()
+# to fill. ★2026-09-10: this used to say "already wrapped in canon_text() at
+# import" — that import-time wrap was itself the stale-floor bug; the wrap now
+# happens per request in _render_page().
 
 
 def _render_page(client_key: str, view_id: int | None) -> str:
@@ -808,7 +888,17 @@ def _render_page(client_key: str, view_id: int | None) -> str:
     # with no template literals. CSS uses doubled-braces `{{` / `}}` to
     # escape under .format(). The JSON placeholders are inserted via
     # repr-safe json.dumps so they're always valid JS literals.
-    return _PAGE_TEMPLATE.format(
+    # ★ Resolve canon HERE, per request, then format. See the block above
+    # _PAGE_TEMPLATE_RAW for why this is not done at import, and why the order
+    # cannot be swapped (a surviving {canon_*} is a KeyError under .format()).
+    _annual_desc = ("One-time payment, 365 days of Pro."
+                    if not _annual_save_html() else
+                    "One-time payment, 365 days of Pro. Best value.")
+    return canon_text(_PAGE_TEMPLATE_RAW).format(
+        PRO_PRICE=_pro_price_usd(),
+        ANNUAL_PRICE=f"{_ANNUAL_PRICE_USD:,}",
+        ANNUAL_SAVE_HTML=_annual_save_html(),
+        ANNUAL_DESC=_annual_desc,
         NAME=c["name"],
         KEY=client_key,
         TAGLINE=c["tagline"],
