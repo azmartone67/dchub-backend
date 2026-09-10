@@ -924,7 +924,13 @@ def mint_deal_desk_brief():
         "brief_token": token,
         "brief_url": html_url,
         "pdf_url": pdf_url,
-        "deliverable": "Branded 4-page DC Hub Deal Desk Brief (PDF)",
+        # No page count, and the guard below forbids re-adding one. This field
+        # carried the sheet count of the FIRST draft; the live artifact renders
+        # more than twice that. Same defect as the "n / N" footer cut earlier
+        # for being wrong by two sheets — content is chunked here, but how many
+        # physical sheets that becomes is Chromium's answer, reached long after
+        # this response was sent.
+        "deliverable": "Branded DC Hub Deal Desk Brief (PDF)",
         "expires_at": expires.isoformat(),
         # Machine-checkable proof the honesty section is populated, so a caller
         # can assert the brief published its limits instead of trusting that it did.
