@@ -453,6 +453,60 @@ def _annual_save_html() -> str:
     return f' <span class="save">{pct}% off</span>' if pct >= 1 else ""
 
 
+# The tile is its own template because the page template is rendered with a
+# single .format() pass: a pre-rendered string injected as {ANNUAL_TILE_HTML}
+# is NOT re-scanned, so {KEY}/{VIEW_ID} inside it would ship to the browser as
+# literal text. It is formatted here, with the same values, before injection.
+_ANNUAL_TILE_TEMPLATE = """    <a id="upg-annual" class="upgrade-tile" \
+href="/api/v1/connect/click?platform={KEY}&plan=pro_annual&view_id={VIEW_ID}">
+      <h3>Pro Annual{SAVE}</h3>
+      <div class="price">${PRICE}<span style="font-size:.7em;color:var(--muted)">/yr</span></div>
+      <div class="desc">One-time payment, 365 days of Pro. Best value.</div>
+    </a>
+"""
+
+
+def _annual_tile_html(client_key: str, view_id) -> str:
+    """The Pro Annual tile — rendered ONLY while the annual link is a saving.
+
+    ★ r-price-collapse (2026-09-05) WITHDREW Pro Annual, and the reason is
+    arithmetic: both annual SKUs were priced off the $299 monthly list, so
+    against a $99 list $1,188/yr is 12 x $99 EXACTLY — a 0% discount sold
+    beside a monthly button. tier_registry's own note calls that "an offer
+    that punishes the buyer for taking it".
+
+    ★ THAT WITHDRAWAL ONLY REACHED HALF THE SURFACES. It landed in
+    ANNUAL_OPTIONS, so /api/v1/tiers stopped advertising annual — and never
+    reached this module, so all 12 install pages went on rendering the tile
+    for five days. Measured live 2026-09-10 on /connect/cursor, cache-busted:
+
+        Pro Annual        Pro Monthly
+        $1,188 /yr        $99 /mo
+
+    ★ DERIVED, NOT DELETED, and that distinction is the point. The Stripe
+    link stays intact: an annual subscription already provisioned keeps
+    renewing, the live URL keeps resolving, and /api/v1/connect/click still
+    honours plan=pro_annual for anyone holding one. The offer is simply not
+    ADVERTISED while it is not a deal. Mint a $990/yr link (2 months free on
+    $99), set _ANNUAL_PRICE_USD, and the tile comes back on its own — which
+    is exactly the restore path tier_registry documents, with no code change
+    beyond the number.
+
+    Gated on _annual_save_html() so there is ONE definition of "is this a
+    saving" rather than two that can drift apart. That also fails closed: an
+    unreadable monthly price renders no tile rather than an unpriced one.
+    """
+    save = _annual_save_html()
+    if not save:
+        return ""
+    return _ANNUAL_TILE_TEMPLATE.format(
+        KEY=client_key,
+        VIEW_ID=(str(view_id) if view_id else ""),
+        SAVE=save,
+        PRICE=f"{_ANNUAL_PRICE_USD:,}",
+    )
+
+
 # ── Telemetry: best-effort DB write ──────────────────────────────────────
 def _get_db():
     try:
@@ -616,6 +670,7 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
  .example::before{{content:"> ";color:var(--accent2);font-style:normal;font-weight:600}}
  .upgrade-grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}}
  @media (max-width:560px){{.upgrade-grid{{grid-template-columns:1fr}}}}
+ .upgrade-grid.solo{{grid-template-columns:1fr}}
  .upgrade-tile{{background:#0d1117;border:1px solid var(--border);border-radius:10px;padding:18px;text-align:left;text-decoration:none;color:var(--text);transition:border-color .15s,transform .1s}}
  .upgrade-tile:hover{{border-color:var(--accent);transform:translateY(-1px)}}
  .upgrade-tile h3{{margin:0 0 6px;font-size:1.08rem}}
@@ -702,7 +757,7 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
     Need more? Upgrade to Pro — gets you unlimited daily quota, all {canon_tools} tools,
     and removes the free-tier truncation on grid + fiber intel.
   </p>
-  <div class="upgrade-grid">
+  <div class="upgrade-grid{ANNUAL_GRID_MOD}">
     <!-- r68-funnel-stamping (2026-06-06): both hrefs now point at the
          /api/v1/connect/click proxy which stamps connect_landing_views
          .stripe_clicked_at before bouncing to Stripe.  The href is
@@ -713,12 +768,7 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
       <div class="price">${PRO_PRICE}<span style="font-size:.7em;color:var(--muted)">/mo</span></div>
       <div class="desc">Cancel anytime. Same unlimited access, monthly billing.</div>
     </a>
-    <a id="upg-annual" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pro_annual&view_id={VIEW_ID}">
-      <h3>Pro Annual{ANNUAL_SAVE_HTML}</h3>
-      <div class="price">${ANNUAL_PRICE}<span style="font-size:.7em;color:var(--muted)">/yr</span></div>
-      <div class="desc">{ANNUAL_DESC}</div>
-    </a>
-  </div>
+{ANNUAL_TILE_HTML}  </div>
   <p class="upgrade-note" id="ref-note" style="display:none">
     Upgrade links carry your trial key so the conversion attributes back to this page.
   </p>
@@ -782,9 +832,16 @@ async function mintKey(again) {{
       document.getElementById("upg-monthly").href =
         "/api/v1/connect/click?platform=" + encodeURIComponent(CLIENT_KEY) +
         "&plan=pro_monthly" + viewQS + keyQS;
-      document.getElementById("upg-annual").href =
-        "/api/v1/connect/click?platform=" + encodeURIComponent(CLIENT_KEY) +
-        "&plan=pro_annual" + viewQS + keyQS;
+      // ★ The annual tile is DERIVED and may not be on the page at all
+      // (see _annual_tile_html). Unguarded, this line throws a TypeError and
+      // takes the rest of mintKey() with it — the ref-note and the
+      // mint-update POST that attributes the trial key to this view.
+      const annualEl = document.getElementById("upg-annual");
+      if (annualEl) {{
+        annualEl.href =
+          "/api/v1/connect/click?platform=" + encodeURIComponent(CLIENT_KEY) +
+          "&plan=pro_annual" + viewQS + keyQS;
+      }}
       document.getElementById("ref-note").style.display = "block";
 
       btn.innerText = again ? "Mint another" : "Key minted -- paste in step 2 ↑";
@@ -891,14 +948,10 @@ def _render_page(client_key: str, view_id: int | None) -> str:
     # ★ Resolve canon HERE, per request, then format. See the block above
     # _PAGE_TEMPLATE_RAW for why this is not done at import, and why the order
     # cannot be swapped (a surviving {canon_*} is a KeyError under .format()).
-    _annual_desc = ("One-time payment, 365 days of Pro."
-                    if not _annual_save_html() else
-                    "One-time payment, 365 days of Pro. Best value.")
     return canon_text(_PAGE_TEMPLATE_RAW).format(
         PRO_PRICE=_pro_price_usd(),
-        ANNUAL_PRICE=f"{_ANNUAL_PRICE_USD:,}",
-        ANNUAL_SAVE_HTML=_annual_save_html(),
-        ANNUAL_DESC=_annual_desc,
+        ANNUAL_TILE_HTML=_annual_tile_html(client_key, view_id),
+        ANNUAL_GRID_MOD=("" if _annual_tile_html(client_key, view_id) else " solo"),
         NAME=c["name"],
         KEY=client_key,
         TAGLINE=c["tagline"],
