@@ -329,3 +329,40 @@ def test_a_body_that_is_not_a_plan_execution_is_refused(monkeypatch):
     r = _app().test_client().post("/api/v1/deal-desk", json={"nope": 1},
                                   headers={"X-Admin-Key": "k"})
     assert r.status_code == 400 and r.get_json()["error"] == "missing_plan_execution"
+
+
+# ── the write is checked, not assumed ───────────────────────────────────────
+
+class _FakeCursor:
+    """Only `execute` + `fetchone` — exactly what a psycopg2 cursor gives here.
+    A fake with more capability than the real object turns a can't-work path
+    green."""
+
+    def __init__(self, returns):
+        self._returns = list(returns)
+        self.sql = None
+
+    def execute(self, sql, params=None):
+        self.sql = sql
+        self.params = params
+
+    def fetchone(self):
+        return self._returns.pop(0)
+
+
+def test_the_insert_declares_on_conflict_and_returns_the_id():
+    from routes.deal_desk import _INSERT_SQL
+    up = " ".join(_INSERT_SQL.split()).upper()
+    assert "ON CONFLICT (BRIEF_TOKEN) DO NOTHING" in up
+    assert up.rstrip().endswith("RETURNING ID"), (
+        "without RETURNING, a conflict is indistinguishable from a write")
+
+
+def test_a_conflicting_token_reports_that_nothing_was_stored():
+    """ON CONFLICT DO NOTHING is how a write silently becomes a no-op. The
+    caller would hand its human a link to a brief that does not exist."""
+    from routes.deal_desk import store_brief
+    row = dict.fromkeys(["api_key_hash", "intent", "intent_class", "prepared_for",
+                         "prepared_by", "payload", "source", "expires_at"], "x")
+    assert store_brief(_FakeCursor([(1,)]), "dd-fresh", row) is True
+    assert store_brief(_FakeCursor([None]), "dd-taken", row) is False

@@ -825,6 +825,34 @@ def _extract_envelope(body):
     return None
 
 
+# One string, not adjacent fragments: regression_lint's insert-no-on-conflict
+# rule scans from INSERT INTO up to the next quote character, so a statement
+# split across literals hides its own ON CONFLICT clause from the guard.
+_INSERT_SQL = """
+    INSERT INTO deal_desk_briefs (brief_token, api_key_hash, intent, intent_class,
+                                  prepared_for, prepared_by, payload, source, expires_at)
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+    ON CONFLICT (brief_token) DO NOTHING
+    RETURNING id
+"""
+
+
+def store_brief(cur, token, row) -> bool:
+    """Insert one brief. True when a row actually landed.
+
+    ★ ON CONFLICT DO NOTHING, and then the return value is CHECKED. Bare DO
+    NOTHING is how a write silently becomes a no-op: the caller would hand its
+    human a link to a brief that was never stored and the failure would surface
+    days later as a 404 on someone else's desk. `RETURNING id` turns the
+    conflict into a fact the caller must handle — here, by minting a new token.
+    """
+    cur.execute(_INSERT_SQL, (
+        token, row["api_key_hash"], row["intent"], row["intent_class"],
+        row["prepared_for"], row["prepared_by"], row["payload"], row["source"],
+        row["expires_at"]))
+    return cur.fetchone() is not None
+
+
 @deal_desk_bp.route("/api/v1/deal-desk", methods=["POST"])
 def mint_deal_desk_brief():
     """Turn one `execute_plan` run into a shareable, no-login branded brief."""
@@ -859,17 +887,22 @@ def mint_deal_desk_brief():
     if c is None:
         return jsonify({"error": "store_unavailable",
                         "message": "The brief store is unreachable; no link was minted."}), 503
+    payload = json.dumps({"plan": env, "prepared_for": prepared_for,
+                          "prepared_by": prepared_by})
+    row = {"api_key_hash": _hash_key(request.headers.get("X-API-Key") or ""),
+           "intent": B["intent"][:2000], "intent_class": B["intent_class"][:80],
+           "prepared_for": prepared_for, "prepared_by": prepared_by,
+           "payload": payload, "source": str(body.get("source") or "api")[:40],
+           "expires_at": expires}
     try:
         with c, c.cursor() as cur:
-            cur.execute(
-                "INSERT INTO deal_desk_briefs (brief_token, api_key_hash, intent, intent_class,"
-                " prepared_for, prepared_by, payload, source, expires_at)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (token, _hash_key(request.headers.get("X-API-Key") or ""),
-                 B["intent"][:2000], B["intent_class"][:80], prepared_for, prepared_by,
-                 json.dumps({"plan": env, "prepared_for": prepared_for,
-                             "prepared_by": prepared_by}),
-                 str(body.get("source") or "api")[:40], expires))
+            stored = False
+            for _ in range(3):
+                if store_brief(cur, token, row):
+                    stored = True
+                    break
+                token = _new_token()   # token collision — mint a new one, never
+                                       # hand back a URL for a row that is not there
     except Exception as e:
         print(f"[deal_desk] insert failed: {e}", file=sys.stderr)
         return jsonify({"error": "store_write_failed", "detail": f"{type(e).__name__}"}), 503
@@ -878,6 +911,9 @@ def mint_deal_desk_brief():
             c.close()
         except Exception:
             pass
+    if not stored:
+        return jsonify({"error": "store_write_failed",
+                        "message": "Could not mint a unique brief token; nothing was stored."}), 503
 
     html_url, pdf_url = _brief_urls(token)
     share = (f"DC Hub Deal Desk Brief · {B['intent'][:90]}"
