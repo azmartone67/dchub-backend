@@ -728,10 +728,41 @@ def amplify_to_all(source_post_id: int = 0,
 
 # ── Auto-sweep (cron) ────────────────────────────────────────────────
 
+# ★ 2026-09-10 — THE LOOKBACK MUST COVER THE GAP BETWEEN RUNS.
+# This module was written for a 30-minute cron, where a 60-minute window
+# overlaps every run. It never ran that way: crawler_scheduler collapsed it to
+# TWO slots a day, 15 and 03 UTC, to fit the harness's two-slot cap — and the
+# window stayed at 60 minutes. LinkedIn publishes at 08, 12, 16 and 20 UTC
+# (routes/linkedin_quad_daily.SLOTS), so the two sweep windows are
+# [14:00,15:00) and [02:00,03:00) and NOT ONE SLOT HAS EVER FALLEN INSIDE ONE.
+# The sweep has been finding zero rows by construction since 2026-06-07, which
+# is why the cadence sentinel reports non-LinkedIn and Bluesky publishing dark
+# while linkedin_publish itself stays healthy and unalarmed.
+#
+# ★ The scheduler's own comment states the intent and refutes itself: "a noon
+# LinkedIn post is picked up by the 15 UTC slot" — noon is 12:00, the window
+# opens at 14:00 — and it names a "midnight LinkedIn post" for the 03 UTC slot
+# when there is no midnight slot at all.
+#
+# 13h = the 12h gap between the 15 and 03 slots, plus an hour of margin for a
+# late or retried publish. Re-sweeping old rows is free: the query already
+# excludes anything in multiplatform_amplifier_log, the UNIQUE(source_post_id,
+# target_platform) index makes a repeat no-op, and MULTIPLATFORM_AMPLIFIER_
+# DAILY_CAP still bounds what actually goes out.
+def _lookback_minutes() -> int:
+    try:
+        v = int(os.environ.get("MULTIPLATFORM_AMPLIFIER_LOOKBACK_MINUTES", "780"))
+    except (TypeError, ValueError):
+        return 780
+    # A zero or negative window is the 60-minute bug with a different number.
+    return v if v > 0 else 780
+
 
 def auto_sweep_recent() -> dict:
-    """Find LinkedIn posts published in the last 60 minutes that have
-    NOT been amplified yet, and amplify each. Idempotent — repeat
+    """Find LinkedIn posts published within the lookback window that have
+    NOT been amplified yet, and amplify each. The window covers the gap
+    between cron runs (see _lookback_minutes) — a 60-minute window under a
+    twice-daily cron matched nothing, ever. Idempotent — repeat
     sweeps no-op via the UNIQUE(source_post_id, target_platform) index.
 
     Bounded scan: at most 10 posts per sweep (a sane sanity cap)."""
@@ -747,7 +778,7 @@ def auto_sweep_recent() -> dict:
                 cur.execute("""
                     SELECT lp.id
                       FROM linkedin_posts lp
-                     WHERE lp.posted_at > NOW() - INTERVAL '60 minutes'
+                     WHERE lp.posted_at > NOW() - (%s * INTERVAL '1 minute')
                        AND NOT EXISTS (
                              SELECT 1
                                FROM multiplatform_amplifier_log a
@@ -756,7 +787,7 @@ def auto_sweep_recent() -> dict:
                        )
                      ORDER BY lp.posted_at DESC
                      LIMIT 10
-                """)
+                """, (_lookback_minutes(),))
                 ids = [r[0] if not hasattr(r, "get") else r.get("id")
                        for r in (cur.fetchall() or [])]
                 result["swept"] = len(ids)

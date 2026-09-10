@@ -903,9 +903,18 @@ SCHEDULE = [
     # Mastodon + Hacker News (semi-auto via 1-click submitlink URL).
     # User spec says "every 30 min" → "every hour" — collapsed to two
     # slots/day (15/3 UTC) within the harness's hour-based two-slot
-    # cap. Detection window is 60 min so a noon LinkedIn post is picked
-    # up by the 15 UTC slot, a midnight LinkedIn post by the 3 UTC
-    # slot. Daily cap is enforced INSIDE amplify_to_all() (5/day default
+    # cap. ★ 2026-09-10 — THIS COMMENT USED TO SAY "Detection window is 60
+    # min so a noon LinkedIn post is picked up by the 15 UTC slot, a midnight
+    # LinkedIn post by the 3 UTC slot." Both halves were false, and it stood
+    # for three months while the lane was dark. Noon is 12:00 and a 60-minute
+    # window opening at 14:00 never contains it; there is no midnight LinkedIn
+    # slot at all — they are 08/12/16/20 (linkedin_quad_daily.SLOTS). The
+    # sweep matched nothing by construction from the day it was collapsed to
+    # two slots. The window is now MULTIPLATFORM_AMPLIFIER_LOOKBACK_MINUTES
+    # (default 780 = the 12h gap between these two slots + 1h margin), and
+    # tests/test_amplifier_window_covers_the_linkedin_slots.py does the
+    # arithmetic against both real schedules so moving either has to move the
+    # other. Daily cap is enforced INSIDE amplify_to_all() (5/day default
     # via MULTIPLATFORM_AMPLIFIER_DAILY_CAP), so even if both slots fire
     # the user-visible cadence stays sane. Idempotent via UNIQUE(
     # source_post_id, target_platform) on multiplatform_amplifier_log
