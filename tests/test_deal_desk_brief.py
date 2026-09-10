@@ -366,3 +366,14 @@ def test_a_conflicting_token_reports_that_nothing_was_stored():
                          "prepared_by", "payload", "source", "expires_at"], "x")
     assert store_brief(_FakeCursor([(1,)]), "dd-fresh", row) is True
     assert store_brief(_FakeCursor([None]), "dd-taken", row) is False
+
+
+def test_the_mint_response_never_claims_a_page_count():
+    """Found by verifying the real thing: the mint said "Branded 4-page …" while
+    the live PDF rendered 10 sheets. The footer count was cut for exactly this
+    reason and the same literal survived one layer up, in the field an agent
+    reads back to its human."""
+    import routes.deal_desk as dd
+    src = open(dd.__file__).read()
+    assert re.search(r"\d+\s*-?\s*page\b", src, re.I) is None, (
+        "an authored page count reappeared in deal_desk.py")
