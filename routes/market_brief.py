@@ -45,6 +45,9 @@ from routes._swallowed_writes import note_swallowed_write
 
 from util.market_aliases import DCPI_METRO_ALIASES, canonical_slug
 from util.dcpi_score_row import PUBLISHED_ONLY
+# Derived per call, never frozen at import: #4334 retired three templates
+# that froze canon at import time and retyped their prices.
+from tier_registry import price_display
 
 logger = logging.getLogger(__name__)
 
@@ -1132,7 +1135,7 @@ def _build_brief(slug: str, tier: str) -> dict:
                     "checkout_url":  "/pricing?utm_source=market_brief",
                     "blurb":         ("Power & Grid, Pipeline, Operator footprint, "
                                       "M&A, Comps, and Risk are unlocked for PRO "
-                                      "subscribers at $499/mo, all markets."),
+                                      f"subscribers at {price_display('pro')}, all markets."),
                 }
         out["ok"] = True
     finally:
@@ -1443,7 +1446,7 @@ def _render_html(brief: dict) -> str:
             '<div class="blur-title">PRO unlocks all sections</div>'
             '<div class="blur-body">Power &amp; Grid · Pipeline · Operator Footprint '
             '· M&amp;A · Comps · Risk. All markets, live updates, share-ready.</div>'
-            '<a class="cta" href="/pricing?utm_source=market_brief">Unlock with PRO · $499/mo</a>'
+            f'<a class="cta" href="/pricing?utm_source=market_brief">Unlock with PRO · {price_display("pro")}</a>'
             '</div>'
             '<div class="blur-fake">'
             '<div class="fake-row"></div><div class="fake-row"></div>'
@@ -1924,12 +1927,12 @@ def _render_embed_codegen_html(slug: str, name: str, verdict: str,
 </label>
 <p class="hint">Your PRO+ token is good for 1 year. Re-load this page to mint a fresh one.</p>"""
     else:
-        toggle_html = """
+        toggle_html = f"""
 <label class="toggle disabled">
   <input type="checkbox" id="watermark-toggle" checked disabled>
   <span>Show "Powered by DC Hub" bar — watermark-off requires PRO+</span>
 </label>
-<p class="hint"><a href="/pricing?utm_source=embed_codegen">Upgrade to PRO ($499/mo)</a> to remove the watermark.</p>"""
+<p class="hint"><a href="/pricing?utm_source=embed_codegen">Upgrade to PRO ({price_display('pro')})</a> to remove the watermark.</p>"""
 
     title_safe = _esc(name)
     return f"""<!doctype html>
@@ -3233,7 +3236,7 @@ def pdf_market_brief(slug):
         return jsonify({
             "error":       "pdf_requires_pro",
             "upgrade_url": "/pricing",
-            "message":     ("PDF export is a PRO feature ($499/mo). "
+            "message":     (f"PDF export is a PRO feature ({price_display('pro')}). "
                             "Visit dchub.cloud/pricing to unlock."),
         }), 402
     canonical = _canonical(slug)
@@ -3595,7 +3598,7 @@ def _bulk_429_response(tier: str, cap: int, count: int, tool: str):
         "current_count": count,
         "upgrade_url":   "/pricing?utm_source=market_brief_bulk",
         "message":       (f"Daily limit of {cap} calls reached for tier {tier}. "
-                          "Upgrade to PRO ($499/mo) for unlimited bulk pulls."),
+                          f"Upgrade to PRO ({price_display('pro')}) for unlimited bulk pulls."),
     }
     resp = jsonify(payload)
     resp.headers["Retry-After"] = "3600"
