@@ -341,6 +341,81 @@ def _step_headline(findings):
     return (findings[0] if findings else (None, None))
 
 
+# ── row tables ─────────────────────────────────────────────────────────────
+#
+# `top_level_findings` renders a list as "12 items". That is a COUNT, and for a
+# ranking question the twelve rows it is counting ARE the answer.
+#
+# Measured 2026-09-10, "rank markets for a 200 MW AI campus in Texas": the
+# printed brief named ZERO of the twelve shortlisted markets — not Midland, not
+# El Paso, none. The page said `shortlist  12 items` and stopped, and a reader
+# who wanted the ranked list had to go get it from somewhere else. So the brief
+# was strictly worse than the tool call it was made from.
+#
+# A row earns a place on the page when it NAMES a thing and SCORES it. That rule
+# is why the 19-row `demand_24h` series ({mw, period} — no name) and
+# `site_evaluation_handoff` ({tool, why} — no score) stay off it, without
+# needing a per-tool allowlist that would go stale the next time a tool grows a
+# field.
+_ROW_LABEL_KEYS = ("market", "market_slug", "name", "facility_name", "site_ref",
+                   "slug", "operator", "candidate_id", "iso", "title")
+# Decision-relevant columns, most-decisive first. Deliberately the same
+# vocabulary as _HEADLINE_KEYS: a number worth leading a step with is a number
+# worth printing beside the row it belongs to.
+_ROW_VALUE_KEYS = ("verdict", "composite_score", "constraint_score",
+                   "excess_power_score", "time_to_power_months", "capacity_mw",
+                   "power_mw", "headroom_mw", "available_mw", "avg_kwh_cents",
+                   "rank", "score", "queue_wait_months", "state")
+_ROW_CAP = 14
+
+
+def _row_label(row):
+    for k in _ROW_LABEL_KEYS:
+        v = row.get(k)
+        if isinstance(v, _SCALAR_TYPES) and str(v).strip():
+            return _fmt_scalar(v)
+    return None
+
+
+def step_tables(result, max_tables=2, max_rows=_ROW_CAP):
+    """Top-level lists OF OBJECTS → [{key, columns, rows, total, shown}].
+
+    Never truncates silently: `total` and `shown` are both carried, so a list
+    longer than the cap prints how many it left out instead of quietly ending.
+    """
+    if not isinstance(result, dict):
+        return []
+    tables = []
+    for key, val in result.items():
+        if len(tables) >= max_tables:
+            break
+        if key in _MACHINERY_KEYS or str(key).startswith("_"):
+            continue
+        if not isinstance(val, list) or not val:
+            continue
+        # A row earns its place by NAMING a thing; two of them make a table.
+        # One labelled row is a finding, and top_level_findings already has it.
+        labelled = [r for r in val if isinstance(r, dict) and _row_label(r) is not None]
+        if len(labelled) < 2:
+            continue
+        cols = [k for k in _ROW_VALUE_KEYS
+                if any(isinstance(r.get(k), _SCALAR_TYPES) and r.get(k) is not None
+                       for r in labelled)]
+        if not cols:                           # names a thing but scores nothing
+            continue
+        cols = cols[:4]
+        rows = []
+        for r in labelled[:max_rows]:
+            rows.append({
+                "label": _clip(_row_label(r), 34),
+                "values": [(_fmt_scalar(r[k]) if isinstance(r.get(k), _SCALAR_TYPES)
+                            and r.get(k) is not None else "—") for k in cols],
+            })
+        tables.append({"key": str(key), "columns": list(cols), "rows": rows,
+                       "total": len(labelled), "shown": len(rows)})
+    return tables
+
+
 def _arg_summary(args):
     if not isinstance(args, dict) or not args:
         return ""
@@ -446,6 +521,7 @@ def brief_model(env, *, prepared_for="", prepared_by="DC Hub", now=None):
             "status": str(s.get("status") or ""),
             "ms": s.get("ms"),
             "findings": findings,
+            "tables": step_tables(result),
             "headline_key": hk,
             "headline_value": hv,
             "truncated": truncated,
@@ -535,6 +611,14 @@ _EXTRA_CSS = """
   .limit .what{color:#e9e9ee;font-size:12px;line-height:1.5;}
   .limit.clean{border-left-color:var(--grn);}
   .limit.clean .who{color:var(--grn);}
+  .rowtable{width:100%;border-collapse:collapse;margin:8px 0 2px;}
+  .rowtable th{font-family:'JetBrains Mono',monospace;font-size:8.5px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--dim);text-align:right;padding:0 0 6px 10px;font-weight:500;}
+  .rowtable th:first-child{text-align:left;padding-left:0;}
+  .rowtable td{font-family:'JetBrains Mono',monospace;font-size:11px;color:#fff;
+    text-align:right;padding:5px 0 5px 10px;border-top:1px solid var(--b);white-space:nowrap;}
+  .rowtable td.rl{text-align:left;padding-left:0;color:var(--mut);white-space:normal;}
+  .rowtable{page-break-inside:avoid;break-inside:avoid;}
   .findrow{display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid var(--b);font-size:12px;}
   .findrow:last-child{border-bottom:0;}
   .findrow .fk{color:var(--mut);font-family:'JetBrains Mono',monospace;font-size:11px;}
@@ -674,6 +758,18 @@ def render_brief_html(B) -> str:
             else:
                 body += ('<p class="note">This step returned no scalar fields to summarise. '
                          'Call the tool directly for its full payload.</p>')
+            for tb in st["tables"]:
+                body += (f'<table class="rowtable"><tr><th>{_esc(tb["key"])}</th>'
+                         + "".join(f'<th>{_esc(c)}</th>' for c in tb["columns"])
+                         + '</tr>')
+                for r in tb["rows"]:
+                    body += (f'<tr><td class="rl">{_esc(r["label"])}</td>'
+                             + "".join(f'<td>{_esc(v)}</td>' for v in r["values"])
+                             + '</tr>')
+                body += '</table>'
+                if tb["total"] > tb["shown"]:
+                    body += (f'<p class="note">{tb["shown"]} of {tb["total"]} '
+                             f'{_esc(tb["key"])} rows shown.</p>')
             tags = []
             if st["completeness"]:
                 tags.append(str(st["completeness"]))
