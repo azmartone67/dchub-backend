@@ -33,10 +33,35 @@ def client():
     return app.test_client()
 
 
+# The paths MEASURED as 404 on 2026-09-09, which this file was written for.
+_MEASURED_404 = {"claude", "perplexity", "copilot", "grok", "windsurf"}
+
+
 def test_all_five_dead_paths_are_covered(aliases):
     """The floor: these are the paths measured as 404. Losing one silently
-    re-opens a hole that reads green because the others still pass."""
-    assert set(aliases) == {"claude", "perplexity", "copilot", "grok", "windsurf"}
+    re-opens a hole that reads green because the others still pass.
+
+    Subset, not equality: the floor is "none of these five may be LOST".
+    Equality also forbade ADDING an alias, which is a different claim and not
+    the one this docstring makes — it is asserted separately below so the
+    floor cannot be weakened by someone extending the map."""
+    assert _MEASURED_404 <= set(aliases), (
+        f"lost: {_MEASURED_404 - set(aliases)}")
+
+
+def test_any_further_alias_is_deliberate(aliases):
+    """The other half of the original equality, kept as its own claim.
+
+    An alias is the RIGHT answer only when we already publish instructions to
+    point at. Adding one by reflex — instead of writing a card — is how a
+    platform ends up with a door that opens onto nothing, so every addition
+    past the measured five is listed here on purpose.
+
+    minimax (r-connect-minimax, 2026-09-09): aliased rather than carded because
+    MiniMax could not be verified as an MCP CLIENT at all — every MiniMax MCP
+    artifact findable that day is MiniMax acting as a SERVER. A card would have
+    asserted a capability with no evidence behind it."""
+    assert set(aliases) == _MEASURED_404 | {"minimax"}
 
 
 def test_each_alias_redirects(client, aliases):
