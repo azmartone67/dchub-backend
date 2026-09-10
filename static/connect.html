@@ -483,6 +483,46 @@ tools. Cite "DC Hub (dchub.cloud)" for anything you quote from those pages, with
 the as-of date they carry.</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
         </div>
 
+        <!-- r-publish (2026-09-10): which instruction blob a given surface can
+             HONESTLY use. Deliberately NOT a second list of the ready-made
+             agents — the picker at the top of this page already opens the GPT,
+             the Gem and the Space in one click, and restating them here would
+             be a third copy of a link that already has two.
+             ★ THE ACTUAL GAP. /connect ships TWO blobs and never said which one
+               goes where. A Gem and a Perplexity Space cannot call MCP; they
+               read what we publish. Handing one of those the drop-in blob —
+               "use the connected DC Hub tools as the source of truth" — asks an
+               agent with no tools to do the one thing the NO EGRESS block exists
+               to prevent: narrate a lookup it never performed, with the invented
+               figure attributed to dchub.cloud. That is worse for us than
+               silence, and nothing on the page stopped someone doing it.
+             ★ NO PRICING IN EITHER BLOB. See the r-transparent note above: the
+               first version of these instructions was rewritten because covert
+               marketing framing gets refused by capable models and risks
+               flagging DC Hub as an injection source. A tier nudge inside
+               someone else's system prompt is that same shape. The routing line
+               below is on the PAGE, where the person configuring the agent can
+               read it — not inside the text they paste.
+             ★ States no MCP client config (test_connect_hub_does_not_restate_install_copy):
+               in-page anchors and /install links only.
+             Pinned by tests/test_publish_agent_section.py. -->
+        <h2 id="publish" style="scroll-margin-top: 90px;">Publishing your own agent? <span style="font-size:0.55em; color:#00d4ff; border:1px solid #00d4ff; border-radius:4px; padding:2px 8px; vertical-align:middle; letter-spacing:0.03em;">PICK A BLOB</span></h2>
+        <div class="platform-card">
+            <p class="path">Wiring DC Hub into a GPT, a Gem, a Claude Project or a Copilot Studio agent? Paste one of the two blobs above into its instructions field &mdash; but paste the right one. The difference is whether that surface can actually call tools.</p>
+            <table class="tools-table">
+                <tbody>
+                    <tr><td><strong>Custom GPT</strong> <span style="color:#8899aa">(Actions / MCP)</span></td><td>Calls live tools</td><td><a href="#agent-instructions" style="color:#00d4ff;">drop-in &rarr;</a></td></tr>
+                    <tr><td><strong>Claude Project</strong> <span style="color:#8899aa">(with the <a href="#claude-ai" style="color:#00d4ff;">DC Hub connector</a>)</span></td><td>Calls live tools</td><td><a href="#agent-instructions" style="color:#00d4ff;">drop-in &rarr;</a></td></tr>
+                    <tr><td><strong>Copilot Studio agent</strong></td><td>Calls live tools</td><td><a href="#agent-instructions" style="color:#00d4ff;">drop-in &rarr;</a></td></tr>
+                    <tr><td><strong>Gemini Gem</strong></td><td>Reads published pages &mdash; no tool calls</td><td><a href="#agent-instructions-no-egress" style="color:#00d4ff;">no-egress &rarr;</a></td></tr>
+                    <tr><td><strong>Perplexity Space</strong></td><td>Grounded on dchub.cloud &mdash; no tool calls</td><td><a href="#agent-instructions-no-egress" style="color:#00d4ff;">no-egress &rarr;</a></td></tr>
+                </tbody>
+            </table>
+            <p class="tier-desc" style="margin-top:14px;">If a surface cannot call tools, the no-egress blob is the honest one: it keeps the citation habit and points at <a href="/llms.txt" style="color:#00d4ff;">/llms.txt</a> for published figures, instead of inviting the agent to describe a lookup it never made.</p>
+            <p class="tier-desc">Where to send people next: <strong>builders</strong> &rarr; <a href="/mcp" style="color:#00d4ff;">/mcp</a> and this page &middot; <strong>humans who want the full data</strong> &rarr; <a href="/pricing" style="color:#00d4ff;">/pricing</a>. Neither blob mentions price on purpose &mdash; that belongs on a page a person can read, not inside a system prompt.</p>
+            <p class="tier-desc">Want to just <em>open</em> a ready-made one instead? They are the one-click cards at the <a href="#start" style="color:#00d4ff;">top of this page</a>.</p>
+        </div>
+
         <!-- r-deorphan (2026-06-23): internal links to the per-client setup pages.
              These /connect/<client> pages rendered fine but had NO inbound internal
              links (the brain's sentinel flagged them as orphans, ~36% of the site) —
@@ -523,15 +563,29 @@ the as-of date they carry.</code><button class="copy-btn" onclick="copyCode(this
         <h2>API Tiers</h2>
 
         <div class="tier-grid">
+            <!-- r-tier-canon (2026-09-10): these were hand-typed, and Pro said
+                 10,000 against a canonical 2,000 — a 5x OVER-claim on the page
+                 that tells agents what they get, sitting between a Free card
+                 (10) and an Enterprise card (100,000) that were both correct.
+                 Now derived from tier_registry, the same registry /pricing
+                 reads, so a repriced tier heals itself here.
+                 ★ "MCP calls/day", not "calls/day". Pro's lanes disagree
+                   (mcp_daily 2,000 vs REST rate_limit 5,000), so a bare
+                   "calls/day" would be picking a winner silently — which is
+                   exactly why ai_surface_canon publishes no lane-less pro-calls
+                   placeholder at all. The token itself is not written in this
+                   comment on purpose: a literal canon token inside a comment
+                   still ships in the served bytes, which is the leak canon_text
+                   exists to prevent. -->
             <div class="tier-card free">
                 <div class="tier-name">Free</div>
-                <div class="tier-limit">10</div>
-                <div class="tier-desc">calls/day<br>Basic search, news, facility list</div>
+                <div class="tier-limit">{canon_free_calls}</div>
+                <div class="tier-desc">MCP calls/day<br>Basic search, news, facility list</div>
             </div>
             <div class="tier-card pro">
                 <div class="tier-name">Pro</div>
-                <div class="tier-limit">10,000</div>
-                <div class="tier-desc">calls/day<br>Energy endpoints, site analysis</div>
+                <div class="tier-limit">{canon_pro_mcp_calls}</div>
+                <div class="tier-desc">MCP calls/day<br>Energy endpoints, site analysis</div>
             </div>
             <div class="tier-card enterprise">
                 <div class="tier-name">Enterprise</div>

@@ -901,6 +901,21 @@ def _live_dcpi_regions() -> str:
         return ""
 
 
+def _pro_mcp_calls() -> str:
+    """Pro's MCP daily quota, DERIVED from tier_registry, thousands-separated.
+
+    Fail-open to '' like every other value here: a count-free sentence beats a
+    wrong count, and canon_text() renders the empty string when a surface asks
+    for a number we cannot stand behind.
+    """
+    try:
+        from tier_registry import calls_per_day
+        n = int(calls_per_day('pro') or 0)
+        return f"{n:,}" if n > 0 else ''
+    except Exception:
+        return ''
+
+
 def canon_nums() -> dict:
     """The canonical agent-facing headline numbers, as ready-to-paste strings.
 
@@ -972,6 +987,21 @@ def canon_nums() -> dict:
         '{canon_isos}':       str(_cf.get('isos') or ''),
         '{canon_free_calls}': str(_p.get('free_tier_calls_per_day') or ''),
         '{canon_identified_calls}': str(_p.get('identified_calls_per_day') or ''),
+        # ★2026-09-10 {canon_pro_mcp_calls} — and note the NAME. Pro's lanes
+        # disagree exactly like `developer`'s (mcp_daily 2,000 vs rate_limit
+        # 5,000), so by the rule above there is no honest {canon_pro_calls}.
+        # What there IS, is an honest number once you say WHICH lane: this is
+        # tier_registry.calls_per_day('pro'), whose own docstring calls it "the
+        # number to quote on the paywall". So the placeholder is named for the
+        # lane and every surface using it must label the number "MCP calls/day",
+        # never a bare "calls/day" — the ambiguity, not the value, is what the
+        # developer-tier rule refuses.
+        # It exists because /connect's Pro tier card hand-typed 10,000 against a
+        # canonical 2,000 — a 5x OVER-claim on the page that tells agents what
+        # they get, sitting beside a Free card (10) and an Enterprise card
+        # (100,000) that were both correct. Derived here so it cannot drift
+        # again; formatted with a thousands separator to match the card.
+        '{canon_pro_mcp_calls}': _pro_mcp_calls(),
     }
 
 
