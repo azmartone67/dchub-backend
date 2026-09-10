@@ -34,6 +34,11 @@ import re
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROUTES = os.path.join(ROOT, "routes", "integrations_landing.py")
 
+# ★2026-09-10 — MCP_LANDING_HTML became _MCP_LANDING_TEMPLATE when the page
+# stopped freezing canon at import. These assertions are about LINKS, which the
+# canon/token passes never touch, so they still slice the template source; only
+# the name moved.
+
 CF_DASH = 'href="https://dash.cloudflare.com/"'
 CF_DOCS = "developers.cloudflare.com/cloudflare-one/access-controls/ai-controls/mcp-portals/"
 
@@ -73,7 +78,7 @@ def test_the_cloudflare_recipe_links_the_cloudflare_dashboard():
 
 
 def test_the_main_mcp_page_links_the_cloudflare_dashboard():
-    blob = _blob("MCP_LANDING_HTML")
+    blob = _blob("_MCP_LANDING_TEMPLATE")
     assert CF_DASH in blob, (
         "/integrations/mcp names the Cloudflare MCP Server Portal but carries no "
         "Cloudflare-side URL, unlike every peer quickstart card on the same page"
@@ -82,9 +87,9 @@ def test_the_main_mcp_page_links_the_cloudflare_dashboard():
 
 def test_the_two_slices_are_actually_different_pages():
     """Non-vacuity: proves neither assertion above is reading the other page."""
-    mcp = _blob("MCP_LANDING_HTML")
+    mcp = _blob("_MCP_LANDING_TEMPLATE")
     cf = _blob("CLOUDFLARE_PORTAL_RECIPE_HTML")
-    assert CF_DOCS not in mcp, "MCP_LANDING_HTML slice is bleeding into the recipe page"
+    assert CF_DOCS not in mcp, "_MCP_LANDING_TEMPLATE slice is bleeding into the recipe page"
     assert "CLOUDFLARE_PORTAL_RECIPE_HTML" not in mcp
     assert "60-second quickstarts" not in cf, "recipe slice is bleeding into the landing page"
 
@@ -96,8 +101,8 @@ def test_no_stale_one_dash_deep_links():
     assert not bad, f"stale Zero Trust deep link(s) that lose their target: {bad}"
 
 def _quickstart_grid():
-    """The <div class="qs"> card grid near the TOP of MCP_LANDING_HTML."""
-    blob = _blob("MCP_LANDING_HTML")
+    """The <div class="qs"> card grid near the TOP of _MCP_LANDING_TEMPLATE."""
+    blob = _blob("_MCP_LANDING_TEMPLATE")
     i = blob.index('<div class="qs">')
     j = blob.index("<h2>Agent recipes", i)
     grid = blob[i:j]
@@ -133,7 +138,7 @@ def test_cloudflare_has_a_quickstart_card_not_just_a_tail_link():
 def test_the_quickstart_pane_does_not_miscount_its_own_cards():
     """The pane claimed 'the six biggest agent platforms'; there are now seven
     cards. A stale hard-coded count is the cheapest kind of lie on the page."""
-    blob = _blob("MCP_LANDING_HTML")
+    blob = _blob("_MCP_LANDING_TEMPLATE")
     n = _quickstart_grid().count('<div class="qs-card">')
     assert "six biggest agent platforms" not in blob, (
         f"heading still claims six platforms but the grid renders {n} cards"

@@ -69,8 +69,15 @@ _KNOWN_LATCHED = {
     # the same second. It is now _MCP_LANDING_TEMPLATE, a raw constant
     # resolved per request in render_mcp_landing(), and
     # tests/test_integrations_mcp_derives_price_and_canon.py renders the
-    # page to prove it. The other three are STILL LATCHED and stay listed.
-    'routes/integrations_landing.py': ['MCP_SEO_PAGE_HTML', 'META_LANDING_HTML', '_RECIPE_PAGE_TEMPLATE'],
+    # page to prove it.
+    # ★2026-09-10 (same day, second pass): MCP_SEO_PAGE_HTML and
+    # META_LANDING_HTML came off too — the two siblings that first pass
+    # named and deliberately left. Same treatment: raw
+    # _MCP_SEO_PAGE_TEMPLATE / _META_LANDING_TEMPLATE constants resolved
+    # per request in render_mcp_seo_page() / render_meta_landing(), each
+    # with its retyped "$9/mo" entry price derived from tier_registry.
+    # _RECIPE_PAGE_TEMPLATE is the last latch left in this module.
+    'routes/integrations_landing.py': ['_RECIPE_PAGE_TEMPLATE'],
     # routes/mcp_connect.py came off 2026-09-10. Its _PAGE_TEMPLATE was the
     # LATCH THAT SHIPPED: the install pages served the cold-start pinned floor
     # while /api/v1/canon/phrases in the same process served the live one. The
