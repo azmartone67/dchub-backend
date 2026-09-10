@@ -27743,10 +27743,16 @@ def get_press_releases_list():
         import os as _os
         conn = _pg.connect(_os.getenv('DATABASE_URL'), connect_timeout=8)
         cur = conn.cursor()
+        # Was press_releases alone, which nothing has written since 2026-09-04,
+        # so the baked /press and /dc-hub-media/ froze there for five days while
+        # the hourly press-rss workflow ran green ~120 times. It was never the
+        # bake. The resolver adds the queue + auto tables the feeds publish from
+        # and KEEPS the 163-row archive that only press_releases has.
+        from routes.press_queue import _RESOLVABLE_PRESS_CTE
         cur.execute(
-            "SELECT id, title, slug, category, date, subheadline, meta_description "
-            "FROM press_releases WHERE published = TRUE "
-            "ORDER BY date DESC NULLS LAST"
+            _RESOLVABLE_PRESS_CTE +
+            " SELECT id, title, slug, category, date, subheadline, meta_description"
+            " FROM resolvable ORDER BY published_at DESC NULLS LAST"
         )
         rows = cur.fetchall()
         cur.close(); conn.close()
@@ -39624,7 +39630,16 @@ def get_press_release(slug):
         import psycopg2
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         cur = conn.cursor()
-        cur.execute("SELECT id,title,slug,category,date,subheadline,body,meta_description FROM press_releases WHERE slug=%s AND published=TRUE", (slug,))
+        # THE gate for every URL the public feed advertises: the edge worker
+        # builds /press-release/<slug> from this endpoint. Reading press_releases
+        # alone meant 10 releases the feed published on 2026-09-05..09-09 resolved
+        # to the fallback below — a 200 carrying the wrong article, which the
+        # worker renders as 404. Same resolver as the list, so a slug that appears
+        # on /press is a slug that opens.
+        from routes.press_queue import _RESOLVABLE_PRESS_CTE
+        cur.execute(_RESOLVABLE_PRESS_CTE +
+                    " SELECT id,title,slug,category,date,subheadline,body,"
+                    "meta_description FROM resolvable WHERE slug=%s", (slug,))
         r = cur.fetchone()
         if not r:
             # press-jam fix (2026-07-18): a 404 here becomes the edge worker's

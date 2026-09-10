@@ -23,12 +23,18 @@ import re
 
 import pytest
 
-SRC = pathlib.Path(__file__).resolve().parents[1] / "routes" / "press_queue.py"
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+SRC = ROOT / "routes" / "press_queue.py"
+MAIN = ROOT / "main.py"
 READERS = ("press_feed_json", "press_feed_html", "press_release_page")
+# The two endpoints the EDGE actually serves /press and /press-release/<slug>
+# from. They live in main.py and import the resolver constant across modules,
+# so their SQL only resolves if press_queue's constants are in scope.
+EDGE_READERS = ("get_press_releases_list", "get_press_release")
 
 
-def _module():
-    return ast.parse(SRC.read_text())
+def _module(path=None):
+    return ast.parse((path or SRC).read_text())
 
 
 def _string_constants(tree):
@@ -57,13 +63,16 @@ def _resolve(node, consts):
     return ""
 
 
-def _tables_read_by(func_name):
-    tree = _module()
+def _tables_read_by(func_name, path=None):
+    tree = _module(path)
     consts = _string_constants(tree)
+    if path is not None and path != SRC:
+        # cross-module: main.py does `from routes.press_queue import <CONST>`
+        consts = {**_string_constants(_module(SRC)), **consts}
     fn = next((n for n in ast.walk(tree)
                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                and n.name == func_name), None)
-    assert fn is not None, f"{func_name} not found in {SRC.name}"
+    assert fn is not None, f"{func_name} not found in {(path or SRC).name}"
     sql = []
     for node in ast.walk(fn):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
@@ -99,3 +108,40 @@ def test_every_reader_agrees_exactly():
         f"readers disagree: {seen!r} — every release in the difference is a "
         "404 behind a link we publish."
     )
+
+
+# ── the EDGE half: containment, not equality ────────────────────────────────
+# /press-release/<slug> is served by the worker from main.py, NOT by
+# press_release_page(). Measured 2026-09-10: /press/<slug> 301s to
+# /press-release/<slug> at the edge, so the origin route is never reached for
+# the canonical URL. The legacy resolver must therefore cover everything the
+# feed can advertise. It carries MORE (the 163-row press_releases archive), so
+# the invariant is a superset, not equality.
+
+@pytest.mark.parametrize("fn", EDGE_READERS)
+def test_edge_reader_resolves_its_sql(fn):
+    """Floor: cross-module constant resolution must actually yield tables, or
+    every containment check below compares against an empty set and passes."""
+    assert _tables_read_by(fn, MAIN), f"{fn}: resolved zero source tables"
+
+
+@pytest.mark.parametrize("fn", EDGE_READERS)
+def test_edge_reader_covers_everything_the_feed_advertises(fn):
+    feed = _tables_read_by("press_feed_json")
+    edge = _tables_read_by(fn, MAIN)
+    missing = feed - edge
+    assert not missing, (
+        f"{fn} cannot resolve {sorted(missing)!r}, which press_feed_json "
+        "publishes. Every release in that gap is a link we advertise and the "
+        "edge renders as 404."
+    )
+
+
+def test_edge_readers_also_keep_the_archive():
+    """press_releases holds 163 releases neither other table has. Dropping it
+    to force equality with the feed would empty the /press archive."""
+    for fn in EDGE_READERS:
+        assert "press_releases" in _tables_read_by(fn, MAIN), (
+            f"{fn} no longer reads press_releases — the archive would vanish "
+            "from /press and every archived slug would stop resolving."
+        )

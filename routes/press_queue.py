@@ -324,6 +324,55 @@ _UNIFIED_PRESS_CTE = """
             )
 """
 
+# ── The RESOLVER set — a superset, and that direction is the invariant ───────
+# The public feed advertises /press-release/<slug>. That URL is served by the
+# EDGE worker, which fetches main.py's /api/press-releases/<slug> — it never
+# reaches press_release_page() below, because the worker 301s /press/<slug> to
+# /press-release/<slug> first. Measured 2026-09-10 on a slug the feed
+# publishes:
+#
+#     /press/<slug>                  -> 301 -> /press-release/<slug> -> 404
+#     /api/v1/press/<slug>/page      -> 404
+#     /api/press-releases/<slug>     -> 200, but it is the not_found FALLBACK
+#
+# So the resolver that decides whether an advertised link works is the LEGACY
+# one, over press_releases. It must therefore cover everything the feed can
+# publish, PLUS the 163-row archive that only it has. Feed set ⊆ resolver set:
+# equality is the wrong invariant here and would drop the archive off /press.
+# tests/test_press_feed_and_page_agree.py asserts the containment.
+_RESOLVABLE_PRESS_CTE = """
+            WITH resolvable AS (
+                SELECT
+                    id::bigint AS id, slug, title, subheadline, body,
+                    COALESCE(category, 'Press Release')::text AS category,
+                    date::date AS date,
+                    meta_description,
+                    date::timestamptz AS published_at
+                FROM press_releases
+                WHERE published = TRUE
+                UNION ALL
+                SELECT
+                    id::bigint AS id, slug, title, subheadline, body,
+                    COALESCE(category, 'Press Release')::text AS category,
+                    published_at::date AS date,
+                    subheadline AS meta_description,
+                    published_at
+                FROM press_releases_queue
+                WHERE status = 'published'
+                UNION ALL
+                SELECT
+                    id::bigint AS id, slug, title,
+                    LEFT(COALESCE(body, ''), 240) AS subheadline, body,
+                    COALESCE(source_topic, 'auto')::text AS category,
+                    COALESCE(generated_at, generated_for::timestamptz)::date AS date,
+                    LEFT(COALESCE(body, ''), 240) AS meta_description,
+                    COALESCE(generated_at, generated_for::timestamptz) AS published_at
+                FROM auto_press_releases
+                WHERE COALESCE(validation_ok, true) = true
+            )
+"""
+
+
 @press_queue_bp.route("/api/v1/press/feed.json", methods=["GET"])
 def press_feed_json():
     """Public RSS feed source. UNIONs both press tables:
