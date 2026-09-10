@@ -63,7 +63,14 @@ _KNOWN_LATCHED = {
     'routes/comprehensive_report.py': ['_CANON_FAC'],
     'routes/dchub_media_hub.py': ['_CANON_FAC'],
     'routes/demo.py': ['DEMO_SYSTEM_PROMPT'],
-    'routes/integrations_landing.py': ['MCP_LANDING_HTML', 'MCP_SEO_PAGE_HTML', 'META_LANDING_HTML', '_RECIPE_PAGE_TEMPLATE'],
+    # ★2026-09-10: MCP_LANDING_HTML came off. It was the latch that
+    # SHIPPED on this module — /integrations/mcp served "20,700+" six
+    # times against a live resolver saying 21,400+, in the same process,
+    # the same second. It is now _MCP_LANDING_TEMPLATE, a raw constant
+    # resolved per request in render_mcp_landing(), and
+    # tests/test_integrations_mcp_derives_price_and_canon.py renders the
+    # page to prove it. The other three are STILL LATCHED and stay listed.
+    'routes/integrations_landing.py': ['MCP_SEO_PAGE_HTML', 'META_LANDING_HTML', '_RECIPE_PAGE_TEMPLATE'],
     # routes/mcp_connect.py came off 2026-09-10. Its _PAGE_TEMPLATE was the
     # LATCH THAT SHIPPED: the install pages served the cold-start pinned floor
     # while /api/v1/canon/phrases in the same process served the live one. The

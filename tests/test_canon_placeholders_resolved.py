@@ -195,11 +195,38 @@ def test_every_placeholder_string_is_resolved(fname):
     assert known, "canon_nums() returned no placeholders — the guard would be vacuous"
 
     covered: set[int] = set()
+    resolved_names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _resolver_name(node) in _RESOLVERS:
             for arg in list(node.args) + [kw.value for kw in node.keywords]:
                 covered.update(id(n) for n in ast.walk(arg)
                                if isinstance(n, ast.Constant))
+                # ★2026-09-10 — A TEMPLATE RESOLVED PER REQUEST IS RESOLVED.
+                # This scan only understood `X = canon_text("""…""")`, which is
+                # precisely the shape that SHIPPED the cold-start pinned floor:
+                # it resolves canon ONCE at import while canon keeps moving.
+                # #4320 fixed that on /connect by making the template a raw
+                # constant and calling canon_text on it at request time, and
+                # had to DELETE routes/mcp_connect.py from this sweep to do it
+                # — trading a real defect for a real loss of coverage.
+                #
+                # Following a resolver's Name argument back to its module-scope
+                # assignment keeps both. It is NOT a blanket exemption: the
+                # name has to be passed to a resolver SOMEWHERE in the module,
+                # so deleting the canon_text() call re-arms this check on the
+                # template's own line. test_a_template_only_counts_as_resolved_
+                # if_something_resolves_it holds that.
+                if isinstance(arg, ast.Name):
+                    resolved_names.add(arg.id)
+    if resolved_names:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(isinstance(t, ast.Name) and t.id in resolved_names
+                       for t in node.targets):
+                continue
+            covered.update(id(n) for n in ast.walk(node.value)
+                           if isinstance(n, ast.Constant))
 
     unresolved = []
     for node in ast.walk(tree):
@@ -215,6 +242,48 @@ def test_every_placeholder_string_is_resolved(fname):
         f"and would SHIP the literal braces:\n" +
         "\n".join(f"  line {ln}: {txt!r}" for ln, txt in unresolved)
     )
+
+
+def test_a_template_only_counts_as_resolved_if_something_resolves_it():
+    """★ THE NAME-FOLLOWING ABOVE MUST NOT BECOME A BLANKET EXEMPTION.
+
+    Mutating away the resolver call must re-arm the check on the template's
+    own line. Run against a synthetic module so it cannot be silently satisfied
+    by whatever the real tree happens to contain.
+    """
+    known = _known_placeholders()
+    assert known, "canon_nums() returned no placeholders"
+    ph = sorted(known)[0]
+
+    def _unresolved(src: str) -> list:
+        tree = ast.parse(src)
+        covered: set[int] = set()
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _resolver_name(node) in _RESOLVERS:
+                for arg in list(node.args) + [kw.value for kw in node.keywords]:
+                    covered.update(id(n) for n in ast.walk(arg)
+                                   if isinstance(n, ast.Constant))
+                    if isinstance(arg, ast.Name):
+                        names.add(arg.id)
+        if names:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and any(
+                        isinstance(t, ast.Name) and t.id in names
+                        for t in node.targets):
+                    covered.update(id(n) for n in ast.walk(node.value)
+                                   if isinstance(n, ast.Constant))
+        return [n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and ph in n.value and id(n) not in covered]
+
+    tpl = 'T = "hi %s"\n' % ph
+    assert _unresolved(tpl + "def render():\n    return canon_text(T)\n") == []
+    assert _unresolved(tpl + "def render():\n    return T\n") != [], (
+        "a template nothing resolves was treated as resolved — the "
+        "name-following became a blanket exemption")
+    # and a DIFFERENT name being resolved must not cover this one
+    assert _unresolved(tpl + "OTHER = 'x'\ndef render():\n    return canon_text(OTHER)\n") != []
 
 
 @pytest.mark.parametrize("fname", _SWEPT)

@@ -23,7 +23,23 @@ except Exception:  # pragma: no cover - defensive
 
 integrations_landing_bp = Blueprint("integrations_landing", __name__)
 
-MCP_LANDING_HTML = canon_text("""<!DOCTYPE html>
+# ★2026-09-10 — THE THIRD TIME THIS EXACT PAIR HAS SHIPPED ON A PUBLIC PAGE.
+# #4320 fixed both on /connect/* and routes/agent_concierge.py had the canon
+# half on /agent. This module had both and was missed by the sweep, so measured
+# live on 2026-09-10 /integrations/mcp served "$199/mo" for Pro (the button
+# beside it charges $99, and tier_registry has said 99 since r-price-collapse
+# on 2026-09-05) and "20,700+" facilities six times.
+#
+#   (a) canon_text() AT IMPORT freezes canon for the life of the process. The
+#       floor is walked by healers between deploys, so the page serves whatever
+#       canon said when the worker booted. Resolved PER REQUEST below.
+#   (b) A RETYPED PRICE cannot track the SSOT. Derived from tier_registry.
+#
+# ★ REPLACE-TOKENS, NOT .format(). The template is ~1,600 lines of HTML with a
+# full CSS block in it; every `{` in that CSS would have to be doubled for
+# .format() to run, which is a large silent-breakage surface for two numbers.
+# `__SCOPE_PANE__` below is the idiom this file already uses.
+_MCP_LANDING_TEMPLATE = ("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline, Continue</title>
@@ -298,9 +314,9 @@ Footer: the sources that actually contributed, e.g.
 
 <div class="pane">
   <h2>Tiers</h2>
-  <p><b>Free</b>: 10 calls/day, top-5 result truncation. No signup.<br>
-  <b>Developer ($49/mo)</b>: 500 calls/day, full data, exports.<br>
-  <b>Pro ($199/mo)</b>: 2,000 calls/day, gated tools unlocked.<br>
+  <p><b>Free</b>: __FREE_CALLS__ calls/day, top-5 result truncation. No signup.<br>
+  <b>Developer__DEV_PRICE__</b>: __DEV_CALLS__ calls/day, full data, exports.<br>
+  <b>Pro__PRO_PRICE__</b>: __PRO_CALLS__ calls/day, gated tools unlocked.<br>
   <b>Enterprise</b>: SLA, dedicated capacity, MCP 2025-06-18 OAuth. <a href="https://dchub.cloud/enterprise">Talk to sales</a>.</p>
 </div>
 
@@ -620,13 +636,59 @@ except Exception:  # pragma: no cover - defensive
 # names first carried neither list. Same fail-open contract.
 try:
     from routes.problem_taxonomy import render_scope_html as _scope_pane_html
-    MCP_LANDING_HTML = MCP_LANDING_HTML.replace(
+    _MCP_LANDING_TEMPLATE = _MCP_LANDING_TEMPLATE.replace(
         "__SCOPE_PANE__",
         '<div class="pane" id="scope">\n'
         '  <h2>What to ask DC Hub &mdash; and what not to</h2>\n  '
         + _scope_pane_html() + '\n</div>')
 except Exception:  # pragma: no cover - defensive
-    MCP_LANDING_HTML = MCP_LANDING_HTML.replace("__SCOPE_PANE__", "")
+    _MCP_LANDING_TEMPLATE = _MCP_LANDING_TEMPLATE.replace("__SCOPE_PANE__", "")
+
+
+# ── the tier pane, DERIVED ──────────────────────────────────────────────────
+# tier_registry is the SSOT for both the price and the daily call allowance.
+# FAIL-OPEN ASYMMETRICALLY: an unreadable price renders the tier with NO
+# parenthetical rather than a guessed one, and an unreadable allowance renders
+# the word "metered". A page that omits a number costs a reader one click; a
+# page that states the wrong one is what this change exists to stop, and it is
+# the version a partner quotes back.
+def _tier_pane_tokens() -> dict:
+    def _price_paren(tier: str) -> str:
+        try:
+            from tier_registry import price as _price
+            usd = int(_price(tier) or 0)
+        except Exception:  # pragma: no cover - defensive
+            return ""
+        return (" ($%d/mo)" % usd) if usd > 0 else ""
+
+    def _calls(tier: str) -> str:
+        try:
+            from tier_registry import calls_per_day as _cpd
+            n = int(_cpd(tier) or 0)
+        except Exception:  # pragma: no cover - defensive
+            return "metered"
+        return ("{:,}".format(n)) if n > 0 else "metered"
+
+    return {
+        "__FREE_CALLS__": _calls("free"),
+        "__DEV_PRICE__": _price_paren("developer"),
+        "__DEV_CALLS__": _calls("developer"),
+        "__PRO_PRICE__": _price_paren("pro"),
+        "__PRO_CALLS__": _calls("pro"),
+    }
+
+
+def render_mcp_landing() -> str:
+    """The page, canon resolved and tiers derived AT REQUEST TIME.
+
+    ★ canon_text() BEFORE the token replaces, matching routes/mcp_connect: the
+    canon pass owns the `{canon_*}` placeholders and the token pass owns the
+    `__NAME__` ones, so neither can consume the other's markers.
+    """
+    html = canon_text(_MCP_LANDING_TEMPLATE)
+    for token, value in _tier_pane_tokens().items():
+        html = html.replace(token, value)
+    return html
 
 _RECIPE_PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
 <html lang="en"><head>
@@ -1659,7 +1721,7 @@ _WEBMCP_TOOLS = [
 @integrations_landing_bp.route("/integrations/mcp", strict_slashes=False, methods=["GET"])
 @integrations_landing_bp.route("/integrations", strict_slashes=False, methods=["GET"])
 def integrations_mcp():
-    return _webmcp_inject(MCP_LANDING_HTML, _WEBMCP_TOOLS), 200, {
+    return _webmcp_inject(render_mcp_landing(), _WEBMCP_TOOLS), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
