@@ -16,12 +16,6 @@ from urllib.parse import quote_plus
 from db_utils import get_db
 from ai_surface_canon import canon_text
 _CANON_FAC = canon_text("{canon_facilities}")
-# ★2026-09-06 r-news-sources. Pre-resolved for the same reason _CANON_FAC
-# is: the pitch bodies below are f-strings, so a bare {canon_*} token in
-# one is parsed as a FIELD NAME and raises NameError at send time rather
-# than rendering. tests/test_canon_placeholders_resolved.py
-# ::test_no_placeholder_is_eaten_by_an_fstring caught exactly that here.
-_CANON_NEWS_SOURCES = canon_text("{canon_news_sources}")
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1643,7 +1637,16 @@ def register_outreach_routes(app):
         stats = get_outreach_stats()
         total_events = stats.get('total_outreach_events', 0)
         organic_total = stats.get('organic_traffic_total', 0)
-        
+        # ★2026-09-10 resolved HERE, not at import. This was
+        # _CANON_NEWS_SOURCES = canon_text(...) at module scope, which freezes
+        # the count for the life of the process; the pitch below is rendered
+        # per request, so the canon read belongs in the same place. The local
+        # is deliberately NOT named canon_* — an f-string interpolating a bare
+        # canon_-prefixed Name is the exact mistake
+        # tests/test_canon_placeholders_resolved.py
+        # ::test_no_placeholder_is_eaten_by_an_fstring exists to catch.
+        news_sources = canon_text("{canon_news_sources}")
+
         pitch = f"""DC Hub — Data Center Intelligence Platform
 
 DC Hub is the world's largest open data center intelligence platform, tracking {_CANON_FAC} facilities across 170+ countries with daily-updated M&A, capacity pipeline, energy pricing, and construction data.
@@ -1654,7 +1657,7 @@ KEY DATA POINTS:
 • 673+ M&A deals with buyer, seller, MW, and transaction value
 • 19,532 MW total capacity tracked
 • 8,420+ MW under active construction
-• {_CANON_NEWS_SOURCES} news sources aggregated every 3 minutes
+• {news_sources} news sources aggregated every 3 minutes
 • 108 operators tracked
 
 INTEGRATION ENDPOINTS:
