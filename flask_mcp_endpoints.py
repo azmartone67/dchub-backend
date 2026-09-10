@@ -64,6 +64,14 @@ from routes.handoff_definition import (
     high_intent_basis as _high_intent_basis,
     live_high_intent_threshold as _live_high_intent_threshold,
 )
+from routes.handoff_definition import (  # r-third-artifact (2026-09-10)
+    HUMAN_ACTED_V7_BASIS as _V7_BASIS,
+    HUMAN_ACTED_V7_LINKS_BASIS as _V7_LINKS_BASIS,
+    RELAYED_CHECKOUT_PROVENANCE_BASIS as _V7_PROV_BASIS,
+    human_acted_v7_count_sql as _human_acted_v7_count_sql,
+    human_acted_v7_links_sql as _human_acted_v7_links_sql,
+    relayed_checkout_provenance_sql as _relayed_checkout_provenance_sql,
+)
 from mcp_calls_deloop import (
     PLATFORM_CASE as _DELOOP_PLATFORM_CASE,
     PROBE_PLATFORMS as _DELOOP_PROBE_PLATFORMS,
@@ -548,6 +556,39 @@ def handoff_funnel():
                           "and " + _v6_id + " is not null")
         opened_v6_links = one(
             ("select count(distinct " + _v6_id + ") " + _v6_links_body) % iv)
+
+        # ── THE THIRD HUMAN ARTIFACT (r-third-artifact, 2026-09-10) ─────────
+        # Everything above reads relay_opens, which ONLY /upgrade/h/ writes.
+        # Measured from outside anonymously 2026-09-09: a gated tools/call puts
+        # https://dchub.cloud/go/c/<token> in content[0].text — the block a
+        # client renders and a model relays — and puts the /upgrade/h/ link
+        # ONLY in structuredContent. /go/c writes mcp_checkout_clicks, and this
+        # endpoint had no read of that table, so a human clicking the link
+        # their agent actually showed them could not move this stage for any
+        # click, ever. The SQL lives in routes/handoff_definition (the one
+        # writer) so it is importable, and testable, without a database.
+        #
+        # ★ ONE QUERY, NOT FOUR. The split's identity — probe_ua +
+        # unsigned_clicks + minted_link_clicks == total — is only true of a
+        # single snapshot. mcp_checkout_clicks is append-only and a row landing
+        # between two sibling `one()` calls would publish a partition that does
+        # not add up, which reads as a bug in the definition rather than as a
+        # race. relay_open_provenance above takes four passes and carries that
+        # hazard; this one does not.
+        def row(sql):
+            try:
+                cur.execute(sql)
+                r = cur.fetchone()
+                if not r:
+                    return None
+                cols = [d[0] for d in cur.description]
+                return {c: (int(v) if v is not None else 0)
+                        for c, v in zip(cols, r)}
+            except Exception:
+                return None
+        clicked_v7 = one(_human_acted_v7_count_sql(iv))
+        clicked_v7_links = one(_human_acted_v7_links_sql(iv))
+        relayed_checkout_prov = row(_relayed_checkout_provenance_sql(iv))
         opened_v2 = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                         "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         opened_legacy = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
@@ -800,6 +841,17 @@ def handoff_funnel():
                 "count of humans reached. Rows written BEFORE 2026-09-07 have "
                 "no token_hash and stay uncountable: forward-looking, it does "
                 "not retroactively recover the 30."),
+            # ── the third human artifact, published alongside ──────────
+            # Flat scalars beside a single nested provenance object, matching
+            # relay_open_provenance's shape so a shell reading one can read
+            # the other. `_num()` in shell #54 returns None for a dict, which
+            # is why the two counts are NOT nested.
+            "human_acted_v7_from_checkout_clicks": clicked_v7,
+            "human_acted_v7_basis": _V7_BASIS,
+            "human_acted_v7_links_clicked": clicked_v7_links,
+            "human_acted_v7_links_clicked_basis": _V7_LINKS_BASIS,
+            "relayed_checkout_provenance": relayed_checkout_prov,
+            "relayed_checkout_provenance_basis": _V7_PROV_BASIS,
             "human_acted_v2_all_view_opens": opened_v2,
             "human_acted_v3_including_self_traffic": opened_v3,
             "human_acted_v4_before_rotation": opened_v4,
