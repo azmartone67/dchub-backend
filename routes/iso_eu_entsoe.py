@@ -196,6 +196,40 @@ def _build_zones(registry):
 # (code → (EIC in_Domain, name, hub city)) — built, never hand-edited.
 _ZONES, _ZONE_REGISTRY_WARNINGS = _build_zones(_ZONE_REGISTRY)
 
+# ── how far back the A75 request reaches ─────────────────────────────────────
+# ★ THE LANE ASKED FOR DATA THAT DOES NOT EXIST YET. This was 5 hours, ending at
+#   now, and ENTSO-E answered every single call with an Acknowledgement:
+#   "No matching data found for Data item AGGREGATED_GENERATION_PER_TYPE_R3".
+#   _parse_generation_xml correctly returns None on an Acknowledgement, so every
+#   zone read as unavailable and the feed logged 199 CONSECUTIVE ZERO-ROW RUNS
+#   while the token was valid and the API was up the whole time.
+#
+# MEASURED 2026-09-09 against the live API with the production token, A75 /
+# processType A16, three zones (DE-LU, FR, ES) — identical in all three:
+#
+#     end=now-0h  none     end=now-12h  none
+#     end=now-4h  none     end=now-16h  DATA
+#     end=now-8h  none     end=now-24h  DATA
+#
+# ★ WIDENED, NOT SHIFTED, and the difference matters. A fixed lag would pin a
+#   guess about someone else's publishing schedule; a wider window keeps
+#   periodEnd at NOW and lets the response carry whatever has been published:
+#
+#     span 5h  end=now → none
+#     span 30h end=now → DATA, 705 points, latest 2026-09-09T06:45Z
+#     span 48h end=now → DATA, 1436 points, SAME latest instant (no fresher
+#                        data exists, so the extra 18h is pure payload)
+#
+#   So 30h clears the observed ~16-18h lag with margin, and the day ENTSO-E
+#   publishes faster this lane gets fresher data with no code change.
+#
+# ★ SAFE ONLY BECAUSE THE PARSER RANKS BY TIME. A wider window returns many
+#   Periods; _parse_generation_xml keeps the LATEST per TimeSeries by the
+#   point's own end instant (r-entsoe-period, 2026-08-08). If that ever regresses
+#   to document order, widening would start serving OLD readings as current —
+#   tests/test_entsoe_window_reaches_published_data.py fences both halves.
+_LOOKBACK_H = 30
+
 
 def _token():
     """ENTSO-E security token from env. Several name variants so it works
@@ -471,7 +505,7 @@ def _zone_snapshot(code, max_age=None, timeout=15):
         return None
     eic = _ZONES[code][0]
     now = datetime.datetime.utcnow()
-    frm = (now - datetime.timedelta(hours=5)).strftime("%Y%m%d%H00")
+    frm = (now - datetime.timedelta(hours=_LOOKBACK_H)).strftime("%Y%m%d%H00")
     to = now.strftime("%Y%m%d%H00")
     try:
         r = _rq.get(_ENTSOE_BASE, params={
