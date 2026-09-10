@@ -1,4 +1,4 @@
-"""Every module-level name the gas ingest uses must actually be defined.
+r"""Every module-level name the gas ingest uses must actually be defined.
 
 THE DEFECT (2026-09-07, shipped and live): rewriting `_log_sync` with the regex
 
