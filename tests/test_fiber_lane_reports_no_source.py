@@ -95,15 +95,34 @@ IX_NO_COORDS = {"data": [
     {"id": 1, "name": "Equinix Ashburn", "city": "Ashburn", "net_count": 517},
     {"id": 2, "name": "Equinix Chicago", "city": "Chicago", "net_count": 340},
 ]}
-IX_WITH_COORDS = {"data": [
-    {"id": 1, "name": "A", "city": "Ashburn", "latitude": 39.0,
-     "longitude": -77.4, "net_count": 500},
-    # ~145 miles apart. The generator only emits pairs 50-500 miles apart, so
-    # a closer pair (Ashburn/Baltimore is 48) silently produces nothing and the
-    # control would assert on an empty result for the wrong reason.
-    {"id": 2, "name": "B", "city": "Philadelphia", "latitude": 39.95,
-     "longitude": -75.16, "net_count": 200},
+# ★ THE REAL SHAPE, not the one this file used to imagine. PeeringDB's ix
+# objects carry NO coordinates (see the header); a fixture that gave them a
+# `latitude` was describing an API that does not exist, and any code tested
+# against it could not work in production. Coordinates come from /api/fac,
+# joined through /api/ixfac.
+IX_PLACEABLE = {"data": [
+    {"id": 1, "name": "A", "city": "Ashburn", "net_count": 300},
+    {"id": 2, "name": "B", "city": "Philadelphia", "net_count": 12},
 ]}
+FAC_PLACEABLE = {"data": [
+    {"id": 11, "latitude": 39.0, "longitude": -77.5},
+    {"id": 22, "latitude": 39.95, "longitude": -75.16},
+]}
+IXFAC_PLACEABLE = {"data": [
+    {"ix_id": 1, "fac_id": 11},
+    {"ix_id": 2, "fac_id": 22},
+]}
+
+
+def _get_join(code=200):
+    """Answer each of the three endpoints the lane actually calls."""
+    def _f(url, *a, **k):
+        if "/ixfac" in url:
+            return _Resp(code, IXFAC_PLACEABLE, "")
+        if "/fac" in url:
+            return _Resp(code, FAC_PLACEABLE, "")
+        return _Resp(code, IX_PLACEABLE, "")
+    return _f
 
 
 def _get(payload=None, code=200, exc=None, text=""):
@@ -147,7 +166,7 @@ def test_a_timeout_is_recorded_as_a_timeout(monkeypatch):
 
 def test_a_working_source_still_reports_success(monkeypatch):
     """★ The control. This must not become a check that always fails."""
-    monkeypatch.setattr(F.requests, "get", _get(IX_WITH_COORDS))
+    monkeypatch.setattr(F.requests, "get", _get_join())
     res = F.run_fiber_discovery()
     assert res["peeringdb"]["status"] == "ok"
     assert res["peeringdb"]["usable"] == 2
@@ -167,7 +186,7 @@ def test_the_hardcoded_seed_step_is_gone(monkeypatch):
         return True
 
     monkeypatch.setattr(F, "_upsert_fiber_route", _capture)
-    monkeypatch.setattr(F.requests, "get", _get(IX_WITH_COORDS))
+    monkeypatch.setattr(F.requests, "get", _get_join())
     res = F.run_fiber_discovery()
     assert "seeded" not in res
     assert "seed_is_hardcoded" not in res
@@ -180,7 +199,7 @@ def test_the_hardcoded_seed_step_is_gone(monkeypatch):
 def test_a_failed_write_still_reports_partial_not_no_source(monkeypatch):
     """errors (failed writes) and no_source are different diagnoses."""
     monkeypatch.setattr(F, "_upsert_fiber_route", lambda conn, route: False)
-    monkeypatch.setattr(F.requests, "get", _get(IX_WITH_COORDS))
+    monkeypatch.setattr(F.requests, "get", _get_join())
     res = F.run_fiber_discovery()
     assert res["errors"] > 0
     assert res["status"] == "partial"
