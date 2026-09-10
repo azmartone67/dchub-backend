@@ -76,13 +76,20 @@ class Unreachable(Exception):
 
 def fetch(url: str, *, headers: dict | None = None, timeout: int = 30,
           method: str = "GET", data: bytes | None = None,
-          retries: int = 2) -> tuple[int, dict, str]:
+          retries: int = 2, allow_redirects: bool = True) -> tuple[int, dict, str]:
     """Fetch a URL. Returns (status, headers, body_text).
 
     A 4xx/5xx is RETURNED, not raised — an HTTP error is an observation about the
     surface and is often exactly what we are testing. Only a transport failure
     (DNS, TLS, timeout, connection reset) raises Unreachable, because that is the
     case where we genuinely learned nothing.
+
+    ``allow_redirects=False`` returns the FIRST hop, so a caller can read the
+    ``Location`` a redirector emits instead of only where the chain landed. The
+    default is unchanged. It exists because what a checkout proxy puts in that
+    header — whether the session survives the hop — is the thing under test, and
+    following the chain both loses it and sends a request to the payment
+    processor that the probe has no business making.
     """
     h = {"User-Agent": QA_UA}
     if headers:
@@ -91,7 +98,8 @@ def fetch(url: str, *, headers: dict | None = None, timeout: int = 30,
     for attempt in range(retries + 1):
         try:
             r = requests.request(method, url, headers=h, data=data,
-                                 timeout=timeout, allow_redirects=True)
+                                 timeout=timeout,
+                                 allow_redirects=allow_redirects)
             # No raise_for_status(): a 4xx/5xx is the observation, not an error.
             return r.status_code, dict(r.headers), body_text(r)
         except requests.RequestException as e:
