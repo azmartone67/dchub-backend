@@ -123,6 +123,31 @@ def _north_star() -> dict:
             "AND created_at >= date_trunc('week', now()) - interval '7 days' "
             "AND created_at < date_trunc('week', now()) - interval '7 days' "
             "          + (now() - date_trunc('week', now()))")
+        # ★ 2026-09-10 — the delta below is published in the digest's SUBJECT
+        # LINE, and it had no comparability check at all. flask_mcp_endpoints
+        # has withheld exactly this comparison since 2026-08-20 (see the block
+        # above _mark_wow_comparability); this function never consulted it, so
+        # on 2026-09-09 it mailed "5 (-25 vs same point last wk)" across the
+        # #3962 self-branding correction. One number, two publishers, one
+        # guard. Same helper, so there is no second implementation to drift.
+        try:
+            import datetime as _dt
+            from routes.weekly_series import comparability_for_spans
+            _now = _dt.datetime.now(_dt.UTC)
+            _wk = (_now - _dt.timedelta(days=_now.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            _elapsed = _now - _wk
+            out["comparability"] = comparability_for_spans([
+                (_wk, _now),                                        # this week to date
+                (_wk - _dt.timedelta(days=7),
+                 _wk - _dt.timedelta(days=7) + _elapsed),            # same slice last week
+            ])
+        except Exception as e:
+            # Losing the marker must not lose the digest, but an UNKNOWN
+            # verdict is treated as unsafe at the render site, not as clear.
+            logger.debug("[growth_digest] comparability failed: %s", e)
+            out["comparability"] = {"error": str(e)[:80]}
+
         out["conv_30d"] = _scalar(
             "SELECT COUNT(*) FROM mcp_conversions "
             "WHERE created_at >= now() - interval '30 days' AND COALESCE(is_test,false)=false")
@@ -217,10 +242,31 @@ def _build_digest() -> dict:
     apwtd = ns.get("agents_prev_wtd")
     # Difference like with like: week-to-date against the same elapsed slice of
     # last week. `apw` stays on the line as context, NOT as the comparand.
-    delta = ("" if aw is None or apwtd is None else
-             f" ({'+' if aw >= apwtd else ''}{aw - apwtd} vs same point last wk)")
-    add(f"NORTH STAR · distinct real agents week-to-date: {aw}{delta}"
-        f"  (same point last wk {apwtd} · prev full wk {apw})")
+    comp = ns.get("comparability")
+    # Absent or errored verdict => unsafe. A missing marker is the state this
+    # whole hazard lives in, so it must not read as "clear".
+    # `quotable_as_trend` is the contract _verdict() publishes for exactly this
+    # branch, and it is the ONLY safe read: it also carries the harvester
+    # hazard, which re-deriving the two definition booleans by hand would miss.
+    # Absent or errored => unsafe. A missing marker is the state this hazard
+    # lives in (#3962 went five days unregistered), so it must not read clear.
+    _unsafe = not (isinstance(comp, dict) and comp.get("quotable_as_trend") is True)
+    if _unsafe:
+        _why = "no comparability verdict"
+        if isinstance(comp, dict) and not comp.get("error"):
+            _ch = (comp.get("changes") or []) + (comp.get("superseded_by") or [])
+            _ref = next((c.get("ref") for c in _ch
+                         if isinstance(c, dict) and c.get("ref")), None)
+            _why = (f"spans a definition change ({_ref})" if _ref
+                    else "not quotable as a trend")
+        add(f"NORTH STAR · distinct real agents week-to-date: {aw}"
+            f"  (WoW WITHHELD — {_why}; last wk read {apwtd} on a different "
+            f"basis · prev full wk {apw})")
+    else:
+        delta = ("" if aw is None or apwtd is None else
+                 f" ({'+' if aw >= apwtd else ''}{aw - apwtd} vs same point last wk)")
+        add(f"NORTH STAR · distinct real agents week-to-date: {aw}{delta}"
+            f"  (same point last wk {apwtd} · prev full wk {apw})")
     add(f"Real conversions 30d: {ns.get('conv_30d')}")
     add("")
 

@@ -58,7 +58,13 @@ def _digest(monkeypatch, signals, north=None):
     monkeypatch.setattr(god, "_shell_lanes", lambda mod: {})
     monkeypatch.setattr(god, "_north_star", lambda: north or {
         "agents_wk": 9, "agents_prev_wk": 43, "agents_prev_wtd": 8,
-        "conv_30d": 2})
+        "conv_30d": 2,
+        # ★ 2026-09-10 — the headline now withholds the delta unless the
+        # comparability verdict says quotable_as_trend. These tests are about
+        # the delta ARITHMETIC (same elapsed slice, not the full prior week),
+        # so they hand it a clean verdict; the withholding branch is covered in
+        # tests/test_growth_digest_withholds_uncomparable_delta.py.
+        "comparability": {"quotable_as_trend": True}})
     d = god._build_digest()
     # _build_digest returns {subject, text, html, ...}. Read `text` by KEY --
     # falling back to str(d) renders the whole dict on one line, where

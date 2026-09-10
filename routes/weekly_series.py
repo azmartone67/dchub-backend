@@ -233,6 +233,43 @@ _DEFINITION_CHANGES = [
         "ref": "dchub-mcp-server#302",
     },
     # ★ 2026-09-07 — PRE-REGISTERED, before the change it describes has merged.
+    # ★ 2026-09-10 — REGISTERED FIVE DAYS LATE, and the cost is on the record.
+    # #3962 merged 2026-09-05 23:47:13Z and nothing marked it, so every
+    # consumer of comparability_for_spans has been declaring the surrounding
+    # deltas quotable. The Growth-Ops digest published "distinct real agents
+    # week-to-date: 5 (-25 vs same point last wk)" in its SUBJECT LINE on
+    # 2026-09-09, and the Daily Brief carried a 7d tool-call series reading
+    # 2,180 -> 652 -> 534 -> 173 across the same boundary. A rolling 7-day
+    # window cannot lose 70% in one day from demand.
+    {
+        "effective_at": "2026-09-05T23:47:13+00:00",
+        "change": (
+            "http_ua_default.py finally patches httpx and closes the urllib "
+            "hole, so DC Hub's own outbound calls carry a branded User-Agent "
+            "on every stack. They are recognised as ours from this timestamp "
+            "and leave is_real_external; before it they were indistinguishable "
+            "from an external caller"
+        ),
+        "direction": "REDUCES agents and calls, sharply",
+        "is_correction": True,
+        "measured_effect": (
+            "measured at the Cloudflare edge in the PR itself over 7d and "
+            "546,632 successful POSTs to /mcp: 35.2% ours by branded UA or our "
+            "own network, 49.5% generic UA on a network our agent uses, 12.6% "
+            "unattributed, and 2.8% (15,149) an identifiable EXTERNAL MCP "
+            "client. Observed after the deploy: the Daily Brief's 7d tool "
+            "calls went 2,180 (09-05) -> 652 (09-06) -> 173 (09-09), and "
+            "distinct real agents week-to-date 44 -> 5"
+        ),
+        "means": (
+            "is_real_external is STORED AT INGEST, so rows written before this "
+            "timestamp keep the looser classification permanently. The two "
+            "sides of any delta spanning it count different populations and "
+            "cannot be differenced without a backfill. The LEVEL after it is "
+            "the honest one; the drop is us learning to subtract ourselves"
+        ),
+        "ref": "dchub-backend#3962",
+    },
     # #294 and #302 were both registered AFTER the fact, on 2026-09-02, and the
     # comment above records what that cost: comparability_for_spans had already
     # declared the W36 delta quotable. This one is filed with its PR.
