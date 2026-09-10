@@ -45171,6 +45171,20 @@ try:
 except Exception as _cwg_e:
     print(f"[main] customer_white_glove register skipped: {_cwg_e}", file=sys.stderr)
 
+# Per-customer monthly activity email — two lanes (usage recap for customers who
+# called, activation for paying customers who did not). DRY-RUN unless BOTH
+# ?confirm=1 AND MONTHLY_CUSTOMER_REPORT_ARM=1; nothing auto-contacts a customer
+# from here. The preferred send path is the CLI (railway run python3 -m
+# routes.monthly_customer_report), which is not subject to the edge's 15s
+# admin-POST timeout.
+try:
+    from routes.monthly_customer_report import monthly_customer_report_bp
+    app.register_blueprint(monthly_customer_report_bp)
+    print("[main] monthly_customer_report_bp registered: "
+          "/api/v1/admin/monthly-customer-report/{preview,send}", flush=True)
+except Exception as _mcr_e:
+    print(f"[main] monthly_customer_report register skipped: {_mcr_e}", file=sys.stderr)
+
 # Agent-adoption funnel conductor — the honest reach→real-tool-use→planner-first→
 # conversion measurement per platform (mcp_calls_identity de-looped vs ai_cumulative
 # reach). Diagnostic/read-only; names the distribution actuator per lane.
