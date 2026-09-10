@@ -80,8 +80,23 @@ from tools.qa_superuser.probe_relay import (  # noqa: E402
     relayed_checkout_url,
 )
 
-_STRIPE_OK = ("https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i"
-              "?client_reference_id=366f9a6f-bc22-45a7-b6fe-d7c4ba08e278")
+def _canon_stripe_url() -> str:
+    """A REAL Payment Link, taken from canon rather than pasted.
+
+    tests/test_stripe_link_canonical.py scans every tracked file for Payment
+    Link ids and fails on any that is not in routes/_stripe_links. A made-up
+    placeholder id in a fixture failed it, correctly — and so did the first
+    version of THIS docstring, which spelled that placeholder out: the scan is
+    a text sweep and does not care that the mention is prose. Say the shape,
+    never the id. Deriving also means these fixtures follow a link rotation
+    instead of pinning one that has been retired.
+    """
+    from routes._stripe_links import STRIPE_LINKS
+    return STRIPE_LINKS["pro"]
+
+
+_STRIPE_OK = (_canon_stripe_url()
+              + "?client_reference_id=366f9a6f-bc22-45a7-b6fe-d7c4ba08e278")
 
 
 def test_the_link_is_read_from_the_text_an_agent_relays():
@@ -123,12 +138,12 @@ def test_stripe_with_a_client_reference_id_is_pass():
 def test_stripe_with_no_client_reference_id_is_red():
     """★ 'session lost' by its proper name — the symptom Ship #2 assumed."""
     verdict, severity, reason = checkout_binding_verdict(
-        302, "https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i")
+        302, _canon_stripe_url())
     assert (verdict, severity) == (RED, MAJOR)
     assert "client_reference_id" in reason
     # and an EMPTY one is not a present one
     assert checkout_binding_verdict(
-        302, "https://buy.stripe.com/x?client_reference_id=")[0] == RED
+        302, _canon_stripe_url() + "?client_reference_id=")[0] == RED
 
 
 def test_the_pricing_fallback_is_red():
