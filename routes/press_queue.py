@@ -283,6 +283,96 @@ def publish(slug):
     return jsonify(published=slug, id=r[0]), 200
 
 
+# ── ONE predicate, TWO readers ───────────────────────────────────────────────
+# What counts as a published release must be defined ONCE. It was defined
+# twice: press_feed_json() UNIONed press_releases_queue + auto_press_releases,
+# while press_release_page() read press_releases_queue ALONE. Every
+# auto_press_releases row the public RSS feed advertised therefore 404'd —
+# 10 live dead links measured 2026-09-09, and the brain had been re-filing
+# "N of 8 published story links are dead" daily since 09-06 (#4051, #4078,
+# #4147, #4301) with N climbing as more auto-press shipped.
+#
+# Both readers now select FROM this CTE. tests/test_press_feed_and_page_agree.py
+# fails if either one grows a source table the other cannot see.
+_UNIFIED_PRESS_CTE = """
+            WITH unified AS (
+                SELECT
+                    id::bigint AS id,
+                    slug,
+                    title,
+                    subheadline,
+                    body,
+                    category,
+                    'published'::text AS status,
+                    published_at,
+                    trigger_type
+                FROM press_releases_queue
+                WHERE status = 'published'
+                UNION ALL
+                SELECT
+                    id::bigint AS id,
+                    slug,
+                    title,
+                    LEFT(COALESCE(body, ''), 240) AS subheadline,
+                    body,
+                    COALESCE(source_topic, 'auto')::text AS category,
+                    'published'::text AS status,
+                    COALESCE(generated_at, generated_for::timestamptz) AS published_at,
+                    'auto_press'::text AS trigger_type
+                FROM auto_press_releases
+                WHERE COALESCE(validation_ok, true) = true
+            )
+"""
+
+# ── The RESOLVER set — a superset, and that direction is the invariant ───────
+# The public feed advertises /press-release/<slug>. That URL is served by the
+# EDGE worker, which fetches main.py's /api/press-releases/<slug> — it never
+# reaches press_release_page() below, because the worker 301s /press/<slug> to
+# /press-release/<slug> first. Measured 2026-09-10 on a slug the feed
+# publishes:
+#
+#     /press/<slug>                  -> 301 -> /press-release/<slug> -> 404
+#     /api/v1/press/<slug>/page      -> 404
+#     /api/press-releases/<slug>     -> 200, but it is the not_found FALLBACK
+#
+# So the resolver that decides whether an advertised link works is the LEGACY
+# one, over press_releases. It must therefore cover everything the feed can
+# publish, PLUS the 163-row archive that only it has. Feed set ⊆ resolver set:
+# equality is the wrong invariant here and would drop the archive off /press.
+# tests/test_press_feed_and_page_agree.py asserts the containment.
+_RESOLVABLE_PRESS_CTE = """
+            WITH resolvable AS (
+                SELECT
+                    id::bigint AS id, slug, title, subheadline, body,
+                    COALESCE(category, 'Press Release')::text AS category,
+                    date::date AS date,
+                    meta_description,
+                    date::timestamptz AS published_at
+                FROM press_releases
+                WHERE published = TRUE
+                UNION ALL
+                SELECT
+                    id::bigint AS id, slug, title, subheadline, body,
+                    COALESCE(category, 'Press Release')::text AS category,
+                    published_at::date AS date,
+                    subheadline AS meta_description,
+                    published_at
+                FROM press_releases_queue
+                WHERE status = 'published'
+                UNION ALL
+                SELECT
+                    id::bigint AS id, slug, title,
+                    LEFT(COALESCE(body, ''), 240) AS subheadline, body,
+                    COALESCE(source_topic, 'auto')::text AS category,
+                    COALESCE(generated_at, generated_for::timestamptz)::date AS date,
+                    LEFT(COALESCE(body, ''), 240) AS meta_description,
+                    COALESCE(generated_at, generated_for::timestamptz) AS published_at
+                FROM auto_press_releases
+                WHERE COALESCE(validation_ok, true) = true
+            )
+"""
+
+
 @press_queue_bp.route("/api/v1/press/feed.json", methods=["GET"])
 def press_feed_json():
     """Public RSS feed source. UNIONs both press tables:
@@ -300,33 +390,11 @@ def press_feed_json():
     """
     _ensure()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            WITH unified AS (
-                SELECT
-                    id::bigint AS id,
-                    slug,
-                    title,
-                    subheadline,
-                    category,
-                    'published'::text AS status,
-                    published_at,
-                    trigger_type
-                FROM press_releases_queue
-                WHERE status = 'published'
-                UNION ALL
-                SELECT
-                    id::bigint AS id,
-                    slug,
-                    title,
-                    LEFT(COALESCE(body, ''), 240) AS subheadline,
-                    COALESCE(source_topic, 'auto')::text AS category,
-                    'published'::text AS status,
-                    COALESCE(generated_at, generated_for::timestamptz) AS published_at,
-                    'auto_press'::text AS trigger_type
-                FROM auto_press_releases
-                WHERE COALESCE(validation_ok, true) = true
-            )
-            SELECT * FROM unified
+        cur.execute(_UNIFIED_PRESS_CTE + """
+            SELECT id, slug, title, subheadline, category, status,
+                   published_at, trigger_type,
+                   LEFT(COALESCE(body, ''), 600) AS body
+            FROM unified
             ORDER BY published_at DESC NULLS LAST
             LIMIT 50
         """)
@@ -341,19 +409,9 @@ def press_feed_html():
     """HTML render of the unified feed (same union as feed.json)."""
     _ensure()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""
-            WITH unified AS (
-                SELECT slug, title, subheadline, published_at, trigger_type
-                FROM press_releases_queue WHERE status = 'published'
-                UNION ALL
-                SELECT slug, title,
-                       LEFT(COALESCE(body, ''), 240) AS subheadline,
-                       COALESCE(generated_at, generated_for::timestamptz) AS published_at,
-                       'auto_press'::text AS trigger_type
-                FROM auto_press_releases
-                WHERE COALESCE(validation_ok, true) = true
-            )
-            SELECT * FROM unified
+        cur.execute(_UNIFIED_PRESS_CTE + """
+            SELECT slug, title, subheadline, published_at, trigger_type
+            FROM unified
             ORDER BY published_at DESC NULLS LAST
             LIMIT 30
         """)
@@ -405,8 +463,8 @@ def press_release_page(slug):
     # pointed at nothing.
     _canon_url = build_public_url("press_release", slug)
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""SELECT * FROM press_releases_queue WHERE slug=%s
-                       AND status = 'published'""", (slug,))
+        cur.execute(_UNIFIED_PRESS_CTE +
+                    " SELECT * FROM unified WHERE slug=%s", (slug,))
         r = cur.fetchone()
     if not r:
         return Response("<h1>Release not found or not yet published</h1>", status=404, mimetype="text/html")
