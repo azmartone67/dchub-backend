@@ -36,10 +36,13 @@ metric it verifies (the /go/c QA rule).
 """
 from __future__ import annotations
 
+import re
+import urllib.parse
+
 from . import config as C
 from .finding import (BLIND, CRITICAL, GAUGE, INFO, MAJOR, PASS, RED,
                       SEAT_ADMIN, SEAT_ANON, Finding, stable_key)
-from .http import MCPSession, Unreachable, fetch, get_json
+from .http import MCPSession, Unreachable, envelope_text, fetch, get_json
 
 SURFACE = "mcp"
 
@@ -84,6 +87,68 @@ def arbitrage_verdict(minted, machine):
     if minted <= 0:
         return (GAUGE, INFO)
     return (RED, CRITICAL) if machine > 0 else (PASS, CRITICAL)
+
+
+# ── the THIRD regression: the relayed link stops carrying an identity ───────
+# Ship #2's brief asserted a "session lost" symptom on the unlock path and no
+# one had produced the failing trace. Walked by hand 2026-09-09 there is none:
+# /go/c/<token> 302s to Stripe with the session in client_reference_id. That
+# answer cost an hour of manual probing and was worth having; leaving it as a
+# one-off means the next person argues it from priors again.
+#
+# ★ IT CHECKS THE LINK IN THE TEXT, NOT THE ONE IN structuredContent.
+# _check_presence above reads structuredContent.for_your_human.url — the
+# /upgrade/h/ artifact. The block a client renders and a model relays is
+# content[].text, and the link IN it is /go/c/<token>, a different endpoint
+# writing a different table. Both are human handoffs and they had one probe
+# between them.
+_GO_C_RE = re.compile(r"https://[a-z0-9.\-]+/go/c/[A-Za-z0-9_\-]+\.[a-f0-9]+")
+_STRIPE_HOSTS = ("buy.stripe.com", "checkout.stripe.com")
+_REDIRECT_CODES = (301, 302, 303, 307, 308)
+
+
+def relayed_checkout_url(text: str):
+    """The /go/c checkout link an agent would relay, from the envelope TEXT.
+
+    None when the text carries none — which is a GAUGE, not a conviction: an
+    ungated envelope has no reason to offer one.
+    """
+    m = _GO_C_RE.search(text or "")
+    return m.group(0) if m else None
+
+
+def checkout_binding_verdict(status: int, location: str):
+    """(verdict, severity, reason) for one hop of the relayed checkout link.
+
+    RED is reserved for the three ways a human is actually lost:
+      · the link does not redirect at all
+      · it redirects somewhere that is not a payment processor — the honest
+        fallback checkout_click_tracker uses for a token it cannot verify, and
+        from the human's side indistinguishable from being dumped on /pricing
+      · it reaches the processor carrying no client_reference_id, which is the
+        "session lost" symptom by its proper name: the sale can complete and
+        nothing joins it back to the agent that asked for it
+    """
+    if status not in _REDIRECT_CODES:
+        return (RED, MAJOR,
+                "the relayed checkout link answered HTTP %s instead of "
+                "redirecting to a checkout" % status)
+    loc = location or ""
+    host = urllib.parse.urlparse(loc).netloc.lower()
+    if host not in _STRIPE_HOSTS:
+        return (RED, MAJOR,
+                "the relayed checkout link redirects to %r, not to a payment "
+                "processor — a human following it lands somewhere they cannot "
+                "buy the thing the message named" % (loc[:120] or "(no Location)"))
+    crid = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query).get(
+        "client_reference_id", [""])[0]
+    if not crid.strip():
+        return (RED, MAJOR,
+                "the relayed checkout link reaches Stripe with NO "
+                "client_reference_id — a completed sale cannot be joined back "
+                "to the agent session that asked for it")
+    return (PASS, MAJOR,
+            "redirects to %s carrying client_reference_id" % host)
 
 
 def _fyh(sc: dict):
@@ -252,7 +317,82 @@ def _check_arbitrage(findings: list) -> None:
 
 
 
+def _check_checkout_binding(findings: list) -> None:
+    key = stable_key("relay", "anon", "checkout_binding")
+    basis = (f"anon MCP tools/call {C.FLAGSHIP_TOOL}; the /go/c link is read "
+             f"from content[].text — the block a client renders and a model "
+             f"relays — NOT from structuredContent, which carries the other "
+             f"artifact; the link is then fetched ONCE with the harness UA and "
+             f"allow_redirects=False, and the verdict reads the Location "
+             f"header only. Stripe is never called.")
+    red_when = ("the relayed checkout link does not redirect, redirects "
+                "somewhere that is not a payment processor, or reaches one "
+                "with no client_reference_id")
+    try:
+        s = MCPSession(C.MCP_URL, timeout=C.MCP_TIMEOUT).open()
+        env = s.call(C.FLAGSHIP_TOOL, {"market": "Northern Virginia"})
+    except Unreachable as e:
+        findings.append(Finding(
+            key=key, surface=SURFACE, seat=SEAT_ANON,
+            title="checkout binding unobserved — MCP unreachable",
+            verdict=BLIND, severity=INFO,
+            evidence=str(e)[:200], basis=basis, red_when=red_when))
+        return
+    except Exception as e:
+        findings.append(Finding(
+            key=key, surface=SURFACE, seat=SEAT_ANON,
+            title="checkout binding unobserved — call failed",
+            verdict=BLIND, severity=INFO,
+            evidence=f"{type(e).__name__}: {str(e)[:160]}",
+            basis=basis, red_when=red_when, instrument_fault=True))
+        return
+
+    url = relayed_checkout_url(envelope_text(env))
+    if not url:
+        # Same rule as _check_presence: an envelope that never offered the
+        # link did not reach the condition, and a probe that convicts on a
+        # condition it did not reach flaps with the runner IP's daily budget.
+        findings.append(Finding(
+            key=key, surface=SURFACE, seat=SEAT_ANON,
+            title="checkout binding not judged — no /go/c link in the text",
+            verdict=GAUGE, severity=INFO,
+            evidence=("envelope text carries no /go/c URL; "
+                      f"sc keys {sorted((env.get('structuredContent') or {}).keys())[:12]}"),
+            basis=basis,
+            red_when=("n/a — a GAUGE. The gated text did not offer a relayed "
+                      "checkout link this run, so the binding contract had "
+                      "nothing to bind")))
+        return
+
+    try:
+        status, hdrs, _body = fetch(url, timeout=20, allow_redirects=False)
+    except Unreachable as e:
+        findings.append(Finding(
+            key=key, surface=SURFACE, seat=SEAT_ANON,
+            title="relayed checkout link UNFETCHABLE",
+            verdict=BLIND, severity=INFO,
+            evidence=f"{url[:80]} -> {str(e)[:120]}",
+            basis=basis, red_when=red_when))
+        return
+
+    location = hdrs.get("Location") or hdrs.get("location") or ""
+    verdict, severity, reason = checkout_binding_verdict(status, location)
+    findings.append(Finding(
+        key=key, surface=SURFACE, seat=SEAT_ANON,
+        title=("the relayed checkout link loses the human"
+               if verdict == RED else
+               "relayed checkout link reaches Stripe with the session bound"),
+        verdict=verdict, severity=severity,
+        evidence=f"GET {url[:70]} -> {status} Location={location[:130]}",
+        basis=basis, red_when=red_when,
+        remedy=("routes/checkout_click_tracker._verify (a token it cannot "
+                "verify falls back to /pricing) or server.mjs _goUrl, which "
+                "emits the DIRECT Stripe link when DCHUB_INTERNAL_KEY is unset"
+                if verdict == RED else "")))
+
+
 def probe(findings: list) -> None:
     """Runner convention: append to the given list, return None."""
     _check_presence(findings)
+    _check_checkout_binding(findings)
     _check_arbitrage(findings)
