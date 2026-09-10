@@ -240,8 +240,13 @@ def test_degraded_resolvers_cannot_publish_an_under_claim(degraded_canon):
     from ai_surface_canon import PINNED
     pinned = PINNED.get("public") or {}
     desc = mpc._build_canonical_description("mcphive")
-    assert "400+ discovered facilities" not in desc
-    assert "1,400+" not in desc, "emitted a phrase the detector calls stale"
+    # ★2026-09-09: ANCHORED — "21,400+" contains "400+" as a suffix, so this
+    # fired on copy carrying the CURRENT number and no degraded one.
+    assert not re.search(r"(?<![\d,])400\+ discovered facilities", desc)
+    # ★2026-09-09: ANCHORED — same suffix collision as its sibling below:
+    # "21,400+" contains the retired deal literal "1,400+".
+    assert not re.search(r"(?<![\d,])1,400\+", desc), (
+        "emitted a phrase the detector calls stale")
     assert f"{pinned['facilities']} discovered facilities" in desc
     assert f"{pinned['deals']} tracked deals" in desc
 
@@ -283,7 +288,11 @@ def test_the_last_resort_deals_fallback_is_not_a_known_stale_claim(monkeypatch):
                                  "markets": LIVE_CANON["markets_floor"],
                                  "deals": 1800})  # no phrase
     desc = mpc._build_canonical_description("glama")
-    assert "1,400+" not in desc, "last-resort fallback emits a stale_marker"
+    # ★2026-09-09: ANCHORED — the retired deal literal "1,400+" is a suffix of
+    # the walked facilities floor "21,400+", so this failed on copy whose only
+    # 1,400+ was the tail of a legitimate facilities figure.
+    assert not re.search(r"(?<![\d,])1,400\+", desc), (
+        "last-resort fallback emits a stale_marker")
     assert "1,800+ tracked deals" in desc
     drifts = detect_number_drift(desc, LIVE_CANON | {"deals_floor": 1800})
     assert drifts == [], f"last-resort copy drifts: {drifts}"

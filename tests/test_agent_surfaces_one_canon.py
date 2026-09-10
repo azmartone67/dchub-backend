@@ -77,8 +77,14 @@ def test_catalog_descriptions_carry_the_live_floor_not_the_import_time_pin(catal
 def test_catalog_serves_no_retired_pipeline_or_deal_literals(catalog, monkeypatch):
     monkeypatch.setattr(catalog, "_live_tools_map", lambda: {})
     blob = " ".join(t["description"] for t in catalog.tools_for_well_known())
+    # ★2026-09-09: ANCHORED, was `bad not in blob`. The canon facilities floor
+    # walked to "21,400+", which CONTAINS the retired deal literal "1,400+" as a
+    # suffix — so this fired on a catalog carrying the CURRENT number and no
+    # retired one. Reject a digit-or-comma immediately before the match so a
+    # retired figure is caught standalone while a larger legitimate figure that
+    # merely ends with those digits is not.
     for bad in ("369 GW", "1,400+", "540+ projects"):
-        assert bad not in blob, bad
+        assert not re.search(rf"(?<![\d,]){re.escape(bad)}", blob), bad
 
 
 _RETIRED_SERVED = ("369 GW", "1,400+ tracked", "18,500+ facilities", "28+ tools")
@@ -423,3 +429,22 @@ def test_checkout_never_overrides_an_explicit_or_pro_choice(checkout_app, monkey
     j = _get(app, "?tool=analyze_site")          # TOOL_TIER_MAP -> pro
     assert j["tier"] == "pro" and j["tier_pricing"] == "$99/mo", j
     assert _get(app, "?tier=enterprise")["tier_pricing"] == "Custom"
+
+
+def test_the_anchored_ban_is_not_vacuous():
+    """Guard-the-guard for the ★2026-09-09 anchoring above.
+
+    Anchoring a substring ban is how you stop it false-firing on a legitimate
+    larger number — and also how you accidentally make it match nothing at all.
+    These four cases pin both directions, so the next person to widen or narrow
+    the lookbehind finds out here instead of in production.
+    """
+    def banned(bad, text):
+        return re.search(rf"(?<![\d,]){re.escape(bad)}", text) is not None
+    # the collision that prompted the change: a legitimate figure ENDING in the
+    # banned digits must pass
+    assert not banned("400+", "covering 21,400+ distinct facilities")
+    assert not banned("1,400+", "covering 21,400+ distinct facilities")
+    # the thing the ban exists for must still fail
+    assert banned("400+", "covering 400+ distinct facilities")
+    assert banned("1,400+", "1,400+ tracked deals")

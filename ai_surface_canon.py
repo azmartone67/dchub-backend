@@ -268,7 +268,22 @@ PINNED = {
         #  Probed live 2026-09-07: /api/v1/canon/phrases facilities = "20,700+",
         #  /api/v1/stats facilities = 20,840. Floor rounds DOWN and never exceeds
         #  the resolver: 20,700 == resolver, < 20,840.
-        "facilities": "20,700+",
+        # ★2026-09-09: 20,700+ -> 21,400+. The seventh walk, and the same shape
+        #  as the six before it — the pin trails the resolver because the
+        #  resolver self-heals and a literal cannot.
+        #  Probed live 2026-09-09, cache-busted: /api/v1/canon/phrases
+        #  facilities = "21,400+" (source=resolve_public_floors live),
+        #  /api/v1/stats facilities = 21,487. Floor rounds DOWN and never
+        #  exceeds the resolver: 21,400 == resolver, < 21,487.
+        #  ★ MEASURED SPLIT that prompted this: the surfaces that resolve at
+        #    REQUEST time (/connect, /llms.txt, /agent) all served "21,400+" on
+        #    the same probe, while /, /pricing and /ai served "21,200+". Those
+        #    three are NOT in this repo — they are frontend/CF-Pages assets
+        #    (neither ai.html nor static/ai.html here matches what /ai serves:
+        #    99KB/128KB and "15,000+" against a live 351KB carrying "21,200+").
+        #    So walking this pin does NOT fix them; it fixes every cold-start
+        #    and PINNED reader inside this repo, which is what it governs.
+        "facilities": "21,400+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
