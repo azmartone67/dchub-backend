@@ -26,6 +26,8 @@ import sys
 import time
 from pathlib import Path
 
+import re
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -100,7 +102,14 @@ def _as_int(phrase) -> int:
 # path while claiming to prove the overlay RAISES — the exact inversion this
 # module exists to prevent. Re-based above the new pin; the guard test below
 # fails loudly the next time a walk overtakes it.
-RISEN_FACILITIES = "20,900+"
+# ★2026-09-09: re-based 20,900+ -> 21,900+ because the pin walked to 21,400+
+# and this fixture must sit ABOVE it — test_the_risen_scenario_still_rises_above
+# _the_pin says so in its own failure message ("RE-BASE it above the pin. Do not
+# delete this assertion and do not lower the pin to suit it."). Kept a full 500
+# above so the next walk does not immediately re-trip it.
+# ★ SYNTHETIC. This is "what if the live floor RISES above the pin", not a claim
+#   about the fleet — measured distinct today is 21,441, below this on purpose.
+RISEN_FACILITIES = "21,900+"
 
 
 # ── the overlay raises ───────────────────────────────────────────────
@@ -166,7 +175,13 @@ def test_agents_md_never_publishes_the_degraded_floor(monkeypatch):
     _prime()   # the degrade must be rejected THROUGH the cache, not merely
                # missed because the cache happened to be cold
     page = _render_agents_md()
-    assert "400+ facilities" not in page
+    # ★2026-09-09: ANCHORED. The degraded floor is "400+"; the pin walked to
+    # "21,400+", which CONTAINS it as a suffix, so a bare substring test failed
+    # on a page publishing the CORRECT number. Reject a digit-or-comma before
+    # the match so the degraded seed is caught standalone and a legitimate
+    # larger figure ending in those digits is not.
+    assert not re.search(r"(?<![\d,])400\+ facilities", page), (
+        "the degraded 400+ floor reached the page")
     assert f"{PINNED['public']['facilities']} facilities" in page
 
 

@@ -190,7 +190,28 @@ def pinned_canon(monkeypatch):
 # that actually gates this test is check_facility_count_claims', which the
 # 20,700+ walk already clears; these are per-metric measured literals, so moving
 # only the one that was re-measured keeps each honest about its own basis.
-CANON_ERA_DISTINCT, CANON_ERA_DEALS = 20198, 2118
+# ★2026-09-09 — CANON_ERA_DISTINCT RE-MEASURED 20,198 -> 21,441, and the
+# measurement is what makes the walk legal, exactly as it was for
+# CANON_ERA_DEALS above. The pin walked to "21,400+" the same day; at the old
+# ceiling 20,198 x 1.05 = 21,207.9, so today's canon read as an over-claim —
+# ten days of growth measured as a defect, the same era drift the note above
+# describes and the reason 18,656 became 20,198.
+#
+# THE INDEPENDENT MEASUREMENT — a direct query against the production primary,
+# NOT read back off ai_surface_canon (that is the self-certification this file
+# forbids), and NOT off /api/v1/stats (which reads canonical_stats via _canon,
+# the same source the canon publishes):
+#
+#   SELECT COUNT(DISTINCT canonical_slug) FILTER (WHERE COALESCE(is_duplicate,0)=0),
+#          COUNT(*)
+#     FROM discovered_facilities;
+#   -> 21441 | 29941
+#
+# 21,441 distinct buildings against a 29,941-row pile — the ~1.4x gap this
+# fence exists to catch is INTACT and still refuses the pile. Floor rounds DOWN
+# to the nearest 100: 21,400 <= 21,441, so the published phrase can never
+# exceed the basis it is floored from.
+CANON_ERA_DISTINCT, CANON_ERA_DEALS = 21441, 2118
 CANON_ERA = dict(LIVE, facilities_verified=CANON_ERA_DISTINCT,
                  deals=CANON_ERA_DEALS)
 
