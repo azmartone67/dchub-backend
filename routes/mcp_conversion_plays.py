@@ -427,7 +427,7 @@ def redeem_topup_token(token: str, stripe_session_id: str | None = None) -> dict
 # ═══════════════════════════════════════════════════════════════════════════
 def grant_credit_pack(api_key, mcp_session_id, credits,
                       stripe_session_id=None, source="pack5", expires_days=90,
-                      api_key_hash=None):
+                      api_key_hash=None, price_cents=None):
     """Grant a one-time credit pack. IDEMPOTENT on stripe_session_id so a Stripe
        webhook retry never double-grants. Keys the balance on BOTH the durable
        api_key AND the buying mcp session (same-session instant unlock +
@@ -436,7 +436,14 @@ def grant_credit_pack(api_key, mcp_session_id, credits,
        key by its HASH without the raw key — the move-#3 key-bound $5 pack path,
        where the 'pk-<hash>' Stripe ref carries only the hash (raw key never
        reaches Stripe). get_credit_balance hashes the caller's key the same way,
-       so the balance is found."""
+       so the balance is found.
+
+       ★2026-09-10 — price_cents IS A PARAMETER NOW. It was hardcoded to
+       PACK5_PRICE_CENTS while `credits` and `expires_days` were already
+       per-pack, so every $10 pack10 sale wrote 500 into mcp_topups.price_cents
+       and revenue read back at HALF what was charged. Defaults to
+       PACK5_PRICE_CENTS so the agentic $5 caller in routes/stripe_metered.py
+       is unchanged."""
     out = {"ok": False}
     h = api_key_hash or _hash_key(api_key)
     if not h:
@@ -465,7 +472,9 @@ def grant_credit_pack(api_key, mcp_session_id, credits,
                 VALUES (%s, %s, %s, %s, NOW(),
                         NOW() + (%s || ' days')::interval, %s, %s, %s, %s)
                 RETURNING id;
-            """, (token, h, credits, PACK5_PRICE_CENTS, str(int(expires_days)),
+            """, (token, h, credits,
+                  int(PACK5_PRICE_CENTS if price_cents is None else price_cents),
+                  str(int(expires_days)),
                   credits, stripe_session_id, sid, source))
             row = cur.fetchone()
             out.update(ok=True, idempotent=False,
