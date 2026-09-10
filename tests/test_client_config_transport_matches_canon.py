@@ -221,8 +221,13 @@ def test_scan_actually_reads_the_surfaces():
     assert sum(1 for r in rels if r.startswith("static/integrations/")) >= 20, (
         "static/integrations/ not scanned — this is the tree #4282's globs "
         "missed and where 24 of the 32 defects lived")
-    for must in ("static/.well-known/ai-agents.json", "static/AGENTS.md",
-                 "registries/anthropic-quickstarts.json", "github-repo/README.md",
+    # ★ static/.well-known/ai-agents.json and static/AGENTS.md were pinned here
+    # too, until both were retired as dead files — 404 at their static paths,
+    # with the live /.well-known/ai-agents.json served from
+    # routes/mcp_tool_catalog.py and the live /AGENTS.md from
+    # routes/agents_md_fallback.py. Their defects were real when this guard was
+    # written; the FILES are simply gone now. Do not re-add them here.
+    for must in ("registries/anthropic-quickstarts.json", "github-repo/README.md",
                  "REGISTRY_SUBMISSIONS.md", "ai-hub-standalone.html"):
         assert must in rels, f"{must} not scanned — it carried a live defect"
 
@@ -260,23 +265,27 @@ def test_self_description_occurrences_are_still_present_and_allowed():
     capability card, the .well-known descriptors and every registry submission.
     If these vanish, someone ran a blind find-and-replace and broke the registry
     surfaces — which is the other half of this defect, and the half a naive fix
-    causes. 25 such occurrences sit inside the scanned set (89 repo-wide,
-    counting `PATCHES/` and the Python modules outside SCAN_GLOBS — do not
-    conflate the two populations, the floor below is the scanned-set one). The
-    floor is ~20% under so retiring one file does not manufacture a red build.
+    14 such occurrences sit inside the scanned set (79 repo-wide, counting
+    `PATCHES/` and the Python modules outside SCAN_GLOBS — do not conflate the
+    two populations, the floor below is the scanned-set one). The floor is ~20%
+    under so retiring one file does not manufacture a red build.
+
+    ★ It was 25/89 until `static/.well-known/ai-agents.json` was retired as a
+    dead file; that one carried 11 of them. Re-measured because the code
+    legitimately shrank — NEVER lower this to turn a red build green, which is
+    how a floor becomes decoration.
     """
     seen = 0
     for rel in ("routes/agent_capabilities_feed.py",
                 "routes/mcp_tool_catalog.py",
                 "routes/mcp_registry_outreach.py",
-                "static/.well-known/ai-agents.json",
                 "registries/anthropic-quickstarts.json",
                 "REGISTRY_SUBMISSIONS.md"):
         text = (REPO / rel).read_text(encoding="utf-8", errors="replace")
         if FORBIDDEN.search(text):
             seen += 1
-    assert seen == 6, (
-        f"expected all 6 self-description surfaces to still name "
+    assert seen == 5, (
+        f"expected all 5 self-description surfaces to still name "
         f"streamable-http as DC Hub's own transport, found {seen} — a blind "
         f"replace stripped the correct occurrences along with the wrong ones")
 
@@ -288,10 +297,11 @@ def test_self_description_occurrences_are_still_present_and_allowed():
                 continue
             if not _window_has_marker(lines, i):
                 total += 1
-    assert total >= 20, (
+    assert total >= 11, (
         f"only {total} self-description occurrences left in the scanned set "
-        f"(25 when written) — a blind find-and-replace stripped the correct "
-        f"spelling from our own published manifests")
+        f"(14 after the dead-surface retirement below) — a blind "
+        f"find-and-replace stripped the correct spelling from our own "
+        f"published manifests")
 
 
 def test_the_window_is_directional_not_symmetric():

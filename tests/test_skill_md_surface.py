@@ -90,7 +90,8 @@ def test_retired_claims_are_gone(marker):
         f"static/skill.md carries the retired claim {marker!r}. This file is now "
         "PUBLICLY SERVED at https://dchub.cloud/skill.md and is advertised to agent "
         "platforms by name (ai_agent_discovery.py, ai_outreach_agent.py, "
-        "static/.well-known/ai-agents.json) — a stale number here is externally visible."
+        "routes/mcp_tool_catalog.py's /.well-known/ai-agents.json) — a stale "
+        "number here is externally visible."
     )
 
 
