@@ -199,8 +199,13 @@ def test_the_W35_W36_complete_pair_is_withheld_by_the_0901_markers():
     comp = out["real_external_complete_wk_comparability"]
     assert comp["crosses_definition_change"] is True
     assert comp["quotable_as_trend"] is False
-    assert [c["ref"] for c in comp["changes"]] == [
-        "dchub-mcp-server#294", "dchub-mcp-server#302"]
+    # Containment, not equality: this test's subject is that the two 0901
+    # markers withhold the W35->W36 pair, not that they are the only markers
+    # in that span. dchub-backend#3962 (2026-09-05) lands there too as of
+    # 2026-09-10. The exact W36 set is pinned once, in
+    # tests/test_weekly_series_definition_change.py.
+    assert {"dchub-mcp-server#294", "dchub-mcp-server#302"} <= {
+        c["ref"] for c in comp["changes"]}
     assert out["real_external_calls_complete_wk"] == 400, "the level is untouched"
 
 

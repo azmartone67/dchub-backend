@@ -365,11 +365,23 @@ def test_quotable_as_trend_is_false_when_either_hazard_fires():
 W35 = _dt.date(2026, 8, 24)
 W36 = _dt.date(2026, 8, 31)
 _REFS_0901 = ["dchub-mcp-server#294", "dchub-mcp-server#302"]
+# ★ 2026-09-10 — dchub-backend#3962 (2026-09-05 23:47:13Z) also lands in W36.
+# These three assertions were exact-list equalities on _REFS_0901, so the new
+# marker turned three green tests red. That is the assertion working: a change
+# to which markers cover a published week SHOULD stop someone. Registering it
+# is the acknowledgement, and W36 is now a three-marker week.
+#
+# The 0901-specific tests below assert CONTAINMENT — their subject is that the
+# two enforcement changes land in W36, not that nothing else ever will. The
+# exact set is pinned once, in test_W36_marker_set_is_exactly_these, so a
+# surprise marker still trips exactly one test on purpose rather than three by
+# accident.
+_REFS_W36 = _REFS_0901 + ["dchub-backend#3962"]
 
 
 def test_the_0901_enforcement_changes_are_registered_and_land_in_W36():
     hits = _changes_in(W36, W36 + _dt.timedelta(weeks=1))
-    assert [h["ref"] for h in hits] == _REFS_0901
+    assert set(_REFS_0901) <= {h["ref"] for h in hits}
     by_ref = {h["ref"]: h for h in hits}
     assert by_ref["dchub-mcp-server#294"]["is_correction"] is True
     assert by_ref["dchub-mcp-server#294"]["direction"].startswith("REDUCES signals")
@@ -384,7 +396,7 @@ def test_the_W35_to_W36_delta_is_withheld_by_both_markers():
     got = _comparability([W35.isoformat(), W36.isoformat()])
     assert got["crosses_definition_change"] is True
     assert got["quotable_as_trend"] is False
-    assert [c["ref"] for c in got["changes"]] == _REFS_0901
+    assert set(_REFS_0901) <= {c["ref"] for c in got["changes"]}
     assert "NOT a trend" in got["means"]
 
 
@@ -397,5 +409,13 @@ def test_wow_across_W36_carries_the_refusal_the_press_headline_reads():
     assert got["calls_pct"] is not None, "the arithmetic still publishes"
     assert got["comparability"]["crosses_definition_change"] is True
     assert got["comparability"]["quotable_as_trend"] is False
-    assert [c["ref"] for c in weeks[1]["definition_changes"]] == _REFS_0901
+    assert set(_REFS_0901) <= {c["ref"] for c in weeks[1]["definition_changes"]}
     assert weeks[0]["definition_changes"] == [], "W35 is clean; W36 carries them"
+
+
+def test_W36_marker_set_is_exactly_these():
+    """The one exact-set assertion for W36, so a new marker trips ONE test
+    deliberately instead of three incidentally. If this fails, a definition
+    change was registered or removed — update the list and say why."""
+    hits = _changes_in(W36, W36 + _dt.timedelta(weeks=1))
+    assert sorted(h["ref"] for h in hits) == sorted(_REFS_W36)
