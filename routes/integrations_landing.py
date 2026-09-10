@@ -637,7 +637,7 @@ try:
 except Exception:  # pragma: no cover - defensive
     _FRONT_DOOR_HTML = _FRONT_DOOR_HTML.replace("__SCOPE_BLOCK__", "")
 
-# ★★ MCP_LANDING_HTML (/integrations + /integrations/mcp) does NOT embed
+# ★★ _MCP_LANDING_TEMPLATE (/integrations + /integrations/mcp) does NOT embed
 # _FRONT_DOOR_HTML (that pane goes to the recipe pages + /integrations/meta),
 # so the landing gets its own scope pane from the same canonical module —
 # live-verified 2026-07-31 that without this, the one page the round-10 spec
