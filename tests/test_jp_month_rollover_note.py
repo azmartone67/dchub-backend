@@ -31,6 +31,7 @@ import pytest
 
 from routes.iso_jp_denkiyoho import (
     _MONTH_ROLLOVER_GRACE_DAYS,
+    _UPSTREAM_MONTH_GRACE_DAYS,
     _month_gap_note,
     _JST,
 )
@@ -38,6 +39,28 @@ from routes.iso_jp_denkiyoho import (
 
 def _sep3():
     return datetime(2026, 9, 3, 7, 40, tzinfo=_JST)
+
+
+class _ClockAt:
+    """A `datetime` stand-in that pins now() and delegates everything else.
+
+    _fetch_eria branches on `datetime.now(_JST).day`, so a test that does not
+    pin the clock is asserting against the calendar. Delegating the rest keeps
+    fromisoformat/timedelta arithmetic real on the paths that reach them.
+    """
+
+    def __init__(self, when):
+        self._when = when
+
+    def now(self, tz=None):
+        return self._when
+
+    def __getattr__(self, name):
+        return getattr(datetime, name)
+
+
+def _jst_day(day):
+    return datetime(2026, 9, day, 7, 40, tzinfo=_JST)
 
 
 def test_it_names_the_unpublished_month_not_a_broken_url():
@@ -85,11 +108,20 @@ class _Resp:
 
 def test_fetch_eria_returns_the_honest_note_when_this_month_404s(monkeypatch):
     """★ END TO END. A 404 on this month's file must surface as the month-gap
-    note, not http_404 — this is the string that reaches /ops/deadman."""
+    note, not http_404 — this is the string that reaches /ops/deadman.
+
+    ★ THE CLOCK IS PINNED, and must stay pinned. This assertion only holds
+    INSIDE _UPSTREAM_MONTH_GRACE_DAYS; past it the raw status is the correct
+    answer and _fetch_eria says so deliberately. Unpinned, this test asserted
+    against the real calendar: it passed for the first ten days of a month and
+    went red on the eleventh. It did exactly that on 2026-09-11 JST, taking
+    main red and blocking every open PR — the failure had nothing to do with
+    any diff, it was the date."""
     import routes.iso_jp_denkiyoho as m
 
     monkeypatch.setattr(m, "_rq", type("RQ", (), {
         "get": staticmethod(lambda url, **kw: _Resp(404))})())
+    monkeypatch.setattr(m, "datetime", _ClockAt(_jst_day(_UPSTREAM_MONTH_GRACE_DAYS)))
     parsed, note = m._fetch_eria("hokkaido")
     assert parsed is None
     assert note.startswith("month_not_published_yet:"), note
@@ -105,4 +137,23 @@ def test_a_non_404_failure_is_still_reported_verbatim(monkeypatch):
     parsed, note = m._fetch_eria("hokkaido")
     assert parsed is None
     assert note == "http_500", note
+    assert "month_not_published" not in note
+
+
+def test_past_the_grace_window_the_raw_status_stands(monkeypatch):
+    """★ THE WAIT MUST BE ABLE TO LAPSE — the property _fetch_eria's own comment
+    insists on, and the one nothing was checking.
+
+    An upstream that still has not published by day 11 is not "yet", it is
+    broken, so the raw status has to come back and take the feed red. This is
+    the behaviour the unpinned test above was accidentally exercising every
+    month from the eleventh onward, while claiming to prove the opposite."""
+    import routes.iso_jp_denkiyoho as m
+
+    monkeypatch.setattr(m, "_rq", type("RQ", (), {
+        "get": staticmethod(lambda url, **kw: _Resp(404))})())
+    monkeypatch.setattr(m, "datetime", _ClockAt(_jst_day(_UPSTREAM_MONTH_GRACE_DAYS + 1)))
+    parsed, note = m._fetch_eria("hokkaido")
+    assert parsed is None
+    assert note == "http_404", note
     assert "month_not_published" not in note
