@@ -201,18 +201,56 @@ def test_provenance_branches_partition_exhaustively():
                 "does not add up" % (real_ua, signed, hits))
 
 
-def test_provenance_names_the_subset_as_a_subset():
-    """minted_link_clicks_deloopable is a SUBSET, not a fourth branch.
+def test_provenance_names_every_subset_as_a_subset():
+    """A subset is never a branch. Adding one to the other double-counts.
 
-    Adding one field from each of two orthogonal splits double-counts. The
-    basis has to say so, because the number itself cannot.
+    Floor: there must BE subsets. A version of this test that only iterated
+    whatever the module declared would pass on an empty tuple.
     """
+    subsets = H.relayed_checkout_provenance_subsets()
+    assert len(subsets) >= 2, subsets
     sql = H.relayed_checkout_provenance_sql(_IV)
-    assert "minted_link_clicks_deloopable" in sql
     branch_names = [n for n, _ in H.relayed_checkout_provenance_branches()]
-    assert "minted_link_clicks_deloopable" not in branch_names
+    for name, _cond in subsets:
+        assert (" as " + name) in sql, "%s is declared but not selected" % name
+        assert name not in branch_names, (
+            "%s is published as a branch of an exhaustive partition; it is a "
+            "subset and adding it to the branches double-counts" % name)
     basis = H.RELAYED_CHECKOUT_PROVENANCE_BASIS
     assert "SUBSET" in basis and "ORTHOGONAL" in basis, basis
+    for name, _cond in subsets:
+        assert name in basis, "%s is published with no basis entry" % name
+
+
+def test_the_ceiling_and_the_no_ref_subset_reconcile():
+    """★ minted_link_clicks - minted_link_clicks_no_ref == what the ceiling sees.
+
+    The first live read of this block, 2026-09-10 over 30d, published
+    minted_link_clicks 1 beside human_acted_v7_links_clicked 0. That pair is
+    correct — a signed click with an empty ref has no identity to count
+    distinctly, and unlike relay_opens this table stores no token-hash
+    fallback — but with nothing naming the gap it reads as an arithmetic error
+    in the split. This binds the two conditions as exact complements so the
+    reconciliation stays true rather than staying merely asserted in prose.
+    """
+    has_ref = "coalesce(cc.ref,'') <> ''"
+    no_ref = "coalesce(cc.ref,'') = ''"
+
+    ceiling = H.human_acted_v7_links_sql(_IV)
+    assert has_ref in ceiling, (
+        "the ceiling does not require a ref, so it cannot be reconciled "
+        "against minted_link_clicks_no_ref")
+
+    subsets = dict(H.relayed_checkout_provenance_subsets())
+    assert "minted_link_clicks_no_ref" in subsets, sorted(subsets)
+    cond = subsets["minted_link_clicks_no_ref"]
+    assert no_ref in cond, cond
+    assert has_ref not in cond, (
+        "minted_link_clicks_no_ref counts rows that DO carry a ref — it is "
+        "then not the complement of what the ceiling sees")
+    # and it must be scoped to the minted branch, or it is not a subset of it.
+    assert H.relayed_checkout_signed() in cond, cond
+    assert H.relayed_checkout_real_ua() in cond, cond
 
 
 @pytest.mark.parametrize("iv", ["30 days", "7 days", "24 hours"])
