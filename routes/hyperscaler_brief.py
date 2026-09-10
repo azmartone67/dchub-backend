@@ -2,7 +2,10 @@
 hyperscaler_brief.py — Per-hyperscaler Brief pages (2026-06-06).
 
 M&A bankers + PE deal teams + hedge funds tracking hyperscalers pay
-$100K+/yr for similar coverage from Wells Fargo. DC Hub charges $499/mo.
+$100K+/yr for similar coverage from Wells Fargo. DC Hub charges a small
+fraction of that — the exact figure is derived from tier_registry at render
+time and deliberately NOT repeated here, because a price written into a
+docstring is a price nobody re-reads when it changes.
 
 For each hyperscaler (AWS, Azure, Google, Meta, Apple, Oracle, ByteDance,
 Tencent, Alibaba), the brief gives a full pipeline view. SoftBank is
@@ -50,6 +53,8 @@ import re
 from flask import Blueprint, Response, jsonify, request
 
 from utils.cache import BoundedCache
+# Derived per call, never frozen at import (see #4334).
+from tier_registry import price_display
 
 logger = logging.getLogger(__name__)
 
@@ -1331,7 +1336,7 @@ def _build_brief(slug: str, tier: str) -> dict:
                     "blurb":         (
                         "Signed PPAs, M&A flow, water consumption, ISO concentration, "
                         "time-to-power trajectory, and capital velocity are unlocked "
-                        "for PRO subscribers — $499/mo, all hyperscalers."),
+                        f"for PRO subscribers — {price_display('pro')}, all hyperscalers."),
                 }
             out["ok"] = True
     finally:
@@ -1525,7 +1530,7 @@ def _render_html(brief: dict) -> str:
         <section class="paywall">
           <h2>Unlock the full brief</h2>
           <p>{_esc((brief.get('paywall') or {}).get('blurb') or '')}</p>
-          <p><a class="btn" href="/pricing?utm_source=hyperscaler_brief&hs={_esc(slug)}">Upgrade to PRO — $499/mo →</a></p>
+          <p><a class="btn" href="/pricing?utm_source=hyperscaler_brief&hs={_esc(slug)}">Upgrade to PRO — {price_display('pro')} →</a></p>
           <p class="note">PRO unlocks: Signed PPAs · M&amp;A Activity · Water Consumption · ISO Concentration · Time-to-Power · Capital Velocity</p>
         </section>"""
 
@@ -1621,7 +1626,7 @@ def _render_html(brief: dict) -> str:
      <a href="/hyperscaler-deals">All hyperscaler deals</a> ·
      <a href="/pricing">Pricing</a></p>
   <p class="note">M&amp;A bankers + PE deal teams + hedge funds: this brief is built for you.
-     Wells Fargo charges $100K+/yr for similar coverage. DC Hub PRO is $499/mo.</p>
+     Wells Fargo charges $100K+/yr for similar coverage. DC Hub PRO is {price_display('pro')}.</p>
 </footer>
 
 </body></html>"""

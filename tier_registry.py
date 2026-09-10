@@ -267,6 +267,23 @@ def price(tier):
     return TIER_PRICE_USD_MONTH.get(_norm(tier), 0)
 
 
+def price_display(tier, suffix="/mo"):
+    """'$99/mo' for a tier with a list price; '' for custom/contact or unknown.
+
+    ★ THE ONE PLACE A DISPLAYED PRICE IS FORMATTED. A gate that types its own
+    "$N/mo" goes stale in a sentence only a NON-PAYING caller ever reads, which
+    is exactly why nobody notices: four brief surfaces were still quoting $499
+    — a retired A/B arm — after `r-price-collapse` moved Pro to $99, telling
+    every gated caller the product cost 5x what it does.
+
+    Returns '' rather than '$0/mo' when there is no list price, so a custom-
+    priced tier reads as "contact us" instead of free. Callers omit the
+    parenthetical when this is empty — say nothing before saying a wrong price.
+    """
+    p = price(tier)
+    return f"${p}{suffix}" if p else ""
+
+
 def calls_per_day(tier):
     """Canonical MCP calls/day quota for a tier (the number to quote on the paywall)."""
     return limits(tier).get('mcp_daily', 0)

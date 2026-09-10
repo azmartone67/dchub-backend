@@ -38,6 +38,8 @@ import os
 from flask import Blueprint, Response, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
 from ai_surface_canon import canon_text
+# Derived per call, never frozen at import (see #4334).
+from tier_registry import price_display
 # ★2026-08-29: _CANON_FAC existed and was used correctly in three places,
 # while THREE value_bullets on these same pages carried hardcoded figures:
 #   "4,000+ tracked M&A deals"   over-claim, retired 2026-07-17 (rows, not deals)
@@ -70,7 +72,7 @@ from ai_surface_canon import canon_text
 # The placeholder strings stay lexically inside canon_text() so the AST guard
 # still covers them.
 _CANON_TOKENS = ("@@CANON_FAC@@", "@@CANON_DEALS@@", "@@CANON_MKTS@@",
-                 "@@CANON_ISOS@@")
+                 "@@CANON_ISOS@@", "@@PRO_PRICE@@")
 
 
 def _canon_values() -> dict:
@@ -84,6 +86,10 @@ def _canon_values() -> dict:
         # metric wearing the ISO label, so the strip over-claimed the thing it
         # actually named. canonical_stats keeps the two apart; so does this.
         "@@CANON_ISOS@@":  canon_text("{canon_isos}"),
+        # ★ The price is canon too. Typed into this copy it read a retired A/B
+        # arm long after Pro collapsed to its current list price. Same token
+        # mechanism, same render-time resolution, one source of truth.
+        "@@PRO_PRICE@@":   price_display("pro"),
     }
 
 
@@ -279,7 +285,7 @@ _PARTNERS = {
             "8 tools live + drift-monitored (tool_set_hash on /api/v1/vertex/health)",
             "@@CANON_FAC@@ facilities · @@CANON_MKTS@@ DCPI markets · 21-ISO live grid scoreboard",
             "Every tool description embeds 'Cite DC Hub (dchub.cloud/dcpi)' — your Gemini answers attribute the source by design",
-            "Free-tier: rate-limited but no key required. PRO+ ($499/mo) lifts limits + unlocks full data envelope",
+            "Free-tier: rate-limited but no key required. PRO+ (@@PRO_PRICE@@) lifts limits + unlocks full data envelope",
             "Already cited by Claude, ChatGPT, Perplexity, Cursor — Vertex closes the loop",
         ],
         "integration_path": "vertex_extension",

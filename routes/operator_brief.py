@@ -43,6 +43,8 @@ import re
 from flask import Blueprint, Response, jsonify, request
 
 from utils.cache import BoundedCache
+# Derived per call, never frozen at import (see #4334).
+from tier_registry import price_display
 
 operator_brief_bp = Blueprint("operator_brief", __name__)
 
@@ -877,7 +879,7 @@ def _build_brief(slug: str, tier: str) -> dict:
                     "blurb":         ("Market Concentration, Pipeline, Lease Velocity, "
                                       "Capital Structure, M&A History, and Competitive "
                                       "Position are unlocked for PRO subscribers — "
-                                      "$499/mo, all operators."),
+                                      f"{price_display('pro')}, all operators."),
                 }
             # Outlook narrative (free teaser at render time)
             out["outlook"] = _section_outlook(provider, hero, sections)
@@ -1135,7 +1137,7 @@ def _render_html(brief: dict) -> str:
             '<div class="blur-body">Market Concentration · Pipeline · Lease Velocity '
             '· Capital Structure · M&amp;A History · Competitive Position — every '
             'operator, live updates, share-ready URL.</div>'
-            '<a class="cta" href="/pricing?utm_source=operator_brief">Unlock with PRO — $499/mo</a>'
+            f'<a class="cta" href="/pricing?utm_source=operator_brief">Unlock with PRO — {price_display("pro")}</a>'
             '</div>'
             '<div class="blur-fake">'
             '<div class="fake-row"></div><div class="fake-row"></div>'
