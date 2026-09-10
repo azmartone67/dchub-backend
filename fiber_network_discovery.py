@@ -215,6 +215,16 @@ MAJOR_ROUTES = [
 # PeeringDB FIBER DISCOVERY
 # ============================================================
 
+class _PDBError(RuntimeError):
+    """A PeeringDB leg answered with a non-200. Named so a failed FETCH can
+    never be reported as an empty JOIN, and carries the STATUS CODE so a 429
+    stays tellable from a 5xx."""
+
+    def __init__(self, path, status, body=""):
+        super().__init__("%s -> HTTP %d" % (path, status))
+        self.path, self.status, self.body = path, status, body
+
+
 def _discover_peeringdb_fiber():
     """Discover fiber routes from PeeringDB IX data.
 
@@ -241,13 +251,24 @@ def _discover_peeringdb_fiber():
     which is exactly the shape that hid this for 73 days. Setting
     PEERINGDB_API_KEY is a separate, still-open action.
 
-    THE COORDINATE REPAIR IS DELIBERATELY NOT DONE HERE. Restoring it would
-    mint thousands of straight-line segments between exchange pairs, with
-    `fiber_count` set to the exchange's PEER COUNT — two unrelated quantities —
-    into the same table that holds surveyed Zayo/NTIA carrier routes. That is a
-    product decision about whether DC Hub manufactures synthetic route volume,
-    not a bug fix, and it belongs to the owner. This change makes the lane
-    report its own death; it does not resurrect it by fabricating.
+    ★ THE COORDINATE REPAIR WAS ESCALATED HERE AND THE OWNER TOOK IT
+      (2026-09-09). It is done now, and the objection it carried is answered
+      rather than ignored:
+
+      - The routes are DERIVED and stay labelled as such — source 'peeringdb',
+        route_type 'ix_interconnect', provider 'PeeringDB/IX'. The table has
+        carried them under those labels since long before this break (2,288
+        rows) alongside another derived lane (cfp_metro_synth), so they are a
+        distinguishable class, never mixed into the surveyed carrier rows.
+      - `fiber_count` NO LONGER CARRIES THE PEER COUNT, which was the real
+        objection. Nobody has counted strands on a derived route; the surveyed
+        lanes leave the field NULL (all 20,381 carrier_kmz rows) and so does
+        this one now. The old behaviour rendered an exchange's peer count to
+        humans as "<n> fibers" through the upsert's capacity label.
+
+      What remains true is that these are straight lines between exchange
+      centroids, not surveyed paths. That is what route_type 'ix_interconnect'
+      says, and it is why the strand count stays blank.
     """
     discovered = []
     diag = {"status": "unknown", "fetched": 0, "usable": 0, "detail": None}
@@ -259,36 +280,101 @@ def _discover_peeringdb_fiber():
         # /api/ix%scountry=US&status=ok (literal '%s' character).
         # PeeringDB's API was never wrong; the URL template was. Fixed:
         # the separator between path and query string is '?'.
-        resp = requests.get(
-            "https://www.peeringdb.com/api/ix?country=US&status=ok",
-            headers={"User-Agent": "DCHub/2.0 (dchub.cloud)"},
-            timeout=15
-        )
-        if resp.status_code != 200:
-            logger.warning(f"PeeringDB returned {resp.status_code}")
-            diag["status"] = "http_%d" % resp.status_code
-            diag["detail"] = (resp.text or "")[:200]
+        # ── ix -> ixfac -> fac, because coordinates do not live on ix ──────
+        # MEASURED 2026-09-09 against the live API: /api/ix returns 212 US
+        # exchanges and its objects carry NO coordinate field of any kind. The
+        # old code filtered on ix["latitude"], dropped all 212, and returned []
+        # every run since 2026-06-22. Coordinates live on the FACILITY objects,
+        # and /api/ixfac is the link table between them:
+        #     /api/ix?country=US&status=ok      212 exchanges  (id, name, city)
+        #     /api/ixfac                      4,521 links      (ix_id, fac_id)
+        #     /api/fac?country=US&status=ok   1,376 facilities (id, lat, lng)
+        # All three verified live before this was written.
+        # ★ THIS LANE NOW MAKES THREE CALLS PER RUN, NOT ONE. PeeringDB throttles
+        #   anonymous callers after ~4 requests ("Request was throttled. Expected
+        #   available in 58 minutes."), so the join tripled this lane's exposure
+        #   to a limit it was already close to — and a throttled run is
+        #   indistinguishable from a dead source unless the code is reported,
+        #   which is why _PDBError carries it.
+        #
+        #   Setting PEERINGDB_API_KEY on Railway lifts the limit. The header
+        #   shape matches carrier_facility_ingestion.py:216, which has read the
+        #   same env var for months — so one variable fixes both lanes. Until it
+        #   is set this lane WILL intermittently report http_429, and that is the
+        #   honest reading, not a failure to hide.
+        _headers = {"User-Agent": "DCHub/2.0 (dchub.cloud)"}
+        _pdb_key = os.environ.get("PEERINGDB_API_KEY", "").strip()
+        if _pdb_key:
+            _headers["Authorization"] = "Api-Key " + _pdb_key
+
+        def _pdb(path):
+            r = requests.get("https://www.peeringdb.com/api/" + path,
+                             headers=_headers, timeout=20)
+            if r.status_code != 200:
+                # ★ KEEP THE CODE. 429 is the one that matters here — the
+                # docstring above records that anonymous callers are throttled
+                # after ~4 requests, and this lane now makes THREE per run.
+                # Collapsing every non-200 to a generic error would make
+                # "we are being rate-limited" read the same as "their server
+                # broke", which is the distinction that decides what to do.
+                raise _PDBError(path, r.status_code, (r.text or "")[:200])
+            return r.json().get("data", [])
+
+        try:
+            ix_rows = _pdb("ix?country=US&status=ok")
+            fac_rows = _pdb("fac?country=US&status=ok")
+            link_rows = _pdb("ixfac")
+        except _PDBError as e:
+            logger.warning("PeeringDB: %s", e)
+            diag["status"] = "http_%d" % e.status
+            diag["detail"] = "%s: %s" % (e, e.body)
             return discovered, diag
 
-        data = resp.json().get("data", [])
-        logger.info(f"PeeringDB: found {len(data)} US Internet Exchanges")
-        diag["fetched"] = len(data)
+        diag["fetched"] = len(ix_rows)
+        diag["fac_fetched"] = len(fac_rows)
+        diag["ixfac_fetched"] = len(link_rows)
+        logger.info("PeeringDB: %d US IXes, %d facilities, %d ix<->fac links",
+                    len(ix_rows), len(fac_rows), len(link_rows))
 
-        # Filter IXes with coordinates
+        # facility id -> (lat, lng). Facilities without usable coordinates are
+        # dropped here rather than defaulted, so an IX reachable only through
+        # them stays UNPLACED instead of landing at (0, 0).
+        fac_pt = {}
+        for f in fac_rows:
+            lat, lng = f.get("latitude"), f.get("longitude")
+            try:
+                lat, lng = float(lat), float(lng)
+            except (TypeError, ValueError):
+                continue
+            if abs(lat) > 0.1 or abs(lng) > 0.1:
+                fac_pt[f.get("id")] = (lat, lng)
+        diag["fac_with_coords"] = len(fac_pt)
+
+        ix_facs = {}
+        for ln in link_rows:
+            pt = fac_pt.get(ln.get("fac_id"))
+            if pt is not None:
+                ix_facs.setdefault(ln.get("ix_id"), []).append(pt)
+
+        # An exchange is a set of facilities, not a point. The centroid of its
+        # OWN facilities is the metro location of that exchange; for a metro IX
+        # they sit within a few miles of each other.
         ixes = []
-        for ix in data:
-            lat = ix.get("latitude")
-            lng = ix.get("longitude")
-            if lat and lng and abs(lat) > 0.1:
-                ixes.append({
-                    "id": ix.get("id"),
-                    "name": ix.get("name", ""),
-                    "city": ix.get("city", ""),
-                    "state": ix.get("region_continent", ""),
-                    "lat": float(lat),
-                    "lng": float(lng),
-                    "net_count": ix.get("net_count", 0),
-                })
+        for ix in ix_rows:
+            pts = ix_facs.get(ix.get("id")) or []
+            if not pts:
+                continue
+            lat = sum(p[0] for p in pts) / len(pts)
+            lng = sum(p[1] for p in pts) / len(pts)
+            ixes.append({
+                "id": ix.get("id"),
+                "name": ix.get("name", ""),
+                "city": ix.get("city", ""),
+                "state": ix.get("region_continent", ""),
+                "lat": lat,
+                "lng": lng,
+                "fac_n": len(pts),
+            })
 
         # Create routes between IXes in nearby cities (< 500 miles apart)
         import math
@@ -313,7 +399,15 @@ def _discover_peeringdb_fiber():
                         'start_location': ix1.get('city', ix1['name']),
                         'end_location': ix2.get('city', ix2['name']),
                         'route_miles': round(dist_miles, 1),
-                        'fiber_count': max(ix1['net_count'], ix2['net_count']),
+                        # ★ NOT net_count. These are DERIVED routes between
+                        # exchanges; nobody has counted strands on them. The
+                        # surveyed lanes (carrier_kmz:*, 20,381 rows) leave
+                        # fiber_count NULL, and the upsert renders this field to
+                        # humans as "<n> fibers" — so writing an exchange's PEER
+                        # COUNT here published "57 fibers" about a route whose
+                        # strand count is unknown. A wrong number is worse than
+                        # the honest blank the surveyed lanes carry.
+                        'fiber_count': None,
                         'dark_fiber': 0,
                         'start_lat': ix1['lat'],
                         'start_lng': ix1['lng'],
@@ -333,9 +427,11 @@ def _discover_peeringdb_fiber():
             # been in since 2026-06-22.
             diag["status"] = "no_usable_records"
             diag["detail"] = (
-                "fetched %d IX records and NONE carried usable coordinates; "
-                "PeeringDB's ix objects have no latitude/longitude field "
-                "(coordinates live on /api/fac)" % diag["fetched"])
+                "fetched %d IX records, %d facilities (%d with coordinates) and "
+                "%d ix<->fac links, and NOT ONE exchange resolved to a placeable "
+                "facility — the join is returning nothing, not the fetch"
+                % (diag["fetched"], diag.get("fac_fetched", 0),
+                   diag.get("fac_with_coords", 0), diag.get("ixfac_fetched", 0)))
         else:
             diag["status"] = "ok"
 
