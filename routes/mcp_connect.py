@@ -399,6 +399,60 @@ Workspace scope instead: <project root>/.zcode/config.json
             "Show the latest hyperscaler data-center M&A deals this quarter.",
         ],
     },
+    # ── r-connect-zed (2026-09-10) ───────────────────────────────────────
+    # ★ ZED GETS A REAL JSON BLOCK, and the Z.ai note above is why that is a
+    #   decision rather than a default. The bar is the VENDOR publishing the
+    #   remote key names. Zed does, verbatim, in its own repo
+    #   (docs/src/ai/mcp.md): a remote entry is `"url"` plus a `"headers"`
+    #   map, beside the local `"command"`/`"args"` form. Nothing is inferred
+    #   here — the only value we supply is our own header name.
+    #
+    # ★ THE REGRESSION THIS CARD PINS: the top-level key is "context_servers",
+    #   NOT "mcpServers". Zed shipped the feature as "context servers" before
+    #   "MCP" settled as the word and kept the settings key. The
+    #   Claude/Cursor/Kimi muscle memory writes "mcpServers", which Zed does
+    #   not read AT ALL — no error, the server simply never appears in the
+    #   agent panel. Same failure family as the Qwen `httpUrl` note above,
+    #   and the reason these cards are not copy-paste jobs.
+    #
+    # ★ X-API-Key, not the Authorization: Bearer that Zed's own example shows.
+    #   Zed's `headers` is a free-form map, and this origin reads the key from
+    #   X-API-Key only (flask_mcp_endpoints.py, _resolve of the tools/call
+    #   path) — it has no Bearer branch for a tool key. Publishing Zed's
+    #   example header verbatim would authenticate against nothing.
+    "zed": {
+        "name":           "Zed",
+        "tagline":        "Zed's agent panel — add DC Hub as a remote MCP server",
+        "install_path":   "~/.config/zed/settings.json",
+        "install_path_win": "%APPDATA%\\Zed\\settings.json",
+        "snippet_lang":   "text",
+        "snippet":        """In Zed: Settings -> AI -> MCP Servers -> Add Server -> Add Remote Server
+
+Or edit the settings file directly (command palette: `zed: open settings file`):
+
+{
+  "context_servers": {
+    "dchub": {
+      "url": "https://dchub.cloud/mcp",
+      "headers": { "X-API-Key": "{{TRIAL_KEY}}" }
+    }
+  }
+}
+
+★ The key is "context_servers", NOT "mcpServers". Zed named the feature
+  before "MCP" settled and kept the settings key — a "mcpServers" block is
+  not read, and the server never shows up in the agent panel.
+
+macOS + Linux: ~/.config/zed/settings.json
+Windows:       %APPDATA%\\Zed\\settings.json""",
+        "deep_link":      "",
+        "deep_link_label": "",
+        "examples": [
+            "Which US markets have the most interconnection headroom for a 200MW AI campus?",
+            "get_power_availability_timeline — how long to 100MW in Northern Virginia?",
+            "Compare ERCOT and PJM on time-to-power and grid headroom right now.",
+        ],
+    },
 }
 
 
@@ -986,6 +1040,11 @@ def connect_qwen():
 @mcp_connect_bp.route("/connect/zai", methods=["GET"])
 def connect_zai():
     return _serve("zai")
+
+
+@mcp_connect_bp.route("/connect/zed", methods=["GET"])
+def connect_zed():
+    return _serve("zed")
 
 
 # ── Deep links onto content we ALREADY publish ──────────────────────────────
