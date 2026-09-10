@@ -30,6 +30,7 @@ THE LIMIT: this pins what we PUBLISH. Whether Qwen Code and ZCode actually
 connect against a live key is an end-to-end check against third-party clients,
 which this cannot do and did not do.
 """
+import json
 import pathlib
 import re
 import sys
@@ -52,7 +53,7 @@ def client():
 
 # ── the 404s are gone ────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("slug", ["qwen", "zai"])
+@pytest.mark.parametrize("slug", ["qwen", "zai", "zed"])
 def test_new_cards_answer_200(client, slug):
     r = client.get("/connect/" + slug)
     assert r.status_code == 200, f"/connect/{slug} -> {r.status_code}"
@@ -100,7 +101,7 @@ def test_no_minimax_card_asserts_client_capability():
         "MiniMax is not a verified MCP client — it publishes MCP servers")
 
 
-@pytest.mark.parametrize("slug", ["qwen", "zai"])
+@pytest.mark.parametrize("slug", ["qwen", "zai", "zed"])
 def test_cards_carry_the_full_contract(slug):
     """The renderer reads these unguarded — a missing key is a 500."""
     c = mc._CLIENTS[slug]
@@ -110,7 +111,7 @@ def test_cards_carry_the_full_contract(slug):
     assert len(c["examples"]) >= 3
 
 
-@pytest.mark.parametrize("slug", ["qwen", "zai"])
+@pytest.mark.parametrize("slug", ["qwen", "zai", "zed"])
 def test_cards_mint_the_trial_key_placeholder(slug):
     """{{TRIAL_KEY}} is what _serve swaps for a real minted key."""
     assert "{{TRIAL_KEY}}" in mc._CLIENTS[slug]["snippet"]
@@ -123,3 +124,103 @@ def test_no_card_hardcodes_a_facility_count():
         blob = f"{c.get('tagline','')} {c.get('snippet','')}"
         assert not re.search(r"\b\d{2},\d{3}\+", blob), (
             f"{slug} hardcodes a count — read canon instead")
+
+
+# ── r-connect-zed (2026-09-10) ───────────────────────────────────────────
+# MEASURED LIVE 2026-09-10, cache-busted, on dchub.cloud:
+#     /connect/zed  ->  404
+# the last pending platform that is a VERIFIED remote-MCP client.
+#
+# ★ WHY ZED GETS A CARD AND MINIMAX STILL DOES NOT — the same test above,
+#   re-applied to CURRENT evidence rather than inherited from the earlier
+#   verdict. Re-checked 2026-09-10 against each vendor's OWN docs:
+#
+#     MiniMax   platform.minimax.io/docs/guides/mcp-guide documents the nine
+#               tools MiniMax EXPOSES (TTS, voice clone, image, video) and
+#               ZERO configuration for registering an external MCP endpoint.
+#               Still a server. The alias stands, unchanged.
+#     Zed       zed.dev/docs/ai/mcp documents a remote entry verbatim —
+#               "url" plus a "headers" map — and ships an explicit
+#               "Add Remote Server" UI path. Client, with published keys.
+#
+#   So the difference is not that Zed is more popular. It is that one vendor
+#   documents consuming a remote endpoint and the other documents serving
+#   one, which is the only thing these cards are allowed to assert.
+
+
+def test_zed_uses_context_servers_and_never_mcpservers():
+    """THE REGRESSION THIS PINS, and it is silent.
+
+    Zed reads "context_servers" — it shipped the feature under that name
+    before "MCP" settled as the word. A "mcpServers" block, which is the
+    muscle memory from every other card in this file, is not read at all:
+    no error, no entry in the agent panel, nothing to debug.
+    """
+    snip = mc._CLIENTS["zed"]["snippet"]
+    obj = json.loads(_first_json_object(snip).replace("{{TRIAL_KEY}}", "k"))
+    assert list(obj.keys()) == ["context_servers"], (
+        f"the copyable block must key on context_servers alone, got "
+        f"{list(obj.keys())} — Zed reads nothing else")
+
+    # ★ THE PROSE IS ALLOWED TO NAME THE WRONG KEY, and must. The first cut of
+    # this guard asserted `"mcpServers" not in snip` and failed on the card's
+    # own warning line — a guard that would have been "fixed" by deleting the
+    # most useful sentence on the page. The invariant is about the block the
+    # reader COPIES, not the note telling them why it looks unfamiliar.
+    assert "mcpServers" in snip, (
+        "the card no longer warns about the wrong key — that warning is the "
+        "reason this card exists rather than a link to Zed's docs")
+
+
+def _first_json_object(text):
+    """The first brace-balanced object in a snippet, so this parses the block
+    the reader copies rather than a regex's idea of it."""
+    i = text.index("{")
+    depth = 0
+    for k in range(i, len(text)):
+        if text[k] == "{":
+            depth += 1
+        elif text[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[i:k + 1]
+    raise AssertionError("unbalanced braces in snippet")
+
+
+def test_zed_snippet_is_valid_json_in_the_shape_zed_documents():
+    """PARSE it, do not eyeball it.
+
+    The block IS the deliverable on this card — unlike Z.ai, which publishes
+    a UI path precisely because its keys are undocumented. A trailing comma
+    or a stray brace here ships a settings.json that Zed refuses to load, and
+    a substring assertion would not notice.
+    """
+    block = _first_json_object(mc._CLIENTS["zed"]["snippet"])
+    obj = json.loads(block.replace("{{TRIAL_KEY}}", "dch_live_test"))
+
+    srv = obj["context_servers"]["dchub"]
+    assert srv["url"] == "https://dchub.cloud/mcp"
+    assert srv["headers"]["X-API-Key"] == "dch_live_test"
+    assert "command" not in srv and "args" not in srv, (
+        "this is Zed's REMOTE entry — a command/args pair is the local "
+        "stdio shape and would try to launch a binary that does not exist")
+
+
+def test_zed_does_not_publish_the_bearer_header_zeds_example_shows():
+    """Zed's own doc example is `Authorization: Bearer <token>`, and copying
+    it here would authenticate against nothing: this origin resolves a tool
+    key from X-API-Key and has no Bearer branch for one. Zed's `headers` is
+    a free-form map, so the documented shape and the working header coexist.
+    """
+    snip = mc._CLIENTS["zed"]["snippet"]
+    assert "X-API-Key" in snip
+    assert "Bearer" not in snip and "Authorization" not in snip
+
+
+def test_zed_states_both_settings_paths():
+    """Zed is the one card here whose Windows path is not a %USERPROFILE%
+    dotfile — it is %APPDATA%\\Zed. Getting it wrong sends Windows readers
+    to a file Zed never reads."""
+    c = mc._CLIENTS["zed"]
+    assert c["install_path"] == "~/.config/zed/settings.json"
+    assert c["install_path_win"] == "%APPDATA%\\Zed\\settings.json"
