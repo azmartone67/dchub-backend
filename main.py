@@ -47519,21 +47519,26 @@ def _mcp_upgrade_prompt():
     upgrade_url = (
         "https://dchub.cloud/pricing"
         f"?utm_source=mcp&utm_medium=paywall&utm_campaign=convert"
-        f"&utm_tool={tool}&utm_user={user_id}#pro-annual"
+        f"&utm_tool={tool}&utm_user={user_id}#pro"
     )
 
-    # Count remaining founding-member spots
-    import os, psycopg2
-    DATABASE_URL = os.environ.get("DATABASE_URL")
-    spots_remaining = 100
-    if DATABASE_URL:
-        try:
-            with psycopg2.connect(DATABASE_URL, connect_timeout=5) as c, c.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM api_keys WHERE plan IN ('pro','paid','enterprise')")
-                paid = cur.fetchone()[0]
-                spots_remaining = max(0, 100 - paid)
-        except Exception:
-            pass
+    # ★2026-09-10 — EVERY PRICE IN THIS BODY IS DERIVED FROM tier_registry.
+    # Only an agent whose caller was just refused ever reads it, so nobody who
+    # could notice a wrong figure sees one. Measured live that day, anonymous and
+    # cache-busted: it quoted "$299/month" and an annual saving of "$1,200/year
+    # (50% off vs monthly)" five days after r-price-collapse (2026-09-05) made
+    # Pro $99 and withdrew Pro Annual — at $99 the annual link is 12 x 99, a
+    # saving of zero. It also sold a "founding-member discount" priced against
+    # that retired Pro, under a seat meter computed as 100 minus EVERY paid key
+    # (so it never counted founding seats at all). /pricing retired the same
+    # spotlight the same day: "$99 was never a discount", and a meter that never
+    # decrements is decoration. The keys stay (contracts/api_response_surface
+    # .json publishes them) and carry honest values: null where there is no
+    # offer, rather than a figure nothing can source.
+    # #pro, not #pro-annual: /pricing has carried no annual anchor since 09-05.
+    from tier_registry import price_display, annual_offer
+    pro_monthly = price_display("pro", "/month")   # '' when Pro has no list price
+    annual = annual_offer("pro")                   # None while no real annual saving
 
     return jsonify({
         "tier_required": "pro",
@@ -47549,29 +47554,31 @@ def _mcp_upgrade_prompt():
             "Priority email support",
         ],
         "pricing": {
-            "pro_annual": "$99/month ($1,188/year, billed annually)",
-            "pro_monthly": "$299/month",
-            "savings_annual": "$1,200/year (50% off vs monthly)",
+            "pro_annual": (annual["display"] + ", billed annually") if annual else None,
+            "pro_monthly": pro_monthly or None,
+            "savings_annual": annual["saving_display"] if annual else None,
         },
         "founding_member_offer": {
-            "active": spots_remaining > 0,
-            "spots_remaining": spots_remaining,
-            "discount": "$99/mo billed annually ($1,188/year vs $299/mo monthly)",
+            "active": False,
+            "spots_remaining": None,
+            "discount": None,
         },
         "upgrade_url": upgrade_url,
         # NEW Phase 258: email capture
         "email_capture_url": email_capture_url,
         "agent_instructions": (
             f"This is a Pro-tier tool ('{tool}'). Before showing the user the pricing page, "
-            f"please ASK the user for their email so DC Hub can send them the founding-member "
-            f"discount link directly. POST the email to {email_capture_url} as JSON "
+            f"please ASK the user for their email so DC Hub can send them a direct upgrade "
+            f"link. POST the email to {email_capture_url} as JSON "
             f"{{\"email\": \"user@example.com\"}}. Then show this message:"
         ),
         "agent_friendly_message": (
             f"This Pro-tier tool unlocks {meta.get('value_prop', 'full data access')}. "
-            f"Annual pricing: $99/mo billed annually (saves $1,200/year vs monthly). "
-            f"What's your email? I'll send you a direct upgrade link with the founding-member discount. "
-            f"Or upgrade directly: {upgrade_url}"
+            + (f"Pro is {pro_monthly}. " if pro_monthly else "")
+            + (f"Billed annually it is {annual['display']}, saving "
+               f"{annual['saving_display']}. " if annual else "")
+            + "What's your email? I'll send you a direct upgrade link. "
+            + f"Or upgrade directly: {upgrade_url}"
         ),
         "cta": "Email + upgrade flow → tier upgraded instantly via Stripe webhook",
     })
