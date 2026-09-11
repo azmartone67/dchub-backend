@@ -594,6 +594,33 @@ jobs:
             echo "::error::the top-up expiry SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Served-slug batch: the profile page's lookups against the batch's ──
+      # routes/facility_profile_page.served_slugs resolves a whole list of
+      # facility links past the profile route's own 301s (a dedup twin's page
+      # redirects to its keeper) with batch statements that MIRROR the page's
+      # per-request lookups. tests/test_served_slugs_batch.py compares the two
+      # sides' statements as text; only a real Postgres shows DISTINCT ON
+      # picking the page's LIMIT 1 row, the `facilities` lookup raising in the
+      # live schema shape, and the `k.id` coercions agreeing. Creates and drops
+      # its own schema per shape.
+      - name: Served-slug batch parity against a real Postgres
+        env:
+          SERVED_SLUG_PARITY_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+          SERVED_SLUG_PARITY_REQUIRE: '1'
+        run: python3 -m pytest tests/test_served_slugs_sql_parity.py -v --tb=short
+
+      - name: Prove the served-slug parity test actually RAN
+        env:
+          SERVED_SLUG_PARITY_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+          SERVED_SLUG_PARITY_REQUIRE: '1'
+        run: |
+          python3 -m pytest tests/test_served_slugs_sql_parity.py \
+            -q -rs --tb=no > ss.txt 2>&1 || { cat ss.txt; exit 1; }
+          cat ss.txt
+          if grep -qi "skipped" ss.txt; then
+            echo "::error::the served-slug parity test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -603,14 +630,14 @@ jobs:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # out.txt, cc.txt, lp.txt, pk.txt, hp.txt and tu.txt are written by the six
+          # out.txt, cc.txt, lp.txt, pk.txt, hp.txt, tu.txt and ss.txt are written by the seven
           # prove-it-RAN steps above, each of which already fails the job on a
           # skip. N sums the SAME files those checks read, so the count and the
           # skip checks cannot disagree — a lane that ran but is not counted here
           # reports fewer tests than the job actually proved.
           # Same empty-vs-zero rule as unit-tests: present-but-unparseable => 0.
-          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ] || [ -f pk.txt ] || [ -f hp.txt ] || [ -f tu.txt ]; then
-            N=$(cat out.txt cc.txt lp.txt pk.txt hp.txt tu.txt 2>/dev/null \
+          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ] || [ -f pk.txt ] || [ -f hp.txt ] || [ -f tu.txt ] || [ -f ss.txt ]; then
+            N=$(cat out.txt cc.txt lp.txt pk.txt hp.txt tu.txt ss.txt 2>/dev/null \
                 | grep -oE '[0-9]+ (passed|failed)' \
                 | awk '{t+=$1} END{if(NR)print t; else print 0}')
           else

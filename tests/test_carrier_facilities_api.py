@@ -25,10 +25,21 @@ MEASURED LIVE 2026-09-11 (dchub.cloud, plain and cache-busted, cf-cache-status M
     /facilities/cloudhq-cloudhq-ashburn-08754197   200   (stored canonical_slug)
     /facilities/cloudhq-ashburn-08754197           301 -> the stored slug
 
+  And a stored slug is still a ROW's slug. Measured 2026-09-11 18:21Z, HEAD with
+  redirects not followed, over every URL this endpoint emitted for ten
+  carriers: 59 of 678 were 301s, integer and hex ids alike, e.g.
+    /facilities/equinix-inc-equinix-am4-amsterdam-science-park-457de6cc   301
+      -> /facilities/equinix-equinix-am4-amsterdam-science-park-0a9c12c9  200
+  The page answers a dedup twin's own slug with a 301 to its keeper
+  (routes/facility_profile_page._twin_redirect_target, case B), so the
+  endpoint must link the keeper.
+
 THE ORACLE for every slug below is the stored canonical_slug in a fixture row —
-what the live page serves — never the helper under test. build_canonical_slug
-is called in one place: the control proving the fixtures can tell a stored
-slug from a rebuilt one.
+for a dedup twin, its KEEPER's — which is what the live page serves; never the
+helper under test. build_canonical_slug is called in one place: the control
+proving the fixtures can tell a stored slug from a rebuilt one. The page's
+lookups are answered from these same TABLES by tests/_served_slug_world.py; the
+real served_slugs and _twin_redirect_target decide where each slug lands.
 
 ★ EXACT MATCHES ONLY. The rebuilt alias is a SUFFIX of the served slug, so a
   substring ban on the alias would fail on correct output.
@@ -47,9 +58,12 @@ import sys
 import pytest
 from flask import Flask
 
+from tests._served_slug_world import World
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "carrier_facility_ingestion.py"
 FREEZE = ROOT / "routes" / "facility_slug_freeze.py"
+PROFILE = ROOT / "routes" / "facility_profile_page.py"
 DB_UTILS = ROOT / "db_utils.py"
 
 # ── fixtures ────────────────────────────────────────────────────────────────
@@ -61,9 +75,19 @@ SERVED_HEX = "digital-realty-digital-realty-ams11-f5d44402"
 ALIAS_HEX = "digital-realty-ams11-f5d44402"
 UNFROZEN_SLUG = "equinix-sc-55151879"      # no stored slug: the build IS the URL
 SERVED_DIGITS = "interxion-interxion-fra8-5ba81d1d"
+# Dedup twins measured live: each TWIN is a row's own stored slug and 301s to
+# its KEEPER. The hex pair is the census's legacy id 7fb2abba31f0f7b4, which
+# wears the same frozen slug as its discovered twin.
+TWIN = "equinix-inc-equinix-am4-amsterdam-science-park-457de6cc"       # 301 live
+KEEPER = "equinix-equinix-am4-amsterdam-science-park-0a9c12c9"         # 200
+TWIN_HEX = "telehouse-global-data-centers-telehouse-london-docklands-south-1535329c"
+KEEPER_HEX = "telehouse-telehouse-london-docklands-south-c0145e6c"
 
 HEX_ID = "a1b192d375769750"
 DIGITS_HEX_ID = "5480394207366128"         # valid hex16, every character a digit
+HEX_TWIN_ID = "7fb2abba31f0f7b4"
+_AM4 = {"address": "Science Park 610", "latitude": 52.3564, "longitude": 4.9531}
+_DOCKLANDS = {"address": "Coriander Avenue", "latitude": 51.5115, "longitude": 0.0023}
 
 
 def _presence(facility_pdb_id, dchub_facility_id, carrier=CARRIER):
@@ -92,6 +116,9 @@ TABLES = {
         _presence("fac-digits-hex", DIGITS_HEX_ID),
         _presence("fac-orphan", "999999"),       # resolves in neither table
         _presence("fac-unlinked", None),
+        _presence("fac-twin", "1105"),           # its page 301s to 1106's
+        _presence("fac-keeper", "1106"),
+        _presence("fac-twin-hex", HEX_TWIN_ID),  # legacy copy wearing 1107's slug
         _presence("fac-other-carrier", "1101", carrier="643"),
     ],
     "discovered_facilities": [
@@ -101,12 +128,27 @@ TABLES = {
          "canonical_slug": None},
         {"id": 1104, "provider": "Nobody", "name": "!!!",
          "canonical_slug": None},
+        {"id": 1105, "provider": "Equinix, Inc.",
+         "name": "Equinix AM4 - Amsterdam, Science Park",
+         "canonical_slug": TWIN, "duplicate_of_id": 1106, **_AM4},
+        {"id": 1106, "provider": "Equinix",
+         "name": "Equinix AM4 Amsterdam Science Park",
+         "canonical_slug": KEEPER, "duplicate_of_id": None, **_AM4},
+        {"id": 1107, "provider": "Telehouse Global Data Centers",
+         "name": "Telehouse - London (Docklands South)",
+         "canonical_slug": TWIN_HEX, "duplicate_of_id": 1108, **_DOCKLANDS},
+        {"id": 1108, "provider": "Telehouse",
+         "name": "Telehouse London Docklands South",
+         "canonical_slug": KEEPER_HEX, "duplicate_of_id": None, **_DOCKLANDS},
     ],
     "facilities": [
         {"id": HEX_ID, "provider": "Digital Realty",
          "name": "Digital Realty AMS11", "canonical_slug": SERVED_HEX},
         {"id": DIGITS_HEX_ID, "provider": "Interxion", "name": "Interxion FRA8",
          "canonical_slug": SERVED_DIGITS},
+        {"id": HEX_TWIN_ID, "provider": "Telehouse Global Data Centers",
+         "name": "Telehouse - London (Docklands South)",
+         "canonical_slug": TWIN_HEX},
     ],
 }
 
@@ -119,6 +161,9 @@ EXPECTED_URLS = {
     "fac-unfrozen": "/facilities/" + UNFROZEN_SLUG,
     "fac-hex": "/facilities/" + SERVED_HEX,
     "fac-digits-hex": "/facilities/" + SERVED_DIGITS,
+    "fac-twin": "/facilities/" + KEEPER,
+    "fac-keeper": "/facilities/" + KEEPER,
+    "fac-twin-hex": "/facilities/" + KEEPER_HEX,
 }
 
 
@@ -256,28 +301,41 @@ def _methods(path, cls_name):
     return {n.name for n in hits[0].body if isinstance(n, ast.FunctionDef)}
 
 
+def _profile_page():
+    """The real routes/facility_profile_page.py — the module the handler imports."""
+    fpp = importlib.import_module("routes.facility_profile_page")
+    assert pathlib.Path(fpp.__file__).resolve() == PROFILE.resolve(), fpp.__file__
+    return fpp
+
+
 @pytest.fixture
 def api(monkeypatch):
-    # The handler imports routes.facility_slug_freeze at request time.
+    # The handler imports routes.facility_slug_freeze and
+    # routes.facility_profile_page at request time.
     monkeypatch.syspath_prepend(str(ROOT))
     db = FakeDatabase(TABLES)
+    # The page's lookups, answered from the same TABLES; the real served_slugs
+    # and _twin_redirect_target decide where each slug lands.
+    world = World(TABLES["discovered_facilities"], TABLES["facilities"]
+                  ).install_batch(monkeypatch, _profile_page())
     app = Flask(__name__)
     _load(MODULE, "_carrier_api_under_test").register_carrier_routes(app, db.connect)
-    return app.test_client(), db
+    return app.test_client(), db, world
 
 
 def _get(api):
-    client, db = api
+    client, db, world = api
     resp = client.get(f"/api/v1/carriers/{CARRIER}/facilities")
     casts = [sql for sql, _ in db.statements if "::" in sql]
     assert not casts, (
         "a column is cast in the SQL — cast the PARAMETER, or the index on that "
         f"column cannot be used: {casts}")
     assert not db.unreadable, f"the fake could not read: {db.unreadable}"
+    assert not world.refused, f"slug resolution went around its lookups: {world.refused}"
     body = resp.get_json()
     assert resp.status_code == 200 and body.get("success") is True, (
         f"the endpoint failed: {body.get('error')!r}")
-    return resp, body, db
+    return resp, body, db, world
 
 
 # ── controls ────────────────────────────────────────────────────────────────
@@ -292,6 +350,22 @@ def test_the_fixtures_tell_a_stored_slug_from_a_rebuilt_one():
     assert build("Equinix", "Equinix SC") == UNFROZEN_SLUG
     assert build("Nobody", "!!!") is None
     assert re.fullmatch(r"[0-9a-f]{16}", DIGITS_HEX_ID) and DIGITS_HEX_ID.isdigit()
+
+
+def test_the_twin_fixtures_reproduce_the_live_redirect():
+    """If the page did not 301 the twins' own slugs, the keeper URLs asserted
+    below would prove nothing — and the hex id must wear its twin's slug."""
+    fpp = _profile_page()
+    world = World(TABLES["discovered_facilities"], TABLES["facilities"])
+    for twin, keeper in ((TWIN, KEEPER), (TWIN_HEX, KEEPER_HEX)):
+        row = world.page_row(twin)
+        assert row["canonical_slug"] == twin and row["duplicate_of_id"], row
+        assert fpp._twin_redirect_target(row, twin, keeper_row=world.keeper) == keeper
+        assert fpp._twin_redirect_target(world.page_row(keeper), keeper,
+                                         keeper_row=world.keeper) is None
+    frozen = _load(FREEZE, "_carrier_api_twin_freeze").frozen_slug_for_row
+    legacy = next(r for r in TABLES["facilities"] if r["id"] == HEX_TWIN_ID)
+    assert frozen(legacy) == TWIN_HEX
 
 
 def test_the_fake_database_raises_what_postgres_raises():
@@ -330,19 +404,19 @@ def test_the_fake_is_no_more_capable_than_the_pooled_wrappers():
 
 # ── the endpoint ────────────────────────────────────────────────────────────
 def test_the_carrier_id_reaches_both_text_columns_as_text(api):
-    _resp, body, db = _get(api)
+    _resp, body, db, _world = _get(api)
     assert body["carrier_name"] == CARRIER_NAME, (
         "carrier_profiles.pdb_id is TEXT too; the name lookup must bind text")
     assert body["carrier_id"] == 642
     assert sorted(f["pdb_id"] for f in body["facilities"]) == sorted(MINE)
-    assert body["total"] == len(MINE) == 8
+    assert body["total"] == len(MINE) == 11
     bound = [params for sql, params in db.statements
              if re.search(r"\bpdb_id\s*=|\bcarrier_pdb_id\s*=", sql)]
     assert bound == [(CARRIER,), (CARRIER,)], bound
 
 
 def test_dchub_url_is_the_served_slug_never_the_legacy_form(api):
-    resp, body, _db = _get(api)
+    resp, body, _db, world = _get(api)
     assert "/facility/" not in resp.get_data(as_text=True), (
         "the response carries the legacy /facility/<id> form, which 301s for "
         "every row that has a slug")
@@ -354,7 +428,15 @@ def test_dchub_url_is_the_served_slug_never_the_legacy_form(api):
     assert not rebuilt, (
         f"served a REBUILT slug {rebuilt} — live it 301s to the stored "
         "canonical_slug, which the lookup must select and prefer")
+    twins = sorted(u for u in urls.values()
+                   if u in ("/facilities/" + TWIN, "/facilities/" + TWIN_HEX))
+    assert not twins, (
+        f"linked a dedup twin's own stored slug {twins} — live that page 301s to "
+        "its keeper, so the slugs must be resolved past the page's redirects")
     assert urls == EXPECTED_URLS, urls
+    assert world.rounds["page_rows"] == 2, (
+        f"{world.rounds}: the list resolves in one batch per hop (every slug, "
+        "then the two keepers), never a lookup per facility")
     for pdb in ("fac-noslug", "fac-orphan"):
         assert by_pdb[pdb].get("dchub_facility_id"), by_pdb[pdb]
         assert "dchub_url" not in by_pdb[pdb], (

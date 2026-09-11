@@ -8688,8 +8688,14 @@ def _dcpi_facility_list_html(mkt_name, _fac_ctry_sql, _fac_ctry_params):
     A market page that links its facilities through redirects adds to Search
     Console's "Page with redirect" bucket on every crawl.
 
-    A row with no slug at all is still listed, by name, without a link."""
-    from routes.facility_profile_page import _esc as _fesc
+    A row with no slug at all is still listed, by name, without a link.
+
+    ★ r-served-slug-batch (2026-09-11): the stored slug is still the ROW's slug,
+    and a dedup twin's page 301s to its keeper even when the listed row carries
+    no pointer itself (a pointed twin can share its frozen slug and win the
+    page's lookup). Every slug is resolved past the page's own redirects in ONE
+    batch (facility_profile_page.served_slugs), never per row."""
+    from routes.facility_profile_page import _esc as _fesc, served_slugs
     from routes.facility_slug_freeze import frozen_slug_for_row
     with _conn() as _fc, _fc.cursor() as _fcur:
         _fcur.execute(f"""
@@ -8704,12 +8710,15 @@ def _dcpi_facility_list_html(mkt_name, _fac_ctry_sql, _fac_ctry_params):
         _frows = _fcur.fetchall() or []
     if not _frows:
         return ""
+    _slugs = [frozen_slug_for_row(
+                  {"provider": _rprov, "name": _rname, "canonical_slug": _rcanon})
+              for _rid, _rname, _rprov, _rpow, _rcanon in _frows]
+    _served = served_slugs(s for s in _slugs if s)
     _items = []
-    for _rid, _rname, _rprov, _rpow, _rcanon in _frows:
-        _slug = frozen_slug_for_row(
-            {"provider": _rprov, "name": _rname, "canonical_slug": _rcanon})
+    for (_rid, _rname, _rprov, _rpow, _rcanon), _slug in zip(_frows, _slugs):
         _label = _fesc(_rname)
         if _slug:
+            _slug = _served.get(_slug) or _slug
             _label = (f'<a href="/facilities/{_fesc(_slug)}" '
                       f'style="color:#5aa3ff;text-decoration:none">{_label}</a>')
         _items.append(

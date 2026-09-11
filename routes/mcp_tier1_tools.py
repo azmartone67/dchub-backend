@@ -135,8 +135,8 @@ def _specs_visible(tier):
             >= _SPEC_TIER_RANK.get(_SPECS_MIN_TIER, 2))
 
 
-def _facility_page_url(row):
-    """Public URL of a facility's page, at the slug that page is SERVED at.
+def _facility_page_urls(rows):
+    """Public URL of each row's facility page, at the slug that page is SERVED at.
 
     ★ r-served-slug (2026-09-11): find_alternatives and score_facility returned
     https://dchub.cloud/facility/<id>. That is the legacy form — it 301s to
@@ -147,10 +147,19 @@ def _facility_page_url(row):
     name canonical_slug: without it every row frozen with the doubled provider
     prefix is rebuilt into an alias that 301s. A row with no slug (a name that
     slugifies to nothing) gets None, never a /facilities/ URL that cannot
-    resolve."""
+    resolve.
+
+    ★ r-served-slug-batch (2026-09-11): the stored slug is still the ROW's slug,
+    and a dedup twin's page 301s to its keeper. Every slug is resolved past the
+    page's own redirects by facility_profile_page.served_slugs — ONE call for
+    the whole list, which is why this takes rows and not a row: a per-row
+    helper is one resolution per alternative."""
+    from routes.facility_profile_page import served_slugs
     from routes.facility_slug_freeze import frozen_slug_for_row
-    slug = frozen_slug_for_row(row)
-    return f"https://dchub.cloud/facilities/{slug}" if slug else None
+    slugs = [frozen_slug_for_row(r) for r in rows]
+    served = served_slugs(s for s in slugs if s)
+    return [f"https://dchub.cloud/facilities/{served.get(s) or s}" if s else None
+            for s in slugs]
 
 try:
     import psycopg2
@@ -905,15 +914,21 @@ def find_alternatives():
             "tier":            cand_tier,
             "match_reasons":   match_reasons,
             "key_differences": diffs,
-            "url":             _facility_page_url(cand),
+            "url":             None,     # set below, for the rows that ship
         }
         if _specs:
             _row["provider"] = cand.get("provider")
             _row["power_mw"] = cand_mw
-        scored.append(_row)
+        scored.append((_row, cand))
 
-    scored.sort(key=lambda x: x["similarity_score"], reverse=True)
+    scored.sort(key=lambda x: x[0]["similarity_score"], reverse=True)
     scored = scored[:limit]
+    # ONE served-slug resolution for the target and every alternative that
+    # ships: up to 200 candidates are scored, at most `limit` + 1 are linked.
+    _urls = _facility_page_urls([target] + [_cand for _r, _cand in scored])
+    for (_r, _cand), _url in zip(scored, _urls[1:]):
+        _r["url"] = _url
+    scored = [_r for _r, _cand in scored]
 
     # The TARGET carries the same two specs and must be masked with the rest —
     # leaving it whole would hand back capacity + operator for any facility_id
@@ -924,7 +939,7 @@ def find_alternatives():
         "city":        target.get("city"),
         "state":       target.get("state"),
         "tier":        target_tier,
-        "url":         _facility_page_url(target),
+        "url":         _urls[0],
     }
     if _specs_visible(_tier):
         _target_block["provider"] = target.get("provider")
@@ -1163,7 +1178,7 @@ def score_facility():
         },
         "methodology":         "7 dimensions weighted by user preference. Phase 1 uses state-level baselines for water/climate/tax; Phase 2 integrates real-time water-risk + tax-incentive APIs.",
         "tier":                "developer",   # descriptive only — see module docstring
-        "url":                 _facility_page_url(f),
+        "url":                 _facility_page_urls([f])[0],
     }), 200
 
 

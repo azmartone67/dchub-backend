@@ -25,10 +25,22 @@ MEASURED LIVE 2026-09-11 (dchub.cloud, cache-busted, redirects not followed):
 Search Console files those URLs under "Page with redirect" (22,597 on the
 2026-09-08 export). The 301s are right; linking to them is not.
 
-THE ORACLE is the stored canonical_slug in each fixture row — what the live page
-serves, per the measurements above — never the helper under test. The slug
-builder is called in one place only: the control proving the fixtures
-reproduce the live defect (its answer for a frozen row IS the alias).
+AND A STORED SLUG IS STILL A ROW'S SLUG. Measured 2026-09-11 18:21Z, after these
+links moved to it, on every URL /api/v1/carriers/<id>/facilities emitted for
+ten carriers: 59 of 678 still 301'd, each a dedup twin's own slug that the page
+answers with a 301 to its keeper (facility_profile_page._twin_redirect_target):
+    /facilities/equinix-inc-equinix-dc1-dc15dc21-dc22-ashburn-8f425dea
+      301 -> /facilities/equinix-equinix-dc1-dc15-dc21-ashburn-07001072
+So every surface here resolves its whole list through
+facility_profile_page.served_slugs, once.
+
+THE ORACLE is the stored canonical_slug in each fixture row — for a dedup twin,
+its KEEPER's — which is what the live page serves, per the measurements above;
+never the helper under test. The slug builder is called in one place only: the
+control proving the fixtures reproduce the live defect (its answer for a frozen
+row IS the alias). The page's lookups are answered from this file's rows by
+tests/_served_slug_world.py; the real served_slugs and _twin_redirect_target
+decide where each slug lands.
 
 ★ EXACT MATCHES ONLY. The alias is a SUFFIX of the served slug
   ("cloudhq-ashburn-08754197" sits inside "cloudhq-cloudhq-ashburn-08754197"),
@@ -57,6 +69,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from routes.facility_slug_freeze import build_canonical_slug  # noqa: E402
+from tests._served_slug_world import World  # noqa: E402
 
 # ── fixtures: two real frozen rows, one unfrozen row, one with no slug ──────
 SERVED = "cloudhq-cloudhq-ashburn-08754197"              # stored; 200 live
@@ -79,6 +92,20 @@ UNFROZEN = dict(_GEO, id=1103, name="Equinix SC", provider="Equinix",
                 longitude=-77.47)
 NO_SLUG = dict(_GEO, id=1104, name="!!!", provider="Nobody", power_mw=None,
                canonical_slug=None, latitude=39.04, longitude=-77.49)
+# A dedup twin measured live in Ashburn: TWIN is the row's own stored slug and
+# its page 301s to KEEPER (same street address, so case B holds).
+TWIN = "equinix-inc-equinix-dc1-dc15dc21-dc22-ashburn-8f425dea"      # 301 live
+KEEPER = "equinix-equinix-dc1-dc15-dc21-ashburn-07001072"            # 200
+_DC1 = {"address": "21715 Filigree Ct", "latitude": 39.0161, "longitude": -77.4592}
+TWIN_ROW = dict(_GEO, id=1107, name="Equinix DC1-DC15/DC21-DC22 - Ashburn",
+                provider="Equinix, Inc.", power_mw=40.0, canonical_slug=TWIN,
+                duplicate_of_id=1108, **_DC1)
+KEEPER_ROW = dict(_GEO, id=1108, name="Equinix DC1-DC15, DC21 Ashburn",
+                  provider="Equinix", power_mw=40.0, canonical_slug=KEEPER,
+                  duplicate_of_id=None, **_DC1)
+# What each HTML list below is fed. The fakes do not apply a list's WHERE; the
+# redirect depends only on the slug a list links.
+LISTED = [FROZEN, UNFROZEN, NO_SLUG, TWIN_ROW]
 
 SITE = "https://dchub.cloud"
 FACILITY_PAGE = re.compile(r"/facilities/[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{8}")
@@ -92,6 +119,13 @@ def test_the_fixtures_reproduce_the_live_defect():
     assert SERVED != ALIAS and SERVED.endswith(ALIAS)      # the suffix trap
     assert build_canonical_slug(UNFROZEN["provider"], UNFROZEN["name"]) == UNFROZEN_SLUG
     assert build_canonical_slug(NO_SLUG["provider"], NO_SLUG["name"]) is None
+    # the twin's own slug 301s to its keeper, and the keeper's page terminates
+    import routes.facility_profile_page as fpp
+    world = _world()
+    assert fpp._twin_redirect_target(world.page_row(TWIN), TWIN,
+                                     keeper_row=world.keeper) == KEEPER
+    assert fpp._twin_redirect_target(world.page_row(KEEPER), KEEPER,
+                                     keeper_row=world.keeper) is None
 
 
 # ── loading and the fake database ───────────────────────────────────────────
@@ -245,23 +279,51 @@ def _facility_hrefs(page):
 
 
 def _assert_listed_at_the_served_slug(block, where):
-    """The list was fed [FROZEN, UNFROZEN, NO_SLUG]."""
+    """The list was fed LISTED: a frozen row, an unfrozen row, a row with no
+    slug, and a dedup twin."""
     hrefs = _facility_hrefs(block)
     legacy = [h for h in hrefs if "/facility/" in h]
     assert not legacy, f"{where} links the legacy /facility/ form, a 301: {legacy}"
     assert "/facilities/" + ALIAS not in hrefs, (
         f"{where} links /facilities/{ALIAS}, the REBUILT slug — live it 301s "
         f"to /facilities/{SERVED}. The stored canonical_slug was not used.")
+    assert "/facilities/" + TWIN not in hrefs, (
+        f"{where} links /facilities/{TWIN}, a dedup twin's own stored slug — "
+        f"live that page 301s to /facilities/{KEEPER}. The list was not resolved "
+        "past the page's own redirects.")
     assert sorted(hrefs) == sorted(["/facilities/" + SERVED,
-                                    "/facilities/" + UNFROZEN_SLUG]), (
+                                    "/facilities/" + UNFROZEN_SLUG,
+                                    "/facilities/" + KEEPER]), (
         f"{where} should link the frozen row at its stored slug, the unfrozen "
-        f"row at its build, and nothing for the row with no slug; got {hrefs}")
+        f"row at its build, the twin at its keeper, and nothing for the row "
+        f"with no slug; got {hrefs}")
     assert NO_SLUG["name"] in block, (
         f"{where} dropped the facility with no slug instead of naming it")
 
 
 def _rows(rows, table="discovered_facilities"):
     return lambda t, _sql: list(rows) if t == table else []
+
+
+def _world():
+    return World([FROZEN, FROZEN_B, UNFROZEN, NO_SLUG, TWIN_ROW, KEEPER_ROW])
+
+
+def _served_world(monkeypatch):
+    """Only the page's lookups come from this file's rows; the real served_slugs
+    and _twin_redirect_target decide where each slug lands."""
+    import routes.facility_profile_page as fpp
+    assert (pathlib.Path(fpp.__file__).resolve()
+            == (ROOT / "routes" / "facility_profile_page.py").resolve()), fpp.__file__
+    return _world().install_batch(monkeypatch, fpp)
+
+
+def _resolved_once(world, where):
+    assert not world.refused, (
+        f"{where}: slug resolution went around its lookups: {world.refused}")
+    assert world.rounds["page_rows"] == 2, (
+        f"{where}: {world.rounds} — one batch per hop (the list, then the "
+        "keeper), never a lookup per facility")
 
 
 def _function(rel, name):
@@ -288,11 +350,13 @@ def _facility_path_constants(fn):
 # ── 1. /dcpi/<market>: "Data centers in <market>" ───────────────────────────
 def test_dcpi_facility_list_links_the_served_slug(monkeypatch):
     dcpi = _load("routes/dcpi.py", "_dcpi_facility_list_html")
-    db = _DB(_rows([FROZEN, UNFROZEN, NO_SLUG]))
+    world = _served_world(monkeypatch)
+    db = _DB(_rows(LISTED))
     monkeypatch.setattr(dcpi, "_conn", db.connect)
     block = dcpi._dcpi_facility_list_html("Ashburn", "", ())
     assert db.queries, "the list never queried — nothing here was exercised"
     _assert_listed_at_the_served_slug(block, "/dcpi/<market>")
+    _resolved_once(world, "/dcpi/<market>")
 
 
 def test_the_dcpi_page_renders_its_list_through_that_helper():
@@ -318,12 +382,14 @@ def test_the_dcpi_page_renders_its_list_through_that_helper():
 # ── 2. /markets/<slug>: the same list on the market page ────────────────────
 def test_market_page_facility_list_links_the_served_slug(monkeypatch):
     mdd = _load("routes/market_deep_dive.py", "_market_facility_links_html")
-    db = _DB(_rows([FROZEN, UNFROZEN, NO_SLUG]))
+    world = _served_world(monkeypatch)
+    db = _DB(_rows(LISTED))
     monkeypatch.setattr(mdd, "_conn", db.connect)
     block = mdd._market_facility_links_html("Ashburn")
     assert db.queries, "the list never queried — nothing here was exercised"
     _assert_listed_at_the_served_slug(block, "/markets/<slug>")
     assert db.opened and all(c.closed for c in db.opened), "the list leaks its connection"
+    _resolved_once(world, "/markets/<slug>")
 
 
 def test_the_market_page_renders_its_list_through_that_helper():
@@ -342,7 +408,7 @@ def test_the_market_page_renders_its_list_through_that_helper():
 
 # ── 3. MCP tools: find_alternatives + score_facility "url" ──────────────────
 def _mcp_client(monkeypatch, answer):
-    mt = _load("routes/mcp_tier1_tools.py", "_facility_page_url")
+    mt = _load("routes/mcp_tier1_tools.py", "_facility_page_urls")
     db = _DB(answer)
 
     @contextmanager
@@ -360,26 +426,42 @@ def _mcp_client(monkeypatch, answer):
     return app.test_client()
 
 
-def test_find_alternatives_urls_are_the_served_slugs(monkeypatch):
+def _find_alternatives(monkeypatch, target, candidates):
     def answer(table, sql):
         if table != "discovered_facilities":
             return []
         if "WHERE state = %s" in sql:           # the candidate query
-            return [FROZEN_B, UNFROZEN, NO_SLUG]
-        return [FROZEN]                          # the target lookup
+            return list(candidates)
+        return [target]                          # the target lookup
+    world = _served_world(monkeypatch)
     client = _mcp_client(monkeypatch, answer)
     r = client.get("/api/v1/mcp/tools/find_alternatives",
-                   query_string={"facility_id": "1101", "limit": "20"})
+                   query_string={"facility_id": str(target["id"]), "limit": "20"})
     assert r.status_code == 200, r.get_data(as_text=True)[:300]
-    body = r.get_json()
+    assert "dchub.cloud/facility/" not in r.get_data(as_text=True)
+    return r.get_json(), world
+
+
+def test_find_alternatives_urls_are_the_served_slugs(monkeypatch):
+    body, world = _find_alternatives(monkeypatch, FROZEN,
+                                     [FROZEN_B, UNFROZEN, NO_SLUG, TWIN_ROW])
     assert body["target_facility"]["url"] == f"{SITE}/facilities/{SERVED}", (
         f"target url {body['target_facility']['url']!r} — the target is the row an "
         "agent asked about, and the one it is most likely to cite")
     got = {a["facility_id"]: a["url"] for a in body["alternatives"]}
     assert got == {1102: f"{SITE}/facilities/{SERVED_B}",
                    1103: f"{SITE}/facilities/{UNFROZEN_SLUG}",
-                   1104: None}, got
-    assert "dchub.cloud/facility/" not in r.get_data(as_text=True)
+                   1104: None,
+                   1107: f"{SITE}/facilities/{KEEPER}"}, got
+    _resolved_once(world, "find_alternatives")
+
+
+def test_find_alternatives_target_that_is_a_twin_links_its_keeper(monkeypatch):
+    body, world = _find_alternatives(monkeypatch, TWIN_ROW, [FROZEN])
+    assert body["target_facility"]["url"] == f"{SITE}/facilities/{KEEPER}", (
+        body["target_facility"])
+    assert [a["url"] for a in body["alternatives"]] == [f"{SITE}/facilities/{SERVED}"]
+    _resolved_once(world, "find_alternatives target")
 
 
 def _score(monkeypatch, df_rows, legacy_rows):
@@ -391,6 +473,7 @@ def _score(monkeypatch, df_rows, legacy_rows):
         if table == "facilities":
             return legacy_rows
         return []
+    _served_world(monkeypatch)
     client = _mcp_client(monkeypatch, answer)
     r = client.get("/api/v1/mcp/tools/score_facility",
                    query_string={"facility_id": "probe"})
@@ -401,6 +484,10 @@ def _score(monkeypatch, df_rows, legacy_rows):
 
 def test_score_facility_url_is_the_served_slug(monkeypatch):
     assert _score(monkeypatch, [FROZEN], [])["url"] == f"{SITE}/facilities/{SERVED}"
+
+
+def test_score_facility_url_for_a_twin_is_its_keeper(monkeypatch):
+    assert _score(monkeypatch, [TWIN_ROW], [])["url"] == f"{SITE}/facilities/{KEEPER}"
 
 
 def test_score_facility_url_for_a_legacy_row_is_its_served_slug(monkeypatch):
@@ -425,8 +512,9 @@ def test_facility_page_neighbours_link_the_served_slug(monkeypatch):
         if table != "discovered_facilities":
             return []
         if "CAST(id AS TEXT) != %s" in sql:     # the neighbours query
-            return [FROZEN, UNFROZEN, NO_SLUG]
+            return list(LISTED)
         return [page_row]
+    world = _served_world(monkeypatch)
     db = _DB(answer)
     monkeypatch.setattr(sp, "_conn", db.connect)
     app = Flask(__name__)
@@ -438,6 +526,7 @@ def test_facility_page_neighbours_link_the_served_slug(monkeypatch):
                        r.get_data(as_text=True), re.S)
     assert len(lists) == 1, f"expected one neighbour list, found {len(lists)}"
     _assert_listed_at_the_served_slug(lists[0], "/facility/<id> neighbours")
+    _resolved_once(world, "/facility/<id> neighbours")
 
 
 # ── 5. hand-built landings: AWS codes, 1725 Comstock, Interxion Frankfurt ───

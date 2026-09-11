@@ -2208,8 +2208,13 @@ def _market_facility_links_html(name):
     provider prefix is an alias that 301s to the stored one; the same list on
     /dcpi/<slug> measured 82 of 257 facility links as 301s (see
     routes/dcpi.py _dcpi_facility_list_html). A row with no slug is listed by
-    name, unlinked."""
-    from routes.facility_profile_page import _esc as _fesc
+    name, unlinked.
+
+    ★ r-served-slug-batch (2026-09-11): the stored slug is still the ROW's slug,
+    and a dedup twin's page 301s to its keeper. Every slug is resolved past the
+    page's own redirects in ONE batch (facility_profile_page.served_slugs),
+    never per row."""
+    from routes.facility_profile_page import _esc as _fesc, served_slugs
     from routes.facility_slug_freeze import frozen_slug_for_row
     _c3 = _conn()
     if _c3 is None:
@@ -2231,12 +2236,15 @@ def _market_facility_links_html(name):
         except Exception: pass
     if not _frows:
         return ""
+    _slugs = [frozen_slug_for_row(
+                  {"provider": _rprov, "name": _rname, "canonical_slug": _rcanon})
+              for _rid, _rname, _rprov, _rpow, _rcanon in _frows]
+    _served = served_slugs(s for s in _slugs if s)
     _items = []
-    for _rid, _rname, _rprov, _rpow, _rcanon in _frows:
-        _slug = frozen_slug_for_row(
-            {"provider": _rprov, "name": _rname, "canonical_slug": _rcanon})
+    for (_rid, _rname, _rprov, _rpow, _rcanon), _slug in zip(_frows, _slugs):
         _label = _fesc(_rname)
         if _slug:
+            _slug = _served.get(_slug) or _slug
             _label = f'<a href="/facilities/{_fesc(_slug)}">{_label}</a>'
         _items.append(
             f'<li>{_label}'
