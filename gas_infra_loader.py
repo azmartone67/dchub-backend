@@ -93,7 +93,7 @@ def load_gas_processings():
             """INSERT INTO gas_processing_plants
                (eia_id, plant_name, name, operator, state, county, capacity_mmcfd,
                 status, lat, lng, latitude, longitude, source, loaded_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now() ON CONFLICT DO NOTHING)""",
             (str(a.get('FID') or a.get('OBJECTID') or ''), a.get('Plant_Name'), a.get('Plant_Name'),
              a.get('Operator') or a.get('Owner'), a.get('State'), a.get('County'),
              a.get('Cap_MMcfd'), a.get('Status') or 'Operating', lat, lng, lat, lng,
@@ -134,7 +134,7 @@ def load_gas_compressors():
             """INSERT INTO gas_compressor_stations
                (hifld_id, station_name, name, operator, county, state, status,
                 lat, lng, latitude, longitude, source, loaded_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now() ON CONFLICT DO NOTHING)""",
             (str(a.get('GCOMPID') or a.get('OBJECTID') or ''), a.get('NAME'), a.get('NAME'),
              a.get('OPERATOR') or a.get('Operator'), a.get('COUNTY'), a.get('STATE'),
              a.get('STATUS') or 'Operating', lat, lng, lat, lng,
