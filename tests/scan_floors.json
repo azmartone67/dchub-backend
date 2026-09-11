@@ -181,6 +181,9 @@
     "test_outbound_copy_matches_canon.py": {
       "glob": 4
     },
+    "test_pack_credits_never_expire.py": {
+      "pglob": 2080
+    },
     "test_parametrize_ids_are_checkout_independent.py": {
       "glob": 770
     },
