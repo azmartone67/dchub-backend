@@ -27,7 +27,11 @@ What is proved here:
   · a stream that is NOT registered intermittent is unaffected;
   · the leash is READ from routes/freshness_public, never restated here — the
     mutation test below fails if the detector ever grows its own copy;
-  · the read is fail-soft toward FILING, never toward silence.
+  · the read is fail-soft toward FILING, never toward silence;
+  · (2026-09-11) the SAME leash covers `iso_metric_count_dropped`: an EIA-930
+    stream a day behind files nothing for having one row in the 24h window,
+    while a normal stream, a stream past the leash, and an unknown age all
+    still file.
 
 House rules: no DB, never import main, nothing runs at module scope.
 
@@ -208,3 +212,63 @@ def test_one_query_gives_both_the_iso_list_and_the_ages(monkeypatch):
     assert not any("SELECT DISTINCT iso" in s for s in cur.sql), (
         "the DISTINCT query should be gone — its work is done by the GROUP BY")
     assert any("GROUP BY iso" in s and "EPOCH" in s for s in cur.sql)
+
+
+# ── the dropped branch (2026-09-11) ───────────────────────────────────────
+#
+# 10 of the 20 rows on the squasher portal's Submit-a-fix list were
+# `iso_metric_count_dropped` on registered intermittent streams. EIA-930
+# publishes ~26-28h late, so while a stream's newest hour is 22-24h old only
+# that hour sits inside the 24h window — and Tacoma Power writes one metric
+# (fuel_wat), so it "wrote only 1 metric in 24h". The leash only ever covered
+# the zero-writes branch.
+
+MEASURED_LAGGED = ("SPA", "TAL", "TPWR", "DOPD", "CHPD", "TIDC", "GVL",
+                   "GCPD", "SEC", "SCL")
+
+
+def _dropped(findings):
+    return {f["url"].split("iso=")[-1] for f in findings
+            if f["issue"] == "iso_metric_count_dropped"}
+
+
+def test_the_ten_measured_streams_are_registered_intermittent():
+    """The premise, pinned: if one of these ever leaves the registry, the tests
+    below would pass for a reason that no longer holds."""
+    got = r._intermittent_grid_streams()[0]
+    missing = [s for s in MEASURED_LAGGED if s not in got]
+    assert not missing, "not registered intermittent: %s" % missing
+
+
+@pytest.mark.parametrize("iso", MEASURED_LAGGED)
+def test_a_lagged_stream_with_one_row_in_the_window_files_nothing(monkeypatch, iso):
+    """THE regression. TPWR on 2026-09-11: newest EIA hour 22.35h old, one row
+    inside the 24h window — on schedule for a feed published a day late."""
+    findings, _ = _run(monkeypatch, recent={iso: 1, "PJM": 9},
+                       ages={iso: 22.35, "PJM": 0.2})
+    assert iso not in _dropped(findings), (
+        "%s is registered upstream-intermittent; a 24h row count on a feed "
+        "published ~26-28h late measures the lag, not the loop" % iso)
+
+
+def test_a_normal_stream_with_one_row_still_files_dropped(monkeypatch):
+    """CONTROL: the leash must not become a blanket amnesty on this branch."""
+    findings, _ = _run(monkeypatch, recent={"ERCOT": 1, "PJM": 9},
+                       ages={"ERCOT": 0.5, "PJM": 0.2})
+    assert "ERCOT" in _dropped(findings)
+
+
+def test_dropped_past_the_leash_files_again(monkeypatch):
+    """A LONGER LEASH, NEVER IMMUNITY — on this branch too. Reachable only with
+    a leash below the 24h window, so set one there."""
+    monkeypatch.setattr(fp, "_INTERMITTENT_MAX_H", 1.0)
+    findings, _ = _run(monkeypatch, recent={"TPWR": 1, "PJM": 9},
+                       ages={"TPWR": 5.0, "PJM": 0.2})
+    assert "TPWR" in _dropped(findings)
+
+
+def test_dropped_with_an_unknown_age_still_files(monkeypatch):
+    """An unknown age must not buy a pass here either — the dangerous direction."""
+    findings, _ = _run(monkeypatch, recent={"TPWR": 1, "PJM": 9},
+                       ages={"TPWR": None, "PJM": 0.2})
+    assert "TPWR" in _dropped(findings)
