@@ -612,9 +612,17 @@ def get_credit_balance(api_key, mcp_session_id):
 def get_credit_status(api_key, mcp_session_id):
     """Like get_credit_balance but ALSO returns had_pack — whether the caller EVER
        bought a pack (even if now depleted/expired). Lets the gateway show a 'top up
-       $5 for 1,000 more' re-up nudge to a PROVEN buyer (highest-ROI re-conversion)
-       instead of the generic claim-free-key teaser. Returns
-       {'credits': int, 'had_pack': bool}; fail-soft to {0, False}."""
+       for 1,000 more' re-up nudge to a PROVEN buyer (highest-ROI re-conversion)
+       instead of the generic claim-free-key teaser, and exempts a depleted buyer
+       from the metered wall. Returns {'credits': int, 'had_pack': bool};
+       fail-soft to {0, False}.
+
+       ★2026-09-11 — had_pack WAS `source LIKE 'pack5%'`, written when pack5 was
+       the only SKU. grant_credit_pack also writes pack10, pack10_keybound and
+       agentic_pack5, so a buyer of the live $10 pack read had_pack=False the
+       moment their credits ran out. It is membership in PACK_SOURCES now — the
+       set tests/test_pack_credits_never_expire.py pins to every caller's source=.
+       Bound as a list: psycopg2 sends a tuple as a record, which ANY() rejects."""
     h = _hash_key(api_key) if api_key else None
     sid = (mcp_session_id or "").strip()[:200] or None
     if not h and not sid:
@@ -629,12 +637,12 @@ def get_credit_status(api_key, mcp_session_id):
                   COALESCE(SUM(credits_remaining) FILTER (
                       WHERE credits_remaining > 0
                         AND (expires_at IS NULL OR expires_at > NOW())), 0),
-                  bool_or(COALESCE(source,'') LIKE 'pack5%%')
+                  bool_or(source = ANY(%s))
                 FROM mcp_topups
                 WHERE paid_at IS NOT NULL
                   AND ((%s IS NOT NULL AND api_key_hash = %s)
                        OR (%s IS NOT NULL AND mcp_session_id = %s));
-            """, (h, h, sid, sid))
+            """, (list(PACK_SOURCES), h, h, sid, sid))
             row = cur.fetchone()
             return {"credits": int(row[0]) if row and row[0] else 0,
                     "had_pack": bool(row[1]) if row else False}

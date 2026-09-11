@@ -548,6 +548,29 @@ jobs:
             echo "::error::the pack-expiry SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── had_pack reads every pack source, against the same Postgres ─────
+      # tests/test_had_pack_reads_every_pack_source.py pins the SQL and binds
+      # PACK_SOURCES to it against a fake cursor. Only a real Postgres shows
+      # the list adapting into `= ANY(...)`, a spent pack10 buyer reading
+      # had_pack true and a paid tu- top-up (source NULL) reading false — the
+      # flag that picks the gateway's re-up nudge and metered-wall exemption.
+      # Owns and recreates only mcp_topups / mcp_trial_emails.
+      - name: had_pack SQL against a real Postgres
+        env:
+          HAD_PACK_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_had_pack_reads_every_pack_source_sql.py -v --tb=short
+
+      - name: Prove the had_pack SQL test actually RAN
+        env:
+          HAD_PACK_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_had_pack_reads_every_pack_source_sql.py \
+            -q -rs --tb=no > hp.txt 2>&1 || { cat hp.txt; exit 1; }
+          cat hp.txt
+          if grep -qi "skipped" hp.txt; then
+            echo "::error::the had_pack SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -557,14 +580,14 @@ jobs:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # out.txt, cc.txt, lp.txt and pk.txt are written by the four
+          # out.txt, cc.txt, lp.txt, pk.txt and hp.txt are written by the five
           # prove-it-RAN steps above, each of which already fails the job on a
           # skip. N sums the SAME files those checks read, so the count and the
           # skip checks cannot disagree — a lane that ran but is not counted here
           # reports fewer tests than the job actually proved.
           # Same empty-vs-zero rule as unit-tests: present-but-unparseable => 0.
-          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ] || [ -f pk.txt ]; then
-            N=$(cat out.txt cc.txt lp.txt pk.txt 2>/dev/null \
+          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ] || [ -f pk.txt ] || [ -f hp.txt ]; then
+            N=$(cat out.txt cc.txt lp.txt pk.txt hp.txt 2>/dev/null \
                 | grep -oE '[0-9]+ (passed|failed)' \
                 | awk '{t+=$1} END{if(NR)print t; else print 0}')
           else
