@@ -4,7 +4,7 @@
   "zone_id": "1cb22dda8d50546d6edf0c09a8be5128",
   "ruleset_id": "fecada9378704aa395b8f98ecfbdfbf0",
   "phase": "http_request_cache_settings",
-  "pinned_version": "64",
+  "pinned_version": "65",
   "pinned_at": "2026-09-07T07:08:56Z",
   "rules": [
     {
