@@ -571,6 +571,29 @@ jobs:
             echo "::error::the had_pack SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Paid legacy top-ups never expire: the redeem path, for real ──────
+      # tests/test_topup_paid_credits_never_expire.py pins the UPDATE's text
+      # against a fake cursor. Only a real Postgres shows a paid tu- row
+      # outliving its 30-minute checkout window: the balance still full at
+      # +31 minutes and a year on, a late payment worth its credits, and a
+      # webhook retry changing nothing. Owns and recreates only mcp_topups /
+      # mcp_trial_emails.
+      - name: Top-up expiry SQL against a real Postgres
+        env:
+          TOPUP_EXPIRY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_topup_paid_credits_never_expire_sql.py -v --tb=short
+
+      - name: Prove the top-up expiry SQL test actually RAN
+        env:
+          TOPUP_EXPIRY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_topup_paid_credits_never_expire_sql.py \
+            -q -rs --tb=no > tu.txt 2>&1 || { cat tu.txt; exit 1; }
+          cat tu.txt
+          if grep -qi "skipped" tu.txt; then
+            echo "::error::the top-up expiry SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -580,14 +603,14 @@ jobs:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # out.txt, cc.txt, lp.txt, pk.txt and hp.txt are written by the five
+          # out.txt, cc.txt, lp.txt, pk.txt, hp.txt and tu.txt are written by the six
           # prove-it-RAN steps above, each of which already fails the job on a
           # skip. N sums the SAME files those checks read, so the count and the
           # skip checks cannot disagree — a lane that ran but is not counted here
           # reports fewer tests than the job actually proved.
           # Same empty-vs-zero rule as unit-tests: present-but-unparseable => 0.
-          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ] || [ -f pk.txt ] || [ -f hp.txt ]; then
-            N=$(cat out.txt cc.txt lp.txt pk.txt hp.txt 2>/dev/null \
+          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ] || [ -f pk.txt ] || [ -f hp.txt ] || [ -f tu.txt ]; then
+            N=$(cat out.txt cc.txt lp.txt pk.txt hp.txt tu.txt 2>/dev/null \
                 | grep -oE '[0-9]+ (passed|failed)' \
                 | awk '{t+=$1} END{if(NR)print t; else print 0}')
           else

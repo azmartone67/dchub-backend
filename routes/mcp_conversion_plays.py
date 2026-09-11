@@ -4,10 +4,10 @@ Phase DD shipped plays 1+2 (pair-code magic link + funnel diagnostics).
 This module bundles the remaining four lower-friction conversion paths
 the user asked to ship together:
 
-  Play 3: One-time top-up ($5 / 50 calls)
-          For users hesitant about a $49/mo subscription but who need
-          "just a few more queries for this project." Smaller commitment
-          = higher conversion rate on hesitant users.
+  Play 3: One-time top-up ($5 / 50 calls) — RETIRED 2026-09-11
+          No new top-up is minted: POST /api/v1/mcp/topup/start answers
+          410 and points at the one-time pack. Tokens minted before that
+          still redeem, and a paid top-up's credits never expire.
 
   Play 4: Per-tool demo unlock
           Currently paid tools return 403 with ZERO data. We now also
@@ -35,7 +35,7 @@ Tables created idempotently on first import:
 
 Endpoints
 ---------
-  POST /api/v1/mcp/topup/start             — Play 3: agent buys 50 calls
+  POST /api/v1/mcp/topup/start             — Play 3: 410, retired (-> the pack)
   GET  /api/v1/mcp/topup/<id>/status       — Play 3: agent polls
   POST /api/v1/trial/start                  — Play 5: email → trial key
   POST /api/v1/trial/<token>/redeem         — Play 5: magic-link consumer
@@ -56,24 +56,23 @@ conversion_bp = Blueprint("mcp_conversion_plays", __name__)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 RESEND_API_KEY = os.environ.get("DCHUB_RESEND_API_KEY", "")
 ADMIN_KEY = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
-STRIPE_DEVELOPER_LINK = (
-    os.environ.get('DCHUB_STRIPE_DEVELOPER_LINK')
-    or 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c'
-)
-# Phase DD+: one-time $5 top-up Stripe Payment Link. Create in Stripe
-# dashboard as a fixed $5.00 one-time price (NOT a subscription).
-# Set env var DCHUB_STRIPE_TOPUP_LINK once configured. Fallback to the
-# developer link if absent — payment still tracks, just upgrades to
-# Developer plan instead of crediting calls.
-STRIPE_TOPUP_LINK = os.environ.get('DCHUB_STRIPE_TOPUP_LINK',
-                                    STRIPE_DEVELOPER_LINK).strip()
-TOPUP_CREDITS = int(os.environ.get('DCHUB_TOPUP_CREDITS', '50'))
-TOPUP_PRICE_CENTS = int(os.environ.get('DCHUB_TOPUP_PRICE_CENTS', '500'))
+
+# ★2026-09-11 — THE $5 / 50-CALL TOP-UP (Play 3) IS RETIRED. Owner decision.
+# Nothing sold it: no page, paywall or MCP response ever linked
+# /api/v1/mcp/topup/start, and the human link it handed out,
+# dchub.cloud/topup/<token>, never reached the worker — /topup/* is not in the
+# frontend's _routes.json, so the edge answered 404. The endpoint was still
+# minting tokens, and its checkout link fell back to the Developer SUBSCRIPTION
+# link whenever DCHUB_STRIPE_TOPUP_LINK was unset (production's value was never
+# read). The link, that fallback, their env knobs and the token minter are
+# removed, so no variable can put it back on sale. Tokens already minted still
+# redeem — see redeem_topup_token, which is also where a paid top-up stops
+# expiring.
 
 # r-pack5 (2026-06-16): the $5 / 1,000-credit one-time PACK — the cheap
 # front-end acquisition offer (distinct from the legacy 50-credit top-up above).
 # A fixed $5.00 one-time Stripe Payment Link created in the dashboard. Unlike the
-# top-up (tu-token, keyed agent, 30-min TTL), the pack is a one-click,
+# top-up (tu-token, keyed agent; retired 2026-09-11), the pack is a one-click,
 # session-bound acquisition SKU: the $5 checkout mints a durable key + grants
 # 1000 credits keyed on BOTH the key AND the buying mcp session, so the
 # current session unlocks instantly (by session id) and future sessions unlock by
@@ -139,6 +138,9 @@ CREATE TABLE IF NOT EXISTS mcp_topups (
     credits         INTEGER NOT NULL DEFAULT 50,
     price_cents     INTEGER NOT NULL DEFAULT 500,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- DEFAULT = an UNPAID tu- token's 30-minute checkout window, never a
+    -- credit lifetime: payment writes PACK_NEVER_EXPIRES (redeem_topup_token,
+    -- grant_credit_pack). 2026-09-11.
     expires_at      TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 minutes'),
     paid_at         TIMESTAMPTZ,
     stripe_session_id TEXT,
@@ -216,73 +218,41 @@ except Exception:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Play 3: one-time top-up ($5 / 50 calls)
+# Play 3: one-time top-up ($5 / 50 calls) — RETIRED 2026-09-11: redeem only
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _new_topup_token() -> str:
-    return "tu-" + _secrets.token_urlsafe(8).rstrip("=").replace("_", "").replace("-", "")[:10]
+def _pack_offer() -> dict:
+    """What the retired top-up points at instead: the one-time pack, read on
+       every call and never frozen into copy. PACK5_URL (DCHUB_PACK5_URL) is the
+       one-time pack link; PACK10_CREDITS / PACK10_PRICE_CENTS are what the
+       webhook's pack branch grants and verifies for it."""
+    cents = PACK10_PRICE_CENTS
+    return {
+        "pack_url": PACK5_URL,
+        "credits": PACK10_CREDITS,
+        "price_usd": cents / 100,
+        "price_label": f"${cents // 100:,}" if cents % 100 == 0 else f"${cents / 100:,.2f}",
+    }
 
 
 @conversion_bp.post("/api/v1/mcp/topup/start")
 def topup_start():
-    """Agent calls this when its human wants a one-time top-up. Returns
-       a Stripe URL with client_reference_id=<token>. Stripe webhook
-       reads the token, marks paid_at, and the agent's next calls
-       consume from credits_remaining before hitting the daily cap.
+    """RETIRED 2026-09-11 — mints no token and opens no database connection.
 
-       Cheaper, lower-commitment than a Developer subscription — for
-       agents who just need to finish "this one project."
-    """
-    api_key = (request.headers.get("X-API-Key")
-               or (request.json.get("api_key") if request.is_json else None)
-               or request.args.get("api_key") or "")
-    if not api_key:
-        return jsonify(ok=False, error="api_key_required"), 400
-    body = request.get_json(silent=True) or {}
-    referring_agent = _capture_agent(body)
-
-    c = _conn()
-    if c is None: return jsonify(ok=False, error="no_database"), 503
-    try:
-        token = _new_topup_token()
-        h = _hash_key(api_key)
-        with c.cursor() as cur:
-            cur.execute("""
-                INSERT INTO mcp_topups
-                    (topup_token, api_key_hash, credits, price_cents,
-                     credits_remaining, referring_agent)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (topup_token) DO NOTHING
-                RETURNING id, expires_at;
-            """, (token, h, TOPUP_CREDITS, TOPUP_PRICE_CENTS,
-                  TOPUP_CREDITS, referring_agent))
-            row = cur.fetchone()
-        c.commit()
-        if not row:
-            return jsonify(ok=False, error="token_collision_retry"), 503
-        topup_id, expires_at = row
-        stripe_url = (f"{STRIPE_TOPUP_LINK}"
-                      f"{'&' if '?' in STRIPE_TOPUP_LINK else '?'}"
-                      f"client_reference_id={token}")
-        return jsonify(
-            ok=True,
-            topup_token=token,
-            credits=TOPUP_CREDITS,
-            price_usd=TOPUP_PRICE_CENTS / 100.0,
-            stripe_url=stripe_url,
-            expires_at=expires_at.isoformat(),
-            redeem_url=f"https://dchub.cloud/topup/{token}",
-            human_message=(
-                f"💸 **One-time top-up: {TOPUP_CREDITS} extra calls for ${TOPUP_PRICE_CENTS/100:.2f}.** "
-                f"No subscription. Tell your human to visit: "
-                f"https://dchub.cloud/topup/{token} — one click, done."
-            ),
-        ), 200
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)[:200]), 500
-    finally:
-        try: c.close()
-        except Exception: pass
+       This used to hand an agent a tu- token and a checkout link for 50 calls
+       at $5 (see the retirement note at the top of this module). The route
+       stays registered so a caller that still knows it gets 410 Gone, a
+       reason and the pack instead of a bare 404. Tokens minted before the
+       retirement still redeem through the Stripe webhook."""
+    offer = _pack_offer()
+    return jsonify(
+        ok=False,
+        error="topup_retired",
+        message=(f"The one-time top-up is retired. The one-time pack replaces it: "
+                 f"{offer['credits']:,} API calls for {offer['price_label']}, "
+                 f"no subscription — {offer['pack_url']}"),
+        **offer,
+    ), 410
 
 
 @conversion_bp.get("/api/v1/mcp/topup/<token>/status")
@@ -316,8 +286,12 @@ def topup_status(token):
 
 @conversion_bp.get("/topup/<token>")
 def topup_landing(token):
-    """User-facing top-up page. Same UX pattern as /redeem/<code> but for
-       the one-time $5 / 50-call offer."""
+    """User-facing page for a legacy top-up token (Play 3, retired 2026-09-11).
+
+       Paid -> the confirmation, which no longer says "today": a paid top-up's
+       credits never expire (redeem_topup_token). Unpaid -> 410 Gone: the
+       top-up is not sold any more, so the page offers the one-time pack
+       instead of the token's checkout. Unknown token -> 404."""
     from flask import Response
     from html import escape as _h
     token = token.strip()
@@ -326,7 +300,7 @@ def topup_landing(token):
         return Response("<h1>Database unavailable</h1>", mimetype="text/html"), 503
     try:
         with c.cursor() as cur:
-            cur.execute("""SELECT credits, price_cents, paid_at, expires_at
+            cur.execute("""SELECT credits, paid_at
                            FROM mcp_topups WHERE topup_token = %s""", (token,))
             row = cur.fetchone()
     finally:
@@ -335,7 +309,7 @@ def topup_landing(token):
     if not row:
         return Response(f"<h1>Top-up token <code>{_h(token)}</code> not found</h1>",
                         mimetype="text/html"), 404
-    credits, price_cents, paid_at, expires_at = row
+    credits, paid_at = row
     if paid_at:
         return Response(
             f"<!DOCTYPE html><meta charset=utf-8><title>Top-up complete</title>"
@@ -344,15 +318,16 @@ def topup_landing(token):
             f"<div style='max-width:480px;text-align:center;padding:40px'>"
             f"<div style='font-size:3rem;color:#10b981'>✓</div>"
             f"<h1>Top-up complete</h1>"
-            f"<p style='color:#9ca3af'>Your agent has {_h(credits)} extra calls today. Tell it to retry — "
+            f"<p style='color:#9ca3af'>Your agent has {_h(str(credits))} extra calls. Tell it to retry — "
             f"the next call goes through.</p></div></body>",
             mimetype="text/html"), 200
-    stripe_url = (f"{STRIPE_TOPUP_LINK}"
-                  f"{'&' if '?' in STRIPE_TOPUP_LINK else '?'}"
-                  f"client_reference_id={_h(token)}")
+    offer = _pack_offer()
+    pack_url = _h(offer["pack_url"])
+    price = _h(offer["price_label"])
+    calls = _h(f"{offer['credits']:,}")
     return Response(
         f"""<!DOCTYPE html><html><head><meta charset=utf-8>
-<title>Top-up · DC Hub</title>
+<title>Top-up retired · DC Hub</title>
 <link rel="stylesheet" href="/static/dchub-brand.css">
 <style>body{{font-family:'Instrument Sans',system-ui;background:#0a0a0f;color:#fff;display:flex;
 align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px}}
@@ -363,15 +338,15 @@ h1{{margin:0 0 10px;letter-spacing:-.02em}}p{{color:#9ca3af}}
 .cta{{display:block;background:linear-gradient(135deg,#10b981,#6366f1);color:#fff;text-align:center;padding:16px;border-radius:10px;text-decoration:none;font-weight:700;margin-top:24px}}
 a{{color:#6366f1}}.foot{{margin-top:18px;text-align:center;font-size:.78rem}}
 </style></head><body><div class="wrap">
-<div class="kicker">💸 ONE-TIME TOP-UP</div>
-<h1>Extra calls — no subscription</h1>
-<p>Your AI agent needs more queries today. Skip the $49/mo commitment with a one-time credit pack.</p>
-<div class="price">${_h(f"{price_cents/100:.2f}")}</div>
-<div style="color:#9ca3af;font-size:.95rem">{_h(credits)} additional calls · valid for the rest of today</div>
-<a href="{stripe_url}" class="cta">Pay ${_h(f"{price_cents/100:.2f}")} — Unlock now →</a>
-<div class="foot"><a href="/pricing">Want unlimited? Compare plans →</a></div>
+<div class="kicker">One-time top-up · retired</div>
+<h1>This top-up is no longer sold</h1>
+<p>The one-time pack replaces it. No subscription.</p>
+<div class="price">{price}</div>
+<div style="color:#9ca3af;font-size:.95rem">{calls} API calls · one-time</div>
+<a href="{pack_url}" class="cta">Get {calls} calls — {price} →</a>
+<div class="foot"><a href="/pricing">Compare plans →</a></div>
 </div></body></html>""",
-        mimetype="text/html"), 200
+        mimetype="text/html"), 410
 
 
 def consume_topup_credit(api_key: str, count: int = 1) -> bool:
@@ -410,7 +385,20 @@ def consume_topup_credit(api_key: str, count: int = 1) -> bool:
 
 def redeem_topup_token(token: str, stripe_session_id: str | None = None) -> dict:
     """Stripe webhook calls this when checkout completes for a token
-       starting with 'tu-'. Idempotent."""
+       starting with 'tu-'. Idempotent.
+
+       ★2026-09-11 — PAYMENT WRITES expires_at = PACK_NEVER_EXPIRES. topup_start
+       never set expires_at, so every tu- row carried the column DEFAULT, NOW()
+       + 30 minutes — the unpaid token's checkout window — and this UPDATE set
+       only paid_at. get_credit_balance, get_credit_status and consume_credits
+       all require expires_at > NOW(), so the credits a buyer had just paid for
+       left the balance 30 minutes after checkout STARTED, and a payment that
+       completed later than that was worth nothing on arrival. Measured on
+       Postgres 18.6 with this module's DDL: balance 50 at payment, 0 at +31
+       minutes, while /api/v1/mcp/topup/<token>/status still reported paid with
+       50 remaining. Owner decision: a paid top-up follows the pack rule. A
+       webhook retry writes the same instant and keeps the first paid_at and
+       session id."""
     out = {"ok": False, "token": token}
     if not token:
         out["error"] = "missing_token"
@@ -424,10 +412,11 @@ def redeem_topup_token(token: str, stripe_session_id: str | None = None) -> dict
             cur.execute("""
                 UPDATE mcp_topups
                 SET paid_at = COALESCE(paid_at, NOW()),
-                    stripe_session_id = COALESCE(stripe_session_id, %s)
+                    stripe_session_id = COALESCE(stripe_session_id, %s),
+                    expires_at = %s::timestamptz
                 WHERE topup_token = %s
                 RETURNING id, credits;
-            """, (stripe_session_id, token))
+            """, (stripe_session_id, PACK_NEVER_EXPIRES, token))
             row = cur.fetchone()
         if not row:
             out["error"] = "token_not_found"
