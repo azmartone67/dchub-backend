@@ -45,15 +45,29 @@ permissions:
 jobs:
   qa-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 10 min deploy wait + the checks' share of the old 5 minutes (they took
+    # 17s on 2026-09-11).
+    timeout-minutes: 15
 
     steps:
-      # Give Railway time to deploy and warm up after a push
-      - name: Wait for Railway deploy
+      # ★ 2026-09-11 — WAS `sleep 20` "for Railway to deploy and warm up".
+      # Railway's 39 most recent swaps of the backend took 111-202s, so a
+      # push's checks ran against the build that push replaced: 7ea2a2265 was
+      # pushed at 09:40:51Z and checked 09:41:19-09:41:36Z. Now the push path
+      # waits for the commit itself (scripts/wait_for_deployed_commit.py) and
+      # fails if it never goes live. The script comes from the checkout, which
+      # only that path needs; the cron and a dispatch check whatever is live.
+      - uses: actions/checkout@v5
         if: github.event_name == 'push'
-        run: |
-          echo "⏳ Waiting 20s for Railway to deploy and warm up..."
-          sleep 20
+
+      - name: Wait until the origin runs this commit
+        id: deploy_wait
+        if: github.event_name == 'push'
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECT_SHA: ${{ github.sha }}
+        run: python3 scripts/wait_for_deployed_commit.py --expect "$EXPECT_SHA" --timeout 600
 
       - name: Run DC Hub QA checks
         id: qa

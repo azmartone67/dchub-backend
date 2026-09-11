@@ -54,7 +54,8 @@ HTTP goes through curl, because scripts/regression_lint.py blocks
 urllib.request.urlopen; headers go to curl on stdin (--config -), so the admin
 key and the GitHub token never appear in a process listing.
 
-Usage (a workflow step, push events only):
+Usage (a workflow step; EXPECT_SHA is github.sha on a push to main, and the
+merge commit on a merged pull_request):
     python3 scripts/wait_for_deployed_commit.py --expect "$EXPECT_SHA"
 Env:
     DCHUB_ADMIN_KEY    required

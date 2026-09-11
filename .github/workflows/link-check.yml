@@ -8,16 +8,16 @@ name: Link Check — kill 404s before demos do
 #   4. Nobody runs the live site → 404 sits there for weeks
 #   5. Jonathan demos to a prospect → clicks the "NEW" badge → 404
 #
-# This workflow runs after every push to main (gives ~90s for Railway +
-# Cloudflare deploys to land), then probes the production URLs that
+# This workflow runs after every push to main (once the Railway origin
+# runs the pushed commit), then probes the production URLs that
 # matter: homepage nav, footer, every href on the homepage. If any of
 # them return non-2xx/3xx, the workflow fails RED and posts a GitHub
 # issue so the failure can't be missed.
 #
 # This is post-deploy verification (not pre-deploy gate), because
 # pre-deploy would require spinning up a test instance. Post-deploy
-# catches within ~2 minutes — fast enough that we can fix-forward
-# before any prospect demo.
+# catches within a few minutes of the deploy landing — fast enough that
+# we can fix-forward before any prospect demo.
 
 on:
   push:
@@ -35,13 +35,30 @@ permissions:
 jobs:
   link-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    # 10 min deploy wait + up to 15 min of crawl. The crawl (25 critical paths
+    # plus every link on / and /dcpi, ~430 URLs): of the 30 runs to 2026-09-11,
+    # 21 finished it in 41-376s and 9 were killed mid-crawl by the old 8-minute
+    # cap, after 385-430s — so its tail past that is unmeasured, and a killed
+    # job files no issue.
+    timeout-minutes: 26
     steps:
       - uses: actions/checkout@v4
 
-      - name: Wait for deploys to propagate (~90s)
+      # ★ 2026-09-11 — WAS `sleep 90`. Railway's 39 most recent swaps of the
+      # backend took 111-202s from deployment created to previous deployment
+      # removed, so the crawl started while the build this push replaced was
+      # still answering, and reported it as this push. Now the push path waits
+      # for the commit itself (scripts/wait_for_deployed_commit.py) and fails
+      # if it never goes live. The cron and a manual dispatch crawl whatever is
+      # live, as before.
+      - name: Wait until the origin runs this commit
+        id: deploy_wait
         if: github.event_name == 'push'
-        run: sleep 90
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECT_SHA: ${{ github.sha }}
+        run: python3 scripts/wait_for_deployed_commit.py --expect "$EXPECT_SHA" --timeout 600
 
       - name: Crawl + probe critical URLs
         id: crawl

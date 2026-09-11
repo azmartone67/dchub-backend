@@ -150,6 +150,15 @@ unset in GitHub so `auto-rollback.yml` stays alert-only.
 Step 3 is the part that was broken: the old workflow died on the rejected push
 and skipped its issue step, so a real burn produced no rollback *and* no alert.
 
+**On a push to main it first waits for the deploy** — until the Railway origin
+runs the pushed commit (`scripts/wait_for_deployed_commit.py`, up to 10
+minutes), not a fixed sleep. If the commit never goes live, that run takes **no
+samples and rolls nothing back**: the build answering is the one from before the
+commit, and by then the 10-minute anti-stacking guard no longer holds a rollback
+back. The run fails red and opens (or bumps) one `slo-gate: post-deploy SLO
+check did not run` issue instead. The scheduled lane does not wait and is
+unaffected.
+
 ## Manual path
 
 When the automation cannot (no token, API down, no eligible image):
