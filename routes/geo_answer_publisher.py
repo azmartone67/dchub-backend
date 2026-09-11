@@ -24,6 +24,7 @@ Endpoint:
 """
 
 import os
+import re
 import json
 import base64
 import logging
@@ -173,6 +174,162 @@ def _append_sitemap(slug: str):
         logger.warning("geo sitemap append failed: %s", str(e)[:120])
 
 
+# ── the canon ceiling (2026-09-11) ───────────────────────────────────────────
+# ★ WHY IT IS HERE. This module commits straight to dchub-frontend main: no PR,
+# no CI in between. The first check a page ever meets is
+# scripts/accuracy_fence.py, and that runs as a step INSIDE deploy-pages.yml —
+# so a page the fence bans does not fail on its own, it stops EVERY frontend
+# deploy until a human edits it. On 2026-09-10 one page saying "29,000+ data
+# center facilities (21,500+ verified)", committed at 14:42Z, held production
+# for 29 consecutive deploy runs, about ten hours. The 09-08 page carried the
+# same two-population copy. geo_autopublish no longer hands its drafter the raw
+# pile; this refuses the page if a figure gets through anyway, whoever wrote it.
+#
+# ★ A MIRROR OF THE FENCE, NOT A SECOND RULE:
+#   · _FENCE_MAGNITUDE is MAGNITUDE_BANNED copied verbatim; _CANON_MARGIN and
+#     _FENCE_FALLBACK are CANON_MARGIN and CANON_FALLBACK. Change the fence
+#     first, then these.
+#   · canon comes from data/growth.json on frontend main — the file the fence
+#     itself reads at deploy time — AND from live canonical_stats. The LOWER
+#     threshold wins, so a stale growth.json refuses the page here instead of
+#     freezing the deploy there.
+#   · every line is read raw and tag-stripped, both unescaped, as the fence's
+#     _magnitude_matches() reads it.
+# _ALSO_REFUSED adds shapes the fence is known to pass: a qualifier outside its
+# three ("29,000+ distinct facilities", "29,000+ data-center facilities") and
+# the noun "data centers" ("29,000+ data centers"). Refusing one of those costs
+# a page; the fence missing it publishes the over-claim.
+_CANON_MARGIN = 1.05
+_FENCE_FALLBACK = {"facilities": 20000, "deals": 3900}
+_TAG = re.compile(r"<[^>]+>")
+
+_FENCE_MAGNITUDE = (
+    ("facilities",
+     re.compile(r"(\d{1,3}(?:,\d{3})+)\+?\s*(?:data\s+center\s+|global\s+|tracked\s+)*facilit", re.I)),
+    ("deals",
+     re.compile(r"(\d{1,3}(?:,\d{3})+)\+?\s*(?:[A-Za-z&][A-Za-z&-]*[\s-]+){0,3}"
+                r"(?:deals|transactions|acquisitions)", re.I)),
+)
+
+_ALSO_REFUSED = (
+    ("facilities",
+     re.compile(r"(\d{1,3}(?:,\d{3})+)\+?\s*"
+                r"(?:(?:distinct|verified|unique|physical|operational|active|mapped|"
+                r"tracked|global|live|listed|known|total)[\s-]+"
+                r"|data[\s-]+cent(?:er|re)[\s-]+)*"
+                r"(?:facilit|data[\s-]+cent(?:er|re)s\b)", re.I)),
+)
+
+
+def _claims(text: str) -> list:
+    """Every facility / deal figure in `text` as {kind, claimed, text}, once per
+    (kind, figure). Line by line, raw and tag-stripped: the raw form keeps
+    attribute text (a meta description vanishes under a tag strip), the
+    stripped form joins a number to a noun that markup separates."""
+    found, seen = [], set()
+    for line in (text or "").split("\n"):
+        forms = (_html.unescape(line), _html.unescape(_TAG.sub(" ", line)))
+        for kind, rx in _FENCE_MAGNITUDE + _ALSO_REFUSED:
+            for form in forms:
+                for m in rx.finditer(form):
+                    claimed = int(m.group(1).replace(",", ""))
+                    if (kind, claimed) not in seen:
+                        seen.add((kind, claimed))
+                        found.append({"kind": kind, "claimed": claimed,
+                                      "text": m.group(0)[:90]})
+    return found
+
+
+def _fence_canon():
+    """current.{facilities,deals} from data/growth.json on frontend main, parsed
+    the way the fence's _canon() parses it. None when GitHub could not be read
+    (unknown); {} when the file was read and is unusable — the case in which
+    the fence itself falls back to CANON_FALLBACK."""
+    try:
+        r = _gh("GET", f"/repos/{_FRONTEND_REPO}/contents/data/growth.json")
+    except Exception:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        raw = base64.b64decode(((r.json() or {}).get("content") or "").replace("\n", ""))
+        cur = json.loads(raw.decode("utf-8")).get("current", {})
+        return {k: int(cur[k]) for k in ("facilities", "deals")
+                if isinstance(cur.get(k), int) and cur[k] > 0}
+    except Exception:
+        return {}
+
+
+def _live_canon() -> dict:
+    """The same two populations from live canon. `facilities_verified` is the
+    distinct figure facilities_verified_phrase() floors — the only facility
+    figure the drafter is handed — and `deals` the deduplicated count
+    deals_phrase() floors."""
+    try:
+        import canonical_stats as cs
+        stats = cs.get_canonical_stats()
+    except Exception:
+        return {}
+    out = {}
+    for key, field in (("facilities", "facilities_verified"), ("deals", "deals")):
+        try:
+            value = int(stats.get(field) or 0)
+        except Exception:
+            value = 0
+        if value > 0:
+            out[key] = value
+    return out
+
+
+def claim_thresholds() -> dict:
+    """{kind: the highest figure allowed, or None when no canon could be read}."""
+    fence, live = _fence_canon(), _live_canon()
+    out = {}
+    for key in ("facilities", "deals"):
+        limits = []
+        if fence is not None:
+            limits.append(int(fence[key] * _CANON_MARGIN) if fence.get(key)
+                          else _FENCE_FALLBACK[key])
+        if live.get(key):
+            limits.append(int(live[key] * _CANON_MARGIN))
+        out[key] = min(limits) if limits else None
+    return out
+
+
+def over_canon_claims(text: str, thresholds: dict | None = None) -> list:
+    """Every figure in `text` the fence would ban, or a known gap shape, as
+    {kind, claimed, allowed, text}.
+
+    [] means nothing was OVER — not that the page is accurate; like the fence,
+    this only sees over-claims. Canon is read only when a claim exists, so a
+    page with no figures costs no GitHub call. A kind with no readable canon
+    has no ceiling and every claim of it is refused: a page that cannot be
+    checked is a page that can freeze the deploy."""
+    claims = _claims(text)
+    if not claims:
+        return []
+    if thresholds is None:
+        thresholds = claim_thresholds()
+    return [dict(c, allowed=thresholds.get(c["kind"])) for c in claims
+            if thresholds.get(c["kind"]) is None or c["claimed"] > thresholds[c["kind"]]]
+
+
+def _render(payload: dict) -> str:
+    return render_answer_html(
+        slug=(payload.get("slug") or "").strip().strip("/"),
+        title=payload.get("title", ""),
+        question=payload.get("question", payload.get("title", "")),
+        short_answer=payload.get("short_answer", ""),
+        lede=payload.get("lede", ""), sections=payload.get("sections", []),
+        meta_description=payload.get("meta_description", ""),
+        tools=payload.get("tools", ""))
+
+
+def check_answer(payload: dict) -> list:
+    """over_canon_claims() on exactly the page publish_answer() would commit."""
+    return over_canon_claims(_render(payload))
+
+
 def publish_answer(payload: dict, overwrite: bool = False) -> dict:
     """Render + commit one answer page. Returns a summary dict; never raises."""
     if not _GH_TOKEN:
@@ -181,13 +338,11 @@ def publish_answer(payload: dict, overwrite: bool = False) -> dict:
     if not slug or "/" in slug or not payload.get("title"):
         return {"ok": False, "error": "slug+title required"}
     try:
-        html_doc = render_answer_html(
-            slug=slug, title=payload.get("title", ""),
-            question=payload.get("question", payload.get("title", "")),
-            short_answer=payload.get("short_answer", ""),
-            lede=payload.get("lede", ""), sections=payload.get("sections", []),
-            meta_description=payload.get("meta_description", ""),
-            tools=payload.get("tools", ""))
+        html_doc = _render(payload)
+        over = over_canon_claims(html_doc)
+        if over:
+            logger.error("geo publish REFUSED /answers/%s — over canon: %s", slug, over[:3])
+            return {"ok": False, "slug": slug, "error": "over_canon", "offending": over[:5]}
         ok, detail = _commit_file(
             f"answers/{slug}.html", html_doc,
             f"geo(answer): publish /answers/{slug}", overwrite)
