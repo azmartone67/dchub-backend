@@ -8668,6 +8668,60 @@ def _cite_as_header(slug: str) -> str:
         return "DC Hub DCPI"
 
 
+def _dcpi_facility_list_html(mkt_name, _fac_ctry_sql, _fac_ctry_params):
+    """The "Data centers in <market>" block on /dcpi/<slug>, or "" for none.
+
+    Called from public_market_page, whose comments carry the history of this
+    query's country (r-namesake) and duplicate (r-list-dedup) predicates.
+
+    ★ r-served-slug (2026-09-11): each facility is linked at the slug its page
+    is SERVED at — the stored canonical_slug, and a live build only for a row
+    the freeze has not reached (facility_slug_freeze.frozen_slug_for_row, the
+    helper facilities_hub and d1_sync already use). This list used to REBUILD
+    the slug (facility_profile_page._fac_slug). canonical_slug is set-once and
+    rows frozen before the 2026-07-28 provider-prefix dedupe keep the doubled
+    form, so for them the rebuilt URL is an alias that 301s to the stored one.
+    Measured live 2026-09-11 over 12 sampled /dcpi pages: 82 of 257 facility
+    links (31.9%) were 301s, every one of that shape, e.g.
+        /facilities/digital-realty-ams11-f5d44402
+          301 -> /facilities/digital-realty-digital-realty-ams11-f5d44402  200
+    A market page that links its facilities through redirects adds to Search
+    Console's "Page with redirect" bucket on every crawl.
+
+    A row with no slug at all is still listed, by name, without a link."""
+    from routes.facility_profile_page import _esc as _fesc
+    from routes.facility_slug_freeze import frozen_slug_for_row
+    with _conn() as _fc, _fc.cursor() as _fcur:
+        _fcur.execute(f"""
+            SELECT id, name, provider, power_mw, canonical_slug
+              FROM discovered_facilities
+             WHERE (market = %s OR LOWER(city) = LOWER(%s))
+               AND name IS NOT NULL AND name <> ''
+               AND duplicate_of_id IS NULL
+               {_fac_ctry_sql}
+             ORDER BY power_mw DESC NULLS LAST LIMIT 50
+        """, (mkt_name, mkt_name, *_fac_ctry_params))
+        _frows = _fcur.fetchall() or []
+    if not _frows:
+        return ""
+    _items = []
+    for _rid, _rname, _rprov, _rpow, _rcanon in _frows:
+        _slug = frozen_slug_for_row(
+            {"provider": _rprov, "name": _rname, "canonical_slug": _rcanon})
+        _label = _fesc(_rname)
+        if _slug:
+            _label = (f'<a href="/facilities/{_fesc(_slug)}" '
+                      f'style="color:#5aa3ff;text-decoration:none">{_label}</a>')
+        _items.append(
+            f'<li>{_label}'
+            f'{(" &middot; " + str(round(_rpow)) + " MW") if _rpow else ""}</li>')
+    return (
+        '<div style="margin:32px auto;max-width:760px;font-family:system-ui">'
+        f'<h2 style="color:#e8eef8;font-size:18px">Data centers in {_fesc(mkt_name)}</h2>'
+        '<ul style="columns:2;color:#9eb5d8;font-size:14px;line-height:1.9">'
+        + "".join(_items) + '</ul></div>')
+
+
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
 def public_market_page(slug):
     # r-period-slug (2026-07-06): strip periods and 301 to the '-'-normalized
@@ -8886,7 +8940,6 @@ def public_market_page(slug):
     # cached copy carries the links.
     _facilities_html = ""
     try:
-        from routes.facility_profile_page import _fac_slug as _fslug, _esc as _fesc
         _mkt_name = s.get("market_name") or ""
         _mkt_state = s.get("state") or ""
         # r-namesake (2026-08-07): this list had NO country predicate, so it
@@ -8923,27 +8976,8 @@ def public_market_page(slug):
         # It shipped separately, with its own recompute and verdict diff,
         # because it rescores every published market — see that comment.
         if _mkt_name:
-            with _conn() as _fc, _fc.cursor() as _fcur:
-                _fcur.execute(f"""
-                    SELECT id, name, provider, power_mw
-                      FROM discovered_facilities
-                     WHERE (market = %s OR LOWER(city) = LOWER(%s))
-                       AND name IS NOT NULL AND name <> ''
-                       AND duplicate_of_id IS NULL
-                       {_fac_ctry_sql}
-                     ORDER BY power_mw DESC NULLS LAST LIMIT 50
-                """, (_mkt_name, _mkt_name, *_fac_ctry_params))
-                _frows = _fcur.fetchall() or []
-            if _frows:
-                _items = "".join(
-                    f'<li><a href="/facilities/{_fslug(_rid,_rprov,_rname)}" '
-                    f'style="color:#5aa3ff;text-decoration:none">{_fesc(_rname)}</a>'
-                    f'{(" &middot; " + str(round(_rpow)) + " MW") if _rpow else ""}</li>'
-                    for _rid, _rname, _rprov, _rpow in _frows)
-                _facilities_html = (
-                    '<div style="margin:32px auto;max-width:760px;font-family:system-ui">'
-                    f'<h2 style="color:#e8eef8;font-size:18px">Data centers in {_fesc(_mkt_name)}</h2>'
-                    f'<ul style="columns:2;color:#9eb5d8;font-size:14px;line-height:1.9">{_items}</ul></div>')
+            _facilities_html = _dcpi_facility_list_html(
+                _mkt_name, _fac_ctry_sql, _fac_ctry_params)
     except Exception:
         pass
 

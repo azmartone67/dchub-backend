@@ -142,10 +142,19 @@ def get_priority_urls():
                 if slug:
                     priority_urls.append(f"{base_url}/market/{slug}")
 
-            c.execute('''SELECT id FROM facilities ORDER BY updated_at DESC LIMIT 100''')
+            # r-served-slug (2026-09-11): submit the slug each facility page is
+            # SERVED at. /facility/<id> 301s for every row that has one, so this
+            # handed IndexNow a redirect per facility. Stored canonical_slug
+            # first, a live build only for an unfrozen row; no slug, no URL.
+            from routes.facility_slug_freeze import frozen_slug_for_row
+            c.execute('''SELECT provider, name, canonical_slug FROM facilities
+                ORDER BY updated_at DESC LIMIT 100''')
             facilities = c.fetchall()
-            for (fid,) in facilities:
-                priority_urls.append(f"{base_url}/facility/{fid}")
+            for provider, name, canonical_slug in facilities:
+                slug = frozen_slug_for_row({"provider": provider, "name": name,
+                                            "canonical_slug": canonical_slug})
+                if slug:
+                    priority_urls.append(f"{base_url}/facilities/{slug}")
 
         finally:
             conn.close()

@@ -134,6 +134,24 @@ def _specs_visible(tier):
     return (_SPEC_TIER_RANK.get(tier, 0)
             >= _SPEC_TIER_RANK.get(_SPECS_MIN_TIER, 2))
 
+
+def _facility_page_url(row):
+    """Public URL of a facility's page, at the slug that page is SERVED at.
+
+    ★ r-served-slug (2026-09-11): find_alternatives and score_facility returned
+    https://dchub.cloud/facility/<id>. That is the legacy form — it 301s to
+    /facilities/<slug> for every row that has a slug — so every agent that
+    cited one of these URLs cited a redirect. The slug is the row's stored
+    canonical_slug, with a live build only for a row the freeze has not reached
+    (facility_slug_freeze.frozen_slug_for_row). The SELECTs feeding this must
+    name canonical_slug: without it every row frozen with the doubled provider
+    prefix is rebuilt into an alias that 301s. A row with no slug (a name that
+    slugifies to nothing) gets None, never a /facilities/ URL that cannot
+    resolve."""
+    from routes.facility_slug_freeze import frozen_slug_for_row
+    slug = frozen_slug_for_row(row)
+    return f"https://dchub.cloud/facilities/{slug}" if slug else None
+
 try:
     import psycopg2
     import psycopg2.extras
@@ -761,7 +779,7 @@ def find_alternatives():
                 # name-slug match needs no stored slug column → schema-safe.
                 cur.execute("""
                     SELECT id, name, provider, city, state, country,
-                           latitude, longitude, power_mw, status
+                           latitude, longitude, power_mw, status, canonical_slug
                       FROM discovered_facilities
                      WHERE CAST(id AS TEXT) = %s
                         OR LOWER(slug) = LOWER(%s)
@@ -792,7 +810,7 @@ def find_alternatives():
 
                 cur.execute(f"""
                     SELECT id, name, provider, city, state, country,
-                           latitude, longitude, power_mw, status
+                           latitude, longitude, power_mw, status, canonical_slug
                       FROM discovered_facilities
                      WHERE state = %s
                        AND id != %s
@@ -887,7 +905,7 @@ def find_alternatives():
             "tier":            cand_tier,
             "match_reasons":   match_reasons,
             "key_differences": diffs,
-            "url":             f"https://dchub.cloud/facility/{cand['id']}",
+            "url":             _facility_page_url(cand),
         }
         if _specs:
             _row["provider"] = cand.get("provider")
@@ -906,7 +924,7 @@ def find_alternatives():
         "city":        target.get("city"),
         "state":       target.get("state"),
         "tier":        target_tier,
-        "url":         f"https://dchub.cloud/facility/{target['id']}",
+        "url":         _facility_page_url(target),
     }
     if _specs_visible(_tier):
         _target_block["provider"] = target.get("provider")
@@ -1000,7 +1018,7 @@ def score_facility():
                 cur.execute("""
                     SELECT id, name, provider, city, state, country,
                            latitude, longitude, power_mw, status,
-                           source, source_url, confidence_score
+                           source, source_url, confidence_score, canonical_slug
                       FROM discovered_facilities
                      WHERE CAST(id AS TEXT) = %s
                         OR LOWER(slug) = LOWER(%s)
@@ -1020,7 +1038,7 @@ def score_facility():
                     cur.execute("""
                         SELECT id, name, provider, city, state, country,
                                latitude, longitude, power_mw, status,
-                               source, source_url, confidence_score
+                               source, source_url, confidence_score, canonical_slug
                           FROM facilities
                          WHERE CAST(id AS TEXT) = %s
                             OR LOWER(slug) = LOWER(%s)
@@ -1145,7 +1163,7 @@ def score_facility():
         },
         "methodology":         "7 dimensions weighted by user preference. Phase 1 uses state-level baselines for water/climate/tax; Phase 2 integrates real-time water-risk + tax-incentive APIs.",
         "tier":                "developer",   # descriptive only — see module docstring
-        "url":                 f"https://dchub.cloud/facility/{f['id']}",
+        "url":                 _facility_page_url(f),
     }), 200
 
 

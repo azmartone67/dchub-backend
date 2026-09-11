@@ -144,7 +144,8 @@ _SQLITE_DDL = """
 CREATE TABLE discovered_facilities (
   id INTEGER PRIMARY KEY, name TEXT, provider TEXT, power_mw REAL,
   city TEXT, market TEXT, state TEXT, country TEXT,
-  latitude REAL, longitude REAL, duplicate_of_id INTEGER, is_duplicate INTEGER
+  latitude REAL, longitude REAL, duplicate_of_id INTEGER, is_duplicate INTEGER,
+  canonical_slug TEXT
 )
 """
 

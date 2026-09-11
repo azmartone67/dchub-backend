@@ -524,7 +524,7 @@ def facility_page(id_or_slug: str):
                 # discovered_facilities.id raised, silently dropping the
                 # whole nearby section for legacy-resolved pages.
                 cur.execute("""
-                    SELECT id, name, provider, power_mw
+                    SELECT id, name, provider, power_mw, canonical_slug
                       FROM discovered_facilities
                      WHERE city = %s AND state = %s AND CAST(id AS TEXT) != %s
                        AND COALESCE(is_duplicate, 0) = 0
@@ -625,11 +625,19 @@ def _render_facility(f: dict, nearby: list) -> str:
 
     nearby_html = ""
     if nearby:
+        # r-served-slug (2026-09-11): link each neighbour at the slug its page
+        # is SERVED at (stored canonical_slug; a live build only for an unfrozen
+        # row). These were /facility/<id> links, which 301 for every row that
+        # has a slug. A neighbour with no slug is named, not linked.
+        from routes.facility_slug_freeze import frozen_slug_for_row
         items = []
         for n in nearby:
             n_mw = _round(n.get('power_mw'), 1)
             mw_str = f" — {n_mw}MW" if n_mw else ""
-            items.append(f'<li><a href="/facility/{_esc_attr(n["id"])}">{_h(n["name"])}</a> · {_h(n.get("provider") or "Unknown")}{_h(mw_str)}</li>')
+            n_slug = frozen_slug_for_row(n)
+            n_label = (f'<a href="/facilities/{_esc_attr(n_slug)}">{_h(n["name"])}</a>'
+                       if n_slug else _h(n["name"]))
+            items.append(f'<li>{n_label} · {_h(n.get("provider") or "Unknown")}{_h(mw_str)}</li>')
         nearby_html = f"""
   <h2>Other Data Centers in {_h(city)}, {_h(state)}</h2>
   <ul class="facility-list">
@@ -1066,13 +1074,16 @@ def iso_page(code: str):
 
 # AWS region code → (display_query, h1, canonical_facility_slug, operator,
 #                    market_city, market_state, market_slug, country, summary)
-# The slug is the existing static facility URL slug (see
-# dchub-frontend/facilities/ for the canonical files).
+# facility_slug is the page's FROZEN canonical slug — the URL /facilities/
+# serves 200 at. 2026-09-11: these still named the pre-freeze static files
+# (`…-<old hash8>.html`), and all 7 facility links on these 5 landings were
+# 301s (measured live, e.g. …-iad36-cc7fa9f2.html -> …-iad36-db3d106a); each
+# value below is that redirect's measured 200 target.
 AWS_REGION_MAP = {
     "iad36": {
         "query":      "iad36 data center",
         "h1":         "IAD36 Data Center — Digital Realty Northern Virginia (Ashburn)",
-        "facility_slug": "digital-realty-digital-realty-northern-virginia-iad36-cc7fa9f2",
+        "facility_slug": "digital-realty-digital-realty-northern-virginia-iad36-db3d106a",
         "operator":   "Digital Realty",
         "city":       "Ashburn",
         "state":      "VA",
@@ -1090,7 +1101,7 @@ AWS_REGION_MAP = {
     "db1": {
         "query":      "db1 data center",
         "h1":         "DB1 Data Center — Equinix Dublin DB1 (Ireland)",
-        "facility_slug": "equinix-equinix-dublin-db1-3be55f49",
+        "facility_slug": "equinix-equinix-dublin-db1-bc8ad875",
         "operator":   "Equinix",
         "city":       "Dublin",
         "state":      "",
@@ -1108,7 +1119,7 @@ AWS_REGION_MAP = {
     "kix10": {
         "query":      "kix10 data center",
         "h1":         "KIX10 Data Center — Digital Realty Osaka (Japan)",
-        "facility_slug": "digital-realty-digital-realty-osaka-kix10-bdaf59fb",
+        "facility_slug": "digital-realty-digital-realty-osaka-kix10-020bdffa",
         "operator":   "Digital Realty",
         "city":       "Osaka",
         "state":      "",
@@ -1127,7 +1138,7 @@ AWS_REGION_MAP = {
     "sjc29": {
         "query":      "sjc29 data center",
         "h1":         "SJC29 Data Center — Digital Realty Silicon Valley (San Jose)",
-        "facility_slug": "digital-realty-digital-realty-silicon-valley-sjc29-0e364091",
+        "facility_slug": "digital-realty-digital-realty-silicon-valley-sjc29-0dfc8b2e",
         "operator":   "Digital Realty",
         "city":       "San Jose",
         "state":      "CA",
@@ -1144,13 +1155,13 @@ AWS_REGION_MAP = {
     },
 }
 
-# Address → existing static facility URL slug
+# Address → the facility's frozen canonical slug (see AWS_REGION_MAP)
 ADDRESS_MAP = {
     "1725-comstock-st-san-jose": {
         "query":      "1725 Comstock Street San Jose data center",
         "h1":         "Data Center at 1725 Comstock Street, San Jose, CA — Digital Realty SJC Campus",
         "address":    "1725 Comstock St, San Jose, CA 95054",
-        "facility_slug": "digital-realty-digital-realty-sjc-1725-comstock-st-292e0cd6",
+        "facility_slug": "digital-realty-digital-realty-sjc-1725-comstock-st-0380f780",
         "operator":   "Digital Realty",
         "city":       "San Jose",
         "state":      "CA",
@@ -1225,7 +1236,7 @@ def _aws_landing_html(meta: dict, code: str) -> str:
     <tr><th>Operator</th><td>{_h(meta['operator'])}</td></tr>
     <tr><th>Location</th><td>{_h(location)}</td></tr>
     <tr><th>Coordinates</th><td>{meta['lat']}, {meta['lon']}</td></tr>
-    <tr><th>Canonical facility page</th><td><a href="/facilities/{_esc_attr(meta['facility_slug'])}.html">View full facility profile →</a></td></tr>
+    <tr><th>Canonical facility page</th><td><a href="/facilities/{_esc_attr(meta['facility_slug'])}">View full facility profile →</a></td></tr>
   </table>
 </section>
 
@@ -1238,7 +1249,7 @@ def _aws_landing_html(meta: dict, code: str) -> str:
 <section id="cta">
   <h2>Get {_h(code.upper())} intelligence</h2>
   <p>Full facility profile includes power profile, fiber carriers on-net, water risk, M&amp;A history, and live grid scarcity for the campus's ISO/TSO. Free MCP API access for AI agents.</p>
-  <a href="/facilities/{_esc_attr(meta['facility_slug'])}.html" class="cta">View {_h(code.upper())} full profile</a>
+  <a href="/facilities/{_esc_attr(meta['facility_slug'])}" class="cta">View {_h(code.upper())} full profile</a>
   <a href="/signup?from=aws-{_esc_attr(code)}" class="cta secondary">Free MCP API access</a>
 </section>
 
@@ -1348,7 +1359,7 @@ def _address_landing_html(meta: dict, slug: str) -> str:
     <tr><th>Operator</th><td>{_h(meta['operator'])}</td></tr>
     <tr><th>City</th><td>{_h(meta['city'])}, {_h(meta['state'])}</td></tr>
     <tr><th>Coordinates</th><td>{meta['lat']}, {meta['lon']}</td></tr>
-    <tr><th>Canonical facility page</th><td><a href="/facilities/{_esc_attr(meta['facility_slug'])}.html">View full facility profile →</a></td></tr>
+    <tr><th>Canonical facility page</th><td><a href="/facilities/{_esc_attr(meta['facility_slug'])}">View full facility profile →</a></td></tr>
   </table>
 </section>
 
@@ -1356,8 +1367,8 @@ def _address_landing_html(meta: dict, slug: str) -> str:
   <h2>Nearby Comstock Street Data Centers</h2>
   <p>Digital Realty's San Jose campus on Comstock Street includes multiple co-located buildings:</p>
   <ul class="facility-list">
-    <li><a href="/facilities/digital-realty-digital-realty-sjc-1201-comstock-st-7a4315af.html">1201 Comstock St</a> — Digital Realty SJC</li>
-    <li><a href="/facilities/digital-realty-digital-realty-sjc-1525-comstock-st-f9a76d78.html">1525 Comstock St</a> — Digital Realty SJC</li>
+    <li><a href="/facilities/digital-realty-digital-realty-sjc-1201-comstock-st-9fdc26b7">1201 Comstock St</a> — Digital Realty SJC</li>
+    <li><a href="/facilities/digital-realty-digital-realty-sjc-1525-comstock-st-b674f406">1525 Comstock St</a> — Digital Realty SJC</li>
     <li><strong>1725 Comstock St</strong> — Digital Realty SJC (this page)</li>
   </ul>
   <p><a href="/markets/{_esc_attr(meta['market_slug'])}">All San Jose data centers →</a></p>
@@ -1366,7 +1377,7 @@ def _address_landing_html(meta: dict, slug: str) -> str:
 <section id="cta">
   <h2>Get the full {_h(meta['address'])} profile</h2>
   <p>Full profile includes power capacity, fiber on-net carriers, water risk, M&amp;A history, and live CAISO grid intelligence.</p>
-  <a href="/facilities/{_esc_attr(meta['facility_slug'])}.html" class="cta">View full facility profile</a>
+  <a href="/facilities/{_esc_attr(meta['facility_slug'])}" class="cta">View full facility profile</a>
   <a href="/signup?from=address-{_esc_attr(slug)}" class="cta secondary">Free MCP API access</a>
 </section>"""
 
@@ -1467,10 +1478,10 @@ def interxion_frankfurt_landing():
 <section id="campuses">
   <h2>Interxion / Digital Realty Frankfurt Campuses</h2>
   <ul class="facility-list">
-    <li><a href="/facilities/digital-realty-interxion-frankfurt-0e94f4d2.html">Interxion Frankfurt (FRA1+ campus)</a></li>
-    <li><a href="/facilities/digital-realty-digital-realty-frankfurt-fra1-16-3ab4cbfd.html">Digital Realty Frankfurt FRA1&ndash;16</a></li>
-    <li><a href="/facilities/digital-realty-digital-realty-frankfurt-fra28-94e84073.html">Digital Realty Frankfurt FRA28</a></li>
-    <li><a href="/facilities/digital-realty-digital-realty-frankfurt-fra29-32-26e01077.html">Digital Realty Frankfurt FRA29&ndash;32</a></li>
+    <li><a href="/facilities/digital-realty-interxion-frankfurt-fra15-0789f0fc">Interxion Frankfurt (FRA1+ campus)</a></li>
+    <li><a href="/facilities/digital-realty-digital-realty-frankfurt-fra1-16-94e57daf">Digital Realty Frankfurt FRA1&ndash;16</a></li>
+    <li><a href="/facilities/digital-realty-digital-realty-frankfurt-fra28-74f46a44">Digital Realty Frankfurt FRA28</a></li>
+    <li><a href="/facilities/digital-realty-digital-realty-frankfurt-fra29-32-7d3edc16">Digital Realty Frankfurt FRA29&ndash;32</a></li>
   </ul>
   <p><a href="/markets/frankfurt-de">All Frankfurt data centers (full market roll-up) &rarr;</a></p>
 </section>

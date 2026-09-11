@@ -2198,6 +2198,53 @@ def markets_hub_page():
     return resp
 
 
+def _market_facility_links_html(name):
+    """The "Data centers in <market>" list on /markets/<slug>, or "" for none.
+
+    ★ r-served-slug (2026-09-11): each facility is linked at the slug its page
+    is SERVED at — the stored canonical_slug, and a live build only for a row
+    the freeze has not reached (facility_slug_freeze.frozen_slug_for_row). This
+    list used to REBUILD the slug, which for every row frozen with the doubled
+    provider prefix is an alias that 301s to the stored one; the same list on
+    /dcpi/<slug> measured 82 of 257 facility links as 301s (see
+    routes/dcpi.py _dcpi_facility_list_html). A row with no slug is listed by
+    name, unlinked."""
+    from routes.facility_profile_page import _esc as _fesc
+    from routes.facility_slug_freeze import frozen_slug_for_row
+    _c3 = _conn()
+    if _c3 is None:
+        return ""
+    try:
+        with _c3.cursor() as _fcur:
+            _fcur.execute("""
+                SELECT id, name, provider, power_mw, canonical_slug
+                  FROM discovered_facilities
+                 WHERE market = %s AND name IS NOT NULL AND name <> ''
+                   AND (country IN ('US','USA','United States')
+                        OR country IS NULL OR country='')
+                 ORDER BY power_mw DESC NULLS LAST
+                 LIMIT 50
+            """, (name,))
+            _frows = _fcur.fetchall() or []
+    finally:
+        try: _c3.close()
+        except Exception: pass
+    if not _frows:
+        return ""
+    _items = []
+    for _rid, _rname, _rprov, _rpow, _rcanon in _frows:
+        _slug = frozen_slug_for_row(
+            {"provider": _rprov, "name": _rname, "canonical_slug": _rcanon})
+        _label = _fesc(_rname)
+        if _slug:
+            _label = f'<a href="/facilities/{_fesc(_slug)}">{_label}</a>'
+        _items.append(
+            f'<li>{_label}'
+            f'{(" &middot; " + str(round(_rpow)) + " MW") if _rpow else ""}</li>')
+    return (f'<h2>Data centers in {name}</h2>'
+            f'<ul class="fac-list">{"".join(_items)}</ul>')
+
+
 @market_deep_dive_bp.route("/markets/<slug>", methods=["GET"])
 def market_short_html(slug):
     """Top-level /markets/<slug>. Prefers the cached deep-dive narrative;
@@ -2529,35 +2576,11 @@ def market_short_html(slug):
     # crawl ISLAND — every hub page that should funnel link-equity into them
     # rendered ZERO facility links, so Google left ~21k pages unindexed.
     # Emit the top facilities IN this market as real <a href="/facilities/…">
-    # links using the populated `market` column (96.7% of rows) + the
-    # canonical slug builder so the URLs match the sitemap exactly.
+    # links using the populated `market` column (96.7% of rows), each at the
+    # slug its page is SERVED at — see _market_facility_links_html.
     fac_links_html = ""
     try:
-        from routes.facility_profile_page import _fac_slug as _fslug, _esc as _fesc
-        _c3 = _conn()
-        if _c3 is not None:
-            try:
-                with _c3.cursor() as _fcur:
-                    _fcur.execute("""
-                        SELECT id, name, provider, power_mw
-                          FROM discovered_facilities
-                         WHERE market = %s AND name IS NOT NULL AND name <> ''
-                           AND (country IN ('US','USA','United States')
-                                OR country IS NULL OR country='')
-                         ORDER BY power_mw DESC NULLS LAST
-                         LIMIT 50
-                    """, (name,))
-                    _frows = _fcur.fetchall() or []
-            finally:
-                try: _c3.close()
-                except Exception: pass
-            if _frows:
-                _items = "".join(
-                    f'<li><a href="/facilities/{_fslug(_rid, _rprov, _rname)}">{_fesc(_rname)}</a>'
-                    f'{(" &middot; " + str(round(_rpow)) + " MW") if _rpow else ""}</li>'
-                    for _rid, _rname, _rprov, _rpow in _frows)
-                fac_links_html = (f'<h2>Data centers in {name}</h2>'
-                                  f'<ul class="fac-list">{_items}</ul>')
+        fac_links_html = _market_facility_links_html(name)
     except Exception:
         pass
 
