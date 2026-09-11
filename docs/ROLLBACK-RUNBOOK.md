@@ -129,6 +129,15 @@ something **older**. One correct rollback becomes an over-rollback.
 So a second actor arriving after a rollback does nothing, which is right. The
 manual CLI can override with `--force` when a human is sure nobody else acted.
 
+The guard cannot tell a rollback from a deploy that is young because it just
+landed, so `auto-rollback.yml`'s push lane **holds its decision** until the
+deploy it measured is past this window plus 120s
+(`scripts/hold_past_stacking_window.py`). Before the hold it decided ~6.5
+minutes after a merge, and every rollback it ordered was refused. The 120s
+clears the sentinel's 60s cadence, so an armed sentinel acts first and the push
+lane is then refused. The hold never waits out a live deployment that does not
+carry the pushed commit, and the guard itself is unchanged.
+
 ### ⚠️ Arm only one
 
 If `RAILWAY_TOKEN` is set as a **GitHub secret** *and* the sentinel is armed,
@@ -156,7 +165,9 @@ minutes), not a fixed sleep. If the commit never goes live, that run takes **no
 samples and rolls nothing back**: the build answering is the one from before the
 commit, and by then the 10-minute anti-stacking guard no longer holds a rollback
 back. The run fails red and opens (or bumps) one `slo-gate: post-deploy SLO
-check did not run` issue instead. The scheduled lane does not wait and is
+check did not run` issue instead. Once the commit is live, the push lane holds
+until the deploy is past the anti-stacking window (above), so a rollback it
+decides can execute. The scheduled lane neither waits nor holds, and is
 unaffected.
 
 ## Manual path

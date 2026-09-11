@@ -27,6 +27,10 @@ anyway"). Pinned here:
     way the runner decides it: nothing reaches production, auto-rollback rolls
     nothing back and files a report instead, the brain guard grades nothing —
     and the cron/dispatch paths run exactly the steps they always did.
+  * THE PUSH LANE DECIDES PAST THE ANTI-STACKING WINDOW, checked against
+    railway_rollback's own guard: a burn on the landed commit gets a rollback
+    target, an armed sentinel's rollback still wins, and the hold never waits
+    one out.
 """
 from __future__ import annotations
 
@@ -328,9 +332,10 @@ ACTING = {
     "link-check.yml": Lane("link-check", lambda s: s.get("id") == "crawl", 900),
     # the checks' share of the old 5-minute budget (they took 17s)
     "dchub-qa.yml": Lane("qa-check", lambda s: s.get("id") == "qa", 280),
+    # the hold past the stacking window (600 + 120 - 240 = 480s at most), then
     # the old 25 minutes less the 240s sleep: 5 samples, a rollback polling up
     # to 420s for recovery, the revert branch, the issue
-    "auto-rollback.yml": Lane("check-and-rollback", lambda s: s.get("id") == "probe", 1260),
+    "auto-rollback.yml": Lane("check-and-rollback", lambda s: s.get("id") == "probe", 1740),
     # the probe (~47s), a rollback (~510s), the revert branch, comment,
     # callback (30s) and beat (20s)
     "brain-pr-post-merge-guard.yml": Lane(
@@ -625,8 +630,8 @@ def test_a_burn_on_the_landed_commit_still_rolls_back_and_alerts():
     steps = _wiring("auto-rollback.yml")[1]
     ran = _simulate(steps, "push", ends={"railway": "failure", "revertpr": "failure"}, outputs={
         **_BURN, "railway": {"outcome": "failed-rc2"}, "revertpr": {"outcome": "branch-pushed-no-pr"}})
-    assert ran == ["actions/checkout@v5", "deploy_wait", "probe", "decide", "railway",
-                   "revertpr", "Open issue", _RB_FAIL], ran
+    assert ran == ["actions/checkout@v5", "deploy_wait", "stacking_window", "probe", "decide",
+                   "railway", "revertpr", "Open issue", _RB_FAIL], ran
 
 
 @pytest.mark.parametrize("event,inputs,scenario,expected", [
@@ -808,3 +813,181 @@ def test_a_measured_merge_still_gets_its_verdict_comment():
     assert "PASSED" in _brain_comment("success", {"probe.verdict": "healthy", "probe.status": "ok"})
     broken = _brain_comment("success", {"probe.verdict": "broken", "revert.reverted": "true"})
     assert "FAILED" in broken and "rolled back to the previous deployment" in broken
+
+
+# ── auto-rollback: the push lane decides past the anti-stacking window ───────
+# railway_rollback.py refuses while the live deployment is under 600s old. The
+# push lane decided ~6.5 min after a merge, so its own fresh deploy blocked every
+# rollback it ordered. It now holds after the deploy wait until the decision
+# lands past the window. Checked against the rollback script's REAL guard.
+
+HOLD = ROOT / "scripts" / "hold_past_stacking_window.py"
+SENTINEL = ROOT / "routes" / "slo_rollback_sentinel.py"
+T0 = 1_800_000_000.0        # the pushed deploy's createdAt
+
+
+@pytest.fixture(scope="module")
+def hold():
+    spec = importlib.util.spec_from_file_location("hold_past_stacking_window", HOLD)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _dep(dep_id, status, sha, created):
+    return {"id": dep_id, "status": status, "canRollback": True, "meta": {"commitHash": sha},
+            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(created))}
+
+
+def _hold_config(hold):
+    """The hold step's own command line, parsed by the script's real argparse."""
+    steps = _wiring("auto-rollback.yml")[1]
+    hits = [s for s in steps if "scripts/hold_past_stacking_window.py" in _code(s)]
+    assert len(hits) == 1, f"{len(hits)} hold steps in auto-rollback.yml, want exactly 1"
+    lines = [l for l in _code(hits[0]).splitlines() if "hold_past_stacking_window.py" in l]
+    assert len(lines) == 1
+    argv = shlex.split(lines[0])
+    assert argv[:2] == ["python3", "scripts/hold_past_stacking_window.py"]
+    return hold.parser().parse_args([a.replace("$EXPECT_SHA", EXPECT) for a in argv[2:]])
+
+
+def _sampler_min_s():
+    """Run the probe step's REAL shell with `sleep` and `curl` stubbed and add up
+    the sleeps: the least time between the hold and the rollback decision."""
+    probe = _step("auto-rollback.yml", "probe")
+    with tempfile.TemporaryDirectory() as d:
+        bin_dir, log = pathlib.Path(d, "bin"), pathlib.Path(d, "sleeps")
+        bin_dir.mkdir()
+        (bin_dir / "sleep").write_text('#!/usr/bin/env bash\necho "$1" >> "$SLEEP_LOG"\n')
+        (bin_dir / "curl").write_text(
+            "#!/usr/bin/env bash\necho '{\"verdict\": \"within_budget\", \"global_err_pct\": 0}'\n")
+        for f in ("sleep", "curl"):
+            (bin_dir / f).chmod(0o755)
+        proc = subprocess.run(["bash", "-c", probe["run"]], cwd=d, capture_output=True, text=True,
+                              timeout=60, env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+                                               "SLEEP_LOG": str(log),
+                                               "GITHUB_OUTPUT": str(pathlib.Path(d, "out"))})
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.count("verdict=within_budget") == 5, proc.stdout
+        return sum(float(x) for x in log.read_text().split())
+
+
+def test_the_hold_sits_between_the_deploy_wait_and_the_samples_on_the_push_path():
+    _, steps, i_wait, i_probe = _wiring("auto-rollback.yml")
+    hits = [i for i, s in enumerate(steps) if "scripts/hold_past_stacking_window.py" in _code(s)]
+    assert len(hits) == 1
+    step = steps[hits[0]]
+    assert i_wait < hits[0] < i_probe, "the hold follows the deploy wait and precedes the samples"
+    assert step.get("if") == "github.event_name == 'push'", "cron and dispatch decide as before"
+    env = step.get("env") or {}
+    assert env.get("RAILWAY_TOKEN") == "${{ secrets.RAILWAY_TOKEN }}"
+    assert env.get("GH_TOKEN") == "${{ secrets.GITHUB_TOKEN }}"
+    assert env.get("EXPECT_SHA") == "${{ github.sha }}"
+
+
+def test_the_decision_after_the_hold_is_one_the_guard_lets_through(hold):
+    """★ The point of the change, pinned with railway_rollback's own guard: a burn
+    on the landed commit, decided at the earliest the wiring allows, gets a
+    rollback target. Decided at the old timing, the guard refused it."""
+    rb, cfg, sampler = hold.rb, _hold_config(hold), _sampler_min_s()
+    assert cfg.before_decision <= sampler, (
+        f"the hold counts on {cfg.before_decision}s before the decision; the samples take {sampler:g}s")
+    deps = [_dep("live", "SUCCESS", EXPECT, T0), _dep("prev", "REMOVED", BEFORE, T0 - 3600)]
+    kind, created, why = hold.plan(deps, EXPECT, lambda e, r: None)
+    assert (kind, created) == ("hold", T0), why
+    decided_at = created + rb.MIN_CURRENT_AGE_S + cfg.margin - cfg.before_decision + sampler
+    _, target, reason = rb.pick_rollback_target(deps, now=decided_at)
+    assert target is not None and target["id"] == "prev", reason
+    # control: the old push lane decided after the deploy wait (~134s) and the samples
+    _, target, reason = rb.pick_rollback_target(deps, now=T0 + 134 + sampler)
+    assert target is None and "refusing to stack" in reason, reason
+
+
+def test_an_armed_sentinel_acts_first_and_the_push_lane_is_then_refused(hold):
+    """The sentinel acts on its first sample past the window — by T0 + 600 +
+    its interval. The margin puts this lane's decision after that, so it finds
+    the sentinel's rollback, a young deployment, and is refused: one rollback."""
+    rb, cfg = hold.rb, _hold_config(hold)
+    m = re.search(r'"SLO_SENTINEL_INTERVAL_S", "(\d+)"', SENTINEL.read_text(encoding="utf-8"))
+    assert m, "the sentinel's cadence moved: re-derive the hold's margin from it"
+    assert cfg.margin > int(m.group(1)), f"margin {cfg.margin}s does not clear a {m.group(1)}s cadence"
+    sentinel_at = T0 + rb.MIN_CURRENT_AGE_S + int(m.group(1))
+    decided_at = T0 + rb.MIN_CURRENT_AGE_S + cfg.margin - cfg.before_decision + _sampler_min_s()
+    assert decided_at > sentinel_at
+    deps = [_dep("sentinel-rollback", "SUCCESS", BEFORE, sentinel_at),
+            _dep("pushed", "REMOVED", EXPECT, T0), _dep("prev", "REMOVED", BEFORE, T0 - 3600)]
+    _, target, reason = rb.pick_rollback_target(deps, now=decided_at)
+    assert target is None and "refusing to stack" in reason, reason
+
+
+@pytest.mark.parametrize("live_sha,contains", [
+    (BEFORE, False), (None, None), (AFTER, None)],
+    ids=["an-older-commit-is-live", "the-live-deployment-names-no-commit", "ancestry-unknown"])
+def test_the_hold_never_waits_out_someone_elses_rollback(hold, live_sha, contains):
+    """A live deployment that does not carry the push is a rollback, or a deploy
+    this run never measured. Holding past ITS window would disarm the guard for
+    exactly the case it exists for."""
+    live = _dep("live", "SUCCESS", live_sha, T0 + 300)
+    if live_sha is None:
+        live["meta"] = {}
+    kind, created, why = hold.plan([live, _dep("pushed", "REMOVED", EXPECT, T0)], EXPECT,
+                                   lambda e, r: contains)
+    assert kind == "skip" and created is None, why
+
+
+def test_a_later_commit_containing_the_push_is_held_on(hold):
+    kind, created, why = hold.plan([_dep("live", "SUCCESS", AFTER, T0)], EXPECT, lambda e, r: True)
+    assert (kind, created) == ("hold", T0), why
+
+
+def test_no_hold_while_a_newer_deployment_is_on_its_way(hold):
+    deps = [_dep("next", "BUILDING", AFTER, T0 + 200), _dep("live", "SUCCESS", EXPECT, T0)]
+    kind, _, why = hold.plan(deps, EXPECT, lambda e, r: True)
+    assert kind == "skip" and "on its way" in why, why
+
+
+def _run_hold(hold, monkeypatch, *, token="t", deployments=None, fail=None):
+    """main() on a fake clock that starts where the deploy wait lands, 140s
+    after the pushed deploy was created."""
+    clock = _Clock()
+    clock.t = T0 + 140
+
+    def fake_list(tok, *a, **kw):
+        assert token, "listed Railway deployments without a token"
+        if fail:
+            raise hold.rb.RailwayError(fail)
+        return deployments
+
+    monkeypatch.setattr(hold.rb, "list_deployments", fake_list)
+    monkeypatch.setattr(hold.wait, "github_contains", lambda *a: (lambda e, r: None))
+    if token:
+        monkeypatch.setenv("RAILWAY_TOKEN", token)
+    else:
+        monkeypatch.delenv("RAILWAY_TOKEN", raising=False)
+    rc = hold.main(["--expect", EXPECT, "--margin", "120", "--before-decision", "240"],
+                   clock=clock.now, sleep=clock.sleep)
+    return rc, clock
+
+
+def test_main_holds_until_the_decision_can_land_past_the_window(hold, monkeypatch):
+    rc, clock = _run_hold(hold, monkeypatch, deployments=[_dep("live", "SUCCESS", EXPECT, T0)])
+    assert rc == 0
+    assert clock.t == T0 + hold.rb.MIN_CURRENT_AGE_S + 120 - 240, clock.t
+    assert max(clock.sleeps) <= 30, "the hold keeps its log alive in short sleeps"
+
+
+def test_main_without_a_token_holds_nothing(hold, monkeypatch):
+    rc, clock = _run_hold(hold, monkeypatch, token="")
+    assert rc == 0 and clock.sleeps == []
+
+
+def test_main_holds_the_full_bound_when_railway_cannot_be_read(hold, monkeypatch):
+    """Unreadable never makes it act sooner: the whole span, from now."""
+    rc, clock = _run_hold(hold, monkeypatch, fail="Not Authorized")
+    assert rc == 0
+    assert clock.t == T0 + 140 + hold.rb.MIN_CURRENT_AGE_S + 120 - 240, clock.t
+
+
+def test_main_does_not_hold_on_someone_elses_deployment(hold, monkeypatch):
+    rc, clock = _run_hold(hold, monkeypatch, deployments=[_dep("live", "SUCCESS", BEFORE, T0 + 100)])
+    assert rc == 0 and clock.sleeps == []
