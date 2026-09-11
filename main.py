@@ -15958,9 +15958,8 @@ def stripe_webhook():
                     # on the Stripe session id (grant_credit_pack dedupes).
                     from routes.mcp_conversion_plays import (
                         grant_credit_pack as _gcp, PACK5_CREDITS as _p5c,
-                        PACK5_EXPIRY_DAYS as _p5e, PACK5_PRICE_CENTS as _p5pc,
-                        PACK10_CREDITS as _p10c, PACK10_EXPIRY_DAYS as _p10e,
-                        PACK10_PRICE_CENTS as _p10pc)
+                        PACK5_PRICE_CENTS as _p5pc,
+                        PACK10_CREDITS as _p10c, PACK10_PRICE_CENTS as _p10pc)
                     # SECURITY (adversarial review 2026-06-24): client_reference_id is
                     # attacker-controllable, so VERIFY the buyer actually paid a PACK
                     # price (mode=payment + amount==PACK5 or PACK10 pre/post-tax, mirroring
@@ -15971,7 +15970,8 @@ def stripe_webhook():
                     # this pk- (durable-key) branch previously accepted ONLY $5 — so a keyed
                     # $10 purchase was REJECTED and the durable-key credit silently no-op'd
                     # (the durable-key pack fix was inert for the real price). Accept both,
-                    # granting the credits/expiry of whichever pack was actually paid.
+                    # granting the credits of whichever pack was actually paid. Credits
+                    # never expire (2026-09-11) — see PACK_NEVER_EXPIRES.
                     _pk_mode = (data.get('mode') or '').lower()
                     _pk_amt  = int(data.get('amount_total') or 0)
                     _pk_sub  = int(data.get('amount_subtotal') or 0)
@@ -15981,7 +15981,6 @@ def stripe_webhook():
                         _pk_grant = _gcp(None, None, (_p10c if _pk_is10 else _p5c),
                                          stripe_session_id=data.get('id'),
                                          source=('pack10_keybound' if _pk_is10 else 'pack5_keybound'),
-                                         expires_days=(_p10e if _pk_is10 else _p5e),
                                          api_key_hash=ref[3:].strip())
                         print(f"💳 Key-bound pack redemption: {_pk_grant}")
                     else:
@@ -16073,8 +16072,8 @@ def stripe_webhook():
             # reserved tu- ref (handled above) so it's excluded here. Fail-soft.
             try:
                 from routes.mcp_conversion_plays import (
-                    PACK5_PRICE_CENTS, PACK5_CREDITS, PACK5_EXPIRY_DAYS,
-                    PACK10_PRICE_CENTS, PACK10_CREDITS, PACK10_EXPIRY_DAYS,
+                    PACK5_PRICE_CENTS, PACK5_CREDITS,
+                    PACK10_PRICE_CENTS, PACK10_CREDITS,
                     grant_credit_pack)
                 _p5_mode = (data.get('mode') or '').lower()
                 _p5_amt  = int(data.get('amount_total') or 0)
@@ -16107,13 +16106,12 @@ def stripe_webhook():
                 # r-pack10 (2026-06-25): recognize a 2nd one-time credit pack —
                 # the repurposed ex-metered link ($10 one-time = 1,000 calls,
                 # price_1TmOic…). Match either pack by its PRE-TAX subtotal (or
-                # total) and grant that pack's credits/expiry. Both currently
-                # grant 1,000 / 90-day; each is env-configurable so they can
-                # diverge without more code.
+                # total) and grant that pack's credits. Both currently grant
+                # 1,000; each is env-configurable so they can diverge without
+                # more code. Neither expires (2026-09-11, PACK_NEVER_EXPIRES).
                 _p10 = PACK10_PRICE_CENTS in (_p5_sub, _p5_amt)
                 _pack_credits = PACK10_CREDITS if _p10 else PACK5_CREDITS
                 _pack_src = 'pack10' if _p10 else 'pack5'
-                _pack_expiry = PACK10_EXPIRY_DAYS if _p10 else PACK5_EXPIRY_DAYS
                 # ★ …and the PRICE, which was the one member of this set that
                 # was not per-pack. grant_credit_pack hardcoded
                 # PACK5_PRICE_CENTS, so a $10 sale recorded as $5.
@@ -16147,7 +16145,7 @@ def stripe_webhook():
                     _p5_grant = grant_credit_pack(
                         _p5_key, _p5_sess or None, _pack_credits,
                         stripe_session_id=data.get('id'), source=_pack_src,
-                        expires_days=_pack_expiry, price_cents=_pack_price)
+                        price_cents=_pack_price)
                     print(f"💳 Pack grant ({_pack_src}): key={_p5_key[:14]}… email={_p5_email or '(none)'} "
                           f"newmint={_p5_newmint} grant={_p5_grant}")
                     # r-pack5-conv (2026-06-17): RECORD the pack sale as an
