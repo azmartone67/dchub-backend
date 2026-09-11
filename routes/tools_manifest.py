@@ -70,6 +70,11 @@ _TOOL_REST = {
     "get_agent_registry":     ("/api/v1/ai-platforms/status", "GET"),
     "get_backup_status":      ("/api/health/data-freshness", "GET"),
     "why_dchub":              ("/api/v1/competitive/why-dchub", "GET"),
+    # pocket listings (2026-09-11) — routes/exclusive_listings.py. With no slug,
+    # request_listing_intro registers a standing requirement instead, at
+    # POST /api/v1/listings/interest.
+    "get_pocket_listings":    ("/api/v1/listings", "GET"),
+    "request_listing_intro":  ("/api/v1/listings/<slug>/intro", "POST"),
     # ★ 2026-09-03 — /api/v1/facilities/export has never been registered
     #   (no route definition anywhere in the repo) and answered 404 live.
     #   This map is what agents follow to find a tool's REST equivalent,

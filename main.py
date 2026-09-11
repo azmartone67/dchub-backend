@@ -44030,7 +44030,7 @@ try:
         html = """<!doctype html>
 <html><head><meta charset="utf-8">
 <title>Pocket Listings — DC Hub</title>
-<meta name="description" content="Curated pre-market data center capacity listings — exclusive opportunities for tenants and buyers.">
+<meta name="description" content="Off-market data center capacity DC Hub is onboarding — browse teaser cards, sign in to open a listing, and let DC Hub introduce you to the operator.">
 <link rel="canonical" href="https://dchub.cloud/pocket-listings">
 <style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;
 margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.55;background:#fafbfc}
@@ -44046,23 +44046,28 @@ color:white;padding:.6rem 1.25rem;border-radius:6px;font-weight:600;
 text-decoration:none;margin-top:1rem}</style>
 </head><body>
 <h1>Pocket Listings</h1>
-<p class="lead">Curated pre-market data center capacity listings — exclusive opportunities for tenants, buyers, and brokers.</p>
+<p class="lead">Off-market data center capacity — powered shells, available capacity and development sites that are not publicly marketed. The first listings are being onboarded now.</p>
 <div class="card">
-<h2>How to browse</h2>
-<p>The pocket listings dataset is currently surfaced through:</p>
+<h2>How it works</h2>
 <ul>
- <li><strong>MCP tools</strong> — call <code>get_pocket_listings</code> (IDENTIFIED tier) or <code>get_pocket_listing</code> from your AI agent at <a href="/mcp">/mcp</a>.</li>
- <li><strong>REST API</strong> — <a href="/api/v1/listings">/api/v1/listings</a> returns the live JSON feed.</li>
- <li><strong>Spare Capacity Marketplace</strong> — operators can list their own capacity at <a href="/spare-capacity">/spare-capacity</a> for tenant discovery.</li>
+ <li><strong>Browse</strong> — teaser cards (market, state, capacity) are open to everyone at <a href="https://dchub.cloud/listings">dchub.cloud/listings</a>.</li>
+ <li><strong>Sign in to open a listing</strong> — full listing detail needs a signed-in account, or an AI agent using a key with an email bound or an OAuth connection.</li>
+ <li><strong>Request an introduction</strong> — DC Hub makes the introduction to the operator. Operator contact details are never published, and every registered lead has a public verification record.</li>
+ <li><strong>Nothing that fits yet?</strong> Register a requirement to get first access when matching listings open.</li>
 </ul>
+<a class="cta" href="https://dchub.cloud/listings">Browse pocket listings →</a>
+</div>
+<div class="card">
+<h2>From an AI agent</h2>
+<p>Connect to <a href="/mcp">/mcp</a> and call <code>get_pocket_listings</code> to browse teasers and open a listing, then <code>request_listing_intro</code> to request an introduction or register a requirement. The REST feed is <a href="/api/v1/listings">/api/v1/listings</a>.</p>
+</div>
+<div class="card">
+<h2>Have spare capacity?</h2>
+<p>Operators can list their own capacity at <a href="/spare-capacity">/spare-capacity</a> for tenant discovery.</p>
 <a class="cta" href="/spare-capacity">List your spare capacity →</a>
 </div>
-<div class="card">
-<h2>What's coming</h2>
-<p class="muted">A full HTML browser for pocket listings (filters, map view, broker-attribution tracking) is queued for the next phase. Until then, the MCP + REST surfaces are the canonical access path.</p>
-</div>
 <p class="muted" style="text-align:center;margin-top:3rem">
- Part of <a href="/">DC Hub</a> · <a href="/spare-capacity">Spare capacity</a> · <a href="/transactions">Transactions</a> · <a href="/api-docs">API docs</a>
+ Part of <a href="/">DC Hub</a> · <a href="https://dchub.cloud/listings">Pocket listings</a> · <a href="/spare-capacity">Spare capacity</a> · <a href="/transactions">Transactions</a> · <a href="/api-docs">API docs</a>
 </p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
