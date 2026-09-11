@@ -140,11 +140,11 @@ def test_the_retired_start_quotes_the_pack_as_it_is_now(monkeypatch, credits, ce
     """Read from the pack constants on every call, never frozen into the copy:
     move them and the message moves with them."""
     monkeypatch.setattr(mcp, "_conn", _no_db)
-    monkeypatch.setattr(mcp, "PACK5_URL", "https://buy.stripe.com/test_pack_link")
+    monkeypatch.setattr(mcp, "PACK5_URL", "https://example.invalid/pack-checkout")
     monkeypatch.setattr(mcp, "PACK10_CREDITS", credits)
     monkeypatch.setattr(mcp, "PACK10_PRICE_CENTS", cents)
     body = _app().post("/api/v1/mcp/topup/start", json={}).get_json()
-    assert body["pack_url"] == "https://buy.stripe.com/test_pack_link", body
+    assert body["pack_url"] == "https://example.invalid/pack-checkout", body
     assert body["credits"] == credits and body["price_usd"] == cents / 100, body
     assert quoted in body["message"], body["message"]
 
