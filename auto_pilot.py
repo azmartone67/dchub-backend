@@ -634,7 +634,15 @@ def seo_status():
 
 @autopilot_bp.route('/api/autopilot/seo/run', methods=['POST'])
 def seo_run():
-    """Manually trigger SEO promotion cycle"""
+    """Manually trigger SEO promotion cycle.
+
+    NOTE: this is the DEAD TWIN — Blueprint('autopilot') here is never
+    registered (the live route is routes/autopilot_routes.py). Gated anyway,
+    for the same reason social_test above is: a future re-registration must not
+    reintroduce the hole. run_seo_promotion() reaches ping_indexnow.
+    """
+    if not require_internal_or_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
     try:
         from seo_promotion_engine import run_seo_promotion
         result = run_seo_promotion()

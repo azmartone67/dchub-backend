@@ -169,6 +169,9 @@
     "test_llm_spend.py": {
       "pglob": 660
     },
+    "test_locked_gate_manifest_post_only.py": {
+      "glob": 670
+    },
     "test_no_provider_key_in_url.py": {
       "pglob": 1950
     },
@@ -213,6 +216,9 @@
     },
     "test_route_auth_master_shell.py": {
       "glob": 660
+    },
+    "test_route_auth_shell_transitive_reach.py": {
+      "pglob": 2100
     },
     "test_scaffold_evidence_reconcile.py": {
       "pglob": 20

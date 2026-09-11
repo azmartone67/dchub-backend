@@ -681,7 +681,18 @@ def seo_status():
 
 @autopilot_bp.route('/api/autopilot/seo/run', methods=['POST'])
 def seo_run():
-    """Manually trigger SEO promotion cycle"""
+    """Manually trigger SEO promotion cycle.
+
+    Fail-closed gate: run_seo_promotion() -> ping_indexnow submits URLs to
+    Bing/Yandex under DC Hub's IndexNow key, so an anonymous POST spent our
+    submission quota. /api/autopilot/seo/run is listed 'enterprise' in main.py's
+    LOCKED_GATE_MANIFEST, but the boot canary (verify_tier_gating) probes every
+    manifest path with client.get() and scores 405 as 'gated' -- this route is
+    POST-only, so its 405 on GET counted as enforcement and the POST surface was
+    never tested. The gate goes FIRST, before the engine import.
+    """
+    if not require_internal_or_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
     try:
         from seo_promotion_engine import run_seo_promotion
         result = run_seo_promotion()

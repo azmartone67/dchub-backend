@@ -330,7 +330,6 @@
         <div class="hdr-right">
             <a href="/" class="hdr-btn">← Platform</a>
             <a href="/api-docs" class="hdr-btn">API Docs</a>
-            <button class="hdr-btn accent" onclick="forceOutreach()">▶ Run Outreach</button>
         </div>
     </div>
 </header>
@@ -410,7 +409,6 @@
                     <span class="ob-val" id="organicVal" style="color:var(--amber);">Monitoring...</span>
                 </div>
                 <div class="disco-actions">
-                    <button class="da-btn primary" id="forceBtn" onclick="forceOutreach()">▶ Force Cycle</button>
                     <button class="da-btn" onclick="openPitch()">📝 View Pitch</button>
                     <button class="da-btn" onclick="openEP('/api/outreach/social-posts')">📱 Social Templates</button>
                     <button class="da-btn" onclick="openEP('/api/outreach/directories')">📁 Directory Info</button>
@@ -493,7 +491,7 @@
             <div class="ep-card" onclick="openEP('/api/outreach/pitch')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/pitch</div><div class="ep-desc">Current AI pitch</div></div>
             <div class="ep-card" onclick="openEP('/api/outreach/social-posts')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/social-posts</div><div class="ep-desc">Social templates</div></div>
             <div class="ep-card" onclick="openEP('/api/outreach/directories')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/directories</div><div class="ep-desc">Directory info</div></div>
-            <div class="ep-card" onclick="forceOutreach()"><span class="ep-method post">POST</span><div class="ep-path">/api/outreach/run</div><div class="ep-desc">Force outreach cycle</div></div>
+            <div class="ep-card"><span class="ep-method post">POST</span><div class="ep-path">/api/outreach/run</div><div class="ep-desc">Force outreach cycle &mdash; admin only</div></div>
             <div class="ep-card" onclick="openEP('/api/agents/stats')"><span class="ep-method get">GET</span><div class="ep-path">/api/agents/stats</div><div class="ep-desc">All agent stats</div></div>
             <div class="ep-card" onclick="openEP('/api/agents/logs')"><span class="ep-method get">GET</span><div class="ep-path">/api/agents/logs</div><div class="ep-desc">Activity logs</div></div>
         </div>
@@ -541,12 +539,6 @@ async function loadOrganic() {
             el.textContent=d.platforms.length+' platform(s) detected!'; el.style.color='var(--green)';
         } else { el.textContent='No organic traffic yet'; el.style.color='var(--amber)'; }
     } catch(e){ document.getElementById('organicVal').textContent='Monitoring...'; }
-}
-async function forceOutreach() {
-    const b=document.getElementById('forceBtn'); b.disabled=true; b.textContent='⏳ Running...';
-    try { await fetch(API+'/api/outreach/run',{method:'POST'}); b.textContent='✅ Done!'; loadStatus(); loadLog();
-    } catch(e){ b.textContent='❌ Error'; }
-    setTimeout(()=>{ b.textContent='▶ Force Cycle'; b.disabled=false; },2000);
 }
 async function openPitch() {
     try { const r=await fetch(API+'/api/outreach/pitch'), d=await r.json();

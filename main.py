@@ -45,7 +45,8 @@ from routes.dcpi_mcp import dcpi_mcp_bp
 from routes.outreach import outreach_bp
 # phase69_gating_rollout -- gating.js + data-gate attrs added
 from dotenv import load_dotenv
-from internal_auth import is_valid_internal_key, get_internal_key_for_client
+from internal_auth import (is_valid_internal_key, get_internal_key_for_client,
+                           require_internal_or_admin)
 from csp_report import csp_report_bp
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
@@ -36720,6 +36721,7 @@ def verify_tier_gating():
     failures = []
     passed = 0
     skipped_429 = 0
+    unverified = []
     INTERNAL_HEADERS = {'X-Internal-Key': get_internal_key_for_client()}
     try:
         with app.test_client() as client:
@@ -36730,7 +36732,26 @@ def verify_tier_gating():
                         if r.status_code == 429:
                             passed += 1
                             skipped_429 += 1
-                        elif r.status_code in (401, 403, 404, 405):
+                        elif r.status_code == 405:
+                            # 2026-09-11: 405 is NOT evidence of a gate. Werkzeug
+                            # rejects the METHOD before routing to the handler, so
+                            # the gate is never consulted -- this probe says nothing
+                            # about the method the route actually serves. Counting it
+                            # as passed is how POST-only
+                            # /api/autopilot/seo/run sat in this manifest as
+                            # 'enterprise' while an anonymous POST ran the full SEO
+                            # promotion cycle (run_seo_promotion -> ping_indexnow):
+                            # every boot logged "all enforcing" on the strength of a
+                            # 405 to a GET the route never accepted.
+                            #
+                            # It is NOT re-probed with POST: on a route that turned
+                            # out to be ungated, the probe would EXECUTE the action
+                            # on every boot. So it is reported honestly as unverified
+                            # and the real coverage is static --
+                            # tests/test_locked_gate_manifest_post_only.py requires a
+                            # gate on every manifest path this probe cannot reach.
+                            unverified.append(f"{path} (tier={tier})")
+                        elif r.status_code in (401, 403, 404):
                             passed += 1
                         elif r.status_code == 503 and tier == 'enterprise':
                             # 503 on enterprise = service not running, effectively gated
@@ -36792,6 +36813,13 @@ def verify_tier_gating():
                 except Exception:
                     pass
 
+        if unverified:
+            logger.warning(
+                "⚠️ TIER GATING: %d manifest endpoint(s) NOT VERIFIED by this probe "
+                "(405 to GET -- the route serves another method, so the gate was "
+                "never consulted): %s. Their gates are asserted statically by "
+                "tests/test_locked_gate_manifest_post_only.py.",
+                len(unverified), ", ".join(unverified))
         if failures:
             for f in failures:
                 logger.critical(f)
@@ -45496,7 +45524,18 @@ except (ImportError, NameError):
 try:
     @app.route("/api/cron/daily/preview", methods=["GET", "POST"])
     def _v1_daily_preview():
+        """Compose the daily media post; ?post=true PUBLISHES it.
+
+        Fail-closed gate FIRST, for either method. The dry-run branch is a
+        read, but ?post=true reaches dchub_media.run_daily(), which writes the
+        announcements feed, posts, and submits the URL to IndexNow -- so the
+        publishing branch was one query parameter away from any anonymous
+        caller. Gating the route rather than the branch keeps the decision in
+        one place: no later edit can add a second publishing path that skips it.
+        """
         from flask import jsonify, request
+        if not require_internal_or_admin(request):
+            return jsonify({"error": "Unauthorized"}), 401
         try:
             from dchub_media import run_daily
             # Default: dry-run (compose only, don't post to LinkedIn)
@@ -45634,7 +45673,20 @@ except NameError:
 try:
     @app.route("/api/v1/media/announcement", methods=["POST"])
     def _v1_media_publish():
+        """Publish one announcement into the public feed.
+
+        Fail-closed gate FIRST. The caller-supplied dict goes straight to
+        dchub_media.publish_announcement, which upserts announcements_feed
+        ON CONFLICT (slug) DO UPDATE and then submits the URL to IndexNow.
+        Ungated, that let an anonymous caller INSERT entries into the public
+        feed or OVERWRITE any existing one by naming its slug -- title, excerpt,
+        url and payload all replaced. submit_to_indexnow host-filters to
+        dchub.cloud, but the feed's own `url` column is not filtered, so the
+        stored row could point anywhere.
+        """
         from flask import request, jsonify
+        if not require_internal_or_admin(request):
+            return jsonify({"error": "Unauthorized"}), 401
         try:
             from dchub_media import publish_announcement
         except ImportError:
