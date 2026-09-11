@@ -16,6 +16,8 @@ import json
 import urllib.request
 from flask import Blueprint, jsonify, request
 
+from internal_auth import require_internal_or_admin
+
 outcome_verifier_bp = Blueprint('outcome_verifier', __name__)
 _ADMIN_KEY = (os.environ.get('DCHUB_ADMIN_KEY')
               or os.environ.get('DCHUB_INTERNAL_KEY') or '').strip()
@@ -167,9 +169,13 @@ def verify_pending() -> dict:
 
 @outcome_verifier_bp.post('/api/v1/brain/outcome-verifier/run')
 def run_endpoint():
-    sent = (request.headers.get('X-Admin-Key')
-            or request.headers.get('X-Internal-Key') or '').strip()
-    if _ADMIN_KEY and sent != _ADMIN_KEY and (request.headers.get('X-DC-Internal-Cron') or '') != '1':
+    # r-sec (2026-09-11): fail-CLOSED gate. The prior
+    #   `if _ADMIN_KEY and sent != _ADMIN_KEY and X-DC-Internal-Cron != '1'`
+    # failed OPEN when DCHUB_ADMIN_KEY was unset at import (same class as #4408
+    # cf_purge) AND let ANY caller bypass auth with a forgeable X-DC-Internal-Cron
+    # header. require_internal_or_admin re-reads env PER REQUEST and requires a
+    # real X-Internal-Key / X-Admin-Key (the cron heartbeat already sends one).
+    if not require_internal_or_admin(request):
         return jsonify(error='unauthorized'), 401
     return jsonify(verify_pending()), 200
 
