@@ -54,7 +54,7 @@ WHY EVERY SIBLING, AND WHY THE LEGACY ROW
    uncorrected twin becomes the anchor.
  * The linked legacy row's power_mw resurfaces through
    COALESCE(df.power_mw, f.power_mw): /api/v1/map (main.py:7126),
-   /api/v1/facilities/slug/<slug> (main.py:37334), routes/d1_sync.py:251,
+   /api/v1/facilities/slug/<slug> (main.py:37344), routes/d1_sync.py:251,
    routes/vectorize_sync.py:140.
  * coordinates_status is computed, not stored (routes/provenance.py:477-514):
    NULL latitude/longitude publishes `unknown`.
@@ -135,15 +135,15 @@ RUNBOOK AFTER --apply (auth header NAME only: X-Admin-Key)
                "https://dchub.cloud/api/v1/facility/<slug>",
                "https://dchub.cloud/api/v1/facilities/by-slug/<slug>",
                "https://dchub.cloud/api/v1/facilities/slug/<slug>"]}
-   /facilities/<slug>.json is routes/facility_profile_page.py:2003 and
-   /api/v1/facilities/slug/<slug> is main.py:37314. by-slug is fetched by the
+   /facilities/<slug>.json is routes/facility_profile_page.py:2047 and
+   /api/v1/facilities/slug/<slug> is main.py:37324. by-slug is fetched by the
    edge worker (PATCHES/dchubapiproxy-*.js); no Flask route defines it.
-2. Rebuild the sitemap snapshot (main.py:33915):
+2. Rebuild the sitemap snapshot (main.py:33925):
      POST https://dchub.cloud/api/v1/admin/sitemap/rebuild-snapshot   header: X-Admin-Key
 3. Expected:
    * Anthropic: robots noindex because contentless (util/thin_content.py:107-116,
-     routes/facility_profile_page.py:1143-1145), and dropped from the sitemap
-     (util/thin_content.py:119-181, main.py:33466). BOTH hold only if EVERY row
+     routes/facility_profile_page.py:1168-1170), and dropped from the sitemap
+     (util/thin_content.py:119-181, main.py:33476). BOTH hold only if EVERY row
      carrying the slug is left with no power, no coordinates, no real city AND
      NO ADDRESS. address is not part of this correction; the dry run prints it
      and predicts the outcome. (util/facility_ner_noindex.py:225-229 is a
@@ -156,9 +156,11 @@ RUNBOOK AFTER --apply (auth header NAME only: X-Admin-Key)
      That row is deleted only by the prune after a FULLY successful pass
      (d1_sync.py:319-324, 355-368). Until then D1 keeps the old point and
      200 MW.
-   * The Anthropic page body can still name a New York market: with no city
-     match and no coordinates the DCPI lookup falls back to the most recent
-     market in the state (routes/facility_profile_page.py:482-489).
+   * The Anthropic page can still name a New York market: with no city match
+     and no coordinates the DCPI lookup falls back to the most recent market
+     in the state (routes/facility_profile_page.py:482-489), and the page body
+     AND the SERP <title> / meta description take that market's ISO and
+     time-to-power (routes/facility_profile_page.py:1449-1456).
    * Carrier rows deleted by --include-carrier-links are not re-attached to the
      real New York buildings their facility_pdb_id describes.
 """
@@ -414,7 +416,7 @@ class AnthropicNewYork(Correction):
                     f"{linked_from} but does not carry the seeded point, so it is "
                     f"NOT corrected; its power_mw={row.get('power_mw')!r} still "
                     "resurfaces through COALESCE(df.power_mw, f.power_mw) once the "
-                    "discovered power_mw is NULL (main.py:7126, main.py:37334, "
+                    "discovered power_mw is NULL (main.py:7126, main.py:37344, "
                     "routes/d1_sync.py:251, routes/vectorize_sync.py:140)")
         return None
 
