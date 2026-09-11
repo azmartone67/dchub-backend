@@ -340,8 +340,15 @@ def _canonical_rows() -> list:
     try:
         import canonical_stats as cs
         facts = {}
-        for key, fn in (("facilities_tracked", "facilities_phrase"),
-                        ("facilities_verified", "facilities_verified_phrase"),
+        # ★2026-09-11 — ONE facility population. This row used to carry
+        # facilities_phrase() too: the raw discovery pile, undeduplicated
+        # (29,945 records against 21,570 distinct buildings). Handed both, the
+        # drafter published both — "29,000+ data center facilities (21,500+
+        # verified)" on 09-08 and again on 09-10 — and the 29,000 is 35% over
+        # the canon the frontend accuracy fence enforces. That fence runs inside
+        # the deploy job, so the 09-10 page stopped every frontend deploy for
+        # ten hours. Canon publishes the distinct figure only; so does this.
+        for key, fn in (("facilities_distinct", "facilities_verified_phrase"),
                         ("countries", "countries_phrase"),
                         ("markets_scored", "markets_phrase"),
                         # deduped + quarantine-filtered + floored DOWN. Never
@@ -417,7 +424,12 @@ _SYSTEM = (
     "STATE THE BASIS: when a row carries both a total and a subset of it "
     "(e.g. projects_total alongside projects_with_capacity), never present the "
     "subset as the whole — say what the figure is over, e.g. '1,826 of 1,907 "
-    "projects with a published capacity'."
+    "projects with a published capacity'. "
+    # 2026-09-11: two facility populations became "29,000+ facilities (21,500+
+    # verified)" twice, and the frontend deploy refuses that page.
+    "ONE FACILITY FIGURE: facilities_distinct is the only facility count. State "
+    "it as distinct facilities, once per claim, and never add a second facility "
+    "population, a tracked/verified split, or a rounder or larger figure."
 )
 
 
@@ -667,6 +679,22 @@ def autopublish_next(dry: bool = False) -> dict:
         draft = _llm_draft(item, rows)
         if not draft:
             considered.append({"slug": item["slug"], "skip": "draft_failed", "source": src})
+            continue
+        # ★2026-09-11: refuse, before it is previewed or committed, the page the
+        # frontend accuracy fence would ban — that fence runs inside the deploy
+        # job, so one such page stops every frontend deploy. The rule lives in
+        # geo_answer_publisher, which applies it again at commit time. Fails
+        # CLOSED: a check that could not run is not a check that passed.
+        try:
+            from routes.geo_answer_publisher import check_answer
+            over = check_answer(draft)
+        except Exception as e:
+            over = [{"kind": "unchecked", "error": f"{type(e).__name__}: {str(e)[:80]}"}]
+        if over:
+            logger.error("geo_autopublish REFUSED %s — over canon: %s",
+                         item["slug"], over[:3])
+            considered.append({"slug": item["slug"], "skip": "over_canon", "source": src,
+                               "pack": item.get("pack"), "offending": over[:3]})
             continue
         if dry:
             return {"ok": True, "acted": False, "dry_run": True,

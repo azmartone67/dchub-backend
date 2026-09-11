@@ -411,6 +411,10 @@ def test_publish_writes_the_ledger(monkeypatch):
     monkeypatch.setattr(g, "_record_publish",
                         lambda *a: calls.append(a))
     pub = type(sys)("routes.geo_answer_publisher")
+    # the real module's interface: autopublish runs the canon check before it
+    # publishes, and a stub without it is refused (fail-closed) before publish
+    # is ever reached — which would make these ledger tests pass vacuously.
+    pub.check_answer = lambda draft: []
     pub.publish_answer = lambda draft, overwrite=False: {"ok": True, "slug": draft["slug"]}
     monkeypatch.setitem(sys.modules, "routes.geo_answer_publisher", pub)
     monkeypatch.setattr(g, "_enabled", lambda: True)
@@ -434,6 +438,10 @@ def test_a_failed_publish_writes_no_ledger_row(monkeypatch):
         "meta_description": "M", "sections": [{"h": "h", "p": "p"}]})
     monkeypatch.setattr(g, "_record_publish", lambda *a: calls.append(a))
     pub = type(sys)("routes.geo_answer_publisher")
+    # the real module's interface: autopublish runs the canon check before it
+    # publishes, and a stub without it is refused (fail-closed) before publish
+    # is ever reached — which would make these ledger tests pass vacuously.
+    pub.check_answer = lambda draft: []
     pub.publish_answer = lambda draft, overwrite=False: {"ok": False, "error": "boom"}
     monkeypatch.setitem(sys.modules, "routes.geo_answer_publisher", pub)
     monkeypatch.setattr(g, "_enabled", lambda: True)
