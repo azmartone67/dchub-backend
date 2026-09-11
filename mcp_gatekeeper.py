@@ -926,7 +926,7 @@ TOOL_TEASER = {
     # makes the introduction), and a listing's detail sits behind an auth wall.
     "get_pocket_listings":    "teaser cards for off-market data center capacity DC Hub is onboarding — powered shells, available capacity and development sites that are not publicly marketed. Market, state and capacity are open to anyone; the full listing needs an identified caller (a key with an email bound, or OAuth). Operator contact is never shared: request_listing_intro asks DC Hub to make the introduction.",
     "request_listing_intro":  "a registered introduction to the operator behind a pocket listing — or a standing requirement for first access to upcoming listings — recorded in DC Hub's hash-chained lead register with a public verification record. DC Hub emails a one-click confirmation and makes the introduction; operator contact is never shared. Needs an identified caller and accept_terms=true once your human has agreed to the introduction terms.",
-    "get_pocket_listing":     "detailed pocket-listing view with full contact info and entitlement details.",
+    "get_pocket_listing":     "one pocket listing in full for an identified caller (call get_pocket_listings with slug) — DC Hub makes the operator introduction; operator contact is never shared.",
     "get_dcpi_scores":        "DCPI verdicts (BUILD/CAUTION/AVOID) + 4 numeric scores per market — DC Hub's headline build/avoid signal.",
     "get_dcpi_market":        "full DCPI snapshot for one market — verdict + scores + top risks + opportunities + queue wait.",
     "get_dcpi_movers":        "biggest DCPI movers over a window — emerging BUILD opportunities + newly-flagged AVOID markets with deltas.",

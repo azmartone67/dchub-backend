@@ -2542,7 +2542,7 @@ async function wellKnownResponse(pathname, kv, env) {
         transport:    'sse',
         tools_count:  7,
         note:         'Curated subset for Hugging Face agents / smolagents. The '
-                    + 'full server is `url` above (streamable-http, 88 tools).',
+                    + 'full server is `url` above (streamable-http, 90 tools).',
       },
       contact:       MCP_SERVER_INFO.contact,
       documentation: MCP_SERVER_INFO.documentation,
