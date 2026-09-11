@@ -638,6 +638,55 @@ def run_carrier_sync(get_db):
 # ─────────────────────────────────────────────────────────────
 # API ENDPOINTS (register with Flask app)
 # ─────────────────────────────────────────────────────────────
+def _facility_slugs(c, facility_ids):
+    """dchub_facility_id -> the slug its /facilities/<slug> page is SERVED at.
+
+    r-carrierfac (2026-09-11). dchub_facility_id is TEXT holding two id-spaces
+    (tests/test_carrier_facility_link.py): integer-as-text is
+    discovered_facilities.id (INTEGER), hex16 is facilities.id (TEXT). Each
+    table is matched with the PARAMETER in the column's own type — no column
+    is cast — so both primary keys stay usable.
+
+    The slug is frozen_slug_for_row: the stored canonical_slug, with a live
+    build only for a row the freeze has not reached. A rebuilt slug for a
+    frozen row can be an alias that 301s, and /facility/<id> 301s for every
+    row that has a slug. An id with no row, or a name that slugifies to
+    nothing, maps to nothing rather than to a URL that cannot resolve.
+    """
+    from routes.facility_slug_freeze import frozen_slug_for_row
+
+    ids = {fid for fid in facility_ids if fid}
+    rows = {}
+    # Exactly the text an INTEGER id casts to: digits, no leading zero.
+    int_ids = sorted({int(fid) for fid in ids
+                      if fid.isascii() and fid.isdigit() and fid[0] != '0'})
+    if int_ids:
+        c.execute("""
+            SELECT id, canonical_slug, provider, name
+            FROM discovered_facilities
+            WHERE id = ANY(%s)
+        """, (int_ids,))
+        rows.update((str(r[0]), r) for r in c.fetchall())
+    # Whatever discovered_facilities did not claim is tried as a facilities.id,
+    # digit strings included: a hex16 id can be all digits.
+    rest = sorted(fid for fid in ids if fid not in rows)
+    if rest:
+        c.execute("""
+            SELECT id, canonical_slug, provider, name
+            FROM facilities
+            WHERE id = ANY(%s)
+        """, (rest,))
+        rows.update((str(r[0]), r) for r in c.fetchall())
+
+    slugs = {}
+    for fid, r in rows.items():
+        slug = frozen_slug_for_row(
+            {'canonical_slug': r[1], 'provider': r[2], 'name': r[3]})
+        if slug:
+            slugs[fid] = slug
+    return slugs
+
+
 def register_carrier_routes(app, get_db):
     """Register carrier & fiber API routes with the Flask app."""
     from flask import jsonify, request
@@ -703,16 +752,25 @@ def register_carrier_routes(app, get_db):
             conn = get_db()
             c = conn.cursor()
 
+            # r-carrierfac (2026-09-11): carrier_pdb_id and carrier_profiles.pdb_id
+            # are TEXT (init_carrier_tables migrates both via information_schema),
+            # but <int:carrier_id> binds a real int, so every call failed with
+            # `operator does not exist: text = integer` — served behind a 200.
+            # Stringify the PARAM, never cast the column, so idx_cfp_carrier and
+            # idx_carrier_profiles_pdb stay usable.
+            carrier_key = str(carrier_id)
             c.execute("""
                 SELECT facility_pdb_id, facility_name, facility_city, facility_state,
                        facility_country, facility_lat, facility_lng, dchub_facility_id
                 FROM carrier_facility_presence
                 WHERE carrier_pdb_id = %s
                 ORDER BY facility_country, facility_state, facility_city
-            """, (carrier_id,))
+            """, (carrier_key,))
+            rows = c.fetchall()
+            slugs = _facility_slugs(c, [row[7] for row in rows])
 
             facilities = []
-            for row in c.fetchall():
+            for row in rows:
                 fac = {
                     'pdb_id': row[0], 'name': row[1], 'city': row[2],
                     'state': row[3], 'country': row[4],
@@ -720,11 +778,13 @@ def register_carrier_routes(app, get_db):
                 }
                 if row[7]:
                     fac['dchub_facility_id'] = row[7]
-                    fac['dchub_url'] = f"/facility/{row[7]}"
+                    # Not /facility/<id>: that legacy form 301s. No slug, no URL.
+                    if slugs.get(row[7]):
+                        fac['dchub_url'] = f"/facilities/{slugs[row[7]]}"
                 facilities.append(fac)
 
             # Get carrier name
-            c.execute("SELECT name FROM carrier_profiles WHERE pdb_id = %s", (carrier_id,))
+            c.execute("SELECT name FROM carrier_profiles WHERE pdb_id = %s", (carrier_key,))
             name_row = c.fetchone()
 
             return jsonify({
