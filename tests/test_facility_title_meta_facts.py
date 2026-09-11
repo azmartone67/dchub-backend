@@ -245,6 +245,37 @@ def test_the_operator_prefix_does_not_suppress_the_region():
     assert _segments(t)[1:] == ["China"]
 
 
+def test_a_place_is_matched_as_whole_words_not_as_a_substring():
+    """Owner review 2026-09-11: a substring test let "Australian" hide
+    "Australia" and "DCROUBAIX" hide "Roubaix" — 4 of 330 sampled titles lost
+    a real location. Asserted on the location segment."""
+    t = compose_title("Australian Data Centres Sydney", None, "Sydney", None,
+                      "AU")
+    assert _segments(t)[1:] == ["Australia"], t
+    t = compose_title("OVHcloud Roubaixnord", None, "Roubaix", None, "FR")
+    assert _segments(t)[1:] == ["Roubaix, France"], t
+    # a whole word still counts, including one that ends at a hyphen
+    assert _segments(compose_title(*MARS))[1:] == ["Turkey"]
+
+
+def test_announced_is_never_a_title_phase_but_stays_in_the_description():
+    """Owner review 2026-09-11: "announced" was 83 of the 97 phases a 330-page
+    sample would have shown (a quarter of all facility titles), and those
+    statuses are mostly news-extracted. Titles carry planned / under
+    construction only; the description keeps the word."""
+    for mw in (None, 120):
+        t = compose_title(*ROOMY, power_mw=mw, status="Announced")
+        assert "announced" not in t.lower(), t
+    assert _segments(compose_title(*ROOMY, power_mw=120,
+                                   status="Announced"))[-1] == "120 MW"
+    assert compose_description(*ROOMY, power_mw=120,
+                               status="Announced").startswith(
+        "120 MW announced data center in Tulsa, Oklahoma.")
+    # the approved phases are still admitted
+    assert _segments(compose_title(*ROOMY, power_mw=120,
+                                   status="Planned"))[-1] == "120 MW planned"
+
+
 # ── the description's rules ──────────────────────────────────────────────
 
 def test_the_name_prefix_is_used_only_for_a_site_code_lead():

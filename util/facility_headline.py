@@ -203,7 +203,12 @@ _US_COUNTRIES = frozenset({"US", "USA", "UNITED STATES",
 # "operational" is absent ON PURPOSE. People searching "equinix fr5 status",
 # "… down", "… issue" want outage news; "Operational" in that title reads as a
 # live status claim. The description states the lifecycle in plain words.
-TITLE_PHASES = ("planned", "under construction", "announced")
+# "announced" is absent too (owner review, 2026-09-11): it was 83 of the 97
+# phases a 330-page sample would have shown, i.e. a quarter of all facility
+# titles, and announced statuses are mostly news-extracted, the likeliest to be
+# stale. The approved template names only planned / under construction; the
+# description still says "announced data center".
+TITLE_PHASES = ("planned", "under construction")
 _DESCRIPTION_ADJECTIVES = {
     "operational": "operational",
     "planned": "planned",
@@ -234,8 +239,9 @@ def display_mw(power_mw) -> str:
 
 
 def title_phase(status) -> str:
-    """The lifecycle word a title may carry — "planned", "under construction"
-    or "announced", lower-case — else "". Never "operational" (TITLE_PHASES)."""
+    """The lifecycle word a title may carry — "planned" or "under
+    construction", lower-case — else "". Never "operational" or "announced"
+    (TITLE_PHASES)."""
     s = str(status or "").strip().lower()
     return s if s in TITLE_PHASES else ""
 
@@ -276,6 +282,23 @@ def _real_city(city) -> str:
     return "" if is_placeholder_city(city) else city
 
 
+def _names_words(text, words) -> bool:
+    """True when `words` occurs in `text` as whole words, case-insensitively.
+
+    Whole words, not a substring (owner review, 2026-09-11): a substring test
+    let "Australian" hide "Australia", "NOCPERU" hide "Peru", "ColoradoColo"
+    hide "Colorado" and "DCROUBAIX" hide "Roubaix", so 4 of 330 sampled titles
+    lost a real location. The boundary is an ASCII letter or digit rather than
+    a regex word character, so names written without spaces (CJK) still match
+    the way they did.
+    """
+    w = str(words or "").strip()
+    if not w:
+        return False
+    return _re.search(r"(?<![A-Za-z0-9])" + _re.escape(w) + r"(?![A-Za-z0-9])",
+                      str(text or ""), _re.IGNORECASE) is not None
+
+
 def _title_place(lead, op, city, state, country):
     """(place, qualifier) for the title's location slot.
 
@@ -292,11 +315,11 @@ def _title_place(lead, op, city, state, country):
     """
     site = lead[len(op):] if (op and lead.startswith(op)) else lead
     region = region_name(state, country)
-    region_in_site = bool(region) and region.lower() in site.lower()
+    region_in_site = _names_words(site, region)
     if not city:
         return region, ""
     qualifier = "" if region_in_site else region
-    if city.lower() not in lead.lower():
+    if not _names_words(lead, city):
         return city, qualifier
     return "", qualifier
 
