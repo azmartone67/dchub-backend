@@ -62,6 +62,7 @@ def _hit(url, timeout=10):
         return {"status": 0, "error": f"{type(e).__name__}"}
 
 
+# AUTO-REPAIR: duplicate route '/warm' also in routes/brain_warming.py:62 — review and remove one
 @grid_warmer_bp.route("/warm", methods=["GET", "POST"])
 def warm():
     started = datetime.datetime.utcnow()
@@ -97,6 +98,7 @@ def warm():
         "results":       results,
     }), 200 if healthy == total else 207
 
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 
 @grid_warmer_bp.route("/health", methods=["GET"])
 def health():
