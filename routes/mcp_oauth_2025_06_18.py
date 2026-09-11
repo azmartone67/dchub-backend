@@ -525,11 +525,32 @@ def oauth_identity_resolve():
         # retention is measurable (created_at vs last_used_at).
         cur.execute("UPDATE mcp_dev_keys SET last_used_at = NOW() WHERE api_key = %s", (api_key,))
         # Backfill an email we learned later (row created before bind).
+        #
+        # 2026-09-11: stamp the binding VERIFIED at the same time. This address
+        # did not come from a request body — the IdP asserted it for an
+        # authenticated identity, which is the proof /keys/claim and
+        # /keys/identify never had. _inherit_paid_tier (and the billing
+        # reconcile, and the Stripe webhook) now require that proof, matched
+        # against the address itself, before any email match can grant a paid
+        # tier. Without this stamp an OAuth customer who pays would stay free.
+        # COALESCE(NULLIF(...)) only ever FILLS an empty address, never
+        # overwrites one, and the trailing predicate makes the stamp follow the
+        # same rule: the marker can only ever name the address the row ends up
+        # carrying, so a row already bound elsewhere is left untouched.
         if email:
             cur.execute(
-                "UPDATE mcp_dev_keys SET email = COALESCE(NULLIF(email, ''), %s) "
-                "WHERE api_key = %s",
-                (email, api_key),
+                """UPDATE mcp_dev_keys
+                      SET email = COALESCE(NULLIF(email, ''), %s),
+                          metadata = COALESCE(metadata, '{}'::jsonb)
+                                     || jsonb_build_object(
+                                          'email_verified_for', LOWER(%s::text),
+                                          'email_verified_at',
+                                          to_char(NOW() AT TIME ZONE 'UTC',
+                                                  'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+                                          'email_verified_via', 'oauth_identity')
+                    WHERE api_key = %s
+                      AND LOWER(COALESCE(NULLIF(email, ''), %s)) = LOWER(%s)""",
+                (email, email, api_key, email, email),
             )
         # Read back the CURRENT tier so a later upgrade reflects immediately.
         cur.execute("SELECT tier FROM mcp_dev_keys WHERE api_key = %s", (api_key,))

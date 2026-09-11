@@ -18256,14 +18256,42 @@ def handle_checkout_completed(session):
             # paywall sells $9 as an MCP unlock).
             _paid_mcp_tier = ('enterprise' if plan_name == 'enterprise'
                               else 'paid' if plan_name in ('developer', 'pro', 'founding') else None)
+            # 2026-09-11 (security): match on the address AND on proof that the
+            # address belongs to whoever holds the key. Unqualified, this
+            # UPDATE promoted EVERY active key bound to the paying address —
+            # so a key someone else bound to a customer's address, before or
+            # after they paid, was promoted by the customer's own payment.
+            # mcp_dev_keys has no user_id FK, so the email match is all this
+            # webhook has; metadata.email_verified_for is what turns it from a
+            # typed string into a claim someone proved (a confirmation click,
+            # or an OAuth-asserted identity). See
+            # routes/mcp_key_email_verification.py.
             if _paid_mcp_tier and customer_email:
                 _mc, _ = _pg_execute(
-                    "UPDATE mcp_dev_keys SET tier = %s WHERE LOWER(email) = LOWER(%s) AND status = 'active'",
-                    (_paid_mcp_tier, customer_email))
+                    "UPDATE mcp_dev_keys SET tier = %s WHERE LOWER(email) = LOWER(%s) AND status = 'active'"
+                    "   AND LOWER(COALESCE(metadata->>'email_verified_for','')) = LOWER(%s)",
+                    (_paid_mcp_tier, customer_email, customer_email))
                 print(f"🔑 MCP dev key(s) → tier '{_paid_mcp_tier}' for {customer_email} (rows={_mc})")
                 if not _mc:
-                    print(f"ℹ️ No active mcp_dev_keys row for {customer_email} yet — "
-                          f"will apply when they claim/identify an MCP key with this email.")
+                    print(f"ℹ️ No CONFIRMED active mcp_dev_keys row for {customer_email} yet — "
+                          f"will apply when they claim/identify an MCP key with this email "
+                          f"and click the confirmation link we send to that address. "
+                          f"(The k- checkout reference below upgrades the caller's own key "
+                          f"directly and needs no confirmation.)")
+                    # CLAIM-THEN-PAY, the common order: they already have a key
+                    # on this address, so nothing will call claim/identify again
+                    # and nothing would ever offer them the confirmation. Ask
+                    # now, at the inbox that just paid. No-op when the address
+                    # has no unconfirmed key. Fail-soft — never break the webhook.
+                    try:
+                        from routes.mcp_key_email_verification import (
+                            offer_confirmation_for_address as _offer_conf)
+                        _offered = _offer_conf(customer_email)
+                        if _offered:
+                            print(f"✉️ Sent {customer_email} a confirmation link for "
+                                  f"{_offered} unconfirmed key(s).")
+                    except Exception as _conf_err:
+                        print(f"⚠️ key-confirmation offer failed (non-fatal): {str(_conf_err)[:120]}")
         except Exception as _mcp_err:
             print(f"⚠️ mcp_dev_keys tier upgrade failed (non-fatal): {str(_mcp_err)[:120]}")
 
@@ -39015,6 +39043,11 @@ except Exception as e:
 try:
     from routes.keys_recover import register as _register_keys_recover
     _register_keys_recover(app)
+
+    # /api/v1/keys/confirm — the click that turns a typed address into a proven
+    # one. Without it a pay-first customer can never reach their paid MCP tier.
+    from routes.mcp_key_email_verification import register as _register_key_verify
+    _register_key_verify(app)
     print("🔑 Keys Recover: ✅ Registered")
 except Exception as e:
     print(f"🔑 Keys Recover: ⚠️ Failed to load: {e}")

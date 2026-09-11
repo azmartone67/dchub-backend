@@ -510,6 +510,32 @@ jobs:
             echo "::error::the compliance SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── The three PAID-TIER grants, against the same Postgres ───────────
+      # mcp_dev_keys has no user_id FK, so `email` is the only link between a
+      # key and a paying account — and three statements granted paid MCP tier
+      # on that link alone, from public request bodies. The fix is one WHERE
+      # clause in each; a clause is exactly the kind of thing that gets dropped
+      # in a refactor and never noticed, so the statements are read out of the
+      # shipped source by ast and executed for real here.
+      #
+      # Safe to share the `parity` database: this test owns and recreates only
+      # mcp_dev_keys / users, and runs after the lanes above have reported.
+      - name: Paid-tier grant SQL against a real Postgres
+        env:
+          PAID_TIER_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_paid_tier_verification_sql.py -v --tb=short
+
+      - name: Prove the paid-tier SQL test actually RAN
+        env:
+          PAID_TIER_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_paid_tier_verification_sql.py \
+            -q -rs --tb=no > pt.txt 2>&1 || { cat pt.txt; exit 1; }
+          cat pt.txt
+          if grep -qi "skipped" pt.txt; then
+            echo "::error::the paid-tier SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── The live-proof PLATFORM query, against the same Postgres ─────────
       # It decides the homepage line naming which platforms call MCP tools.
       # Until 2026-09-03 it counted raw mcp_tool_calls with neither the
