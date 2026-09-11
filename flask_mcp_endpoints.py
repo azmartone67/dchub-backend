@@ -1966,11 +1966,39 @@ def _inherit_paid_tier(cur, api_key, email):
     the natural pay-then-connect order landed on the one path that could
     not upgrade. Same SQL, one definition, called from both.
 
+    VERIFIED BINDINGS ONLY (2026-09-11). mcp_dev_keys has no user_id FK, so
+    `email` is the whole link between a key and a paying account — and both
+    callers of this helper take that address from an unauthenticated request
+    body. Matching on it alone meant anyone who knew a paying customer's
+    address could claim a key with it and be handed tier 'paid' in the same
+    response. The email match is now only half the rule: the row must ALSO
+    carry metadata.email_verified_for NAMING this same address — written by a
+    click on the link routes/mcp_key_email_verification.py mails to the bound
+    address, or by an OAuth resolve where the IdP asserted it. r-coldbuy works —
+    the pay-first customer claims with the address they paid with and clicks
+    the link we send to it.
+
     Guarded to only ever raise a stuck key (never demote), and best-effort:
     a failure here must not break a claim or a bind.
     """
     if not email:
         return 0
+    # The verification clause below is what separates a paying customer from
+    # anyone who typed their address. Deliberately NOT written as a SQL `--`
+    # comment inside the statement: a `--` comment survives only as long as the
+    # newline after it does, so any caller that logs, normalises or flattens
+    # this SQL would turn the rest of the WHERE clause into comment text and
+    # silently restore the vulnerability. Keep the explanation in Python.
+    #
+    #   AND LOWER(COALESCE(k.metadata->>'email_verified_for','')) = LOWER(%s)
+    #
+    # The marker NAMES the address it was proven for and is matched against the
+    # address being granted on, never stored as a boolean. That is what makes it
+    # survive a re-bind: /keys/identify overwrites k.email with anything the
+    # caller sends, so a boolean would let someone confirm their OWN address and
+    # then re-point the key at a payer's. A proof that names its address simply
+    # stops matching — on every re-bind path there is, including ones added
+    # after this line.
     try:
         cur.execute(
             """UPDATE mcp_dev_keys AS k
@@ -1981,8 +2009,9 @@ def _inherit_paid_tier(cur, api_key, email):
                    AND LOWER(u.email) = LOWER(%s)
                    AND u.plan IN ('developer','pro','founding','enterprise')
                    AND COALESCE(u.subscription_status,'') = 'active'
-                   AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')""",
-            (api_key, email),
+                   AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')
+                   AND LOWER(COALESCE(k.metadata->>'email_verified_for','')) = LOWER(%s)""",
+            (api_key, email, email),
         )
         _rows = cur.rowcount or 0
         if _rows:
@@ -2336,7 +2365,23 @@ def claim_key():
             # the key is born paid. Without this a pay-first customer's very
             # first claim_free_key hands them free-tier depth they're paying
             # to be past. See _inherit_paid_tier.
+            #
+            # 2026-09-11: a key minted right here has never had its address
+            # verified, so this call is now always 0 on this path — that is the
+            # fix, not an oversight. A typed address used to be enough to be
+            # handed someone else's paid tier, and `paid_plan_applied` in the
+            # response was itself an oracle for "is this a paying customer".
+            # The branch below stays because the helper is shared and remains
+            # upgrade-only; what unlocks the tier is the click, not the claim.
             _claimed_paid = bool(_inherit_paid_tier(cur, api_key, email))
+            # ...and tell the INBOX, not the caller. Sent only when confirming
+            # would actually unlock a tier; the HTTP response is identical
+            # either way, so probing addresses here reveals nothing.
+            try:
+                from routes.mcp_key_email_verification import offer_confirmation
+                offer_confirmation(cur, api_key, email)
+            except Exception:
+                pass  # never break a claim on a courtesy email
     except Exception as e:
         return jsonify(
             ok=False,
@@ -2746,7 +2791,20 @@ def identify_key():
             # identifies their key later would stay free. Only upgrades a stuck key.
             # r-coldbuy (2026-08-08): extracted to _inherit_paid_tier so claim_key
             # runs the identical rule — it used to have none.
+            #
+            # 2026-09-11: the rule now also requires a VERIFIED binding. This
+            # endpoint takes the caller's own key plus ANY address and only
+            # checked deliverability, so binding a free key to a payer's address
+            # used to upgrade it outright. It upgrades only a binding that was
+            # already confirmed (re-identifying the same confirmed address, or
+            # an OAuth-asserted one); a new address lands unverified and gets a
+            # confirmation link at the address itself.
             _inherit_paid_tier(cur, api_key, email)
+            try:
+                from routes.mcp_key_email_verification import offer_confirmation
+                offer_confirmation(cur, api_key, email)
+            except Exception:
+                pass  # never break a bind on a courtesy email
     except Exception as e:
         # Never hard-fail the agent — it can keep using the key.
         return jsonify(ok=False, error="storage_failed",
@@ -3663,6 +3721,11 @@ def admin_reconcile_keys():
         return jsonify(ok=False, error="auth_unavailable"), 503
     apply = (request.args.get("apply") in ("1", "true", "yes"))
     _full = (request.args.get("full") in ("1", "true", "yes"))  # admin-only: un-redact for outreach
+    # OPT-IN, and deliberately not the daily default: a payer whose binding is
+    # unconfirmed stays eligible until they click, so notifying on every run
+    # would mail the same person every day. The daily job reports them; an
+    # operator runs notify=1 when they want the backlog nudged.
+    notify = (request.args.get("notify") in ("1", "true", "yes"))
     PAID_PLANS = ("developer", "pro", "founding", "enterprise")  # starter is web-only, not MCP-paid
     def _redact(e):
         if _full:
@@ -3672,11 +3735,26 @@ def admin_reconcile_keys():
             return (u[:2] + "***@" + d)
         except Exception:
             return "***"
-    out = {"ok": True, "apply": apply, "keys_upgraded": 0,
+    out = {"ok": True, "apply": apply, "notify": notify,
+           "keys_upgraded": 0, "confirmations_sent": 0,
            "real_payers": 0,
            "buckets": {"already_paid_key": 0, "key_upgraded": 0,
-                       "unlinked_no_matching_key": 0},
-           "samples": {"upgraded": [], "unlinked": []}}
+                       "unlinked_no_matching_key": 0,
+                       # A payer whose only email-matched key never proved it
+                       # owns the address. Before 2026-09-11 these were
+                       # upgraded outright, daily, with apply=1 — which is why
+                       # gating claim/identify alone would have been cosmetic:
+                       # a key bound to a customer's address was promoted here
+                       # within 24 hours anyway.
+                       "withheld_unverified_binding": 0},
+           "samples": {"upgraded": [], "unlinked": [], "withheld": []},
+           # Read-only audit of the rows the old rule already granted. These are
+           # paid keys whose address was bound through a public door and never
+           # confirmed — each is either a real customer (most) or a key that
+           # took a tier it did not pay for. Reported, never auto-demoted:
+           # demoting a paying customer's live key to close this is worse than
+           # the defect. Work the list, then revoke what it turns up.
+           "legacy_unverified_paid_keys": {"count": 0, "samples": []}}
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute("""
@@ -3693,10 +3771,19 @@ def admin_reconcile_keys():
             for uid, email, plan in payers:
                 want = "enterprise" if plan == "enterprise" else "paid"
                 cur.execute(
-                    "SELECT tier FROM mcp_dev_keys "
+                    "SELECT tier, "
+                    "       LOWER(COALESCE(metadata->>'email_verified_for','')) = %s "
+                    "  FROM mcp_dev_keys "
                     " WHERE LOWER(COALESCE(email,'')) = %s AND status='active'",
-                    (email,))
-                tiers = [(r[0] or "").lower() for r in cur.fetchall()]
+                    (email, email))
+                rows = cur.fetchall()
+                tiers = [(r[0] or "").lower() for r in rows]
+                # Read the proof HERE, not only inside `if apply:` — otherwise
+                # the dry run (how this endpoint is read day to day) reports
+                # every stuck payer as upgradable and the apply run silently
+                # does less than the report promised.
+                confirmed = [r for r in rows
+                             if r[1] and (r[0] or "").lower() not in ("paid", "enterprise")]
                 if not tiers:
                     out["buckets"]["unlinked_no_matching_key"] += 1
                     if len(out["samples"]["unlinked"]) < 25:
@@ -3704,6 +3791,22 @@ def admin_reconcile_keys():
                     continue
                 if any(t in ("paid", "enterprise") for t in tiers):
                     out["buckets"]["already_paid_key"] += 1
+                    continue
+                if not confirmed:
+                    out["buckets"]["withheld_unverified_binding"] += 1
+                    if len(out["samples"]["withheld"]) < 50:
+                        out["samples"]["withheld"].append(
+                            {"email": _redact(email), "plan": plan, "want_tier": want,
+                             "reason": "no key on this address has a confirmed "
+                                       "binding; pass notify=1 to send the owner "
+                                       "a confirmation link"})
+                    if notify:
+                        try:
+                            from routes.mcp_key_email_verification import (
+                                offer_confirmation_for_address as _offer)
+                            out["confirmations_sent"] += bool(_offer(email, cur=cur))
+                        except Exception:
+                            pass
                     continue
                 out["buckets"]["key_upgraded"] += 1
                 if len(out["samples"]["upgraded"]) < 50:
@@ -3713,9 +3816,40 @@ def admin_reconcile_keys():
                     cur.execute(
                         "UPDATE mcp_dev_keys SET tier=%s "
                         " WHERE LOWER(COALESCE(email,''))=%s AND status='active' "
-                        "   AND COALESCE(tier,'') NOT IN ('paid','enterprise')",
-                        (want, email))
+                        "   AND COALESCE(tier,'') NOT IN ('paid','enterprise') "
+                        # Same proof _inherit_paid_tier requires, for the same
+                        # reason: an email match says nothing about who bound
+                        # the address. This job runs daily with apply=1 from
+                        # .github/workflows/billing-reconcile-daily.yml, so
+                        # without this clause it re-grants every promotion the
+                        # public doors were just stopped from making.
+                        "   AND LOWER(COALESCE(metadata->>'email_verified_for','')) = %s",
+                        (want, email, email))
                     out["keys_upgraded"] += (cur.rowcount or 0)
+            # Audit (read-only): paid keys carrying an unconfirmed binding.
+            # Under the old rule ANY of these could have been obtained by
+            # someone who merely knew a paying customer's address.
+            try:
+                cur.execute(
+                    """SELECT LOWER(COALESCE(k.email,'')) AS email,
+                              k.tier,
+                              COALESCE(k.metadata->>'source','') AS source,
+                              k.created_at
+                         FROM mcp_dev_keys k
+                        WHERE COALESCE(k.tier,'') IN ('paid','enterprise')
+                          AND COALESCE(k.status,'active') = 'active'
+                          AND COALESCE(k.email,'') <> ''
+                          AND LOWER(COALESCE(k.metadata->>'email_verified_for',''))
+                              <> LOWER(COALESCE(k.email,''))
+                        ORDER BY k.created_at DESC NULLS LAST""")
+                _legacy = cur.fetchall() or []
+                out["legacy_unverified_paid_keys"]["count"] = len(_legacy)
+                out["legacy_unverified_paid_keys"]["samples"] = [
+                    {"email": _redact(r[0]), "tier": r[1], "source": r[2],
+                     "created_at": (r[3].isoformat() if r[3] else None)}
+                    for r in _legacy[:100]]
+            except Exception as _ae:
+                out["legacy_unverified_paid_keys"]["error"] = str(_ae)[:160]
             if apply:
                 conn.commit()
         return jsonify(out)
