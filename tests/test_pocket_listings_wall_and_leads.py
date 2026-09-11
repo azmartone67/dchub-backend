@@ -37,9 +37,9 @@ from flask import Flask  # noqa: E402
 import routes.exclusive_listings as el  # noqa: E402
 from util import listing_ledger as ledger  # noqa: E402
 
-JWT_SECRET = "pocket-listings-test-secret-0123456789abcdef"
-INTERNAL_KEY = "internal-gateway-key-for-tests-only"
-ADMIN_KEY = "admin-key-for-tests-only-0123456789"
+JWT_SECRET = "pocket-listings-test-secret-0123456789abcdef"  # secretscan:allow (test placeholder)
+INTERNAL_KEY = "internal-gateway-key-for-tests-only"  # secretscan:allow (test placeholder)
+ADMIN_KEY = "admin-key-for-tests-only-0123456789"  # secretscan:allow (test placeholder)
 ADMIN_INBOX = "ops@dchub.example"
 OPERATOR_SENTINEL = "operator-private@sentinel.example"
 OWNER_SENTINEL = "owner-private-sentinel"
@@ -432,6 +432,30 @@ def test_the_public_record_masks_the_prospect_and_names_tampering(env):
     j2 = env.client.get(f"/api/v1/listings/leads/{lead_id}/verify").get_json()
     assert j2["events"][0]["hash_valid"] is False
     assert j2["chain"]["intact"] is False and j2["chain"]["first_break_seq"] == env.rows[0]["seq"]
+
+
+def test_every_listing_answer_says_confidential_and_never_cc_by(env):
+    """The MCP gateway stamps CC-BY-4.0 on any response that does not carry its
+    own provenance/citation. Listing data must not reach an agent labelled as
+    free to republish — walls included, since the tools relay them as results."""
+    lead_id = _register_and_confirm(env, headers=_bearer(user_id="u-ann", email="ann@firm.example"))
+    responses = {
+        "feed": env.client.get("/api/v1/listings"),
+        "detail (walled)": env.client.get("/api/v1/listings/dfw-40"),
+        "detail (open)": env.client.get("/api/v1/listings/dfw-40", headers=_bearer()),
+        "terms": env.client.get("/api/v1/listings/terms"),
+        "wall": env.client.post("/api/v1/listings/dfw-40/intro", json=INTRO),
+        "intro": env.client.post("/api/v1/listings/dfw-40/intro", json=INTRO, headers=_bearer()),
+        "interest": env.client.post("/api/v1/listings/interest", headers=_bearer(),
+                                    json={**INTRO, "requirement": {"markets": ["Dallas"]}}),
+        "record": env.client.get(f"/api/v1/listings/leads/{lead_id}/verify"),
+    }
+    for label, r in responses.items():
+        j, body = r.get_json(), r.get_data(as_text=True)
+        for block in ("provenance", "citation"):
+            assert j[block]["license"] == el.LISTING_LICENSE, (label, block)
+        assert j["provenance"]["redistribution"] == "not_permitted", label
+        assert "CC-BY" not in body, label
 
 
 def test_the_operator_ledger_is_scoped_and_hides_email_until_introduced(env):
