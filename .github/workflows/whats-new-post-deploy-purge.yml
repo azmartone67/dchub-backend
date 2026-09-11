@@ -1,0 +1,61 @@
+name: What's New post-deploy purge
+
+# ★ 2026-09-11 — WHY. dchub-backend#4405 merged seven What's New cards at
+# 18:50:34Z. The feed served them, and https://dchub.cloud/whats-new showed the
+# old fourteen for about ten more minutes. The page fetches
+# /api/v1/whats-new?d=<UTC date>, and a request the OLD build answered during the
+# deploy swap was stored twice: in the Pages worker's KV (fresh for 300s) and in
+# the zone (rule 2, 3600s). A zone purge made while the KV copy was still fresh
+# was answered from KV and stored again.
+#
+# This runs when a push changes what the feed publishes. It waits for the origin
+# to run the commit; then scripts/purge_whats_new_after_deploy.py waits for the
+# worker's copy to be current, purges the zone, and reads the URL the way the
+# page does. It fails loudly, including when CLOUDFLARE_API_TOKEN is missing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - data/platform_updates.json
+      - routes/platform_updates.py
+      - routes/capability_announcements.py
+      - routes/infra_growth.py
+      - scripts/purge_whats_new_after_deploy.py
+      - .github/workflows/whats-new-post-deploy-purge.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: whats-new-post-deploy-purge
+  cancel-in-progress: false
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    # 10 min deploy wait, then up to 3 rounds of (worker freshness + a read).
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install --quiet requests
+
+      - name: Wait until the origin runs this commit
+        if: github.event_name == 'push'
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECT_SHA: ${{ github.sha }}
+        run: python3 scripts/wait_for_deployed_commit.py --expect "$EXPECT_SHA" --timeout 600
+
+      - name: Purge the feed the page fetches, once the worker's copy is current
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: python3 scripts/purge_whats_new_after_deploy.py --edge https://dchub.cloud --origin https://dchub-backend-production.up.railway.app
