@@ -1,5 +1,5 @@
 name: Post-Deploy Smoke Test
-# Runs after every push to main (once Railway finishes rebuilding),
+# Runs after every push to main (once the origin runs the pushed commit),
 # and every 30 min as a safety net. Fails the build — and pings you —
 # on any gated-endpoint regression OR on a 2026-04-28 regression.
 
@@ -19,7 +19,8 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    # 10 min deploy wait + the 6.5 min the smoke had inside the old 8.
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v6
 
@@ -30,9 +31,22 @@ jobs:
       - name: Install deps
         run: pip install --quiet psycopg2-binary requests
 
-      - name: Wait for Railway rebuild to settle
+      # ★ 2026-09-11 — WAS `sleep 90`. Railway's 39 most recent swaps of this
+      # service took 111-202s from deployment created to previous deployment
+      # removed, so the smoke below routinely started before the new build was
+      # serving: for 9923d803d (#4385) it ran 06:03:40-06:04:01Z, and the
+      # origin first served the new code at 06:04:22Z — a green smoke of the
+      # PREVIOUS build, reported as this commit. Now the step waits for the
+      # commit itself (scripts/wait_for_deployed_commit.py) and fails if it
+      # never goes live, which is a post-deploy failure in its own right.
+      - name: Wait until the origin runs this commit
+        id: deploy_wait
         if: github.event_name == 'push'
-        run: sleep 90
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECT_SHA: ${{ github.sha }}
+        run: python3 scripts/wait_for_deployed_commit.py --expect "$EXPECT_SHA" --timeout 600
 
       - name: Run main smoke test (Railway / DB / MCP)
         id: smoke
@@ -64,8 +78,10 @@ jobs:
       # DCHUB-REGRESSION-2026-04-28: extra checks for the 2026-04-28 fixes
       # (press-release daily brief, Explorer, MCP discovery, coord-parser,
       #  right-panel CSS, Worker version, pr_queue integrity).
+      # always() so a failed main smoke does not skip it — but never after a
+      # failed deploy wait, which would probe the OLD build as this commit.
       - name: Run 2026-04-28 regression smoke
-        if: always()
+        if: always() && steps.deploy_wait.outcome != 'failure'
         run: |
           if [ -f dchub-frontend/qa/smoke_regression_2026_04_28.py ]; then
             python3 dchub-frontend/qa/smoke_regression_2026_04_28.py \
@@ -116,11 +132,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WAIT_OUTCOME: ${{ steps.deploy_wait.outcome }}
         run: |
           title="Post-Deploy Smoke Test failing on main"
           {
             echo "Smoke failed on \`${GITHUB_SHA:0:7}\` — [run log](${RUN_URL})."
             echo
+            if [ "${WAIT_OUTCOME:-}" = "failure" ]; then
+              echo "**The deploy wait failed.** The origin was never confirmed running"
+              echo "this commit (the wait step's log says whether it never went live or"
+              echo "could not be read), so nothing was smoke-tested against it."
+              echo
+            fi
             if [ -f report.json ]; then
               echo "**Failing endpoint checks**"
               echo

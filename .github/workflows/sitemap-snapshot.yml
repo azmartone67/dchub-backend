@@ -26,6 +26,16 @@
 # an internal collapse floor for the facilities section; this is the floor for
 # the published artifact, and it is the one a human sees fail.
 #
+# ★ 2026-09-11 — "ONCE RAILWAY HAS SETTLED" WAS A 120s SLEEP, AND IT LOST.
+# #4385 (9923d803d) changed main.py's market-brief sitemap list. Run
+# 34568249517 slept 06:02:03-06:04:03Z and rebuilt generation 513 (27,199
+# URLs, green) while the origin still served the OLD code: old response at
+# 06:04:02Z, new first at 06:04:22Z. /sitemap-static.xml went on listing three
+# brief URLs that 301, out of a snapshot a green run had just rebuilt — the
+# 2026-08-14 failure again, one layer down. Railway's 39 most recent swaps of
+# this service took 111-202s, so a fixed sleep either loses that race or waits
+# minutes for nothing. The push path now waits for the COMMIT to be running.
+#
 # Kill switch: repo variable SITEMAP_SNAPSHOT_DISABLE=1.
 name: sitemap-snapshot-rebuild
 
@@ -52,15 +62,26 @@ permissions:
 jobs:
   rebuild:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 10 min deploy wait + the rebuild (--max-time 240) + the read-back (60 + 90).
+    timeout-minutes: 20
     steps:
-      # Same wait post-deploy-smoke.yml uses. Rebuilding before Railway has
-      # swapped replicas would regenerate the snapshot from the OLD code and
-      # look like a successful rebuild — the exact failure this job now exists
-      # to prevent, arriving through the fix for it.
-      - name: Wait for the Railway rebuild to settle
+      # Rebuilding before the new deploy is live regenerates the snapshot from
+      # the OLD code and looks like a successful rebuild (see the header). So
+      # the push path waits for the commit: scripts/wait_for_deployed_commit.py
+      # polls /api/v1/admin/build-info until the origin runs github.sha — or a
+      # later commit that contains it — and fails the job if it never does.
+      # Push only: the cron and a manual dispatch rebuild from whatever is
+      # live, which is what a data-drift rebuild is for.
+      - uses: actions/checkout@v5
         if: github.event_name == 'push'
-        run: sleep 120
+
+      - name: Wait until the origin runs this commit
+        if: github.event_name == 'push'
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECT_SHA: ${{ github.sha }}
+        run: python3 scripts/wait_for_deployed_commit.py --expect "$EXPECT_SHA" --timeout 600
 
       - name: Rebuild sitemap snapshot
         env:

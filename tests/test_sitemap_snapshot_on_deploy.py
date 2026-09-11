@@ -15,8 +15,9 @@ said SHIPPED: PR merged, checks green, origin 200. The only tell was
 
 ★ THE GAP IS BETWEEN "THE CODE IS LIVE" AND "WHAT THE CODE PRODUCES IS LIVE."
 A deploy is not a rebuild. So a push to main that touches the sitemap builder
-now rebuilds the snapshot, after the same Railway settle-wait post-deploy-smoke
-already uses. The cron stays for data drift — facilities appear without deploys.
+now rebuilds the snapshot — once the origin RUNS the pushed commit. Until
+2026-09-11 it slept a fixed 120s instead, and that sleep rebuilt from the old
+code. The cron stays for data drift — facilities appear without deploys.
 
 ★ AND A 200 IS NOT A GOOD SNAPSHOT. _rebuild_sitemap_snapshot DELETEs every row
 and re-INSERTs in one transaction, so a build that succeeds and produces almost
@@ -49,6 +50,12 @@ def _on():
 
 def _steps():
     return _wf()["jobs"]["rebuild"]["steps"]
+
+
+def _code(step):
+    """A step's shell minus whole-line comments."""
+    return "\n".join(l for l in (step.get("run") or "").splitlines()
+                     if not l.lstrip().startswith("#"))
 
 
 def _rebuild_run():
@@ -88,22 +95,34 @@ def test_the_cron_survives_as_the_drift_net():
     )
 
 
-def test_it_waits_for_railway_before_rebuilding():
-    """★ Rebuilding before the replicas swap regenerates the snapshot from the
-    OLD code and reports success — the very failure this job exists to prevent,
-    arriving through the fix for it."""
+def test_it_waits_for_the_pushed_commit_before_rebuilding():
+    """★ Rebuilding before the new deploy is live regenerates the snapshot from
+    the OLD code and reports success. A `sleep 120` stood here and did exactly
+    that on 2026-09-11: run 34568249517 rebuilt generation 513 at 06:04:03Z,
+    and the origin first served #4385's code at 06:04:22Z. The wait now polls
+    the running commit; tests/test_deploy_wait_polls_the_running_commit.py pins
+    how it decides."""
     steps = _steps()
-    waits = [s for s in steps
-             if "sleep" in (s.get("run") or "") and "push" in str(s.get("if", ""))]
-    assert waits, (
-        "a push-triggered rebuild must wait for the Railway deploy to settle"
-    )
-    idx_wait = steps.index(waits[0])
-    idx_rebuild = next(i for i, s in enumerate(steps)
-                       if "rebuild-snapshot" in (s.get("run") or ""))
-    assert idx_wait < idx_rebuild, "the wait must come BEFORE the rebuild"
-    secs = int(re.search(r"sleep\s+(\d+)", waits[0]["run"]).group(1))
-    assert secs >= 90, f"sleep {secs}s is under the 90s post-deploy-smoke uses"
+    waits = [i for i, s in enumerate(steps)
+             if "scripts/wait_for_deployed_commit.py" in _code(s)]
+    assert waits, "a push-triggered rebuild must wait for the pushed commit to be live"
+    idx_rebuild = next(i for i, s in enumerate(steps) if "rebuild-snapshot" in _code(s))
+    assert waits[0] < idx_rebuild, "the wait must come BEFORE the rebuild"
+    assert steps[waits[0]].get("if") == "github.event_name == 'push'"
+
+
+def test_the_cron_path_rebuilds_without_waiting():
+    """The 4-hourly rebuild is the data-drift net: it rebuilds from whatever is
+    live. Everything before the rebuild is push-only, and the rebuild and the
+    read-back run on every trigger."""
+    steps = _steps()
+    idx_rebuild = next(i for i, s in enumerate(steps) if "rebuild-snapshot" in _code(s))
+    assert idx_rebuild > 0, "nothing runs before the rebuild — the push-path wait is gone"
+    for s in steps[:idx_rebuild]:
+        assert s.get("if") == "github.event_name == 'push'", (
+            f"{s.get('name') or s.get('uses')!r} runs on the cron path before the rebuild")
+    for s in steps[idx_rebuild:]:
+        assert "if" not in s, f"{s.get('name')!r} no longer runs on every trigger"
 
 
 def test_a_collapsed_rebuild_fails_the_job():
