@@ -634,8 +634,21 @@ def run_daily_intelligence():
 
 @intelligence_bp.route('/api/v1/intelligence/daily', methods=['GET', 'POST'])
 def api_daily_intelligence():
-    """Trigger or get daily intelligence"""
+    """Trigger (POST) or read (GET) daily intelligence.
+
+    Only POST reaches a sink: run_daily_intelligence() calls post_to_linkedin()
+    with the DC Hub company token, so the gate sits at the top of that branch.
+    GET returns get_daily_stats() and stays public.
+
+    The sibling POST /api/v1/intelligence/linkedin-post in this same file has
+    carried this gate since the route-auth-criticals fix; this door to the same
+    sink was left open, and nothing saw it because the master shell only
+    followed DIRECT calls -- the post here is one hop away, inside
+    run_daily_intelligence.
+    """
     if request.method == 'POST':
+        if not require_internal_or_admin(request):
+            return jsonify({'error': 'Unauthorized'}), 401
         results = run_daily_intelligence()
         return jsonify(results)
     else:

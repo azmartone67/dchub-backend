@@ -129,26 +129,21 @@ def test_l1_does_not_flag_the_internal_auth_control():
 
 
 def test_l2_flags_ungated_trigger_but_not_the_decorator_gated_control():
-    """L2: iso_ercot /extract and ai_outreach /api/outreach/run are ungated
-    state-changing triggers; network_ix's sync routes call the same kind of
-    ingest but carry a LOCALLY-DEFINED @require_internal_key. The detector must
-    resolve the whole decorator stack — a grep for is_valid_internal_key() would
-    false-flag it.
+    """L2: iso_ercot /extract is an ungated state-changing trigger;
+    network_ix's sync routes call the same kind of ingest but carry a
+    LOCALLY-DEFINED @require_internal_key. The detector must resolve the whole
+    decorator stack — a grep for is_valid_internal_key() would false-flag it.
 
-    (The former seeds — gas /feeds/ingest and sec_edgar /extract — were closed by
-    fix(security): gate unauthenticated cron job-trigger endpoints, which added
-    inline `is_valid_internal_key` gates. That the detector now clears BOTH is
-    itself asserted by test_l2_clears_the_now_gated_cron_triggers below; here we
-    use two triggers that remain intentionally ungated — DEFER'd per the
-    silent-feed-death safety asymmetry — so the ungated lane still has seeds.)"""
+    (Seed history: gas /feeds/ingest and sec_edgar /extract were closed by
+    fix(security): gate unauthenticated cron job-trigger endpoints;
+    ai_outreach /api/outreach/run was closed by the ungated-IndexNow-reach
+    sweep. Each is asserted CLEARED by test_l2_clears_the_now_gated_cron_triggers
+    below, so the lane keeps a positive seed here and a negative one there.)"""
     from routes.route_auth_master_shell import _detect_l2
     off = _detect_l2([_rec_from_file("routes/iso_ercot.py"),
-                      _rec_from_file("ai_outreach_agent.py"),
                       _rec_from_file("network_ix_ingestion.py")])
     files = {o["file"] for o in off}
     assert any("iso_ercot" in f for f in files), "ungated /extract not flagged"
-    assert any("ai_outreach_agent" in f for f in files), \
-        "ungated /api/outreach/run not flagged"
     assert not any("network_ix" in f for f in files), \
         "network_ix @require_internal_key control wrongly flagged"
 
@@ -161,8 +156,15 @@ def test_l2_clears_the_now_gated_cron_triggers():
     a decorator."""
     from routes.route_auth_master_shell import _detect_l2
     off = _detect_l2([_rec_from_file("routes/gas_price_feeds.py"),
-                      _rec_from_file("routes/sec_edgar.py")])
+                      _rec_from_file("routes/sec_edgar.py"),
+                      _rec_from_file("ai_outreach_agent.py")])
     files = {o["file"] for o in off}
+    # ai_outreach /api/outreach/run + /trigger: the outreach cycle submits to
+    # directories and pings the search engines, so it is an outbound publisher,
+    # not an inbound feed — the silent-feed-death asymmetry that DEFER'd it does
+    # not apply. Now gated with require_internal_or_admin.
+    assert not any("ai_outreach_agent" in f for f in files), \
+        "gated /api/outreach/run wrongly flagged as ungated"
     assert not any("gas_price_feeds" in f for f in files), \
         "gated /feeds/ingest wrongly flagged as ungated"
     assert not any("sec_edgar" in f for f in files), \

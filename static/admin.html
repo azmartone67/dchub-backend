@@ -549,7 +549,13 @@ pubLoadQueue();
 
 async function orApiFetch(path, opts = {}) {
     const sep = path.includes('?') ? '&' : '?';
-    const url = `${API_BASE}${path}${sep}key=${ADMIN_KEY}`;
+    // admin_key, not key: /api/outreach/trigger is now gated by
+    // internal_auth.require_internal_or_admin, which reads X-Internal-Key,
+    // X-Admin-Key or ?admin_key= -- never ?key=. The two admin endpoints this
+    // helper also calls accept admin_key, and discovered-platforms/<k>/toggle
+    // accepts ONLY admin_key, so it was 401ing on every click until now.
+    // pubApiFetch (line ~292) keeps ?key=: content_publisher.py reads that one.
+    const url = `${API_BASE}${path}${sep}admin_key=${ADMIN_KEY}`;
     try {
         const r = await fetch(url, { mode: 'cors', ...opts });
         return await r.json();

@@ -1525,7 +1525,7 @@ def get_outreach_stats():
 def register_outreach_routes(app):
     """Register Flask routes for outreach agent"""
     from flask import jsonify, request
-    from internal_auth import is_valid_internal_key
+    from internal_auth import is_valid_internal_key, require_internal_or_admin
 
     @app.route('/api/outreach/status')
     def outreach_status():
@@ -1558,6 +1558,20 @@ def register_outreach_routes(app):
     @app.route('/api/outreach/run', methods=['POST'])
     @app.route('/api/outreach/trigger', methods=['POST'])
     def run_outreach():
+        # Fail-closed gate. run_outreach_cycle() submits DC Hub's URLs to
+        # third-party directories and pings the search engines (submit_to_indexnow),
+        # i.e. it ACTS ON THE OUTSIDE WORLD under our identity. The 'already_running'
+        # flag below is a concurrency guard, not auth: it lets one cycle through per
+        # completion, from any caller.
+        #
+        # This route was previously DEFER'd under the silent-feed-death safety
+        # asymmetry (a gated ingest whose credential breaks dies quietly, which can
+        # be worse than an open refresh). That reasoning covers INBOUND feeds; it
+        # does not transfer to an outbound publisher, where the failure mode of an
+        # open door is a stranger acting as DC Hub. Its one automated caller,
+        # scheduled_discovery.py, already sends X-Internal-Key and is unaffected.
+        if not require_internal_or_admin(request):
+            return jsonify({'error': 'Unauthorized'}), 401
         if _last_cycle_result.get('running'):
             return jsonify({
                 'status': 'already_running',

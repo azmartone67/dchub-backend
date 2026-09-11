@@ -2005,7 +2005,6 @@ AGENT_HUB_HTML = """<!DOCTYPE html>
             <a href="/" class="hdr-btn">&larr; Platform</a>
             <a href="/api-docs" class="hdr-btn">API Docs</a>
             <a href="/admin" class="hdr-btn">Admin</a>
-            <button class="hdr-btn accent" onclick="forceOutreach()">&#9654; Run Outreach</button>
         </div>
     </div>
 </header>
@@ -2080,7 +2079,6 @@ AGENT_HUB_HTML = """<!DOCTYPE html>
                     <span class="ob-val" id="organicVal" style="color:var(--amber)">Monitoring...</span>
                 </div>
                 <div class="disco-actions">
-                    <button class="da-btn primary" id="forceBtn" onclick="forceOutreach()">&#9654; Force Cycle</button>
                     <button class="da-btn" onclick="openPitch()">&#128221; View Pitch</button>
                     <button class="da-btn" onclick="openEP('/api/outreach/social-posts')">&#128241; Social Templates</button>
                     <button class="da-btn" onclick="openEP('/api/outreach/directories')">&#128193; Directory Info</button>
@@ -2159,7 +2157,7 @@ AGENT_HUB_HTML = """<!DOCTYPE html>
             <div class="ep-card" onclick="openEP('/api/outreach/pitch')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/pitch</div><div class="ep-desc">Current AI pitch</div></div>
             <div class="ep-card" onclick="openEP('/api/outreach/social-posts')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/social-posts</div><div class="ep-desc">Social templates</div></div>
             <div class="ep-card" onclick="openEP('/api/outreach/directories')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/directories</div><div class="ep-desc">Directory info</div></div>
-            <div class="ep-card" onclick="forceOutreach()"><span class="ep-method post">POST</span><div class="ep-path">/api/outreach/run</div><div class="ep-desc">Force outreach cycle</div></div>
+            <div class="ep-card"><span class="ep-method post">POST</span><div class="ep-path">/api/outreach/run</div><div class="ep-desc">Force outreach cycle &mdash; admin only</div></div>
             <div class="ep-card" onclick="openEP('/api/agents/stats')"><span class="ep-method get">GET</span><div class="ep-path">/api/agents/stats</div><div class="ep-desc">All agent stats</div></div>
             <div class="ep-card" onclick="openEP('/api/agents/logs')"><span class="ep-method get">GET</span><div class="ep-path">/api/agents/logs</div><div class="ep-desc">Activity logs</div></div>
         </div>
@@ -2185,7 +2183,6 @@ const EP={sales:'/api/agents/sales/chat',enrich:'/api/agents/enrichment/market-r
 const PK={sales:'message',enrich:'query',social:'topic'};
 async function loadStatus(){try{const r=await fetch(API+'/api/outreach/status');if(!r.ok)return;const d=await r.json();const ev=d.total_events||d.outreach_events||0,ix=d.indexnow_pings||0,dp=d.directory_pings||0;document.getElementById('cOutreach').textContent=ev;document.getElementById('cIndexNow').textContent=ix;document.getElementById('cDirPings').textContent=dp;document.getElementById('hOutreach').textContent=ev}catch(e){}}
 async function loadOrganic(){try{const r=await fetch(API+'/api/outreach/organic');if(!r.ok)return;const d=await r.json(),el=document.getElementById('organicVal');if(d.organic_detected||(d.platforms&&d.platforms.length>0)){el.textContent=d.platforms.length+' platform(s) detected!';el.style.color='var(--green)'}else{el.textContent='No organic traffic yet';el.style.color='var(--amber)'}}catch(e){document.getElementById('organicVal').textContent='Monitoring...'}}
-async function forceOutreach(){const b=document.getElementById('forceBtn');b.disabled=true;b.textContent='Running...';try{await fetch(API+'/api/outreach/run',{method:'POST'});b.textContent='Done!';loadStatus();loadLog()}catch(e){b.textContent='Error'}setTimeout(()=>{b.textContent='\u25B6 Force Cycle';b.disabled=false},2000)}
 async function openPitch(){try{const r=await fetch(API+'/api/outreach/pitch'),d=await r.json();document.getElementById('pitchContent').textContent=d.pitch||JSON.stringify(d,null,2);document.getElementById('pitchModal').classList.add('open')}catch(e){alert('Pitch endpoint not available.')}}
 function closePitch(){document.getElementById('pitchModal').classList.remove('open')}
 function openEP(p){window.open(API+p,'_blank')}

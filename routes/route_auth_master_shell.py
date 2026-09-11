@@ -252,13 +252,29 @@ def _static_sql(node):
     return None
 
 
+# Flask's method shortcuts register a route just as @<x>.route(...) does.
+# Accepting only "route" made every @bp.post(...) / @bp.get(...) handler in the
+# repo invisible to EVERY lane of this shell -- 209 of them at the time this was
+# widened. They were never scanned, so they could never be reported.
+_ROUTE_ATTRS = frozenset({"route", "get", "post", "put", "patch", "delete"})
+
+
 def _is_route(dec) -> bool:
     """True when a decorator is a Flask route registration (@bp.route /
-    @app.route, incl. app.route nested inside a register_*_routes(app) closure).
-    Structural, not unparse — a route decorator is `<x>.route(...)`."""
-    node = dec.func if isinstance(dec, ast.Call) else dec
-    return isinstance(node, ast.Attribute) and node.attr == "route" \
-        and isinstance(dec, ast.Call)
+    @app.route / @bp.post and friends, incl. app.route nested inside a
+    register_*_routes(app) closure). Structural, not unparse."""
+    if not isinstance(dec, ast.Call):
+        return False
+    node = dec.func
+    if not (isinstance(node, ast.Attribute) and node.attr in _ROUTE_ATTRS):
+        return False
+    if node.attr == "route":
+        return True
+    # @x.get("/p") is a route; requests.get("http://...") is not. A route
+    # registration's first argument is a URL PATH literal.
+    first = dec.args[0] if dec.args else None
+    return isinstance(first, ast.Constant) and isinstance(first.value, str) \
+        and first.value.startswith("/")
 
 
 _STMT_CONTAINERS = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
@@ -355,7 +371,15 @@ _GATE_CALLS = {
 }
 
 
-def _handler_is_gated(fn) -> bool:
+def _denies(fn) -> bool:
+    """This function produces a 401/403 — i.e. it can refuse a caller."""
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Constant) and n.value in (401, 403):
+            return True
+    return False
+
+
+def _handler_is_gated(fn, rec=None, index=None) -> bool:
     if _dec_names(fn) & _GATE_DECORATORS:
         return True
     if _call_name_set(fn) & _GATE_CALLS:
@@ -367,9 +391,111 @@ def _handler_is_gated(fn) -> bool:
     # from gas /feeds/ingest (ungated: returns only 200/207). Preferring this
     # over a fixed name list keeps the CRITICAL lanes from crying wolf on a
     # handler that is in fact gated.
-    for n in ast.walk(fn):
-        if isinstance(n, ast.Constant) and n.value in (401, 403):
+    if _denies(fn):
+        return True
+    # ...and a handler whose gate lives one call away, in a helper that returns
+    # the 401 for it:
+    #
+    #     auth_err = _require_admin_key()
+    #     if auth_err: return auth_err
+    #
+    # is just as gated, but carries no 401 of its own. Gate detection has to
+    # reach as far as sink detection does: the moment _reaches_sink started
+    # following helpers, every handler gated in this shape became a false
+    # positive (routes/jobs_routes.py job_ai_outreach and job_content_publish
+    # both are). Resolving the callee is deliberate rather than adding
+    # "_require_admin_key" to _GATE_CALLS -- that list already carries
+    # _require_admin and require_admin and still missed this spelling, and the
+    # next helper would be named something else again.
+    if rec is None or index is None:
+        return False
+    # A decorator that can answer 401/403 is an auth decorator, whatever it is
+    # called. _GATE_DECORATORS lists "require_admin" and still missed
+    # routes/marketing_engine.py's @_require_admin -- one underscore -- which
+    # gates auto_generate, publish_now and repost_now. Resolving beats listing.
+    for dname in _dec_names(fn):
+        _t, dfn = _resolve_callee(dname, rec, fn, index)
+        if dfn is None or dfn is fn:
+            continue
+        # ...either it answers the 401 itself, or it is a factory that hands the
+        # request to a gate it calls. routes/discovery_routes.py's
+        # @_lazy_require_plan('enterprise') is the second shape: its own
+        # literals are 503s, and the enforcement is the _require_plan() call
+        # inside its wrapper.
+        if _denies(dfn) or (_call_name_set(dfn) & _GATE_CALLS):
             return True
+    # A helper called for its EFFECT that raises the refusal:
+    #     _require_auth(authorization)   ->   raise HTTPException(401, ...)
+    # Keyed on `raise` specifically, not on the presence of a 401 anywhere in
+    # the callee: plenty of non-gates READ a 401 (an API client checking an
+    # upstream's status), and accepting those cleared main.py::daily_cron --
+    # which has no gate at all -- because something downstream of it handles a
+    # 401 from LinkedIn.
+    for name, mod_hint in _called_names(fn):
+        tfn = None
+        if mod_hint:
+            tmod = index.get(mod_hint) or index.get(mod_hint.split(".")[-1])
+            if tmod is not None:
+                tfn = _fn_map(tmod).get(name)
+        if tfn is None:
+            _t, tfn = _resolve_callee(name, rec, fn, index)
+        if tfn is not None and tfn is not fn and _raises_denial(tfn):
+            return True
+    return _returns_a_helpers_denial(fn, rec, index)
+
+
+def _raises_denial(fn) -> bool:
+    """This function REFUSES by raising — `raise HTTPException(401, ...)`."""
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Raise) and any(
+                isinstance(c, ast.Constant) and c.value in (401, 403)
+                for c in ast.walk(n)):
+            return True
+    return False
+
+
+def _returns_a_helpers_denial(fn, rec, index) -> bool:
+    """True only for the `err = helper(); if err: return err` gate shape.
+
+    Deliberately narrow. The first cut of this accepted any resolvable callee
+    whose body merely CONTAINED a 401/403, and that silently cleared
+    main.py::daily_cron -- an entirely ungated handler -- because something it
+    calls downstream handles a 401 from LinkedIn's API. A handler is only gated
+    by a helper if it RETURNS what the helper gave it: the refusal has to be
+    the handler's own answer to the caller, not a status code seen somewhere in
+    the call graph.
+    """
+    denial_names = set()
+    for n in ast.walk(fn):
+        if not (isinstance(n, ast.Assign) and isinstance(n.value, ast.Call)
+                and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)):
+            continue
+        f = n.value.func
+        cname = getattr(f, "id", None) or getattr(f, "attr", None) or ""
+        if not cname:
+            continue
+        tfn = None
+        if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+            tmod = index.get(f.value.id) or index.get(f.value.id.split(".")[-1])
+            if tmod is not None:
+                tfn = _fn_map(tmod).get(cname)
+        if tfn is None:
+            _t, tfn = _resolve_callee(cname, rec, fn, index)
+        if tfn is not None and tfn is not fn and _denies(tfn):
+            denial_names.add(n.targets[0].id)
+    if not denial_names:
+        return False
+    for n in ast.walk(fn):
+        if not isinstance(n, ast.If):
+            continue
+        if not ({t.id for t in ast.walk(n.test) if isinstance(t, ast.Name)}
+                & denial_names):
+            continue
+        for b in ast.walk(n):
+            if isinstance(b, ast.Return) and b.value is not None:
+                if ({t.id for t in ast.walk(b.value) if isinstance(t, ast.Name)}
+                        & denial_names):
+                    return True
     return False
 
 
@@ -685,17 +811,128 @@ def _lane_unauth_trigger(c, ctx) -> list[dict]:
 
 # ── LANE 3 · unauthenticated outbound action ──────────────────────────
 
+# Every name here must be a name that EXISTS. Three did not:
+#   submit_indexnow  - the IndexNow arm. `git grep submit_indexnow` returned
+#                      this line and nothing else, so it never matched a single
+#                      handler in its lifetime. The submitters are actually
+#                      submit_to_indexnow (routes/indexnow.py), ping_indexnow
+#                      (seo_agent.py, seo_promotion_engine.py) and
+#                      ping_new_facilities (routes/indexnow.py).
+#   post_to_moltbook - no definition and no call anywhere in the repo.
+#   tweet            - no definition; the live X poster is post_to_twitter
+#                      (routes/multiplatform_amplifier.py), already listed.
+# A name that matches nothing is worse than an absent one: it reads as coverage.
+# tests/test_route_auth_shell_transitive_reach.py holds the set to that rule.
 _OUTBOUND_SINKS = {
     "post_to_linkedin", "create_text_post", "create_article_post",
-    "post_to_twitter", "tweet", "post_to_moltbook", "post_to_x",
-    "_send_email", "_p99_send_email", "send_email", "submit_indexnow",
+    "post_to_twitter", "post_to_x",
+    "_send_email", "_p99_send_email", "send_email",
+    "submit_to_indexnow", "ping_indexnow", "ping_new_facilities",
 }
 _OUTBOUND_HOST = re.compile(
     r"api\.resend\.com|sendgrid|api\.twitter\.com|api\.linkedin\.com"
     r"|graph\.facebook|indexnow", re.I)
 
 
-def _reaches_sink(fn):
+_REACH_MAX_DEPTH = 2
+
+
+def _fn_map(rec):
+    """name -> FunctionDef for every def in a scanned module. Cached on the
+    record; first definition wins (a later shadow is the rarer case)."""
+    m = rec.get("_fn_map")
+    if m is None:
+        m = {}
+        for f in _all_funcdefs(rec["tree"]):
+            m.setdefault(f.name, f)
+        rec["_fn_map"] = m
+    return m
+
+
+def _module_index(records):
+    """Every scanned module addressable by the spellings an import can use:
+    'routes.indexnow', 'routes/indexnow' and bare 'indexnow'. Bare names are
+    ambiguous across directories, so a repo-root module wins over routes/ --
+    that is the resolution order of the app's own sys.path."""
+    idx = {}
+    for rec in records:
+        rel = rec["rel"]
+        if not rel.endswith(".py"):
+            continue
+        stem = rel[:-3]
+        idx[stem.replace(os.sep, ".")] = rec
+        idx.setdefault(os.path.basename(stem), rec)
+    for rec in records:                      # repo-root modules take the bare name
+        rel = rec["rel"]
+        if rel.endswith(".py") and os.sep not in rel:
+            idx[rel[:-3]] = rec
+    return idx
+
+
+def _import_bindings(node, cache=None, key=None):
+    """{bound name: (module, original name)} for every import under `node`.
+
+    Built with ONE walk and memoised. Doing this per looked-up name instead
+    cost minutes on main.py (100k nodes re-walked for every callee of every
+    handler); the scan is served on request and must stay in milliseconds.
+    """
+    if cache is not None and key in cache:
+        return cache[key]
+    out = {}
+    for n in ast.walk(node):
+        if isinstance(n, ast.ImportFrom) and n.module:
+            for a in n.names:
+                out.setdefault(a.asname or a.name, (n.module, a.name))
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                out.setdefault(a.asname or a.name.split(".")[0], (a.name, None))
+    if cache is not None:
+        cache[key] = out
+    return out
+
+
+def _module_imports(rec):
+    m = rec.get("_imports")
+    if m is None:
+        m = rec["_imports"] = _import_bindings(rec["tree"])
+    return m
+
+
+_FN_IMPORTS: dict = {}
+
+
+def _fn_imports(fn):
+    """Function-local imports. Handlers in this repo import inside the body far
+    more often than at module level (`from dchub_media import run_daily`)."""
+    return _import_bindings(fn, _FN_IMPORTS, id(fn))
+
+
+def _resolve_callee(name, rec, fn, index):
+    """(record, FunctionDef) the call `name` lands in, or (None, None).
+
+    Resolution order matches Python's: a name bound by an import in the
+    handler, then by an import at module level, then a def in the same module.
+    """
+    for bindings in (_fn_imports(fn), _module_imports(rec)):
+        got = bindings.get(name)
+        if not got:
+            continue
+        mod, orig = got
+        target = index.get(mod) or index.get(mod.split(".")[-1])
+        if target is not None:
+            tfn = _fn_map(target).get(orig or name)
+            if tfn is not None:
+                return target, tfn
+        return None, None
+    own = _fn_map(rec).get(name)
+    if own is not None and own is not fn:
+        return rec, own
+    return None, None
+
+
+def _direct_sink(fn):
+    """A sink called in this function's own body (nested defs included -- an
+    inline thread target is part of the handler's tree)."""
     for c in ast.walk(fn):
         if not isinstance(c, ast.Call):
             continue
@@ -711,14 +948,77 @@ def _reaches_sink(fn):
     return None
 
 
+def _called_names(fn):
+    """Names this function calls, as (name, module_hint). `mod.fn()` carries
+    its module in the hint; a bare `fn()` resolves through imports."""
+    for c in ast.walk(fn):
+        if not isinstance(c, ast.Call):
+            continue
+        f = c.func
+        if isinstance(f, ast.Name):
+            yield f.id, None
+        elif isinstance(f, ast.Attribute):
+            base = f.value
+            yield f.attr, (base.id if isinstance(base, ast.Name) else None)
+
+
+def _reaches_sink(fn, rec=None, index=None):
+    """The outbound sink this handler reaches, directly or THROUGH A HELPER.
+
+    Direct-call-only reach is why this lane never saw /api/cron/daily/preview
+    (-> dchub_media.run_daily), /api/v1/media/announcement
+    (-> publish_announcement), /api/outreach/run (-> run_outreach_cycle) or
+    /api/autopilot/seo/run (-> run_seo_promotion): every one of them reaches an
+    IndexNow or publishing sink one call past the handler body, so a scan of the
+    body alone reports nothing. Returns "helper -> sink" so a finding names the
+    path it took, not just the destination.
+
+    rec/index omitted = direct reach only (the old behaviour), so the existing
+    single-function callers keep working.
+    """
+    hit = _direct_sink(fn)
+    if hit or rec is None or index is None:
+        return hit
+
+    seen = {id(fn)}
+    # (record, funcdef, trail) queue, breadth-first, depth-bounded
+    frontier = [(rec, fn, [])]
+    for _ in range(_REACH_MAX_DEPTH):
+        nxt = []
+        for crec, cfn, trail in frontier:
+            for name, mod_hint in _called_names(cfn):
+                if name in _OUTBOUND_SINKS:
+                    return " -> ".join(trail + [name]) if trail else name
+                target, tfn = (None, None)
+                if mod_hint:
+                    tmod = index.get(mod_hint) or index.get(mod_hint.split(".")[-1])
+                    if tmod is not None:
+                        tfn = _fn_map(tmod).get(name)
+                        target = tmod if tfn is not None else None
+                if tfn is None:
+                    target, tfn = _resolve_callee(name, crec, cfn, index)
+                if tfn is None or id(tfn) in seen:
+                    continue
+                seen.add(id(tfn))
+                inner = _direct_sink(tfn)
+                if inner:
+                    return " -> ".join(trail + [name, inner])
+                nxt.append((target, tfn, trail + [name]))
+        if not nxt:
+            break
+        frontier = nxt
+    return None
+
+
 def _detect_l3(records):
     out = []
+    index = _module_index(records)
     for rec in records:
         for fn in rec["handlers"]:
-            sink = _reaches_sink(fn)
+            sink = _reaches_sink(fn, rec, index)
             if not sink:
                 continue
-            if _handler_is_gated(fn):
+            if _handler_is_gated(fn, rec, index):
                 continue
             paths, methods = _route_info(fn)
             out.append({"file": rec["rel"], "line": fn.lineno, "handler": fn.name,
