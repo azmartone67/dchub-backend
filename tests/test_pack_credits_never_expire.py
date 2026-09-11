@@ -219,15 +219,18 @@ def test_no_caller_passes_or_imports_an_expiry():
 
 # ── the backfill, shape only (the SQL file proves the behaviour) ─────────────
 
-def test_the_backfill_targets_pack_rows_and_binds_never(monkeypatch):
+def test_the_backfill_targets_pack_rows_and_binds_never(monkeypatch, capsys):
     old = [dt.datetime(2026, 9, 14, 3, 0, tzinfo=dt.timezone.utc),
            dt.datetime(2026, 12, 8, 17, 30, tzinfo=dt.timezone.utc)]
-    cur = _Cur(rows=[(old[1],), (old[0],)])
+    cur = _Cur(rows=[(11, old[1]), (7, old[0])])       # (id, prior expiry), as RETURNING yields
     monkeypatch.setattr(mcp, "_conn", lambda: _Conn(cur))
     out = mcp.restore_pack_never_expires()
     assert out == {"ok": True, "restored": 2,
                    "earliest_old_expiry": old[0].isoformat(),
                    "latest_old_expiry": old[1].isoformat()}, out
+    # the audit trail: each id with the expiry it held, enough to reverse it
+    err = capsys.readouterr().err
+    assert f"id=7:{old[0].isoformat()}" in err and f"id=11:{old[1].isoformat()}" in err, err
     assert len(cur.calls) == 1
     sql, params = cur.calls[0]
     pieces = " ".join(sql.split()).split("%s")

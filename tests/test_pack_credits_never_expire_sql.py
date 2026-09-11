@@ -76,7 +76,7 @@ def test_a_real_grant_never_expires_and_is_spendable(db):
         assert spent["ok"] and spent["remaining"] == 995, (source, spent)
 
 
-def test_the_backfill_restores_exactly_the_pack_rows(db):
+def test_the_backfill_restores_exactly_the_pack_rows(db, capsys):
     rows = {
         "pack10_90d": _seed(db, "k-pack10", "pack10", "NOW() + INTERVAL '89 days'"),
         "keybound_lapsed": _seed(db, "k-lapsed", "pack5_keybound", "NOW() - INTERVAL '1 day'", remaining=700),
@@ -85,11 +85,22 @@ def test_the_backfill_restores_exactly_the_pack_rows(db):
     }
     legacy_tu = _seed(db, "k-tu", None)                     # source NULL, 30-minute default
     tu_before = _expiry(db, legacy_tu)
+    held = {row_id: _expiry(db, row_id) for row_id in rows.values()}
     assert mcp.get_credit_balance("k-lapsed", None) == 0, "control: the lapsed grant reads empty before"
 
     out = mcp.restore_pack_never_expires()
     assert out["ok"] and out["restored"] == 3, out            # pack10_90d, keybound_lapsed, agentic
     assert out["earliest_old_expiry"] < out["latest_old_expiry"], out
+
+    # The audit trail: the log line names every moved id with the expiry it
+    # held, read back from the database before the backfill — nothing else.
+    line = next(l for l in capsys.readouterr().err.splitlines() if "restore_pack_never_expires" in l)
+    logged = dict(item[len("id="):].split(":", 1)
+                  for item in line.split("prior values: ", 1)[1].split(", "))
+    moved = {rows["pack10_90d"], rows["keybound_lapsed"], rows["agentic"]}
+    assert set(map(int, logged)) == moved, line
+    for row_id in moved:
+        assert dt.datetime.fromisoformat(logged[str(row_id)]) == held[row_id], (row_id, line)
 
     for name, row_id in rows.items():
         assert _expiry(db, row_id).astimezone(dt.timezone.utc) == NEVER, name

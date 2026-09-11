@@ -544,16 +544,20 @@ def restore_pack_never_expires():
                    SET expires_at = %s::timestamptz
                   FROM prior
                  WHERE t.id = prior.id
-                RETURNING prior.expires_at;
+                RETURNING t.id, prior.expires_at;
             """, (list(PACK_SOURCES), PACK_NEVER_EXPIRES, PACK_NEVER_EXPIRES))
-            olds = [r[0] for r in cur.fetchall() if r and r[0] is not None]
-        out.update(ok=True, restored=len(olds),
+            moved = sorted((r[0], r[1]) for r in cur.fetchall() if r and r[1] is not None)
+        olds = [old for _id, old in moved]
+        out.update(ok=True, restored=len(moved),
                    earliest_old_expiry=min(olds).isoformat() if olds else None,
                    latest_old_expiry=max(olds).isoformat() if olds else None)
-        if olds:
-            print(f"[mcp_conversion_plays] restore_pack_never_expires: {len(olds)} pack "
+        if moved:
+            # The audit trail is the log line itself: every row id with the
+            # expiry it held, so the backfill can be reversed row by row.
+            print(f"[mcp_conversion_plays] restore_pack_never_expires: {len(moved)} pack "
                   f"grant(s) moved to never-expires (old expiries "
-                  f"{out['earliest_old_expiry']} .. {out['latest_old_expiry']})",
+                  f"{out['earliest_old_expiry']} .. {out['latest_old_expiry']}); prior "
+                  "values: " + ", ".join(f"id={i}:{old.isoformat()}" for i, old in moved),
                   file=sys.stderr)
         return out
     except Exception as e:
