@@ -520,7 +520,7 @@ def test_live_mirror_prefilter_selects_exactly_what_repair_provider_changes(capl
                 "'fiber_routes' resolves to %s, not a temp schema — refusing to "
                 "write" % schema)
             cur.executemany(
-                "INSERT INTO fiber_routes (id, name, provider) VALUES (%s,%s,%s)",
+                "INSERT INTO fiber_routes (id, name, provider) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                 _MIRROR_ROWS)
 
             # the pre-fix prefilter, to prove the exclusion is load-bearing

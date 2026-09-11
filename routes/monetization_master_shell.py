@@ -271,7 +271,7 @@ def _act_metered(over: list) -> str:
                     cur.execute(
                         """INSERT INTO mcp_paid_intent
                            (tool, tier, api_key_hash, raw_args, user_agent)
-                           VALUES (%s,%s,%s,%s,%s)""",
+                           VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
                         ("metered_grid_fiber_over_threshold", r.get("tier"),
                          (r["identity"][:64] if r["id_kind"] == "api_key" else None),
                          json.dumps({"id_kind": r["id_kind"], "identity": r["identity"][:64],
@@ -561,7 +561,7 @@ def monetize_master_tick():
                 cur.execute(
                     """INSERT INTO monetize_snapshots
                        (monetize_score, weakest_lever, action_taken, lever_scores, findings_filed, detail)
-                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                       VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
                     (total, weakest, action[:500], json.dumps(scores), 0, json.dumps(detail)))
         except Exception:
             pass
