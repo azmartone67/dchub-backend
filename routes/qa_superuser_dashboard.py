@@ -456,7 +456,7 @@ def qa_superuser_ack():
             cur.execute(
                 """INSERT INTO qa_superuser_acks
                        (finding_key, evidence_sha, note, acked_at)
-                   VALUES (%s, %s, %s, NOW())
+                   VALUES (%s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                    ON CONFLICT (finding_key) DO UPDATE SET
                        evidence_sha = EXCLUDED.evidence_sha,
                        note         = EXCLUDED.note,
@@ -497,7 +497,7 @@ def _persist_investigation(meta: dict, ev_sha: str, question: str, result: dict,
                        (finding_key, evidence_sha, question, recommendation,
                         confidence, survived, result_json, brain_id,
                         issue_number, commented, created_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,FALSE,NOW())
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,FALSE,NOW() ON CONFLICT DO NOTHING)
                    ON CONFLICT (finding_key) DO UPDATE SET
                        evidence_sha   = EXCLUDED.evidence_sha,
                        question       = EXCLUDED.question,
