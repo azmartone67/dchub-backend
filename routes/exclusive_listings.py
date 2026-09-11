@@ -148,21 +148,19 @@ HOW_TO_VERIFY = (
 # default CC-BY-4.0 grant (dchub-mcp-server lib/attribution.mjs mergeProvenance /
 # reconcileCitation). Without these, every agent reading a pocket listing would
 # be told it may republish it.
+# Only `citation` is emitted. `provenance` is a data-CURRENCY claim key to
+# scripts/dataset_inventory.py, and listings are curated inventory, not an
+# ingested feed with a freshness to watch; the MCP tools force a matching
+# confidential provenance on their side (dchub-mcp-server _listingConfidential).
 LISTING_LICENSE = "LicenseRef-DCHub-Pocket-Listings-Confidential"
 LISTING_CITE_AS = ("DC Hub Pocket Listings (confidential — not for redistribution), "
                    "dchub.cloud")
 
 
-def _provenance():
-    return {"source": "DC Hub Pocket Listings", "url": SITE + "/listings",
-            "license": LISTING_LICENSE, "license_url": TERMS_URL,
-            "redistribution": "not_permitted", "cite_as": LISTING_CITE_AS}
-
-
 def _citation():
     return {"source": "DC Hub Pocket Listings", "url": SITE + "/listings",
             "license": LISTING_LICENSE, "license_url": TERMS_URL,
-            "cite_as": LISTING_CITE_AS}
+            "redistribution": "not_permitted", "cite_as": LISTING_CITE_AS}
 
 
 _ACCESS_LEVELS = ("registered", "pro", "enterprise", "founding")
@@ -639,7 +637,7 @@ def _admin_ok():
 
 def _err(status, code, message, **extra):
     body = {"ok": False, "error": code, "message": message,
-            "provenance": _provenance(), "citation": _citation()}
+            "citation": _citation()}
     body.update(extra)
     resp = jsonify(body)
     resp.headers["Cache-Control"] = "private, no-store"
@@ -1361,7 +1359,6 @@ def list_listings():
 
     out = {
         "ok": True,
-        "provenance": _provenance(),
         "citation": _citation(),
         "program": _program(live_count),
         "viewer": _viewer_public(v, "/listings"),
@@ -1384,7 +1381,7 @@ def list_listings():
 
 @exclusive_listings_bp.route("/api/v1/listings/terms", methods=["GET"])
 def listing_terms():
-    out = {"ok": True, "provenance": _provenance(), "citation": _citation(),
+    out = {"ok": True, "citation": _citation(),
            "terms": {"version": TERMS_VERSION, "url": TERMS_URL,
                                  "summary": TERMS_SUMMARY, "text": TERMS_TEXT}}
     resp = jsonify(out)
@@ -1411,7 +1408,6 @@ def get_listing(slug_or_id):
         _record_view(row, v)
     out = {
         "ok": True,
-        "provenance": _provenance(),
         "citation": _citation(),
         "locked": not access["granted"],
         "listing": _full(row, access) if access["granted"] else _teaser(row, access),
@@ -1461,7 +1457,6 @@ def request_intro(slug_or_id):
         return result["_error"]
     out = {
         "ok": True,
-        "provenance": _provenance(),
         "citation": _citation(),
         "lead_id": result["lead_id"],
         "kind": "listing_introduction",
@@ -1494,7 +1489,6 @@ def register_interest():
         matching = 0
     out = {
         "ok": True,
-        "provenance": _provenance(),
         "citation": _citation(),
         "lead_id": result["lead_id"],
         "kind": "standing_requirement",
@@ -1577,7 +1571,6 @@ def confirm_lead():
 
     out = {
         "ok": True,
-        "provenance": _provenance(),
         "citation": _citation(),
         "lead_id": lead_id,
         "status": status,
@@ -1636,7 +1629,6 @@ def verify_lead(lead_id):
     confirmed = _first(events, "email_confirmed")
     out = {
         "ok": True,
-        "provenance": _provenance(),
         "citation": _citation(),
         "lead_id": lead_id,
         "issuer": "DC Hub · dchub.cloud",
@@ -1717,7 +1709,6 @@ def operator_ledger(slug_or_id):
     views = [ev for ev in events if ev.get("event") == "listing_viewed"]
     out = {
         "ok": True,
-        "provenance": _provenance(),
         "citation": _citation(),
         "listing": {"slug": row.get("slug"), "title": row.get("title")},
         "leads": leads,

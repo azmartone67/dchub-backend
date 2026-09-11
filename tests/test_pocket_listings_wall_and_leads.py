@@ -436,7 +436,7 @@ def test_the_public_record_masks_the_prospect_and_names_tampering(env):
 
 def test_every_listing_answer_says_confidential_and_never_cc_by(env):
     """The MCP gateway stamps CC-BY-4.0 on any response that does not carry its
-    own provenance/citation. Listing data must not reach an agent labelled as
+    own citation. Listing data must not reach an agent labelled as
     free to republish — walls included, since the tools relay them as results."""
     lead_id = _register_and_confirm(env, headers=_bearer(user_id="u-ann", email="ann@firm.example"))
     responses = {
@@ -452,9 +452,8 @@ def test_every_listing_answer_says_confidential_and_never_cc_by(env):
     }
     for label, r in responses.items():
         j, body = r.get_json(), r.get_data(as_text=True)
-        for block in ("provenance", "citation"):
-            assert j[block]["license"] == el.LISTING_LICENSE, (label, block)
-        assert j["provenance"]["redistribution"] == "not_permitted", label
+        assert j["citation"]["license"] == el.LISTING_LICENSE, label
+        assert j["citation"]["redistribution"] == "not_permitted", label
         assert "CC-BY" not in body, label
 
 
