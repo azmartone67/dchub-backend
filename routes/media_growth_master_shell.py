@@ -526,7 +526,7 @@ def tier3_act(m: dict, sc: dict) -> dict:
         try:
             with c, c.cursor() as cur:
                 cur.execute("""INSERT INTO media_growth_actions (lever, action, rationale, payload, mode)
-                               VALUES (%s,%s,%s,%s,%s)""",
+                               VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
                             (lever, action, rationale[:500],
                              json.dumps({"score": sc.get("growth_score"),
                                          "components": sc.get("components")}),
@@ -560,7 +560,7 @@ def _persist(m: dict, sc: dict, act: dict) -> bool:
                     (li_followers, li_followers_wow, x_followers, x_followers_wow,
                      citation_velocity, citation_trend, li_eng_rate, posts_7d,
                      growth_score, weakest_lever, action_taken, act_mode, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (m.get("li_followers"), m.get("li_followers_wow"),
                   m.get("x_followers"), m.get("x_followers_wow"),
                   m.get("citation_velocity"), m.get("citation_trend"),
