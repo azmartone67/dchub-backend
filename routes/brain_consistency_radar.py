@@ -3946,6 +3946,27 @@ def check_iso_metric_dropped() -> list[dict]:
                                + _iso_module_clause(iso) + _leash_note),
                 })
             elif recent[0] < 3:
+                # ★ THE SAME LEASH, ON THE BRANCH IT NEVER REACHED (2026-09-11).
+                #   The leash above only ever covered ZERO writes. EIA-930
+                #   streams publish ~26-28h behind real time (see
+                #   freshness_public._eia930_fleet), so while a stream's newest
+                #   hour is 22-24h old only that last hour sits inside this 24h
+                #   window — and a one-metric balancing authority (Tacoma Power
+                #   writes fuel_wat alone) "wrote only 1 metric". Measured on the
+                #   squasher portal 2026-09-11: 10 of its 20 Submit-a-fix rows
+                #   were this, every one a registered intermittent stream
+                #   (SPA TAL TPWR DOPD CHPD TIDC GVL GCPD SEC SCL), each billed a
+                #   ~48s investigation that could only end in "human decision
+                #   required".
+                #   Same rule as the zero branch: inside the leash nothing files;
+                #   past it (reachable here only if the leash is ever set below
+                #   the 24h window) the stream is judged like any other.
+                #   What this gives up, stated: a partial write on a lagged
+                #   stream is not caught here. A 24h wall-clock count cannot
+                #   tell it from the lag, so this branch never could.
+                age_h = all_ages.get(iso)
+                if iso in intermittent and age_h is not None and age_h < leash_h:
+                    continue
                 findings.append({
                     "issue":  "iso_metric_count_dropped",
                     "url":    f"grid_data: iso={iso}",
