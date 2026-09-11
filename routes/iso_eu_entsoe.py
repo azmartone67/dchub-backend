@@ -290,7 +290,7 @@ def _resolution_seconds(text):
     return _RESOLUTION_S.get((text or "").strip().upper())
 
 
-def _period_latest_point(period_el):
+def _period_latest_point(period_el, curve_type=None):
     """★ r-entsoe-period (2026-08-08). The latest Point of ONE <Period>, with
     the instant it covers.
 
@@ -306,6 +306,27 @@ def _period_latest_point(period_el):
     Returns (point_end_utc | None, quantity | None). point_end is the END of
     the interval the point covers: period start + position * resolution, which
     is the instant the measurement closed.
+
+    ★ r-entsoe-a03 (2026-09-11). That formula is only exact for curve type A01
+    (sequential fixed-size blocks: every position present). `curve_type` is the
+    TimeSeries' <curveType>. Under A03 (variable-sized blocks) ENTSO-E OMITS
+    each position whose value repeats the one before — entsoe-py forward-fills
+    them for exactly this reason — so a point's value holds until the next
+    point, and the LAST point's value holds until the Period ends. A fuel that
+    sat at one value all window (Germany's nuclear at 0 MW) arrives as ONE point
+    at position 1, and the formula dated it to the window's first quarter-hour.
+    Measured live 2026-09-11 on /api/v1/iso/eu/debug?zone=DE_LU:
+
+        30h window from 22:00Z   data_period_end          2026-09-09T22:15Z
+                                 data_period_end_newest   2026-09-11T03:45Z
+        5h window from 23:00Z    period_end               2026-09-10T23:15Z
+
+    In both windows the oldest instant is the window start + 15 minutes. The mix
+    is judged on its stalest fuel, so that one flat series set the zone's age to
+    the lookback itself: ~30h on 16 zones once #4309 widened it to 30h, past the
+    radar's 24h, while DE_LU's newest fuel was 42 minutes old.
+    So an A03 last point ends at its Period end. A01, any other curve type and a
+    missing one keep the formula — nothing is extended on a guess.
     """
     start = end = None
     res_s = None
@@ -340,7 +361,9 @@ def _period_latest_point(period_el):
     if best_qty is None:
         return None, None
     pt_end = None
-    if start is not None and res_s:
+    if curve_type == "A03" and end is not None:
+        pt_end = end              # A03: the last block runs to the period end
+    elif start is not None and res_s:
         pt_end = start + datetime.timedelta(seconds=res_s * best_pos)
         if end is not None and pt_end > end:
             pt_end = end          # never claim past the period's own end
@@ -378,11 +401,16 @@ def _parse_generation_xml(xml_text):
         if _ln(ts.tag) != "TimeSeries":
             continue
         psr = None
+        curve = None
         is_consumption = False
         for el in ts.iter():
             ln = _ln(el.tag)
             if ln == "psrType" and not psr:
                 psr = (el.text or "").strip()
+            elif ln == "curveType" and curve is None:
+                # A01 / A03 decides how long the last point's value holds —
+                # see r-entsoe-a03 in _period_latest_point.
+                curve = (el.text or "").strip().upper()
             elif ln == "outBiddingZone_Domain.mRID":
                 is_consumption = True  # storage consumption leg — skip
         if not psr or is_consumption:
@@ -396,7 +424,7 @@ def _parse_generation_xml(xml_text):
         for per in ts.iter():
             if _ln(per.tag) != "Period":
                 continue
-            p_end, p_qty = _period_latest_point(per)
+            p_end, p_qty = _period_latest_point(per, curve)
             if p_qty is None:
                 continue
             if best_qty is None:
@@ -970,6 +998,16 @@ def http_debug():
         }, timeout=15)
         out["http_status"] = r.status_code
         out["xml_head"] = (r.text or "")[:600]
+        # r-entsoe-a03 (2026-09-11): that head ends inside the document header,
+        # before any TimeSeries, so it never showed the curve type — the field
+        # that decides how long a reading's last value holds.
+        try:
+            out["curve_types"] = sorted({
+                (el.text or "").strip().upper()
+                for el in ET.fromstring(r.text).iter()
+                if _ln(el.tag) == "curveType"})
+        except Exception:
+            out["curve_types"] = None
         out["parsed"] = _parse_generation_xml(r.text)
         out["zone_snapshot"] = _zone_snapshot(zone)
     except Exception as e:
