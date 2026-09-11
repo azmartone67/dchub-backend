@@ -438,7 +438,7 @@ def run_check(force: bool = False, now: datetime.datetime | None = None) -> dict
         try:
             cur.execute("""
                 INSERT INTO metric_truth_runs (iso_week, ran_at, report)
-                VALUES (%s, NOW(), %s::jsonb)
+                VALUES (%s, NOW() ON CONFLICT DO NOTHING, %s::jsonb)
                 ON CONFLICT (iso_week)
                 DO UPDATE SET ran_at = NOW(), report = EXCLUDED.report
             """, (week_key, json.dumps(report, default=str)))
@@ -469,6 +469,7 @@ def check_endpoint():
     return jsonify(run_check(force=force)), 200
 
 
+# AUTO-REPAIR: duplicate route '/status' also in ai_agent.py:357 — review and remove one
 @metric_truth_bp.route("/status", methods=["GET"])
 def status_endpoint():
     if not _admin_ok():
