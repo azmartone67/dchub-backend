@@ -592,10 +592,12 @@ def test_indexnow_priority_urls_name_the_served_slug(monkeypatch):
 # ── 7. /facilities/in/<country> + /facilities/in/us/<state>: the geography hub ──
 # The hub's listing queries keep only rows with duplicate_of_id IS NULL, so a
 # twin never lists itself there. Its 301s are a listed row whose frozen slug a
-# pointed twin ALSO wears, winning the page's lookup: measured 2026-09-11, the
-# Madrid hub lists "Equinix MD6" at /facilities/equinix-equinix-md6-343acdf7,
-# which 301s to /facilities/equinix-inc-equinix-md6-6de05ce8. HUB_ROW is the
-# listed row; the world holds TWIN_ROW, the row the page fetches for that slug.
+# pointed twin ALSO wears, winning the page's lookup. Measured 2026-09-11 over
+# every link on all 309 hub pages (18,607 distinct URLs, redirects not
+# followed): 8 x 301, each one hop to a 200. The Madrid hub lists "Equinix MD6"
+# at /facilities/equinix-equinix-md6-343acdf7, which 301s to
+# /facilities/equinix-inc-equinix-md6-6de05ce8. HUB_ROW is the listed row; the
+# world holds TWIN_ROW, the row the page fetches for that slug.
 HUB_ROW = dict(TWIN_ROW, id=1109, duplicate_of_id=None)
 HUB_LISTED = [FROZEN, UNFROZEN, NO_SLUG, HUB_ROW]
 

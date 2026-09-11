@@ -444,8 +444,10 @@ def _render_listing(ck, facs, page, base, place_name, crumbs, extra_block=""):
       The listing queries keep only rows with duplicate_of_id IS NULL, but a
       pointed dedup twin can wear the same frozen slug and win the profile
       page's lookup, and the page answers that slug with a 301 to the twin's
-      keeper (facility_profile_page._twin_redirect_target). Measured live on
-      the Madrid hub, redirects not followed:
+      keeper (facility_profile_page._twin_redirect_target). Measured live
+      2026-09-11 over every facility link on all 309 hub pages (18,607
+      distinct URLs, HEAD, redirects not followed): 8 were 301s, each one hop
+      to a 200, e.g. on the Madrid hub
           /facilities/equinix-equinix-md6-343acdf7
             301 -> /facilities/equinix-inc-equinix-md6-6de05ce8
       So the slugs this page renders — its own slice, not the whole country —
