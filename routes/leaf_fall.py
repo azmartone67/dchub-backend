@@ -102,7 +102,7 @@ def sweep():
                     INSERT INTO page_health
                       (surface, views_30d, clicks_30d, last_engagement_at,
                        vitality_score, status, computed_at, prune_reason)
-                    VALUES (%s,%s,%s,%s,%s,%s,NOW(),%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING,%s)
                     ON CONFLICT (surface) DO UPDATE SET
                       views_30d = EXCLUDED.views_30d,
                       clicks_30d = EXCLUDED.clicks_30d,
