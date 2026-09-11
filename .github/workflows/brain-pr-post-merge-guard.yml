@@ -5,8 +5,8 @@ name: Brain PR post-merge guard (Phase GG#4)
 #
 # The generic auto-rollback.yml runs every 15 min against ALL of main.
 # This is the brain-specific fast path: it fires the MOMENT a
-# brain-authored PR (label autonomous-brain-layer5) merges, waits for
-# Railway to redeploy, probes /api/health, and:
+# brain-authored PR (label autonomous-brain-layer5) merges, waits until
+# the Railway origin runs the merge commit, probes /api/health, and:
 #   - if healthy  → comment ✓ on the PR + mark the proposal merged_healthy
 #   - if broken   → roll Railway back to the last good deployment, open a
 #                   revert PR, comment ✗ on the PR + mark merged_reverted
@@ -50,7 +50,10 @@ jobs:
       github.event.pull_request.merged == true &&
       contains(github.event.pull_request.labels.*.name, 'autonomous-brain-layer5')
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # 10 min deploy wait + what can follow it at its ceilings: the probe (~47s
+    # of curl timeouts), a rollback that polls up to 420s for recovery, the
+    # revert branch, the comment, the callback (30s) and the beat (20s).
+    timeout-minutes: 23
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -64,22 +67,28 @@ jobs:
           git config user.name 'dchub-brain-v2'
           git config user.email 'brain@dchub.cloud'
 
-      - name: Wait for Railway redeploy
-        run: |
-          echo "Waiting for Railway to pick up the merge (max 5 min)…"
-          for i in $(seq 1 30); do
-            UPTIME=$(curl -s --max-time 8 \
-              "https://dchub-backend-production.up.railway.app/api/health?_cb=$(date +%s)" \
-              | python3 -c "import sys,json; print(json.load(sys.stdin).get('uptime_seconds',9999))" 2>/dev/null || echo 9999)
-            if [ "$UPTIME" -lt 200 ] 2>/dev/null; then
-              echo "Fresh deploy detected (uptime=${UPTIME}s)"
-              # Give it another 15s to fully warm up
-              sleep 15
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "::warning::Did not observe a fresh deploy in 5 min — probing anyway"
+      # ★ 2026-09-11 — WAS AN UPTIME POLL THAT COULD NOT SEE A DEPLOY. It waited
+      # up to 5 min for /api/health to report uptime_seconds < 200, then probed
+      # anyway. The origin's /api/health answers {"status": ...} and nothing
+      # else, so every read was the 9999 default: all three runs on 2026-09-08
+      # sat out the full 5 minutes, warned "Did not observe a fresh deploy in 5
+      # min — probing anyway", and graded whichever build was live. Had the
+      # field existed it would still be wrong: uptime resets on any restart, not
+      # only on this merge. Now: wait until the origin runs the merge commit (or
+      # a later commit that contains it), and fail if it never does.
+      #
+      # After a failed wait nothing here grades the merge. The probe, rollback
+      # and revert keep GitHub's implicit success() and are skipped; the PR
+      # comment says the check did not run; no outcome goes to the brain DB
+      # (merged_reverted would cut this source's trust for a merge nobody
+      # measured); and the beat reports unmeasured rather than fail.
+      - name: Wait until the origin runs the merge commit
+        id: deploy_wait
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: python3 scripts/wait_for_deployed_commit.py --expect "$EXPECT_SHA" --timeout 600
 
       - name: Probe /api/health
         id: probe
@@ -199,6 +208,9 @@ jobs:
       - name: Comment outcome on the brain PR
         if: ${{ !cancelled() }}
         uses: actions/github-script@v7
+        env:
+          WAIT_OUTCOME: ${{ steps.deploy_wait.outcome }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         with:
           script: |
             const verdict = '${{ steps.probe.outputs.verdict }}';
@@ -208,8 +220,20 @@ jobs:
             const reverted= '${{ steps.revert.outputs.reverted }}';
             const detail  = '${{ steps.revert.outputs.detail }}' || '(no detail)';
             const prUrl   = '${{ steps.revertpr.outputs.url }}' || '(not opened)';
+            const runUrl  = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
             let body;
-            if (verdict === 'healthy') {
+            if (process.env.WAIT_OUTCOME !== 'success') {
+              // The merge was never confirmed live, so nothing after the wait
+              // ran. The branches below would call that a failed check.
+              body = `### ⏸️ Post-merge health check did not run\n\n` +
+                `The Railway origin was never confirmed running this merge ` +
+                `(\`${(process.env.MERGE_SHA || '').slice(0, 9)}\`) within 10 minutes. ` +
+                `The wait step in the [run log](${runUrl}) names its last read: an older ` +
+                `commit still serving, no answer from the origin, or a refused admin key.\n\n` +
+                `Nothing was probed, rolled back or reverted, and **no outcome was recorded ` +
+                `in the brain DB**: a verdict taken now would grade the build that was live ` +
+                `before this merge. \`auto-rollback\` keeps watching production.`;
+            } else if (verdict === 'healthy') {
               body = `### ✅ Post-merge health check PASSED\n\n` +
                 `Railway redeployed cleanly after this brain PR merged.\n\n` +
                 `- \`/api/health\`: **${status}**\n` +
@@ -243,8 +267,11 @@ jobs:
               body,
             });
 
+      # Only once the merge was measured. After a failed deploy wait the probe
+      # never ran and VERDICT is empty, which the mapping below records as
+      # merged_reverted: a trust cut for a merge nobody graded.
       - name: Mark proposal outcome in brain DB
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.deploy_wait.outcome == 'success' }}
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
@@ -284,6 +311,7 @@ jobs:
         env:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
+          WAIT_OUTCOME: ${{ steps.deploy_wait.outcome }}
         run: |
           # N = 3, the endpoints this guard probes (health, dcpi, heal/findings).
           # A fixed number is honest here because the probe set is literal in
@@ -293,5 +321,8 @@ jobs:
             failure) V=fail ;;
             *)       V=unmeasured ;;
           esac
+          # `fail` says this gate refused something. A merge that never went
+          # live was never probed, so a failed wait is unmeasured, not fail.
+          if [ "${WAIT_OUTCOME:-}" != "success" ]; then V=unmeasured; fi
           bash scripts/gate_beat.sh "brain-pr-post-merge-guard:guard" "$V" 3 absent \
             "N = 3 post-deploy probes (health, dcpi, heal/findings)"

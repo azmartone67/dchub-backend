@@ -18,7 +18,7 @@ name: auto-rollback
 # alert-only. See docs/ROLLBACK-RUNBOOK.md.
 on:
   push:
-    branches: [main]   # run 5 min after every deploy
+    branches: [main]   # run once the origin runs the pushed commit
   workflow_dispatch:
     inputs:
       force_rollback:
@@ -73,7 +73,10 @@ concurrency:
 jobs:
   check-and-rollback:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 10 min deploy wait + the 21 min this job had after its old 240s sleep:
+    # 5 samples (~245s), a rollback that polls up to 420s for recovery, the
+    # revert branch and the issue.
+    timeout-minutes: 32
     permissions:
       contents: write        # push the revert BRANCH (never main — main is protected)
       pull-requests: write   # open the revert PR
@@ -84,9 +87,34 @@ jobs:
           fetch-depth: 5
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Wait for Railway to settle
+      # ★ 2026-09-11 — WAS `sleep 240` ("Railway rebuild + warmup"). A clock
+      # cannot know when a deploy lands: Railway's 39 most recent swaps of the
+      # backend took 111-202s, and two sibling lanes acted on the OLD build
+      # behind shorter sleeps (#4392). The push lane now samples only once the
+      # origin runs github.sha, or a later commit that contains it.
+      #
+      # ★ IF THE WAIT FAILS, THIS LANE SAMPLES NOTHING AND ROLLS NOTHING BACK.
+      # The build answering is then the one live BEFORE this commit: a verdict
+      # would be filed under the wrong commit, and a rollback would remove that
+      # build. The anti-stacking guard in the rollback script would not stop
+      # it — a timed-out wait (600s) plus the samples (~245s) is past its 600s
+      # window, where the old sleep decided at ~8 minutes, inside it. So every
+      # step from the probe on keeps GitHub's implicit success() and is skipped.
+      # Skipped is not silent: the run goes red, "Report that the post-deploy
+      # check did not run" files one issue naming what was not checked, and
+      # "Open issue" stays out of it. The scheduled lane (its own concurrency
+      # group, no wait) keeps sampling production meanwhile.
+      #
+      # A newer push cancels this run mid-wait; its own wait covers this commit,
+      # because a descendant of it counts as arrived.
+      - name: Wait until the origin runs this commit
+        id: deploy_wait
         if: github.event_name == 'push'
-        run: sleep 240   # 4 min — Railway rebuild + warmup
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECT_SHA: ${{ github.sha }}
+        run: python3 scripts/wait_for_deployed_commit.py --expect "$EXPECT_SHA" --timeout 600
 
       - name: Sample SLO 5x over ~4min
         id: probe
@@ -272,8 +300,13 @@ jobs:
       # job died at that step and this one was SKIPPED, so a real burn produced
       # no rollback AND no alert. That silent-failure mode is the reason this
       # whole change exists; keep the condition permissive.
+      #
+      # Except after a failed deploy wait, which has its own report below:
+      # nothing was sampled then, and this step would call the missing verdict
+      # "ROLLBACK FAILED". Off the push path the wait is skipped, so this
+      # condition is exactly what it was.
       - name: Open issue
-        if: ${{ !cancelled() && (steps.decide.outputs.rollback == 'true' || failure()) }}
+        if: ${{ !cancelled() && steps.deploy_wait.outcome != 'failure' && (steps.decide.outputs.rollback == 'true' || failure()) }}
         uses: actions/github-script@v7
         env:
           RAILWAY_STEP:   ${{ steps.railway.outcome }}
@@ -408,6 +441,38 @@ jobs:
               body,
               labels: drill ? ['slo-gate', 'drill'] : ['slo-gate', 'auto-rollback'],
             });
+
+      # ── A deploy that never landed: say exactly what was not checked ──
+      # Runs only when the deploy wait failed. Everything from the probe on was
+      # skipped on purpose (see the wait step), so no verdict exists for this
+      # commit. One stable title, bumped per run: a refused admin key would
+      # otherwise open an issue for every push.
+      - name: Report that the post-deploy check did not run
+        if: failure() && steps.deploy_wait.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="slo-gate: post-deploy SLO check did not run (deploy never confirmed live)"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body="${RUNNER_TEMP:-/tmp}/slo-wait-issue.md"
+          {
+            printf 'The push lane of `auto-rollback` took **no SLO samples** for `%s` and rolled **nothing** back: the origin was never confirmed running that commit within 10 minutes.\n\n' "${GITHUB_SHA:0:9}"
+            printf -- '- **Why the wait stopped:** the "Wait until the origin runs this commit" step in the [run log](%s) names its last read: an older commit still serving (the deploy failed or is stuck), no answer from the origin, or a refused admin key.\n' "$run_url"
+            printf -- '- **Why nothing was sampled:** the build answering is the one live *before* this commit. A verdict taken on it would be filed under this commit, and a rollback decided on it would remove that build.\n'
+            printf -- '- **Still watching production:** the scheduled lane of this workflow samples the error budget without waiting, and the worker-side SLO sentinel samples every 60s.\n\n'
+            printf '_Bumped on each push whose deploy wait fails. Close by hand once deploys land again._\n'
+          } > "$body"
+          existing=$(gh issue list --state open --search "in:title \"$title\"" \
+                       --json number --jq '.[0].number') || existing=""
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh issue comment "$existing" --body-file "$body"
+            echo "::notice::Bumped existing issue #$existing"
+          else
+            url=$(gh issue create --title "$title" --body-file "$body")
+            echo "::notice::Opened $url"
+            gh issue edit "$url" --add-label slo-gate >/dev/null 2>&1 \
+              || echo "::warning::could not label $url (missing label?) — it is open regardless"
+          fi
 
       # Make the run visibly red when a rollback was needed but nothing worked,
       # so it cannot pass as a healthy green run in the history.

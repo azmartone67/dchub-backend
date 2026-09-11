@@ -51,7 +51,12 @@ WF_DIR = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows"
 #   stale on the board while the job is green — the same invisibility this
 #   guard exists to stop. daily-infra-sync.yml's beat, added in the same
 #   change, was written guarded from the start and does not move the count.
-MAX_UNGUARDED_STEPS = 153
+#   153 -> 141 on 2026-09-11: brain-pr-post-merge-guard.yml's "Wait for Railway
+#   redeploy" polled /api/health with `curl -s ... || echo 9999` for a field
+#   that endpoint never returns; scripts/wait_for_deployed_commit.py replaced
+#   it and fails loudly. The other 11 of the drop had landed since 2026-08-10
+#   without the baseline moving.
+MAX_UNGUARDED_STEPS = 141
 
 _CURL = re.compile(r"\bcurl\b")
 _GUARDS = (
