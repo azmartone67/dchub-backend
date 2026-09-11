@@ -361,11 +361,13 @@ jobs:
         # is the RFC 9309 parser; the stdlib robotparser cannot see `Disallow: /*?`
         # at all and reports those paths allowed either way, so there is no
         # stdlib fallback that would make these guards real.
-        # PyJWT (pinned as in requirements.txt): routes/exclusive_listings.py
-        # verifies the dchub_token JWT on its auth wall, and
-        # tests/test_pocket_listings_wall_and_leads.py drives that real decode
-        # path. Without it the module aborts collection — and importorskip would
-        # turn the wall's tests into a silent skip instead.
+        # PyJWT (pinned as in requirements.txt): the pocket-listings auth wall
+        # verifies the dchub_token JWT, and its request-level tests drive that
+        # real decode path. Without it they abort collection — and importorskip
+        # would turn them into a silent skip instead.
+        # ★ Do not name a route module's file here: scripts/dataset_inventory.py
+        # reads any workflow text naming a module as a LOADER of the tables it
+        # writes ("workflow_loader"), which reclassifies them as foreign data.
         run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0" "feedparser==6.0.12" protego "PyJWT==2.12.0"
       # The beat wiring's own must-fail control. Runs BEFORE the suite so a
       # dishonest count fails fast — and it lives HERE rather than in
