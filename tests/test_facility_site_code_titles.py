@@ -446,10 +446,15 @@ def test_rendered_page_without_a_code_uses_the_plain_template():
     """Was `..._is_byte_identical_to_the_legacy_title`. r-title-template
     (2026-09-09) retired the legacy shape for DISPLAY; the invariant this test
     actually holds is that a name carrying no site code takes the ordinary
-    path, not the code path — so it leads with the name, not a code."""
+    path, not the code path — so it leads with the name, not a code.
+
+    r-title-facts (2026-09-10): what follows the name moved — this name already
+    carries its city, so "· Council Bluffs" is no longer repeated after it. The
+    invariant is unchanged: the lead is the whole name."""
     html = _render("Google Data Center Council Bluffs", "Google", "Council Bluffs")
-    assert _title(html).startswith(
-        "Google Data Center Council Bluffs · Council Bluffs | ")
+    lead = _title(html).split(" | ")[0].split(" · ")[0]
+    assert lead == "Google Data Center Council Bluffs", _title(html)
+    assert _title(html).count("Council Bluffs") == 1, _title(html)
     assert _h1(html) == "Google Data Center Council Bluffs"
     assert _og(html) == "Google Data Center Council Bluffs — Data Center"
 

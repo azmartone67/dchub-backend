@@ -123,13 +123,15 @@ def test_the_headline_treats_a_placeholder_city_as_absent():
     assert hl["loc_short"] == "CN", hl["loc_short"]
     # r-title-template (2026-09-09): the DISPLAY title is now
     # `{Operator} {Site} · {City} · {Grid} | DC Hub`, and this row has no city
-    # (that is the whole point of the lane), so it renders with no location
-    # segment at all. ★ The dedup basis is UNMOVED — identity_key reads
-    # dedup_title, which is still the pre-template string byte for byte, so the
-    # 4,363-group measurement quoted above still describes today's grouping.
-    # the placeholder city is absent, but CN is real and still publishes —
-    # see the floor in tests/test_seo_index_hygiene.py
-    assert hl["title"] == "China Telecom Shanwei Data Center · CN | DC Hub", hl["title"]
+    # (that is the whole point of the lane). ★ The dedup basis is UNMOVED —
+    # identity_key reads dedup_title, which is still the pre-template string
+    # byte for byte, so the 4,363-group measurement quoted above still
+    # describes today's grouping.
+    # the placeholder city is absent, but the country is real and still
+    # publishes — see the floor in tests/test_seo_index_hygiene.py.
+    # r-title-facts (2026-09-10): the country is spelled out now ("China", was
+    # the code "CN"); the invariant is the same, the literal moved with it.
+    assert hl["title"] == "China Telecom Shanwei Data Center · China | DC Hub", hl["title"]
     assert hl["dedup_title"] == ("China Telecom Shanwei Data Center — CN "
                                  "Data Center | DC Hub"), hl["dedup_title"]
     assert "regional" not in identity_key(

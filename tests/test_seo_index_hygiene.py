@@ -85,11 +85,20 @@ def test_the_country_survives_when_the_city_is_a_placeholder():
     change: the first cut keyed the template's location slot on `city` alone,
     so these rows — whose city is a placeholder and therefore absent — rendered
     with no location at all, and this test caught it. The slot is now "the most
-    specific place we actually have"."""
+    specific place we actually have".
+
+    r-title-facts (2026-09-10) spells the country out (`… · China | DC Hub`, was
+    `… · CN | DC Hub`). The invariant is unchanged and the literal moved with
+    the spelling. ★ It is NOT `"China" in title`: this row's NAME begins "China
+    Telecom", so that substring survives the country being dropped. The check
+    reads what follows the name — the location segment."""
     html = fpp._render_profile(
         _fac("China Telecom Shanwei Data Center", None, **_PLACEHOLDER_ROW), "x")
     title = _page_title(html)
-    assert "CN" in title, f"country dropped with the placeholder: {title!r}"
+    name = "China Telecom Shanwei Data Center"
+    assert title.startswith(name), title
+    assert " · China" in title[len(name):], (
+        f"country dropped with the placeholder: {title!r}")
     assert "Regional" not in title, title
     assert "China Telecom Shanwei Data Center" in html
 
