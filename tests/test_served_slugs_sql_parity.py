@@ -369,14 +369,30 @@ def test_served_slugs_lands_where_the_page_lands(db, monkeypatch):
 
 
 class _CountingConnection:
+    """A real psycopg2 connection that counts statements — and exactly as capable
+    as what it wraps. The per-request keeper lookup opens its cursor with `with`;
+    a wrapper without that protocol made the lookup raise into its own except,
+    so a batch that fell back to one keeper query per twin counted ZERO extra
+    statements and passed. Caught by mutation, not by a run."""
+
     def __init__(self, conn, statements):
         self._conn, self._statements = conn, statements
 
     def cursor(self, *a, **k):
         return _CountingCursor(self._conn.cursor(*a, **k), self._statements)
 
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._conn.__exit__(*exc)
+
     def rollback(self):
         return self._conn.rollback()
+
+    def commit(self):
+        return self._conn.commit()
 
     def close(self):
         return self._conn.close()
@@ -385,6 +401,13 @@ class _CountingConnection:
 class _CountingCursor:
     def __init__(self, cur, statements):
         self._cur, self._statements = cur, statements
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._cur.close()
+        return False
 
     def execute(self, sql, params=None):
         self._statements.append(" ".join(str(sql).split())[:90])
@@ -410,6 +433,14 @@ def test_the_batch_costs_statements_per_hop_not_per_slug(db, schema, monkeypatch
     main = types.ModuleType("main")
     main.get_read_db = lambda: _CountingConnection(_connect(name), statements)
     monkeypatch.setitem(sys.modules, "main", main)
+    # control: the wrapper does what the real connection does, `with` included,
+    # or a per-request lookup fails inside its own except and is never counted
+    probe = main.get_read_db()
+    with probe.cursor() as cur:
+        cur.execute("SELECT 1")
+    probe.close()
+    assert statements == ["SELECT 1"], statements
+    statements.clear()
     fpp.served_slugs(MATRIX)
     assert 4 <= len(statements) <= 1 + 6 * 3, (
         f"{len(statements)} statements for {len(MATRIX)} slugs: {statements}")
