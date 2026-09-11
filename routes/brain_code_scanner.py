@@ -464,7 +464,7 @@ def _upsert_one(c, row: dict) -> bool:
                        prev_line_count, prev_function_count, notes
                    ) VALUES (
                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                       NOW(), %s, %s, %s::jsonb
+                       NOW() ON CONFLICT DO NOTHING, %s, %s, %s::jsonb
                    )
                    ON CONFLICT (file_path) DO UPDATE
                        SET line_count = EXCLUDED.line_count,
