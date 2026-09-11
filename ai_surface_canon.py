@@ -283,7 +283,20 @@ PINNED = {
         #    99KB/128KB and "15,000+" against a live 351KB carrying "21,200+").
         #    So walking this pin does NOT fix them; it fixes every cold-start
         #    and PINNED reader inside this repo, which is what it governs.
-        "facilities": "21,400+",
+        # ★2026-09-11: 21,400+ -> 21,500+. The eighth walk, same drill as the
+        #  seventh (#4316) and for the same reason: the pin trails the resolver
+        #  because the resolver self-heals and a literal cannot.
+        #  Probed live 2026-09-11, cache-busted: /api/v1/canon/phrases
+        #  facilities = "21,500+" (source=resolve_public_floors live, three
+        #  consecutive warm reads), /api/v1/stats facilities = 21,570. Floor
+        #  rounds DOWN and never exceeds the resolver: 21,500 == resolver,
+        #  < 21,570.
+        #  ★ STILL FLAPPING: the probe just before those answered "21,400+"
+        #    with source "resolve_public_floors (cold: PINNED floors)" and
+        #    value_source facilities = "pinned". A cold window publishes this
+        #    literal, so a trailing pin is an under-claim on exactly the reads
+        #    that land on a cold process.
+        "facilities": "21,500+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
