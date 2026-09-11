@@ -89,7 +89,16 @@ MIN_CHANNELS_FOUND = 15
 # Representative paths on the cache:true surface (rule 2's three prefixes).
 # A credentialed request to any of these must not be cached.
 PROBE_PATHS = ("/api/v1/stats", "/api/v1/facilities",
-               "/api/rankings/markets", "/api/news/latest")
+               "/api/rankings/markets", "/api/news/latest",
+               # ★ 2026-09-11: the tier-varying HTML surface. Every path above is
+               # /api/, so this checker could not see rule 15 storing /markets/* for
+               # 86400s with override_origin while rule 24 bypassed header
+               # credentials only under /api/. Measured live that day: the render
+               # for an X-API-Key request to a market brief was served to the next
+               # anonymous request (cf-cache-status HIT, age 1). The brief and its
+               # PDF resolve the caller tier; the rest sample rule 18's HTML set.
+               "/markets/dallas/brief", "/markets/dallas/brief.pdf",
+               "/dcpi/dallas", "/facility/example", "/grid/pjm", "/")
 
 # ── ORACLE: dispositions MEASURED at the live edge on 2026-09-07 ─────────────
 # Two consecutive un-cache-busted GETs of https://dchub.cloud/api/v1/stats.
@@ -107,6 +116,15 @@ ORACLE = [
 # Without it, a rule 24 degraded to a bare path match ("/api/" with no credential
 # clause) would bypass everything and every assertion below would pass vacuously.
 NEGATIVE_CONTROL = ("header", "x-definitely-not-a-credential", "cached")
+
+# ★ 2026-09-11 — the same kind of measurement on the tier-varying HTML surface:
+# two reads of one fresh /markets/dallas/brief URL, one second apart. Anonymous
+# read HIT (rule 15 caches it); a dchub_token cookie read DYNAMIC (rule 18).
+HTML_ORACLE_PATH = "/markets/dallas/brief"
+HTML_ORACLE = [
+    ("cookie", "dchub_token", "bypass"),
+    ("anon", None, "cached"),                   # POSITIVE CONTROL on the HTML surface
+]
 
 
 def _load(name: str, filename: str):
@@ -183,8 +201,10 @@ def _request_for(cx, kind: str, name: str, path: str):
 def self_check(cx, rules) -> list[str]:
     """Reproduce the measured edge, or report nothing at all."""
     failures = []
-    for kind, name, expected in [*ORACLE, NEGATIVE_CONTROL]:
-        req = _request_for(cx, kind, name, "/api/v1/stats")
+    checks = [(k, n, e, "/api/v1/stats") for k, n, e in [*ORACLE, NEGATIVE_CONTROL]]
+    checks += [(k, n, e, HTML_ORACLE_PATH) for k, n, e in HTML_ORACLE]
+    for kind, name, expected, path in checks:
+        req = _request_for(cx, kind, name, path)
         got, _, err = cx.disposition(rules, req)
         if got != expected:
             label = "anonymous" if kind == "anon" else f"{kind} {name}"
