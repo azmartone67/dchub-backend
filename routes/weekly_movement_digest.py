@@ -15,9 +15,9 @@ import os
 import datetime
 from flask import Blueprint, jsonify, request
 
+from internal_auth import require_internal_or_admin
+
 weekly_movement_digest_bp = Blueprint('weekly_movement_digest', __name__)
-_ADMIN_KEY = (os.environ.get('DCHUB_ADMIN_KEY')
-              or os.environ.get('DCHUB_INTERNAL_KEY') or '').strip()
 RESEND_KEY = os.environ.get('DCHUB_RESEND_API_KEY', '').strip()
 FROM_EMAIL = os.environ.get('DCHUB_RESEND_FROM', 'DC Hub Brain <noreply@dchub.cloud>')
 TO_EMAIL = os.environ.get('DCHUB_BRAIN_DIGEST_TO', 'azmartone@gmail.com')
@@ -182,9 +182,13 @@ def _send(html: str, subject: str) -> bool:
 
 @weekly_movement_digest_bp.post('/api/v1/brain/weekly-movement-digest/run')
 def run_digest():
-    sent = (request.headers.get('X-Admin-Key')
-            or request.headers.get('X-Internal-Key') or '').strip()
-    if _ADMIN_KEY and sent != _ADMIN_KEY and (request.headers.get('X-DC-Internal-Cron') or '') != '1':
+    # r-sec (2026-09-11): fail-CLOSED gate. The prior
+    #   `if _ADMIN_KEY and sent != _ADMIN_KEY and X-DC-Internal-Cron != '1'`
+    # failed OPEN when DCHUB_ADMIN_KEY was unset at import (same class as #4408
+    # cf_purge) AND let ANY caller bypass auth with a forgeable X-DC-Internal-Cron
+    # header. require_internal_or_admin re-reads env PER REQUEST and requires a
+    # real X-Internal-Key / X-Admin-Key (the cron heartbeat already sends one).
+    if not require_internal_or_admin(request):
         return jsonify(error='unauthorized'), 401
     do_send = (request.args.get('send') or '').lower() in ('1', 'true', 'yes')
     payload = compose()

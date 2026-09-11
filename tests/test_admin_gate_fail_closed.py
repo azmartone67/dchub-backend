@@ -85,8 +85,14 @@ _BASELINE = {
     "market_alerts.py": 1,
     "market_deep_dive.py": 2,
     "marketing_engine.py": 1,
-    "metric_observatory.py": 1,
-    "outcome_verifier.py": 1,
+    # metric_observatory.py + outcome_verifier.py: RESOLVED 2026-09-11 — POST
+    # /api/v1/brain/metric-observatory/snapshot and /outcome-verifier/run now
+    # gate on internal_auth.require_internal_or_admin (fail-closed, per-request
+    # env read), replacing `if _ADMIN_KEY and sent != _ADMIN_KEY and
+    # X-DC-Internal-Cron != '1'` — which both fell OPEN when the env var was
+    # unset AND let any caller bypass auth with a forgeable X-DC-Internal-Cron
+    # header. Removed from the baseline so they can never come back at 1. See
+    # tests/test_brain_cron_gate_fail_closed.py for the behaviour + mutation.
     "outreach_cap_exceeded.py": 1,
     "pattern_growth.py": 1,
     "radar_history.py": 1,
@@ -95,7 +101,11 @@ _BASELINE = {
     "tenant_directory.py": 1,
     "upgrade_nudger.py": 1,
     "weekly_digest.py": 1,
-    "weekly_movement_digest.py": 1,
+    # weekly_movement_digest.py: RESOLVED 2026-09-11 — POST /api/v1/brain/
+    # weekly-movement-digest/run now gates on require_internal_or_admin
+    # (fail-closed) instead of the self-disabling + forgeable-X-DC-Internal-Cron
+    # gate (its ?send=1 path can send email). Removed from the baseline so it
+    # can never come back at 1.
     "winback_outreach.py": 2,
 }
 
