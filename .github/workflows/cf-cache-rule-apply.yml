@@ -1,0 +1,145 @@
+name: Apply cache ruleset canon to Cloudflare
+
+# The one-click half of the cache-ruleset guard family.
+#
+#   check_cf_cache_ruleset.py          reads the zone and compares it to canon
+#   check_cf_cache_ruleset.py --repin  writes the ZONE into canon
+#   apply_cf_cache_ruleset.py --apply  writes CANON into the zone   ← this lane
+#
+# Built 2026-09-11 because the third direction did not exist. #4407 landed the
+# canon change for rule 24 (the every-channel credential bypass, previously
+# scoped to /api/) so that it also covers rule 18's tier-varying HTML set — and
+# the rule itself was never applied, because applying it meant hand-editing a
+# 25-rule last-match-wins set in the dashboard. Measured after that merge: an
+# anonymous request was still served the PAID render of a market brief, and a
+# paid request was still served the anonymous "Unlock with PRO" render.
+#
+# ★ MANUAL ONLY, ON PURPOSE. No schedule, no push trigger. This is the only
+# workflow in the repo that WRITES to the Cloudflare zone configuration, and a
+# config write belongs to a human pressing a button, not to a merge. The
+# script refuses to write anything it was not asked to: it will not add,
+# remove or reorder rules, it stops above `cap` differing rules, and `expect`
+# pins the single rule id this run may touch, so an unrelated dashboard edit
+# made since canon was pinned REFUSES the run instead of being reverted.
+#
+# ★ NOT IN THE `ACTING` LANE REGISTRY (tests/test_deploy_wait_polls_the_running
+# _commit.py) and that is deliberate, not an oversight: those lanes act on
+# production right after a deploy and must wait for the origin to be running
+# the commit under test. This one is dispatched by hand, reads the edge
+# CONFIG rather than the app, and races no deploy.
+
+on:
+  workflow_dispatch:
+    inputs:
+      expect:
+        description: "Rule id prefix this run may touch (blank = any differing rule, up to the cap)"
+        required: false
+        default: "b3ce82fb"
+      cap:
+        description: "Refuse if more than this many rules differ from canon"
+        required: false
+        default: "3"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Two concurrent writers to one ruleset is how a rule gets half-applied.
+  group: cf-cache-ruleset-write
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: python3 -m pip install --quiet requests
+
+      - name: Show the plan (writes nothing)
+        env:
+          # ★ Export EVERY credential the script knows how to try. Reading this
+          # ruleset works in CI with CF_CACHE_RULES_TOKEN; which of the three
+          # can EDIT it is not knowable from here, and a documented fallback the
+          # caller does not wire up is not a fallback.
+          CF_CACHE_RULES_TOKEN: ${{ secrets.CF_CACHE_RULES_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_TOKEN: ${{ secrets.CF_TOKEN }}
+          EXPECT: ${{ inputs.expect }}
+          CAP: ${{ inputs.cap }}
+        run: python3 scripts/apply_cf_cache_ruleset.py --expect "$EXPECT" --cap "$CAP"
+
+      - name: Apply canon to the zone
+        id: apply
+        env:
+          CF_CACHE_RULES_TOKEN: ${{ secrets.CF_CACHE_RULES_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_TOKEN: ${{ secrets.CF_TOKEN }}
+          EXPECT: ${{ inputs.expect }}
+          CAP: ${{ inputs.cap }}
+        run: |
+          STATUS=0
+          python3 scripts/apply_cf_cache_ruleset.py --apply --expect "$EXPECT" --cap "$CAP" || STATUS=$?
+          case "$STATUS" in
+            0) echo "::notice::the zone matches canon." ;;
+            1) echo "::error::the write was attempted and the READ-BACK still does not match canon. The zone may be partially applied — run 'python3 scripts/check_cf_cache_ruleset.py' and read the diff before pressing anything again." ;;
+            2) echo "::error::REFUSED, nothing was written. The log above says which reason: a rule added or deleted outside this repo, a different rule ORDER, a rule outside the 'expect' prefix, or more differences than 'cap' allows. All of those want a human reading the diff." ;;
+            3) echo "::error::COULD NOT WRITE — this is not a pass. The log above names each credential tried and the HTTP status it got. Reading works in CI already, so what is missing is EDIT rather than READ on Cache Rules for dchub.cloud." ;;
+            *) echo "::error::applier exited with unexpected status $STATUS" ;;
+          esac
+          exit "$STATUS"
+
+      - name: Verify from a paying seat that the leak is closed
+        env:
+          DCHUB_API_KEY: ${{ secrets.DCHUB_API_KEY }}
+        run: python3 scripts/smoke_pro_seat_brief.py --base https://dchub.cloud --slug dallas
+
+      - name: Purge copies the old rule let the edge store
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ZONE_SECRET: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          # Applying the rule stops NEW credentialed responses from being stored.
+          # Anything a header-credentialed request stored BEFORE the fix stays
+          # servable to anonymous visitors until rule 15's 86400s expires, so
+          # evict it. The URL list is DERIVED from the coverage checker's probe
+          # paths rather than typed here, so it cannot drift away from the
+          # surface the checker claims to cover.
+          python3 - <<'PY'
+          import importlib.util, json, os, urllib.request, sys
+          spec = importlib.util.spec_from_file_location(
+              "coverage", "scripts/check_credential_channel_coverage.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          paths = [p for p in module.PROBE_PATHS if not p.startswith("/api/")]
+          if not paths:
+              sys.exit("no HTML probe paths found — the derivation is broken, not empty")
+          urls = ["https://dchub.cloud" + p for p in paths]
+          token = os.environ.get("TOKEN", "")
+          if not token:
+              sys.exit("::error::CLOUDFLARE_API_TOKEN is not set — the stored copies were NOT purged")
+          # Cloudflare ZONE ID, not a credential — it is in the path of every CF
+          # API call and is useless without the token.
+          zone = os.environ.get("ZONE_SECRET") or "1cb22dda8d50546d6edf0c09a8be5128"  # secretscan:allow
+          req = urllib.request.Request(
+              f"https://api.cloudflare.com/client/v4/zones/{zone}/purge_cache",
+              data=json.dumps({"files": urls}).encode(),
+              headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+              method="POST")
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              body = json.load(resp)
+          if not body.get("success"):
+              sys.exit(f"::error::purge failed: {json.dumps(body.get('errors'))[:300]}")
+          print(f"purged {len(urls)} URL(s): {', '.join(paths)}")
+          print("::notice::this evicts the SAMPLED tier-varying URLs only. Any other "
+                "HTML URL fetched with a header credential before the fix can still "
+                "hold a paid copy until rule 15's 86400s TTL expires. To evict "
+                "everything: run cf-purge.yml with the URLs, or purge the zone in "
+                "the Cloudflare dashboard.")
+          PY
