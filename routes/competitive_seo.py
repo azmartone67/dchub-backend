@@ -212,7 +212,14 @@ def _dchub_numbers() -> dict:
         "grid_operators": 10,
         "utility_bas": 43,
         "grid_regions": 53,            # 10 NA operators + 43 utility BAs
-        "mcp_tools": 88,               # fallback only; PINNED overrides below
+        # ★2026-09-11: this fallback was a hand-typed 88 and went stale the day
+        # canon moved on, the same drift the docstring above already records
+        # once. It is now canon's own manifest length (the house fallback:
+        # tools_advertised, else len(tool_manifest)), so no second copy of the
+        # number lives here. _CANON is None only if ai_surface_canon failed to
+        # import, and then the unconditional canon_text import at the top of
+        # this module has already failed, so this never renders an empty count.
+        "mcp_tools": len((_CANON or {}).get("tool_manifest") or ()),  # PINNED overrides below
     }
     if _CANON:
         try:

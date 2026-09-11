@@ -987,6 +987,18 @@ the only thing your human can act on.
 - Standing Intents (POST https://dchub.cloud/api/v1/agentic/intents): Register standing queries with HMAC-signed webhook pushes on change. Kinds: new_deal_in_market, news_keyword, permitting_change.
 - [REST/MCP parity map](https://dchub.cloud/api/v1/agent/tools-manifest): every MCP tool's REST equivalent + the rest_native endpoints above
 
+## Pocket listings — off-market data center capacity (upcoming)
+DC Hub is onboarding pocket listings: powered shells, available capacity and development sites that
+are not publicly marketed. The program is UPCOMING while the first listings are onboarded, and
+GET /api/v1/listings says so in `program.status`. Teaser cards (market, state, capacity) are open to
+anyone; opening a listing needs sign-in, a key with your human's email bound (claim_free_key, then
+bind_email), or an OAuth connection. Operator contact is never shared: DC Hub makes the introduction,
+and every registered lead has a public verification record in DC Hub's hash-chained lead register.
+- get_pocket_listings -> teaser cards + program status; pass slug for one listing (full detail for an identified caller). REST: GET /api/v1/listings, GET /api/v1/listings/{slug}
+- request_listing_intro -> registers an introduction request (pass slug) or a standing requirement for first access (omit slug). Needs an identified caller and accept_terms=true once your human has agreed to the terms at GET /api/v1/listings/terms. REST: POST /api/v1/listings/{slug}/intro, POST /api/v1/listings/interest
+- Verify a registered lead (public, no key): GET /api/v1/listings/leads/{lead_id}/verify
+- Browse: https://dchub.cloud/listings
+
 """ + _llms_paid_heading() + """
 - [Facility Detail](https://dchub.cloud/api/v1/facilities/{id}): Full record by id — the `id` returned by /api/v1/facilities round-trips here
 - [Bulk Export](https://dchub.cloud/api/v1/mcp/tools/export_facility_csv): CSV export of filtered facilities, up to 10,000 rows/request. X-API-Key on the Developer plan or higher — anonymous and unverified callers get 401, free-tier keys get 402. Filters: ?state=ST&operator=name&min_mw=N

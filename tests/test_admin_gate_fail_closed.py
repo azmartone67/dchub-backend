@@ -77,7 +77,9 @@ _BASELINE = {
     "competitor_intel.py": 1,
     "data_freshness_radar.py": 1,
     "dchub_media_hub.py": 1,
-    "exclusive_listings.py": 1,
+    # exclusive_listings.py: RESOLVED 2026-09-11 — the listings admin routes
+    # now gate on X-Admin-Key == DCHUB_ADMIN_KEY read per request (fail-closed,
+    # header only), not an import-time snapshot that skipped auth when unset.
     "grid_fiber_usage_radar.py": 1,
     "hosting_capacity_ingest.py": 1,
     "industry_events.py": 1,

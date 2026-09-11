@@ -331,6 +331,20 @@ def _curated_tools() -> list:
         ("subscribe_digest",      "account",        "free",
          "Subscribe your human to DC Hub's FREE weekly 'what changed in the markets/sites you queried' digest (DCPI movers, new facilities, new deals & news) — ONE call, the nudge that pulls your agent back when the data moves. DOUBLE opt-in + consent-safe: a one-click CONFIRM link is emailed, the human only gets the digest after confirming, and every email has one-click unsubscribe — this call alone sets no marketing flag. Only call once your human shares their email and wants a weekly email. Params: email (required), source (optional attribution tag). Returns {ok, sent, message}. Prefer this over hand-building POST /api/v1/opt-in/request.",
          'subscribe_digest(email="you@firm.com", source="mcp_digest")'),
+        # ── POCKET LISTINGS (2026-09-11) — off-market capacity, introduced by DC Hub ──
+        # dchub-mcp-server serves both on the /api/v1/listings contract
+        # (routes/exclusive_listings.py). "intelligence" keeps them beside the deal
+        # tools, the family discover_tools files them under. Teasers are open to
+        # anyone, so get_pocket_listings is "free"; request_listing_intro registers a
+        # lead tied to a person and refuses an unidentified caller, so it is
+        # "identified". No counts and no prices in either description: the program
+        # is upcoming, and a listing's figures belong to the listing, not the catalog.
+        ("get_pocket_listings",   "intelligence",   "free",
+         "Use for OFF-MARKET data-center capacity DC Hub is bringing to market — pocket listings: powered shells, available capacity and development sites that are not publicly marketed. The program is upcoming while the first listings are onboarded, and the response says so in program.status. Teaser cards (market, state, capacity, status) are open to any caller; pass slug for one listing, whose full detail needs an identified caller (a key with an email bound via claim_free_key then bind_email, or an OAuth connection). Operator contact is never returned — call request_listing_intro and DC Hub makes the introduction. Do NOT use for the public facility directory (use search_facilities) or completed M&A (use list_transactions).",
+         'get_pocket_listings(market="Dallas")'),
+        ("request_listing_intro", "intelligence",   "identified",
+         "Use when your human wants DC Hub to introduce them to the operator behind a pocket listing (pass slug), or wants first access to upcoming off-market capacity that matches a requirement (omit slug; pass capacity_mw, markets or states, timeline). DC Hub records the request in its hash-chained lead register, emails your human a one-click confirmation, and makes the introduction once it is confirmed; every registered lead has a public verification record. Requires an identified caller (claim_free_key, then bind_email with your human's address) and accept_terms=true only after your human has read and agreed to the introduction terms at https://dchub.cloud/listings#terms. Operator contact is never shared. Do NOT use to save or monitor a site (use save_site / set_site_alert).",
+         'request_listing_intro(slug="dfw-40mw-powered-shell", name="Jane Doe", company="Acme Capital", capacity_mw=40, accept_terms=true)'),
     ]
 
 

@@ -153,11 +153,14 @@ def _generate_sitemap():
                   FROM exclusive_listings
                  WHERE status = 'public'
                  ORDER BY created_at DESC LIMIT 100""")
+            # /listings/<slug> 404s at the edge (no _routes.json include
+            # reaches the worker's SPA rewrite); the static page reads ?l=.
+            from urllib.parse import quote as _quote
             for slug, last in rows:
                 if slug:
                     lastmod = last.strftime("%Y-%m-%d") if last else now_iso
                     urls.append(_url_xml(
-                        f"{BASE}/listings/{slug}", lastmod, 0.7, "weekly"))
+                        f"{BASE}/listings?l={_quote(slug, safe='')}", lastmod, 0.7, "weekly"))
     except Exception:
         pass
 
