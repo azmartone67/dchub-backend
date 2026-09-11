@@ -123,7 +123,7 @@ def _select_scoped(rows, name, iso, state, lat=None, lon=None):
     con.execute(_SQLITE_DDL)
     con.executemany(
         "INSERT INTO discovered_facilities "
-        "(id,name,city,state,country,latitude,longitude) VALUES (?,?,?,?,?,?,?)",
+        "(id,name,city,state,country,latitude,longitude) VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
         rows)
     sql = ("SELECT id FROM discovered_facilities WHERE LOWER(city) = LOWER(?) "
            + ctry_sql).replace("%s", "?")
