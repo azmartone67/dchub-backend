@@ -259,7 +259,7 @@ def _compute_week(cur, week_start: date, week_end: date) -> dict:
         INSERT INTO reach_weekly
             (week_start, distinct_external_ips, distinct_platforms,
              new_external_ips, requests, id_lo, id_hi, per_platform, computed_at)
-        VALUES (%s, %s, %s, %s, %s, NULL, NULL, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, NULL, NULL, %s, NOW() ON CONFLICT DO NOTHING)
         ON CONFLICT (week_start) DO UPDATE SET
             distinct_external_ips = EXCLUDED.distinct_external_ips,
             distinct_platforms    = EXCLUDED.distinct_platforms,
