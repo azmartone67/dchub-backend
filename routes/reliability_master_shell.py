@@ -548,7 +548,7 @@ def _persist(m: dict, levers: dict, gate: dict, score: float, action: dict) -> b
                 INSERT INTO reliability_snapshots
                   (reliability_score, rate_live, rate_clean, verified_sample, sample_clean,
                    arm_ready, consecutive_ge50, weakest_lever, action_taken, lever_scores, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 score, m.get("rate_live"), m.get("rate_clean"),
                 m.get("verified_sample"), m.get("sample_clean"),
