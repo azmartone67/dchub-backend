@@ -32994,11 +32994,21 @@ def _build_sitemap_sections():
     # pages had zero crawl surface). Seed lists kept in lock-step with
     # routes.market_brief.SEED_MARKETS / state_brief.SEED_STATES /
     # operator_brief.SEED_OPERATORS / hyperscaler_brief.SEED_HYPERSCALERS.
-    for _mb_slug in (
-        'northern-virginia', 'dallas', 'phoenix', 'atlanta', 'chicago',
-        'silicon-valley', 'new-york', 'portland', 'hillsboro', 'reno',
-        'columbus', 'salt-lake-city', 'charlotte', 'denver', 'madison',
-    ):
+    # ★2026-09-11 — the MARKET tuple drifted the other way: every slug still
+    # served, but three were aliases the brief route 301s — northern-virginia
+    # -> ashburn, silicon-valley -> santa-clara, portland -> portland-or
+    # (measured live). A 301 in a sitemap is a "Page with redirect" URL we
+    # submitted ourselves. SEED_MARKETS is canonicalised at source, so it is
+    # imported like the operator and hyperscaler tuples below; the fallback is
+    # that tuple as it resolves today.
+    try:
+        from routes.market_brief import SEED_MARKETS as _mb_slugs
+    except Exception as _mb_e:
+        logger.warning("sitemap: market seed import failed (%s) — literal fallback", _mb_e)
+        _mb_slugs = ('ashburn', 'dallas', 'phoenix', 'atlanta', 'chicago',
+                     'santa-clara', 'new-york', 'portland-or', 'hillsboro', 'reno',
+                     'columbus', 'salt-lake-city', 'charlotte', 'denver', 'madison')
+    for _mb_slug in _mb_slugs:
         static_pages.append((f'/markets/{_mb_slug}/brief', '0.9', 'daily'))
     for _sb_slug in ('texas', 'california', 'virginia', 'georgia',
                      'ohio', 'oregon', 'illinois', 'arizona'):

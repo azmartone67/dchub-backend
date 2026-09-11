@@ -3244,7 +3244,9 @@ def _run_market_brief_warm():
         )
     except Exception as e:
         logger.error("🧾 market_brief_warm prewarm error: %s", e)
-        SEED_MARKETS = ("northern-virginia", "dallas", "phoenix",
+        # 2026-09-11: canonical slugs — northern-virginia 301s to ashburn,
+        # and priming a redirect caches nothing a reader lands on.
+        SEED_MARKETS = ("ashburn", "dallas", "phoenix",
                         "atlanta", "chicago")
     # CF edge-cache prime (best-effort).
     try:
