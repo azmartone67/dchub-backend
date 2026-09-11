@@ -334,11 +334,15 @@ def buyer_brief():
                     f"Candidate facility list ({len(on_market)} matching capacity ≥{min_mw} MW)",
                     "facilities", now_iso()))
 
-            # Pocket listings matching same criteria.
+            # Pocket listings matching same criteria — TEASER fields only.
+            # 2026-09-11: asking_price is detail behind the pocket-listing
+            # auth wall (routes/exclusive_listings.py), and soft_gate's
+            # truncate_to=3 still served three full rows to anonymous callers.
             sql_li = """SELECT id, slug, title, market, state, capacity_mw,
-                               asking_price, asking_currency, tier_required, status
+                               tier_required, status
                           FROM exclusive_listings
                          WHERE status IN ('public', 'pocket')
+                           AND (expires_at IS NULL OR expires_at > NOW())
                            AND (capacity_mw IS NULL OR capacity_mw >= %s)"""
             li_params = [min_mw]
             if state:
@@ -354,9 +358,8 @@ def buyer_brief():
                     "id": r[0], "slug": r[1], "title": r[2],
                     "market": r[3], "state": r[4],
                     "capacity_mw": _as_float(r[5]),
-                    "asking_price": _as_float(r[6]),
-                    "asking_currency": r[7],
-                    "tier_required": r[8], "status": r[9],
+                    "tier_required": r[6], "status": r[7],
+                    "url": f"https://dchub.cloud/listings?l={r[1]}",
                 })
             payload["pocket_listings"] = (
                 None if "pocket_listings" in errors else listings)
