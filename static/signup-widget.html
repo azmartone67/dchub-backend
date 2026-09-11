@@ -18,6 +18,7 @@
   .result{margin-top:20px;padding:16px;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;font-size:13px;line-height:1.5}
   .result.ok{border-color:#1f3d2e;background:#0a1f15}
   .result.err{border-color:#3d1f1f;background:#1f0a0a;color:#f87171}
+  .result p{margin:8px 0}
   pre{background:#000;padding:12px;border-radius:4px;font-size:11px;overflow-x:auto;margin:8px 0;color:#9af}
   .footer{font-size:12px;color:#666;margin-top:24px;line-height:1.6}
   code{background:#0d0d0d;padding:2px 6px;border-radius:3px;font-size:11px;color:#9af}
@@ -27,12 +28,12 @@
 </head><body>
 <div class="widget">
   <h1>Get your free DC Hub MCP key</h1>
-  <p class="sub">30 seconds. No credit card. 100 calls/day across the free-tier tools.</p>
+  <p class="sub">30 seconds. No credit card. We email the key to you. 100 calls/day across the free-tier tools.</p>
 
   <label for="email">Email</label>
   <input type="email" id="email" placeholder="you@example.com" autocomplete="email" autofocus>
 
-  <button id="btn" onclick="signup()">Get my key</button>
+  <button id="btn" onclick="signup()">Email me my key</button>
 
   <div id="result" style="display:none" class="result"></div>
 
@@ -44,6 +45,12 @@
 </div>
 
 <script>
+function el(tag, text) {
+  const n = document.createElement(tag);
+  n.textContent = text;
+  return n;
+}
+
 async function signup() {
   const btn    = document.getElementById('btn');
   const result = document.getElementById('result');
@@ -57,7 +64,7 @@ async function signup() {
   }
 
   btn.disabled = true;
-  btn.textContent = 'Issuing key…';
+  btn.textContent = 'Sending…';
   result.style.display = 'none';
 
   try {
@@ -69,15 +76,18 @@ async function signup() {
     const d = await r.json();
 
     result.style.display = 'block';
-    if (d.api_key) {
+    // The key arrives by email and is never in this response. The endpoint
+    // answers every address the same way, so it cannot hand one person's key
+    // to whoever typed their address.
+    if (r.ok && d.ok) {
       result.className = 'result ok';
-      result.innerHTML =
-        '<strong>' + (d.is_new ? '✓ Key issued' : '✓ Welcome back — your existing key:') + '</strong>' +
-        '<pre>' + d.api_key + '</pre>' +
-        '<strong>Next:</strong> drop this in your MCP client config as the <code>X-API-Key</code> header.' +
-        '<pre>{\n  "mcpServers": {\n    "dc-hub": {\n      "url": "https://dchub.cloud/mcp",\n      "headers": { "X-API-Key": "' + d.api_key + '" }\n    }\n  }\n}</pre>' +
-        '<a href="' + (d.upgrade_url || 'https://dchub.cloud/ai#pricing') + '">Upgrade to Pro →</a>  for unlimited + paid tools.';
-      btn.textContent = 'Done';
+      result.replaceChildren(
+        el('strong', '✓ Check your inbox'),
+        el('p', d.message),
+        el('p', 'When it arrives, add the key to your MCP client config as the X-API-Key header:'),
+        el('pre', '{\n  "mcpServers": {\n    "dc-hub": {\n      "url": "https://dchub.cloud/mcp",\n      "headers": { "X-API-Key": "YOUR_KEY" }\n    }\n  }\n}')
+      );
+      btn.textContent = 'Sent';
     } else {
       result.className = 'result err';
       result.textContent = 'Error: ' + (d.error || JSON.stringify(d));

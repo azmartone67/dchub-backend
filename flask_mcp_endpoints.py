@@ -3560,53 +3560,86 @@ def mcp_stats():
 
 
 # ── POST /api/v1/dev-signup — Self-serve free dev key (PUBLIC) ────────────
+#
+# ★ 2026-09-11 (security): this used to return the EXISTING key for any address
+# in its JSON body, and again inside upgrade_url. The endpoint is public and the
+# address unverified, so anyone who knew or guessed an email received that
+# account's live key — keys that had inherited a paid tier included. Measured
+# live before the fix: a second POST of one address returned the same key with
+# is_new:false.
+#
+# Now every accepted address gets the SAME 200 and the key travels only to the
+# inbox. An address that already has a key (or a paid account) gets the
+# POST /api/v1/keys/recover email; a new address is minted a key that is emailed.
+# The response cannot say whether an address is registered, and a key minted
+# here is never seen by whoever typed the address.
+_DEV_SIGNUP_MESSAGE = (
+    "Check your inbox. If that address can receive email, we've sent your DC "
+    "Hub API key to it: your existing key if you already have one, otherwise a "
+    "new one. For security the key is never shown in this response."
+)
+
+
+def _mint_dev_signup_key(email):
+    """Insert a fresh free key bound to `email` and return it, or None when the
+    write produced no row. The caller emails it; it never reaches the HTTP client.
+
+    RETURNING is what makes the key safe to send. A conflict means that key
+    string already belongs to another row, and emailing the generated string
+    anyway would hand that row's key to this address. A 128-bit collision is not
+    a realistic event; the check exists so this path can only email a key it
+    actually wrote."""
+    api_key      = f"dch_live_{secrets.token_hex(16)}"
+    developer_id = f"dev_{secrets.token_hex(8)}"
+    with _pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO mcp_dev_keys
+                 (api_key, developer_id, email, tier, status, metadata)
+               VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+               ON CONFLICT (api_key) DO NOTHING
+               RETURNING api_key""",
+            (api_key, developer_id, email, "free", "active",
+             '{"source":"dev-signup-form","delivery":"email"}'),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
 
 @mcp_bp.post("/api/v1/dev-signup")
 def dev_signup():
+    from routes import keys_recover as _kr
+
     body  = request.get_json(silent=True) or {}
-    email = (body.get("email") or "").strip().lower()
-    if not email or "@" not in email or len(email) > 254:
+    email = (str(body.get("email") or "")).strip().lower()
+    # Syntax only, with the regex /keys/recover uses. It reads the typed string
+    # and never the database, so a rejection here says nothing about accounts.
+    if not _kr._looks_like_email(email):
         return jsonify({"error": "valid email required"}), 400
 
-    api_key      = f"dch_live_{secrets.token_hex(16)}"
-    developer_id = f"dev_{secrets.token_hex(8)}"
-
     try:
-        with _pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                "SELECT api_key FROM mcp_dev_keys WHERE email=%s AND status='active' LIMIT 1",
-                (email,),
-            )
-            existing = cur.fetchone()
-            if existing:
-                return jsonify({
-                    "api_key":     existing[0],
-                    "tier":        "free",
-                    "email":       email,
-                    "is_new":      False,
-                    "header":      "X-API-Key",
-                    "docs":        "https://dchub.cloud/ai",
-                    # Phase FF+7 (2026-05-19): /upgrade entry-point (see /keys/claim above)
-                    "upgrade_url": f"https://dchub.cloud/upgrade?key={existing[0]}",
-                }), 200
-            cur.execute(
-                """INSERT INTO mcp_dev_keys
-                     (api_key, developer_id, email, tier, status, metadata)
-                   VALUES (%s, %s, %s, 'free', 'active', %s::jsonb)""",
-                (api_key, developer_id, email, '{"source":"dev-signup-form"}'),
-            )
-    except Exception as e:
-        return jsonify({"error": "key issuance failed", "detail": str(e)}), 500
+        if _kr._rate_ok(email, _kr._client_ip(request)):
+            # Mint ONLY when the lookup established that nothing is bound to the
+            # address. "unknown" means a lookup failed: minting then could issue
+            # a second key to an address that has one, or a free key to a paying
+            # account whose row we could not read.
+            if _kr._lookup_and_send(email, connect=_pool.connection) == "none":
+                api_key = _mint_dev_signup_key(email)
+                if api_key:
+                    _kr._send(email, "Your DC Hub API key",
+                              _kr._signup_html_key(email, api_key))
+    except Exception:
+        # The response below is identical whatever happened here.
+        note_swallowed_write("mcp_dev_keys", where="flask_mcp_endpoints.dev_signup")
 
     return jsonify({
-        "api_key":     api_key,
-        "tier":        "free",
-        "email":       email,
-        "is_new":      True,
-        "header":      "X-API-Key",
-        "docs":        "https://dchub.cloud/ai",
-        # Phase FF+7 (2026-05-19): /upgrade entry-point with attribution
-        "upgrade_url": f"https://dchub.cloud/upgrade?key={api_key}",
+        "ok":           True,
+        "message":      _DEV_SIGNUP_MESSAGE,
+        "key_delivery": "email",
+        "header":       "X-API-Key",
+        "docs":         "https://dchub.cloud/ai",
+        # For a script that needs the key in the response itself: the claim
+        # door returns an unbound free key directly, without an email.
+        "instant_key_endpoint": "https://dchub.cloud/api/v1/keys/claim",
     }), 200
 
 

@@ -33,7 +33,15 @@ them their probe "worked" or "failed".
 Honesty: we email TRANSACTIONAL content only (the key / a sign-in link). No
 digest, no market-alert promise — those were stripped. marketing_opt_in stays
 off; nothing here implies a subscription.
+
+Shared with POST /api/v1/dev-signup (2026-09-11). That endpoint used to return
+an address's EXISTING key in its JSON body, to anyone who typed the address. It
+now runs _lookup_and_send on its own pool, mints a key only when the lookup
+established that nothing is bound to the address, and emails that key with
+_signup_html_key — never in a response. The _rate_ok counters are shared, so
+alternating the two endpoints does not double an address's send budget.
 """
+import functools
 import os
 import threading
 from datetime import datetime, timezone
@@ -80,6 +88,12 @@ def _rate_ok(email: str, ip: str) -> bool:
         return True
 
 
+def _client_ip(req) -> str:
+    """The caller address _rate_ok keys on: the first X-Forwarded-For hop, else
+    the socket peer. One spelling for both endpoints that share the counters."""
+    return (req.headers.get("X-Forwarded-For") or req.remote_addr or "").split(",")[0].strip()
+
+
 _EMAIL_RE = None
 
 
@@ -111,6 +125,25 @@ def _recover_html_key(email: str, api_key: str) -> str:
   </p>
   <p style="color:#444;font-size:14px">Add it to your MCP client as header <code>X-API-Key</code>, or pass it to the REST API the same way. Keep it private — anyone with this key can use your quota.</p>
   <p style="color:#444;font-size:14px">If you didn't request this, you can ignore this email — nothing changed, and the key was only ever sent to this address.</p>
+  <p style="margin-top:20px">— DC Hub<br><span style="color:#888;font-size:13px">dchub.cloud</span></p>
+</div>"""
+
+
+def _signup_html_key(email: str, api_key: str) -> str:
+    """A NEW key issued by POST /api/v1/dev-signup. Same posture as recovery:
+    the key only ever travels to the address it is bound to."""
+    import html as _html
+    email = _html.escape(email)  # attacker-controlled — escape before HTML interpolation
+    api_key = _html.escape(api_key)
+    return f"""<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a;line-height:1.55">
+  <h2 style="font-weight:600;margin:0 0 4px">Your free DC Hub API key 🛰️</h2>
+  <p style="color:#666;margin:0 0 18px">You (or an AI agent acting for you) asked for a free DC Hub key for this email.</p>
+  <p>Here is the key we issued to <b>{email}</b>:</p>
+  <p style="margin:16px 0">
+    <code style="background:#f4f4f5;border:1px solid #e4e4e7;border-radius:6px;padding:10px 14px;display:inline-block;font-size:14px">{api_key}</code>
+  </p>
+  <p style="color:#444;font-size:14px">Add it to your MCP client as header <code>X-API-Key</code> (server URL <code>https://dchub.cloud/mcp</code>), or pass it to the REST API the same way. Keep it private — anyone with this key can use your quota.</p>
+  <p style="color:#444;font-size:14px">If you didn't request this, you can ignore this email — the key was only ever sent to this address.</p>
   <p style="margin-top:20px">— DC Hub<br><span style="color:#888;font-size:13px">dchub.cloud</span></p>
 </div>"""
 
@@ -165,18 +198,33 @@ def _send(to_email: str, subject: str, html: str) -> bool:
         return False
 
 
-def _lookup_and_send(email: str) -> None:
+def _lookup_and_send(email: str, connect=None) -> str:
     """Resolve the email to a recovery action and send it. Best-effort, fully
-    swallowed — NOTHING about success/failure reaches the caller. Order:
-      1) paid users account  -> sign-in link (never a raw key)
+    swallowed — NOTHING about success/failure reaches the HTTP caller. Order:
+      1) paid users account  -> the MCP connector URL (sign-in link if no MCP key)
       2) mcp_dev_keys.email   -> the free key itself, to its own bound address
       3) auto_trial_keys.operator_email -> that trial key, same treatment
+
+    Returns what the lookup ESTABLISHED, for an in-process caller that has to
+    branch on it — POST /api/v1/dev-signup mints a key only on "none". No HTTP
+    response may depend on it; that is the enumeration-safety contract above.
+      "sent"    — something is bound to this email and a send was attempted
+      "none"    — every lookup ran and nothing is bound to this email
+      "unknown" — a lookup did not run (no DSN, connect or query failure), so
+                  absence is NOT established
+
+    `connect` is a zero-arg callable returning a connection context manager.
+    dev-signup passes its own pool so it reads the table it writes. Default:
+    psycopg2 on DATABASE_URL / NEON_DATABASE_URL, as before.
     """
-    dsn = _dsn()
-    if not dsn:
-        return
+    if connect is None:
+        dsn = _dsn()
+        if not dsn:
+            return "unknown"
+        connect = functools.partial(psycopg2.connect, dsn, connect_timeout=8)
+    unread = False
     try:
-        with psycopg2.connect(dsn, connect_timeout=8) as conn:
+        with connect() as conn:
             with conn.cursor() as cur:
                 # 1) Paid account? Send the dashboard sign-in link, not a key.
                 try:
@@ -191,6 +239,7 @@ def _lookup_and_send(email: str) -> None:
                     prow = cur.fetchone()
                 except Exception:
                     prow = None
+                    unread = True
                 if prow:
                     # r-onboarding-fix (2026-07-03, defect #14): email the paid
                     # customer their dch_live_ MCP connector URL (the credential
@@ -217,7 +266,7 @@ def _lookup_and_send(email: str) -> None:
                     else:
                         _send(email, "Recover your DC Hub access",
                               _recover_html_signin(email))
-                    return
+                    return "sent"
 
                 # 2) Pure free key bound to this email.
                 try:
@@ -231,10 +280,11 @@ def _lookup_and_send(email: str) -> None:
                     krow = cur.fetchone()
                 except Exception:
                     krow = None
+                    unread = True
                 if krow and krow[0]:
                     _send(email, "Your DC Hub API key",
                           _recover_html_key(email, krow[0]))
-                    return
+                    return "sent"
 
                 # 3) Auto-trial key bound via operator_email.
                 try:
@@ -248,14 +298,16 @@ def _lookup_and_send(email: str) -> None:
                     trow = cur.fetchone()
                 except Exception:
                     trow = None
+                    unread = True
                 if trow and trow[0]:
                     _send(email, "Your DC Hub trial key",
                           _recover_html_key(email, trow[0]))
-                    return
+                    return "sent"
     except Exception:
         # Swallow everything — recovery is best-effort and the response is
         # neutral no matter what.
-        return
+        return "unknown"
+    return "unknown" if unread else "none"
 
 
 @keys_recover_bp.route("/api/v1/keys/recover", methods=["POST"])
@@ -266,7 +318,7 @@ def recover_key():
     """
     body = request.get_json(silent=True) or {}
     email = (str(body.get("email") or request.args.get("email") or "")).strip().lower()
-    ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip()
+    ip = _client_ip(request)
 
     # Even on bad input we return the SAME neutral 200 — never reveal that the
     # input was rejected (which would itself be an oracle).
