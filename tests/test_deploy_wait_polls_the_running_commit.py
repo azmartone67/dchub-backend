@@ -323,7 +323,7 @@ ACTING = {
     "sitemap-snapshot.yml": Lane("rebuild", lambda s: "rebuild-snapshot" in _code(s), 390),
     # the smoke's share of its old 8-minute budget
     "post-deploy-smoke.yml": Lane("smoke", lambda s: s.get("id") == "smoke", 390),
-    # the crawl finished in 41-376s over 30 runs; 11 more were killed at
+    # the crawl: of 30 runs, 21 finished in 41-376s and 9 were killed at
     # 385-430s by the old 8-minute cap, so its tail is unmeasured past that
     "link-check.yml": Lane("link-check", lambda s: s.get("id") == "crawl", 900),
     # the checks' share of the old 5-minute budget (they took 17s)

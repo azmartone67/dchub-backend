@@ -36,10 +36,10 @@ jobs:
   link-check:
     runs-on: ubuntu-latest
     # 10 min deploy wait + up to 15 min of crawl. The crawl (25 critical paths
-    # plus every link on / and /dcpi, ~430 URLs) finished in 41-376s over the
-    # 30 runs to 2026-09-11, and 11 more were killed mid-crawl by the old
-    # 8-minute cap after 385-430s — so its tail past that is unmeasured, and a
-    # killed job files no issue.
+    # plus every link on / and /dcpi, ~430 URLs): of the 30 runs to 2026-09-11,
+    # 21 finished it in 41-376s and 9 were killed mid-crawl by the old 8-minute
+    # cap, after 385-430s — so its tail past that is unmeasured, and a killed
+    # job files no issue.
     timeout-minutes: 26
     steps:
       - uses: actions/checkout@v4
