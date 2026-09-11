@@ -315,6 +315,17 @@ def test_nothing_is_written_or_emailed_before_identity_fields_and_terms(env, who
     assert env.rows == [] and env.sent == []
 
 
+@pytest.mark.parametrize("path", ["/api/v1/listings/dfw-40/intro", "/api/v1/listings/interest"])
+@pytest.mark.parametrize("headers", [{}, {"X-Internal-Key": INTERNAL_KEY}, {"X-API-Key": "x"}])
+def test_an_unidentified_caller_registers_nothing(env, path, headers):
+    """/interest has no listing behind it, so no listing-level access check
+    stands between an anonymous caller and the register — only identity does."""
+    body = {**INTRO, "requirement": {"markets": ["Dallas"], "capacity_mw": 20}}
+    r = env.client.post(path, json=body, headers=headers)
+    assert (r.status_code, r.get_json()["error"]) == (401, "identity_required")
+    assert env.rows == [] and env.sent == []
+
+
 def test_a_request_is_pending_until_the_inbox_confirms_it(env):
     r = env.client.post("/api/v1/listings/dfw-40/intro", json=INTRO, headers=_bearer())
     body, j = r.get_data(as_text=True), r.get_json()
