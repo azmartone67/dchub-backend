@@ -232,7 +232,17 @@ def test_canon_values_are_what_this_guard_thinks_they_are():
     #   three consecutive probes the same day ("source=resolve_public_floors
     #   (cold: PINNED floors)"). So this is not cosmetic: during every cold
     #   window the old pin was under-reporting the fleet by ~800.
-    assert CANON_FACILITIES == "21,400+", (
+    # ★2026-09-11: facilities 21,400+ -> 21,500+, the eighth walk, same drill as
+    # the 09-09 note above. Probed live, cache-busted: /api/v1/canon/phrases
+    # facilities = "21,500+" (source=resolve_public_floors live) and
+    # /api/v1/stats facilities = 21,570 — floor rounds DOWN and never exceeds
+    # the resolver. The flap is still live: the probe just before read
+    # "21,400+" (cold: PINNED floors).
+    # ★ The RETIRED_* lists were re-checked and NOT touched, for the 09-07
+    #   reason above: 21,500+ collides with none of them, and 21,400+ was canon
+    #   until today — test_canonical_counts_drift's below-the-floor fence bans it
+    #   on every scanned surface the moment the pin moves past it, no list edit.
+    assert CANON_FACILITIES == "21,500+", (
         f"PINNED facilities moved to {CANON_FACILITIES}. Update the surfaces "
         f"in SURFACES and the RETIRED_* lists, then this assertion.")
     assert CANON_DEALS == "2,100+", (
