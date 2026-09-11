@@ -608,9 +608,11 @@ def test_a_deploy_that_never_lands_is_reported_and_nothing_is_rolled_back():
     the report runs (and the job is already red). Roll back: a timed-out wait
     puts the decision past the anti-stacking guard's 600s window, so a rollback
     here would remove the build that was live BEFORE this commit. And "Open
-    issue" stays out — it would call the missing verdict ROLLBACK FAILED."""
+    issue" stays out — it would call the missing verdict ROLLBACK FAILED.
+    The burn outputs are loaded on purpose: a probe or decide that DID run
+    would hand the rollback step a measured hard_burn."""
     steps = _wiring("auto-rollback.yml")[1]
-    ran = _simulate(steps, "push", ends={"deploy_wait": "failure"})
+    ran = _simulate(steps, "push", ends={"deploy_wait": "failure"}, outputs=_BURN)
     assert ran == ["actions/checkout@v5", "deploy_wait", _RB_REPORT], ran
 
 
