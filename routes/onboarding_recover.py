@@ -150,21 +150,32 @@ def delivery_truth():
 
     ★★★ Every "we welcomed them" claim in this repo means *sent*, not
     *delivered*. welcome_email_log stamps a resend_message_id on each send
-    precisely so /api/v1/webhooks/resend can close that loop — and as of
-    2026-08-28 email_events holds ONE row all time, a synthetic
-    deploy-verify@example.com from 2026-07-17. Zero real events, ever, for any
-    customer.
+    precisely so /api/v1/webhooks/resend can close that loop.
 
-    The failure mode is SILENCE: nothing was broken loudly, so nobody looked.
-    This endpoint exists to make the absence say something. It reports a
-    verdict rather than a row count, because "0" reads like "nothing to
-    report" and what it actually means is "we cannot prove a single customer
-    email has ever arrived".
+    ★ 2026-09-11: the upstream gap this docstring used to describe is CLOSED.
+    email_events holds 892 rows, 888 of them signature-verified, arriving
+    continuously since 2026-08-29 03:10Z — the endpoint IS configured in the
+    Resend dashboard and RESEND_WEBHOOK_SECRET IS set. This paragraph used to
+    read "as of 2026-08-28 email_events holds ONE row all time"; it was true
+    when written and stale about fourteen hours later. Read this endpoint's
+    own output, never this paragraph.
 
-    Note what this can and cannot fix. The route is live and permissive (it
-    stores unsigned events with verified=false), so the gap is upstream: no
-    endpoint is configured in the Resend dashboard, and RESEND_WEBHOOK_SECRET
-    is unset. Both are owner actions; code cannot mint the data.
+    ★ What is still open, and why the verdict is not CONFIRMED: no
+    welcome_email_log.resend_message_id has EVER matched an email_events row —
+    zero overlap, all time — while the last 30 days hold 23 delivered events
+    whose subject is the welcome subject. Both columns are 36-char UUIDs, so
+    the shapes agree and the populations do not. Every id-carrying send in the
+    window also predates the verified stream (newest such send 2026-08-28).
+    So a non-CONFIRMED verdict here currently means "the join found nothing",
+    which is NOT the same as "the mail did not arrive" — understand the join
+    population before reading this as a delivery failure.
+
+    The failure mode this exists for is SILENCE: nothing breaks loudly, so
+    nobody looks. It reports a verdict rather than a row count, because "0"
+    reads like "nothing to report" and what it actually means is "we cannot
+    prove a single customer email has ever arrived". The route stays
+    permissive (it stores unsigned events with verified=false) so a
+    misconfigured secret degrades to unverified rows rather than to no rows.
     """
     if not _admin_ok():
         return jsonify(ok=False, error="admin only"), 403
