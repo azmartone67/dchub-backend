@@ -443,7 +443,7 @@ def run_ingest(dry_run: bool = True) -> dict:
             for r in rows:
                 cur.execute(
                     "INSERT INTO water_risk (state, water_stress_score, baseline_water_stress, "
-                    "bws_category, source, computed_at) VALUES (%s,%s,%s,%s,%s, now())",
+                    "bws_category, source, computed_at) VALUES (%s,%s,%s,%s,%s, now() ON CONFLICT DO NOTHING)",
                     (r["state"], r["score100"], r["raw"], r["category"], _SOURCE_TAG))
                 wrote += 1
     except Exception as e:

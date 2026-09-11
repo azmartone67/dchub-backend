@@ -656,7 +656,7 @@ def queue_wins(dry_run: bool = True) -> dict:
                     for _plat in ("linkedin", "twitter"):
                         cur.execute("""INSERT INTO social_media_posts
                                          (platform, content, post_type, status, win_key, created_at)
-                                       VALUES (%s,%s,'win',%s,%s,NOW())
+                                       VALUES (%s,%s,'win',%s,%s,NOW() ON CONFLICT DO NOTHING)
                                        ON CONFLICT (win_key, platform) DO NOTHING""",
                                     (_plat, text, _status, c["win_key"]))
                     cur.execute("""INSERT INTO wins_posted_ledger (win_kind, dedup_key, win_key, headline, status)
