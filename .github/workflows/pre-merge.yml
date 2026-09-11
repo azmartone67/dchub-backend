@@ -460,7 +460,9 @@ jobs:
       - name: Install deps
         # flask: the module under test is a blueprint, and _load executes its
         # module-level imports. psycopg2-binary: the parity test connects.
-        run: python3 -m pip install pytest flask psycopg2-binary requests
+        # psycopg[binary]: the pack-expiry lane loads its instant through
+        # psycopg 3 too, the driver that refuses 'infinity'.
+        run: python3 -m pip install pytest flask psycopg2-binary "psycopg[binary]" requests
       - name: Fiber provider/name lane parity against a real Postgres
         run: python3 -m pytest tests/test_fiber_provider_backfill.py -v --tb=short
       - name: Prove the parity test actually RAN
@@ -523,6 +525,29 @@ jobs:
             echo "::error::the live-proof SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Pack credits never expire: the grant and the backfill, for real ──
+      # tests/test_pack_credits_never_expire.py pins the SQL TEXT against a
+      # fake cursor. Only a real Postgres can show that the backfill's
+      # data-modifying CTE moves exactly the pack rows, leaves the legacy tu-
+      # top-ups alone, runs idempotently at import, and that psycopg2 AND
+      # psycopg 3 both load the far-future instant back ('infinity' makes
+      # psycopg 3 raise). Owns and recreates only mcp_topups / mcp_trial_emails.
+      - name: Pack-expiry SQL against a real Postgres
+        env:
+          PACK_EXPIRY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_pack_credits_never_expire_sql.py -v --tb=short
+
+      - name: Prove the pack-expiry SQL test actually RAN
+        env:
+          PACK_EXPIRY_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_pack_credits_never_expire_sql.py \
+            -q -rs --tb=no > pk.txt 2>&1 || { cat pk.txt; exit 1; }
+          cat pk.txt
+          if grep -qi "skipped" pk.txt; then
+            echo "::error::the pack-expiry SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -532,14 +557,14 @@ jobs:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # out.txt, cc.txt and lp.txt are written by the three prove-it-RAN
-          # steps above, each of which already fails the job on a skip. N sums
-          # the SAME files those checks read, so the count and the skip checks
-          # cannot disagree — a lane that ran but is not counted here reports
-          # fewer tests than the job actually proved.
+          # out.txt, cc.txt, lp.txt and pk.txt are written by the four
+          # prove-it-RAN steps above, each of which already fails the job on a
+          # skip. N sums the SAME files those checks read, so the count and the
+          # skip checks cannot disagree — a lane that ran but is not counted here
+          # reports fewer tests than the job actually proved.
           # Same empty-vs-zero rule as unit-tests: present-but-unparseable => 0.
-          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ]; then
-            N=$(cat out.txt cc.txt lp.txt 2>/dev/null \
+          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ] || [ -f pk.txt ]; then
+            N=$(cat out.txt cc.txt lp.txt pk.txt 2>/dev/null \
                 | grep -oE '[0-9]+ (passed|failed)' \
                 | awk '{t+=$1} END{if(NR)print t; else print 0}')
           else

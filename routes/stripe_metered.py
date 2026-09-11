@@ -458,11 +458,11 @@ def handle_agentic_commerce_order(session):
         for sku in skus:
             if sku == _AGENTIC_SKU_PACK:
                 from routes.mcp_conversion_plays import (
-                    grant_credit_pack, PACK5_CREDITS, PACK5_EXPIRY_DAYS)
+                    grant_credit_pack, PACK5_CREDITS)
                 key = _agentic_key_for_email(email)
                 grant = grant_credit_pack(
                     key, None, PACK5_CREDITS, stripe_session_id=sid,
-                    source="agentic_pack5", expires_days=PACK5_EXPIRY_DAYS)
+                    source="agentic_pack5")
                 emailed = False
                 if grant.get("ok") and not grant.get("idempotent"):
                     emailed = _agentic_email_key(email, key)

@@ -75,7 +75,7 @@ TOPUP_PRICE_CENTS = int(os.environ.get('DCHUB_TOPUP_PRICE_CENTS', '500'))
 # A fixed $5.00 one-time Stripe Payment Link created in the dashboard. Unlike the
 # top-up (tu-token, keyed agent, 30-min TTL), the pack is a one-click,
 # session-bound acquisition SKU: the $5 checkout mints a durable key + grants
-# 1000 credits (90-day) keyed on BOTH the key AND the buying mcp session, so the
+# 1000 credits keyed on BOTH the key AND the buying mcp session, so the
 # current session unlocks instantly (by session id) and future sessions unlock by
 # the emailed durable key. Both burn the same balance (consume_credits, value-
 # tiered cost). Reuses the proven mcp_topups storage — NOT a 2nd credits system.
@@ -83,14 +83,37 @@ PACK5_URL = os.environ.get(
     'DCHUB_PACK5_URL', 'https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i').strip()
 PACK5_CREDITS = int(os.environ.get('DCHUB_PACK5_CREDITS', '1000'))
 PACK5_PRICE_CENTS = int(os.environ.get('DCHUB_PACK5_PRICE_CENTS', '500'))
-PACK5_EXPIRY_DAYS = int(os.environ.get('DCHUB_PACK5_EXPIRY_DAYS', '90'))
 
 # r-pack10 (2026-06-25): a 2nd one-time credit pack — the repurposed ex-metered
 # link ($10 one-time = 1,000 API calls, price_1TmOic…). Separate env knobs so
-# the two packs can diverge in price/credits/expiry without code changes.
+# the two packs can diverge in price/credits without code changes.
 PACK10_CREDITS = int(os.environ.get('DCHUB_PACK10_CREDITS', '1000'))
 PACK10_PRICE_CENTS = int(os.environ.get('DCHUB_PACK10_PRICE_CENTS', '1000'))
-PACK10_EXPIRY_DAYS = int(os.environ.get('DCHUB_PACK10_EXPIRY_DAYS', '90'))
+
+# ★2026-09-11 — PACK CREDITS NEVER EXPIRE. /pricing has said so since
+# 2026-06-17, in three places (the pack Offer JSON-LD, the price note and the
+# FAQ), one day after r-pack5 shipped a 90-day clock that no page, email or MCP
+# message ever mentioned. Owner decision 2026-09-10: the code follows the page.
+# The DCHUB_PACK5_EXPIRY_DAYS / DCHUB_PACK10_EXPIRY_DAYS knobs are GONE, not
+# re-defaulted: an env var that can quietly re-arm the clock is how the promise
+# broke, and what production had set could not even be read.
+#
+# "Never" is a far-future instant, not NULL and not 'infinity':
+#   · mcp_topups.expires_at is NOT NULL (the legacy tu- top-ups use its
+#     30-minute default). A NULL fails the INSERT, and grant_credit_pack
+#     swallows that error — the buyer pays and receives no credits.
+#   · 'infinity' has no Python datetime. Measured on Postgres 18: psycopg 3
+#     raises DataError loading it, psycopg2 silently turns it into
+#     datetime.max — and these rows are read back into Python (topup_status
+#     calls .isoformat() on expires_at). This instant loads in both drivers,
+#     in any session time zone.
+# get_credit_balance, get_credit_status and consume_credits all filter on
+# `expires_at > NOW()`, which this instant always passes.
+PACK_NEVER_EXPIRES = "9999-12-31 00:00:00+00"
+
+# Every `source` grant_credit_pack writes, and the only rows
+# restore_pack_never_expires() may touch. Legacy tu- top-ups carry source NULL.
+PACK_SOURCES = ("pack5", "pack10", "pack5_keybound", "pack10_keybound", "agentic_pack5")
 
 
 def _conn():
@@ -426,7 +449,7 @@ def redeem_topup_token(token: str, stripe_session_id: str | None = None) -> dict
 # Reuses the mcp_topups storage + decrement shape; keys on api_key OR mcp session.
 # ═══════════════════════════════════════════════════════════════════════════
 def grant_credit_pack(api_key, mcp_session_id, credits,
-                      stripe_session_id=None, source="pack5", expires_days=90,
+                      stripe_session_id=None, source="pack5",
                       api_key_hash=None, price_cents=None):
     """Grant a one-time credit pack. IDEMPOTENT on stripe_session_id so a Stripe
        webhook retry never double-grants. Keys the balance on BOTH the durable
@@ -443,7 +466,11 @@ def grant_credit_pack(api_key, mcp_session_id, credits,
        per-pack, so every $10 pack10 sale wrote 500 into mcp_topups.price_cents
        and revenue read back at HALF what was charged. Defaults to
        PACK5_PRICE_CENTS so the agentic $5 caller in routes/stripe_metered.py
-       is unchanged."""
+       is unchanged.
+
+       ★2026-09-11 — AND EXPIRY IS NOT. Every pack is written with
+       expires_at = PACK_NEVER_EXPIRES, the promise /pricing makes; no argument
+       and no env var is left that can shorten it."""
     out = {"ok": False}
     h = api_key_hash or _hash_key(api_key)
     if not h:
@@ -470,11 +497,11 @@ def grant_credit_pack(api_key, mcp_session_id, credits,
                      expires_at, credits_remaining, stripe_session_id,
                      mcp_session_id, source)
                 VALUES (%s, %s, %s, %s, NOW(),
-                        NOW() + (%s || ' days')::interval, %s, %s, %s, %s)
+                        %s::timestamptz, %s, %s, %s, %s)
                 RETURNING id;
             """, (token, h, credits,
                   int(PACK5_PRICE_CENTS if price_cents is None else price_cents),
-                  str(int(expires_days)),
+                  PACK_NEVER_EXPIRES,
                   credits, stripe_session_id, sid, source))
             row = cur.fetchone()
             out.update(ok=True, idempotent=False,
@@ -487,6 +514,63 @@ def grant_credit_pack(api_key, mcp_session_id, credits,
     finally:
         try: c.close()
         except Exception: pass
+
+
+def restore_pack_never_expires():
+    """Bring every pack row written under the retired 90-day clock onto the
+       promise: expires_at = PACK_NEVER_EXPIRES for each PACK_SOURCES row still
+       carrying an earlier instant. That includes a grant whose clock already
+       ran out, so its unspent credits come back. Rows with source NULL — the
+       legacy tu- top-ups — are never touched.
+
+       IDEMPOTENT: once applied it matches nothing, so it runs on every import
+       (below) with no flag and no ledger. The CTE is named `prior`, not `old`:
+       Postgres 18 gives RETURNING its own OLD alias. Returns {ok, restored,
+       earliest_old_expiry, latest_old_expiry}; never raises."""
+    out = {"ok": False, "restored": 0}
+    c = _conn()
+    if c is None:
+        out["error"] = "no_database"; return out
+    try:
+        with c, c.cursor() as cur:
+            cur.execute("""
+                WITH prior AS (
+                    SELECT id, expires_at FROM mcp_topups
+                     WHERE source = ANY(%s)
+                       AND expires_at < %s::timestamptz
+                     FOR UPDATE
+                )
+                UPDATE mcp_topups AS t
+                   SET expires_at = %s::timestamptz
+                  FROM prior
+                 WHERE t.id = prior.id
+                RETURNING prior.expires_at;
+            """, (list(PACK_SOURCES), PACK_NEVER_EXPIRES, PACK_NEVER_EXPIRES))
+            olds = [r[0] for r in cur.fetchall() if r and r[0] is not None]
+        out.update(ok=True, restored=len(olds),
+                   earliest_old_expiry=min(olds).isoformat() if olds else None,
+                   latest_old_expiry=max(olds).isoformat() if olds else None)
+        if olds:
+            print(f"[mcp_conversion_plays] restore_pack_never_expires: {len(olds)} pack "
+                  f"grant(s) moved to never-expires (old expiries "
+                  f"{out['earliest_old_expiry']} .. {out['latest_old_expiry']})",
+                  file=sys.stderr)
+        return out
+    except Exception as e:
+        out["error"] = str(e)[:200]
+        print(f"[mcp_conversion_plays] restore_pack_never_expires: {e}", file=sys.stderr)
+        return out
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# Every process import, once the schema exists. Idempotent — see above.
+try:
+    _PACK_EXPIRY_RESTORE = (restore_pack_never_expires() if _SCHEMA_OK
+                            else {"ok": False, "restored": 0, "skipped": "schema_not_ready"})
+except Exception:
+    _PACK_EXPIRY_RESTORE = {"ok": False, "restored": 0, "skipped": "error"}
 
 
 def get_credit_balance(api_key, mcp_session_id):

@@ -120,7 +120,6 @@ def test_a_ten_dollar_pack_records_ten_dollars(monkeypatch):
     sql, params = _capture(monkeypatch,
                            credits=mcp.PACK10_CREDITS,
                            source="pack10",
-                           expires_days=mcp.PACK10_EXPIRY_DAYS,
                            price_cents=mcp.PACK10_PRICE_CENTS)
     assert _price_param(sql, params) == mcp.PACK10_PRICE_CENTS == 1000
 
@@ -128,8 +127,7 @@ def test_a_ten_dollar_pack_records_ten_dollars(monkeypatch):
 def test_the_five_dollar_pack_is_unchanged(monkeypatch):
     """The agentic caller in routes/stripe_metered.py passes no price at all."""
     sql, params = _capture(monkeypatch, credits=mcp.PACK5_CREDITS,
-                           source="agentic_pack5",
-                           expires_days=mcp.PACK5_EXPIRY_DAYS)
+                           source="agentic_pack5")
     assert _price_param(sql, params) == mcp.PACK5_PRICE_CENTS == 500
 
 
