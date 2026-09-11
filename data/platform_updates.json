@@ -24,6 +24,97 @@
   ],
   "updates": [
     {
+      "id": "mcp-pack-siting",
+      "status": "published",
+      "announced": "2026-09-08",
+      "tag": "MCP pack",
+      "title": "Siting pack: from a requirement to a ranked shortlist",
+      "body": "/mcp/siting is an MCP endpoint on dchub.cloud that lists the siting tools, including execute_plan, find_sites, site analysis and comparison, site and market ranking, composite site scores, fiber readiness, water, disaster and climate risk, and tax incentives. Point an agent at it when the job is choosing where to build.",
+      "code": "/mcp/siting",
+      "link": {
+        "href": "/connect",
+        "label": "Connect an MCP client →"
+      }
+    },
+    {
+      "id": "mcp-pack-grid",
+      "status": "published",
+      "announced": "2026-09-08",
+      "tag": "MCP pack",
+      "title": "Grid pack: interconnection, headroom and live grid data",
+      "body": "/mcp/grid lists the power tools, including grid intelligence, interconnection queues, hosting capacity, power-availability timelines, the power pipeline, retirement headroom, energy prices, ISO comparisons and live grid telemetry. Built for agents answering how much power a site can get, and when.",
+      "code": "/mcp/grid",
+      "link": {
+        "href": "/connect",
+        "label": "Connect an MCP client →"
+      }
+    },
+    {
+      "id": "mcp-pack-fiber",
+      "status": "published",
+      "announced": "2026-09-08",
+      "tag": "MCP pack",
+      "title": "Fiber pack: routes, metro depth, peering and subsea cables",
+      "body": "/mcp/fiber lists the connectivity tools, including long-haul and metro fiber, fiber readiness at a site, lead-in route planning, peering and internet exchanges, subsea cables, and latency clustering of candidate sites.",
+      "code": "/mcp/fiber",
+      "link": {
+        "href": "/connect",
+        "label": "Connect an MCP client →"
+      }
+    },
+    {
+      "id": "mcp-pack-deals",
+      "status": "published",
+      "announced": "2026-09-08",
+      "tag": "MCP pack",
+      "title": "Deals pack: M&A, hyperscaler deals and where markets are heading",
+      "body": "/mcp/deals lists the transaction tools, including M&A and capital transactions, hyperscaler AI deals, deal autopsies, the construction pipeline, news and intelligence search, market intelligence and market trajectory forecasts.",
+      "code": "/mcp/deals",
+      "link": {
+        "href": "/connect",
+        "label": "Connect an MCP client →"
+      }
+    },
+    {
+      "id": "mcp-pack-gas",
+      "status": "published",
+      "announced": "2026-09-08",
+      "tag": "MCP pack",
+      "title": "Gas pack: behind-the-meter power economics",
+      "body": "/mcp/gas lists the gas tools, including gas access and pipeline intelligence, delivered gas economics, gas pricing, energy prices and the power pipeline, for agents weighing gas-fired or behind-the-meter power against the grid.",
+      "code": "/mcp/gas",
+      "link": {
+        "href": "/connect",
+        "label": "Connect an MCP client →"
+      }
+    },
+    {
+      "id": "mcp-pack-site",
+      "status": "published",
+      "announced": "2026-09-08",
+      "tag": "MCP pack",
+      "title": "Site pack: one facility or one market, answered directly",
+      "body": "/mcp/site lists the lookup tools for a single facility or market, including search and fetch, facility records, a market's power-index rank and its market context.",
+      "code": "/mcp/site",
+      "link": {
+        "href": "/connect",
+        "label": "Connect an MCP client →"
+      }
+    },
+    {
+      "id": "mcp-pack-deepresearch",
+      "status": "published",
+      "announced": "2026-09-08",
+      "tag": "MCP pack",
+      "title": "Deep Research pack: search and fetch, nothing else",
+      "body": "/mcp/deepresearch exposes only search and fetch, in the connector format OpenAI Deep Research and ChatGPT expect: find data-center facility records, then fetch a citable public summary of each.",
+      "code": "/mcp/deepresearch",
+      "link": {
+        "href": "/connect",
+        "label": "Connect an MCP client →"
+      }
+    },
+    {
       "id": "capabilities-live",
       "status": "published",
       "announced": "2026-08-17",

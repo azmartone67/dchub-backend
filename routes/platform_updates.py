@@ -93,7 +93,9 @@ METRIC_TOKENS = {
 #   alternative was silently truncating real, approved stories. Keep it above
 #   the size of any honest wave; the gate + merge-approval are the editorial
 #   controls, this is only the runaway-bot backstop.
-MAX_CARDS = 16
+#   Raised 16→24 on 2026-09-11 for the same reason: one card per MCP tool pack
+#   (shipped 2026-09-08) met a feed already holding fourteen approved cards.
+MAX_CARDS = 24
 
 _TTL = 300.0
 _cache: dict = {"ts": 0.0, "block": None}
