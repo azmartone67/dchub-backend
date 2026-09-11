@@ -336,6 +336,11 @@ ACTING = {
     "brain-pr-post-merge-guard.yml": Lane(
         "guard", lambda s: s.get("id") == "probe", 720, event="pull_request",
         wait_if=None, expect="${{ github.event.pull_request.merge_commit_sha }}"),
+    # the purge script's own budget (BUDGET_S in scripts/purge_whats_new_after_deploy.py):
+    # consistent origin reads, then up to 3 rounds of waiting for the worker's KV
+    # copy, purging, and reading the page's URLs back
+    "whats-new-post-deploy-purge.yml": Lane(
+        "purge", lambda s: "scripts/purge_whats_new_after_deploy.py" in _code(s), 1500),
 }
 
 # Lanes whose later steps read the wait's outcome — a scan of them that finds
