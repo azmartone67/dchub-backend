@@ -231,6 +231,96 @@ def test_the_critical_push_runs_before_the_fragile_one():
     )
 
 
+# ── 2026-09-10: the heal covered ONE of dchub-mcp-server's two derived sets ──
+#
+# dchub-mcp-server #397 — a facts PR this workflow opened — went red on the
+# sibling repo's "Per-pack listings match the catalog" step and needed a human
+# commit (db838b5, integrations/packs/site.json) before it could merge. The
+# regenerate had rewritten a tool description in mcp-server.json, the site pack
+# quotes that description, and the pack emitter is a separate CI STEP rather
+# than a test file, so nothing this workflow ran could see it. Reproduced at
+# the bot's commit 5f0fece: the check exits 1, and `--fix` produces db838b5
+# byte for byte.
+#
+# Keyed on the COMMANDS each step runs, never on step names — the ordering test
+# above records what name-matching cost last time.
+
+_SIBLING = "dchub-mcp-server"
+_HEAL = r"^\s*node scripts/sync-tools-manifest\.mjs --fix\s*$"
+_EMIT_FIX = r"^\s*node scripts/emit-pack-manifests\.mjs --fix\s*$"
+_EMIT_CHECK = r"^\s*node scripts/emit-pack-manifests\.mjs\s*$"
+_OPEN_PR = r"^\s*PR_URL=\$\(gh pr create --repo azmartone67/dchub-mcp-server\b"
+
+
+def _code(step):
+    """A step's shell with comment lines stripped (the same rule as _run_code),
+    so a command that survives only inside a comment does not count."""
+    return "\n".join(l for l in str(step.get("run", "")).splitlines()
+                     if not l.lstrip().startswith("#"))
+
+
+def _indices(pattern):
+    rx = re.compile(pattern, re.MULTILINE)
+    return [i for i, s in enumerate(_steps())
+            if s.get("working-directory") == _SIBLING and rx.search(_code(s))]
+
+
+def _one(pattern, what):
+    hits = _indices(pattern)
+    assert len(hits) == 1, (
+        f"expected exactly one {_SIBLING} step that {what}, found {len(hits)} "
+        f"at {hits} — an ordering assertion over the wrong steps proves nothing")
+    return hits[0]
+
+
+def test_the_pack_listings_are_regenerated_after_the_catalog_heal():
+    heal = _one(_HEAL, "heals the catalog")
+    emit = _one(_EMIT_FIX, "regenerates the pack listings")
+    pr = _one(_OPEN_PR, "opens the PR")
+    assert heal < emit < pr, (
+        f"heal@{heal}, pack emit@{emit}, PR@{pr}. The listings quote the catalog "
+        "the heal rewrites, so they must be regenerated AFTER it and BEFORE the "
+        "commit — otherwise the PR ships yesterday's descriptions and goes red on "
+        "dchub-mcp-server's per-pack step, exactly as #397 did.")
+
+
+def test_the_pack_emitter_has_its_dependencies_installed_first():
+    """emit-pack-manifests imports server.mjs, which imports its npm deps. The
+    catalog heal before it needs none, so this workflow never installed any."""
+    npm = _indices(r"^\s*npm ci\b")
+    emit = _one(_EMIT_FIX, "regenerates the pack listings")
+    assert npm and min(npm) < emit, (
+        f"npm ci@{npm}, pack emit@{emit}: the emitter's import of server.mjs "
+        "throws without node_modules, and set -euo pipefail turns that into a "
+        "failed export")
+
+
+def test_the_pre_pr_guard_runs_the_pack_check_too():
+    """Both drift checks dchub-mcp-server's CI runs, on the tree about to be
+    committed — a red caught here is a red PR that is never opened."""
+    emit = _one(_EMIT_FIX, "regenerates the pack listings")
+    check = _one(_EMIT_CHECK, "checks the pack listings")
+    pr = _one(_OPEN_PR, "opens the PR")
+    assert emit < check < pr, (
+        f"pack emit@{emit}, pack check@{check}, PR@{pr}: the check must read the "
+        "tree the emitter produced, before it is committed")
+    assert re.search(r"^\s*node scripts/sync-tools-manifest\.mjs\s*$",
+                     _code(_steps()[check]), re.MULTILINE), (
+        "the pack check left the drift-guard step — the two checks CI runs must "
+        "be proven on the same tree")
+
+
+def test_a_new_pack_listing_is_staged_not_left_untracked():
+    """`git add -u` stages no untracked file, and the emitter REBUILDS its
+    directory. A pack declared since the last export would be checked on disk
+    by the guard step and then dropped from the commit."""
+    code = _code(_steps()[_one(_OPEN_PR, "opens the PR")])
+    add = re.search(r"^\s*git add -A -- integrations/packs\s*$", code, re.MULTILINE)
+    commit = re.search(r"^\s*git commit\b", code, re.MULTILINE)
+    assert add and commit and add.start() < commit.start(), (
+        "integrations/packs/ must be staged with -A before `git commit`")
+
+
 if __name__ == "__main__":
     _failed = 0
     for _name, _fn in sorted(globals().items()):
