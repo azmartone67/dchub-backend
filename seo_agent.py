@@ -94,10 +94,17 @@ def ping_indexnow(urls):
         conn = get_db()
         try:
             c = conn.cursor()
+            # Append one row per submitted URL. This used to upsert on url, but
+            # the table has no unique constraint on url (see init_seo_tables),
+            # so Postgres rejected every write with InvalidColumnReference and
+            # note_swallowed_write ate it: logged on Railway 2026-09-11 at
+            # 15:50:30Z and 17:36:20Z. An untargeted DO NOTHING needs no
+            # constraint, and an append log is what /api/seo/status counts
+            # (rows in the last 24h).
             for url in (urls or [])[:100]:
                 c.execute('''INSERT INTO seo_indexing_log
                     (url, search_engine, status, response_code)
-                    VALUES (%s, %s, %s, %s) ON CONFLICT (url) DO UPDATE SET search_engine = EXCLUDED.search_engine, status = EXCLUDED.status, response_code = EXCLUDED.response_code''',
+                    VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING''',
                     (url, res.get("endpoint") or "indexnow", status, res.get("status")))
             conn.commit()
         finally:
@@ -110,58 +117,6 @@ def ping_indexnow(urls):
         "urls_submitted": res.get("submitted", 0),
         "engines": [res],
     }
-
-def get_priority_urls():
-    """Get high-priority URLs for indexing"""
-    base_url = "https://dchub.cloud"
-    
-    priority_urls = [
-        f"{base_url}/",
-        f"{base_url}/api",
-        f"{base_url}/markets",
-        f"{base_url}/facilities",
-        f"{base_url}/transactions",
-        f"{base_url}/news",
-        f"{base_url}/llms.txt",
-        f"{base_url}/ai.txt",
-        f"{base_url}/AGENTS.md",
-        f"{base_url}/.well-known/ai-plugin.json"
-    ]
-    
-    try:
-        conn = get_db()
-        try:
-            c = conn.cursor()
-
-            c.execute('''SELECT DISTINCT city, state, country FROM facilities
-                WHERE city IS NOT NULL LIMIT 50''')
-            markets = c.fetchall()
-
-            for city, state, country in markets:
-                slug = city.lower().replace(' ', '-') if city else ''
-                if slug:
-                    priority_urls.append(f"{base_url}/market/{slug}")
-
-            # r-served-slug (2026-09-11): submit the slug each facility page is
-            # SERVED at. /facility/<id> 301s for every row that has one, so this
-            # handed IndexNow a redirect per facility. Stored canonical_slug
-            # first, a live build only for an unfrozen row; no slug, no URL.
-            from routes.facility_slug_freeze import frozen_slug_for_row
-            c.execute('''SELECT provider, name, canonical_slug FROM facilities
-                ORDER BY updated_at DESC LIMIT 100''')
-            facilities = c.fetchall()
-            for provider, name, canonical_slug in facilities:
-                slug = frozen_slug_for_row({"provider": provider, "name": name,
-                                            "canonical_slug": canonical_slug})
-                if slug:
-                    priority_urls.append(f"{base_url}/facilities/{slug}")
-
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"Error getting priority URLs: {e}")
-    
-    return priority_urls
 
 def generate_seo_content_ideas():
     """Generate AI-powered content ideas for backlinks"""
@@ -309,28 +264,15 @@ def seo_status():
         return jsonify({"success": False, "error": str(e)})
 
 
-@seo_agent_bp.route('/api/seo/indexnow/ping', methods=['POST'])
-def indexnow_ping():
-    """Ping IndexNow to request rapid indexing"""
-    data = request.get_json() or {}
-    urls = data.get('urls', [])
-    
-    if not urls:
-        urls = get_priority_urls()
-    
-    result = ping_indexnow(urls)
-    return jsonify(result)
-
-
-@seo_agent_bp.route('/api/seo/indexnow/ping-all', methods=['POST'])
-def indexnow_ping_all():
-    """Ping all priority URLs for indexing"""
-    urls = get_priority_urls()
-    result = ping_indexnow(urls)
-    return jsonify({
-        **result,
-        "priority_urls": len(urls)
-    })
+# POST /api/seo/indexnow/ping, /api/seo/indexnow/ping-all and /api/seo/run-cycle
+# were removed 2026-09-11, with get_priority_urls, the URL list only they used.
+# None of the three had an auth gate: an anonymous POST reached ping_indexnow
+# and submitted URLs to IndexNow under our key. Verified live before removal: a
+# malformed JSON body got the handler's own 400, where the gated
+# /api/v1/admin/indexnow answers the same body with 401. Nothing called them
+# (Railway: no requests in 7 days besides that probe; no reference in the
+# backend, frontend or MCP repos). routes/indexnow.py is the submit path:
+# admin-gated, and run every 6h by .github/workflows/indexnow.yml.
 
 
 @seo_agent_bp.route('/api/seo/content-ideas', methods=['GET'])
@@ -404,49 +346,12 @@ def backlink_opportunities():
     })
 
 
-@seo_agent_bp.route('/api/seo/run-cycle', methods=['POST'])
-def run_seo_cycle():
-    """Run a full SEO optimization cycle"""
-    results = {
-        "timestamp": datetime.now().isoformat(),
-        "actions": []
-    }
-    
-    urls = get_priority_urls()
-    indexnow_result = ping_indexnow(urls[:50])
-    results["actions"].append({
-        "action": "indexnow_ping",
-        "urls_submitted": len(urls[:50]),
-        "result": indexnow_result
-    })
-    
-    content_ideas = generate_seo_content_ideas()
-    results["actions"].append({
-        "action": "content_ideas_generated",
-        "count": len(content_ideas)
-    })
-    
-    ai_stats = get_ai_citation_stats()
-    results["actions"].append({
-        "action": "ai_citations_tracked",
-        "total": ai_stats.get("total_ai_citations", 0)
-    })
-    
-    results["success"] = True
-    results["summary"] = f"SEO cycle complete: {len(urls[:50])} URLs pinged, {len(content_ideas)} content ideas, {ai_stats.get('total_ai_citations', 0)} AI citations"
-    
-    return jsonify(results)
-
-
 def register_seo_agent(app):
     """Register SEO agent with Flask app"""
     init_seo_tables()
     app.register_blueprint(seo_agent_bp)
     print("🔍 SEO Agent registered:")
     print("   GET  /api/seo/status - SEO metrics")
-    print("   POST /api/seo/indexnow/ping - Ping search engines")
-    print("   POST /api/seo/indexnow/ping-all - Ping all priority URLs")
     print("   GET  /api/seo/content-ideas - Backlink content ideas")
     print("   GET  /api/seo/ai-citations - AI citation tracking")
     print("   GET  /api/seo/backlink-opportunities - Link opportunities")
-    print("   POST /api/seo/run-cycle - Run full SEO cycle")

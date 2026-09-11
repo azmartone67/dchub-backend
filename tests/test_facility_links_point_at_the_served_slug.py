@@ -572,23 +572,6 @@ def test_landing_pages_link_facility_profiles_at_their_served_slug(monkeypatch):
         f"unexpected {sorted(set(found) - LANDING_TARGETS)}")
 
 
-# ── 6. IndexNow priority URLs (seo_agent) ───────────────────────────────────
-def test_indexnow_priority_urls_name_the_served_slug(monkeypatch):
-    sa = _load("seo_agent.py", "get_priority_urls")
-
-    def answer(_table, sql):
-        return [FROZEN, UNFROZEN, NO_SLUG] if "updated_at" in sql else []
-    db = _DB(answer)
-    monkeypatch.setattr(sa, "get_db", db.connect)
-    urls = sa.get_priority_urls()
-    facility_urls = [u for u in urls
-                     if re.match(r"https://dchub\.cloud/facilit(y|ies)/", u)]
-    assert sorted(facility_urls) == sorted([f"{SITE}/facilities/{SERVED}",
-                                            f"{SITE}/facilities/{UNFROZEN_SLUG}"]), (
-        f"IndexNow would be handed {facility_urls}")
-    assert db.opened and all(c.closed for c in db.opened)
-
-
 # ── 7. /facilities/in/<country> + /facilities/in/us/<state>: the geography hub ──
 # The hub's listing queries keep only rows with duplicate_of_id IS NULL, so a
 # twin never lists itself there. Its 301s are a listed row whose frozen slug a

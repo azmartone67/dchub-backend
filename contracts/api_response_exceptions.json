@@ -66,6 +66,25 @@
       ],
       "reason": "'recorded_id' was a PHANTOM key: only the SHADOWED email_engagement.resend_webhook returned it. The live handler (resend_webhook.resend_webhook) has only ever returned {ok:true}, so no caller could observe recorded_id. Removed with the shadowed blueprint.",
       "added": "2026-08-28"
+    },
+    {
+      "endpoint": "POST /api/seo/indexnow/ping-all",
+      "keys": [
+        "priority_urls"
+      ],
+      "reason": "Removed 2026-09-11 (seo_agent.py): the route had no auth gate, so any anonymous caller could make it submit URLs to IndexNow under our key. Nothing read its response: Railway counted no requests in the 7 days before removal, and no file in dchub-backend, dchub-frontend or dchub-mcp-server names the path. Submits go through the admin-gated POST /api/v1/admin/indexnow.",
+      "added": "2026-09-11"
+    },
+    {
+      "endpoint": "POST /api/seo/run-cycle",
+      "keys": [
+        "actions",
+        "success",
+        "summary",
+        "timestamp"
+      ],
+      "reason": "Removed 2026-09-11 (seo_agent.py) with POST /api/seo/indexnow/ping-all: the same ungated IndexNow submit, bundled with two reads. No requests in the 7 days before removal (Railway), and no file in the three repos names the path. Both reads are still served on their own, at GET /api/seo/content-ideas and GET /api/seo/ai-citations.",
+      "added": "2026-09-11"
     }
   ]
 }

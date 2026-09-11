@@ -496,34 +496,150 @@ def test_indexnow_endpoint_public_read_stays_public():
     assert _status(rv) == 200 and rv != ("__PAST__",)
 
 
-def test_no_second_ungated_indexnow_admin_route():
-    """Any /api/v1/admin/indexnow* handler in routes/ must carry a gate.
+# ── every route that can reach IndexNow decides auth first (2026-09-11) ──
+# The check this replaces keyed on the PATH (/admin/indexnow) and walked
+# routes/ only. seo_agent.py, a repo-root module, served POST
+# /api/seo/indexnow/ping, /ping-all and /run-cycle with no gate, each calling
+# ping_indexnow: an anonymous POST submitted URLs under our key (verified live
+# 2026-09-11: a malformed body got the handler's own 400, where the gated
+# /api/v1/admin/indexnow answers 401). Neither the path nor the directory
+# matched, so nothing looked. This keys on the submit itself, over both
+# directories the route surface lives in.
 
-    This is the guard the original bug needed: indexnow_route.indexnow_submit
-    was a route decorator on an admin path with no gate call anywhere in the
-    body, and nothing objected for two months."""
-    offenders = []
-    for path in sorted((_ROOT / "routes").glob("*.py")):
+_INDEXNOW_SINKS = frozenset({"submit_to_indexnow", "ping_indexnow",
+                             "ping_new_facilities"})
+_INDEXNOW_GATES = frozenset({"require_internal_or_admin", "_admin_ok"})
+# A decorator with one of these names counts as a gate here. Whether it fails
+# CLOSED is tests/test_admin_gate_fail_closed.py's ratchet (marketing_engine's
+# _require_admin is on it), not this test's.
+_INDEXNOW_GATE_DECORATORS = frozenset({"require_internal_or_admin",
+                                       "_require_admin"})
+_ROUTE_DECORATORS = frozenset({"route", "get", "post", "put", "patch", "delete"})
+
+# Route handlers that reach IndexNow with no gate: known, and keyed by the exact
+# handler so a new one is never exempt. An entry that stops being an offender
+# fails the test too, so the fix deletes its line and this set only shrinks.
+_KNOWN_UNGATED_INDEXNOW_REACH = frozenset({
+    # GET|POST /api/cron/daily starts a thread that calls submit_to_indexnow
+    # (and posts to LinkedIn). Railway counted 14 calls in the 7 days to
+    # 2026-09-11, all 2xx, from a caller whose credential nobody has checked,
+    # so gating it without that caller could stop the daily job.
+    "main.py::daily_cron",
+})
+
+
+def _call_name(call):
+    f = call.func
+    return f.id if isinstance(f, ast.Name) else getattr(f, "attr", None)
+
+
+def _route_paths(fn):
+    return [d.args[0].value for d in fn.decorator_list
+            if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+            and d.func.attr in _ROUTE_DECORATORS and d.args
+            and isinstance(d.args[0], ast.Constant)
+            and isinstance(d.args[0].value, str)
+            and d.args[0].value.startswith("/")]
+
+
+def _reaches_indexnow(node):
+    """A call to an IndexNow submitter, or an IndexNow URL, anywhere under
+    `node`. Nested defs count: a thread the handler starts is still reached."""
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call) and _call_name(n) in _INDEXNOW_SINKS:
+            return True
+        if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and n.value.startswith("http") and "indexnow" in n.value.lower()):
+            return True
+    return False
+
+
+def _gate_decides_first(fn):
+    """True when auth is decided before anything can reach IndexNow: a gate
+    decorator, or a top-level `if` that answers 401/403 when a gate says no
+    (`not gate(...)`, or `not x` for `x = gate(...)`), ahead of the first
+    statement that reaches a submitter. A gate that runs after the submit, one
+    whose answer is ignored or inverted, and one that only a comment or
+    docstring names, all leave the handler ungated."""
+    for d in fn.decorator_list:
+        node = d.func if isinstance(d, ast.Call) else d
+        if (getattr(node, "id", None) or getattr(node, "attr", None)) \
+                in _INDEXNOW_GATE_DECORATORS:
+            return True
+    bound = set()
+    for stmt in fn.body:
+        if (isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call)
+                and _call_name(stmt.value) in _INDEXNOW_GATES):
+            bound.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+        if isinstance(stmt, ast.If):
+            says_no = any(
+                isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not)
+                and ((isinstance(n.operand, ast.Call)
+                      and _call_name(n.operand) in _INDEXNOW_GATES)
+                     or (isinstance(n.operand, ast.Name) and n.operand.id in bound))
+                for n in ast.walk(stmt.test))
+            refuses = any(
+                isinstance(r, ast.Return) and any(
+                    isinstance(k, ast.Constant) and k.value in (401, 403)
+                    for k in ast.walk(r))
+                for s in stmt.body for r in ast.walk(s))
+            if says_no and refuses:
+                return True
+        if _reaches_indexnow(stmt):
+            return False
+    return False
+
+
+def _indexnow_reach():
+    """({"<file>::<handler>": gated}, files parsed) for every route handler in
+    a repo-root module or routes/ that can reach IndexNow."""
+    reach, parsed = {}, set()
+    for path in (sorted(_ROOT.glob("*.py"))
+                 + sorted((_ROOT / "routes").glob("*.py"))):
+        src = path.read_text(encoding="utf-8")
+        # A module that never spells a submitter or the service cannot call one.
+        if "indexnow" not in src.lower() \
+                and not any(s in src for s in _INDEXNOW_SINKS):
+            continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = ast.parse(src)
         except SyntaxError:
             continue
-        lines = path.read_text(encoding="utf-8").splitlines()
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        rel = path.relative_to(_ROOT).as_posix()
+        parsed.add(rel)
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            routes = [d.args[0].value for d in node.decorator_list
-                      if isinstance(d, ast.Call) and d.args
-                      and isinstance(d.args[0], ast.Constant)
-                      and isinstance(d.args[0].value, str)
-                      and getattr(d.func, "attr", "") == "route"]
-            if not any("/admin/indexnow" in r for r in routes):
-                continue
-            body = "\n".join(lines[node.lineno - 1:node.end_lineno])
-            if not ("_admin_ok(" in body
-                    or "require_internal_or_admin(" in body):
-                offenders.append(f"{path.name}::{node.name} {routes}")
-    assert not offenders, f"ungated IndexNow admin route(s): {offenders}"
+            paths = _route_paths(fn)
+            if paths and (any("indexnow" in p.lower() for p in paths)
+                          or _reaches_indexnow(fn)):
+                key = f"{rel}::{fn.name}"
+                reach[key] = reach.get(key, True) and _gate_decides_first(fn)
+    return reach, parsed
+
+
+def test_every_route_that_reaches_indexnow_decides_auth_first():
+    """No route handler in a repo-root module or routes/ may reach an IndexNow
+    submitter unless a gate has answered 401/403 first."""
+    reach, parsed = _indexnow_reach()
+    # A scan that read nothing, or a detector that found nothing, is green about
+    # nothing. The files this exists for must have been read, and the routes it
+    # judges must be found and judged as they are written.
+    assert {"seo_agent.py", "main.py", "routes/indexnow.py"} <= parsed, \
+        sorted(parsed)
+    assert reach.get("routes/indexnow.py::indexnow_endpoint") is True, reach
+    assert reach.get("routes/marketing_engine.py::auto_generate") is True, reach
+
+    offenders = {k for k, gated in reach.items() if not gated}
+    new = sorted(offenders - _KNOWN_UNGATED_INDEXNOW_REACH)
+    assert not new, (
+        f"route handler(s) reach IndexNow with no gate deciding first: {new}. "
+        "Answer 401 on `not internal_auth.require_internal_or_admin(request)` "
+        "before anything submits, or remove the route.")
+    stale = sorted(_KNOWN_UNGATED_INDEXNOW_REACH - offenders)
+    assert not stale, (
+        f"{stale} no longer reach IndexNow ungated: delete them from "
+        "_KNOWN_UNGATED_INDEXNOW_REACH in the same change.")
 
 
 def test_indexnow_twin_module_stays_deleted():
