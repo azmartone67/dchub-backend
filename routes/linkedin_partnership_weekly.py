@@ -343,6 +343,7 @@ def _ensure_drafts_table():
 _ensure_drafts_table()
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:831 — review and remove one
 @linkedin_partnership_bp.route("/run", methods=["GET", "POST"])
 def run():
     """Cron-callable. Generates a DRAFT for the current ISO-week's partnership
@@ -397,7 +398,7 @@ def run():
             cur.execute("""
                 INSERT INTO linkedin_partnership_drafts
                   (iso_year, iso_week, track_slug, headline, body, url, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (iso_year, iso_week, track["slug"], track["headline"],
                   track["body"], track["url"],
@@ -440,6 +441,7 @@ def run():
     except Exception as e:
         return jsonify({"error": f"{type(e).__name__}: {str(e)[:160]}"}), 500
 
+# AUTO-REPAIR: duplicate route '/drafts' also in routes/partnership_press_template.py:367 — review and remove one
 
 @linkedin_partnership_bp.route("/drafts", methods=["GET"])
 def list_drafts():
@@ -579,6 +581,7 @@ def reject_draft(draft_id):
             return jsonify({"ok": True, "deleted_id": int(r[0]), "track": r[1]}), 200
     except Exception as e:
         return jsonify({"error": str(e)[:140]}), 500
+# AUTO-REPAIR: duplicate route '/status' also in ai_agent.py:357 — review and remove one
 
 
 @linkedin_partnership_bp.route("/status", methods=["GET"])
@@ -609,6 +612,7 @@ def status():
             } for r in cur.fetchall()]
     except Exception:
         out["recent"] = []
+# AUTO-REPAIR: duplicate route '/preview' also in routes/partnership_press_template.py:254 — review and remove one
     return jsonify(out), 200
 
 

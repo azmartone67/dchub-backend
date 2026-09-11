@@ -128,9 +128,9 @@ def fc(monkeypatch):
     raw.execute("CREATE TABLE users (email TEXT PRIMARY KEY, plan TEXT)")
     for email, plan_at_tag, current in LIVE_COHORT:
         raw.execute("INSERT INTO founding_customers (email, plan_at_tag, "
-                    "contact_status) VALUES (?, ?, 'auto-tagged')",
+                    "contact_status) VALUES (?, ?, 'auto-tagged') ON CONFLICT DO NOTHING",
                     (email, plan_at_tag))
-        raw.execute("INSERT INTO users (email, plan) VALUES (?, ?)",
+        raw.execute("INSERT INTO users (email, plan) VALUES (?, ?) ON CONFLICT DO NOTHING",
                     (email, current))
     raw.commit()
 
@@ -183,7 +183,7 @@ def test_a_founding_customer_does_move_the_counter(fc):
     """The counterweight: the gate is not simply refusing everyone."""
     before = fc.founding_status()["claimed"]
     fc._get_db()._raw.execute(
-        "INSERT INTO users (email, plan) VALUES ('new-f@x.com', 'founding')")
+        "INSERT INTO users (email, plan) VALUES ('new-f@x.com', 'founding') ON CONFLICT DO NOTHING")
     res = fc.auto_tag_if_under_cap(email="new-f@x.com", plan="founding")
     assert res["tagged"] is True, res
     assert res["position"] == before + 1
@@ -197,7 +197,7 @@ def test_the_cap_gate_counts_the_same_population_as_the_counter(fc,
     monkeypatch.setattr(fc, "FOUNDING_CAP", SKU_HOLDERS)
     assert fc.founding_status()["program_active"] is False
     fc._get_db()._raw.execute(
-        "INSERT INTO users (email, plan) VALUES ('late@x.com', 'founding')")
+        "INSERT INTO users (email, plan) VALUES ('late@x.com', 'founding') ON CONFLICT DO NOTHING")
     res = fc.auto_tag_if_under_cap(email="late@x.com", plan="founding")
     assert res["tagged"] is False
     assert res["reason"].startswith("cap_reached (7/7)"), res

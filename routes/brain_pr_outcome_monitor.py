@@ -357,7 +357,7 @@ def _upsert_pr_outcome(row: dict) -> str:
                      sentinel_before_grade, sentinel_after_grade,
                      outcome, regression_details, files_changed,
                      brain_authored, learned_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING)
                    ON CONFLICT (pr_number) DO NOTHING""",
                 (pr_number, row.get("pr_url"), row.get("pr_title"),
                  row.get("branch"), row.get("merged_at"),
