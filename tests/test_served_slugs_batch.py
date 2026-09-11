@@ -22,8 +22,8 @@ WHAT THIS FILE PINS
      give the same answer from the same rows — and it is the answer written in
      EXPECTED, so the two walks cannot agree on a wrong one and pass.
   2. ONE COPY OF THE RULES. Only _twin_redirect_target reads slug_rows or asks
-     _same_physical_site, across the route and all five emitters, and each
-     emitter resolves its list in ONE served_slugs call that no loop repeats.
+     _same_physical_site, across the route and every emitter in EMITTERS, and
+     each resolves its list in ONE served_slugs call that no loop repeats.
   3. THE STATEMENTS ARE THE PAGE'S. Both sides run against a recording
      connection and are compared lookup by lookup: table, columns, key, ORDER
      BY. The column list is load-bearing — `facilities` has no is_duplicate
@@ -325,6 +325,7 @@ def test_a_pointer_is_keyed_the_way_the_keeper_lookup_binds_it(dup, key):
 # ── 2. one copy of the rules ────────────────────────────────────────────────
 EMITTERS = {
     "carrier_facility_ingestion.py": "_facility_slugs",
+    "facilities_hub.py": "_render_listing",
     "routes/dcpi.py": "_dcpi_facility_list_html",
     "routes/market_deep_dive.py": "_market_facility_links_html",
     "routes/mcp_tier1_tools.py": "_facility_page_urls",

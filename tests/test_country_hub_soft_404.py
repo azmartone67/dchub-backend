@@ -55,12 +55,21 @@ class _Conn:
 
 
 def _client(monkeypatch, rows):
+    import sys
+    import types
+
     from flask import Flask
 
     import facilities_hub as fh
 
     fh._CACHE.clear()
     monkeypatch.setattr(fh, "_conn", lambda: _Conn(rows))
+    # A rendered listing resolves its links through
+    # facility_profile_page.served_slugs, which asks main.get_read_db for a
+    # connection. There is no database here, and without a stub that render
+    # would import the real main.py.
+    monkeypatch.setitem(sys.modules, "main", types.SimpleNamespace(
+        get_read_db=lambda: None, get_db=lambda: None))
     app = Flask(__name__)
     app.register_blueprint(fh.facilities_hub_bp)
     return app.test_client(), fh

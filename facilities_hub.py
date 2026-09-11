@@ -11,9 +11,11 @@ Geography hierarchy — path-based (robots.txt disallows ?params):
   /facilities/in/us/<state>            → US per-state pages (r-seo-0801)
   /facilities/in/us/<state>/page/<n>   → state pagination
 
-Links are the row's STORED discovered_facilities.canonical_slug (the frozen,
-set-once URL the live page actually serves), falling back to the one composer
-— routes.facility_slug_freeze — only for rows the freeze has not reached yet.
+Links start from the row's STORED discovered_facilities.canonical_slug (the
+frozen, set-once slug), falling back to the one composer —
+routes.facility_slug_freeze — only for rows the freeze has not reached yet.
+Each rendered page then resolves its slice past the profile page's own 301s in
+one batch (routes.facility_profile_page.served_slugs; see _render_listing).
 Cached in-process (1h) to spare the 1-replica backend from crawler hammering.
 
 r-seo-0801 (SEO diagnosis 2026-08-01): these pages get real Google clicks but
@@ -436,12 +438,29 @@ def _pager_html(base, page, pages):
 
 def _render_listing(ck, facs, page, base, place_name, crumbs, extra_block=""):
     """Grouped facility listing page (country + US state views).
-    crumbs = [(name, url), ...] ending with this page's own entry."""
+    crumbs = [(name, url), ...] ending with this page's own entry.
+
+    ★ r-served-slug-hub (2026-09-11): the stored slug is still the ROW's slug.
+      The listing queries keep only rows with duplicate_of_id IS NULL, but a
+      pointed dedup twin can wear the same frozen slug and win the profile
+      page's lookup, and the page answers that slug with a 301 to the twin's
+      keeper (facility_profile_page._twin_redirect_target). Measured live on
+      the Madrid hub, redirects not followed:
+          /facilities/equinix-equinix-md6-343acdf7
+            301 -> /facilities/equinix-inc-equinix-md6-6de05ce8
+      So the slugs this page renders — its own slice, not the whole country —
+      are resolved past the page's own redirects in ONE batch
+      (facility_profile_page.served_slugs), never per row, and the <li> links
+      and the ItemList both read the resolved slice."""
+    from routes.facility_profile_page import served_slugs
     total = len(facs)
     pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
     page = min(page, pages)
     start = (page - 1) * PAGE_SIZE
     chunk = facs[start:start + PAGE_SIZE]
+    served = served_slugs(slug for _grp, slug, _name, _loc in chunk)
+    chunk = [(grp, served.get(slug) or slug, name, loc)
+             for grp, slug, name, loc in chunk]
 
     # Group this page's slice by market heading (validated interlinks).
     out, cur_grp = [], None

@@ -57,12 +57,14 @@ import ast
 import functools
 import html as _html
 import importlib.util
+import json
 import pathlib
 import re
 import sys
 from contextlib import contextmanager
 
 import psycopg2.extras  # noqa: F401 — the MCP routes build RealDictCursor cursors
+import pytest
 from flask import Flask
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -585,3 +587,75 @@ def test_indexnow_priority_urls_name_the_served_slug(monkeypatch):
                                             f"{SITE}/facilities/{UNFROZEN_SLUG}"]), (
         f"IndexNow would be handed {facility_urls}")
     assert db.opened and all(c.closed for c in db.opened)
+
+
+# ── 7. /facilities/in/<country> + /facilities/in/us/<state>: the geography hub ──
+# The hub's listing queries keep only rows with duplicate_of_id IS NULL, so a
+# twin never lists itself there. Its 301s are a listed row whose frozen slug a
+# pointed twin ALSO wears, winning the page's lookup: measured 2026-09-11, the
+# Madrid hub lists "Equinix MD6" at /facilities/equinix-equinix-md6-343acdf7,
+# which 301s to /facilities/equinix-inc-equinix-md6-6de05ce8. HUB_ROW is the
+# listed row; the world holds TWIN_ROW, the row the page fetches for that slug.
+HUB_ROW = dict(TWIN_ROW, id=1109, duplicate_of_id=None)
+HUB_LISTED = [FROZEN, UNFROZEN, NO_SLUG, HUB_ROW]
+
+
+def test_the_hub_fixture_is_a_listed_row_whose_page_redirects():
+    """Control. HUB_ROW carries no pointer, so the hub's WHERE keeps it and it
+    cannot redirect by itself; the 301 comes only from the row the page fetches
+    for its slug. Were either false, the hub test below would prove nothing."""
+    import routes.facility_profile_page as fpp
+    world = _world()
+    assert HUB_ROW["duplicate_of_id"] is None and HUB_ROW["canonical_slug"] == TWIN
+    fetched = world.page_row(TWIN)
+    assert fetched["id"] == TWIN_ROW["id"] != HUB_ROW["id"]
+    assert fpp._twin_redirect_target(HUB_ROW, TWIN, keeper_row=world.keeper) is None
+    assert fpp._twin_redirect_target(fetched, TWIN, keeper_row=world.keeper) == KEEPER
+
+
+def _hub_client(monkeypatch, rows):
+    hub = _load("facilities_hub.py", "_render_listing")
+
+    def answer(table, _sql):
+        if table == "information_schema.columns":    # _canon_col: column present
+            return [{"1": 1}]
+        return list(rows) if table == "discovered_facilities" else []
+    db = _DB(answer)
+    monkeypatch.setattr(hub, "_conn", db.connect)
+    monkeypatch.setattr(hub, "_CACHE", {})
+    # the market-group headings read another module's cached slug set
+    monkeypatch.setattr(hub, "_group_links", lambda _grp: (None, None))
+    app = Flask(__name__)
+    app.register_blueprint(hub.facilities_hub_bp)
+    return app.test_client(), db
+
+
+@pytest.mark.parametrize("path", ["/facilities/in/us", "/facilities/in/us/virginia"],
+                         ids=["country", "us-state"])
+def test_geography_hub_links_the_served_slug(monkeypatch, path):
+    world = _served_world(monkeypatch)
+    client, db = _hub_client(monkeypatch, HUB_LISTED)
+    r = client.get(path)
+    assert r.status_code == 200, f"{path} -> {r.status_code}"
+    body = r.get_data(as_text=True)
+    assert "discovered_facilities" in {t for t, _cols in db.queries}, (
+        "the hub never ran its listing query — nothing here was exercised")
+    hrefs = [h.replace(SITE, "", 1) for h in _facility_hrefs(body)]
+    assert "/facilities/" + TWIN not in hrefs, (
+        f"{path} links /facilities/{TWIN}, a listed row's frozen slug that a "
+        f"pointed twin also wears — live that page 301s to /facilities/{KEEPER}. "
+        "The page's links were not resolved past its own redirects.")
+    assert sorted(hrefs) == sorted(["/facilities/" + SERVED,
+                                    "/facilities/" + UNFROZEN_SLUG,
+                                    "/facilities/" + KEEPER]), (
+        f"{path} should link the frozen row at its stored slug, the unfrozen row "
+        "at its build and the row on a twin's slug at the twin's keeper, and skip "
+        f"the row with no slug; got {hrefs}")
+    ld = [json.loads(m) for m in re.findall(
+        r'<script type="application/ld\+json">(.*?)</script>', body, re.S)]
+    listed = [e["url"].replace(SITE, "", 1) for block in ld
+              if block.get("@type") == "ItemList" for e in block["itemListElement"]]
+    assert sorted(listed) == sorted(hrefs), (
+        f"{path}: the ItemList names {listed} while the page links {hrefs}")
+    assert db.opened and all(c.closed for c in db.opened), "the hub leaks its connection"
+    _resolved_once(world, path)
