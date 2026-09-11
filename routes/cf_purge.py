@@ -18,12 +18,21 @@ import os
 import logging
 from flask import Blueprint, request, jsonify
 
+from internal_auth import require_internal_or_admin
+
 logger = logging.getLogger(__name__)
 cf_purge_bp = Blueprint("cf_purge", __name__)
 
 _CF_API_TOKEN  = (os.environ.get("CLOUDFLARE_API_TOKEN") or "").strip()
 _CF_ZONE_ID    = (os.environ.get("CLOUDFLARE_ZONE_ID") or "").strip()
-_ADMIN_KEY     = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+# NOTE: the admin gate on POST /api/v1/cf/purge is NOT an import-time snapshot of
+# DCHUB_ADMIN_KEY. That shape (`if _ADMIN_KEY and provided != _ADMIN_KEY`) fails
+# OPEN: when the env var is absent at import — which is exactly what a
+# misconfigured process looks like (dchub-worker on 2026-08-08) — the guard
+# disables itself and any caller can purge caller-supplied URLs. The gate is
+# require_internal_or_admin(), which re-reads env PER REQUEST and returns False
+# when no secret is configured (fail-closed). Pinned by
+# tests/test_cf_purge_admin_fail_closed.py and tests/test_admin_gate_fail_closed.py.
 
 
 def _purge_urls(urls: list[str]) -> dict:
@@ -97,9 +106,14 @@ def purge_endpoint():
 
     POST body: { "urls": ["https://dchub.cloud/markets", ...] }
     OR        : { "url":  "https://dchub.cloud/markets" }
+
+    This endpoint takes CALLER-SUPPLIED urls, so an open version is an
+    arbitrary-URL zone-eviction primitive (cheap origin-load amplification) —
+    the reason it, unlike the derived-list one-shots below, is admin-gated.
+    require_internal_or_admin fails CLOSED: no configured secret -> 401, so a
+    process that lost DCHUB_ADMIN_KEY refuses instead of opening.
     """
-    provided = (request.headers.get("X-Admin-Key") or "").strip()
-    if _ADMIN_KEY and provided != _ADMIN_KEY:
+    if not require_internal_or_admin(request):
         return jsonify(error="unauthorized"), 401
 
     body = request.get_json(silent=True) or {}

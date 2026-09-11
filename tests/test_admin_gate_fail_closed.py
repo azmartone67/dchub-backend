@@ -69,7 +69,10 @@ _BASELINE = {
     "brain_narrative.py": 1,
     "brain_pr_opener.py": 1,
     "broadcast.py": 1,
-    "cf_purge.py": 1,
+    # cf_purge.py: RESOLVED 2026-09-11 (#PENDING) — POST /api/v1/cf/purge now
+    # gates on internal_auth.require_internal_or_admin (fail-closed, per-request
+    # env read) instead of the self-disabling `if _ADMIN_KEY and provided !=
+    # _ADMIN_KEY`. Removed from the baseline so it can never come back at 1.
     "citation_hunter.py": 1,
     "competitor_intel.py": 1,
     "data_freshness_radar.py": 1,
