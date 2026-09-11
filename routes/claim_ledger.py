@@ -414,7 +414,7 @@ def register_claim(kind: str, subject: str, statement: str,
             # the clause from the same string as the INSERT, and a fragment
             # split hides it (the brain_llm_usage note in scripts/regression_lint.py).
             cur.execute(
-                "INSERT INTO brain_predictions_log (source_layer, chain_title, prediction, kind, subject, statement, regime, surfaces, expected_metric, expected_value, horizon_hours, shipped_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END) ON CONFLICT DO NOTHING RETURNING id",  # noqa: E501
+                "INSERT INTO brain_predictions_log (source_layer, chain_title, prediction, kind, subject, statement, regime, surfaces, expected_metric, expected_value, horizon_hours, shipped_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() ON CONFLICT DO NOTHING ELSE NULL END) ON CONFLICT DO NOTHING RETURNING id",  # noqa: E501
                 (SOURCE_LAYER, chain_title, statement[:1000], kind, subject,
                  statement, json.dumps(regime, default=str), surfaces, metric,
                  value, int(horizon_hours), bool(shipped)))
