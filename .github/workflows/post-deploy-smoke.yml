@@ -75,6 +75,20 @@ jobs:
           path: report.json
           if-no-files-found: ignore
 
+      # ★ 2026-09-11 — THE PAID SEAT. Every check above looks from the anonymous
+      # or the admin seat, and three defects reached customers past all of them
+      # in one morning: a Pro render of a market brief served out of the edge
+      # cache to logged-out visitors, the anonymous paywall served to a Pro user,
+      # and a Pro "Download PDF" that failed on every click. This arrives through
+      # the public edge with the DCHUB_API_KEY seat. BLIND verdicts (no key, key
+      # not PRO+) print warnings and do not fail the job; a RED does. Never after
+      # a failed deploy wait, which would judge the old build as this commit.
+      - name: Pro-seat market brief smoke (page, PDF, cross-tier cache)
+        if: always() && steps.deploy_wait.outcome != 'failure'
+        env:
+          DCHUB_API_KEY: ${{ secrets.DCHUB_API_KEY }}
+        run: python3 scripts/smoke_pro_seat_brief.py --base https://dchub.cloud --slug dallas
+
       # DCHUB-REGRESSION-2026-04-28: extra checks for the 2026-04-28 fixes
       # (press-release daily brief, Explorer, MCP discovery, coord-parser,
       #  right-panel CSS, Worker version, pr_queue integrity).
