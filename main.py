@@ -15934,7 +15934,8 @@ def stripe_webhook():
             # (Phase DD+ play 3) both forward their identifier via
             # Stripe's `client_reference_id`:
             #   DCM-XXXX  → flip API key tier free → developer
-            #   tu-XXXX   → credit N one-time call credits for today
+            #   tu-XXXX   → credit N one-time call credits that never expire
+            #               (minting retired 2026-09-11; minted tokens still pay)
             # Wrapped in try/except so a redemption error never breaks
             # subscription creation / welcome email / admin alerts.
             try:
