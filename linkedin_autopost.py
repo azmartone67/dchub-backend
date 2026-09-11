@@ -148,7 +148,7 @@ def save_token(access_token, expires_in, refresh_token=None, refresh_expires_in=
         cur.execute('DELETE FROM linkedin_tokens WHERE token_type = %s', ('organization',))
         cur.execute('''
             INSERT INTO linkedin_tokens (token_type, access_token, refresh_token, expires_at, refresh_expires_at, scopes)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         ''', ('organization', access_token, refresh_token, expires_at, refresh_expires_at, scopes))
         conn.commit()
         logger.info(f"LinkedIn token saved, expires at {expires_at}")
@@ -379,7 +379,7 @@ def log_post(post_type, text, article_url, result):
             INSERT INTO linkedin_posts
                 (post_urn, post_id, post_type, content, content_text,
                  article_url, status, published_at, linkedin_response, media_topic_tags)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) ON CONFLICT DO NOTHING
         ''', (
             post_urn,
             post_urn,
@@ -536,7 +536,7 @@ def queue_post(content_text, article_url=None, post_type='article',
     try:
         cur.execute('''
             INSERT INTO linkedin_post_queue (content_text, article_url, post_type, priority, scheduled_for)
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             RETURNING id
         ''', (content_text, article_url, post_type, priority, scheduled_for))
         post_id = cur.fetchone()[0]
