@@ -109,9 +109,33 @@ def test_purge_batches_within_the_cf_thirty_file_limit(monkeypatch):
 
 
 def test_admin_gated_purge_still_requires_the_key():
-    """Adding a public sibling must not have relaxed the arbitrary-URL route."""
+    """Adding a public sibling must not have relaxed the arbitrary-URL route.
+
+    2026-09-11: the gate moved from an import-time `X-Admin-Key` snapshot compare
+    (`if _ADMIN_KEY and provided != _ADMIN_KEY`, which fails OPEN when the env var
+    is unset) to internal_auth.require_internal_or_admin (fail-closed). This test
+    used to assert the literal string "X-Admin-Key" was present in the handler —
+    a proxy for "is gated" that broke on the change that made the gate STRONGER,
+    because the header name now lives inside the helper. Assert the invariant
+    instead: the handler calls the fail-closed helper AND returns 401. The
+    unset/wrong/right-key behaviour is pinned by
+    tests/test_cf_purge_admin_fail_closed.py.
+    """
     fn = _fn("purge_endpoint")
-    src = ast.get_source_segment(SRC, fn) or ""
-    assert "X-Admin-Key" in src, (
-        "the caller-supplied-URL purge no longer checks X-Admin-Key"
+    calls = {
+        n.func.id for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert "require_internal_or_admin" in calls, (
+        "purge_endpoint no longer calls the fail-closed admin gate "
+        "require_internal_or_admin — the caller-supplied-URL route may be open"
+    )
+    returns_401 = any(
+        isinstance(c, ast.Constant) and c.value == 401
+        for r in ast.walk(fn)
+        if isinstance(r, ast.Return) and r.value is not None
+        for c in ast.walk(r.value)
+    )
+    assert returns_401, (
+        "purge_endpoint no longer returns 401 for an unauthorized caller"
     )
