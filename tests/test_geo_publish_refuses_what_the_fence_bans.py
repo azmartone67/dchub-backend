@@ -121,13 +121,15 @@ def test_the_lower_canon_wins(monkeypatch, fence, live):
     assert [o["claimed"] for o in pub.over_canon_claims("25,000+ facilities")] == [25000]
 
 
-def test_an_unusable_growth_json_gets_the_fences_own_fallback(monkeypatch):
-    """The fence bans >20,000 facilities when growth.json is unusable, and so
-    would every deploy — so the publisher must not add a page to that."""
+def test_an_unusable_growth_json_refuses_the_claim_even_with_live_canon(monkeypatch):
+    """Read but unusable, growth.json sends the fence to a fallback literal of
+    its own that the publisher does not copy — so what the fence will ban is
+    unknowable, and a live canon that would allow the figure must not."""
     monkeypatch.setattr(pub, "_fence_canon", lambda: {})
-    monkeypatch.setattr(pub, "_live_canon", lambda: {})
-    assert pub.claim_thresholds() == {"facilities": 20000, "deals": 3900}
-    assert [o["claimed"] for o in pub.over_canon_claims("21,500+ facilities")] == [21500]
+    monkeypatch.setattr(pub, "_live_canon", lambda: dict(LIVE))
+    assert pub.claim_thresholds() == {"facilities": None, "deals": None}
+    off = pub.over_canon_claims("21,500+ facilities")
+    assert [(o["claimed"], o["allowed"]) for o in off] == [(21500, None)]
 
 
 def test_no_readable_canon_refuses_any_claim_but_not_a_page_without_one(monkeypatch):

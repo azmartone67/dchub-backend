@@ -186,9 +186,10 @@ def _append_sitemap(slug: str):
 # pile; this refuses the page if a figure gets through anyway, whoever wrote it.
 #
 # ★ A MIRROR OF THE FENCE, NOT A SECOND RULE:
-#   · _FENCE_MAGNITUDE is MAGNITUDE_BANNED copied verbatim; _CANON_MARGIN and
-#     _FENCE_FALLBACK are CANON_MARGIN and CANON_FALLBACK. Change the fence
-#     first, then these.
+#   · _FENCE_MAGNITUDE is MAGNITUDE_BANNED copied verbatim and _CANON_MARGIN is
+#     CANON_MARGIN. Change the fence first, then these. The fence's
+#     CANON_FALLBACK literals are deliberately NOT copied: when growth.json is
+#     unusable, claim_thresholds() refuses the claim instead.
 #   · canon comes from data/growth.json on frontend main — the file the fence
 #     itself reads at deploy time — AND from live canonical_stats. The LOWER
 #     threshold wins, so a stale growth.json refuses the page here instead of
@@ -200,7 +201,6 @@ def _append_sitemap(slug: str):
 # the noun "data centers" ("29,000+ data centers"). Refusing one of those costs
 # a page; the fence missing it publishes the over-claim.
 _CANON_MARGIN = 1.05
-_FENCE_FALLBACK = {"facilities": 20000, "deals": 3900}
 _TAG = re.compile(r"<[^>]+>")
 
 _FENCE_MAGNITUDE = (
@@ -282,16 +282,20 @@ def _live_canon() -> dict:
 
 
 def claim_thresholds() -> dict:
-    """{kind: the highest figure allowed, or None when no canon could be read}."""
+    """{kind: the highest figure allowed, or None when a claim of that kind
+    cannot be checked and must be refused}."""
     fence, live = _fence_canon(), _live_canon()
     out = {}
     for key in ("facilities", "deals"):
-        limits = []
-        if fence is not None:
-            limits.append(int(fence[key] * _CANON_MARGIN) if fence.get(key)
-                          else _FENCE_FALLBACK[key])
-        if live.get(key):
-            limits.append(int(live[key] * _CANON_MARGIN))
+        if fence is not None and not fence.get(key):
+            # growth.json was read and cannot give this figure. The fence then
+            # judges against a literal floor of its own, which this module does
+            # not copy — a bare count in agent-facing Python is exactly what
+            # tests/test_canonical_counts_drift.py forbids. What the fence will
+            # ban is unknowable, so the claim is refused.
+            out[key] = None
+            continue
+        limits = [int(v * _CANON_MARGIN) for v in ((fence or {}).get(key), live.get(key)) if v]
         out[key] = min(limits) if limits else None
     return out
 
