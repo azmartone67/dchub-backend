@@ -621,6 +621,29 @@ jobs:
             echo "::error::the served-slug parity test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── seo_indexing_log: the write ping_indexnow makes, for real ────────
+      # seo_agent.ping_indexnow upserted on url into a table whose own DDL
+      # gives url no unique constraint, so Postgres refused every write and
+      # note_swallowed_write ate it (Railway, 2026-09-11). A fake cursor
+      # accepts any conflict target. tests/test_seo_indexing_log_write_sql.py
+      # builds the table with init_seo_tables and runs the real ping_indexnow
+      # against it, with the submit stubbed. Creates and drops its own schema.
+      - name: seo_indexing_log write against a real Postgres
+        env:
+          SEO_INDEXING_LOG_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_seo_indexing_log_write_sql.py -v --tb=short
+
+      - name: Prove the seo_indexing_log test actually RAN
+        env:
+          SEO_INDEXING_LOG_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_seo_indexing_log_write_sql.py \
+            -q -rs --tb=no > si.txt 2>&1 || { cat si.txt; exit 1; }
+          cat si.txt
+          if grep -qi "skipped" si.txt; then
+            echo "::error::the seo_indexing_log test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -630,14 +653,14 @@ jobs:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # out.txt, cc.txt, lp.txt, pk.txt, hp.txt, tu.txt and ss.txt are written by the seven
+          # out.txt, cc.txt, lp.txt, pk.txt, hp.txt, tu.txt, ss.txt and si.txt are written by the eight
           # prove-it-RAN steps above, each of which already fails the job on a
           # skip. N sums the SAME files those checks read, so the count and the
           # skip checks cannot disagree — a lane that ran but is not counted here
           # reports fewer tests than the job actually proved.
           # Same empty-vs-zero rule as unit-tests: present-but-unparseable => 0.
-          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ] || [ -f pk.txt ] || [ -f hp.txt ] || [ -f tu.txt ] || [ -f ss.txt ]; then
-            N=$(cat out.txt cc.txt lp.txt pk.txt hp.txt tu.txt ss.txt 2>/dev/null \
+          if [ -f out.txt ] || [ -f cc.txt ] || [ -f lp.txt ] || [ -f pk.txt ] || [ -f hp.txt ] || [ -f tu.txt ] || [ -f ss.txt ] || [ -f si.txt ]; then
+            N=$(cat out.txt cc.txt lp.txt pk.txt hp.txt tu.txt ss.txt si.txt 2>/dev/null \
                 | grep -oE '[0-9]+ (passed|failed)' \
                 | awk '{t+=$1} END{if(NR)print t; else print 0}')
           else

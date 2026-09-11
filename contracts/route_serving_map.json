@@ -14479,21 +14479,6 @@
     "saved_searches"
    ]
   },
-  "POST /api/seo/indexnow/ping": {
-   "modules": [
-    "seo_agent"
-   ]
-  },
-  "POST /api/seo/indexnow/ping-all": {
-   "modules": [
-    "seo_agent"
-   ]
-  },
-  "POST /api/seo/run-cycle": {
-   "modules": [
-    "seo_agent"
-   ]
-  },
   "POST /api/signup": {
    "modules": [
     "main"
