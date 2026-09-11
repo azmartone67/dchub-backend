@@ -652,7 +652,17 @@ def _facility_slugs(c, facility_ids):
     frozen row can be an alias that 301s, and /facility/<id> 301s for every
     row that has a slug. An id with no row, or a name that slugifies to
     nothing, maps to nothing rather than to a URL that cannot resolve.
+
+    ★ r-served-slug-batch (2026-09-11): that is the ROW's slug, and the page for
+    it can 301 onward — a dedup twin's page redirects to its keeper
+    (routes/facility_profile_page.py, _twin_redirect_target). Measured live,
+    HEAD without following redirects, over every URL this endpoint emitted for
+    ten carriers: 59 of 678 (8.7%) were 301s, integer and hex ids alike. So the
+    slugs go through served_slugs, which applies the page's own rules to the
+    whole list in a bounded number of statements (euNetworks alone is 351 URLs)
+    and hands back unchanged any slug it cannot resolve.
     """
+    from routes.facility_profile_page import served_slugs
     from routes.facility_slug_freeze import frozen_slug_for_row
 
     ids = {fid for fid in facility_ids if fid}
@@ -684,7 +694,8 @@ def _facility_slugs(c, facility_ids):
             {'canonical_slug': r[1], 'provider': r[2], 'name': r[3]})
         if slug:
             slugs[fid] = slug
-    return slugs
+    served = served_slugs(slugs.values())
+    return {fid: served.get(slug) or slug for fid, slug in slugs.items()}
 
 
 def register_carrier_routes(app, get_db):

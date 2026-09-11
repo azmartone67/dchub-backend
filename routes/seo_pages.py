@@ -548,8 +548,17 @@ def facility_page(id_or_slug: str):
         try: c.close()
         except Exception: pass
 
+    # r-served-slug-batch (2026-09-11): link the neighbours past the profile
+    # route's own twin 301s — one batch for the list, after this request's
+    # connection is closed, and never from inside the renderer.
+    _served = {}
+    if nearby:
+        from routes.facility_profile_page import served_slugs
+        from routes.facility_slug_freeze import frozen_slug_for_row
+        _served = served_slugs(
+            s for s in (frozen_slug_for_row(n) for n in nearby) if s)
     return Response(
-        _render_facility(row, nearby),
+        _render_facility(row, nearby, served=_served),
         mimetype="text/html",
         headers={
             "Cache-Control": "public, max-age=900, s-maxage=3600",
@@ -562,7 +571,7 @@ def facility_page(id_or_slug: str):
     )
 
 
-def _render_facility(f: dict, nearby: list) -> str:
+def _render_facility(f: dict, nearby: list, served=None) -> str:
     name      = f['name'] or 'Unnamed facility'
     operator  = f.get('provider') or 'Unknown operator'
     city      = f.get('city') or ''
@@ -629,12 +638,17 @@ def _render_facility(f: dict, nearby: list) -> str:
         # is SERVED at (stored canonical_slug; a live build only for an unfrozen
         # row). These were /facility/<id> links, which 301 for every row that
         # has a slug. A neighbour with no slug is named, not linked.
+        # r-served-slug-batch (2026-09-11): `served` carries each of those slugs
+        # past the profile route's own 301s (a dedup twin's page redirects to
+        # its keeper). facility_page resolves it once for the list.
         from routes.facility_slug_freeze import frozen_slug_for_row
         items = []
         for n in nearby:
             n_mw = _round(n.get('power_mw'), 1)
             mw_str = f" — {n_mw}MW" if n_mw else ""
             n_slug = frozen_slug_for_row(n)
+            if n_slug and served:
+                n_slug = served.get(n_slug) or n_slug
             n_label = (f'<a href="/facilities/{_esc_attr(n_slug)}">{_h(n["name"])}</a>'
                        if n_slug else _h(n["name"]))
             items.append(f'<li>{n_label} · {_h(n.get("provider") or "Unknown")}{_h(mw_str)}</li>')

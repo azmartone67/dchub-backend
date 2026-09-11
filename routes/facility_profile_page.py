@@ -1942,8 +1942,13 @@ def _same_physical_site(a, b, max_m=_SAME_SITE_METRES):
     return math.hypot(x, y) * 6371000.0 <= max_m
 
 
-def _twin_redirect_target(fac, slug):
-    """Frozen slug this request should 301 to, or None to render as before."""
+def _twin_redirect_target(fac, slug, keeper_row=None):
+    """Frozen slug this request should 301 to, or None to render as before.
+
+    keeper_row(duplicate_of_id) returns the keeper row or None. The page passes
+    nothing and gets _canonical_twin_row, one query per request; served_slugs
+    passes a lookup into the keepers it read for a whole list in one statement.
+    The rules below are the same code either way — there is no second copy."""
     slug = str(slug or "")
     frozen = str(fac.get("canonical_slug") or "").strip()
     # case A — alias of this row
@@ -1953,7 +1958,7 @@ def _twin_redirect_target(fac, slug):
     dup = fac.get("duplicate_of_id")
     if not dup:
         return None
-    keeper = _canonical_twin_row(dup)
+    keeper = (keeper_row or _canonical_twin_row)(dup)
     if not keeper:
         return None
     kslug = str(keeper.get("canonical_slug") or "").strip()
@@ -2036,6 +2041,299 @@ def resolve_final_slug(slug: str, max_hops: int = 3) -> str:
         seen.add(nxt)
         cur = nxt
     return start                          # longer than max_hops — don't guess
+
+
+# ── r-served-slug-batch (2026-09-11) ─────────────────────────────────────────
+# A ROW's frozen slug is not always the URL its page is served at. For a dedup
+# twin (one building under a provider-string variant, "Equinix, Inc." against
+# "Equinix") this route answers the twin's own slug with the case-B 301 to its
+# keeper, so every list that links facilities at frozen_slug_for_row links some
+# of them through a redirect. Measured live 2026-09-11 18:21Z, HEAD with
+# redirects NOT followed, on every distinct dchub_url that
+# /api/v1/carriers/<id>/facilities returned for ten carriers: 678 URLs, 619 200s
+# and 59 301s (8.7%), each one hop to a 200 — 30 on integer discovered ids and
+# 29 on hex `facilities` ids. The .json twin of every sampled 301 names the
+# requested slug as the fetched row's own, so the page matched a discovered
+# twin wearing that frozen slug exactly and 301'd on its pointer.
+#
+# resolve_final_slug already knows where each lands, but it spends several
+# statements per slug per hop — fine for the one 301 /facility/<id> issues, not
+# for a list: euNetworks alone emits 351 URLs behind a 15 s edge timeout.
+# served_slugs walks the same ladder for the whole list at once, one statement
+# per lookup per hop, and decides every hop with _twin_redirect_target itself.
+#
+# ★ The lookups MIRROR _fetch_facility_by_slug, _canonical_twin_row and
+#   resolve_alias statement for statement: same columns, same predicates, the
+#   same ORDER BY behind a DISTINCT ON. That includes the failure that decides
+#   legacy rows — `facilities` has no is_duplicate column live, so the page's
+#   exact-slug arm on it raises and the lookup falls through to the hash8 arms.
+#   Select fewer columns here and that arm starts SUCCEEDING, and the batch
+#   answers for a row the page never serves. tests/test_served_slugs_batch.py
+#   executes both sides and compares their statements;
+#   tests/test_served_slugs_sql_parity.py runs both against a real Postgres, in
+#   both schema shapes.
+# ★ One step is not taken: _resolve_legacy_slug, the fuzzy LIKE scan for a slug
+#   that matches no row at all. It is per slug by construction and exists for
+#   old INDEXED URLs; a slug built from a row the caller just read matches that
+#   row. Such a slug comes back unchanged — the link every caller emitted before.
+_BATCH_KEY = "_served_key"
+_INT_TEXT_RE = _re.compile(r"^\s*[+-]?\d+\s*$")
+
+
+def _rollback_quietly(conn):
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
+def _twin_key(dup):
+    """duplicate_of_id as _canonical_twin_row's `k.id = %s` binds it: an int as
+    itself, a digit string as the integer Postgres coerces it to, and anything
+    else (a hex legacy id) as None — the answer that lookup gives when the bind
+    raises."""
+    if isinstance(dup, bool):
+        return None
+    if isinstance(dup, int):
+        return dup
+    if isinstance(dup, str) and _INT_TEXT_RE.match(dup):
+        return int(dup)
+    return None
+
+
+def _canonical_slug_tables(conn, cur):
+    """The facility tables that have a canonical_slug column — the page's probe,
+    once for a whole batch instead of once per request."""
+    try:
+        cur.execute("SELECT table_name FROM information_schema.columns "
+                    "WHERE column_name = 'canonical_slug' "
+                    "AND table_name IN ('discovered_facilities', 'facilities')")
+        return {str(r[0]) for r in cur.fetchall()}
+    except Exception:
+        _rollback_quietly(conn)
+        return set()
+
+
+def _batch_page_rows(conn, cur, slugs, has_canon):
+    """{slug: the row _fetch_facility_by_slug returns for it}, for many slugs.
+
+    The page's four lookups in the page's order, each ONE statement for every
+    slug still unanswered; DISTINCT ON (key) over the page's own ORDER BY is its
+    LIMIT 1 per slug. Same columns except substation_band, which the page probes
+    and so can never make its lookup raise. A slug whose tail is not 8
+    characters is never looked up, exactly as there."""
+    from routes.facility_slug import hash_sql
+    tails = {}
+    for s in slugs:
+        parts = s.rsplit("-", 1)
+        if len(parts) == 2 and len(parts[1]) == 8:
+            tails[s] = parts[1]
+    if not tails:
+        return {}
+    cs = {t: ("canonical_slug" if t in has_canon else "NULL AS canonical_slug")
+          for t in ("discovered_facilities", "facilities")}
+
+    def by_key(sql, keys):
+        cur.execute(sql, (sorted(keys),))
+        names = [d[0] for d in cur.description]
+        rows = {}
+        for r in cur.fetchall():
+            row = dict(zip(names, r))
+            rows[row.pop(_BATCH_KEY)] = row
+        return rows
+
+    found = {}
+    # 1-2. the frozen slug exactly, suppressed rows last. The page names
+    # canonical_slug in this WHERE whatever its probe said, so a table without
+    # the column raises there; not running the statement is the same answer.
+    for tbl, region in (("discovered_facilities", "market AS region"),
+                        ("facilities", "NULL AS region")):
+        want = [s for s in tails if s not in found]
+        if not want or tbl not in has_canon:
+            continue
+        try:
+            found.update(by_key(
+                "SELECT DISTINCT ON (canonical_slug) "
+                "canonical_slug AS " + _BATCH_KEY + ", "
+                "id, name, provider, city, state, country, " + region + ", "
+                "latitude, longitude, power_mw, status, address, "
+                "is_duplicate, duplicate_of_id, " + cs[tbl] + ", "
+                "'" + tbl + "' AS _src_table "
+                "FROM " + tbl + " WHERE canonical_slug = ANY(%s) "
+                "ORDER BY canonical_slug, COALESCE(is_duplicate, 0) ASC, "
+                "COALESCE(power_mw, 0) DESC, id ASC", want))
+        except Exception:
+            _rollback_quietly(conn)
+    # 3. hash8 on discovered_facilities. The page has no try/except around this
+    # one — an error returns None for the slug — so here it ends the lookup for
+    # every slug still unanswered.
+    want = {s: t for s, t in tails.items() if s not in found}
+    if not want:
+        return found
+    h = hash_sql('')
+    try:
+        by_hash = by_key(
+            "SELECT DISTINCT ON (" + h + ") " + h + " AS " + _BATCH_KEY + ", "
+            "id, name, provider, city, state, country, market AS region, "
+            "latitude, longitude, power_mw, status, address, "
+            "is_duplicate, duplicate_of_id, "
+            "'discovered_facilities' AS _src_table, "
+            + cs["discovered_facilities"] + " "
+            "FROM discovered_facilities WHERE " + h + " = ANY(%s) "
+            "ORDER BY " + h + ", COALESCE(power_mw, 0) DESC, id ASC",
+            set(want.values()))
+    except Exception:
+        _rollback_quietly(conn)
+        return found
+    for s, t in list(want.items()):
+        if t in by_hash:
+            found[s] = by_hash[t]
+            del want[s]
+    # 4. hash8 on facilities — wrapped there, so a failure ends only this arm.
+    if want:
+        try:
+            by_hash = by_key(
+                "SELECT DISTINCT ON (" + h + ") " + h + " AS " + _BATCH_KEY + ", "
+                "id, name, provider, city, state, country, NULL AS region, "
+                "latitude, longitude, power_mw, status, address, "
+                "NULL AS is_duplicate, NULL AS duplicate_of_id, "
+                "'facilities' AS _src_table, " + cs["facilities"] + " "
+                "FROM facilities WHERE " + h + " = ANY(%s) "
+                "ORDER BY " + h + ", COALESCE(power_mw, 0) DESC, id ASC",
+                set(want.values()))
+        except Exception:
+            _rollback_quietly(conn)
+            by_hash = {}
+        for s, t in want.items():
+            if t in by_hash:
+                found[s] = by_hash[t]
+    return found
+
+
+def _batch_keeper_rows(cur, dup_ids):
+    """{_twin_key: keeper row} — _canonical_twin_row for many pointers in one
+    statement: its SELECT, its refusals (a suppressed target, or one with no or
+    a blank frozen slug, is no keeper) and its dict shape."""
+    keys = sorted({k for k in map(_twin_key, dup_ids) if k is not None})
+    if not keys:
+        return {}
+    cur.execute(
+        "SELECT k.id, k.canonical_slug, k.address, k.latitude, "
+        "       k.longitude, k.duplicate_of_id, "
+        "       (SELECT COUNT(*) FROM discovered_facilities s "
+        "         WHERE s.canonical_slug = k.canonical_slug) "
+        "         AS slug_rows "
+        "  FROM discovered_facilities k "
+        " WHERE k.id = ANY(%s) AND COALESCE(k.is_duplicate, 0) = 0 "
+        "   AND k.canonical_slug IS NOT NULL "
+        "   AND k.canonical_slug <> ''",
+        (keys,))
+    keepers = {}
+    for r in cur.fetchall():
+        if r[1]:
+            keepers[int(r[0])] = {"canonical_slug": str(r[1]), "address": r[2],
+                                  "latitude": r[3], "longitude": r[4],
+                                  "duplicate_of_id": r[5],
+                                  "slug_rows": int(r[6] or 0)}
+    return keepers
+
+
+def _batch_alias_targets(cur, slugs):
+    """{slug: alias target} — resolve_alias for many slugs in one statement: the
+    same table, the same key normalisation, the same refusal of an alias that
+    names itself. (resolve_alias reads the primary; this reads the replica the
+    page's row lookups read.)"""
+    keys = {}
+    for s in slugs:
+        k = (s[:-5] if s.endswith(".html") else s).split("/")[0].strip().lstrip("/")
+        if k:
+            keys[s] = k
+    if not keys:
+        return {}
+    cur.execute("SELECT old_slug, canonical_slug FROM facility_slug_aliases "
+                "WHERE old_slug = ANY(%s)", (sorted(set(keys.values())),))
+    targets = {str(r[0]): r[1] for r in cur.fetchall()}
+    aliases = {}
+    for s, k in keys.items():
+        t = targets.get(k)
+        if t and t != k:
+            aliases[s] = t
+    return aliases
+
+
+def served_slugs(slugs, max_hops: int = 3) -> dict:
+    """{slug: the /facilities/<slug> a request for it is served at}, for a list.
+
+    resolve_final_slug's answer for every slug, bar the one step named above,
+    in statements that grow with the number of hops and never with the list:
+    one probe, then at most six per hop. A slug that already terminates, a
+    cycle, a chain longer than max_hops and any failure all map to the slug that
+    was passed in. Never raises — a caller keeps linking what it linked before.
+    """
+    out = {}
+    for s in slugs or ():
+        s = str(s or "").strip()
+        if s:
+            out[s] = s
+    if not out:
+        return out
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+    except Exception:
+        return out
+    if not conn:
+        return out
+    try:
+        cur = conn.cursor()
+        has_canon = _canonical_slug_tables(conn, cur)
+        walks = {s: (s, {s}) for s in out}
+        for _hop in range(max_hops):
+            if not walks:
+                break
+            frontier = {at for at, _seen in walks.values()}
+            rows = _batch_page_rows(conn, cur, frontier, has_canon)
+            try:
+                keepers = _batch_keeper_rows(
+                    cur, [r.get("duplicate_of_id") for r in rows.values()])
+            except Exception:
+                _rollback_quietly(conn)
+                keepers = {}
+            misses = frontier.difference(rows)
+            try:
+                aliases = _batch_alias_targets(cur, misses) if misses else {}
+            except Exception:
+                _rollback_quietly(conn)
+                aliases = {}
+            for start, (at, seen) in list(walks.items()):
+                fac = rows.get(at)
+                if fac is not None:
+                    try:
+                        nxt = _twin_redirect_target(
+                            fac, at,
+                            keeper_row=lambda d, _k=keepers: _k.get(_twin_key(d)))
+                    except Exception:
+                        del walks[start]          # fail open: the original
+                        continue
+                else:
+                    nxt = aliases.get(at)
+                if not nxt or nxt == at:
+                    out[start] = at               # terminal — this slug is served
+                    del walks[start]
+                elif nxt in seen:
+                    del walks[start]              # cycle — hand back the original
+                else:
+                    seen.add(nxt)
+                    walks[start] = (nxt, seen)
+        # a walk still open here is longer than max_hops: it keeps the original
+    except Exception:
+        return {s: s for s in out}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return out
 
 
 # ── r-facility-entity (2026-09-03) — the machine-readable twin ───────────────
