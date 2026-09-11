@@ -991,6 +991,33 @@ def _nearby_generation_html(rows, city: str, country: str) -> str:
     )
 
 
+def _nearby_generation_total_mw(rows):
+    """The total MW the "Power generation nearby" section prints, else None.
+
+    r-title-facts (2026-09-10): the meta description cites this figure when
+    the market has no time-to-power. PURE and fail-soft, like the renderer.
+    Same row filter, same sums and same "is there anything to say" test as
+    _nearby_generation_html, so the snippet can never cite a number the
+    section does not print.
+
+    ★ That function deliberately does NOT call this one.
+      tests/test_facility_nearby_generation.py compiles it out of the AST into
+      a bare namespace, so a call to a helper outside it would NameError there.
+      tests/test_facility_title_meta_facts.py holds the two spellings together
+      on behaviour instead."""
+    try:
+        rows = [r for r in (rows or []) if r and len(r) == 3 and r[0]]
+        if not rows:
+            return None
+        total_units = sum(int(r[1] or 0) for r in rows)
+        total_mw = sum(float(r[2] or 0.0) for r in rows)
+    except Exception:
+        return None
+    if total_units < 1 or total_mw <= 0:
+        return None
+    return total_mw
+
+
 def _brand_already_in_name(provider: str, name: str) -> bool:
     """Delegates to util.facility_headline.brand_already_in_name.
 
@@ -1107,15 +1134,13 @@ def _render_profile(fac: dict, slug: str) -> str:
     _hl = _headline(name, provider, city, state, country)
     loc_short = _hl["loc_short"]
     _disp = _hl["disp"]
-    title = _hl["title"]
     _h1 = _hl["h1"]
     _og_title = _hl["og_title"]
-    _op = _hl["op"]
-    desc = (f"{_disp} is a data center"
-            f"{f' operated by {provider}' if _op else ''}"
-            f"{f' in {loc_short}' if loc_short else ''}. "
-            f"{f'Power capacity: {power} MW. ' if power else ''}"
-            f"View specs, location, power & connectivity on DC Hub.")
+    # r-title-facts (2026-09-10): `title` and `desc` are NOT composed here. Both
+    # now carry facts that are only known further down — the DCPI market's ISO
+    # and time-to-power, and the nearby-generation total — so they are built
+    # ONCE, after those lookups, just before the <head> is emitted. Nothing in
+    # between reads either name.
 
     # r-frozen-slug (2026-07-06): canonicalize to the facility's FROZEN slug (the
     # one the sitemap + the /facility 301 both use), not whatever slug the request
@@ -1347,13 +1372,11 @@ def _render_profile(fac: dict, slug: str) -> str:
         # r-iso-unk (2026-08-27): 'UNK' is the not-a-label sentinel, not an
         # operator — a bare truthy test put "UNK grid" in the <title> of every
         # page resolving to barueri/bologna/midrand/osasco.
-        if _is_registered_label(_dcpi.get("iso")):
-            # r-title-template (2026-09-09): the ISO joins the title in the
-            # template's own separator — "· ERCOT |" not "| ERCOT grid |".
-            # The word "grid" was 5 chars of the tail that Google was cutting
-            # off anyway; the ISO token itself is the retrieval key r-geo-
-            # headers added, and it is preserved exactly.
-            title = title.replace(" | DC Hub", f" · {_dcpi['iso']} | DC Hub")
+        # r-title-facts (2026-09-10): the ISO no longer joins the title HERE by
+        # string replacement. It goes to compose_title with the page's other
+        # facts (`_iso`, below) in the template's own separator — "· ERCOT |" —
+        # and is admitted last, only while the title fits 60 characters. It is
+        # always in the description's "on the <ISO> grid" clause.
         _chips = []
         if _is_registered_label(_dcpi.get("iso")):         _chips.append(("ISO", _esc(_dcpi.get("iso"))))
         if _dcpi.get("excess_power_score") is not None:   _chips.append(("Excess-power", _esc(_dcpi.get("excess_power_score"))))
@@ -1414,6 +1437,27 @@ def _render_profile(fac: dict, slug: str) -> str:
     except Exception as _gen_err:
         logger.warning(f"facility_profile nearby-generation failed: {_gen_err}")
         nearby_gen_html = ""
+
+    # r-title-facts (2026-09-10): the SERP <title> and meta description, built
+    # ONCE, now that every fact they may carry is known — the market's ISO and
+    # time-to-power (`_dcpi`, above) and the nearby-generation total. DISPLAY-
+    # ONLY: identity_key() reads neither. The generation total is passed only
+    # when its section actually rendered, so the snippet cannot cite a figure
+    # the page does not print.
+    from util.facility_headline import (compose_title as _compose_title,
+                                        compose_description as _compose_desc)
+    _iso = (_dcpi.get("iso")
+            if (_dcpi and _is_registered_label(_dcpi.get("iso"))) else "")
+    _ttp = _dcpi.get("time_to_power_months") if _dcpi else None
+    _gen_mw = (_nearby_generation_total_mw(fac.get("_nearby_gen"))
+               if nearby_gen_html else None)
+    title = _compose_title(name, provider, city, state, country,
+                           power_mw=power, status=status, iso=_iso)
+    desc = _compose_desc(name, provider, city, state, country,
+                         power_mw=power, status=status, iso=_iso,
+                         time_to_power_months=_ttp,
+                         nearby_generation_mw=_gen_mw,
+                         radius_km=int(_RADIUS_KM))
 
     # r-soft404-rag: RAG market-narrative snippet — turns a thin facility page into
     # substantive, indexable content when its market has a deep-dive (fail-soft '').
