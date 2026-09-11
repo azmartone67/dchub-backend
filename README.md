@@ -63,7 +63,7 @@ DC Hub is the live data layer for data-center infrastructure — every API, MCP 
 
 ## MCP integration
 
-The MCP server at `https://dchub.cloud/mcp` exposes **80+ tools** for AI agents (`tools/list` is the canonical, always-current catalog). See the standalone repo: [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server).
+The MCP server at `https://dchub.cloud/mcp` exposes **88 tools** for AI agents (`tools/list` is the canonical, always-current catalog). See the standalone repo: [azmartone67/dchub-mcp-server](https://github.com/azmartone67/dchub-mcp-server).
 
 **MCP catalog listings:**
 - [Glama](https://glama.ai/mcp/connectors/cloud.dchub/dc-hub-data-center-intelligence-mcp-server) — ownership verified
@@ -86,7 +86,7 @@ The MCP server at `https://dchub.cloud/mcp` exposes **80+ tools** for AI agents 
 
 - **Public API**: <https://dchub.cloud/api/v1/> — free tier with no signup
 - **Free dev key**: <https://dchub.cloud/signup> for higher rate limits
-- **Paid tiers**: <https://dchub.cloud/pricing> ($9 Starter, $49 Developer, $299 Pro, Enterprise)
+- **Paid tiers**: <https://dchub.cloud/pricing> ($9 Starter, $49 Developer, $99 Pro, Enterprise)
 - **OpenAPI spec**: <https://dchub.cloud/openapi.json>
 
 ## Used by
