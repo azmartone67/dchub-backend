@@ -342,7 +342,7 @@ def persist_metrics(iso, metrics, observed_at=_OBSERVED_AT_UNDECLARED):
             try:
                 cur.execute(
                     """INSERT INTO grid_data (iso, metric_name, metric_value, unit, timestamp)
-                       VALUES (%s, %s, %s, %s, COALESCE(%s, NOW()))
+                       VALUES (%s, %s, %s, %s, COALESCE(%s, NOW() ON CONFLICT DO NOTHING))
                        ON CONFLICT (iso, timestamp, metric_name) DO NOTHING""",
                     (iso, name, data["value"], data.get("unit", ""), ts),
                 )
