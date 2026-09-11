@@ -509,7 +509,20 @@ def test_repo_worker_is_canon_clean_and_current():
     # Verify with (want 4.9.65-install-links):
     #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.65-install-links'" in src
+    #
+    # 4.9.65 -> 4.9.66-fallback-tools-90 (2026-09-11): dchub-mcp-server
+    # feat/pocket-listings-leads adds get_pocket_listings + request_listing_intro
+    # (88 -> 90). MCP_FALLBACK_TOOLS gained both entries, DERIVED from that
+    # branch's tools/list (name, description and inputSchema verbatim), and
+    # MCP_SERVER_INFO.description was reconciled alongside
+    # ai_surface_canon.PINNED. Fallback-only: the served count derives from
+    # origin, so this is degraded-mode correctness, not a live regression.
+    # ⚠ PASTE OUTSTANDING, and ORDER MATTERS: paste only after that mcp-server
+    # branch deploys, or the fallback names two tools live tools/list lacks.
+    # Verify with (want 4.9.66-fallback-tools-90):
+    #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.66-fallback-tools-90'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

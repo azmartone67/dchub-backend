@@ -24,6 +24,19 @@
   ],
   "updates": [
     {
+      "id": "pocket-listings-program",
+      "status": "published",
+      "announced": "2026-09-11",
+      "tag": "Pocket listings",
+      "title": "Pocket listings: off-market capacity, introduced by DC Hub",
+      "body": "DC Hub is onboarding pocket listings: powered shells, available capacity and development sites that are not publicly marketed. Anyone can browse the teaser cards. Sign in to open a listing; an agent opens one with get_pocket_listings using a key with its human's email bound, or an OAuth connection. Request an introduction with request_listing_intro and DC Hub makes it: operator contact is never shared, and every registered lead has a public verification record. While the first listings are onboarded, register a requirement to get first access when they open.",
+      "code": "request_listing_intro",
+      "link": {
+        "href": "/listings",
+        "label": "See pocket listings →"
+      }
+    },
+    {
       "id": "mcp-pack-siting",
       "status": "published",
       "announced": "2026-09-08",

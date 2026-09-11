@@ -19,6 +19,19 @@
  * historical entry should name the version it shipped in. Only the title line,
  * which claims to describe the file as it stands, was the lie.
  * ================================================================================
+ * v4.9.66 CHANGES (Sep 11 2026) — Phase fallback-tools-90:
+ *   - SYNC: MCP_FALLBACK_TOOLS 88 → 90 — adds get_pocket_listings and
+ *          request_listing_intro, the pocket-listings tools dchub-mcp-server
+ *          serves on the /api/v1/listings contract (branch
+ *          feat/pocket-listings-leads). Both entries were DERIVED from that
+ *          branch's tools/list output (name, description and inputSchema
+ *          inserted verbatim), not hand-typed. MCP_SERVER_INFO.description
+ *          reconciled to the same count alongside ai_surface_canon.PINNED.
+ *          ★ Fallback-only: the served tool list derives from the origin, so
+ *          this is degraded-mode correctness. Paste AFTER that mcp-server
+ *          branch deploys, or the fallback names two tools live tools/list
+ *          does not have.
+ * ================================================================================
  * v4.9.64 CHANGES (Sep 08 2026) — Phase pro-price-99:
  *   - FIX: SIX statements said Pro is $299/mo. Pro has been $99 since
  *          r-price-collapse (owner call, 2026-09-05). Measured live AFTER the
@@ -555,7 +568,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.65-install-links';
+const WORKER_VERSION = '4.9.66-fallback-tools-90';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -696,7 +709,7 @@ function isFlaskHtmlPath(pathname) {
 //   /.well-known/mcp.json  said tools=25, name="DC Hub MCP Server"
 //   /.well-known/server-card.json said tools=25, version=worker
 //   /.well-known/agent.json said name="DC Hub Intelligence Agent" v2.0.0
-// Live MCP server serves 88 tools (canon sync 2026-09-07, live-probed; #375 added get_subsea_cables + get_peering_intel — two datasets the description already advertised). (v4.9.24: the worker no longer
+// Live MCP server serves 90 tools once dchub-mcp-server feat/pocket-listings-leads deploys (canon sync 2026-09-11, NOT live-probed: that branch adds get_pocket_listings + request_listing_intro and had not deployed when canon moved; 88 before it, #375 added get_subsea_cables + get_peering_intel). (v4.9.24: the worker no longer
 // intercepts semantic_search — it proxies to Railway with the rest.)
 // v4.9.33 (2026-07-25): canon sync — 80 tools / 12,650+ floor. All endpoints
 // below MUST derive name/version/count from this object.
@@ -778,7 +791,7 @@ const MCP_SERVER_INFO = {
   // (Static literal — evaluated before MCP_FALLBACK_TOOLS is defined, so it
   // cannot interpolate .length here. The mcp.json/server-card pricing prose IS
   // derived from the live count.)
-  description:      'Real-time data center, power & hyperscale intelligence for AI agents — 88 tools over the global data-center facility base, live grid data for 7 US ISOs + international grids, fiber routes, tracked M&A deals, capacity pipeline, interconnection-queue snapshots, daily AI Capacity Index, and DCPI BUILD/CAUTION/AVOID market verdicts. Live facility, deal and market counts: https://dchub.cloud/api/v1/canon/phrases',
+  description:      'Real-time data center, power & hyperscale intelligence for AI agents — 90 tools over the global data-center facility base, live grid data for 7 US ISOs + international grids, fiber routes, tracked M&A deals, capacity pipeline, interconnection-queue snapshots, daily AI Capacity Index, and DCPI BUILD/CAUTION/AVOID market verdicts. Live facility, deal and market counts: https://dchub.cloud/api/v1/canon/phrases',
   url:              'https://dchub.cloud/mcp',
   transport:        'streamable-http',
   protocol_version: '2024-11-05',
@@ -1057,6 +1070,11 @@ const MCP_FALLBACK_TOOLS = [
   { name: "recover_my_key", description: "Recover a LOST DC Hub key. Pass your human's email and DC Hub re-sends any key tied to that address to that inbox. It NEVER returns the key over the wire (it emails the bound address), and the confirmation is the same whether or not a key exists (enumeration-safe), so no key is leaked to a caller. Use this when your human had a key, lost it, and knows the email they bound it to. Param: email (required). Returns DC Hub's neutral confirmation.", inputSchema: {"type": "object", "properties": {"email": {"description": "Your human's email address that a lost key was bound to (required) \u2014 the key is re-sent to that inbox, never returned over the wire", "type": "string"}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
   { name: "unlock_more_data", description: "Unlock DC Hub's full depth. Call this when a result came back as a 1-of-N preview, a tool was locked, or your human wants the complete dataset. Returns the upgrade ladder + ready-to-paste checkout links your human completes in ONE click \u2014 after which your very next call returns full data (no reconnect; the checkout binds to this session). Cheapest start: \ud83d\udcb3 $10 one-time = 1,000 API calls (no subscription). Also $9/mo Starter \u00b7 $49/mo Developer \u00b7 $99/mo Pro. Want the FREE identified tier instead (no payment, 10 calls/day, all tools)? Call claim_free_key. Param: reason (optional \u2014 what you were trying to do, so your human sees why it matters). Returns {plans, human_message, what_unlocks}.", inputSchema: {"type": "object", "properties": {"reason": {"description": "Optional free-text describing what you were trying to do, so your human sees why an upgrade matters", "type": "string"}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
   { name: "summarize_for_citation", description: "Use right before you QUOTE a DC Hub figure to a human \u2014 it returns one paste-ready attribution line for the value you are about to cite, with the CORRECT licence for that layer. Pass what you read off the response you are citing: subject (what the figure is), as_of (the provenance as_of), url (the row's profile_url or dcpi_url), completeness (the completeness flag), and layer. \u2605 LICENCE IS PER LAYER AND THIS IS THE POINT: DCPI scores, verdicts, band thresholds, methodology and DC Hub's own grid/site analysis are CC-BY-4.0 and yours to quote with attribution; the facility inventory and third-party physical layers are COMPOSITES whose upstream terms DC Hub cannot waive (parts are OpenStreetMap, ODbL 1.0, share-alike), so they carry a pointer to https://dchub.cloud/data-sources instead of a grant. A flat \"CC-BY-4.0\" over a facility record is an over-claim. Returns {citation_text, cite_as, license, license_basis, source, url, as_of, as_of_basis, completeness, omitted}. Free, no key, no network call \u2014 it assembles what you pass and never resolves or invents a value. If you omit as_of the line says RETRIEVED rather than claiming a data date, and tells you which field to pass next time. Do NOT use to look a figure UP (call the data tool first); this cites a figure you already have.", inputSchema: {"type": "object", "properties": {"subject": {"description": "What you are citing, in the words you will show the human, e.g. \"Ashburn DCPI verdict\" or \"ERCOT interconnection queue depth\"", "type": "string"}, "as_of": {"description": "The as_of you read off the cited response (provenance.as_of). Omit it and the line says RETRIEVED instead of claiming a data date.", "type": "string"}, "url": {"description": "The profile_url or dcpi_url from the cited row. Must be a dchub.cloud URL; anything else is dropped and named in `omitted`.", "type": "string"}, "completeness": {"description": "The completeness flag from the cited response, if it carried one", "type": "string"}, "layer": {"description": "Which layer the figure came from: dcpi | grid_analysis | facility_inventory | physical_infrastructure | deals | other. Decides the licence line; omit and you get the scoped statement rather than a grant.", "type": "string"}}} },
+  // pocket listings (2026-09-11): dchub-mcp-server feat/pocket-listings-leads.
+  // DERIVED from that branch's tools/list (name, description, inputSchema
+  // verbatim), the same way get_subsea_cables / get_peering_intel were.
+  { name: "get_pocket_listings", description: "Use for OFF-MARKET data-center capacity DC Hub is bringing to market \u2014 pocket listings: powered shells, available MW and development sites that are not publicly marketed. Returns teaser cards (market, state, capacity, status) to any caller plus the program status (live, or upcoming while the first listings are onboarded). Pass slug for one listing: full detail needs an identified caller (a key with an email bound via claim_free_key then bind_email, or an OAuth connection); others get the teaser and the unlock steps. Operator contact is never returned \u2014 call request_listing_intro and DC Hub makes the introduction. Do NOT use for the public facility directory (use search_facilities) or for completed M&A (use list_transactions).", inputSchema: {"type": "object", "properties": {"slug": {"description": "One listing: its slug or numeric id exactly as items[].slug / items[].id return it. Omit to browse teaser cards", "anyOf": [{"type": "string"}, {"type": "number"}]}, "market": {"description": "Browse filter: market name as it appears on a listing, e.g. \"Dallas\"", "type": "string"}, "state": {"description": "Browse filter: two-letter US state, e.g. \"TX\"", "type": "string"}, "min_mw": {"description": "Browse filter: only listings with at least this much capacity, in MW", "type": "number"}, "limit": {"description": "Max results to return (1-500; default varies by tool)", "type": "integer", "minimum": 1, "maximum": 500}}} },
+  { name: "request_listing_intro", description: "Use when your human wants an introduction to the operator behind a pocket listing (pass slug), or wants first access to upcoming off-market capacity matching a requirement (omit slug; pass capacity_mw, markets or states, timeline). DC Hub records the request in its lead register, emails your human a one-click confirmation, and once confirmed introduces them to the operator. Requires an identified caller (claim_free_key, then bind_email with your human's address) and accept_terms=true only after your human has read and agreed to the introduction terms at https://dchub.cloud/listings#terms. Returns lead_id, status and a verify_url your human can share with the operator. Do NOT use to save or monitor a site (use save_site / set_site_alert).", inputSchema: {"type": "object", "properties": {"slug": {"description": "The listing to request an introduction for: its slug or id from get_pocket_listings. Omit to register a standing requirement for upcoming listings instead", "anyOf": [{"type": "string"}, {"type": "number"}]}, "name": {"description": "Your human's full name. Nothing is sent without it; use only what they gave you, never invent it", "type": "string"}, "company": {"description": "Your human's company. Nothing is sent without it", "type": "string"}, "role": {"description": "Your human's role or title", "type": "string"}, "capacity_mw": {"description": "Capacity needed, in MW", "type": "number"}, "markets": {"description": "Comma-separated markets of interest, e.g. \"Dallas, Phoenix\"", "type": "string"}, "states": {"description": "Comma-separated US states of interest, e.g. \"TX, AZ\"", "type": "string"}, "timeline": {"description": "When the capacity is needed, e.g. a quarter and year", "type": "string"}, "use_case": {"description": "What the capacity is for, e.g. \"AI inference\"", "type": "string"}, "notes": {"description": "Anything else the operator should know about the requirement", "type": "string"}, "message": {"description": "A short note from your human to the operator", "type": "string"}, "accept_terms": {"description": "Set true ONLY after your human has read and agreed to the introduction terms at https://dchub.cloud/listings#terms. Unless it is exactly true, nothing is sent", "type": "boolean"}, "terms_version": {"description": "The terms version your human agreed to, e.g. program.terms.version from get_pocket_listings. Omit to send the version currently published", "type": "string"}}} },
 ];
 
 const ROUTE_TIMEOUTS = {
@@ -2524,7 +2542,7 @@ async function wellKnownResponse(pathname, kv, env) {
         transport:    'sse',
         tools_count:  7,
         note:         'Curated subset for Hugging Face agents / smolagents. The '
-                    + 'full server is `url` above (streamable-http, 88 tools).',
+                    + 'full server is `url` above (streamable-http, 90 tools).',
       },
       contact:       MCP_SERVER_INFO.contact,
       documentation: MCP_SERVER_INFO.documentation,

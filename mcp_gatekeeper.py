@@ -202,6 +202,11 @@ TOOL_TIER = {
     "get_iso_comparison":           Tier.DEVELOPER,
     "get_pocket_listings":          Tier.IDENTIFIED,  # teaser at free, full at identified+
     "get_pocket_listing":           Tier.IDENTIFIED,
+    # 2026-09-11: pocket listings relaunched as an introduction program
+    # (routes/exclusive_listings.py). request_listing_intro registers an
+    # introduction request or a standing requirement: a lead record tied to a
+    # person, so it needs an identified caller (email-bound key or OAuth).
+    "request_listing_intro":        Tier.IDENTIFIED,
 
     # DCPI MCP tools (PR #152)
     "get_dcpi_scores":              Tier.IDENTIFIED,
@@ -916,8 +921,12 @@ TOOL_TEASER = {
     "get_site_capacity_report":"per-facility bundled view: metadata + capacity rollup + pipeline + DCPI verdict + peers + news in one call.",
     "get_iso_snapshot":       "comprehensive ISO snapshot: heartbeat + DCPI rollup + pipeline + facility footprint for any tracked ISO.",
     "get_iso_comparison":     "head-to-head across every tracked ISO ranked by avg excess-power — best opportunities first.",
-    "get_pocket_listings":    "off-market data center sites curated by DC Hub — capacity, asking price, direct seller contact. Free tier sees public listings + teaser count of pocket inventory.",
-    "get_pocket_listing":     "detailed pocket-listing view with full contact info and entitlement details.",
+    # 2026-09-11: rewritten. The old line promised "asking price, direct seller
+    # contact"; the relaunched program never serves operator contact (DC Hub
+    # makes the introduction), and a listing's detail sits behind an auth wall.
+    "get_pocket_listings":    "teaser cards for off-market data center capacity DC Hub is onboarding — powered shells, available capacity and development sites that are not publicly marketed. Market, state and capacity are open to anyone; the full listing needs an identified caller (a key with an email bound, or OAuth). Operator contact is never shared: request_listing_intro asks DC Hub to make the introduction.",
+    "request_listing_intro":  "a registered introduction to the operator behind a pocket listing — or a standing requirement for first access to upcoming listings — recorded in DC Hub's hash-chained lead register with a public verification record. DC Hub emails a one-click confirmation and makes the introduction; operator contact is never shared. Needs an identified caller and accept_terms=true once your human has agreed to the introduction terms.",
+    "get_pocket_listing":     "one pocket listing in full for an identified caller (call get_pocket_listings with slug) — DC Hub makes the operator introduction; operator contact is never shared.",
     "get_dcpi_scores":        "DCPI verdicts (BUILD/CAUTION/AVOID) + 4 numeric scores per market — DC Hub's headline build/avoid signal.",
     "get_dcpi_market":        "full DCPI snapshot for one market — verdict + scores + top risks + opportunities + queue wait.",
     "get_dcpi_movers":        "biggest DCPI movers over a window — emerging BUILD opportunities + newly-flagged AVOID markets with deltas.",
