@@ -2039,14 +2039,23 @@ if (toggle && IS_PRO) {{
 # PDF export — Phase 2 (2026-06-06)
 #
 # Brokers want to drop the brief into PowerPoint decks. We render the
-# SAME 9-section data through a print-tuned HTML shell + weasyprint,
-# adding a cover page, page numbers, and a footer watermark. PRO+ gated
-# (anon → 402); 1h edge cache because a fresh render is expensive.
+# SAME 9-section data through a print-tuned HTML shell, adding a cover
+# page, page numbers and a footer watermark, and render it with the private
+# Gotenberg/Chromium service (routes/pdf_render.py) that the Deal Desk Brief
+# and the Site Analysis PDF already use. PRO+ gated (anon → 402); the response
+# is private + no-store.
 #
-# Linux Docker runtime needs the native libs (libpango1.0-0 + libcairo2
-# + libpangoft2-1.0-0). Local arm64 macOS dev needs them via Homebrew —
-# CI tests against the Linux image. On import failure we raise 503
-# from the route (NOT silently render a TODO stub).
+# 2026-09-11: this path used to import weasyprint, which cannot load on the
+# Railway image. The service builds with Railpack, which does not read
+# nixpacks.toml, so the Pango/Cairo packages declared there never reach the
+# runtime and every export died on import ("WeasyPrint could not import some
+# external libraries"). A Pro user's three download attempts that morning were
+# three 5xx.
+#
+# The page numbers and the watermark are CSS @page margin boxes, which Chromium
+# prints: checked against Chrome 152, the cover is bare and every later page
+# carries "Page N of M" and the watermark. A renderer that predates margin-box
+# support drops the footer, never the document.
 # ─────────────────────────────────────────────────────────────────────
 
 # Slimmer print-mode HTML: drops nav/share/blur/script, swaps the dark
@@ -2080,7 +2089,9 @@ body { font-family: 'Helvetica', 'Arial', sans-serif; color: #0a0a0f; font-size:
 /* ── COVER PAGE ── */
 .cover { page: cover; height: 100vh; padding: 0; margin: 0; page-break-after: always; position: relative;
          background: linear-gradient(160deg, #0a0a0f 0%, #131319 60%, #1a1a26 100%); color: #fafafa; }
-.cover-inner { padding: 1.4in 0.9in 1in 0.9in; height: 100%; display: flex; flex-direction: column; }
+/* border-box keeps the padding inside the cover's full-page height. Without it
+   Chromium moved the cover's meta block onto a page of its own. */
+.cover-inner { box-sizing: border-box; padding: 1.4in 0.9in 1in 0.9in; height: 100%; display: flex; flex-direction: column; }
 .cover-logo { font-size: 11pt; letter-spacing: .08em; text-transform: uppercase; color: #a1a1aa; font-weight: 600; }
 .cover-title { font-size: 38pt; font-weight: 700; letter-spacing: -0.02em; margin: 0.55in 0 0.15in 0; line-height: 1.05; }
 .cover-sub { font-size: 13pt; color: #a1a1aa; margin: 0 0 0.5in 0; }
@@ -2121,7 +2132,7 @@ td { color: #18181b; vertical-align: top; }
 
 
 def _render_pdf_html(brief: dict) -> str:
-    """Build a print-tuned HTML for weasyprint — cover page first, then
+    """Build the print-tuned HTML the PDF renderer prints — cover page first, then
     the same data the live brief renders but stripped of nav/blur/share/
     print-fragile CSS. PRO-only path (called only by the PDF route after
     `_is_pro()` gate)."""
@@ -2382,25 +2393,57 @@ def _render_pdf_html(brief: dict) -> str:
 </html>"""
 
 
-def _render_pdf_for_slug(slug: str, tier: str = "PRO") -> bytes:
-    """End-to-end: build the brief data → render print HTML → weasyprint PDF.
-    Raises ImportError if weasyprint native libs aren't loadable; raises
-    ValueError if the market isn't covered. Callers (the route) translate
-    those into HTTP status codes. Used directly by the requested smoke test:
+# Rendered PDF bytes, keyed on what the document prints: the market, the date
+# stamped on it, and the data timestamp on its cover. Only PRO+ callers reach a
+# render and every PRO+ tier gets the same document, so one copy serves them
+# all, and a double-clicked download does not pay for a second render.
+_PDF_CACHE = BoundedCache(max_size=64, ttl=600)
 
-        python3 -c "from routes.market_brief import _render_pdf_for_slug; \\
-                    _render_pdf_for_slug('dallas')"
+# The edge abandons a proxied request after 12s (the phase282 proxy in
+# dchub-frontend/_worker.js). Finish inside that, so a slow render reaches the
+# caller as this route's own 503 with Retry-After, not as an edge timeout.
+_PDF_REQUEST_BUDGET_S = 11.0
+_PDF_MIN_RENDER_S = 2.0
+_monotonic = time.monotonic
+
+
+def _render_pdf_for_slug(slug: str, tier: str = "PRO", *,
+                         deadline: float | None = None) -> bytes:
+    """End-to-end: build the brief data → print HTML → PDF bytes.
+
+    The PDF comes from routes.pdf_render.html_to_pdf (private Gotenberg).
+    `deadline` is a _monotonic() instant; the renderer gets only the time left
+    before it. Raises ValueError("brief_unavailable:...") if the market is not
+    covered, TimeoutError if building the brief used up the budget, and
+    RuntimeError if the renderer answers with something that is not a PDF.
+    Renderer transport errors propagate. The route maps each to a status code.
+
+    Smoke test (needs RENDER_PDF_URL reachable):
+        python3 -c "from routes.market_brief import _render_pdf_for_slug; _render_pdf_for_slug('dallas')"
     """
-    # Force a PRO render so the deep sections populate even when called
-    # outside an HTTP context (smoke tests + the future prewarm cron).
     brief = _build_brief(slug, tier=tier)
     if not brief.get("ok"):
         raise ValueError(f"brief_unavailable:{brief.get('error') or 'unknown'}")
-    html = _render_pdf_html(brief)
-    # Lazy import — keeps the module importable even when weasyprint's
-    # native deps aren't installed (the JSON + HTML routes still serve).
-    from weasyprint import HTML  # noqa: WPS433  (deferred import is deliberate)
-    return HTML(string=html, base_url="https://dchub.cloud/").write_pdf()
+    live = brief.get("live_as_of") or {}
+    hero = brief.get("hero") or {}
+    key = (brief.get("slug") or slug,
+           datetime.date.today().isoformat(),
+           live.get("iso") or hero.get("computed_at") or "")
+    cached = _PDF_CACHE.get(key)
+    if cached is not None:
+        return cached
+    timeout = 60.0
+    if deadline is not None:
+        timeout = deadline - _monotonic()
+        if timeout < _PDF_MIN_RENDER_S:
+            raise TimeoutError(f"{timeout:.1f}s left of the request budget, too little to render")
+    from routes.pdf_render import html_to_pdf
+    pdf = html_to_pdf(_render_pdf_html(brief), timeout=timeout)
+    if not isinstance(pdf, (bytes, bytearray)) or bytes(pdf[:5]) != b"%PDF-":
+        raise RuntimeError("the renderer answered with a body that is not a PDF")
+    pdf = bytes(pdf)
+    _PDF_CACHE.set(key, pdf)
+    return pdf
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -3018,9 +3061,15 @@ def html_market_brief(slug):
                         # cache keyed only on URL — so whichever tier filled the
                         # cache (usually anon) was served to EVERYONE, incl PRO
                         # users → "gated even though I'm pro". Per-user pages must
-                        # never sit in a shared cache. private+no-store; the CF
-                        # worker's _originSaysNoStore honor-path makes it stick
-                        # edge-side. (The cookieless catalog page /markets/<slug>
+                        # never sit in a shared cache, hence private+no-store.
+                        # ★ 2026-09-11: those headers do NOT stop the edge. The worker's
+                        # phase282 proxy caches /markets/* with cacheTtlByStatus, which
+                        # overrides them, and the same symptom came back in both
+                        # directions (a Pro render served to logged-out visitors too).
+                        # What keeps a caller's render out of the shared copy is the
+                        # worker's credential gate: dchub-frontend
+                        # tests/qa-credentialed-requests-never-share-cache.test.mjs.
+                        # (The cookieless catalog page /markets/<slug>
                         # stays cacheable; only the gated /brief goes dynamic.)
                         "Cache-Control": "private, no-store, no-cache, must-revalidate",
                         "CDN-Cache-Control": "no-store",
@@ -3218,17 +3267,20 @@ def admin_widget_embeds_stats():
 def pdf_market_brief(slug):
     """PDF export — PRO+ only.
 
-    Phase 2 of the Market Brief spec. Same 9-section data, print-tuned
-    HTML, weasyprint → PDF, cover page + page numbers + footer watermark.
-    1h edge cache; filename headers so the broker's Downloads folder
-    ends up with `dchub-market-brief-<slug>-YYYY-MM-DD.pdf`.
+    Phase 2 of the Market Brief spec. Same 9-section data, print-tuned HTML,
+    rendered by the private Gotenberg service (routes/pdf_render.py): cover
+    page, page numbers, footer watermark. Filename headers put
+    `dchub-market-brief-<slug>-YYYY-MM-DD.pdf` in the broker's Downloads folder.
 
     Auth contract:
       - Anon/FREE  → 402 Payment Required + upgrade JSON
-      - PRO+       → 200 application/pdf
+      - PRO+       → 200 application/pdf, private + no-store: a Pro-only
+                     document never belongs in a shared cache
       - missing slug → 404 (consistent with the JSON endpoint)
-      - weasyprint native libs missing → 503 (Docker image regression)
+      - renderer unreachable, slow, or answering with a non-PDF → 503 JSON with
+        Retry-After. Never a 500, never an HTML body under a .pdf name.
     """
+    started = _monotonic()
     tier = _caller_tier()
     if not _is_pro(tier):
         # Spec says: anon gets a clean 402 JSON, not a paywall HTML page,
@@ -3246,27 +3298,31 @@ def pdf_market_brief(slug):
         from flask import redirect
         return redirect(f"/markets/{canonical}/brief.pdf", code=301)
     try:
-        pdf_bytes = _render_pdf_for_slug(canonical, tier=tier)
-    except ImportError as e:
-        # weasyprint native libs not loadable — surface clearly so the
-        # ops team fixes the Docker image rather than the page silently
-        # falling back to HTML.
-        return jsonify({
-            "error":   "pdf_engine_unavailable",
-            "detail":  f"{type(e).__name__}: {str(e)[:200]}",
-            "hint":    ("weasyprint native libs (libpango1.0-0, libcairo2, "
-                        "libpangoft2-1.0-0) missing from the runtime image."),
-        }), 503
-    except ValueError as e:
-        msg = str(e)
-        if msg.startswith("brief_unavailable:market_not_found"):
-            return jsonify({"error": "market_not_found", "slug": slug}), 404
-        return jsonify({"error": "brief_unavailable", "detail": msg}), 502
+        pdf_bytes = _render_pdf_for_slug(
+            canonical, tier=tier, deadline=started + _PDF_REQUEST_BUDGET_S)
     except Exception as e:
-        return jsonify({
-            "error":  "pdf_render_failed",
-            "detail": f"{type(e).__name__}: {str(e)[:200]}",
-        }), 500
+        msg = str(e)
+        # Only the brief's own "not covered" signal is a 404/502. requests'
+        # InvalidURL is a ValueError too, and that is a renderer problem.
+        if isinstance(e, ValueError) and msg.startswith("brief_unavailable:"):
+            if msg.startswith("brief_unavailable:market_not_found"):
+                return jsonify({"error": "market_not_found", "slug": slug}), 404
+            return jsonify({"error": "brief_unavailable", "detail": msg}), 502
+        # Log the cause, do not publish it: a transport error names the
+        # private renderer's internal host.
+        logger.warning("market brief PDF for %s failed: %s: %s",
+                       canonical, type(e).__name__, msg[:300])
+        resp = jsonify({
+            "error":    "pdf_engine_unavailable",
+            "message":  ("The PDF could not be generated just now. Try the download "
+                         "again in a minute. The full brief is on the page, and the "
+                         "page prints to PDF from the browser."),
+            "html_url": f"/markets/{canonical}/brief",
+        })
+        resp.status_code = 503
+        resp.headers["Retry-After"] = "30"
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     today_iso = datetime.date.today().isoformat()
     filename = f"dchub-market-brief-{canonical}-{today_iso}.pdf"
@@ -3274,8 +3330,12 @@ def pdf_market_brief(slug):
         pdf_bytes,
         mimetype="application/pdf",
         headers={
-            # 1h edge cache — PDF render is expensive (~1-3s for weasyprint).
-            "Cache-Control":       "public, max-age=3600, s-maxage=3600",
+            # A Pro-only file. This was `public, max-age=3600, s-maxage=3600`,
+            # an invitation to every cache between here and the browser to
+            # hand one Pro download to the next caller of the same URL.
+            "Cache-Control":       "private, no-store",
+            "CDN-Cache-Control":   "no-store",
+            "Vary":                "Cookie",
             "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Market-Brief-Tier": tier,
             "X-Content-Type-Options": "nosniff",
