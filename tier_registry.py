@@ -338,6 +338,49 @@ ANNUAL_OPTIONS = {
 }
 
 
+def annual_offer(tier):
+    """The annual plan a surface may ADVERTISE for `tier` — derived — or None.
+
+    ★2026-09-10. /api/v1/mcp/upgrade-prompt, the body an agent relays the moment
+    its caller hits a Pro wall, still quoted a $299 Pro and a "$1,200/year (50%
+    off vs monthly)" annual saving five days after r-price-collapse withdrew
+    Pro Annual above. At a $99 list the annual link is 12 x $99 exactly, so the
+    saving it named was false, not merely stale — and the withdrawal could not
+    reach it, because it typed its figures instead of reading them from here.
+
+    Reads ANNUAL_OPTIONS (what is on sale) and price() (the monthly list), so the
+    restore path the note above names — put a real annual back in ANNUAL_OPTIONS
+    — needs no second edit wherever this is used.
+
+    Returns None when the tier has no PRICED annual option, and ALSO when the
+    annual would not save anything against twelve months of the list: an annual
+    that costs the same or more is not an offer, so a caller says nothing rather
+    than quoting a zero-percent "discount". Formatted here, beside
+    price_display(), for the reason that function gives.
+
+    ★ NOT YET THE ONLY ANNUAL PREDICATE. routes/mcp_connect.py binds its install-
+    page tile to the Stripe link's own price (_ANNUAL_PRICE_USD), because that
+    page renders the link itself. Both answer "no annual" today; a restore has
+    to move both until they share one source.
+    """
+    opt = ANNUAL_OPTIONS.get(_norm(tier)) or {}
+    year = opt.get('annual_usd_year')
+    monthly = price(tier)
+    if not year or not monthly:
+        return None
+    full_year = monthly * 12
+    saved = full_year - year
+    pct = int(round(saved * 100.0 / full_year))
+    if pct < 1:             # costs the same, costs more, or saves a rounding error
+        return None
+    return {
+        'usd_year': year,
+        'display': f"${year:,}/year",
+        'saved_usd_year': saved,
+        'saving_display': f"${saved:,}/year ({pct}% off vs monthly)",
+    }
+
+
 def as_public_dict():
     """Serializable registry for GET /api/v1/tiers (frontend mirror).
 
