@@ -256,6 +256,13 @@ class TestBodyTile:
         html = fpp._render_profile(dict(SITE), SITE["canonical_slug"])
         assert 'stat-label">Power<' in html
         assert "reported power capacity of 350.0 MW" in html
+        # ★ NOT DECORATION — the anchor that stops the FLEET assertions above
+        #   from being vacuous. "Reported capacity" not in html is satisfied
+        #   just as well by a LANE-2 block that never rendered at all, which is
+        #   the shape of a substring assertion that goes green on a deletion.
+        assert "Reported capacity" in html, (
+            "the LANE-2 context block must actually render for a plausible "
+            "capacity, or its suppression test proves nothing")
         assert html.count("350") >= 3, (
             "tile + prose + a JSON-LD measurement, at least")
 
