@@ -519,13 +519,10 @@ _ROUTE_DECORATORS = frozenset({"route", "get", "post", "put", "patch", "delete"}
 # Route handlers that reach IndexNow with no gate: known, and keyed by the exact
 # handler so a new one is never exempt. An entry that stops being an offender
 # fails the test too, so the fix deletes its line and this set only shrinks.
-_KNOWN_UNGATED_INDEXNOW_REACH = frozenset({
-    # GET|POST /api/cron/daily starts a thread that calls submit_to_indexnow
-    # (and posts to LinkedIn). Railway counted 14 calls in the 7 days to
-    # 2026-09-11, all 2xx, from a caller whose credential nobody has checked,
-    # so gating it without that caller could stop the daily job.
-    "main.py::daily_cron",
-})
+# 2026-09-12: EMPTY, and that is the point of the set. Its one entry,
+# main.py::daily_cron, was gated once the cron-job.org job that drives it began
+# sending a credential; the set shrinks and never grows.
+_KNOWN_UNGATED_INDEXNOW_REACH = frozenset()
 
 
 def _call_name(call):

@@ -298,30 +298,60 @@ def test_the_routes_this_pr_gated_are_clear():
         assert (f, h) not in flagged, f"{f}::{h} still reaches a sink ungated"
 
 
-def test_daily_cron_is_still_reported():
-    """main.py::daily_cron stays UNGATED by owner decision: its only caller is
-    an external cron-job.org job that sends no credential yet, so gating it now
-    would kill the daily news sync + LinkedIn digest. It must therefore keep
-    showing up in lane 3 — an accepted exposure that stays visible, not one the
-    detector stopped being able to see."""
-    off = _l3([_rec_file("main.py")])
-    assert any(o["handler"] == "daily_cron" for o in off), \
-        "daily_cron is no longer reported — the reach detector lost it"
+def _indexnow_reachers(rel):
+    """{handler name} in `rel` that REACH an IndexNow submitter — gated or not.
+
+    Deliberately not lane 3, which drops gated handlers. This asks only "can the
+    detector still SEE the call", which is the half that goes silently wrong.
+    """
+    from routes.route_auth_master_shell import _reaches_sink, _module_index
+    rec = _rec_file(rel)
+    index = _module_index([rec])
+    out = set()
+    for fn in rec["handlers"]:
+        sink = _reaches_sink(fn, rec, index)
+        if sink and any(n in sink for n in _INDEXNOW_SINK_NAMES):
+            out.add(fn.name)
+    return out
+
+
+def test_daily_cron_still_reaches_indexnow_and_is_now_gated():
+    """The anchor that keeps the repo-wide scan honest now the registry is empty.
+
+    main.py::daily_cron was the last ungated IndexNow reach, held open while its
+    only caller (an external cron-job.org job) sent no credential. That caller
+    now sends one and the handler is gated, so _ALLOWED_UNGATED_INDEXNOW is
+    empty — which makes test_no_new_ungated_indexnow_reach pass on an EMPTY
+    offender list, exactly what a blind detector also produces (mutation M17).
+
+    So this pins the two halves apart: daily_cron must still be SEEN reaching
+    submit_to_indexnow (it does — the gate refuses the caller, it does not remove
+    the call), and must NOT be in the ungated set. Revert the sink names and the
+    first assertion fails; delete the gate and the second does.
+    """
+    reachers = _indexnow_reachers("main.py")
+    assert "daily_cron" in reachers, (
+        "main.py::daily_cron no longer reads as reaching an IndexNow submitter "
+        "— it still calls submit_to_indexnow, so the DETECTOR went blind "
+        "(sink names, scan scope, or reach resolution)")
+    assert "daily_cron" not in _ungated_indexnow_reach(), \
+        "daily_cron is reaching IndexNow ungated again"
 
 
 # ── 6 · the CI gate: no NEW ungated IndexNow reach ────────────────────
 
-# The one handler allowed to reach an IndexNow submitter with no gate.
-# main.py::daily_cron is driven by an external cron-job.org job that sends no
-# credential yet (14 req/7d, all 2xx); gating it before that caller carries a
-# header would kill the daily news sync and LinkedIn digest. The owner is adding
-# the header, then it gets its gate and this set goes empty.
+# EMPTY, 2026-09-12. Its one entry, main.py::daily_cron, was gated once the
+# cron-job.org job began sending a credential. An empty set makes the "no new
+# offenders" test below pass on an empty list — which is also what a BLIND
+# detector produces — so test_daily_cron_still_reaches_indexnow_and_is_now_gated
+# holds the scan to still seeing that call. Add an entry only with the reason it
+# cannot be gated yet.
 #
 # This is the transitive counterpart of _KNOWN_UNGATED_INDEXNOW_REACH in
 # tests/test_route_auth_criticals.py, which keys on DIRECT calls only. Every
 # route in the sweep this file documents reached its submitter one or two calls
 # past the handler body, so a direct-reach registry cannot see a new one.
-_ALLOWED_UNGATED_INDEXNOW = {"main.py::daily_cron"}
+_ALLOWED_UNGATED_INDEXNOW = set()
 
 _INDEXNOW_SINK_NAMES = ("submit_to_indexnow", "ping_indexnow", "ping_new_facilities")
 
@@ -357,11 +387,16 @@ def test_no_new_ungated_indexnow_reach():
         "register them here with the reason they cannot be gated yet")
 
 
-def test_the_registered_exception_is_still_real():
-    """The other direction. If daily_cron stops being an offender — because it
-    was gated, or because the detector stopped seeing it — this set is stale and
-    must be emptied in the same change. A registry nobody prunes is how an
-    accepted exposure becomes a permanent one."""
+def test_every_registered_exception_is_still_real():
+    """The other direction: a registry nobody prunes is how an accepted exposure
+    becomes a permanent one. If an entry stops being an offender — gated, or the
+    detector stopped seeing it — it must be deleted in that same change.
+
+    DORMANT while _ALLOWED_UNGATED_INDEXNOW is empty, and deliberately kept: it
+    is what makes the next registration safe to add. The live proof that the
+    scan is not simply blind is
+    test_daily_cron_still_reaches_indexnow_and_is_now_gated, which does not
+    depend on this set at all."""
     found = _ungated_indexnow_reach()
     stale = _ALLOWED_UNGATED_INDEXNOW - found
     assert not stale, (
