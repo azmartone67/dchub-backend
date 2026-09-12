@@ -15,6 +15,10 @@ statements as text. Only a database can show what those statements DO:
     The batch has to land in the same place in both;
   · `k.id = %s` coerces a digit-string pointer to an integer and cannot bind a
     hex one; `k.id = ANY(%s)` has to end up with the same keepers;
+  · the IndexNow delta's own window: `id > %s` bounds each page — without it
+    the public walk (?delta=1&dry_run=1&since_id=…) returns the same rows
+    forever — and COALESCE(is_duplicate, 0) = 0 keeps suppressed rows out of a
+    preview of a stream that would never submit them;
   · both walks end to end, and the carrier endpoint's own id lookups feeding
     them.
 
@@ -465,3 +469,45 @@ def test_the_carrier_endpoint_links_each_id_at_the_page_it_lands_on(db):
                              else "ntt-ntt-tokyo-5-" + H_NTT),
         "ccccccccccccccc3": "ovh-rbx-8-" + H_OVH,
     }
+
+
+def _delta_slug_of(row):
+    return row["canonical_slug"] or build_canonical_slug(row["provider"], row["name"])
+
+
+def test_the_indexnow_delta_window_pages_and_skips_suppressed_rows(db):
+    """The delta preview went public so the daily stream can be WALKED: each
+    reply names the next_since to ask for. The in-memory fake in
+    tests/test_facility_links_point_at_the_served_slug.py answers a table, not a
+    WHERE clause, so the two things that make the walk true are proved here.
+    Without `id > %s` every page returns the same rows forever and the walk is a
+    fiction; without COALESCE(is_duplicate, 0) = 0 the preview shows URLs the
+    cron will never submit, which is the same as not having measured it."""
+    _shape, conn = db
+    import routes.indexnow as inx
+    expected = [r for r in DISCOVERED
+                if r["id"] > 113 and not (r["is_duplicate"] or 0)][:5]
+    assert [r["id"] for r in expected] == [115, 116, 117, 118, 120], (
+        "the fixture drifted: 114 and 119 are the suppressed rows this window "
+        "is built to step over")
+    with conn.cursor() as cur:
+        n1, next1, page1 = inx._delta_slugs(cur, 113, 5, True)
+        assert n1 == len(expected) and next1 == expected[-1]["id"]
+        assert page1 == [_delta_slug_of(r) for r in expected], page1
+        # A slug is only a witness for suppression when NO live row wears it:
+        # 119 is suppressed and 120 is not, and the pair share one frozen slug
+        # deliberately (they are the page's ORDER BY fixture).
+        suppressed = {_delta_slug_of(r) for r in DISCOVERED if (r["is_duplicate"] or 0)}
+        suppressed -= {_delta_slug_of(r) for r in DISCOVERED if not (r["is_duplicate"] or 0)}
+        assert suppressed, "no slug belongs only to a suppressed row — pass empty"
+        assert not (set(page1) & suppressed), \
+            f"the delta carries a suppressed row: {sorted(set(page1) & suppressed)}"
+        n2, next2, page2 = inx._delta_slugs(cur, next1, 5, True)
+        assert n2 and next2 > next1, "the second page did not advance"
+        assert not (set(page1) & set(page2)), \
+            "the pages overlap — `id > %s` is not bounding the window"
+        # without the frozen column the delta composes every slug itself
+        _n, _m, built = inx._delta_slugs(cur, 113, 5, False)
+        assert built == [build_canonical_slug(r["provider"], r["name"])
+                         for r in expected], built
+    conn.rollback()

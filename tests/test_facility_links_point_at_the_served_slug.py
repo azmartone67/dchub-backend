@@ -661,9 +661,14 @@ def test_geography_hub_links_the_served_slug(monkeypatch, path):
 # routes/indexnow.py ONLY"); seo_agent's list went with its ungated routes in
 # be#4422. Measured 2026-09-12 through this module's PUBLIC dry-run preview,
 # which returns the list and never pings — cache-busted, HEAD with redirects not
-# followed: 25 of 25 newest facility URLs already 200. The preview hands back 25
-# URLs whatever `n` says, and the delta stream cannot be previewed at all, so
-# these tests are the fence for the part no probe can reach.
+# followed: 25 of 25 newest facility URLs already 200.
+#
+# That preview then handed back 25 URLs whatever `n` said, and the delta stream
+# — the one that runs unattended — could not be previewed at all, so these tests
+# were the only fence over it. The cap is now _PREVIEW_MAX_PUBLIC and the delta
+# has _delta_preview, which is read-only; the tests below cover the preview too,
+# because a preview that could submit, move the cursor, or disagree with the
+# submitter would be worse than no preview.
 INDEXNOW_ROWS = [dict(row, id=1200 + i) for i, row in enumerate(LISTED)]
 
 
@@ -704,6 +709,20 @@ def test_indexnow_recent_facility_urls_are_the_served_slugs(monkeypatch):
     _resolved_once(world, "indexnow _recent_facility_urls")
 
 
+def test_indexnow_newest_list_reports_what_it_resolved(monkeypatch):
+    """The facilities preview's moved/collapsed are counted inside
+    _served_facility_urls and reach the reply only because this builder passes
+    the dict THROUGH. A builder that drops it answers a confident 0 for a list
+    full of moved URLs — and the sample cannot contradict it, because by then
+    every URL in it answers 200."""
+    _served_world(monkeypatch)
+    inx, _db = _indexnow(monkeypatch, _indexnow_answer)
+    stats = {}
+    urls = inx._recent_facility_urls(50, stats)
+    assert len(urls) == 3, urls
+    assert stats == {"moved": 1, "collapsed": 0}, stats
+
+
 def test_indexnow_delta_submits_the_served_slugs(monkeypatch):
     """The daily churn hook: the one IndexNow path that runs unattended."""
     world = _served_world(monkeypatch)
@@ -736,3 +755,85 @@ def test_indexnow_collapses_a_twin_and_its_keeper_into_one_url(monkeypatch):
         else list(rows) if t == "discovered_facilities" else []))
     assert _paths(inx, inx._recent_facility_urls(50)) == ["/facilities/" + KEEPER]
     _resolved_once(world, "indexnow twin and keeper")
+
+
+def _writes(db):
+    """Statements the fake recorded that were NOT SELECTs — it records those by
+    verb, in caps, where a SELECT is recorded by table name."""
+    return [t for t, _cols in db.queries if t.isupper()]
+
+
+def test_the_fake_records_a_write_when_one_happens(monkeypatch):
+    """Floor for the two read-only assertions below. If the fake stopped
+    recording writes, 'the preview wrote nothing' would pass on a preview that
+    wrote everything. The submitter is the control: it creates its cursor table
+    and updates it."""
+    _served_world(monkeypatch)
+    inx, db = _indexnow(monkeypatch, _indexnow_answer)
+    monkeypatch.setattr(inx, "submit_to_indexnow", lambda urls: {"ok": True})
+    inx.ping_new_facilities(50)
+    assert set(_writes(db)) >= {"CREATE", "UPDATE"}, (
+        f"the submitter's writes were not recorded: {db.queries}")
+
+
+def test_indexnow_delta_preview_shows_the_stream_without_touching_it(monkeypatch):
+    """The measurement this endpoint exists for: what the daily delta WOULD
+    submit, read from outside the process, with no ping and no cursor move."""
+    world = _served_world(monkeypatch)
+    inx, db = _indexnow(monkeypatch, _indexnow_answer)
+
+    def _refuse(_urls):
+        raise AssertionError("the preview pinged IndexNow")
+    monkeypatch.setattr(inx, "submit_to_indexnow", _refuse)
+    out = inx._delta_preview(50)
+    assert out.get("ok") and out.get("dry_run") is True, out
+    assert _paths(inx, out["sample"]) == ["/facilities/" + SERVED,
+                                          "/facilities/" + UNFROZEN_SLUG,
+                                          "/facilities/" + KEEPER], out["sample"]
+    assert out["count"] == 3 and out["new_facilities"] == len(INDEXNOW_ROWS)
+    assert out["cursor"] == 1199 and out["since"] == 1199
+    assert out["next_since"] == max(r["id"] for r in INDEXNOW_ROWS), (
+        "next_since must name where the cursor WOULD land, so the stream can be "
+        "walked in pages")
+    # The number no HEAD of `sample` can recover: one of these rows wears a
+    # slug whose page 301s, and the sample already shows it resolved.
+    assert out["moved"] == 1 and out["collapsed"] == 0, out
+    assert not _writes(db), f"the preview wrote to the database: {_writes(db)}"
+    _resolved_once(world, "indexnow _delta_preview")
+
+
+def test_indexnow_delta_preview_counts_a_collapse(monkeypatch):
+    """moved and collapsed are different things: a twin whose keeper is also in
+    the window both moves AND collapses, and a preview that reported only the
+    URL count would show two rows becoming one URL with no reason given."""
+    _served_world(monkeypatch)
+    rows = [dict(TWIN_ROW, id=1300), dict(KEEPER_ROW, id=1301)]
+    inx, db = _indexnow(monkeypatch, lambda t, _s: (
+        [{"1": 1}] if t.startswith("information_schema")
+        else [{"last_fac_id": 1299}] if t == "indexnow_cursor"
+        else list(rows) if t == "discovered_facilities" else []))
+    out = inx._delta_preview(50)
+    assert _paths(inx, out["sample"]) == ["/facilities/" + KEEPER]
+    assert out["new_facilities"] == 2 and out["count"] == 1
+    assert out["moved"] == 1 and out["collapsed"] == 1, out
+    assert not _writes(db), f"the preview wrote to the database: {_writes(db)}"
+
+
+def test_indexnow_delta_preview_reopens_a_window_the_cursor_has_passed(monkeypatch):
+    """Without since_id, a preview run any time after the daily cron sees an
+    empty delta — and an empty preview measures nothing. since_id is what makes
+    the stream walkable, so it must reach the SELECT's lower bound, not just the
+    reply."""
+    _served_world(monkeypatch)
+    inx, _db = _indexnow(monkeypatch, _indexnow_answer)
+    bounds, real = [], inx._delta_slugs
+
+    def _spy(cur, last_id, limit, has_canon):
+        bounds.append(last_id)
+        return real(cur, last_id, limit, has_canon)
+    monkeypatch.setattr(inx, "_delta_slugs", _spy)
+    assert inx._delta_preview(50)["since"] == 1199
+    assert bounds == [1199], "the default window is not the stored cursor"
+    assert inx._delta_preview(50, since_id=0)["since"] == 0
+    assert bounds == [1199, 0], (
+        f"since_id never reached the one delta selection: {bounds}")

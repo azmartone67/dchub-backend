@@ -69,4 +69,38 @@ def test_the_delta_endpoint_still_does_what_the_cron_relies_on():
     ok_idx = body.index('if res.get("ok"):')
     upd_idx = body.index("UPDATE indexnow_cursor SET last_fac_id", ok_idx)
     assert upd_idx > ok_idx and "conn.rollback()" in body[upd_idx:]
-    assert "COALESCE(is_duplicate, 0) = 0" in body, "duplicates must never be submitted"
+    # The selection moved into _delta_slugs (2026-09-12) so the public preview
+    # measures the stream the cron actually submits instead of a second copy of
+    # it. The filter follows the query; what is NEW here is that there is one
+    # of them and that both callers run it.
+    sel = ast.get_source_segment(src, fn["_delta_slugs"])
+    assert "COALESCE(is_duplicate, 0) = 0" in sel, "duplicates must never be submitted"
+    assert "id > %s" in sel and "ORDER BY id ASC" in sel, \
+        "the delta is rows NEWER than the cursor, in id order"
+    assert "COALESCE(is_duplicate, 0) = 0" not in src.replace(sel, "", 1), (
+        "a second copy of the delta filter — the preview must run the "
+        "submitter's own selection, not one that can drift from it")
+    for caller in ("ping_new_facilities", "_delta_preview"):
+        assert "_delta_slugs(" in ast.get_source_segment(src, fn[caller]), \
+            f"{caller} does not run the one delta selection"
+
+
+def test_the_public_delta_preview_cannot_submit_or_move_the_cursor():
+    """?delta=1&dry_run=1 is public (2026-09-12) so the daily delta can be
+    measured from outside. That is safe because _delta_preview does not CONTAIN
+    the calls that would make it unsafe — not because it checks a flag first,
+    which a later edit could invert. The submitter's body is the control: every
+    banned string is checked to be real there, so this cannot pass by naming
+    things that do not exist."""
+    src = SRC.read_text()
+    fn = {n.name: n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef)}
+    preview = ast.get_source_segment(src, fn["_delta_preview"])
+    submitter = ast.get_source_segment(src, fn["ping_new_facilities"])
+    for banned in ("submit_to_indexnow", "UPDATE indexnow_cursor",
+                   "CREATE TABLE", "FOR UPDATE", "conn.commit("):
+        assert banned in submitter, \
+            f"{banned!r} is not in the submitter — this ban names nothing"
+        assert banned not in preview, \
+            f"_delta_preview contains {banned!r}: a preview must only read"
+    ep = ast.get_source_segment(src, fn["indexnow_endpoint"])
+    assert "_delta_preview(" in ep, "the endpoint never reaches the preview"

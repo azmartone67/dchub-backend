@@ -449,20 +449,32 @@ def test_team_view_returns_key_for_admin_or_matching_subscription():
 # routes/indexnow.py is now the ONLY IndexNow surface. These guard it, and
 # guard against a third ungated twin appearing.
 
-def _run_indexnow_endpoint(req):
+def _run_indexnow_endpoint(req, **overrides):
     """Exec the REAL indexnow_endpoint together with the REAL _admin_ok/_wants
     it calls, in ONE namespace, so the gate under test is the shipped code and
-    not a stub. submit_to_indexnow is the sink that proves we got past it."""
+    not a stub. submit_to_indexnow is the sink that proves we got past it.
+    `overrides` replace collaborators in that namespace (used to capture what
+    the handler hands the preview)."""
     def _sink(*a, **k):
         raise _PastGate("reached submit_to_indexnow")
 
+    # The REAL caps, imported rather than repeated: a preview cap the handler
+    # reads from a constant this fixture invented would be gate-shaped and
+    # measure nothing.
+    from routes.indexnow import _PREVIEW_MAX_ADMIN, _PREVIEW_MAX_PUBLIC
     ns = {
         "jsonify": _jsonify, "_ADMIN_KEY": _ADMIN, "HOST": "dchub.cloud",
         "KEY_LOCATION": "https://dchub.cloud/k.txt",
         "_load_last": lambda: {}, "submit_to_indexnow": _sink,
-        "ping_new_facilities": _sink, "_recent_facility_urls": lambda n: [],
+        "ping_new_facilities": _sink,
+        "_recent_facility_urls": lambda n, stats=None: [],
         "_recent_dcpi_urls": lambda n: [], "_sitemap_recent": lambda n: [],
+        # the read-only delta preview: NOT a sink — reaching it is the point
+        "_delta_preview": lambda *a, **k: {"ok": True, "preview": True},
+        "_PREVIEW_MAX_PUBLIC": _PREVIEW_MAX_PUBLIC,
+        "_PREVIEW_MAX_ADMIN": _PREVIEW_MAX_ADMIN,
     }
+    ns.update(overrides)
     for fname in ("_admin_ok", "_wants", "indexnow_endpoint"):
         exec(compile(_extract("routes/indexnow.py", fname), "<h>", "exec"), ns)
     ns["request"] = req          # after exec: these share ns as __globals__
@@ -479,6 +491,111 @@ def test_indexnow_endpoint_submit_modes_are_gated():
                 _FakeReq(method=method, args={mode: "1"}))
             assert _rejected(rv), \
                 f"{method} ?{mode}=1 was not gated (got {_status(rv)})"
+
+
+def test_dry_run_delta_previews_and_never_reaches_the_submitter():
+    """?delta=1&dry_run=1 became PUBLIC on 2026-09-12, so the daily delta —
+    the one IndexNow stream no external probe could see — can be measured.
+    What keeps that safe is WHERE it lands: _delta_preview, which neither pings
+    nor advances the cursor. ping_new_facilities is the sink here; reaching it
+    fails. The admin case at the end proves the sink is reachable at all, so
+    the assertion above is not passing on a dead path."""
+    for method in ("GET", "POST"):
+        rv = _run_indexnow_endpoint(
+            _FakeReq(method=method, args={"delta": "1", "dry_run": "1"}))
+        assert rv != ("__PAST__",), \
+            f"{method} ?delta=1&dry_run=1 reached ping_new_facilities"
+        assert rv == {"_payload": {"ok": True, "preview": True}}, \
+            f"{method} ?delta=1&dry_run=1 did not reach the read-only preview: {rv}"
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="POST", args={"delta": "1"},
+                 headers={"X-Admin-Key": _ADMIN}))
+    assert rv == ("__PAST__",), "an admin ?delta=1 no longer reaches the submitter"
+
+
+def test_the_preview_cap_bounds_the_public_read_and_the_key_lifts_it():
+    """The cap IS the change: at 25 URLs a preview could not answer how many of
+    a 2,000-URL submit move, so nothing about these streams was measurable from
+    outside. Raising it keeps a bound on the keyless read and hands the key
+    holder the whole list."""
+    from routes.indexnow import _PREVIEW_MAX_ADMIN, _PREVIEW_MAX_PUBLIC
+    assert 100 <= _PREVIEW_MAX_PUBLIC <= _PREVIEW_MAX_ADMIN, (
+        f"public preview cap {_PREVIEW_MAX_PUBLIC} cannot measure a stream this "
+        "size, or exceeds the admin cap")
+    calls = []
+
+    def _capture(*a, **k):
+        calls.append(a)
+        return {"ok": True}
+
+    args = {"delta": "1", "dry_run": "1", "n": "9999"}
+    _run_indexnow_endpoint(_FakeReq(method="GET", args=dict(args)),
+                           _delta_preview=_capture)
+    assert calls[-1][0] == _PREVIEW_MAX_PUBLIC, (
+        f"a keyless preview asked the DB for {calls[-1][0]} rows — the public "
+        f"cap is {_PREVIEW_MAX_PUBLIC}")
+    _run_indexnow_endpoint(_FakeReq(method="GET", args=dict(args),
+                                    headers={"X-Admin-Key": _ADMIN}),
+                           _delta_preview=_capture)
+    assert calls[-1][0] == 9999, "the admin key did not lift the preview cap"
+    # the paging knob: without it a preview run after the cron is empty
+    _run_indexnow_endpoint(
+        _FakeReq(method="GET", args={"delta": "1", "dry_run": "1",
+                                     "since_id": "1234"}),
+        _delta_preview=_capture)
+    assert calls[-1][1] == 1234, "since_id never reached the preview"
+
+
+def test_the_preview_returns_its_whole_capped_list_not_a_25_url_slice():
+    """The RESPONSE, not just the row cap. The slice was hardcoded at 25, so a
+    preview of a 2,000-URL submit came back 25 URLs long however large `n` was
+    and whoever asked — `count` was the only field that told the truth."""
+    from routes.indexnow import _PREVIEW_MAX_ADMIN, _PREVIEW_MAX_PUBLIC
+    many = [f"https://dchub.cloud/facilities/f-{i}"
+            for i in range(_PREVIEW_MAX_PUBLIC + 100)]
+
+    def _many(n, stats=None):
+        return list(many)
+
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="GET", args={"facilities": "1", "dry_run": "1"}),
+        _recent_facility_urls=_many)
+    body = rv["_payload"]
+    assert body["count"] == len(many), body
+    assert len(body["sample"]) == _PREVIEW_MAX_PUBLIC, (
+        f"a keyless preview returned {len(body['sample'])} of {body['count']} "
+        f"URLs — the cap is {_PREVIEW_MAX_PUBLIC}")
+    assert body["sample_truncated"] is True, \
+        "a short sample must say so, or count and sample read as the same list"
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="GET", args={"facilities": "1", "dry_run": "1"},
+                 headers={"X-Admin-Key": _ADMIN}),
+        _recent_facility_urls=_many)
+    body = rv["_payload"]
+    assert len(many) <= _PREVIEW_MAX_ADMIN and len(body["sample"]) == len(many), \
+        "the admin key did not lift the sample slice"
+    assert body["sample_truncated"] is False
+
+
+def test_the_preview_reports_what_the_resolution_absorbed():
+    """`moved` and `collapsed` are counted where the slugs are resolved and are
+    unrecoverable afterwards — every URL in `sample` already answers 200. If the
+    handler stops handing the builder somewhere to put them, the preview reports
+    a confident 0 for a stream full of moved URLs."""
+    def _fills_stats(n, stats=None):
+        if stats is not None:
+            stats["moved"], stats["collapsed"] = 7, 2
+        return ["https://dchub.cloud/facilities/a"]
+
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="GET", args={"facilities": "1", "dry_run": "1"}),
+        _recent_facility_urls=_fills_stats)
+    assert rv["_payload"]["moved"] == 7 and rv["_payload"]["collapsed"] == 2, rv
+    # a preview of a stream that does not resolve slugs claims nothing
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="GET", args={"dcpi": "1", "dry_run": "1"}))
+    assert "moved" not in rv["_payload"], \
+        "the DCPI list has no served-slug resolution to report"
 
 
 def test_indexnow_endpoint_accepts_admin_key():
