@@ -172,6 +172,7 @@ class PGCursorWrapper:
         self._cur = pg_cursor
         self._description = None
         self._lastrowid = None
+        self._rowcount = None
 
     @property
     def description(self):
@@ -179,7 +180,63 @@ class PGCursorWrapper:
 
     @property
     def rowcount(self):
+        # ★★★ The rowcount of the statement the CALLER ran, captured at execute
+        # time — not whatever the underlying cursor holds now. execute() runs a
+        # second statement of its own (`SELECT lastval()`) after an INSERT with
+        # no RETURNING, and the raw cursor's rowcount then describes THAT SELECT:
+        # 1 row, unconditionally. Every caller doing the standard
+        # `INSERT ... ON CONFLICT DO NOTHING` / `if cur.rowcount > 0` pair was
+        # told a conflicting insert had landed. news_engine.save_articles
+        # reported "322 new" for 172 rows that way (2026-09-12 02:24Z) — a false
+        # count is what let a nine-day news outage read as healthy. 92 call sites
+        # across this repo read rowcount straight after such an INSERT; they are
+        # fixed here, at the one place that broke them, rather than one by one.
+        if self._rowcount is not None:
+            return self._rowcount
         return self._cur.rowcount
+
+    def _probe_lastval(self):
+        """Read lastval() for .lastrowid WITHOUT risking the caller's transaction.
+
+        ★ Wrapped in a SAVEPOINT because the bare probe was destructive. When no
+        sequence has been used yet in the session, `SELECT lastval()` raises
+        55000 `lastval is not yet defined in this session` — and inside an open
+        transaction that error aborts the transaction, so the INSERT that just
+        succeeded is discarded at commit and every later statement fails with
+        "current transaction is aborted". Measured against real Postgres: a
+        single new row inserted through this wrapper on a cold session committed
+        ZERO rows. The probe is a convenience for .lastrowid (16 call sites); it
+        must never cost the write it is reporting on.
+        """
+        if self._cur.rowcount == 0:
+            return None  # nothing was inserted, so there is no new id to read
+        try:
+            self._cur.execute("SAVEPOINT _pgw_lastval")
+        except Exception:
+            # No transaction to save into (autocommit) — there is nothing for a
+            # failed probe to abort, so the plain read is safe here.
+            try:
+                self._cur.execute("SELECT lastval()")
+                row = self._cur.fetchone()
+                return row[0] if row else None
+            except Exception:
+                return None
+        try:
+            self._cur.execute("SELECT lastval()")
+            row = self._cur.fetchone()
+            lastrowid = row[0] if row else None
+        except Exception:
+            lastrowid = None
+            try:
+                self._cur.execute("ROLLBACK TO SAVEPOINT _pgw_lastval")
+            except Exception:
+                pass
+        else:
+            try:
+                self._cur.execute("RELEASE SAVEPOINT _pgw_lastval")
+            except Exception:
+                pass
+        return lastrowid
 
     @property
     def lastrowid(self):
@@ -202,15 +259,14 @@ class PGCursorWrapper:
         has_returning = 'RETURNING' in translated.upper() if is_insert else False
 
         try:
+            self._rowcount = None
             self._cur.execute(translated, pg_params)
             self._description = self._cur.description
+            # Captured BEFORE the lastval probe below runs a second statement
+            # over the top of it. See the rowcount property.
+            self._rowcount = self._cur.rowcount
             if is_insert and not has_returning:
-                try:
-                    self._cur.execute("SELECT lastval()")
-                    row = self._cur.fetchone()
-                    self._lastrowid = row[0] if row else None
-                except Exception:
-                    self._lastrowid = None
+                self._lastrowid = self._probe_lastval()
         except Exception as e:
             logger.warning(f"PG query failed, sql snippet: {translated[:120]}... error: {e}")
             try:
@@ -227,6 +283,9 @@ class PGCursorWrapper:
 
     def executemany(self, sql, rows):
         translated, _ = _translate_sql(sql)
+        # Cleared so a cached rowcount from an earlier execute() on this cursor
+        # cannot be read back as if it described this batch.
+        self._rowcount = None
         try:
             for row in rows:
                 if isinstance(row, (list, tuple)):

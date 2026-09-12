@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import re
 from pathlib import Path
 
 import psycopg2
@@ -295,3 +296,318 @@ def test_both_writers_ask_before_they_write():
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             assert "SAVEPOINT sp_article" not in node.value, (
                 "the savepoint recovery this writer relied on never existed")
+
+
+# ── the single-row writer: the count must name rows, not offers ──────────────
+# 2026-09-12 02:24Z, same worker, the run immediately after #4438 restored
+# ingestion: `✅ Sync done in 49.9s — 322 new, 322 to announcements, 12081
+# total`, while /api/v1/admin/news/ingest-health moved rows_24h from 10 to 182.
+# 322 was exactly the number of articles OFFERED; about 172 rows landed.
+#
+# `save_articles` counted with `if c.rowcount > 0`, and its cursor is a
+# db_utils.PGCursorWrapper whose execute() fires `SELECT lastval()` of its own
+# after any INSERT carrying no RETURNING. The rowcount read back described that
+# SELECT — one row, always — so an ON CONFLICT DO NOTHING that inserted nothing
+# still counted as saved.
+#
+# Every semantic the fake below adds was measured against a real Postgres 18
+# through the real PGCursorWrapper before it was written here (a fixture that
+# models a database more capable than the real one turns a can't-work into a
+# green): a conflicting ON CONFLICT DO NOTHING reports rowcount 0; a fresh
+# insert reports 1; `SELECT lastval()` reports 1 when a sequence has been used
+# in the session and raises 55000 when it has not; that raise aborts the
+# transaction until a ROLLBACK TO SAVEPOINT; and `RETURNING id` hands back one
+# row per row inserted and nothing for a skipped conflict.
+class Aborted(Exception):
+    """psycopg2 raises for both `lastval is not yet defined in this session`
+    (55000) and the `current transaction is aborted` that follows it."""
+
+
+class RowStoreCursor(FakeCursor):
+    """FakeCursor plus the parts a row-at-a-time INSERT needs to be observable.
+
+    Deliberately shaped like a psycopg2 cursor, because the REAL
+    PGCursorWrapper is layered over it — `.description`, `.connection` and a
+    per-statement `.rowcount` are read by the wrapper's own code, not by tests.
+    """
+
+    def __init__(self, conn):
+        super().__init__(conn)
+        self.description = None
+        self.connection = conn
+
+    def execute(self, sql, params=None):
+        head = " ".join(sql.strip().split()[:3]).upper()
+        upper = sql.upper()
+        if self.conn.aborted and not head.startswith("ROLLBACK TO"):
+            raise Aborted("current transaction is aborted, commands ignored")
+        if "LASTVAL()" in upper:
+            self.conn.lastval_probes += 1
+            if not self.conn.lastval_defined:
+                self.conn.aborted = True
+                self.description = None
+                self.rowcount = -1
+                raise Aborted("lastval is not yet defined in this session")
+            self.conn.serial += 1
+            self.description = [("lastval",)]
+            self.rowcount = 1
+            self._result = (self.conn.serial,)
+            return self
+        if head.startswith("INSERT INTO") and "NEWS_ARTICLES" in upper:
+            # One `(%s` group after VALUES is the row-at-a-time form and its
+            # first parameter is the id; several groups is a multi-row INSERT
+            # and every parameter is an id.
+            tail = sql[upper.index("VALUES"):] if "VALUES" in upper else ""
+            groups = len(re.findall(r"\(\s*%s", tail))
+            ids = list(params or ()) if groups > 1 else [(params or (None,))[0]]
+            self.conn.offered += len(ids)
+            fresh = [i for i in ids if i not in self.conn.ids()]
+            self.conn.pending.extend(fresh)
+            self.rowcount = len(fresh)
+            if "RETURNING" in upper:
+                self.description = [("id",)]
+                self._returned = list(fresh)
+                self._result = self._returned.pop(0) if self._returned else None
+                if self._result is not None:
+                    self._result = (self._result,)
+            else:
+                self.description = None
+                self._result = None
+            return self
+        result = super().execute(sql, params)
+        if head.startswith("ROLLBACK TO"):
+            # Postgres: this is how an aborted transaction becomes usable
+            # again. Without it modelled, a correct SAVEPOINT-guarded probe
+            # would look like it had failed.
+            self.conn.aborted = False
+        self.description = [("col",)] if self._result is not None else None
+        self.rowcount = 1 if self._result is not None else 0
+        return result
+
+
+class RowStoreConn(FakeConn):
+    def __init__(self, *, lastval_defined=True, **kw):
+        super().__init__(**kw)
+        # A long-lived worker process has touched some serial table by the time
+        # news runs, so lastval() is defined. That is the production path, and
+        # the path that overcounted.
+        self.lastval_defined = lastval_defined
+        self.aborted = False
+        self.lastval_probes = 0
+        self.serial = 500
+        self.offered = 0
+
+    def ids(self):
+        """Uncommitted rows conflict too — they are in the same transaction."""
+        return set(self.committed) | set(self.pending)
+
+    def cursor(self):
+        return RowStoreCursor(self)
+
+    def commit(self):
+        if self.aborted:      # psycopg2: committing an aborted tx discards it
+            self.pending = []
+            self.aborted = False
+            self.savepoints.clear()
+            return
+        super().commit()
+
+    def rollback(self):
+        self.aborted = False
+        super().rollback()
+
+
+def wrapped(conn):
+    """The connection save_articles gets: cursors are REAL PGCursorWrappers."""
+    import db_utils
+
+    class Pooled:
+        def cursor(self):
+            return db_utils.PGCursorWrapper(conn.cursor())
+
+        def commit(self):
+            conn.commit()
+
+        def rollback(self):
+            conn.rollback()
+
+        def close(self):
+            pass
+
+    return Pooled()
+
+
+def store(monkeypatch, engine, conn, *, has_column=True):
+    """Point save_articles at `conn` through the real wrapper."""
+    monkeypatch.setattr(engine, "get_db", lambda *a, **k: wrapped(conn))
+    monkeypatch.setattr(engine, "publisher_url_column_available",
+                        lambda: has_column)
+    # The PG batch writer and the announcements writer are separate code paths
+    # with their own connections; silencing them keeps `committed` a reading of
+    # the single-row writer alone.
+    monkeypatch.setattr(engine, "_sync_articles_to_pg", lambda a: None)
+
+
+def test_the_count_never_exceeds_the_rows_the_database_stored(engine, monkeypatch):
+    """★ THE BUG. 322 offered, 172 new, 150 already present -> "322 new".
+
+    The reported count is compared against rows the fake actually stored, not
+    against a number computed the same way the writer computes it."""
+    conn = RowStoreConn(columns={"publisher_url"})
+    store(monkeypatch, engine, conn)
+    already = articles(150)
+    engine.save_articles(already)
+    assert len(conn.committed) == 150
+    conn.offered = 0
+
+    reported = engine.save_articles(already + articles(322)[150:])
+
+    landed = len(conn.committed) - 150
+    assert conn.offered == 322, "the run must offer 322 articles to be the real case"
+    assert landed == 172, f"expected 172 new rows to land, {landed} did"
+    assert reported <= landed, (
+        f"save_articles reported {reported} new for {landed} rows actually "
+        f"stored — a count of articles OFFERED, not inserted")
+    assert reported == landed, (
+        f"save_articles reported {reported}, the database stored {landed}")
+
+
+def test_a_conflicting_insert_is_not_counted(engine, monkeypatch):
+    """The same article twice is one row, and must be reported as one."""
+    conn = RowStoreConn(columns={"publisher_url"})
+    store(monkeypatch, engine, conn)
+
+    first = engine.save_articles(articles(4))
+    second = engine.save_articles(articles(4))
+
+    assert first == 4
+    assert second == 0, f"re-offering the same 4 articles reported {second} new"
+    assert len(conn.committed) == 4
+
+
+def test_the_count_holds_without_the_publisher_url_column(engine, monkeypatch):
+    """The narrow statement is a separate literal and needs the same RETURNING."""
+    conn = RowStoreConn(columns=set())
+    store(monkeypatch, engine, conn, has_column=False)
+
+    engine.save_articles(articles(5))
+    reported = engine.save_articles(articles(8))
+
+    assert len(conn.committed) == 8
+    assert reported == 3, f"narrow-statement path reported {reported} for 3 new rows"
+
+
+# ── the wrapper underneath, exercised as itself ──────────────────────────────
+def test_the_real_wrapper_reports_the_inserts_rowcount_not_its_own_probe(engine):
+    """db_utils regression pin: 92 call sites in this repo read rowcount right
+    after an INSERT with no RETURNING. All of them read this number.
+
+    Two shapes, because they fail for different reasons. A CONFLICTING insert
+    catches a probe that runs when nothing was inserted. A MULTI-ROW insert
+    catches a rowcount that describes the probe rather than the statement —
+    the only shape that can, since a single new row and a lastval() both
+    report exactly 1."""
+    import db_utils
+
+    conn = RowStoreConn(columns={"publisher_url"})
+    cur = db_utils.PGCursorWrapper(conn.cursor())
+    plain = ("INSERT INTO news_articles (id) VALUES (%s) "
+             "ON CONFLICT (id) DO NOTHING")
+
+    cur.execute(plain, ("a1",))
+    assert cur.rowcount == 1, "a row that inserted must report 1"
+    assert conn.lastval_probes == 1, (
+        "the wrapper did not probe lastval, so this test is no longer "
+        "exercising the statement shape that broke — re-aim it")
+    conn.commit()
+
+    cur.execute(plain, ("a1",))
+    assert cur.rowcount == 0, (
+        f"a conflicting ON CONFLICT DO NOTHING reported rowcount "
+        f"{cur.rowcount}; the wrapper is describing its own SELECT lastval()")
+    conn.commit()
+    assert conn.committed == ["a1"]
+
+    before = conn.lastval_probes
+    cur.execute("INSERT INTO news_articles (id) VALUES (%s),(%s),(%s) "
+                "ON CONFLICT (id) DO NOTHING", ("b1", "b2", "b3"))
+    assert conn.lastval_probes == before + 1, (
+        "no probe ran, so this case cannot show a probe clobbering rowcount")
+    assert cur.rowcount == 3, (
+        f"a 3-row INSERT reported rowcount {cur.rowcount} — that is the "
+        f"SELECT lastval() the wrapper ran after it, not the INSERT")
+    conn.commit()
+    assert len(conn.committed) == 4
+
+
+def test_the_fixture_can_still_show_the_false_count(engine):
+    """★ CONTROL. The assertion above is worthless if this fake cannot produce
+    the 1 that the old wrapper read. Runs the old shape by hand: INSERT, then
+    the probe, then read the RAW cursor's rowcount — as db_utils used to."""
+    conn = RowStoreConn(columns={"publisher_url"})
+    raw = conn.cursor()
+    raw.execute("INSERT INTO news_articles (id) VALUES (%s) "
+                "ON CONFLICT (id) DO NOTHING", ("a1",))
+    conn.commit()
+    raw.execute("INSERT INTO news_articles (id) VALUES (%s) "
+                "ON CONFLICT (id) DO NOTHING", ("a1",))
+    assert raw.rowcount == 0, "the conflicting insert itself must report 0"
+    raw.execute("SELECT lastval()")
+    assert raw.rowcount == 1, (
+        "the fake cannot show a probe overwriting the insert's rowcount, so it "
+        "cannot prove the fix")
+
+
+def test_a_cold_session_still_keeps_the_row_it_inserted(engine, monkeypatch):
+    """The probe used to cost the write, not just the count.
+
+    With no sequence used yet, `SELECT lastval()` raises 55000 and aborts the
+    transaction, so the INSERT that had just succeeded was discarded at commit.
+    Measured against real Postgres: one new row in, zero rows committed."""
+    conn = RowStoreConn(columns={"publisher_url"}, lastval_defined=False)
+    store(monkeypatch, engine, conn)
+
+    reported = engine.save_articles(articles(3))
+
+    assert len(conn.committed) == 3, (
+        f"{3 - len(conn.committed)} of 3 rows were lost to the lastval probe")
+    assert reported == 3
+
+
+def test_the_lastval_probe_cannot_abort_the_callers_transaction(engine):
+    """Directly: a failing probe must leave the connection usable."""
+    import db_utils
+
+    conn = RowStoreConn(columns={"publisher_url"}, lastval_defined=False)
+    cur = db_utils.PGCursorWrapper(conn.cursor())
+    cur.execute("INSERT INTO news_articles (id) VALUES (%s) "
+                "ON CONFLICT (id) DO NOTHING", ("a1",))
+    assert conn.lastval_probes == 1, "the probe must have been attempted"
+    assert not conn.aborted, (
+        "a failed lastval() left the transaction aborted — it needs a SAVEPOINT")
+    assert cur.lastrowid is None
+    cur.execute("INSERT INTO news_articles (id) VALUES (%s) "
+                "ON CONFLICT (id) DO NOTHING", ("a2",))
+    conn.commit()
+    assert conn.committed == ["a1", "a2"]
+
+
+def test_the_writer_does_not_count_with_a_rowcount(engine):
+    """AST floor: the count may not come from rowcount, and both statement
+    literals must carry RETURNING."""
+    saver = _source("save_articles")
+    for node in ast.walk(saver):
+        if isinstance(node, ast.Attribute) and node.attr == "rowcount":
+            raise AssertionError(
+                "save_articles reads rowcount again — through the pooled "
+                "wrapper that number describes a SELECT lastval(), not the "
+                "INSERT")
+    inserts = [n.value for n in ast.walk(saver)
+               if isinstance(n, ast.Constant) and isinstance(n.value, str)
+               and "INSERT INTO news_articles" in n.value]
+    assert len(inserts) == 2, f"expected 2 INSERT literals, found {len(inserts)}"
+    for sql in inserts:
+        assert "RETURNING" in sql.upper(), (
+            f"an INSERT with no RETURNING makes the wrapper probe lastval and "
+            f"clobber rowcount: {' '.join(sql.split())[:80]}")
+        assert "ON CONFLICT" in sql.upper(), "dedup must stay on the statement"
