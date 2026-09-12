@@ -50,15 +50,42 @@ def _fresh_dedupe():
     db_utils._DDL_DROPPED_SEEN.clear()
 
 
+class _FakeConnection:
+    """Reached only on the wrapper's error path, which calls rollback()."""
+
+    def __init__(self):
+        self.rollbacks = 0
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
 class _Underlying:
-    """A raw cursor double. Records what actually reached the driver."""
+    """A raw psycopg2 cursor double. Records what reached the driver.
+
+    ★ IT MUST CARRY EVERYTHING THE WRAPPER TOUCHES, not merely what today's
+    assertions read. This double shipped with only `description` and
+    `execute`; #4453 then added a `rowcount` capture to
+    PGCursorWrapper.execute()'s non-DDL path, and these tests went red ON MAIN
+    with a bare AttributeError. The double was LESS capable than the object it
+    stands in for, so a legitimate change to the wrapper broke the test rather
+    than the test describing the wrapper.
+
+    test_the_double_carries_everything_the_wrapper_touches derives the required
+    surface from db_utils itself, so the next such change fails here by name.
+    """
     description = None
+    rowcount = -1          # psycopg2's value when a statement sets no count
 
     def __init__(self):
         self.seen = []
+        self.connection = _FakeConnection()
 
     def execute(self, sql, params=None):
         self.seen.append(sql)
+
+    def fetchone(self):
+        return None        # the wrapper's lastval() probe
 
 
 DDL = "ALTER TABLE news_articles ADD COLUMN IF NOT EXISTS publisher_url TEXT"
@@ -158,3 +185,54 @@ def test_the_logger_is_reachable_from_a_bare_root_handler():
     assert db_utils.logger.propagate, (
         "db_utils' logger does not propagate — these warnings would be "
         "invisible in Railway logs, which is where they have to be read")
+
+
+# ── the double must track the wrapper ──────────────────────────────────────
+
+_WRAPPER_METHODS = ("execute", "_probe_lastval")
+
+
+def test_the_double_carries_everything_the_wrapper_touches():
+    """Derive the required cursor surface from db_utils, not from memory.
+
+    A test double that is missing an attribute the wrapper reads does not fail
+    with a useful message — it fails with AttributeError, in whichever test
+    happens to exercise that line, one merge after the change that caused it.
+    That is how these tests went red on main after #4453 added a rowcount
+    capture. Deriving the surface turns that into a named failure here.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(db_utils))
+    cls = next((n for n in ast.walk(tree)
+                if isinstance(n, ast.ClassDef) and n.name == "PGCursorWrapper"), None)
+    assert cls is not None, "PGCursorWrapper is gone from db_utils"
+
+    seen_methods, required = set(), set()
+    for node in cls.body:
+        if isinstance(node, ast.FunctionDef) and node.name in _WRAPPER_METHODS:
+            seen_methods.add(node.name)
+            required |= {n.attr for n in ast.walk(node)
+                         if isinstance(n, ast.Attribute)
+                         and isinstance(n.value, ast.Attribute)
+                         and n.value.attr == "_cur"}
+
+    # Floors. If the introspection stops matching, every assertion below runs
+    # against an empty set and passes having checked nothing.
+    missing_methods = sorted(set(_WRAPPER_METHODS) - seen_methods)
+    assert not missing_methods, (
+        f"{missing_methods} no longer exist on PGCursorWrapper — this guard is "
+        "reading the wrong methods and would pass on anything. Update "
+        "_WRAPPER_METHODS to the ones that drive the underlying cursor.")
+    assert len(required) >= 3, (
+        f"derived only {sorted(required)} from the wrapper — the introspection "
+        "broke, not the double")
+
+    u = _Underlying()
+    absent = sorted(a for a in required if not hasattr(u, a))
+    assert not absent, (
+        f"PGCursorWrapper reads self._cur.{absent} but the test double does not "
+        f"provide {absent}. A real psycopg2 cursor has them; add them to "
+        "_Underlying rather than letting the next test to touch that line fail "
+        "with a bare AttributeError.")
