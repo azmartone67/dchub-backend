@@ -51,8 +51,19 @@ def _fresh_dedupe():
 
 
 class _Underlying:
-    """A raw cursor double. Records what actually reached the driver."""
+    """A raw cursor double. Records what actually reached the driver.
+
+    It must expose everything PGCursorWrapper reads off a real cursor, because
+    a double that is LESS capable than the real object fails tests the shipped
+    code would pass. `rowcount` is mandated by PEP 249 on every cursor — -1
+    when it cannot be determined, which is this double's honest answer since it
+    never runs a statement. #4453 started capturing it (to stop save_articles
+    counting a SELECT the wrapper ran), and these tests went red against a
+    double that had never needed it: main was red for reasons no production
+    path shared.
+    """
     description = None
+    rowcount = -1
 
     def __init__(self):
         self.seen = []
