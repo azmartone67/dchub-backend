@@ -32211,9 +32211,9 @@ def _build_sitemap_sections():
     # news-NER slug set.
     _ner_junk_slugs = set()
     # r-drain-fork (2026-09-07): same pre-bind contract — an early failure in
-    # the DB block must leave the emit loop with an empty map (keep every URL),
+    # the DB block must leave the emit loop with an empty set (keep every URL),
     # never an unbound name.
-    _drained_keeper = {}
+    _drained_twin_slugs = set()
     # r-noindex-coherence (2026-09-07): same pre-bind contract. Empty means
     # "emit everything", i.e. exactly today's sitemap — a failure building this
     # set must never be able to shrink the artefact.
@@ -32476,37 +32476,63 @@ def _build_sitemap_sections():
         # as r-selfcanon above — leaving it in the sitemap would submit a
         # guaranteed GSC "Alternate page with proper canonical". Drop it.
         #
-        # ★★ THE KEEPER MUST ACTUALLY BE EMITTED. This maps slug -> KEEPER SLUG
-        #    rather than collecting a drop-set, and the emit loop drops a legacy
-        #    URL only once the keeper's slug is already in seen_slugs. On
-        #    2026-07-28 a drop-set keyed on "belongs to a duplicate" cost 21 live
-        #    pages their sitemap entry; a membership test against what has
-        #    actually been emitted cannot do that, whatever the row ordering or
-        #    the capacity gate decide.
-        # ★ DISTINCT ON + the same ORDER BY as _drained_twin_url, so the sitemap
-        #   and the rel=canonical name the SAME keeper. Two answers here would
-        #   put the canonical on a URL the sitemap had dropped.
-        # ★ The tiebreak is `d.id ASC` alone, deliberately NOT the house's usual
-        #   "richest row wins". Measured 2026-09-07: 4,379 of 4,390 legacy slugs
-        #   have exactly ONE candidate keeper, and ordering by power_mw picks a
-        #   different keeper for ZERO of them — the term decides nothing here.
-        #   It also put a power_mw reference inside a builder query, which
-        #   test_sitemap_thin_gate::test_the_gate_is_emission_only correctly
-        #   refuses: capacity must reach this SQL only through _thin_excl, or
-        #   the kill switch and the collapse floor stop governing it.
+        # ★★★ r-selfcanon-unconditional (2026-09-12) — THIS WAS A MAP KEYED ON
+        #     THE KEEPER, AND THE EMIT LOOP DROPPED A LEGACY URL ONLY ONCE THAT
+        #     KEEPER'S SLUG WAS ALREADY IN seen_slugs. IT IS NOW A SET, AND
+        #     MEMBERSHIP ALONE DROPS.
+        #
+        # The 09-07 condition read as a safety property — "if the keeper did not
+        # make it into this sitemap, keep the twin so the facility keeps a URL".
+        # It is not one, because the PAGE does not consult it. _drained_twin_url
+        # and _twin_pointer_url canonicalise the twin at the keeper on the DB
+        # facts alone: no capacity gate, no junk/contentless/NER filter, no
+        # seen_slugs. So a twin whose keeper is filtered OUT of this artefact is
+        # still a page that canonicalises elsewhere, and advertising it is a
+        # guaranteed GSC "Alternate page with proper canonical" — the exact row
+        # r-selfcanon above exists to stop submitting.
+        #
+        # MEASURED 2026-09-12 against the live sitemap: sitemap-facilities-1.xml
+        # advertised 66 URLs that are 0-for-66 self-canonical. All 66 are exactly
+        # the set present in the GATED shard and absent from the UNGATED AI
+        # family — i.e. the condition firing: gated, the keeper is capacity-gated
+        # out so the twin is kept; ungated, the keeper is emitted first so the
+        # twin is dropped. 59 of the 66 canonical targets are in the AI family
+        # and NONE is in the gated shard. On 2026-09-07 the gated-only set was 0.
+        # ★ The condition also cost the artefact its subset property, which is
+        #   what the len()-based superset guard in _rebuild_sitemap_snapshot was
+        #   supposed to catch and could not — a count cannot see a set difference.
+        # ★ WHAT THE UNCONDITIONAL DROP COSTS: a facility whose keeper the
+        #   capacity gate withholds leaves the GATED shard entirely. That is the
+        #   honest outcome — the URL we were advertising canonicalises away, so
+        #   it could never be indexed — and the keeper is still published in the
+        #   ungated AI family. This is _noncanon_slugs' contract exactly, which
+        #   has dropped unconditionally since 2026-08-01.
+        # ★ The 2026-07-28 "a drop-set cost 21 live pages" lesson is carried by
+        #   the NOT EXISTS below, NOT by the seen_slugs test: a slug a LIVE
+        #   discovered row also wears is never in this set at all.
+        # ★ A SET, not a map: the sitemap no longer names a keeper, so it can no
+        #   longer name a DIFFERENT one from the canonical. The drain/twin
+        #   precedence that mattered while the value steered the artefact is now
+        #   the render path's alone (facility_profile_page tries _drained_twin_url
+        #   first; tests/test_sitemap_no_duplicate_selfcanon pins that there).
+        # ★ The same ORDER BY as _drained_twin_url is no longer needed for the
+        #   same reason — there is no keeper to agree about. The tiebreak stays
+        #   OUT of power_mw regardless: capacity must reach this SQL only through
+        #   _thin_excl or the kill switch and the collapse floor stop governing
+        #   it (test_sitemap_thin_gate::test_the_gate_is_emission_only).
         # ★ duplicate_of_id IS NULL on the keeper: a keeper that points onward
         #   is not a canonical target (no chains), mirroring _canonical_twin_row.
         # ★ NOT EXISTS: never drop a slug a live discovered row also wears —
         #   the 6,846-of-7,157 lesson, "this slug belongs to a duplicate" is not
         #   "this URL is redundant".
-        # ★ Fail-open like _dupe_slugs / _noncanon_slugs: no map → the old,
+        # ★ Fail-open like _dupe_slugs / _noncanon_slugs: no set → the old,
         #   bigger sitemap, never a broken one.
         # ★ r-junk-keeper (2026-09-07): the SAME predicate
         #   facility_profile_page._drained_twin_url applies, from the SAME
         #   function — a sitemap and a canonical that disagree about what a junk
         #   slug is put the canonical on a URL the sitemap never advertised.
         from routes.facility_dedup_v4 import junk_slug_sql as _junk_slug_sql
-        _drained_keeper = {}
+        _drained_twin_slugs = set()
         try:
             c.execute(
                 "SELECT DISTINCT ON (f.canonical_slug) "
@@ -32523,12 +32549,12 @@ def _build_sitemap_sections():
                 "                   WHERE COALESCE(s.is_duplicate, 0) = 0 "
                 "                     AND s.canonical_slug = f.canonical_slug) "
                 " ORDER BY f.canonical_slug, d.id ASC")
-            _drained_keeper = {r[0]: r[1] for r in (c.fetchall() or [])
-                               if r and r[0] and r[1]}
+            _drained_twin_slugs = {r[0] for r in (c.fetchall() or [])
+                                   if r and r[0] and r[1]}
         except Exception as _dk:
             try: conn.rollback()
             except Exception: pass
-            logger.warning("sitemap: drained-twin map unavailable, drain forks "
+            logger.warning("sitemap: drained-twin set unavailable, drain forks "
                            "will stay in the sitemap: %s", _dk)
 
         # ★★ r-twin-pointer (2026-09-07): the SECOND source of the same map —
@@ -32540,10 +32566,12 @@ def _build_sitemap_sections():
         #    sitemap would submit a guaranteed "Alternate page with proper
         #    canonical" — the same reason r-drain-fork drops its half.
         #
-        # ★ setdefault, NOT assignment: where a slug somehow has both links the
-        #   DRAIN FORK WINS, because facility_profile_page tries
-        #   _drained_twin_url first. Two answers here would put the canonical on
-        #   a URL the sitemap had dropped.
+        # ★ It feeds the SAME set as the drain arm, so a slug carried by both
+        #   links is dropped once and for the same reason. Which of the two the
+        #   canonical then names is the render path's choice alone — it tries
+        #   _drained_twin_url first — and the sitemap can no longer disagree with
+        #   it, because the sitemap no longer names a keeper (see the set note
+        #   above; before 2026-09-12 this was a map and the value decided).
         # ★ Every guard below is the drain-fork query's, unchanged and for the
         #   same measured reasons — keeper unsuppressed, keeper points at
         #   nobody, both slugs real, slugs differ, and NOT EXISTS so a slug a
@@ -32570,7 +32598,7 @@ def _build_sitemap_sections():
                 " ORDER BY f.canonical_slug, d.id ASC")
             for _r in (c.fetchall() or []):
                 if _r and _r[0] and _r[1]:
-                    _drained_keeper.setdefault(_r[0], _r[1])
+                    _drained_twin_slugs.add(_r[0])
         except Exception as _tp:
             try: conn.rollback()
             except Exception: pass
@@ -33465,6 +33493,10 @@ def _build_sitemap_sections():
     # Sharding (10k/file) keeps every emitted file far below the 50k/50MB
     # sitemap hard limits, so no per-file cap juggling is needed anymore.
     seen_slugs = set()
+    # r-sitemap-301 (2026-09-12): the emitted slugs in emission order, index-
+    # aligned with sections['facilities'], so the redirect resolver below can
+    # drop an entry without re-parsing a rendered <loc>.
+    _emitted_slugs = []
     _drain_fork_skipped = 0
     _osm_junk_skipped = 0
     _noncanon_skipped = 0
@@ -33659,13 +33691,14 @@ def _build_sitemap_sections():
             continue
 
         # r-drain-fork (2026-09-07): a legacy row the drain forked off a
-        # discovered row that has ALREADY been emitted under its own slug. Its
-        # page canonicalises to that keeper, so this URL is an alternate. The
-        # `in seen_slugs` test is the safety property — see _drained_keeper: if
-        # the keeper did not make it into this sitemap, neither of them is
-        # dropped and the facility keeps a URL.
-        _dk_keeper = _drained_keeper.get(full_slug)
-        if _dk_keeper and _dk_keeper in seen_slugs:
+        # discovered row, or one explicitly pointed at its discovered twin. Its
+        # page canonicalises to that keeper, so this URL is an alternate.
+        # r-selfcanon-unconditional (2026-09-12): the drop is UNCONDITIONAL, as
+        # _noncanon_slugs' is. The old `and _dk_keeper in seen_slugs` test read
+        # as a safety property but the PAGE never consults it, so with the
+        # keeper capacity-gated out it published 66 URLs that were 0-for-66
+        # self-canonical — see _drained_twin_slugs for the measurement.
+        if full_slug in _drained_twin_slugs:
             _drain_fork_skipped += 1
             continue
 
@@ -33679,20 +33712,54 @@ def _build_sitemap_sections():
 
         if full_slug not in seen_slugs:
             seen_slugs.add(full_slug)
+            _emitted_slugs.append(full_slug)
             sections['facilities'].append(f'  <url><loc>https://dchub.cloud/facilities/{full_slug}</loc><lastmod>{_lm}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
         # else: collision-loser — same provider|name as an already-emitted
         # winner. Its /facility/<id> page 301s to the winner's slug URL now;
         # emitting nothing here is the whole point of r-sitemap-shard.
 
+    # ★★★ r-sitemap-301 (2026-09-12) — NEVER ADVERTISE A URL THAT 301s.
+    # Measured live: three confirmed persistent redirects in the shards at both
+    # the edge and the origin, ~19 site-wide by sample. The predicate, the
+    # resolver call and the blast-radius cap live in util/sitemap_redirects,
+    # which documents the cause (a composed slug for an unfrozen row that the
+    # page answers from the hash8 arm, then case-A 301s to the frozen doubled
+    # spelling) and why a hash8 heuristic cannot decide it.
+    # ★ The connection is LENT, not opened: served_slugs would otherwise
+    #   `from main import get_read_db` re-entrantly.
+    # ★ EMISSION only, and fail-open — an empty set means today's artefact.
+    _redirect_skipped = 0
+    if _emitted_slugs:
+        _rconn = None
+        try:
+            from util.sitemap_redirects import redirecting_slug_set
+            _rconn = get_read_db()
+            _redirecting = redirecting_slug_set(_rconn, _emitted_slugs)
+            if _redirecting:
+                _kept = [e for _s, e in zip(_emitted_slugs, sections['facilities'])
+                         if _s not in _redirecting]
+                _redirect_skipped = len(sections['facilities']) - len(_kept)
+                sections['facilities'] = _kept
+                _emitted_slugs = [_s for _s in _emitted_slugs
+                                  if _s not in _redirecting]
+        except Exception as _rd_e:
+            logger.warning("sitemap: redirect resolution unavailable (%s) — "
+                           "redirecting facility URLs will be emitted", _rd_e)
+        finally:
+            if _rconn is not None:
+                try: _rconn.close()
+                except Exception: pass
+
     logger.info(
-        f"sitemap: {len(seen_slugs)} unique facility slugs "
+        f"sitemap: {len(_emitted_slugs)} unique facility slugs "
         f"(collision-losers dropped — they 301 to the winner now; "
         f"{_osm_junk_skipped} unknown-*/numeric-OSM junk slugs excluded; "
         f"{_headline_junk_skipped} news-headline/NER-span names excluded; "
         f"{_ner_junk_skipped} published news-NER slugs excluded; "
         f"{_drain_fork_skipped} drained legacy twins excluded (r-drain-fork); "
         f"{_noncanon_skipped} alternate-canonical slugs excluded; "
-        f"{_contentless_skipped} noindexed contentless pages excluded)")
+        f"{_contentless_skipped} noindexed contentless pages excluded; "
+        f"{_redirect_skipped} redirecting slugs excluded (r-sitemap-301))")
 
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
     # The geography hub (facilities_hub.py) that un-orphans the /facilities/<slug>
@@ -33882,6 +33949,24 @@ def _render_index_xml(shard_files, today):
             + '\n'.join(entries) + '\n</sitemapindex>')
 
 
+_SITEMAP_LOC_RE = re.compile(r'<loc>([^<]+)</loc>')
+
+
+def _sitemap_entry_locs(entries):
+    """The set of <loc> URLs in a list of rendered '  <url>…</url>' strings.
+
+    ★ r-superset-set (2026-09-12): the superset guard below used to compare
+      len(), and a COUNT CANNOT SEE A SET DIFFERENCE. 18,741 > 6,897 passed
+      while 66 gated URLs were missing from the ungated set entirely.
+    """
+    out = set()
+    for e in entries or ():
+        m = _SITEMAP_LOC_RE.search(str(e))
+        if m:
+            out.add(m.group(1))
+    return out
+
+
 def _rebuild_sitemap_snapshot():
     """Build every shard's XML ONCE and persist to sitemap_snapshot in one primary
     transaction. Runs from the 4-hourly cron / admin endpoint, NOT per request."""
@@ -33915,15 +34000,34 @@ def _rebuild_sitemap_snapshot():
     ai_shard_keys = []
     try:
         ai_fac = _build_sitemap_facilities_ungated() or []
-        if len(ai_fac) < len(fac):
-            # The ungated set is a strict superset of the gated one by
-            # construction — same query minus one AND clause. Smaller means the
-            # build is wrong, and publishing it would RETIRE URLs from the AI
-            # crawlers rather than add any. Refuse rather than shrink.
+        # ★★★ r-superset-set (2026-09-12) — COMPARE SETS, NOT LENGTHS.
+        # This guard read `if len(ai_fac) < len(fac)`, and a COUNT CANNOT SEE A
+        # SET DIFFERENCE. Measured live 2026-09-12: 18,741 >= 6,897 passed
+        # happily while 66 URLs in the GATED shard were absent from the ungated
+        # set entirely — the shard Google and Bing actually read was advertising
+        # 66 URLs that are 0-for-66 self-canonical, and the one guard that
+        # existed to notice could not. The subset property is what this check
+        # claims; assert the property, not a proxy for it.
+        # ★ NAME the missing members. "the superset shrank" sent the last
+        #   reader to the gated count; a list of slugs sends them to the row.
+        #   Capped so a real collapse cannot write a 19k-line log entry, with
+        #   the true total alongside.
+        # ★ Still REFUSE rather than shrink, unchanged: publishing would retire
+        #   URLs from the AI crawlers rather than add any, and the gated
+        #   artefact GSC reads is untouched either way.
+        _gated_locs = _sitemap_entry_locs(fac)
+        _ai_locs = _sitemap_entry_locs(ai_fac)
+        _missing_locs = _gated_locs - _ai_locs
+        if _missing_locs:
+            _named = sorted(_missing_locs)
             logger.error(
-                "sitemap: ungated AI build returned %d URLs, FEWER than the "
-                "gated %d — refusing to publish a superset that shrank. AI "
-                "shards omitted from this generation.", len(ai_fac), len(fac))
+                "sitemap: the ungated AI set is NOT a superset of the gated "
+                "one — %d of %d gated URLs are missing from it (ungated total "
+                "%d). Refusing to publish; AI shards omitted from this "
+                "generation. Missing: %s%s",
+                len(_missing_locs), len(_gated_locs), len(_ai_locs),
+                ", ".join(_named[:25]),
+                "" if len(_named) <= 25 else " … (+%d more)" % (len(_named) - 25))
         else:
             ai_shard_keys = _ai_shard_keys(len(ai_fac))
             for i, key in enumerate(ai_shard_keys, start=1):

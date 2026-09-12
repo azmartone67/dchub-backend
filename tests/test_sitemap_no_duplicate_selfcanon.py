@@ -133,12 +133,19 @@ class _Cur:
     """Answers only the queries the facility path needs; [] for the rest."""
 
     def __init__(self, drain_link=DRAIN_LINK, legacy=LEGACY,
-                 discovered=DISCOVERED, twin_link=TWIN_LINK, evidence=None):
+                 discovered=DISCOVERED, twin_link=TWIN_LINK, evidence=None,
+                 capacity=None):
         self._rows = []
         self.drain_link = drain_link
         self.twin_link = twin_link
         self.legacy = legacy
         self.discovered = discovered
+        # r-thin-sitemap: {canonical_slug: power_mw}. Default None = "every row
+        # has capacity", i.e. the gate is INERT and every test written before
+        # this parameter existed keeps testing exactly what it tested. Pass a
+        # map to make the capacity gate observable (see
+        # tests/test_sitemap_publishes_only_served_selfcanonical_urls.py).
+        self.capacity = capacity
         # r-noindex-coherence: (canonical_slug, city, address, lat, lng, mw)
         # rows for the contentless-set query. Default: every fixture slug
         # carries a city, i.e. nothing is contentless and the guard is inert —
@@ -148,6 +155,30 @@ class _Cur:
                           for r in list(discovered) + list(legacy)])
         self.seen = []
 
+    def _gated(self, rows, low):
+        """Apply _thin_excl the way Postgres would. The clause is literally
+        `AND COALESCE(power_mw, 0) > 0`, so keying on that text is reading the
+        SQL under test, not re-implementing a policy."""
+        if self.capacity is None or "coalesce(power_mw, 0) > 0" not in low:
+            return list(rows)
+        return [r for r in rows if (self.capacity.get(r[7]) or 0) > 0]
+
+    def _unjunked(self, pairs, low):
+        """Apply the keeper query's junk predicate. The SQL emits it from
+        routes.facility_dedup_v4.junk_slug_sql; this calls that module's Python
+        twin, which test_the_junk_slug_predicate_agrees_with_is_junk_slug pins
+        as classifying identically — so the stub cannot drift from the SQL.
+
+        ★ Without this the drain arm answered junk keepers too, and
+        test_a_junk_slug_keeper_is_refused_and_the_legacy_url_stays passed only
+        because the old `keeper in seen_slugs` escape hatch happened to hold the
+        URL in. It asserted the refusal and observed something else.
+        """
+        if "!~ '^unknown-'" not in low:
+            return list(pairs)
+        from routes.facility_dedup_v4 import is_junk_slug
+        return [p for p in pairs if not is_junk_slug(str(p[1]))]
+
     def execute(self, sql, params=None):
         q = " ".join(str(sql).split())
         self.seen.append(q)
@@ -155,15 +186,16 @@ class _Cur:
         if "information_schema.columns" in low:
             self._rows = [(1,)]                      # canonical_slug exists
         elif "from discovered_facilities" in low and "select name, provider" in low:
-            self._rows = list(self.discovered)
+            self._rows = self._gated(self.discovered, low)
         elif low.startswith("select name, provider") and "from facilities" in low:
-            self._rows = list(self.legacy)
+            self._rows = self._gated(self.legacy, low)
         elif "join discovered_facilities d on d.merged_facility_id = f.id" in low:
-            self._rows = list(self.drain_link)       # _drained_keeper, drain arm
+            # _drained_twin_slugs, drain arm
+            self._rows = self._unjunked(self.drain_link, low)
         elif "select canonical_slug, city, address" in low:
             self._rows = list(self.evidence)          # r-noindex-coherence
         elif "join discovered_facilities d on d.id = f.discovered_twin_id" in low:
-            self._rows = list(self.twin_link)        # _drained_keeper, twin arm
+            self._rows = list(self.twin_link)        # _drained_twin_slugs, twin arm
         else:
             self._rows = []
         return self
@@ -203,8 +235,12 @@ class _Log:
         return lambda *a, **k: None
 
 
-def _run_builder(cur):
-    """Execute the SHIPPED _build_sitemap_sections against `cur`."""
+def _run_builder(cur, thin_gate=False):
+    """Execute the SHIPPED _build_sitemap_sections against `cur`.
+
+    thin_gate=False (the default, and what every test here wants) disables the
+    capacity gate, because the fixtures carry no power_mw. Pass True together
+    with _Cur(capacity=...) to run the GATED build and compare the two sets."""
     src = open(SRC, encoding="utf-8").read()
     i = src.index("def _build_sitemap_sections(")
     j = src.index("\ndef ", i + 100)
@@ -225,7 +261,10 @@ def _run_builder(cur):
     }
     exec(compile(fn, SRC, "exec"), ns)
     prev = os.environ.get("SITEMAP_THIN_GATE_DISABLE")
-    os.environ["SITEMAP_THIN_GATE_DISABLE"] = "1"   # fixtures carry no power_mw
+    if thin_gate:
+        os.environ.pop("SITEMAP_THIN_GATE_DISABLE", None)
+    else:
+        os.environ["SITEMAP_THIN_GATE_DISABLE"] = "1"  # fixtures carry no power_mw
     try:
         return ns["_build_sitemap_sections"]()
     finally:
@@ -367,14 +406,36 @@ def test_a_facility_with_no_twin_is_never_dropped():
     assert "equinix-dc5-11111111" in slugs, slugs
 
 
-def test_the_legacy_url_survives_when_its_keeper_is_not_emitted():
-    """THE SAFETY PROPERTY of main._drained_keeper: a legacy URL is dropped
-    only once the keeper's slug is already in seen_slugs. With no discovered
-    row to keep, the legacy URL is the facility's ONLY URL and must stay —
-    otherwise the facility silently leaves the sitemap entirely."""
+def test_the_legacy_url_is_dropped_even_when_its_keeper_is_not_emitted():
+    """★★★ REVERSED 2026-09-12 (r-selfcanon-unconditional), on measurement.
+
+    This asserted the opposite: that a legacy URL survives while its keeper is
+    absent from the artefact, on the reasoning that the facility would otherwise
+    lose its only URL. That read as a safety property and was not one, because
+    THE PAGE DOES NOT CONSULT IT. _drained_twin_url canonicalises this row at
+    the keeper from the DB facts alone — no capacity gate, no junk/contentless
+    filter, no seen_slugs — so a kept twin is a page that canonicalises
+    elsewhere, i.e. a guaranteed GSC "Alternate page with proper canonical".
+
+    MEASURED 2026-09-12 on the live sitemap: sitemap-facilities-1.xml, the
+    shard Google and Bing actually read, advertised 66 URLs that were
+    0-for-66 self-canonical. All 66 were exactly this: the keeper capacity-
+    gated out of the gated build, the twin kept by the old condition. 59 of
+    the 66 canonical targets sit in the ungated AI family and NONE in the
+    gated shard.
+
+    The facility does lose its GATED URL here, and that is the honest outcome:
+    the URL we were advertising could never be indexed, and the keeper is
+    published in the ungated family. This is _noncanon_slugs' contract, which
+    has dropped unconditionally since 2026-08-01.
+    """
     cur = _Cur(discovered=[DISCOVERED[1]])      # keeper row removed
     slugs = _facility_slugs(_run_builder(cur))
-    assert "007-hebergement-paris-d128fc26" in slugs, slugs
+    assert "007-hebergement-paris-d128fc26" not in slugs, slugs
+    # ★ and the control still stands: a facility with NO twin link keeps its
+    #   URL. Without this the assertion above is also satisfied by a builder
+    #   that emits nothing at all.
+    assert "equinix-dc5-11111111" in slugs, slugs
 
 
 def test_identity_is_the_rendered_headline_not_the_slug():
@@ -416,40 +477,51 @@ def test_the_twinned_legacy_url_is_dropped_and_the_keeper_survived():
     assert "equinix-fr5-bbbbbbbb" not in slugs, slugs
 
 
-def test_the_twinned_legacy_url_survives_when_its_keeper_is_not_emitted():
-    """THE SAFETY PROPERTY, and the reason the twin arm feeds the SAME map
-    rather than a drop-set of its own: the emit loop drops a legacy URL only
-    once the keeper's slug is already in seen_slugs. Remove the keeper and the
-    legacy URL is this facility's ONLY URL — dropping it would take the
-    facility out of the sitemap entirely, which is exactly what a drop-set cost
-    21 live pages on 2026-07-28."""
+def test_the_twinned_legacy_url_is_dropped_even_when_its_keeper_is_not_emitted():
+    """★★★ REVERSED 2026-09-12 with its drain-arm sibling above, for the same
+    reason: _twin_pointer_url canonicalises this row at the keeper whatever the
+    sitemap decided to emit, so keeping the URL publishes an alternate.
+
+    The 2026-07-28 "a drop-set cost 21 live pages their sitemap entry" lesson is
+    carried by the query's NOT EXISTS clause — a slug a LIVE discovered row also
+    wears is never in the set at all — not by a membership test against the
+    artefact. test_a_facility_with_no_twin_is_never_dropped is its control.
+    """
     cur = _Cur(discovered=[r for r in DISCOVERED if r != DISCOVERED_TWIN])
     slugs = _facility_slugs(_run_builder(cur))
-    assert "equinix-fr5-bbbbbbbb" in slugs, slugs
+    assert "equinix-fr5-bbbbbbbb" not in slugs, slugs
+    assert "equinix-dc5-11111111" in slugs, slugs      # the no-twin control
 
 
-def test_the_drain_link_wins_when_one_slug_carries_both():
-    """PRECEDENCE. facility_profile_page tries _drained_twin_url BEFORE
-    _twin_pointer_url, so the sitemap must resolve the same slug the same way,
-    or a URL it KEEPS renders a canonical pointing somewhere else — the exact
-    "Alternate page with proper canonical" this feature exists to stop
-    submitting. main builds the drain arm first and the twin arm with
-    setdefault.
+def test_either_link_alone_is_enough_to_drop_the_legacy_url():
+    """★★★ REWRITTEN 2026-09-12. This used to pin PRECEDENCE — that where a
+    slug carries both links the DRAIN wins, because facility_profile_page tries
+    _drained_twin_url first and a sitemap that picked the other keeper would
+    leave a KEPT URL whose canonical points somewhere the sitemap dropped.
 
-    ★ The two keepers are chosen so precedence is OBSERVABLE in the artefact:
-      the drain's keeper is emitted, the twin's does not exist. Drain-wins ->
-      the keeper is in seen_slugs -> the legacy URL is dropped. Twin-wins ->
-      the keeper is absent, the safety condition holds the URL in, and the page
-      still canonicalises at the drain keeper.
-      Written the obvious way — two keepers that are BOTH emitted — this test
-      passed with setdefault replaced by plain assignment, because the URL is
-      dropped either way and the map's value never reaches the output."""
-    cur = _Cur(
+    That hazard is now structurally impossible in the sitemap, and pinning it
+    here would be pinning nothing: main._drained_twin_slugs is a SET, so the
+    builder never names a keeper and has no second answer to disagree with. The
+    render path still chooses, and test_the_drain_link_is_preferred_in_the_
+    render_path_too below is where that choice is pinned.
+
+    What IS load-bearing now: EITHER arm alone drops the URL, so a slug that
+    reaches the set through only one of the two queries is not published.
+    Written with a drain keeper that IS emitted and a twin keeper that does not
+    exist at all, so neither case can be satisfied by the other's keeper."""
+    drain_only = _Cur(
         drain_link=[("equinix-fr5-bbbbbbbb", "equinix-fr5-aaaaaaaa")],
-        twin_link=[("equinix-fr5-bbbbbbbb", "ghost-keeper-99999999")])
-    slugs = _facility_slugs(_run_builder(cur))
+        twin_link=[])
+    slugs = _facility_slugs(_run_builder(drain_only))
     assert "equinix-fr5-aaaaaaaa" in slugs, slugs      # the drain's keeper
-    assert "equinix-fr5-bbbbbbbb" not in slugs, slugs  # resolved via the DRAIN
+    assert "equinix-fr5-bbbbbbbb" not in slugs, slugs
+
+    twin_only = _Cur(
+        drain_link=[],
+        twin_link=[("equinix-fr5-bbbbbbbb", "ghost-keeper-99999999")])
+    slugs = _facility_slugs(_run_builder(twin_only))
+    assert "equinix-fr5-bbbbbbbb" not in slugs, slugs  # keeper absent, still out
+    assert "equinix-dc5-11111111" in slugs, slugs      # the no-twin control
 
 
 def test_a_twinned_legacy_page_canonicalises_to_its_keeper():

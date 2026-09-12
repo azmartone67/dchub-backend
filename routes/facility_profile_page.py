@@ -2306,7 +2306,7 @@ def _batch_alias_targets(cur, slugs):
     return aliases
 
 
-def served_slugs(slugs, max_hops: int = 3) -> dict:
+def served_slugs(slugs, max_hops: int = 3, conn=None) -> dict:
     """{slug: the /facilities/<slug> a request for it is served at}, for a list.
 
     resolve_final_slug's answer for every slug, bar the one step named above,
@@ -2314,6 +2314,12 @@ def served_slugs(slugs, max_hops: int = 3) -> dict:
     one probe, then at most six per hop. A slug that already terminates, a
     cycle, a chain longer than max_hops and any failure all map to the slug that
     was passed in. Never raises — a caller keeps linking what it linked before.
+
+    ★ `conn` lets a caller that already holds a read connection lend it instead
+      of opening a second one, and a LENT connection is never closed here — the
+      lender owns it. main._build_sitemap_sections passes one; it must not
+      `from main import get_read_db` re-entrantly, and the sitemap tests exec
+      that builder with a stub cursor and no importable `main` at all.
     """
     out = {}
     for s in slugs or ():
@@ -2322,11 +2328,13 @@ def served_slugs(slugs, max_hops: int = 3) -> dict:
             out[s] = s
     if not out:
         return out
-    try:
-        from main import get_read_db
-        conn = get_read_db()
-    except Exception:
-        return out
+    _lent = conn is not None
+    if not _lent:
+        try:
+            from main import get_read_db
+            conn = get_read_db()
+        except Exception:
+            return out
     if not conn:
         return out
     try:
@@ -2374,10 +2382,11 @@ def served_slugs(slugs, max_hops: int = 3) -> dict:
     except Exception:
         return {s: s for s in out}
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if not _lent:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return out
 
 
