@@ -391,6 +391,28 @@ def test_the_floor_step_runs_after_the_rebuild():
         "the floor measures the artefact the rebuild just published")
 
 
+def test_the_fetch_fails_closed_on_a_missing_shard():
+    """★ Plain `curl -sS` EXITS 0 on a 404 and writes the error page to the
+    output file — so a shard that is GONE arrives as a successful download of
+    zero <loc> elements, indistinguishable from an empty shard, and the family
+    total silently drops. That is the shape tests/test_workflow_curl_guard.py
+    exists to catch. urlopen raises instead, and this pins that it stays that
+    way if anyone reaches for curl here."""
+    # Comments stripped first: the step's own commentary EXPLAINS the curl
+    # trap by naming it, and matching our own postmortem would fail a healthy
+    # step — the mirror of the false pass tests/test_workflow_curl_guard.py
+    # strips comments to avoid. See
+    # [[feedback_comment_explaining_drift_quotes_the_drift]].
+    code_only = re.sub(r"(?m)^\s*#.*$", "", _source())
+    assert "urllib.request.urlopen" in code_only, (
+        "the step no longer uses urlopen — if it now shells out to curl, a 404 "
+        "exits 0 and a missing shard reads as an empty one")
+    assert "curl" not in code_only, "curl in the fetch path: a 404 would exit 0"
+    # and behaviourally: a 404 on a listed shard is a defect, not a zero count
+    code, out, _ = _run(_edge(fail={"facilities-1": _http(404)}))
+    assert code == 1 and "is not served" in out, out
+
+
 def test_the_step_reads_the_artefact_not_the_endpoints_report():
     run = _step()["run"]
     assert "https://dchub.cloud" in run, "the step does not read the edge"

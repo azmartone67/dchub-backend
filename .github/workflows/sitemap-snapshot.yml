@@ -246,6 +246,22 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          # ★ urllib, not curl, and not requests.
+          #   * requests is not on a GitHub runner unless a step pip-installs it
+          #     (sitemap-selfcanon-daily.yml has to). This needs no dependency.
+          #   * scripts/wait_for_deployed_commit.py routes through curl because
+          #     it is a .py file and regression_lint.py's `urllib-request-on-
+          #     railway` rule blocks urlopen there. That rule is about ORIGIN
+          #     code on Railway — it says "use requests instead", which is
+          #     advice a runner cannot take — and it only scans *.py, so it
+          #     never looked at this heredoc. Named here rather than left for a
+          #     reviewer to wonder about.
+          #   * urlopen RAISES on 404. Plain `curl -sS` EXITS 0 on one and
+          #     writes the error page to the output file, which is the exact
+          #     shape tests/test_workflow_curl_guard.py exists to catch — a
+          #     shard that is gone would arrive as a successful download of
+          #     zero <loc> elements, indistinguishable from an empty shard.
+          #     This check fails closed on a 404 for free.
           import os
           import re
           import sys
