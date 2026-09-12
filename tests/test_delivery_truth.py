@@ -1,11 +1,11 @@
 """Zero delivery confirmations must read as an alarm, not as silence.
 
 welcome_email_log stamps a resend_message_id on every send so
-/api/v1/webhooks/resend can close the loop. As of 2026-08-28 email_events held
-ONE row all time — a synthetic deploy-verify@example.com from 2026-07-17 — while
-14 real welcome emails went out in the preceding 30 days. Every "we welcomed
-them" claim in this repo therefore meant *sent*, not *delivered*, and nothing
-anywhere said so.
+/api/v1/webhooks/resend can close the loop. When this suite was written on
+2026-08-28 that loop was open: the events table held a single synthetic row from
+a deploy check and not one customer event, against 14 real welcome emails in the
+preceding 30 days. Every "we welcomed them" claim in this repo therefore meant
+*sent*, not *delivered*, and nothing anywhere said so.
 
 Since 2026-08-29 03:10Z that webhook is configured and signature-verified events
 do arrive (892 rows, 888 verified, measured 2026-09-11). A second reading trap
