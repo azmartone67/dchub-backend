@@ -261,11 +261,14 @@ serves at /pockets). If it's missing from your nav menu, edit
 
 ## 🔍 Continuous monitoring (already automated)
 
-The brain now runs three on-demand probe endpoints. Trigger any of
-them with:
+Two on-demand admin probes live under the brain path. Both accept
+X-Internal-Key, X-Admin-Key or ?admin_key, validated by
+internal_auth.is_valid_internal_key — send a value from the env, never a
+literal (the legacy hardcoded keys this file used to print are rejected; see
+SECURITY_KEY_ROTATION.md):
 
 ```sh
-curl -sS -X POST -H "X-Internal-Key: dchub-internal-sync-2026" \
+curl -sS -X POST -H "X-Internal-Key: $DCHUB_INTERNAL_KEY" \
   https://dchub.cloud/api/v1/admin/brain/<probe>
 ```
 
@@ -274,10 +277,16 @@ Where `<probe>` is one of:
 - **`security-scan`** — admin auth checks, paywall holes, secret patterns
   in responses, hosting traffic share, VPN/proxy share, brute-force
   scans against /admin/*.
-- **`site-probe`** — checks 40+ public URLs for 404, 5xx, empty bodies,
-  error-marker strings. Use after any deploy.
-- **(coming)** `enterprise-leads/refresh` — re-materializes the
-  enterprise leads queue from current whale data.
+- **`enterprise-leads/refresh`** — re-materializes the enterprise leads
+  queue from current whale data. No longer "coming": it is live at
+  /api/v1/admin/enterprise-leads/refresh.
+
+**`site-probe` is GONE.** routes/brain_site_probe.py was deleted 2026-08-29 —
+it was dead code, nothing scheduled it — and its unique coverage moved into
+routes/site_qa.py. Measured 2026-09-12: a POST to
+/api/v1/admin/brain/site-probe answers 404. The 40+ URL canary now runs from
+`POST /api/v1/qa/run` (non-blocking, 202; read `GET /api/v1/qa/report` ~20s
+later) and on a 15-minute cron in .github/workflows/site-qa.yml.
 
 Findings flow into the brain dashboard at https://dchub.cloud/brain
 (or `GET /api/v1/heal/findings`).

@@ -94,9 +94,13 @@ const WORKER_VERSION = '4.8.6-render-failover';
 # Force a 503 path. Then check the worker_version in the response.
 # After this patch lands, the version should be 4.8.6-render-failover
 # AND the tip should mention Render.
-curl -sS https://api.dchub.cloud/api/v1/admin/brain/site-probe -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-Internal-Key: dchub-internal-sync-2026" | python3 -m json.tool
+# Any POST will do — this step only needs the request to REACH a backend, so
+# it carries NO credential. /api/v1/admin/brain/site-probe, used here before,
+# was deleted 2026-08-29 and now 404s, and the legacy literal it sent is
+# rejected. An unauthenticated 401 from security-scan proves the POST reached
+# Railway/Render; the failover body appears here when Railway is down.
+curl -sS https://api.dchub.cloud/api/v1/admin/brain/security-scan -X POST \
+  -H "Content-Type: application/json" | python3 -m json.tool
 ```
 
 9. Also verify GET failover by checking response headers when Railway is healthy:
