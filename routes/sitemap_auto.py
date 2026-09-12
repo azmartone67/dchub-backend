@@ -42,7 +42,20 @@ _STATIC_PAGES = [
     ("/dc-hub-media", 0.9, "daily"),
     ("/by-the-numbers", 0.9, "daily"),
     ("/cited-by", 0.8, "weekly"),
-    ("/sites/", 0.8, "daily"),
+    # ── /sites/ is DELIBERATELY ABSENT (2026-09-12) ─────────────────────────
+    # In lockstep with main.py's static_pages, which withholds it, and with
+    # WITHHELD in tests/test_sitemap_covers_linked_pages.py: robots.txt carries
+    # `Disallow: /sites/`, and a sitemap entry for a robots-blocked URL is
+    # reported as "Submitted URL blocked by robots.txt" against the whole
+    # sitemap. This list shipped it at 0.8/daily while main.py withheld it —
+    # one policy, two hand-typed lists, only one of them guarded. Both are
+    # checked now.
+    # ★ The SERVED robots.txt also carries `Allow: /sites/$`, which exempts THIS
+    #   exact landing page (not /sites/value, not /sites/<id>), so re-listing it
+    #   is defensible. But that file belongs to dchub-frontend and this repo
+    #   deliberately does not model it — see
+    #   test_this_repo_does_not_pretend_to_own_robots_txt. Change it there, then
+    #   update WITHHELD and ROBOTS_BLOCKED_PREFIXES in the same PR.
     ("/listings", 0.8, "daily"),
     ("/transactions", 0.8, "daily"),
     ("/capacity-pipeline", 0.8, "daily"),
@@ -140,18 +153,25 @@ def _generate_sitemap():
     #     /api/v1/sitemap/health counted 2,103 rows with power_mw. Naming
     #     first_seen instead would not have rescued it either: it is TEXT, and
     #     the loop called .strftime() on it, which the `except` below swallows.
-    #   * The pages are not a type a sitemap may carry. `/sites/<anything>`
-    #     answers 200 from the static shell (`/sites/zzz-not-a-facility-zzz`
-    #     included), its server-rendered canonical is `https://dchub.cloud/sites/`
-    #     whatever the id, and the data call its JS makes,
-    #     `/sites/<id_or_slug>/capacity-report`, 404s for a real facility slug
-    #     as well as for junk — `/sites/*` is not in the frontend's
-    #     _routes.json include, so it never reaches this backend.
-    # Reviving it would publish 200 soft-404s that canonicalise elsewhere: the
+    #   * Every `/sites/<id>` URL is ROBOTS-BLOCKED. Live robots.txt carries
+    #     `Disallow: /sites/` with `Allow: /sites/$`, so the bare landing page
+    #     is crawlable and the per-id pages are not. A sitemap entry for a
+    #     robots-blocked URL is reported as "Submitted URL blocked by
+    #     robots.txt" against the whole sitemap, which is why main.py's
+    #     static_pages withholds these paths. They also answer 200 from the
+    #     static shell for ANY id (`/sites/zzz-not-a-facility-zzz` included),
+    #     canonicalising to `/sites/` whatever the id.
+    # ★ CORRECTION (2026-09-12). The first version of this comment claimed the
+    #   page's data call 404s and the page type was dead. That was a bad probe:
+    #   the endpoint is `/api/v1/sites/<id_or_slug>/capacity-report` — the
+    #   /api/v1 prefix was missing — and it answers 200 with a Site Capacity
+    #   Report teaser for a real slug, 404 `site_not_found` for junk. The page
+    #   WORKS and is withheld from crawlers on purpose. `/site*` IS in the
+    #   frontend's _routes.json include.
+    # Reviving the block would publish 200 robots-blocked soft-404s: the
     # /facilities/in/<cc> 676-shell lesson, and the same edge-routing lesson the
     # listings block below already learned (it emits ?l= because /listings/<slug>
-    # 404s). The bare /sites/ landing page stays in _STATIC_PAGES above.
-    # Pinned by tests/test_sitemap_auto_no_site_id_urls.py.
+    # 404s). Pinned by tests/test_sitemap_auto_no_site_id_urls.py.
 
     # Public pocket listings
     try:

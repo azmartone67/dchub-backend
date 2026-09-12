@@ -184,3 +184,51 @@ def test_this_repo_does_not_pretend_to_own_robots_txt():
         f"robots.txt (dchub-frontend) also governs. Two files answering for "
         f"the same paths and only one reaching the edge is how the vendored "
         f"mirror went stale. Keep the answer in one repo.")
+
+
+# ── the SECOND hand-typed list: routes/sitemap_auto._STATIC_PAGES ────────────
+# 2026-09-12: this site ships two sitemaps from two hand-typed lists, and they
+# disagreed. main.py withheld /sites/ as robots-blocked; the dynamic list at
+# /api/v1/sitemap.xml shipped it at 0.8/daily. WITHHELD is a claim about the
+# SITE, so either list publishing a withheld page publishes it — and the
+# contradiction is harder to see for living in a different file. One policy,
+# both lists, one guard.
+DYNAMIC = os.path.join(REPO, "routes", "sitemap_auto.py")
+
+
+def _dynamic_pages():
+    """The paths routes/sitemap_auto.py puts in /api/v1/sitemap.xml. Its
+    entries use double quotes, main.py's use single — hence the second regex."""
+    with open(DYNAMIC, encoding="utf-8") as fh:
+        src = fh.read()
+    i = src.index("_STATIC_PAGES = [")
+    j = src.index("\n]", i)
+    return re.findall(r'\(\s*"(/[^"]*)"', src[i:j])
+
+
+def test_the_dynamic_list_is_actually_parsed():
+    """★ NON-VACUITY, the same trap as the main.py parse above: a renamed or
+    reshaped literal matches nothing and every assertion below passes on an
+    empty list."""
+    paths = _dynamic_pages()
+    assert len(paths) >= 40, (
+        f"only {len(paths)} paths parsed out of routes/sitemap_auto.py — the "
+        f"_STATIC_PAGES literal moved or changed shape, and this guard is blind")
+    assert "/" in paths and "/pricing" in paths, "parsed something, but not the list"
+
+
+def test_the_dynamic_sitemap_obeys_withheld_and_robots():
+    """The alignment. A page declared unindexable here cannot ship in the other
+    sitemap: whichever statement is stale is the one trusted later."""
+    listed = set(_dynamic_pages())
+    contradicted = sorted(p for p in WITHHELD if p in listed)
+    assert not contradicted, (
+        f"{contradicted} are in routes/sitemap_auto._STATIC_PAGES but WITHHELD "
+        f"says they must not be indexed "
+        f"({ {p: WITHHELD[p] for p in contradicted} }). Drop the entry, or drop "
+        f"the WITHHELD entry with the reason it changed.")
+    blocked = sorted(p for p in listed if p.startswith(ROBOTS_BLOCKED_PREFIXES))
+    assert not blocked, (
+        f"{blocked} are in the dynamic sitemap but robots.txt disallows "
+        f"{ROBOTS_BLOCKED_PREFIXES}. Either drop them, or change robots.txt "
+        f"first and update ROBOTS_BLOCKED_PREFIXES in the same PR.")
