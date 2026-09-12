@@ -18,9 +18,13 @@ import types
 
 import pytest
 
-if "main" not in sys.modules:
-    sys.modules["main"] = types.SimpleNamespace(
-        get_read_db=lambda: None, get_db=lambda: None)
+# ★ 2026-09-12. The fake `main` used to be parked in sys.modules at MODULE
+# scope and never removed, so it outlived this file and was visible to every
+# module collected afterwards. Nothing here needs it at IMPORT time — the
+# route modules reach for `main` lazily, inside functions — so an autouse
+# fixture covers the real requirement and pytest takes the key back out.
+# See tests/_import_shims.py.
+from tests._import_shims import stub_main_module  # noqa: E402,F401
 
 from util.facility_site_code import (   # noqa: E402
     detect_site_code, detect_site_designator, site_code_headline,
