@@ -188,9 +188,15 @@ class PGCursorWrapper:
         # `INSERT ... ON CONFLICT DO NOTHING` / `if cur.rowcount > 0` pair was
         # told a conflicting insert had landed. news_engine.save_articles
         # reported "322 new" for 172 rows that way (2026-09-12 02:24Z) — a false
-        # count is what let a nine-day news outage read as healthy. 92 call sites
-        # across this repo read rowcount straight after such an INSERT; they are
-        # fixed here, at the one place that broke them, rather than one by one.
+        # count is what let a nine-day news outage read as healthy.
+        #
+        # A per-function AST scan of this repo (tests excluded) found 102 reads
+        # of rowcount whose nearest preceding execute is an INSERT with no
+        # RETURNING: 13 on a cursor provably from get_db()/get_bg_db(), 22
+        # provably on a direct psycopg2 cursor and so never affected, and 67
+        # taking their connection from a parameter or a local helper, where it
+        # depends on the caller. Fixing it here settles all of them at once; a
+        # scan resolving 67 call graphs to patch them one at a time would not.
         if self._rowcount is not None:
             return self._rowcount
         return self._cur.rowcount
@@ -205,8 +211,10 @@ class PGCursorWrapper:
         succeeded is discarded at commit and every later statement fails with
         "current transaction is aborted". Measured against real Postgres: a
         single new row inserted through this wrapper on a cold session committed
-        ZERO rows. The probe is a convenience for .lastrowid (16 call sites); it
-        must never cost the write it is reporting on.
+        ZERO rows. The probe is a convenience for .lastrowid (16 call sites
+        outside tests, 4 of them on an ON CONFLICT DO NOTHING insert, which now
+        read None rather than an unrelated row's id); it must never cost the
+        write it is reporting on.
         """
         if self._cur.rowcount == 0:
             return None  # nothing was inserted, so there is no new id to read

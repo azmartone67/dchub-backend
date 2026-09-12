@@ -499,8 +499,9 @@ def test_the_count_holds_without_the_publisher_url_column(engine, monkeypatch):
 
 # ── the wrapper underneath, exercised as itself ──────────────────────────────
 def test_the_real_wrapper_reports_the_inserts_rowcount_not_its_own_probe(engine):
-    """db_utils regression pin: 92 call sites in this repo read rowcount right
-    after an INSERT with no RETURNING. All of them read this number.
+    """db_utils regression pin: 102 reads of rowcount in this repo sit right
+    after an INSERT with no RETURNING (13 provably on a pooled wrapper cursor,
+    67 depending on the caller). All of them read this number.
 
     Two shapes, because they fail for different reasons. A CONFLICTING insert
     catches a probe that runs when nothing was inserted. A MULTI-ROW insert
