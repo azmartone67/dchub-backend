@@ -186,6 +186,36 @@ def _sitemap_recent(n=500):
     return [u for u, _ in pairs[:max(1, n)]]
 
 
+def _served_facility_urls(slugs):
+    """/facilities/<slug> URLs for `slugs`, each at the slug its page is SERVED at.
+
+    r-served-slug-batch (2026-09-12): a row's frozen slug is not always the URL
+    its page answers. For a dedup twin, /facilities/<slug> 301s to the keeper
+    (facility_profile_page._twin_redirect_target), so submitting the stored slug
+    asks Bing to index a URL that moves — the same class be#4412 fixed for the
+    carrier/DCPI/MCP links and be#4421 for the hubs. served_slugs resolves the
+    WHOLE list in a bounded number of statements (never one per row) and hands
+    back any slug it cannot resolve, so a failure submits exactly what this
+    module submitted before. Two slugs can land on one URL (a twin and its
+    keeper both in the delta), so the de-duplication is done AFTER resolving.
+
+    Measured before the change (public dry-run preview, cache-busted, HEAD with
+    redirects not followed): 25 of 25 newest facility URLs already 200. The
+    preview caps its sample at 25 whatever `n` says, and the delta stream below
+    cannot be previewed at all, so this is defence for the unmeasured rest.
+    """
+    from routes.facility_profile_page import served_slugs
+    served = served_slugs(slugs)
+    urls, emitted = [], set()
+    for slug in slugs:
+        landed = served.get(slug) or slug
+        if landed in emitted:
+            continue
+        emitted.add(landed)
+        urls.append(f"https://{HOST}/facilities/{landed}")
+    return urls
+
+
 def _recent_facility_urls(n=2000):
     """Canonical /facilities/<slug> URLs for the NEWEST facilities.
 
@@ -204,7 +234,7 @@ def _recent_facility_urls(n=2000):
         conn = psycopg2.connect(db, connect_timeout=10)
     except Exception:
         return []
-    urls, seen = [], set()
+    seen, slugs = set(), []
     try:
         with conn.cursor() as cur:
             # r-routeslug (2026-07-31): submit the row's LIVE canonical slug.
@@ -236,15 +266,15 @@ def _recent_facility_urls(n=2000):
                 if not full or full in seen:
                     continue
                 seen.add(full)
-                urls.append(f"https://{HOST}/facilities/{full}")
+                slugs.append(full)
     except Exception:
-        urls = []
+        slugs = []
     finally:
         try:
             conn.close()
         except Exception:
             pass
-    return urls
+    return _served_facility_urls(slugs)
 
 
 def ping_new_facilities(limit=5000):
@@ -309,7 +339,7 @@ def ping_new_facilities(limit=5000):
                 return {"ok": True, "submitted": 0, "cursor": last_id,
                         "new_facilities": 0}
             max_seen = max(int(r[0]) for r in rows)
-            urls, seen = [], set()
+            slugs, seen = [], set()
             # r-routeslug (2026-07-31): the delta submitter emits the LIVE
             # canonical slug — stored canonical_slug first, else the freeze
             # builder (provider-prefix dedupe + ascii folding). The old
@@ -322,7 +352,12 @@ def ping_new_facilities(limit=5000):
                 if not full or full in seen:
                     continue
                 seen.add(full)
-                urls.append(f"https://{HOST}/facilities/{full}")
+                slugs.append(full)
+            # r-served-slug-batch (2026-09-12): submit where each page LANDS,
+            # not the row's own slug — see _served_facility_urls. Resolved here,
+            # while the cursor row lock is held, exactly as the Bing POST below
+            # already is; a failure submits the stored slugs, as before.
+            urls = _served_facility_urls(slugs)
             if not urls:
                 # nothing slug-worthy in the delta — still advance past it
                 cur.execute("UPDATE indexnow_cursor SET last_fac_id = %s, "

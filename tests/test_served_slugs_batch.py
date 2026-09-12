@@ -324,12 +324,13 @@ def test_a_pointer_is_keyed_the_way_the_keeper_lookup_binds_it(dup, key):
 
 # ── 2. one copy of the rules ────────────────────────────────────────────────
 EMITTERS = {
-    "carrier_facility_ingestion.py": "_facility_slugs",
-    "facilities_hub.py": "_render_listing",
-    "routes/dcpi.py": "_dcpi_facility_list_html",
-    "routes/market_deep_dive.py": "_market_facility_links_html",
-    "routes/mcp_tier1_tools.py": "_facility_page_urls",
-    "routes/seo_pages.py": "facility_page",
+    "carrier_facility_ingestion.py": ("_facility_slugs",),
+    "facilities_hub.py": ("_render_listing",),
+    "routes/dcpi.py": ("_dcpi_facility_list_html",),
+    "routes/indexnow.py": ("_served_facility_urls",),
+    "routes/market_deep_dive.py": ("_market_facility_links_html",),
+    "routes/mcp_tier1_tools.py": ("_facility_page_urls",),
+    "routes/seo_pages.py": ("facility_page",),
 }
 
 
@@ -412,14 +413,27 @@ def test_the_twin_rules_are_decided_in_one_function():
 
 
 def test_each_emitter_resolves_its_list_in_one_call_outside_any_loop():
-    for rel, name in EMITTERS.items():
+    for rel, names in EMITTERS.items():
         tree = _tree(rel)
-        fn, parents = _one_def(tree, name), _parents(tree)
+        parents = _parents(tree)
+        for name in names:
+            fn = _one_def(tree, name)
+            calls = [n for n in ast.walk(fn)
+                     if isinstance(n, ast.Call) and _callee(n) == "served_slugs"]
+            assert len(calls) == 1, f"{rel} {name}() calls served_slugs {len(calls)}x"
+            assert not _inside_a_loop(calls[0], fn, parents), (
+                f"{rel} {name}() calls served_slugs once per row — resolve the list")
+    # IndexNow submits through one shared helper; each builder hands it the
+    # whole list it is about to submit, never a row at a time.
+    tree = _tree("routes/indexnow.py")
+    parents = _parents(tree)
+    for name in ("_recent_facility_urls", "ping_new_facilities"):
+        fn = _one_def(tree, name)
         calls = [n for n in ast.walk(fn)
-                 if isinstance(n, ast.Call) and _callee(n) == "served_slugs"]
-        assert len(calls) == 1, f"{rel} {name}() calls served_slugs {len(calls)}x"
+                 if isinstance(n, ast.Call) and _callee(n) == "_served_facility_urls"]
+        assert len(calls) == 1, f"{name}() calls _served_facility_urls {len(calls)}x"
         assert not _inside_a_loop(calls[0], fn, parents), (
-            f"{rel} {name}() calls served_slugs once per row — resolve the list")
+            f"{name}() resolves per row — one call for the list it submits")
     tree = _tree("routes/mcp_tier1_tools.py")
     parents = _parents(tree)
     for name in ("find_alternatives", "score_facility"):

@@ -32,7 +32,8 @@ answers with a 301 to its keeper (facility_profile_page._twin_redirect_target):
     /facilities/equinix-inc-equinix-dc1-dc15dc21-dc22-ashburn-8f425dea
       301 -> /facilities/equinix-equinix-dc1-dc15-dc21-ashburn-07001072
 So every surface here resolves its whole list through
-facility_profile_page.served_slugs, once.
+facility_profile_page.served_slugs, once — the rendered pages, and the IndexNow
+URLs handed to Bing (section 8), which are submitted rather than rendered.
 
 THE ORACLE is the stored canonical_slug in each fixture row — for a dedup twin,
 its KEEPER's — which is what the live page serves, per the measurements above;
@@ -236,9 +237,18 @@ class _Cursor:
         return False
 
     def execute(self, sql, params=None):
-        table, cols = _projection(str(sql))
+        text = " ".join(str(sql).split())
+        if not text.upper().startswith("SELECT"):
+            # DDL/DML (the IndexNow cursor table and its UPDATE): record the
+            # verb and answer no rows, as a cursor does. Only SELECTs are
+            # projected, so the strictness that makes a missing column visible
+            # is unchanged.
+            self._db.queries.append((text.split()[0].upper(), []))
+            self._rows = []
+            return
+        table, cols = _projection(text)
         self._db.queries.append((table, [n for n, _ in cols]))
-        rows = self._db.answer(table, str(sql)) or []
+        rows = self._db.answer(table, text) or []
         self._rows = [{n: pick(r) for n, pick in cols} if self._as_dict
                       else tuple(pick(r) for _, pick in cols) for r in rows]
 
@@ -644,3 +654,85 @@ def test_geography_hub_links_the_served_slug(monkeypatch, path):
         f"{path}: the ItemList names {listed} while the page links {hrefs}")
     assert db.opened and all(c.closed for c in db.opened), "the hub leaks its connection"
     _resolved_once(world, path)
+
+
+# ── 8. IndexNow: the URLs handed to Bing ────────────────────────────────────
+# routes/indexnow.py is the live submitter (main.py: "IndexNow lives in
+# routes/indexnow.py ONLY"); seo_agent's list went with its ungated routes in
+# be#4422. Measured 2026-09-12 through this module's PUBLIC dry-run preview,
+# which returns the list and never pings — cache-busted, HEAD with redirects not
+# followed: 25 of 25 newest facility URLs already 200. The preview hands back 25
+# URLs whatever `n` says, and the delta stream cannot be previewed at all, so
+# these tests are the fence for the part no probe can reach.
+INDEXNOW_ROWS = [dict(row, id=1200 + i) for i, row in enumerate(LISTED)]
+
+
+def _indexnow(monkeypatch, answer):
+    inx = _load("routes/indexnow.py", "_served_facility_urls")
+    db = _DB(answer)
+    monkeypatch.setattr(psycopg2, "connect", lambda *_a, **_k: db.connect())
+    monkeypatch.setattr(inx, "_db_conn", db.connect)
+    monkeypatch.setenv("DATABASE_URL", "postgresql:///only-the-fake-answers")
+    return inx, db
+
+
+def _indexnow_answer(table, _sql):
+    if table.startswith("information_schema"):
+        return [{"1": 1}]                       # canonical_slug column exists
+    if table == "indexnow_cursor":
+        return [{"last_fac_id": 1199}]          # every fixture row is newer
+    if table == "discovered_facilities":
+        return list(INDEXNOW_ROWS)
+    return []
+
+
+def _paths(inx, urls):
+    return [u.replace(f"https://{inx.HOST}", "", 1) for u in urls]
+
+
+def test_indexnow_recent_facility_urls_are_the_served_slugs(monkeypatch):
+    world = _served_world(monkeypatch)
+    inx, db = _indexnow(monkeypatch, _indexnow_answer)
+    urls = _paths(inx, inx._recent_facility_urls(50))
+    assert db.queries, "the builder never queried — nothing here was exercised"
+    assert "/facilities/" + TWIN not in urls, (
+        f"IndexNow would be handed /facilities/{TWIN}, a dedup twin's own slug — "
+        f"live that page 301s to /facilities/{KEEPER}, so Bing is asked to index "
+        "a URL that moves")
+    assert urls == ["/facilities/" + SERVED, "/facilities/" + UNFROZEN_SLUG,
+                    "/facilities/" + KEEPER], urls
+    _resolved_once(world, "indexnow _recent_facility_urls")
+
+
+def test_indexnow_delta_submits_the_served_slugs(monkeypatch):
+    """The daily churn hook: the one IndexNow path that runs unattended."""
+    world = _served_world(monkeypatch)
+    inx, _db = _indexnow(monkeypatch, _indexnow_answer)
+    sent = []
+
+    def _capture(urls):
+        sent.append(list(urls))
+        return {"ok": True, "submitted": len(urls)}
+    monkeypatch.setattr(inx, "submit_to_indexnow", _capture)
+    out = inx.ping_new_facilities(50)
+    assert out.get("ok"), out
+    assert len(sent) == 1, f"submitted {len(sent)} times, expected one batch"
+    urls = _paths(inx, sent[0])
+    assert "/facilities/" + TWIN not in urls, (
+        f"the daily delta would submit /facilities/{TWIN}, which 301s to "
+        f"/facilities/{KEEPER}")
+    assert urls == ["/facilities/" + SERVED, "/facilities/" + UNFROZEN_SLUG,
+                    "/facilities/" + KEEPER], urls
+    _resolved_once(world, "indexnow ping_new_facilities")
+
+
+def test_indexnow_collapses_a_twin_and_its_keeper_into_one_url(monkeypatch):
+    """Two rows can land on ONE page. Submitting it twice is waste, and the
+    de-duplication done before resolving cannot see it."""
+    world = _served_world(monkeypatch)
+    rows = [dict(TWIN_ROW, id=1300), dict(KEEPER_ROW, id=1301)]
+    inx, _db = _indexnow(monkeypatch, lambda t, _s: (
+        [{"1": 1}] if t.startswith("information_schema")
+        else list(rows) if t == "discovered_facilities" else []))
+    assert _paths(inx, inx._recent_facility_urls(50)) == ["/facilities/" + KEEPER]
+    _resolved_once(world, "indexnow twin and keeper")
