@@ -1954,6 +1954,13 @@ def _restamp_claim_session(api_key: str) -> None:
                 pass
 
 
+# The proof clause, in one place. Every statement that grants paid tier off an
+# email match carries it; see tests/test_tier_grants_are_classified.py, which
+# enumerates those statements and fails on a new one that is not classified.
+# Takes the address being granted on as its parameter.
+_VERIFIED_BINDING_SQL = "AND LOWER(COALESCE(metadata->>'email_verified_for','')) = %s "
+
+
 def _inherit_paid_tier(cur, api_key, email):
     """Lift an MCP key to the tier its owner has ALREADY paid for.
 
@@ -3852,6 +3859,146 @@ def admin_reconcile_keys():
                 out["legacy_unverified_paid_keys"]["error"] = str(_ae)[:160]
             if apply:
                 conn.commit()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+
+
+# ── POST /api/v1/admin/billing/backfill-verified-bindings ────────────────────
+# #4428 made paid tier follow a CONFIRMED email binding. Keys minted before that
+# carry no marker, so they sit in reconcile-keys' legacy_unverified_paid_keys
+# audit forever, and — because the checkout webhook's tier write is not
+# upgrade-only — a later PLAN CHANGE (pro → enterprise) would not reach them.
+#
+# This records the proof those rows already had. It is NOT a grant: it only ever
+# touches rows that are ALREADY paid/enterprise, so the worst it can do is
+# describe an entitlement that is in force. Stamping a FREE key would be a grant
+# (the next reconcile would lift it), which is why the tier predicate below is
+# the one clause this endpoint cannot lose.
+#
+# The allowlist is a standing rule, not a fit to today's 52 rows: a source
+# qualifies when the ADDRESS was established by a channel at least as strong as
+# a confirmation click — Stripe checkout, an authenticated IdP, or a human
+# admin. How the tier arrived is beside the point; who proved the address is not.
+_BACKFILL_PROVEN_SOURCES = {
+    # address came from a Stripe checkout the payer completed
+    "stripe_subscription":          "minted by the subscription handler from the Stripe customer email",
+    "welcome_ensure":               "minted during the paid-checkout welcome; address from Stripe",
+    "pack5":                        "minted from a completed pack checkout; address from customer_details.email",
+    "pack10":                       "minted from a completed pack checkout; address from customer_details.email",
+    # address asserted by an authenticated identity
+    "workos_oauth":                 "the IdP asserted this address for a signed-in identity",
+    # address chosen by a human operator, out of band
+    "entitlement_reconcile_manual": "granted deliberately by an admin",
+    "recover_usage_key":            "admin-gated, Stripe-confirmed, key delivered only to the address",
+}
+# Deliberately NOT proven, and why — kept in code so the next reader inherits the
+# reasoning instead of re-deriving it:
+#   redeem    — _p99_persist_key INSERTs tier='free' with a CALLER-SUPPLIED
+#               address behind a bearer session id; the paid tier arrived later
+#               through the very email match #4428 closed. Bearer-shaped.
+#   claim_api — the public door the defect was in. Never.
+#   (absent)  — no recorded provenance at all. Needs a human, not a rule.
+_BACKFILL_NEVER = ("redeem", "claim_api")
+
+
+# THE INVARIANT, in one named place: already paid/enterprise. This endpoint
+# records a proof for an entitlement ALREADY IN FORCE; it must never create one.
+# Stamping a free key would not merely describe it — the next reconcile would
+# read that stamp and grant paid. Module-level so the whole statement can be
+# read (and executed by tests) as one string: a WHERE clause assembled out of
+# function-locals is a clause a reader, and a guard, can silently miss.
+_BACKFILL_SCOPE_SQL = """
+                 WHERE COALESCE(k.status,'active') = 'active'
+                   AND COALESCE(k.tier,'') IN ('paid','enterprise')
+                   AND COALESCE(k.email,'') <> ''
+                   AND COALESCE(k.metadata->>'source','') = ANY(%s)
+                   AND LOWER(COALESCE(k.metadata->>'email_verified_for',''))
+                       <> LOWER(COALESCE(k.email,''))"""
+
+
+@mcp_bp.route("/api/v1/admin/billing/backfill-verified-bindings",
+              methods=["GET", "POST"])
+def admin_backfill_verified_bindings():
+    """Record the proof a legacy paid key already had. Dry run unless apply=1.
+
+    ?apply=1          write (default: report only)
+    ?sources=a,b      NARROW to these sources; never widens past the allowlist
+    ?full=1           un-redact addresses (admin-only, for working the list)
+    """
+    try:
+        from routes.funnel_health import _admin_ok
+        if not _admin_ok(request):
+            return jsonify(ok=False, error="unauthorized"), 401
+    except Exception:
+        return jsonify(ok=False, error="auth_unavailable"), 503
+
+    apply = (request.args.get("apply") in ("1", "true", "yes"))
+    _full = (request.args.get("full") in ("1", "true", "yes"))
+    asked = [x.strip() for x in (request.args.get("sources") or "").split(",") if x.strip()]
+    # Intersection, never union: a source absent from the allowlist cannot be
+    # smuggled in through the query string.
+    sources = sorted(set(asked) & set(_BACKFILL_PROVEN_SOURCES)) if asked \
+        else sorted(_BACKFILL_PROVEN_SOURCES)
+    rejected = sorted(set(asked) - set(_BACKFILL_PROVEN_SOURCES))
+
+    def _redact(e):
+        if _full:
+            return e
+        try:
+            u, d = e.split("@", 1)
+            return (u[:2] + "***@" + d)
+        except Exception:
+            return "***"
+
+    out = {"ok": True, "apply": apply, "sources": sources,
+           "rejected_sources": rejected, "stamped": 0,
+           "by_source": {}, "samples": [],
+           "still_unproven": {"count": 0, "by_source": {}}}
+    if not sources:
+        out["message"] = "no allowlisted source selected — nothing to do"
+        return jsonify(out)
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(k.metadata->>'source',''), LOWER(k.email), k.tier "
+                "  FROM mcp_dev_keys k" + _BACKFILL_SCOPE_SQL
+                + " ORDER BY 1, 2", (sources,))
+            rows = cur.fetchall() or []
+            for src, email, tier in rows:
+                out["by_source"][src] = out["by_source"].get(src, 0) + 1
+                if len(out["samples"]) < 100:
+                    out["samples"].append({"email": _redact(email), "tier": tier,
+                                           "source": src})
+            if apply and rows:
+                cur.execute(
+                    """UPDATE mcp_dev_keys AS k
+                          SET metadata = COALESCE(k.metadata,'{}'::jsonb)
+                                         || jsonb_build_object(
+                                              'email_verified_for', LOWER(k.email),
+                                              'email_verified_at',
+                                              to_char(NOW() AT TIME ZONE 'UTC',
+                                                      'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+                                              'email_verified_via', 'legacy_backfill',
+                                              'email_verified_source',
+                                              COALESCE(k.metadata->>'source',''))"""
+                    + _BACKFILL_SCOPE_SQL, (sources,))
+                out["stamped"] = cur.rowcount or 0
+                conn.commit()
+            # What the rule deliberately will not touch. Reported so the
+            # leftover is a decision someone made, not a list nobody saw.
+            cur.execute(
+                """SELECT COALESCE(metadata->>'source',''), COUNT(*)
+                     FROM mcp_dev_keys
+                    WHERE COALESCE(status,'active') = 'active'
+                      AND COALESCE(tier,'') IN ('paid','enterprise')
+                      AND COALESCE(email,'') <> ''
+                      AND LOWER(COALESCE(metadata->>'email_verified_for',''))
+                          <> LOWER(COALESCE(email,''))
+                    GROUP BY 1 ORDER BY 2 DESC""")
+            for src, n in (cur.fetchall() or []):
+                out["still_unproven"]["by_source"][src or "(none)"] = n
+                out["still_unproven"]["count"] += n
         return jsonify(out)
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
@@ -6903,9 +7050,25 @@ def stripe_webhook_mcp():
         # Any paid subscription (incl the $1/100 metered plan) → 'paid'.
         _ptier = "enterprise" if (plan_to or "").lower() == "enterprise" else "paid"
         with _pool.connection() as conn, conn.cursor() as cur:
+            # 2026-09-12 (security, #4428 follow-up): pick up an existing key
+            # ONLY where the address was confirmed by its owner.
+            #
+            # This SELECT took the NEWEST active key on the buyer's address and
+            # the UPDATE below lifted it to paid. Anyone could bind a key to a
+            # customer's address (/keys/claim, /keys/identify), and because the
+            # ordering is created_at DESC, binding shortly before that customer
+            # paid took the grant deterministically — their payment upgraded
+            # someone else's key. #4428 closed that on the claim/identify/
+            # reconcile/webhook grants and missed this one.
+            #
+            # A buyer whose only key is unconfirmed now falls through to the
+            # mint branch and is EMAILED a fresh paid key, which is the same
+            # delivery the no-key case already uses. They are never left
+            # without one — that was the r-coldbuy failure and it stays fixed.
             cur.execute("SELECT api_key, tier FROM mcp_dev_keys "
                         "WHERE LOWER(email)=%s AND status='active' "
-                        "ORDER BY created_at DESC LIMIT 1", (email,))
+                        "  " + _VERIFIED_BINDING_SQL +
+                        "ORDER BY created_at DESC LIMIT 1", (email, email))
             _ex = cur.fetchone()
             _newmint = False
             _upgraded = False
