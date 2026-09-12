@@ -23,6 +23,8 @@ Pure: no Flask, no DB, no network. Callers supply the record.
 """
 from __future__ import annotations
 
+from util.facility_headline import plausible_mw
+
 SITE = "https://dchub.cloud"
 LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/"
 CITE_AS = "DC Hub, dchub.cloud"
@@ -44,15 +46,19 @@ def facility_measures(fac: dict | None) -> list[dict]:
     that matters more than usual: power_mw is frequently absent (a DISCLOSURE
     gap, not a shut-down site), and a fabricated 0 MW is indistinguishable from
     a real reading of zero.
+
+    ★★★ r-mw-one-owner (2026-09-12). The same rule now applies to a number too
+    LARGE to be one building. This builder feeds BOTH the inline Dataset
+    JSON-LD and the /facilities/<slug>.json twin, so the two surfaces that wrap
+    a CC-BY "you may cite this" envelope around a measurement were the two that
+    published 63,000 MW for a single facility. Omitting it here is one edit for
+    both, and it cannot drift from the title's cap because both now ask
+    util.facility_headline.plausible_mw — see its docstring for the measurement.
     """
     fac = fac or {}
     out = []
-    mw = fac.get("power_mw")
-    try:
-        mw = float(mw) if mw is not None else None
-    except (TypeError, ValueError):
-        mw = None
-    if mw is not None and mw > 0:
+    mw = plausible_mw(fac.get("power_mw"))
+    if mw is not None:
         out.append({
             "@type": "PropertyValue",
             "name": "Power Capacity",
