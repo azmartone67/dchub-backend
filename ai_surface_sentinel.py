@@ -108,6 +108,33 @@ _SURFACES = [
 ]
 
 
+# ★ 2026-09-12 — SURFACES THE CODE LOOP CANNOT FIX.
+# These two are shadowed at the edge by the off-repo Cloudflare zone worker:
+# the backend route exists and returns 200, but its bytes never reach the
+# public. Established by reading x-dc-worker-version PER PATH in one second:
+#
+#   /.well-known/mcp.json              4.9.66-fallback-tools-90      <- zone worker
+#   /.well-known/mcp/server-card.json  4.9.66-fallback-tools-90      <- zone worker
+#   /AGENTS.md                         4.99.0-revert-edge-...-09-11
+#   /integrations/chatgpt/instructions.txt   4.99.0-revert-edge-...
+#   /integrations/grok/mcp-config.json       4.99.0-revert-edge-...
+#   /.well-known/mcp-server.json             4.99.0-revert-edge-...
+#
+# Drift on the first two is REAL and worth reporting, but it is fixed by an
+# owner paste into the CF dashboard, not by a code change — the sentinel says
+# so itself at the free_tier_anon check ("owner-gated (CF dashboard paste, no
+# API) so this is DETECT-only"). Emitting it with the same shape as fixable
+# drift made the brain propose the identical "render from canon + CI gate"
+# change 11 times across Jul 24 / Aug 9 / Aug 17 / Aug 18 and 7 more in
+# September, approve it every time, and never land it: on 2026-09-12, 11 of
+# the 15 self-directed agenda items were this one unlandable class.
+#
+# Every OTHER surface is repo-served and its drift IS a code fix — including
+# agents_md, which carries the same per-day literals. This set is deliberately
+# the measured two, not "all the manifests".
+_OWNER_GATED_SURFACES = {"mcp_json", "server_card"}
+
+
 def _admin_ok() -> bool:
     import hmac
     ak = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
@@ -149,8 +176,13 @@ def _audit_surface(key, url, kind, canon):
                 "drifts": [{"field": "http", "live": str(code), "expected": "200",
                             "severity": "medium"}]}
 
+    owner_gated = key in _OWNER_GATED_SURFACES
+
     def add(field, live, expected, sev):
-        drifts.append({"field": field, "live": live, "expected": expected, "severity": sev})
+        drifts.append({"field": field, "live": live, "expected": expected,
+                       "severity": sev, "owner_gated": owner_gated,
+                       "fix_action": "owner-action" if owner_gated
+                                     else "update-from-canon"})
 
     # 1) known-stale markers present in the served body
     for m in canon.get("stale_markers", []):
@@ -430,6 +462,28 @@ def _draft_drift_fix_prs(audit):
         return {"attempted": True, "error": str(e)[:120]}
 
 
+def finding_status_for(drift: dict) -> str:
+    """'wont_fix' for drift on an owner-gated surface, else 'open'.
+
+    wont_fix is the EXISTING exemption honoured by
+    brain_findings_writer._maybe_quarantine_runaway ("A finding marked
+    resolved/wont_fix is exempt — only runaway 'open' findings get
+    suppressed"), so a gated finding stays visible and auditable while
+    leaving the autopilot's code-fix path."""
+    return "wont_fix" if bool(drift.get("owner_gated")) else "open"
+
+
+def owner_gated_fields(audit: dict) -> list:
+    """Every '<surface>:<field>' on an owner-gated surface, sorted. These are
+    the ones an owner must re-paste in the Cloudflare dashboard."""
+    out = []
+    for s in (audit or {}).get("surfaces", []) or []:
+        for d in s.get("drifts", []) or []:
+            if d.get("owner_gated"):
+                out.append(f"{s.get('surface')}:{d.get('field')}")
+    return sorted(out)
+
+
 def _write_findings(audit):
     """Upsert each drift into brain_findings (dedup on issue+url) so drift is
     tracked + actionable in the brain workflow. SAFE: findings are informational
@@ -445,18 +499,44 @@ def _write_findings(audit):
     try:
         conn = get_pg_connection()
         with conn.cursor() as cur:
+            owner_pending = owner_gated_fields(audit)
             for s in audit.get("surfaces", []):
                 for d in s.get("drifts", []):
                     issue = f"ai_surface_drift:{s['surface']}:{d['field']}"
+                    gated = bool(d.get("owner_gated"))
                     detail = (f"{s['surface']} {d['field']}: live={d['live']!r} "
                               f"expected={d['expected']!r} sev={d['severity']} "
                               f"({s['live_url']})")
+                    if gated:
+                        # Real drift, but the edge serves this path from the
+                        # off-repo zone worker — no code change can reach it.
+                        # wont_fix keeps it visible and auditable while taking
+                        # it OUT of the autopilot's code-fix path (see
+                        # _maybe_quarantine_runaway: wont_fix is exempt).
+                        detail += " [OWNER-GATED: served by the off-repo CF zone worker; fix is a dashboard paste, not a code change]"
                     try:
-                        upsert_brain_finding(cur, issue=issue, url=s["live_url"],
-                                             detail=detail, detector="ai_surface_sentinel")
+                        upsert_brain_finding(
+                            cur, issue=issue, url=s["live_url"], detail=detail,
+                            detector="ai_surface_sentinel",
+                            status=finding_status_for(d))
                         written += 1
                     except Exception:
                         pass
+
+            # ONE actionable item for the owner, instead of N unlandable ones.
+            if owner_pending:
+                try:
+                    upsert_brain_finding(
+                        cur,
+                        issue="ai_surface_owner_action:cf_zone_worker",
+                        url=f"{_PUBLIC}/.well-known/mcp.json",
+                        detail=("Owner-gated AI surfaces have drifted from canon and "
+                                "must be re-pasted in the Cloudflare dashboard (no API): "
+                                + ", ".join(sorted(owner_pending))),
+                        detector="ai_surface_sentinel", status="open")
+                    written += 1
+                except Exception:
+                    pass
         conn.commit()
     except Exception as e:
         return {"written": written, "error": str(e)[:120]}
