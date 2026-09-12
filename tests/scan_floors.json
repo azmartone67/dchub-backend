@@ -94,6 +94,9 @@
     "test_cron_selftraffic_ua.py": {
       "glob": 140
     },
+    "test_cursor_doubles_match_the_wrapper.py": {
+      "pglob": 950
+    },
     "test_daily_service_origin.py": {
       "pglob": 2980
     },

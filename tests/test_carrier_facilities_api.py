@@ -268,6 +268,8 @@ class FakeCursor:
     """No more capable than db_utils.PGCursorWrapper: no __enter__, no
     __iter__, and rows are plain tuples (the real PGRowProxy answers by index
     AND by name, so a tuple is the weaker of the two)."""
+    description = None  # a real cursor always has it (None before a statement)
+    rowcount = -1  # psycopg2: -1 = no statement / not determinable
 
     def __init__(self, db):
         self._db, self._rows = db, []

@@ -160,6 +160,8 @@ def test_auto_log_reports_the_real_endpoint_not_unknown(monkeypatch, caplog):
     conn = FakeConn(REPLICA)
 
     class Cur:
+        description = None  # a real cursor always has it (None before a statement)
+        rowcount = -1  # psycopg2: -1 = no statement / not determinable
         def __enter__(self):
             return self
 
@@ -208,6 +210,8 @@ class _SessionCur:
     test stayed green. A fixture may never be able to do something the real
     thing cannot.
     """
+    description = None  # a real cursor always has it (None before a statement)
+    rowcount = -1  # psycopg2: -1 = no statement / not determinable
 
     def __init__(self, row, log):
         self._row = row

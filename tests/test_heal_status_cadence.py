@@ -114,6 +114,8 @@ def _derived_names(fn):
 
 class _FakeCursor:
     """Enough cursor for get_status()'s two aggregate reads. No DB."""
+    description = None  # a real cursor always has it (None before a statement)
+    rowcount = -1  # psycopg2: -1 = no statement / not determinable
 
     def __enter__(self):
         return self
