@@ -1,5 +1,5 @@
-"""POST /api/v1/qa/run must be gated, and ?sync=1 must not run before the gate
-(2026-09-12).
+"""Every /api/v1/qa/* surface must be gated, and ?sync=1 must not run before
+the gate (2026-09-12).
 
 WHAT WAS WRONG
 --------------
@@ -42,10 +42,29 @@ still answer 401 to the plain POST test — and still run the suite for
 fails in that arrangement, so it asserts the RUNNER WAS NOT CALLED rather than
 just reading the status code.
 
+THE READ SURFACES (added in the follow-up)
+------------------------------------------
+/report, /regressions, /dashboard and /health were open too, and they are not
+inert: /report publishes, per test, the url, http_code, error_detail and
+proposed_fix of every currently-failing surface; /regressions the same for open
+alerts; /health the count of open alerts. That is a live "what is broken here
+right now, and how" map.
+
+★ Traffic did NOT enumerate the callers. Railway metrics for the 7 days to
+2026-09-12 show 0 requests to /regressions — not because nothing calls it, but
+because its caller (.github/workflows/site-qa.yml's issue step) runs ONLY when
+a P0 has already fired, and none had. Gating on the metric alone would have
+401'd that fetch at exactly the moment the signal mattered. Its credential is
+added in the same change, and test_the_p0_issue_step_sends_a_credential pins it.
+
+/api/v1/qa/health is QA-suite health, not service liveness — the service health
+check is /api/health and is untouched.
+
 MUTATION-VERIFIED (verify-a-guard) — transcript in the PR body.
 """
 import ast
 import os
+import re
 import sys
 
 import pytest
@@ -253,9 +272,15 @@ def test_the_qa_workflow_sends_a_credential():
     and the site QA signal would go dark."""
     with open(WORKFLOW, encoding="utf-8") as fh:
         text = fh.read()
-    assert "X-Internal-Key" in text, (
-        ".github/workflows/site-qa.yml no longer sends X-Internal-Key — its "
-        f"POST to {PATH} will 401 on every scheduled run"
+    # ★ Assert the CODE form, not the bare header name. This file also
+    # MENTIONS X-Internal-Key in the P0 issue body's explanatory prose, so a
+    # substring check over the file passes even with the real header deleted —
+    # measured: mutation M8 removed the live header and this suite stayed green
+    # until the assertion was tightened to the binding below.
+    assert re.search(r"""["']X-Internal-Key["']\s*:\s*INTERNAL_KEY""", text), (
+        ".github/workflows/site-qa.yml no longer BINDS X-Internal-Key to the "
+        f"secret in its request headers — its POST to {PATH} will 401 on every "
+        "scheduled run"
     )
     assert "secrets.DCHUB_INTERNAL_KEY" in text, (
         "the workflow's credential no longer comes from the repo secret"
@@ -269,4 +294,163 @@ def test_the_dashboard_does_not_link_a_run_trigger():
         text = fh.read()
     assert 'href="/api/v1/qa/run"' not in text, (
         "the QA dashboard links to the run trigger again"
+    )
+
+
+# ── the read surfaces ────────────────────────────────────────────────────────
+
+_READ_PATHS = [
+    ("report",      "/api/v1/qa/report"),
+    ("regressions", "/api/v1/qa/regressions"),
+    ("dashboard",   "/api/v1/qa/dashboard"),
+    ("health",      "/api/v1/qa/health"),
+]
+_READ_IDS = [i for i, _ in _READ_PATHS]
+
+
+@pytest.fixture
+def read_app(monkeypatch):
+    """Real blueprint with the DB stubbed. _conn is a recorder: a refused
+    request must not reach it, which also proves _ensure_tables' DDL never
+    ran for an unauthenticated caller."""
+    mod = pytest.importorskip("routes.site_qa")
+    calls = []
+
+    class _Boom:
+        def __enter__(self, *a):
+            raise AssertionError("the handler queried the DB on a refused request")
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_conn(*a, **k):
+        calls.append((a, k))
+        return _Boom()
+
+    monkeypatch.setattr(mod, "_conn", _fake_conn)
+    monkeypatch.setattr(mod, "_ensure_tables", lambda *a, **k: None, raising=False)
+    app = flask.Flask(__name__)
+    app.register_blueprint(mod.site_qa_bp)
+    return app, calls
+
+
+@pytest.mark.parametrize("name,path", _READ_PATHS, ids=_READ_IDS)
+def test_read_surface_refuses_without_a_credential(monkeypatch, read_app, name, path):
+    """Each read publishes internal QA state. None may answer an anonymous
+    caller, and none may touch the DB before deciding."""
+    _clear(monkeypatch)
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", _REAL_KEY)
+    app, calls = read_app
+    resp = app.test_client().get(path)
+    assert resp.status_code == 401, (
+        f"GET {path} returned {resp.status_code}, not 401 — it publishes which "
+        "of our surfaces are failing, and how"
+    )
+    assert calls == [], (
+        f"{path} opened a DB connection for a refused request ({calls})"
+    )
+
+
+@pytest.mark.parametrize("name,path", _READ_PATHS, ids=_READ_IDS)
+def test_read_surface_refuses_a_wrong_credential(monkeypatch, read_app, name, path):
+    _clear(monkeypatch)
+    monkeypatch.setenv("DCHUB_INTERNAL_KEY", _REAL_KEY)
+    app, calls = read_app
+    resp = app.test_client().get(path, headers={"X-Internal-Key": _WRONG_KEY})
+    assert resp.status_code == 401, f"{path} accepted a wrong key"
+    assert calls == []
+
+
+@pytest.mark.parametrize("name,path", _READ_PATHS, ids=_READ_IDS)
+def test_read_surface_refuses_when_no_secret_is_configured(monkeypatch, read_app,
+                                                           name, path):
+    """Fail CLOSED on a misconfigured process (the #4411 / #4434 shape)."""
+    _clear(monkeypatch)
+    app, calls = read_app
+    resp = app.test_client().get(path)
+    assert resp.status_code == 401, (
+        f"{path} returned {resp.status_code} with NO secret in the env — the "
+        "gate disabled itself instead of denying"
+    )
+    assert calls == []
+
+
+@pytest.mark.parametrize("name,path", _READ_PATHS, ids=_READ_IDS)
+def test_read_surface_lets_a_valid_credential_through(monkeypatch, read_app,
+                                                      name, path):
+    """Past the gate the handler reaches _conn — which this fixture makes
+    explode. Reaching the explosion is the proof the credential was accepted;
+    a 401 would mean the legitimate caller was locked out."""
+    _clear(monkeypatch)
+    monkeypatch.setenv("DCHUB_INTERNAL_KEY", _REAL_KEY)
+    app, calls = read_app
+    client = app.test_client()
+    try:
+        resp = client.get(path, headers={"X-Internal-Key": _REAL_KEY})
+    except AssertionError:
+        return                      # reached the DB == past the gate
+    assert resp.status_code != 401, (
+        f"a valid X-Internal-Key was rejected on {path} — the QA cron and the "
+        "P0 issue step read these"
+    )
+    assert calls, f"{path} answered {resp.status_code} without reaching _conn"
+
+
+@pytest.mark.parametrize("name,path", _READ_PATHS, ids=_READ_IDS)
+def test_read_surface_gate_is_the_first_statement(name, path):
+    """Ahead of _ensure_tables(), which runs DDL. A gate below it would let an
+    anonymous request take table locks before being refused."""
+    fname = {"report": "latest_report", "regressions": "regressions",
+             "dashboard": "dashboard", "health": "health"}[name]
+    with open(SOURCE, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == fname), None)
+    assert fn is not None, f"{fname} not found in routes/site_qa.py"
+    body = [b for b in fn.body
+            if not (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))]
+    while body and isinstance(body[0], (ast.Import, ast.ImportFrom)):
+        body = body[1:]
+    assert body, f"{fname} has no executable body"
+    calls = {c.func.id for c in ast.walk(body[0])
+             if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+    assert "require_internal_or_admin" in calls, (
+        f"{fname}'s first statement is {type(body[0]).__name__} calling "
+        f"{sorted(calls)} — the gate is not first, so work happens before auth"
+    )
+
+
+def test_the_p0_issue_step_sends_a_credential():
+    """This step runs only when a P0 has ALREADY fired, so it is the one fetch
+    that must not 401. Its path showed zero traffic in the sample that motivated
+    the gate — because no P0 fired, not because nothing calls it."""
+    with open(WORKFLOW, encoding="utf-8") as fh:
+        text = fh.read()
+    issue_step = text.split("Open issue if P0 regressed", 1)
+    assert len(issue_step) == 2, "the P0 issue step was renamed or removed"
+    step = issue_step[1]
+    # ★ The code form, for the reason spelled out in
+    # test_the_qa_workflow_sends_a_credential: this very step's issue body
+    # mentions the header name in prose, which satisfied a substring check
+    # while the real header was gone (mutation M8).
+    assert re.search(r"""headers\s*:\s*\{\s*["']X-Internal-Key["']\s*:\s*internalKey""",
+                     step), (
+        "the P0 issue step no longer passes X-Internal-Key in its fetch headers "
+        "— it will 401 exactly when a regression has fired, and open an empty "
+        "issue"
+    )
+    assert "secrets.DCHUB_INTERNAL_KEY" in step, (
+        "the P0 issue step's credential no longer comes from the repo secret"
+    )
+
+
+def test_no_credential_is_embedded_in_the_public_issue_body():
+    """This repo and its issues are PUBLIC. The dashboard link must stay a bare
+    URL — never ?admin_key=<value> interpolated into issue text."""
+    with open(WORKFLOW, encoding="utf-8") as fh:
+        text = fh.read()
+    body_region = text.split("Dashboard: https://dchub.cloud/api/v1/qa/dashboard", 1)
+    assert len(body_region) == 2, "the dashboard link in the issue body moved"
+    assert "admin_key=${" not in text and "admin_key=' +" not in text, (
+        "a credential is being interpolated into the public issue body"
     )
