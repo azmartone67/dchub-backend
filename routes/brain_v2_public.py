@@ -483,6 +483,28 @@ _PUBLIC_BRAIN_HEAD = (
 
 @brain_v2_public_bp.route("/brain-live", methods=["GET"])  # PUBLIC sanitized view — distribute.html "Watch brain evolve" + page-monitors land here.
 @brain_v2_public_bp.route("/brain/public", methods=["GET"])
+def grade_score_text(weighted_score, esc=None) -> str:
+    """The " · 3.3/4" suffix beside the letter grade, or "" when there is no
+    score.
+
+    ★ 2026-09-12 — weighted_score is the weighted MEAN of grade components
+    each scored 0..4 (brain_learning: weighted = score_sum / weight_sum), so
+    it is on a 0..4 scale. This was rendered as "/100", so the public board
+    advertised "B · 3.3/100" — a healthy loop (3.3/4 = 82.5%) reading as a
+    catastrophe on the one page whose job is to show the loop is working.
+    The denominator is imported from the module that DEFINES the scale so
+    the two cannot drift apart again."""
+    if not isinstance(weighted_score, (int, float)) or isinstance(
+            weighted_score, bool):
+        return ""
+    try:
+        from routes.brain_learning import GRADE_SCALE_MAX as scale
+    except Exception:  # noqa: BLE001
+        scale = 4
+    txt = str(round(weighted_score, 1))
+    return f" · {esc(txt) if esc else txt}/{scale}"
+
+
 def brain_public_page():
     """PUBLIC, sanitized brain-evolution view — no admin key required."""
     from flask import current_app
@@ -582,7 +604,7 @@ def brain_public_page():
     if grade:
         _gc = {"A": "green", "B": "green", "C": "amber", "D": "red", "F": "red", "I": "amber"}.get(str(grade), "amber")
         _ws = sa.get("weighted_score")
-        _score_txt = f" · {_h(str(round(_ws, 1)))}/100" if isinstance(_ws, (int, float)) else ""
+        _score_txt = grade_score_text(_ws, _h)
         parts.append('<div class="section"><h2 class="section-title">Self-assessment</h2><div class="kpis">')
         parts.append(f'<div class="kpi"><div class="v {_gc}" style="font-size:2.6rem">{_h(str(grade))}</div><div class="l">Letter grade{_score_txt}</div></div>')
         _comp = sa.get("component_scores") or {}

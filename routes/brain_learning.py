@@ -1130,6 +1130,12 @@ def verify_merged_fixes():
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Every grade component is scored 0..4 and weighted_score is their weighted
+# MEAN, so the self-assessment score is on a 0..4 scale — never 0..100.
+# routes/brain_v2_public.py rendered it as "3.3/100" on the public board,
+# which reads as a system in freefall next to a green "B" (3.3/4 = 82.5%).
+GRADE_SCALE_MAX = 4
+
 # 4B — Review decisions (rejection memory)
 # ─────────────────────────────────────────────────────────────────────
 @brain_learning_bp.route("/api/v1/brain/review-decision", methods=["POST"])
@@ -1484,6 +1490,9 @@ def brain_self_assessment():
     # unread input silently drag the letter down.
     weights = {"fix_success": 0.35, "rejection": 0.25, "cron_health": 0.20,
                "volume": 0.10, "memory": 0.10}
+    # weighted is score_sum / weight_sum — NORMALISED, so it is always on the
+    # 0..GRADE_SCALE_MAX component scale regardless of which components are
+    # present. Anything rendering it must divide by GRADE_SCALE_MAX, not 100.
     score_sum = 0; weight_sum = 0
     for comp, w in weights.items():
         v = grade_components.get(comp)
