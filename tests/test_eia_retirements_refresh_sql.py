@@ -219,6 +219,18 @@ def test_a_filing_under_the_keep_ratio_is_refused_and_writes_nothing(cur, monkey
     assert [(b["feed"], b["status"]) for b in beats] == [(er.FEED, "error")]
 
 
+def test_a_filing_that_parses_to_nothing_is_refused(cur, monkeypatch):
+    """With nothing held, the keep-ratio floor has nothing to compare against,
+    so an empty parse needs its own refusal — never a 'successful' zero-row
+    refresh."""
+    _fetched, beats, beat = _wire(monkeypatch, "2026-07", [
+        {"plantid": "", "generatorid": "1", "planned-retirement-year-month": "2029-01"}])
+    out = _run(beat)
+    assert out["ok"] is False and "no planned retirements parsed" in out["error"], out
+    assert _dump(cur) == []
+    assert [b["status"] for b in beats] == ["error"]
+
+
 def test_a_period_older_than_the_one_held_is_refused(cur, monkeypatch):
     _seed(cur, _row(400, "1", "2028-01-01", period="2026-06"))
     before = _dump(cur)
