@@ -129,21 +129,29 @@ def _generate_sitemap():
     except Exception:
         pass
 
-    # Top facilities by power_mw — sites/<id> deep pages
-    try:
-        with _conn() as c, c.cursor() as cur:
-            rows = _safe(cur, """
-                SELECT id, COALESCE(updated_at, first_seen)
-                  FROM facilities
-                 WHERE power_mw IS NOT NULL
-                 ORDER BY power_mw DESC NULLS LAST
-                 LIMIT 200""")
-            for fid, last in rows:
-                lastmod = last.strftime("%Y-%m-%d") if last else now_iso
-                urls.append(_url_xml(
-                    f"{BASE}/sites/{fid}", lastmod, 0.6, "weekly"))
-    except Exception:
-        pass
+    # ── r-sites-dead (2026-09-11): the /sites/<id> block is GONE ────────────
+    # It selected `id, COALESCE(updated_at, first_seen) FROM facilities` and
+    # appended 200 `/sites/<facilities.id>` URLs. Both halves were broken:
+    #   * `facilities` has NO `updated_at` column — GET /api/health/diag reports
+    #     the live information_schema for it: 45 columns, `first_seen` and
+    #     `last_updated` both TEXT, no `updated_at`, no `created_at`. The SELECT
+    #     raised on every build and `_safe` returned [], so this block has
+    #     emitted ZERO URLs for as long as the column has been absent, while
+    #     /api/v1/sitemap/health counted 2,103 rows with power_mw. Naming
+    #     first_seen instead would not have rescued it either: it is TEXT, and
+    #     the loop called .strftime() on it, which the `except` below swallows.
+    #   * The pages are not a type a sitemap may carry. `/sites/<anything>`
+    #     answers 200 from the static shell (`/sites/zzz-not-a-facility-zzz`
+    #     included), its server-rendered canonical is `https://dchub.cloud/sites/`
+    #     whatever the id, and the data call its JS makes,
+    #     `/sites/<id_or_slug>/capacity-report`, 404s for a real facility slug
+    #     as well as for junk — `/sites/*` is not in the frontend's
+    #     _routes.json include, so it never reaches this backend.
+    # Reviving it would publish 200 soft-404s that canonicalise elsewhere: the
+    # /facilities/in/<cc> 676-shell lesson, and the same edge-routing lesson the
+    # listings block below already learned (it emits ?l= because /listings/<slug>
+    # 404s). The bare /sites/ landing page stays in _STATIC_PAGES above.
+    # Pinned by tests/test_sitemap_auto_no_site_id_urls.py.
 
     # Public pocket listings
     try:
