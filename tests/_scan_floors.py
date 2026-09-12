@@ -130,6 +130,9 @@ def _is_noise(item, kind: str) -> bool:
 _lock = threading.Lock()
 # {test_file_basename: {kind: max_size}}
 observations: dict[str, dict[str, int]] = {}
+# Scans performed off the main thread, kept OUT of `observations`. Same shape,
+# keyed by thread name. Diagnostic only — nothing is judged against it.
+background_observations: dict[str, dict[str, int]] = {}
 _current: dict[str, str] = {"file": ""}
 
 _installed = False
@@ -137,6 +140,46 @@ _originals: dict = {}
 
 
 def _record(kind: str, n: int) -> None:
+    """Credit a scan to the test file that made it — and ONLY to that file.
+
+    ★ 2026-09-12. `_current` is one global string; `_lock` guards
+    `observations` and nothing guards attribution. So a scan performed on a
+    BACKGROUND thread was credited to whichever test the main thread happened
+    to be running at that instant, which is never right and wrong in two
+    different ways:
+
+      · it invents a scan for a file that does not scan, so the adoption guard
+        reports it as an unpinned scanner — a red build naming an innocent
+        file, and a different file each run;
+      · worse, it can TOP UP a pinned file whose real scan collapsed, so a
+        genuine coverage collapse reads as green. That is the fail-open this
+        whole mechanism exists to end, arriving through its own front door.
+
+    Real and reproducible: routes/ddl_audit.py starts a thread named
+    `ddl-audit-boot` that walks the repo. Running tests/test_a*.py twice on two
+    trees differing only in files that run did not collect produced the same
+    stray walk=93 under two different names —
+    test_async_admin_calls_are_polled.py and test_app_contract_gate.py — and a
+    third, test_ausgrid_au_forecast_pin.py, in a full run. None of those three
+    contains a walk or a glob.
+
+    Latent for as long as the wrappers were switched off early in the session
+    (see temporarily_installed); #4477 turned the meter back on for the whole
+    run and made it reachable.
+
+    Off-thread scans go to `background_observations` instead of being dropped
+    silently, so a guard that legitimately scans from a worker thread shows up
+    there rather than vanishing — and its pinned floor then fails LOUDLY with
+    "performed NO repo scan at all this run" rather than quietly passing on
+    somebody else's number.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        with _lock:
+            slot = background_observations.setdefault(
+                threading.current_thread().name, {})
+            if n > slot.get(kind, -1):
+                slot[kind] = n
+        return
     f = _current["file"]
     if not f:
         return
