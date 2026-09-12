@@ -24,6 +24,14 @@
   },
   "allowed_removals": [
     {
+      "endpoint": "GET /api/v1/sitemap/health",
+      "keys": [
+        "facilities_with_power"
+      ],
+      "reason": "It counted the population behind the /sites/<id> sitemap block removed in #4436 (the facilities table has no updated_at column, so that block raised on every build and emitted zero URLs; the pages are robots-blocked besides). The count described that block and nothing else the generator emits. Its only reader was GET /api/v1/status's sitemap block, which drops the mirrored key in this same PR rather than publishing a null; no reader in dchub-frontend or dchub-mcp-server (grepped both).",
+      "added": "2026-09-12"
+    },
+    {
       "endpoint": "GET /api/v1/capacity/heatmap",
       "keys": [
         "description",

@@ -236,8 +236,13 @@ def sitemap_health():
         with _conn() as c, c.cursor() as cur:
             cur.execute("SELECT COUNT(DISTINCT market_slug) FROM market_power_scores")
             out["dcpi_markets"] = int(cur.fetchone()[0])
-            cur.execute("""SELECT COUNT(*) FROM facilities WHERE power_mw IS NOT NULL""")
-            out["facilities_with_power"] = int(cur.fetchone()[0])
+            # `facilities_with_power` lived here until 2026-09-12. It counted
+            # the population behind the /sites/<id> block removed in #4436, so
+            # it described nothing this generator emits — every other count
+            # here maps to a block above. With it gone, this module does not
+            # read `facilities` at all, which is what the module-wide AST check
+            # in tests/test_sitemap_auto_no_site_id_urls.py now pins. Audited
+            # removal: contracts/api_response_exceptions.json.
             cur.execute("""SELECT COUNT(*) FROM exclusive_listings WHERE status = 'public'""")
             out["public_listings"] = int(cur.fetchone()[0])
             cur.execute("""SELECT COUNT(*) FROM news

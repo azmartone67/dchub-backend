@@ -154,23 +154,39 @@ def test_every_other_block_still_emits(monkeypatch):
         "unblocking starts in dchub-frontend, not here.)")
 
 
-def test_the_generator_does_not_query_the_facilities_table():
-    """Comment-proof: reads the SQL _generate_sitemap ASKS FOR, from string
-    constants in its AST, so the prose above can neither satisfy nor trip it. A
-    revived block naming a column the live table lacks emits nothing and would
-    slip past the behavioural test.
+def test_the_module_does_not_query_the_facilities_table():
+    """Comment-proof: reads the SQL this module ASKS FOR, from string constants
+    in its AST, so the prose above can neither satisfy nor trip it. A revived
+    block naming a column the live table lacks emits nothing and would slip past
+    the behavioural test.
 
-    Scoped to the generator, not the module: sitemap_health() legitimately
-    counts `facilities` rows, and that COUNT is the oracle that showed this
-    block was raising (0 /sites URLs beside facilities_with_power = 2,103)."""
+    ★ MODULE-WIDE since 2026-09-12. It was scoped to _generate_sitemap while
+      sitemap_health() counted `facilities` for its facilities_with_power field
+      — the oracle that exposed the dead block (0 /sites URLs beside
+      facilities_with_power = 2,103). That field was dropped with the block it
+      described, so nothing here reads that table any more and the check needs
+      no exemption."""
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
-    fns = [n for n in ast.walk(tree)
-           if isinstance(n, ast.FunctionDef) and n.name == "_generate_sitemap"]
-    assert len(fns) == 1, f"expected one _generate_sitemap(), found {len(fns)}"
-    asks = [n.value for n in ast.walk(fns[0])
+    asks = [n.value for n in ast.walk(tree)
             if isinstance(n, ast.Constant) and isinstance(n.value, str)
             and re.search(r"\bFROM\s+facilities\b", " ".join(n.value.split()), re.I)]
     assert not asks, (
-        "_generate_sitemap queries `facilities` again. The live table has no "
-        "updated_at/created_at column and the /sites/<id> pages it fed are "
-        f"soft-404s: {[a[:80] for a in asks]}")
+        "routes/sitemap_auto.py queries `facilities` again. The live table has "
+        "no updated_at/created_at column and the /sites/<id> pages it fed are "
+        f"robots-blocked soft-404s: {[a[:80] for a in asks]}")
+
+
+def test_the_status_payload_does_not_mirror_the_dropped_field():
+    """THE SECOND CONSUMER. GET /api/v1/status mirrored sitemap/health's
+    facilities_with_power, and `.get` on a key nobody sends returns None — so
+    dropping the field at the source alone would publish a null on the public
+    status page. A number that quietly becomes "unknown" is worse than a field
+    that is gone."""
+    status = (SOURCE.parent / "status_api.py").read_text(encoding="utf-8")
+    hits = [i for i, line in enumerate(status.splitlines(), 1)
+            if "facilities_with_power" in line and not line.lstrip().startswith("#")]
+    assert not hits, (
+        "routes/status_api.py names facilities_with_power again at line(s) "
+        f"{hits}, but /api/v1/sitemap/health no longer returns it — the status "
+        "page would publish a null. Drop the mirror, or restore the field and "
+        "its contracts/api_response_exceptions.json entry together.")
