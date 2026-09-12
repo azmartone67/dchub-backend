@@ -341,18 +341,30 @@ def plausible_mw(power_mw):
 
     ★★★ r-mw-one-owner (2026-09-12). MW_PLAUSIBLE_MAX existed, and exactly one
     surface consulted it — the SERP title, through display_mw. Measured live
-    the same day against the published sitemap (18,950 indexable facility
-    URLs), the same row reached a reader four ways and was capped once:
+    the same day against the published sitemap (a full census of all 18,950
+    indexable facility URLs), the same row reached a reader SIX ways and was
+    capped once. On /facilities/aep-none-0dc136e7, the rendered HTML contained
+    "63000" four times and the twin once more:
 
         <title>                    capped      "AEP None · United States ·
                                                Planned | DC Hub"   <- no MW
-        body stat tile             UNCAPPED    "Power  63000.0 MW"
         inline Dataset JSON-LD     UNCAPPED    variableMeasured 63000.0
+        narrative paragraph        UNCAPPED    "It carries a reported power
+                                               capacity of 63000.0 MW …"
+        body stat tile             UNCAPPED    "Power  63000.0 MW"
+        LANE-2 context block       UNCAPPED    "Reported capacity 63000.0 MW"
         /facilities/<slug>.json    UNCAPPED    variableMeasured 63000.0
+
+    A SEVENTH consumer prints a PEER's capacity: the comparables list, ORDER BY
+    power DESC, so one fleet-sized row led the list on every co-located page in
+    its market. It asks this function too.
 
     63,000 MW is American Electric Power's entire generating fleet, published
     as one building, on a page that says `index, follow` and is listed TWICE in
-    the sitemap. The title guard was not wrong; it was alone.
+    the sitemap. 53 of the 18,950 published URLs (0.28%) carry a capacity above
+    this cap; the largest is 150,000 MW. The title guard was not wrong; it was
+    alone — and the surfaces were found by COUNTING occurrences in a rendered
+    page, not by listing the ones someone remembered.
 
     ★ THE COMPARISON LIVES HERE AND NOWHERE ELSE. Callers ask this function,
       they do not re-spell `<= MW_PLAUSIBLE_MAX`. A second copy is how the cap
