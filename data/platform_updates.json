@@ -24,6 +24,18 @@
   ],
   "updates": [
     {
+      "id": "nav-land-and-power-first",
+      "status": "published",
+      "announced": "2026-09-12",
+      "tag": "Navigation",
+      "title": "Land & Power now leads the site menu",
+      "body": "The menu now opens on the question DC Hub is built to answer: how much power is available at a specific site, and when. Land & Power brings the map, the Power Index, grid intelligence, the interconnection queue and the site-selection tools together. AI and What's New now sit in the main menu, and the agent tools are grouped under MCP. Every page that was in the menu is still in it.",
+      "link": {
+        "href": "/land-power-map",
+        "label": "Open the Land & Power map →"
+      }
+    },
+    {
       "id": "pocket-listings-program",
       "status": "published",
       "announced": "2026-09-11",
