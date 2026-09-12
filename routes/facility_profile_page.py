@@ -376,10 +376,20 @@ def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
     #   never really had and resolves on city/state like any other coordinate-
     #   less row. Nothing is invented: a facility whose city is not a scored
     #   market still gets None.
+    # ★ WRAPPED, because this block sits OUTSIDE the try/except that guards the DB
+    #   work below and _market_dcpi runs on every one of ~19k facility pages. An
+    #   ImportError here would propagate into _render_profile and 500 the page
+    #   rather than cost it a market block, which is the trade this whole change
+    #   is arguing against. Degrades to the pre-fix behaviour, never to a 500 —
+    #   the same shape as the lazy imports in _fetch_facility_by_slug.
     if flat is not None and flng is not None:
-        from routes.provenance import normalize_coordinates as _norm_coords
-        _nc = _norm_coords({"latitude": flat, "longitude": flng})
-        flat, flng = _nc.get("latitude"), _nc.get("longitude")
+        try:
+            from routes.provenance import normalize_coordinates as _norm_coords
+            _nc = _norm_coords({"latitude": flat, "longitude": flng})
+            flat, flng = _nc.get("latitude"), _nc.get("longitude")
+        except Exception as _nc_err:
+            logger.warning("facility_profile: coordinate normaliser unavailable "
+                           "(%s) — a 0,0 row keeps today's resolution", _nc_err)
 
     if not city_cands and not st and flat is None:
         return None

@@ -475,6 +475,30 @@ def test_null_island_never_invents_a_market_for_a_city_that_has_none(monkeypatch
         "page would publish a market this facility is not in")
 
 
+def test_an_unavailable_normaliser_costs_a_market_not_the_page(monkeypatch):
+    """This step runs OUTSIDE the try/except that guards the DB work.
+
+    _market_dcpi is called on every one of ~19k facility pages, and an
+    ImportError raised here propagates into _render_profile — turning a missing
+    market block into a 500 on the whole page, which is a far worse trade than
+    the bug being fixed. Simulated by making the import itself fail.
+    """
+    fpp, _ = _drive(monkeypatch, _row("houston", *HOUSTON))
+    monkeypatch.setitem(sys.modules, "routes.provenance", None)  # import -> ImportError
+
+    try:
+        got = fpp._market_dcpi("Houston", "", 0.0, 0.0)
+    except Exception as e:                       # noqa: BLE001 — that IS the defect
+        pytest.fail(f"_market_dcpi raised {type(e).__name__}: {e} — an "
+                    "unavailable normaliser 500s every facility page instead "
+                    "of costing one market block")
+
+    assert got is None, (
+        f"expected the pre-fix degradation (no market) but got {got!r} — if "
+        "resolution now survives without the normaliser, this test's premise "
+        "is stale and the fallback needs re-describing, not re-asserting")
+
+
 # ── the SQL, against a real database ─────────────────────────────────────
 
 @pytest.mark.skipif(not _DB, reason="no database URL in the environment")
