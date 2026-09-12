@@ -238,6 +238,9 @@
     "test_shell_killswitch_never_5xx.py": {
       "pglob": 60
     },
+    "test_sitemap_no_duplicate_selfcanon.py": {
+      "walk": 70
+    },
     "test_tier_grants_are_classified.py": {
       "pglob": 2110
     }
