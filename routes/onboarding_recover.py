@@ -118,17 +118,48 @@ def welcome_log():
         return jsonify(ok=False, error=str(e)[:200]), 500
 
 
-def delivery_verdict(matchable, events, confirmed, days):
+# ★ What this endpoint reconciles, and what it CANNOT — published in the
+# response rather than left for the reader to assume. The join is
+# welcome_email_log.resend_message_id -> email_events.resend_message_id, so a
+# send that writes no log row can never be confirmed here however well it was
+# delivered. Measured 2026-09-11: of 23 welcome-subject delivery events in 30
+# days, 22 were free-tier welcomes — mail this surface is structurally blind to.
+#
+# These lanes are OUT OF SCOPE BY CONSTRUCTION, and deliberately so: they must
+# not simply start writing welcome_email_log. _claim_welcome_send refuses to
+# claim when the address already holds a non-receipt 'sent'/'sent_via_resend'
+# row inside 24h, so logging a free signup there would SUPPRESS that customer's
+# paid welcome if they upgraded the same day. Widening the surface means giving
+# these senders their own delivery-truth table, not borrowing this one.
+UNRECONCILED_SENDERS = [
+    "free-tier welcome (main.send_free_welcome_email_sendgrid) — no log row",
+    "Pro-upgrade welcome (main.send_pro_welcome_email_sendgrid) — no log row",
+    "key recovery (routes/keys_recover.py) — sends via main._resend_email, no log row",
+    "digests, nudges, campaigns and operator alerts — their own tables or none",
+]
+
+
+def delivery_verdict(matchable, events, confirmed, days, events_all=None):
     """(verdict, healthy) from the reconciliation counts. Pure, so the rule
     that zero-events is NOT healthy can be tested without a database.
 
     ★The whole point is that `0` must never read as "nothing to report". A
     count of zero delivery events against a positive send count is the loudest
     fact on this endpoint, not the quietest.
+
+    `events` is WELCOME delivery events; `events_all` is every delivery event
+    in the window, whatever sent it. r-delivery-truth-join (2026-09-11): this
+    function used to be handed the all-senders count, and that made BLIND
+    almost impossible to reach — the weekly digest alone posts ~175 events a
+    window, so welcome delivery could stop dead and the number beside it would
+    still read healthy. Narrowing the input only ever makes this LOUDER.
+    `events_all` defaults to `events`, so a four-argument caller is unchanged.
     """
+    if events_all is None:
+        events_all = events
     if matchable == 0:
         return "NO_SENDS — nothing to reconcile in this window.", True
-    if events == 0:
+    if events == 0 and not events_all:
         return (
             "BLIND — %d welcome email(s) were handed to Resend in the last %d "
             "days and NOT ONE delivery event has been received. Every "
@@ -137,6 +168,15 @@ def delivery_verdict(matchable, events, confirmed, days):
             "https://dchub.cloud/api/v1/webhooks/resend as an endpoint in the "
             "Resend dashboard, then set RESEND_WEBHOOK_SECRET so events are "
             "stored verified=true." % (matchable, days)), False
+    if events == 0:
+        return (
+            "BLIND — %d welcome email(s) were handed to Resend in the last %d "
+            "days and NOT ONE welcome delivery event has been received, while "
+            "%d delivery event(s) for other DC Hub mail arrived in the same "
+            "window. The webhook is alive, so this is send-side, not "
+            "owner-side: the welcome lane is not reaching Resend at all. Do "
+            "not read the healthy-looking all-senders count as delivery of "
+            "these sends." % (matchable, days, events_all)), False
     if confirmed < matchable:
         return ("PARTIAL — %d of %d sends confirmed delivered; the rest are "
                 "unproven, not known-failed." % (confirmed, matchable)), False
@@ -153,24 +193,36 @@ def delivery_truth():
     precisely so /api/v1/webhooks/resend can close that loop.
 
     ★ 2026-09-11: the upstream gap this docstring used to describe is CLOSED.
-    email_events holds 892 rows, 888 of them signature-verified, arriving
-    continuously since 2026-08-29 03:10Z — the endpoint IS configured in the
-    Resend dashboard and RESEND_WEBHOOK_SECRET IS set. Until this edit the
-    paragraph here still described the state before that: a lone synthetic row
-    and no customer events, blamed on two owner actions that were in fact done
-    about fourteen hours after it was written. It was accurate for those
-    fourteen hours and wrong for the fortnight that followed. Read this
-    endpoint's own output, never this paragraph.
+    The endpoint IS configured in the Resend dashboard, RESEND_WEBHOOK_SECRET
+    IS set, and signature-verified events have arrived continuously since
+    2026-08-29 03:10Z. Until #4425 this paragraph still described the state
+    before that — a lone synthetic row from a deploy check, no customer events,
+    blamed on two owner actions that were in fact done about fourteen hours
+    after it was written. It was accurate for those fourteen hours and wrong
+    for the fortnight that followed. #4431 then stopped it REPRINTING the
+    superseded claim verbatim; this edit drops the live row counts it still
+    carried, for that same reason — a count in a docstring is the next stale
+    sentence. Read this endpoint's own output, never this paragraph.
 
-    ★ What is still open, and why the verdict is not CONFIRMED: no
-    welcome_email_log.resend_message_id has EVER matched an email_events row —
-    zero overlap, all time — while the last 30 days hold 23 delivered events
-    whose subject is the welcome subject. Both columns are 36-char UUIDs, so
-    the shapes agree and the populations do not. Every id-carrying send in the
-    window also predates the verified stream (newest such send 2026-08-28).
-    So a non-CONFIRMED verdict here currently means "the join found nothing",
-    which is NOT the same as "the mail did not arrive" — understand the join
-    population before reading this as a delivery failure.
+    ★ The open question this docstring recorded — why no
+    welcome_email_log.resend_message_id had EVER matched an email_events row —
+    is ANSWERED and FIXED (r-delivery-truth-join, 2026-09-11). It was never a
+    provenance mismatch: Resend's POST /emails `id` and its webhook's
+    data.email_id are the same value, and both columns held 36-char UUIDs. The
+    two populations simply never overlapped IN TIME. #4198 moved the paid
+    welcome off the dead SendGrid import onto main._resend_email, which
+    returned a bare bool and discarded the response body — so the send stopped
+    recording an id at the moment it started succeeding. Measured before the
+    fix: the newest id-carrying row in ANY table in this database was
+    2026-08-28, the verified stream began 2026-08-29 03:10Z, and the join had
+    therefore never had a row to match on either side. _resend_email now
+    returns the message id and the welcome lane stamps it.
+
+    ★ SCOPE, because a surface that quietly omits things is its own failure
+    mode: this reconciles welcome_email_log sends only. See
+    UNRECONCILED_SENDERS above for the lanes that write no log row and so can
+    never reach CONFIRMED here — most delivered welcome-subject mail is the
+    free-tier welcome, which is one of them. The response repeats that list.
 
     The failure mode this exists for is SILENCE: nothing breaks loudly, so
     nobody looks. It reports a verdict rather than a row count, because "0"
@@ -206,11 +258,21 @@ def delivery_truth():
                     " WHERE attempted_at > NOW() - (%s || ' days')::interval",
                     (days,))
                 matchable, unmatchable = cur.fetchone()
+                # Every delivery event in the window, whatever sent it —
+                # context, not evidence about these sends. The welcome-scoped
+                # count beside it is what the verdict is allowed to read: the
+                # weekly digest alone posts ~175 events a window, and feeding
+                # THAT to delivery_verdict made BLIND unreachable even if
+                # welcome delivery stopped dead. Percent DOUBLED — psycopg2
+                # scans the whole query for format specs.
                 cur.execute(
-                    "SELECT COUNT(*) FROM email_events"
+                    "SELECT COUNT(*),"
+                    "       COUNT(*) FILTER (WHERE subject ILIKE"
+                    "                        'Welcome to DC Hub%%')"
+                    "  FROM email_events"
                     " WHERE received_at > NOW() - (%s || ' days')::interval",
                     (days,))
-                events = cur.fetchone()[0]
+                events_all, events = cur.fetchone()
                 cur.execute(
                     "SELECT COUNT(DISTINCT w.resend_message_id)"
                     "  FROM welcome_email_log w"
@@ -228,15 +290,20 @@ def delivery_truth():
     out.update({
         "sends_with_a_message_id": matchable,
         "sends_without_a_message_id": unmatchable,
-        "delivery_events_in_window": events,
+        "delivery_events_in_window": events_all,
+        "welcome_delivery_events_in_window": events,
         "sends_confirmed_delivered": confirmed,
         "email_events_rows_all_time": total_events,
         "last_event_received_at": (last_event.isoformat()
                                    if last_event is not None else None),
     })
-    verdict, healthy = delivery_verdict(matchable, events, confirmed, days)
+    verdict, healthy = delivery_verdict(matchable, events, confirmed, days,
+                                        events_all=events_all)
     out["verdict"] = verdict
     out["healthy"] = healthy
+    out["reconciles"] = ("welcome_email_log sends carrying a resend_message_id, "
+                         "joined to email_events on that id")
+    out["cannot_be_confirmed_here"] = list(UNRECONCILED_SENDERS)
     return jsonify(out)
 
 
