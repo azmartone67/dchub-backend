@@ -1063,6 +1063,217 @@ def _nearby_generation_total_mw(rows):
     return total_mw
 
 
+# ── Fiber connectivity ──────────────────────────────────────────────────────
+#
+# r-fiber-names (2026-09-12). /api/v1/facilities/<slug> — the URL this page
+# links in its own footer — has published fiber_carrier_count, on_net and
+# fiber_providers on 28.0% of live facility pages since 2026-07-17, and the
+# page rendered NONE of it. That is roughly double the reach of the power tile
+# (12.2%), and it is the one fact that separates two colocation halls in the
+# same city, which "other data centers nearby" cannot.
+#
+# ★★★ THE COUNT IS A CO-LOCATION MEASURE, NOT A CONTRACT — so this renders
+#     NAMES AND NO NUMBER, EVER. Two independent mechanisms inflate it:
+#
+#   (1) THE LINK ITSELF. carrier_facility_ingestion.py attaches a PeeringDB
+#       facility's whole carrier list to the NEAREST DC Hub facility within
+#       2 km of it, in the same city. Several PeeringDB buildings can elect the
+#       same DC Hub row, which then wears all of their carriers.
+#   (2) THE TWIN UNION in /api/v1/facilities (main.py ~23783). Carriers are
+#       UNIONed across every row sharing the slug within 0.01 deg.
+#
+#   Measured live 2026-09-12, and this is the whole argument:
+#       LADC4 - 530 W 6th St   34.048428,-118.25519  -> 477 carriers
+#       TurnKey Internet - CA  34.048336,-118.25508  -> 477 carriers
+#   Two DIFFERENT facilities 13 m apart with a BYTE-IDENTICAL carrier list.
+#   "477 carriers" on the TurnKey page would be a claim about One Wilshire.
+#   Likewise Lunavi - Westin1809 reports 346 — the Westin Building Exchange's
+#   list, not Lunavi's suite. And the Anthropic New York record reported 263
+#   "on-site" carriers purely because its coordinates were a Manhattan
+#   placeholder; those links were deleted 2026-09-11, the mechanism was not.
+#   Distribution over the rendering set: median 8-15, p90 119-140, max 648.
+#
+#   So: named carriers, labelled as presence AT OR AROUND this building from
+#   peering records, and no total. The total is not merely unprinted — it is
+#   never FETCHED (no COUNT in the SQL below), so no later edit can leak one.
+#
+# ★★★ NO COORDINATES -> NO SECTION. The union's "sameness cannot be disproven"
+#     rule is weakest exactly where a row has no coordinate, and the ingestion
+#     in (1) skips such rows entirely (`if cand['lat'] and cand['lng']`), so a
+#     coordinate-less facility's carriers are ALWAYS inherited from a twin,
+#     never linked to it directly. MEASURED over 650 live pages sampled from
+#     the sitemap (2026-09-12): 339 carry no usable coordinate, and exactly ONE
+#     of them reports any carrier at all (one carrier). Refusing that class
+#     costs 1 page in 650 — 0.55% of the sections that would otherwise render —
+#     and removes 100% of the inherited-only population.
+#
+# 0,0 is absent, not the Gulf of Guinea: routes.provenance.normalize_coordinates
+# owns that sentinel and this REUSES it rather than adding a fourth copy.
+
+_FIBER_KIN_DEG = 0.01    # the co-location window /api/v1/facilities already uses
+_FIBER_NAME_CAP = 12     # names RENDERED; the fetch asks for one more, to learn
+                         # that more exist without ever learning how many.
+
+
+def _fiber_carrier_names(fac: dict):
+    """Carrier names present at or around this facility. [] on anything unusual.
+
+    Fetched by the ROUTE before render, never inside the renderer — see
+    _nearby_generation_rows for why that separation is load-bearing and must
+    stay that way.
+
+    Returns at most _FIBER_NAME_CAP + 1 names. The extra one is the overflow
+    sentinel: its presence says "there are more" without producing a total.
+    There is deliberately no COUNT in this query — see the block comment above.
+    """
+    try:
+        fid = fac.get("id")
+    except Exception:
+        return []
+    if fid is None or str(fid).strip() == "":
+        return []
+
+    src = fac.get("_src_table") or "discovered_facilities"
+    # Whitelist, not interpolation of user input: the table name cannot be
+    # parameterised, so only these two literals may ever reach the SQL.
+    if src not in ("discovered_facilities", "facilities"):
+        return []
+
+    # ★ THE NO-COORDINATE GATE. Runs BEFORE any DB work so the refusal is
+    #   visible as "no query ran", not as "a query returned nothing".
+    _c = {"latitude": fac.get("latitude"), "longitude": fac.get("longitude")}
+    try:
+        from routes.provenance import normalize_coordinates as _norm
+        _norm(_c)
+    except Exception as _nc_err:
+        logger.warning("facility_profile: coordinate normaliser unavailable "
+                       "(%s) — fiber connectivity stays unrendered", _nc_err)
+        return []
+    try:
+        _lat = float(_c.get("latitude"))
+        _lng = float(_c.get("longitude"))
+    except (TypeError, ValueError):
+        return []
+    if not (-90.0 <= _lat <= 90.0) or not (-180.0 <= _lng <= 180.0):
+        return []
+
+    # Siblings are found the way the slug DEFINES a building — same
+    # provider|name — computed from THIS row's own values rather than from the
+    # slug's frozen suffix, so a name that has drifted since the slug froze
+    # still matches itself. Same expression as routes.facility_slug.hash_sql,
+    # so the same expression index serves it.
+    try:
+        from routes.facility_slug import stable_hash8
+        h8 = stable_hash8(fac.get("provider"), fac.get("name"))
+    except Exception:
+        return []
+
+    conn = None
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+        if conn is None:
+            return []
+        with conn.cursor() as c:
+            c.execute(
+                """
+                WITH sib AS (
+                    SELECT id, latitude, longitude
+                      FROM """ + src + """
+                     WHERE LEFT(MD5(COALESCE(provider,'')
+                                    || '|' || COALESCE(name,'')), 8) = %s
+                ),
+                kin AS (
+                    SELECT id::text AS fid
+                      FROM sib
+                     WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                       AND abs(latitude - %s) < %s
+                       AND abs(longitude - %s) < %s
+                    UNION
+                    SELECT CAST(%s AS text)
+                )
+                SELECT DISTINCT cfp.carrier_name
+                  FROM carrier_facility_presence cfp
+                 WHERE cfp.dchub_facility_id IN (SELECT fid FROM kin)
+                   AND cfp.carrier_name IS NOT NULL
+                   AND btrim(cfp.carrier_name) <> ''
+                 ORDER BY 1
+                 LIMIT %s
+                """,
+                (h8, _lat, _FIBER_KIN_DEG, _lng, _FIBER_KIN_DEG,
+                 str(fid), _FIBER_NAME_CAP + 1),
+            )
+            rows = c.fetchall() or []
+    except Exception as _fib_err:
+        logger.warning("facility_profile fiber carriers unavailable (%s) — "
+                       "section omitted", _fib_err)
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    out = []
+    for r in rows:
+        try:
+            v = r[0] if isinstance(r, (list, tuple)) else r
+        except Exception:
+            continue
+        v = ("" if v is None else str(v)).strip()
+        if v:
+            out.append(v)
+    return out
+
+
+def _fiber_connectivity_html(names, place: str = "") -> str:
+    """Render the named carriers. PURE — no DB, no I/O.
+
+    `names` is the list from _fiber_carrier_names, or anything falsy when there
+    is nothing to say. Returns '' rather than an empty section: no carriers is
+    exactly the case where a header would promise a fact the page does not
+    have, and on_net is DEFINED in main.py as carrier count > 0, so an empty
+    list IS the on_net=false case — there is no second switch to disagree with.
+
+    ★ NOT ONE DIGIT of this function's own prose is a number. Everything
+      numeric a reader could mistake for a carrier count is absent by
+      construction; the only digits that can appear in the output come from
+      carrier names themselves ("365 Data Centers", "5G Networks")."""
+    names = [str(n).strip() for n in (names or []) if str(n or "").strip()]
+    if not names:
+        return ""
+    shown = names[:_FIBER_NAME_CAP]
+    if not shown:
+        return ""
+    more = len(names) > _FIBER_NAME_CAP
+
+    where = _esc(place) if place else "this building"
+    chips = "".join(
+        f'<span class="chip fiber-chip">{_esc(n)}</span>' for n in shown)
+
+    overflow = (
+        '<p class="section-sub fiber-note">Further networks are recorded at '
+        'this location beyond those listed here.</p>' if more else '')
+
+    return (
+        '<div class="section"><div class="section-head">'
+        '<h2>Fiber connectivity</h2></div>'
+        f'<p class="section-sub">Networks recorded as present at or immediately '
+        f'around {where} in public peering records. Treat this as a map of who '
+        f'is <em>there</em>, not as a list of contracted cross-connects &mdash; '
+        f'availability, diversity and pricing are the operator&rsquo;s to '
+        f'confirm.</p>'
+        f'<div class="chips">{chips}</div>'
+        + overflow +
+        '<p class="section-sub fiber-note">Source: PeeringDB carrier-to-facility '
+        'records, matched to this site by location. A network listed here may '
+        'sit in a neighbouring hall or an adjacent building at the same '
+        'address, so presence is reported for the location rather than for a '
+        'single suite.</p></div>'
+    )
+
+
 def _brand_already_in_name(provider: str, name: str) -> bool:
     """Delegates to util.facility_headline.brand_already_in_name.
 
@@ -1483,6 +1694,19 @@ def _render_profile(fac: dict, slug: str) -> str:
         logger.warning(f"facility_profile nearby-generation failed: {_gen_err}")
         nearby_gen_html = ""
 
+    # r-fiber-names (2026-09-12): named carriers, never a total. Rows are
+    # fetched by the ROUTE (see _fiber_carrier_names) and passed in on `fac`,
+    # the same separation _nearby_gen uses — a direct-call test that renders
+    # without them simply gets no section, which is the correct answer for a
+    # page with no data behind it. Fail-soft: a query error costs the section,
+    # never the page.
+    try:
+        fiber_html = _fiber_connectivity_html(
+            fac.get("_fiber_carriers"), name or "")
+    except Exception as _fib_err:
+        logger.warning(f"facility_profile fiber connectivity failed: {_fib_err}")
+        fiber_html = ""
+
     # r-title-facts (2026-09-10): the SERP <title> and meta description, built
     # ONCE, now that every fact they may carry is known — the market's ISO and
     # time-to-power (`_dcpi`, above) and the nearby-generation total. DISPLAY-
@@ -1645,6 +1869,8 @@ def _render_profile(fac: dict, slug: str) -> str:
   .chip{{background:var(--surf2);border:1px solid var(--b);border-radius:10px;padding:10px 14px;min-width:118px}}
   .chip-l{{display:block;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}}
   .chip-v{{display:block;font-size:18px;font-weight:600;font-family:'JetBrains Mono',monospace;margin-top:4px}}
+  .fiber-chip{{min-width:0;padding:7px 12px;font-size:13px;line-height:1.3}}
+  .fiber-note{{margin:14px 0 0;font-size:13px}}
   .link{{display:inline-block;margin-top:16px;color:var(--ind);text-decoration:none;font-weight:600;font-size:14px}}
   .map-block{{padding:0;overflow:hidden}}
   .cta{{background:linear-gradient(135deg,rgba(99,102,241,0.12),rgba(168,85,247,0.06));border:1px solid rgba(99,102,241,0.25);border-radius:16px;padding:22px 24px;margin:18px 0;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;justify-content:center;text-align:center}}
@@ -1689,6 +1915,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     {map_block}
 
     {context_html}
+    {fiber_html}
     {nearby_gen_html}
     {comps_html}
     {sponsor_html}
@@ -2482,6 +2709,13 @@ text-align:center;padding:80px 20px">
             fac.get("latitude"), fac.get("longitude"))
     except Exception:
         fac["_nearby_gen"] = []
+    # r-fiber-names (2026-09-12): same rule — fetched HERE, once, never in the
+    # renderer. Its own try/except so a fiber failure cannot cost the page the
+    # generation section, or the page.
+    try:
+        fac["_fiber_carriers"] = _fiber_carrier_names(fac)
+    except Exception:
+        fac["_fiber_carriers"] = []
     html = _render_profile(fac, slug)
     # r-page-onramp (2026-07-04): citation header with as-of stamp. ASCII only
     # (headers are latin-1; the industry-pulse em-dash 502 is the trap).
