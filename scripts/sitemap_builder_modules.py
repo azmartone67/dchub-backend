@@ -18,11 +18,18 @@ by refusing `power_mw` inside a builder query. So the policy moved next to its
 predicate, by design, and the rebuild trigger stayed behind.
 
 MEASURED 2026-09-12 over the 34.1 days of run history GitHub still holds
-(2026-08-09 .. 2026-09-12, 400 runs):
+(2026-08-09 .. 2026-09-12, 400 runs). The graph was re-derived AS OF EACH
+COMMIT'S PARENT — applying today's graph backwards over-counts, because
+util/sitemap_redirects only landed on 2026-09-12 and pulls
+routes/facility_profile_page in with it:
 
-    commits touching a module this file derives        84
-      rebuilt only because main.py changed too        19
-      MISSED THE REBUILD ENTIRELY                     65   (1.91/day)
+    commits on main in the window                 1,461
+    evaluated against their own-era graph           984
+    MISSED THE REBUILD ENTIRELY                      41   (1.20/day)
+
+(Today's graph over the same window gives 65. That is the number of extra runs
+this filter ADDS, not a count of misses — see the concurrency note in the
+workflow.)
 
 The most recent is PR #4500 (4df6ccce4, merged 12:38:17Z), which changed
 util/thin_content.evidence so 17 URLs leave both sitemap families. The last

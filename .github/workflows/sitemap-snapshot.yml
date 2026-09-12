@@ -57,10 +57,21 @@ on:
     # design, and the rebuild trigger stayed behind.
     #
     # MEASURED over the 34.1 days of run history GitHub still holds
-    # (2026-08-09 .. 2026-09-12, 400 runs): 84 commits touched a module the
-    # builder reads, 19 rebuilt only because they happened to touch main.py
-    # too, and 65 MISSED THE REBUILD ENTIRELY — 1.91 a day, every one of them
-    # a green CI and a stale artefact for up to four hours.
+    # (2026-08-09 .. 2026-09-12, 400 runs). The import graph was re-derived AS
+    # OF EACH COMMIT'S PARENT rather than applying today's graph backwards —
+    # today's would over-count, because util/sitemap_redirects only landed on
+    # 2026-09-12 (#4459) and drags routes/facility_profile_page in with it:
+    #
+    #     commits on main in the window                 1,461
+    #     evaluated against their own-era graph           984
+    #     MISSED THE REBUILD ENTIRELY                      41   (1.20/day)
+    #
+    # Every one of the 41 a green CI and a stale artefact for up to four hours.
+    #
+    # ★ 65 IS A DIFFERENT NUMBER AND NOT THE MISS COUNT. Applying TODAY's graph
+    # to the same window gives 65 commits — that is what this widened filter
+    # would have ADDED in extra runs, i.e. the cost line by the concurrency
+    # block below, not a count of things that went wrong.
     #
     # The most recent was PR #4500 (4df6ccce4, merged 12:38:17Z), which changed
     # util/thin_content.evidence so 17 URLs leave both families. The last
@@ -108,6 +119,25 @@ on:
       - 'utils/cache.py'
   workflow_dispatch: {}
 
+# ★ 2026-09-12 — CHECKED WHEN THE PUSH FILTER WAS WIDENED FROM ONE FILE TO 21.
+#
+# Widening fires more runs, and this group serialises them. Measured over the
+# same 400-run window: push runs 5.34/day -> ~7.25/day (+36%), all runs 400 ->
+# ~465 (+16%), about 2.4 extra runner-hours a month at the p50 of 133s.
+#
+# The queue cannot pile up. Runs are far shorter than the gaps between
+# triggers — push duration p50 133s / p90 157s / max 377s against a p10 trigger
+# gap of 736s — and only 8 of 400 runs have ever overlapped at all; all 8
+# queued and completed, zero cancellations in the window. Above that, GitHub
+# keeps at most ONE pending run per group when no `queue:` property is set and
+# cancels a previously pending one, so depth is bounded at 1 by construction.
+# A superseded rebuild is harmless here: the later run waits for its OWN commit
+# (which contains the superseded one) and rebuilds from live data, so it
+# subsumes what the cancelled run would have published.
+#
+# timeout-minutes: 20 on the job covers the worst observed run 3.3x over, and
+# sitemap-snapshot-rebuild is not a required check on main, so an extra run
+# cannot block a merge.
 concurrency:
   group: sitemap-snapshot
   cancel-in-progress: false

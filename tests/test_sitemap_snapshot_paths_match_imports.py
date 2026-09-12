@@ -127,6 +127,15 @@ def _covered(module, paths):
     return any(_as_regex(p).match(module) for p in paths)
 
 
+def _negations(paths):
+    """GitHub path filters accept `!pattern` to EXCLUDE. This guard has no room
+    for one: an exclusion can switch a module off while the positive entry it
+    contradicts is still sitting in the list, so every check here would keep
+    reading it as covered. Treated as unsupported and named, rather than parsed
+    into a silent green."""
+    return [p for p in paths if p.startswith("!")]
+
+
 # --------------------------------------------------------------------------
 # the derivation must actually derive something
 # --------------------------------------------------------------------------
@@ -205,7 +214,7 @@ def test_no_path_entry_the_builder_no_longer_reads():
     mattering, and — worse — reads as coverage this filter does not have."""
     derived = set(builder_modules(ROOT))
     stale = [p for p in _push_paths()
-             if p not in SELF_REFERENTIAL
+             if p not in SELF_REFERENTIAL and not p.startswith("!")
              and not any(_as_regex(p).match(m) for m in derived)]
     assert not stale, (
         "paths: lists %s, which nothing in the sitemap build imports any more. "
@@ -215,11 +224,26 @@ def test_no_path_entry_the_builder_no_longer_reads():
     )
 
 
+def test_no_negated_path_entry_quietly_switches_a_module_off():
+    """★ `paths: ['util/thin_content.py', '!util/thin_content.py']` is a filter
+    that excludes the file while still LISTING it. Every other assertion in
+    this file would read the positive entry and pass. The derived-filter model
+    has no room for an exclusion, so an exclusion has to be loud."""
+    bad = _negations(_push_paths())
+    assert not bad, (
+        "paths: contains exclusion pattern(s) %s. An exclusion can switch off a "
+        "module whose positive entry is still listed, which every check in this "
+        "file would still read as covered. The filter is derived from the "
+        "import graph (python3 %s) — remove the entry instead of negating it."
+        % (", ".join(bad), DERIVER_REL)
+    )
+
+
 def test_every_path_entry_names_a_file_that_exists():
     """A path entry naming a deleted file never matches, so it is not a filter
     — it is a line that looks like one."""
     gone = [p for p in _push_paths()
-            if "*" not in p and "?" not in p
+            if "*" not in p and "?" not in p and not p.startswith("!")
             and not os.path.exists(os.path.join(ROOT, p))]
     assert not gone, "paths: names file(s) that do not exist: %s" % ", ".join(gone)
 
