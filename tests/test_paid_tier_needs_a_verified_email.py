@@ -546,3 +546,58 @@ def test_the_confirm_token_uses_a_query_name_the_edge_treats_as_a_credential(app
         "confirmation page — token and all — is cacheable again. Either add "
         "/api/v1/keys/confirm to a bypass rule on the zone, or use an arg name "
         f"the rule still honours: {sorted(honoured)}")
+
+
+# ── 7. the legacy backfill's source allowlist cannot be widened ──────────
+# The allowlist is a standing rule about which channels ESTABLISHED an address
+# well enough to count as proof. `?sources=` exists to stage a backfill, so it
+# must only ever narrow — a query string that could add `claim_api` would hand
+# the rule back to whoever types the URL, which is the shape of the original
+# defect one level up.
+@pytest.fixture
+def backfill(app, monkeypatch):
+    import routes.funnel_health as fh
+    monkeypatch.setattr(fh, "_ADMIN_KEY", "admin-test-key")
+
+    def get(**params):
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        return app.client.get(
+            "/api/v1/admin/billing/backfill-verified-bindings?" + qs,
+            headers={"X-Admin-Key": "admin-test-key"})
+    return get
+
+
+@pytest.mark.parametrize("asked", ["claim_api", "redeem", "claim_api,redeem",
+                                   "", "anything_at_all"])
+def test_a_source_outside_the_allowlist_is_never_backfilled(app, backfill, asked):
+    db = app.use(_DB())
+    r = backfill(**({"sources": asked} if asked else {}))
+    assert r.status_code == 200
+    body = r.get_json()
+    for bad in ("claim_api", "redeem"):
+        assert bad not in body["sources"], (
+            f"{bad!r} reached the backfill through the query string — "
+            f"the allowlist must be an intersection, never a union")
+    if asked:
+        assert set(body["sources"]) <= set(app.fme._BACKFILL_PROVEN_SOURCES)
+        assert body["rejected_sources"] == sorted(
+            set(x for x in asked.split(",") if x)
+            - set(app.fme._BACKFILL_PROVEN_SOURCES))
+        assert db.statements == [], "an all-rejected request must not query at all"
+
+
+def test_the_allowlist_excludes_the_two_bearer_shaped_sources(app):
+    """Kept as an assertion, not only a comment: `redeem` binds a caller-typed
+    address behind a bearer session id, and `claim_api` is the door the defect
+    was in. Neither is evidence the inbox belongs to the key holder."""
+    proven = app.fme._BACKFILL_PROVEN_SOURCES
+    for never in app.fme._BACKFILL_NEVER:
+        assert never not in proven, f"{never!r} is not proof of anything"
+    assert "stripe_subscription" in proven and "workos_oauth" in proven, (
+        "the allowlist lost the channels that DO establish an address")
+
+
+def test_the_backfill_requires_the_admin_gate(app):
+    app.use(_DB())
+    r = app.client.get("/api/v1/admin/billing/backfill-verified-bindings?apply=1")
+    assert r.status_code in (401, 503)

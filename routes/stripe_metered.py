@@ -394,9 +394,17 @@ def _agentic_key_for_email(email):
     if email:
         try:
             with _conn() as c, c.cursor() as cur:
+                # 2026-09-12 (security, #4428 follow-up): only a CONFIRMED
+                # binding may be adopted. The caller upgrades whatever this
+                # returns to 'paid', and this took the newest key on the
+                # address — so a key someone else bound there took the buyer's
+                # upgrade. No confirmed key ⇒ this mints a fresh one below,
+                # which is the behaviour an address with no key already had.
                 cur.execute("SELECT api_key FROM mcp_dev_keys WHERE LOWER(email)=%s "
-                            "AND status='active' ORDER BY created_at DESC LIMIT 1",
-                            (email,))
+                            "AND status='active' "
+                            "AND LOWER(COALESCE(metadata->>'email_verified_for','')) = %s "
+                            "ORDER BY created_at DESC LIMIT 1",
+                            (email, email))
                 row = cur.fetchone()
                 if row:
                     key = row[0]

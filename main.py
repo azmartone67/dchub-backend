@@ -19391,6 +19391,14 @@ def reconcile_mcp_tiers():
 
     dry_run = str(request.args.get('dry_run', '')).strip() in ('1', 'true', 'yes')
 
+    # 2026-09-12 (security, #4428 follow-up): this is the TWIN of
+    # /api/v1/admin/billing/reconcile-keys, running the same users-to-keys email
+    # join. #4428 gated that one and missed this one, which is the whole reason
+    # a sweep like this needs the clause too: an admin run here re-granted every
+    # promotion the public doors had just been stopped from making. The clause
+    # goes on the SELECT as well as the UPDATE so the dry-run report — how this
+    # endpoint is read before anyone applies it — names the same rows the apply
+    # would actually touch.
     _select = """
         SELECT k.api_key, k.email, u.plan,
                CASE WHEN u.plan = 'enterprise' THEN 'enterprise' ELSE 'paid' END
@@ -19400,6 +19408,7 @@ def reconcile_mcp_tiers():
            AND u.plan IN ('developer','pro','founding','enterprise')
            AND COALESCE(u.subscription_status,'') = 'active'
            AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')
+           AND LOWER(COALESCE(k.metadata->>'email_verified_for','')) = LOWER(k.email)
     """
     try:
         _, rows = _pg_execute(_select, (), fetch=True)
@@ -19421,7 +19430,8 @@ def reconcile_mcp_tiers():
                        AND k.status = 'active'
                        AND u.plan IN ('developer','pro','founding','enterprise')
                        AND COALESCE(u.subscription_status,'') = 'active'
-                       AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')""",
+                       AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')
+                       AND LOWER(COALESCE(k.metadata->>'email_verified_for','')) = LOWER(k.email)""",
                 (), fetch=False)
             updated = _rc or 0
             for s in stranded:

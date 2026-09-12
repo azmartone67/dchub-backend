@@ -536,6 +536,27 @@ jobs:
             echo "::error::the paid-tier SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── The grants #4428 MISSED, against the same Postgres ──────────────
+      # #4428 gated three statements that granted paid tier on an email match
+      # and missed three more of the same shape — including a SECOND admin
+      # reconcile endpoint. Two of the three gates sit on a SELECT rather than
+      # the write, so these run the SELECT and assert which row it hands back.
+      - name: Tier-grant gates + legacy backfill SQL against a real Postgres
+        env:
+          TIER_GATES_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_tier_grant_gates_sql.py -v --tb=short
+
+      - name: Prove the tier-gates SQL test actually RAN
+        env:
+          TIER_GATES_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_tier_grant_gates_sql.py \
+            -q -rs --tb=no > tg.txt 2>&1 || { cat tg.txt; exit 1; }
+          cat tg.txt
+          if grep -qi "skipped" tg.txt; then
+            echo "::error::the tier-gates SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── The live-proof PLATFORM query, against the same Postgres ─────────
       # It decides the homepage line naming which platforms call MCP tools.
       # Until 2026-09-03 it counted raw mcp_tool_calls with neither the
