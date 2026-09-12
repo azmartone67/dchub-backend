@@ -223,6 +223,16 @@ def test_one_building_at_five_urls_is_one_gap():
         "what check_gap_coverage.py reads to call a source tapped out")
 
 
+def test_the_same_building_name_under_two_operators_is_two_gaps():
+    """The batch key is the composed SLUG, not the name. Two operators can name
+    a building the same thing and they are two pages; a name-keyed de-dup would
+    throw away a real facility before it was ever probed."""
+    res = _gaps([_cand("https://cloudscene.com/a", name="AM4", operator="Equinix"),
+                 _cand("https://cloudscene.com/b", name="AM4", operator="Digital Realty")])
+    assert len(res["true_gaps"]) == 2, [g["operator"] for g in res["true_gaps"]]
+    assert res["dropped_same_run_repeat"] == 0
+
+
 def test_distinct_buildings_are_still_distinct_gaps():
     """Non-vacuity for the de-dup above."""
     res = _gaps([_cand("https://cloudscene.com/a", name="South Reach Networks Fort Pierce"),

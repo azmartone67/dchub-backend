@@ -131,6 +131,13 @@ SELECT r.id, r.canonical_slug, r.name, r.source, k.id AS keeper_id
  ORDER BY r.canonical_slug, r.id
 """
 
+# The write, in one place so the test can run THIS statement rather than a
+# retyped copy of it. `AND duplicate_of_id IS NULL` is what makes the rollback
+# exact: the only rows this can touch are rows whose pointer was NULL, so
+# setting them back to NULL restores precisely what was there.
+POINT_SQL = ("UPDATE discovered_facilities SET duplicate_of_id = %s "
+             " WHERE id = %s AND duplicate_of_id IS NULL")
+
 COUNTS_SQL = {
     "records": "SELECT COUNT(*) FROM discovered_facilities",
     "distinct_slugs": "SELECT COUNT(DISTINCT canonical_slug) FROM "
@@ -228,9 +235,7 @@ def main() -> int:
             print(f"\nrollback file written: {rb}")
 
             for p in pointed:
-                cur.execute("UPDATE discovered_facilities SET duplicate_of_id = %s "
-                            " WHERE id = %s AND duplicate_of_id IS NULL",
-                            (p["keeper_id"], p["id"]))
+                cur.execute(POINT_SQL, (p["keeper_id"], p["id"]))
             after = _counts(cur)
             conn.commit()
             print("\nAFTER:")

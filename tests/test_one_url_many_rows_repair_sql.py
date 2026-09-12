@@ -47,7 +47,13 @@ CREATE TABLE discovered_facilities (
   country TEXT, market TEXT, latitude DOUBLE PRECISION,
   longitude DOUBLE PRECISION, power_mw DOUBLE PRECISION, status TEXT,
   address TEXT, is_duplicate INTEGER, duplicate_of_id INTEGER,
-  canonical_slug TEXT, confidence_score DOUBLE PRECISION, source TEXT);
+  canonical_slug TEXT, confidence_score DOUBLE PRECISION, source TEXT,
+  source_url TEXT, sqft DOUBLE PRECISION, notes TEXT,
+  investment_usd DOUBLE PRECISION, acreage DOUBLE PRECISION,
+  discovered_at TEXT);
+CREATE SEQUENCE discovered_facilities_id_seq START 9000;
+ALTER TABLE discovered_facilities
+  ALTER COLUMN id SET DEFAULT nextval('discovered_facilities_id_seq');
 CREATE TABLE facilities (
   id TEXT PRIMARY KEY, name TEXT, provider TEXT, city TEXT, state TEXT,
   country TEXT, latitude DOUBLE PRECISION, longitude DOUBLE PRECISION,
@@ -169,10 +175,11 @@ def _elect(conn):
 
 
 def _apply(conn, pointed):
+    """Runs the SCRIPT's own UPDATE, not a retyped copy of it."""
+    mod = _repair_module()
     with conn.cursor() as cur:
         for rid, keeper in pointed:
-            cur.execute("UPDATE discovered_facilities SET duplicate_of_id = %s "
-                        " WHERE id = %s AND duplicate_of_id IS NULL", (keeper, rid))
+            cur.execute(mod.POINT_SQL, (keeper, rid))
     conn.commit()
 
 
@@ -235,6 +242,100 @@ def test_the_public_listing_now_shows_the_facility_once(db):
 
 
 # ── 3. it can be run twice, and undone ─────────────────────────────────────
+
+def test_the_repair_never_suppresses_a_row(db):
+    """Pointer only. Setting the flag as well would drop the facility out of the
+    FLAG basis too, and a slug whose rows are all suppressed leaves every
+    is_duplicate-filtered count while still serving 200 — suppression deletes a
+    page, a canonical merges it."""
+    _apply(db, _elect(db))
+    with db.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM discovered_facilities "
+                    " WHERE canonical_slug = %s AND COALESCE(is_duplicate, 0) <> 0",
+                    (SRN,))
+        assert cur.fetchone()[0] == 0, "the repair suppressed rows it should only point"
+
+
+def test_the_write_cannot_overwrite_a_pointer_that_already_exists(db):
+    """`AND duplicate_of_id IS NULL` is what makes the rollback exact. Without
+    it a re-run could move a pointer another lane set, and restoring NULL would
+    then be wrong."""
+    mod = _repair_module()
+    with db.cursor() as cur:
+        cur.execute(mod.POINT_SQL, (999, 512))   # 512 already points at 511
+        assert cur.rowcount == 0, "the update overwrote an existing pointer"
+        cur.execute("SELECT duplicate_of_id FROM discovered_facilities WHERE id = 512")
+        assert cur.fetchone()[0] == 511
+    db.rollback()
+
+
+# ── 4. the WRITE guard, against real SQL ───────────────────────────────────
+# The probe asks two questions in one statement. A fake cursor answers the
+# statement, not the questions, so only a database can show that BOTH arms
+# bite — and each arm is the only one that can catch its own case.
+
+def _fac(**over):
+    fac = {"name": "Row 501", "provider": "South Reach Networks",
+           "city": "Fort Pierce", "state": "FL", "country": "US",
+           "latitude": None, "longitude": None, "power_mw": None, "sqft": None,
+           "status": "Announced", "source": "competitor_gap:cloudscene",
+           "source_url": "https://cloudscene.com/brand-new-url",
+           "confidence_score": 0.55, "discovered_at": "2026-09-12",
+           "notes": "", "investment_usd": None, "acreage": None}
+    fac.update(over)
+    return fac
+
+
+def _rows_now(conn, **where):
+    col, val = next(iter(where.items()))
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM discovered_facilities WHERE {col} = %s",
+                    (val,))
+        return cur.fetchone()[0]
+
+
+def test_the_write_refuses_a_sibling_the_freeze_has_not_reached_yet(db):
+    """The live case. Row 501 exists with provider+name X and — like every row
+    inserted minutes ago — NO stored canonical_slug. Only the provider+name arm
+    can see it, and this is the row that became five."""
+    import news_facility_extractor as nfe
+    with db.cursor() as cur:
+        cur.execute("UPDATE discovered_facilities SET canonical_slug = NULL "
+                    " WHERE id = 501")
+    db.commit()
+    before = _rows_now(db, name="Row 501")
+    assert nfe.insert_discovered_facility(db, _fac()) is None
+    assert _rows_now(db, name="Row 501") == before, "a sixth row was written"
+
+
+def test_the_write_refuses_a_row_wearing_an_ALREADY_FROZEN_slug(db):
+    """The other arm, and the only one that can catch this: the stored slug
+    matches what the new row composes, while provider+name are spelled
+    differently, so a provider+name-only probe would let it through."""
+    import news_facility_extractor as nfe
+    from routes.facility_slug_freeze import build_canonical_slug
+    slug = build_canonical_slug("Brand New Operator", "Brand New Campus")
+    assert slug
+    with db.cursor() as cur:
+        cur.execute("INSERT INTO discovered_facilities "
+                    " (id, name, provider, city, country, canonical_slug) "
+                    " VALUES (%s, %s, %s, %s, %s, %s)",
+                    (601, "Different Spelling", "Someone Else", "Fort Pierce",
+                     "US", slug))
+    db.commit()
+    assert nfe.insert_discovered_facility(
+        db, _fac(name="Brand New Campus", provider="Brand New Operator")) is None
+    assert _rows_now(db, canonical_slug=slug) == 1
+
+
+def test_the_write_still_inserts_a_genuinely_new_facility(db):
+    """Non-vacuity: a guard that refused everything passes both tests above."""
+    import news_facility_extractor as nfe
+    new_id = nfe.insert_discovered_facility(
+        db, _fac(name="Wholly Unrelated Campus", provider="Nobody At All"))
+    assert new_id, "the guard refused a facility nothing else holds"
+    assert _rows_now(db, name="Wholly Unrelated Campus") == 1
+
 
 def test_running_it_again_finds_nothing(db):
     _apply(db, _elect(db))
