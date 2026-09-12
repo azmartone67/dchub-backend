@@ -23,6 +23,13 @@ if [[ -z "$KEY" ]]; then
 fi
 
 H=(-H "X-API-Key: $KEY" -H "Accept: application/json" --max-time 20)
+# /api/v1/qa/* went admin-gated 2026-09-12 (r-sec). require_internal_or_admin
+# reads X-Internal-Key / X-Admin-Key / ?admin_key — NOT the X-API-Key above,
+# which is a customer credential and must not open internal QA state. Export
+# DCHUB_ADMIN_KEY (or DCHUB_INTERNAL_KEY) to keep those probes 200; without one
+# they record a 401, which is a correct refusal rather than a broken probe.
+ADMIN_KEY="${DCHUB_ADMIN_KEY:-${DCHUB_INTERNAL_KEY:-}}"
+if [[ -n "$ADMIN_KEY" ]]; then H+=(-H "X-Admin-Key: $ADMIN_KEY"); fi
 
 banner() { printf "\n\033[1;36m━━━ %s ━━━\033[0m\n" "$1"; }
 sub()    { printf "\033[1;33m• %s\033[0m\n" "$1"; }

@@ -100,20 +100,44 @@ jobs:
       - name: Open issue if P0 regressed
         if: steps.run.outputs.p0 != '0'
         uses: actions/github-script@v7
+        env:
+          # /api/v1/qa/regressions is gated as of 2026-09-12 (r-sec). This step
+          # runs ONLY when a P0 has already fired, so an unauthenticated fetch
+          # here would 401 at exactly the moment the signal matters — and the
+          # 7-day traffic sample that motivated the gate showed 0 requests to
+          # this path precisely BECAUSE no P0 fired in the window. Zero traffic
+          # is not the same as no caller.
+          INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
         with:
           script: |
             const fs = require('fs');
             const title = `🚨 P0 site QA regression detected — ${new Date().toISOString()}`;
-            const resp = await fetch(
-              'https://dchub-backend-production.up.railway.app/api/v1/qa/regressions'
-            ).then(r => r.json());
+            const internalKey = process.env.INTERNAL_KEY;
+            if (!internalKey) {
+              core.setFailed('DCHUB_INTERNAL_KEY is not set — cannot read ' +
+                '/api/v1/qa/regressions, so the P0 issue would be empty');
+              return;
+            }
+            const r = await fetch(
+              'https://dchub-backend-production.up.railway.app/api/v1/qa/regressions',
+              { headers: { 'X-Internal-Key': internalKey } }
+            );
+            if (!r.ok) {
+              core.setFailed(`qa/regressions returned ${r.status} — P0 detail ` +
+                'unavailable; not opening an issue with no content');
+              return;
+            }
+            const resp = await r.json();
             const body = `## P0 regressions detected\n\n` +
               resp.alerts.filter(a => a.severity === 'p0' && !a.resolved_at).map(a =>
                 `- **${a.test_name}** (${a.consecutive_failures}x failures)\n` +
                 `  - ${a.message}\n` +
                 `  - Proposed fix: ${a.proposed_fix || '(none)'}\n`
               ).join('\n') +
-              `\n\nDashboard: https://dchub.cloud/api/v1/qa/dashboard`;
+              `\n\nDashboard: https://dchub.cloud/api/v1/qa/dashboard` +
+              `\n(admin-gated since 2026-09-12 — send X-Internal-Key/X-Admin-Key, `+
+              `or ?admin_key=. No credential is embedded here: this repo and its `+
+              `issues are public.)`;
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,

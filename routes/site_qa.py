@@ -539,7 +539,15 @@ def trigger_run():
 
 @site_qa_bp.route("/report", methods=["GET"])
 def latest_report():
-    """Latest test results — most recent run only."""
+    """Latest test results — most recent run only.
+
+    r-sec (2026-09-12): GATED. This publishes, for every test, the url, the
+    http_code, the error_detail and the proposed_fix — a live map of which of
+    our own surfaces are broken right now and how. It was open to anyone.
+    """
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized",
+                       hint="X-Internal-Key or X-Admin-Key required"), 401
     _ensure_tables()
     with _conn() as c, c.cursor() as cur:
         cur.execute(
@@ -567,6 +575,9 @@ def latest_report():
 @site_qa_bp.route("/regressions", methods=["GET"])
 def regressions():
     """Tests that recently changed status — alerts."""
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized",
+                       hint="X-Internal-Key or X-Admin-Key required"), 401
     _ensure_tables()
     with _conn() as c, c.cursor() as cur:
         cur.execute(
@@ -593,6 +604,9 @@ def regressions():
 @site_qa_bp.route("/dashboard", methods=["GET"])
 def dashboard():
     """HTML dashboard."""
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized",
+                       hint="X-Internal-Key or X-Admin-Key required"), 401
     _ensure_tables()
     # Get latest results
     with _conn() as c, c.cursor() as cur:
@@ -689,8 +703,14 @@ def dashboard():
     # No "trigger run" anchor: /api/v1/qa/run is POST-only and gated as of
     # 2026-09-12, so a link could only 401 — and an anchor that starts a
     # 28-URL probe is exactly the GET-triggers-work shape that was removed.
+    # These are admin-gated too (r-sec 2026-09-12). The credential is NOT
+    # propagated into the hrefs: that would write it into the page body and
+    # into the Referer of any outbound click. Follow them with the same
+    # header, or append ?admin_key= yourself.
     html.append('<a href="/api/v1/qa/report">JSON report</a> · ')
     html.append('<a href="/api/v1/qa/regressions">regressions</a>')
+    html.append(' <span>(both admin-gated — send X-Internal-Key/X-Admin-Key'
+                ' or ?admin_key=)</span>')
     html.append('</div></body></html>')
 
     return "".join(html), 200, {"Content-Type": "text/html; charset=utf-8"}
@@ -698,6 +718,9 @@ def dashboard():
 
 @site_qa_bp.route("/health", methods=["GET"])
 def health():
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized",
+                       hint="X-Internal-Key or X-Admin-Key required"), 401
     _ensure_tables()
     with _conn() as c, c.cursor() as cur:
         cur.execute(
