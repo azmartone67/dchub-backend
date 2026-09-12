@@ -63,6 +63,8 @@ class _StubCursor:
     """Like db_utils.PGCursorWrapper: execute() returns None (NOT the
     cursor — chaining .fetchone() off it must AttributeError), rows
     are plain tuples (NOT dicts)."""
+    description = None  # a real cursor always has it (None before a statement)
+    rowcount = -1  # psycopg2: -1 = no statement / not determinable
 
     def __init__(self, rows):
         self._rows = list(rows)

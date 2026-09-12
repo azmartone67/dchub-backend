@@ -213,6 +213,7 @@ def test_send_failure_releases_claim(monkeypatch):
 # these tests pin the SQL it issues and the duplicate-day skip.
 
 class _PlainCursor:
+    description = None  # a real cursor always has it (None before a statement)
     def __init__(self, log):
         self._log = log
         self.rowcount = 1
@@ -247,6 +248,8 @@ def test_claim_today_creates_table_and_inserts(monkeypatch):
 
 def test_claim_today_duplicate_day_skips(monkeypatch):
     class _DupCursor(_PlainCursor):
+        description = None  # a real cursor always has it (None before a statement)
+        rowcount = -1  # psycopg2: -1 = no statement / not determinable
         def execute(self, sql, params=None):
             super().execute(sql, params)
             if "INSERT" in str(sql):

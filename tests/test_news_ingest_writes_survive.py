@@ -54,6 +54,7 @@ class Missing(Exception):
 
 
 class FakeCursor:
+    description = None  # a real cursor always has it (None before a statement)
     def __init__(self, conn):
         self.conn = conn
         self.rowcount = 0
@@ -256,6 +257,8 @@ def test_ddl_through_the_pooled_cursor_is_still_a_silent_no_op():
     import db_utils
 
     class Underlying:
+        description = None  # a real cursor always has it (None before a statement)
+        rowcount = -1  # psycopg2: -1 = no statement / not determinable
         def __init__(self):
             self.seen = []
 
@@ -330,6 +333,7 @@ class RowStoreCursor(FakeCursor):
     PGCursorWrapper is layered over it — `.description`, `.connection` and a
     per-statement `.rowcount` are read by the wrapper's own code, not by tests.
     """
+    rowcount = -1  # psycopg2: -1 = no statement / not determinable
 
     def __init__(self, conn):
         super().__init__(conn)
