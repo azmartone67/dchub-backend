@@ -28429,12 +28429,18 @@ def seed_serverfarm_facilities():
             try:
                 source_id = 'sf_' + hashlib.sha256(f['name'].encode()).hexdigest()[:12]
                 c = conn.cursor()
+                # RETURNING, and the count is the rows handed back. Through the
+                # pooled wrapper an INSERT with no RETURNING is followed by a
+                # `SELECT lastval()` of its own, and rowcount then described that
+                # SELECT — so a skipped ON CONFLICT counted as added (#4453).
+                # Fixed in the wrapper; RETURNING keeps this site honest
+                # independently of it, and skips the probe entirely.
                 c.execute("""
                     INSERT INTO facilities (id, name, provider, city, state, country, power_mw, status, address, source, source_id)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'manual', %s)
-                    ON CONFLICT DO NOTHING
+                    ON CONFLICT DO NOTHING RETURNING 1
                 """, (source_id, f['name'], f['provider'], f['city'], f.get('state',''), f['country'], f.get('power_mw',0), f['status'], f.get('address',''), source_id))
-                if c.rowcount > 0:
+                if c.fetchone() is not None:
                     added += 1
                 conn.commit()
             except Exception:

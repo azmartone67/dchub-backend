@@ -251,7 +251,7 @@ def ingest_cables(get_db):
         features = data  # Some versions return array directly
 
     conn = None
-    inserted = 0
+    upserted = 0
     updated = 0
     errors = 0
 
@@ -310,9 +310,16 @@ def ingest_cables(get_db):
                 """, (cable_id, name, color, owners, url, length_km, rfs_year,
                       str(rfs_str), is_planned, geometry_str, landing_json))
 
-                if c.rowcount > 0:
-                    # Check if it was insert or update
-                    inserted += 1  # Simplified — counts both
+                # ★ Counted as UPSERTED, which is what both the log line and
+                # the 'upserted' key below publish. The statement is
+                # ON CONFLICT DO UPDATE, so every row it touches — new or
+                # refreshed — is one affected row; there is no reading of
+                # rowcount that could separate them. Distinguishing them would
+                # take `RETURNING (xmax = 0)`, and nothing downstream asks for
+                # that. The old name said `inserted` while the report said
+                # upserted, which is the kind of gap that invites a "fix" to the
+                # wrong half.
+                upserted += 1
 
             except Exception as e:
                 errors += 1
@@ -320,7 +327,7 @@ def ingest_cables(get_db):
                     logger.warning(f"Cable ingestion error: {e}")
 
         conn.commit()
-        logger.info(f"✅ Subsea cables: {inserted} upserted, {errors} errors from {len(features)} features")
+        logger.info(f"✅ Subsea cables: {upserted} upserted, {errors} errors from {len(features)} features")
 
     except Exception as e:
         logger.error(f"Cable ingestion failed: {e}")
@@ -336,7 +343,7 @@ def ingest_cables(get_db):
         'success': True,
         'source': 'TeleGeography',
         'total_features': len(features),
-        'upserted': inserted,
+        'upserted': upserted,
         'errors': errors,
     }
 
@@ -355,7 +362,7 @@ def ingest_landing_points(get_db):
         features = data
 
     conn = None
-    inserted = 0
+    upserted = 0
     errors = 0
 
     try:
@@ -409,7 +416,7 @@ def ingest_landing_points(get_db):
                 """, (point_id, name, country, country_code, latitude, longitude,
                       cable_ids, cable_count, is_major))
 
-                inserted += 1
+                upserted += 1
 
             except Exception as e:
                 errors += 1
@@ -417,7 +424,7 @@ def ingest_landing_points(get_db):
                     logger.warning(f"Landing point error: {e}")
 
         conn.commit()
-        logger.info(f"✅ Landing points: {inserted} upserted, {errors} errors from {len(features)} features")
+        logger.info(f"✅ Landing points: {upserted} upserted, {errors} errors from {len(features)} features")
 
     except Exception as e:
         logger.error(f"Landing point ingestion failed: {e}")
@@ -433,7 +440,7 @@ def ingest_landing_points(get_db):
         'success': True,
         'source': 'TeleGeography',
         'total_features': len(features),
-        'upserted': inserted,
+        'upserted': upserted,
         'errors': errors,
     }
 

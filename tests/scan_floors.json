@@ -166,6 +166,9 @@
     "test_identity_view_columns.py": {
       "pglob": 660
     },
+    "test_insert_counts_name_rows_inserted.py": {
+      "walk": 78
+    },
     "test_iso_error_echo_scrubbed.py": {
       "glob": 20
     },
