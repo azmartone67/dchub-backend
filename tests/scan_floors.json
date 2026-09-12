@@ -241,11 +241,48 @@
     "test_scaffold_evidence_reconcile.py": {
       "pglob": 20
     },
+    "test_shell_beat_reports_red.py": {
+      "glob": 670
+    },
+    "test_shell_get_does_not_beat.py": {
+      "glob": 670
+    },
     "test_shell_killswitch_never_5xx.py": {
       "pglob": 60
     },
+    "test_shell_scheduler_coverage.py": {
+      "glob": 670
+    },
+    "test_sql_literal_percent.py": {
+      "pglob": 2120,
+      "prglob": 2120
+    },
+    "test_sqlite_time_functions_on_postgres.py": {
+      "walk": 70
+    },
+    "test_stripe_route_auth.py": {
+      "pglob": 2120,
+      "prglob": 2120,
+      "walk": 70
+    },
+    "test_substations_columns.py": {
+      "pglob": 670
+    },
+    "test_testimonials_quote_capture.py": {
+      "walk": 70
+    },
+    "test_thin_content_lanes.py": {
+      "pglob": 670,
+      "prglob": 670
+    },
     "test_tier_grants_are_classified.py": {
       "pglob": 2110
+    },
+    "test_workflow_continuation_comment.py": {
+      "pglob": 140
+    },
+    "test_workflow_curl_guard.py": {
+      "pglob": 140
     }
   }
 }
