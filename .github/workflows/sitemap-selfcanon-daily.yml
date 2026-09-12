@@ -1,0 +1,262 @@
+name: Sitemap self-canon residual (daily)
+
+# ★★★ THE MEASUREMENT NOBODY WAS TAKING (2026-09-11, r-dupe-remeasure).
+#
+# scripts/check_sitemap_selfcanon.py asks the deployed artefact "does the
+# published sitemap advertise two self-canonical URLs for one facility?" — the
+# question tests/test_sitemap_no_duplicate_selfcanon.py CANNOT ask, because the
+# sitemap is served from a snapshot and shipping the emit rule is separated
+# from publishing it by a rebuild.
+#
+# It was referenced by NO workflow and NO cron. Its 103-group figure was a
+# hand-run from 2026-09-07 by whoever happened to be looking. So the 96% drop
+# after #4101/#4110 was real and completely unmonitored: the residual could
+# have climbed back to its pre-fix 3,930 and nothing would have said a word.
+#
+# HOW IT GETS A DATABASE. Same way backup-neon-r2.yml (daily, green) and
+# apply-identity-views.yml do: the `DATABASE_URL` / `NEON_DATABASE_URL` repo
+# secrets, added 2026-07-13. ★ Two older workflows (backfill-states.yml,
+# mcp-identity-backfill.yml) carry comments saying "GitHub Actions has NO DB
+# secret" and route through a Railway admin endpoint instead. Those comments
+# PREDATE the secrets and are stale — verified 2026-09-11 with `gh secret
+# list`. No secret is invented here; both names already exist.
+#
+# ★★★ THREE OUTCOMES, AND THE JOB TREATS THEM AS THREE THINGS.
+#
+#   checker exit 0  MEASURED, within budget     -> job passes
+#   checker exit 1  MEASURED, OVER BUDGET       -> job FAILS, ::error::
+#                                                  "residual regressed"
+#   checker exit 2  COULD NOT MEASURE           -> job passes with a
+#                                                  ::warning::, UNLESS nothing
+#                                                  has measured in
+#                                                  UNMEASURED_GRACE_DAYS
+#
+# "Could not run" is NOT rounded up to "fine" and it is NOT rounded up to
+# "broken" either. A Neon cold start, a Cloudflare hiccup or a slow sitemap
+# shard is not a duplicate-page regression, and a red X for it is how a real
+# alarm gets ignored. But an unmeasured lane that stays unmeasured is exactly
+# the state this workflow exists to end, so the grace window is finite: after
+# UNMEASURED_GRACE_DAYS with no measurement the job fails with a DIFFERENT
+# message and a different exit path. See
+# [[feedback_could_not_run_is_not_ran_and_failed]].
+# The checker's own `--json` already carries the discriminator: `measured`
+# true/false, next to `ok`. The summary prints both.
+#
+# THE BUDGET (--max-groups, default 120 in the script, pinned as a literal by
+# tests/test_sitemap_no_duplicate_selfcanon.py):
+#
+#   103   measured live 2026-09-07 after r-twin-pointer (#4110) — the basis
+#   102   RE-MEASURED 2026-09-11 from the outside: every /facilities/<slug> in
+#         the published sitemap (18,809 URLs) grouped on the repo's own
+#         util.facility_headline.identity_key, with the five identity fields
+#         read from the public /api/v1/exports/facilities snapshot plus
+#         /api/v1/facilities/<slug> for the 1,858 slugs that snapshot does not
+#         carry. That figure is an UPPER BOUND on what this checker reports,
+#         because it cannot see `duplicate_of_id` and so skips nothing.
+#   120   the ceiling: 18 groups of headroom over today's reading, and far
+#         below the 322 a full regression returns to.
+#
+# ★ The budget is NOT re-derived here from that outside reading — the script's
+#   own docstring is emphatic that a budget set from anything but the artefact
+#   is "a guess wearing a measurement's clothes", and #4110 shipped one and
+#   failed on its first real run. 102 CORROBORATES 120; it does not replace the
+#   basis. The first scheduled run measures this properly, and the JSON it
+#   uploads is what a re-pin should be read off.
+
+'on':
+  schedule:
+    # Daily 10:41 UTC. Deliberately placed:
+    #   * AFTER facility_dedup_v4_daily (04:xx UTC, routes/cron_heartbeat.py)
+    #     so the day's new twins are consolidated before we count them;
+    #   * AFTER backup-neon-r2.yml (09:31 UTC, ~16 min of pg_dump holding
+    #     AccessShareLock on every table) — this job is a plain reader and
+    #     takes no exclusive lock, but two full-table scans against a Neon
+    #     instance that is already streaming a dump is a bill, not a bug;
+    #   * hour 10 carries ONE other cron in this repo (pm-brief-daily at
+    #     10:23), and :41 is off both it and the top of the hour, where
+    #     GitHub's own scheduler congests.
+    - cron: '41 10 * * *'
+  workflow_dispatch:
+    inputs:
+      max_groups:
+        description: 'Budget override (default: the script literal, 120)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: read          # the staleness tripwire reads this workflow's history
+
+concurrency:
+  group: sitemap-selfcanon
+  cancel-in-progress: false
+
+env:
+  UNMEASURED_GRACE_DAYS: '3'
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the checker's two dependencies
+        run: pip install --quiet psycopg2-binary 'requests==2.32.5'
+
+      - name: Refuse to run unconfigured
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          # ★ A MISSING SECRET IS NOT "DATA UNREACHABLE". The checker reports
+          # both as exit 2, which would let a lane that can never measure sit
+          # inside the grace window forever. Configuration is this job's own
+          # problem and it fails immediately and separately.
+          if [ -z "${DATABASE_URL:-}" ] && [ -z "${NEON_DATABASE_URL:-}" ]; then
+            echo "::error title=Not configured::neither DATABASE_URL nor NEON_DATABASE_URL is set for this workflow. This is a wiring failure, not an unreachable database."
+            exit 1
+          fi
+
+      - name: Measure the published sitemap
+        id: measure
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          # No pipe: a pipeline reports the LAST command's status and would
+          # turn "over budget" into a pass. Redirect, then read $?.
+          ARGS=""
+          if [ -n "${{ github.event.inputs.max_groups }}" ]; then
+            ARGS="--max-groups ${{ github.event.inputs.max_groups }}"
+          fi
+          set +e
+          python3 scripts/check_sitemap_selfcanon.py --json $ARGS \
+            > selfcanon.json 2> selfcanon.err
+          CODE=$?
+          set -e
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "checker exit: $CODE"
+          cat selfcanon.json || true
+          cat selfcanon.err || true
+
+      - name: Upload the measurement
+        if: steps.measure.outputs.code != '2'
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfcanon-measurement
+          path: selfcanon.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CODE: ${{ steps.measure.outputs.code }}
+        run: |
+          python3 - <<'PY'
+          import datetime as dt
+          import json
+          import os
+          import subprocess
+          import sys
+
+          code = os.environ["CODE"]
+          grace = int(os.environ["UNMEASURED_GRACE_DAYS"])
+          repo = os.environ["GITHUB_REPOSITORY"]
+          summary = open(os.environ["GITHUB_STEP_SUMMARY"], "a")
+          try:
+              data = json.load(open("selfcanon.json"))
+          except Exception as e:
+              data = {"measured": False, "error": f"no JSON from the checker: {e}"}
+
+          def say(line):
+              print(line)
+              summary.write(line + "\n")
+
+          def gh(path, jq):
+              out = subprocess.run(
+                  ["gh", "api", path, "--jq", jq],
+                  capture_output=True, text=True)
+              return out.stdout.strip() if out.returncode == 0 else ""
+
+          def age_days(stamp):
+              if not stamp:
+                  return None
+              t = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+              return (dt.datetime.now(dt.timezone.utc) - t).total_seconds() / 86400
+
+          say("### Sitemap self-canon residual")
+          say("")
+          say(f"* checker exit code: `{code}`")
+          say(f"* `measured`: `{data.get('measured')}`  ·  "
+              f"`ok`: `{data.get('ok')}`")
+
+          if code == "1":
+              say(f"* duplicate groups: **{data.get('duplicate_groups')}** "
+                  f"(budget {data.get('budget')})")
+              say(f"* surplus URLs: **{data.get('surplus_urls')}**")
+              say(f"* published facility URLs: {data.get('published_facility_urls')}")
+              say("")
+              say("Sample groups:")
+              for g in (data.get("sample") or [])[:10]:
+                  say(f"  * `{g['h1'][:70]}` -> {g['urls']}")
+              print(f"::error title=Self-canon residual REGRESSED::"
+                    f"{data.get('duplicate_groups')} duplicate groups against a "
+                    f"budget of {data.get('budget')} "
+                    f"({data.get('surplus_urls')} surplus URLs). This RAN and "
+                    f"FOUND BREAKAGE — it is not an unreachable-data warning. "
+                    f"Re-measure with scripts/check_sitemap_selfcanon.py and "
+                    f"read the uploaded selfcanon.json artifact.")
+              sys.exit(1)
+
+          if code == "0":
+              say(f"* duplicate groups: **{data.get('duplicate_groups')}** "
+                  f"(budget {data.get('budget')})")
+              say(f"* surplus URLs: {data.get('surplus_urls')}")
+              say(f"* published facility URLs: "
+                  f"{data.get('published_facility_urls')}  ·  "
+                  f"unresolved slugs: {data.get('unresolved_slugs')}")
+              say(f"* group sizes: `{data.get('sizes')}`")
+              say("")
+              say("MEASURED and within budget.")
+              sys.exit(0)
+
+          # ── code 2: could not measure ────────────────────────────────────
+          say(f"* **COULD NOT MEASURE** — `{data.get('error')}`")
+          last = gh(f"repos/{repo}/actions/artifacts?name=selfcanon-measurement"
+                    f"&per_page=100",
+                    "[.artifacts[].created_at] | max // empty")
+          kind = "last measurement"
+          if not last:
+              # Never measured. Start the clock at this workflow's own oldest
+              # visible run so a first run is not failed for having no history.
+              last = gh(f"repos/{repo}/actions/workflows/"
+                        f"sitemap-selfcanon-daily.yml/runs?per_page=100",
+                        "[.workflow_runs[].created_at] | min // empty")
+              kind = "first run of this workflow (never measured)"
+          age = age_days(last)
+          say(f"* {kind}: `{last or 'unknown'}`"
+              + (f" ({age:.1f} days ago)" if age is not None else ""))
+          if age is not None and age > grace:
+              print(f"::error title=Unmeasured for {age:.1f} days::"
+                    f"the residual has not been MEASURED since {last} "
+                    f"({kind}), past the {grace}-day grace. This is NOT a "
+                    f"duplicate-page regression — the check itself has stopped "
+                    f"working. Last error: {data.get('error')}")
+              say("")
+              say(f"FAILED because nothing has measured in {grace} days — "
+                  "distinct from a residual regression.")
+              sys.exit(2)
+          print(f"::warning title=Could not measure::"
+                f"{data.get('error')} — inside the {grace}-day grace, so this "
+                f"is NOT failed. 'could not run' is not 'ran and found "
+                f"breakage'.")
+          say("")
+          say(f"Not failed: inside the {grace}-day grace window.")
+          sys.exit(0)
+          PY

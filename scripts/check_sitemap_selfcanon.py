@@ -38,6 +38,31 @@ MEASURED 2026-09-07, live:
     after  r-twin-pointer (#4110)         103 groups   <- the budget's basis
     --max-groups default                  120          17 groups of headroom
 
+★★★ NOTHING RAN THIS UNTIL 2026-09-11. The 103 below was a HAND-RUN. No
+workflow and no cron referenced this file, so the 96% drop it recorded was
+completely unmonitored — the residual could have climbed back to 3,930 in
+silence. .github/workflows/sitemap-selfcanon-daily.yml now runs it daily at
+10:41 UTC on the `DATABASE_URL` repo secret and fails on exit 1, warns on
+exit 2, and fails DIFFERENTLY when nothing has measured for 3 days.
+
+RE-MEASURED 2026-09-11 FROM THE OUTSIDE (no DB), as a corroboration of the
+budget rather than a replacement for its basis:
+
+    18,809  distinct /facilities/<slug> in the published sitemap
+       102  groups of >=2 on util.facility_headline.identity_key
+       108  surplus URLs
+        40  of those 102 still have >=2 members serving rel=canonical at
+            THEMSELVES (the rest already canonicalise at a twin — this
+            checker counts them anyway, by design: see the 37 drain-fork and
+            13 twin-pointer lines below)
+
+The five identity fields came from the public /api/v1/exports/facilities
+snapshot plus /api/v1/facilities/<slug> for the 1,858 published slugs that
+snapshot does not carry. ★ It is an UPPER BOUND on what this script reports:
+the public surfaces do not expose `duplicate_of_id`, so the outside reading
+skips nothing and this script skips the twins. 102 against a 103 measured four
+days earlier says the residual has not moved, and 120 still sits 18 above it.
+
 ★ 103 is MEASURED, live, after the apply. #4110 predicted 80 by simulation and
   shipped a budget of 100 on that prediction, so the guard failed on its first
   real run. The simulation was wrong twice over: it anchored on a BEFORE of 310
