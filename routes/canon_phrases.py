@@ -72,8 +72,44 @@ _CACHE_TTL_S = 300
 #    (resolve_canon's tools probe alone is seconds), so retrying every request
 #    would hammer the origin exactly when it is already unhealthy.
 _PROVISIONAL_TTL_S = 20
+
+# ── ★2026-09-12: A PROVISIONAL BODY MUST NOT EVICT A GOOD ONE.
+#
+#    _PROVISIONAL_TTL_S above bounds how long a cold body is HELD. It does not
+#    stop a cold body being stored in the first place, and storing it is the
+#    part that reaches customers. The block below already refuses to lose a good
+#    body to a blip — but only when the builder RAISES. When
+#    resolve_public_floors_cached() is merely cold it RETURNS, successfully, a
+#    body of pinned floors, and that return overwrote the good one. Same intent,
+#    one branch short.
+#
+#    MEASURED 2026-09-12, from outside, minutes apart:
+#        cold=False  facilities 21,600+  "resolve_public_floors (live)"
+#        cold=True   facilities 21,500+  "(cold: PINNED floors)"
+#    and downstream, in the same hour: /llms.txt, /AGENTS.md, /openapi.json and
+#    the MCP server card all serving 21,500+ while this origin answered 21,600+
+#    — the server card carrying BOTH numbers in one document. The zone stores
+#    /api/v1/* with override_origin (measured: same URL MISS then HIT), so one
+#    cold answer is snapshotted and served for the edge TTL.
+#
+#    ★ This is the lever THIS repo owns. Per the note above, shortening
+#    Cache-Control cannot help — CF rewrites it and caches anyway; only the zone
+#    rule or a purge changes edge behaviour. What the origin controls is what it
+#    puts in the body, and a good body is never worth replacing with a floor.
+#
+#    BOUNDED ON PURPOSE. Covering forever would turn "the resolver is sick" into
+#    "the numbers stopped moving", which is the harder failure to see. The cold
+#    window at its source is 7.6-15.5s measured; this is two orders of magnitude
+#    more than that, enough to ride out a restart or a brief resolver wobble, and
+#    short enough that a real outage surfaces within the quarter-hour.
+_GOOD_BODY_GRACE_S = 900
+
 _cache_lock = threading.Lock()
-_cache = {"at": 0.0, "body": None, "ttl": _CACHE_TTL_S}
+# `good_at` is when a NON-provisional body was last stored; `covering` is true
+# while a good body is being served in place of a provisional refresh. Both are
+# read by the route for the X-DC-Canon-* headers — a number that silently
+# differs from what the builder just returned is what costs hours to diagnose.
+_cache = {"at": 0.0, "body": None, "ttl": _CACHE_TTL_S, "good_at": 0.0, "covering": False}
 
 
 def _is_provisional(body):
@@ -122,11 +158,29 @@ def _cached_body(builder):
                 return _cache["body"], True
             raise
         if body is not None:
-            _cache["at"] = time.time()
+            now2 = time.time()
+            provisional = _is_provisional(body)
+            prev = _cache["body"]
+            # Cover a provisional refresh with the last good body, for a bounded
+            # window. Retry on the provisional TTL, not the full one: the cold
+            # window is seconds, so the good body should stop covering quickly.
+            if (provisional and prev is not None and not _is_provisional(prev)
+                    and (now2 - _cache["good_at"]) < _GOOD_BODY_GRACE_S):
+                _cache["at"] = now2
+                _cache["ttl"] = _PROVISIONAL_TTL_S
+                _cache["covering"] = True
+                logger.info(
+                    "canon_phrases: covering a provisional refresh with the good body "
+                    "(good is %.0fs old, grace %ss)", now2 - _cache["good_at"], _GOOD_BODY_GRACE_S)
+                return prev, True
+            _cache["at"] = now2
             _cache["body"] = body
+            _cache["covering"] = False
             # A provisional body is held only long enough to keep a stampede off
             # a sick origin; a good one keeps the full TTL.
-            _cache["ttl"] = _PROVISIONAL_TTL_S if _is_provisional(body) else _CACHE_TTL_S
+            _cache["ttl"] = _PROVISIONAL_TTL_S if provisional else _CACHE_TTL_S
+            if not provisional:
+                _cache["good_at"] = now2
         return body, False
 
 
@@ -141,6 +195,10 @@ def canon_phrases():
     # computed or served from the process cache. A latency claim about this
     # endpoint is unreadable without it.
     resp.headers["X-DC-Canon-Cache"] = "hit" if cached else "miss"
+    # Says so when the body is a good one standing in for a provisional refresh,
+    # so "why is this number not moving" is answerable from a response header.
+    if _cache.get("covering"):
+        resp.headers["X-DC-Canon-Covering"] = str(int(time.time() - _cache.get("good_at", 0)))
     return resp
 
 
