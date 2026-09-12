@@ -95,7 +95,7 @@ def test_the_fix_is_named_in_the_message(caplog):
 
 @pytest.mark.parametrize("sql", [
     "SELECT 1",
-    "INSERT INTO news_articles (title) VALUES ('x')",
+    "INSERT INTO news_articles (title) VALUES ('x') ON CONFLICT DO NOTHING",
     "UPDATE news_articles SET title = 'x'",
 ])
 def test_statements_that_are_not_dropped_are_not_reported(caplog, sql):

@@ -8158,6 +8158,7 @@ except Exception as e:
 # =============================================================================
 # INSTANT HEALTH CHECK - Must respond within 1 second
 # =============================================================================
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 @app.route('/health')
 def health_check():
     return {'status': 'ok'}, 200
@@ -11865,6 +11866,7 @@ def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
 
 
 
+# AUTO-REPAIR: duplicate route '/mcp' also in mcp_proxy_snippet.py:26 — review and remove one
 # __mcp_get_405_shim__
 @app.route('/mcp', methods=['GET', 'HEAD'])
 def _mcp_no_sse_stream():
@@ -12138,6 +12140,8 @@ X-API-Key: your-key
 # Rendered ONCE at import — the route below returns this constant verbatim, so
 # the substitution never touches a request. Bound to the name the route already
 # reads, so nothing downstream changes.
+# AUTO-REPAIR: duplicate route '/mcp' also in mcp_proxy_snippet.py:26 — review and remove one
+# AUTO-REPAIR: duplicate route '/mcp/' also in mcp_proxy_snippet.py:27 — review and remove one
 _MCP_LANDING_HTML = _canon_text(_MCP_LANDING_HTML_TEMPLATE)
 
 @app.route('/mcp', methods=['POST', 'DELETE', 'OPTIONS'])
@@ -12563,6 +12567,7 @@ def _fetch_live_mcp_metadata():
     except Exception:
         pass
     # Return stale cache if available rather than fallback static
+# AUTO-REPAIR: duplicate route '/mcp/manifest' also in mcp_server.py:217 — review and remove one
     return _MCP_LIVE_CACHE.get("data")
 
 
@@ -14930,6 +14935,7 @@ except Exception as e:
             print(f"⚠️ admin alert fallback transport failed: {str(_se)[:120]}")
             return False
 
+# AUTO-REPAIR: duplicate route '/api/leads/subscribe' also in api_server.py:424 — review and remove one
 
 # =============================================================================
 # LEAD CAPTURE ENDPOINTS
@@ -14973,7 +14979,7 @@ def subscribe_lead():
 
         c.execute("""
             INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, created_at, last_activity)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             lead_id,
             email,
@@ -14989,7 +14995,7 @@ def subscribe_lead():
         # Log activity
         c.execute("""
             INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-            VALUES (%s, 'subscribed', %s, %s)
+            VALUES (%s, 'subscribed', %s, %s) ON CONFLICT DO NOTHING
         """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), utc_iso_z()))
 
         conn.commit()
@@ -14999,6 +15005,7 @@ def subscribe_lead():
             'message': 'Subscribed successfully',
             'new': True,
             'lead_id': lead_id
+# AUTO-REPAIR: duplicate route '/api/leads/capture' also in api_server.py:492 — review and remove one
         }), 201
 
     finally:
@@ -15052,7 +15059,7 @@ def capture_lead():
 
             c.execute("""
                 INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (
                 lead_id,
                 email,
@@ -15069,7 +15076,7 @@ def capture_lead():
         # Log activity
         c.execute("""
             INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-            VALUES (%s, 'content_access', %s, %s)
+            VALUES (%s, 'content_access', %s, %s) ON CONFLICT DO NOTHING
         """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), utc_iso_z()))
 
         conn.commit()
@@ -15078,6 +15085,7 @@ def capture_lead():
             'success': True,
             'message': 'Lead captured',
             'lead_id': lead_id,
+# AUTO-REPAIR: duplicate route '/api/leads/verify/<token>' also in api_server.py:568 — review and remove one
             'access_granted': True
         })
 
@@ -15102,6 +15110,7 @@ def verify_lead(token):
             UPDATE leads SET verified = 1, verified_at = %s, verify_token = NULL WHERE id = %s
         """, (utc_iso_z(), lead[0]))
 
+# AUTO-REPAIR: duplicate route '/api/leads/unsubscribe' also in api_server.py:590 — review and remove one
         conn.commit()
 
         return jsonify({'success': True, 'message': 'Email verified successfully'})
@@ -15193,7 +15202,7 @@ def submit_partner_inquiry():
         # Save to database
         c.execute("""
             INSERT INTO partner_inquiries (id, name, email, company, partner_type, message, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             inquiry_id,
             name,
@@ -15211,7 +15220,7 @@ def submit_partner_inquiry():
             verify_token = secrets.token_urlsafe(32)
             c.execute("""
                 INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
-                VALUES (%s, %s, %s, %s, 'partner_inquiry', %s, %s, 30, %s, %s)
+                VALUES (%s, %s, %s, %s, 'partner_inquiry', %s, %s, 30, %s, %s) ON CONFLICT DO NOTHING
             """, (
                 lead_id, email, name, company, partner_type, verify_token,
                 utc_iso_z(), utc_iso_z()
@@ -15261,7 +15270,7 @@ def submit_partner_inquiry():
 
                 c2.execute("""
                     INSERT INTO email_queue (id, email, template_name, subject, body_html, scheduled_at, status, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s) ON CONFLICT DO NOTHING
                 """, (
                     secrets.token_hex(8),
                     'jonathan@dchub.cloud',
@@ -15404,6 +15413,7 @@ def get_user_alerts():
             'success': True,
             'alerts': alerts,
             'count': len(alerts)
+# AUTO-REPAIR: duplicate route '/api/alerts' also in main.py:15369 — review and remove one
         })
     finally:
         try:
@@ -15461,7 +15471,7 @@ def create_alert():
         now = utc_iso_z()
         c.execute("""
             INSERT INTO user_alerts (user_id, market, alert_type, enabled, email_notify, created_at)
-            VALUES (%s, %s, %s, 1, 1, %s)
+            VALUES (%s, %s, %s, 1, 1, %s) ON CONFLICT DO NOTHING
         """, (user_id, market, alert_type, now))
 
         alert_id = c.lastrowid
@@ -15602,6 +15612,7 @@ def trigger_alert_check():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # =============================================================================
+# AUTO-REPAIR: duplicate route '/api/stripe/config' also in api_server.py:953 — review and remove one
 # STRIPE PAYMENT INTEGRATION
 # =============================================================================
 
@@ -15615,6 +15626,7 @@ STRIPE_PRICES = {
 @app.route('/api/stripe/config', methods=['GET'])
 def stripe_config():
     """Get Stripe publishable key and configuration"""
+# AUTO-REPAIR: duplicate route '/api/stripe/create-checkout' also in api_server.py:966 — review and remove one
     from tier_registry import price as _canon_price
     return jsonify({
         'publishableKey': STRIPE_PUBLISHABLE_KEY,
@@ -15796,6 +15808,7 @@ def _stripe_event_already_processed(event_id, event_type=''):
                     " processed_at TIMESTAMPTZ DEFAULT now())")
                 _STRIPE_EVENTS_TABLE_READY = True
             _cur.execute(
+# AUTO-REPAIR: duplicate route '/api/stripe/webhook' also in api_server.py:1025 — review and remove one
                 "INSERT INTO stripe_webhook_events (event_id, event_type) "
                 "VALUES (%s, %s) ON CONFLICT (event_id) DO NOTHING",
                 (event_id, event_type))
@@ -16139,7 +16152,7 @@ def stripe_webhook():
                         _p5_newmint = True
                         _pg_execute(
                             "INSERT INTO mcp_dev_keys (api_key, developer_id, email, "
-                            "tier, status, metadata) VALUES (%s,%s,%s,'free','active',%s::jsonb) "
+                            "tier, status, metadata) VALUES (%s,%s,%s,'free','active',%s::jsonb) ON CONFLICT DO NOTHING "
                             "ON CONFLICT (api_key) DO NOTHING",
                             (_p5_key, "dev_" + _p5sec.token_hex(8), _p5_email or None,
                              json.dumps({"source": _pack_src,
@@ -19244,6 +19257,7 @@ def handle_payment_failed(invoice):
                     f"🪫 Dunning demote ({demote_reason}): user_id={user_id} email={email} "
                     f"customer={customer_id} plan={plan} paid={paid_count} "
                     f"failed={failed_count} attempt={attempt_count} "
+# AUTO-REPAIR: duplicate route '/api/stripe/subscription' also in api_server.py:1165 — review and remove one
                     f"→ rate_limit_tier=free (key stays active)"
                 )
             except Exception as e:
@@ -19313,6 +19327,7 @@ def get_plan_features(plan):
             'founding_badge': True
         },
         'enterprise': {
+# AUTO-REPAIR: duplicate route '/api/stripe/portal' also in api_server.py:1218 — review and remove one
             'market_comparisons': -1,
             'pdf_reports': -1,
             'saved_searches': -1,
@@ -19768,6 +19783,7 @@ def list_markets_alias_v1():
     target = _ca.view_functions.get("list_markets")
     if target is None:
         return jsonify(error="route_not_registered",
+# AUTO-REPAIR: duplicate route '/api/v1/markets/list' also in api_server.py:1248 — review and remove one
                        canonical="/api/v1/markets/list"), 503
     out = target()
     resp = _mr(out)
@@ -19923,6 +19939,7 @@ def list_markets():
                 'basis': 'operational_deduped',
                 'as_of': datetime.now(timezone.utc).isoformat(),
                 'cite_as': 'DC Hub, dchub.cloud',
+# AUTO-REPAIR: duplicate route '/api/v1/markets/<market>' also in api_server.py:1301 — review and remove one
                 'license': 'CC-BY-4.0',
                 'cite_url_template': 'https://dchub.cloud/markets/{id}',
                 # The one thing a consumer must not do with this list.
@@ -20177,6 +20194,7 @@ def get_market_stats(market):
             'top_providers': top_providers,
             'by_status': by_status,
             'recent_facilities': recent,
+# AUTO-REPAIR: duplicate route '/api/v1/markets/compare' also in api_server.py:1397 — review and remove one
             '_gated': (not _mk_paid),
             'related_intel': _rel
         })
@@ -20377,6 +20395,7 @@ def compare_markets():
             })
 
         return jsonify({
+# AUTO-REPAIR: duplicate route '/api/reports/generate' also in api_server.py:1496 — review and remove one
             'success': True,
             'comparison': comparison,
             'generated_at': utc_iso_z()
@@ -20428,7 +20447,7 @@ def generate_report():
                 lead_id = secrets.token_hex(8)
                 c.execute("""
                     INSERT INTO leads (id, email, source, source_detail, lead_score, created_at, last_activity)
-                    VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s)
+                    VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s) ON CONFLICT DO NOTHING
                 """, (lead_id, email, json.dumps(markets), utc_iso_z(), utc_iso_z()))
             else:
                 c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
@@ -20450,7 +20469,7 @@ def generate_report():
         c = conn.cursor()
         c.execute("""
             INSERT INTO reports (id, user_id, email, report_type, markets, status, created_at, completed_at)
-            VALUES (%s, %s, %s, %s, %s, 'completed', %s, %s)
+            VALUES (%s, %s, %s, %s, %s, 'completed', %s, %s) ON CONFLICT DO NOTHING
         """, (
             report_id,
             request.user['user_id'] if request.user else None,
@@ -20669,6 +20688,7 @@ def generate_market_pdf(markets, report_type):
 
             elements.append(Spacer(1, 30))
 
+# AUTO-REPAIR: duplicate route '/api/marketing/stats' also in marketing_stats_route.py:14 — review and remove one
 
         # Footer
         elements.append(Spacer(1, 20))
@@ -22493,6 +22513,7 @@ _STATS_TTL = 300  # 5min
 # present, else a minimal {success, booting} stub) so the probe gets a quick
 # 200. The moment the memo warms (first full run) OR the boot window elapses,
 # /api/v1/stats behaves EXACTLY as before for every real caller — this only
+# AUTO-REPAIR: duplicate route '/api/v1/stats' also in api_server.py:1730 — review and remove one
 # ever short-circuits the cold-boot gap, never the steady state.
 _STATS_PROC_START = _t_stats.monotonic()
 _STATS_BOOT_GRACE_S = int(os.environ.get("STATS_BOOT_GRACE_S", "210"))  # ~watchdog 300s grace − margin
@@ -24026,6 +24047,7 @@ def facilities_by_provider():
             WHERE provider IS NOT NULL AND provider != ''
               AND COALESCE(is_duplicate, 0) = 0
             {RAILWAY_EXCLUSION}
+# AUTO-REPAIR: duplicate route '/api/v1/facilities' also in api_server.py:1782 — review and remove one
             {provider_sql}
             GROUP BY provider
             ORDER BY count DESC
@@ -24516,6 +24538,7 @@ def _list_facilities_free():
         'note': f'Free tier: showing {len(facilities)} of {total_matching} matching facilities with basic fields. Upgrade for full data including capacity, coordinates, and detailed specs.'
     }
     # provenance-v1: collection-level block (once per response — fail-soft).
+# AUTO-REPAIR: duplicate route '/api/v1/search' also in api_server.py:1871 — review and remove one
     try:
         from routes.provenance import (attach_provenance as _pv_attach,
                                        facility_verification_counts as _pv_counts,
@@ -24781,6 +24804,7 @@ def search_facilities():
         except Exception:
             pass
 
+# AUTO-REPAIR: duplicate route '/api/agents/health' also in api_server.py:1930 — review and remove one
 
 
 # =============================================================================
@@ -24851,6 +24875,7 @@ def _ensure_submissions_table():
             cur.execute("SET lock_timeout = '5s'")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS submissions (
+# AUTO-REPAIR: duplicate route '/api/agents/enrichment/submit' also in api_server.py:1962 — review and remove one
                     id TEXT PRIMARY KEY,
                     api_key TEXT,
                     submission_type TEXT,
@@ -24931,9 +24956,10 @@ def partner_inquiry():
         c = conn.cursor()
 
         inquiry_id = secrets.token_hex(8)
+# AUTO-REPAIR: duplicate route '/' also in diag_app.py:45 — review and remove one
         c.execute("""
             INSERT INTO partner_inquiries (id, name, email, company, platform_type, use_case, submitted_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (inquiry_id, data['name'], data['email'], data['company'],
               data['platform_type'], data['use_case'], utc_iso_z()))
 
@@ -24941,6 +24967,7 @@ def partner_inquiry():
 
         logger.info(f"New partner inquiry from {data['company']} ({data['platform_type']})")
 
+# AUTO-REPAIR: duplicate route '/api/health' also in diag_app.py:43 — review and remove one
         return jsonify({
             'success': True,
             'message': 'Thank you for your interest! We will be in touch within 24 hours.',
@@ -25282,6 +25309,7 @@ _JUNK_PLATFORM_RE = re.compile(
     re.I,
 )
 def _is_junk_platform(key: str) -> bool:
+# AUTO-REPAIR: duplicate route '/api/v1/ai-tracking/stats' also in ai_agent_discovery.py:545 — review and remove one
     """r62-qa: a platform 'connected/active/tracked' count must exclude our own
     'internal' bucket (r62) + the ~30 probe/scanner/test UAs that each minted a
     distinct ai_cumulative row. Used by BOTH the /api/v1/ai-tracking/stats
@@ -26152,6 +26180,7 @@ def _discovery_status(rec):
 
 
 def _discovery_exists(rec):
+# AUTO-REPAIR: duplicate route '/api/v1/discovery' also in ai_agent_discovery.py:677 — review and remove one
     """True / False / None. None (JSON null) is UNMEASURED, not absent.
 
     A bool cannot carry three states, and `false` for "we have not looked" is
@@ -26700,6 +26729,7 @@ def land_power_page():
 # Self-contained HTML at static/powered-land.html consumes the new
 # /api/v1/markets/<slug>/gas-pricing + /gas-to-grid endpoints (PRO-gated).
 # Free callers see hub identification + verdict with numbers masked;
+# AUTO-REPAIR: duplicate route '/news' also in ai_agent.py:367 — review and remove one
 # PRO+ sees the full 4-layer payload + 5 heat-rate $/MWh scenarios.
 @app.route('/powered-land')
 @app.route('/powered-land.html')
@@ -26830,6 +26860,7 @@ def api_config():
         "version": "v92"
     })
 
+# AUTO-REPAIR: duplicate route '/api/testimonials' also in main.py:26850 — review and remove one
 # /favicon.ico is registered by routes/favicon_quieter.py — removing the inline
 # duplicate (2026-06-05 Phase HJ-2 brain-finding sweep). The blueprint version
 # also suppresses noisy 404-on-missing-favicon logs; this inline version was
@@ -26953,7 +26984,7 @@ def api_signup():
 
         c.execute("""
             INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (email, key_hash, key_prefix, company, '["read"]', 'free', utc_iso_z()))
 
         c.execute("""
@@ -27489,7 +27520,7 @@ def daily_cron():
                     pub = _clamp_future_published_at(a.get('published_at')) or datetime.now(_tz.utc).isoformat()
                     if hasattr(pub, 'isoformat'): pub = pub.isoformat()
                     aid = a.get('id') or _hl.md5(a.get('url','').encode()).hexdigest()[:16]
-                    cur2.execute("INSERT INTO announcements (id,title,summary,url,source,source_url,published_date,discovered_at,category,announcement_type,confidence) VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9) ON CONFLICT(id) DO UPDATE SET title=EXCLUDED.title,summary=EXCLUDED.summary,discovered_at=NOW()",
+                    cur2.execute("INSERT INTO announcements (id,title,summary,url,source,source_url,published_date,discovered_at,category,announcement_type,confidence) VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW() ON CONFLICT DO NOTHING,%s,'news',0.9) ON CONFLICT(id) DO UPDATE SET title=EXCLUDED.title,summary=EXCLUDED.summary,discovered_at=NOW()",
                         (aid,(a.get('title') or '')[:500],(a.get('summary') or '')[:2000],(a.get('url') or '')[:1000],(a.get('source') or '')[:200],(a.get('url') or '')[:1000],pub,(a.get('category') or 'Industry')[:100]))
                     if cur2.rowcount > 0: pushed += 1
                 except Exception as re:
@@ -27851,7 +27882,7 @@ def push_news_to_neon():
                     cur.execute("""
                         INSERT INTO announcements
                             (id, title, summary, url, source, source_url, published_date, discovered_at, category, announcement_type, confidence)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW() ON CONFLICT DO NOTHING,%s,'news',0.9)
                         ON CONFLICT(id) DO UPDATE SET
                             title=EXCLUDED.title,
                             summary=EXCLUDED.summary,
@@ -27973,6 +28004,7 @@ def get_press_release_digest(date_slug=None):
         logger.warning(f'[press-release digest] {e}')
         payload = resolve_digest(None, d)
     return jsonify(payload)
+# AUTO-REPAIR: duplicate route '/api/v1/lmp/prices' also in data_layers_api.py:57 — review and remove one
 
 @app.route('/api/agent/chat', methods=['POST'])
 def api_agent_chat():
@@ -28063,6 +28095,7 @@ def api_lmp_prices():
             'interval_ending_utc': interval_ending.astimezone(timezone.utc).isoformat(),
             'source': source_name,
         }
+# AUTO-REPAIR: duplicate route '/api/v1/facilities/stats' also in data_layers_api.py:295 — review and remove one
         if age_minutes > LMP_STALE_AFTER_MINUTES:
             prices[iso]['stale'] = True
             prices[iso]['age_minutes'] = age_minutes
@@ -28137,6 +28170,7 @@ def api_facilities_stats():
         })
     finally:
         try: conn.close()
+# AUTO-REPAIR: duplicate route '/api/email/track/<email_id>/open.gif' also in api_server.py:2984 — review and remove one
         except Exception: pass
 
 
@@ -28154,6 +28188,7 @@ try:
     )
     init_discovery_routes(require_plan, protect_data, get_db, IS_RAILWAY)
     app.register_blueprint(discovery_bp)
+# AUTO-REPAIR: duplicate route '/api/email/unsubscribe' also in api_server.py:3002 — review and remove one
     print("🔍 Discovery Routes Blueprint: ✅ Registered (16 routes)")
 except Exception as e:
     print(f"🔍 Discovery Routes Blueprint: ⚠️ Failed to load: {e}")
@@ -28213,6 +28248,7 @@ def email_unsubscribe():
         except:
             pass
 
+# AUTO-REPAIR: duplicate route '/api/email/stats' also in api_server.py:3057 — review and remove one
     # Also update leads table
     conn = get_db()
     try:
@@ -28229,6 +28265,7 @@ def email_unsubscribe():
         <html>
         <head><title>Unsubscribed - DC Hub</title>
         <style>
+# AUTO-REPAIR: duplicate route '/api/email/process' also in api_server.py:3074 — review and remove one
             body{font-family:system-ui;max-width:600px;margin:100px auto;text-align:center;color:#333;}
             .success{color:#00d4ff;font-size:48px;margin-bottom:20px;}
             a{color:#00d4ff;}
@@ -28248,6 +28285,7 @@ def email_unsubscribe():
             conn.close()
         except Exception:
             pass
+# AUTO-REPAIR: duplicate route '/api/email/test' also in api_server.py:3094 — review and remove one
 @app.route('/api/email/stats', methods=['GET'])
 @require_auth
 def email_stats():
@@ -30001,6 +30039,7 @@ def data_freshness():
                 conn.close()
             except:
                 pass
+# AUTO-REPAIR: duplicate route '/api/transactions/refresh' also in api_server.py:3166 — review and remove one
 
 _news_refresh_running = threading.Lock()
 
@@ -30237,6 +30276,7 @@ def deals_crawl_batch():
             except Exception as e2:
                 results['errors'].append({'source': src_name, 'error': str(e2)})
                 results['batches'].append({'source': src_name, 'found': 0, 'added': 0, 'status': 'error', 'error': str(e2)})
+# AUTO-REPAIR: duplicate route '/api/facilities/refresh' also in api_server.py:3191 — review and remove one
         except Exception as e:
             results['errors'].append({'source': src_name, 'error': str(e)})
             results['batches'].append({'source': src_name, 'found': 0, 'added': 0, 'status': 'error', 'error': str(e)})
@@ -31391,6 +31431,7 @@ def get_testimonials():  # v2 neon-backed
             "  AND quote NOT ILIKE '%%286 market%%' AND quote NOT ILIKE '%%324B%%' "
             "  AND quote NOT ILIKE '%%50,000 facil%%' "
         )
+# AUTO-REPAIR: duplicate route '/api/v1/testimonials' also in main.py:31350 — review and remove one
         params = []
 
         if featured_only:
@@ -31454,7 +31495,7 @@ def add_testimonial():
         c = conn.cursor()
         c.execute("""
             INSERT INTO ai_testimonials (platform, agent_name, quote, context, query, url, category, source, approved, approved_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END) ON CONFLICT DO NOTHING
             RETURNING id
         """, (platform, agent_name, quote, context, query_text, url, category, source, auto_approve, auto_approve))
         new_id = c.fetchone()[0]
@@ -31582,7 +31623,7 @@ def seed_testimonials():
                 continue
             c.execute("""
                 INSERT INTO ai_testimonials (platform, agent_name, quote, context, query, category, source, approved, featured, approved_at)
-                VALUES (%s, %s, %s, %s, %s, %s, 'seed', TRUE, %s, CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, %s, %s, %s, 'seed', TRUE, %s, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING
             """, (platform, agent, quote, context, query_text, category, featured))
             inserted += 1
         conn.commit()
@@ -34177,6 +34218,7 @@ def admin_sitemap_purge():
         shard_files = _sitemap_shard_files(_new_sections)
     except Exception:
         section_counts = {}
+# AUTO-REPAIR: duplicate route '/.well-known/mcp.json' also in mcp_server.py:306 — review and remove one
         new_url_count = -1
         shard_files = []
     return jsonify({
@@ -34485,6 +34527,7 @@ def _well_known_tool_gate(live_tool_count=0):
             "free":       {"price_usd_month": _money("free", "price_usd_month"),
                               "calls_per_day": _money("free", "calls_per_day"),
                               "tools_unlocked": total,
+# AUTO-REPAIR: duplicate route '/.well-known/agent.json' also in ai_agent_discovery.py:355 — review and remove one
                               "tools_unlocked_note": _note("free"),
                               "signup_url": "https://dchub.cloud/signup"},
             "identified": {"price_usd_month": _money("identified", "price_usd_month"),
@@ -34504,6 +34547,7 @@ def _well_known_tool_gate(live_tool_count=0):
                               "stripe_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"},
             "pro":        {"price_usd_month": _money("pro", "price_usd_month"),
                               "calls_per_day": _money("pro", "calls_per_day"),
+# AUTO-REPAIR: duplicate route '/.well-known/security.txt' also in ai_agent_discovery.py:533 — review and remove one
                               "tools_unlocked": total,
                               "tools_unlocked_note": _note("pro"),
                               "stripe_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04"},
@@ -35048,7 +35092,7 @@ def api_health_autoheal():
         try:
             with pg_connection() as pg:
                 cur = pg.cursor()
-                cur.execute("INSERT INTO site_health_findings (check_name,status,expected,actual,error,duration_ms) VALUES (%s,%s,%s,%s,%s,%s)",
+                cur.execute("INSERT INTO site_health_findings (check_name,status,expected,actual,error,duration_ms) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                             (f"autoheal:{check}", result["status"], action["description"], result.get("detail"), None, result.get("duration_ms")))
                 pg.commit()
         except Exception as e:
@@ -35320,7 +35364,7 @@ def api_patch_propose():
                 cur = pg.cursor()
                 cur.execute("""
                     INSERT INTO patch_attempts (check_name, finding_id, prompt, status, safety_flag, duration_ms)
-                    VALUES (%s, %s, %s, 'claude_error', %s, %s)
+                    VALUES (%s, %s, %s, 'claude_error', %s, %s) ON CONFLICT DO NOTHING
                 """, (check_name, finding.get("id"), prompt, result.get("error", "")[:300], result.get("duration_ms", 0)))
                 pg.commit()
         except Exception:
@@ -35352,7 +35396,7 @@ def api_patch_propose():
                     files_changed, diff, explanation, diff_lines,
                     passed_size_check, passed_allowlist_check, safety_flag,
                     prompt_tokens, completion_tokens, duration_ms, status, model)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (check_name, finding.get("id"), prompt, result["text"],
                   parsed.get("files_changed", []), parsed.get("diff", ""), parsed.get("explanation", ""),
@@ -38083,6 +38127,7 @@ def api_site_score():
                 'market_conditions': round(market_score, 1),
                 'risk_resilience': round(risk_score, 1),
             },
+# AUTO-REPAIR: duplicate route '/api/agents/intelligence-index' also in intelligence_index.py:38 — review and remove one
             'power_cost': power_cost,
             'nearby': {
                 'facilities_100km': nearby_facilities,
@@ -45971,7 +46016,7 @@ try:
                         cur.execute(f"""
                             INSERT INTO market_power_scores
                             (market_slug, market_name, constraint_score, excess_power_score, verdict, tier_required, computed_at)
-                            VALUES (%s, %s, %s, %s, %s, 'lite-pro', NOW())
+                            VALUES (%s, %s, %s, %s, %s, 'lite-pro', NOW() ON CONFLICT DO NOTHING)
                             ON CONFLICT (market_slug) DO UPDATE SET
                               constraint_score = EXCLUDED.constraint_score,
                               excess_power_score = EXCLUDED.excess_power_score,
@@ -47230,7 +47275,7 @@ def _heal_cache_db_write(payload: dict):
         if not url: return
         with _pg2.connect(url, sslmode="require", connect_timeout=5) as c, c.cursor() as cur:
             cur.execute(
-                "INSERT INTO heal_findings_cache (payload) VALUES (%s::jsonb)",
+                "INSERT INTO heal_findings_cache (payload) VALUES (%s::jsonb) ON CONFLICT DO NOTHING",
                 (_json.dumps(payload, default=str),))
             cur.execute(
                 "DELETE FROM heal_findings_cache "
@@ -48528,7 +48573,7 @@ def _mcp_capture_email():
                 INSERT INTO mcp_upgrade_signals
                     (session_id, user_email, signal_type, tool_requested,
                      tier_current, created_at)
-                VALUES (%s, %s, 'email_captured', %s, 'free', NOW());
+                VALUES (%s, %s, 'email_captured', %s, 'free', NOW() ON CONFLICT DO NOTHING);
             """, (session_id, email, tool or "unknown"))
             results["new_capture_logged"] = True
             conn.commit()

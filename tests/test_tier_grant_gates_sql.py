@@ -152,7 +152,7 @@ def _key(conn, name, email, tier="free", verified_for=None, age_seconds=0,
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, metadata,"
-            " created_at) VALUES (%s,%s,%s,%s,%s::jsonb, NOW() - (%s || ' seconds')::interval)",
+            " created_at) VALUES (%s,%s,%s,%s,%s::jsonb, NOW() ON CONFLICT DO NOTHING - (%s || ' seconds')::interval)",
             (name, "dev_" + name, email, tier, json.dumps(meta), age_seconds))
 
 
