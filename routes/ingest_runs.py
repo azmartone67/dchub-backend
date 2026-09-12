@@ -531,3 +531,36 @@ def leader_state():
     except Exception as e:
         out["ok"] = False; out["error"] = str(e)[:200]
         return jsonify(out), 503
+
+
+# ── POST /api/v1/admin/ingest-runs/served-table-freshness ──────────────────
+# ★2026-09-12: the board could see producers but not TABLES — a table whose
+# loader was never built beats nothing and can never go red here. This measures
+# the served tables that have no live producer and beats ONE feed naming the
+# frozen ones; routes/served_table_freshness carries the why, the candidate rule
+# and the column rule. Admin-gated and off the public path on purpose: GET
+# /api/v1/ops/deadman is read by ~8 monitors on 10s timeouts, and a scheduled
+# MAX() over two dozen tables does not belong behind it. Appended at the end of
+# the module so no existing route's line number moves under
+# contracts/api_response_surface.json.
+@ingest_runs_bp.route("/api/v1/admin/ingest-runs/served-table-freshness", methods=["POST"])
+def served_table_freshness_tick():
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin key required"), 401
+    from routes import served_table_freshness as stf
+    out = stf.run(_dsn())
+    if out.get("disabled"):
+        out["beat_recorded"] = False
+        return jsonify(out), 200
+    try:
+        # record_beat, NOT beat_feed: beat_feed coerces rows with int(rows or 0),
+        # so a pass that could not measure would beat 0 and climb the zero-row
+        # streak on a producer that never got as far as counting anything.
+        record_beat(stf.FEED, status=out["status"], rows=out.get("measured"),
+                    cad=stf.CADENCE_HOURS, note=out.get("note"))
+        out["beat_recorded"] = True
+    except Exception as e:  # noqa: BLE001 — reported in the body; the workflow step fails on it
+        log.warning("served-table-freshness beat failed: %s", e)
+        out["beat_recorded"] = False
+        out["beat_error"] = str(e)[:200]
+    return jsonify(out), 200
