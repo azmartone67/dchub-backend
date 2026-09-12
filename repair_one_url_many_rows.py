@@ -151,7 +151,12 @@ COUNTS_SQL = {
 
 def _conn(dsn: str):
     import psycopg2
-    return psycopg2.connect(dsn, sslmode="require", connect_timeout=10)
+    # sslmode=require by default, because production is Neon — but never
+    # override a DSN that states its own. A keyword argument beats the DSN in
+    # psycopg2, so hardcoding it makes the script impossible to run against a
+    # local Postgres, and a repair nobody can rehearse is one nobody has run.
+    kw = {} if "sslmode=" in dsn else {"sslmode": "require"}
+    return psycopg2.connect(dsn, connect_timeout=10, **kw)
 
 
 def _counts(cur) -> dict:
