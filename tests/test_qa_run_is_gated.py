@@ -64,6 +64,7 @@ MUTATION-VERIFIED (verify-a-guard) — transcript in the PR body.
 """
 import ast
 import os
+import re
 import sys
 
 import pytest
@@ -271,9 +272,15 @@ def test_the_qa_workflow_sends_a_credential():
     and the site QA signal would go dark."""
     with open(WORKFLOW, encoding="utf-8") as fh:
         text = fh.read()
-    assert "X-Internal-Key" in text, (
-        ".github/workflows/site-qa.yml no longer sends X-Internal-Key — its "
-        f"POST to {PATH} will 401 on every scheduled run"
+    # ★ Assert the CODE form, not the bare header name. This file also
+    # MENTIONS X-Internal-Key in the P0 issue body's explanatory prose, so a
+    # substring check over the file passes even with the real header deleted —
+    # measured: mutation M8 removed the live header and this suite stayed green
+    # until the assertion was tightened to the binding below.
+    assert re.search(r"""["']X-Internal-Key["']\s*:\s*INTERNAL_KEY""", text), (
+        ".github/workflows/site-qa.yml no longer BINDS X-Internal-Key to the "
+        f"secret in its request headers — its POST to {PATH} will 401 on every "
+        "scheduled run"
     )
     assert "secrets.DCHUB_INTERNAL_KEY" in text, (
         "the workflow's credential no longer comes from the repo secret"
@@ -422,9 +429,15 @@ def test_the_p0_issue_step_sends_a_credential():
     issue_step = text.split("Open issue if P0 regressed", 1)
     assert len(issue_step) == 2, "the P0 issue step was renamed or removed"
     step = issue_step[1]
-    assert "X-Internal-Key" in step, (
-        "the P0 issue step fetches /api/v1/qa/regressions with no credential — "
-        "it will 401 exactly when a regression has fired"
+    # ★ The code form, for the reason spelled out in
+    # test_the_qa_workflow_sends_a_credential: this very step's issue body
+    # mentions the header name in prose, which satisfied a substring check
+    # while the real header was gone (mutation M8).
+    assert re.search(r"""headers\s*:\s*\{\s*["']X-Internal-Key["']\s*:\s*internalKey""",
+                     step), (
+        "the P0 issue step no longer passes X-Internal-Key in its fetch headers "
+        "— it will 401 exactly when a regression has fired, and open an empty "
+        "issue"
     )
     assert "secrets.DCHUB_INTERNAL_KEY" in step, (
         "the P0 issue step's credential no longer comes from the repo secret"
