@@ -149,14 +149,15 @@ def init_news_db(db_path=NEWS_DB_PATH):
     # <source url="..."/>, the publisher's own domain and name. A row whose
     # `url` is an opaque token can then still say WHO published it.
     #
-    # ALTER runs separately because CREATE TABLE IF NOT EXISTS is a no-op
-    # against the existing table and would leave the column missing on every
-    # already-deployed database.
-    try:
-        c.execute('ALTER TABLE news_articles '
-                  'ADD COLUMN IF NOT EXISTS publisher_url TEXT')
-    except Exception:
-        pass
+    # ★★★ NO ALTER HERE — IT NEVER RAN. This function's statements go through
+    # db_utils.PGCursorWrapper, whose execute() returns without sending
+    # anything when the SQL starts with CREATE TABLE / CREATE INDEX / ALTER
+    # TABLE (`SKIP_DDL` defaults to '1'). An `ALTER TABLE news_articles ADD
+    # COLUMN IF NOT EXISTS publisher_url TEXT` sat here from 2026-09-02 and
+    # reached Postgres zero times: no exception, no log, and a column that
+    # every INSERT then named and none could write. See
+    # ensure_publisher_url_column, which does it on a DIRECT connection and
+    # reads information_schema back afterwards.
     c.execute('''CREATE TABLE IF NOT EXISTS feed_health (
         url TEXT PRIMARY KEY, name TEXT, last_success DATETIME,
         last_failure DATETIME, failure_count INTEGER DEFAULT 0,
@@ -599,16 +600,18 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
     c = conn.cursor()
     saved = 0
     now_ts = utc_iso_z()
+    # ★★★ ASK BEFORE WRITING, do not write-then-recover. The old shape opened a
+    # SAVEPOINT, attempted the 13-column INSERT and retried without the column
+    # on failure. Through the pooled wrapper that recovery does not exist: the
+    # Railway worker logged `savepoint "sp_article" does not exist` after EVERY
+    # failed insert of every run (2026-09-12 01:03), so the retry never ran and
+    # this writer returned 0 while its comment said it degraded gracefully. The
+    # column's presence is now a measured fact, taken once per process on a
+    # direct connection, and the statement is chosen from it.
+    has_publisher_url = publisher_url_column_available()
     for a in articles:
         try:
             pub = _clamp_future_published_at(a.get('published_at'))
-            c.execute("SAVEPOINT sp_article")
-            # ★ publisher_url is written through a FALLBACK rather than
-            # assumed. init_db's ALTER runs before writes in-process, but a
-            # read replica or a DB restored from an older dump can still lack
-            # the column, and an UndefinedColumn there would stop news ingest
-            # dead to save one field. Degrade, never block — the SAVEPOINT
-            # this block already opens is what makes the retry safe.
             # Both statements are written out in full rather than composed
             # from a shared column list: regression_lint's insert-no-on-conflict
             # rule reads the literal, and a concatenated INSERT hides its
@@ -617,15 +620,14 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
                      a.get('category','Industry'), a.get('summary',''),
                      a.get('author',''), pub, a.get('relevance_score',0.5),
                      a.get('keywords','[]'), a.get('image_url'), now_ts)
-            try:
+            if has_publisher_url:
                 c.execute('''INSERT INTO news_articles
                     (id,title,url,source,category,summary,author,published_at,
                      relevance_score,keywords,image_url,fetched_at,publisher_url)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (id) DO NOTHING''',
                     _vals + (a.get('publisher_url'),))
-            except Exception:
-                c.execute("ROLLBACK TO SAVEPOINT sp_article")
+            else:
                 c.execute('''INSERT INTO news_articles
                     (id,title,url,source,category,summary,author,published_at,
                      relevance_score,keywords,image_url,fetched_at)
@@ -651,14 +653,111 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
     return saved
 
 
+# Tri-state, measured not assumed: None = not checked yet this process,
+# True/False = what information_schema said. Reset per process, so a restart
+# re-checks rather than trusting a decision made against another database.
+_PUBLISHER_URL_COLUMN = None
+
+
+def ensure_publisher_url_column(pg_conn):
+    """Add `news_articles.publisher_url` if Postgres says it is missing.
+
+    ★★★ THIS MUST NOT GO THROUGH `db_utils.get_db()`. That wrapper's cursor
+    SKIPS every statement beginning with CREATE TABLE / CREATE INDEX / ALTER
+    TABLE — `SKIP_DDL` defaults to `'1'`, and `PGCursorWrapper.execute` returns
+    `self` without sending the statement — so `init_news_db`'s
+    `ALTER TABLE news_articles ADD COLUMN IF NOT EXISTS publisher_url TEXT` has
+    never reached the database. It raised nothing and logged nothing, which is
+    why it read as working for nine days.
+
+    Measured consequence (2026-09-08 → 09-12): every INSERT naming the column
+    failed, both writers fell back, and net intake was ONE row between the 00:40
+    and 01:03 syncs while the run logged "172 new articles inserted".
+
+    Takes a DIRECT psycopg2 connection. `lock_timeout` keeps a blocked DDL from
+    holding the table: adding a nullable column is metadata-only on PG11+, so if
+    it cannot get the lock in five seconds something else is wrong and the sync
+    should carry on without the column rather than stall behind it.
+
+    Returns True when the column is present afterwards, False when it is not —
+    never raises, because one optional field must not stop news ingest.
+    """
+    try:
+        cur = pg_conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'news_articles' AND column_name = 'publisher_url'")
+        if cur.fetchone():
+            return True
+        logger.warning(
+            "📰 news_articles.publisher_url is MISSING — adding it. Every insert "
+            "naming this column has been failing; see ensure_publisher_url_column.")
+        cur.execute("SET lock_timeout = '5s'")
+        cur.execute("ALTER TABLE news_articles ADD COLUMN IF NOT EXISTS publisher_url TEXT")
+        pg_conn.commit()
+        # ★ Verify by READING BACK. `ADD COLUMN IF NOT EXISTS` reports success
+        # whether or not it did anything, and this guard exists precisely
+        # because a statement that appears to run may not have.
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'news_articles' AND column_name = 'publisher_url'")
+        present = bool(cur.fetchone())
+        logger.info("📰 news_articles.publisher_url present after ALTER: %s", present)
+        return present
+    except Exception as exc:  # noqa: BLE001 - degrade, never block ingest
+        logger.warning("📰 could not add news_articles.publisher_url (%s) — "
+                       "inserting without it", exc)
+        try:
+            pg_conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def publisher_url_column_available():
+    """Does `news_articles.publisher_url` exist? Measured once per process.
+
+    Both writers ask this BEFORE choosing a statement, instead of attempting the
+    wide INSERT and recovering — one of them had no working recovery at all.
+
+    Opens its own DIRECT psycopg2 connection when the answer is unknown, because
+    a pooled connection cannot run the ALTER (see ensure_publisher_url_column).
+    When there is no database URL, or the check itself fails, this returns True:
+    the writers' own error paths are then the fallback, and a check that cannot
+    look must not silently narrow what gets written.
+    """
+    global _PUBLISHER_URL_COLUMN
+    if _PUBLISHER_URL_COLUMN is not None:
+        return _PUBLISHER_URL_COLUMN
+    db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    if not db_url:
+        return True
+    conn = None
+    try:
+        import psycopg2
+        conn = psycopg2.connect(db_url, connect_timeout=15)
+        _PUBLISHER_URL_COLUMN = ensure_publisher_url_column(conn)
+        return _PUBLISHER_URL_COLUMN
+    except Exception as exc:  # noqa: BLE001 - never block ingest on a check
+        logger.warning("📰 publisher_url column check failed (%s) — writing the "
+                       "wide row and letting the insert decide", exc)
+        return True
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _sync_articles_to_pg(articles):
     """Sync articles to PostgreSQL — write-through so PG stays current.
-    
+
     POOL FIX v2: Uses a dedicated direct psycopg2 connection (NOT from the pool)
     and batch-inserts with execute_values for speed. The old approach grabbed a
     pool connection via get_bg_db() and did row-by-row SAVEPOINTs across 300+
     articles — holding a pool slot for 30-60s and causing pool exhaustion.
-    
+
     Failures here are non-fatal; SQLite remains the fallback."""
     if not articles:
         return
@@ -705,37 +804,62 @@ def _sync_articles_to_pg(articles):
                 a.get('publisher_url')
             ))
         
-        # Batch insert in chunks of 100
+        # Add the column if the database does not have it, once per process —
+        # init_news_db's ALTER cannot, see ensure_publisher_url_column.
+        global _PUBLISHER_URL_COLUMN
+        if _PUBLISHER_URL_COLUMN is None:
+            _PUBLISHER_URL_COLUMN = ensure_publisher_url_column(pg_conn)
+        sql, width = ((insert_sql, 13) if _PUBLISHER_URL_COLUMN
+                      else (insert_sql_legacy, 12))
+
+        # Batch insert in chunks of 100.
+        # ★★★ SAVEPOINT PER CHUNK, NEVER conn.rollback(). The previous version
+        # called pg_conn.rollback() before retrying a failed chunk, and a
+        # rollback ends the WHOLE transaction — it discarded every chunk already
+        # inserted, so of 320 articles only the last chunk survived the closing
+        # commit. `synced` went on counting the rows the rollback had just
+        # thrown away, which is how a run that added ONE row (11909 → 11910
+        # between the 00:40 and 01:03 syncs on 2026-09-12) logged "172 new
+        # articles inserted". A chunk must be able to fail without taking its
+        # siblings, and the number printed must be the number that survives.
         synced = 0
+        dropped = 0
         for i in range(0, len(values), 100):
-            chunk = values[i:i+100]
+            chunk = values[i:i + 100]
+            cur.execute("SAVEPOINT news_chunk")
             try:
-                execute_values(cur, insert_sql, chunk,
-                    template='(' + ','.join(['%s'] * 13) + ')')
+                execute_values(cur, sql, [v[:width] for v in chunk],
+                               template='(' + ','.join(['%s'] * width) + ')')
                 synced += cur.rowcount
+                cur.execute("RELEASE SAVEPOINT news_chunk")
+                continue
             except Exception as chunk_err:
-                try:
-                    pg_conn.rollback()
-                except Exception:
-                    pass
-                # Retry without publisher_url before giving up on 100 rows.
-                try:
-                    execute_values(cur, insert_sql_legacy,
-                                   [v[:12] for v in chunk],
-                                   template='(' + ','.join(['%s'] * 12) + ')')
-                    synced += cur.rowcount
-                    logger.warning("⚠️ News PG batch: publisher_url column "
-                                   "absent, inserted without it")
-                except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT news_chunk")
+                if width == 12:
+                    dropped += len(chunk)
                     logger.warning(
                         f"⚠️ News PG batch insert chunk failed: {chunk_err}")
-                    try:
-                        pg_conn.rollback()
-                    except Exception:
-                        pass
-        
+                    continue
+            # The column was there when we looked and is not there now — a
+            # replica or a restore from an older dump. Drop the field, not the
+            # articles, and stop attempting it for the rest of this run.
+            try:
+                execute_values(cur, insert_sql_legacy, [v[:12] for v in chunk],
+                               template='(' + ','.join(['%s'] * 12) + ')')
+                synced += cur.rowcount
+                cur.execute("RELEASE SAVEPOINT news_chunk")
+                sql, width = insert_sql_legacy, 12
+                _PUBLISHER_URL_COLUMN = False
+                logger.warning("⚠️ News PG batch: publisher_url column "
+                               "absent, inserting without it")
+            except Exception as legacy_err:
+                cur.execute("ROLLBACK TO SAVEPOINT news_chunk")
+                dropped += len(chunk)
+                logger.warning(
+                    f"⚠️ News PG batch insert chunk failed: {legacy_err}")
+
         pg_conn.commit()
-        
+
         # Cleanup old articles
         try:
             cur.execute("DELETE FROM news_articles WHERE fetched_at::timestamptz < NOW() - INTERVAL '90 days'")
@@ -748,8 +872,11 @@ def _sync_articles_to_pg(articles):
                 pass
         
         cur.close()
-        if synced > 0:
-            logger.info(f"📰 PG sync: {synced} new articles inserted ({len(articles)} total, batch mode)")
+        # Logged AFTER the commit, so the number names rows that survived it.
+        if synced > 0 or dropped > 0:
+            logger.info(
+                f"📰 PG sync: {synced} new articles committed "
+                f"({len(articles)} offered, {dropped} dropped, batch mode)")
     except Exception as e:
         logger.warning(f"⚠️ News PG sync failed (falling back to SQLite only): {e}")
     finally:
