@@ -127,6 +127,9 @@
     "test_delegated_202_crons.py": {
       "glob": 140
     },
+    "test_delivery_truth_join.py": {
+      "walk": 70
+    },
     "test_enterprise_inquiries_schema_fork.py": {
       "pglob": 1910
     },
