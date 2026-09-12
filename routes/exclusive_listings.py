@@ -1700,6 +1700,9 @@ def operator_ledger(slug_or_id):
             "company": opening.get("company"),
             "role": opening.get("role"),
             "email_domain": entry.get("email_domain"),
+            "email_verified": bool(entry.get("email_verified") or confirmed),
+            "verified_via": (entry.get("verified_via")
+                             or ("email_link" if confirmed else None)),
             "email": opening.get("email") if introduced else None,
             "requirement": _requirement_of(opening),
             "channel": entry.get("channel"),

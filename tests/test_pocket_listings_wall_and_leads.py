@@ -468,6 +468,9 @@ def test_the_operator_ledger_is_scoped_and_hides_email_until_introduced(env):
     assert [lead["lead_id"] for lead in j["leads"]] == [lead_id]
     assert (j["leads"][0]["name"], j["leads"][0]["email_domain"], j["leads"][0]["email"]) == (
         "Jane Doe", "acme.com", None)
+    # the operator sees HOW the inbox was proven, so a Google-verified lead does
+    # not read as "not yet confirmed" merely because no link was clicked
+    assert (j["leads"][0]["email_verified"], j["leads"][0]["verified_via"]) == (True, "email_link")
     r = env.client.post(f"/api/v1/admin/listings/leads/{lead_id}/status",
                         json={"status": "introduced"}, headers={"X-Admin-Key": ADMIN_KEY})
     assert r.status_code == 200
