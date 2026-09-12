@@ -406,6 +406,75 @@ def _item_directive(kind: str, item_id: int) -> tuple[str, str]:
         except Exception: pass
 
 
+# ── The approve→PR verdict gate ──────────────────────────────────────
+# ★ 2026-09-12. innovation_approve() used to hand ANY greenlit item to the code
+# drafter without ever reading the item's own refutation verdict. Measured on
+# the live board that day: 8 of 15 self-directed agenda items were marked
+# ✗ refuted AND ✓ approved, the lowest at confidence 0.10 — i.e. the adversarial
+# refuter's output, which is the loop's actual learning signal, was being
+# discarded at the approval gate. The greenlight is still RECORDED (the operator
+# may know something the refuter does not), but a refuted or low-confidence item
+# no longer silently becomes a draft PR unless the caller passes override=true.
+PR_MIN_CONFIDENCE = 0.40
+
+
+def _item_verdict(kind: str, item_id: int) -> dict:
+    """Read one item's adversarial verdict for the approve→PR gate.
+    Returns {confidence, refutation_survived, refutation_attempted}; values are
+    None when unknown. Best-effort — never raises, and an unreadable item
+    returns all-None so the gate FAILS OPEN rather than blocking the operator
+    on a DB hiccup."""
+    unknown = {"confidence": None, "refutation_survived": None,
+               "refutation_attempted": None}
+    src = _ITEM_SOURCES.get(kind)
+    if not src:
+        return unknown
+    # table/column names come from the _ITEM_SOURCES whitelist, never user input.
+    table, jcol, _ = src
+    conn = _conn()
+    if conn is None:
+        return unknown
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT confidence, {jcol} FROM {table} WHERE id = %s",
+                        (int(item_id),))
+            row = cur.fetchone()
+        if not row:
+            return unknown
+        flat = _flatten(_as_obj(row[1]))
+        conf = None
+        if row[0] is not None:
+            try:
+                conf = float(row[0])
+            except (TypeError, ValueError):
+                conf = None
+        return {"confidence": conf,
+                "refutation_survived": flat.get("refutation_survived"),
+                "refutation_attempted": flat.get("refutation_attempted")}
+    except Exception as e:
+        logger.warning("brain_innovation_dashboard: _item_verdict failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return unknown
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _pr_block_reason(verdict: dict) -> str:
+    """Why this item must NOT auto-draft a PR, or '' when it may.
+    Only an EXPLICIT refutation or an EXPLICIT sub-floor confidence blocks;
+    unknown/None never blocks (fail open)."""
+    if verdict.get("refutation_survived") is False:
+        return ("the adversarial refuter REFUTED this item — approval recorded, "
+                "but a refuted analysis does not auto-draft a PR")
+    conf = verdict.get("confidence")
+    if conf is not None and conf < PR_MIN_CONFIDENCE:
+        return (f"confidence {conf:.2f} is below the {PR_MIN_CONFIDENCE:.2f} "
+                "floor for auto-drafting a PR — approval recorded only")
+    return ""
+
+
 # ── Read each of the three streams (best-effort; [] not a crash) ─────
 def _recent_agenda(limit: int = 15) -> list[dict]:
     """Recent SELF-CHOSEN agenda items, newest first, flattened for display.
@@ -773,6 +842,18 @@ def innovation_approve():
     # pr_url) — it used to live only in this response, so a failed draft was
     # indistinguishable from a landed one and nothing could re-drive it.
     if open_pr and decision == "approved":
+        _verdict = _item_verdict(kind, item_id)
+        _blocked = "" if bool(body.get("override")) else _pr_block_reason(_verdict)
+        resp["verdict"] = _verdict
+        if _blocked:
+            # Approval row is already committed above — only the PR is withheld.
+            resp["pr_blocked"] = _blocked
+            resp["pr_attempt"] = {"ok": True, "acted": False,
+                                  "note": _blocked,
+                                  "override_with": "re-POST with override=true"}
+            return jsonify(**resp), 200
+        if bool(body.get("override")) and _pr_block_reason(_verdict):
+            resp["pr_override"] = _pr_block_reason(_verdict)
         _pr = _attempt_pr(kind, item_id, operator_directive)
         resp["directive_source"] = _pr.get("directive_source")
         resp["pr_attempt"] = _pr

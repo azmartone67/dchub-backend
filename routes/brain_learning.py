@@ -1136,6 +1136,28 @@ def verify_merged_fixes():
 # which reads as a system in freefall next to a green "B" (3.3/4 = 82.5%).
 GRADE_SCALE_MAX = 4
 
+# Minimum 60d review count before a 0.0% rejection rate is treated as a DEAD
+# signal rather than a clean record. Below this a zero is just a small sample.
+REJECTION_DEAD_SIGNAL_N = 20
+
+
+def rejection_component(rej: float, total: int) -> tuple[int, str]:
+    """Score the human-rejection rate 0..4 (weight 25%, lower is better) and
+    say whether the signal is LIVE or DEAD.
+
+    A rate of EXACTLY zero across a meaningful sample is a dead signal, not a
+    clean record: a review gate that has never once disagreed carries no
+    information about whether the brain is right. Scoring it 4/4 — which the
+    un-floored band did — makes the brain read "nobody has ever disagreed with
+    me" as evidence it is correct. Below REJECTION_DEAD_SIGNAL_N a zero is just
+    a small sample and scores normally."""
+    if rej == 0.0 and total >= REJECTION_DEAD_SIGNAL_N:
+        return 1, "dead"
+    return (4 if rej <= 0.10 else
+            3 if rej <= 0.20 else
+            2 if rej <= 0.40 else
+            1 if rej <= 0.60 else 0), "live"
+
 # 4B — Review decisions (rejection memory)
 # ─────────────────────────────────────────────────────────────────────
 @brain_learning_bp.route("/api/v1/brain/review-decision", methods=["POST"])
@@ -1404,11 +1426,24 @@ def brain_self_assessment():
                 rej = by_dec.get('reject', 0) / total
                 metrics["human_rejection_rate"] = round(rej * 100, 1)
                 metrics["human_review_count_60d"] = total
-                grade_components["rejection"] = (
-                    4 if rej <= 0.10 else
-                    3 if rej <= 0.20 else
-                    2 if rej <= 0.40 else
-                    1 if rej <= 0.60 else 0)
+                # ★ 2026-09-12 — DEAD-SIGNAL FLOOR. The band below is monotonic
+                # "lower is better" and used to have NO floor, so a rejection
+                # rate of EXACTLY zero scored 4/4 — identical to a healthy 8%.
+                # A review gate that has never once disagreed carries no
+                # information about whether the brain is right; scoring it
+                # perfect made the brain read "nobody has ever disagreed with
+                # me across 293 reviews" as evidence it was correct. Measured
+                # on the live board 2026-09-12: human_rejection_rate 0.0 over
+                # human_review_count_60d 293, scoring rejection 4/4, while 8
+                # agenda items marked ✗ refuted were ALSO marked ✓ approved
+                # (one at confidence 0.10). This is the can't-fail signature
+                # from the 2026-09-07 null-signal spec ("a FILTER count that
+                # is 0 across EVERY group"); brain_null_signal_detector.py
+                # implements the writer/reader check, not this one, so the
+                # guard lives at the site that computes the metric.
+                _score, _signal = rejection_component(rej, total)
+                grade_components["rejection"] = _score
+                metrics["rejection_signal"] = _signal
             else:
                 metrics["human_rejection_rate"] = None
                 metrics["human_review_count_60d"] = 0
@@ -1569,7 +1604,12 @@ def _build_rationale(letter, metrics, comp):
         parts.append("no outcome verifications yet")
     rr = metrics.get("human_rejection_rate")
     if rr is not None:
-        parts.append(f"rejection {rr}%")
+        if metrics.get("rejection_signal") == "dead":
+            parts.append(
+                f"rejection {rr}% over {metrics.get('human_review_count_60d')} "
+                "reviews — DEAD SIGNAL, the review gate has never disagreed")
+        else:
+            parts.append(f"rejection {rr}%")
     msl = metrics.get("minutes_since_last_run")
     if msl is not None:
         parts.append(f"last cron run {msl:.0f}min ago")

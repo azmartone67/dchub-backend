@@ -12235,6 +12235,69 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
     return out
 
 
+# Below this many 60d review decisions, a zero-rejection rate is a small
+# sample rather than a dead gate. Mirrors brain_learning's floor.
+_REVIEW_GATE_MIN_SAMPLE = 20
+
+
+def check_review_gate_never_disagrees() -> list[dict]:
+    """Has the human review gate EVER disagreed with the brain?
+
+    ★ WHY (2026-09-12). This is the detector that would have caught the bug
+    shipped alongside it. /api/v1/brain/self-assessment reported
+    human_rejection_rate 0.0 over human_review_count_60d 293 and scored the
+    `rejection` component 4/4 — the band was monotonic "lower is better" with
+    no floor, so EXACTLY zero tied the best possible score. A review gate that
+    has never once disagreed carries no information about whether the brain is
+    right, and scoring it perfect made the brain read "nobody has ever
+    disagreed with me across 293 reviews" as evidence it was correct. On the
+    same day 8 of 15 self-directed agenda items were marked BOTH refuted and
+    approved, the lowest at confidence 0.10.
+
+    This is check A — "can't-fail signatures" — from the 2026-09-07 null-signal
+    spec, which named `rejected 0 of 237` specifically.
+    brain_null_signal_detector.py implements check B (writer/reader key
+    disagreement via to_regclass probes) and is blind to this shape.
+
+    Fires only on a MEASURED zero across a meaningful sample: below
+    _REVIEW_GATE_MIN_SAMPLE a zero is a small sample, not a dead gate. An
+    unreadable table returns [] — UNMEASURED, never a clean pass.
+    """
+    try:
+        conn = _db()
+        if conn is None:
+            return []                      # UNMEASURED
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT decision, COUNT(*) FROM brain_review_decisions "
+                " WHERE decided_at > NOW() - INTERVAL '60 days' "
+                " GROUP BY decision")
+            rows = cur.fetchall() or []
+        by_dec = {r[0]: int(r[1]) for r in rows}
+        total = sum(by_dec.values())
+        if total < _REVIEW_GATE_MIN_SAMPLE:
+            return []                      # too small to mean anything
+        rejects = by_dec.get("reject", 0)
+        if rejects > 0:
+            return []                      # the gate fires — signal is live
+        return [{
+            "issue": "review_gate_never_disagrees",
+            "url": "dchub://brain/review-decisions",
+            "count": 1,
+            "detail": (
+                f"{total} human review decisions in 60d and NOT ONE rejection. "
+                "A gate that has never fired cannot tell you the brain is "
+                "right — it is an unmeasured signal, not a clean record. "
+                "Check that rejections are reachable at all from the review "
+                "UI, and that brain_learning.rejection_component() is not "
+                "scoring this 4/4. Decisions seen: "
+                + (", ".join(f"{k}={v}" for k, v in sorted(by_dec.items()))
+                   or "none")),
+        }]
+    except Exception:
+        return []                          # UNMEASURED — never a clean pass
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues.
@@ -12244,7 +12307,11 @@ def scan_all() -> list[dict]:
     are collected first, then run concurrently with per-detector 20s
     timeout — wall time becomes max(detector) instead of sum(detector)."""
     detectors: list = []
-    for fn in (# r-preempt (2026-06-16): anti-fabrication PRE-EMPTION detectors —
+    for fn in (# 2026-09-12: the brain's own review gate had returned 0
+               # rejections across 293 decisions while the grade scored that
+               # 4/4 — a can't-fail signature nothing was watching.
+               check_review_gate_never_disagrees,
+               # r-preempt (2026-06-16): anti-fabrication PRE-EMPTION detectors —
                # catch over-claim floors + parallel-stale metric surfaces (the
                # class the freshness/breakage/placeholder detectors are blind to).
                # Finding-only; NO autopilot action map → escalate to a human.
