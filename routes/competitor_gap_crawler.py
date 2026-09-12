@@ -13,7 +13,8 @@ Design (per vetted spec, reuse-first + additive):
     sitemap map (_GAP_SOURCES) because the gap diff needs the per-facility
     child sitemaps, not the root sitemap.
   - REUSES news_facility_extractor.insert_discovered_facility (dedups on
-    source_url) to stage TRUE gaps into discovered_facilities — NEVER writes
+    source_url AND on the canonical slug the row would be served at)
+    to stage TRUE gaps into discovered_facilities — NEVER writes
     custom SQL into the live `facilities` table (capacity_mw/lat/lng schema
     trap). facility_auto_approve.run_auto_approve promotes from there.
   - REUSES routes/news_entity_extraction._is_real_entity for the NER
@@ -536,6 +537,21 @@ def _is_existing(cur, cand: dict) -> bool:
     return False
 
 
+def _identity_key(cand: dict) -> str | None:
+    """The candidate's PAGE identity: the canonical slug it would be served at.
+
+    The slug hashes provider|name, so two candidates composing the same slug
+    are ONE /facilities/<slug> page however many URLs they were found at.
+    _to_discovered_facility maps operator -> provider, so the key is composed
+    from the same two fields the row will carry.
+    """
+    try:
+        from routes.facility_slug_freeze import build_canonical_slug
+        return build_canonical_slug(cand.get("operator"), cand.get("name"))
+    except Exception:
+        return None
+
+
 def _is_geocodable(cand: dict) -> bool:
     """True if a city/state/country is parseable so the row can be
     geocoded by the pipeline (matches validate_facility's location gate:
@@ -580,8 +596,17 @@ def diff_gaps(parsed_rows: list[dict], cur) -> dict:
     """
     res = {"true_gaps": [], "gap_only": [], "dropped_not_facility": 0,
            "dropped_ner": 0, "dropped_not_geocodable": 0,
-           "dropped_existing": 0}
+           "dropped_existing": 0, "dropped_same_run_repeat": 0}
     seen_urls = set()
+    # r-one-url-many-rows (2026-09-12): the batch's OWN repeats. seen_urls
+    # de-dups on the URL a candidate was found at, so one building listed at
+    # five URLs in the same sitemap passes it five times — and _is_existing
+    # below reads the database as it was BEFORE this run inserted anything, so
+    # it cannot see the siblings either. That made five rows under one slug,
+    # one page, at consecutive ids. Counted separately from `dropped_existing`
+    # on purpose: that counter means "we already had it", which is the signal
+    # check_gap_coverage.py reads to decide whether a source is tapped out.
+    seen_idents = set()
     for cand in parsed_rows or []:
         if cand.get("_provider_index") or cand.get("_editorial"):
             res["dropped_not_facility"] += 1
@@ -593,6 +618,12 @@ def diff_gaps(parsed_rows: list[dict], cur) -> dict:
         if url in seen_urls:
             continue
         seen_urls.add(url)
+        ident = _identity_key(cand)
+        if ident:
+            if ident in seen_idents:
+                res["dropped_same_run_repeat"] += 1
+                continue
+            seen_idents.add(ident)
         if not _passes_ner_gate(cand):
             res["dropped_ner"] += 1
             continue
@@ -724,7 +755,8 @@ def record_sweep(conn, slug: str, srec: dict, p: dict,
 def _insert_true_gaps(conn, slug: str, true_gaps: list[dict],
                       max_inserts: int = _MAX_INSERTS_PER_RUN) -> dict:
     """Insert TRUE gaps via news_facility_extractor.insert_discovered_facility
-    (dedups on source_url). Returns {inserted, dup, errors}."""
+    (dedups on source_url AND on the canonical slug the row would be
+    served at). Returns {inserted, dup, errors}."""
     out = {"inserted": 0, "dup": 0, "errors": 0}
     try:
         from news_facility_extractor import insert_discovered_facility
@@ -742,7 +774,7 @@ def _insert_true_gaps(conn, slug: str, true_gaps: list[dict],
             if new_id:
                 out["inserted"] += 1
             else:
-                out["dup"] += 1  # dedup on source_url (already staged)
+                out["dup"] += 1  # already staged: same source_url, or same page
         except Exception:
             out["errors"] += 1
     return out

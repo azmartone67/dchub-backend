@@ -1026,7 +1026,8 @@ def _promote_candidates(min_mentions: int = None,
 
     Returns a summary dict. Idempotent: promoted rows are flipped to
     in_facilities=TRUE / status='promoted' so a re-run won't double-insert,
-    and insert_discovered_facility() itself dedups on source_url."""
+    and insert_discovered_facility() itself dedups on source_url and on the
+    canonical slug the row would be served at."""
     if min_mentions is None:
         min_mentions = PROMOTE_MIN_MENTIONS
     if limit is None:

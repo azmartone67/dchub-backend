@@ -275,6 +275,57 @@ def extract_facility_from_article(title, body, source_url, source_name):
 # DATABASE INSERT HELPER
 # ─────────────────────────────────────────────────────────
 
+def _facility_already_staged(conn, cur, facility) -> bool:
+    """True when discovered_facilities already holds THIS facility.
+
+    Keyed on the canonical slug, because the slug is what decides whether two
+    rows are one page: it hashes provider|name, so rows composing the same slug
+    share a URL whatever else differs. Two spellings of the question, because a
+    row inserted moments ago has no stored canonical_slug yet (the freeze
+    backfills it later) — so a run's own siblings are only visible through
+    provider+name, and rows frozen long ago are only visible through the stored
+    column.
+
+    ★ FAILS OPEN. A probe that cannot run — an older schema with no
+    canonical_slug column, a lost connection — must never stop ingestion, so
+    anything unexpected here answers "not staged" and the insert proceeds, the
+    behaviour that shipped before this guard existed. The failed probe poisons
+    the transaction, so it is rolled back and the caller's cursor is re-armed.
+    """
+    try:
+        from routes.facility_slug_freeze import build_canonical_slug
+        slug = build_canonical_slug(facility.get('provider'),
+                                    facility.get('name'))
+    except Exception:
+        return False
+    if not slug:
+        # A name that folds to nothing composes no URL, so there is no page to
+        # collide with; the name-sanity gate above owns that rejection.
+        return False
+    try:
+        cur.execute(
+            "SELECT id FROM discovered_facilities "
+            " WHERE canonical_slug = %s "
+            "    OR (LOWER(TRIM(COALESCE(provider, ''))) "
+            "          = LOWER(TRIM(COALESCE(%s, ''))) "
+            "        AND LOWER(TRIM(COALESCE(name, ''))) "
+            "          = LOWER(TRIM(COALESCE(%s, '')))) "
+            " LIMIT 1",
+            (slug, facility.get('provider'), facility.get('name')))
+        row = cur.fetchone()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+    if not row:
+        return False
+    logger.info("Skipping facility already staged as %s (row %s): %r",
+                slug, row[0], (facility.get('name') or '')[:120])
+    return True
+
+
 def insert_discovered_facility(conn, facility):
     """
     Insert an extracted facility into discovered_facilities.
@@ -310,6 +361,24 @@ def insert_discovered_facility(conn, facility):
         )
         if cur.fetchone():
             logger.debug(f"Skipping duplicate source_url: {facility['source_url']}")
+            return None
+
+        # r-one-url-many-rows (2026-09-12): source_url was the ONLY write-time
+        # dedup, and it is narrower than the identity it was protecting. One
+        # building reachable at five URLs in a single competitor-gap sweep
+        # became five rows at consecutive ids, all wearing ONE canonical_slug,
+        # none pointing at another, none flagged — measured live on
+        # `south-reach-networks-fort-pierce-d6d47cf4` (ids 12901642-46), where
+        # the 5-result free search preview returned that one building five
+        # times. The name+city probe that should have caught it
+        # (competitor_gap_crawler._is_existing) runs BEFORE any of the run's own
+        # inserts, so siblings in one sweep cannot see each other.
+        #
+        # The slug IS the identity: it hashes provider|name, so two rows
+        # composing the same slug are ONE /facilities/<slug> page. The second
+        # row can never have a page of its own — it can only inflate every
+        # count and every search result that reads rows.
+        if _facility_already_staged(conn, cur, facility):
             return None
 
         cur.execute("""
