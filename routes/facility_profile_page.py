@@ -809,7 +809,12 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
         extra = ""
         if rprov and rprov.strip().lower() != (rname or "").strip().lower():
             extra += f" &middot; {_esc(rprov)}"
-        if rpow and str(rpow) not in ("0", "0.0"):
+        # r-mw-one-owner (2026-09-12): a PEER's capacity is the same number on
+        # somebody else's page, and this list is ORDER BY power DESC — so one
+        # fleet-sized row is printed FIRST on every co-located facility page in
+        # its market, not once. Suppressing the annotation keeps the link (the
+        # peer facility is real) and drops only the unciteable figure.
+        if _plausible_mw(rpow) is not None:
             extra += f" &middot; {_esc(rpow)} MW"
         items.append(
             f'<li style="margin:4px 0"><a class="link" href="/facilities/{_esc(slug)}">{_esc(rname)}</a>'
@@ -846,7 +851,13 @@ def _narrative(fac: dict, dcpi) -> str:
     if loc:
         lead += f" in {_esc(loc)}"
     bits.append(lead + ".")
-    if power and str(power) not in ("0", "0.0"):
+    # r-mw-one-owner (2026-09-12): the docstring above promises every sentence
+    # is sourced from this facility's data. 63,000 MW is sourced from a row,
+    # but it is a utility's fleet, and PROSE is the worst place for it — a
+    # sentence reads as an editorial assertion, not a field dump, and this is
+    # the block written to make the page worth indexing. Falls through to the
+    # status-only sentence below, so the paragraph keeps a second clause.
+    if _plausible_mw(power) is not None:
         s = f"It carries a reported power capacity of {_esc(power)} MW"
         if status and status.lower() != "unknown":
             s += f" and is currently {_esc(status.lower())}"

@@ -208,7 +208,15 @@ def context_block(fac: dict, dcpi) -> str:
             rows.append(("Est. time to power", f"{_e(str(ttp))} months"))
     if city and country:
         rows.append(("Location", f"{_e(city)}, {_e(country)}"))
-    if _has(fac.get("power_mw")):
+    # ★ r-mw-one-owner (2026-09-12): NOT `_has`. This row is LANE 2 — facts
+    #   rendered to make a thin page rankable — and it published "Reported
+    #   capacity  63000.0 MW" for a utility's whole generating fleet. The
+    #   plausibility cap has one owner (util.facility_headline.MW_PLAUSIBLE_MAX,
+    #   asked through plausible_mw); imported here rather than re-spelled,
+    #   function-level to match this module's other imports and to keep
+    #   thin_content importable with nothing else loaded.
+    from util.facility_headline import plausible_mw as _plausible_mw
+    if _plausible_mw(fac.get("power_mw")) is not None:
         rows.append(("Reported capacity", f"{_e(str(fac['power_mw']))} MW"))
     if _has(fac.get("operational_year")):
         rows.append(("Operational since", _e(str(fac["operational_year"]))))
