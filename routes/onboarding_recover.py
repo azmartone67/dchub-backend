@@ -155,10 +155,12 @@ def delivery_truth():
     ★ 2026-09-11: the upstream gap this docstring used to describe is CLOSED.
     email_events holds 892 rows, 888 of them signature-verified, arriving
     continuously since 2026-08-29 03:10Z — the endpoint IS configured in the
-    Resend dashboard and RESEND_WEBHOOK_SECRET IS set. This paragraph used to
-    read "as of 2026-08-28 email_events holds ONE row all time"; it was true
-    when written and stale about fourteen hours later. Read this endpoint's
-    own output, never this paragraph.
+    Resend dashboard and RESEND_WEBHOOK_SECRET IS set. Until this edit the
+    paragraph here still described the state before that: a lone synthetic row
+    and no customer events, blamed on two owner actions that were in fact done
+    about fourteen hours after it was written. It was accurate for those
+    fourteen hours and wrong for the fortnight that followed. Read this
+    endpoint's own output, never this paragraph.
 
     ★ What is still open, and why the verdict is not CONFIRMED: no
     welcome_email_log.resend_message_id has EVER matched an email_events row —
