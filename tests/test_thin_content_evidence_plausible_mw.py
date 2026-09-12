@@ -53,6 +53,7 @@ page: precisely what LANE 3 exists to noindex.
   question, and no page with any other fact leaves the index.
 """
 import ast
+import decimal
 import importlib
 import io
 import pathlib
@@ -60,8 +61,8 @@ import pathlib
 import pytest
 
 from util.facility_headline import MW_PLAUSIBLE_MAX, display_mw, plausible_mw
-from util.thin_content import (contentless_slug_set, context_block, evidence,
-                               is_contentless)
+from util.thin_content import (_has, contentless_slug_set, context_block,
+                               evidence, is_contentless)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -132,6 +133,36 @@ class TestNothingWithRealContentLeaves:
                 "latitude": 39.96, "longitude": -83.0, "power_mw": 63000.0}
         assert evidence(rich) == {"power": False, "coords": True,
                                   "address": True, "city": True}
+
+    def test_the_new_predicate_can_only_REMOVE_evidence_never_ADD_it(self):
+        """★ Why "0 slugs left the contentless set" is STRUCTURAL, not luck.
+
+        `_has` is False for exactly five inputs — None, '', '0', '0.0' and
+        'None' after strip — and plausible_mw rejects every one of them too
+        (unparseable, or not > 0). So the new predicate is a strict SUBSET of
+        the old: evidence['power'] can flip True -> False and never
+        False -> True, no page can LOSE a noindex it has today, and no page
+        outside the 17 can change verdict on this field at all.
+
+        The three live draws each measured `lost = 0`. A measurement says it
+        did not happen; this says it CANNOT — including for the Decimal the DB
+        driver actually hands us, and for the str/bool/NaN shapes a row can
+        carry."""
+        cases = [None, "", " ", "0", "0.0", " 0.0 ", "None", "none", "n/a",
+                 "x", "NaN", 0, 0.0, -0.0, -1, -0.5, 0.0001, 1, 36, 350,
+                 4999.9, MW_PLAUSIBLE_MAX, MW_PLAUSIBLE_MAX + 0.1, 5600,
+                 63000.0, 150000, True, False, float("nan"), float("inf"),
+                 float("-inf"), "350", " 350 ", "00", "0.00", "5e3", "63000",
+                 decimal.Decimal("0"), decimal.Decimal("0.0"),
+                 decimal.Decimal("350.0"), decimal.Decimal("63000.0")]
+        for v in cases:
+            if plausible_mw(v) is not None:
+                assert _has(v), (
+                    "plausible_mw admits a value `_has` rejects, so this change "
+                    "could ADD evidence and un-noindex a page: %r" % (v,))
+            assert (evidence({"power_mw": v})["power"]
+                    <= _has(v)), ("evidence gained a fact it did not have "
+                                  "before this change: %r" % (v,))
 
     def test_a_page_with_no_capacity_at_all_is_unchanged(self):
         """The 408-row LANE-3 population this module was built for."""
