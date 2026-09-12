@@ -208,9 +208,15 @@ scope. App-only bearer cannot post tweets."*
 11. **Force-flush the queue** (optional, immediate publish):
     ```sh
     curl -sS -X POST \
-      -H "X-Internal-Key: dchub-internal-sync-2026" \
+      -H "X-Admin-Key: $DCHUB_ADMIN_KEY" \
       "https://dchub.cloud/api/v1/marketing/publish-now?only=twitter"
     ```
+    The header used to read `X-Internal-Key: dchub-internal-sync-2026`. That
+    literal is one of the two legacy hardcoded keys internal_auth rejects unless
+    INTERNAL_AUTH_LEGACY_OK=1 (see SECURITY_KEY_ROTATION.md), and publish-now's
+    gate did not read X-Internal-Key at all, so the curl answered 401. It now
+    accepts X-Internal-Key, X-Admin-Key or ?admin_key — carrying a value from
+    the env, not a string from this file.
 
 12. **Verify on Twitter** — open `https://twitter.com/dchubcloud` and
     you'll see the most-recent press release auto-posted within 6
