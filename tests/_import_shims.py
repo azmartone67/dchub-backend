@@ -60,10 +60,7 @@ import importlib.util
 import sys
 import types
 
-import pytest
-
-__all__ = ["real_or_stub", "importable", "make_placeholder",
-           "fake_main", "stub_main_module"]
+__all__ = ["real_or_stub", "importable", "make_placeholder", "fake_main"]
 
 
 def importable(name: str) -> bool:
@@ -167,35 +164,9 @@ def fake_main() -> types.SimpleNamespace:
     sites across facility_profile_page, dcpi, mcp_connect and
     facility_slug_freeze), so the stand-in has to be present while a test RUNS,
     not merely while the test module imports.
+
+    Installed once per session by tests/conftest.py's
+    ``_house_rule_main_is_never_imported`` — the rule is the whole suite's, not
+    any one file's, and that fixture's comment carries the measurements.
     """
     return types.SimpleNamespace(get_read_db=lambda: None, get_db=lambda: None)
-
-
-@pytest.fixture(autouse=True)
-def stub_main_module(monkeypatch):
-    """Autouse: keep a fake ``main`` in sys.modules for one test, then remove it.
-
-    ★ 2026-09-12. Four test modules used to park the fake at MODULE scope:
-
-        if "main" not in sys.modules:
-            sys.modules["main"] = types.SimpleNamespace(
-                get_read_db=lambda: None, get_db=lambda: None)
-
-    which never came back — collection has no teardown hook — so a fake app
-    entrypoint outlived the file that wanted it and was visible to every module
-    collected afterwards. Import it into a test module by name and pytest
-    applies it automatically; monkeypatch removes the key on teardown (it was
-    absent before, so `setitem` deletes rather than restores).
-
-    Module scope was never required for these four: nothing in their import
-    chains reads ``main`` at import time. Measured by deleting the stub
-    outright — every file still PASSED, but by importing the real 45K-line
-    app: test_crossover_onramp 0.6s -> 52.6s, test_facilities_hub_seo -> 65.6s,
-    test_facilities_hub_stored_slug -> 39.5s. Passing while silently exercising
-    the real entrypoint is the failure mode
-    ``feedback_suite_stubs_a_module_into_sys_modules`` records in its
-    reverse-direction section: the lazy import fails open, so nothing is
-    visible. The stand-in earns its place; the module-scope assignment did not.
-    """
-    monkeypatch.setitem(sys.modules, "main", fake_main())
-    yield

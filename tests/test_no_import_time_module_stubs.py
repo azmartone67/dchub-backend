@@ -513,3 +513,54 @@ def test_the_placeholder_can_serve_a_from_import():
         mod = sys.modules[absent]
         assert mod.Blueprint is not None
         assert callable(mod.jsonify)
+
+
+def test_the_real_main_py_was_never_imported_in_process():
+    """The house rule dozens of test docstrings state, finally checked.
+
+    "tests never import main.py" is asserted in prose across the suite and was
+    enforced by nothing. What actually held it up was an accident: four files
+    parked a fake `main` at module scope and never removed it, and because
+    collection imports every module before any test runs, that fake covered the
+    whole execution phase. Removing the leak let the real entrypoint back in —
+    it opens DB pools, starts threads, and RAISES here, so Python drops the
+    partial module and the next lazy import pays again. Measured on the full
+    suite: 0 boot markers / 20:15 with the leak, 138 markers / 47:58 without
+    it, 0 markers / 19:17 once conftest supplied the stand-in deliberately.
+
+    Nothing was red for any of that. Half an hour of wall clock and a booted
+    Flask app inside the unit-test process, and the only signal was the
+    runtime — which is why this assertion exists.
+    """
+    mod = sys.modules.get("main")
+    assert mod is not None, (
+        "sys.modules['main'] is absent — tests/conftest.py's session fixture "
+        "_house_rule_main_is_never_imported should have installed the "
+        "stand-in. Without it the next lazy `from main import get_read_db` "
+        "boots the real app."
+    )
+    path = getattr(mod, "__file__", None)
+    assert path is None, (
+        f"the REAL main.py was imported in-process (sys.modules['main'] came "
+        f"from {path}). It opens DB pools and registers ~200 blueprints; the "
+        f"suite's house rule is that tests never import it. Something popped "
+        f"the session stand-in and did not put it back."
+    )
+
+
+def test_the_real_main_check_can_actually_fail():
+    """MUTATION CONTROL for the assertion above, without importing main.
+
+    The session fixture makes a real import structurally impossible, so the
+    check above passes on a state that cannot currently go wrong. Prove the
+    predicate still separates the two cases.
+    """
+    real_ish = types.ModuleType("main")
+    real_ish.__file__ = "/repo/main.py"
+    assert getattr(real_ish, "__file__", None) is not None
+    assert getattr(_import_shims_fake_main(), "__file__", None) is None
+
+
+def _import_shims_fake_main():
+    from tests._import_shims import fake_main
+    return fake_main()

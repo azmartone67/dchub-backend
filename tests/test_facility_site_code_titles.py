@@ -19,13 +19,10 @@ import types
 import pytest
 
 # ★ 2026-09-12. The fake `main` used to be parked in sys.modules at MODULE
-# scope and never removed, so it outlived this file and was visible to every
-# module collected afterwards. Nothing here needs it at IMPORT time — the
-# route modules reach for `main` lazily, inside functions — so an autouse
-# fixture covers the real requirement and pytest takes the key back out.
-# See tests/_import_shims.py.
-from tests._import_shims import stub_main_module  # noqa: E402,F401
-
+# scope here and never removed, so it outlived this file. Nothing in this
+# file needs it at IMPORT time — the route modules reach for `main` lazily,
+# inside functions — and the suite-wide house rule is now owned by the
+# session fixture in tests/conftest.py, which puts it back afterwards.
 from util.facility_site_code import (   # noqa: E402
     detect_site_code, detect_site_designator, site_code_headline,
     _clean_prefix, _state_token, DENY_PREFIXES, DENY_SUFFIX_WORDS)

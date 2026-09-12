@@ -172,6 +172,43 @@ def pytest_runtest_teardown(item, nextitem):
 import pytest  # noqa: E402
 
 
+# ── the "tests never import main.py" house rule, ENFORCED ────────────────
+# Stated in the docstrings of dozens of test files and implemented in none of
+# them. What actually held it up was an ACCIDENT: four files parked a fake
+# `main` in sys.modules at module scope and never removed it. Collection
+# imports every module before any test runs, so that fake — installed while
+# collecting a file beginning with "c" — was present for the whole execution
+# phase, including files that sort earlier. The leak was load-bearing.
+#
+# Removing it (the point of this change) therefore let the real 45K-line
+# entrypoint back in. Measured on the full suite:
+#
+#     merged main, leak intact      0 boot markers   20:15
+#     leak removed, no replacement  138 markers      47:58
+#     fake supplied for the session 0 markers        19:17
+#
+# The import RAISES here ("No database URL configured") after ~14.5s, so
+# Python drops the partial module and the next lazy `from main import
+# get_read_db` pays the cost again — which is why one unguarded import turns
+# into 138 boot banners and half an hour.
+#
+# Session-scoped so it covers the execution phase the way the leak did, and
+# undone at the end so it cannot escape the run. Files that install their own
+# fake `main` (test_facility_fiber_connectivity, test_claim_ledger_followup,
+# test_ai_platform_signals_source, ...) save and restore around this one, which
+# is why they are unaffected.
+@pytest.fixture(autouse=True, scope="session")
+def _house_rule_main_is_never_imported():
+    from _pytest.monkeypatch import MonkeyPatch
+
+    from tests._import_shims import fake_main
+
+    mp = MonkeyPatch()
+    mp.setitem(sys.modules, "main", fake_main())
+    yield
+    mp.undo()
+
+
 @pytest.fixture(autouse=True)
 def _reset_process_sticky_ddl_flags():
     for _name in ("founder_note", "routes.squasher_queue"):
