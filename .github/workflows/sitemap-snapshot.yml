@@ -44,12 +44,68 @@ on:
     - cron: '19 */4 * * *'   # every 4 hours at :19 — data drift safety net
   push:
     branches: [main]
-    # Only the file that builds the XML. Scoping this to main.py keeps a docs
-    # commit from firing a rebuild, and a rebuild is the ONLY way a builder
-    # change reaches the served artifact before the next cron.
+    # ★★★ 2026-09-12 — THIS LISTED ONE FILE, AND THE PREDICATES HAD LEFT IT.
+    #
+    # The comment that stood here said "only the file that builds the XML",
+    # naming main.py. That premise was stale: the predicates deciding WHICH
+    # URLs get emitted are moved OUT of main.py on purpose.
+    # util/thin_content.contentless_slug_set says so in its own docstring —
+    # "★ THIS QUERY LIVES HERE, NOT IN main._build_sitemap_sections, and that
+    # is not cosmetic" — and tests/test_sitemap_thin_gate::
+    # test_the_gate_is_emission_only enforces the move by refusing power_mw
+    # inside a builder query. So the policy moved next to its predicate, by
+    # design, and the rebuild trigger stayed behind.
+    #
+    # MEASURED over the 34.1 days of run history GitHub still holds
+    # (2026-08-09 .. 2026-09-12, 400 runs): 84 commits touched a module the
+    # builder reads, 19 rebuilt only because they happened to touch main.py
+    # too, and 65 MISSED THE REBUILD ENTIRELY — 1.91 a day, every one of them
+    # a green CI and a stale artefact for up to four hours.
+    #
+    # The most recent was PR #4500 (4df6ccce4, merged 12:38:17Z), which changed
+    # util/thin_content.evidence so 17 URLs leave both families. The last
+    # rebuild before it was the 12:34:45Z cron — 3.5 minutes EARLIER. At 15:03Z
+    # the shards still served 6,846 / 10,000 / 8,886 with all 17 published,
+    # while the origin already served those pages as noindex.
+    #
+    # ★ THIS LIST IS DERIVED, NOT REMEMBERED. scripts/sitemap_builder_modules.py
+    # slices the import graph from main._rebuild_sitemap_snapshot, and
+    # tests/test_sitemap_snapshot_paths_match_imports.py fails CI when the two
+    # disagree — so a predicate moved into a NEW module breaks the build
+    # instead of silently missing its rebuilds. Regenerate with:
+    #     python3 scripts/sitemap_builder_modules.py
+    # Do not hand-edit one side. A from-memory answer to "which modules" missed
+    # three of these, including util/facility_headline — the module #4500
+    # itself routes evidence() through.
+    #
+    # ★ WHAT IS DELIBERATELY NOT HERE: anything that only changes how a page
+    # RENDERS. These are the files that change which <loc> elements exist.
+    # And no filter can see the other half — facilities appear in the database
+    # with no deploy at all, which is what the 4-hourly cron above is for.
     paths:
-      - 'main.py'
       - '.github/workflows/sitemap-snapshot.yml'
+      - 'scripts/sitemap_builder_modules.py'
+      - 'db_utils.py'
+      - 'facilities_hub.py'
+      - 'main.py'
+      - 'routes/facility_dedup_v4.py'
+      - 'routes/facility_profile_page.py'
+      - 'routes/facility_slug.py'
+      - 'routes/facility_slug_freeze.py'
+      - 'routes/hyperscaler_brief.py'
+      - 'routes/market_brief.py'
+      - 'routes/market_deep_dive.py'
+      - 'routes/operator_brief.py'
+      - 'routes/pockets.py'
+      - 'util/dcpi_score_row.py'
+      - 'util/deployability_rank.py'
+      - 'util/facility_headline.py'
+      - 'util/facility_name_sanity.py'
+      - 'util/facility_ner_noindex.py'
+      - 'util/market_aliases.py'
+      - 'util/sitemap_redirects.py'
+      - 'util/thin_content.py'
+      - 'utils/cache.py'
   workflow_dispatch: {}
 
 concurrency:
