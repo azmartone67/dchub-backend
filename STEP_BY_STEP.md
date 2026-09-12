@@ -211,12 +211,12 @@ scope. App-only bearer cannot post tweets."*
       -H "X-Admin-Key: $DCHUB_ADMIN_KEY" \
       "https://dchub.cloud/api/v1/marketing/publish-now?only=twitter"
     ```
-    The header used to read `X-Internal-Key: dchub-internal-sync-2026`. That
-    literal is one of the two legacy hardcoded keys internal_auth rejects unless
-    INTERNAL_AUTH_LEGACY_OK=1 (see SECURITY_KEY_ROTATION.md), and publish-now's
-    gate did not read X-Internal-Key at all, so the curl answered 401. It now
-    accepts X-Internal-Key, X-Admin-Key or ?admin_key — carrying a value from
-    the env, not a string from this file.
+    This used to send one of the legacy hardcoded internal keys as a literal
+    (see SECURITY_KEY_ROTATION.md, which names them so this file does not).
+    internal_auth rejects those unless INTERNAL_AUTH_LEGACY_OK=1, and
+    publish-now's gate did not read X-Internal-Key at all, so the curl answered
+    401 either way. It now accepts X-Internal-Key, X-Admin-Key or ?admin_key —
+    carrying a value from the env, never a string from this file.
 
 12. **Verify on Twitter** — open `https://twitter.com/dchubcloud` and
     you'll see the most-recent press release auto-posted within 6
@@ -363,10 +363,12 @@ are below.
 
 ### 3d. Trigger the autonomous registry-resubmit cron (BONUS)
 
-After round 25, the submit-all endpoint accepts the legacy key. Run:
+The submit-all endpoint accepts X-Internal-Key, X-Admin-Key or ?admin_key,
+validated by internal_auth.is_valid_internal_key. Round 25's note that it also
+took the legacy hardcoded key is STALE — that key is rejected now. Run:
 
 ```sh
-curl -sS -X POST -H "X-Internal-Key: dchub-internal-sync-2026" \
+curl -sS -X POST -H "X-Internal-Key: $DCHUB_INTERNAL_KEY" \
   "https://dchub.cloud/api/v1/admin/outreach/mcp-registry/submit-all" \
   | jq '.[] | {target, audit_listed: .audit.listed, http: .audit.http_code}'
 ```
@@ -440,12 +442,16 @@ For ALL of these, the brain probe will catch regressions within 5 min
 once enabled:
 
 ```sh
-# Run on-demand site probe (40+ URL canary):
-curl -sS -X POST -H "X-Internal-Key: dchub-internal-sync-2026" \
-  https://dchub.cloud/api/v1/admin/brain/site-probe | jq
+# Run on-demand site probe (40+ URL canary). /api/v1/admin/brain/site-probe is
+# GONE — routes/brain_site_probe.py was deleted 2026-08-29 (dead code: nothing
+# scheduled it) and its unique coverage was ported into routes/site_qa.py.
+# Measured 2026-09-12: a POST to the old path answers 404. The live surface is
+# non-blocking — it returns 202 and writes results within ~20s:
+curl -sS -X POST https://dchub.cloud/api/v1/qa/run | jq
+curl -sS https://dchub.cloud/api/v1/qa/report | jq
 
 # Run security scan (admin endpoints, paywall holes, secret leaks):
-curl -sS -X POST -H "X-Internal-Key: dchub-internal-sync-2026" \
+curl -sS -X POST -H "X-Internal-Key: $DCHUB_INTERNAL_KEY" \
   https://dchub.cloud/api/v1/admin/brain/security-scan | jq
 
 # Twitter publisher diagnostic:
