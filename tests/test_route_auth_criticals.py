@@ -637,10 +637,22 @@ _ROUTE_DECORATORS = frozenset({"route", "get", "post", "put", "patch", "delete"}
 # Route handlers that reach IndexNow with no gate: known, and keyed by the exact
 # handler so a new one is never exempt. An entry that stops being an offender
 # fails the test too, so the fix deletes its line and this set only shrinks.
-# 2026-09-12: EMPTY, and that is the point of the set. Its one entry,
-# main.py::daily_cron, was gated once the cron-job.org job that drives it began
-# sending a credential; the set shrinks and never grows.
-_KNOWN_UNGATED_INDEXNOW_REACH = frozenset()
+_KNOWN_UNGATED_INDEXNOW_REACH = frozenset({
+    # GET|POST /api/cron/daily starts a thread that calls submit_to_indexnow.
+    # GATED IN #4432 AND REVERTED THE SAME DAY. The owner added a credential
+    # header at cron-job.org; the gate refused it on the very next fire --
+    # 2026-09-12 13:00:10Z, the real job (ua=Mozilla/4.0 (compatible;
+    # cron-job.org...), src 91.99.23.109, POST -> 401, twice in one second),
+    # which stopped the daily news sync. Reverted to restore it. Re-land only
+    # after a MANUAL cron-job.org trigger is observed returning 202.
+    #
+    # The static reach is real but currently unreachable at runtime:
+    # submit_to_indexnow sits inside the LinkedIn-publish branch, retired
+    # 2026-06-17 behind DCHUB_DAILY_DIGEST_LINKEDIN (default off). What an
+    # anonymous caller actually gets is a 60-source RSS crawl and a bulk upsert
+    # into `announcements` -- not a publish.
+    "main.py::daily_cron",
+})
 
 
 def _call_name(call):
