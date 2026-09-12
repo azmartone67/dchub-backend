@@ -620,20 +620,32 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
                      a.get('category','Industry'), a.get('summary',''),
                      a.get('author',''), pub, a.get('relevance_score',0.5),
                      a.get('keywords','[]'), a.get('image_url'), now_ts)
+            # ★★★ RETURNING id, and the count is the rows the database HANDED
+            # BACK — not a rowcount. `if c.rowcount > 0` counted every article
+            # offered: the pooled wrapper runs `SELECT lastval()` of its own
+            # after an INSERT with no RETURNING, so by the time this line read
+            # rowcount it described that SELECT (always 1 row), and an
+            # ON CONFLICT DO NOTHING that inserted NOTHING still counted as
+            # saved. The Railway worker reported "322 new" for ~172 rows that
+            # way (2026-09-12 02:24Z, against ingest-health rows_24h 10 -> 182).
+            # With RETURNING present the wrapper skips that probe entirely, and
+            # a skipped conflict returns no row at all — so this counts inserts
+            # even if the wrapper's rowcount regresses again.
             if has_publisher_url:
                 c.execute('''INSERT INTO news_articles
                     (id,title,url,source,category,summary,author,published_at,
                      relevance_score,keywords,image_url,fetched_at,publisher_url)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (id) DO NOTHING''',
+                    ON CONFLICT (id) DO NOTHING RETURNING id''',
                     _vals + (a.get('publisher_url'),))
             else:
                 c.execute('''INSERT INTO news_articles
                     (id,title,url,source,category,summary,author,published_at,
                      relevance_score,keywords,image_url,fetched_at)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (id) DO NOTHING''', _vals)
-            if c.rowcount > 0: saved += 1
+                    ON CONFLICT (id) DO NOTHING RETURNING id''', _vals)
+            if c.fetchone() is not None:
+                saved += 1
         except Exception:
             try:
                 conn.rollback()
