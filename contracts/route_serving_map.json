@@ -2211,6 +2211,11 @@
     "job_posting_aggregator"
    ]
   },
+  "GET /api/jobs/welcome-delivery-reconcile": {
+   "modules": [
+    "routes.welcome_delivery_reconciler"
+   ]
+  },
   "GET /api/kmz-discovery/routes": {
    "modules": [
     "kmz_auto_discovery"
@@ -3246,9 +3251,19 @@
     "routes.backfunnel_master_shell"
    ]
   },
+  "GET /api/v1/admin/billing/backfill-verified-bindings": {
+   "modules": [
+    "flask_mcp_endpoints"
+   ]
+  },
   "GET /api/v1/admin/billing/reconcile-keys": {
    "modules": [
     "flask_mcp_endpoints"
+   ]
+  },
+  "GET /api/v1/admin/blocked-demand-profile": {
+   "modules": [
+    "routes.blocked_demand_profile"
    ]
   },
   "GET /api/v1/admin/brain-ascension": {
@@ -3284,6 +3299,11 @@
   "GET /api/v1/admin/brain/backlog": {
    "modules": [
     "routes.brain_backlog_admin"
+   ]
+  },
+  "GET /api/v1/admin/brain/bug-squash/actionable": {
+   "modules": [
+    "routes.brain_bug_squash"
    ]
   },
   "GET /api/v1/admin/brain/code-scanner/preview": {
@@ -3391,6 +3411,11 @@
     "routes.brain_micro_cycle"
    ]
   },
+  "GET /api/v1/admin/brain/null-signals": {
+   "modules": [
+    "routes.brain_null_signal_detector"
+   ]
+  },
   "GET /api/v1/admin/brain/pr-metrics": {
    "modules": [
     "routes.brain_pr_metric_harness"
@@ -3419,6 +3444,11 @@
   "GET /api/v1/admin/brain/pr-outcomes/summary": {
    "modules": [
     "routes.brain_pr_outcome_monitor"
+   ]
+  },
+  "GET /api/v1/admin/brain/product-lead": {
+   "modules": [
+    "routes.brain_product_lead"
    ]
   },
   "GET /api/v1/admin/brain/rag/duplicate-findings": {
@@ -4161,6 +4191,21 @@
     "routes.expired_demote"
    ]
   },
+  "GET /api/v1/admin/listings": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
+  "GET /api/v1/admin/listings/leads": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
+  "GET /api/v1/admin/listings/ledger/verify": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
   "GET /api/v1/admin/loop-control": {
    "modules": [
     "routes.loop_control_master_shell"
@@ -4396,6 +4441,11 @@
     "routes.monetization_master_shell"
    ]
   },
+  "GET /api/v1/admin/monthly-customer-report/preview": {
+   "modules": [
+    "routes.monthly_customer_report"
+   ]
+  },
   "GET /api/v1/admin/morning-briefing/history": {
    "modules": [
     "routes.morning_briefing"
@@ -4429,6 +4479,11 @@
   "GET /api/v1/admin/news-ner/status": {
    "modules": [
     "routes.news_entity_extraction"
+   ]
+  },
+  "GET /api/v1/admin/news/ingest-health": {
+   "modules": [
+    "routes.news_ingest_health"
    ]
   },
   "GET /api/v1/admin/newsletter/ab": {
@@ -8639,6 +8694,11 @@
     "routes.auto_trial"
    ]
   },
+  "GET /api/v1/keys/confirm": {
+   "modules": [
+    "routes.mcp_key_email_verification"
+   ]
+  },
   "GET /api/v1/keys/standing": {
    "modules": [
     "flask_mcp_endpoints"
@@ -8789,7 +8849,22 @@
     "routes.exclusive_listings"
    ]
   },
+  "GET /api/v1/listings/<slug_or_id>/leads": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
   "GET /api/v1/listings/health": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
+  "GET /api/v1/listings/leads/<lead_id>/verify": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
+  "GET /api/v1/listings/terms": {
    "modules": [
     "routes.exclusive_listings"
    ]
@@ -9467,6 +9542,11 @@
   "GET /api/v1/media/feed.json": {
    "modules": [
     "routes.dchub_media_hub"
+   ]
+  },
+  "GET /api/v1/media/geo/outcomes": {
+   "modules": [
+    "routes.geo_autopublish"
    ]
   },
   "GET /api/v1/media/journalist-lane/pitch-queue": {
@@ -10335,11 +10415,6 @@
    ]
   },
   "GET /api/v1/qa/report": {
-   "modules": [
-    "routes.site_qa"
-   ]
-  },
-  "GET /api/v1/qa/run": {
    "modules": [
     "routes.site_qa"
    ]
@@ -11710,6 +11785,11 @@
     "routes.mcp_connect"
    ]
   },
+  "GET /connect/claude": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
   "GET /connect/claude-desktop": {
    "modules": [
     "routes.mcp_connect"
@@ -11725,6 +11805,11 @@
     "routes.mcp_connect"
    ]
   },
+  "GET /connect/copilot": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
   "GET /connect/cursor": {
    "modules": [
     "routes.mcp_connect"
@@ -11735,7 +11820,17 @@
     "routes.mcp_connect"
    ]
   },
+  "GET /connect/grok": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
   "GET /connect/kimi": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
+  "GET /connect/minimax": {
    "modules": [
     "routes.mcp_connect"
    ]
@@ -11745,7 +11840,32 @@
     "routes.mcp_connect"
    ]
   },
+  "GET /connect/perplexity": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
+  "GET /connect/qwen": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
   "GET /connect/vscode": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
+  "GET /connect/windsurf": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
+  "GET /connect/zai": {
+   "modules": [
+    "routes.mcp_connect"
+   ]
+  },
+  "GET /connect/zed": {
    "modules": [
     "routes.mcp_connect"
    ]
@@ -12906,6 +13026,16 @@
   "GET /reports/analyst-note": {
    "modules": [
     "routes.analyst_note"
+   ]
+  },
+  "GET /reports/deal-desk/<token>": {
+   "modules": [
+    "routes.deal_desk"
+   ]
+  },
+  "GET /reports/deal-desk/<token>.pdf": {
+   "modules": [
+    "routes.deal_desk"
    ]
   },
   "GET /reports/energy/monthly": {
@@ -14329,6 +14459,11 @@
     "routes.jobs_routes"
    ]
   },
+  "POST /api/jobs/welcome-delivery-reconcile": {
+   "modules": [
+    "routes.welcome_delivery_reconciler"
+   ]
+  },
   "POST /api/kmz-discovery/prune": {
    "modules": [
     "kmz_auto_discovery"
@@ -14694,6 +14829,11 @@
     "routes.backfunnel_master_shell"
    ]
   },
+  "POST /api/v1/admin/billing/backfill-verified-bindings": {
+   "modules": [
+    "flask_mcp_endpoints"
+   ]
+  },
   "POST /api/v1/admin/billing/reconcile-keys": {
    "modules": [
     "flask_mcp_endpoints"
@@ -14722,6 +14862,11 @@
   "POST /api/v1/admin/brain/architecture/run": {
    "modules": [
     "routes.brain_architecture_proposer"
+   ]
+  },
+  "POST /api/v1/admin/brain/bug-squash/normalise-paths": {
+   "modules": [
+    "routes.brain_bug_squash"
    ]
   },
   "POST /api/v1/admin/brain/code-scanner/run": {
@@ -14789,6 +14934,11 @@
     "routes.brain_mirror"
    ]
   },
+  "POST /api/v1/admin/brain/null-signals": {
+   "modules": [
+    "routes.brain_null_signal_detector"
+   ]
+  },
   "POST /api/v1/admin/brain/outcome-ledger/record": {
    "modules": [
     "routes.brain_outcome_ledger"
@@ -14802,6 +14952,11 @@
   "POST /api/v1/admin/brain/pr-outcomes/monitor-now": {
    "modules": [
     "routes.brain_pr_outcome_monitor"
+   ]
+  },
+  "POST /api/v1/admin/brain/proposals/<int:pid>/settle": {
+   "modules": [
+    "routes.brain_autonomy_master_shell"
    ]
   },
   "POST /api/v1/admin/brain/rag/ingest-fix-history": {
@@ -15434,6 +15589,21 @@
     "routes.exclusive_listings"
    ]
   },
+  "POST /api/v1/admin/listings/<int:lid>/operator-link": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
+  "POST /api/v1/admin/listings/leads/<lead_id>/notify-operator": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
+  "POST /api/v1/admin/listings/leads/<lead_id>/status": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
   "POST /api/v1/admin/loop-control/master-tick": {
    "modules": [
     "routes.loop_control_master_shell"
@@ -15644,6 +15814,11 @@
     "routes.monetization_master_shell"
    ]
   },
+  "POST /api/v1/admin/monthly-customer-report/send": {
+   "modules": [
+    "routes.monthly_customer_report"
+   ]
+  },
   "POST /api/v1/admin/morning-briefing/send": {
    "modules": [
     "routes.morning_briefing"
@@ -15687,6 +15862,11 @@
   "POST /api/v1/admin/news/clamp-future-dates": {
    "modules": [
     "routes.brain_autoaction_helpers"
+   ]
+  },
+  "POST /api/v1/admin/news/ingest-health": {
+   "modules": [
+    "routes.news_ingest_health"
    ]
   },
   "POST /api/v1/admin/newsletter/send": {
@@ -17122,6 +17302,11 @@
     "routes.dcpi"
    ]
   },
+  "POST /api/v1/deal-desk": {
+   "modules": [
+    "routes.deal_desk"
+   ]
+  },
   "POST /api/v1/decisions": {
    "modules": [
     "decisions"
@@ -17557,6 +17742,11 @@
     "flask_mcp_endpoints"
    ]
   },
+  "POST /api/v1/keys/confirm": {
+   "modules": [
+    "routes.mcp_key_email_verification"
+   ]
+  },
   "POST /api/v1/keys/identify": {
    "modules": [
     "flask_mcp_endpoints"
@@ -17655,6 +17845,21 @@
   "POST /api/v1/linkedin/token/reset-from-env": {
    "modules": [
     "routes.linkedin_token_reset"
+   ]
+  },
+  "POST /api/v1/listings/<slug_or_id>/intro": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
+  "POST /api/v1/listings/interest": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
+  "POST /api/v1/listings/leads/confirm": {
+   "modules": [
+    "routes.exclusive_listings"
    ]
   },
   "POST /api/v1/lp/alerts": {

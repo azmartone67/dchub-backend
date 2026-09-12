@@ -31,6 +31,8 @@ except ImportError:
     def _heartbeat(*args, **kwargs): pass
 
 
+from internal_auth import require_internal_or_admin
+
 site_qa_bp = Blueprint("site_qa", __name__, url_prefix="/api/v1/qa")
 SOURCE_ID = "site-qa-self-healing"
 
@@ -452,7 +454,7 @@ def _update_alerts(results):
 _QA_RUN_STATE = {"running": False, "last_started": None}
 
 
-@site_qa_bp.route("/run", methods=["GET", "POST"])
+@site_qa_bp.route("/run", methods=["POST"])
 def trigger_run():
     """Trigger the full QA suite. 2026-05-30: NON-BLOCKING by default.
 
@@ -467,9 +469,38 @@ def trigger_run():
     An in-progress guard collapses overlapping cron ticks into one run.
 
     ?sync=1 forces the old blocking behavior (manual debugging only; never
-    let the cron use it)."""
+    let the cron use it).
+
+    r-sec (2026-09-12): GATED, and POST-only.
+
+    This route starts work — ~28 outbound URL probes in a daemon thread — and
+    it was reachable by anyone. Two things made that worse than a wasted
+    thread:
+
+      * ?sync=1 runs the suite ON THE REQUEST, and that branch is evaluated
+        BEFORE the _QA_RUN_STATE in-progress guard below. So the guard never
+        saw it: N concurrent ?sync=1 requests meant N concurrent 106s suites,
+        each holding a gthread worker. The docstring above records what one of
+        those did to the site. An anonymous GET could reproduce it on demand.
+      * methods included GET, so a crawler, a link prefetch or a preview
+        fetching /api/v1/qa/run was enough to fire a run — no form, no POST.
+
+    GET is dropped rather than gated: Railway HTTP metrics for the 7 days to
+    2026-09-12 show 608 requests to this path, 608 of them POST and ZERO GET,
+    so nothing was using the verb. The dashboard's "trigger run" anchor was
+    its only in-repo consumer and is removed in the same change.
+
+    require_internal_or_admin is fail-closed and re-reads os.environ per
+    request; it accepts X-Internal-Key, X-Admin-Key or ?admin_key. The one
+    caller, .github/workflows/site-qa.yml, now sends X-Internal-Key from
+    secrets.DCHUB_INTERNAL_KEY — added in this same commit, because gating
+    ahead of the caller is how a cron dies silently."""
     import threading as _threading
     from flask import request as _req
+
+    if not require_internal_or_admin(_req):
+        return jsonify(error="unauthorized",
+                       hint="X-Internal-Key or X-Admin-Key required"), 401
 
     if _req.args.get("sync") == "1":
         summary = run_full_qa_suite()
@@ -655,7 +686,9 @@ def dashboard():
     html.append('</table>')
 
     html.append('<div style="color:#888;font-size:12px;margin-top:24px">')
-    html.append('<a href="/api/v1/qa/run">trigger run</a> · ')
+    # No "trigger run" anchor: /api/v1/qa/run is POST-only and gated as of
+    # 2026-09-12, so a link could only 401 — and an anchor that starts a
+    # 28-URL probe is exactly the GET-triggers-work shape that was removed.
     html.append('<a href="/api/v1/qa/report">JSON report</a> · ')
     html.append('<a href="/api/v1/qa/regressions">regressions</a>')
     html.append('</div></body></html>')
