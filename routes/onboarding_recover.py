@@ -77,16 +77,24 @@ def resend_welcome():
     subject = "Welcome to DC Hub — your account is live"
     html = _welcome_html(name, plan, email)
     sent = False
+    mid = None
     err = None
     try:
         from main import _resend_email
-        sent = bool(_resend_email(email, subject, html,
-                                  from_email="hello@dchub.cloud", from_name="Jonathan at DC Hub"))
+        # r-delivery-truth-join (2026-09-12): keep the message id. This lane
+        # writes welcome_email_log, so a send logged without one lands in this
+        # same endpoint's sends_without_a_message_id forever — the operator
+        # resending a welcome by hand could never prove it arrived.
+        mid = _resend_email(email, subject, html,
+                            from_email="hello@dchub.cloud", from_name="Jonathan at DC Hub")
+        sent = bool(mid)
     except Exception as e:
         err = str(e)[:200]
     try:
         from main import _log_welcome_email
-        _log_welcome_email(email, f"{plan}:resend", "sent" if sent else "failed")
+        _log_welcome_email(email, f"{plan}:resend", "sent" if sent else "failed",
+                           resend_message_id=(mid if sent and mid != 'sent-no-id'
+                                              else None))
     except Exception:
         pass
     return jsonify(ok=sent, email=email, plan=plan, sent=sent, error=err), (200 if sent else 502)

@@ -17487,10 +17487,16 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
                 # first — the live channel — and only alert admin if it's also
                 # unavailable. Idempotency (_welcome_recently_sent) already ran
                 # above, so this cannot double-send.
-                if _welcome_email_resend_fallback(to_email, raw_api_key, plan_name,
-                                                  reset_url=reset_url):
+                # r-delivery-truth-join (2026-09-12): the fallback RETURNS the
+                # Resend message id; testing it for truth threw that away and
+                # made this lane's sends permanently unmatchable.
+                _mid_nokey = _welcome_email_resend_fallback(
+                    to_email, raw_api_key, plan_name, reset_url=reset_url)
+                if _mid_nokey:
                     print(f"📧 Welcome sent via Resend (SENDGRID_API_KEY unset) to {to_email}")
                     _log_welcome_email(to_email, plan_name, status='sent_via_resend',
+                                       resend_message_id=(None if _mid_nokey == 'sent-no-id'
+                                                          else _mid_nokey),
                                        claim_id=claim_id)
                     return
                 # r43-H (2026-05-27): was a silent skip. Now alerts admin
