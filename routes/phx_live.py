@@ -386,7 +386,7 @@ def _record_utm_hit() -> None:
                     """
                     INSERT INTO phx_utm_hits
                         (utm_source, utm_campaign, utm_medium, user_agent, referer)
-                    VALUES (%s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """,
                     (source, campaign,
                      _clip(request.args.get("utm_medium"), 100),
