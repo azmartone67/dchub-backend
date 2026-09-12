@@ -2,8 +2,9 @@
 
 r-fiber-names (2026-09-12). /api/v1/facilities/<slug>, the URL this page links
 in its own FOOTER, has published fiber_carrier_count / on_net / fiber_providers
-since 2026-07-17. Measured over 650 live pages sampled from the sitemap on
-2026-09-12, 28.0% carry named carriers and the page rendered none of them.
+since 2026-07-17. Measured over 1,000 live pages sampled from the sitemap in
+three independent draws on 2026-09-12, 31.2% carry named carriers (per-draw
+27.2% / 28.5% / 37.1%) and the page rendered none of them.
 
 ★★★ THE COUNT IS A CO-LOCATION MEASURE, NOT A CONTRACT. Measured live the same
 day, and this is the whole reason these tests exist:
@@ -239,9 +240,9 @@ def test_no_coordinates_means_no_section_and_no_query():
     carriers by INHERITANCE: carrier_facility_ingestion skips candidates with no
     lat/lng (`if cand['lat'] and cand['lng']`), so the direct link can never
     have been made, and only the API union's "sameness cannot be disproven"
-    branch remains. Measured over 650 live pages (2026-09-12): 339 carry no
-    usable coordinate and exactly ONE of them reports any carrier — 1 page in
-    650, 0.55% of the sections that would otherwise render.
+    branch remains. Measured over 1,000 live pages (2026-09-12, three draws):
+    513 carry no usable coordinate and exactly TWO of them report any carrier —
+    2 pages in 1,000, 0.64% of the sections that would otherwise render.
 
     Asserted as "no query ran", not merely "no names": a refusal that still
     opens a connection would be indistinguishable from an empty result."""
@@ -307,7 +308,7 @@ def test_the_fetch_asks_for_one_more_than_it_shows():
 
 
 def test_overflow_is_announced_without_a_number_and_only_when_real():
-    """p90 of the rendering set is 119-140 carriers and the max is 648. What is
+    """p90 of the rendering set is 111 carriers and the max is 648. What is
     hidden must be admitted — but "and 636 more" is the headline number this
     whole section refuses to print."""
     _, render, _ = _load([])
@@ -371,12 +372,38 @@ def test_kin_are_scoped_by_coordinates_with_no_cannot_be_disproven_branch():
 def test_the_rows_own_id_is_always_in_the_kin_set():
     """The slug's frozen hash and a live MD5(provider|name) can DRIFT apart —
     measured: slug lunavi-inc-lunavi-westin1809-b5d054ae against a live hash of
-    da81130d. The row's own id is UNIONed in unconditionally so a drifted hash
-    degrades to "this row only", never to "no carriers"."""
+    da81130d. Siblings are matched on the row's OWN provider|name and the row's
+    own id is UNIONed in unconditionally, so a drifted hash degrades to "this
+    row only", never to "no carriers"."""
     fetch, _, conn = _load(WESTIN)
     fetch(SEATTLE)
     assert str(SEATTLE["id"]) in conn.c.params
+    assert SEATTLE["provider"] in conn.c.params
+    assert SEATTLE["name"] in conn.c.params
     assert "UNION" in conn.c.sql
+
+
+def test_the_slug_hash_has_exactly_one_spelling_and_it_is_the_canonical_one():
+    """★ routes/facility_profile_page.py is FORBIDDEN to import stable_hash8 —
+    tests/test_route_slug_compose_delegation.py bans it, because that import is
+    the signature of the local slug composer r-routeslug deleted, and a reader
+    cannot tell a hash used for LOOKUP from one used to MINT a slug. That guard
+    caught this function on its first draft. The fix was not to weaken it: both
+    sides of the comparison are built by routes.facility_slug.hash_sql, so this
+    file carries no second spelling of the expression to drift."""
+    src = ast.get_source_segment(TEXT, _fn("_fiber_carrier_names"))
+    # The rule is about the IMPORT and the CALL, not the word — the comment
+    # explaining why the import is banned has to be allowed to name it.
+    assert "import stable_hash8" not in src, "the banned import must not return"
+    assert "stable_hash8(" not in src, "nor a call to it under another name"
+    assert "hash_sql" in src, "the canonical helper must be the source"
+    assert "MD5(" not in src.upper(), \
+        "a hand-written MD5 here would be a second spelling of the canon"
+    fetch, _, conn = _load(WESTIN)
+    fetch(SEATTLE)
+    from routes.facility_slug import hash_sql
+    assert hash_sql("s") in conn.c.sql and hash_sql("me") in conn.c.sql, (
+        "both sides of the sibling match must be the helper's own expression")
 
 
 def test_only_known_tables_can_reach_the_sql():

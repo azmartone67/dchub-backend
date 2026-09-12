@@ -1067,7 +1067,7 @@ def _nearby_generation_total_mw(rows):
 #
 # r-fiber-names (2026-09-12). /api/v1/facilities/<slug> — the URL this page
 # links in its own footer — has published fiber_carrier_count, on_net and
-# fiber_providers on 28.0% of live facility pages since 2026-07-17, and the
+# fiber_providers on 31.2% of live facility pages since 2026-07-17, and the
 # page rendered NONE of it. That is roughly double the reach of the power tile
 # (12.2%), and it is the one fact that separates two colocation halls in the
 # same city, which "other data centers nearby" cannot.
@@ -1091,7 +1091,7 @@ def _nearby_generation_total_mw(rows):
 #   list, not Lunavi's suite. And the Anthropic New York record reported 263
 #   "on-site" carriers purely because its coordinates were a Manhattan
 #   placeholder; those links were deleted 2026-09-11, the mechanism was not.
-#   Distribution over the rendering set: median 8-15, p90 119-140, max 648.
+#   Distribution over the rendering set: median 9, p90 111, p95 256, max 648.
 #
 #   So: named carriers, labelled as presence AT OR AROUND this building from
 #   peering records, and no total. The total is not merely unprinted — it is
@@ -1101,11 +1101,12 @@ def _nearby_generation_total_mw(rows):
 #     rule is weakest exactly where a row has no coordinate, and the ingestion
 #     in (1) skips such rows entirely (`if cand['lat'] and cand['lng']`), so a
 #     coordinate-less facility's carriers are ALWAYS inherited from a twin,
-#     never linked to it directly. MEASURED over 650 live pages sampled from
-#     the sitemap (2026-09-12): 339 carry no usable coordinate, and exactly ONE
-#     of them reports any carrier at all (one carrier). Refusing that class
-#     costs 1 page in 650 — 0.55% of the sections that would otherwise render —
-#     and removes 100% of the inherited-only population.
+#     never linked to it directly. MEASURED over 1,000 live pages sampled from
+#     the sitemap in three independent draws (2026-09-12): 513 carry no usable
+#     coordinate, and exactly TWO of them report any carrier at all (one
+#     carrier each, both DataBank rows). Refusing that class costs 2 pages in
+#     1,000 — 0.64% of the sections that would otherwise render — and removes
+#     100% of the inherited-only population.
 #
 # 0,0 is absent, not the Gulf of Guinea: routes.provenance.normalize_coordinates
 # owns that sentinel and this REUSES it rather than adding a fourth copy.
@@ -1158,13 +1159,22 @@ def _fiber_carrier_names(fac: dict):
         return []
 
     # Siblings are found the way the slug DEFINES a building — same
-    # provider|name — computed from THIS row's own values rather than from the
-    # slug's frozen suffix, so a name that has drifted since the slug froze
-    # still matches itself. Same expression as routes.facility_slug.hash_sql,
-    # so the same expression index serves it.
+    # provider|name — matched against THIS row's own values rather than against
+    # the slug's frozen suffix, so a name that has drifted since the slug froze
+    # still matches itself.
+    #
+    # ★ BOTH SIDES OF THE COMPARISON COME FROM routes.facility_slug.hash_sql,
+    #   the one owner of that expression. Deliberately NOT stable_hash8: this
+    #   module is forbidden to import it (tests/test_route_slug_compose_
+    #   delegation.py), because importing it here is the signature of the local
+    #   slug composer r-routeslug deleted — and that guard is right, a reader
+    #   cannot tell a hash used for LOOKUP from one used to MINT a slug. Doing
+    #   the hashing in SQL needs no second spelling of the expression and keeps
+    #   the idx_df_md5slug expression index usable (an alias resolves to the
+    #   same Var, so `s.provider` still matches the indexed expression).
     try:
-        from routes.facility_slug import stable_hash8
-        h8 = stable_hash8(fac.get("provider"), fac.get("name"))
+        from routes.facility_slug import hash_sql as _hash_sql
+        _sib_hash, _me_hash = _hash_sql("s"), _hash_sql("me")
     except Exception:
         return []
 
@@ -1177,11 +1187,14 @@ def _fiber_carrier_names(fac: dict):
         with conn.cursor() as c:
             c.execute(
                 """
-                WITH sib AS (
-                    SELECT id, latitude, longitude
-                      FROM """ + src + """
-                     WHERE LEFT(MD5(COALESCE(provider,'')
-                                    || '|' || COALESCE(name,'')), 8) = %s
+                WITH me AS (
+                    SELECT CAST(%s AS text) AS provider,
+                           CAST(%s AS text) AS name
+                ),
+                sib AS (
+                    SELECT s.id, s.latitude, s.longitude
+                      FROM """ + src + """ s CROSS JOIN me
+                     WHERE """ + _sib_hash + " = " + _me_hash + """
                 ),
                 kin AS (
                     SELECT id::text AS fid
@@ -1200,7 +1213,8 @@ def _fiber_carrier_names(fac: dict):
                  ORDER BY 1
                  LIMIT %s
                 """,
-                (h8, _lat, _FIBER_KIN_DEG, _lng, _FIBER_KIN_DEG,
+                (fac.get("provider"), fac.get("name"),
+                 _lat, _FIBER_KIN_DEG, _lng, _FIBER_KIN_DEG,
                  str(fid), _FIBER_NAME_CAP + 1),
             )
             rows = c.fetchall() or []
