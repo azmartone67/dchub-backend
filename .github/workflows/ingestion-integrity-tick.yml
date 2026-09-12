@@ -77,3 +77,59 @@ jobs:
               sys.exit(1)
           print("\nno lane failed")
           PY
+
+      # ★2026-09-12 — the served tables that have NO producer. The dead-man
+      # board is built from producer beats, so a table whose loader was never
+      # built emits nothing and can never go red there: 10 of 11 tables known
+      # dead on 2026-09-12 were absent from it. This step measures them by their
+      # own newest ingest timestamp and beats ONE feed (served-table-freshness)
+      # whose note names the frozen ones.
+      # `if: always()` because the tick above exits 1 whenever any lane is red,
+      # which it has every day since daily-infra-sync went honestly red; a
+      # sibling's red must not stop this measurement from running.
+      # This step fails only when the measurement or its beat did not land. A
+      # frozen table is reported ON THE BOARD, not by failing this job.
+      - name: Measure served tables with no producer (beats served-table-freshness)
+        if: always()
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -uo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set — the measurement would 401"
+            exit 1
+          fi
+          # Railway origin directly, as the tick above: no edge timeout, no cache.
+          BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
+          URL="$BASE/api/v1/admin/ingest-runs/served-table-freshness"
+          echo "POST $URL"
+          CODE=$(curl -sS --max-time 120 -X POST -o /tmp/stf.json -w '%{http_code}' \
+                   -H "X-Admin-Key: $ADMIN_KEY" "$URL" || echo 000)
+          echo "HTTP $CODE"
+          if [ "$CODE" != "200" ]; then
+            head -c 800 /tmp/stf.json || true
+            echo "::error::served-table-freshness returned $CODE — its feed will go LATE on the board"
+            exit 1
+          fi
+          STF_JSON=/tmp/stf.json python3 - <<'PY'
+          # served-table-freshness-renderer — a test executes this exact block against fixtures
+          import json, os, sys
+          d = json.load(open(os.environ.get("STF_JSON", "/tmp/stf.json")))
+          if d.get("disabled"):
+              print("disabled via SERVED_TABLE_FRESHNESS_DISABLE — the feed will go LATE on the board")
+              sys.exit(0)
+          print("status=%s  %s" % (d.get("status"), d.get("note") or ""))
+          for t in d.get("tables") or []:
+              if t.get("state") == "frozen":
+                  print("  frozen        %-34s %sd since its newest ingest" % (t.get("table"), t.get("age_days")))
+              elif t.get("state") in ("not_measured", "absent"):
+                  print("  %-13s %-34s %s" % (t.get("state"), t.get("table"), t.get("reason") or ""))
+          if d.get("status") == "error":
+              print("::error::served-table-freshness could not measure: %s" % (d.get("error") or d.get("note")))
+              sys.exit(1)
+          if d.get("beat_recorded") is not True:
+              print("::error::measured, but the beat did not land (%s) — the board will not show it" % d.get("beat_error"))
+              sys.exit(1)
+          if d.get("status") == "tables_frozen":
+              print("::warning::%s" % d.get("note"))
+          PY
