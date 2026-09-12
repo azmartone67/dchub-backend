@@ -12,16 +12,29 @@ jobs:
     steps:
       - name: Trigger QA run and read its result
         id: run
+        env:
+          # /api/v1/qa/run is gated as of 2026-09-12 (r-sec): it starts ~28
+          # outbound probes, and ?sync=1 runs them ON the request. Without this
+          # secret the trigger 401s and the step fails loudly below — it does
+          # not silently report a healthy site.
+          INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
         run: |
+          if [ -z "$INTERNAL_KEY" ]; then
+            echo "::error title=Site QA::DCHUB_INTERNAL_KEY secret is not set — \
+          the QA trigger would 401 and results would be unknown"
+            exit 1
+          fi
           python3 - <<'PY'
           import json, os, time, urllib.request
 
           HOST = "https://dchub-backend-production.up.railway.app"
+          INTERNAL_KEY = os.environ["INTERNAL_KEY"]
 
           def get(path, data=None, timeout=60):
               req = urllib.request.Request(
                   HOST + path, method=("POST" if data is not None else "GET"),
-                  data=data, headers={"User-Agent": "dchub-site-qa-ci/1.0"})
+                  data=data, headers={"User-Agent": "dchub-site-qa-ci/1.0",
+                                      "X-Internal-Key": INTERNAL_KEY})
               with urllib.request.urlopen(req, timeout=timeout) as r:
                   return json.loads(r.read().decode())
 
