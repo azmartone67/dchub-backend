@@ -55,6 +55,7 @@ from flask import Blueprint, Response, jsonify, request
 from utils.cache import BoundedCache
 # Derived per call, never frozen at import (see #4334).
 from tier_registry import price_display
+from routes._paid_seat_heal import paid_seat_heal_html
 
 logger = logging.getLogger(__name__)
 
@@ -1538,6 +1539,8 @@ def _render_html(brief: dict) -> str:
     bullets = "\n".join(f"<li>{_esc(b)}</li>" for b in (outlook.get("bullets") or []))
     outlook_full = outlook.get("summary") if is_pro else outlook.get("teaser")
 
+    # A paying seat whose access JWT lapsed must not be shown the upsell.
+    heal_html = paid_seat_heal_html(is_pro)
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1549,6 +1552,7 @@ def _render_html(brief: dict) -> str:
 <link rel="canonical" href="https://dchub.cloud/hyperscalers/{_esc(slug)}/brief">
 <link rel="stylesheet" href="/static/dchub-brand.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap">
+{heal_html}
 <script src="/js/dchub-nav.js" defer></script>
 <style>
  :root{{--bg:#0a0a0f;--surf:#131319;--surf2:#1a1a22;--b:rgba(255,255,255,.09);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--vio:#a855f7;--cy:#22d3ee}}

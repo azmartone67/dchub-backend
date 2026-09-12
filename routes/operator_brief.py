@@ -45,6 +45,7 @@ from flask import Blueprint, Response, jsonify, request
 from utils.cache import BoundedCache
 # Derived per call, never frozen at import (see #4334).
 from tier_registry import price_display
+from routes._paid_seat_heal import paid_seat_heal_html
 
 operator_brief_bp = Blueprint("operator_brief", __name__)
 
@@ -1168,6 +1169,8 @@ def _render_html(brief: dict) -> str:
     citation = (f"DC Hub · <a href=\"{page_url}\">{page_url}</a> · "
                 f"Live as of {citation_iso} UTC")
 
+    # A paying seat whose access JWT lapsed must not be shown the upsell.
+    heal_html = paid_seat_heal_html(is_pro)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1275,6 +1278,7 @@ tbody tr:last-child td{{border-bottom:none}}
 
 <p class="footer">Powered by <a href="https://dchub.cloud">DC Hub</a> · Source-of-truth data center operator intelligence · 4,000+ tracked deals · JSON: <a href="/api/v1/operator-brief/{slug}">/api/v1/operator-brief/{slug}</a></p>
 
+{heal_html}
 <script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>"""

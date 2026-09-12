@@ -48,6 +48,7 @@ from util.dcpi_score_row import PUBLISHED_ONLY
 # Derived per call, never frozen at import: #4334 retired three templates
 # that froze canon at import time and retyped their prices.
 from tier_registry import price_display
+from routes._paid_seat_heal import paid_seat_heal_html
 
 logger = logging.getLogger(__name__)
 
@@ -1549,6 +1550,8 @@ def _render_html(brief: dict) -> str:
     citation = (f"DC Hub · <a href=\"{citation_url}\">{citation_url}</a> · "
                 f"Live as of {citation_iso} UTC")
 
+    # A paying seat whose access JWT lapsed must not be shown the upsell.
+    heal_html = paid_seat_heal_html(is_pro)
     _html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1696,6 +1699,7 @@ tbody tr:last-child td{{border-bottom:none}}
 
 <p class="footer">Powered by <a href="https://dchub.cloud">DC Hub</a> · Source-of-truth data center market intelligence · 4,000+ tracked deals · 21,433 facilities · 300+ markets · JSON: <a href="/api/v1/market-brief/{slug}">/api/v1/market-brief/{slug}</a></p>
 
+{heal_html}
 <script src="/js/dchub-nav.js" defer></script>
 </body>
 </html>"""
