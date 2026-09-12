@@ -16934,6 +16934,23 @@ def _log_welcome_email(to_email, plan_name, status, resend_message_id=None,
         print(f"⚠️ _log_welcome_email failed (non-fatal): {_e}")
 
 
+def _resend_message_id(response):
+    """The Resend message id from a send response, or the 'sent-no-id' sentinel.
+
+    Resend's POST /emails answers {"id": "<uuid>"} and its webhook reports the
+    same value as data.email_id. That pair is the ONLY link between a send and
+    its delivery event, which is why the sender has to keep it.
+
+    Never raises: a send that actually worked must not be recorded as a failure
+    because its response body would not parse."""
+    import json as _json
+    try:
+        body = _json.loads(response.read().decode('utf-8', errors='replace')) or {}
+        return body.get('id') or 'sent-no-id'
+    except Exception:
+        return 'sent-no-id'
+
+
 def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro',
                                    reset_url=None):
     """Resend fallback when SendGrid fails (r-resend-fallback 2026-06-16 — SendGrid
@@ -17032,12 +17049,11 @@ def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro',
         ok = 200 <= getattr(r, 'status', 0) < 300
         if ok:
             print(f"📧 Welcome email sent to {to_email} via Resend fallback")
-            try:
-                _mid = (_json.loads(r.read().decode('utf-8', errors='replace'))
-                        or {}).get('id')
-            except Exception:
-                _mid = None
-            return _mid or 'sent-no-id'
+            # One definition of "what the Resend message id is", shared with
+            # _resend_email. Two copies is exactly how the join breaks again:
+            # a sender that reads a different field than the reconciler joins
+            # on produces no error, just silence.
+            return _resend_message_id(r)
         return False
     except Exception as _e:
         print(f"⚠️ Resend fallback also failed for {to_email}: {str(_e)[:120]}")
@@ -17140,7 +17156,22 @@ def _resend_pace():
 
 
 def _resend_email(to_email, subject, html, from_email="alerts@dchub.cloud", from_name="DC Hub"):
-    """General Resend send. Light urllib, no SDK. Returns True on 2xx.
+    """General Resend send. Light urllib, no SDK.
+
+    Returns the Resend message id on a 2xx — always truthy, 'sent-no-id' when
+    the response carried none — and False otherwise. Every call site reads this
+    as a boolean (`bool(...)`, `if ...`, or discards it), so the richer return
+    is backward compatible; it exists because a caller that wants to record
+    WHAT it sent previously had no way to learn the id.
+
+    ★ r-delivery-truth-join (2026-09-11): this used to `return 200 <= status <
+    300` and throw the response body away, and that is why delivery could never
+    be confirmed. #4198 moved the paid welcome off the dead SendGrid import
+    onto this function, so the id stopped being recorded by the very send that
+    started succeeding. Measured: welcome_email_log has not stamped an id since
+    2026-08-28, the verified event stream began 2026-08-29 03:10Z, and NO table
+    in the database has written a Resend send-response id since — so the
+    reconciliation join has never had a row to match on either side.
 
     r-resend-port 2026-06-16. r-welcome-429 2026-09-09: paced + retried, because
     a 429 here used to strand a paying customer with no key and no alarm."""
@@ -17157,7 +17188,9 @@ def _resend_email(to_email, subject, html, from_email="alerts@dchub.cloud", from
                              headers={"Authorization": "Bearer " + rk, "Content-Type": "application/json",
                                       "User-Agent": "dchub/1.0"})
             r = _u.urlopen(req, timeout=20)
-            return 200 <= getattr(r, 'status', 0) < 300
+            if not (200 <= getattr(r, 'status', 0) < 300):
+                return False
+            return _resend_message_id(r)
         except _ue.HTTPError as _he:
             # 429 = rate limit, 5xx = Resend-side blip. Both are RETRYABLE.
             # A 4xx that is not 429 (bad address, unverified sender) is not —
@@ -17640,9 +17673,13 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             # printed "Welcome email failed" every time. Customers were fine;
             # observability was not, because a REAL failure looked exactly like
             # the routine one. Send the rich HTML through Resend directly.
-            _ok = bool(_resend_email(to_email, subject, html,
-                                     from_email='alerts@dchub.cloud',
-                                     from_name='DC Hub'))
+            # ★ r-delivery-truth-join (2026-09-11): KEEP THE ID, don't just
+            # test it. bool() here discarded the only value that can prove this
+            # email arrived — see /api/v1/admin/welcome-log/delivery-truth.
+            _sent_mid = _resend_email(to_email, subject, html,
+                                      from_email='alerts@dchub.cloud',
+                                      from_name='DC Hub')
+            _ok = bool(_sent_mid)
             if _ok:
                 # The SDK's add_cc has no Resend equivalent; the owner copy is
                 # a second send so losing it can never fail the customer's.
@@ -17666,6 +17703,9 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
                     return
             _log_welcome_email(to_email, plan_name,
                                status=('sent' if _ok else 'resend_failed'),
+                               resend_message_id=(_sent_mid if _ok and
+                                                  _sent_mid != 'sent-no-id'
+                                                  else None),
                                claim_id=claim_id)
             # ★ r-welcome-429 (2026-09-09): THE ALARM GOES ON THE OUTCOME, NOT
             # THE EXCEPTION. _resend_email swallows its own error and returns

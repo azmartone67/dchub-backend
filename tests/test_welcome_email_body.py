@@ -38,17 +38,28 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MAIN = ROOT / "main.py"
 FN = "_welcome_email_resend_fallback"
+# r-delivery-truth-join (2026-09-11): the sender now shares main's single
+# message-id extractor rather than parsing the response itself. It is loaded
+# REAL, not stubbed — a stub here would go green on a sender that cannot
+# actually read an id, and reading the id is the point.
+DEPS = ("_resend_message_id",)
 
 
 def _load_sender():
     """Pull FN out of main.py and exec it against stubs. Never imports main."""
     src = MAIN.read_text(encoding="utf-8")
     tree = ast.parse(src, filename="main.py")
-    node = next((n for n in tree.body
-                 if isinstance(n, ast.FunctionDef) and n.name == FN), None)
+    wanted = (FN,) + DEPS
+    nodes = [n for n in tree.body
+             if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    node = next((n for n in nodes if n.name == FN), None)
     assert node is not None, (
         f"{FN} not found in main.py — this guard is watching a function that no "
         "longer exists, which is exactly how a check rots into a green tick"
+    )
+    assert len(nodes) == len(wanted), (
+        f"missing {set(wanted) - {n.name for n in nodes}} in main.py — the "
+        "sender would NameError into its own except and report a false failure"
     )
     sent = {}
 
@@ -69,7 +80,7 @@ def _load_sender():
         "print": lambda *a, **k: None,
         "__builtins__": __builtins__,
     }
-    exec(compile(ast.Module(body=[node], type_ignores=[]), "main.py", "exec"), ns)
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), "main.py", "exec"), ns)
     return ns[FN], sent, _fake_urlopen, _real_u
 
 

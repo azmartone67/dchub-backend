@@ -8,9 +8,12 @@ preceding 30 days. Every "we welcomed them" claim in this repo therefore meant
 *sent*, not *delivered*, and nothing anywhere said so.
 
 Since 2026-08-29 03:10Z that webhook is configured and signature-verified events
-do arrive (892 rows, 888 verified, measured 2026-09-11). A second reading trap
-has joined the first: no welcome_email_log id has ever matched an event id, so
-the verdict can be non-CONFIRMED while the mail is in fact arriving.
+do arrive. A second reading trap joined the first and has since been FIXED
+(r-delivery-truth-join, 2026-09-11): no welcome_email_log id had ever matched an
+event id, because main._resend_email returned a bare bool and the send stopped
+recording an id at the moment it started succeeding. The join and its guards
+live in tests/test_delivery_truth_join.py; what stays here is the reading of
+zero.
 
 The failure mode is silence, so the thing worth guarding is the READING of zero.
 delivery_verdict is pure, so that rule is tested for real rather than asserted
