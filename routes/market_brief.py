@@ -565,6 +565,43 @@ def _section_hero(cur, slug: str) -> dict | None:
     }
 
 
+# ── Multi-city market names ──────────────────────────────────────────────
+# A DCPI market name is a HUMAN label, and several are dual-city joined by an
+# EN DASH: "Midland–Odessa", "Raleigh–Durham", "Minneapolis–St. Paul". Both
+# matchers below took name.split(",")[0] as "the city", which for those yields
+# the whole "midland–odessa" — a string that appears in NO column of
+# discovered_facilities, so every clause built from it matched zero rows.
+#
+# Measured 2026-09-12 on /markets/midland-tx/brief as a PRO seat: At-a-Glance
+# read 0 facilities, 0 MW operational, 0 MW pipeline and no top operator, and
+# Pipeline and Operator Footprint were both empty (coverage 3/8), while
+# /api/v1/facilities?state=TX&city=Midland returned Crusoe Energy Permian Basin
+# — 50 MW, status Operational, v=verified, so it passes
+# COALESCE(is_duplicate,0)=0. The matcher could not see it from any angle: its
+# `market` tag is not "midland–odessa", and latitude/longitude are NULL
+# (coordinates_status "unknown"), so the ~0.6° proximity box — the only rescue
+# the matcher had for a market whose name does not match a metro tag — could
+# not fire either.
+def _market_name_tokens(name: str) -> list[str]:
+    """Lowercased city components of a DCPI market name, ", ST" suffix dropped.
+
+    "Midland–Odessa"   -> ["midland", "midland–odessa", "odessa"]
+    "Cheyenne, WY"     -> ["cheyenne"]
+    """
+    import re as _re
+    head = (name or "").split(",")[0].strip()
+    if not head:
+        return []
+    toks = {head.lower()}
+    # En dash, em dash, slash, or a standalone "and". \band\b cannot split
+    # inside a word, so "Portland" and "Highland" are left whole.
+    for part in _re.split(r"[\u2013\u2014/]|\band\b", head):
+        part = part.strip(" .")
+        if len(part) >= 3:
+            toks.add(part.lower())
+    return sorted(toks)
+
+
 def _facility_match(hero: dict):
     """(_match_sql, _match_params) to match a market's rows in
     discovered_facilities. Shared by KPIs / pipeline / operators so all three
@@ -595,6 +632,17 @@ def _facility_match(hero: dict):
         sql += (" OR (state = %s AND latitude IS NOT NULL AND longitude IS NOT NULL "
                 "AND (latitude-%s)*(latitude-%s)+(longitude-%s)*(longitude-%s) < 0.36)")
         params += [st, lat, lat, lng, lng]
+    # ★ 2026-09-12 — the city column, STATE-SCOPED. Every clause above is left
+    #   exactly as it was and this is a pure OR, so a market's count can only
+    #   rise, never fall. The state scope is what keeps it precise: without it,
+    #   the token "midland" would also claim Midland, MICHIGAN for a Texas
+    #   market. This is the clause that finds a row with a populated city/state,
+    #   no usable `market` tag and NULL coordinates — see _market_name_tokens.
+    _toks = _market_name_tokens(name)
+    if st and _toks:
+        sql += (" OR (state = %s AND (LOWER(COALESCE(city, '')) = ANY(%s)"
+                " OR LOWER(COALESCE(market, '')) = ANY(%s)))")
+        params += [st, _toks, _toks]
     return sql, params
 
 
@@ -606,7 +654,12 @@ def _deals_match(hero: dict):
     same gap _facility_match fixes for discovered_facilities."""
     name = (hero or {}).get("name") or ""
     city = name.split(",")[0].strip()
-    mkt = list({v for v in (name.lower(), city.lower()) if v})
+    # Components too, so a dual-city name reaches a deal tagged with one half
+    # ("Midland"). Exact equality only — deals carries no state to scope a
+    # substring match with, and an unscoped \ymidland\y on market OR region
+    # would pull another state's deal into this market's M&A table.
+    mkt = sorted({v for v in (name.lower(), city.lower()) if v}
+                 | set(_market_name_tokens(name)))
     import re
     sql = "(LOWER(COALESCE(market, '')) = ANY(%s) OR LOWER(COALESCE(region, '')) = ANY(%s)"
     params = [mkt, mkt]
