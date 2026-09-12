@@ -219,6 +219,27 @@ def _iter_py_files(repo_root: str):
                 yield os.path.join(dirpath, fn)
 
 
+def _line_snippet(root: Path, rel: str, line: int) -> str:
+    """The text at `line` of `rel`, trimmed. '' when unreadable — a missing
+    snippet must never drop the candidate."""
+    try:
+        lines = _file_lines_cached(root, rel)
+        if 1 <= line <= len(lines):
+            return lines[line - 1].strip()[:160]
+    except Exception:
+        pass
+    return ""
+
+
+def _file_lines_cached(root: Path, rel: str) -> list:
+    try:
+        with open(os.path.join(str(root), rel), "r", encoding="utf-8",
+                  errors="replace") as fh:
+            return fh.read().splitlines()
+    except Exception:
+        return []
+
+
 def _route_to_regex(pattern: str) -> Optional["re.Pattern"]:
     """Turn a Flask URL pattern into a compiled regex that matches a
     CONCRETE incoming path. `<slug>` / `<int:id>` / `<path:p>` become
@@ -373,6 +394,24 @@ def _get_index(repo_root: str, *, rebuild: bool = False) -> dict:
 # ──────────────────────────────────────────────────────────────────
 _RE_URL_PATH = re.compile(r"/[A-Za-z0-9_\-/<>:.]+")
 _RE_PY_FILE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*\.py)\b")
+# ★ 2026-09-12. A finding whose url is a SOURCE POINTER ("routes/x.py:2403")
+# used to resolve worse than one with no pointer at all. _RE_URL_PATH scraped
+# "/x.py:2403" out of it; the `not p.endswith(".py")` guard below was written to
+# stop exactly that but MISSES when a line number is appended, so the fabricated
+# single-segment "path" reached the route matcher and matched every bare
+# `/<param>` catch-all route in the repo at 0.92 — outranking the real file at
+# 0.90, whose own candidate was pinned to line 1. The cited line was discarded.
+# Measured against live finding cross_surface_metric_divergence
+# (routes/mcp_presence_crawler.py:2403): 4 of 5 candidates were unrelated slug
+# routes and the 5th was the right file at line 1.
+_RE_PY_FILE_LINE = re.compile(r"\b([A-Za-z0-9_./\\-]*[A-Za-z_][A-Za-z0-9_]*\.py):(\d+)\b")
+# A scraped path that is really a source pointer, with or without :LINE.
+_RE_PATH_IS_SOURCE = re.compile(r"\.py(?::\d+)?$", re.IGNORECASE)
+# Test files may be cited, but must never outrank production code for a slot.
+_RE_TEST_FILE = re.compile(r"(?:^|/)tests?/|(?:^|/)test_[^/]*\.py$|_test\.py$")
+_TEST_CONFIDENCE_FACTOR = 0.5
+# No single file may take more than this many of the five candidate slots.
+_MAX_PER_FILE = 2
 _RE_CRON_URL = re.compile(r"dchub://cron/([A-Za-z0-9_\-]+)")
 _RE_TABLE_HINT = re.compile(r"\btable[:=]\s*([A-Za-z_][A-Za-z0-9_.]*)", re.IGNORECASE)
 _RE_CRON_SCHEDULE = re.compile(r"(?:^|[\s'\"])((?:[\d*,/\-]+\s+){4}[\d*,/\-]+)(?:[\s'\"]|$)")
@@ -447,6 +486,14 @@ def resolve_finding_to_sources(finding: dict, repo_root: str = "") -> list:
         seen_keys = set()              # dedupe on (file, line)
 
         def _add(file, line, snippet, confidence, kind):
+            # ★ A test file may legitimately be cited, but must never outrank
+            # production code for one of the five slots. Measured 2026-09-12:
+            # live finding iso_metric_count_dropped returned 4 of 5 candidates
+            # inside tests/test_grid_ba_surface_guard.py — the brain was being
+            # offered test files as FIX SITES while the real ingest path was
+            # crowded out of the budget entirely.
+            if _RE_TEST_FILE.search(file.replace("\\", "/")):
+                confidence = float(confidence) * _TEST_CONFIDENCE_FACTOR
             key = (file, int(line or 0))
             if key in seen_keys:
                 # Keep the higher-confidence sighting of the same location.
@@ -480,7 +527,7 @@ def resolve_finding_to_sources(finding: dict, repo_root: str = "") -> list:
         # also scan free text for bare /paths (some findings embed them)
         for pm in _RE_URL_PATH.finditer(free_text):
             p = pm.group(0)
-            if p not in url_paths and not p.endswith(".py"):
+            if p not in url_paths and not _RE_PATH_IS_SOURCE.search(p):
                 url_paths.append(p)
 
         for upath in url_paths[:4]:
@@ -505,11 +552,36 @@ def resolve_finding_to_sources(finding: dict, repo_root: str = "") -> list:
                 if conf is not None:
                     _add(r["file"], r["line"], r["snippet"], conf, kind)
 
+        # ---- 1b. SOURCE POINTER (file.py:LINE) ------------------------
+        # The finding already names the exact location. Honour it: emit the
+        # cited LINE at a confidence above the param-pattern route tier
+        # (0.92), so a fabricated "/x.py:2403" path can never outrank the
+        # thing the finding actually pointed at.
+        pinned_files = set()
+        for pm in _RE_PY_FILE_LINE.finditer(free_text + " " + url):
+            raw_path, raw_line = pm.group(1), int(pm.group(2))
+            base = os.path.basename(raw_path).lower()
+            pinned_files.add(base)
+            for rel in idx.get("files", {}).get(base, []):
+                norm = rel.replace("\\", "/")
+                # When the finding spelled a directory too, require it to match
+                # so "routes/x.py:9" never pins a same-named file elsewhere.
+                if "/" in raw_path.replace("\\", "/") and not norm.endswith(
+                        raw_path.replace("\\", "/")):
+                    continue
+                snippet = _line_snippet(root, rel, raw_line)
+                _add(rel, raw_line, snippet or f"(cited: {raw_path}:{raw_line})",
+                     0.97, "source_pointer")
+
         # ---- 2. FILENAME hint -----------------------------------------
         py_hits = set()
         for fm in _RE_PY_FILE.finditer(free_text + " " + url):
             py_hits.add(fm.group(1).lower())
         for base in py_hits:
+            # A file already pinned to its CITED line must not also be added
+            # at line 1 — that burns a second slot to say less.
+            if base in pinned_files:
+                continue
             for rel in idx.get("files", {}).get(base, []):
                 # Slight boost when the hinted file lives under routes/.
                 conf = 0.9 if rel.replace("\\", "/").startswith("routes/") else 0.85
@@ -556,11 +628,24 @@ def resolve_finding_to_sources(finding: dict, repo_root: str = "") -> list:
         # Specificity is encoded in the confidence we assigned per match
         # kind; sort by confidence desc, then by a kind-priority tiebreak,
         # then by file/line for determinism.
-        kind_rank = {"route": 0, "filename": 1, "table": 2, "symbol": 3, "text": 4}
+        kind_rank = {"source_pointer": 0, "route": 1, "filename": 2,
+                     "table": 3, "symbol": 4, "text": 5}
         candidates.sort(key=lambda c: (
             -c["confidence"], kind_rank.get(c["match_kind"], 9),
             c["file"], c["line"]))
-        return candidates[:5]
+        # ★ Per-file cap. Four hits in ONE file are four lines of the same
+        # answer; they used to consume the whole five-slot budget and hide
+        # every other file the finding touched.
+        out, per_file = [], {}
+        for c in candidates:
+            n = per_file.get(c["file"], 0)
+            if n >= _MAX_PER_FILE:
+                continue
+            per_file[c["file"]] = n + 1
+            out.append(c)
+            if len(out) >= 5:
+                break
+        return out
     except Exception as e:  # pragma: no cover - the never-raise contract
         print(f"[brain_source_map] resolve failed: {e}", file=sys.stderr)
         return []
