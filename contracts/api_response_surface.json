@@ -9287,47 +9287,11 @@
    ]
   },
   "GET /api/v1/brain/qa-agent": {
-   "source": "routes/brain_layer11_qa_agent.py:239",
+   "source": "routes/brain_layer11_qa_agent.py:268",
    "handler": "qa_agent",
-   "resolution": "resolved",
-   "open_at": [
-    "by_classification",
-    "errors",
-    "errors[].error",
-    "errors[].path",
-    "errors[].status",
-    "latest_sweep_at",
-    "probed",
-    "probes",
-    "regressions",
-    "rows",
-    "slow_pages",
-    "slow_pages[].ms",
-    "slow_pages[].path",
-    "static_html_pages[].path",
-    "verdict"
-   ],
-   "keys": [
-    "by_classification",
-    "errors",
-    "errors[].error",
-    "errors[].path",
-    "errors[].status",
-    "latest_sweep_at",
-    "note",
-    "ok",
-    "probed",
-    "probes",
-    "ran_at",
-    "regressions",
-    "rows",
-    "slow_pages",
-    "slow_pages[].ms",
-    "slow_pages[].path",
-    "static_html_pages",
-    "static_html_pages[].path",
-    "verdict"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "GET /api/v1/brain/qa-agent/history": {
    "source": "routes/brain_layer11_qa_agent.py:333",
@@ -28236,47 +28200,11 @@
    ]
   },
   "POST /api/v1/brain/qa-agent": {
-   "source": "routes/brain_layer11_qa_agent.py:239",
+   "source": "routes/brain_layer11_qa_agent.py:268",
    "handler": "qa_agent",
-   "resolution": "resolved",
-   "open_at": [
-    "by_classification",
-    "errors",
-    "errors[].error",
-    "errors[].path",
-    "errors[].status",
-    "latest_sweep_at",
-    "probed",
-    "probes",
-    "regressions",
-    "rows",
-    "slow_pages",
-    "slow_pages[].ms",
-    "slow_pages[].path",
-    "static_html_pages[].path",
-    "verdict"
-   ],
-   "keys": [
-    "by_classification",
-    "errors",
-    "errors[].error",
-    "errors[].path",
-    "errors[].status",
-    "latest_sweep_at",
-    "note",
-    "ok",
-    "probed",
-    "probes",
-    "ran_at",
-    "regressions",
-    "rows",
-    "slow_pages",
-    "slow_pages[].ms",
-    "slow_pages[].path",
-    "static_html_pages",
-    "static_html_pages[].path",
-    "verdict"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "POST /api/v1/brain/qa/fast-sweep": {
    "source": "routes/brain_fast_qa.py:385",

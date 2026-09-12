@@ -177,9 +177,15 @@ def _gather_context() -> dict:
     # prompt gives the orchestrator a head-start on prioritization
     # ("don't list 46 findings — fix the 2 root causes that produce them").
     causal   = _internal("/api/v1/brain/causal", 6)
-    # Phase FF+7 (2026-05-19): also include L11 QA results so L8 knows
-    # which surfaces are currently failing/slow without re-probing.
-    qa       = _internal("/api/v1/brain/qa-agent", 6)
+    # ★2026-09-12 — L11 QA probe REMOVED. The L11 endpoint kept serving the
+    # 2026-05-19 sweep as current surface health for 116 days after that sweep
+    # was disabled (container crash-loop), so L8 prioritised against May's
+    # 404s as though they were live. L11 is retired and answers 410.
+    # This layer now has NO live QA input: fast-QA files its problems into
+    # brain_findings (detector fast_qa), but `findings` above comes from the
+    # consistency radar, which does not carry them. The key is kept below as an
+    # explicit "not read" marker for the same reason as outreach — a missing
+    # key reads as "no QA failures".
     # Phase FF+7 (2026-05-19): redeem funnel for actual stage-level leak data
     redeem   = _internal("/api/v1/redeem/funnel-stats", 6)
     # Recent commits via GitHub API
@@ -241,10 +247,16 @@ def _gather_context() -> dict:
         # L8 should use as its starting point rather than re-deriving.
         "causal_chains": (causal.get("analysis") or {}).get("causal_chains", []),
         "causal_highest_leverage": (causal.get("analysis") or {}).get("single_highest_leverage"),
-        # Phase FF+7: L11 QA — current surface health snapshot.
-        "qa_verdict":   qa.get("verdict"),
-        "qa_errors":    (qa.get("errors") or [])[:5],
-        "qa_slow":      (qa.get("slow_pages") or [])[:5],
+        # L11 QA — retired 2026-09-12 (see where it used to be read).
+        "qa": {
+            "read": False,
+            "note": ("NOT READ — the L11 QA agent is retired (its last sweep "
+                     "was 2026-05-19) and this layer has no live QA input: "
+                     "fast-QA's findings are not in the radar findings above. "
+                     "Absence of QA data here is a DELIBERATE GAP, not a "
+                     "measurement of healthy surfaces. Do not infer anything "
+                     "about surface health from it."),
+        },
         # Phase FF+7: redeem funnel — actual stage-level numbers, not
         # just aggregate "0 conversions". Shows WHERE in the funnel
         # the leak is.

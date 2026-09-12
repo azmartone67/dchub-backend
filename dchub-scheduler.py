@@ -619,13 +619,23 @@ DISABLED_JOBS = {
     # The 240s timeout + N parallel HTTP probes was sitting on memory at
     # the worst moments. Re-enable after the memory pressure cycle is
     # closed (likely requires moving QA probes to a separate worker).
+    #
+    # ★ RETIRED 2026-09-12 — do NOT re-enable, despite the line above. In the
+    # four months this sat disabled, fast-QA (every ~30 min), site-qa (every
+    # 15 min), qa-superuser (every 4h) and dchub-qa (twice daily) took over its
+    # job, so re-enabling would bring back the crash-loop only to duplicate
+    # them. Meanwhile GET kept serving the 2026-05-19 sweep as current health to
+    # brain_self_test, L8 and L14. The endpoint now answers 410.
     'brain_qa_agent_sweep_DISABLED': {
-        'name': 'Brain L11 QA Agent — Surface Sweep (DISABLED)',
+        'name': 'Brain L11 QA Agent — Surface Sweep (RETIRED)',
         'endpoint': '/api/v1/brain/qa-agent',
         'method': 'POST',
         'hours': [],
         'minute': 5,
         'timeout': 240,
+        'disabled_reason': ('RETIRED 2026-09-12: superseded by fast-QA, site-qa, '
+                            'qa-superuser and dchub-qa; re-enabling brings back '
+                            'the 2026-05-19 crash-loop. Endpoint returns 410.'),
     },
     # Phase FF+6 (2026-05-18): Brain L12 expansion snapshot — once daily
     # so 7d/30d deltas are stable. Lightweight, no LLM, ~1s.

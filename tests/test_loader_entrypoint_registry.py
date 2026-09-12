@@ -307,7 +307,7 @@ _REASONLESS_DISABLED_BASELINE = frozenset({
     'brain_draft_pr_expire', 'brain_expansion_snapshot', 'brain_issue_janitor',
     'brain_memory_consolidate_DISABLED', 'brain_narrative_refresh',
     'brain_orchestrator_refresh', 'brain_press_loop',
-    'brain_qa_agent_sweep_DISABLED', 'brain_self_critique_DISABLED',
+    'brain_self_critique_DISABLED',
     'campus_sync', 'competitor_scan', 'customer_white_glove_digest',
     'customer_white_glove_tick', 'daily_aggregation', 'health_probe',
     'heartbeat_auto_drain', 'heartbeat_refresh', 'industry_pulse_refresh',
@@ -325,7 +325,7 @@ def test_no_new_reasonless_disabled_job():
     subsea_sync sat in DISABLED_JOBS with a full weekly hours/minute/
     day_of_week schedule and no reason, under a comment describing it as
     "weekly Wednesday 03:00+". It fired nothing; the run loop iterates JOBS
-    only. 43 further entries are in the same shape today — pinned in
+    only. 42 further entries are in the same shape today — pinned in
     _REASONLESS_DISABLED_BASELINE so no NEW one can be added quietly.
     """
     tree = _parse(SCHEDULER_PY)

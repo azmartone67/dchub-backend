@@ -13,7 +13,6 @@ without checking 12 different dashboards.
            "score": "<N/M layers ok>",
            "layers": {
              "L4_text_loop":          {"ok": true, "ms": 12, "verdict": "active"},
-             "L11_qa_agent":          {"ok": true, ...},
              "L14_causal":            {...},
              "L15_auto_action":       {...},
              "L20_durability":        {...},
@@ -44,7 +43,10 @@ brain_self_test_bp = Blueprint("brain_self_test", __name__)
 # stays fast (<5s end-to-end) even on cold start.
 _LAYER_PROBES = [
     ("L4_text_loop",          "/api/v1/brain/status",                "healthy|active"),
-    ("L11_qa_agent",          "/api/v1/brain/qa-agent",              "agent|ok"),
+    # L11_qa_agent REMOVED 2026-09-12 — L11 is retired and answers 410. Its
+    # marker was a substring test for "agent" or "ok", so any 200 body
+    # containing "ok" passed: this probe reported L11 active for 116 days on a
+    # sweep last run 2026-05-19.
     ("L14_causal",            "/api/v1/brain/causal/findings",       "findings"),
     ("L15_auto_action",       "/api/v1/brain/autopilot/recent",      "actions|recent"),
     ("L20_durability",        "/api/v1/brain/error-classes",         "classes"),
