@@ -17,12 +17,18 @@ _spec = importlib.util.spec_from_file_location(
 smoke = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(smoke)
 
+# What every brief emits above </body> since #4433: the refresh self-heal
+# FIRST (both are `defer`, so document order is execution order), then nav.
+HEAL_TAIL = ('<script src="/js/dchub-api-base.js" defer></script>'
+             '<script src="/js/dchub-nav.js" defer></script>')
+NO_HEAL_TAIL = '<script src="/js/dchub-nav.js" defer></script>'
+
 PAID_PAGE = ('<h2>Power &amp; Grid</h2><table></table>'
              '<a href="https://dchub.cloud/markets/dallas/brief.pdf" class="pdf-btn pro" '
-             'download="dchub-market-brief-dallas.pdf">Download PDF</a>')
+             'download="dchub-market-brief-dallas.pdf">Download PDF</a>') + HEAL_TAIL
 ANON_PAGE = ('<div class="blur-title">PRO unlocks all sections</div>' * 6
              + '<a href="/pricing?utm_source=market_brief_pdf" class="pdf-btn upgrade">'
-               'Upgrade to download PDF</a>')
+               'Upgrade to download PDF</a>') + HEAL_TAIL
 GOOD_PDF = b"%PDF-1.7\n" + b"x" * 4096 + b"\n%%EOF\n"
 
 
@@ -38,8 +44,9 @@ class FakeEdge:
     """A tiny model of the edge: a URL-keyed cache that either respects
     credentials (healthy) or ignores them (the 2026-09-11 defect)."""
 
-    def __init__(self, leak=False, key_is_pro=True, pdf=None, pdf_headers=None):
-        self.leak, self.key_is_pro = leak, key_is_pro
+    def __init__(self, leak=False, key_is_pro=True, pdf=None, pdf_headers=None,
+                 can_heal=True):
+        self.leak, self.key_is_pro, self.can_heal = leak, key_is_pro, can_heal
         self.cache = {}
         self.pdf = pdf if pdf is not None else FakeResponse(
             200, content=GOOD_PDF,
@@ -57,7 +64,10 @@ class FakeEdge:
         paid = keyed and self.key_is_pro
         if self.leak and url in self.cache:
             return self.cache[url]
-        resp = FakeResponse(200, text=PAID_PAGE if paid else ANON_PAGE)
+        body = PAID_PAGE if paid else ANON_PAGE
+        if not self.can_heal:
+            body = body.replace(HEAL_TAIL, NO_HEAL_TAIL)
+        resp = FakeResponse(200, text=body)
         if self.leak or not keyed:
             self.cache[url] = resp
         return resp
@@ -84,6 +94,22 @@ def test_the_2026_09_11_leak_is_red_in_both_directions():
     assert v["anonymous-never-gets-the-paid-copy"] == smoke.RED
     assert v["paid-never-gets-the-anonymous-copy"] == smoke.RED
     assert smoke.report(res) == 1
+
+
+def test_a_brief_that_cannot_heal_a_lapsed_seat_is_red():
+    """The 2026-09-12 report: the render a lapsed Pro seat gets carries no
+    /js/dchub-api-base.js, so the 401 on /api/auth/me is never refreshed."""
+    res = smoke.run("https://dchub.cloud", "dallas", "k",
+                    session=FakeEdge(can_heal=False), pause_s=0)
+    assert verdicts(res)["brief-can-heal-a-lapsed-paid-seat"] == smoke.RED
+    assert smoke.report(res) == 1
+
+
+def test_the_heal_loaded_after_nav_is_red():
+    """Order is the invariant: api-base after nav never wraps nav's call."""
+    assert smoke.verdict_lapsed_token_heal(
+        '<script src="/js/dchub-nav.js" defer></script>'
+        '<script src="/js/dchub-api-base.js" defer></script>')[0] == smoke.RED
 
 
 @pytest.mark.parametrize("pdf", [

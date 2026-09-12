@@ -44,6 +44,8 @@ PASS, RED, BLIND = "PASS", "RED", "BLIND"
 PAYWALL_CARD = "PRO unlocks all sections"
 PRO_PDF_BUTTON = 'class="pdf-btn pro"'
 UPGRADE_PDF_BUTTON = "Upgrade to download PDF"
+NAV_TAG = '<script src="/js/dchub-nav.js" defer></script>'
+API_BASE_TAG = '<script src="/js/dchub-api-base.js" defer></script>'
 
 USER_AGENT = "dchub-qa-pro-seat-smoke/1.0 (+https://github.com/azmartone67/dchub-backend)"
 TIMEOUT_S = 30
@@ -115,6 +117,27 @@ def verdict_pdf_cache_control(cache_control: str):
     return PASS, f"Cache-Control {cache_control!r}"
 
 
+def verdict_lapsed_token_heal(body: str):
+    """The render a LAPSED paid seat receives must be able to heal itself.
+
+    2026-09-12: a Pro seat whose 7-day access JWT had expired was served exactly
+    this render -- the origin resolved FREE from the stale cookie -- and the page
+    carried no /js/dchub-api-base.js, so the 401 on /api/auth/me never reached the
+    refresh path and the customer sat on the upsell with a Pro chip in the header.
+    Both scripts are `defer`, so api-base must come FIRST or it never wraps nav's
+    call."""
+    body = body or ""
+    if NAV_TAG not in body:
+        return BLIND, "nav script not found; the brief markup changed, this is not a verdict"
+    if API_BASE_TAG not in body:
+        return RED, ("the brief does not load /js/dchub-api-base.js: a paid seat whose "
+                     "access token lapsed is shown the upsell and cannot recover")
+    if body.index(API_BASE_TAG) > body.index(NAV_TAG):
+        return RED, ("/js/dchub-api-base.js loads AFTER /js/dchub-nav.js: it never wraps "
+                     "the /api/auth/me call, so the 401 is not healed")
+    return PASS, "the brief loads the refresh self-heal ahead of the nav script"
+
+
 def verdict_anonymous_pdf(status: int):
     if status == 402:
         return PASS, "anonymous PDF request is refused with 402"
@@ -141,6 +164,10 @@ def control_fires() -> bool:
         verdict_pro_pdf(200, "application/pdf", b"%PDF-1.7 truncated")[0] == RED,
         verdict_pdf_cache_control("public, max-age=3600, s-maxage=3600")[0] == RED,
         verdict_anonymous_pdf(200)[0] == RED,
+        verdict_lapsed_token_heal(f'x{NAV_TAG}y')[0] == RED,
+        verdict_lapsed_token_heal(f'{NAV_TAG}{API_BASE_TAG}')[0] == RED,
+        verdict_lapsed_token_heal('nothing recognisable')[0] == BLIND,
+        verdict_lapsed_token_heal(f'{API_BASE_TAG}{NAV_TAG}')[0] == PASS,
     ]
     return all(checks)
 
@@ -196,6 +223,9 @@ def run(base: str, slug: str, key: str, session=None, pause_s: float = 1.2):
                                 *verdict_pdf_cache_control(r.headers.get("Cache-Control", ""))))
             return v
         attempt("pro-pdf-downloads", pro_pdf)
+
+    attempt("brief-can-heal-a-lapsed-paid-seat",
+            lambda: verdict_lapsed_token_heal(get(f"{page}?_=heal{token}", False).text))
 
     attempt("anonymous-pdf-is-402",
             lambda: verdict_anonymous_pdf(get(f"{page}.pdf?_=pdfanon{token}", False).status_code))
