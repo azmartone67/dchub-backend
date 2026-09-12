@@ -149,7 +149,36 @@ def table_existence(cur, tables) -> dict:
     return {n: (n in present) for n in names}
 
 
-def verdicts(frozen, exists: dict) -> list:
+def column_existence(cur, pairs) -> dict:
+    """{(table, column): True|False} for every ALTER TABLE ... ADD COLUMN.
+
+    ★ WHY THIS EXISTS SEPARATELY FROM table_existence. This audit used to ask
+    only whether the TABLE existed. `news_engine.init_news_db` ran
+    `ALTER TABLE news_articles ADD COLUMN IF NOT EXISTS publisher_url TEXT` on
+    a pooled cursor, which dropped it — and the audit answered EXISTS, because
+    news_articles has existed for a long time. The COLUMN was missing, every
+    INSERT naming it failed, and intake ran at ~10 rows/day instead of ~157
+    for nine days (#4438). The verdict was true and useless: it was keyed one
+    level coarser than the defect.
+
+    ★ A pair absent from the result is False here, NOT unknown — unlike
+    table_existence, whose comment explains the opposite rule. The difference
+    is deliberate: this query filters on an explicit list of (table, column)
+    pairs, so a pair that does not come back was asked about and not found.
+    Callers still get UNKNOWN for the whole probe when the query itself fails.
+    """
+    pairs = sorted({(t, c) for t, c in pairs if t and c})
+    if not pairs:
+        return {}
+    cur.execute(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND (table_name, column_name) IN %s",
+        (tuple(pairs),))
+    present = {(r[0].lower(), r[1].lower()) for r in (cur.fetchall() or [])}
+    return {p: (p in present) for p in pairs}
+
+
+def verdicts(frozen, exists: dict, columns: dict | None = None) -> list:
     """One row per frozen function: does its table exist?"""
     by_fn = {}
     for o in frozen:
@@ -159,9 +188,22 @@ def verdicts(frozen, exists: dict) -> list:
             "line": o["line"], "tables": [], "statements": 0,
         })
         row["statements"] += 1
-        if o["table"] and o["table"] not in [t["table"] for t in row["tables"]]:
+        col = o.get("column") or ""
+        if col:
+            # An ADD COLUMN is satisfied by the COLUMN being there. Its table
+            # almost always exists — that is exactly how publisher_url hid.
+            key = (o["table"], col)
+            name = f"{o['table']}.{col}"
+            if name not in [t["table"] for t in row["tables"]]:
+                row["tables"].append({
+                    "table": name,
+                    "exists": (columns or {}).get(key),
+                    "kind": "column",
+                })
+        elif o["table"] and o["table"] not in [t["table"] for t in row["tables"]]:
             row["tables"].append({"table": o["table"],
-                                  "exists": exists.get(o["table"])})
+                                  "exists": exists.get(o["table"]),
+                                  "kind": "table"})
     out = []
     for row in by_fn.values():
         states = [t["exists"] for t in row["tables"]]
@@ -186,7 +228,10 @@ _HOW_TO_READ = (
     "EXISTS = a migration or a pre-SKIP_DDL deploy created it; the lazy CREATE "
     "is dead weight — deleting it is the honest change, converting it is not. "
     "PARTIAL = one function, some tables present and some not. "
-    "UNKNOWN = we could not ask. It is not EXISTS."
+    "UNKNOWN = we could not ask. It is not EXISTS. "
+    "A row named table.column is an ALTER TABLE ... ADD COLUMN, judged on the "
+    "COLUMN: its table existing is not the question, and answering the table "
+    "question is how news_articles.publisher_url read as EXISTS for nine days."
 )
 
 
@@ -199,13 +244,16 @@ def audit_report(refresh: bool = False) -> dict:
         return {"ok": False, "error": s.get("error", "scan_failed")}
 
     c = _conn()
-    exists, db_err = {}, None
+    exists, columns, db_err = {}, {}, None
     if c is None:
         db_err = "no database — every verdict below is UNKNOWN, not EXISTS"
     else:
         try:
             with c.cursor() as cur:
                 exists = table_existence(cur, [o["table"] for o in s["frozen"]])
+                columns = column_existence(
+                    cur, [(o["table"], o.get("column") or "")
+                          for o in s["frozen"]])
         except Exception as e:  # noqa: BLE001
             db_err = f"existence query failed: {str(e)[:140]} — UNKNOWN, not EXISTS"
         finally:
@@ -214,7 +262,7 @@ def audit_report(refresh: bool = False) -> dict:
             except Exception:
                 pass
 
-    rows = verdicts(s["frozen"], exists)
+    rows = verdicts(s["frozen"], exists, columns)
     counts = {}
     for r in rows:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1

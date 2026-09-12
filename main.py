@@ -24813,6 +24813,68 @@ def agents_health():
         "timestamp": utc_iso_z()
     })
 
+def _ensure_submissions_table():
+    """Create `submissions` if Postgres says it is not there. Returns True when
+    the table is present afterwards.
+
+    ★ WHY THIS IS NOT IN discovery_nexus._init_db, WHERE THE CREATE LIVES.
+    That function runs on a cursor from `db_utils`, whose `PGCursorWrapper`
+    drops every CREATE TABLE while `SKIP_DDL` is set — and it defaults to on.
+    So the CREATE has never reached the database, `submissions` does not exist
+    (confirmed against production information_schema, 2026-09-11), and the
+    INSERT below has been failing for every caller of this route. Same
+    mechanism as the news_articles.publisher_url ALTER in #4438, which cost
+    nine days of ingest; this is the same class, on a public endpoint.
+
+    ★ AND WHY THE SCHEMA HERE IS NOT A COPY OF THAT ONE. discovery_nexus
+    declares `FOREIGN KEY (api_key) REFERENCES api_keys(key)`. Production
+    `api_keys` has no `key` column — it has `key_hash` — so that CREATE could
+    never have succeeded even with SKIP_DDL off, and both writers pass the
+    literal 'crowdsource' here, which is a tag rather than a key and would
+    satisfy no foreign key at all. Reproducing the constraint would trade
+    "relation does not exist" for "violates foreign key constraint" and read
+    as fixed. `api_key` is therefore a plain column, which is how it is used.
+
+    Runs on ddl_cursor() — a direct autocommit psycopg2 connection — because a
+    pooled one cannot execute this. Latched once per process: `CREATE TABLE IF
+    NOT EXISTS` is a no-op once the table exists but still requests ACCESS
+    EXCLUSIVE, and a pending exclusive request queues every later lock (see
+    util/ddl_once). Never raises: a submission endpoint must not 500 because a
+    schema probe failed.
+    """
+    from util.ddl_once import already_done, ensure_once_call
+    key = "submissions.table"
+
+    def _run():
+        from db_utils import ddl_cursor
+        with ddl_cursor() as cur:
+            cur.execute("SET lock_timeout = '5s'")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS submissions (
+                    id TEXT PRIMARY KEY,
+                    api_key TEXT,
+                    submission_type TEXT,
+                    data TEXT,
+                    status TEXT DEFAULT 'pending',
+                    reviewed_by TEXT,
+                    reviewed_at TEXT,
+                    submitted_at TEXT
+                )
+            """)
+            # ★ Verify by READING BACK. `IF NOT EXISTS` reports success whether
+            # or not it did anything, and this whole class of bug is a
+            # statement that appeared to run and did not.
+            cur.execute("SELECT 1 FROM information_schema.tables "
+                        "WHERE table_schema = 'public' AND table_name = 'submissions'")
+            if not cur.fetchone():
+                raise RuntimeError(
+                    "submissions still absent after CREATE TABLE — not latching")
+        logger.info("✅ submissions table present (verified via information_schema)")
+
+    ensure_once_call(key, _run)
+    return already_done(key)
+
+
 @app.route('/api/agents/enrichment/submit', methods=['POST'])
 def enrichment_submit():
     """Submit data enrichment"""
@@ -24820,6 +24882,11 @@ def enrichment_submit():
 
     if not data:
         return jsonify({'error': 'Data required'}), 400
+
+    # The table this INSERT names is created by discovery_nexus on a pooled
+    # cursor, which never ran it. Ask before writing, the way news_engine's
+    # save_articles asks before naming publisher_url.
+    _ensure_submissions_table()
 
     # Store submission
     conn = get_db()

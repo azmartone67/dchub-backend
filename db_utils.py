@@ -20,6 +20,74 @@ def _is_ddl(sql):
     stripped = sql.strip().upper()
     return any(stripped.startswith(p) for p in _DDL_PREFIXES)
 
+
+# ── the dropped-DDL log ───────────────────────────────────────────────────
+# ★ WHY THIS EXISTS. `PGCursorWrapper.execute` returns early for DDL and used
+# to do it in total silence: no raise, no log, no table. That is not a
+# hypothetical — `news_engine.init_news_db`'s
+# `ALTER TABLE news_articles ADD COLUMN IF NOT EXISTS publisher_url TEXT`
+# never reached Postgres, every INSERT naming the column failed, and news
+# intake ran at ~10 rows/day instead of ~157 FOR NINE DAYS while the sync log
+# said "172 new articles inserted" (#4438).
+#
+# Nine days is the cost of silence, not the cost of the skip. The skip itself
+# stays: SKIP_DDL has been on by default for a long time and ~57 functions
+# have been running against that default, so turning it off would execute 212
+# frozen statements at once. What changes here is only that the drop becomes
+# VISIBLE — one WARNING per distinct call site, greppable on a fixed token, so
+# the next one shows up in the first deploy's logs rather than nine days later
+# in a row count.
+#
+# Deduped by call site: these fire from boot-time init functions, several of
+# which run per-worker, and an un-deduped line per statement would be noise
+# that gets tuned out — which is how you get back to silence by another route.
+_DDL_DROPPED_SEEN = set()
+_DDL_DROPPED_TOKEN = "DDL-DROPPED"
+
+
+def _ddl_dropped_callsite():
+    """The first frame outside db_utils — the code that wrote the DDL.
+
+    Without it the warning names this module for all 212 statements, which
+    tells you the trap exists but not who walked into it.
+    """
+    try:
+        import sys as _sys
+        f = _sys._getframe(1)
+        here = __file__
+        while f is not None:
+            fn = f.f_code.co_filename
+            if fn != here:
+                return "%s:%d in %s" % (os.path.basename(fn), f.f_lineno,
+                                        f.f_code.co_name)
+            f = f.f_back
+    except Exception:
+        pass
+    return "unknown caller"
+
+
+def _log_dropped_ddl(sql):
+    """Say, once per call site, that a statement was thrown away.
+
+    Never raises: this is a diagnostic on a path that is already degrading,
+    and a logging bug must not become a database bug.
+    """
+    try:
+        site = _ddl_dropped_callsite()
+        flat = " ".join((sql or "").split())
+        key = (site, flat[:80])
+        if key in _DDL_DROPPED_SEEN:
+            return
+        _DDL_DROPPED_SEEN.add(key)
+        logger.warning(
+            "%s: %s — this statement was NOT sent to the database. "
+            "SKIP_DDL is on (default) and this cursor is pooled, so the object "
+            "it creates will not exist and the first query naming that object "
+            "will fail. Run it on db_utils.ddl_cursor() instead. Dropped at %s",
+            _DDL_DROPPED_TOKEN, flat[:160], site)
+    except Exception:
+        pass
+
 SQLITE_TO_PG_FUNC = {
     "datetime('now', '-7 days')": "(NOW() - INTERVAL '7 days')",
     "datetime('now', '-30 days')": "(NOW() - INTERVAL '30 days')",
@@ -187,6 +255,7 @@ class PGCursorWrapper:
 
     def execute(self, sql, params=None):
         if _is_ddl(sql):
+            _log_dropped_ddl(sql)
             return self
 
         translated, param_count = _translate_sql(sql)

@@ -115,6 +115,9 @@
     "test_dcpi_verdict_bands.py": {
       "walk": 80
     },
+    "test_ddl_audit_sees_columns.py": {
+      "walk": 80
+    },
     "test_ddl_through_pool.py": {
       "walk": 80
     },
