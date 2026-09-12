@@ -43,6 +43,35 @@ def cmd_mint(args):
     developer_id = f"dev_{secrets.token_hex(8)}"
     metadata     = {"note": args.note} if args.note else {}
 
+    # ── the binding this mint asserts (2026-09-12) ──────────────────────────
+    # #4428 made paid MCP tier follow a CONFIRMED email binding:
+    # metadata.email_verified_for must NAME the address being granted on, or no
+    # email match may lift a key's tier. A hand-mint is that assertion — an
+    # operator typed this address and this tier at a terminal holding the
+    # production DSN. It is the same evidence as 'entitlement_reconcile_manual',
+    # which IS on the backfill's proven list; the only reason a CLI mint did not
+    # count was that this function wrote no provenance at all.
+    #
+    # Consequences of the omission, both real: every key minted here landed in
+    # reconcile-keys' legacy_unverified_paid_keys audit permanently (8 of the 52
+    # found on 2026-09-11 were from this path), and the checkout webhook's tier
+    # write — which is NOT upgrade-only, so it is what carries a pro→enterprise
+    # PLAN CHANGE — could never reach them.
+    #
+    # Stamped for every tier, not just paid. On a free mint it means a later
+    # genuine payment upgrades THIS key instead of issuing the buyer a second
+    # one. It grants nothing an operator could not already do directly: anyone
+    # who can run this can pass --tier paid.
+    #
+    # Lowercased, because every consumer compares LOWER(marker) to LOWER(email).
+    metadata["source"] = "cli_mint"
+    _bound = (args.email or "").strip().lower()
+    if _bound:
+        metadata["email_verified_for"] = _bound
+        metadata["email_verified_at"] = datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        metadata["email_verified_via"] = "cli_mint"
+
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             """INSERT INTO mcp_dev_keys
