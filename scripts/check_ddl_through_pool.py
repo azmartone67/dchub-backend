@@ -281,6 +281,46 @@ def target_table(stmt: str) -> str:
     return ""
 
 
+# The negative lookahead is load-bearing. Without it, a statement whose
+# `IF NOT EXISTS` is cut short — by truncation, or simply written without a
+# following column — captures "IF" as the column name, and a garbage name gets
+# probed against information_schema and reported permanently MISSING.
+_ADD_COL_RE = re.compile(
+    r"\bADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(?!IF\b|NOT\b|EXISTS\b|COLUMN\b)[\"']?([A-Za-z_][\w$]*)", re.I)
+# PostgreSQL lets you omit the COLUMN keyword. Excluded words are the other
+# things ADD can introduce, none of which is a column.
+_ADD_BARE_RE = re.compile(
+    r"\bADD\s+(?!COLUMN\b|CONSTRAINT\b|PRIMARY\b|UNIQUE\b|FOREIGN\b|CHECK\b|EXCLUDE\b"
+    r"|IF\b|NOT\b|EXISTS\b)[\"']?([A-Za-z_][\w$]*)", re.I)
+
+
+def target_column(stmt: str) -> str:
+    """The column an ALTER TABLE adds, or "" for any other statement.
+
+    ★ WHY THIS IS NOT DERIVED FROM THE STORED SNIPPET. The snippet kept on each
+    offence is `stmt.split("\n")[0][:70]` — first line, 70 characters. The
+    column name is the LAST thing in an ADD COLUMN, so for anything longer than
+    a short one-liner it is exactly what the truncation removes. Deriving the
+    column later, from the snippet, would silently return "" for the long
+    statements and report them as table-only — which is the blindness this was
+    added to remove.
+
+    ★ AND WHY THE COLUMN MATTERS AT ALL. `routes/ddl_audit.py` used to ask only
+    whether the TABLE existed. For
+    `ALTER TABLE news_articles ADD COLUMN publisher_url TEXT` the answer was
+    YES — news_articles has existed for a long time — so the audit reported
+    EXISTS while the column was missing and every INSERT naming it failed
+    (#4438, nine days). A register keyed one level coarser than the defect
+    cannot see the defect.
+    """
+    flat = " ".join((stmt or "").split())
+    if not flat.upper().startswith("ALTER TABLE"):
+        return ""
+    m = _ADD_COL_RE.search(flat) or _ADD_BARE_RE.search(flat)
+    return m.group(1).lower() if m else ""
+
+
 def _ddl_statements(node):
     """DDL in a string-ish expression, as (snippet, table) pairs.
 
@@ -302,7 +342,8 @@ def _ddl_statements(node):
     for stmt in text.split(";"):
         s = stmt.strip().upper()
         if any(s.startswith(p) for p in _DDL_PREFIXES):
-            out.append((stmt.strip().split("\n")[0][:70], target_table(stmt)))
+            out.append((stmt.strip().split("\n")[0][:70], target_table(stmt),
+                        target_column(stmt)))
     return out
 
 
@@ -337,11 +378,11 @@ class _FnScan(ast.NodeVisitor):
             self.direct = True
         if kind == "pooled" and name in POOLED_EXECUTORS:
             for arg in node.args[:3]:
-                for snip, tbl in _ddl_statements(arg):
-                    self.executor_ddl.append((node.lineno, snip, tbl))
+                for snip, tbl, col in _ddl_statements(arg):
+                    self.executor_ddl.append((node.lineno, snip, tbl, col))
         if name in ("execute", "executescript", "executemany") and node.args:
-            for snip, tbl in _ddl_statements(node.args[0]):
-                self.ddl.append((node.lineno, snip, tbl))
+            for snip, tbl, col in _ddl_statements(node.args[0]):
+                self.ddl.append((node.lineno, snip, tbl, col))
         self.generic_visit(node)
 
 
@@ -389,10 +430,10 @@ def scan_source(src: str, path: str = "<src>"):
     for qual, s in scans.items():
         direct = s.direct or bool(s.calls & local_direct)
         pooled = bool(s.pooled) or bool(s.calls & local_pooled)
-        for lineno, snip, tbl in s.executor_ddl:
+        for lineno, snip, tbl, col in s.executor_ddl:
             offences.append({
                 "path": path, "line": lineno, "function": qual, "sql": snip,
-                "table": tbl,
+                "table": tbl, "column": col,
                 "why": "DDL handed to a db_utils safe_* helper, which always "
                        "runs on the wrapped cursor",
             })
@@ -405,10 +446,10 @@ def scan_source(src: str, path: str = "<src>"):
         via = (", ".join("db_utils." + n for n in sorted(s.pooled))
                if s.pooled else "a local helper that returns a db_utils "
                                 "connection")
-        for lineno, snip, tbl in s.ddl:
+        for lineno, snip, tbl, col in s.ddl:
             offences.append({
                 "path": path, "line": lineno, "function": qual, "sql": snip,
-                "table": tbl,
+                "table": tbl, "column": col,
                 "why": f"DDL on a cursor from {via}",
             })
     return offences
