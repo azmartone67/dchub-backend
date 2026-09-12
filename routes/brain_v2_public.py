@@ -481,8 +481,6 @@ _PUBLIC_BRAIN_HEAD = (
 )
 
 
-@brain_v2_public_bp.route("/brain-live", methods=["GET"])  # PUBLIC sanitized view — distribute.html "Watch brain evolve" + page-monitors land here.
-@brain_v2_public_bp.route("/brain/public", methods=["GET"])
 def grade_score_text(weighted_score, esc=None) -> str:
     """The " · 3.3/4" suffix beside the letter grade, or "" when there is no
     score.
@@ -505,6 +503,8 @@ def grade_score_text(weighted_score, esc=None) -> str:
     return f" · {esc(txt) if esc else txt}/{scale}"
 
 
+@brain_v2_public_bp.route("/brain-live", methods=["GET"])  # PUBLIC sanitized view — distribute.html "Watch brain evolve" + page-monitors land here.
+@brain_v2_public_bp.route("/brain/public", methods=["GET"])
 def brain_public_page():
     """PUBLIC, sanitized brain-evolution view — no admin key required."""
     from flask import current_app
