@@ -429,22 +429,51 @@ class APIAutoDiscovery:
         conn.close()
 
     def seed_known_apis(self) -> Dict:
-        results = {'added': 0, 'existing': 0}
+        results = {'added': 0, 'existing': 0, 'no_url': 0}
 
         conn = get_db(self.db_path)
         cursor = conn.cursor()
 
         for api in KNOWN_API_SOURCES:
+            # ★ A seed with no url is SKIPPED, not inserted. `url TEXT UNIQUE`
+            # does not constrain NULLs — Postgres treats every NULL as distinct —
+            # so a null-url seed conflicts with nothing and was re-inserted on
+            # EVERY run, growing discovered_apis by one row forever. No
+            # ON CONFLICT can catch it, targeted or not. It is also dead data:
+            # test_api() needs a url, so such a row can never be verified.
+            # KNOWN_API_SOURCES[0] 'HIFLD Electric Substations' is one today —
+            # measured against a real Postgres, run 2 of the seeder stored a
+            # 14th row for 13 sources.
+            if not api.get('url'):
+                results['no_url'] += 1
+                continue
             try:
+                # ★ `existing` was UNREACHABLE. A plain INSERT either affects one
+                # row or RAISES, so `cursor.rowcount > 0` was always true and the
+                # else branch never ran: results['existing'] was permanently 0
+                # and a seed that was already present fell into the except below,
+                # counted as neither added nor existing. ON CONFLICT DO NOTHING
+                # turns "already there" into a row the loop can SEE rather than
+                # an exception, and RETURNING makes the two outcomes distinct —
+                # a rowcount could not, because through the pooled wrapper it
+                # describes the wrapper's own SELECT lastval() (#4453).
+                # ★ NO conflict target. `ON CONFLICT (url)` would need a unique
+                # constraint on url to exist in the LIVE table, and the CREATE
+                # TABLE above declaring `url TEXT UNIQUE` runs through a pooled
+                # cursor, which drops DDL when SKIP_DDL=1 (its default) — so that
+                # declaration is not evidence. Untargeted DO NOTHING matches
+                # whatever unique constraints the table actually has and cannot
+                # raise 42P10 for a target that is not there.
                 cursor.execute('''
                     INSERT INTO discovered_apis
                     (name, category, api_type, url, record_count, fields, status)
                     VALUES (%s, %s, %s, %s, %s, %s, 'verified')
+                    ON CONFLICT DO NOTHING RETURNING 1
                 ''', (
                     api['name'], api['category'], api['type'],
                     api['url'], api['record_count'], json.dumps(api['fields'])
                 ))
-                if cursor.rowcount > 0:
+                if cursor.fetchone() is not None:
                     results['added'] += 1
                 else:
                     results['existing'] += 1

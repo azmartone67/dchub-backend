@@ -601,14 +601,17 @@ class AutonomousBrain:
                                 operator = 'news-extracted'
                                 source_id = f"news_gas_{int(hashlib.sha1(str(article['source_url'] or name).encode()).hexdigest()[:12], 16)}"
                                 try:
+                                    # RETURNING: the count is rows handed back, not
+                                    # a rowcount the wrapper's own SELECT lastval()
+                                    # had already overwritten (#4453).
                                     wcur.execute("""
                                         INSERT INTO gas_pipelines
                                         (name, operator, pipeline_type, status, source, source_id)
                                         VALUES (%s, %s, %s, %s, %s, %s)
-                                        ON CONFLICT (name, operator) DO NOTHING
+                                        ON CONFLICT (name, operator) DO NOTHING RETURNING 1
                                     """, (name, operator, 'discovered', 'active',
                                           'news_extraction', source_id[:100]))
-                                    if wcur.rowcount and wcur.rowcount > 0:
+                                    if wcur.fetchone() is not None:
                                         results['added'] += 1
                                     conn.commit()
                                 except Exception as ins_err:
@@ -672,14 +675,15 @@ class AutonomousBrain:
                             if name:
                                 hifld_id = f"news_{int(hashlib.sha1(str(article['source_url'] or name).encode()).hexdigest()[:12], 16)}"
                                 try:
+                                    # RETURNING: see the gas_pipelines writer above.
                                     wcur.execute("""
                                         INSERT INTO transmission_lines
                                         (hifld_id, name, operator, status, line_type, source)
                                         VALUES (%s, %s, %s, %s, %s, %s)
-                                        ON CONFLICT (hifld_id) DO NOTHING
+                                        ON CONFLICT (hifld_id) DO NOTHING RETURNING 1
                                     """, (hifld_id[:50], name, 'news-extracted',
                                           'operational', 'discovered', 'news_extraction'))
-                                    if wcur.rowcount and wcur.rowcount > 0:
+                                    if wcur.fetchone() is not None:
                                         results['added'] += 1
                                     conn.commit()
                                 except Exception as ins_err:
