@@ -93,11 +93,43 @@ def real_city(fac: dict) -> str:
 
 
 def evidence(fac: dict) -> dict:
-    """Which indexable facts this facility actually carries."""
+    """Which indexable facts this facility actually carries.
+
+    ★★★ r-mw-one-owner (2026-09-12). "carries" means WHAT THE PAGE RENDERS, not
+    what the column holds. `power` therefore asks
+    util.facility_headline.plausible_mw, the single owner of the plausibility
+    cap, and NOT `_has` — because a capacity above that cap is suppressed from
+    every surface the reader or a crawler can see: the SERP title, the body
+    stat tile, the narrative, this module's own LANE-2 context_block, the
+    comparables peer annotation, and facility_measures (which feeds both the
+    inline Dataset JSON-LD and the /facilities/<slug>.json twin).
+
+    Measured live 2026-09-12 against the published sitemap (18,880 facility
+    URLs) and the rows behind it (47,695 across both tables): 17 published
+    pages had NO city, NO street address and NO coordinates, so an implausible
+    power_mw was the whole of their evidence. All 17 render exactly three stat
+    tiles — Power, Status, Country — and a LANE-2 block whose only row is
+    "Reported capacity". Suppress the capacity and Status + Country is all that
+    is left, i.e. precisely the page LANE 3 exists to noindex; `_has` kept
+    every one of them `index, follow` and in BOTH sitemap families.
+
+    ★ ASK THE FUNCTION, do not re-spell `<= MW_PLAUSIBLE_MAX`. A second copy of
+      that comparison is the original defect — the cap existed and exactly one
+      surface consulted it. See plausible_mw's docstring for the census.
+    ★ The import is function-level, like context_block's below: this module is
+      imported BY util.facility_headline (is_placeholder_city, at its own
+      function level), so a module-level import here would close that cycle.
+    ★ SUPPRESSION, NOT DELETION, unchanged: the row keeps its power_mw, the
+      page keeps serving 200 at its frozen slug, and the facility qualifies
+      again the moment it gains any one of the four — including a corrected
+      capacity that lands under the cap.
+    """
+    from util.facility_headline import plausible_mw as _plausible_mw
+
     lat = fac.get("latitude", fac.get("lat"))
     lng = fac.get("longitude", fac.get("lon", fac.get("lng")))
     return {
-        "power": _has(fac.get("power_mw")),
+        "power": _plausible_mw(fac.get("power_mw")) is not None,
         "coords": _has(lat) and _has(lng),
         "address": _has(fac.get("address")),
         "city": bool(real_city(fac)),
@@ -151,6 +183,16 @@ def contentless_slug_set(cursor) -> set:
       the richest row serves the page, and that page is not noindexed.
     ★ Returns an EMPTY set on failure or on an implausible result. The caller's
       contract is "empty means emit everything", i.e. exactly today's sitemap.
+
+    ★ 2026-09-12, r-mw-one-owner: this set grew by 17 when `evidence` stopped
+      counting a capacity above MW_PLAUSIBLE_MAX — see evidence's docstring for
+      the census. Measured twice, 20 minutes apart, against the live rows:
+      1,462 -> 1,479 and 1,463 -> 1,480, the SAME 17 slugs both times and none
+      leaving. 17 URLs left each published family (gated 6,840 -> 6,823, ai
+      18,880 -> 18,863): both are built from this one loop, so the ungated set
+      stays a superset of the gated one and #4459's guard is unmoved, and both
+      sit far above #4467's per-family floors (4,598 / 12,495). The blast-radius
+      cap below is nowhere near it either — 1,480 of 47,695 rows is 3.1%.
     """
     # measured rate is ~4% of rows; a quarter of the corpus is ~6x that and
     # means the evidence columns went missing, not that the corpus went empty
