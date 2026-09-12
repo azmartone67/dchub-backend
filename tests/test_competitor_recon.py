@@ -1,40 +1,30 @@
 """Unit tests for routes/competitor_recon.py — pure functions only.
 
 No network, no database, no main import (house rule). Flask is stubbed
-if absent so these run anywhere.
+if absent — through tests._import_shims.real_or_stub, which puts it back — so
+these run anywhere without shadowing the library for the rest of the session.
 """
 
 import os
 import sys
-import types
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-try:  # pragma: no cover
-    import flask  # noqa: F401
-except Exception:  # minimal stub — module only needs Blueprint at import
-    fake = types.ModuleType("flask")
+# ★ 2026-09-12. The fallback stub used to be assigned straight into
+# sys.modules at module scope and never removed. It asked the right question
+# (`try: import flask`, so it never fires where flask is installed) but had no
+# way to undo itself, so in a flask-less checkout it would shadow the library
+# for every module collected afterwards. real_or_stub keeps the fallback and
+# takes it back out again. See tests/_import_shims.py.
+from tests._import_shims import real_or_stub  # noqa: E402
 
-    class _BP:
-        def __init__(self, *a, **k):
-            pass
-
-        def route(self, *a, **k):
-            def deco(f):
-                return f
-            return deco
-
-    fake.Blueprint = _BP
-    fake.jsonify = lambda *a, **k: {}
-    fake.request = None
-    sys.modules["flask"] = fake
-
-from routes.competitor_recon import (  # noqa: E402
-    AXES, TARGETS, ai_access_score, assess_target, build_target_row,
-    parse_feed_velocity, parse_home, parse_robots, planned_fetches,
-    render_report_md, synthesize,
-)
+with real_or_stub("flask"):
+    from routes.competitor_recon import (  # noqa: E402
+        AXES, TARGETS, ai_access_score, assess_target, build_target_row,
+        parse_feed_velocity, parse_home, parse_robots, planned_fetches,
+        render_report_md, synthesize,
+    )
 
 ROBOTS_BLOCKING = """
 User-agent: GPTBot
