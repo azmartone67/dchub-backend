@@ -52,7 +52,7 @@ def _mint(conn, token, key):
         cur.execute("""INSERT INTO mcp_topups
                          (topup_token, api_key_hash, credits, price_cents,
                           credits_remaining, referring_agent)
-                       VALUES (%s, %s, 50, 500, 50, 'claude')
+                       VALUES (%s, %s, 50, 500, 50, 'claude') ON CONFLICT DO NOTHING
                        RETURNING source, paid_at, expires_at - created_at""",
                     (token, mcp._hash_key(key)))
         # the premise: an unpaid token carries a 30-minute checkout window
