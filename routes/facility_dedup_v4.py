@@ -63,7 +63,7 @@ WHAT IT WRITES, AND WHAT IT DELIBERATELY DOES NOT
                            facilities.id). It already canonicalises correctly
                            via routes/facility_profile_page._drained_twin_url
                            and is already dropped from the sitemap by
-                           main._drained_keeper — 3,667 of the 3,989 groups.
+                           main._drained_twin_slugs — 3,667 of the 3,989 groups.
                            Nothing to write; writing anything would be inventing
                            a second, disagreeing pointer.
 
