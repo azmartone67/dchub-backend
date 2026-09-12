@@ -47,6 +47,7 @@ from functools import wraps
 from flask import Blueprint, jsonify, request
 from util.ddl_once import ensure_once  # a no-op ALTER still takes ACCESS EXCLUSIVE
 from utils.anthropic_helper import anthropic_messages_url
+from internal_auth import require_internal_or_admin
 from routes._swallowed_writes import note_swallowed_write
 from util.json_column import json_for_column
 from utc_clock import utc_now
@@ -65,11 +66,11 @@ MARKETING_MODEL = os.environ.get("DCHUB_MARKETING_MODEL", "claude-sonnet-4-5")
 # same model brain_narrative already uses successfully.
 MARKETING_MODEL_FALLBACK = os.environ.get(
     "DCHUB_MARKETING_MODEL_FALLBACK", "claude-haiku-4-5-20251001")
-# .strip() — a trailing newline on the Railway env var (dashboards add
-# one when you paste) would make EVERY admin call 401, since the
-# comparison below is exact. Same whitespace footgun fixed for the
-# LinkedIn/X tokens in PR #110.
-ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+# r-sec (2026-09-11): the module-level ADMIN_KEY snapshot that used to live
+# here is GONE — see _require_admin below. The whitespace footgun it existed
+# to .strip() (a trailing newline on the Railway env var would have made every
+# admin call 401) is handled on both sides by internal_auth._clean_key, which
+# also survives a shell path pasted after the value.
 DATABASE_URL = os.environ.get("DATABASE_URL")
 # Phase QQ+16 (2026-05-13): module-level RESEND_API_KEY. The
 # linkedin_send_daily_email handler references this name unqualified,
@@ -77,19 +78,47 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 # fire raised NameError("name 'RESEND_API_KEY' is not defined") and
 # the LinkedIn email for today's DCPI press release (Cheyenne, WY
 # Tops DCPI Excess Power Index) never went out. Defining it here
-# matches the existing pattern used by ANTHROPIC_API_KEY / ADMIN_KEY
-# above. When Railway has DCHUB_RESEND_API_KEY set, this becomes the
+# matches the existing pattern used by ANTHROPIC_API_KEY /
+# MARKETING_MODEL above. When Railway has DCHUB_RESEND_API_KEY set, this becomes the
 # Bearer token in the Resend API call.
 RESEND_API_KEY = os.environ.get("DCHUB_RESEND_API_KEY", "")
 
 
 def _require_admin(fn):
+    """Fail-CLOSED admin gate for the five routes below.
+
+    r-sec (2026-09-11): this wrapper used to read
+
+        provided = (request.headers.get("X-Admin-Key")
+                    or request.args.get("admin_key") or "").strip()
+        if ADMIN_KEY and provided != ADMIN_KEY:
+            return jsonify(error="unauthorized"), 401
+
+    with ADMIN_KEY an IMPORT-TIME snapshot of DCHUB_ADMIN_KEY. Two holes, both
+    the class #4411 fixed in the brain crons:
+
+      1. FAIL OPEN. `if ADMIN_KEY and ...` — on a process whose env lacks the
+         var the snapshot is "", the condition is False, and EVERY route this
+         decorates ran the body for anyone. auto-generate reaches ping_indexnow;
+         publish-now and repost-now reach _post_to_linkedin and the X publisher.
+         Latent in prod (the key IS set there), live the moment it is not —
+         dchub-worker was in exactly that state on 2026-08-08.
+      2. STALE SNAPSHOT. Even with a key set, the value is frozen at import, so
+         a rotated or late-bound DCHUB_ADMIN_KEY is never picked up: the new key
+         is refused and the retired one keeps working until the process restarts.
+
+    require_internal_or_admin re-reads os.environ PER REQUEST (no snapshot, so
+    a rotation takes effect immediately) and denies unless a real credential
+    arrives in a repo-standard slot: X-Internal-Key, X-Admin-Key or ?admin_key.
+    That is a SUPERSET of the X-Admin-Key + ?admin_key this used to accept, so
+    every caller keeps working unchanged — evolve-cron.yml, publish-verify.yml,
+    repost-now.yml and linkedin-whoami.yml all send X-Admin-Key: $DCHUB_ADMIN_KEY,
+    as do dchub-scheduler.py api_call() and press_publisher_restart.py. Nothing
+    in the repo calls these five routes with ?key=, the one slot it does not read.
+    """
     @wraps(fn)
     def w(*a, **kw):
-        # .strip() the caller's value too — curl/shell vars frequently
-        # carry a trailing newline, which would never match otherwise.
-        provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key") or "").strip()
-        if ADMIN_KEY and provided != ADMIN_KEY:
+        if not require_internal_or_admin(request):
             return jsonify(error="unauthorized",
                            hint="X-Admin-Key header required"), 401
         return fn(*a, **kw)

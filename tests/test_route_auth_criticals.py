@@ -510,8 +510,9 @@ _INDEXNOW_SINKS = frozenset({"submit_to_indexnow", "ping_indexnow",
                              "ping_new_facilities"})
 _INDEXNOW_GATES = frozenset({"require_internal_or_admin", "_admin_ok"})
 # A decorator with one of these names counts as a gate here. Whether it fails
-# CLOSED is tests/test_admin_gate_fail_closed.py's ratchet (marketing_engine's
-# _require_admin is on it), not this test's.
+# CLOSED is tests/test_admin_gate_fail_closed.py's ratchet, not this test's --
+# marketing_engine's _require_admin was on that baseline until 2026-09-11, when
+# it moved to require_internal_or_admin (tests/test_marketing_admin_gate_fail_closed.py).
 _INDEXNOW_GATE_DECORATORS = frozenset({"require_internal_or_admin",
                                        "_require_admin"})
 _ROUTE_DECORATORS = frozenset({"route", "get", "post", "put", "patch", "delete"})
