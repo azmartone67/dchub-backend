@@ -12298,6 +12298,92 @@ def check_review_gate_never_disagrees() -> list[dict]:
         return []                          # UNMEASURED — never a clean pass
 
 
+# Public brain pages are DERIVED, not listed: a route in brain_v2_public.py whose
+# view never calls _pub_admin_ok() is served to anonymous visitors — the same
+# seat fast-QA probes from.
+_BRAIN_PUBLIC_ROUTES_FILE = "routes/brain_v2_public.py"
+_BRAIN_ADMIN_GATE_FN = "_pub_admin_ok"
+
+
+def derive_public_brain_pages(src: str) -> list:
+    """Concrete GET routes whose view never calls the brain admin gate.
+
+    Parameterised rules are skipped (not a single URL a probe can fetch), as
+    are routes that do not accept GET."""
+    import ast as _ast
+    pages = set()
+    for node in _ast.walk(_ast.parse(src)):
+        if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            continue
+        rules = []
+        for d in node.decorator_list:
+            if not (isinstance(d, _ast.Call) and isinstance(d.func, _ast.Attribute)
+                    and d.func.attr == "route" and d.args
+                    and isinstance(d.args[0], _ast.Constant)
+                    and isinstance(d.args[0].value, str)):
+                continue
+            methods = ["GET"]
+            for kw in d.keywords:
+                if kw.arg == "methods":
+                    try:
+                        methods = [str(m).upper() for m in _ast.literal_eval(kw.value)]
+                    except Exception:
+                        methods = []
+            if "GET" in methods:
+                rules.append(d.args[0].value)
+        if not rules:
+            continue
+        gated = any(isinstance(c, _ast.Call) and isinstance(c.func, _ast.Name)
+                    and c.func.id == _BRAIN_ADMIN_GATE_FN
+                    for c in _ast.walk(node))
+        if gated:
+            continue
+        pages.update(r for r in rules if "<" not in r)
+    return sorted(pages)
+
+
+def check_brain_public_pages_are_fast_qa_watched() -> list[dict]:
+    """Is every public brain page on fast-QA's probe list?
+
+    ★ WHY (2026-09-12). /brain-live and /brain/public returned 500 for about
+    40 minutes after a helper was inserted between their route decorators and
+    their view. Nothing noticed. fast-QA, every ~30 min, reported healthy
+    through the outage because neither URL was on its curated list; the L11 QA
+    agent meant to sweep every public surface had been disabled since
+    2026-05-19. The brain's own public scorecard was watched by nothing.
+
+    Derived rather than listed, so a NEW public brain page fires this until it
+    is added to fast-QA instead of silently joining the unwatched set.
+    Unreadable source, an empty derivation, or an import failure returns [] —
+    UNMEASURED, never a clean pass.
+    """
+    try:
+        import os as _os
+        root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        with open(_os.path.join(root, _BRAIN_PUBLIC_ROUTES_FILE), encoding="utf-8") as fh:
+            pages = derive_public_brain_pages(fh.read())
+        if not pages:
+            return []                      # UNMEASURED — derivation found nothing
+        from routes.brain_fast_qa import _PUBLIC_URLS
+        watched = set(_PUBLIC_URLS)
+        missing = [p for p in pages if p not in watched]
+        if not missing:
+            return []
+        return [{
+            "issue": "brain_public_page_unwatched",
+            "url": "dchub://brain/fast-qa/url-list",
+            "count": len(missing),
+            "detail": (
+                f"{len(missing)} public brain page(s) are not on fast-QA's probe "
+                f"list, so an outage on them goes unnoticed: {', '.join(missing)}. "
+                "Add them to routes/brain_fast_qa.py _PUBLIC_URLS (with a "
+                "_URL_TIMEOUTS entry if their cold latency is near the default "
+                "timeout)."),
+        }]
+    except Exception:
+        return []                          # UNMEASURED — never a clean pass
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues.
@@ -12311,6 +12397,9 @@ def scan_all() -> list[dict]:
                # rejections across 293 decisions while the grade scored that
                # 4/4 — a can't-fail signature nothing was watching.
                check_review_gate_never_disagrees,
+               # 2026-09-12: /brain-live 500'd for ~40 min and no QA
+               # system was watching the brain's own public pages.
+               check_brain_public_pages_are_fast_qa_watched,
                # r-preempt (2026-06-16): anti-fabrication PRE-EMPTION detectors —
                # catch over-claim floors + parallel-stale metric surfaces (the
                # class the freshness/breakage/placeholder detectors are blind to).

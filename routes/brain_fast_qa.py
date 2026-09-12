@@ -49,8 +49,8 @@ brain_fast_qa_bp = Blueprint("brain_fast_qa", __name__)
 
 _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
 
-# Curated high-value public URLs. Kept SMALL (≤12) and tight-timeout so a
-# single sweep holds one worker for <~20s on the 1-replica backend — a cron
+# Curated high-value public URLs. Kept SMALL (≤14) so a sweep stays well
+# inside gunicorn's --timeout (worst-case budget at _URL_TIMEOUTS) — a cron
 # every 30 min is not "hammering". Each is a surface whose breakage would be
 # customer- or revenue-visible. Mix of HTML pages + JSON endpoints + the two
 # CF-worker-served paths (/mcp, /.well-known/mcp.json) so the sweep exercises
@@ -68,10 +68,40 @@ _PUBLIC_URLS = [
     "/sitemap.xml",
     "/daily",
     "/api/v1/brain/action-queue",
+    # 2026-09-12: the brain's own public scorecard. Both returned 500 for
+    # ~40 min that day and this sweep reported healthy throughout — neither
+    # was on the list. One view serves both; both are listed because a
+    # later edit can split the routes.
+    "/brain-live",
+    "/brain/public",
 ]
 
 _BASE = "https://dchub.cloud"
-_PER_URL_TIMEOUT = 4  # seconds; total worst-case ~ len(_PUBLIC_URLS) * timeout
+_PER_URL_TIMEOUT = 4  # seconds — the default for every URL not in _URL_TIMEOUTS
+
+# ★ 2026-09-12 — per-URL budgets, measured rather than assumed. A healthy URL
+# whose latency sits near the 4s default is filed as a HIGH "fetch error"
+# outage on its slow runs: /api/v1/mcp/funnel has been exactly that finding for
+# 77 days while returning 200. Sampled 8x over 10 min from outside, through the
+# edge, cache-busted:
+#   /api/v1/mcp/funnel  3.27-6.53s  (3 of 8 over the 4s default)
+#   /brain-live         2.20-4.99s  (cold render; per-replica cache, 300s TTL)
+#   /brain/public       0.62-2.89s  (same view as /brain-live — same budget)
+# Each budget is ~2x its worst sample. Worst case for a whole sweep with every
+# URL timing out: 11x4 + 10 + 10 + 13 = 77s, plus the 8s freshness read = 85s —
+# inside gunicorn's --timeout 120 (start_web.sh), which would otherwise kill the
+# request, and the findings it was about to persist, on exactly the run where
+# the site is down. tests/test_brain_speedup_smoke.py re-derives this budget.
+_URL_TIMEOUTS = {
+    "/api/v1/mcp/funnel": 13,
+    "/brain-live": 10,
+    "/brain/public": 10,
+}
+
+
+def url_timeout(path: str) -> int:
+    """The read budget for one curated URL."""
+    return _URL_TIMEOUTS.get(path, _PER_URL_TIMEOUT)
 
 
 # ── persistence of last-run summary (process-local, cheap) ──────────────
@@ -114,7 +144,7 @@ def _check_urls() -> tuple[list[dict], list[dict]]:
     for path in _PUBLIC_URLS:
         url = _BASE + path
         try:
-            r = sess.get(url, timeout=_PER_URL_TIMEOUT, allow_redirects=True)
+            r = sess.get(url, timeout=url_timeout(path), allow_redirects=True)
             status = r.status_code
             if status == 429:
                 # Defense in depth: even if the exemption headers stop
@@ -139,7 +169,7 @@ def _check_urls() -> tuple[list[dict], list[dict]]:
             problems.append({
                 "path": path,
                 "status": "ERR",
-                "detail": f"[HIGH] fetch error on {path}: {str(e)[:120]}",
+                "detail": f"[HIGH] fetch error on {path} (budget {url_timeout(path)}s): {str(e)[:120]}",
             })
     return problems, rate_limited
 
