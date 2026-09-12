@@ -16,13 +16,55 @@ name: What's New post-deploy purge
 on:
   push:
     branches: [main]
+    # ★★★ 2026-09-12 — THIS NAMED FOUR MODULES AND THE FEED READS EIGHTEEN.
+    #
+    # The comment above says this runs "when a push changes what the feed
+    # publishes". It listed four files. /api/v1/whats-new is served by
+    # routes/infra_growth.whats_new, and slicing that handler's import graph
+    # returns 18 modules — SIXTEEN of them were absent here, including
+    # util/deals, routes/dcpi, routes/claim_ledger and util/status_taxonomy.
+    # A push changing one of those changed the feed, purged nothing, and left
+    # dchub.cloud/whats-new serving the old copy for up to the zone TTL of
+    # 3600s. Exactly the failure sitemap-snapshot.yml was fixed for in #4506,
+    # found by sweeping every push paths: filter in this directory afterwards.
+    #
+    # ★ DERIVED, NOT REMEMBERED. scripts/workflow_trigger_modules.py holds the
+    # entry point and the two escape hatches; tests/
+    # test_workflow_trigger_paths_match_imports.py fails CI when this list and
+    # the import graph disagree. Regenerate with:
+    #     python3 scripts/workflow_trigger_modules.py --workflow whats-new-post-deploy-purge.yml
+    #
+    # ★ TWO ENTRIES ARE NOT IMPORTS AND CANNOT BE DERIVED:
+    #   data/platform_updates.json      published_updates reads it off disk via
+    #                                   STORE_PATH; editing it changes the feed
+    #                                   with no code change at all.
+    #   routes/capability_announcements.py  authors that JSON. The feed never
+    #                                   imports it — over-broad, kept because a
+    #                                   spurious purge is cheap. Stated, not hidden.
     paths:
-      - data/platform_updates.json
-      - routes/platform_updates.py
-      - routes/capability_announcements.py
-      - routes/infra_growth.py
-      - scripts/purge_whats_new_after_deploy.py
-      - .github/workflows/whats-new-post-deploy-purge.yml
+      - '.github/workflows/whats-new-post-deploy-purge.yml'
+      - 'ai_surface_canon.py'
+      - 'canonical_stats.py'
+      - 'data/platform_updates.json'
+      - 'db_utils.py'
+      - 'main.py'
+      - 'monthly_quota.py'
+      - 'routes/capability_announcements.py'
+      - 'routes/claim_ledger.py'
+      - 'routes/dcpi.py'
+      - 'routes/infra_growth.py'
+      - 'routes/platform_updates.py'
+      - 'scripts/purge_whats_new_after_deploy.py'
+      - 'scripts/workflow_trigger_modules.py'
+      - 'tier_registry.py'
+      - 'util/dcpi_score_row.py'
+      - 'util/deals.py'
+      - 'util/deployability_rank.py'
+      - 'util/dominant_source.py'
+      - 'util/internal_fetch.py'
+      - 'util/iso_taxonomy.py'
+      - 'util/market_aliases.py'
+      - 'util/status_taxonomy.py'
   workflow_dispatch:
 
 permissions:
