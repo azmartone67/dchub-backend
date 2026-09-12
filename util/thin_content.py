@@ -183,6 +183,16 @@ def contentless_slug_set(cursor) -> set:
       the richest row serves the page, and that page is not noindexed.
     ★ Returns an EMPTY set on failure or on an implausible result. The caller's
       contract is "empty means emit everything", i.e. exactly today's sitemap.
+
+    ★ 2026-09-12, r-mw-one-owner: this set grew by 17 when `evidence` stopped
+      counting a capacity above MW_PLAUSIBLE_MAX — see evidence's docstring for
+      the census. Measured twice, 20 minutes apart, against the live rows:
+      1,462 -> 1,479 and 1,463 -> 1,480, the SAME 17 slugs both times and none
+      leaving. 17 URLs left each published family (gated 6,840 -> 6,823, ai
+      18,880 -> 18,863): both are built from this one loop, so the ungated set
+      stays a superset of the gated one and #4459's guard is unmoved, and both
+      sit far above #4467's per-family floors (4,598 / 12,495). The blast-radius
+      cap below is nowhere near it either — 1,480 of 47,695 rows is 3.1%.
     """
     # measured rate is ~4% of rows; a quarter of the corpus is ~6x that and
     # means the evidence columns went missing, not that the corpus went empty
