@@ -143,7 +143,10 @@ def _build_status_payload():
     out["sitemap"] = {
         "static_pages": sm.get("static_pages"),
         "dcpi_markets": sm.get("dcpi_markets"),
-        "facilities_with_power": sm.get("facilities_with_power"),
+        # facilities_with_power dropped 2026-09-12 together with the /sites/<id>
+        # sitemap block it counted (#4436). /api/v1/sitemap/health no longer
+        # returns it, and `.get` on a key nobody sends publishes a null — a
+        # number that silently becomes "unknown" is worse than an absent field.
         "recent_news": sm.get("recent_news"),
     }
 
