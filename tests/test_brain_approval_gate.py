@@ -86,3 +86,117 @@ def test_the_floor_is_a_real_threshold_not_a_rubber_stamp():
         {"refutation_survived": True, "confidence": PR_MIN_CONFIDENCE}) == ""
     assert _pr_block_reason(
         {"refutation_survived": True, "confidence": PR_MIN_CONFIDENCE - 0.001})
+
+
+# ── the detector that would have caught this ─────────────────────────
+# routes/brain_consistency_radar.check_review_gate_never_disagrees is the
+# can't-fail signature (check A of the 2026-09-07 null-signal spec) for the
+# exact bug above: 293 review decisions, zero rejections, scored 4/4.
+import pytest
+
+
+class _Cur:
+    def __init__(self, rows): self._rows = rows
+    def execute(self, *a, **k): pass
+    def fetchall(self): 
+        if isinstance(self._rows, Exception):
+            raise self._rows
+        return self._rows
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+class _Conn:
+    def __init__(self, rows): self._rows = rows
+    def cursor(self): return _Cur(self._rows)
+
+
+def _run(monkeypatch, rows):
+    import routes.brain_consistency_radar as R
+    monkeypatch.setattr(R, "_db",
+                        lambda: None if rows is None else _Conn(rows))
+    return R.check_review_gate_never_disagrees()
+
+
+def test_the_detector_fires_on_the_shipped_state():
+    """293 decisions, not one rejection."""
+    import routes.brain_consistency_radar as R
+    mp = pytest.MonkeyPatch()
+    try:
+        out = _run(mp, [("approve", 293)])
+    finally:
+        mp.undo()
+    assert len(out) == 1, out
+    assert out[0]["issue"] == "review_gate_never_disagrees"
+    assert "293" in out[0]["detail"]
+
+
+def test_the_detector_is_silent_when_the_gate_actually_fires():
+    mp = pytest.MonkeyPatch()
+    try:
+        out = _run(mp, [("approve", 280), ("reject", 13)])
+    finally:
+        mp.undo()
+    assert out == []
+
+
+def test_one_rejection_is_enough_to_prove_the_signal_is_live():
+    mp = pytest.MonkeyPatch()
+    try:
+        out = _run(mp, [("approve", 292), ("reject", 1)])
+    finally:
+        mp.undo()
+    assert out == []
+
+
+def test_a_small_sample_of_zero_rejections_is_not_a_dead_gate():
+    import routes.brain_consistency_radar as R
+    mp = pytest.MonkeyPatch()
+    try:
+        out = _run(mp, [("approve", R._REVIEW_GATE_MIN_SAMPLE - 1)])
+    finally:
+        mp.undo()
+    assert out == []
+
+
+def test_the_sample_floor_is_a_real_threshold():
+    import routes.brain_consistency_radar as R
+    mp = pytest.MonkeyPatch()
+    try:
+        at = _run(mp, [("approve", R._REVIEW_GATE_MIN_SAMPLE)])
+        under = _run(mp, [("approve", R._REVIEW_GATE_MIN_SAMPLE - 1)])
+    finally:
+        mp.undo()
+    assert len(at) == 1, "exactly at the floor must fire"
+    assert under == [], "a hair under must not"
+
+
+def test_an_unreadable_signal_is_unmeasured_never_a_clean_pass():
+    """No DB, or a broken query, must return [] — the ABSENCE of a finding,
+    not a claim that the gate is healthy."""
+    mp = pytest.MonkeyPatch()
+    try:
+        assert _run(mp, None) == []
+        assert _run(mp, Exception("relation does not exist")) == []
+    finally:
+        mp.undo()
+
+
+def test_the_detector_is_registered_in_the_sweep():
+    """A check defined but absent from scan_all's container NEVER RUNS.
+    Asserted with ast against executable text, so a name in a comment
+    cannot satisfy it."""
+    import ast, os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "routes", "brain_consistency_radar.py")
+    tree = ast.parse(open(path).read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "scan_all":
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.For) and isinstance(sub.iter, (ast.Tuple, ast.List)):
+                    names |= {e.id for e in sub.iter.elts if isinstance(e, ast.Name)}
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
+                   and sub.func.attr == "append":
+                    names |= {a.id for a in sub.args if isinstance(a, ast.Name)}
+    assert "check_review_gate_never_disagrees" in names, sorted(names)[:5]
