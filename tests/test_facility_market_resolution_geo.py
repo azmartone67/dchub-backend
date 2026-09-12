@@ -53,6 +53,7 @@ field, so this failed in both directions at once:
 import os
 import sys
 import types
+from decimal import Decimal
 
 import pytest
 
@@ -293,6 +294,185 @@ def test_the_global_coordinate_step_still_owns_the_stateless_case(monkeypatch):
     assert got and got.get("market_slug") == "frankfurt", (
         "a stateless facility with coordinates got no market — the global "
         "coordinate step is unreachable and international pages go thin again")
+
+
+# ── Null Island: the placeholder that poisoned the guard ─────────────────
+#
+# r-nullisland-market (2026-09-11). The distance guard fenced above is correct
+# and its thresholds are right; what it was never told is that 0,0 is not a
+# position. `latitude` and `longitude` reach _market_dcpi RAW off the facility
+# row, both range checks PASS for (0,0) — 0 is a legal latitude and a legal
+# longitude — and the ingestion placeholder documented in
+# routes/provenance.normalize_coordinates therefore measured every candidate
+# market from the Gulf of Guinea. Step (1)'s EXACT city match was rejected at
+# ~10,000 km and every later step fell through, so the page got NO market.
+#
+# Measured on a 500-page live sample (2026-09-11): 6 pages store 0,0; the 5
+# whose city is a scored market — Houston, Tokyo x2, Taipei, Austin — each
+# rendered no market block, a median 45 distinct words against 186 for pages
+# that render one. The other 89 thin pages in that sample are NOT this bug:
+# their city genuinely is not a scored market (/dcpi/istanbul, /dcpi/shanghai,
+# /dcpi/dusseldorf all 404) and they must keep getting nothing.
+
+HOUSTON = (29.7604, -95.3698)
+AUSTIN = (30.2672, -97.7431)
+TOKYO = (35.6762, 139.6503)
+LIBREVILLE = (0.3901, 9.4544)     # Gabon — a REAL place at latitude ~0
+
+
+def test_null_island_coordinates_do_not_reject_the_exact_city_match(monkeypatch):
+    """The defect in one assertion: 0,0 cost a page the market it names.
+
+    A Houston facility stored with coordinates 0,0 resolved to None because
+    _too_far measured Houston at 10,526 km from Null Island. The identical row
+    with NULL coordinates resolves to `houston` today — so the placeholder was
+    strictly worse than the absence it stands for.
+    """
+    fpp, _ = _drive(monkeypatch, _row("houston", *HOUSTON))
+
+    got = fpp._market_dcpi("Houston", "", 0.0, 0.0)
+
+    assert got and got.get("market_slug") == "houston", (
+        f"a Houston facility stored at 0,0 resolved to {got!r} — the Null "
+        f"Island placeholder is being treated as a real position "
+        f"{fpp._km_between(0.0, 0.0, *HOUSTON):.0f} km away, so the distance "
+        "guard rejects the facility's own city and the page renders no market")
+
+
+def test_a_null_coordinate_facility_and_a_null_island_one_resolve_alike(monkeypatch):
+    """0,0 MEANS 'missing', so it must behave exactly like missing.
+
+    This is the whole contract of the fix — not "0,0 gets special handling" but
+    "0,0 stops being a position at all". Pinning the two against each other
+    fails if the sentinel is only partly translated.
+    """
+    fpp, _ = _drive(monkeypatch, _row("houston", *HOUSTON))
+    absent = fpp._market_dcpi("Houston", "", None, None)
+
+    fpp, _ = _drive(monkeypatch, _row("houston", *HOUSTON))
+    sentinel = fpp._market_dcpi("Houston", "", 0.0, 0.0)
+
+    assert absent == sentinel, (
+        f"coords=None gave {absent!r} but coords=(0,0) gave {sentinel!r} — "
+        "the placeholder is still steering resolution somewhere")
+
+
+@pytest.mark.parametrize("lat,lng", [
+    (0, 0),                 # ints, as a JSON body or an INTEGER column yields
+    (0.0, 0.0),             # floats, the live discovered_facilities spelling
+    ("0", "0"),             # strings, as a CSV/scraper import leaves them
+    ("0.0", "0.0"),         # stringified floats, same path
+    (Decimal("0"), Decimal("0")),        # psycopg2 NUMERIC columns
+    (Decimal("0.0"), Decimal("0.0")),
+])
+def test_every_spelling_of_null_island_reads_as_absent(monkeypatch, lat, lng):
+    """The row can carry 0,0 as int, float, str or Decimal.
+
+    _market_dcpi float()s whatever it is handed, so a guard that only knew the
+    float spelling would leave the other four live. discovered_facilities and
+    `facilities` are read by two different drivers and populated by importers
+    that each stringify differently, so the spelling is not ours to assume.
+    """
+    fpp, _ = _drive(monkeypatch, _row("houston", *HOUSTON))
+
+    got = fpp._market_dcpi("Houston", "", lat, lng)
+
+    assert got and got.get("market_slug") == "houston", (
+        f"coordinates ({lat!r}, {lng!r}) resolved to {got!r} — this spelling "
+        "of the Null Island placeholder still reads as a real position")
+
+
+def test_a_real_state_still_resolves_when_the_coordinates_are_null_island(monkeypatch):
+    """The US/state path was poisoned too, and it is the majority path.
+
+    Austin TX is the live case: it carries a REAL state, so it renders a State
+    tile and never appeared in the thin-page signature — but step (1) rejected
+    `austin` at 11,000 km, step (2) ranked TX metros by distance from the Gulf
+    of Guinea, and step (4) was distance-checked from there as well. A fix that
+    only rescued stateless pages would leave this one broken.
+    """
+    fpp, _ = _drive(monkeypatch, _row("austin", *AUSTIN))
+
+    got = fpp._market_dcpi("Austin", "TX", 0.0, 0.0)
+
+    assert got and got.get("market_slug") == "austin", (
+        f"an Austin TX facility stored at 0,0 resolved to {got!r} — a row with "
+        "a perfectly good state and city lost its market to the coordinate "
+        "placeholder")
+
+
+def test_a_city_with_no_state_resolves_through_null_island(monkeypatch):
+    """City but no state is the international shape, and it is most of the class.
+
+    4 of the 5 measured pages (Houston, Tokyo x2, Taipei) carry a city and an
+    EMPTY state, so `st` is falsy and steps (2) and (4) cannot run at all. Only
+    the exact city match can answer them, which is precisely the step the
+    poisoned distance guard was rejecting.
+    """
+    fpp, _ = _drive(monkeypatch, _row("tokyo", *TOKYO))
+
+    got = fpp._market_dcpi("Tokyo", "", 0.0, 0.0)
+
+    assert got and got.get("market_slug") == "tokyo", (
+        f"a Tokyo facility with no state and coordinates 0,0 resolved to "
+        f"{got!r} — with no state there is no fallback, so rejecting the city "
+        "match leaves the page with nothing")
+
+
+def test_a_genuinely_equatorial_coordinate_is_not_treated_as_missing(monkeypatch):
+    """lat=0 with a REAL longitude is Gabon, not a placeholder.
+
+    This is why the fix reuses provenance.normalize_coordinates rather than
+    testing `not lat` or `abs(lat) < eps` on either axis alone: ONLY (0,0)
+    TOGETHER is absent. Libreville sits at latitude 0.39 and there are live
+    facilities on the equator in Gabon, Ecuador, Indonesia and Kenya.
+    """
+    fpp, sink = _drive(monkeypatch, _row("libreville", *LIBREVILLE),
+                       only_when="latitude BETWEEN")
+
+    got = fpp._market_dcpi("", "", 0.0, 9.4544)
+
+    assert got and got.get("market_slug") == "libreville", (
+        f"an equatorial facility at (0.0, 9.4544) resolved to {got!r} — a real "
+        "coordinate on the equator is being discarded as a placeholder")
+    assert any("latitude BETWEEN" in s for s in sink), (
+        "the bounding-box step never ran, so these coordinates were thrown "
+        "away before they could resolve anything")
+
+
+def test_null_island_does_not_switch_off_the_distance_guard(monkeypatch):
+    """Translating the sentinel must not cost the guard it was poisoning.
+
+    The cheap wrong fix is to stop distance-checking when coordinates look
+    unusable. Blumenau still has REAL coordinates and must still be refused
+    /dcpi/charleston-sc, 7,395 km away.
+    """
+    fpp, _ = _drive(monkeypatch, _row("charleston-sc", *CHARLESTON_SC))
+
+    got = fpp._market_dcpi("Blumenau", "SC", *BLUMENAU)
+
+    assert got is None, (
+        f"a Brazilian facility resolved to {got!r} — the Null Island change "
+        "disabled the continent guard it was supposed to unblock")
+
+
+def test_null_island_never_invents_a_market_for_a_city_that_has_none(monkeypatch):
+    """Falling through is the goal; guessing is not.
+
+    89 of the 94 thin pages in the sample have a city that is genuinely not a
+    scored market (/dcpi/istanbul and /dcpi/shanghai both 404). Clearing the
+    placeholder must let those resolve HONESTLY to nothing, not hand them the
+    most-recent row in some state. Every query answers empty here, which is
+    what the live table does for Istanbul.
+    """
+    fpp, _ = _drive(monkeypatch, _row("houston", *HOUSTON),
+                    only_when="__never_matches__")
+
+    got = fpp._market_dcpi("Istanbul", "", 0.0, 0.0)
+
+    assert got is None, (
+        f"a facility in a city with no scored market resolved to {got!r} — the "
+        "page would publish a market this facility is not in")
 
 
 # ── the SQL, against a real database ─────────────────────────────────────
