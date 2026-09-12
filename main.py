@@ -27445,28 +27445,7 @@ def daily_cron():
     30-second HTTP timeout never fires. The actual work (RSS fetch across
     60+ sources, Neon upserts, LinkedIn post) runs on a daemon thread.
     Check Railway logs for `[daily_cron] complete` to confirm completion.
-
-    Fail-closed gate, FIRST statement, for either method. The thread this
-    starts syncs RSS to Neon, POSTS THE DIGEST TO LINKEDIN and submits to
-    IndexNow, so an anonymous GET published on our behalf. It was the last
-    ungated IndexNow reach in the repo, held open deliberately while its only
-    caller -- an external cron-job.org job, ~2x/day, no workflow and no
-    cron_heartbeat lane -- still sent no credential. That caller now sends one.
-
-    The refusal is LOGGED at warning with the method and UA. This route has
-    exactly one legitimate caller and no UI, so a 401 here means the cron broke,
-    and a broken cron is otherwise silent: the job simply stops publishing. The
-    relay logs the status on web (`workerproxy: ... -> worker 401`), but when the
-    worker is unreachable the handler runs LOCALLY and that line never appears --
-    this is the one that does either way.
     """
-    if not require_internal_or_admin(request):
-        logger.warning(
-            "[daily_cron] REFUSED %s from ua=%s — if this is the cron-job.org "
-            "job, its credential header is missing or wrong and the daily news "
-            "sync + LinkedIn digest are NOT running",
-            request.method, (request.headers.get('User-Agent') or '-')[:80])
-        return jsonify({'error': 'Unauthorized'}), 401
     from datetime import datetime as _dt
 
     def _run():

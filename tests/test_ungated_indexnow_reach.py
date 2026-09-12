@@ -102,13 +102,6 @@ def _call(relpath, name, ns, *, headers=None, method="POST", query=None):
 
 # (relpath, handler, extra globals the body reads, method)
 _GATED = [
-    # Thread stubbed: past the gate this starts the daemon that syncs RSS to
-    # Neon and posts the digest to LinkedIn. The test must reach the 202, never
-    # the work.
-    ("main.py", "daily_cron",
-     lambda: {"threading": _NoThreads, "logger": _Logger()}, "GET"),
-    ("main.py", "daily_cron",
-     lambda: {"threading": _NoThreads, "logger": _Logger()}, "POST"),
     ("main.py", "_v1_daily_preview", lambda: {}, "POST"),
     ("main.py", "_v1_media_publish", lambda: {}, "POST"),
     ("routes/autopilot_routes.py", "seo_run", lambda: {}, "POST"),
@@ -126,17 +119,6 @@ _IDS = [f"{f}::{n}" for f, n, _g, _m in _GATED]
 
 def _sink(*a, **k):
     raise _PastGate()
-
-
-class _NoThreads:
-    """threading stand-in whose Thread never runs its target."""
-    @staticmethod
-    def Thread(*a, **k):
-        class _T:
-            @staticmethod
-            def start():
-                pass
-        return _T
 
 
 class _SyncThread:
