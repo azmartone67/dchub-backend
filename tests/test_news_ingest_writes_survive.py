@@ -611,3 +611,109 @@ def test_the_writer_does_not_count_with_a_rowcount(engine):
             f"an INSERT with no RETURNING makes the wrapper probe lastval and "
             f"clobber rowcount: {' '.join(sql.split())[:80]}")
         assert "ON CONFLICT" in sql.upper(), "dedup must stay on the statement"
+
+
+# ── the same two facts, against a real database ──────────────────────────────
+# NOT coverage: this skips unless a DSN is handed to it, so CI proves nothing
+# here and the guards above are what hold the line. It exists so the next person
+# to touch the fake can re-measure the semantics the fake encodes, in one
+# command, instead of trusting this file:
+#
+#   NEWS_TEST_PG_DSN="dbname=postgres" python3 -m pytest \
+#       tests/test_news_ingest_writes_survive.py -k real_postgres -v
+import os
+
+real_pg = pytest.mark.skipif(
+    not os.environ.get("NEWS_TEST_PG_DSN"),
+    reason="set NEWS_TEST_PG_DSN to re-measure the wrapper against real Postgres")
+
+
+@pytest.fixture()
+def pg_table():
+    """★ Hands out a `probe()` that OWNS the connection and always closes it.
+
+    An earlier version of this fixture let each test open its own connection and
+    close it on the last line. Running it against a deliberately broken wrapper
+    hung for two minutes: the failing assertion skipped the close, the aborted
+    transaction sat `idle in transaction` holding a lock on the table, and the
+    teardown DROP waited on it forever. A test that cannot fail cleanly cannot
+    be used to measure a fix — and a lock_timeout makes the teardown say so
+    instead of hanging."""
+    dsn = os.environ["NEWS_TEST_PG_DSN"]
+    admin = psycopg2.connect(dsn)
+    admin.autocommit = True
+    cur = admin.cursor()
+    cur.execute("SET lock_timeout = '5s'")
+    cur.execute("DROP TABLE IF EXISTS wrapper_probe; DROP TABLE IF EXISTS wrapper_probe_seq")
+    cur.execute("CREATE TABLE wrapper_probe (id TEXT PRIMARY KEY)")
+    cur.execute("CREATE TABLE wrapper_probe_seq (n SERIAL PRIMARY KEY)")
+    opened = []
+
+    def stored():
+        c = admin.cursor()
+        c.execute("SELECT COUNT(*) FROM wrapper_probe")
+        n = c.fetchone()[0]
+        c.close()
+        return n
+
+    def probe():
+        import db_utils
+        conn = psycopg2.connect(dsn)
+        opened.append(conn)
+        return conn, db_utils.PGCursorWrapper(conn.cursor())
+
+    try:
+        yield probe, stored
+    finally:
+        for conn in opened:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+        try:
+            cur.execute("DROP TABLE IF EXISTS wrapper_probe; "
+                        "DROP TABLE IF EXISTS wrapper_probe_seq")
+        finally:
+            admin.close()
+
+
+@real_pg
+def test_real_postgres_conflicting_insert_reports_zero_rows(pg_table):
+    """The measurement this whole fix rests on."""
+    probe, stored = pg_table
+    conn, cur = probe()
+    # a sequence used earlier in the session is what makes lastval() succeed,
+    # and a long-lived worker process always has one
+    cur.execute("INSERT INTO wrapper_probe_seq DEFAULT VALUES")
+    conn.commit()
+    sql = "INSERT INTO wrapper_probe (id) VALUES (%s) ON CONFLICT (id) DO NOTHING"
+
+    cur.execute(sql, ("x",))
+    assert cur.rowcount == 1
+    conn.commit()
+    assert stored() == 1
+
+    cur.execute(sql, ("x",))
+    assert cur.rowcount == 0, (
+        "a conflicting insert reports the wrapper's SELECT lastval(), not the "
+        "INSERT — this is the 322-for-172 bug")
+    conn.commit()
+    assert stored() == 1
+
+
+@real_pg
+def test_real_postgres_cold_session_keeps_the_row(pg_table):
+    """No sequence used yet: lastval() raises 55000 and used to abort the
+    transaction, discarding the INSERT that had just succeeded."""
+    probe, stored = pg_table
+    conn, cur = probe()
+
+    cur.execute("INSERT INTO wrapper_probe (id) VALUES (%s) "
+                "ON CONFLICT (id) DO NOTHING", ("cold",))
+    conn.commit()
+
+    assert stored() == 1, "the lastval probe cost the write it was reporting on"
