@@ -253,12 +253,12 @@ def test_the_dsn_is_the_direct_endpoint_not_the_pooler(monkeypatch):
     """
     m = _mod()
     monkeypatch.setenv("DATABASE_URL",
-                       "postgres://u:p@ep-x-123-pooler.us-east-2.aws.neon.tech/db")
+                       "postgres://u:p@ep-x-123-pooler.us-east-2.aws.neon.tech/db")  # secretscan:allow (test placeholder)
     dsn = m._dsn()
     assert "-pooler." not in dsn, (
         "the build would dial Neon's pgbouncer pooler, where statement_timeout "
         "is capped at 5s and every transaction ends with DISCARD ALL")
-    assert dsn == "postgres://u:p@ep-x-123.us-east-2.aws.neon.tech/db"
+    assert dsn == "postgres://u:p@ep-x-123.us-east-2.aws.neon.tech/db"  # secretscan:allow (test placeholder)
 
 
 def test_the_swap_does_not_touch_credentials(monkeypatch):
@@ -266,15 +266,15 @@ def test_the_swap_does_not_touch_credentials(monkeypatch):
     characters. main._leader_lock_url() uses a plain substring swap for the
     same reason."""
     m = _mod()
-    weird = "postgres://u:p%40ss+w/rd@ep-x-pooler.aws.neon.tech/db?sslmode=require"
+    weird = "postgres://u:p%40ss+w/rd@ep-x-pooler.aws.neon.tech/db?sslmode=require"  # secretscan:allow (test placeholder)
     monkeypatch.setenv("DATABASE_URL", weird)
     assert m._dsn() == weird.replace("-pooler.", ".")
 
 
 def test_an_already_direct_or_non_neon_url_is_untouched(monkeypatch):
     m = _mod()
-    for url in ("postgres://u:p@ep-x.aws.neon.tech/db",
-                "postgres://u:p@localhost:5432/db"):
+    for url in ("postgres://u:p@ep-x.aws.neon.tech/db",  # secretscan:allow (test placeholder)
+                "postgres://u:p@localhost:5432/db"):  # secretscan:allow (test placeholder)
         monkeypatch.setenv("DATABASE_URL", url)
         assert m._dsn() == url
 
@@ -283,7 +283,7 @@ def test_it_refuses_to_build_through_a_pooled_dsn(monkeypatch):
     """If the swap ever stops matching a new Neon host shape, fail loudly
     rather than start a build the pooler will cancel and leave invalid."""
     m = _mod()
-    monkeypatch.setattr(m, "_dsn", lambda: "postgres://u:p@ep-x-pooler.neon.tech/db")
+    monkeypatch.setattr(m, "_dsn", lambda: "postgres://u:p@ep-x-pooler.neon.tech/db")  # secretscan:allow (test placeholder)
     called = {"n": 0}
 
     def _boom(*a, **k):
