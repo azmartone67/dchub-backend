@@ -130,7 +130,7 @@ SHAPE = {
                    "is never a refuted_kept one. Public at /api/v1/ops/claims."),
 }
 
-_SCHEMA_STATE = {"ok": False}
+_SCHEMA_STATE = {"ok": False, "open_claim_index": None}
 _CANON_MEMO: dict = {}
 
 
@@ -192,10 +192,35 @@ def ensure_schema(force: bool = False) -> bool:
                         "ON brain_predictions_log (shipped_at) "
                         "WHERE outcome IS NULL AND shipped_at IS NOT NULL")
         _SCHEMA_STATE["ok"] = True
-        return True
     except Exception as e:  # noqa: BLE001
         logger.warning("[claim_ledger] ensure_schema failed: %s", e)
         return False
+
+    # The one-open-claim unique index gets its OWN cursor. A CREATE UNIQUE
+    # INDEX fails while duplicate open claims already exist, and inside the
+    # block above that failure would roll back its siblings — the column
+    # ALTERs would silently not apply. Isolated here, and RECORDED: a
+    # silently-absent index leaves the register race open while looking fixed.
+    try:
+        from db_utils import ddl_cursor
+        with ddl_cursor() as cur:
+            res = ensure_open_claim_unique_index(cur)
+        with ddl_cursor() as cur:
+            present = open_claim_index_present(cur)
+        _SCHEMA_STATE["open_claim_index"] = present
+        if not present:
+            logger.warning(
+                "[claim_ledger] one-open-claim unique index ABSENT — the "
+                "dedupe in register_claim is racy until it exists. Most "
+                "likely cause: duplicate open claims already in the ledger "
+                "(observed 2026-09-12: ids 101442/101443, subject "
+                "canon:public.countries). Resolve one, then re-run "
+                "ensure_schema(force=True). create said: %s",
+                res.get("error") or "ok-but-still-absent")
+    except Exception as e:  # noqa: BLE001
+        _SCHEMA_STATE["open_claim_index"] = False
+        logger.warning("[claim_ledger] open-claim index step failed: %s", e)
+    return True
 
 
 # ── the contract, as pure functions ─────────────────────────────────────
@@ -367,6 +392,57 @@ def refusal(reason: str) -> dict:
 
 # ── register / stamp ────────────────────────────────────────────────────
 
+# ★ 2026-09-12 — the "one OPEN claim per (subject, statement, metric)" rule in
+# register_claim() below is a SELECT followed by an INSERT with no unique index
+# behind it, so its ON CONFLICT DO NOTHING has nothing to conflict on and is
+# inert. Two ticks firing concurrently both pass the SELECT and both INSERT.
+# Observed on the live ledger 2026-09-12: ids 101442 and 101443 — consecutive,
+# same subject canon:public.countries, both open — rendered as two identical
+# rows on the public board.
+#
+# This index makes the rule atomic. It is best-effort and REPORTED rather than
+# swallowed: while a duplicate pair already exists the CREATE cannot succeed,
+# and a silently-absent index would leave the race open while looking fixed.
+_OPEN_CLAIM_UNIQUE_INDEX = "brain_predictions_log_one_open_claim"
+
+
+def ensure_open_claim_unique_index(cur) -> dict:
+    """Create the partial unique index that enforces one OPEN claim per
+    (source_layer, subject, statement, expected_metric). Returns
+    {"ok": bool, "error": str} — an existing duplicate pair makes this fail,
+    and that failure is the signal to go resolve the duplicate."""
+    try:
+        cur.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {_OPEN_CLAIM_UNIQUE_INDEX} "
+            "ON brain_predictions_log "
+            "(source_layer, subject, statement, expected_metric) "
+            "WHERE outcome IS NULL")
+        return {"ok": True, "error": ""}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:200]}
+
+
+def open_claim_index_present(cur) -> bool:
+    """Whether the index actually exists RIGHT NOW. Checks pg_indexes, not the
+    return value of a CREATE that may have been rolled back with its
+    transaction — the name existing in code is not the index existing."""
+    try:
+        cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = %s",
+                    (_OPEN_CLAIM_UNIQUE_INDEX,))
+        return cur.fetchone() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_unique_violation(exc) -> bool:
+    """A duplicate blocked by the index is a SUCCESSFUL dedupe, not an error."""
+    code = getattr(exc, "pgcode", None) or getattr(
+        getattr(exc, "orig", None), "pgcode", None)
+    if code == "23505":
+        return True
+    return "duplicate key value violates unique constraint" in str(exc).lower()
+
+
 def register_claim(kind: str, subject: str, statement: str,
                    expected_metric: str, expected_value: str,
                    horizon_hours: int, regime: dict | None = None,
@@ -428,6 +504,10 @@ def register_claim(kind: str, subject: str, statement: str,
             except Exception:  # noqa: BLE001
                 pass
     except Exception as e:  # noqa: BLE001
+        if _is_unique_violation(e):
+            # The index caught a concurrent double-register. That is the rule
+            # working, so report it the same way the SELECT fast-path does.
+            return {"ok": True, "already": True, "deduped_by": "index"}
         logger.warning("[claim_ledger] register failed for %s: %s", subject, e)
         return {"ok": False, "error": str(e)[:200]}
 
