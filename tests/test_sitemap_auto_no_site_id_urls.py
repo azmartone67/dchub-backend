@@ -70,13 +70,21 @@ class _Cur:
     def execute(self, sql, params=()):
         s = " ".join(str(sql).split())
         when = _dt.datetime(2026, 9, 1, 12, 0, 0)
-        if "FROM market_power_scores" in s:
+
+        def reads(table):
+            """★ Word-boundary, never substring. Matching "FROM
+            market_power_scores" inside "FROM market_power_scores_gone" fed rows
+            to a query against a table that does not exist, and the control
+            mutation that renames the table SURVIVED on it."""
+            return re.search(rf"\bFROM\s+{table}\b", s, re.I) is not None
+
+        if reads("market_power_scores"):
             self._rows = [("northern-virginia", when)]
-        elif "FROM exclusive_listings" in s:
+        elif reads("exclusive_listings"):
             self._rows = [("a-listing", when)]
-        elif "FROM news" in s:
+        elif reads("news"):
             self._rows = [("https://dchub.cloud/news/a-release", when)]
-        elif "FROM facilities" in s:
+        elif reads("facilities"):
             # If the block ever comes back, hand it rows so it emits and the
             # behavioural test goes red rather than passing on an empty read.
             self._rows = [("1f0e2d3c4b5a6978", when)]
