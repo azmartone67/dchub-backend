@@ -108,7 +108,15 @@ def test_the_scan_reads_the_docs_and_knows_the_keys():
     """A repo-glob guard is green at zero. Pin a floor on both inputs: the docs
     it walks, and the key set it walks them for."""
     docs = _docs()
-    assert len(docs) > 20, f"only found {len(docs)} tracked .md files"
+    # 568 measured 2026-09-12. The AUTHORITATIVE floor lives in
+    # tests/scan_floors.json (pglob: 450) and is enforced by tests/_scan_floors
+    # for every repo-scanning test; this one is the in-file backstop for a run
+    # that does not load that mechanism. It was >20 in the first draft — loose
+    # enough that a glob collapsing from 568 to 21 would still have passed.
+    assert len(docs) > 400, (
+        f"only found {len(docs)} tracked .md files; 568 were measured on "
+        "2026-09-12 — the glob has collapsed and this guard is nearly blind"
+    )
     names = {rel for rel, _ in docs}
     for required in ("STEP_BY_STEP.md", "USER_ACTIONS.md",
                      "SECURITY_KEY_ROTATION.md"):

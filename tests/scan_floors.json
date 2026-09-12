@@ -133,6 +133,9 @@
     "test_delivery_truth_join.py": {
       "walk": 70
     },
+    "test_docs_do_not_send_a_retired_key.py": {
+      "pglob": 450
+    },
     "test_enterprise_inquiries_schema_fork.py": {
       "pglob": 1910
     },
