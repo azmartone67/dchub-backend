@@ -28,6 +28,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from tests import _scan_floors  # noqa: E402
+from tests import _stub_sentinel  # noqa: E402
 
 _FLOORS_ON = os.environ.get("DCHUB_SCAN_FLOORS", "1") != "0"
 _floors = _scan_floors.load_floors() if _FLOORS_ON else {}
@@ -37,6 +38,10 @@ _checked: set = set()
 def pytest_configure(config):
     if _FLOORS_ON:
         _scan_floors.install()
+    # Pin the identity of the real flask/psycopg2/requests BEFORE any test
+    # module is imported, so a module that swaps one for a fake can be named.
+    # See tests/_stub_sentinel.py and tests/test_no_import_time_module_stubs.py.
+    _stub_sentinel.snapshot()
 
 
 def pytest_unconfigure(config):
@@ -61,10 +66,30 @@ def pytest_collectstart(collector):
     harmless; only the CHECK is conditional.
     """
     if hasattr(collector, "fspath"):
-        _scan_floors.set_current_file(os.path.basename(str(collector.fspath)))
+        base = os.path.basename(str(collector.fspath))
+        # Attribute BEFORE switching: anything that appeared in sys.modules
+        # since the last checkpoint was done by the PREVIOUS file's import.
+        _stub_sentinel.checkpoint()
+        _scan_floors.set_current_file(base)
+        _stub_sentinel.set_current_file(base)
 
 
-_PIN_GUARD = "test_scan_floors_are_pinned.py"
+# Guards that must observe EVERY other file before they run. Ordered to the
+# tail of the session; the comment on pytest_collection_modifyitems explains
+# why alphabetical position is not an ordering guarantee.
+# ★ ORDER MATTERS, and it is the reverse of the order you would guess.
+# test_scan_floors_are_pinned.py reads the scan-observation table, so it must
+# run after every file that scans — INCLUDING the other tail guards. Putting it
+# first in this tuple would recreate, inside the very mechanism built to end it,
+# the blind zone its docstring describes.
+_TAIL_GUARDS = (
+    # Reads the sys.modules swap ledger, which only fills as files are
+    # imported. Sorts 400+ files early on its own name, so without this it
+    # would report on a fraction of the session and call it clean.
+    "test_no_import_time_module_stubs.py",
+    # LAST. It judges everything above, this file's own scan included.
+    "test_scan_floors_are_pinned.py",
+)
 
 
 def pytest_collection_modifyitems(session, config, items):
@@ -83,14 +108,21 @@ def pytest_collection_modifyitems(session, config, items):
 
     Alphabetical position is not an ordering guarantee. Make it one.
     """
-    tail = [i for i in items if os.path.basename(str(i.fspath)) == _PIN_GUARD]
+    def _rank(item):
+        base = os.path.basename(str(item.fspath))
+        return _TAIL_GUARDS.index(base) if base in _TAIL_GUARDS else -1
+
+    tail = [i for i in items if _rank(i) >= 0]
     if tail:
-        items[:] = [i for i in items
-                    if os.path.basename(str(i.fspath)) != _PIN_GUARD] + tail
+        tail.sort(key=_rank)
+        items[:] = [i for i in items if _rank(i) < 0] + tail
 
 
 def pytest_runtest_setup(item):
-    _scan_floors.set_current_file(os.path.basename(str(item.fspath)))
+    base = os.path.basename(str(item.fspath))
+    _stub_sentinel.checkpoint()
+    _scan_floors.set_current_file(base)
+    _stub_sentinel.set_current_file(base)
 
 
 def pytest_runtest_teardown(item, nextitem):

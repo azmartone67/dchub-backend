@@ -38,12 +38,42 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-# ── flask/psycopg2-free import shims (mirrors test_brain_automerge) ──
-for _name in ("flask", "psycopg2", "requests"):
-    if _name not in sys.modules:
-        sys.modules[_name] = types.ModuleType(_name)
+# ── flask/psycopg2/requests: real if installed, restored either way ──
+# ★ 2026-09-12. This used to be:
+#
+#     for _name in ("flask", "psycopg2", "requests"):
+#         if _name not in sys.modules:
+#             sys.modules[_name] = types.ModuleType(_name)
+#
+# Two defects, and they compounded.
+#
+# WRONG QUESTION. `_name not in sys.modules` asks "has anything imported it
+# YET?", not "is it installed?". All three are in requirements.txt and CI's
+# unit-tests job pip-installs them, so the real libraries were always there —
+# but nothing had imported them at the moment this file loaded, so the empty
+# placeholder won and shadowed the library for the rest of the process.
+#
+# NO WAY BACK. A module-scope assignment runs during COLLECTION, where neither
+# monkeypatch nor a fixture finalizer exists. Nothing restored it.
+#
+# Measured at 2fdebb9bf: `pytest tests/test_agent_card_oauth2.py` collects 7
+# tests; `pytest tests/test_brain_smoke_regression.py
+# tests/test_agent_card_oauth2.py` collected 0, with BOTH files erroring on
+# "cannot import name 'Flask' from 'flask' (unknown location)". This file could
+# not even run alone — its own chain needs `from flask import Blueprint`, which
+# an empty types.ModuleType cannot serve. A full-directory run hid all of it:
+# an alphabetically earlier module imports real flask first, the predicate goes
+# False, and the placeholder is never installed. So CI was green and every
+# subset run — "just the suites my change touches" — was silently blind.
+#
+# real_or_stub imports the real module when one exists and installs a
+# permissive placeholder only for a name that genuinely cannot be imported,
+# removing on exit anything it installed. Nothing escapes this block.
+# tests/test_no_import_time_module_stubs.py is the ratchet.
+from tests._import_shims import real_or_stub  # noqa: E402
 
-import routes.brain_smoke_regression as sr  # noqa: E402
+with real_or_stub("flask", "psycopg2", "requests"):
+    import routes.brain_smoke_regression as sr  # noqa: E402
 
 
 def _explode(*_a, **_k):

@@ -48,6 +48,7 @@ a red build green is how you turn this into decoration.
 """
 from __future__ import annotations
 
+import contextlib as _contextlib
 import glob as _glob_mod
 import json
 import os
@@ -213,6 +214,40 @@ def uninstall() -> None:
     pathlib.Path.glob = _originals["pglob"]
     pathlib.Path.rglob = _originals["prglob"]
     _installed = False
+
+
+@_contextlib.contextmanager
+def temporarily_installed():
+    """Install the wrappers for a block, then put the SESSION state back.
+
+    ★ 2026-09-12. install() is idempotent-guarded and uninstall() is not, so a
+    caller that did `install(); try: ... finally: uninstall()` inside a running
+    session turned the wrappers off for every file collected afterwards —
+    permanently, because nothing re-installs them. This module's own tests
+    (tests/test_scan_floors_noise_filter.py) do exactly that.
+
+    The damage was invisible for as long as it lasted: a scan that happens at
+    MODULE scope is recorded during collection, before any test body runs, so
+    the two pinned files sorting after the noise-filter test kept their
+    observations and stayed green. Only a pinned file that scans inside a test
+    body, and runs later, loses its measurement — and it does not go quiet, it
+    goes RED with "performed NO repo scan at all this run", blaming the guard
+    instead of the thing that switched the meter off.
+    test_no_import_time_module_stubs.py is the first such file; it is
+    tail-ordered, so it lands squarely in the window.
+
+    Worse than the red build: test_scan_floors_are_pinned.py reads the same
+    observation table, so an unpinned late scanner would be invisible to the
+    adoption check too — the exact blind zone that check exists to close.
+    """
+    was = _installed
+    install()
+    try:
+        yield
+    finally:
+        uninstall()
+        if was:
+            install()
 
 
 def load_floors() -> dict:

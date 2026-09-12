@@ -79,13 +79,10 @@ def test_the_wrapper_is_transparent(tmp_path):
     (tmp_path / "__pycache__").mkdir()
     (tmp_path / "__pycache__" / "real.cpython-313.pyc").write_text("noise")
 
-    _scan_floors.install()
-    try:
+    with _scan_floors.temporarily_installed():
         _scan_floors.set_current_file("test_scan_floors_noise_filter.py")
         walked = list(os.walk(tmp_path))
         globbed = sorted(str(p) for p in pathlib.Path(tmp_path).rglob("*"))
-    finally:
-        _scan_floors.uninstall()
 
     dirs = {os.path.basename(d) for d, _, _ in walked}
     assert "__pycache__" in dirs, "walk stopped yielding the noise dir to the caller"
@@ -106,14 +103,51 @@ def test_pruning_idiom_still_works(tmp_path):
     (tmp_path / "skipme").mkdir()
     (tmp_path / "skipme" / "b.py").write_text("")
 
-    _scan_floors.install()
-    try:
+    with _scan_floors.temporarily_installed():
         _scan_floors.set_current_file("test_scan_floors_noise_filter.py")
         seen = []
         for dirpath, dirnames, _files in os.walk(tmp_path):
             dirnames[:] = [d for d in dirnames if d != "skipme"]
             seen.append(os.path.basename(dirpath))
-    finally:
-        _scan_floors.uninstall()
     assert "skipme" not in seen, "dirnames pruning stopped working — walk is eager"
     assert "keep" in seen
+
+
+def test_temporary_install_restores_the_session_wide_wrappers():
+    """★ A block that installs must not switch the meter off for everyone else.
+
+    install() is idempotent-guarded, uninstall() is not, so the old
+    `install(); try: ... finally: uninstall()` in the two tests above left the
+    wrappers OFF for the rest of the session. Every file collected afterwards
+    scanned unmeasured, which means:
+
+      · a pinned file that scans inside a test body goes RED with "performed
+        NO repo scan at all this run" — blaming the guard, not the meter;
+      · test_scan_floors_are_pinned.py reads the same table, so an UNPINNED
+        late scanner is invisible to the adoption check that exists to find it.
+
+    The window was real but quiet: a module-scope scan is recorded during
+    collection, before any test body runs, so the pinned files that sort after
+    this one kept their observations. It surfaced the moment a pinned file
+    scanned at run time and ran later (test_no_import_time_module_stubs.py,
+    which conftest tail-orders).
+    """
+    _scan_floors.install()          # the state pytest_configure leaves behind
+    assert _scan_floors._installed
+
+    with _scan_floors.temporarily_installed():
+        assert _scan_floors._installed
+    assert _scan_floors._installed, (
+        "temporarily_installed() left the wrappers OFF. Every scan after this "
+        "point in the session goes unrecorded.")
+
+    # ...and it must still be honest in the other direction: started off,
+    # ends off.
+    _scan_floors.uninstall()
+    with _scan_floors.temporarily_installed():
+        assert _scan_floors._installed
+    assert not _scan_floors._installed, (
+        "temporarily_installed() switched the wrappers ON for the rest of the "
+        "session in a context that had them off.")
+
+    _scan_floors.install()          # leave the session as we found it
