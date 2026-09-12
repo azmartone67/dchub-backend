@@ -15,6 +15,7 @@ This is the endpoint the frontend agent-page heal + any registry heal fetch —
 ONE source, so the numbers can never disagree across surfaces again.
 """
 import logging
+import json
 import threading
 import time
 
@@ -104,6 +105,121 @@ _PROVISIONAL_TTL_S = 20
 #    short enough that a real outage surfaces within the quarter-hour.
 _GOOD_BODY_GRACE_S = 900
 
+# ── ★2026-09-12 (second pass): THE LAST-GOOD BODY MUST BE SHARED, NOT PER-PROCESS.
+#
+#    The in-process cover below fixed the case it was written for and did NOT
+#    fix the oscillation. MEASURED across the deploy that shipped it, 24 reads
+#    over 7 minutes, one URL:
+#
+#        t=48   cache=miss  cold=false  21,600+
+#        t=69   cache=miss  cold=true   21,500+
+#        ...    8 cold bodies in all, and X-DC-Canon-Covering never once set
+#
+#    A single process cannot do that. Storing a warm body at t=48 arms the memo
+#    for _CACHE_TTL_S, so t=69 would be a HIT. Two MISSES 21s apart, one warm and
+#    one cold, means two PROCESSES with independent memos — Railway replicas —
+#    and requests alternating between them. The cover never fired because the
+#    cold replica had no good body of its OWN to cover with: it was the
+#    "genuinely cold process" case, which the first pass documented as a
+#    residual and which turns out to be the dominant one.
+#
+#    So the last-good body is kept where every replica can see it. A cold
+#    replica now serves the newest known-good canon instead of the pinned floor,
+#    under the same grace bound. Best-effort in both directions: if the store is
+#    unreachable the endpoint behaves exactly as it did before this block.
+_SHARED_TABLE = "canon_last_good"
+_shared_ready = False
+_shared_last_put = None          # avoid rewriting an unchanged body every refresh
+
+
+def _ensure_shared_table():
+    """Create the cross-process store, once per process.
+
+    ★ db_utils.ddl_cursor() and not a pooled cursor. PGCursorWrapper.execute()
+    returns early for CREATE TABLE whenever SKIP_DDL is set, and it defaults to
+    '1' — no raise, no log, no table. ddl_cursor is the blessed direct
+    connection. The read-back is not ceremony: a CREATE that silently did
+    nothing is the exact failure being avoided, so the table is confirmed to
+    exist before anything is allowed to depend on it.
+    """
+    global _shared_ready
+    if _shared_ready:
+        return True
+    try:
+        from db_utils import ddl_cursor
+        with ddl_cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS " + _SHARED_TABLE + " ("
+                "  id        SMALLINT PRIMARY KEY,"
+                "  body      JSONB NOT NULL,"
+                "  stored_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+                ")")
+            cur.execute("SELECT to_regclass(%s) IS NOT NULL", ("public." + _SHARED_TABLE,))
+            row = cur.fetchone()
+            _shared_ready = bool(row and row[0])
+        if not _shared_ready:
+            logger.warning("canon_phrases: %s did not exist after CREATE — "
+                           "the cross-process cover is disabled", _SHARED_TABLE)
+        return _shared_ready
+    except Exception as e:
+        logger.warning("canon_phrases: shared store unavailable (%s); "
+                       "falling back to per-process cover only", str(e)[:140])
+        return False
+
+
+def _shared_put(body):
+    """Publish a good body for the other replicas. Never raises."""
+    global _shared_last_put
+    if body is None or _is_provisional(body):
+        return
+    try:
+        key = json.dumps(body, sort_keys=True, default=str)
+    except Exception:
+        return
+    if key == _shared_last_put:          # unchanged — nothing to publish
+        return
+    if not _ensure_shared_table():
+        return
+    try:
+        from db_utils import safe_db_cursor
+        with safe_db_cursor() as cur:
+            cur.execute(
+                "INSERT INTO " + _SHARED_TABLE + " (id, body, stored_at) "
+                "VALUES (1, %s::jsonb, NOW()) "
+                "ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body, "
+                "stored_at = EXCLUDED.stored_at", (key,))
+        _shared_last_put = key
+    except Exception as e:
+        logger.warning("canon_phrases: could not publish last-good: %s", str(e)[:140])
+
+
+def _shared_get():
+    """(body, age_seconds) of the newest published good body, or (None, None).
+
+    The age is computed by the DATABASE, not this process: replicas do not share
+    a clock, and a cover bounded by a grace window must not be bounded by a
+    clock that might be minutes out.
+    """
+    if not _ensure_shared_table():
+        return None, None
+    try:
+        from db_utils import safe_db_cursor
+        with safe_db_cursor() as cur:
+            cur.execute("SELECT body, EXTRACT(EPOCH FROM (NOW() - stored_at)) "
+                        "FROM " + _SHARED_TABLE + " WHERE id = 1")
+            row = cur.fetchone()
+        if not row or row[0] is None:
+            return None, None
+        body = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        age = float(row[1] or 0)
+        if _is_provisional(body):        # never cover with a floor
+            return None, None
+        return body, age
+    except Exception as e:
+        logger.warning("canon_phrases: could not read last-good: %s", str(e)[:140])
+        return None, None
+
+
 _cache_lock = threading.Lock()
 # `good_at` is when a NON-provisional body was last stored; `covering` is true
 # while a good body is being served in place of a provisional refresh. Both are
@@ -164,6 +280,22 @@ def _cached_body(builder):
             # Cover a provisional refresh with the last good body, for a bounded
             # window. Retry on the provisional TTL, not the full one: the cold
             # window is seconds, so the good body should stop covering quickly.
+            if provisional and not (prev is not None and not _is_provisional(prev)
+                                    and (now2 - _cache["good_at"]) < _GOOD_BODY_GRACE_S):
+                # No good body of our own — the cold-replica case. Adopt the
+                # newest one any replica published, keeping its TRUE age so the
+                # grace bound still means what it says.
+                shared_body, shared_age = _shared_get()
+                if shared_body is not None and shared_age is not None and shared_age < _GOOD_BODY_GRACE_S:
+                    _cache["at"] = now2
+                    _cache["body"] = shared_body
+                    _cache["good_at"] = now2 - shared_age
+                    _cache["ttl"] = _PROVISIONAL_TTL_S
+                    _cache["covering"] = True
+                    logger.info("canon_phrases: covering a provisional refresh with the "
+                                "SHARED last-good body (%.0fs old, grace %ss)",
+                                shared_age, _GOOD_BODY_GRACE_S)
+                    return shared_body, False
             if (provisional and prev is not None and not _is_provisional(prev)
                     and (now2 - _cache["good_at"]) < _GOOD_BODY_GRACE_S):
                 _cache["at"] = now2
@@ -181,6 +313,7 @@ def _cached_body(builder):
             _cache["ttl"] = _PROVISIONAL_TTL_S if provisional else _CACHE_TTL_S
             if not provisional:
                 _cache["good_at"] = now2
+                _shared_put(body)          # let the other replicas cover with it
         return body, False
 
 
