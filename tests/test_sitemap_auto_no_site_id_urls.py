@@ -12,16 +12,23 @@ live app that day:
     raised on every build, `_safe` returned [], and the block emitted ZERO URLs
     for as long as the column has been absent — while `/api/v1/sitemap/health`
     counted 2,103 `facilities` rows with power_mw.
-  * The pages are not a type a sitemap may carry. `/sites/<anything>` answers
-    200 from the static shell — `/sites/zzz-not-a-facility-zzz` included — its
-    server-rendered canonical is `https://dchub.cloud/sites/` whatever the id,
-    and the data call its JS makes, `/sites/<id_or_slug>/capacity-report`,
-    404s for a real facility slug as well as for junk (`/sites/*` is not in the
-    frontend's _routes.json include, so it never reaches this backend).
+  * Every `/sites/<id>` URL is ROBOTS-BLOCKED. Live robots.txt carries
+    `Disallow: /sites/` with `Allow: /sites/$`, so the bare landing page is
+    crawlable and the per-id pages are not; a sitemap entry for a robots-blocked
+    URL is reported as "Submitted URL blocked by robots.txt" against the whole
+    sitemap. They also answer 200 from the static shell for ANY id
+    (`/sites/zzz-not-a-facility-zzz` included), canonicalising to `/sites/`.
 
-Reviving it would publish 200 soft-404s that canonicalise elsewhere — the
-`/facilities/in/<cc>` 676-shell lesson. The bare `/sites/` landing page stays a
-static entry and this file pins that too.
+★ CORRECTION (2026-09-12). The first version of this file said the page's data
+  call 404s and the page type was dead. That was a bad probe: the endpoint is
+  `/api/v1/sites/<id_or_slug>/capacity-report` — the /api/v1 prefix was missing
+  — and it returns 200 with a Site Capacity Report teaser for a real slug, 404
+  `site_not_found` for junk. The page WORKS and is withheld on purpose.
+
+Reviving the block would publish 200 robots-blocked soft-404s — the
+`/facilities/in/<cc>` 676-shell lesson. The bare `/sites/` landing page is
+WITHHELD from both sitemaps as well (tests/test_sitemap_covers_linked_pages.py),
+and this file pins that too.
 
 ★ THE CONTROL IS THE POINT. A generator that produced nothing at all would pass
   the /sites/<id> assertion trivially, so the fake database feeds every other
@@ -138,8 +145,13 @@ def test_every_other_block_still_emits(monkeypatch):
         assert f"<loc>{expected}</loc>" in xml, (
             f"{expected} is missing — the fake database fed this generator "
             "nothing, so the /sites/<id> check above was vacuous")
-    assert "<loc>https://dchub.cloud/sites/</loc>" in xml, (
-        "the bare /sites/ landing page is a static entry and must stay listed")
+    assert "<loc>https://dchub.cloud/sites/</loc>" not in xml, (
+        "the bare /sites/ landing page is listed again. It is WITHHELD in "
+        "tests/test_sitemap_covers_linked_pages.py because robots.txt carries "
+        "`Disallow: /sites/`, and main.py's static_pages withholds it for that "
+        "reason — a sitemap entry for a robots-blocked URL counts against the "
+        "whole sitemap. (The served robots.txt also has `Allow: /sites/$`; "
+        "unblocking starts in dchub-frontend, not here.)")
 
 
 def test_the_generator_does_not_query_the_facilities_table():
