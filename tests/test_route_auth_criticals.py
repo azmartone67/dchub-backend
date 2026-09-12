@@ -449,20 +449,32 @@ def test_team_view_returns_key_for_admin_or_matching_subscription():
 # routes/indexnow.py is now the ONLY IndexNow surface. These guard it, and
 # guard against a third ungated twin appearing.
 
-def _run_indexnow_endpoint(req):
+def _run_indexnow_endpoint(req, **overrides):
     """Exec the REAL indexnow_endpoint together with the REAL _admin_ok/_wants
     it calls, in ONE namespace, so the gate under test is the shipped code and
-    not a stub. submit_to_indexnow is the sink that proves we got past it."""
+    not a stub. submit_to_indexnow is the sink that proves we got past it.
+    `overrides` replace collaborators in that namespace (used to capture what
+    the handler hands the preview)."""
     def _sink(*a, **k):
         raise _PastGate("reached submit_to_indexnow")
 
+    # The REAL caps, imported rather than repeated: a preview cap the handler
+    # reads from a constant this fixture invented would be gate-shaped and
+    # measure nothing.
+    from routes.indexnow import _PREVIEW_MAX_ADMIN, _PREVIEW_MAX_PUBLIC
     ns = {
         "jsonify": _jsonify, "_ADMIN_KEY": _ADMIN, "HOST": "dchub.cloud",
         "KEY_LOCATION": "https://dchub.cloud/k.txt",
         "_load_last": lambda: {}, "submit_to_indexnow": _sink,
-        "ping_new_facilities": _sink, "_recent_facility_urls": lambda n: [],
+        "ping_new_facilities": _sink,
+        "_recent_facility_urls": lambda n, stats=None: [],
         "_recent_dcpi_urls": lambda n: [], "_sitemap_recent": lambda n: [],
+        # the read-only delta preview: NOT a sink — reaching it is the point
+        "_delta_preview": lambda *a, **k: {"ok": True, "preview": True},
+        "_PREVIEW_MAX_PUBLIC": _PREVIEW_MAX_PUBLIC,
+        "_PREVIEW_MAX_ADMIN": _PREVIEW_MAX_ADMIN,
     }
+    ns.update(overrides)
     for fname in ("_admin_ok", "_wants", "indexnow_endpoint"):
         exec(compile(_extract("routes/indexnow.py", fname), "<h>", "exec"), ns)
     ns["request"] = req          # after exec: these share ns as __globals__
@@ -479,6 +491,59 @@ def test_indexnow_endpoint_submit_modes_are_gated():
                 _FakeReq(method=method, args={mode: "1"}))
             assert _rejected(rv), \
                 f"{method} ?{mode}=1 was not gated (got {_status(rv)})"
+
+
+def test_dry_run_delta_previews_and_never_reaches_the_submitter():
+    """?delta=1&dry_run=1 became PUBLIC on 2026-09-12, so the daily delta —
+    the one IndexNow stream no external probe could see — can be measured.
+    What keeps that safe is WHERE it lands: _delta_preview, which neither pings
+    nor advances the cursor. ping_new_facilities is the sink here; reaching it
+    fails. The admin case at the end proves the sink is reachable at all, so
+    the assertion above is not passing on a dead path."""
+    for method in ("GET", "POST"):
+        rv = _run_indexnow_endpoint(
+            _FakeReq(method=method, args={"delta": "1", "dry_run": "1"}))
+        assert rv != ("__PAST__",), \
+            f"{method} ?delta=1&dry_run=1 reached ping_new_facilities"
+        assert rv == {"_payload": {"ok": True, "preview": True}}, \
+            f"{method} ?delta=1&dry_run=1 did not reach the read-only preview: {rv}"
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="POST", args={"delta": "1"},
+                 headers={"X-Admin-Key": _ADMIN}))
+    assert rv == ("__PAST__",), "an admin ?delta=1 no longer reaches the submitter"
+
+
+def test_the_preview_cap_bounds_the_public_read_and_the_key_lifts_it():
+    """The cap IS the change: at 25 URLs a preview could not answer how many of
+    a 2,000-URL submit move, so nothing about these streams was measurable from
+    outside. Raising it keeps a bound on the keyless read and hands the key
+    holder the whole list."""
+    from routes.indexnow import _PREVIEW_MAX_ADMIN, _PREVIEW_MAX_PUBLIC
+    assert 100 <= _PREVIEW_MAX_PUBLIC <= _PREVIEW_MAX_ADMIN, (
+        f"public preview cap {_PREVIEW_MAX_PUBLIC} cannot measure a stream this "
+        "size, or exceeds the admin cap")
+    calls = []
+
+    def _capture(*a, **k):
+        calls.append(a)
+        return {"ok": True}
+
+    args = {"delta": "1", "dry_run": "1", "n": "9999"}
+    _run_indexnow_endpoint(_FakeReq(method="GET", args=dict(args)),
+                           _delta_preview=_capture)
+    assert calls[-1][0] == _PREVIEW_MAX_PUBLIC, (
+        f"a keyless preview asked the DB for {calls[-1][0]} rows — the public "
+        f"cap is {_PREVIEW_MAX_PUBLIC}")
+    _run_indexnow_endpoint(_FakeReq(method="GET", args=dict(args),
+                                    headers={"X-Admin-Key": _ADMIN}),
+                           _delta_preview=_capture)
+    assert calls[-1][0] == 9999, "the admin key did not lift the preview cap"
+    # the paging knob: without it a preview run after the cron is empty
+    _run_indexnow_endpoint(
+        _FakeReq(method="GET", args={"delta": "1", "dry_run": "1",
+                                     "since_id": "1234"}),
+        _delta_preview=_capture)
+    assert calls[-1][1] == 1234, "since_id never reached the preview"
 
 
 def test_indexnow_endpoint_accepts_admin_key():

@@ -424,10 +424,12 @@ def test_each_emitter_resolves_its_list_in_one_call_outside_any_loop():
             assert not _inside_a_loop(calls[0], fn, parents), (
                 f"{rel} {name}() calls served_slugs once per row — resolve the list")
     # IndexNow submits through one shared helper; each builder hands it the
-    # whole list it is about to submit, never a row at a time.
+    # whole list it is about to submit, never a row at a time. _delta_preview
+    # is held to the same rule: it is a PUBLIC read, so a per-row resolution
+    # there is a lookup storm anyone can start.
     tree = _tree("routes/indexnow.py")
     parents = _parents(tree)
-    for name in ("_recent_facility_urls", "ping_new_facilities"):
+    for name in ("_recent_facility_urls", "ping_new_facilities", "_delta_preview"):
         fn = _one_def(tree, name)
         calls = [n for n in ast.walk(fn)
                  if isinstance(n, ast.Call) and _callee(n) == "_served_facility_urls"]

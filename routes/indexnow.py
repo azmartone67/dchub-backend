@@ -10,6 +10,10 @@ in the frontend repo). The ping references that keyLocation.
   GET  /api/v1/admin/indexnow            → config + last-submit status (public read)
   POST /api/v1/admin/indexnow            → {"urls":[...]} explicit submit (admin)
   POST /api/v1/admin/indexnow?recent=1   → submit the most-recent sitemap URLs (admin)
+  GET  /api/v1/admin/indexnow?...&dry_run=1  → PREVIEW: the URLs a submit would
+        send, never a ping. Public, capped at _PREVIEW_MAX_PUBLIC; with the
+        admin key, the whole list. ?delta=1&dry_run=1[&since_id=N] previews the
+        daily cursor delta without advancing the cursor (_delta_preview).
 
 submit_to_indexnow(urls) is exported for in-process hooks (e.g. ping on press
 publish). Only https://dchub.cloud/* URLs are accepted (IndexNow rejects off-host).
@@ -36,6 +40,14 @@ _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
               or os.environ.get("DCHUB_INTERNAL_KEY")
               or os.environ.get("ADMIN_API_KEY") or "")
 _LAST = {"at": None, "submitted": 0, "status": None}
+# How much of a dry_run preview is returned. A preview never pings and only
+# names URLs that are already in the public sitemap, so the cap is about cost,
+# not secrecy — and at 25 it was too low to MEASURE anything: the question
+# "how many of the URLs this stream submits move?" cannot be answered from a
+# 25-URL window of a 2,000-URL submit. Walk a bigger stream in pages with
+# ?delta=1&since_id=<next_since> rather than by raising this.
+_PREVIEW_MAX_PUBLIC = 500
+_PREVIEW_MAX_ADMIN = 10000   # what submit_to_indexnow itself caps a submit at
 
 
 def _db_conn():
@@ -186,7 +198,7 @@ def _sitemap_recent(n=500):
     return [u for u, _ in pairs[:max(1, n)]]
 
 
-def _served_facility_urls(slugs):
+def _served_facility_urls(slugs, stats=None):
     """/facilities/<slug> URLs for `slugs`, each at the slug its page is SERVED at.
 
     r-served-slug-batch (2026-09-12): a row's frozen slug is not always the URL
@@ -199,24 +211,33 @@ def _served_facility_urls(slugs):
     module submitted before. Two slugs can land on one URL (a twin and its
     keeper both in the delta), so the de-duplication is done AFTER resolving.
 
-    Measured before the change (public dry-run preview, cache-busted, HEAD with
-    redirects not followed): 25 of 25 newest facility URLs already 200. The
-    preview caps its sample at 25 whatever `n` says, and the delta stream below
-    cannot be previewed at all, so this is defence for the unmeasured rest.
+    `stats`, when a dict is passed, is filled with the measurement this
+    resolution destroys on its way out: `moved` (slugs whose page is served at
+    a DIFFERENT slug — each one a URL a submit would previously have asked Bing
+    to index at an address that 301s) and `collapsed` (slugs that landed where
+    another slug had already landed). Nothing downstream can recover them,
+    because every URL returned here already answers 200 — HEAD-ing the output
+    measures the fix, not the defect. The dry-run preview reports both.
     """
     from routes.facility_profile_page import served_slugs
+    slugs = list(slugs or [])
     served = served_slugs(slugs)
-    urls, emitted = [], set()
+    urls, emitted, moved = [], set(), 0
     for slug in slugs:
         landed = served.get(slug) or slug
+        if landed != slug:
+            moved += 1
         if landed in emitted:
             continue
         emitted.add(landed)
         urls.append(f"https://{HOST}/facilities/{landed}")
+    if stats is not None:
+        stats["moved"] = moved
+        stats["collapsed"] = len(slugs) - len(urls)
     return urls
 
 
-def _recent_facility_urls(n=2000):
+def _recent_facility_urls(n=2000, stats=None):
     """Canonical /facilities/<slug> URLs for the NEWEST facilities.
 
     The sitemap stamps a uniform lastmod (every URL = today), so 'recent by
@@ -224,7 +245,8 @@ def _recent_facility_urls(n=2000):
     so ORDER BY id DESC = most-recently-discovered. Slugs come from the ONE
     canonical composer (routes.facility_slug_freeze — stored canonical_slug
     first, else build_canonical_slug), so each URL is a strict subset of the
-    canonical sitemap. Read-only, fail-soft → []."""
+    canonical sitemap. Read-only, fail-soft → []. `stats` is passed through to
+    _served_facility_urls for the dry-run preview."""
     db = (os.environ.get("DATABASE_URL")
           or os.environ.get("NEON_DATABASE_URL") or "")
     if not db:
@@ -274,7 +296,47 @@ def _recent_facility_urls(n=2000):
             conn.close()
         except Exception:
             pass
-    return _served_facility_urls(slugs)
+    return _served_facility_urls(slugs, stats)
+
+
+def _delta_slugs(cur, last_id, limit, has_canon):
+    """Rows newer than `last_id`, and the slugs they would be submitted under.
+
+    ONE selection, run by the submitter and by the preview alike. A preview
+    carrying its own copy of this query would be measuring a stream nobody
+    submits — the filters here (a non-empty name, never a duplicate row) are
+    exactly what decides which facilities Bing is told about.
+
+    Returns (row_count, max_seen, slugs). row_count counts ROWS, before slug
+    de-duplication, because the cursor advances past rows, not URLs; max_seen
+    is where it would advance to.
+    """
+    _cs = "canonical_slug" if has_canon else "NULL AS canonical_slug"
+    cur.execute(f"""
+        SELECT id, name, provider, {_cs} FROM discovered_facilities
+         WHERE id > %s AND name IS NOT NULL AND name != ''
+           AND COALESCE(is_duplicate, 0) = 0
+         ORDER BY id ASC
+         LIMIT %s
+    """, (last_id, max(1, min(int(limit), 10000))))
+    rows = cur.fetchall()
+    if not rows:
+        return 0, last_id, []
+    # r-routeslug (2026-07-31): the delta submitter emits the LIVE
+    # canonical slug — stored canonical_slug first, else the freeze
+    # builder (provider-prefix dedupe + ascii folding). The old
+    # hand-compose sent Bing the doubled pre-dedupe form for every
+    # new brand-prefixed row — and new rows are precisely the
+    # not-yet-frozen ones this delta path exists to submit.
+    from routes.facility_slug_freeze import build_canonical_slug
+    slugs, seen = [], set()
+    for _fac_id, name, provider, canon in rows:
+        full = canon or build_canonical_slug(provider, name)
+        if not full or full in seen:
+            continue
+        seen.add(full)
+        slugs.append(full)
+    return len(rows), max(int(r[0]) for r in rows), slugs
 
 
 def ping_new_facilities(limit=5000):
@@ -311,7 +373,6 @@ def ping_new_facilities(limit=5000):
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
-            _cs = "canonical_slug" if _has_canon else "NULL AS canonical_slug"
             cur.execute("CREATE TABLE IF NOT EXISTS indexnow_cursor "
                         "(id INT PRIMARY KEY, last_fac_id BIGINT, updated_at TEXT)")
             cur.execute("SELECT last_fac_id FROM indexnow_cursor WHERE id = 1 FOR UPDATE")
@@ -326,33 +387,11 @@ def ping_new_facilities(limit=5000):
                 return {"ok": True, "initialized": True, "cursor": max_id,
                         "submitted": 0}
             last_id = int(row[0] or 0)
-            cur.execute(f"""
-                SELECT id, name, provider, {_cs} FROM discovered_facilities
-                 WHERE id > %s AND name IS NOT NULL AND name != ''
-                   AND COALESCE(is_duplicate, 0) = 0
-                 ORDER BY id ASC
-                 LIMIT %s
-            """, (last_id, max(1, min(int(limit), 10000))))
-            rows = cur.fetchall()
-            if not rows:
+            n_rows, max_seen, slugs = _delta_slugs(cur, last_id, limit, _has_canon)
+            if not n_rows:
                 conn.commit()
                 return {"ok": True, "submitted": 0, "cursor": last_id,
                         "new_facilities": 0}
-            max_seen = max(int(r[0]) for r in rows)
-            slugs, seen = [], set()
-            # r-routeslug (2026-07-31): the delta submitter emits the LIVE
-            # canonical slug — stored canonical_slug first, else the freeze
-            # builder (provider-prefix dedupe + ascii folding). The old
-            # hand-compose sent Bing the doubled pre-dedupe form for every
-            # new brand-prefixed row — and new rows are precisely the
-            # not-yet-frozen ones this delta path exists to submit.
-            from routes.facility_slug_freeze import build_canonical_slug
-            for fac_id, name, provider, canon in rows:
-                full = canon or build_canonical_slug(provider, name)
-                if not full or full in seen:
-                    continue
-                seen.add(full)
-                slugs.append(full)
             # r-served-slug-batch (2026-09-12): submit where each page LANDS,
             # not the row's own slug — see _served_facility_urls. Resolved here,
             # while the cursor row lock is held, exactly as the Bing POST below
@@ -365,7 +404,7 @@ def ping_new_facilities(limit=5000):
                             (max_seen, datetime.datetime.utcnow().isoformat() + "Z"))
                 conn.commit()
                 return {"ok": True, "submitted": 0, "cursor": max_seen,
-                        "new_facilities": len(rows)}
+                        "new_facilities": n_rows}
             res = submit_to_indexnow(urls)
             if res.get("ok"):
                 cur.execute("UPDATE indexnow_cursor SET last_fac_id = %s, "
@@ -374,7 +413,7 @@ def ping_new_facilities(limit=5000):
                 conn.commit()
             else:
                 conn.rollback()  # keep the old cursor → retry next run
-            return {**res, "new_facilities": len(rows),
+            return {**res, "new_facilities": n_rows,
                     "cursor": max_seen if res.get("ok") else last_id}
     except Exception as e:
         try:
@@ -383,6 +422,75 @@ def ping_new_facilities(limit=5000):
             pass
         return {"ok": False, "error": str(e)[:200]}
     finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _delta_preview(limit=None, since_id=None):
+    """What ?delta=1 WOULD submit — computed without submitting or writing.
+
+    The delta is the one IndexNow stream that runs unattended (the daily cron,
+    _start_delta_loop), and until now nothing outside the process could see it:
+    a real run pings Bing AND advances the cursor, so asking what it was about
+    to send consumed it. Every claim about this path was therefore an argument
+    about the code rather than a reading of it.
+
+    This answers with the submitter's own selection (_delta_slugs) and the
+    submitter's own resolution (_served_facility_urls), and nothing else: no
+    cursor lock, no DDL, no UPDATE, no ping. It cannot advance the cursor
+    because it never writes — not by a flag that a later edit could invert, but
+    because the calls are absent (pinned by tests).
+
+    `since_id` re-opens a window the cursor has already passed. Without it a
+    preview run the hour after the cron is empty and measures nothing; with it
+    the whole corpus can be walked in pages of `limit`, each response naming
+    the `next_since` to ask for.
+    """
+    conn = _db_conn()
+    if not conn:
+        return {"ok": False, "reason": "no db"}
+    try:
+        with conn.cursor() as cur:
+            _has_canon = False
+            try:
+                cur.execute("SELECT 1 FROM information_schema.columns "
+                            "WHERE table_name = 'discovered_facilities' "
+                            "  AND column_name = 'canonical_slug'")
+                _has_canon = cur.fetchone() is not None
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            # Read the cursor WITHOUT creating it and WITHOUT locking it: a
+            # preview must not make the table, and must not queue the daily run
+            # behind a reader.
+            cursor_at = None
+            try:
+                cur.execute("SELECT last_fac_id FROM indexnow_cursor WHERE id = 1")
+                _row = cur.fetchone()
+                cursor_at = int(_row[0] or 0) if _row else None
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            since = int(since_id) if since_id is not None else int(cursor_at or 0)
+            n_rows, max_seen, slugs = _delta_slugs(
+                cur, since, limit or _PREVIEW_MAX_PUBLIC, _has_canon)
+            stats = {}
+            urls = _served_facility_urls(slugs, stats)
+            return {"ok": True, "dry_run": True, "cursor": cursor_at,
+                    "since": since, "next_since": max_seen,
+                    "new_facilities": n_rows, "count": len(urls),
+                    "moved": stats.get("moved", 0),
+                    "collapsed": stats.get("collapsed", 0),
+                    "sample": urls}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+    finally:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         try:
             conn.close()
         except Exception:
@@ -457,21 +565,38 @@ def indexnow_endpoint():
         n = int(request.args.get("n", body.get("n", 0)) or 0)
     except Exception:
         n = 0
+    # How much of the preview comes back. A keyless preview is held to
+    # _PREVIEW_MAX_PUBLIC because it is DB-backed, not because the URLs are
+    # secret — they are the ones in the public sitemap. It used to be 25, which
+    # was below the size of the thing being previewed: a 2,000-URL submit seen
+    # 25 URLs at a time cannot say how many of its URLs move.
+    cap = _PREVIEW_MAX_ADMIN if is_admin else _PREVIEW_MAX_PUBLIC
     if dry and not is_admin:
-        n = min(n or 25, 50)  # cap public preview (DB-backed) to avoid abuse
-    # Cursor-advancing facility delta (admin-only, never dry): submits only
-    # facilities newer than the last successful ping. The daily churn loop
-    # (register_indexnow) calls ping_new_facilities() directly; this mode is
-    # the manual/external-cron trigger for the same thing.
+        n = min(n or cap, cap)
+    try:
+        _since = request.args.get("since_id", body.get("since_id"))
+        since_id = int(_since) if _since not in (None, "") else None
+    except Exception:
+        since_id = None
+    # Cursor-advancing facility delta: submits only facilities newer than the
+    # last successful ping. The daily churn loop (register_indexnow) calls
+    # ping_new_facilities() directly; this mode is the manual/external-cron
+    # trigger for the same thing. A real run is admin-only; the dry_run
+    # PREVIEW is public and reaches _delta_preview, which cannot submit or
+    # advance the cursor — ping_new_facilities stays behind the key.
     if _wants("delta"):
+        if dry:
+            return jsonify(_delta_preview(n or cap, since_id))
         if not is_admin:
             return jsonify(ok=False, error="admin key required"), 401
         return jsonify(ping_new_facilities(n or 5000))
     urls = list(body.get("urls") or [])
     # Newest facilities (canonical /facilities/<slug>, by id desc) — the main
     # new-content stream that has no in-process publish hook.
+    _facility_stats = None
     if _wants("facilities") or _wants("new_facilities"):
-        urls += _recent_facility_urls(n or 2000)
+        _facility_stats = {}
+        urls += _recent_facility_urls(n or 2000, _facility_stats)
     # DCPI market pages (canonical /dcpi/<slug>, published only) — Lever #3:
     # re-engage crawlers on the #1-tool content after the daily recompute.
     if _wants("dcpi") or _wants("markets"):
@@ -482,7 +607,15 @@ def indexnow_endpoint():
     if dry:
         seen = [u for u in dict.fromkeys(urls)
                 if isinstance(u, str) and u.startswith(f"https://{HOST}")]
-        return jsonify(ok=True, dry_run=True, count=len(seen), sample=seen[:25])
+        out = {"ok": True, "dry_run": True, "count": len(seen),
+               "sample": seen[:cap], "sample_truncated": len(seen) > cap}
+        if _facility_stats is not None:
+            # what the served-slug resolution absorbed on the way out — the
+            # numbers HEAD-ing the sample can no longer see (see
+            # _served_facility_urls), over the WHOLE list, not just the sample.
+            out["moved"] = _facility_stats.get("moved", 0)
+            out["collapsed"] = _facility_stats.get("collapsed", 0)
+        return jsonify(**out)
     return jsonify(submit_to_indexnow(urls))
 
 
