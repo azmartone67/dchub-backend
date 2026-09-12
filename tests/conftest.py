@@ -74,14 +74,15 @@ def pytest_collectstart(collector):
         _stub_sentinel.set_current_file(base)
 
 
-# Guards that must observe EVERY other file before they run. Ordered to the
-# tail of the session; the comment on pytest_collection_modifyitems explains
+# Guards that must observe EVERY other file before they run, ordered to the
+# tail of the session. The comment on pytest_collection_modifyitems explains
 # why alphabetical position is not an ordering guarantee.
-# ★ ORDER MATTERS, and it is the reverse of the order you would guess.
+#
+# ★ ORDER WITHIN THIS TUPLE MATTERS, and it is the reverse of the intuitive one.
 # test_scan_floors_are_pinned.py reads the scan-observation table, so it must
-# run after every file that scans — INCLUDING the other tail guards. Putting it
-# first in this tuple would recreate, inside the very mechanism built to end it,
-# the blind zone its docstring describes.
+# run after every file that scans — the other tail guards INCLUDED. Listing it
+# first would recreate, inside the very mechanism built to end it, the blind
+# zone its docstring describes.
 _TAIL_GUARDS = (
     # Reads the sys.modules swap ledger, which only fills as files are
     # imported. Sorts 400+ files early on its own name, so without this it
