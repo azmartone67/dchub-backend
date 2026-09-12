@@ -111,6 +111,9 @@ TWIN_UPDATE = shipped_sql("main.py", "reconcile_mcp_tiers", "UPDATE mcp_dev_keys
 # an existing paid key to enterprise.
 WEBHOOK_TIER_WRITE = shipped_sql("main.py", "handle_checkout_completed",
                                  "UPDATE mcp_dev_keys SET tier = %s WHERE LOWER(email)")
+UNPROVEN = shipped_sql("flask_mcp_endpoints.py",
+                       "admin_backfill_verified_bindings",
+                       "SELECT COALESCE(metadata->>'source',''), COUNT(*)")
 BACKFILL_UPDATE = shipped_sql("flask_mcp_endpoints.py",
                               "admin_backfill_verified_bindings",
                               "UPDATE mcp_dev_keys AS k")
@@ -282,3 +285,51 @@ def test_an_unstamped_legacy_key_misses_a_plan_change_until_it_is_backfilled(db)
     assert tier_of(db, "k_legacy") == "enterprise", (
         "after the backfill records the proof it already had, the plan change "
         "reaches the key again")
+
+
+# ── 5. the dry run must say what the apply will leave behind ─────────────
+def _unproven(conn, exclude_sources):
+    with conn.cursor() as cur:
+        cur.execute(UNPROVEN, (exclude_sources,))
+        return {(r[0] or "(none)"): r[1] for r in cur.fetchall()}
+
+
+def test_the_dry_run_reports_the_state_the_apply_would_leave(db):
+    """The first cut computed this AFTER the write with no source clause, so a
+    dry run — which writes nothing — reported the state it STARTS from under a
+    name that reads as the state it ends in. Measured live on 52 rows: it said
+    52 would remain when the answer was 25.
+
+    The invariant: after == before minus exactly the rows this run stamps, and
+    it must hold WITHOUT the write having happened.
+    """
+    for i, src in enumerate(["stripe_subscription"] * 3 + ["workos_oauth"] * 2
+                            + ["redeem"] * 4 + ["claim_api"]):
+        _key(db, f"k{i}", PAYER, tier="paid", source=src)
+    run_sources = ["stripe_subscription", "workos_oauth"]
+
+    before = _unproven(db, [])
+    after = _unproven(db, run_sources)          # no write has happened yet
+    assert sum(before.values()) == 10
+    assert sum(after.values()) == 5, "after must exclude the 5 rows this run covers"
+    assert after == {"redeem": 4, "claim_api": 1}
+    assert sum(before.values()) - sum(after.values()) == _count_scope(db, run_sources)
+
+    # ...and the projection was right: applying leaves exactly that set.
+    assert _backfill(db, run_sources) == 5
+    assert _unproven(db, []) == after, (
+        "the dry run's 'after' did not match what the apply actually left")
+
+
+def _count_scope(conn, sources):
+    """How many rows the UPDATE would touch, counted independently of it."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM mcp_dev_keys k"
+            " WHERE COALESCE(k.status,'active')='active'"
+            "   AND COALESCE(k.tier,'') IN ('paid','enterprise')"
+            "   AND COALESCE(k.email,'') <> ''"
+            "   AND COALESCE(k.metadata->>'source','') = ANY(%s)"
+            "   AND LOWER(COALESCE(k.metadata->>'email_verified_for',''))"
+            "       <> LOWER(COALESCE(k.email,''))", (sources,))
+        return cur.fetchone()[0]

@@ -164,6 +164,40 @@ class _Cursor:
                                != (r["email"] or "").lower())]
             return
 
+        def _unproven(r):
+            return ((r["tier"] or "") in ("paid", "enterprise")
+                    and r["status"] == "active" and r["email"]
+                    and (r["metadata"].get("email_verified_for") or "").lower()
+                    != (r["email"] or "").lower())
+
+        if s.startswith("SELECT COALESCE(k.metadata->>'source',''), LOWER(k.email)"):
+            self._rows = [((r["metadata"].get("source") or ""),
+                           (r["email"] or "").lower(), r["tier"])
+                          for r in self.db.keys.values()
+                          if _unproven(r)
+                          and (r["metadata"].get("source") or "") in (params[0] or [])]
+            return
+
+        if s.startswith("SELECT COALESCE(metadata->>'source',''), COUNT(*)"):
+            # Clause-aware: the exclusion only applies when the shipped query
+            # carries it. Without that, this fake would report a correct
+            # before/after split for a query that no longer makes one.
+            excl = set(params[0] or []) if "NOT (COALESCE(metadata->>'source','')" in s else set()
+            counts = {}
+            for r in self.db.keys.values():
+                src = r["metadata"].get("source") or ""
+                if _unproven(r) and src not in excl:
+                    counts[src] = counts.get(src, 0) + 1
+            self._rows = sorted(counts.items(), key=lambda kv: -kv[1])
+            return
+
+        if s.startswith("UPDATE mcp_dev_keys AS k SET metadata"):   # the backfill
+            for r in self.db.keys.values():
+                if _unproven(r) and (r["metadata"].get("source") or "") in (params[0] or []):
+                    r["metadata"]["email_verified_for"] = (r["email"] or "").lower()
+                    self.rowcount += 1
+            return
+
         if s.startswith("SELECT developer_id FROM mcp_dev_keys"):
             row = self.db.keys.get(params[0])
             self._rows = [(row["developer_id"],)] if row else []
@@ -601,3 +635,55 @@ def test_the_backfill_requires_the_admin_gate(app):
     app.use(_DB())
     r = app.client.get("/api/v1/admin/billing/backfill-verified-bindings?apply=1")
     assert r.status_code in (401, 503)
+
+
+# ── 8. the dry run must report the state the apply would LEAVE ───────────
+def test_the_dry_run_reports_what_would_remain_not_what_is_there_now(app, backfill):
+    """The defect this fixes, at the wiring rather than in the SQL.
+
+    The query can be perfectly correct and still be CALLED with the wrong
+    source list — which is what shipped: the after-count was computed with no
+    exclusion, so a dry run (which writes nothing) reported its starting state
+    under a name that reads as its ending state. Measured live on 52 rows: it
+    said 52 would remain when the answer was 25.
+
+    tests/test_tier_grant_gates_sql.py executes the query directly and cannot
+    see this: it supplies its own parameters. Only driving the handler does.
+    """
+    db = app.use(_DB(keys=[
+        _key("dch_live_" + "a" * 32, PAYER, tier="paid"),          # source ""
+        _key("dch_live_" + "b" * 32, PAYER, tier="paid"),
+    ]))
+    for k, src in zip(db.keys.values(), ["stripe_subscription", "redeem"]):
+        k["metadata"]["source"] = src
+
+    body = backfill(apply=0).get_json()
+    assert body["unproven_before"]["count"] == 2
+    assert body["unproven_after"]["count"] == 1, (
+        "the dry run reported its starting state as what would remain")
+    assert body["unproven_after"]["by_source"] == {"redeem": 1}
+    assert sum(body["by_source"].values()) == 1
+    assert body["stamped"] == 0 and db.keys[list(db.keys)[0]]["tier"] == "paid"
+    # the alias the endpoint shipped with now means what its name claimed
+    assert body["still_unproven"] == body["unproven_after"]
+
+
+def test_the_apply_leaves_exactly_what_the_dry_run_predicted(app, backfill):
+    """The projection is only worth anything if applying agrees with it."""
+    db = app.use(_DB(keys=[
+        _key("dch_live_" + "c" * 32, PAYER, tier="paid"),
+        _key("dch_live_" + "d" * 32, PAYER, tier="paid"),
+        _key("dch_live_" + "e" * 32, PAYER, tier="paid"),
+    ]))
+    for k, src in zip(db.keys.values(),
+                      ["stripe_subscription", "workos_oauth", "claim_api"]):
+        k["metadata"]["source"] = src
+
+    predicted = backfill(apply=0).get_json()["unproven_after"]
+    applied = backfill(apply=1).get_json()
+    assert applied["stamped"] == 2
+    assert applied["unproven_before"]["count"] == 1, (
+        "after the write, 'before' is measured on the new state — the two "
+        "stamped rows are proven now")
+    assert applied["unproven_after"] == predicted, (
+        "the apply left a different set than the dry run promised")

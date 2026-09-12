@@ -3908,6 +3908,31 @@ _BACKFILL_NEVER = ("redeem", "claim_api")
 # read that stamp and grant paid. Module-level so the whole statement can be
 # read (and executed by tests) as one string: a WHERE clause assembled out of
 # function-locals is a clause a reader, and a guard, can silently miss.
+# The unproven set, before and after. `%s` is the source list THIS run covers.
+#
+# Why one query answers both: the rows this run stamps are exactly
+# (unproven AND source IN list), so the rows left unproven afterwards are
+# (unproven AND source NOT IN list) — which does not depend on whether the
+# UPDATE has run yet. Passing the list gives the AFTER state in a dry run and
+# the same answer in an apply run; passing an empty list gives the BEFORE state.
+#
+# The first cut computed this AFTER the write with no source clause, so a dry
+# run — which writes nothing — reported the BEFORE state under a name that reads
+# as the after ("still_unproven: 52"). The apply would have taken it to 25. A
+# dry run whose whole job is to say what the apply will do must not report the
+# state it would leave behind as the state it starts from.
+_BACKFILL_UNPROVEN_SQL = """
+                SELECT COALESCE(metadata->>'source',''), COUNT(*)
+                  FROM mcp_dev_keys
+                 WHERE COALESCE(status,'active') = 'active'
+                   AND COALESCE(tier,'') IN ('paid','enterprise')
+                   AND COALESCE(email,'') <> ''
+                   AND LOWER(COALESCE(metadata->>'email_verified_for',''))
+                       <> LOWER(COALESCE(email,''))
+                   AND NOT (COALESCE(metadata->>'source','') = ANY(%s))
+                 GROUP BY 1 ORDER BY 2 DESC"""
+
+
 _BACKFILL_SCOPE_SQL = """
                  WHERE COALESCE(k.status,'active') = 'active'
                    AND COALESCE(k.tier,'') IN ('paid','enterprise')
@@ -3954,7 +3979,8 @@ def admin_backfill_verified_bindings():
     out = {"ok": True, "apply": apply, "sources": sources,
            "rejected_sources": rejected, "stamped": 0,
            "by_source": {}, "samples": [],
-           "still_unproven": {"count": 0, "by_source": {}}}
+           "unproven_before": {"count": 0, "by_source": {}},
+           "unproven_after": {"count": 0, "by_source": {}}}
     if not sources:
         out["message"] = "no allowlisted source selected — nothing to do"
         return jsonify(out)
@@ -3986,19 +4012,17 @@ def admin_backfill_verified_bindings():
                 out["stamped"] = cur.rowcount or 0
                 conn.commit()
             # What the rule deliberately will not touch. Reported so the
-            # leftover is a decision someone made, not a list nobody saw.
-            cur.execute(
-                """SELECT COALESCE(metadata->>'source',''), COUNT(*)
-                     FROM mcp_dev_keys
-                    WHERE COALESCE(status,'active') = 'active'
-                      AND COALESCE(tier,'') IN ('paid','enterprise')
-                      AND COALESCE(email,'') <> ''
-                      AND LOWER(COALESCE(metadata->>'email_verified_for',''))
-                          <> LOWER(COALESCE(email,''))
-                    GROUP BY 1 ORDER BY 2 DESC""")
-            for src, n in (cur.fetchall() or []):
-                out["still_unproven"]["by_source"][src or "(none)"] = n
-                out["still_unproven"]["count"] += n
+            # leftover is a decision someone made, not a list nobody saw —
+            # and reported as BEFORE and AFTER, because a dry run exists to
+            # say what changes.
+            for field, srcs in (("unproven_before", []), ("unproven_after", sources)):
+                cur.execute(_BACKFILL_UNPROVEN_SQL, (srcs,))
+                for src, n in (cur.fetchall() or []):
+                    out[field]["by_source"][src or "(none)"] = n
+                    out[field]["count"] += n
+            # Alias kept for anything reading the field this shipped with — and
+            # it now means what its name always claimed.
+            out["still_unproven"] = out["unproven_after"]
         return jsonify(out)
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
