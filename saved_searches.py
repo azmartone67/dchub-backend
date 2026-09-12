@@ -219,6 +219,7 @@ def list_saved_searches():
         'count': len(searches)
     })
 
+# AUTO-REPAIR: duplicate route '/api/saved-searches' also in saved_searches.py:191 — review and remove one
 @saved_searches_bp.route('/api/saved-searches', methods=['POST'])
 def create_saved_search():
     """Create a new saved search"""
@@ -243,7 +244,7 @@ def create_saved_search():
         c.execute("""
             INSERT INTO saved_searches
             (id, user_id, name, criteria, alert_frequency, alert_enabled, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, [
             search_id, user_id, name, json.dumps(criteria),
             alert_frequency, 1 if alert_enabled else 0, now, now
@@ -287,6 +288,7 @@ def get_saved_search(search_id):
         'success': True,
         'search': search
     })
+# AUTO-REPAIR: duplicate route '/api/saved-searches/<search_id>' also in saved_searches.py:262 — review and remove one
 
 @saved_searches_bp.route('/api/saved-searches/<search_id>', methods=['PUT'])
 def update_saved_search(search_id):
@@ -327,6 +329,7 @@ def update_saved_search(search_id):
     finally:
         conn.close()
     
+# AUTO-REPAIR: duplicate route '/api/saved-searches/<search_id>' also in saved_searches.py:262 — review and remove one
     return jsonify({'success': True, 'message': 'Search updated'})
 
 @saved_searches_bp.route('/api/saved-searches/<search_id>', methods=['DELETE'])
@@ -398,7 +401,7 @@ def check_new_matches():
                 alert_id = c.execute("""
                     INSERT INTO search_alerts
                     (search_id, user_id, facilities_matched, facilities_count, created_at)
-                    VALUES (%s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, [
                     search_dict['id'],
                     search_dict['user_id'],
