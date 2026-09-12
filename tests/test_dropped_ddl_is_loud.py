@@ -53,6 +53,15 @@ def _fresh_dedupe():
 class _Underlying:
     """A raw cursor double. Records what actually reached the driver."""
     description = None
+    # psycopg2 cursors ALWAYS expose rowcount (-1 when undefined), and since
+    # #4453 the wrapper reads it immediately after execute() so a later lastval
+    # probe cannot overwrite the count. Without it here that read raised
+    # AttributeError *inside the wrapper's own try*, which logs "PG query
+    # failed" and rolls back — so a statement that was forwarded fine looked
+    # dropped, and the three "not dropped are not reported" cases below went
+    # red on origin/main. A double less capable than the real cursor on the
+    # success path turns success into failure.
+    rowcount = -1
 
     def __init__(self):
         self.seen = []
@@ -62,6 +71,55 @@ class _Underlying:
 
 
 DDL = "ALTER TABLE news_articles ADD COLUMN IF NOT EXISTS publisher_url TEXT"
+
+
+def test_the_double_models_every_cursor_attribute_the_wrapper_reads():
+    """★ THE META-GUARD, added 2026-09-12 after #4453 broke this file.
+
+    Derived, not hand-listed: it reads which `self._cur.<attr>` the wrapper
+    touches on its SUCCESS path and requires the double to model each.
+
+    ★ The walk is PRUNED AT `except` HANDLERS, which is the whole subtlety.
+      `self._cur.connection.rollback()` sits in a try nested INSIDE execute()'s
+      own handler, so a naive "every ast.Try body" scan reports `connection` as
+      success-path and demands the double grow an attribute that only the error
+      path touches — that path is itself wrapped in try/except, so a missing
+      attribute there cannot turn success into failure. The first version of
+      this test did exactly that and contradicted this docstring.
+    """
+    import ast
+    import pathlib
+
+    def success_reads(node):
+        """self._cur.<attr> loads reachable without entering an except handler."""
+        out = set()
+        if (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "_cur"):
+            out.add(node.attr)
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ExceptHandler):
+                continue                         # error path — guarded there
+            out |= success_reads(child)
+        return out
+
+    src = pathlib.Path(db_utils.__file__).read_text(encoding="utf-8")
+    cls = next(n for n in ast.walk(ast.parse(src))
+               if isinstance(n, ast.ClassDef) and n.name == "PGCursorWrapper")
+    fn = next(n for n in cls.body
+              if isinstance(n, ast.FunctionDef) and n.name == "execute")
+    reads = success_reads(fn)
+    assert {"execute", "rowcount"} <= reads, (
+        f"the scan found {sorted(reads)} — it must at least see the execute() "
+        f"call and the rowcount read #4453 added, or it is blind and would pass "
+        f"on anything")
+    missing = sorted(a for a in reads if not hasattr(_Underlying(), a))
+    assert not missing, (
+        f"PGCursorWrapper.execute reads self._cur.{missing} on its success "
+        f"path, but this double does not model {missing}. The read raises "
+        f"inside the wrapper's own try, which logs 'PG query failed' and makes "
+        f"a forwarded statement look dropped — exactly how #4453 turned this "
+        f"file red. Add the attribute to _Underlying, modelling psycopg2.")
 
 
 def test_a_dropped_statement_is_reported(caplog):
