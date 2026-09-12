@@ -346,6 +346,51 @@ def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
     if flng is not None and not (-180.0 <= flng <= 180.0):
         flat = flng = None
 
+    # ★★★ 0,0 IS A MISSING COORDINATE, NOT A PLACE IN THE GULF OF GUINEA.
+    # Both range checks above PASS for (0,0) — 0 is a legal latitude AND a
+    # legal longitude — so the ingestion placeholder that
+    # routes/provenance.normalize_coordinates exists to name arrived here as a
+    # real position and POISONED the distance guard. _too_far then measured
+    # every candidate from Null Island, so step (1)'s EXACT city match was
+    # rejected at ~10,000 km and (2)-(4) fell through to None. The page did not
+    # get a WRONG market, it got NO market — the same thin page the r-market-
+    # resolve-geo work above was written to prevent, arriving through the guard
+    # that work added.
+    #
+    # Measured on the same 500-page sample (2026-09-11): 6 pages store 0,0, and
+    # the 5 whose city IS a scored market (Houston, Tokyo x2, Taipei, Austin)
+    # all rendered no market block — a median 45 distinct words against 186 for
+    # pages that render one. Driven through this function with a stub table:
+    #     Houston, coords NULL  -> houston      (resolves today)
+    #     Houston, coords (0,0) -> None         (10,526 km > _SANITY_KM)
+    #
+    # ★ REUSE, NOT A SECOND COPY. provenance owns this sentinel, /api/v1/
+    #   facilities already normalises with it (r-nullisland 2026-08-31), and it
+    #   is fenced by tests/test_null_island_coordinates.py. Its "only (0,0)
+    #   TOGETHER is absent" rule is exactly the rule this needs: lat=0 with a
+    #   real longitude is equatorial Gabon/Ecuador/Kenya and must keep
+    #   resolving. (_nearby_generation_rows carries its own 0.01-degree copy of
+    #   this test; it is a different, wider net for a different question and is
+    #   left alone rather than merged blind.)
+    # ★ FALLING THROUGH IS THE WHOLE FIX — the facility loses a coordinate it
+    #   never really had and resolves on city/state like any other coordinate-
+    #   less row. Nothing is invented: a facility whose city is not a scored
+    #   market still gets None.
+    # ★ WRAPPED, because this block sits OUTSIDE the try/except that guards the DB
+    #   work below and _market_dcpi runs on every one of ~19k facility pages. An
+    #   ImportError here would propagate into _render_profile and 500 the page
+    #   rather than cost it a market block, which is the trade this whole change
+    #   is arguing against. Degrades to the pre-fix behaviour, never to a 500 —
+    #   the same shape as the lazy imports in _fetch_facility_by_slug.
+    if flat is not None and flng is not None:
+        try:
+            from routes.provenance import normalize_coordinates as _norm_coords
+            _nc = _norm_coords({"latitude": flat, "longitude": flng})
+            flat, flng = _nc.get("latitude"), _nc.get("longitude")
+        except Exception as _nc_err:
+            logger.warning("facility_profile: coordinate normaliser unavailable "
+                           "(%s) — a 0,0 row keeps today's resolution", _nc_err)
+
     if not city_cands and not st and flat is None:
         return None
 
