@@ -236,3 +236,60 @@ def test_it_never_borrows_a_pooled_connection():
         assert pooled not in src, f"{pooled} cannot execute this DDL"
     assert "autocommit = True" in src, (
         "CREATE INDEX CONCURRENTLY cannot run inside a transaction block")
+
+
+# ── the endpoint ───────────────────────────────────────────────────────────
+
+def test_the_dsn_is_the_direct_endpoint_not_the_pooler(monkeypatch):
+    """Measured on 2026-09-12 against Neon's pooler:
+
+        SET statement_timeout = 0  ->  SHOW statement_timeout says '5s'
+
+    The pooler substitutes its own value, so the line that exists to let a
+    multi-GB CONCURRENTLY build run for minutes instead guarantees it is
+    cancelled after five seconds — leaving the INVALID index this script exists
+    to detect. On the direct endpoint the SET reports 0 and a 25-second
+    statement completes.
+    """
+    m = _mod()
+    monkeypatch.setenv("DATABASE_URL",
+                       "postgres://u:p@ep-x-123-pooler.us-east-2.aws.neon.tech/db")  # secretscan:allow (test placeholder)
+    dsn = m._dsn()
+    assert "-pooler." not in dsn, (
+        "the build would dial Neon's pgbouncer pooler, where statement_timeout "
+        "is capped at 5s and every transaction ends with DISCARD ALL")
+    assert dsn == "postgres://u:p@ep-x-123.us-east-2.aws.neon.tech/db"  # secretscan:allow (test placeholder)
+
+
+def test_the_swap_does_not_touch_credentials(monkeypatch):
+    """A decode/re-encode round trip mangles passwords containing reserved
+    characters. main._leader_lock_url() uses a plain substring swap for the
+    same reason."""
+    m = _mod()
+    weird = "postgres://u:p%40ss+w/rd@ep-x-pooler.aws.neon.tech/db?sslmode=require"  # secretscan:allow (test placeholder)
+    monkeypatch.setenv("DATABASE_URL", weird)
+    assert m._dsn() == weird.replace("-pooler.", ".")
+
+
+def test_an_already_direct_or_non_neon_url_is_untouched(monkeypatch):
+    m = _mod()
+    for url in ("postgres://u:p@ep-x.aws.neon.tech/db",  # secretscan:allow (test placeholder)
+                "postgres://u:p@localhost:5432/db"):  # secretscan:allow (test placeholder)
+        monkeypatch.setenv("DATABASE_URL", url)
+        assert m._dsn() == url
+
+
+def test_it_refuses_to_build_through_a_pooled_dsn(monkeypatch):
+    """If the swap ever stops matching a new Neon host shape, fail loudly
+    rather than start a build the pooler will cancel and leave invalid."""
+    m = _mod()
+    monkeypatch.setattr(m, "_dsn", lambda: "postgres://u:p@ep-x-pooler.neon.tech/db")  # secretscan:allow (test placeholder)
+    called = {"n": 0}
+
+    def _boom(*a, **k):
+        called["n"] += 1
+        raise AssertionError("connected to a pooled endpoint")
+
+    monkeypatch.setattr(psycopg2, "connect", _boom)
+    assert m.main(["prog", "--apply"]) == 2
+    assert called["n"] == 0, "it dialled the pooler instead of refusing"

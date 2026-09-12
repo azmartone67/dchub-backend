@@ -79,12 +79,42 @@ FROM surface_telemetry WHERE surface_id = %s AND ts >= NOW() - INTERVAL '7 days'
 
 
 def _dsn() -> str:
+    """Neon's DIRECT (non-pooler) endpoint — never the pooled one.
+
+    ★ THIS IS NOT A PREFERENCE. DATABASE_URL points at Neon's pgbouncer POOLER,
+    and measured against it on 2026-09-12:
+
+        SET statement_timeout = 0   ->   SHOW statement_timeout says '5s'
+
+    The pooler does not honour the SET; it substitutes its own value. So the
+    one line in this script that exists to let a multi-GB CREATE INDEX
+    CONCURRENTLY run for minutes is, through the pooler, the line that
+    guarantees the build is cancelled after FIVE SECONDS — leaving exactly the
+    INVALID index this script is built to detect and clean up. Without the SET
+    the same connection cancelled a `SELECT count(*)` at 15.1s. On the direct
+    endpoint the SET reports 0, a 25-second statement completes, and that same
+    count returns in 2.6s.
+
+    ★ AND TIMEOUTS ARE ONLY THE VISIBLE HALF. Transaction-mode pooling ends
+    every transaction with DISCARD ALL and multiplexes sessions across
+    backends. CREATE INDEX CONCURRENTLY needs one stable session across its
+    whole multi-pass build. It does not belong on a pooled connection at all —
+    the same reason main._leader_lock_url() dials direct for advisory locks.
+
+    Plain substring swap, matching that helper: never a decode/re-encode round
+    trip, so credentials are untouched, and a no-op on an already-direct or
+    non-Neon URL.
+    """
     url = ((os.environ.get("DATABASE_URL") or "").strip()
            or (os.environ.get("NEON_DATABASE_URL") or "").strip())
     if not url:
         raise SystemExit("no DATABASE_URL/NEON_DATABASE_URL — refusing to "
                          "pretend the index was built")
-    return url
+    return url.replace("-pooler.", ".")
+
+
+def _is_pooled(dsn: str) -> bool:
+    return "-pooler." in dsn
 
 
 def index_state(cur, name):
@@ -114,7 +144,16 @@ def main(argv) -> int:
     args = ap.parse_args(argv[1:])
 
     import psycopg2
-    conn = psycopg2.connect(_dsn(), connect_timeout=20)
+    dsn = _dsn()
+    if _is_pooled(dsn):
+        # Belt and braces: if the swap above ever stops matching a new Neon
+        # host shape, fail LOUDLY here rather than start a build that the
+        # pooler will cancel at 5s and leave invalid.
+        print("refusing to run: the DSN still names a POOLED endpoint. "
+              "CREATE INDEX CONCURRENTLY on a pooler is cancelled early and "
+              "leaves an INVALID index. Point this at the direct endpoint.")
+        return 2
+    conn = psycopg2.connect(dsn, connect_timeout=20)
     # CREATE INDEX CONCURRENTLY cannot run inside a transaction block.
     conn.autocommit = True
     cur = conn.cursor()
