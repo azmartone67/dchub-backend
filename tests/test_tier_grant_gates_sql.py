@@ -333,3 +333,76 @@ def _count_scope(conn, sources):
             "   AND LOWER(COALESCE(k.metadata->>'email_verified_for',''))"
             "       <> LOWER(COALESCE(k.email,''))", (sources,))
         return cur.fetchone()[0]
+
+
+# ── 6. the CLI's stamp must be the shape the grant predicates accept ─────
+def _cli_mint_metadata(email, tier="free", note=None):
+    """The metadata the SHIPPED gen_dev_key.py mint writes, obtained by calling
+    it — not by restating its keys here. A guard that spells the marker itself
+    would pass while the CLI wrote `email_verified_For` and nothing matched."""
+    import importlib
+    import types as _t
+    os.environ.setdefault("NEON_DATABASE_URL",
+                          "postgresql://stub:stub@127.0.0.1:1/stub")
+    mod = importlib.import_module("gen_dev_key")
+    captured = {}
+
+    class _Cur:
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+        def execute(self, sql, params=()):
+            if "INSERT INTO mcp_dev_keys" in sql:
+                captured["params"] = params
+        def fetchone(self): return None
+        def fetchall(self): return []
+
+    class _Conn:
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+        def cursor(self): return _Cur()
+
+    real = mod._connect
+    mod._connect = lambda: _Conn()
+    try:
+        mod.cmd_mint(_t.SimpleNamespace(email=email, tier=tier, note=note))
+    finally:
+        mod._connect = real
+    return captured["params"]
+
+
+def test_a_cli_minted_key_satisfies_the_grant_rule_it_was_stamped_for(db):
+    """End to end across two artifacts: the CLI writes the marker, and the
+    SHIPPED webhook statement is what reads it. Asserting the string in one
+    place and the predicate in the other leaves the join between them untested —
+    and the join is the only thing that makes the stamp worth writing.
+
+    The webhook write carries a PLAN CHANGE (it is not upgrade-only), which is
+    precisely what a hand-minted key could never receive before.
+    """
+    import json as _json
+    api_key, dev_id, email, tier, meta = _cli_mint_metadata(PAYER, tier="paid")[:5]
+    assert "email_verified_for" in _json.loads(meta), "the CLI wrote no marker"
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, metadata)"
+            " VALUES (%s,%s,%s,%s,%s::jsonb)", (api_key, dev_id, email, tier, meta))
+        cur.execute(WEBHOOK_TIER_WRITE, ("enterprise", PAYER, PAYER))
+    assert tier_of(db, api_key) == "enterprise", (
+        "a key the CLI minted and stamped is still invisible to the grant it "
+        "was stamped for — the marker and the predicate disagree")
+
+
+def test_an_unstamped_cli_mint_is_exactly_what_was_broken(db):
+    """The control. Same row without the marker — the state every hand-minted
+    key was in, and the reason 8 of the 52 audit rows came from this path."""
+    import json as _json
+    api_key, dev_id, email, tier, meta = _cli_mint_metadata(PAYER, tier="paid")[:5]
+    stripped = {k: v for k, v in _json.loads(meta).items()
+                if not k.startswith("email_verified")}
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, metadata)"
+            " VALUES (%s,%s,%s,%s,%s::jsonb)",
+            (api_key, dev_id, email, tier, _json.dumps(stripped)))
+        cur.execute(WEBHOOK_TIER_WRITE, ("enterprise", PAYER, PAYER))
+    assert tier_of(db, api_key) == "paid", "control: the plan change must NOT land"
