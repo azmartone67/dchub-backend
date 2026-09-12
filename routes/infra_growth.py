@@ -342,6 +342,81 @@ def _layer_status(delta_window, window_days, ingest_age, stale, expected):
             f"{expected or 'periodic'} source — the loader may have broken")
 
 
+# ── The verdict: ONE predicate for "every layer is fine" ───────────────────
+# ★★★ THE DEFECT THIS CLOSES (measured 2026-09-12 05:40Z, infra-growth-tracker).
+# That run printed, in order: power_plants_discovered "unjudged" at 194 days
+# ("no staleness threshold is declared for this layer, so it is never flagged
+# as overdue"); substations and metro_fiber_routes with freshness "NOT coming
+# from the main source"; transmission_lines at +2 rows in 7d — and then
+# "✅ no flatlines — all layers within expected cadence".
+#
+# Nothing on the board was lying. The DETAIL lines are derived per layer from
+# status, the dominant-source mask and known_issue; the VERDICT was derived
+# from `flatlines` alone, and a layer with no declared threshold never enters
+# the flatline test — it is excluded, not failed. Two predicates, one output,
+# and the narrower one printed last. A member that cannot enter a computation
+# is indistinguishable from a member that passed it.
+#
+# ★ ALLOWLIST, NOT DENYLIST. Green is the three statuses that affirm a judged,
+# healthy layer. Every other word — unjudged, measuring, unmeasurable, overdue,
+# None, and any status added after today — is held. A denylist has to be edited
+# the day a new status word ships, and the day nobody does is the day it reads
+# green. (A frozenset, not a dict: this names no layer, so it is not the
+# per-layer health map test_status_is_derived_from_measurements_… forbids.)
+_GREEN_STATUSES = frozenset({"growing", "refreshed", "on_cadence"})
+
+
+def _is_masked(lag_days):
+    """True when a layer's freshness read is being satisfied by a minor lane.
+
+    ONE definition, used by the status_reason marker in _summary AND by
+    _verdict, so the line that warns and the verdict that sums the warnings
+    cannot disagree about which layers are masked."""
+    return lag_days is not None and lag_days >= MASK_LAG_DAYS
+
+
+def _verdict(layers):
+    """Roll the per-layer records up into the ONE green / not-green answer.
+
+    Everything a detail line can say is reachable here: a status outside the
+    allowlist, a flatline, a masked freshness read, an open known_issue — and a
+    declared layer that produced no record at all. _summary skips a layer with
+    no snapshot history (`if not rows: continue`), so that case cannot appear
+    anywhere else on the board; it is counted here from _LAYERS, not from the
+    records. `all_green` is True only when none of these hold."""
+    reported, held = set(), []
+    for rec in layers or []:
+        label = rec.get("layer")
+        reported.add(label)
+        status = rec.get("status")
+        why = []
+        if status not in _GREEN_STATUSES:
+            why.append(f"status={status}")
+        if rec.get("flatline"):
+            why.append("flatline")
+        if _is_masked(rec.get("dominant_source_lag_days")):
+            why.append(f"freshness masked: '{rec.get('dominant_source')}' is "
+                       f"{rec.get('dominant_source_lag_days')}d behind")
+        if rec.get("known_issue"):
+            why.append(f"known issue {(rec.get('known_issue') or {}).get('ref')}")
+        if why:
+            held.append({"layer": label, "status": status, "why": why})
+    not_reported = [label for label, _t, _c, _s in _LAYERS if label not in reported]
+    return {
+        "all_green": not held and not not_reported,
+        "declared": len(_LAYERS),
+        "reported": len(reported),
+        "held": held,
+        "not_reported": not_reported,
+        "basis": ("all_green is true only when every declared layer produced a "
+                  "record, every status is one of "
+                  + ", ".join(sorted(_GREEN_STATUSES))
+                  + ", and no layer is flatlined, freshness-masked or carrying "
+                  "an open known_issue. 'unjudged' (no threshold declared), "
+                  "'measuring' and 'unmeasurable' are held, never green."),
+    }
+
+
 def _dsn():
     return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
 
@@ -516,7 +591,7 @@ def _summary(cur):
         # broken, and the second half is the part nobody could see. The status
         # itself is left alone: it is derived from measured signals and each
         # branch is still true as far as it goes.
-        if mask_lag is not None and mask_lag >= MASK_LAG_DAYS:
+        if _is_masked(mask_lag):
             status_reason = (status_reason or "") + (
                 f" [⚠ freshness is NOT coming from the main source: "
                 f"'{mask_src}' holds {mask_rows:,} rows and is {mask_lag}d "
@@ -586,7 +661,8 @@ def snapshot():
                 summary, flatlines = _summary(cur)
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
-    return jsonify(ok=True, recorded=recorded, flatlines=flatlines, layers=summary)
+    return jsonify(ok=True, recorded=recorded, flatlines=flatlines, layers=summary,
+                   verdict=_verdict(summary))
 
 
 @infra_growth_bp.route("/api/v1/admin/infra-growth", methods=["GET"])
@@ -601,7 +677,8 @@ def growth():
                 summary, flatlines = _summary(cur)
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
-    return jsonify(ok=True, flatlines=flatlines, layers=summary)
+    return jsonify(ok=True, flatlines=flatlines, layers=summary,
+                   verdict=_verdict(summary))
 
 
 @infra_growth_bp.route("/api/v1/admin/infra-growth/history", methods=["GET"])
@@ -899,6 +976,8 @@ def whats_new():
                         "schedule for a source that republishes a few times a year; 'measuring' = "
                         "growth NOT YET measured (never read as zero); 'unmeasurable' = the table has "
                         "no ingestion-timestamp column, so freshness is unknown rather than assumed; "
+                        "'unjudged' = no staleness threshold is declared for the layer, so it is "
+                        "never judged overdue — read its ingest age, not this word; "
                         "'overdue'/'idle' = past its own window. 'known_issue' names the open audit "
                         "finding when a layer is structurally stuck; 'resolved' is the short-lived "
                         "credit line for a finding that recently closed — what changed and when, not "

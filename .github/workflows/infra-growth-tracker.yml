@@ -68,10 +68,40 @@ jobs:
                   print(f"      known issue {ki.get('ref')}: {ki.get('note')}")
           PY
 
-          # Surface flatlines as GitHub warnings (early "source broke" alarm).
-          FLAT=$(python3 -c "import json;print('; '.join(json.load(open('/tmp/g.json')).get('flatlines',[])))")
-          if [ -n "$FLAT" ]; then
-            echo "::warning::infra layers flatlined — a source may have broken: $FLAT"
-          else
-            echo "✅ no flatlines — all layers within expected cadence"
-          fi
+          # ★ THE VERDICT IS RENDERED HERE, NEVER RE-DERIVED (2026-09-12).
+          # This used to print "all layers within expected cadence" whenever
+          # `flatlines` came back empty — on a run whose own detail lines, just
+          # above, named a layer "unjudged" at 194 days and two layers whose
+          # freshness was masked by a minor lane. A layer with no declared
+          # threshold never enters the flatline test, so a summary built from
+          # flatlines could not see what the detail printed. The backend now
+          # publishes ONE rolled-up `verdict` (the snapshot response) and
+          # this step only renders it: no second predicate lives here to drift.
+          # A response without a verdict is UNMEASURED, never green.
+          # Warning-level, exactly as flatlines always were — this job is the
+          # reporting surface, and a held layer has an owner, not a broken cron.
+          GROWTH_JSON=/tmp/g.json python3 - <<'PY'
+          # growth-verdict-renderer — a test executes this exact block against fixtures
+          import json, os
+          d = json.load(open(os.environ.get("GROWTH_JSON", "/tmp/g.json")))
+          flat = d.get("flatlines") or []
+          if flat:
+              print("::warning::infra layers flatlined — a source may have broken: " + "; ".join(flat))
+          v = d.get("verdict")
+          if not isinstance(v, dict):
+              print("::warning::growth verdict not published by this deploy — UNMEASURED, not green")
+          elif v.get("all_green") is True:
+              print("✅ no flatlines — all layers within expected cadence")
+          else:
+              parts = ["%s (%s)" % (h.get("layer"), ", ".join(h.get("why") or ["?"]))
+                       for h in (v.get("held") or [])]
+              parts += ["%s (declared, but no snapshot record)" % m
+                        for m in (v.get("not_reported") or [])]
+              if parts:
+                  print("⚠ %d of %s layers not judged green:" % (len(parts), v.get("declared", "?")))
+                  for p in parts:
+                      print("   - " + p)
+                  print("::warning::growth verdict NOT green — " + "; ".join(parts))
+              else:
+                  print("::warning::growth verdict NOT green but names no layer — read the layer lines above")
+          PY
