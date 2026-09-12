@@ -35,6 +35,10 @@ from util.facility_entity import facility_entity, facility_measures
 # place", owned by util/thin_content alongside the list itself. Three copies of
 # that list used to live in this file and the renderer consulted none of them.
 from util.thin_content import is_placeholder_city as _placeholder_city
+# r-mw-one-owner (2026-09-12): same shape, for the number rather than the
+# place. MW_PLAUSIBLE_MAX has always lived in util/facility_headline; only the
+# <title> asked it. The body tile below asks it now too.
+from util.facility_headline import plausible_mw as _plausible_mw
 import datetime as _dt
 
 logger = logging.getLogger(__name__)
@@ -805,7 +809,12 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
         extra = ""
         if rprov and rprov.strip().lower() != (rname or "").strip().lower():
             extra += f" &middot; {_esc(rprov)}"
-        if rpow and str(rpow) not in ("0", "0.0"):
+        # r-mw-one-owner (2026-09-12): a PEER's capacity is the same number on
+        # somebody else's page, and this list is ORDER BY power DESC — so one
+        # fleet-sized row is printed FIRST on every co-located facility page in
+        # its market, not once. Suppressing the annotation keeps the link (the
+        # peer facility is real) and drops only the unciteable figure.
+        if _plausible_mw(rpow) is not None:
             extra += f" &middot; {_esc(rpow)} MW"
         items.append(
             f'<li style="margin:4px 0"><a class="link" href="/facilities/{_esc(slug)}">{_esc(rname)}</a>'
@@ -842,7 +851,13 @@ def _narrative(fac: dict, dcpi) -> str:
     if loc:
         lead += f" in {_esc(loc)}"
     bits.append(lead + ".")
-    if power and str(power) not in ("0", "0.0"):
+    # r-mw-one-owner (2026-09-12): the docstring above promises every sentence
+    # is sourced from this facility's data. 63,000 MW is sourced from a row,
+    # but it is a utility's fleet, and PROSE is the worst place for it — a
+    # sentence reads as an editorial assertion, not a field dump, and this is
+    # the block written to make the page worth indexing. Falls through to the
+    # status-only sentence below, so the paragraph keeps a second clause.
+    if _plausible_mw(power) is not None:
         s = f"It carries a reported power capacity of {_esc(power)} MW"
         if status and status.lower() != "unknown":
             s += f" and is currently {_esc(status.lower())}"
@@ -1571,7 +1586,16 @@ def _render_profile(fac: dict, slug: str) -> str:
     def _has(v):
         return v not in (None, "", 0, 0.0, "0", "Unknown", "unknown")
     stats = []
-    if _has(power):                    stats.append(("Power", f"{power} MW"))
+    # ★★★ r-mw-one-owner (2026-09-12): NOT `_has(power)`. `_has` answers "is
+    # there a value", which is the wrong question for a number a reader takes
+    # as a fact about this one building — it passed 63000.0 through to a tile
+    # reading "Power  63000.0 MW" (AEP's whole generating fleet) on a page the
+    # sitemap publishes as index,follow, while the <title> beside it printed no
+    # MW at all because display_mw had already refused the same number. One
+    # predicate now, in util.facility_headline — see plausible_mw's docstring
+    # for the four surfaces and the live measurement.
+    if _plausible_mw(power) is not None:
+        stats.append(("Power", f"{power} MW"))
     if _has(status):                   stats.append(("Status", str(status).title()))
     if _has(region):                   stats.append(("Market", region))
     # r-placeholder-city (2026-09-07): `_has` already refused 'Unknown' — its
@@ -2649,6 +2673,41 @@ def facility_entity_json(slug):
             error="unknown_facility", slug=slug,
             hint=("No facility by that slug. Call search_facilities, or GET "
                   "/api/v1/search?q=<name> — both publish resolvable slugs.")), 404
+    # ★★★ r-twin-nullisland (2026-09-12). routes.provenance.normalize_coordinates
+    # is the ONE owner of the (0,0) sentinel, and it was already wired into this
+    # page's market block (#4455) and its fiber block (#4474) — the twin was the
+    # hole left. Measured live against the published sitemap: the HTML tile
+    # (`if lat and lng`), the inline Place JSON-LD (same guard) and
+    # /api/v1/facilities/<slug> (which calls this normaliser) all suppressed it;
+    # 0 leaks in 781 sampled indexable pages. This twin emitted
+    #     "geo": {"latitude": 0.0, "longitude": 0.0}
+    # on 10 of those same 781 — Equinix Washington, Digital Realty London /
+    # Paris / Singapore, CyrusOne Frankfurt FRA1 + FRA3, STT Mumbai 3, DataBank
+    # Indianapolis — named buildings, under a CC-BY "you may cite this" licence,
+    # placed in the Gulf of Guinea. facility_entity's own test says geo is
+    # emitted "if lat is not None and lon is not None", which is true of 0.0.
+    #
+    # ★ NORMALISED IN THE ROUTE, not in facility_entity: that module's contract
+    #   is "Pure: no Flask, no DB, no network. Callers supply the record", and
+    #   routes.provenance is route-layer. Same separation as _fiber_carrier_names.
+    # ★ FAILS BY DROPPING THE ELEMENT, never the response — and it drops the
+    #   COORDINATES, not the geo rule: if the normaliser cannot be imported we
+    #   null the pair rather than publishing an unchecked one. That is the
+    #   choice _fiber_carrier_names already made (no normaliser -> no section).
+    # ★ `except Exception:` with exc_info, NOT `as <name>`: an except-as name is
+    #   ast.ExceptHandler.name, never a Name(Store), so TestRouting::
+    #   test_every_name_the_route_uses_RESOLVES reads it as an unresolved Load
+    #   and fails. That guard is right — three NameError-at-request-time bugs
+    #   were caught by it — so the diagnostic moves to exc_info instead of the
+    #   guard moving. Same information in the log, more of it.
+    try:
+        from routes.provenance import normalize_coordinates as _norm_coords
+        _norm_coords(fac)
+    except Exception:
+        logger.warning("facility twin: coordinate normaliser unavailable — "
+                       "publishing the record without geo", exc_info=True)
+        fac["latitude"] = None
+        fac["longitude"] = None
     _disp = (fac.get("name") or slug)
     _canon = f"https://dchub.cloud/facilities/{slug}"
     resp = jsonify(facility_entity(fac, canonical_url=_canon, display_name=_disp))

@@ -336,20 +336,66 @@ _DESCRIPTION_TAILS = (" Specs, nearby power and peer sites on DC Hub.",
                       " Specs, nearby power & peers.")
 
 
-def display_mw(power_mw) -> str:
-    """The capacity a title or description may print: "350 MW", "2.5 MW", "".
+def plausible_mw(power_mw):
+    """`power_mw` as a float when it reads as ONE SITE's capacity, else None.
 
-    "" unless `power_mw` parses and 0 < MW <= MW_PLAUSIBLE_MAX. Anything >= 10
-    or whole prints with no decimals ("1,200 MW"), a smaller fraction with one
-    ("2.5 MW"); a value that would print as "0.0" is not worth printing.
+    ★★★ r-mw-one-owner (2026-09-12). MW_PLAUSIBLE_MAX existed, and exactly one
+    surface consulted it — the SERP title, through display_mw. Measured live
+    the same day against the published sitemap (a full census of all 18,950
+    indexable facility URLs), the same row reached a reader SIX ways and was
+    capped once. On /facilities/aep-none-0dc136e7, the rendered HTML contained
+    "63000" four times and the twin once more:
+
+        <title>                    capped      "AEP None · United States ·
+                                               Planned | DC Hub"   <- no MW
+        inline Dataset JSON-LD     UNCAPPED    variableMeasured 63000.0
+        narrative paragraph        UNCAPPED    "It carries a reported power
+                                               capacity of 63000.0 MW …"
+        body stat tile             UNCAPPED    "Power  63000.0 MW"
+        LANE-2 context block       UNCAPPED    "Reported capacity 63000.0 MW"
+        /facilities/<slug>.json    UNCAPPED    variableMeasured 63000.0
+
+    A SEVENTH consumer prints a PEER's capacity: the comparables list, ORDER BY
+    power DESC, so one fleet-sized row led the list on every co-located page in
+    its market. It asks this function too.
+
+    63,000 MW is American Electric Power's entire generating fleet, published
+    as one building, on a page that says `index, follow` and is listed TWICE in
+    the sitemap. 53 of the 18,950 published URLs (0.28%) carry a capacity above
+    this cap; the largest is 150,000 MW. The title guard was not wrong; it was
+    alone — and the surfaces were found by COUNTING occurrences in a rendered
+    page, not by listing the ones someone remembered.
+
+    ★ THE COMPARISON LIVES HERE AND NOWHERE ELSE. Callers ask this function,
+      they do not re-spell `<= MW_PLAUSIBLE_MAX`. A second copy is how the cap
+      came to be applied on one surface out of four in the first place.
+    ★ SUPPRESSION, NOT CORRECTION. Returning None hides the number from a
+      surface; it does not touch the stored row, which may have a legitimate
+      upstream (a utility's fleet total genuinely is 63,000 MW — it is just not
+      a data centre). The read boundary is reversible; a rewrite is not.
+
+    Rejects bool, unparseable values, NaN, <= 0 and anything above the cap.
     """
     if isinstance(power_mw, bool):
-        return ""
+        return None
     try:
         p = float(power_mw)
     except (TypeError, ValueError):
-        return ""
+        return None
     if not 0 < p <= MW_PLAUSIBLE_MAX:          # NaN fails this as well
+        return None
+    return p
+
+
+def display_mw(power_mw) -> str:
+    """The capacity a title or description may print: "350 MW", "2.5 MW", "".
+
+    "" unless `plausible_mw` accepts the value. Anything >= 10 or whole prints
+    with no decimals ("1,200 MW"), a smaller fraction with one ("2.5 MW"); a
+    value that would print as "0.0" is not worth printing.
+    """
+    p = plausible_mw(power_mw)
+    if p is None:
         return ""
     txt = f"{p:,.0f}" if (p >= 10 or p == int(p)) else f"{p:.1f}"
     return "" if txt == "0.0" else f"{txt} MW"
