@@ -161,3 +161,283 @@ jobs:
           u=$(grep -c '<loc>' /tmp/f.xml || true)
           echo "$first serves $u URLs"
           test "$u" -gt 0
+
+      # ★★★ 2026-09-12 — PER-FAMILY FLOORS. A TOTAL CANNOT SEE A FAMILY VANISH.
+      #
+      # MIN_URLS above is ONE number summed across every shard family, and the
+      # published sitemap is three families of very different size (measured
+      # from the artefact 2026-09-11, see the env block below):
+      #
+      #   fixed     static+markets+dcpi+press     1,604 URLs
+      #   ranking   facilities-N                   6,897 URLs
+      #   ai        ai-facilities-N               18,743 URLs
+      #
+      # The AI family is 69% of the artefact, and it is the ONE family the
+      # rebuild is allowed to drop on its own. _rebuild_sitemap_snapshot wraps
+      # the ungated build in BOTH a try/except and a superset guard, and both
+      # paths log an error and then publish the generation anyway with
+      # `ai_shard_keys = []` — deliberately, so an AI failure cannot take the
+      # gated sitemap down with it. Lose the family and the total is ~8,506,
+      # which clears MIN_URLS=4000 with room to spare. Green job, 18,743 URLs
+      # silently gone from the published sitemap.
+      #
+      # The step above cannot see it either, by construction: it asserts the
+      # index lists >= 3 shards (five remain) and that the FIRST facilities
+      # shard is non-empty — and that is the GATED family, which is exactly
+      # what the AI failure path leaves untouched.
+      #
+      # ★ WHY NOW. Until PR #4459 this was only theoretical: the superset guard
+      #   compared `len(ai_fac) < len(fac)`, and the ungated set is the gated
+      #   query minus one AND clause, so it essentially never fired. #4459
+      #   changes it to compare SETS (`_missing_locs`), which CAN fire on a
+      #   single URL the gated set carries and the ungated one does not. That
+      #   is the change that makes this reachable. #4459 is OPEN as of
+      #   2026-09-12 — this floor does not wait for it.
+      #
+      # ★ MEASURED FROM THE ARTEFACT, NOT FROM THE ENDPOINT'S REPORT.
+      #   _rebuild_sitemap_snapshot returns only {generation, shards,
+      #   facilities_shards, total_urls} — there is no per-family breakdown to
+      #   floor, and it reports on its own write. Reading the published shards
+      #   back needs no main.py change, cannot skew against the deployed
+      #   version, and is the artefact GSC and the AI crawlers actually fetch.
+      #
+      # ★ THREE OUTCOMES, TREATED AS THREE THINGS — the shape
+      #   sitemap-selfcanon-daily.yml established:
+      #
+      #     measured, every family >= its floor   -> pass
+      #     measured, a family BELOW its floor    -> FAIL, ::error:: naming the
+      #                                              family and the shortfall
+      #     nothing answered                      -> pass with a ::warning::
+      #
+      #   A Cloudflare hiccup or a slow 1.7 MB shard is not 18,743 missing
+      #   URLs, and a red X for one is how a real alarm gets ignored. But the
+      #   two are never collapsed: a 404 or a 503 from the origin is the origin
+      #   SAYING the row is not in this generation, and that is measured
+      #   breakage, not an unreachable edge.
+      #   See [[feedback_could_not_run_is_not_ran_and_failed]].
+      - name: Per-family floors on the published sitemap
+        env:
+          # ★ EVERY FLOOR IS (measured value) * 2 // 3 — two thirds of what the
+          # published artefact actually served on 2026-09-11, truncated. Not a
+          # round number on purpose: a round floor is a number someone picked,
+          # and this job already carries one (MIN_URLS=4000) that a family
+          # vanishing walks straight through.
+          #
+          # ranking  facilities-1 served 6,897 URLs   -> 6897 * 2 // 3 = 4598
+          #   Historical readings: 6,266 (2026-09-05, main.py r-ai-sitemap
+          #   note), 7,615 (2026-08-14, _SITEMAP_THIN_GATE_FLOOR note), 9,214
+          #   (PR #2655, the MIN_URLS note above). This family is capacity-
+          #   gated and swings with power_mw, so 4,598 sits at 73% of the
+          #   LOWEST reading ever recorded here.
+          MIN_RANKING_URLS: '4598'
+          # ai  ai-facilities-1 (10,000) + ai-facilities-2 (8,743) = 18,743
+          #     -> 18743 * 2 // 3 = 12495
+          #   Historical readings: 15,950 (2026-09-05), 18,064 (2026-08-14),
+          #   18,809 (2026-09-11, sitemap-selfcanon-daily.yml header). Only
+          #   ever grown. 12,495 is 78% of the lowest.
+          MIN_AI_URLS: '12495'
+          # fixed  static 522 + markets 586 + dcpi 333 + press 163 = 1,604
+          #        -> 1604 * 2 // 3 = 1069
+          MIN_FIXED_URLS: '1069'
+          # main.py's _SITEMAP_FIXED_SECTIONS, pinned here so the check knows
+          # which shards must EXIST rather than only what the family must total.
+          # tests/test_sitemap_family_floor.py asserts the two agree.
+          REQUIRE_FIXED_SHARDS: 'static,markets,dcpi,press'
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = 'https://dchub.cloud'
+          BUST = str(int(time.time()))   # cache-bust: measure what was just published
+          UA = 'DCHub-SitemapSnapshot/1.0'
+
+          # Anchored on purpose. 'ai-facilities-1' must NOT read as a gated
+          # 'facilities-N' shard — main.py's serve_sitemap_shard carries the
+          # same trap and tests/test_sitemap_ai_family.py pins it there.
+          PATTERNS = (('ai', re.compile(r'^ai-facilities-\d+$')),
+                      ('ranking', re.compile(r'^facilities-\d+$')))
+          FIXED = tuple(s for s in os.environ['REQUIRE_FIXED_SHARDS'].split(',') if s)
+          FLOORS = {'ranking': int(os.environ['MIN_RANKING_URLS']),
+                    'ai': int(os.environ['MIN_AI_URLS']),
+                    'fixed': int(os.environ['MIN_FIXED_URLS'])}
+
+          _SUMMARY = os.environ.get('GITHUB_STEP_SUMMARY')
+
+          def say(line):
+              print(line)
+              if _SUMMARY:
+                  with open(_SUMMARY, 'a', encoding='utf-8') as fh:
+                      fh.write(line + '\n')
+
+          class Absent(Exception):
+              """The origin ANSWERED, and its answer was 'not in this
+              generation' — a 404 from the edge or serve_sitemap_shard's
+              documented 503 snapshot miss. Measured breakage."""
+
+          class Unmeasurable(Exception):
+              """Nothing answered: timeout, reset, 5xx from the edge. NOT the
+              same state, and not this job's alarm to raise."""
+
+          def fetch(name):
+              url = '%s/%s?_=%s' % (BASE, name, BUST)
+              why = None
+              for attempt in (1, 2):
+                  try:
+                      req = urllib.request.Request(url, headers={'User-Agent': UA})
+                      with urllib.request.urlopen(req, timeout=90) as r:
+                          return r.read().decode('utf-8', 'replace')
+                  except urllib.error.HTTPError as e:
+                      if e.code in (404, 503):
+                          raise Absent('%s -> HTTP %d' % (name, e.code))
+                      why = '%s -> HTTP %d' % (name, e.code)
+                  except Exception as e:
+                      why = '%s -> %s: %s' % (name, type(e).__name__, e)
+                  if attempt == 1:
+                      time.sleep(5)
+              raise Unmeasurable(why)
+
+          def shard_names(xml):
+              return re.findall(
+                  r'<loc>https://dchub\.cloud/sitemap-([a-z0-9-]+)\.xml</loc>', xml)
+
+          def family_of(name):
+              for fam, pat in PATTERNS:
+                  if pat.match(name):
+                      return fam
+              return 'fixed' if name in FIXED else None
+
+          defects = []      # measured, and wrong
+          unmeasured = []   # (family, why) — nothing answered
+
+          say('### Published sitemap, per family')
+          say('')
+          try:
+              index = fetch('sitemap.xml')
+          except (Absent, Unmeasurable) as e:
+              say('* **COULD NOT MEASURE** — the submitted index was unreadable: %s' % e)
+              print('::warning title=Could not measure any sitemap family::%s. No '
+                    'family was measured, so this is NOT a floor breach — the step '
+                    'before this one already proved /sitemap.xml was 200, so the '
+                    'edge moved under us.' % e)
+              sys.exit(0)
+
+          listed = shard_names(index)
+          say('* `/sitemap.xml` lists %d shards: `%s`'
+              % (len(listed), ', '.join(listed) or '(none)'))
+
+          members = {'fixed': [], 'ranking': [], 'ai': []}
+          for n in listed:
+              fam = family_of(n)
+              if fam:
+                  members[fam].append(n)
+              else:
+                  say('* unclassified shard `%s` — counted in no family' % n)
+
+          ai_blocked = None
+          if not members['ai']:
+              # The AI shards are appended to the submitted index by main.py's
+              # r-ai-in-index block, whose own comment says "reverse by deleting
+              # this block". If that happens they live only under /sitemap-ai.xml,
+              # so ask there before calling the family gone.
+              try:
+                  members['ai'] = shard_names(fetch('sitemap-ai.xml'))
+                  say('* `/sitemap-ai.xml` fallback lists %d AI shards'
+                      % len(members['ai']))
+              except Absent as e:
+                  say('* `/sitemap-ai.xml` says the family is NOT PUBLISHED (%s)' % e)
+              except Unmeasurable as e:
+                  ai_blocked = str(e)
+
+          counts = {}
+          per_shard = {}
+          for fam in ('fixed', 'ranking', 'ai'):
+              if fam == 'ai' and ai_blocked:
+                  unmeasured.append((fam, ai_blocked))
+                  continue
+              total = 0
+              blocked = None
+              for n in members[fam]:
+                  try:
+                      body = fetch('sitemap-%s.xml' % n)
+                  except Absent as e:
+                      defects.append(
+                          'shard `sitemap-%s.xml` is LISTED in a published index '
+                          'and is not served (%s)' % (n, e))
+                      per_shard[n] = 0
+                      continue
+                  except Unmeasurable as e:
+                      blocked = str(e)
+                      break
+                  k = body.count('<loc>')
+                  per_shard[n] = k
+                  total += k
+              if blocked:
+                  unmeasured.append((fam, blocked))
+                  continue
+              counts[fam] = total
+
+          for fam in ('fixed', 'ranking', 'ai'):
+              if fam not in counts:
+                  continue
+              floor = FLOORS[fam]
+              say('* **%s**: %d URLs across %d shards (floor %d) — %s'
+                  % (fam, counts[fam], len(members[fam]), floor,
+                     ', '.join('`%s`=%d' % (n, per_shard.get(n, 0))
+                               for n in members[fam]) or '(no shards)'))
+              if counts[fam] < floor:
+                  defects.append(
+                      'family `%s` published %d URLs across %d shards, BELOW its '
+                      'floor of %d — SHORT BY %d'
+                      % (fam, counts[fam], len(members[fam]), floor,
+                         floor - counts[fam]))
+
+          # ★ A SUMMED FLOOR CANNOT SEE ONE SMALL MEMBER DISAPPEAR. Drop `press`
+          # (163 URLs) and fixed still reads 1,441 against a floor of 1,069 — the
+          # floor catches collapse toward zero and is blind to a minority shard.
+          # So each fixed shard is NAMED and required present and non-empty.
+          # See [[feedback_scan_that_can_find_nothing_needs_a_floor]].
+          if 'fixed' in counts:
+              for want in FIXED:
+                  if want not in members['fixed']:
+                      defects.append('fixed shard `sitemap-%s.xml` is not listed in '
+                                     '/sitemap.xml at all' % want)
+                  elif per_shard.get(want, 0) <= 0:
+                      defects.append('fixed shard `sitemap-%s.xml` is published and '
+                                     'EMPTY' % want)
+
+          for fam, why in unmeasured:
+              say('* **%s**: COULD NOT MEASURE — %s' % (fam, why))
+              print('::warning title=Could not measure the %s sitemap family::%s. '
+                    'Nothing answered, so this family was NOT measured — that is a '
+                    'different state from measuring it and finding it short, and it '
+                    'is not failed here.' % (fam, why))
+
+          if defects:
+              say('')
+              say('MEASURED and BREACHED — %d problem(s).' % len(defects))
+              for d in defects:
+                  print('::error title=Sitemap family floor breached::%s' % d)
+              print('::error title=What to read next::The snapshot is REPLACED in '
+                    'one transaction, so the site is serving this NOW. '
+                    '_rebuild_sitemap_snapshot publishes the generation even when '
+                    'the ungated AI build is refused by the superset guard or '
+                    'raises, and the total MIN_URLS floor clears without that '
+                    'family — this step is what sees it. Read the rebuild step log '
+                    'for the "refusing to publish a superset that shrank" or '
+                    '"ungated AI build FAILED" line.')
+              sys.exit(1)
+
+          say('')
+          if unmeasured:
+              say('%d family/families measured and within floor; %d NOT measured.'
+                  % (len(counts), len(unmeasured)))
+          else:
+              say('All %d families MEASURED and within floor.' % len(counts))
+          sys.exit(0)
+          PY
