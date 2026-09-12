@@ -3,8 +3,10 @@
 
 WHAT WENT WRONG
 ---------------
-`dchub-internal-sync-2026` was a hardcoded admin bypass accepted on 50+ gates
-until r-sec (2026-06-07) flipped internal_auth.LEGACY_OK to OFF. The key is
+internal_auth._LEGACY_KEYS holds two hardcoded admin-bypass strings that were
+accepted on 50+ gates until r-sec (2026-06-07) flipped internal_auth.LEGACY_OK
+to OFF. SECURITY_KEY_ROTATION.md names them; this file deliberately does not,
+since re-documenting them in the public repo is the debt item itself. They are
 dead — is_valid_internal_key refuses it unless INTERNAL_AUTH_LEGACY_OK=1.
 
 Nine tracked docs still printed it, six of them inside a runnable curl:
