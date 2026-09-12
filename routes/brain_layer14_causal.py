@@ -217,7 +217,16 @@ _CONTEXT_PROBES = (
     # timeout. See routes/brain_layer6_predictive.py:152.
     ("predictions",  "/api/v1/brain/predictions",                25),
     ("proposed",     "/api/v1/brain/proposed-detectors",          8),
-    ("qa_agent",     "/api/v1/brain/qa-agent",                    8),
+    # ★2026-09-12 — ("qa_agent", L11 qa-agent) REMOVED. L11's sweep was
+    # disabled on 2026-05-19 (container crash-loop) and never re-enabled, but
+    # this probe kept reading that May sweep as the current surface-health
+    # snapshot — for 116 days it fed May's 404s into the causal prompt as live
+    # symptoms. L11 is retired and now answers 410.
+    # ★Do NOT repoint it at fast-QA's status endpoint instead: that summary is
+    # process-local, and with two backend replicas it returns whichever
+    # replica's last run it holds. Measured 2026-09-12, three consecutive reads
+    # returned runs from 17:17Z, 17:45Z, then 16:45Z — the newest read was the
+    # oldest run. fast-QA's durable output is its brain_findings rows.
     ("expansion",    "/api/v1/brain/expansion",                   8),
     ("publisher",    "/api/v1/marketing/worker-status",           8),
     # ★2026-08-12 — ("outreach", "/api/v1/media/outreach-log") REMOVED.

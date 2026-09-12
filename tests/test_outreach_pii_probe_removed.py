@@ -89,15 +89,37 @@ def test_no_credential_is_attached_to_that_path(mod):
                     "PII into the prompt:\n  %s" % (mod, cred, line.strip()))
 
 
+def _dict_note(src: str, key: str):
+    """The "note" string of the dict literal stored under `key`, or None.
+
+    Anchored with ast on purpose: since 2026-09-12 L8 carries a SECOND labelled
+    gap (the retired L11 QA agent) in the same "NOT READ" / "DELIBERATE GAP"
+    wording, so a whole-file substring check would stay green with the outreach
+    note deleted."""
+    import ast
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Dict):
+            continue
+        for k, v in zip(node.keys, node.values):
+            if isinstance(k, ast.Constant) and k.value == key and isinstance(v, ast.Dict):
+                for k2, v2 in zip(v.keys, v.values):
+                    if (isinstance(k2, ast.Constant) and k2.value == "note"
+                            and isinstance(v2, ast.Constant)
+                            and isinstance(v2.value, str)):
+                        return v2.value
+    return None
+
+
 def test_l8_states_the_gap_instead_of_hiding_it():
     """★A missing key reads as an oversight and the model infers zero from
     silence. The gap must be explicit and labelled."""
     src = _src("brain_layer8_orchestrator.py")
-    assert '"outreach"' in src, \
-        "L8 dropped the outreach key entirely — silence reads as zero"
-    assert "NOT READ" in src, \
+    note = _dict_note(src, "outreach")
+    assert note is not None, \
+        "L8 dropped the outreach key (or its note) — silence reads as zero"
+    assert "NOT READ" in note, \
         "L8's outreach gap is no longer labelled as deliberate"
-    assert "DELIBERATE GAP" in src, \
+    assert "DELIBERATE GAP" in note, \
         "the model is no longer told this absence is not a measurement"
 
 

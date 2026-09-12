@@ -1,6 +1,12 @@
 """
 Brain L11 — QA Agent (2026-05-18).
 
+★ RETIRED 2026-09-12. The 6h sweep below was disabled on 2026-05-19 (container
+crash-loop) and never re-enabled; GET went on serving that sweep as current
+surface health for 116 days. /api/v1/brain/qa-agent now answers 410 on GET and
+POST. Live QA is fast-QA (routes/brain_fast_qa.py). The sweep helpers below are
+unreachable and kept only as history; /history still serves timestamped rows.
+
 Probes every public surface on a 6h cron and answers the founder's
 question: "is every page dynamic, error-free, and fast?"
 
@@ -235,98 +241,39 @@ def _regressions(current: list[dict], previous: dict) -> list[dict]:
     return out
 
 
+RETIRED_AT = "2026-09-12"
+LAST_SWEEP_DISABLED = "2026-05-19"
+
+
+def retired_payload() -> dict:
+    """What /api/v1/brain/qa-agent answers now that L11 is retired."""
+    return {
+        "ok": False,
+        "retired": True,
+        "retired_at": RETIRED_AT,
+        "sweep_disabled_since": LAST_SWEEP_DISABLED,
+        "reason": ("L11's surface sweep was disabled on 2026-05-19 after a "
+                   "container crash-loop and never re-enabled. This endpoint "
+                   "went on serving that May sweep as current surface health, "
+                   "so it no longer reports surface health at all."),
+        "superseded_by": {
+            "live_qa": "fast-QA: routes/brain_fast_qa.py, swept every ~30 min",
+            "durable_output": "brain_findings rows with detector = 'fast_qa'",
+            "history": "/api/v1/brain/qa-agent/history?path=<path> (timestamped rows)",
+        },
+    }
+
+
 @brain_layer11_bp.route("/api/v1/brain/qa-agent", methods=["GET", "POST"])
 def qa_agent():
-    """Run the QA sweep (POST) or read the latest sweep summary (GET)."""
-    if request.method == "POST":
-        # Probe with a small inter-request pause so we don't trip our own
-        # rate limiter (which fired 429s on /iso/* and /brain on first run).
-        rows = []
-        for p in PROBE_PATHS:
-            rows.append(_probe(p))
-            time.sleep(0.5)
-        prev = _previous_run_summary()
-        _record(rows)
-        regr = _regressions(rows, prev)
-
-        by_class: dict = {}
-        for r in rows:
-            by_class[r["classification"]] = by_class.get(r["classification"], 0) + 1
-
-        errors = [r for r in rows if (r.get("status") or 0) >= 400
-                  or r.get("error")]
-        slow   = [r for r in rows if (r.get("total_ms") or 0) > 3000]
-        static_html = [r for r in rows if r["classification"] == "static"
-                       and not r["path"].endswith(".md")
-                       and not r["path"].endswith(".json")]
-
-        return jsonify(
-            ok=True,
-            ran_at=_dt.datetime.utcnow().isoformat() + "Z",
-            probed=len(rows),
-            by_classification=by_class,
-            errors=[{"path": r["path"], "status": r["status"],
-                     "error": r["error"]} for r in errors],
-            slow_pages=[{"path": r["path"], "ms": r["total_ms"]} for r in slow],
-            static_html_pages=[{"path": r["path"]} for r in static_html],
-            regressions=regr,
-            verdict=("clean" if not errors and not regr else
-                     "regressions" if regr else "errors"),
-        )
-
-    # GET — cached summary from latest run
-    conn = None
-    try:
-        from main import get_db  # type: ignore
-        conn = get_db()
-        if not conn:
-            return jsonify(ok=False, error="db unavailable"), 503
-        cur = conn.cursor()
-        cur.execute("SELECT MAX(probed_at) FROM brain_qa_probes")
-        latest = (cur.fetchone() or [None])[0]
-        if not latest:
-            return jsonify(ok=True, note="No QA sweep yet — POST /api/v1/brain/qa-agent")
-        # Pull the most-recent row per path
-        cur.execute("""
-            SELECT path, status, ttfb_ms, total_ms, classification,
-                   dynamic_signal, error, probed_at
-            FROM (
-                SELECT path, status, ttfb_ms, total_ms, classification,
-                       dynamic_signal, error, probed_at,
-                       ROW_NUMBER() OVER (PARTITION BY path ORDER BY probed_at DESC) AS rn
-                FROM brain_qa_probes
-            ) t WHERE rn = 1
-        """)
-        rows = [{"path": r[0], "status": r[1], "ttfb_ms": r[2],
-                 "total_ms": r[3], "classification": r[4],
-                 "dynamic_signal": r[5], "error": r[6],
-                 "probed_at": str(r[7])} for r in cur.fetchall()]
-        try: cur.close()
-        except Exception: pass
-
-        by_class: dict = {}
-        for r in rows:
-            by_class[r["classification"]] = by_class.get(r["classification"], 0) + 1
-        errors = [r for r in rows if (r.get("status") or 0) >= 400
-                  or r.get("error")]
-        slow   = [r for r in rows if (r.get("total_ms") or 0) > 3000]
-
-        return jsonify(
-            ok=True,
-            latest_sweep_at=str(latest),
-            probes=len(rows),
-            by_classification=by_class,
-            errors=errors,
-            slow_pages=slow,
-            verdict=("clean" if not errors else "errors"),
-            rows=rows,
-        )
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)[:200]), 503
-    finally:
-        if conn is not None:
-            try: conn.close()
-            except Exception: pass
+    """RETIRED 2026-09-12 — GET and POST both answer 410. See retired_payload()."""
+    # ★ The sweep was DISABLED 2026-05-19 (container crash-loop) and never
+    # re-enabled, but GET kept serving that sweep as current surface health for
+    # 116 days: brain_self_test passed on it, and L8 and L14 fed its 404s into
+    # their prompts as live state. POST is refused too, so the crash-looping
+    # sweep cannot be re-armed by hitting this endpoint. /history below is left
+    # as-is — every row it returns carries its own probed_at.
+    return jsonify(retired_payload()), 410
 
 
 @brain_layer11_bp.route("/api/v1/brain/qa-agent/history", methods=["GET"])
