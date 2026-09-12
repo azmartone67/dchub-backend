@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import math
 import re as _re
+import unicodedata
 
 
 def brand_already_in_name(provider: str, name: str) -> bool:
@@ -173,6 +174,122 @@ def identity_key(name, provider, city, state, country):
     # an SEO copy edit. dedup_title is the pre-change string byte for byte.
     return (" ".join(hl["h1"].split()).lower(),
             " ".join(hl["dedup_title"].split()).lower())
+
+
+# ── CANDIDATE, NOT WIRED: a wider identity (2026-09-11, r-identity-wide) ──
+#
+# ★★★ NOTHING CALLS identity_key_wide(). It is measured and tested, and it is
+#   deliberately left unused. Re-pointing routes/facility_dedup_v4.plan_group
+#   or scripts/check_sitemap_selfcanon at it RE-PARTITIONS the ~19k published
+#   facility URLs and changes which pages get a rel=canonical — a dedup
+#   decision that needs its own review, its own measurement and its own apply
+#   window. See tests/test_facility_identity_key_wide.py for the measured
+#   delta and the collision cases this key must NOT merge.
+#
+# WHY A WIDER KEY EXISTS AT ALL. identity_key() folds case and whitespace but
+# then compares exact strings, so three cosmetic differences hide a true
+# duplicate from every consumer:
+#
+#     "Telehouse Telehouse Frankfurt"  vs  "Telehouse - Frankfurt"
+#     "Flexential Atlanta GA"          vs  "Flexential Atlanta, GA"
+#     "Global Switch Global Switch Madrid" vs "Global Switch Madrid"
+#
+# The doubling is not a data error the ingest can simply stop making: it comes
+# from a row whose `name` ALREADY carries the operator meeting a `provider`
+# that brand_already_in_name() does not suppress (a different legal-entity
+# spelling — "Master Internet s.r.o." vs a name starting "Master DC").
+#
+# MEASURED 2026-09-11 over the live corpus (every /facilities/<slug> in the
+# published sitemap, 18,809 URLs, five fields each from the public
+# /api/v1/exports/facilities snapshot + /api/v1/facilities/<slug>):
+#
+#     identity_key       18,701 keys · 102 groups of >=2 · 108 surplus URLs
+#     identity_key_wide  18,663 keys · 139 groups of >=2 · 146 surplus URLs
+#     38 groups fuse 76 previously-distinct keys, touching 77 URLs
+#     all 38 have >=2 members that are self-canonical TODAY (0 already merged)
+#     routes.facility_dedup_v4.designators_disagree vetoes 0 of the 38
+#
+# ★★★ TWO FOLDS THAT LOOK OBVIOUS AND ARE WRONG — both were measured, not
+#     reasoned about, and both are pinned by tests:
+#
+#   1. `[^a-z0-9]` IS NOT "punctuation". It erases every CJK, Cyrillic, Arabic
+#      and Bengali name to the empty string, and 36 Chinese-named facilities
+#      then land in ONE group. The fold must keep Unicode alphanumerics.
+#   2. DE-DOUBLING THE WHOLE STRING EATS THE CITY. "DataBank Atlanta —
+#      Atlanta, US …" (city Atlanta) collapses onto "DataBank Atlanta — US …"
+#      (NO city), because the repeated token straddles the boundary between
+#      the site name and the location slot. Only a LEADING run is an operator
+#      prefix, so only a leading run is collapsed.
+#
+# WHAT IT STILL WILL NOT CATCH (measured, stated rather than hidden): four
+# pairs that differ because one row repeats its city into `state` ("Prague,
+# Prague" vs "Prague"). Collapsing a repeat there is the boundary-crossing
+# fold rule 2 forbids; those need a location normaliser, not a wider name key.
+
+_MAX_BRAND_TOKENS = 4
+
+
+def _fold_identity(text: str) -> str:
+    """Case-, punctuation- and whitespace-folded, Unicode-safe.
+
+    NFKC first so full-width and compatibility forms agree with their ASCII
+    spellings ("AirTrunk ２Ａ棟" -> "airtrunk 2a棟"), then every character that
+    is not alphanumeric IN ANY SCRIPT becomes a space.
+
+    ★ `ch.isalnum()`, never `[a-z0-9]`: an ASCII class is not a punctuation
+      filter, it is a Latin filter. Measured 2026-09-11, it folded 36 Chinese-,
+      Japanese-, Russian-, Arabic- and Bengali-named facilities to "" and put
+      them in a single group.
+    ★ Punctuation becomes a SPACE, not nothing: "1&1" -> "1 1" keeps the token
+      boundary the name actually has.
+    """
+    text = unicodedata.normalize("NFKC", text or "").casefold()
+    return " ".join("".join(c if c.isalnum() else " "
+                            for c in text).split())
+
+
+def _dedouble_leading(tokens):
+    """Collapse ONE immediately-repeated run of up to _MAX_BRAND_TOKENS at the
+    START of `tokens` — the operator doubling, and nothing else.
+
+        ["telehouse", "telehouse", "frankfurt"] -> ["telehouse", "frankfurt"]
+        ["global", "switch", "global", "switch", "madrid"]
+                                     -> ["global", "switch", "madrid"]
+
+    ★★★ LEADING ONLY, AND THAT IS THE WHOLE SAFETY ARGUMENT. A repeat anywhere
+      in the string is not evidence of a doubled brand; it is just as likely to
+      be the site name meeting the location slot. Measured 2026-09-11: an
+      any-position collapse merged "DataBank Atlanta — Atlanta, US Data Center"
+      (city Atlanta) with "DataBank Atlanta — US Data Center" (city NULL) by
+      eating one "atlanta", i.e. it made a row that names a city equal to a row
+      that does not. Four such merges were dropped by this restriction and all
+      four were made for the wrong reason.
+    ★ ONE run, not a loop to a fixed point: repeated collapsing is how a
+      three-token brand quietly turns into a one-token one.
+    """
+    n = len(tokens)
+    for w in range(min(_MAX_BRAND_TOKENS, n // 2), 0, -1):
+        if tokens[:w] == tokens[w:2 * w]:
+            return tokens[w:]
+    return list(tokens)
+
+
+def identity_key_wide(name, provider, city, state, country):
+    """CANDIDATE grouping key — WIDER than identity_key(). NOT WIRED UP.
+
+    Same shape and same two components as identity_key() — (h1, dedup_title) —
+    so a consumer could be repointed with no other change, and same inputs, so
+    the two can be compared row by row. The difference is the fold: case,
+    punctuation and whitespace all collapse, and a doubled leading operator
+    token collapses with them.
+
+    ★ It reads `dedup_title`, exactly as identity_key() does. The displayed
+      <title> moves with SERP copy edits; a grouping key must not.
+    """
+    hl = facility_headline(name, provider, city, state, country)
+    return (" ".join(_dedouble_leading(_fold_identity(hl["h1"]).split())),
+            " ".join(_dedouble_leading(
+                _fold_identity(hl["dedup_title"]).split())))
 
 
 # ── r-title-facts (2026-09-10): the SERP <title> and meta description ─────
