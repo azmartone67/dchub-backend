@@ -70,23 +70,28 @@ TESTS_DIR = pathlib.Path(ROOT) / "tests"
 _MIN_FILES_SCANNED = 900
 
 # ── The exemption table ──────────────────────────────────────────────
-# Keyed by (filename, stubbed name) — NOT by filename. A file-keyed register
-# exempts every name added to that file later, which is half a ratchet: the
-# next stub lands inside an existing exemption and nothing fires.
+# EMPTY, and meant to stay that way.
 #
-# `main` is the Flask app entrypoint. The pure-function suite deliberately
-# never imports it (tests/conftest.py's docstring; tests/_market_canon_consts.py
-# asserts "main" not in sys.modules), so a lightweight stand-in installed before
-# `routes.*` is the house rule rather than a defect: there is no real module
-# being shadowed. It is recorded here, name by name, so it stays visible.
-_ALLOWED: dict[tuple[str, str], str] = {
-    ("test_crossover_onramp.py", "main"): "house rule: renderers lazily do "
-        "`from main import get_read_db`; importing real main drags in the app "
-        "+ DB pools",
-    ("test_facilities_hub_seo.py", "main"): "house rule: as above",
-    ("test_facilities_hub_stored_slug.py", "main"): "house rule: as above",
-    ("test_facility_site_code_titles.py", "main"): "house rule: as above",
-}
+# It began with four entries — the `main` stubs in test_crossover_onramp,
+# test_facilities_hub_seo, test_facilities_hub_stored_slug and
+# test_facility_site_code_titles — recorded as a house rule because the
+# pure-function suite deliberately never imports the real app entrypoint. That
+# reasoning was sound about the STAND-IN and wrong about the SCOPE: nothing in
+# those files reads `main` at import time (the route modules reach for it
+# lazily, inside functions), so the fake only ever had to exist while a test
+# RUNS. All four now take tests._import_shims.stub_main_module, an autouse
+# fixture that monkeypatch removes on teardown, and the debt is gone rather
+# than registered.
+#
+# Keyed by (filename, MODULE NAME) if it is ever needed again — NOT by
+# filename. A file-keyed register exempts every name added to that file later,
+# which is half a ratchet: the next stub lands inside an existing exemption and
+# nothing fires.
+#
+# ★ An empty table makes the two tests that police it pass on nothing, so both
+# also exercise their check against a synthetic table that MUST trip it. A
+# control that only ever sees an empty input is not a control.
+_ALLOWED: dict[tuple[str, str], str] = {}
 
 # Names that may NEVER be exempted: real libraries, pinned in requirements.txt
 # and pip-installed by the unit-tests job, so a fake standing in for one is
@@ -379,25 +384,61 @@ def test_the_static_scan_does_not_flag_the_safe_idioms(source):
     assert scan_source(source, "test_clean.py") == []
 
 
+def exemptions_covering_a_real_library(table) -> list:
+    """Entries that wave through a library CI installs. Must always be empty."""
+    return sorted(k for k in table if k[1] in _NEVER_EXEMPTABLE)
+
+
+def stale_exemptions(table, findings) -> list:
+    """Entries matching nothing in the tree — a hole nobody is looking at."""
+    live = {(f["file"], f["module"]) for f in findings}
+    return sorted(set(table) - live)
+
+
 def test_the_exemption_table_cannot_cover_a_real_library():
-    for (fname, module), _reason in _ALLOWED.items():
-        assert module not in _NEVER_EXEMPTABLE, (
-            f"{fname} is exempted for sys.modules[{module!r}], but {module!r} "
-            f"is a real library installed by CI. Faking an installed library at "
-            f"import time is the defect this guard exists to stop; it must be "
-            f"fixed, not exempted."
-        )
+    bad = exemptions_covering_a_real_library(_ALLOWED)
+    assert not bad, (
+        f"{bad} exempted, but those are real libraries installed by CI. Faking "
+        f"an installed library at import time is the defect this guard exists "
+        f"to stop; it must be fixed, not exempted."
+    )
+    # ★ CONTROL. _ALLOWED is empty, so the assertion above passes on nothing.
+    # Prove the check can still refuse.
+    assert exemptions_covering_a_real_library(
+        {("test_x.py", "flask"): "why", ("test_y.py", "main"): "why"}
+    ) == [("test_x.py", "flask")]
 
 
 def test_every_exemption_still_matches_a_real_occurrence():
-    """A stale exemption is a hole nobody is looking at."""
     findings, _ = _scan_tests_dir()
-    live = {(f["file"], f["module"]) for f in findings}
-    stale = sorted(set(_ALLOWED) - live)
+    stale = stale_exemptions(_ALLOWED, findings)
     assert not stale, (
         f"{len(stale)} exemption(s) in _ALLOWED no longer match anything: "
         f"{stale}. The code was fixed; drop the entry so the table keeps "
         f"meaning what it says."
+    )
+    # ★ CONTROL, for the same reason.
+    assert stale_exemptions(
+        {("test_ghost.py", "boto3"): "why"},
+        [{"file": "test_real.py", "module": "boto3"}],
+    ) == [("test_ghost.py", "boto3")]
+
+
+def test_the_scan_finds_no_module_scope_stub_left_in_the_suite():
+    """The table is empty because the tree is clean — assert both halves.
+
+    Without this, emptying _ALLOWED and breaking the scanner would look
+    identical: no findings, no exemptions, green.
+    """
+    findings, n_files = _scan_tests_dir()
+    assert n_files >= _MIN_FILES_SCANNED
+    assert findings == [], (
+        f"{len(findings)} module-scope stub(s) still in the tree: "
+        f"{[(f['file'], f['module']) for f in findings]}"
+    )
+    assert _ALLOWED == {}, (
+        "The tree is clean but _ALLOWED is not empty — every entry in it is "
+        "stale by definition."
     )
 
 
@@ -472,3 +513,54 @@ def test_the_placeholder_can_serve_a_from_import():
         mod = sys.modules[absent]
         assert mod.Blueprint is not None
         assert callable(mod.jsonify)
+
+
+def test_the_real_main_py_was_never_imported_in_process():
+    """The house rule dozens of test docstrings state, finally checked.
+
+    "tests never import main.py" is asserted in prose across the suite and was
+    enforced by nothing. What actually held it up was an accident: four files
+    parked a fake `main` at module scope and never removed it, and because
+    collection imports every module before any test runs, that fake covered the
+    whole execution phase. Removing the leak let the real entrypoint back in —
+    it opens DB pools, starts threads, and RAISES here, so Python drops the
+    partial module and the next lazy import pays again. Measured on the full
+    suite: 0 boot markers / 20:15 with the leak, 138 markers / 47:58 without
+    it, 0 markers / 19:17 once conftest supplied the stand-in deliberately.
+
+    Nothing was red for any of that. Half an hour of wall clock and a booted
+    Flask app inside the unit-test process, and the only signal was the
+    runtime — which is why this assertion exists.
+    """
+    mod = sys.modules.get("main")
+    assert mod is not None, (
+        "sys.modules['main'] is absent — tests/conftest.py's session fixture "
+        "_house_rule_main_is_never_imported should have installed the "
+        "stand-in. Without it the next lazy `from main import get_read_db` "
+        "boots the real app."
+    )
+    path = getattr(mod, "__file__", None)
+    assert path is None, (
+        f"the REAL main.py was imported in-process (sys.modules['main'] came "
+        f"from {path}). It opens DB pools and registers ~200 blueprints; the "
+        f"suite's house rule is that tests never import it. Something popped "
+        f"the session stand-in and did not put it back."
+    )
+
+
+def test_the_real_main_check_can_actually_fail():
+    """MUTATION CONTROL for the assertion above, without importing main.
+
+    The session fixture makes a real import structurally impossible, so the
+    check above passes on a state that cannot currently go wrong. Prove the
+    predicate still separates the two cases.
+    """
+    real_ish = types.ModuleType("main")
+    real_ish.__file__ = "/repo/main.py"
+    assert getattr(real_ish, "__file__", None) is not None
+    assert getattr(_import_shims_fake_main(), "__file__", None) is None
+
+
+def _import_shims_fake_main():
+    from tests._import_shims import fake_main
+    return fake_main()

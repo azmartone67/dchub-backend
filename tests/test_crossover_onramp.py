@@ -27,10 +27,11 @@ import types
 # Stub `main` BEFORE importing routes.* — the renderers lazily do
 # `from main import get_read_db` inside try/except; importing the real
 # main would drag in the whole app + DB pools.
-if "main" not in sys.modules:
-    sys.modules["main"] = types.SimpleNamespace(
-        get_read_db=lambda: None, get_db=lambda: None)
-
+# ★ 2026-09-12. The fake `main` used to be parked in sys.modules at MODULE
+# scope here and never removed, so it outlived this file. Nothing in this
+# file needs it at IMPORT time — the route modules reach for `main` lazily,
+# inside functions — and the suite-wide house rule is now owned by the
+# session fixture in tests/conftest.py, which puts it back afterwards.
 from flask import Flask, render_template_string  # noqa: E402
 
 import routes.facility_profile_page as fpp        # noqa: E402

@@ -151,3 +151,60 @@ def test_temporary_install_restores_the_session_wide_wrappers():
         "session in a context that had them off.")
 
     _scan_floors.install()          # leave the session as we found it
+
+
+def test_a_background_threads_scan_is_never_credited_to_a_test():
+    """★ Attribution is per-TEST, and a worker thread is not in any test.
+
+    `_current` is a single global and only `observations` is locked, so before
+    this fix a scan on a background thread was credited to whichever test the
+    main thread was running at that instant. Two failure modes, and the second
+    is the bad one:
+
+      · it invents a scan for a file that does not scan — the adoption guard
+        then names an innocent file, a different one each run;
+      · it can TOP UP a pinned file whose real scan collapsed, so a genuine
+        collapse reads green. Fail-open, through the front door of the
+        mechanism built to prevent it.
+
+    Reproduced from routes/ddl_audit.py's `ddl-audit-boot` thread: the same
+    stray walk=93 landed on test_async_admin_calls_are_polled.py on one tree
+    and test_app_contract_gate.py on another, and on
+    test_ausgrid_au_forecast_pin.py in a full run. None of the three scans
+    anything.
+    """
+    import threading
+
+    _scan_floors.install()
+    try:
+        _scan_floors.set_current_file("test_the_innocent_bystander.py")
+        _scan_floors.observations.pop("test_the_innocent_bystander.py", None)
+        _scan_floors.background_observations.clear()
+
+        def _walker():
+            # A real scan, on a thread that belongs to no test.
+            list(os.walk(os.path.dirname(os.path.abspath(__file__))))
+
+        t = threading.Thread(target=_walker, name="pretend-boot-audit")
+        t.start()
+        t.join()
+
+        assert "test_the_innocent_bystander.py" not in _scan_floors.observations, (
+            "a background thread's scan was credited to the test that happened "
+            "to be running: "
+            f"{_scan_floors.observations.get('test_the_innocent_bystander.py')}")
+        assert "pretend-boot-audit" in _scan_floors.background_observations, (
+            "the off-thread scan was dropped entirely rather than recorded "
+            "separately — a guard that legitimately scans from a worker thread "
+            "would vanish with no trace to diagnose")
+
+        # ...and the main thread must still be credited normally.
+        list(os.walk(os.path.dirname(os.path.abspath(__file__))))
+        assert _scan_floors.observations.get("test_the_innocent_bystander.py"), (
+            "the main thread stopped being recorded — the fix went too far and "
+            "every floor is now unmeasured")
+    finally:
+        _scan_floors.observations.pop("test_the_innocent_bystander.py", None)
+        _scan_floors.background_observations.clear()
+        _scan_floors.uninstall()
+        _scan_floors.install()

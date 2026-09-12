@@ -46,10 +46,11 @@ import types
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-if "main" not in sys.modules:                                    # noqa: E402
-    sys.modules["main"] = types.SimpleNamespace(
-        get_read_db=lambda: None, get_db=lambda: None)
-
+# ★ 2026-09-12. The fake `main` used to be parked in sys.modules at MODULE
+# scope here and never removed, so it outlived this file. Nothing in this
+# file needs it at IMPORT time — the route modules reach for `main` lazily,
+# inside functions — and the suite-wide house rule is now owned by the
+# session fixture in tests/conftest.py, which puts it back afterwards.
 from flask import Flask                                          # noqa: E402
 
 import facilities_hub as fh                                      # noqa: E402

@@ -60,7 +60,7 @@ import importlib.util
 import sys
 import types
 
-__all__ = ["real_or_stub", "importable", "make_placeholder"]
+__all__ = ["real_or_stub", "importable", "make_placeholder", "fake_main"]
 
 
 def importable(name: str) -> bool:
@@ -149,3 +149,24 @@ def real_or_stub(*names: str):
             mod = sys.modules.get(name)
             if getattr(mod, "__dchub_placeholder__", False):
                 del sys.modules[name]
+
+
+# ═════════════════════════════════════════════════════════════════════
+# `main`: the app entrypoint, faked for the pure-function suite
+# ═════════════════════════════════════════════════════════════════════
+def fake_main() -> types.SimpleNamespace:
+    """The lightweight stand-in for main.py.
+
+    The pure-function suite deliberately never imports the real entrypoint —
+    tests/conftest.py says so, and tests/_market_canon_consts.py asserts
+    ``"main" not in sys.modules``. Route modules reach for it LAZILY, inside
+    functions (``from main import get_read_db`` in a try/except, 14 such call
+    sites across facility_profile_page, dcpi, mcp_connect and
+    facility_slug_freeze), so the stand-in has to be present while a test RUNS,
+    not merely while the test module imports.
+
+    Installed once per session by tests/conftest.py's
+    ``_house_rule_main_is_never_imported`` — the rule is the whole suite's, not
+    any one file's, and that fixture's comment carries the measurements.
+    """
+    return types.SimpleNamespace(get_read_db=lambda: None, get_db=lambda: None)
