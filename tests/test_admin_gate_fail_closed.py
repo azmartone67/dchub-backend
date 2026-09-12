@@ -86,7 +86,14 @@ _BASELINE = {
     "lp_alerts_cron.py": 2,
     "market_alerts.py": 1,
     "market_deep_dive.py": 2,
-    "marketing_engine.py": 1,
+    # marketing_engine.py: RESOLVED 2026-09-11 — its @_require_admin decorator,
+    # which gates all five of POST /api/v1/marketing/{auto-generate,publish-now,
+    # repost-now,linkedin/send-daily-email} and GET .../linkedin/whoami, now
+    # gates on internal_auth.require_internal_or_admin (fail-closed, per-request
+    # env read) instead of `if ADMIN_KEY and provided != ADMIN_KEY`. That one
+    # gate stood in front of an IndexNow submitter and both social publishers.
+    # Removed from the baseline so it can never come back at 1. See
+    # tests/test_marketing_admin_gate_fail_closed.py for behaviour + mutation.
     # metric_observatory.py + outcome_verifier.py: RESOLVED 2026-09-11 — POST
     # /api/v1/brain/metric-observatory/snapshot and /outcome-verifier/run now
     # gate on internal_auth.require_internal_or_admin (fail-closed, per-request
