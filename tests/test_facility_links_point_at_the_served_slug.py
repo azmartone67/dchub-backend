@@ -709,6 +709,20 @@ def test_indexnow_recent_facility_urls_are_the_served_slugs(monkeypatch):
     _resolved_once(world, "indexnow _recent_facility_urls")
 
 
+def test_indexnow_newest_list_reports_what_it_resolved(monkeypatch):
+    """The facilities preview's moved/collapsed are counted inside
+    _served_facility_urls and reach the reply only because this builder passes
+    the dict THROUGH. A builder that drops it answers a confident 0 for a list
+    full of moved URLs — and the sample cannot contradict it, because by then
+    every URL in it answers 200."""
+    _served_world(monkeypatch)
+    inx, _db = _indexnow(monkeypatch, _indexnow_answer)
+    stats = {}
+    urls = inx._recent_facility_urls(50, stats)
+    assert len(urls) == 3, urls
+    assert stats == {"moved": 1, "collapsed": 0}, stats
+
+
 def test_indexnow_delta_submits_the_served_slugs(monkeypatch):
     """The daily churn hook: the one IndexNow path that runs unattended."""
     world = _served_world(monkeypatch)

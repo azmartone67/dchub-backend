@@ -546,6 +546,58 @@ def test_the_preview_cap_bounds_the_public_read_and_the_key_lifts_it():
     assert calls[-1][1] == 1234, "since_id never reached the preview"
 
 
+def test_the_preview_returns_its_whole_capped_list_not_a_25_url_slice():
+    """The RESPONSE, not just the row cap. The slice was hardcoded at 25, so a
+    preview of a 2,000-URL submit came back 25 URLs long however large `n` was
+    and whoever asked — `count` was the only field that told the truth."""
+    from routes.indexnow import _PREVIEW_MAX_ADMIN, _PREVIEW_MAX_PUBLIC
+    many = [f"https://dchub.cloud/facilities/f-{i}"
+            for i in range(_PREVIEW_MAX_PUBLIC + 100)]
+
+    def _many(n, stats=None):
+        return list(many)
+
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="GET", args={"facilities": "1", "dry_run": "1"}),
+        _recent_facility_urls=_many)
+    body = rv["_payload"]
+    assert body["count"] == len(many), body
+    assert len(body["sample"]) == _PREVIEW_MAX_PUBLIC, (
+        f"a keyless preview returned {len(body['sample'])} of {body['count']} "
+        f"URLs — the cap is {_PREVIEW_MAX_PUBLIC}")
+    assert body["sample_truncated"] is True, \
+        "a short sample must say so, or count and sample read as the same list"
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="GET", args={"facilities": "1", "dry_run": "1"},
+                 headers={"X-Admin-Key": _ADMIN}),
+        _recent_facility_urls=_many)
+    body = rv["_payload"]
+    assert len(many) <= _PREVIEW_MAX_ADMIN and len(body["sample"]) == len(many), \
+        "the admin key did not lift the sample slice"
+    assert body["sample_truncated"] is False
+
+
+def test_the_preview_reports_what_the_resolution_absorbed():
+    """`moved` and `collapsed` are counted where the slugs are resolved and are
+    unrecoverable afterwards — every URL in `sample` already answers 200. If the
+    handler stops handing the builder somewhere to put them, the preview reports
+    a confident 0 for a stream full of moved URLs."""
+    def _fills_stats(n, stats=None):
+        if stats is not None:
+            stats["moved"], stats["collapsed"] = 7, 2
+        return ["https://dchub.cloud/facilities/a"]
+
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="GET", args={"facilities": "1", "dry_run": "1"}),
+        _recent_facility_urls=_fills_stats)
+    assert rv["_payload"]["moved"] == 7 and rv["_payload"]["collapsed"] == 2, rv
+    # a preview of a stream that does not resolve slugs claims nothing
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="GET", args={"dcpi": "1", "dry_run": "1"}))
+    assert "moved" not in rv["_payload"], \
+        "the DCPI list has no served-slug resolution to report"
+
+
 def test_indexnow_endpoint_accepts_admin_key():
     rv = _run_indexnow_endpoint(
         _FakeReq(method="POST", args={"recent": "1"},
