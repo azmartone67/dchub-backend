@@ -89,13 +89,19 @@ on:
     # three of these, including util/facility_headline — the module #4500
     # itself routes evidence() through.
     #
+    # ★ 2026-09-12 (second pass) — utils/cache.py is derived but EXCLUDED, and
+    # routes/facility_slug.py was considered for the same and REFUSED. Both
+    # reasons are written out in GUARDED in the deriver, and the guard fails
+    # if an exclusion stops being derived. The deriver moved to
+    # scripts/workflow_trigger_modules.py when whats-new-post-deploy-purge.yml
+    # turned out to have the same defect (16 of 18 modules missing).
+    #
     # ★ WHAT IS DELIBERATELY NOT HERE: anything that only changes how a page
     # RENDERS. These are the files that change which <loc> elements exist.
     # And no filter can see the other half — facilities appear in the database
     # with no deploy at all, which is what the 4-hourly cron above is for.
     paths:
       - '.github/workflows/sitemap-snapshot.yml'
-      - 'scripts/sitemap_builder_modules.py'
       - 'db_utils.py'
       - 'facilities_hub.py'
       - 'main.py'
@@ -108,6 +114,7 @@ on:
       - 'routes/market_deep_dive.py'
       - 'routes/operator_brief.py'
       - 'routes/pockets.py'
+      - 'scripts/workflow_trigger_modules.py'
       - 'util/dcpi_score_row.py'
       - 'util/deployability_rank.py'
       - 'util/facility_headline.py'
@@ -116,7 +123,6 @@ on:
       - 'util/market_aliases.py'
       - 'util/sitemap_redirects.py'
       - 'util/thin_content.py'
-      - 'utils/cache.py'
   workflow_dispatch: {}
 
 # ★ 2026-09-12 — CHECKED WHEN THE PUSH FILTER WAS WIDENED FROM ONE FILE TO 21.

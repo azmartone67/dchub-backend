@@ -71,7 +71,21 @@ def _rebuild_run():
 
 def test_a_builder_change_rebuilds_the_snapshot():
     """★ The motivating failure. Without a push trigger the served sitemap can
-    lag a deploy by up to four hours while every signal reads green."""
+    lag a deploy by up to four hours while every signal reads green.
+
+    ★ 2026-09-12 — THIS IS THE FLOOR, NOT THE WHOLE CHECK, AND THAT DISTINCTION
+    IS THE BUG. Asserting "main.py in paths" was true and complete when it was
+    written, and read as complete long after it stopped being so: the
+    predicates deciding WHICH URLs are emitted were deliberately moved out of
+    main.py, and 41 pushes in 34 days changed one and rebuilt nothing. A reader
+    landing here would have concluded the trigger was covered.
+
+    So: this still pins main.py, because a filter that loses it is broken
+    outright. Everything else — that the filter EQUALS the builder's import
+    graph — lives in tests/test_workflow_trigger_paths_match_imports.py, which
+    derives the list instead of remembering it. Do not grow this assertion into
+    a second hand-maintained list; that is the failure it is commenting on.
+    """
     on = _on()
     assert "push" in on, (
         "a push to main must rebuild the snapshot — otherwise a merged, "
@@ -82,6 +96,14 @@ def test_a_builder_change_rebuilds_the_snapshot():
     assert "main.py" in paths, (
         "main.py builds the sitemap XML; a change there is exactly the case "
         "that needs a rebuild"
+    )
+    # The floor this test can own without keeping a list: the filter must name
+    # more than main.py, because the predicates do not live there any more.
+    assert len(paths) > 2, (
+        "paths: is back to naming main.py and the workflow. The emission "
+        "predicates live in util/thin_content, util/sitemap_redirects and "
+        "others by design — see tests/test_workflow_trigger_paths_match_"
+        "imports.py, which derives the full list from the import graph."
     )
 
 

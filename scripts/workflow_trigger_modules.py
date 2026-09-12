@@ -1,6 +1,39 @@
 #!/usr/bin/env python3
-"""scripts/sitemap_builder_modules.py — which files can change the emitted
-sitemap URL set.
+"""scripts/workflow_trigger_modules.py — which files can change what a
+post-deploy workflow publishes.
+
+★ 2026-09-12 (second pass) — GENERALISED, BECAUSE IT WAS NOT ONE WORKFLOW.
+
+This shipped as sitemap_builder_modules.py, for sitemap-snapshot.yml alone. A
+sweep of every push `paths:` filter in .github/workflows found the same defect
+in whats-new-post-deploy-purge.yml: it purges the Cloudflare copy of
+/api/v1/whats-new "when a push changes what the feed publishes", named four
+modules, and the feed's handler reads EIGHTEEN — sixteen of them absent. Same
+failure: green CI, stale published page, up to the zone TTL (3600s).
+
+(public-api-programmatic-access.yml was audited and is CORRECT as written: it
+probes the live Cloudflare edge with stdlib urllib, so the thing it guards is a
+CF configuration change that is not in this repo at all. Nothing can move out
+of its named files, and it carries a 6-hourly cron besides.)
+
+So the slice is now generic and the per-workflow facts live in GUARDED below.
+
+★ TWO ESCAPE HATCHES, BOTH REQUIRING A WRITTEN REASON, BOTH SELF-INVALIDATING.
+  An import graph is not the whole truth in either direction:
+
+    extras   — a real dependency the graph CANNOT see. /api/v1/whats-new reads
+               data/platform_updates.json off disk through STORE_PATH; no
+               import names it. The guard asserts each extra still exists.
+    excluded — derived, but deliberately not worth a run. The guard asserts
+               each exclusion is STILL IN the derived set, so one left behind
+               by a refactor fails rather than lingering as a silent hole.
+
+  Both are visible in one place and reviewed. That is the point: the previous
+  filter's exceptions were invisible because the filter WAS the exception.
+
+--- the original finding, unchanged ---
+
+Which files can change the emitted sitemap URL set.
 
 ★ 2026-09-12 — THE PUSH FILTER NAMED ONE FILE, AND THE PREDICATES LEFT IT.
 
@@ -82,10 +115,11 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: The function that produces the PUBLISHED artefact. It calls
+#: Kept as the sitemap's entry point and as the default, so the original
+#: call shape still works. main._rebuild_sitemap_snapshot calls
 #: _build_sitemap_sections for the gated families and again, through
 #: _build_sitemap_facilities_ungated, for the AI family — so one entry covers
-#: both. Naming the outer one also covers the shard/index rendering.
+#: both, and naming the outer one also covers the shard/index rendering.
 ENTRY_MODULE = "main.py"
 ENTRY_SYMBOL = "_rebuild_sitemap_snapshot"
 
@@ -176,23 +210,31 @@ def _referenced(node):
     return names
 
 
-def builder_modules(root=REPO_ROOT, with_provenance=False):
-    """Repo-relative paths whose CONTENT can change the emitted URL set.
+def builder_modules(root=REPO_ROOT, with_provenance=False,
+                    entry_module=None, entry_symbol=None):
+    """Repo-relative paths whose CONTENT can change what the entry point emits.
 
     Always includes the entry module itself. Deterministic: sorted, and it
     reads the tree rather than importing anything, so it needs no database,
     no network and none of the app's runtime dependencies.
-    """
-    cache = {}
-    if _index(root, ENTRY_MODULE, cache) is None:
-        raise BuilderEntryMissing("cannot parse %s" % ENTRY_MODULE)
-    if ENTRY_SYMBOL not in _index(root, ENTRY_MODULE, cache)[0]:
-        raise BuilderEntryMissing(
-            "%s has no top-level %s(). The sitemap entry point was renamed or "
-            "moved; this derivation is measuring nothing until it is updated."
-            % (ENTRY_MODULE, ENTRY_SYMBOL))
 
-    seen, queue, found = set(), [(ENTRY_MODULE, ENTRY_SYMBOL)], {}
+    entry_module/entry_symbol default to the sitemap builder. They are
+    PARAMETERS rather than the module-level constants they used to be: the
+    guard needs to slice several entry points in one run, and rebinding a
+    global between calls is how a test ends up measuring the wrong thing.
+    """
+    entry_module = entry_module or ENTRY_MODULE
+    entry_symbol = entry_symbol or ENTRY_SYMBOL
+    cache = {}
+    if _index(root, entry_module, cache) is None:
+        raise BuilderEntryMissing("cannot parse %s" % entry_module)
+    if entry_symbol not in _index(root, entry_module, cache)[0]:
+        raise BuilderEntryMissing(
+            "%s has no top-level %s(). The entry point was renamed or moved; "
+            "this derivation is measuring nothing until it is updated."
+            % (entry_module, entry_symbol))
+
+    seen, queue, found = set(), [(entry_module, entry_symbol)], {}
     while queue:
         rel, sym = queue.pop()
         if (rel, sym) in seen:
@@ -218,7 +260,7 @@ def builder_modules(root=REPO_ROOT, with_provenance=False):
             target = _resolve(root, dotted)
             # Stop at the entry module: db_utils imports back into main for the
             # circuit breaker, and following that edge re-enters the whole app.
-            if not target or target == rel or target == ENTRY_MODULE:
+            if not target or target == rel or target == entry_module:
                 continue
             found.setdefault(target, set()).add(
                 "%s:%s -> %s" % (rel, sym, orig or dotted))
@@ -226,26 +268,136 @@ def builder_modules(root=REPO_ROOT, with_provenance=False):
             if orig:
                 queue.append((target, orig))
 
-    found.setdefault(ENTRY_MODULE, set()).add("the builder itself")
+    found.setdefault(entry_module, set()).add("the entry point itself")
     if with_provenance:
         return {k: sorted(v) for k, v in sorted(found.items())}
     return sorted(found)
 
 
+class Guarded(object):
+    """One workflow whose push `paths:` filter is derived from an import graph.
+
+    workflow      repo-relative path of the .yml
+    entry_module  the module holding the function that produces the artefact
+    entry_symbol  that function
+    extras        {path: reason} — real dependencies the import graph CANNOT
+                  see (data files read off disk, the workflow's own files).
+                  The guard asserts each still exists on disk.
+    excluded      {path: reason} — derived, but deliberately not worth a run.
+                  The guard asserts each is STILL DERIVED, so an exclusion left
+                  behind by a refactor fails instead of quietly widening.
+    floor         minimum plausible derived count; below it the slice has
+                  collapsed and every subset assertion is vacuous.
+    """
+
+    def __init__(self, workflow, entry_module, entry_symbol,
+                 extras=None, excluded=None, floor=1):
+        self.workflow = workflow
+        self.entry_module = entry_module
+        self.entry_symbol = entry_symbol
+        self.extras = dict(extras or {})
+        self.excluded = dict(excluded or {})
+        self.floor = floor
+
+    def derived(self, root=REPO_ROOT):
+        return set(builder_modules(root, entry_module=self.entry_module,
+                                   entry_symbol=self.entry_symbol))
+
+    def expected(self, root=REPO_ROOT):
+        """Exactly what `paths:` should contain."""
+        return (self.derived(root) - set(self.excluded)) | set(self.extras)
+
+
+#: The workflows whose triggers are derived rather than remembered.
+#:
+#: ★ public-api-programmatic-access.yml is deliberately NOT here. It probes the
+#:   live Cloudflare edge from outside with stdlib urllib; what it guards is a
+#:   CF configuration change that does not live in this repo, so there is no
+#:   import graph to drift from. Audited 2026-09-12.
+GUARDED = (
+    Guarded(
+        workflow=".github/workflows/sitemap-snapshot.yml",
+        entry_module="main.py",
+        entry_symbol="_rebuild_sitemap_snapshot",
+        floor=15,
+        extras={
+            ".github/workflows/sitemap-snapshot.yml":
+                "the workflow decides when a rebuild happens; an edit to it "
+                "must rebuild, or the first run under new rules is the cron",
+            "scripts/workflow_trigger_modules.py":
+                "this file derives the filter, so changing it changes which "
+                "pushes rebuild",
+        },
+        excluded={
+            "utils/cache.py":
+                "BoundedCache only. market_brief and hyperscaler_brief build "
+                "_BRIEF_CACHE/_PDF_CACHE at import, and the builder reads "
+                "SEED_MARKETS / SEED_HYPERSCALERS — constants, never the "
+                "cache. A change here cannot SILENTLY move the URL set: the "
+                "only reachable failure is raising at import, which fails the "
+                "build loudly. 0 qualifying commits 2026-08-09..09-12. "
+                "★ routes/facility_slug.py was considered for this list and "
+                "REFUSED: stable_hash8 computes the hash8 suffix of every "
+                "facility URL (main.py:33597). Its 0 commits mean it is FROZEN "
+                "on purpose — 'MUST stay byte-identical' — not that it is "
+                "inert. Low churn is not low relevance.",
+        },
+    ),
+    Guarded(
+        workflow=".github/workflows/whats-new-post-deploy-purge.yml",
+        entry_module="routes/infra_growth.py",
+        entry_symbol="whats_new",
+        floor=12,
+        extras={
+            ".github/workflows/whats-new-post-deploy-purge.yml":
+                "as above — an edit to the trigger must fire the trigger",
+            "scripts/workflow_trigger_modules.py":
+                "derives this filter too, so a change to the slice changes "
+                "which pushes purge — the edit must exercise itself",
+            "scripts/purge_whats_new_after_deploy.py":
+                "the purge itself; a change to how it waits or reads must be "
+                "exercised on the push that makes it",
+            "data/platform_updates.json":
+                "★ THE DEPENDENCY NO IMPORT NAMES. platform_updates."
+                "published_updates reads this file through STORE_PATH "
+                "(routes/platform_updates.py:53) and splices the block into "
+                "/api/v1/whats-new. Editing the JSON changes the published "
+                "feed with no code change at all.",
+            "routes/capability_announcements.py":
+                "stage_announcement_pr() is the designed AUTHOR of "
+                "data/platform_updates.json. The feed never imports it, so "
+                "this is over-broad rather than load-bearing — kept because a "
+                "spurious purge is cheap and a stale marketing page is not. "
+                "Named here so the next reader knows it is a choice.",
+        },
+    ),
+)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default=REPO_ROOT)
+    ap.add_argument("--workflow", default=None,
+                    help="basename of one guarded workflow (default: all)")
     ap.add_argument("--why", action="store_true",
                     help="show what reaches each module")
     args = ap.parse_args(argv)
-    if args.why:
-        for rel, why in builder_modules(args.root, with_provenance=True).items():
-            print(rel)
-            for w in why:
-                print("      <- %s" % w)
-    else:
-        for rel in builder_modules(args.root):
-            print(rel)
+    for g in GUARDED:
+        if args.workflow and not g.workflow.endswith(args.workflow):
+            continue
+        print("# %s  (%s:%s)" % (g.workflow, g.entry_module, g.entry_symbol))
+        if args.why:
+            prov = builder_modules(args.root, with_provenance=True,
+                                   entry_module=g.entry_module,
+                                   entry_symbol=g.entry_symbol)
+            for rel, why in prov.items():
+                print(rel)
+                for w in why:
+                    print("      <- %s" % w)
+        else:
+            for rel in sorted(g.expected(args.root)):
+                print("      - '%s'" % rel)
+        print()
     return 0
 
 
