@@ -297,6 +297,16 @@ SCHEDULE = [
     # on fresh state delivered prices. Idempotent (UNIQUE state,sector,period);
     # no-ops without EIA_API_KEY.
     ( 1,  1, "eia_gas_prices",      "_run_eia_gas_prices"),
+    # eia_retirements (2026-09-12): generator_retirements, the data layer of
+    # /api/v1/retirement-headroom and the power availability timeline. Its
+    # module promised a monthly external cron that nothing ever called, so the
+    # table was still serving the 2026-04 filing five months later. DAILY on
+    # purpose: the runner refreshes only when EIA has published a newer period
+    # or the last refresh is 28 days old, so a refresh a deploy killed is
+    # retried the next night rather than the next month. 00:00 UTC holds one
+    # instant slot. The refresh OUTCOME beats eia-retirements-refresh; this
+    # slot's own beat only proves the slot ran.
+    ( 0,  0, "eia_retirements",     "_run_eia_retirements"),
     ( 4,  4, "gas_pricing_refresh", "_run_gas_pricing_refresh"),
     # Brain Layer-15 Tool Calibration Drift (2026-06-04):
     # Daily test of every registered tool against known-correct (input,
@@ -2341,6 +2351,19 @@ def _run_eia_gas_prices():
     except Exception as e:
         logger.error("eia_gas_prices loader failed: %s", e)
         return {"ok": False, "error": str(e)[:200]}
+
+
+def _run_eia_retirements():
+    """Refresh generator_retirements when due — see eia_retirements.py. Raises
+    when a refresh ran and failed or could not run, so this slot beats
+    `error: …` rather than success. Unlike eia_gas_prices, a missing
+    EIA_API_KEY is not an idle lane here: it leaves a served table ageing."""
+    import eia_retirements
+    out = eia_retirements.run_if_due()
+    if not out.get("ok"):
+        raise RuntimeError(f"eia_retirements refresh failed: {out.get('error')}")
+    logger.info("eia_retirements: %s", out)
+    return out
 
 
 def _run_gas_pricing_refresh():
@@ -4584,6 +4607,9 @@ _RUNNERS = {
     #     raises; no-ops without REFRESH_SECRET (the natural kill switch).
     "eia_gas_prices":      _run_eia_gas_prices,
     "daily_r2_refresh":    _run_daily_r2_refresh,
+    # Registered in the SAME change as its SCHEDULE tuple (the 2026-07-21
+    # class): the refresh behind /api/v1/retirement-headroom.
+    "eia_retirements":     _run_eia_retirements,
     # BUGFIX (2026-07-21): same registration-gap class, but these two are
     # OUTWARD-FACING, so each is gated by its own cron-specific kill switch
     # (NOT the family-wide AI_AGENT_EXPANSION_DISABLE master, which would also
