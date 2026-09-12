@@ -38,14 +38,20 @@ arrives in X-Internal-Key / X-Admin-Key / ?admin_key.
 
 WHY THE TESTS LOOK LIKE THIS
 ----------------------------
-This module is imported by pytest in a process with no DCHUB_* secrets set (the
-suite does not set them), so under the OLD code the snapshot is "" for the whole
-session and the gate is permanently open. Every rejection test below therefore
-sets a key in os.environ and then sends a bad credential: old code answers the
-handler's status (the snapshot never saw the setenv), new code answers 401. The
-rotation test changes os.environ BETWEEN two requests against the SAME app
-object, which is the only shape that can tell a per-request read from a cached
-one.
+Every rejection test SETS a key in os.environ and then sends a bad credential,
+rather than relying on an unconfigured box. Against the old code that is enough
+on its own: _app() imports the module lazily, inside the first test to run and
+after _clear_secrets has emptied the env, so the import-time snapshot is "" for
+the whole session however the process was launched, the gate is permanently
+open, and each decline test gets the handler's own status back instead of 401
+(measured: 36 failures).
+
+The rotation test carries the second defect. It changes os.environ BETWEEN two
+requests against the SAME app object, which is the only shape that can tell a
+per-request read from a value cached at import or on first use. Forcing the old
+code to take a POPULATED snapshot (import the module before any fixture clears
+the env) makes every fail-open test above pass and leaves exactly this test red:
+the rotated key is refused and the retired one still works.
 
 Rejections assert the body did not run, not merely that the status was 401 —
 "declined" and "declined but ran anyway" are different outcomes and the
@@ -54,9 +60,17 @@ is the first side-effecting thing four of the five handlers do, and stubbing it
 to None makes the authorized path answer 503 no_database without a database, a
 network call or a token.
 
-MUTATION-VERIFIED (verify-a-guard): see the PR body for the recorded transcript
-of restoring `if ADMIN_KEY and provided != ADMIN_KEY` with no key configured and
-watching these go red.
+MUTATION-VERIFIED (verify-a-guard), transcript in the PR body:
+  M1 — restore ADMIN_KEY + `if ADMIN_KEY and provided != ADMIN_KEY`, snapshot
+       empty: 36 failed / 49 passed. Every decline test returns 503 (or whoami's
+       500), i.e. the body ran for an unauthenticated caller, and
+       test_admin_gate_fail_closed.py::test_no_new_self_disabling_gates goes red
+       on the baseline removal.
+  M2 — same mutation, snapshot POPULATED at import: 13 failed / 52 passed. The
+       fail-open tests recover; the five rotation tests and the five
+       X-Internal-Key tests stay red, isolating the stale snapshot from the
+       fail-open hole.
+  Restored from a byte-level snapshot, __pycache__ purged: 85 passed, exit 0.
 """
 import ast
 import os
