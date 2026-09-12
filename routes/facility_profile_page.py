@@ -1479,10 +1479,11 @@ def _render_profile(fac: dict, slug: str) -> str:
             # AND share a name.
             # ★ ORDER IS THE CONTRACT. The drain fork is tried first because
             # its link (merged_facility_id) is stamped by the drain itself,
-            # while discovered_twin_id is this house's own inference. The same
-            # precedence is applied when main._build_sitemap_sections builds
-            # _drained_keeper, so the sitemap and this canonical can never name
-            # different keepers for one slug.
+            # while discovered_twin_id is this house's own inference.
+            # r-selfcanon-unconditional (2026-09-12): main's side of this is now
+            # a SET (_drained_twin_slugs) fed by both arms, so the sitemap no
+            # longer names a keeper at all and cannot name a different one —
+            # this order is the only thing that picks, which is why it stays.
             _twin = (_drained_twin_url(fac.get("id"))
                      or _twin_pointer_url(fac.get("id")))
             if _twin and _twin != canonical:
@@ -2000,11 +2001,13 @@ def _drained_twin_url(legacy_id):
     """URL of the discovered_facilities row a legacy `facilities` row was
     drained from, or None. `legacy_id` is a facilities.id (TEXT).
 
-    ★ `ORDER BY d.id ASC` MUST stay identical to main._drained_keeper's, or the
-    sitemap and this canonical can name different keepers and the canonical
-    lands on a URL the sitemap dropped. Measured 2026-09-07: 4,379 of 4,390
-    legacy slugs have one candidate anyway, and adding power_mw to the order
-    changes the pick for none of them.
+    ★ `ORDER BY d.id ASC` used to have to stay identical to main._drained_keeper's
+    or the two could name different keepers. r-selfcanon-unconditional
+    (2026-09-12) made main's side a SET (_drained_twin_slugs) that names no
+    keeper, so this is now the only pick — keep it DETERMINISTIC so the
+    canonical does not move between requests. Measured 2026-09-07: 4,379 of
+    4,390 legacy slugs have one candidate anyway, and adding power_mw to the
+    order changes the pick for none of them.
     """
     if not legacy_id:
         return None
@@ -2547,7 +2550,7 @@ def _batch_alias_targets(cur, slugs):
     return aliases
 
 
-def served_slugs(slugs, max_hops: int = 3) -> dict:
+def served_slugs(slugs, max_hops: int = 3, conn=None) -> dict:
     """{slug: the /facilities/<slug> a request for it is served at}, for a list.
 
     resolve_final_slug's answer for every slug, bar the one step named above,
@@ -2555,6 +2558,12 @@ def served_slugs(slugs, max_hops: int = 3) -> dict:
     one probe, then at most six per hop. A slug that already terminates, a
     cycle, a chain longer than max_hops and any failure all map to the slug that
     was passed in. Never raises — a caller keeps linking what it linked before.
+
+    ★ `conn` lets a caller that already holds a read connection lend it instead
+      of opening a second one, and a LENT connection is never closed here — the
+      lender owns it. main._build_sitemap_sections passes one; it must not
+      `from main import get_read_db` re-entrantly, and the sitemap tests exec
+      that builder with a stub cursor and no importable `main` at all.
     """
     out = {}
     for s in slugs or ():
@@ -2563,11 +2572,13 @@ def served_slugs(slugs, max_hops: int = 3) -> dict:
             out[s] = s
     if not out:
         return out
-    try:
-        from main import get_read_db
-        conn = get_read_db()
-    except Exception:
-        return out
+    _lent = conn is not None
+    if not _lent:
+        try:
+            from main import get_read_db
+            conn = get_read_db()
+        except Exception:
+            return out
     if not conn:
         return out
     try:
@@ -2615,10 +2626,11 @@ def served_slugs(slugs, max_hops: int = 3) -> dict:
     except Exception:
         return {s: s for s in out}
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if not _lent:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return out
 
 

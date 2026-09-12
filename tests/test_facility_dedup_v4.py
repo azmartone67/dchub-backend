@@ -65,7 +65,7 @@ def test_the_keeper_is_deterministic_when_capacity_ties():
 def test_a_drain_fork_is_reported_and_NOT_written():
     """The legacy twin already consolidates through the drain's own
     merged_facility_id stamp (facility_profile_page._drained_twin_url +
-    main._drained_keeper). Writing a second pointer here would create a rival
+    main._drained_twin_slugs). Writing a second pointer here would create a rival
     answer that can disagree with it."""
     p = plan_group([_df(1, "a-11111111", merged="legacy-id"),
                     _lg("legacy-id", "a-22222222")])

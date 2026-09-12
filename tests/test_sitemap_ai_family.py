@@ -163,19 +163,54 @@ def test_a_snapshot_miss_is_503_not_404():
 
 # ── 3. The superset guard ───────────────────────────────────────────────────
 
-def test_the_rebuild_refuses_an_ungated_set_smaller_than_the_gated_one():
-    """The ungated set is the gated query minus one AND clause, so it is a
-    strict superset by construction. Smaller means the build is broken, and
-    publishing it would RETIRE URLs from the AI crawlers rather than add any —
-    the same 'shrinking looks like success' failure the thin-gate floor
-    guards."""
+def test_the_rebuild_refuses_an_ungated_set_that_is_not_a_superset():
+    """★★★ TIGHTENED 2026-09-12 (r-superset-set). This asserted
+    `len(ai_fac) < len(fac)`, and A COUNT CANNOT SEE A SET DIFFERENCE:
+    18,741 >= 6,897 passed happily on 2026-09-12 while 66 URLs in the GATED
+    shard were absent from the ungated set entirely. The subset property is
+    what the guard claims; it must assert the property, not a proxy for it.
+
+    The behaviour is exercised by
+    tests/test_sitemap_publishes_only_served_selfcanonical_urls.py, which runs
+    the shipped builder both ways and compares the two sets. This file keeps
+    the source-level pins that survive a stub the builder cannot reach."""
     body = _fn("_rebuild_sitemap_snapshot")
-    assert "len(ai_fac) < len(fac)" in body, (
-        "no superset check — a broken ungated build would publish a SHORTER "
-        "AI sitemap and read as a successful rebuild")
+    assert "len(ai_fac) < len(fac)" not in body, (
+        "the superset check is back to comparing LENGTHS — that is the check "
+        "that passed while 66 gated URLs were missing from the ungated set")
+    assert "_gated_locs - _ai_locs" in body, (
+        "no set-difference superset check — a broken ungated build could drop "
+        "gated URLs and still read as a successful rebuild")
+    assert "_missing_locs" in body and "Missing: %s" in body, (
+        "the refusal must NAME the missing members; 'the superset shrank' sent "
+        "the last reader to a count instead of to the rows")
     assert "ai_shard_keys = []" in body, (
         "the refusal path must leave the AI shards unpublished for this "
         "generation, not fall through and emit the short list")
+
+
+def test_the_loc_extractor_reads_locs_and_not_whole_entries():
+    """A FLOOR on the guard above. Comparing the RENDERED <url> strings would
+    also 'compare sets' and would be worthless: the gated and ungated entries
+    for one facility are byte-identical only while their lastmods agree, so a
+    whole-entry set difference reports noise. The guard must key on <loc>."""
+    ns = {}
+    src = _full()
+    m = re.search(r"^_SITEMAP_LOC_RE = .*$", src, re.M)
+    assert m, "the <loc> pattern is gone"
+    exec("import re", ns)
+    exec(m.group(0), ns)
+    exec(_fn("_sitemap_entry_locs", src), ns)
+    entry = ('  <url><loc>https://dchub.cloud/facilities/x-11111111</loc>'
+             '<lastmod>2026-09-12</lastmod><changefreq>monthly</changefreq>'
+             '<priority>0.5</priority></url>')
+    other = entry.replace("2026-09-12", "2026-01-01")
+    assert ns["_sitemap_entry_locs"]([entry]) == {
+        "https://dchub.cloud/facilities/x-11111111"}
+    assert ns["_sitemap_entry_locs"]([entry]) == ns["_sitemap_entry_locs"]([other]), (
+        "two entries for the SAME URL with different lastmods must compare "
+        "equal, or the superset guard fires on a date and names no real defect")
+    assert ns["_sitemap_entry_locs"]([]) == set()
 
 
 def test_an_ai_build_failure_does_not_take_the_gated_sitemap_down():
