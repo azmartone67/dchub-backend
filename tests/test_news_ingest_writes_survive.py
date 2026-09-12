@@ -516,7 +516,7 @@ def test_the_real_wrapper_reports_the_inserts_rowcount_not_its_own_probe(engine)
 
     conn = RowStoreConn(columns={"publisher_url"})
     cur = db_utils.PGCursorWrapper(conn.cursor())
-    plain = ("INSERT INTO news_articles (id) VALUES (%s) "
+    plain = ("INSERT INTO news_articles (id) VALUES (%s) ON CONFLICT DO NOTHING "
              "ON CONFLICT (id) DO NOTHING")
 
     cur.execute(plain, ("a1",))
@@ -534,7 +534,7 @@ def test_the_real_wrapper_reports_the_inserts_rowcount_not_its_own_probe(engine)
     assert conn.committed == ["a1"]
 
     before = conn.lastval_probes
-    cur.execute("INSERT INTO news_articles (id) VALUES (%s),(%s),(%s) "
+    cur.execute("INSERT INTO news_articles (id) VALUES (%s) ON CONFLICT DO NOTHING,(%s),(%s) "
                 "ON CONFLICT (id) DO NOTHING", ("b1", "b2", "b3"))
     assert conn.lastval_probes == before + 1, (
         "no probe ran, so this case cannot show a probe clobbering rowcount")
@@ -551,10 +551,10 @@ def test_the_fixture_can_still_show_the_false_count(engine):
     the probe, then read the RAW cursor's rowcount — as db_utils used to."""
     conn = RowStoreConn(columns={"publisher_url"})
     raw = conn.cursor()
-    raw.execute("INSERT INTO news_articles (id) VALUES (%s) "
+    raw.execute("INSERT INTO news_articles (id) VALUES (%s) ON CONFLICT DO NOTHING "
                 "ON CONFLICT (id) DO NOTHING", ("a1",))
     conn.commit()
-    raw.execute("INSERT INTO news_articles (id) VALUES (%s) "
+    raw.execute("INSERT INTO news_articles (id) VALUES (%s) ON CONFLICT DO NOTHING "
                 "ON CONFLICT (id) DO NOTHING", ("a1",))
     assert raw.rowcount == 0, "the conflicting insert itself must report 0"
     raw.execute("SELECT lastval()")
@@ -585,13 +585,13 @@ def test_the_lastval_probe_cannot_abort_the_callers_transaction(engine):
 
     conn = RowStoreConn(columns={"publisher_url"}, lastval_defined=False)
     cur = db_utils.PGCursorWrapper(conn.cursor())
-    cur.execute("INSERT INTO news_articles (id) VALUES (%s) "
+    cur.execute("INSERT INTO news_articles (id) VALUES (%s) ON CONFLICT DO NOTHING "
                 "ON CONFLICT (id) DO NOTHING", ("a1",))
     assert conn.lastval_probes == 1, "the probe must have been attempted"
     assert not conn.aborted, (
         "a failed lastval() left the transaction aborted — it needs a SAVEPOINT")
     assert cur.lastrowid is None
-    cur.execute("INSERT INTO news_articles (id) VALUES (%s) "
+    cur.execute("INSERT INTO news_articles (id) VALUES (%s) ON CONFLICT DO NOTHING "
                 "ON CONFLICT (id) DO NOTHING", ("a2",))
     conn.commit()
     assert conn.committed == ["a1", "a2"]
@@ -717,7 +717,7 @@ def test_real_postgres_cold_session_keeps_the_row(pg_table):
     probe, stored = pg_table
     conn, cur = probe()
 
-    cur.execute("INSERT INTO wrapper_probe (id) VALUES (%s) "
+    cur.execute("INSERT INTO wrapper_probe (id) VALUES (%s) ON CONFLICT DO NOTHING "
                 "ON CONFLICT (id) DO NOTHING", ("cold",))
     conn.commit()
 

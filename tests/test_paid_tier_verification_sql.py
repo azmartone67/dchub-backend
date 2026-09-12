@@ -157,7 +157,7 @@ def db():
                          metadata JSONB DEFAULT '{}'::jsonb,
                          created_at TIMESTAMPTZ DEFAULT NOW())""")
         cur.executemany(
-            "INSERT INTO users (email, plan, subscription_status) VALUES (%s,%s,%s)",
+            "INSERT INTO users (email, plan, subscription_status) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
             USERS)
         for name, (email, tier, verified) in KEYS.items():
             meta = ({} if verified is None

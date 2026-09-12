@@ -103,7 +103,7 @@ def oauth_store_put():
                 """
                 INSERT INTO oauth_store (kind, store_key, data, expires_at)
                 VALUES (%s, %s, %s::jsonb,
-                        CASE WHEN %s > 0 THEN now() + (%s || ' seconds')::interval ELSE NULL END)
+                        CASE WHEN %s > 0 THEN now() ON CONFLICT DO NOTHING + (%s || ' seconds')::interval ELSE NULL END)
                 ON CONFLICT (kind, store_key) DO UPDATE
                     SET data = EXCLUDED.data, expires_at = EXCLUDED.expires_at
                 """,
