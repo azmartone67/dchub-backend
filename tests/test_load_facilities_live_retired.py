@@ -179,7 +179,8 @@ def test_no_registry_or_route_still_loads_the_module():
              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
              and n.func.id == "phase12g_loader_async" and n.args
              and isinstance(n.args[0], ast.Constant)]
-    assert len(sites) >= 3, "phase12g_loader_async extraction found %d call sites" % len(sites)
+    # 2 since 2026-09-13: this route and /api/admin/load-power-plants-live both answer 410.
+    assert len(sites) >= 2, "phase12g_loader_async extraction found %d call sites" % len(sites)
     assert MODULE not in sites, "a phase12g route still runs %s" % MODULE
 
     registry = [ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)

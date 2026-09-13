@@ -10,7 +10,6 @@ reads:
                   in the EIA-930 ISO URL lists, through the real
                   routes/_iso_common.fetch_first_working
                   api_auto_discovery.APIAutoDiscovery.discover_eia_catalog
-                  eia_generator_reseed.fetch_eia_page
                   routes/grid_data_master_shell._eia_henry_hub, through the
                   real _http_json
                   eia_api.make_eia_request
@@ -213,20 +212,6 @@ def test_eia_catalog_discovery_sends_the_key_in_x_api_key(monkeypatch):
         assert urlsplit(req.url).netloc == "api.eia.gov", req.url
         _assert_keyless(req.url)
         assert _sent_headers(req).get("x-api-key") == KEY, req.url
-
-
-def test_the_generator_reseed_sends_the_key_in_x_api_key(monkeypatch):
-    mod = _real("eia_generator_reseed")
-    monkeypatch.setattr(mod, "EIA_API_KEY", KEY)
-    sent = _record_urlopen(monkeypatch, json.dumps(
-        {"response": {"total": 1, "data": [{"plantid": "1"}]}}).encode(), owner=mod)
-    rows, total = mod.fetch_eia_page(offset=5000)
-    assert rows == [{"plantid": "1"}] and total == 1
-    assert len(sent) == 1
-    url = _sent_url(sent[0])
-    assert url.startswith(mod.EIA_BASE) and "offset=5000" in url, url
-    _assert_keyless(url)
-    assert _sent_headers(sent[0]).get("x-api-key") == KEY
 
 
 def test_the_henry_hub_adapter_sends_the_key_in_x_api_key(monkeypatch):

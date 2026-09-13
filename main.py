@@ -36018,7 +36018,6 @@ _STANDALONE_LOADERS = {
     'hifld_substation_loader': {'entry': 'main',            'needs': 'none'},
     'pipeline_sync':           {'entry': 'main',            'needs': 'none'},
     # (the facility ingestion loader was deleted 2026-09-13; it fetched and never wrote)
-    'eia_generator_reseed':    {'entry': 'main',            'needs': 'none'},
     'eia_gas_bulk_loader':     {'entry': 'main',            'needs': 'none'},
     'subsea_cable_ingestion':  {'entry': 'run_subsea_sync', 'needs': 'get_db'},
     'energy_auto_discovery':   {'entry': 'run_full_sync',   'needs': 'conn'},
@@ -36125,7 +36124,6 @@ def phase12c_admin_load_all():
         'pipeline_sync',
         # (the facility ingestion loader was deleted 2026-09-13; it fetched and never wrote)
         'subsea_cable_ingestion',
-        'eia_generator_reseed',
     ]
     for mod in loaders:
         out['loaders'][mod] = _run_standalone_loader(mod)
@@ -36251,8 +36249,10 @@ def phase12g_load_substations_live():
 def phase12g_load_power_plants_live():
     if not _phase12g_check_auth():
         return jsonify({'error': 'forbidden'}), 403
-    return jsonify(phase12g_loader_async(
-        'eia_generator_reseed', ['main','reseed','run'], 'power_plants'))
+    return jsonify({'success': False, 'retired': True, 'retired_at': '2026-09-13', 'error': 'route_retired',
+                    'reason': ('The loader behind this route inserted into columns eia_generators does not have '
+                               '(name, fuel_type, capacity_mw), so no run wrote a row. No route serves that table.'),
+                    'instead': '/api/v1/energy/power-plants/nearby?lat=<lat>&lng=<lng>&radius=<miles>'}), 410
 
 
 @app.route('/api/admin/load-pipelines-live', methods=['POST'])
