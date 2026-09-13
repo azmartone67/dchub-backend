@@ -448,7 +448,7 @@ def seed_database():
             c.execute("""
                 INSERT INTO deals 
                 (id, date, year, buyer, seller, value, mw, type, region, market, status, notes, created_at, verified)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1) ON CONFLICT DO NOTHING
             """, (
                 deal_id,
                 date,
