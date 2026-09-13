@@ -629,9 +629,9 @@ def job_site_baseline():
 
 @jobs_bp.route('/api/jobs/eia-retirements', methods=['POST'])
 def job_eia_retirements():
-    """Cron (monthly) + manual backfill: EIA-860M planned-retirement ingest —
-    the data layer behind /api/v1/retirement-headroom (Gemini co-design r3).
-    Async: pages ~28k generator rows from the EIA API (~1-3 min)."""
+    """Manual backfill — FORCES the EIA-860M planned-retirement refresh behind
+    /api/v1/retirement-headroom; crawler_scheduler's daily slot refreshes when
+    due. Async: pages ~28k generator rows from the EIA API (~1-3 min)."""
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err

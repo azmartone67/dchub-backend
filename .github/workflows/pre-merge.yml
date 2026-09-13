@@ -625,6 +625,29 @@ jobs:
             echo "::error::the had_pack SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── The EIA-860M retirement refresh, against the same Postgres ───────
+      # Unit tests pin the gate and the fetch guards with no database. Only a
+      # real Postgres shows the refresh landing as ONE transaction: a withdrawn
+      # retirement deleted, every refreshed row restamped so the served-table
+      # measurement reads fresh, and a refused or failed refresh leaving the
+      # table exactly as it was. Owns and recreates only generator_retirements
+      # and substations.
+      - name: Retirement refresh SQL against a real Postgres
+        env:
+          EIA_RETIREMENTS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_eia_retirements_refresh_sql.py -v --tb=short
+
+      - name: Prove the retirement refresh SQL test actually RAN
+        env:
+          EIA_RETIREMENTS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_eia_retirements_refresh_sql.py \
+            -q -rs --tb=no > er.txt 2>&1 || { cat er.txt; exit 1; }
+          cat er.txt
+          if grep -qi "skipped" er.txt; then
+            echo "::error::the retirement refresh SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Paid legacy top-ups never expire: the redeem path, for real ──────
       # tests/test_topup_paid_credits_never_expire.py pins the UPDATE's text
       # against a fake cursor. Only a real Postgres shows a paid tu- row

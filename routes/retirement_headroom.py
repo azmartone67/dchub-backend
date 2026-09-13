@@ -13,8 +13,8 @@ the LIVE analyze_site arg names (lat/lon/capacity_mw — handoff parity beats
 symmetry with the co-design sketch; capacity_mw = the CALLER's target_mw,
 the DC being sited, not the retiring plant's MW).
 
-Data layer: generator_retirements (eia_retirements.py ingest, monthly via
-POST /api/jobs/eia-retirements + manual backfill). Reads the replica.
+Data layer: generator_retirements (eia_retirements.py; a daily crawler_scheduler
+slot refreshes it, POST /api/jobs/eia-retirements forces one). Reads the replica.
 """
 
 from __future__ import annotations
