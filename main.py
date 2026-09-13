@@ -10044,13 +10044,6 @@ except Exception as e:
     logger.error(f"⚠️ Infrastructure API failed: {e}")
 
 try:
-    from cors_proxy_routes import register_cors_proxy
-    logger.info("  ✅ cors_proxy_routes")
-except ImportError as e:
-    register_cors_proxy = None
-    logger.warning(f"  ⚠️ cors_proxy_routes: {e}")
-
-try:
     from api_auto_discovery import register_api_discovery_routes
     register_api_discovery_routes(app, start_scheduler=ENABLE_DISCOVERY_SCHEDULERS)
     logger.info("✅ API Auto-Discovery registered" + (" (scheduler active)" if ENABLE_DISCOVERY_SCHEDULERS else " (manual POST only)"))
@@ -28571,14 +28564,6 @@ try:
     logger.info("✅ SEO Meta Tags registered")
 except Exception as e:
     logger.warning(f"⚠️ SEO Meta Tags not loaded: {e}")
-
-# Register CORS Proxy routes
-try:
-    if register_cors_proxy:
-        register_cors_proxy(app)
-        logger.info("✅ CORS Proxy registered")
-except Exception as e:
-    logger.error(f"⚠️ CORS Proxy registration failed: {e}")
 
 # =============================================================================
 # CONSOLIDATED LAND & POWER DATA ENDPOINT (reduces 20+ frontend calls to 1)
