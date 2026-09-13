@@ -75,6 +75,7 @@ _TOOL_REST = {
     # registers a standing requirement instead, at POST /api/v1/listings/interest.
     "source_capacity":        ("/api/v1/listings", "GET"),
     "request_capacity_intro": ("/api/v1/listings/<slug>/intro", "POST"),
+    "accept_capacity_terms":  ("/api/v1/listings/terms/accept", "POST"),
     # ★ 2026-09-03 — /api/v1/facilities/export has never been registered
     #   (no route definition anywhere in the repo) and answered 404 live.
     #   This map is what agents follow to find a tool's REST equivalent,

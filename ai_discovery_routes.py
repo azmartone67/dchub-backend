@@ -997,6 +997,7 @@ contact is never shared: DC Hub makes the introduction, and every registered lea
 verification record in DC Hub's hash-chained lead register.
 - source_capacity -> listing cards + program status; pass slug for one listing (full detail for an identified caller). REST: GET /api/v1/listings, GET /api/v1/listings/{slug}
 - request_capacity_intro -> registers an introduction request (pass slug) or a standing requirement for first access (omit slug). Needs an identified caller and accept_terms=true once your human has agreed to the terms at GET /api/v1/listings/terms. REST: POST /api/v1/listings/{slug}/intro, POST /api/v1/listings/interest
+- accept_capacity_terms -> records your human's acceptance of the introduction terms, once per terms version, so listing details open; call it only after they agree. REST: POST /api/v1/listings/terms/accept
 - Verify a registered lead (public, no key): GET /api/v1/listings/leads/{lead_id}/verify
 - Browse: https://dchub.cloud/listings
 
