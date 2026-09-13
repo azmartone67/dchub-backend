@@ -21,7 +21,7 @@ Query the GitHub API for the tree of azmartone67/dchub-backend main branch to co
 
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — yes: the detector read a path #3871 deleted on 2026-09-04, and filed this finding with the wrong advice on every scan for eight days
+- [x] Scope it to a concrete change (file(s) + approach) — routes/brain_consistency_radar.py: read _worker.js from azmartone67/dchub-frontend, the repo that deploys it, and say why a 404 happened instead of guessing
+- [x] Implement + verify — implemented in #4522; verified live 2026-09-13 on both backend replicas: check_worker_version_drift completed without error inside the scan budget and filed no worker_* finding
+- [x] ~~Or discard this PR if superseded / not worth it~~ — not applicable: implemented in #4522, not discarded
