@@ -1053,10 +1053,23 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     w = weights or DEFAULT_SCORING_WEIGHTS
     score = 0
     breakdown = {}
-    
+
+    def _miles(distance):
+        # A served distance as a float, or 999 (the farthest tier) when there is none.
+        # ★ 2026-09-13 — the three distance tiers used to default a falsy distance to
+        # 999 before converting it. 0.0 is falsy, so a site 0.0 mi away scored in the
+        # farthest tier while 0.04 mi scored "excellent". Transmission and gas
+        # distances are rounded to 0.1 before they are served, so any line or pipeline
+        # within 0.05 mi of the site hit it. None and anything float() cannot read
+        # still count as missing; a label such as 'N/A (live query)' used to raise.
+        try:
+            return float(distance)
+        except (TypeError, ValueError):
+            return 999.0
+
     # 1. Substation proximity
     if substations:
-        nearest_dist = float(substations[0].get('distance_miles') or 999)
+        nearest_dist = _miles(substations[0].get('distance_miles'))
         for tier_name, tier in w['substation_proximity']['thresholds'].items():
             if nearest_dist <= tier['max_miles']:
                 points = tier['points']
@@ -1088,7 +1101,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 4. Transmission proximity
     if transmission:
-        tx_dist = float(transmission.get('distance_miles') or 999)
+        tx_dist = _miles(transmission.get('distance_miles'))
         for tier_name, tier in w['transmission_proximity']['thresholds'].items():
             if tx_dist <= tier['max_miles']:
                 points = tier['points']
@@ -1118,7 +1131,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 7. Gas access
     if gas:
-        gas_dist = float((gas.get('nearest_pipeline', {}) or {}).get('distance_miles') or 999)
+        gas_dist = _miles((gas.get('nearest_pipeline', {}) or {}).get('distance_miles'))
         for tier_name, tier in w['gas_access']['thresholds'].items():
             if gas_dist <= tier['max_miles']:
                 points = tier['points']
