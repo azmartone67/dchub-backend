@@ -368,38 +368,50 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
         # Step 2: Find transmission line connected to that substation
         # Match the first word of the substation name against the line endpoints.
         #
-        # r-txprefix (2026-08-25): this was `LOWER(sub_1) LIKE LOWER('%term%')`.
-        # A LEADING wildcard can never become an index qual, so the planner walked
-        # idx_transmission_voltage across the whole table. Measured EXPLAIN on the
-        # prod row set: "Rows Removed by Filter: 2821162", 208K buffers, 2.29s
-        # warm — and up to 18s under load, sometimes dying on statement_timeout.
-        # A MISS pays the full scan, and a miss is the COMMON case: most rows in
-        # `substations` carry import placeholders (OSM-917634654, RISER167166)
-        # that match no line endpoint. That unbounded miss — not any cold cache —
-        # was the site-report latency tail.
+        # ★ 2026-09-13 — this lookup reads the MAINTAINED table. It used to read
+        # discovered_transmission_lines, a March 2026 crawl with no writer in the
+        # repo and TEXT timestamps (it could not date its own freeze), whose
+        # 2,821,162 rows repeat one line hundreds of times — its top 1,000 rows by
+        # voltage were 2 distinct lines. transmission_lines is the EIA set that
+        # routes/transmission_ingest.py refreshes weekly, one row per line
+        # (~94.6K). Columns: sub_1/sub_2 -> from_sub/to_sub, owner -> operator.
         #
-        # Anchoring the pattern lets Postgres rewrite it into a real index range.
-        # Verified plan: BitmapOr over idx_transmission_sub1/idx_transmission_sub2
-        # with "Index Cond: sub_1 >= 'ASHBURN' AND sub_1 < 'ASHBURO'". 2.29s ->
-        # 26ms; mean over 40 real substation names 1.362s -> 0.056s. Two measured
-        # properties make dropping LOWER() on the column side exact: the DB is
-        # C.UTF-8 (byte order) and sub_1/sub_2 are 100% uppercase (2821162 of
-        # 2821162). Do NOT add COLLATE "C" to 'harden' it — an explicit collation
-        # is a different collation object and DEFEATS the index (see be#3086).
+        # This is not the spatial repoint util/transmission_tables.py rules out:
+        # nothing here reads a coordinate. It matches endpoint NAMES, which the
+        # maintained table carries; distance_miles is the substation's, as before.
+        #
+        # volt_class is served as None. The maintained table does not store
+        # HIFLD's VOLT_CLASS, and it cannot be derived from voltage_kv: in the EIA
+        # source the classes overlap ("100-161" holds lines up to 218 kV, "UNDER
+        # 100" up to 161 kV, and DC lines sit in three different classes).
+        #
+        # r-txprefix (2026-08-25, measured on the crawl): the pattern was
+        # `LOWER(sub_1) LIKE LOWER('%term%')`. A LEADING wildcard can never become
+        # an index qual, so the planner walked the whole table — "Rows Removed by
+        # Filter: 2821162", 2.29s warm, up to 18s under load. A MISS pays the full
+        # scan, and a miss is the COMMON case: most `substations` names are import
+        # placeholders (OSM-917634654, RISER167166) that match no endpoint.
+        # Anchoring made it an index range there (2.29s -> 26ms). Keep it anchored:
+        # the repo DDL indexes only transmission_lines.hifld_id, and the anchored
+        # form is what lets an index on from_sub/to_sub serve this lookup at all.
+        # Dropping LOWER() on the column side stays exact: the DB is C.UTF-8 (byte
+        # order), and 0 of the EIA source's 94,619 lines carry a SUB_1 or SUB_2
+        # that differs from its UPPER() (measured 2026-09-13; the ingest only
+        # trims them). Do NOT add COLLATE "C" to 'harden' it — an explicit
+        # collation is a different collation object and DEFEATS a plain index
+        # (see be#3086).
         #
         # ! SEMANTIC NARROWING, substring -> prefix. A line whose endpoint merely
-        # CONTAINS the term no longer matches. What that drops is coincidental
-        # nationwide hits that were never "the line connected to this substation"
-        # ("West" -> LENZIE, "Lake" -> TAP206230, "Rogers" -> PINNACLE PEAK WALC,
-        # "Pleasant" -> the placeholder UNKNOWN116991). On no match every caller
-        # already falls back to the substation's own voltage/operator. Measured
-        # over 40 real names: 17 identical, 23 changed — table in the PR.
+        # CONTAINS the term does not match; on no match every caller already
+        # falls back to the substation's own voltage/operator. A first word is
+        # still a broad key — WEST% matches 797 EIA lines, NORTH% 917 — so the
+        # highest-voltage hit can belong to a different substation.
         search_term = sub_name.split(' ')[0] if sub_name else ''
         if search_term and len(search_term) > 2:
             tx_query = """
-                SELECT sub_1 as line_name, voltage_kv, owner, status, volt_class
-                FROM discovered_transmission_lines
-                WHERE (sub_1 LIKE %s OR sub_2 LIKE %s)
+                SELECT from_sub AS line_name, voltage_kv, operator AS owner, status
+                FROM transmission_lines
+                WHERE (from_sub LIKE %s OR to_sub LIKE %s)
                   AND voltage_kv IS NOT NULL
                 ORDER BY voltage_kv DESC
                 LIMIT 1;
@@ -409,6 +421,7 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
             
             if tx_result and len(tx_result) > 0:
                 tx = tx_result[0]
+                tx['volt_class'] = None  # not stored by the maintained table; see above
                 tx['distance_miles'] = round(sub_distance, 1)
                 tx['matched_substation'] = sub_name
                 return tx

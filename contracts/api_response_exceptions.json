@@ -93,6 +93,15 @@
       ],
       "reason": "Removed 2026-09-11 (seo_agent.py) with POST /api/seo/indexnow/ping-all: the same ungated IndexNow submit, bundled with two reads. No requests in the 7 days before removal (Railway), and no file in the three repos names the path. Both reads are still served on their own, at GET /api/seo/content-ideas and GET /api/seo/ai-citations.",
       "added": "2026-09-11"
+    },
+    {
+      "endpoint": "GET /api/energy-discovery/export/summary",
+      "keys": [
+        "data.transmission_lines",
+        "endpoints.transmission"
+      ],
+      "reason": "Transmission left the KMZ export on 2026-09-13 (energy_kmz_export.py, TRANSMISSION_RETIRED). data.transmission_lines published COUNT(*) of discovered_transmission_lines, a March 2026 crawl with no writer whose 2,821,162 rows repeat one line hundreds of times, so it was never a line count; endpoints.transmission advertised type=transmission-lines, which now answers 410 because the export has no line geometry to place. The summary states the exclusion in not_exported.transmission_lines instead. No reader: Railway logged no request to this route in the 7 days before removal except the probes behind this change, and neither dchub-frontend (whose Export KMZ button calls type=all only) nor dchub-mcp-server names the path.",
+      "added": "2026-09-13"
     }
   ]
 }

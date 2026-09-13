@@ -561,133 +561,34 @@ def get_substations():
         }), 500
 
 
+# ── RETIRED 2026-09-13 ──────────────────────────────────────────────────────
+# This route read discovered_transmission_lines: a March 2026 crawl with no writer
+# anywhere in the repo and TEXT timestamps, served as 'HIFLD/DHS (Neon
+# PostgreSQL)' beside a hardcoded total_available of '2,821,162 in Neon'. That was
+# never a line count — one line recurs hundreds of times (the top 1,000 rows by
+# voltage were 2 distinct lines, one of them 504 times; measured 2026-09-13). A
+# lat/lng request was snapped to the nearest of 20 hardcoded market centres, never
+# to a line, and ?state= filtered nothing. No caller in dchub-frontend or the MCP
+# server; Railway logged one request in the seven days to 2026-09-13.
+#
+# It cannot be rebuilt on the maintained transmission_lines (EIA, refreshed
+# weekly): that table stores no geometry. The question it answered — which lines
+# are near this point — is already served from maintained data by
+# /api/v1/grid/transmission-proximity, which places each line at its from_sub
+# substation.
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/transmission', methods=['GET'])
 def get_hifld_transmission():
-    """Query transmission lines from Neon PostgreSQL. Uses market mapping for fast queries."""
-    lat = request.args.get('lat', type=float)
-    lng = request.args.get('lng', type=float)
-    radius = request.args.get('radius', 30, type=float)
-    min_voltage = request.args.get('min_voltage', 69, type=int)
-    min_kv = request.args.get('min_kv', min_voltage, type=int)
-    state = request.args.get('state')
-    market = request.args.get('market')
-    limit = min(request.args.get('limit', 200, type=int), 1000)
-
-    # Market centers for lat/lng → market mapping
-    MARKET_CENTERS = {
-        'northern_virginia': (39.04, -77.49), 'atlanta': (33.75, -84.39),
-        'dallas': (32.78, -96.80), 'chicago': (41.88, -87.63),
-        'phoenix': (33.45, -112.07), 'las_vegas': (36.17, -115.14),
-        'houston': (29.76, -95.37), 'denver': (39.74, -104.99),
-        'silicon_valley': (37.39, -122.08), 'seattle_quincy': (47.23, -119.85),
-        'portland_hillsboro': (45.52, -122.99), 'salt_lake': (40.76, -111.89),
-        'new_york_nj': (40.77, -74.17), 'columbus': (40.00, -82.88),
-        'san_antonio': (29.42, -98.49), 'kansas_city': (39.10, -94.58),
-        'miami': (25.76, -80.19), 'nashville': (36.16, -86.78),
-        'minneapolis': (44.98, -93.27), 'des_moines': (41.59, -93.62),
-    }
-
-    def find_nearest_market(lat, lng, radius_miles=100):
-        import math
-        best_market, best_dist = None, float('inf')
-        for mkt, (mlat, mlng) in MARKET_CENTERS.items():
-            dist = math.sqrt((lat - mlat)**2 + (lng - mlng)**2) * 69
-            if dist < best_dist:
-                best_market, best_dist = mkt, dist
-        return best_market if best_dist <= radius_miles else None
-
-    try:
-        from db_utils import get_db
-        conn = get_db()
-        c = conn.cursor()
-
-        conditions = []
-        params = []
-
-        if min_kv:
-            conditions.append('t.voltage_kv >= %s')
-            params.append(min_kv)
-        if state:
-            conditions.append('t.market IN (SELECT DISTINCT market FROM discovered_transmission_lines WHERE market IS NOT NULL)')
-        if market:
-            conditions.append('t.market ILIKE %s')
-            params.append(f'%{market}%')
-
-        if lat and lng and not market:
-            # Map lat/lng to nearest market for fast indexed query
-            nearest_market = find_nearest_market(lat, lng, radius * 1.5)
-            if nearest_market:
-                conditions.append('t.market = %s')
-                params.append(nearest_market)
-        where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-        if conditions:
-            query = f"""
-                SELECT t.id, t.owner, t.voltage_kv, t.volt_class, t.sub_1, t.sub_2, t.status, t.market,
-                       NULL as distance_miles
-                FROM discovered_transmission_lines t
-                {where}
-                ORDER BY t.voltage_kv DESC NULLS LAST
-                LIMIT %s
-            """
-            params_full = params + [limit]
-        else:
-            # No location - filter by market or state
-            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-            query = f"""
-                SELECT t.id, t.owner, t.voltage_kv, t.volt_class, t.sub_1, t.sub_2, t.status, t.market,
-                       NULL as sub1_lat, NULL as sub1_lng, t.sub_1 as sub1_name,
-                       NULL as sub2_lat, NULL as sub2_lng, t.sub_2 as sub2_name,
-                       NULL as distance_miles
-                FROM discovered_transmission_lines t
-                {where}
-                ORDER BY t.voltage_kv DESC NULLS LAST
-                LIMIT %s
-            """
-            params_full = params + [limit]
-
-        c.execute(query, params_full)
-        cols = [desc[0] for desc in c.description]
-        rows = c.fetchall()
-
-        lines = []
-        for row in rows:
-            r = dict(zip(cols, row))
-            line = {
-                'id': r.get('id'),
-                'voltage_kv': r.get('voltage_kv'),
-                'volt_class': r.get('volt_class'),
-                'owner': r.get('owner'),
-                'status': r.get('status'),
-                'market': r.get('market'),
-                'sub_1': r.get('sub1_name') or r.get('sub_1'),
-                'sub_2': r.get('sub2_name') or r.get('sub_2'),
-                'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
-                'source': 'HIFLD/Neon'
-            }
-            # Include substation coordinates for rendering
-            if r.get('sub1_lat') and r.get('sub2_lat'):
-                line['paths'] = [[[r['sub1_lng'], r['sub1_lat']], [r['sub2_lng'], r['sub2_lat']]]]
-            elif r.get('sub1_lat'):
-                line['lat'] = r['sub1_lat']
-                line['lng'] = r['sub1_lng']
-            lines.append(line)
-
-        return jsonify({
-            'success': True,
-            'count': len(lines),
-            'total_available': '2,821,162 in Neon',
-            'source': 'HIFLD/DHS (Neon PostgreSQL)',
-            'transmission_lines': lines
-        })
-    except Exception as e:
-        import traceback
-        print(f"HIFLD transmission Neon error: {traceback.format_exc()}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'count': 0,
-            'transmission_lines': []
-        }), 500
+    """RETIRED 2026-09-13: answers 410 before any DB work (see the note above)."""
+    return jsonify({
+        'success': False,
+        'retired': True,
+        'retired_at': '2026-09-13',
+        'error': 'route_retired',
+        'reason': ('This route served a March 2026 crawl of transmission lines that '
+                   'nothing refreshes, under a fixed row count that was never a line '
+                   'count.'),
+        'instead': '/api/v1/grid/transmission-proximity?lat=<lat>&lon=<lon>&radius_km=<km>&min_kv=<kv>',
+    }), 410
 
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/gas-pipelines', methods=['GET'])
@@ -1047,7 +948,7 @@ def register_expanded_infrastructure(app):
     print("   GET /api/v2/infrastructure/layers - List all 40+ layers")
     print("   GET /api/v2/infrastructure/<layer_id> - Query any layer")
     print("   GET /api/v2/infrastructure/hifld/substations - 70k+ substations")
-    print("   GET /api/v2/infrastructure/hifld/transmission - 300k+ transmission")
+    print("   GET /api/v2/infrastructure/hifld/transmission - RETIRED 2026-09-13 (410)")
     print("   GET /api/v2/infrastructure/hifld/gas-pipelines - 300k+ gas")
     print("   GET /api/v2/infrastructure/railroads - FRA rail network")
     print("   GET /api/v2/infrastructure/airports - 19k+ airports")

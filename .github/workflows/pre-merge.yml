@@ -648,6 +648,31 @@ jobs:
             echo "::error::the retirement refresh SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Transmission readers off the frozen March crawl, same Postgres ───
+      # The site planner's transmission lookup swallows SQL errors into None, so
+      # a wrong column in its repointed statement would silently drop the line
+      # from the composite score and the site report. The Energy Discovery
+      # export's type=all shipped a statement Postgres rejects on every request.
+      # Only a real Postgres shows the lookup matching endpoint names in
+      # transmission_lines and the export running. Owns and recreates only
+      # transmission_lines, substations, discovered_power_plants and
+      # discovered_pipelines.
+      - name: Transmission readers SQL against a real Postgres
+        env:
+          TRANSMISSION_READERS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_transmission_readers_sql.py -v --tb=short
+
+      - name: Prove the transmission readers SQL test actually RAN
+        env:
+          TRANSMISSION_READERS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_transmission_readers_sql.py \
+            -q -rs --tb=no > tx.txt 2>&1 || { cat tx.txt; exit 1; }
+          cat tx.txt
+          if grep -qi "skipped" tx.txt; then
+            echo "::error::the transmission readers SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Paid legacy top-ups never expire: the redeem path, for real ──────
       # tests/test_topup_paid_credits_never_expire.py pins the UPDATE's text
       # against a fake cursor. Only a real Postgres shows a paid tu- row
