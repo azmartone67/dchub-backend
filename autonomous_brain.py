@@ -1172,11 +1172,11 @@ class AutonomousBrain:
         except Exception as e:
             logger.debug(f"   (non-fatal) extraction_intelligence write failed: {e}")
 
-        # r47.39 (2026-05-26): inline heartbeat. The Phase 92 wrapper at
-        # line ~1289 wraps `run_brain_cycle` from globals(), but the
-        # actual cycle runs through this method on the class instance —
-        # the wrapper never sees it. Fire directly so the source-registry
-        # `backend-autonomous-brain` row stops showing "never ran".
+        # r47.39 (2026-05-26): inline heartbeat. Every cycle runs through
+        # this method on the class instance (job_bridges' run_brain_cycle
+        # included), so this is where a run is known to have happened.
+        # Fire directly so the source-registry `backend-autonomous-brain`
+        # row stops showing "never ran".
         try:
             from dchub_heartbeat import heartbeat as _hb
             rows = int(results.get("total_new_rows", 0) or 0)
@@ -1590,28 +1590,3 @@ def init_autonomous_brain():
     """Initialize and start the autonomous brain"""
     brain.start_scheduler(interval_seconds=300)
     return brain
-
-# === phase 92: source-registry heartbeat ===
-# Wraps run_brain_cycle to ping heartbeat after each cycle.
-_phase92_heartbeat_registered = True
-try:
-    from dchub_heartbeat import heartbeat as _phase92_heartbeat
-    if 'run_brain_cycle' in globals() and callable(globals()['run_brain_cycle']):
-        _orig_run_brain_cycle = globals()['run_brain_cycle']
-        import time as _phase92_time, functools as _phase92_functools
-        @_phase92_functools.wraps(_orig_run_brain_cycle)
-        def _phase92_wrapped(*a, **kw):
-            _started = _phase92_time.time()
-            try:
-                result = _orig_run_brain_cycle(*a, **kw)
-                _phase92_heartbeat("backend-autonomous-brain", status="success",
-                                  duration_ms=int((_phase92_time.time() - _started) * 1000))
-                return result
-            except Exception as _e:
-                _phase92_heartbeat("backend-autonomous-brain", status="failure",
-                                  duration_ms=int((_phase92_time.time() - _started) * 1000),
-                                  error=f"{type(_e).__name__}: {_e}")
-                raise
-        globals()['run_brain_cycle'] = _phase92_wrapped
-except Exception:
-    pass

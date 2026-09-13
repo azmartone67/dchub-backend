@@ -17,6 +17,12 @@ import math
 import urllib.request
 import psycopg2
 
+try:
+    from dchub_heartbeat import with_heartbeat
+except ImportError:  # heartbeat client unavailable: the load still runs, unreported
+    def with_heartbeat(*_args, **_kwargs):
+        return lambda fn: fn
+
 EIA_URL = "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0/query"
 
 # State lookup by lat/lng (approximate bounding boxes)
@@ -93,6 +99,9 @@ def fetch_batch(fid_start, fid_end, batch_size=1000):
             break
     return all_features
 
+# The source-registry heartbeat fires from this run (rows = pipelines inserted;
+# a failure if the load raises). Never from importing this module or exiting.
+@with_heartbeat("backend-eia-bulk-loader")
 def main():
     neon_url = os.environ.get('NEON_URL')
     if not neon_url:
@@ -213,23 +222,7 @@ def main():
     print(f"\n   Top states:")
     for state, count in top_states:
         print(f"     {state or '??'}: {count}")
+    return total_inserted
 
 if __name__ == '__main__':
     main()
-
-# === phase 92: source-registry heartbeat (auto-fires on clean module exit) ===
-# Non-invasive: never crashes the script if the registry is unreachable.
-# Source ID: backend-eia-bulk-loader
-_phase92_heartbeat_registered = True
-try:
-    import atexit as _phase92_atexit
-    from dchub_heartbeat import heartbeat as _phase92_heartbeat
-    def _phase92_emit():
-        try:
-            _phase92_heartbeat("backend-eia-bulk-loader", status="success",
-                              metadata={"trigger": "atexit"})
-        except Exception:
-            pass
-    _phase92_atexit.register(_phase92_emit)
-except Exception:
-    pass  # heartbeat module unavailable; extractor continues normally

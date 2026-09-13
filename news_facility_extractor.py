@@ -21,6 +21,12 @@ import traceback
 from datetime import datetime
 from utc_clock import utc_now
 
+try:
+    from dchub_heartbeat import with_heartbeat
+except ImportError:  # heartbeat client unavailable: the scan still runs, unreported
+    def with_heartbeat(*_args, **_kwargs):
+        return lambda fn: fn
+
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────
@@ -414,6 +420,9 @@ def insert_discovered_facility(conn, facility):
 # MAIN SCAN FUNCTION
 # ─────────────────────────────────────────────────────────
 
+# The source-registry heartbeat fires from this scan: rows = facilities inserted,
+# and a failure when no connection was obtained or no source could be read.
+@with_heartbeat("backend-news-facility-extractor", rows_key="facilities_inserted")
 def scan_news_sources(conn=None):
     """
     Scan all configured news sources for new facility announcements.
@@ -423,7 +432,10 @@ def scan_news_sources(conn=None):
         conn: PostgreSQL connection (if None, will attempt to get one from app context)
 
     Returns:
-        dict with scan results: articles_scanned, facilities_found, facilities_inserted
+        dict with scan results: articles_scanned, facilities_found,
+        facilities_inserted, sources_read, errors, and success — False when no
+        connection was obtained or no source answered, so a scan that could not
+        look is not reported as a scan that found nothing.
     """
     import requests
 
@@ -431,7 +443,9 @@ def scan_news_sources(conn=None):
         'articles_scanned': 0,
         'facilities_found': 0,
         'facilities_inserted': 0,
+        'sources_read': 0,
         'errors': [],
+        'success': False,
     }
 
     # Get DB connection if not provided
@@ -459,6 +473,7 @@ def scan_news_sources(conn=None):
             if resp.status_code != 200:
                 logger.warning(f"{source['name']} returned {resp.status_code}")
                 continue
+            results['sources_read'] += 1
 
             content = resp.text
 
@@ -490,6 +505,7 @@ def scan_news_sources(conn=None):
             logger.error(error_msg)
             results['errors'].append(error_msg)
 
+    results['success'] = results['sources_read'] > 0
     logger.info(f"News scan complete: {results}")
     return results
 
@@ -519,20 +535,3 @@ if __name__ == '__main__':
                 print(f"  {k}: {v}")
     else:
         print("No facility detected (check patterns)")
-
-# === phase 92: source-registry heartbeat (auto-fires on clean module exit) ===
-# Non-invasive: never crashes the script if the registry is unreachable.
-# Source ID: backend-news-facility-extractor
-_phase92_heartbeat_registered = True
-try:
-    import atexit as _phase92_atexit
-    from dchub_heartbeat import heartbeat as _phase92_heartbeat
-    def _phase92_emit():
-        try:
-            _phase92_heartbeat("backend-news-facility-extractor", status="success",
-                              metadata={"trigger": "atexit"})
-        except Exception:
-            pass
-    _phase92_atexit.register(_phase92_emit)
-except Exception:
-    pass  # heartbeat module unavailable; extractor continues normally
