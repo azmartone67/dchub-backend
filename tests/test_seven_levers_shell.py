@@ -531,7 +531,11 @@ def test_repo_worker_is_canon_clean_and_current():
     # ⚠ PASTE OUTSTANDING. Verify with (want 4.9.67-capacity-source):
     #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.67-capacity-source'" in src
+    #
+    # 4.9.67 -> 4.9.68-capacity-terms (2026-09-13): dchub-mcp-server #411 adds
+    # accept_capacity_terms (90 -> 91); MCP_FALLBACK_TOOLS carries it, derived from
+    # #411's toolspec.json. ⚠ PASTE OUTSTANDING: paste after #411 deploys.
+    assert "WORKER_VERSION = '4.9.68-capacity-terms'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

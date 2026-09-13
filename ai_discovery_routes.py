@@ -992,11 +992,13 @@ DC Hub Capacity Source lists powered land, powered shells and turnkey capacity t
 including sites that are not publicly marketed. The program is UPCOMING while the first listings are
 onboarded, and GET /api/v1/listings says so in `program.status`; every listing carries `updated_at`.
 Listing cards (market, state, capacity) are open to anyone; opening a listing needs sign-in, a key
-with your human's email bound (claim_free_key, then bind_email), or an OAuth connection. Operator
+with your human's email bound (claim_free_key, then bind_email), or an OAuth connection, plus your
+human's acceptance of the introduction terms, once per terms version (accept_capacity_terms). Operator
 contact is never shared: DC Hub makes the introduction, and every registered lead has a public
 verification record in DC Hub's hash-chained lead register.
-- source_capacity -> listing cards + program status; pass slug for one listing (full detail for an identified caller). REST: GET /api/v1/listings, GET /api/v1/listings/{slug}
+- source_capacity -> listing cards + program status; pass slug for one listing (full detail for an identified caller whose human has accepted the introduction terms). REST: GET /api/v1/listings, GET /api/v1/listings/{slug}
 - request_capacity_intro -> registers an introduction request (pass slug) or a standing requirement for first access (omit slug). Needs an identified caller and accept_terms=true once your human has agreed to the terms at GET /api/v1/listings/terms. REST: POST /api/v1/listings/{slug}/intro, POST /api/v1/listings/interest
+- accept_capacity_terms -> records your human's acceptance of the introduction terms, once per terms version, so listing details open; call it only after they agree. REST: POST /api/v1/listings/terms/accept
 - Verify a registered lead (public, no key): GET /api/v1/listings/leads/{lead_id}/verify
 - Browse: https://dchub.cloud/listings
 
