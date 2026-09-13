@@ -211,13 +211,108 @@ def tracked_prs(issue: dict) -> list[int]:
     return out
 
 
+# ── has the finding behind a spec stopped firing? ────────────────────────
+#
+# ★ 2026-09-13. "Not seen lately" is not "stopped firing": brain_findings bumps
+#   last_seen on every write and resolves any row quiet for 24h whether or not
+#   its detector ran, and one live radar sweep left 54 of 143 detectors
+#   unfinished. The verdicts come from routes/brain_detector_ledger.py, which
+#   records which detectors completed each sweep and what they reported; this
+#   side only maps a spec to its finding and acts on quiet_proven.
+
+EVIDENCE_PATH = "/api/v1/brain/spec-debt/finding-evidence"
+EVIDENCE_ORIGIN = "https://dchub-backend-production.up.railway.app"
+EVIDENCE_UA = "dchub-spec-debt-reconcile/1.0"
+
+_SQUASHER_HEADING_RE = re.compile(r"^(.+?) \(observed at: (.+?)\)\. What is")
+_FINDING_HEADING_RE = re.compile(
+    r"Brain finding: (.+?)(?: @ (.+?))?(?: \((?:seen x\d+|value [\d,]+)\))?$")
+
+
+def doc_heading(doc: str, corpus_dir: str):
+    """The H1 of a landed spec — the untruncated heading its PR title cut."""
+    try:
+        with open(os.path.join(corpus_dir, os.path.basename(doc)), encoding="utf-8",
+                  errors="replace") as fh:
+            m = re.search(r"^# Brain proposal — (.+)$", fh.read(), re.M)
+    except OSError:
+        return None
+    return m.group(1).strip() if m else None
+
+
+def spec_target(heading):
+    """The brain_findings row a spec was filed for — {issue, url, url_prefix} —
+    or None when the spec did not come from one.
+
+    Squasher investigations quote the finding exactly: "<issue> (observed at:
+    <url>). What is…". Agenda and proposal titles quote it cut to 90
+    characters, so their url may be a prefix. QA-board, QA-intake and audit
+    specs never came from brain_findings at all."""
+    h = (heading or "").strip()
+    if not h or re.search(r"— observed from the \w+ seat", h) or re.match(r"(qa_[a-z]+|audit_[HM]) ", h):
+        return None
+    m = _SQUASHER_HEADING_RE.match(h)
+    if m:
+        return {"issue": m.group(1), "url": m.group(2), "url_prefix": False}
+    m = _FINDING_HEADING_RE.search(h)
+    if m:
+        return {"issue": m.group(1), "url": m.group(2) or "", "url_prefix": True}
+    return None
+
+
+def evidence_key(issue, url) -> str:
+    return f"{str(issue or '')[:200]}|{str(url or '')[:500]}"
+
+
+def quiet_verdicts(issues: list[dict], pr_docs: dict, corpus_dir: str, evidence: dict, *,
+                   extra_prs: dict | None = None) -> list[dict]:
+    """Per issue: firing | quiet_proven | quiet_unproven | unmeasured. Pure.
+
+    An issue is quiet_proven only if EVERY spec it tracks maps to a finding the
+    evidence endpoint judged quiet_proven. One firing spec makes it firing; one
+    spec with no measurable finding makes it unmeasured."""
+    rows = []
+    for iss in issues:
+        prs = tracked_prs(iss)
+        prs += [p for p in (extra_prs or {}).get(iss["number"], []) if p not in prs]
+        specs = []
+        for p in prs:
+            docs = pr_docs.get(p)
+            if not docs:
+                specs.append({"pr": p, "verdict": "unmeasured",
+                              "reason": "spec PR files unreadable" if docs is None
+                              else "spec PR landed no doc"})
+                continue
+            for d in docs:
+                target = spec_target(doc_heading(d, corpus_dir))
+                if target is None:
+                    specs.append({"pr": p, "doc": os.path.basename(d), "verdict": "unmeasured",
+                                  "reason": "not filed from a brain_findings row"})
+                    continue
+                ev = evidence.get(evidence_key(target["issue"], target["url"]))
+                specs.append({"pr": p, "doc": os.path.basename(d), "target": target,
+                              "verdict": (ev or {}).get("verdict") or "unmeasured",
+                              "reason": (ev or {}).get("reason") or "no evidence returned for it",
+                              "detector_fn": (ev or {}).get("detector_fn")})
+        seen = {s["verdict"] for s in specs}
+        verdict = ("unmeasured" if not specs else "firing" if "firing" in seen
+                   else "quiet_proven" if seen == {"quiet_proven"}
+                   else "unmeasured" if "unmeasured" in seen else "quiet_unproven")
+        rows.append({"number": iss["number"], "verdict": verdict, "specs": specs})
+    return rows
+
+
 def plan(issues: list[dict], pr_docs: dict, corpus_dir: str, *,
          repo: str = "azmartone67/dchub-backend",
-         max_closes: int = DEFAULT_MAX_CLOSES) -> dict:
+         max_closes: int = DEFAULT_MAX_CLOSES,
+         evidence: dict | None = None, close_on_quiet: bool = False) -> dict:
     """What to close and what to fold. Writes nothing.
 
-    issues   open spec-debt issues: number, title, body, comments[{body}]
-    pr_docs  {pr_number: [doc paths] | None}; None = the files could not be read
+    issues          open spec-debt issues: number, title, body, comments[{body}]
+    pr_docs         {pr_number: [doc paths] | None}; None = files could not be read
+    evidence        {evidence_key: {verdict, reason, detector_fn}} from the evidence
+                    endpoint, or None when it was not read (the quiet arm is skipped)
+    close_on_quiet  close quiet_proven issues; otherwise they are only reported
     """
     try:
         corpus_ok = any(f.endswith(".md") for f in os.listdir(corpus_dir))
@@ -283,8 +378,29 @@ def plan(issues: list[dict], pr_docs: dict, corpus_dir: str, *,
                             "comment": fold_duplicate_comment(k, canon["number"], d)}
                            for d in take],
         })
+    # The quiet arm runs over what survives the two arms above, and a surviving
+    # issue that is absorbing copies this run is judged on their specs as well.
+    quiet = {"read": evidence is not None, "armed": bool(close_on_quiet),
+             "classified": [], "closes": [], "would_close": []}
+    if evidence is not None:
+        folded_away = {d["number"] for f in folds for d in f["duplicates"]}
+        by_number = {i["number"]: i for i in ordered}
+        extra = {f["canonical"]: [p for d in f["duplicates"] for p in tracked_prs(by_number[d["number"]])]
+                 for f in folds}
+        candidates = [i for i in ordered
+                      if i["number"] not in closing and i["number"] not in folded_away]
+        quiet["classified"] = quiet_verdicts(candidates, pr_docs, corpus_dir, evidence,
+                                             extra_prs=extra)
+        proven = [{"number": q["number"], "specs": q["specs"],
+                   "comment": quiet_close_comment(q["specs"])}
+                  for q in quiet["classified"] if q["verdict"] == "quiet_proven"]
+        if close_on_quiet:
+            quiet["closes"], rest = proven[:budget], proven[budget:]
+            deferred += len(rest)
+        else:
+            quiet["would_close"] = proven
     return {"corpus_ok": corpus_ok, "examined": len(ordered), "closes": closes,
-            "folds": folds, "kept": kept, "deferred": deferred}
+            "folds": folds, "kept": kept, "deferred": deferred, "quiet": quiet}
 
 
 # ── what the issues say ──────────────────────────────────────────────────
@@ -382,10 +498,116 @@ def _comment(repo: str, number: int, body: str) -> None:
         stdin=body)
 
 
+def quiet_close_comment(specs: list[dict]) -> str:
+    rows = []
+    for s in specs:
+        t = s.get("target") or {}
+        finding = f"`{t.get('issue', '')}`" + (f" @ `{t['url']}`" if t.get("url") else "")
+        rows.append(f"| #{s['pr']} | {finding} | {s.get('reason', '')} |")
+    return (
+        "Closing — the brain finding behind every spec this issue tracks has provably "
+        "stopped firing.\n\n"
+        "| spec PR | finding | evidence |\n|---|---|---|\n" + "\n".join(rows) + "\n\n"
+        "\"Stopped firing\" is not \"not seen lately\". Each finding's detector completed "
+        "at least 6 recorded runs over at least 7 days without reporting it "
+        "(`brain_detector_runs`), completed within the last day, and is reviewed as a "
+        "detector whose silence means the target is healthy. If the problem comes back, "
+        "the brain files it again.\n\n"
+        "<sub>spec-debt-reconcile · quiet-closed</sub>\n")
+
+
+class EvidenceUnavailable(RuntimeError):
+    """The evidence endpoint could not be read. Never read as "nothing is firing"."""
+
+
+def _curl_post_json(url: str, headers: dict, body: dict, max_time: float = 60.0):
+    """POST JSON -> (status, text).
+
+    Headers go to curl on stdin, never argv, so the admin key stays out of the
+    process list (the scripts/wait_for_deployed_commit.py pattern);
+    regression_lint blocks urllib.request.urlopen."""
+    import tempfile
+
+    def quoted(s: str) -> str:
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                     encoding="utf-8") as fh:
+        json.dump(body, fh)
+        path = fh.name
+    config = "".join(f"header = {quoted(f'{k}: {v}')}\n" for k, v in headers.items())
+    config += f"url = {quoted(url)}\n"
+    try:
+        proc = subprocess.run(
+            ["curl", "-q", "-sS", "--max-time", f"{max_time:g}", "-X", "POST",
+             "--data-binary", f"@{path}", "-w", "\n%{http_code}", "--config", "-"],
+            input=config, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=max_time + 15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise EvidenceUnavailable(f"curl did not complete: {e}"[:200])
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    if proc.returncode != 0:
+        raise EvidenceUnavailable(f"no response (curl exit {proc.returncode}: "
+                                  f"{proc.stderr.strip()[:160]})")
+    text, _, status = proc.stdout.rpartition("\n")
+    if not status.isdigit():
+        raise EvidenceUnavailable(f"no HTTP status from curl ({status[:40]!r})")
+    return int(status), text
+
+
+def evidence_targets(issues: list[dict], pr_docs: dict, corpus_dir: str) -> list[dict]:
+    """Every distinct finding behind the specs these issues track."""
+    seen, out = set(), []
+    for iss in issues:
+        for p in tracked_prs(iss):
+            for d in pr_docs.get(p) or []:
+                t = spec_target(doc_heading(d, corpus_dir))
+                if t and evidence_key(t["issue"], t["url"]) not in seen:
+                    seen.add(evidence_key(t["issue"], t["url"]))
+                    out.append(t)
+    return out
+
+
+def fetch_evidence(targets: list[dict], meta: dict | None = None) -> dict:
+    """{evidence_key: {verdict, reason, detector_fn, ...}} from the backend.
+
+    Raises EvidenceUnavailable on anything short of a MEASURED answer — a
+    missing key, no response, a non-200, or a body that is not the evidence.
+    `meta`, when given, receives the ledger's own extent (first/last sweep,
+    sweep count) so a run can say how much evidence exists at all."""
+    key = os.environ.get("DCHUB_ADMIN_KEY", "")
+    if not key:
+        raise EvidenceUnavailable("DCHUB_ADMIN_KEY is not set")
+    base = (os.environ.get("DCHUB_BACKEND_BASE") or EVIDENCE_ORIGIN).rstrip("/")
+    out = {}
+    for i in range(0, len(targets), 400):
+        status, text = _curl_post_json(
+            base + EVIDENCE_PATH,
+            {"X-Admin-Key": key, "Content-Type": "application/json", "User-Agent": EVIDENCE_UA},
+            {"findings": targets[i:i + 400]})
+        try:
+            data = json.loads(text)
+        except ValueError:
+            raise EvidenceUnavailable(f"HTTP {status}; the body is not JSON: {text[:120]!r}")
+        if status != 200 or not isinstance(data, dict) or data.get("state") != "MEASURED":
+            why = (data.get("reason") or data.get("error") or data.get("state")) \
+                if isinstance(data, dict) else "unexpected body"
+            raise EvidenceUnavailable(f"HTTP {status}: {why}")
+        for f in data.get("findings") or []:
+            out[evidence_key(f.get("issue"), f.get("url"))] = f
+        if meta is not None:
+            meta["ledger"] = data.get("ledger")
+    return out
+
+
 def apply(p: dict, repo: str, *, pause: float = 1.0) -> dict:
     """Carry out a plan. A copy is never closed unless its spec PRs were carried
     to the surviving issue first."""
-    done = {"closed": [], "folded": [], "errors": []}
+    done = {"closed": [], "folded": [], "quiet_closed": [], "errors": []}
     for c in p["closes"]:
         try:
             _comment(repo, c["number"], c["comment"])
@@ -412,10 +634,23 @@ def apply(p: dict, repo: str, *, pause: float = 1.0) -> dict:
                 done["folded"].append(d["number"])
             except RuntimeError as e:
                 done["errors"].append(f"#{d['number']}: {e}")
+    for q in (p.get("quiet") or {}).get("closes") or []:
+        try:
+            _comment(repo, q["number"], q["comment"])
+            time.sleep(pause)
+            _close(repo, q["number"], "completed")
+            time.sleep(pause)
+            done["quiet_closed"].append(q["number"])
+        except RuntimeError as e:
+            done["errors"].append(f"#{q['number']}: {e}")
     return done
 
 
-def _summary(p: dict, done: dict | None) -> str:
+def _normalise_reason(reason) -> str:
+    return re.sub(r"\d+(?:\.\d+)?", "#", str(reason or ""))[:110]
+
+
+def _summary(p: dict, done: dict | None, evidence_note: str = "") -> str:
     lines = [
         "## spec-debt reconcile",
         "",
@@ -428,10 +663,28 @@ def _summary(p: dict, done: dict | None) -> str:
     for f in p["folds"]:
         lines.append(f"  - #{f['canonical']} `{f['key']}` <- "
                      + ", ".join(f"#{d['number']}" for d in f["duplicates"]))
+    q = p.get("quiet") or {}
+    if q.get("read"):
+        from collections import Counter
+        verdicts = Counter(c["verdict"] for c in q.get("classified") or [])
+        lines.append(f"- quiet ({'ARMED' if q.get('armed') else 'shadow'}; evidence "
+                     f"{evidence_note}): " + ", ".join(
+                         f"{k} {verdicts.get(k, 0)}"
+                         for k in ("firing", "quiet_proven", "quiet_unproven", "unmeasured")))
+        acting = q.get("closes") if q.get("armed") else q.get("would_close")
+        lines.append(f"  - {'closing' if q.get('armed') else 'would close'}: "
+                     + (", ".join(f"#{c['number']}" for c in acting or []) or "none"))
+        reasons = Counter(_normalise_reason(s.get("reason"))
+                          for c in q.get("classified") or [] for s in c["specs"]
+                          if s["verdict"] in ("quiet_unproven", "unmeasured"))
+        lines += [f"  - {n} × {reason}" for reason, n in reasons.most_common(6)]
+    else:
+        lines.append(f"- quiet: not run — evidence {evidence_note or 'not read'}")
     if done is None:
         lines.append("- DRY RUN — nothing written")
     else:
         lines.append(f"- written: closed {len(done['closed'])}, folded {len(done['folded'])}, "
+                     f"quiet-closed {len(done.get('quiet_closed') or [])}, "
                      f"errors {len(done['errors'])}")
         lines += [f"  - {e}" for e in done["errors"]]
     return "\n".join(lines) + "\n"
@@ -452,6 +705,10 @@ def main(argv=None) -> int:
     r.add_argument("--max-closes", type=int, default=DEFAULT_MAX_CLOSES)
     r.add_argument("--summary", default="")
     r.add_argument("--plan-json", default="")
+    r.add_argument("--no-evidence", action="store_true",
+                   help="skip the quiet arm and its evidence read")
+    r.add_argument("--require-evidence", action="store_true",
+                   help="exit 2 when the evidence endpoint could not be read")
     args = ap.parse_args(argv)
 
     if args.cmd == "class-key":
@@ -470,18 +727,35 @@ def main(argv=None) -> int:
 
     issues = fetch_open_issues(args.repo)
     prs = [p for i in issues for p in tracked_prs(i)]
-    p = plan(issues, fetch_pr_docs(args.repo, prs), args.corpus, repo=args.repo,
-             max_closes=args.max_closes)
+    pr_docs = fetch_pr_docs(args.repo, prs)
+    evidence, evidence_note = None, "skipped (--no-evidence)"
+    if not args.no_evidence:
+        try:
+            targets, meta = evidence_targets(issues, pr_docs, args.corpus), {}
+            evidence = fetch_evidence(targets, meta) if targets else {}
+            ledger = meta.get("ledger") or {}
+            evidence_note = (f"read for {len(evidence)} of {len(targets)} finding(s); detector "
+                             f"ledger: {ledger.get('sweeps', 0)} sweep(s) since "
+                             f"{ledger.get('first_sweep') or 'never'}")
+        except EvidenceUnavailable as e:
+            evidence_note = f"UNAVAILABLE — {e}"
+    p = plan(issues, pr_docs, args.corpus, repo=args.repo, max_closes=args.max_closes,
+             evidence=evidence,
+             close_on_quiet=os.environ.get("SPEC_DEBT_CLOSE_ON_QUIET", "0") == "1")
     if args.plan_json:
         with open(args.plan_json, "w", encoding="utf-8") as fh:
             json.dump(p, fh, indent=1)
     done = apply(p, args.repo) if args.apply else None
-    text = _summary(p, done)
+    text = _summary(p, done, evidence_note)
     print(text)
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as fh:
             fh.write(text)
-    return 1 if done and done["errors"] else 0
+    if done and done["errors"]:
+        return 1
+    # After every other arm has run: an unreadable evidence endpoint is a
+    # failed run, so a quiet arm that silently never works cannot look green.
+    return 2 if evidence is None and args.require_evidence else 0
 
 
 if __name__ == "__main__":

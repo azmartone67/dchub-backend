@@ -16,10 +16,19 @@ name: spec-debt-reconcile
 #   fold   issues about the same problem into the oldest one, which carries
 #          their spec PRs from then on. The tracker now appends to that issue
 #          instead of filing, so this catches races and anything filed earlier.
+#   quiet  (2026-09-13) an issue whose every spec's brain finding has PROVABLY
+#          stopped firing: its detector completed at least 6 recorded runs over
+#          at least 7 days without reporting it (routes/brain_detector_ledger.py).
+#          "Not seen lately" is not enough — brain_findings resolves anything
+#          quiet for 24h whether or not its detector ran. SHADOW by default: the
+#          summary lists what it would close; repo variable
+#          SPEC_DEBT_CLOSE_ON_QUIET=1 lets it close.
 # Decisions live in scripts/spec_debt_issues.py, shared with the tracker.
 #
 # Fail-closed: an unreadable corpus, a PR whose files cannot be listed, or a doc
-# missing from the corpus keeps the issue OPEN. Closes are capped per run.
+# missing from the corpus keeps the issue OPEN. An unreadable evidence endpoint
+# closes nothing on the quiet arm and fails the run (--require-evidence), after
+# the other arms have run. Closes are capped per run.
 # Kill switch: repo variable SPEC_DEBT_RECONCILE_DISABLE=1.
 # A manual run defaults to a DRY RUN that writes nothing.
 
@@ -55,19 +64,35 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+      - name: Refresh the consistency radar so the detector ledger has a recent sweep
+        # The ledger (routes/brain_detector_ledger.py) is written only when a full
+        # radar sweep persists, and sweeps run on demand. Without this, how often
+        # detectors get recorded depends on who happened to open the radar, and a
+        # detector with no completed run in the last 24h proves nothing. The
+        # origin, not the edge: a cold sweep takes ~35s and the edge gives up at 15s.
+        env:
+          RADAR_URL: https://dchub-backend-production.up.railway.app/api/v1/brain/consistency-radar
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 120 -A "dchub-spec-debt-reconcile/1.0" "$RADAR_URL") || code=000
+          echo "consistency radar refresh: HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "::warning::radar refresh returned HTTP $code; this run's evidence may be older than a day"
+          fi
       - name: Fold repeated problems and close issues the ledger has closed
         env:
           GH_TOKEN: ${{ github.token }}
           RECONCILE_DISABLE: ${{ vars.SPEC_DEBT_RECONCILE_DISABLE }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
           MAX_CLOSES: ${{ inputs.max_closes || '30' }}
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          SPEC_DEBT_CLOSE_ON_QUIET: ${{ vars.SPEC_DEBT_CLOSE_ON_QUIET }}
         run: |
           set -euo pipefail
           if [ "${RECONCILE_DISABLE:-0}" = "1" ]; then
             echo "spec-debt reconcile disabled via SPEC_DEBT_RECONCILE_DISABLE"; exit 0
           fi
           set -- reconcile --repo "$GITHUB_REPOSITORY" --corpus docs/brain-proposals \
-            --max-closes "$MAX_CLOSES" --summary "$GITHUB_STEP_SUMMARY"
+            --max-closes "$MAX_CLOSES" --summary "$GITHUB_STEP_SUMMARY" --require-evidence
           if [ "$DRY_RUN" != "true" ]; then
             set -- "$@" --apply
           fi

@@ -3587,17 +3587,29 @@ def check_csp_drift() -> list[dict]:
 # repetition. Each is a SQL probe against an existing table, never
 # blocks the radar, fails open on table-missing.
 # ─────────────────────────────────────────────────────────────────
+# ★ 2026-09-13 — a detector that could not get a connection returns [] and looks
+#   exactly like a healthy one. _run_detectors reads this thread-local after each
+#   detector and records the run as "degraded" (routes/brain_detector_ledger.py),
+#   so the detector ledger never takes an empty result from a detector that had
+#   no database as evidence that its targets are healthy. Only connections made
+#   through _db(), on the detector's own thread, are seen.
+_DB_UNAVAILABLE = __import__("threading").local()
+
+
 def _db():
     """Local DB helper for the Phase ZZ detectors. Autocommit so a
     failed probe doesn't poison follow-ups inside scan_all()."""
     import os as _os, psycopg2 as _pg2
     db = _os.environ.get("DATABASE_URL")
-    if not db: return None
+    if not db:
+        _DB_UNAVAILABLE.hit = True
+        return None
     try:
         c = _pg2.connect(db, sslmode="require", connect_timeout=5)
         c.autocommit = True
         return c
     except Exception:
+        _DB_UNAVAILABLE.hit = True
         return None
 
 
@@ -12140,6 +12152,13 @@ def check_approved_without_pr_stale() -> list[dict]:
 # actually enforces it; the deadline alone never did.
 _SCAN_BUDGET_S = 25
 
+# ★ 2026-09-13 — each sweep's detector outcomes, keyed by its sweep id. The
+#   persist step looks its own sweep up here instead of trusting _LAST_SWEEP,
+#   which any scan_all() overwrites (the heal-findings refresh thread calls it
+#   without the scan lock). Bounded: only the newest few can still be persisting.
+_SWEEP_OUTCOMES: dict = {}
+_SWEEP_OUTCOMES_KEEP = 16
+
 
 def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]:
     """Run `detectors` concurrently and return their findings, abandoning
@@ -12163,10 +12182,16 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
     # Per-detector 20s timeout prevents any single slow probe from
     # holding up the whole scan.
     import concurrent.futures as _cf, time as _scan_time
+    # ★ 2026-09-13 — detectors that got no connection from _db() this run. A run
+    #   that completed without a database is not evidence (see _DB_UNAVAILABLE).
+    _degraded_fns: list = []
     def _run_one(fn):
         t0 = _scan_time.time()
+        _DB_UNAVAILABLE.hit = False
         try:
             result = fn() or []
+            if getattr(_DB_UNAVAILABLE, "hit", False):
+                _degraded_fns.append(fn.__name__)
             _DETECTOR_TIMINGS[fn.__name__] = {
                 "last_ms":  int((_scan_time.time() - t0) * 1000),
                 "last_run": _scan_time.time(),
@@ -12199,6 +12224,15 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
     _completed = 0
     _abandoned = 0
     _completed_fns: list = []      # detectors that actually REPORTED this sweep
+    # ★ 2026-09-13 — every outcome, not just "completed", and an identity for
+    #   the sweep. routes/brain_detector_ledger.py records both durably: the
+    #   only thing that lets "a detector ran and did not report X" survive this
+    #   process. The sweep id also lets the persist step refuse to attribute
+    #   these findings to a sweep that another scan_all() has since replaced.
+    _crashed_fns: list = []
+    _timeout_fns: list = []
+    import uuid as _scan_uuid
+    _sweep_id = _scan_uuid.uuid4().hex
     ex = _cf.ThreadPoolExecutor(max_workers=8,
                                 thread_name_prefix="brain-scan")
     try:
@@ -12221,6 +12255,7 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
                         _completed_fns.append(name)
                         out.extend(result)
                     else:
+                        _crashed_fns.append(name)
                         out.append({
                             "issue":  f"consistency_radar_detector_crashed:{name}",
                             "url":    name,
@@ -12228,6 +12263,7 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
                             "detail": result,
                         })
                 except _cf.TimeoutError:
+                    _timeout_fns.append(fn.__name__)
                     out.append({
                         "issue":  f"consistency_radar_detector_timeout:{fn.__name__}",
                         "url":    fn.__name__,
@@ -12235,6 +12271,7 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
                         "detail": "Detector exceeded per-future 5s collection cap.",
                     })
                 except Exception as e:
+                    _crashed_fns.append(fn.__name__)
                     out.append({
                         "issue":  f"consistency_radar_detector_crashed:{fn.__name__}",
                         "url":    fn.__name__,
@@ -12267,9 +12304,20 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
         # ★ Record WHAT THIS SWEEP ACTUALLY COVERED, for resolve-on-absence.
         #   Set before shutdown so it describes the same moment
         #   `not_done` was measured.
+        for _f in out:
+            if isinstance(_f, dict):
+                _f["_sweep_id"] = _sweep_id
         _LAST_SWEEP["completed_fns"] = list(_completed_fns)
         _LAST_SWEEP["abandoned_fns"] = list(not_done)
+        _LAST_SWEEP["crashed_fns"] = list(_crashed_fns)
+        _LAST_SWEEP["timeout_fns"] = list(_timeout_fns)
+        _LAST_SWEEP["degraded_fns"] = list(_degraded_fns)
+        _LAST_SWEEP["sweep_id"] = _sweep_id
         _LAST_SWEEP["at"] = _scan_time.time()
+        _SWEEP_OUTCOMES[_sweep_id] = {k: (list(v) if isinstance(v, list) else v)
+                                      for k, v in _LAST_SWEEP.items()}
+        for _old_sweep in list(_SWEEP_OUTCOMES)[:-_SWEEP_OUTCOMES_KEEP]:
+            _SWEEP_OUTCOMES.pop(_old_sweep, None)
     finally:
         # ★ THE BUDGET IS THIS LINE. `with ThreadPoolExecutor(...)` exits via
         #   shutdown(wait=True, cancel_futures=False), so every detector still
@@ -13484,6 +13532,28 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                         note_swallowed_write("brain_findings", where="brain_consistency_radar._persist_findings_to_db")
                         _persist_rollback_sp(cur, "bf_resolve_absent")
                         resolved_now = 0
+                # ★ 2026-09-13 — THE DETECTOR LEDGER (routes/brain_detector_ledger.py).
+                #   _LAST_SWEEP lives in this process, so nothing durable recorded
+                #   that a detector RAN — and "absent" means nothing once the
+                #   process is gone. Full sweeps only, and only when every finding
+                #   here belongs to ONE sweep whose outcomes _run_detectors kept in
+                #   _SWEEP_OUTCOMES. Not _LAST_SWEEP: the heal-findings refresh
+                #   thread and the force-scan endpoint both run scan_all() without
+                #   persisting and can replace it between this scan and this write.
+                if full_sweep and _persist_savepoint(cur, "bf_detector_ledger"):
+                    try:
+                        _sweep_ids = {f.get("_sweep_id") for f in findings
+                                      if isinstance(f, dict)}
+                        _outcomes = (_SWEEP_OUTCOMES.get(next(iter(_sweep_ids)))
+                                     if len(_sweep_ids) == 1 and None not in _sweep_ids
+                                     else None)
+                        if _outcomes:
+                            from routes.brain_detector_ledger import record_sweep
+                            record_sweep(cur, dict(_outcomes), findings)
+                        _persist_release_sp(cur, "bf_detector_ledger")
+                    except Exception:
+                        note_swallowed_write("brain_detector_runs", where="brain_consistency_radar._persist_findings_to_db")
+                        _persist_rollback_sp(cur, "bf_detector_ledger")
                 # Open/resolved/new-rate summary (read-only, for the
                 # incentive signal + logs). Savepoint-wrapped; never fatal.
                 if _persist_savepoint(cur, "bf_summary"):
