@@ -56,7 +56,10 @@ WF_DIR = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows"
 #   that endpoint never returns; scripts/wait_for_deployed_commit.py replaced
 #   it and fails loudly. The other 11 of the drop had landed since 2026-08-10
 #   without the baseline moving.
-MAX_UNGUARDED_STEPS = 141
+#   141 -> 140 on 2026-09-13: data-sync.yml's "Fire async loaders" piped each
+#   POST into `json.tool || echo` and never read a status; it now captures
+#   %{http_code} and fails on a refused fire or a loader that failed.
+MAX_UNGUARDED_STEPS = 140
 
 _CURL = re.compile(r"\bcurl\b")
 _GUARDS = (

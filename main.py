@@ -36334,8 +36334,11 @@ def phase12i_probe_network():
     """Test whether Railway can reach the upstream APIs the loaders depend on.
 
     No auth required — observability only, no data exposed.
+
+    `ok` means the target ANSWERED, not merely that it returned HTTP 200: a
+    JSON object carrying an `error` key is a failure (see the note below).
     """
-    import urllib.request, urllib.error, time as _t
+    import urllib.request, urllib.error, json as _json, time as _t
     targets = [
         ('hifld_substations_arcgis', 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0?f=json'),
         ('hifld_power_plants_arcgis', 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0?f=json'),
@@ -36352,8 +36355,28 @@ def phase12i_probe_network():
             req = urllib.request.Request(url, headers={'User-Agent': 'DCHub-Probe/1.0'})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 rec['status'] = resp.status
-                rec['ok'] = True
+                body = resp.read(65536)
                 rec['ms'] = int((_t.time() - t0) * 1000)
+            # ★ 2026-09-13: ArcGIS reports a failed request inside an HTTP 200.
+            # Both hifld_* targets above answer {"error": {"code": 400,
+            # "message": "Invalid URL"}} because their services were deleted,
+            # and this probe published ok:true for both: it read the status
+            # line and never the body. Its sibling /api/admin/probe-hifld-deep
+            # already reads has_error_key. A body that is not a JSON object (an
+            # HTML page, a payload cut off at the read limit) still counts as
+            # an answer.
+            try:
+                parsed = _json.loads(body.decode('utf-8', 'replace'))
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict) and 'error' in parsed:
+                err = parsed['error']
+                detail = (f"{err.get('code')} {err.get('message')}"
+                          if isinstance(err, dict) else str(err))
+                rec['ok'] = False
+                rec['error'] = f"HTTP {rec['status']} with an error body: {detail}"[:200]
+            else:
+                rec['ok'] = True
         except urllib.error.HTTPError as e:
             rec['status'] = e.code
             rec['ok'] = False

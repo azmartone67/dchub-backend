@@ -154,6 +154,22 @@ def _release(conn):
 # PUBLIC SOURCES
 # ---------------------------------------------------------------------------
 
+# ★ 2026-09-13 — 53 of the 58 sources this list held were measured dead and
+# removed (`git log -p` on this file has them):
+#   · 38 ArcGIS services answered HTTP 200 with {"error": {"code": 400,
+#     "message": "Invalid URL"}}. None is listed in its organisation's service
+#     directory, and three of those organisations do not exist.
+#   · 13 named maps.nccs.nasa.gov, which has no DNS address record.
+#   · 1 county service answered HTTP 200 with error 404 "Service not found".
+#   · 1 ArcGIS Hub dataset page refused /query with HTTP 403.
+# _fetch_arcgis_routes read every one of them as a layer with no features: zero
+# routes, nothing logged above DEBUG, and a kmz_discovery_log row that said
+# 'success'. An unreadable layer is now reported as a failure
+# (_arcgis_feature_page), and the cycle row records it (_cycle_status).
+#
+# The two EIA layers below whose object-id field is FID rather than OBJECTID
+# are live, but the query this module sends (orderByFields=OBJECTID) fails on
+# both. They stay listed: the query is what is broken, and the cycle now says so.
 PUBLIC_KMZ_SOURCES = [
     # ── FEDERAL FIBER / BROADBAND ────────────────────────────────
     {
@@ -163,134 +179,10 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'FCC/NTIA',
         'category': 'federal'
     },
-    {
-        'name': 'HIFLD Fiber Optic Cable Landing Points',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Submarine_Cable_Landing_Points/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'fiber'
-    },
-    {
-        'name': 'NTIA Broadband Infrastructure - Middle Mile',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/NTIA_BIP_Round_1_Middle_Mile/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'NTIA',
-        'category': 'fiber'
-    },
-    {
-        'name': 'NTIA Broadband Infrastructure - Last Mile',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/NTIA_BIP_Round_1_Last_Mile/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'NTIA',
-        'category': 'fiber'
-    },
-    # ── NTIA BEAD PROGRAM — Funded Fiber Builds by State ─────────
-    {
-        'name': 'NTIA BEAD Eligible Locations',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/BEAD_Eligible_Locations/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'NTIA-BEAD',
-        'category': 'fiber'
-    },
-    {
-        'name': 'NTIA BEAD Challenge Process Results',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/BEAD_Challenge_Results/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'NTIA-BEAD',
-        'category': 'fiber'
-    },
-    {
-        'name': 'NTIA BIP Round 2 Middle Mile',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/NTIA_BIP_Round_2_Middle_Mile/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'NTIA',
-        'category': 'fiber'
-    },
-    {
-        'name': 'NTIA Tribal Broadband Connectivity',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Tribal_Broadband_Connectivity/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'NTIA',
-        'category': 'fiber'
-    },
-    # ── FCC BROADBAND DATA COLLECTION ────────────────────────────
-    {
-        'name': 'FCC Fixed Broadband Deployment',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Fixed_Broadband_Deployment/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'FCC',
-        'category': 'fiber'
-    },
-    {
-        'name': 'FCC Broadband Funding Map',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Broadband_Funding/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'FCC',
-        'category': 'fiber'
-    },
-    # ── USDA RECONNECT — Rural Fiber Builds ──────────────────────
-    {
-        'name': 'USDA ReConnect Funded Areas',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USDA_ReConnect_Funded_Areas/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'USDA',
-        'category': 'fiber'
-    },
-    # ── SUBMARINE CABLES ─────────────────────────────────────────
-    {
-        'name': 'HIFLD Submarine Cables',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Submarine_Cables/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'fiber'
-    },
-    # ── CARRIER / DARK FIBER NETWORKS (Public GIS) ───────────────
-    {
-        'name': 'Zayo Fiber Network',
-        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Zayo_Network/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'Zayo',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Crown Castle Fiber',
-        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Crown_Castle_Fiber/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'Crown Castle',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Lumen Long Haul Fiber',
-        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Lumen_Fiber/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'Lumen',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Windstream Fiber Network',
-        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Windstream_Fiber/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'Windstream',
-        'category': 'fiber'
-    },
     # ── POWER INFRASTRUCTURE ─────────────────────────────────────
     {
         'name': 'HIFLD Electric Power Transmission Lines',
         'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'power'
-    },
-    {
-        'name': 'HIFLD Electric Substations',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'power'
-    },
-    {
-        'name': 'HIFLD Power Plants',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0',
         'type': 'arcgis_kml',
         'provider': 'HIFLD',
         'category': 'power'
@@ -316,282 +208,6 @@ PUBLIC_KMZ_SOURCES = [
         'type': 'arcgis_kml',
         'provider': 'EIA',
         'category': 'gas'
-    },
-    # DEAD (2024): HIFLD Natural Gas Compressor Stations — URL returns 400/499 (moved to hash-based names)
-    # {
-    #     'name': 'HIFLD Natural Gas Compressor Stations',
-    #     'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Compressor_Stations/FeatureServer/0',
-    #     'type': 'arcgis_kml',
-    #     'provider': 'HIFLD',
-    #     'category': 'gas'
-    # },
-    # DEAD (2024): HIFLD Natural Gas Processing Plants — URL returns 400/499 (moved to hash-based names)
-    # {
-    #     'name': 'HIFLD Natural Gas Processing Plants',
-    #     'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Processing_Plants/FeatureServer/0',
-    #     'type': 'arcgis_kml',
-    #     'provider': 'HIFLD',
-    #     'category': 'gas'
-    # },
-    {
-        'name': 'HIFLD LNG Import/Export Terminals',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Liquefied_Natural_Gas_Import_Export_Terminals/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'gas'
-    },
-    {
-        'name': 'HIFLD Natural Gas Storage',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Storage/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'gas'
-    },
-    {
-        'name': 'EIA Natural Gas Underground Storage',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Underground_Storage_1/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'EIA',
-        'category': 'gas'
-    },
-    # ── WATER INFRASTRUCTURE (data center cooling) ───────────────
-    {
-        'name': 'HIFLD Water Treatment Plants',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Water_Treatment_Plants/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'water'
-    },
-    # ── INTERNATIONAL FIBER / INFRASTRUCTURE ─────────────────────
-    {
-        'name': 'Australia NBN Fiber Network',
-        'url': 'https://services.arcgis.com/bMDHnT5gHwXJ62Xo/arcgis/rest/services/NBN_Fixed_Line_Footprint/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'NBN-Australia',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Canada CRTC Broadband',
-        'url': 'https://services.arcgis.com/G1JXlRDy3Sp3D6SO/arcgis/rest/services/Canada_Broadband_Internet/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'CRTC-Canada',
-        'category': 'fiber'
-    },
-    {
-        'name': 'UK Openreach Fiber',
-        'url': 'https://services.arcgis.com/dLMuXcEHPBYXdzOo/arcgis/rest/services/Openreach_Fibre/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'Openreach-UK',
-        'category': 'fiber'
-    },
-    # ── NASA/HIFLD COMMUNICATIONS INFRASTRUCTURE ─────────────────
-    # These are massive national datasets hosted by NASA NCCS
-    {
-        'name': 'HIFLD Cellular Towers (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/communications/FeatureServer/5',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'fiber'
-    },
-    {
-        'name': 'HIFLD Antenna Structure Registration (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/communications/FeatureServer/1',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'fiber'
-    },
-    {
-        'name': 'HIFLD Microwave Service Towers (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/communications/FeatureServer/10',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'fiber'
-    },
-    # ── NASA/HIFLD ENERGY INFRASTRUCTURE (30+ layers) ────────────
-    {
-        'name': 'HIFLD Electric Transmission Lines (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/4',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'power'
-    },
-    {
-        'name': 'HIFLD Generating Units (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/10',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'power'
-    },
-    {
-        'name': 'HIFLD Natural Gas Liquid Pipelines (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/16',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'gas'
-    },
-    {
-        'name': 'HIFLD Natural Gas Market Hubs (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/17',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'gas'
-    },
-    {
-        'name': 'HIFLD Oil and Natural Gas Fields (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/32',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'gas'
-    },
-    {
-        'name': 'HIFLD Petroleum Refineries (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/33',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'gas'
-    },
-    {
-        'name': 'HIFLD Solar Plants (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/36',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'power'
-    },
-    {
-        'name': 'HIFLD Wind Turbines (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/38',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'power'
-    },
-    {
-        'name': 'HIFLD Electric Retail Service Territories (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/5',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'power'
-    },
-    {
-        'name': 'HIFLD Independent System Operators (NASA)',
-        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/11',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD-NASA',
-        'category': 'power'
-    },
-    # ── COUNTY/MUNICIPAL FIBER GIS (known public endpoints) ──────
-    {
-        'name': 'Harnett County NC Fiber Network',
-        'url': 'https://gis.harnett.org/arcgis/rest/services/Public_Utilities/Fiber/FeatureServer/1',
-        'type': 'arcgis_kml',
-        'provider': 'Harnett-County-NC',
-        'category': 'fiber'
-    },
-    {
-        'name': 'City of Colorado Springs Fiber',
-        'url': 'https://hub.arcgis.com/api/v3/datasets/aef932d6b3fd4f0994ef672368b09217_0',
-        'type': 'arcgis_kml',
-        'provider': 'Colorado-Springs',
-        'category': 'fiber'
-    },
-    # ── ADDITIONAL HIFLD ARCGIS.COM LAYERS ───────────────────────
-    {
-        'name': 'HIFLD Petroleum Pipelines',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Petroleum_Pipelines/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'gas'
-    },
-    {
-        'name': 'HIFLD Natural Gas Pipelines',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Pipelines/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'gas'
-    },
-    {
-        'name': 'HIFLD Electric Planning Areas',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Planning_Areas/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'power'
-    },
-    {
-        'name': 'HIFLD Control Areas',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Control_Areas/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'power'
-    },
-    {
-        'name': 'HIFLD NERC Regions',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/NERC_Regions/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'power'
-    },
-    # ── ADDITIONAL INFRASTRUCTURE LAYERS ──────────────────────────
-    {
-        'name': 'HIFLD Railroads',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Railroads/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'transport'
-    },
-    {
-        'name': 'HIFLD Major Dams',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Major_Dams/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'water'
-    },
-    {
-        'name': 'HIFLD Wastewater Treatment Plants',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Wastewater_Treatment_Plants/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'water'
-    },
-    {
-        'name': 'EIA Electric Retail Service Territories',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Electric_Retail_Service_Territories_2/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'EIA',
-        'category': 'power'
-    },
-    {
-        'name': 'EIA Electric Planning Areas',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Electric_Planning_Areas_1/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'EIA',
-        'category': 'power'
-    },
-    {
-        'name': 'EIA Coal Mines',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Coal_Mines_1/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'EIA',
-        'category': 'power'
-    },
-    {
-        'name': 'FEMA National Flood Hazard Layer',
-        'url': 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/USA_Flood_Hazard_Reduced_Set/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'FEMA',
-        'category': 'risk'
-    },
-    {
-        'name': 'EPA Superfund Sites (NPL)',
-        'url': 'https://services.arcgis.com/cJ9YHowT8TU7DUyn/arcgis/rest/services/Superfund_National_Priorities_List/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'EPA',
-        'category': 'risk'
-    },
-    {
-        'name': 'US Opportunity Zones',
-        'url': 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Opportunity_Zone_Tract/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'CDFI',
-        'category': 'incentive'
     },
 ]
 
@@ -752,6 +368,62 @@ STATE_BROADBAND_GIS = [
     {'name': 'Vermont Broadband', 'state': 'VT', 'url': 'https://services1.arcgis.com/BkFxaEFNwHqX3tAw/arcgis/rest/services', 'provider': 'Vermont'},
     {'name': 'New Hampshire Broadband', 'state': 'NH', 'url': 'https://services1.arcgis.com/lKUTqejQmSRZ1fIz/arcgis/rest/services', 'provider': 'New Hampshire'},
 ]
+
+
+def _arcgis_feature_page(response):
+    """(features, None) for a readable ArcGIS /query page, else (None, reason).
+
+    ★ ArcGIS reports a failed query INSIDE an HTTP 200. A deleted service
+    answers {"error": {"code": 400, "message": "Invalid URL"}} and a bad query
+    parameter answers the same shape, so a 200 says nothing on its own, and
+    `.get('features', [])` turns the failure into a layer with no features.
+    Only a body that carries a features list is a page.
+    """
+    if response.status_code != 200:
+        return None, f"HTTP {response.status_code}"
+    try:
+        data = response.json()
+    except ValueError:
+        return None, "HTTP 200 with a body that is not JSON"
+    if isinstance(data, dict) and 'error' in data:
+        err = data['error']
+        if isinstance(err, dict):
+            detail = f"{err.get('code')} {err.get('message')}"
+            extra = [str(d) for d in (err.get('details') or [])
+                     if str(d) != str(err.get('message'))]
+            if extra:
+                detail += f" ({'; '.join(extra)})"
+        else:
+            detail = str(err)
+        return None, f"HTTP 200 with an error body: {detail}"[:300]
+    if not isinstance(data, dict) or not isinstance(data.get('features'), list):
+        return None, "HTTP 200 without a features list"
+    return data['features'], None
+
+
+def _cycle_status(results: Dict) -> str:
+    """The kmz_discovery_log status of a finished cycle: ok, partial or failed.
+
+    Judged on the curated PUBLIC_KMZ_SOURCES lane: 'failed' when that stage
+    raised or every layer it queried was unreadable, 'partial' when some were
+    or another stage raised. Unreadable DISCOVERED sources are counted in the
+    export stage's results but do not set the status: that stage re-checks
+    uncurated ArcGIS search results.
+
+    Not 'success': every row written before 2026-09-13 says 'success' whatever
+    the cycle found, and a reader must be able to tell a measured outcome from
+    that constant.
+    """
+    known = results.get('known_sources') or {}
+    queried = known.get('queried') or 0
+    failed = known.get('failed') or 0
+    if 'error' in known or (failed and failed >= queried):
+        return 'failed'
+    other_stage_raised = any('error' in (results.get(stage) or {})
+                             for stage in ('arcgis_search', 'state_broadband', 'arcgis_kml_export'))
+    if failed or other_stage_raised:
+        return 'partial'
+    return 'ok'
 
 
 # =============================================================================
@@ -990,7 +662,11 @@ class KMZAutoDiscovery:
     # ── Process Known Sources ──────────────────────────────────
 
     def _process_known_sources(self) -> Dict:
-        results = {'checked': 0, 'routes_found': 0, 'total_km': 0}
+        # `queried` counts the layers fetched and `failed` the ones that could
+        # not be read, so a lane whose layers are all gone cannot read the same
+        # as one whose layers are merely unchanged.
+        results = {'checked': 0, 'queried': 0, 'failed': 0, 'failed_sources': [],
+                   'routes_found': 0, 'total_km': 0}
 
         for source in PUBLIC_KMZ_SOURCES:
             try:
@@ -998,9 +674,14 @@ class KMZAutoDiscovery:
 
                 if source['type'] == 'arcgis_kml':
                     route_type = 'gas' if source.get('category') == 'gas' else 'fiber'
+                    results['queried'] += 1
                     r = self._fetch_arcgis_routes(source['url'], source['provider'], source['name'], route_type=route_type)
                     results['routes_found'] += r.get('routes_found', 0)
                     results['total_km'] += r.get('total_km', 0)
+                    if r.get('error'):
+                        results['failed'] += 1
+                        results['failed_sources'].append({'name': source['name'], 'error': r['error']})
+                        logger.warning(f"Known source FAILED: {source['name']}: {r['error']}")
 
                 self._add_discovered_source({
                     'name': source['name'],
@@ -1012,15 +693,22 @@ class KMZAutoDiscovery:
 
                 time.sleep(1)
             except Exception as e:
-                logger.debug(f"Known source error for {source['name']}: {e}")
+                results['failed'] += 1
+                results['failed_sources'].append({'name': source.get('name'), 'error': f"{type(e).__name__}: {str(e)[:200]}"})
+                logger.warning(f"Known source error for {source.get('name')}: {e}")
 
-        logger.info(f"Known Sources: checked={results['checked']}, routes={results['routes_found']}, km={results['total_km']:.1f}")
+        logger.info(f"Known Sources: checked={results['checked']}, queried={results['queried']}, failed={results['failed']}, routes={results['routes_found']}, km={results['total_km']:.1f}")
         return results
 
     # ── Fetch ArcGIS Routes (Paginated) ──────────────────────────
 
     def _fetch_arcgis_routes(self, url: str, provider: str, source_name: str, route_type: str = 'fiber') -> Dict:
-        """Fetch routes from ArcGIS FeatureServer with pagination. Pulls up to MAX_FEATURES per source."""
+        """Fetch routes from ArcGIS FeatureServer with pagination. Pulls up to MAX_FEATURES per source.
+
+        Returns routes_found and total_km, plus `error` when a page could not be
+        read: a status other than 200, a body that is not a feature page, or a
+        transport failure. Rows buffered from earlier pages are still written.
+        """
         results = {'routes_found': 0, 'total_km': 0}
         MAX_FEATURES = 5000     # Max total features per source per cycle
         BATCH_SIZE = 1000       # ArcGIS max per request
@@ -1064,11 +752,11 @@ class KMZAutoDiscovery:
 
                 try:
                     response = self.session.get(query_url, timeout=45)
-                    if response.status_code != 200:
+                    features, page_error = _arcgis_feature_page(response)
+                    if page_error:
+                        # Not the end of the data: a page that could not be read.
+                        results['error'] = page_error
                         break
-
-                    data = response.json()
-                    features = data.get('features', [])
 
                     if not features:
                         break  # No more data
@@ -1152,7 +840,7 @@ class KMZAutoDiscovery:
                     time.sleep(0.5)
 
                 except Exception as e:
-                    logger.debug(f"ArcGIS page fetch error at offset {offset}: {e}")
+                    results['error'] = f"{type(e).__name__} at offset {offset}: {str(e)[:200]}"
                     break
 
             # Phase 2: open the pooled connection ONLY now (HTTP is done) and write
@@ -1199,7 +887,8 @@ class KMZAutoDiscovery:
                 logger.info(f"  {source_name}: {results['routes_found']} routes, {results['total_km']:.1f} km (fetched {total_fetched} features)")
 
         except Exception as e:
-            logger.debug(f"ArcGIS route fetch error for {source_name}: {e}")
+            results['error'] = f"{type(e).__name__}: {str(e)[:200]}"
+            logger.warning(f"ArcGIS route fetch error for {source_name}: {e}")
         finally:
             # r47.36: GUARANTEED release on every exit path. Previously
             # only reached on the happy path → 60-73s watchdog reclaims
@@ -1289,7 +978,14 @@ class KMZAutoDiscovery:
                 results['routes_parsed'] += r.get('routes_found', 0)
                 results['total_km'] += r.get('total_km', 0)
 
-                if r.get('routes_found', 0) > 0:
+                if r.get('error'):
+                    # 'error', not 'empty': the layer could not be read. Not
+                    # 'failed' either — the query above never re-checks that
+                    # status, and one timeout should not retire a source.
+                    results['errors'] += 1
+                    self._update_source_status(src_id, 'error', r.get('routes_found', 0))
+                    logger.info(f"ArcGIS export source unreadable: {name}: {r['error']}")
+                elif r.get('routes_found', 0) > 0:
                     results['exported'] += 1
                     self._update_source_status(src_id, 'active', r['routes_found'])
                 else:
@@ -1301,7 +997,7 @@ class KMZAutoDiscovery:
                 self._update_source_status(src_id, 'failed', 0)
                 logger.debug(f"ArcGIS export error for {name}: {e}")
 
-        logger.info(f"ArcGIS Export: exported={results['exported']}, routes={results['routes_parsed']}, km={results['total_km']:.1f}")
+        logger.info(f"ArcGIS Export: exported={results['exported']}, errors={results['errors']}, routes={results['routes_parsed']}, km={results['total_km']:.1f}")
         return results
 
     # ── Helpers ─────────────────────────────────────────────────
@@ -1371,6 +1067,16 @@ class KMZAutoDiscovery:
         return round(total_distance, 2)
 
     def _log_cycle(self, results: Dict):
+        # ★ 2026-09-13: the status written below was the literal 'success' for
+        # every cycle, including cycles in which no known layer could be read.
+        cycle_status = _cycle_status(results)
+        if cycle_status != 'ok':
+            known = results.get('known_sources') or {}
+            logger.warning(
+                f"KMZ cycle {cycle_status}: {known.get('failed', 0)} of "
+                f"{known.get('queried', 0)} known ArcGIS layers unreadable: "
+                + "; ".join(f"{s.get('name')}: {s.get('error')}"
+                            for s in known.get('failed_sources') or [])[:1500])
         conn = None
         try:
             conn = _conn()
@@ -1385,7 +1091,7 @@ class KMZAutoDiscovery:
                 'full_cycle',
                 results.get('total_new_routes', 0),
                 results.get('total_new_km', 0),
-                'success'
+                cycle_status
             ))
             conn.commit()
             cur.close()
@@ -1432,6 +1138,10 @@ class KMZAutoDiscovery:
             # worker-proxy allowlist entry. data-sync.yml polls THIS key.
             'last_cycle': self._cache.get('last_cycle'),
             'last_cycle_at': None,
+            # The outcome recorded in that same newest cycle row: ok, partial or
+            # failed (_cycle_status). Rows written before 2026-09-13 say
+            # 'success', which measured nothing. None when it cannot be read.
+            'last_cycle_status': None,
             'total_routes_discovered': self._cache.get('total_routes_discovered', 0),
             'total_kmz_processed': self._cache.get('total_kmz_processed', 0),
         }
@@ -1458,13 +1168,15 @@ class KMZAutoDiscovery:
             # run. The newest cycle row is the highest id (SERIAL PK), so walk
             # the PK backwards to the first cycle row and cast that ONE value.
             cur.execute("""
-                SELECT discovered_at FROM kmz_discovery_log
+                SELECT discovered_at, status FROM kmz_discovery_log
                  WHERE source_name = 'auto_discovery_cycle'
                  ORDER BY id DESC
                  LIMIT 1
             """)
             _row = cur.fetchone()
             _lc = _row[0] if _row else None
+            if _row and len(_row) > 1:
+                status['last_cycle_status'] = _row[1]
             if _lc is None:
                 status['last_cycle_at'] = None
             elif hasattr(_lc, 'isoformat'):
