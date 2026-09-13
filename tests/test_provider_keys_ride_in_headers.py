@@ -206,7 +206,7 @@ def test_eia_catalog_discovery_sends_the_key_in_x_api_key(monkeypatch):
     for req in rec.sent:
         assert urlsplit(req.url).netloc == "api.eia.gov", req.url
         _assert_keyless(req.url)
-        assert req.headers.get("X-Api-Key") == KEY, req.url
+        assert _sent_headers(req).get("x-api-key") == KEY, req.url
 
 
 def test_the_generator_reseed_sends_the_key_in_x_api_key(monkeypatch):
@@ -271,7 +271,7 @@ def test_the_gemini_lane_sends_x_goog_api_key(monkeypatch):
     sent = urlsplit(rec.sent[0].url)
     assert sent.netloc == urlsplit(cfg["url"]).netloc
     assert sent.path.endswith(":generateContent") and sent.query == "", rec.sent[0].url
-    assert rec.sent[0].headers.get("x-goog-api-key") == KEY
+    assert _sent_headers(rec.sent[0]).get("x-goog-api-key") == KEY
 
 
 def test_no_ai_wars_platform_sends_its_key_in_the_url(monkeypatch):
@@ -288,5 +288,5 @@ def test_no_ai_wars_platform_sends_its_key_in_the_url(monkeypatch):
         req = rec.sent[-1]
         assert urlsplit(req.url).netloc == urlsplit(cfg["url"]).netloc, name
         _assert_keyless(req.url, secret)
-        assert any(secret in value for value in req.headers.values()), (
+        assert any(secret in value for value in _sent_headers(req).values()), (
             name, "the key is in no header")
