@@ -656,7 +656,6 @@ def require_plan(min_plan='pro'):
                     # teaser); MCP keeps full access via X-Internal-Key (STEP 0).
                     '/api/v1/infrastructure/nearby',
                     '/api/v1/infrastructure/summary',
-                    '/api/v1/energy/power-plants',
                     '/api/v1/energy/power-plants/nearby',
                     # 2026-07-15: non-/energy/ alias of the same route -- the
                     # land-power map (js/dchub-infrastructure.js) calls this path
