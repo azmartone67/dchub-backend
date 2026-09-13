@@ -32,6 +32,16 @@ timeout that was never a timeout.
    any table, so S1-S3 follow the new table with the same intent — and S2 also
    fails if a SQL literal in site_planner.py still reads the crawl.
 
+   ★ 2026-09-13, step 2 anchored: the lookup no longer matches a prefix at all.
+   A first word matched 797 EIA lines for WEST and served lines hundreds of miles
+   from the substation, so step 2 now matches endpoint names EXACTLY —
+   `from_sub = ANY(%s) OR to_sub = ANY(%s)` over the names of the substations near
+   the site, uppercased in Python. The two shapes S1 exists to stop are unchanged:
+   a leading wildcard, and a function around the column (UPPER() now as well as
+   LOWER(), since the names are uppercased on the other side). S1-S3 read CODE —
+   SQL literals from the AST, comments blanked — so a comment quoting a query can
+   neither satisfy S3 nor hide from S1.
+
 2. THE CAP THAT NEVER CAPPED.  _call_with_timeout promised "a hard wall-clock
    cap" so a slow probe could not blow the report's budget. It was written as
 
@@ -56,11 +66,16 @@ THE CONTRACT
   T2. Anti-vacuity control for T1: the victim function really is slow, and the
       unpatched `with`-form really does block (so T1 can fail).
   T3. _call_with_timeout still returns the value on the happy path.
-  S1. No SQL literal reading transmission_lines uses a LEADING wildcard in a
-      LIKE against its endpoint columns (from_sub/to_sub).
-  S2. Anti-vacuity control for S1: the scan actually finds that query, and no
-      SQL literal still reads the retired discovered_transmission_lines.
-  S3. Positive control: the anchored prefix form is the one in use.
+  S1. No function that reads transmission_lines — nor one it calls or that calls
+      it, where the query's parameters get built — builds a leading-wildcard
+      pattern, and no SQL literal reading it wraps from_sub/to_sub in LOWER() or
+      UPPER().
+  S2. Anti-vacuity control for S1: the scan finds that query and its endpoint
+      predicate, S1's patterns match the shapes they exist to catch, comments are
+      invisible to it, and no SQL literal still reads the retired
+      discovered_transmission_lines.
+  S3. Positive control: the exact `from_sub = ANY(%s) OR to_sub = ANY(%s)` form is
+      the one in use, with the names uppercased in Python.
   P1. _build_survey_data's section pool is not a `with` block — otherwise its
       per-section _grab(timeout=18) cannot bound the request either.
 
@@ -74,10 +89,14 @@ EXPECTED PASS/FAIL — MEASURED, not predicted.
               origin/main 1117752c, not a hand-edited copy.
 """
 
+import ast
 import concurrent.futures as _cf
+import io
 import pathlib
 import re
+import textwrap
 import time
+import tokenize
 
 import pytest
 
@@ -152,9 +171,13 @@ def test_t3_call_with_timeout_still_returns_the_value():
 
 # ── S1/S2/S3 — the transmission query must be index-usable ───────────────────
 
-# A LIKE parameter built as '%...%' — the un-indexable shape.
-_LEADING_WILDCARD = re.compile(r"""['"]%\{?[A-Za-z_]""")
+# A LIKE pattern with a leading wildcard, in the three shapes code builds one:
+# a literal ('%OSM-917634654%'), an f-string (f"%{term}%"), a concatenation
+# ('%' + term). A bare %s placeholder is none of them.
+_LEADING_WILDCARD = re.compile(r"""['"]%(?:\{|['"]\s*\+|[A-Za-z_])""")
 
+# A function around an endpoint column: no index on from_sub/to_sub can serve it.
+_COLUMN_SIDE_FN = re.compile(r"\b(?:LOWER|UPPER)\s*\(\s*(?:from_sub|to_sub)\b", re.I)
 
 # The maintained table as a whole word, so the retired crawl's name
 # (discovered_transmission_lines) can never satisfy it.
@@ -162,62 +185,135 @@ _TX_TABLE = r"(?<![A-Za-z0-9_])transmission_lines(?![A-Za-z0-9_])"
 _RETIRED_TX_TABLE = "discovered_transmission_lines"
 
 
-def _sql_literals(src):
-    return re.findall(r'"""(.*?)"""', src, re.S)
+def _docstring_ids(tree):
+    ids = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            first = node.body[0] if node.body else None
+            if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                ids.add(id(first.value))
+    return ids
 
 
-def _tx_query_blocks(src):
-    """Every SQL literal in src that reads the maintained transmission_lines."""
-    return [m for m in _sql_literals(src)
-            if re.search(r"(FROM|JOIN)\s+" + _TX_TABLE, m, re.I)]
+def _sql_literals(node, docstrings):
+    """String constants under `node`, docstrings excluded. Comments never reach the
+    AST, so prose about a query cannot stand in for the query."""
+    return [n.value for n in ast.walk(node)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and id(n) not in docstrings]
 
 
-def test_s1_no_leading_wildcard_like_against_transmission_endpoints():
-    """S1: from_sub/to_sub LIKE patterns must be anchored, not '%term%'."""
+def _reads_tx(literal):
+    return re.search(r"(FROM|JOIN)\s+" + _TX_TABLE, literal, re.I)
+
+
+def _code_without_comments(src, node):
+    """The source of `node` with every comment blanked out, positions kept."""
+    seg = textwrap.dedent(ast.get_source_segment(src, node, padded=True))
+    lines = seg.splitlines(keepends=True)
+    for tok in tokenize.generate_tokens(io.StringIO(seg).readline):
+        if tok.type == tokenize.COMMENT:
+            (row, col), (_, end) = tok.start, tok.end
+            lines[row - 1] = lines[row - 1][:col] + " " * (end - col) + lines[row - 1][end:]
+    return "".join(lines)
+
+
+def _tx_scope(src):
+    """Every module-level function with a SQL literal reading transmission_lines,
+    plus the module-level functions it calls and those that call it — where that
+    query's parameters get built. Entries: (name, node, its tx literals, code)."""
+    tree = ast.parse(src)
+    docs = _docstring_ids(tree)
+    fns = {n.name: n for n in tree.body
+           if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    def calls(fn):
+        return {c.func.id for c in ast.walk(fn)
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                and c.func.id in fns}
+
+    readers = {name for name, fn in fns.items()
+               if any(_reads_tx(s) for s in _sql_literals(fn, docs))}
+    scope = set(readers)
+    for name in readers:
+        scope |= calls(fns[name])
+    scope |= {name for name, fn in fns.items() if calls(fn) & readers}
+    return [(name, fns[name],
+             [s for s in _sql_literals(fns[name], docs) if _reads_tx(s)],
+             _code_without_comments(src, fns[name]))
+            for name in sorted(scope)]
+
+
+def test_s1_no_leading_wildcard_or_column_side_function_on_transmission_endpoints():
+    """S1: the endpoint match stays index-usable — no '%term' pattern, and no
+    LOWER()/UPPER() around from_sub/to_sub."""
     src = SITE_PLANNER.read_text()
     offenders = []
-    for block in _tx_query_blocks(src):
-        if "LIKE" not in block.upper():
-            continue
-        if re.search(r"LOWER\((from_sub|to_sub)\)\s+LIKE", block, re.I):
-            offenders.append("LOWER(from_sub/to_sub) LIKE — column-side LOWER() "
-                             "defeats any index on the endpoint columns")
-    for m in _LEADING_WILDCARD.finditer(src):
-        line = src[:m.start()].count("\n") + 1
-        ctx = src[max(0, m.start() - 400):m.start()]
-        if re.search(_TX_TABLE, ctx):
-            offenders.append(f"site_planner.py:{line} leading-wildcard LIKE param")
+    for name, _, literals, code in _tx_scope(src):
+        for literal in literals:
+            m = _COLUMN_SIDE_FN.search(literal)
+            if m:
+                offenders.append(f"{name}: `{m.group(0)}...` — a function on the column "
+                                 "defeats any index on from_sub/to_sub")
+        m = _LEADING_WILDCARD.search(code)
+        if m:
+            offenders.append(f"{name}: leading-wildcard pattern {m.group(0)!r}")
     assert not offenders, (
-        "un-indexable LIKE against transmission_lines: "
+        "un-indexable endpoint match against transmission_lines: "
         + "; ".join(offenders)
-        + ". Anchor the pattern (term.upper() + '%') so Postgres can rewrite it "
-          "into an index range. Do NOT add COLLATE \"C\" — that defeats the index."
+        + ". Match the names exactly (from_sub = ANY(%s)), uppercased in Python. "
+          "Do NOT add COLLATE \"C\" — that defeats the index."
     )
 
 
 def test_s2_control_the_scan_finds_the_transmission_query():
     """S2: anti-vacuity. If this fails, S1 proved nothing."""
     src = SITE_PLANNER.read_text()
-    blocks = _tx_query_blocks(src)
-    assert blocks, "scan found no SQL literal reading transmission_lines"
-    assert any("LIKE" in b.upper() for b in blocks), (
-        "scan found the table but no LIKE query — S1 would pass vacuously"
+    scope = _tx_scope(src)
+    literals = [lit for _, _, lits, _ in scope for lit in lits]
+    assert literals, "scan found no SQL literal reading transmission_lines"
+    assert any(re.search(r"\bWHERE\b.*\bfrom_sub\b.*\bto_sub\b", lit, re.I | re.S)
+               for lit in literals), (
+        "scan found the table but no predicate on from_sub/to_sub — S1 would pass vacuously"
     )
-    stale = [b for b in _sql_literals(src) if _RETIRED_TX_TABLE in b]
+    names = {name for name, *_ in scope}
+    assert "find_nearest_transmission" in names, (
+        f"S1's scope {sorted(names)} misses the lookup's entry point, where a pattern "
+        "could be built and passed in"
+    )
+    # S1's patterns match the shapes they exist to catch, and not the placeholder.
+    for shape in ("LOWER(from_sub) LIKE LOWER(%s)", "UPPER( to_sub ) = ANY(%s)"):
+        assert _COLUMN_SIDE_FN.search(shape), shape
+    for shape in ('f"%{search_term}%"', "'%' + term", '"%"+term', "'%OSM-917634654%'"):
+        assert _LEADING_WILDCARD.search(shape), shape
+    assert not _LEADING_WILDCARD.search("WHERE from_sub LIKE %s"), "a bare %s is not a wildcard"
+    # Comments are invisible to the scan: the same shapes in one cannot trip S1.
+    commented = "def f():\n    # f\"%{term}%\" and UPPER(from_sub)\n    return 1\n"
+    assert not _LEADING_WILDCARD.search(
+        _code_without_comments(commented, ast.parse(commented).body[0]))
+    tree = ast.parse(src)
+    stale = [lit for lit in _sql_literals(tree, _docstring_ids(tree)) if _RETIRED_TX_TABLE in lit]
     assert not stale, (
         "a SQL literal in site_planner.py still reads discovered_transmission_lines, "
         "the frozen March 2026 crawl retired 2026-09-13 — read transmission_lines"
     )
 
 
-def test_s3_positive_control_the_anchored_prefix_is_in_use():
+def test_s3_positive_control_the_exact_anchored_form_is_in_use():
     """S3: the replacement is present, not merely the offender absent."""
     src = SITE_PLANNER.read_text()
-    assert re.search(r"from_sub LIKE %s OR to_sub LIKE %s", src), (
-        "expected the anchored `from_sub LIKE %s OR to_sub LIKE %s` form"
+    readers = [(name, fn, lits) for name, fn, lits, _ in _tx_scope(src) if lits]
+    assert any(re.search(r"from_sub = ANY\(%s\) OR to_sub = ANY\(%s\)", lit)
+               for _, _, lits in readers for lit in lits), (
+        "expected the exact `from_sub = ANY(%s) OR to_sub = ANY(%s)` form in a SQL literal"
     )
-    assert re.search(r"search_term\.upper\(\)\s*\+\s*'%'", src), (
-        "expected the prefix pattern to be built as search_term.upper() + '%'"
+    assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+               and n.func.attr == "upper"
+               for _, fn, _ in readers for n in ast.walk(fn)), (
+        "expected the names uppercased in Python (name.upper()) in the function that "
+        "runs the endpoint query: endpoints are stored uppercase, and a function on "
+        "the column defeats its index"
     )
 
 
