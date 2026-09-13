@@ -168,6 +168,11 @@ def _exec(block, run_body, run_code, status_before="", status_after="",
     script = block.replace("${{ secrets.DCHUB_ADMIN_KEY }}", "k")
     script = script.replace("${{ secrets.DCHUB_INTERNAL_KEY }}", "k")
     with tempfile.TemporaryDirectory() as td:
+        # The steps write their watermarks and bodies to fixed /tmp paths. Two
+        # runs of this file at once (2026-09-13: a mutation run overlapping two
+        # full-suite runs) read each other's /tmp/kmz-wm.json and failed three
+        # tests on a clean tree. Each run gets its own directory.
+        script = script.replace("/tmp/", td + "/")
         sh = os.path.join(td, "s.sh")
         log = os.path.join(td, "urls")
         open(log, "w").close()
@@ -372,6 +377,100 @@ def test_kmz_non_2xx_fails_loudly():
         rc, out, _ = _exec(_kmz_block(), '{"error":"nope"}', code)
         assert rc != 0, f"HTTP {code} did not fail the step:\n{out}"
         assert "::error::" in out and code in out, out
+
+
+# --------------------------------------------------------------------------
+# kmz-discovery — a cycle that COMPLETED is not a cycle that WORKED (2026-09-13)
+#
+# Every kmz_discovery_log row said 'success' while 53 of the cycle's 58 known
+# sources answered with error bodies that were read as "no features". The row
+# now records success / partial / failed and the status endpoint serves it as
+# last_cycle_status; the step judges the newest row it read.
+# --------------------------------------------------------------------------
+
+def _kmz_wm_with_status(last_cycle_at, status):
+    return ('{"success": true, "last_cycle": "2099-01-01T00:00:00", '
+            '"last_cycle_at": "%s", "last_cycle_status": "%s"}'
+            % (last_cycle_at, status))
+
+
+def test_kmz_newest_cycle_failed_fails_the_step():
+    same = _fresh(6)
+    rc, out, _ = _exec(_kmz_block(), DELEGATED_202, "202",
+                       _kmz_wm_with_status(same, "failed"),
+                       _kmz_wm_with_status(same, "failed"))
+    assert rc != 0, f"a cycle that could read none of its layers passed:\n{out}"
+    assert "::error::" in out and "FAILED" in out, out
+
+
+def test_kmz_partial_cycle_warns_without_failing():
+    same = _fresh(6)
+    rc, out, _ = _exec(_kmz_block(), DELEGATED_202, "202",
+                       _kmz_wm_with_status(same, "partial"),
+                       _kmz_wm_with_status(same, "partial"))
+    assert rc == 0, out
+    assert "::warning::" in out and "PARTIAL" in out, out
+    assert "::error::" not in out, out
+
+
+def test_kmz_a_cycle_that_lands_in_the_poll_is_judged_on_its_own_row():
+    """BEFORE succeeded; the cycle that lands inside the poll failed. Judging the
+    row read before the POST would pass a failed cycle."""
+    rc, out, _ = _exec(_kmz_block(), DELEGATED_202, "202",
+                       _kmz_wm_with_status(_fresh(6), "ok"),
+                       _kmz_wm_with_status(_T1, "failed"))
+    assert rc != 0, out
+    assert "completed on the worker" in out and "FAILED" in out, out
+
+
+def test_kmz_a_new_ok_cycle_supersedes_a_failed_previous_one():
+    rc, out, _ = _exec(_kmz_block(), DELEGATED_202, "202",
+                       _kmz_wm_with_status(_fresh(6), "failed"),
+                       _kmz_wm_with_status(_T1, "ok"))
+    assert rc == 0, f"the superseded row was judged instead of the new one:\n{out}"
+    assert "newest recorded kmz cycle: ok" in out, out
+
+
+def test_kmz_a_legacy_success_row_is_unknown_not_success():
+    """Every row written before 2026-09-13 says 'success', including cycles in
+    which no known layer could be read. Reporting that constant as a measured
+    outcome is the defect this judgement exists to stop."""
+    same = _fresh(6)
+    rc, out, _ = _exec(_kmz_block(), DELEGATED_202, "202",
+                       _kmz_wm_with_status(same, "success"),
+                       _kmz_wm_with_status(same, "success"))
+    assert rc == 0, out
+    assert "outcome UNKNOWN" in out and "predates measured outcomes" in out, out
+    assert "kmz cycle: ok" not in out, out
+
+
+def test_kmz_a_row_without_a_status_is_unknown_not_a_failure():
+    same = _fresh(6)
+    rc, out, _ = _exec(_kmz_block(), DELEGATED_202, "202",
+                       _kmz_wm(same), _kmz_wm(same))
+    assert rc == 0, out
+    assert "status UNKNOWN" in out, out
+
+
+def test_kmz_200_with_every_known_layer_unreadable_fails():
+    body = ('{"success": true, "results": {"total_new_routes": 0, '
+            '"total_new_km": 0, "cycle_duration_seconds": 12.0, '
+            '"known_sources": {"queried": 4, "failed": 4, "failed_sources": '
+            '[{"name": "HIFLD Electric Substations", "error": "HTTP 200 with '
+            'an error body: 400 Invalid URL"}]}}}')
+    rc, out, _ = _exec(_kmz_block(), body, "200")
+    assert rc != 0, out
+    assert "::error::" in out and "HIFLD Electric Substations" in out, out
+
+
+def test_kmz_200_with_some_known_layers_unreadable_warns():
+    body = ('{"success": true, "results": {"total_new_routes": 9, '
+            '"total_new_km": 40.5, "cycle_duration_seconds": 12.0, '
+            '"known_sources": {"queried": 4, "failed": 2, "failed_sources": '
+            '[{"name": "a"}, {"name": "b"}]}}}')
+    rc, out, _ = _exec(_kmz_block(), body, "200")
+    assert rc == 0, out
+    assert "::warning::" in out and "2 of 4" in out, out
 
 
 # --------------------------------------------------------------------------

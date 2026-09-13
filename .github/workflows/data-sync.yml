@@ -227,33 +227,139 @@ jobs:
     # each spend up to 5 min polling the worker watermark on top of that.
     timeout-minutes: 30
     steps:
+      # ★ 2026-09-13 — THIS STEP FIRED FOUR LOADERS AND COULD SEE NONE OF THEM.
+      # Three of the four cannot load anything. Measured on the runs of
+      # 2026-09-12 12:19Z and 2026-09-13 00:46Z:
+      #
+      #   load-substations-live   queries services1.arcgis.com/Hp6G80Pky0om7QvQ's
+      #                           Electric_Substations service, which no longer
+      #                           exists (HTTP 200 with {"error": {"code": 400,
+      #                           "message": "Invalid URL"}}). It aborted with a
+      #                           RuntimeError on every run.
+      #   load-power-plants-live  paged EIA's generator API for 28 minutes
+      #                           (310,000 rows), truncated eia_generators, then
+      #                           failed every insert chunk: its INSERT names a
+      #                           column "name" the live table does not have. The
+      #                           truncate rolled back and nothing was written.
+      #   load-facilities-live    fetched PeeringDB (5,861 facilities), Overpass,
+      #                           news feeds and Cloudscene, and inserted none of
+      #                           it: the entry point it runs only fetches.
+      #
+      # All three are off this schedule; the endpoints remain for manual runs.
+      # load-pipelines-live, the one that writes, stays.
+      #
+      # The step could not fail, either. Each POST was piped into
+      # `json.tool || echo`, then it slept 90s and printed
+      # /api/admin/loader-status once. That state is in-memory PER REPLICA and
+      # railway.json runs two, so a read sees only the loaders its replica ran:
+      # on 2026-09-12 06:23Z and 18:15Z it printed {"loaders": {}} after four
+      # loaders had started, and on 2026-09-13 00:46Z it printed the substations
+      # RuntimeError under a green step.
+      #
+      # Now a refused POST fails the step, the status is read six times and
+      # merged across whichever replicas answer, and a loader this run started
+      # that finished with an error fails the step. One still running, or
+      # whose state sits on a replica no read reached, is UNKNOWN: never zero,
+      # never success.
       - name: Fire async loaders (phase 12g — non-blocking)
+        env:
+          INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
         run: |
+          set -uo pipefail
           RAILWAY="https://dchub-backend-production.up.railway.app"
-          INTERNAL_KEY="${{ secrets.DCHUB_INTERNAL_KEY }}"
-          if [ -z "$INTERNAL_KEY" ]; then
+          if [ -z "${INTERNAL_KEY:-}" ]; then
             echo "::error::DCHUB_INTERNAL_KEY secret not set — refusing public fallback"; exit 1
           fi
           echo "Step 0/4: Firing async loaders..."
           # 2026-08-21: load-energy-discovery-live dropped — legacy twin of the
           # retired /api/jobs/energy-discovery, same dead HIFLD host, wrote nothing.
-          for endpoint in load-substations-live load-power-plants-live load-pipelines-live load-facilities-live; do
-            echo "  → $endpoint"
-            curl -sS --max-time 15 -X POST "$RAILWAY/api/admin/$endpoint" \
+          # endpoint:status_key — the key /api/admin/loader-status files it under.
+          LOADERS="load-pipelines-live:pipelines"
+          # A record started before SINCE belongs to an earlier run on whichever
+          # replica answered. Two minutes absorbs runner/origin clock skew; runs
+          # are hours apart.
+          SINCE=$(python3 -c "import datetime as d; print((d.datetime.now(d.timezone.utc) - d.timedelta(minutes=2)).strftime('%Y-%m-%dT%H:%M:%S'))")
+          FIRED=""
+          FAILED=0
+          for pair in $LOADERS; do
+            endpoint="${pair%%:*}"
+            key="${pair##*:}"
+            rm -f /tmp/loader-fire.json
+            CODE=$(curl -sS --max-time 15 -o /tmp/loader-fire.json -w '%{http_code}' \
+              -X POST "$RAILWAY/api/admin/$endpoint" \
               -H "X-Internal-Key: $INTERNAL_KEY" \
-              -H "Content-Type: application/json" \
-              | python3 -m json.tool || echo "    (non-JSON response — see Railway logs)"
-            echo ""
+              -H "Content-Type: application/json") || CODE="000"
+            echo "  → $endpoint HTTP $CODE $(head -c 300 /tmp/loader-fire.json 2>/dev/null)"
+            if [ "$CODE" != "200" ]; then
+              echo "::error::$endpoint answered HTTP $CODE — the $key loader was NOT started"
+              FAILED=1
+              continue
+            fi
+            STARTED=$(python3 -c "import json; d = json.load(open('/tmp/loader-fire.json')); print('yes' if d.get('started') else ('busy' if d.get('reason') == 'already running' else 'no'))" 2>/dev/null || echo "unreadable")
+            case "$STARTED" in
+              yes) FIRED="$FIRED $key" ;;
+              busy) echo "::notice::the $key loader is still running from an earlier fire — not restarted, outcome UNKNOWN" ;;
+              *) echo "::error::$endpoint answered HTTP 200 without starting the $key loader"; FAILED=1 ;;
+            esac
           done
-          echo "Sleeping 90s while loaders run in background..."
-          sleep 90
-          echo ""
-          echo "Final loader status:"
-          curl -sS --max-time 10 "$RAILWAY/api/admin/loader-status" \
-            -H "X-Internal-Key: $INTERNAL_KEY" \
-            | python3 -m json.tool || echo "(status endpoint unreachable)"
+          : > /tmp/loader-status.jsonl
+          READS=0
+          if [ -n "$FIRED" ]; then
+            for i in $(seq 1 6); do
+              sleep 15
+              CODE=$(curl -sS --max-time 10 -o /tmp/loader-status.json -w '%{http_code}' \
+                -H "X-Internal-Key: $INTERNAL_KEY" \
+                "$RAILWAY/api/admin/loader-status") || CODE="000"
+              if [ "$CODE" = "200" ]; then
+                READS=$((READS + 1))
+                python3 -c "import json; print(json.dumps(json.load(open('/tmp/loader-status.json'))))" >> /tmp/loader-status.jsonl 2>/dev/null \
+                  || echo "::warning::loader-status read $i/6 answered HTTP 200 with a body that is not JSON"
+              else
+                echo "::warning::loader-status read $i/6 returned HTTP $CODE"
+              fi
+            done
+            if [ "$READS" = "0" ]; then
+              echo "::error::no /api/admin/loader-status read succeeded — the outcome of every loader fired above is unreadable, which is how a failing loader stays green"
+              FAILED=1
+            fi
+          fi
+          FIRED="$FIRED" SINCE="$SINCE" python3 - <<'PY' || FAILED=1
+          import json, os, sys
+          fired = os.environ["FIRED"].split()
+          since = os.environ["SINCE"]
+          seen = {}
+          for line in open("/tmp/loader-status.jsonl"):
+              try:
+                  loaders = json.loads(line).get("loaders") or {}
+              except (ValueError, AttributeError):
+                  continue
+              for key, rec in loaders.items():
+                  if not isinstance(rec, dict) or str(rec.get("started_at") or "")[:19] < since:
+                      continue
+                  if key not in seen or (seen[key].get("running") and not rec.get("running")):
+                      seen[key] = rec
+          failed = False
+          for key in fired:
+              rec = seen.get(key)
+              if rec is None:
+                  print(f"::notice::{key}: outcome UNKNOWN — no status read reached the replica running it (loader state is in-memory per replica)")
+              elif rec.get("running"):
+                  print(f"::notice::{key}: still running after the poll — outcome UNKNOWN, not failed")
+              elif rec.get("error"):
+                  print(f"::error::the {key} loader FAILED: {str(rec.get('error'))[:300]}")
+                  failed = True
+              elif rec.get("ok"):
+                  print(f"::notice::the {key} loader finished: {str(rec.get('result'))[:200]}")
+              else:
+                  print(f"::warning::the {key} loader finished in an unrecognised shape: {sorted(rec)}")
+          sys.exit(1 if failed else 0)
+          PY
+          exit "$FAILED"
 
+      # `if: always()`: the loader step above can fail now, and a red loader
+      # must not cancel the unrelated syncs that share this cron.
       - name: Infrastructure discovery
+        if: always()
         env:
           INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
         run: |
@@ -281,11 +387,14 @@ jobs:
       #      this was the only step that could take the job down with it.
       #
       # This step is a pure READ (SELECT ... FROM power_plants_eia) — it
-      # verifies, it does not ingest. The ingestion is step 0's async loaders.
+      # verifies, it does not ingest. (This comment used to say step 0's async
+      # loaders do the ingesting; none of them writes power_plants_eia.)
       # So it must NEVER be able to fail the job: a verification step that
       # blocks the work it verifies is strictly worse than no verification.
       # `set +e` + explicit exit 0 make that structural, not incidental.
+      # `if: always()` so a red loader step above cannot skip it.
       - name: Energy discovery per market
+        if: always()
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
@@ -382,9 +491,36 @@ jobs:
               echo "::warning::/api/kmz-discovery/status returned HTTP $code — watermark UNKNOWN for this read" >&2
               return 0
             fi
+            # The outcome recorded in the same newest cycle row, for judge_kmz_cycle.
+            python3 -c "import sys,json;print(json.load(sys.stdin).get('last_cycle_status') or '')" \
+              < /tmp/kmz-wm.json > /tmp/kmz-cycle-status.txt 2>/dev/null || true
             python3 -c "import sys,json;print(json.load(sys.stdin).get('last_cycle_at') or '')" \
               < /tmp/kmz-wm.json 2>/dev/null || true
           }
+          # ★ 2026-09-13 — A CYCLE THAT COMPLETED IS NOT A CYCLE THAT WORKED.
+          # Every kmz_discovery_log row said 'success'. The cycle read its
+          # ArcGIS layers through a check that turned an error body into "no
+          # features", and 53 of its 58 known sources were dead. The row now
+          # records ok, partial (some known layers unreadable) or failed (none
+          # readable). This judges the newest row this run read: the cycle that
+          # landed inside the poll, or else the previous one. 'success' is what
+          # every older row says whatever happened, so it is reported UNKNOWN.
+          judge_kmz_cycle() {
+            local st
+            st=$(cat /tmp/kmz-cycle-status.txt 2>/dev/null || true)
+            case "$st" in
+              ok) echo "::notice::newest recorded kmz cycle: ok — every known ArcGIS layer was read" ;;
+              partial) echo "::warning::newest recorded kmz cycle was PARTIAL — some known ArcGIS layers could not be read (the worker log names them: 'Known source FAILED')" ;;
+              failed)
+                echo "::error::newest recorded kmz cycle FAILED — no known ArcGIS layer could be read (the worker log names them: 'Known source FAILED')"
+                return 1 ;;
+              success) echo "::notice::newest kmz cycle outcome UNKNOWN — the row predates measured outcomes (older rows say 'success' whatever the cycle found)" ;;
+              "") echo "::notice::newest kmz cycle status UNKNOWN — no status was served, or no status read succeeded" ;;
+              *) echo "::warning::newest kmz cycle status is unrecognised: $st" ;;
+            esac
+            return 0
+          }
+          rm -f /tmp/kmz-cycle-status.txt
           BEFORE=$(read_kmz_watermark)
           echo "pre-run last_cycle_at=${BEFORE:-<none>}"
           # ★ THE STALENESS GATE — this is where a KMZ cycle that never lands
@@ -475,6 +611,7 @@ jobs:
               fi
               echo "::notice::kmz-discovery still running on the worker after 5 min of polling — expected for a cycle measured at ~17.7 min. Counters UNKNOWN for this run, not zero and not failed; the staleness gate above fails the NEXT run if it never lands."
             fi
+            judge_kmz_cycle || exit 1
             exit 0
           fi
           if [ "$CODE" != "200" ]; then
@@ -489,6 +626,17 @@ jobs:
               print(f\"::warning::kmz-discovery skipped: {r.get('reason')}\")
           elif 'total_new_routes' in r:
               print(f\"::notice::kmz-discovery: new_routes={r.get('total_new_routes')} new_km={r.get('total_new_km')} duration={r.get('cycle_duration_seconds')}s\")
+              k = r.get('known_sources') or {}
+              if k.get('error'):
+                  print(f\"::error::kmz-discovery: the known-sources stage raised: {k.get('error')}\")
+                  sys.exit(1)
+              queried, failed = k.get('queried'), k.get('failed')
+              if isinstance(queried, int) and isinstance(failed, int) and failed:
+                  names = '; '.join(str(s.get('name')) for s in k.get('failed_sources') or [])
+                  if failed >= queried:
+                      print(f'::error::kmz-discovery: none of the {queried} known ArcGIS layers could be read: {names}')
+                      sys.exit(1)
+                  print(f'::warning::kmz-discovery: {failed} of {queried} known ArcGIS layers could not be read: {names}')
           else:
               print(f'::warning::kmz-discovery returned 200 in an UNRECOGNISED shape: {sorted(d)}')
           " < /tmp/kmz.json
@@ -607,7 +755,10 @@ jobs:
       # after ~15s while the job continues there. So 202 is SUCCESS here, and
       # a non-2xx FAILS the step loudly rather than echoing a reassuring line
       # — the #2318 lesson, which cost 147 hours of green.
+      #
+      # `if: always()` so a red loader, KMZ or evolution step above cannot skip it.
       - name: Subsea cable sync
+        if: always()
         env:
           INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}

@@ -7,23 +7,19 @@ Enhanced with:
 - More comprehensive recommendations
 - Tallgrass/REX pipeline detection
 - Power plant proximity scoring
-- FALLBACK ENDPOINTS for HIFLD services (v3)
-- Multiple source queries for substations, transmission, power plants
+- The routes that proxied live ArcGIS layers were retired 2026-09-13 (410)
 
 INSTALLATION:
 1. Replace existing energy_infrastructure_routes.py in Replit
 2. Restart the server
 """
 
-import requests
 from flask import request, jsonify
-from functools import wraps
-from api_data_protection import protect_data
+import copy
+import re
 import time
-import logging
 from math import cos, radians, sin, sqrt, atan2, inf
-from db_utils import get_db
-from internal_auth import is_valid_internal_key, get_internal_key_for_client
+from internal_auth import get_internal_key_for_client
 from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
 # ============================================================================
 # Phase 34 — alias-wired query
@@ -38,94 +34,11 @@ from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_norm
 # This makes 'amazon' match AWS rows, 'google' match GCP, etc.
 # ============================================================================
 
-# Lazy tier gating - checks at runtime, not import time
-def require_plan(min_plan='pro'):
-    """Lazy require_plan — validates plan at request time.
-    Bypasses for X-Internal-Key (MCP proxy, scheduler, internal sync).
-    """
-    logger = logging.getLogger(__name__)
-    
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            try:
-                # X-Internal-Key bypass (MCP proxy + scheduler calls)
-                internal_key = request.headers.get('X-Internal-Key', '')
-                if is_valid_internal_key(internal_key):
-                    return f(*args, **kwargs)
-
-                from api_tier_gating import validate_api_key, user_has_access
-                
-                # Check API key
-                api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-                if not api_key:
-                    auth_header = request.headers.get('Authorization', '')
-                    if auth_header.startswith('Bearer '):
-                        token = auth_header[7:]
-                        if token.startswith('dchub_'):
-                            api_key = token
-                
-                if not api_key:
-                    return jsonify({
-                        'success': False,
-                        'error': 'authentication_required',
-                        'message': f'This endpoint requires a {min_plan.title()} plan or higher.',
-                        'signup_url': 'https://dchub.cloud/signup',
-                    }), 401
-                
-                valid, info = validate_api_key(api_key)
-                if not valid:
-                    return jsonify({
-                        'success': False,
-                        'error': 'invalid_api_key',
-                        'message': 'Invalid or inactive API key',
-                    }), 401
-                
-                user_plan = info.get('plan', 'free')
-                if not user_has_access(user_plan, min_plan):
-                    return jsonify({
-                        'success': False,
-                        'error': 'plan_upgrade_required',
-                        'message': f'This endpoint requires {min_plan.title()} plan. You are on {user_plan.title()}.',
-                        'upgrade_url': 'https://dchub.cloud/pricing',
-                    }), 403
-                
-                return f(*args, **kwargs)
-            except ImportError:
-                return f(*args, **kwargs)
-            except Exception as e:
-                logger.error(f"Tier gating error: {e}")
-                return f(*args, **kwargs)
-        return wrapper
-    return decorator
-
 # =============================================================================
 # CONFIGURATION
 # =============================================================================# =============================================================================
 # CONFIGURATION
 # =============================================================================
-
-# External API endpoints
-# Primary HIFLD endpoints (services1.arcgis.com)
-HIFLD_BASE = 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services'
-
-# Alternative HIFLD endpoints (if primary fails)
-HIFLD_ALT_SUBSTATIONS = 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/US_Electric_Substations_Transmission_Lines/FeatureServer/0'
-HIFLD_ALT_TRANSMISSION = 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/US_Electric_Power_Transmission_Lines/FeatureServer/0'
-HIFLD_ALT_POWERPLANTS = 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/US_Power_Plants/FeatureServer/0'
-
-# EIA Power Plants (reliable alternative)
-EIA_POWER_PLANTS = 'https://services.arcgis.com/rjCUzSIRlCIAZQhK/arcgis/rest/services/EIA_Power_Plants/FeatureServer/0'
-
-DOT_PIPELINES = 'https://geo.dot.gov/server/rest/services/Hosted/Natural_Gas_Pipelines_US_EIA/FeatureServer/0'
-TEXAS_RRC_BASE = 'https://gis.rrc.texas.gov/server/rest/services/rrc_public/RRC_Public_Viewer_Srvs/MapServer'
-
-# State oil/gas GIS endpoints
-STATE_GIS = {
-    'CA': 'https://gis.conservation.ca.gov/server/rest/services/WellSTAR/Wells/MapServer/0',
-    'NM': 'https://services.arcgis.com/QVENGdaPbd4LUkLV/arcgis/rest/services/OCD_Wells/FeatureServer/0',
-    'CO': 'https://cogccmap.state.co.us/arcgis/rest/services/CO_COGCC_Pub/SurfaceHoles/MapServer/0',
-}
 
 # Simple in-memory cache
 _CACHE = {}
@@ -146,27 +59,6 @@ def set_cache(key, data):
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
-
-def query_arcgis(base_url, params, timeout=30):
-    """Query an ArcGIS REST API endpoint"""
-    default_params = {
-        'f': 'json',
-        'outSR': '4326',
-        'returnGeometry': 'true',
-    }
-    default_params.update(params)
-    
-    try:
-        response = requests.get(
-            f"{base_url}/query",
-            params=default_params,
-            timeout=timeout
-        )
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        print(f"ArcGIS query error: {e}")
-        return {'features': [], 'error': str(e)}
 
 def bounds_to_envelope(min_lat, max_lat, min_lng, max_lng):
     """Convert bounds to ArcGIS envelope string"""
@@ -460,6 +352,56 @@ def calculate_infrastructure_score(lat, lng, substations, pipelines, transmissio
 # FLASK ROUTES
 # =============================================================================
 
+# Substation detail on /api/v1/energy/site-analysis follows the caller, matching
+# the HIFLD substations feeder (expanded_infrastructure_api.get_substations).
+# Callers that are not privileged get coordinates rounded to 0.1 degree (~11 km),
+# no OWNER or ZIP, and the distance to the nearest substation as a band instead
+# of a figure, in the score details and in the recommendation text. Scores are
+# computed from the full data first, so every caller gets the same scores.
+_SUBSTATION_DISTANCE_TEXT = re.compile(r'Substation (within )?(\d+(?:\.\d+)?)km')
+
+
+def _substation_distance_band(match):
+    km = float(match.group(2))
+    if km < 5:
+        return 'Substation within 5km'
+    if km < 10:
+        return 'Substation within 10km'
+    if km < 20:
+        return 'Substation 10-20km'
+    return 'Substation 20km+'
+
+
+def _coarsen_site_analysis(data):
+    """Reduce a site-analysis payload to public precision, IN PLACE.
+
+    Pass a dict nothing else holds: the fresh result is cached as a copy, and a
+    cached payload is copied before it gets here."""
+    for sub in (data.get('infrastructure') or {}).get('substations') or []:
+        geom = sub.get('geometry') or {}
+        for axis in ('x', 'y'):
+            if geom.get(axis) is not None:
+                geom[axis] = round(geom[axis], 1)
+        attrs = sub.get('attributes') or {}
+        attrs['OWNER'] = None
+        attrs['ZIP'] = None
+    scores = data.get('scores') or {}
+    details = scores.get('details') or {}
+    if 'nearestSubstationKm' in details:
+        details['nearestSubstationKm'] = None
+    if isinstance(scores.get('recommendations'), list):
+        scores['recommendations'] = [
+            _SUBSTATION_DISTANCE_TEXT.sub(_substation_distance_band, r) if isinstance(r, str) else r
+            for r in scores['recommendations']
+        ]
+    data['_gated'] = True
+    data['_upgrade_cta'] = (
+        "Free preview: substation locations are approximate (~11 km). Exact "
+        "coordinates, owner and distance require a free key or sign-in — "
+        "dchub.cloud/pricing")
+    return data
+
+
 def setup_energy_routes(app):
     """Register energy infrastructure routes with Flask app"""
     
@@ -482,8 +424,18 @@ def setup_energy_routes(app):
         
         # Check cache
         cache_key = f"site-analysis:{lat:.4f}:{lng:.4f}:{radius}"
+
+        # Precision follows the caller (see _coarsen_site_analysis). Fails closed.
+        try:
+            from routes.tier_gate import caller_is_privileged
+            _full = caller_is_privileged('IDENTIFIED')
+        except Exception:
+            _full = False
+
         cached = get_cached(cache_key)
         if cached:
+            if not _full:
+                cached = _coarsen_site_analysis(copy.deepcopy(cached))
             return jsonify({'success': True, 'data': cached, 'cached': True})
         
         # Calculate bounds
@@ -714,536 +666,196 @@ def setup_energy_routes(app):
             }
         }
         
-        set_cache(cache_key, result)
+        set_cache(cache_key, copy.deepcopy(result))
+        if not _full:
+            _coarsen_site_analysis(result)
         return jsonify({'success': True, 'data': result})
     
+    # ── RETIRED 2026-09-13 ──────────────────────────────────────────────────
+    # This route passed its bounding box to the DOT natural-gas pipelines layer
+    # (geo.dot.gov Natural_Gas_Pipelines_US_EIA), which answered HTTP 500 with an
+    # "Application Error" page on every probe on 2026-09-13, so the route could only
+    # answer 500.
+    #
+    # Retired rather than repointed: dchub-frontend and dchub-mcp-server do not fetch
+    # this path, and Railway logged no request to it in the seven days to 2026-09-13.
+    # Pipelines near a point are already served from the gas_pipelines table, which
+    # routes/gas_pipeline_ingest.py writes, by the route named in `instead`.
     @app.route('/api/v1/energy/pipelines', methods=['GET'])
     def get_pipelines():
-        """
-        Get gas pipelines in an area
-        
-        Query params:
-        - minLat, maxLat, minLng, maxLng: Bounding box
-        - type: 'interstate', 'intrastate', or 'all' (default: all)
-        - operator: Filter by operator name
-        """
-        min_lat = request.args.get('minLat', type=float)
-        max_lat = request.args.get('maxLat', type=float)
-        min_lng = request.args.get('minLng', type=float)
-        max_lng = request.args.get('maxLng', type=float)
-        pipe_type = request.args.get('type', 'all')
-        operator = request.args.get('operator', '')
-        
-        if not all([min_lat, max_lat, min_lng, max_lng]):
-            return jsonify({'success': False, 'error': 'Bounds required (minLat, maxLat, minLng, maxLng)'}), 400
-        
-        envelope = bounds_to_envelope(min_lat, max_lat, min_lng, max_lng)
-        
-        # Build where clause (case-insensitive)
-        where_parts = ['1=1']
-        if pipe_type != 'all':
-            # Handle case-insensitive matching
-            where_parts.append(f"UPPER(typepipe) = '{pipe_type.upper()}'")
-        if operator:
-            where_parts.append(f"UPPER(operator) LIKE '%{operator.upper()}%'")
-        
-        try:
-            data = query_arcgis(DOT_PIPELINES, {
-                'where': ' AND '.join(where_parts),
-                'geometry': envelope,
-                'geometryType': 'esriGeometryEnvelope',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': '*',
-                'inSR': '4326',
-                'resultRecordCount': '1000'
-            })
-            
-            return jsonify({
-                'success': True,
-                'count': len(data.get('features', [])),
-                'data': data.get('features', [])
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
+        """RETIRED 2026-09-13: answers 410 before any network work (see the note above)."""
+        return jsonify({
+            'success': False,
+            'retired': True,
+            'retired_at': '2026-09-13',
+            'error': 'route_retired',
+            'reason': ('This route queried a DOT natural-gas pipelines service that answers '
+                       'HTTP 500, so it could not return a pipeline.'),
+            'instead': '/api/v2/infrastructure/hifld/gas-pipelines?lat=<lat>&lng=<lng>&radius=<miles>',
+        }), 410
     
+    # ── RETIRED 2026-09-13 ──────────────────────────────────────────────────
+    # This route passed its bounding box to the Electric_Substations service on
+    # services1.arcgis.com/Hp6G80Pky0om7QvQ, which no longer exists: ArcGIS answers
+    # HTTP 200 with {"error":{"code":400,"message":"Invalid URL"}}, and that org's
+    # 527-service directory lists no substations service. query_arcgis returned the
+    # error body as data, so the route answered success:true, count:0 on every call.
+    #
+    # Retired rather than repointed. dchub-frontend defines two fetches of this path
+    # that nothing invokes, and both send arguments this route rejected with 400
+    # (lat/lng/radius, state/limit); dchub-mcp-server does not call it. Railway
+    # logged one request in the seven days to 2026-09-13, the probe behind this
+    # change. The national layer that still answers (services5 HDRa0B57OVrv2E1q) is
+    # the one routes/substation_ingest.py refuses to write: 38,479 of its 75,328
+    # names are UNKNOWN<id> placeholders, 18,433 rows carry MAX_VOLT -999999, and its
+    # data was last edited 2021-02-25. The substations table is already served by
+    # the route named in `instead`, which the Land & Power map reads.
     @app.route('/api/v1/energy/substations', methods=['GET'])
     def get_substations():
-        """
-        Get electrical substations in an area
-        
-        Query params:
-        - minLat, maxLat, minLng, maxLng: Bounding box
-        - minVoltage: Minimum voltage in kV (default: 0)
-        """
-        min_lat = request.args.get('minLat', type=float)
-        max_lat = request.args.get('maxLat', type=float)
-        min_lng = request.args.get('minLng', type=float)
-        max_lng = request.args.get('maxLng', type=float)
-        min_voltage = request.args.get('minVoltage', 0, type=int)
-        
-        if not all([min_lat, max_lat, min_lng, max_lng]):
-            return jsonify({'success': False, 'error': 'Bounds required'}), 400
-        
-        envelope = bounds_to_envelope(min_lat, max_lat, min_lng, max_lng)
-        
-        where_clause = '1=1'
-        if min_voltage > 0:
-            where_clause = f'MAX_VOLT >= {min_voltage}'
-        
-        try:
-            data = query_arcgis(f"{HIFLD_BASE}/Electric_Substations/FeatureServer/0", {
-                'where': where_clause,
-                'geometry': envelope,
-                'geometryType': 'esriGeometryEnvelope',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': '*',
-                'inSR': '4326',
-                'resultRecordCount': '1000'
-            })
-            
-            return jsonify({
-                'success': True,
-                'count': len(data.get('features', [])),
-                'data': data.get('features', [])
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
-    
+        """RETIRED 2026-09-13: answers 410 before any network work (see the note above)."""
+        return jsonify({
+            'success': False,
+            'retired': True,
+            'retired_at': '2026-09-13',
+            'error': 'route_retired',
+            'reason': ('This route queried an ArcGIS substations service that no longer '
+                       'exists, and answered every request with zero substations.'),
+            'instead': '/api/v2/infrastructure/hifld/substations?lat=<lat>&lng=<lng>&radius=<miles>',
+        }), 410
+
+    # ── RETIRED 2026-09-13 ──────────────────────────────────────────────────
+    # This route passed its bounding box to Electric_Power_Transmission_Lines on
+    # services1.arcgis.com/Hp6G80Pky0om7QvQ. That layer still answers, but it is a
+    # superseded copy: 52,244 lines on 2026-09-13, against 89,744 on the services5
+    # layer util/hifld_layers.py names as canonical.
+    #
+    # Retired rather than repointed: dchub-frontend and dchub-mcp-server do not fetch
+    # this path, and Railway logged no request to it in the seven days to 2026-09-13.
+    # Lines near a point are already served from the maintained transmission_lines
+    # table by the route named in `instead`.
     @app.route('/api/v1/energy/transmission', methods=['GET'])
     def get_transmission_lines():
-        """
-        Get transmission lines in an area
-        
-        Query params:
-        - minLat, maxLat, minLng, maxLng: Bounding box
-        - minVoltage: Minimum voltage in kV (default: 69)
-        """
-        min_lat = request.args.get('minLat', type=float)
-        max_lat = request.args.get('maxLat', type=float)
-        min_lng = request.args.get('minLng', type=float)
-        max_lng = request.args.get('maxLng', type=float)
-        min_voltage = request.args.get('minVoltage', 69, type=int)
-        
-        if not all([min_lat, max_lat, min_lng, max_lng]):
-            return jsonify({'success': False, 'error': 'Bounds required'}), 400
-        
-        envelope = bounds_to_envelope(min_lat, max_lat, min_lng, max_lng)
-        
-        try:
-            data = query_arcgis(f"{HIFLD_BASE}/Electric_Power_Transmission_Lines/FeatureServer/0", {
-                'where': f'VOLTAGE >= {min_voltage}',
-                'geometry': envelope,
-                'geometryType': 'esriGeometryEnvelope',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': '*',
-                'inSR': '4326',
-                'resultRecordCount': '500'
-            })
-            
-            return jsonify({
-                'success': True,
-                'count': len(data.get('features', [])),
-                'data': data.get('features', [])
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
+        """RETIRED 2026-09-13: answers 410 before any network work (see the note above)."""
+        return jsonify({
+            'success': False,
+            'retired': True,
+            'retired_at': '2026-09-13',
+            'error': 'route_retired',
+            'reason': ('This route queried a superseded copy of the transmission lines layer, '
+                       "missing about two in five of the current layer's lines."),
+            'instead': '/api/v1/grid/transmission-proximity?lat=<lat>&lon=<lon>&radius_km=<km>&min_kv=<kv>',
+        }), 410
     
+    # ── RETIRED 2026-09-13 ──────────────────────────────────────────────────
+    # Both branches of this route read the Power_Plants service on
+    # services1.arcgis.com/Hp6G80Pky0om7QvQ, which no longer exists: ArcGIS answers
+    # HTTP 200 with {"error":{"code":400,"message":"Invalid URL"}}. A bounding box
+    # therefore answered 500. A lat/lng request called requests.get directly, found no
+    # features, and fell back to a state-wide query of discovered_power_plants, the
+    # state picked from 11 hardcoded bounding boxes: no plant coordinates in the
+    # answer, and nothing at all for a point outside those boxes.
+    #
+    # Retired rather than repointed: dchub-frontend's one fetch of this path is in a
+    # script no page loads, dchub-mcp-server calls /nearby, and Railway logged no
+    # request to it in the seven days to 2026-09-13. The route named in `instead`
+    # answers the question from EIA generator data. This route carries no plan gate
+    # because it serves no data, so it left main.py's LOCKED_GATE_MANIFEST, whose boot
+    # canary counts a 410 as ungated.
     @app.route('/api/v1/energy/power-plants', methods=['GET'])
-    @require_plan('pro')
-    @protect_data
     def get_power_plants():
-        """
-        Get power plants in an area
-        
-        Query params (Option 1 - Point search):
-        - lat, lng: Center point coordinates
-        - radius: Search radius in meters (default: 50000)
-        
-        Query params (Option 2 - Bounds search):
-        - minLat, maxLat, minLng, maxLng: Bounding box
-        - minMW: Minimum capacity in MW
-        - fuel: Filter by primary fuel type
-        """
-        lat = request.args.get('lat', type=float)
-        lng = request.args.get('lng', type=float)
-        radius = request.args.get('radius', 50000, type=int)
-        
-        min_lat = request.args.get('minLat', type=float)
-        max_lat = request.args.get('maxLat', type=float)
-        min_lng = request.args.get('minLng', type=float)
-        max_lng = request.args.get('maxLng', type=float)
-        min_mw = request.args.get('minMW', 0, type=int)
-        fuel = request.args.get('fuel', '')
-        
-        if lat is not None and lng is not None:
-            plants = []
-            
-            try:
-                url = f"{HIFLD_BASE}/Power_Plants/FeatureServer/0/query"
-                params = {
-                    'geometry': f'{lng},{lat}',
-                    'geometryType': 'esriGeometryPoint',
-                    'distance': radius,
-                    'units': 'esriSRUnit_Meter',
-                    'outFields': 'NAME,PRIMSOURCE,TOTAL_MW,STATUS,OPERATOR,COUNTY,STATE,NAICS_DESC',
-                    'returnGeometry': 'true',
-                    'f': 'json'
-                }
-                
-                response = requests.get(url, params=params, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-                
-                for f in data.get('features', []):
-                    attr = f.get('attributes', {})
-                    geom = f.get('geometry', {})
-                    plants.append({
-                        'name': attr.get('NAME', 'Unknown'),
-                        'fuel_type': attr.get('PRIMSOURCE', 'Unknown'),
-                        'capacity_mw': attr.get('TOTAL_MW', 0) or 0,
-                        'generation_mwh': None,
-                        'status': attr.get('STATUS', 'Unknown'),
-                        'operator': attr.get('OPERATOR', 'Unknown'),
-                        'county': attr.get('COUNTY'),
-                        'state': attr.get('STATE'),
-                        'lat': geom.get('y'),
-                        'lng': geom.get('x'),
-                        'source': 'HIFLD'
-                    })
-            except Exception as e:
-                print(f"HIFLD API error: {e}")
-            
-            if len(plants) == 0:
-                state = detect_state_from_coords(lat, lng)
-                if state and state != 'US':
-                    try:
-                        conn = get_db()
-                        try:
-                            # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-                            cursor = conn.cursor()
-                            cursor.execute("""
-                                SELECT id, name, fuel_type, capacity_mw, generation_mwh,
-                                       operator, status, state, county, sector, source
-                                FROM discovered_power_plants
-                                WHERE LOWER(state) = ANY(%s)  -- phase34_alias_wired
-                            """, (state,))
-
-                            for row in cursor.fetchall():
-                                plants.append({
-                                    'id': row['id'],
-                                    'name': row['name'] or 'Unknown',
-                                    'fuel_type': row['fuel_type'] or 'Unknown',
-                                    'capacity_mw': row['capacity_mw'] or 0,
-                                    'generation_mwh': row['generation_mwh'] or 0,
-                                    'operator': row['operator'] or 'Unknown',
-                                    'status': row['status'] or 'Operating',
-                                    'state': row['state'],
-                                    'county': row['county'],
-                                    'lat': None,
-                                    'lng': None,
-                                    'source': row['source'] or 'EIA'
-                                })
-                        finally:
-                            conn.close()
-                        print(f"📊 Fallback: Found {len(plants)} plants from local DB for {state}")
-                    except Exception as db_err:
-                        print(f"Local DB fallback error: {db_err}")
-            
-            total_mw = sum(p.get('capacity_mw', 0) or 0 for p in plants)
-            total_gen = sum(p.get('generation_mwh', 0) or 0 for p in plants)
-            
-            return jsonify({
-                'success': True,
-                'data': {
-                    'plants': plants[:50],
-                    'total_count': len(plants),
-                    'total_capacity_mw': round(total_mw, 1),
-                    'total_generation_mwh': round(total_gen, 1)
-                }
-            })
-        
-        if not all([min_lat, max_lat, min_lng, max_lng]):
-            return jsonify({'success': False, 'error': 'lat/lng or bounds required'}), 400
-        
-        envelope = bounds_to_envelope(min_lat, max_lat, min_lng, max_lng)
-        
-        where_parts = ['1=1']
-        if min_mw > 0:
-            where_parts.append(f'TOTAL_MW >= {min_mw}')
-        if fuel:
-            where_parts.append(f"UPPER(PRIM_FUEL) LIKE '%{fuel.upper()}%'")
-        
-        try:
-            data = query_arcgis(f"{HIFLD_BASE}/Power_Plants/FeatureServer/0", {
-                'where': ' AND '.join(where_parts),
-                'geometry': envelope,
-                'geometryType': 'esriGeometryEnvelope',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': '*',
-                'inSR': '4326',
-                'resultRecordCount': '500'
-            })
-            
-            return jsonify({
-                'success': True,
-                'count': len(data.get('features', [])),
-                'data': data.get('features', [])
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
+        """RETIRED 2026-09-13: answers 410 before any network work (see the note above)."""
+        return jsonify({
+            'success': False,
+            'retired': True,
+            'retired_at': '2026-09-13',
+            'error': 'route_retired',
+            'reason': 'This route read an ArcGIS power plants service that no longer exists.',
+            'instead': '/api/v1/energy/power-plants/nearby?lat=<lat>&lng=<lng>&radius=<miles>',
+        }), 410
     
+    # ── RETIRED 2026-09-13 ──────────────────────────────────────────────────
+    # This route proxied a state oil and gas regulator's live GIS layer, chosen by
+    # ?state= or else by four hardcoded bounding boxes tried in the order CA, NM, CO,
+    # TX. Two of the four layers no longer answered on 2026-09-13: New Mexico's
+    # OCD_Wells (HTTP 200, error 400 "Invalid URL") and Colorado's COGCC SurfaceHoles
+    # (HTTP 404). The boxes overlap, so a point in far west Texas, El Paso or Pecos,
+    # went to New Mexico's layer, and a point in Nevada to California's.
+    #
+    # Retired: dchub-frontend and dchub-mcp-server do not fetch this path, Railway
+    # logged no request to it in the seven days to 2026-09-13, and DC Hub keeps no well
+    # data to serve instead, so `instead` names the two regulator layers that still
+    # answered.
     @app.route('/api/v1/energy/wells', methods=['GET'])
     def get_wells():
-        """
-        Get oil/gas wells from state regulatory agencies
-        
-        Query params:
-        - lat, lng: Center point (required)
-        - radius: Search radius in meters (default: 10000)
-        - state: State code (auto-detected if not provided)
-        """
-        lat = request.args.get('lat', type=float)
-        lng = request.args.get('lng', type=float)
-        radius = request.args.get('radius', 10000, type=int)
-        state = request.args.get('state', '').upper()
-        
-        if not lat or not lng:
-            return jsonify({'success': False, 'error': 'lat and lng required'}), 400
-        
-        # Auto-detect state if not provided
-        if not state:
-            if -124.5 <= lng <= -114 and 32.5 <= lat <= 42:
-                state = 'CA'
-            elif -109 <= lng <= -103 and 31.3 <= lat <= 37:
-                state = 'NM'
-            elif -109 <= lng <= -102 and 37 <= lat <= 41:
-                state = 'CO'
-            elif -106.6 <= lng <= -93.5 and 25.8 <= lat <= 36.5:
-                state = 'TX'
-        
-        if state not in STATE_GIS and state != 'TX':
-            return jsonify({
-                'success': True,
-                'message': f'No well data API available for state: {state}',
-                'data': []
-            })
-        
-        # Calculate bounds
-        lat_delta = radius / 111000
-        lng_delta = radius / (111000 * abs(cos(radians(lat))))
-        envelope = bounds_to_envelope(lat - lat_delta, lat + lat_delta, lng - lng_delta, lng + lng_delta)
-        
-        try:
-            if state == 'TX':
-                # Texas RRC
-                data = query_arcgis(f"{TEXAS_RRC_BASE}/1", {  # Oil wells layer
-                    'where': '1=1',
-                    'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope',
-                    'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': '*',
-                    'inSR': '4326',
-                    'resultRecordCount': '500'
-                })
-            else:
-                # State GIS
-                data = query_arcgis(STATE_GIS[state], {
-                    'where': '1=1',
-                    'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope',
-                    'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': '*',
-                    'inSR': '4326',
-                    'resultRecordCount': '500'
-                })
-            
-            return jsonify({
-                'success': True,
-                'state': state,
-                'count': len(data.get('features', [])),
-                'data': data.get('features', [])
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
+        """RETIRED 2026-09-13: answers 410 before any network work (see the note above)."""
+        return jsonify({
+            'success': False,
+            'retired': True,
+            'retired_at': '2026-09-13',
+            'error': 'route_retired',
+            'reason': ("This route proxied state regulators' well layers, two of which no longer "
+                       "answer, and sent points in west Texas to New Mexico's."),
+            'instead': ('No DC Hub route serves well data. Texas RRC Well Locations: '
+                        'https://gis.rrc.texas.gov/server/rest/services/rrc_public/RRC_Public_Viewer_Srvs/MapServer/1'
+                        ' ; California WellSTAR Wells: '
+                        'https://gis.conservation.ca.gov/server/rest/services/WellSTAR/Wells/MapServer/0'),
+        }), 410
     
+    # ── RETIRED 2026-09-13 ──────────────────────────────────────────────────
+    # This route never served pipelines. It queried layer 0 of the Texas RRC public
+    # viewer MapServer, which is "Well Number": on 2026-09-13 it returned permitted
+    # well locations, keyed by API number, and the route served them as pipelines.
+    # That service's pipeline layers are 12 to 14.
+    #
+    # Retired rather than repointed: dchub-frontend and dchub-mcp-server do not fetch
+    # this path, and Railway logged no request to it in the seven days to 2026-09-13.
+    # Natural-gas pipelines in Texas are served from the gas_pipelines table by the
+    # route named in `instead`.
     @app.route('/api/v1/energy/texas-pipelines', methods=['GET'])
     def get_texas_pipelines():
-        """
-        Get Texas RRC pipeline data
-        
-        Query params:
-        - minLat, maxLat, minLng, maxLng: Bounding box (in Texas)
-        - operator: Filter by operator/company name
-        """
-        min_lat = request.args.get('minLat', type=float)
-        max_lat = request.args.get('maxLat', type=float)
-        min_lng = request.args.get('minLng', type=float)
-        max_lng = request.args.get('maxLng', type=float)
-        operator = request.args.get('operator', '')
-        
-        if not all([min_lat, max_lat, min_lng, max_lng]):
-            return jsonify({'success': False, 'error': 'Bounds required'}), 400
-        
-        envelope = bounds_to_envelope(min_lat, max_lat, min_lng, max_lng)
-        
-        where_parts = ['1=1']
-        if operator:
-            where_parts.append(f"UPPER(OPERATOR_NAME) LIKE '%{operator.upper()}%'")
-        
-        try:
-            data = query_arcgis(f"{TEXAS_RRC_BASE}/0", {  # Pipelines layer
-                'where': ' AND '.join(where_parts),
-                'geometry': envelope,
-                'geometryType': 'esriGeometryEnvelope',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': '*',
-                'inSR': '4326',
-                'resultRecordCount': '1000'
-            })
-            
-            return jsonify({
-                'success': True,
-                'count': len(data.get('features', [])),
-                'data': data.get('features', [])
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
+        """RETIRED 2026-09-13: answers 410 before any network work (see the note above)."""
+        return jsonify({
+            'success': False,
+            'retired': True,
+            'retired_at': '2026-09-13',
+            'error': 'route_retired',
+            'reason': 'This route served the Texas RRC well-number layer as pipelines.',
+            'instead': '/api/v2/infrastructure/hifld/gas-pipelines?lat=<lat>&lng=<lng>&radius=<miles>',
+        }), 410
     
+    # ── RETIRED 2026-09-13 ──────────────────────────────────────────────────
+    # This route scored each site from four live ArcGIS layers, and three returned
+    # nothing when measured on 2026-09-13: the services1 Electric_Substations and
+    # Power_Plants services no longer exist (HTTP 200, error 400 "Invalid URL"), and
+    # the DOT natural-gas pipelines server answered HTTP 500. Each query sat in its
+    # own `except: pass`, so a site was scored on transmission lines alone and served
+    # as a success. Ashburn, VA came back with 0 substations, 0 pipelines, 0 power
+    # plants and an overallScore of 37 ("Challenging").
+    #
+    # No caller: dchub-frontend's one fetch of this path is never invoked and sends a
+    # POST, which this GET-only route refused with 405; dchub-mcp-server's
+    # compare_sites tool reads /api/site-score. Railway logged one request in the
+    # seven days to 2026-09-13, the probe behind this change. Sites are compared from
+    # maintained tables by the route named in `instead`.
     @app.route('/api/v1/energy/compare-sites', methods=['GET'])
     def compare_sites():
-        """
-        Compare multiple sites for energy infrastructure
-        
-        Query params:
-        - sites: Comma-separated lat,lng pairs (e.g., "33.45,-112.87;32.88,-111.76")
-        - radius: Search radius in meters (default: 25000)
-        """
-        sites_param = request.args.get('sites', '')
-        radius = request.args.get('radius', 25000, type=int)
-        
-        if not sites_param:
-            return jsonify({'success': False, 'error': 'sites parameter required (format: lat,lng;lat,lng)'}), 400
-        
-        # Parse sites
-        sites = []
-        for site_str in sites_param.split(';'):
-            try:
-                lat, lng = map(float, site_str.split(','))
-                sites.append({'lat': lat, 'lng': lng})
-            except:
-                continue
-        
-        if not sites:
-            return jsonify({'success': False, 'error': 'No valid sites provided'}), 400
-        
-        # Analyze each site
-        results = []
-        for site in sites:
-            lat, lng = site['lat'], site['lng']
-            
-            # Calculate bounds
-            lat_delta = radius / 111000
-            lng_delta = radius / (111000 * abs(cos(radians(lat))))
-            envelope = bounds_to_envelope(lat - lat_delta, lat + lat_delta, lng - lng_delta, lng + lng_delta)
-            
-            # Query infrastructure
-            substations = []
-            pipelines = []
-            transmission = []
-            power_plants = []
-            
-            try:
-                sub_data = query_arcgis(f"{HIFLD_BASE}/Electric_Substations/FeatureServer/0", {
-                    'where': '1=1', 'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope', 'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': 'NAME,MAX_VOLT', 'inSR': '4326', 'resultRecordCount': '100'
-                })
-                substations = sub_data.get('features', [])
-            except:
-                pass
-            
-            try:
-                pipe_data = query_arcgis(DOT_PIPELINES, {
-                    'where': '1=1', 'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope', 'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': 'typepipe,operator', 'inSR': '4326', 'resultRecordCount': '100'
-                })
-                pipelines = pipe_data.get('features', [])
-            except:
-                pass
-            
-            try:
-                trans_data = query_arcgis(f"{HIFLD_BASE}/Electric_Power_Transmission_Lines/FeatureServer/0", {
-                    'where': 'VOLTAGE >= 69', 'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope', 'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': 'VOLTAGE', 'inSR': '4326', 'resultRecordCount': '50'
-                })
-                transmission = trans_data.get('features', [])
-            except:
-                pass
-            
-            try:
-                plant_data = query_arcgis(f"{HIFLD_BASE}/Power_Plants/FeatureServer/0", {
-                    'where': '1=1', 'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope', 'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': 'NAME,TOTAL_MW,PRIM_FUEL', 'inSR': '4326', 'resultRecordCount': '50'
-                })
-                power_plants = plant_data.get('features', [])
-            except:
-                pass
-            
-            # Calculate score
-            score_data = calculate_infrastructure_score(lat, lng, substations, pipelines, transmission, power_plants)
-            
-            results.append({
-                'location': {'lat': lat, 'lng': lng},
-                'scores': score_data,
-                'counts': {
-                    'substations': len(substations),
-                    'pipelines': len(pipelines),
-                    'transmissionLines': len(transmission),
-                    'powerPlants': len(power_plants)
-                }
-            })
-        
-        # Sort by overall score
-        results.sort(key=lambda x: x['scores']['overallScore'], reverse=True)
-        
+        """RETIRED 2026-09-13: answers 410 before any network work (see the note above)."""
         return jsonify({
-            'success': True,
-            'count': len(results),
-            'data': results,
-            'bestSite': results[0] if results else None
-        })
-    
-    def detect_state_from_coords(lat, lng):
-        """Simple state detection from coordinates"""
-        state_bounds = {
-            'AZ': (31.3, 37.0, -114.8, -109.0),
-            'TX': (25.8, 36.5, -106.6, -93.5),
-            'VA': (36.5, 39.5, -83.7, -75.2),
-            'GA': (30.4, 35.0, -85.6, -80.8),
-            'NV': (35.0, 42.0, -120.0, -114.0),
-            'CA': (32.5, 42.0, -124.4, -114.1),
-            'OR': (42.0, 46.3, -124.6, -116.5),
-            'WA': (45.5, 49.0, -124.8, -116.9),
-            'OH': (38.4, 42.0, -84.8, -80.5),
-            'IA': (40.4, 43.5, -96.6, -90.1),
-            'UT': (37.0, 42.0, -114.0, -109.0)
-        }
-        
-        for state, (min_lat, max_lat, min_lng, max_lng) in state_bounds.items():
-            if min_lat <= lat <= max_lat and min_lng <= lng <= max_lng:
-                return state
-        
-        return 'US'
-    
+            'success': False,
+            'retired': True,
+            'retired_at': '2026-09-13',
+            'error': 'route_retired',
+            'reason': ('This route scored sites from live ArcGIS layers, three of the four '
+                       'of which no longer answer, and served the result as a success.'),
+            'instead': 'POST /api/v1/site-planner/compare {"sites": [{"lat": <lat>, "lng": <lng>}, ...]} (2 or 3 sites)',
+        }), 410
+
     print("✅ Energy Infrastructure API v3 routes registered (with fallback endpoints):")
     print("   GET /api/v1/energy/site-analysis")
-    print("   GET /api/v1/energy/pipelines")
-    print("   GET /api/v1/energy/substations")
-    print("   GET /api/v1/energy/transmission")
-    print("   GET /api/v1/energy/power-plants")
-    print("   GET /api/v1/energy/wells")
-    print("   GET /api/v1/energy/texas-pipelines")
-    print("   GET /api/v1/energy/compare-sites")
+    print("   GET /api/v1/energy/pipelines - RETIRED 2026-09-13 (410)")
+    print("   GET /api/v1/energy/substations - RETIRED 2026-09-13 (410)")
+    print("   GET /api/v1/energy/transmission - RETIRED 2026-09-13 (410)")
+    print("   GET /api/v1/energy/power-plants - RETIRED 2026-09-13 (410)")
+    print("   GET /api/v1/energy/wells - RETIRED 2026-09-13 (410)")
+    print("   GET /api/v1/energy/texas-pipelines - RETIRED 2026-09-13 (410)")
+    print("   GET /api/v1/energy/compare-sites - RETIRED 2026-09-13 (410)")

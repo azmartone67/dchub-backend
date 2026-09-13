@@ -775,6 +775,30 @@ jobs:
             echo "::error::the one-URL-many-rows test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Radar resolve-on-absence arms, against the same Postgres ─────────
+      # routes/brain_findings_resolve.py decides which open brain_findings rows
+      # a radar sweep may close, and a fake cursor accepts any clause it is
+      # handed. Only a real Postgres shows NULLIF/COALESCE over NULL and ''
+      # detectors, the `?` test on the ledger's JSONB keys and the sibling
+      # subquery closing exactly the rows their evidence covers — and runs the
+      # radar's query-tracking connection on psycopg2's real cursor types.
+      # Works in its own schema, inside a transaction it rolls back.
+      - name: Resolve-on-absence arms against a real Postgres
+        env:
+          RESOLVE_ARMS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_radar_resolve_arms_sql.py -v --tb=short
+
+      - name: Prove the resolve-arms SQL test actually RAN
+        env:
+          RESOLVE_ARMS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_radar_resolve_arms_sql.py \
+            -q -rs --tb=no > ra.txt 2>&1 || { cat ra.txt; exit 1; }
+          cat ra.txt
+          if grep -qi "skipped" ra.txt; then
+            echo "::error::the resolve-arms SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -814,6 +838,7 @@ jobs:
             ss.txt
             si.txt
             ou.txt
+            ra.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
