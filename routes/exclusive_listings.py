@@ -11,7 +11,10 @@ DC Hub.
     unless an admin sets `pro` / `enterprise` / `founding` on a listing.
     Teasers (market, state, capacity, status) are public — they are the demand
     driver. Full detail needs an identified END USER: a signed-in web user, an
-    agent key with an email bound, or an OAuth-connected agent.
+    agent key with an email bound, or an OAuth-connected agent. That user
+    accepts the introduction terms once, before the first walled listing opens,
+    and the acceptance is recorded in the lead register with the terms version;
+    an introduction or requirement registered under the current version counts.
   * Operator contact is never served. A buyer holding the operator's phone
     number has no reason to let DC Hub make the introduction, and leaves no
     trace that DC Hub did. Prospects request an introduction instead, and the
@@ -32,6 +35,7 @@ the gateway holds the internal key, and lead records carry prospect PII.
 Endpoints:
     GET  /api/v1/listings                          teaser feed + program + viewer
     GET  /api/v1/listings/terms                    introduction terms
+    POST /api/v1/listings/terms/accept             accept them, once per terms version
     GET  /api/v1/listings/health
     GET  /api/v1/listings/<slug_or_id>             detail (walled)
     POST /api/v1/listings/<slug_or_id>/intro       request an introduction
@@ -122,14 +126,14 @@ PROGRAM_SUMMARY = (
     "Powered land, powered shells and turnkey capacity, including sites that "
     "are not publicly marketed, for enterprise buyers and the AI agents that "
     "procure for them. Every listing shows when it was last updated. Browse "
-    "the listings, sign in to open one, and let DC Hub introduce you to the "
-    "operator."
+    "the listings, sign in and accept the introduction terms once to open "
+    "them, and let DC Hub introduce you to the operator."
 )
 PROGRAM_STEPS = (
     "Browse listings — market, state, capacity and when each was last "
     "updated — without an account.",
-    "Sign in with a free account, or connect an identified AI agent, to open "
-    "the full listing.",
+    "Sign in with a free account, or connect an identified AI agent, and "
+    "accept the introduction terms once to open the full listing.",
     "Request an introduction. DC Hub registers the request and introduces you "
     "to the operator; operator contact details are never published.",
 )
@@ -414,6 +418,17 @@ def _db_recent_view(user_ref, listing_id, since):
     rows = _fetch("SELECT seq FROM listing_lead_ledger WHERE user_ref = %s "
                   "AND listing_id = %s AND event = 'listing_viewed' "
                   "AND created_at > %s LIMIT 1", [user_ref, listing_id, since], ("seq",))
+    return bool(rows)
+
+
+def _db_terms_accepted(user_ref, version):
+    """Has this identity accepted the introduction terms under `version`? An
+    introduction or requirement registered under that version carried the
+    acceptance itself, so it counts too."""
+    rows = _fetch("SELECT seq FROM listing_lead_ledger WHERE user_ref = %s "
+                  "AND terms_version = %s AND event IN ('terms_accepted', "
+                  "'intro_requested', 'interest_registered') LIMIT 1",
+                  [user_ref, version], ("seq",))
     return bool(rows)
 
 
@@ -730,7 +745,21 @@ def _available(detail):
     return None
 
 
-def _access(row, v, return_path):
+def _terms_ok(v):
+    """Has this viewer accepted the CURRENT introduction terms? Fails CLOSED:
+    no identity, or a lookup that fails, reads as not accepted."""
+    if not (v["identified"] and v["user_ref"]):
+        return False
+    try:
+        return bool(_db_terms_accepted(v["user_ref"], TERMS_VERSION))
+    except Exception as exc:
+        logger.warning("[pocket-listings] terms lookup failed: %s", exc)
+        return False
+
+
+def _access(row, v, return_path, terms_ok=False):
+    """terms_ok defaults to False, so a caller that does not pass it keeps the
+    listing locked rather than opening it."""
     required = row.get("tier_required") if row.get("tier_required") in _ACCESS_LEVELS else "registered"
     if row.get("status") == "public":
         granted, reason = True, None
@@ -738,10 +767,18 @@ def _access(row, v, return_path):
         granted, reason = False, (v["reason"] or "sign_in_required")
     elif _TIER_RANK.get(v["tier"], 0) < _REQUIRED_RANK.get(required, 1):
         granted, reason = False, "upgrade_required"
+    elif not terms_ok:
+        granted, reason = False, "terms_acceptance_required"
     else:
         granted, reason = True, None
     unlock = None
-    if not granted:
+    if reason == "terms_acceptance_required":
+        unlock = {"web_sign_in_url": None,
+                  "mcp_steps": ["accept_capacity_terms"],
+                  "pricing_url": None,
+                  "terms": _terms_block(),
+                  "accept": {"method": "POST", "path": "/api/v1/listings/terms/accept"}}
+    elif not granted:
         steps = {"sign_in_required": ["claim_free_key", "bind_email"],
                  "email_binding_required": ["bind_email"],
                  "upgrade_required": ["unlock_more_data"]}[reason]
@@ -761,6 +798,7 @@ def _teaser(row, access):
         "status": row.get("status"),
         "access_required": access["required"],
         "locked": not access["granted"],
+        "lock_reason": access["reason"],
         "market": row.get("market"),
         "state": row.get("state"),
         "country": row.get("country"),
@@ -1202,7 +1240,8 @@ def _register_lead(row):
                     "unlock": {"web_sign_in_url": _sign_in_url(return_path),
                                "mcp_steps": steps, "pricing_url": None}})}
     if row is not None:
-        acc = _access(row, v, return_path)
+        # The request itself carries the terms acceptance, validated below.
+        acc = _access(row, v, return_path, terms_ok=True)
         if not acc["granted"]:
             return {"_error": _err(403, "upgrade_required",
                                    "This listing is open to a higher plan.", access=acc)}
@@ -1358,9 +1397,11 @@ def list_listings():
         logger.warning("[pocket-listings] list failed: %s", exc)
         return jsonify(ok=False, error="listings_unavailable", caller_tier=v["tier"]), 200
 
+    # One terms lookup per request, and only for an identified viewer.
+    terms_ok = _terms_ok(v) if v["identified"] else False
     items, needs_upgrade = [], 0
     for row in rows:
-        acc = _access(row, v, _return_path(row.get("slug")))
+        acc = _access(row, v, _return_path(row.get("slug")), terms_ok=terms_ok)
         items.append(_teaser(row, acc))
         if acc["reason"] == "upgrade_required":
             needs_upgrade += 1
@@ -1397,6 +1438,66 @@ def listing_terms():
     return resp, 200
 
 
+@exclusive_listings_bp.route("/api/v1/listings/terms/accept", methods=["POST"])
+def accept_terms():
+    """Accept the introduction terms, once per identity per TERMS_VERSION.
+    Walled listing detail stays locked until the acceptance is in the lead
+    register. The entry carries no PII: user_ref identifies the account."""
+    _ensure_schema()
+    v = _viewer()
+    if not v["identified"]:
+        return _err(
+            401, "identity_required",
+            "Sign in to accept the introduction terms — or, from an AI agent, use a "
+            "key with your human's email bound (claim_free_key, then bind_email) or an "
+            "OAuth connection.",
+            reason=v["reason"] or "sign_in_required")
+    body = request.get_json(silent=True)
+    body = body if isinstance(body, dict) else {}
+    if body.get("accept_terms") is not True:
+        return _err(422, "terms_not_accepted",
+                    "Read the introduction terms, then send accept_terms=true to accept them.",
+                    terms=_terms_block())
+    offered = body.get("terms_version")
+    if offered not in (None, "") and str(offered) != TERMS_VERSION:
+        return _err(409, "terms_version_mismatch",
+                    "The introduction terms have changed — review them again.",
+                    terms=_terms_block())
+    allowed, retry = _rate_ok("terms", v["user_ref"], _LEAD_RATE_LIMIT)
+    if not allowed:
+        return _err(429, "rate_limited", "Too many requests — try again later.",
+                    retry_after_s=retry)
+    try:
+        already = bool(_db_terms_accepted(v["user_ref"], TERMS_VERSION))
+    except Exception as exc:
+        logger.warning("[pocket-listings] terms lookup failed: %s", exc)
+        already = False
+
+    out = {"ok": True, "accepted": True, "already_accepted": already,
+           "terms": _terms_block(), "citation": _citation()}
+    if not already:
+        secret = ledger.ledger_secret()
+        if secret is None:
+            logger.error("[pocket-listings] no ledger secret — refusing to record terms acceptance")
+            return _err(503, "ledger_unavailable",
+                        f"Terms acceptance cannot be recorded right now. Email {SUPPORT_EMAIL}.")
+        try:
+            rec = _append_event(
+                secret=secret, lead_id=None, event="terms_accepted", listing=None,
+                user_ref=v["user_ref"], channel=v["channel"], platform=v["platform"],
+                session_hash=v["session_hash"], ip_hash=_ip_hash(), user_agent=_user_agent(),
+                terms_version=TERMS_VERSION)
+        except ledger.LedgerUnavailable as exc:
+            logger.error("[pocket-listings] terms acceptance write failed: %s", exc)
+            return _err(503, "ledger_unavailable",
+                        f"Terms acceptance cannot be recorded right now. Email {SUPPORT_EMAIL}.")
+        out["accepted_at"] = rec["created_at"]
+        out["ledger"] = {"seq": rec["seq"], "entry_hash": rec["entry_hash"]}
+    resp = jsonify(out)
+    _no_store(resp)
+    return resp, 200
+
+
 @exclusive_listings_bp.route("/api/v1/listings/<slug_or_id>", methods=["GET"])
 def get_listing(slug_or_id):
     """One listing. Locked callers get the teaser plus the way in."""
@@ -1411,7 +1512,7 @@ def get_listing(slug_or_id):
         return _err(404, "not_found", "No such listing.")
 
     return_path = _return_path(row.get("slug"))
-    access = _access(row, v, return_path)
+    access = _access(row, v, return_path, terms_ok=_terms_ok(v))
     if access["granted"] and v["identified"]:
         _record_view(row, v)
     out = {

@@ -12,12 +12,12 @@
  },
  "stats": {
   "python_files_scanned": 1462,
-  "endpoints_total": 1798,
-  "endpoints_resolved": 1290,
+  "endpoints_total": 1799,
+  "endpoints_resolved": 1291,
   "endpoints_partial": 65,
   "endpoints_opaque_not_covered": 443,
-  "keys_total": 10667,
-  "keys_strictly_protected": 9701,
+  "keys_total": 10676,
+  "keys_strictly_protected": 9710,
   "keys_open_level_unmeasured_on_removal": 940,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 115
@@ -15776,7 +15776,7 @@
    ]
   },
   "GET /api/v1/listings": {
-   "source": "routes/exclusive_listings.py:1340",
+   "source": "routes/exclusive_listings.py:1379",
    "handler": "list_listings",
    "resolution": "resolved",
    "open_at": [
@@ -15808,7 +15808,7 @@
    ]
   },
   "GET /api/v1/listings/<slug_or_id>": {
-   "source": "routes/exclusive_listings.py:1401",
+   "source": "routes/exclusive_listings.py:1502",
    "handler": "get_listing",
    "resolution": "resolved",
    "open_at": [
@@ -15835,7 +15835,7 @@
    ]
   },
   "GET /api/v1/listings/<slug_or_id>/leads": {
-   "source": "routes/exclusive_listings.py:1665",
+   "source": "routes/exclusive_listings.py:1766",
    "handler": "operator_ledger",
    "resolution": "resolved",
    "open_at": [
@@ -15865,7 +15865,7 @@
    ]
   },
   "GET /api/v1/listings/health": {
-   "source": "routes/exclusive_listings.py:2032",
+   "source": "routes/exclusive_listings.py:2133",
    "handler": "listings_health",
    "resolution": "resolved",
    "open_at": [
@@ -15879,7 +15879,7 @@
    ]
   },
   "GET /api/v1/listings/leads/<lead_id>/verify": {
-   "source": "routes/exclusive_listings.py:1597",
+   "source": "routes/exclusive_listings.py:1698",
    "handler": "verify_lead",
    "resolution": "resolved",
    "open_at": [
@@ -15922,7 +15922,7 @@
    ]
   },
   "GET /api/v1/listings/terms": {
-   "source": "routes/exclusive_listings.py:1391",
+   "source": "routes/exclusive_listings.py:1432",
    "handler": "listing_terms",
    "resolution": "resolved",
    "open_at": [
@@ -29875,7 +29875,7 @@
    ]
   },
   "POST /api/v1/listings/<slug_or_id>/intro": {
-   "source": "routes/exclusive_listings.py:1454",
+   "source": "routes/exclusive_listings.py:1555",
    "handler": "request_intro",
    "resolution": "resolved",
    "open_at": [
@@ -29908,7 +29908,7 @@
    ]
   },
   "POST /api/v1/listings/interest": {
-   "source": "routes/exclusive_listings.py:1487",
+   "source": "routes/exclusive_listings.py:1588",
    "handler": "register_interest",
    "resolution": "resolved",
    "open_at": [
@@ -29942,7 +29942,7 @@
    ]
   },
   "POST /api/v1/listings/leads/confirm": {
-   "source": "routes/exclusive_listings.py:1520",
+   "source": "routes/exclusive_listings.py:1621",
    "handler": "confirm_lead",
    "resolution": "resolved",
    "open_at": [
@@ -29963,6 +29963,30 @@
     "ok",
     "status",
     "verify_url"
+   ]
+  },
+  "POST /api/v1/listings/terms/accept": {
+   "source": "routes/exclusive_listings.py:1442",
+   "handler": "accept_terms",
+   "resolution": "resolved",
+   "open_at": [
+    "accepted_at",
+    "already_accepted",
+    "citation",
+    "ledger.entry_hash",
+    "ledger.seq",
+    "terms"
+   ],
+   "keys": [
+    "accepted",
+    "accepted_at",
+    "already_accepted",
+    "citation",
+    "ledger",
+    "ledger.entry_hash",
+    "ledger.seq",
+    "ok",
+    "terms"
    ]
   },
   "POST /api/v1/lp/alerts": {

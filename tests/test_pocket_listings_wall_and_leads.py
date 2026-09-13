@@ -7,6 +7,8 @@ What these pin, and why each matters to the program:
   * our MCP gateway's X-Internal-Key is not an identity: an anonymous agent
     stays anonymous, and a user credential forwarded through the gateway still
     resolves (map_tier_gating maps the internal key to 'pro' at STEP 1);
+  * an identified caller accepts the introduction terms once, recorded in the
+    register under the terms version, before a walled listing opens;
   * nothing reaches the register, or anyone's inbox, before identity, valid
     fields and accepted terms;
   * a lead becomes registered only through a token bound to that lead, and the
@@ -164,6 +166,10 @@ def env(monkeypatch):
     monkeypatch.setattr(el, "_db_recent_view", lambda user_ref, listing_id, since: any(
         r["event"] == "listing_viewed" and r["user_ref"] == user_ref
         and r["listing_id"] == listing_id and r["created_at"] > since for r in e.rows))
+    monkeypatch.setattr(el, "_db_terms_accepted", lambda user_ref, version: any(
+        r["user_ref"] == user_ref and r["terms_version"] == version
+        and r["event"] in ("terms_accepted", "intro_requested", "interest_registered")
+        for r in e.rows))
     monkeypatch.setattr(el, "_db_chain_rows", lambda limit: [dict(r) for r in e.rows][:limit])
     monkeypatch.setattr(el, "_db_verified_via", lambda viewer: e.verified_via)
     monkeypatch.setattr(el, "_send_email", lambda to, subject, body: e.sent.append(
@@ -185,6 +191,14 @@ def _bearer(user_id="u-jane", email="Jane@Acme.com", plan="free"):
                         "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
                        JWT_SECRET, algorithm="HS256")
     return {"Authorization": f"Bearer {token}"}
+
+
+def _accept_terms(e, headers):
+    """Accept the introduction terms as the caller behind `headers`."""
+    r = e.client.post("/api/v1/listings/terms/accept",
+                      json={"accept_terms": True, "terms_version": el.TERMS_VERSION}, headers=headers)
+    assert r.status_code == 200, r.get_data(as_text=True)
+    return r
 
 
 def _confirm_link(html_body):
@@ -233,12 +247,14 @@ def test_our_gateway_key_alone_leaves_an_agent_anonymous(env):
 
 def test_a_user_credential_forwarded_through_the_gateway_still_resolves(env):
     headers = {"X-Internal-Key": INTERNAL_KEY, **_bearer()}
+    _accept_terms(env, headers)
     j = env.client.get("/api/v1/listings/dfw-40", headers=headers).get_json()
     assert j["locked"] is False
     assert j["viewer"]["identified"] is True and j["viewer"]["channel"] == "mcp"
 
 
 def test_a_signed_in_user_opens_the_listing_without_operator_contact(env):
+    _accept_terms(env, _bearer())
     r = env.client.get("/api/v1/listings/dfw-40", headers=_bearer())
     body, j = r.get_data(as_text=True), r.get_json()
     listing = j["listing"]
@@ -255,11 +271,15 @@ def test_a_signed_in_user_opens_the_listing_without_operator_contact(env):
 
 
 def test_an_identified_view_is_recorded_once_per_day(env):
+    _accept_terms(env, _bearer())
     for _ in range(3):
         assert env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).status_code == 200
     views = [r for r in env.rows if r["event"] == "listing_viewed"]
     assert len(views) == 1
     assert (views[0]["listing_id"], views[0]["user_ref"], views[0]["lead_id"]) == (1, "u-jane", None)
+    # Two rows in the register, not one: the terms acceptance recorded before
+    # the first view, then the single view.
+    assert [r["event"] for r in env.rows] == ["terms_accepted", "listing_viewed"]
 
 
 def test_a_key_without_a_bound_email_is_told_to_bind_one(env, monkeypatch):
@@ -276,8 +296,9 @@ def test_a_key_with_a_bound_email_opens_the_listing(env, monkeypatch):
     import map_tier_gating
     monkeypatch.setattr(map_tier_gating, "_detect_caller_tier", lambda decode_jwt_func=None: (
         "identified", {"email": "human@firm.example", "plan": "identified", "source": "mcp_dev_keys"}))
-    j = env.client.get("/api/v1/listings/dfw-40",
-                       headers={"X-API-Key": "dch_live_" + "b" * 32}).get_json()
+    headers = {"X-API-Key": "dch_live_" + "b" * 32}
+    _accept_terms(env, headers)
+    j = env.client.get("/api/v1/listings/dfw-40", headers=headers).get_json()
     assert j["locked"] is False
     assert (j["viewer"]["identity_source"], j["viewer"]["channel"]) == ("api_key", "api")
 
@@ -287,6 +308,7 @@ def test_a_pro_listing_asks_a_free_user_to_upgrade(env):
     free = env.client.get("/api/v1/listings/dfw-40", headers=_bearer(plan="free")).get_json()
     assert free["locked"] is True and free["access"]["reason"] == "upgrade_required"
     assert free["access"]["unlock"]["pricing_url"].endswith("/pricing")
+    _accept_terms(env, _bearer(plan="pro"))
     pro = env.client.get("/api/v1/listings/dfw-40", headers=_bearer(plan="pro")).get_json()
     assert pro["locked"] is False
 
@@ -296,6 +318,104 @@ def test_drafts_and_reserved_words_are_not_listings(env):
     assert env.client.get("/api/v1/listings/secret-draft", headers=_bearer()).status_code == 404
     assert env.client.get("/api/v1/listings/interest").status_code == 404
     assert env.client.get("/api/v1/listings/terms").get_json()["terms"]["version"] == el.TERMS_VERSION
+
+
+# ── introduction terms ────────────────────────────────────────────────────
+
+def test_a_signed_in_user_who_has_not_accepted_the_terms_gets_the_teaser(env):
+    r = env.client.get("/api/v1/listings/dfw-40", headers=_bearer())
+    j = r.get_json()
+    assert r.status_code == 200 and j["viewer"]["identified"] is True
+    assert j["locked"] is True
+    access = j["access"]
+    assert (access["granted"], access["reason"]) == (False, "terms_acceptance_required")
+    assert access["unlock"]["accept"]["path"] == "/api/v1/listings/terms/accept"
+    assert access["unlock"]["mcp_steps"] == ["accept_capacity_terms"]
+    assert access["unlock"]["terms"]["version"] == el.TERMS_VERSION
+    for private in ("latitude", "longitude", "asking_price", "detail"):
+        assert private not in j["listing"]
+    assert [row["event"] for row in env.rows] == []          # a locked view records no listing_viewed
+
+
+def test_accepting_the_terms_is_recorded_once_and_opens_the_listing(env):
+    j = _accept_terms(env, _bearer()).get_json()
+    assert (j["ok"], j["accepted"], j["already_accepted"]) == (True, True, False)
+    assert j["terms"]["version"] == el.TERMS_VERSION and j["ledger"]["seq"] == env.rows[0]["seq"]
+    detail = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()
+    assert detail["locked"] is False and detail["listing"]["asking_price"] == 1250000.0
+    accepted = [row for row in env.rows if row["event"] == "terms_accepted"]
+    assert len(accepted) == 1
+    assert (accepted[0]["user_ref"], accepted[0]["lead_id"], accepted[0]["terms_version"],
+            accepted[0]["channel"]) == ("u-jane", None, el.TERMS_VERSION, "web")
+    # user_ref identifies the account; the entry stores and commits no prospect PII
+    assert (accepted[0]["email"], accepted[0]["name"], accepted[0]["company"]) == (None, None, None)
+    assert json.loads(accepted[0]["entry_json"])["pii_commitment"] is None
+
+
+def test_accepting_the_terms_twice_writes_one_entry(env):
+    first = _accept_terms(env, _bearer()).get_json()
+    second = _accept_terms(env, _bearer()).get_json()
+    assert (first["already_accepted"], second["already_accepted"]) == (False, True)
+    assert [row["event"] for row in env.rows] == ["terms_accepted"]
+
+
+def test_an_acceptance_under_an_older_terms_version_does_not_count(env):
+    el._append_event(secret=ledger.ledger_secret(), lead_id=None, event="terms_accepted", listing=None,
+                     user_ref="u-jane", channel="web", terms_version="1999-01-01")
+    j = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()
+    assert j["locked"] is True and j["access"]["reason"] == "terms_acceptance_required"
+    # Control: accepting the current version is a new entry, and then the listing opens.
+    assert _accept_terms(env, _bearer()).get_json()["already_accepted"] is False
+    assert [row["terms_version"] for row in env.rows] == ["1999-01-01", el.TERMS_VERSION]
+    assert env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()["locked"] is False
+
+
+@pytest.mark.parametrize("path,body,event", [
+    ("/api/v1/listings/dfw-40/intro", INTRO, "intro_requested"),
+    ("/api/v1/listings/interest", {**INTRO, "requirement": {"markets": ["Dallas"], "capacity_mw": 20}},
+     "interest_registered"),
+])
+def test_a_request_registered_under_the_current_terms_counts_as_acceptance(env, path, body, event):
+    assert env.client.post(path, json=body, headers=_bearer()).status_code == 200
+    j = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()
+    assert j["locked"] is False
+    assert [row["event"] for row in env.rows] == [event, "listing_viewed"]    # no terms_accepted row needed
+
+
+@pytest.mark.parametrize("who,body,status,error", [
+    ("anon", {"accept_terms": True, "terms_version": el.TERMS_VERSION}, 401, "identity_required"),
+    ("gateway", {"accept_terms": True, "terms_version": el.TERMS_VERSION}, 401, "identity_required"),
+    ("user", {"accept_terms": False, "terms_version": el.TERMS_VERSION}, 422, "terms_not_accepted"),
+    ("user", {"accept_terms": "yes", "terms_version": el.TERMS_VERSION}, 422, "terms_not_accepted"),
+    ("user", {"accept_terms": True, "terms_version": "1999-01-01"}, 409, "terms_version_mismatch"),
+])
+def test_the_terms_are_not_recorded_without_identity_consent_and_the_current_version(env, who, body,
+                                                                                     status, error):
+    headers = {"anon": {}, "gateway": {"X-Internal-Key": INTERNAL_KEY}, "user": _bearer()}[who]
+    r = env.client.post("/api/v1/listings/terms/accept", json=body, headers=headers)
+    assert (r.status_code, r.get_json()["error"]) == (status, error)
+    assert env.rows == [] and env.sent == []
+
+
+def test_the_feed_shows_a_signed_in_user_that_the_terms_keep_a_listing_locked(env):
+    item = env.client.get("/api/v1/listings", headers=_bearer()).get_json()["items"][0]
+    assert item["locked"] is True and item["lock_reason"] == "terms_acceptance_required"
+    # Control: the feed reads the acceptance too, not only the detail view.
+    _accept_terms(env, _bearer())
+    item = env.client.get("/api/v1/listings", headers=_bearer()).get_json()["items"][0]
+    assert item["locked"] is False and item["lock_reason"] is None
+
+
+def test_access_stays_locked_when_a_caller_does_not_pass_terms_ok(env):
+    viewer = {"tier": "free", "identified": True, "email": "jane@acme.com", "user_ref": "u-jane",
+              "user_id": "u-jane", "identity_source": "session", "channel": "web",
+              "platform": None, "session_hash": None, "api_key": None, "reason": None}
+    with env.client.application.test_request_context(headers=_bearer()):
+        assert set(viewer) == set(el._viewer())      # the keys _viewer() returns
+    access = el._access(_listing(), viewer, "/listings?l=x")
+    assert (access["granted"], access["reason"]) == (False, "terms_acceptance_required")
+    # Control: the same viewer passing the acceptance is let in.
+    assert el._access(_listing(), viewer, "/listings?l=x", terms_ok=True)["granted"] is True
 
 
 # ── registration ──────────────────────────────────────────────────────────
@@ -439,17 +559,20 @@ def test_every_listing_answer_says_confidential_and_never_cc_by(env):
     own citation. Listing data must not reach an agent labelled as
     free to republish — walls included, since the tools relay them as results."""
     lead_id = _register_and_confirm(env, headers=_bearer(user_id="u-ann", email="ann@firm.example"))
+    accepted = _accept_terms(env, _bearer())
     responses = {
         "feed": env.client.get("/api/v1/listings"),
         "detail (walled)": env.client.get("/api/v1/listings/dfw-40"),
         "detail (open)": env.client.get("/api/v1/listings/dfw-40", headers=_bearer()),
         "terms": env.client.get("/api/v1/listings/terms"),
+        "terms accepted": accepted,
         "wall": env.client.post("/api/v1/listings/dfw-40/intro", json=INTRO),
         "intro": env.client.post("/api/v1/listings/dfw-40/intro", json=INTRO, headers=_bearer()),
         "interest": env.client.post("/api/v1/listings/interest", headers=_bearer(),
                                     json={**INTRO, "requirement": {"markets": ["Dallas"]}}),
         "record": env.client.get(f"/api/v1/listings/leads/{lead_id}/verify"),
     }
+    assert responses["detail (open)"].get_json()["locked"] is False
     for label, r in responses.items():
         j, body = r.get_json(), r.get_data(as_text=True)
         assert j["citation"]["license"] == el.LISTING_LICENSE, label

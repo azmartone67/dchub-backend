@@ -44348,7 +44348,7 @@ text-decoration:none;margin-top:1rem}</style>
 <h2>How it works</h2>
 <ul>
  <li><strong>Browse</strong> — listing cards (market, state, capacity and when each was last updated) are open to everyone at <a href="https://dchub.cloud/listings">dchub.cloud/listings</a>.</li>
- <li><strong>Sign in to open a listing</strong> — full listing detail needs a signed-in account, or an AI agent using a key with an email bound or an OAuth connection.</li>
+ <li><strong>Sign in to open a listing</strong> — full listing detail needs a signed-in account, or an AI agent using a key with an email bound or an OAuth connection, and a one-time acceptance of the introduction terms.</li>
  <li><strong>Request an introduction</strong> — DC Hub makes the introduction to the operator. Operator contact details are never published, and every registered lead has a public verification record.</li>
  <li><strong>Nothing that fits yet?</strong> Register a requirement to get first access when matching listings open.</li>
 </ul>

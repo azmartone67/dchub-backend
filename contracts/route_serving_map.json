@@ -17862,6 +17862,11 @@
     "routes.exclusive_listings"
    ]
   },
+  "POST /api/v1/listings/terms/accept": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
   "POST /api/v1/lp/alerts": {
    "modules": [
     "routes.lp_sites"
