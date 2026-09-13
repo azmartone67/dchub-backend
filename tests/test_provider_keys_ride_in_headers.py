@@ -13,6 +13,11 @@ reads:
                   eia_generator_reseed.fetch_eia_page
                   routes/grid_data_master_shell._eia_henry_hub, through the
                   real _http_json
+                  eia_api.make_eia_request
+                  main._grid_intel_fetch, both RTO calls, compiled out of
+                  main.py (importing main boots the whole app)
+                  services/nepa_scraper._request, api.data.gov, which
+                  reads the same header
   x-goog-api-key  ai_wars_battle_runner.call_platform_api("gemini") — and no
                   platform in that table sends its key in a URL
 
@@ -21,6 +26,7 @@ adapter — so requests still builds its real PreparedRequest (params merged int
 the URL, session headers into the request's). Nothing here can reach the
 network: the autouse fixture fails any connection attempt.
 """
+import ast
 import datetime as dt
 import importlib
 import json
@@ -252,9 +258,9 @@ _AI_BODY = json.dumps({
 }).encode()
 
 
-def _record_requests(monkeypatch):
+def _record_requests(monkeypatch, body=_AI_BODY):
     """Swap the transport every requests.Session mounts by default."""
-    rec = _RecordingAdapter(_AI_BODY)
+    rec = _RecordingAdapter(body)
     monkeypatch.setattr(requests.adapters.HTTPAdapter, "send",
                         lambda self, request, **kw: rec.send(request, **kw))
     return rec
@@ -290,3 +296,67 @@ def test_no_ai_wars_platform_sends_its_key_in_the_url(monkeypatch):
         _assert_keyless(req.url, secret)
         assert any(secret in value for value in _sent_headers(req).values()), (
             name, "the key is in no header")
+
+
+# ── call sites that wrote the key into a params dict after building it ──────
+def test_make_eia_request_sends_the_key_in_x_api_key(monkeypatch):
+    mod = _real("eia_api")
+    monkeypatch.setattr(mod, "EIA_API_KEY", KEY)
+    rec = _record_requests(monkeypatch, _EIA_BODY)
+    caller = {"frequency": "monthly", "data[0]": "price"}
+    data, err = mod.make_eia_request("electricity/retail-sales/data", caller)
+    assert err is None and data["response"]["data"], (data, err)
+    assert len(rec.sent) == 1
+    req = rec.sent[0]
+    assert urlsplit(req.url).netloc == "api.eia.gov", req.url
+    _assert_keyless(req.url)
+    assert _sent_headers(req).get("x-api-key") == KEY
+    assert caller == {"frequency": "monthly", "data[0]": "price"}, "the caller's dict was written into"
+
+
+def _from_main(name, **given):
+    """One top-level function compiled out of main.py, with the main.py helpers
+    it calls compiled beside it. A name in `given` is used instead."""
+    path = os.path.join(ROOT, "main.py")
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    ns = {"__name__": "main_extract", "os": os, **given}
+    todo = [name]
+    while todo:
+        fn = defs[todo.pop()]
+        if fn.name in ns:
+            continue
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), path, "exec"), ns)
+        todo += [n.id for n in ast.walk(fn)
+                 if isinstance(n, ast.Name) and n.id in defs and n.id not in ns]
+    return ns[name]
+
+
+def test_grid_intel_sends_the_eia_key_in_x_api_key_on_both_rto_calls(monkeypatch):
+    fetch = _from_main("_grid_intel_fetch", _grid_ext_metrics_for=lambda _rto: {})
+    rec = _record_requests(monkeypatch, _EIA_BODY)
+    monkeypatch.setenv("EIA_API_KEY", KEY)
+    fetch("pjm", "PJM")
+    eia = [r for r in rec.sent if urlsplit(r.url).netloc == "api.eia.gov"]
+    assert sorted(urlsplit(r.url).path for r in eia) == [
+        "/v2/electricity/rto/fuel-type-data/data",
+        "/v2/electricity/rto/region-data/data"], [r.url for r in rec.sent]
+    for r in eia:
+        _assert_keyless(r.url)
+        assert _sent_headers(r).get("x-api-key") == KEY, r.url
+    for r in rec.sent:
+        if r not in eia:
+            assert KEY not in r.url and KEY not in _sent_headers(r).values(), r.url
+
+
+def test_the_nepa_scraper_sends_the_key_in_x_api_key(monkeypatch):
+    mod = _real("services.nepa_scraper")
+    monkeypatch.setenv("NEPA_API_KEY", KEY)
+    sent = _record_urlopen(monkeypatch, b'{"data": []}')
+    assert mod.search_documents("data center campus") == {"data": []}
+    assert len(sent) == 1
+    url = _sent_url(sent[0])
+    assert urlsplit(url).netloc == "api.regulations.gov", url
+    _assert_keyless(url)
+    assert _sent_headers(sent[0]).get("x-api-key") == KEY

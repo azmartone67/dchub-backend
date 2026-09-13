@@ -5152,9 +5152,9 @@ def _grid_intel_fetch(region, rto_code):
             'sort[0][column]': 'period', 'sort[0][direction]': 'desc',
             'offset': 0, 'length': 48,
         }
-        if eia_key: params['api_key'] = eia_key
+        eia_h = {**H, 'X-Api-Key': eia_key} if eia_key else H  # EIA reads X-Api-Key, not the query string
         r = _rq.get('https://api.eia.gov/v2/electricity/rto/region-data/data',
-                    params=params, headers=H, timeout=8)  # demand = the #1 field + smallest payload; 5s ReadTimeout'd too often (cache-poisoned PJM/SRP to null)
+                    params=params, headers=eia_h, timeout=8)  # demand = the #1 field + smallest payload; 5s ReadTimeout'd too often (cache-poisoned PJM/SRP to null)
         if r.ok:
             rows = (r.json() or {}).get('response', {}).get('data', [])
             data = [d for d in rows if str(d.get('type') or '').upper() == 'D']
@@ -5215,9 +5215,9 @@ def _grid_intel_fetch(region, rto_code):
             'sort[0][column]': 'period', 'sort[0][direction]': 'desc',
             'offset': 0, 'length': 400,  # all fuels × ~36h (was 7 fuels × 24h)
         }
-        if eia_key: params['api_key'] = eia_key
+        eia_h = {**H, 'X-Api-Key': eia_key} if eia_key else H  # EIA reads X-Api-Key, not the query string
         r = _rq.get('https://api.eia.gov/v2/electricity/rto/fuel-type-data/data',
-                    params=params, headers=H, timeout=5)
+                    params=params, headers=eia_h, timeout=5)
         if r.ok:
             data = (r.json() or {}).get('response', {}).get('data', [])
             # ROBUSTNESS (2026-06-19): build the mix from ONE consistent recent
