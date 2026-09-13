@@ -392,10 +392,14 @@ def _facility_already_staged(conn, cur, facility) -> bool:
     return True
 
 
-def insert_discovered_facility(conn, facility):
+def insert_discovered_facility(conn, facility, failures=None):
     """
     Insert an extracted facility into discovered_facilities.
     Returns the new row ID, or None if duplicate/error.
+
+    None means BOTH "skipped" (rejected name, already known) and "the write
+    failed", so a caller that counts outcomes passes `failures`, a list: a
+    failed write appends its error there, a skip appends nothing.
     """
     # r-headline-reject (2026-08-09): the choke point every news path funnels
     # through — this module's own scan, routes/news_entity_extraction's NER
@@ -471,6 +475,8 @@ def insert_discovered_facility(conn, facility):
         return new_id
 
     except Exception as e:
+        if failures is not None:
+            failures.append(f"{type(e).__name__}: {e}")
         conn.rollback()
         logger.error(f"Error inserting facility: {e}\n{traceback.format_exc()}")
         return None
@@ -489,7 +495,9 @@ def scan_news_sources(conn=None):
         conn: PostgreSQL connection (if None, will attempt to get one from app context)
 
     Returns:
-        dict with scan results: articles_scanned, facilities_found, facilities_inserted
+        dict with scan results: articles_scanned, facilities_found,
+        facilities_inserted, facilities_insert_failed, errors, and success
+        (False when a write failed)
     """
     import requests
 
@@ -497,17 +505,28 @@ def scan_news_sources(conn=None):
         'articles_scanned': 0,
         'facilities_found': 0,
         'facilities_inserted': 0,
+        # Counted apart from "not inserted": insert_discovered_facility returns
+        # None for a skip AND for a failed write, so without this a run whose
+        # every INSERT was refused reported 0 new facilities and nothing else.
+        'facilities_insert_failed': 0,
         'errors': [],
     }
 
-    # Get DB connection if not provided
-    if conn is None:
+    # This scan WRITES. With no connection given it takes one from the primary
+    # pool (main.get_db, as the other insert_discovered_facility callers do),
+    # never main.get_read_db, which hands out the read-replica pool whenever
+    # DATABASE_READ_URL / NEON_REPLICA_URL is set; dchub-worker, where the
+    # scheduler calls this, sets one. A connection the scan took it gives
+    # back; a caller's stays open.
+    owned = conn is None
+    if owned:
         try:
-            from main import get_read_db
-            conn = get_read_db()
+            from main import get_db
+            conn = get_db()
         except Exception as e:
             logger.error(f"Could not get DB connection: {e}")
             results['errors'].append(str(e))
+            results['success'] = False
             return results
 
     for source in NEWS_SOURCES:
@@ -542,15 +561,32 @@ def scan_news_sources(conn=None):
                     title, body, article_url, source['name'])
                 if facility:
                     results['facilities_found'] += 1
-                    new_id = insert_discovered_facility(conn, facility)
+                    failed = []
+                    new_id = insert_discovered_facility(conn, facility, failures=failed)
                     if new_id:
                         results['facilities_inserted'] += 1
+                    elif failed:
+                        results['facilities_insert_failed'] += 1
+                        if results['facilities_insert_failed'] == 1:
+                            # One message, not one per candidate: a refused
+                            # write refuses every insert the same way.
+                            results['errors'].append(
+                                f"discovered_facilities write failed: {failed[0][:200]}")
 
         except Exception as e:
             error_msg = f"Error scanning {source['name']}: {e}"
             logger.error(error_msg)
             results['errors'].append(error_msg)
 
+    if owned:
+        # Each source's work sits inside its own try, so no Exception from the
+        # loop can skip this.
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    results['success'] = results['facilities_insert_failed'] == 0
     logger.info(f"News scan complete: {results}")
     return results
 
