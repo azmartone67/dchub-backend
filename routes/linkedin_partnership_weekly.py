@@ -132,7 +132,7 @@ For anyone at DCD reading this — editorial@dchub.cloud · the full open invita
         "url": "https://dchub.cloud/partners#jll",
         "body": """We don't have a partnership with JLL. We're publishing an open invitation for one — same Switzerland model offer we're extending to CBRE, in parallel. We don't compete with either; we feed both.
 
-What we'd love to offer JLL: a JLL-branded portal into DC Hub's live intelligence layer. Pipeline + M&A intelligence — we're tracking 4,000+ historical M&A deals + live pipeline. A JLL-co-branded "Market Velocity" report quarterly powered by our dataset. Lead-share split on pocket-listing inquiries from JLL-actively-brokered metros.
+What we'd love to offer JLL: a JLL-branded portal into DC Hub's live intelligence layer. Pipeline + M&A intelligence — we're tracking 4,000+ historical M&A deals + live pipeline. A JLL-co-branded "Market Velocity" report quarterly powered by our dataset. Capacity Source for JLL-brokered capacity: JLL lists a site, every inquiry is identity-verified before it reaches JLL, and each introduction lands as a signed, auditable lead record.
 
 Our specific opening offer: a 90-day MCP pilot for one JLL Data Centers regional team (we'd suggest Americas given our coverage density). Same shape as the CBRE invitation — runs in parallel, isolated data planes, no leak across.
 

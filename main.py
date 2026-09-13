@@ -44316,6 +44316,9 @@ except Exception as _e:
 # The data exists (get_pocket_listings MCP tool + /api/v1/listings API)
 # but no HTML surface had been wired. Ship a minimal landing page so the
 # URL stops 404'ing — the richer browser is queued for Phase CCCC+1.
+# ★2026-09-13: the program is DC Hub Capacity Source (tools source_capacity +
+# request_capacity_intro) and its browser is /listings. This stub stays for old
+# links and declares /listings canonical.
 try:
     from flask import Response as _PL_Response
     @app.route('/pocket-listings', methods=['GET'], strict_slashes=False)
@@ -44323,9 +44326,9 @@ try:
     def _pocket_listings_stub():
         html = """<!doctype html>
 <html><head><meta charset="utf-8">
-<title>Pocket Listings — DC Hub</title>
-<meta name="description" content="Off-market data center capacity DC Hub is onboarding — browse teaser cards, sign in to open a listing, and let DC Hub introduce you to the operator.">
-<link rel="canonical" href="https://dchub.cloud/pocket-listings">
+<title>Capacity Source — DC Hub</title>
+<meta name="description" content="DC Hub Capacity Source: data center capacity for enterprise and AI-agent procurement. Browse listings, sign in to open one, and let DC Hub introduce you to the operator.">
+<link rel="canonical" href="https://dchub.cloud/listings">
 <style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;
 margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.55;background:#fafbfc}
 h1{font-size:2rem;margin:0 0 .5rem}
@@ -44339,29 +44342,29 @@ a{color:#1e40af;text-decoration:none} a:hover{text-decoration:underline}
 color:white;padding:.6rem 1.25rem;border-radius:6px;font-weight:600;
 text-decoration:none;margin-top:1rem}</style>
 </head><body>
-<h1>Pocket Listings</h1>
-<p class="lead">Off-market data center capacity — powered shells, available capacity and development sites that are not publicly marketed. The first listings are being onboarded now.</p>
+<h1>Capacity Source</h1>
+<p class="lead">Pocket listings are now DC Hub Capacity Source: powered land, powered shells and turnkey capacity, including sites that are not publicly marketed, for enterprise buyers and the AI agents that procure for them. The first listings are being onboarded now.</p>
 <div class="card">
 <h2>How it works</h2>
 <ul>
- <li><strong>Browse</strong> — teaser cards (market, state, capacity) are open to everyone at <a href="https://dchub.cloud/listings">dchub.cloud/listings</a>.</li>
+ <li><strong>Browse</strong> — listing cards (market, state, capacity and when each was last updated) are open to everyone at <a href="https://dchub.cloud/listings">dchub.cloud/listings</a>.</li>
  <li><strong>Sign in to open a listing</strong> — full listing detail needs a signed-in account, or an AI agent using a key with an email bound or an OAuth connection.</li>
  <li><strong>Request an introduction</strong> — DC Hub makes the introduction to the operator. Operator contact details are never published, and every registered lead has a public verification record.</li>
  <li><strong>Nothing that fits yet?</strong> Register a requirement to get first access when matching listings open.</li>
 </ul>
-<a class="cta" href="https://dchub.cloud/listings">Browse pocket listings →</a>
+<a class="cta" href="https://dchub.cloud/listings">Open Capacity Source →</a>
 </div>
 <div class="card">
 <h2>From an AI agent</h2>
-<p>Connect to <a href="/mcp">/mcp</a> and call <code>get_pocket_listings</code> to browse teasers and open a listing, then <code>request_listing_intro</code> to request an introduction or register a requirement. The REST feed is <a href="/api/v1/listings">/api/v1/listings</a>.</p>
+<p>Connect to <a href="/mcp">/mcp</a> and call <code>source_capacity</code> to browse listings and open one, then <code>request_capacity_intro</code> to request an introduction or register a requirement. The REST feed is <a href="/api/v1/listings">/api/v1/listings</a>.</p>
 </div>
 <div class="card">
-<h2>Have spare capacity?</h2>
-<p>Operators can list their own capacity at <a href="/spare-capacity">/spare-capacity</a> for tenant discovery.</p>
-<a class="cta" href="/spare-capacity">List your spare capacity →</a>
+<h2>Have capacity to list?</h2>
+<p>Operators, developers and brokers list capacity with DC Hub Capacity Source, one site or a whole portfolio.</p>
+<a class="cta" href="https://dchub.cloud/listings#list-capacity">List your capacity →</a>
 </div>
 <p class="muted" style="text-align:center;margin-top:3rem">
- Part of <a href="/">DC Hub</a> · <a href="https://dchub.cloud/listings">Pocket listings</a> · <a href="/spare-capacity">Spare capacity</a> · <a href="/transactions">Transactions</a> · <a href="/api-docs">API docs</a>
+ Part of <a href="/">DC Hub</a> · <a href="https://dchub.cloud/listings">Capacity Source</a> · <a href="/transactions">Transactions</a> · <a href="/api-docs">API docs</a>
 </p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
@@ -44911,7 +44914,7 @@ try:
         register_surface(Surface(
             surface_id="spare_capacity",
             name="Spare Capacity Marketplace",
-            description="/spare-capacity intake + listings with broker-credit referral codes",
+            description="/spare-capacity: folded into Capacity Source 2026-09-13 (pages 301 to /listings, submit 410, read-only feed)",
             routes=["/spare-capacity", "/spare-capacity/<ref>",
                     "/api/v1/spare-capacity/submit", "/api/v1/spare-capacity/listings"],
             paid_tools=[],

@@ -86,8 +86,6 @@ _STATIC_PAGES = [
     ("/bs-translator", 0.7, "weekly"),
     ("/intelligence", 0.7, "weekly"),
     ("/power-totals", 0.7, "daily"),
-    ("/pocket-listings", 0.7, "weekly"),
-    ("/spare-capacity", 0.7, "weekly"),
     ("/events", 0.7, "weekly"),
     # r70 (2026-06-03): the 3 new flagship products — live + nav/ticker/MCP-wired
     # but missing from the sitemap, so crawlers + AI agents couldn't discover them.
@@ -173,7 +171,7 @@ def _generate_sitemap():
     # listings block below already learned (it emits ?l= because /listings/<slug>
     # 404s). Pinned by tests/test_sitemap_auto_no_site_id_urls.py.
 
-    # Public pocket listings
+    # Public Capacity Source listings
     try:
         with _conn() as c, c.cursor() as cur:
             rows = _safe(cur, """

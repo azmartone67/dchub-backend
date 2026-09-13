@@ -11,13 +11,13 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1461,
+  "python_files_scanned": 1462,
   "endpoints_total": 1798,
-  "endpoints_resolved": 1291,
+  "endpoints_resolved": 1290,
   "endpoints_partial": 65,
-  "endpoints_opaque_not_covered": 442,
-  "keys_total": 10671,
-  "keys_strictly_protected": 9705,
+  "endpoints_opaque_not_covered": 443,
+  "keys_total": 10667,
+  "keys_strictly_protected": 9701,
   "keys_open_level_unmeasured_on_removal": 940,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 115
@@ -97,7 +97,7 @@
    "keys": []
   },
   "DELETE /api/v1/outreach/exclude-list": {
-   "source": "main.py:49542",
+   "source": "main.py:49545",
    "handler": "_outreach_exclude_list",
    "resolution": "resolved",
    "open_at": [
@@ -1474,7 +1474,7 @@
    ]
   },
   "GET /api/cron/daily/preview": {
-   "source": "main.py:45792",
+   "source": "main.py:45795",
    "handler": "_v1_daily_preview",
    "resolution": "partial",
    "open_at": [
@@ -3273,21 +3273,21 @@
    "keys": []
   },
   "GET /api/health/diag": {
-   "source": "main.py:45761",
+   "source": "main.py:45764",
    "handler": "_bv2_diag",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/health/freshness": {
-   "source": "main.py:45740",
+   "source": "main.py:45743",
    "handler": "_bv2_health_freshness",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/health/freshness/tables": {
-   "source": "main.py:45751",
+   "source": "main.py:45754",
    "handler": "_bv2_freshness_tables",
    "resolution": "opaque",
    "open_at": [],
@@ -6461,7 +6461,7 @@
    "keys": []
   },
   "GET /api/v1/_phase": {
-   "source": "main.py:47102",
+   "source": "main.py:47105",
    "handler": "_phase239_marker",
    "resolution": "resolved",
    "open_at": [],
@@ -11632,7 +11632,7 @@
    ]
   },
   "GET /api/v1/dcpi/live-count": {
-   "source": "main.py:46637",
+   "source": "main.py:46640",
    "handler": "_dcpi_live_count_v238",
    "resolution": "resolved",
    "open_at": [
@@ -11734,7 +11734,7 @@
    "keys": []
   },
   "GET /api/v1/dcpi/quality": {
-   "source": "main.py:46326",
+   "source": "main.py:46329",
    "handler": "_dcpi_quality",
    "resolution": "resolved",
    "open_at": [
@@ -14361,7 +14361,7 @@
    ]
   },
   "GET /api/v1/heal/findings": {
-   "source": "main.py:47627",
+   "source": "main.py:47630",
    "handler": "_heal_findings",
    "resolution": "partial",
    "open_at": [],
@@ -14377,7 +14377,7 @@
    ]
   },
   "GET /api/v1/heal/master-cycle": {
-   "source": "main.py:47187",
+   "source": "main.py:47190",
    "handler": "_heal_master_cycle",
    "resolution": "resolved",
    "open_at": [
@@ -14394,7 +14394,7 @@
    ]
   },
   "GET /api/v1/heal/qa-crawl": {
-   "source": "main.py:47698",
+   "source": "main.py:47701",
    "handler": "_heal_qa_crawl",
    "resolution": "resolved",
    "open_at": [
@@ -14421,7 +14421,7 @@
    ]
   },
   "GET /api/v1/heal/run": {
-   "source": "main.py:46413",
+   "source": "main.py:46416",
    "handler": "_heal_run_action",
    "resolution": "resolved",
    "open_at": [
@@ -14436,7 +14436,7 @@
    ]
   },
   "GET /api/v1/heal/status": {
-   "source": "main.py:46178",
+   "source": "main.py:46181",
    "handler": "_heal_status",
    "resolution": "opaque",
    "open_at": [],
@@ -14456,7 +14456,7 @@
    ]
   },
   "GET /api/v1/health/deep": {
-   "source": "main.py:46446",
+   "source": "main.py:46449",
    "handler": "_health_deep",
    "resolution": "resolved",
    "open_at": [
@@ -14475,7 +14475,7 @@
    ]
   },
   "GET /api/v1/health/deep-v2": {
-   "source": "main.py:46660",
+   "source": "main.py:46663",
    "handler": "_health_deep_v2_238",
    "resolution": "resolved",
    "open_at": [
@@ -14494,7 +14494,7 @@
    ]
   },
   "GET /api/v1/health/freshness": {
-   "source": "main.py:45743",
+   "source": "main.py:45746",
    "handler": "_bv2_health_freshness_v1",
    "resolution": "opaque",
    "open_at": [],
@@ -15387,7 +15387,7 @@
    ]
   },
   "GET /api/v1/iso/zones": {
-   "source": "main.py:45834",
+   "source": "main.py:45837",
    "handler": "_v1_iso_zones",
    "resolution": "partial",
    "open_at": [
@@ -15776,7 +15776,7 @@
    ]
   },
   "GET /api/v1/listings": {
-   "source": "routes/exclusive_listings.py:1332",
+   "source": "routes/exclusive_listings.py:1340",
    "handler": "list_listings",
    "resolution": "resolved",
    "open_at": [
@@ -15808,7 +15808,7 @@
    ]
   },
   "GET /api/v1/listings/<slug_or_id>": {
-   "source": "routes/exclusive_listings.py:1393",
+   "source": "routes/exclusive_listings.py:1401",
    "handler": "get_listing",
    "resolution": "resolved",
    "open_at": [
@@ -15835,7 +15835,7 @@
    ]
   },
   "GET /api/v1/listings/<slug_or_id>/leads": {
-   "source": "routes/exclusive_listings.py:1657",
+   "source": "routes/exclusive_listings.py:1665",
    "handler": "operator_ledger",
    "resolution": "resolved",
    "open_at": [
@@ -15865,7 +15865,7 @@
    ]
   },
   "GET /api/v1/listings/health": {
-   "source": "routes/exclusive_listings.py:2024",
+   "source": "routes/exclusive_listings.py:2032",
    "handler": "listings_health",
    "resolution": "resolved",
    "open_at": [
@@ -15879,7 +15879,7 @@
    ]
   },
   "GET /api/v1/listings/leads/<lead_id>/verify": {
-   "source": "routes/exclusive_listings.py:1589",
+   "source": "routes/exclusive_listings.py:1597",
    "handler": "verify_lead",
    "resolution": "resolved",
    "open_at": [
@@ -15922,7 +15922,7 @@
    ]
   },
   "GET /api/v1/listings/terms": {
-   "source": "routes/exclusive_listings.py:1383",
+   "source": "routes/exclusive_listings.py:1391",
    "handler": "listing_terms",
    "resolution": "resolved",
    "open_at": [
@@ -16569,7 +16569,7 @@
    ]
   },
   "GET /api/v1/markets/list-rich": {
-   "source": "main.py:46580",
+   "source": "main.py:46583",
    "handler": "_markets_list_rich",
    "resolution": "resolved",
    "open_at": [
@@ -16704,7 +16704,7 @@
    ]
   },
   "GET /api/v1/mcp/capture-email": {
-   "source": "main.py:48587",
+   "source": "main.py:48590",
    "handler": "_mcp_capture_email",
    "resolution": "resolved",
    "open_at": [
@@ -16846,7 +16846,7 @@
    "keys": []
   },
   "GET /api/v1/mcp/conversion-funnel/by-client": {
-   "source": "main.py:48030",
+   "source": "main.py:48033",
    "handler": "_mcp_conversion_funnel_by_client",
    "resolution": "resolved",
    "open_at": [
@@ -17020,7 +17020,7 @@
    ]
   },
   "GET /api/v1/mcp/email-distribution": {
-   "source": "main.py:48491",
+   "source": "main.py:48494",
    "handler": "_mcp_email_distribution",
    "resolution": "resolved",
    "open_at": [
@@ -17248,7 +17248,7 @@
    ]
   },
   "GET /api/v1/mcp/power-users": {
-   "source": "main.py:48181",
+   "source": "main.py:48184",
    "handler": "_mcp_power_users",
    "resolution": "resolved",
    "open_at": [
@@ -17540,7 +17540,7 @@
    ]
   },
   "GET /api/v1/mcp/upgrade-prompt": {
-   "source": "main.py:47828",
+   "source": "main.py:47831",
    "handler": "_mcp_upgrade_prompt",
    "resolution": "resolved",
    "open_at": [
@@ -17681,7 +17681,7 @@
    ]
   },
   "GET /api/v1/media/ai-usage-live": {
-   "source": "main.py:46812",
+   "source": "main.py:46815",
    "handler": "_media_ai_usage_live",
    "resolution": "resolved",
    "open_at": [
@@ -17761,7 +17761,7 @@
    ]
   },
   "GET /api/v1/media/diagnose": {
-   "source": "main.py:46249",
+   "source": "main.py:46252",
    "handler": "_media_diagnose",
    "resolution": "resolved",
    "open_at": [
@@ -17807,14 +17807,14 @@
    ]
   },
   "GET /api/v1/media/feed": {
-   "source": "main.py:45776",
+   "source": "main.py:45779",
    "handler": "_v1_media_feed",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/media/feed-v2": {
-   "source": "main.py:46741",
+   "source": "main.py:46744",
    "handler": "_media_feed_v2_238",
    "resolution": "resolved",
    "open_at": [
@@ -17830,7 +17830,7 @@
    ]
   },
   "GET /api/v1/media/feed-v3": {
-   "source": "main.py:46773",
+   "source": "main.py:46776",
    "handler": "_media_feed_v3",
    "resolution": "resolved",
    "open_at": [
@@ -19053,14 +19053,14 @@
    ]
   },
   "GET /api/v1/outreach/dispatch": {
-   "source": "main.py:49478",
+   "source": "main.py:49481",
    "handler": "_outreach_dispatch",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/outreach/exclude-list": {
-   "source": "main.py:49542",
+   "source": "main.py:49545",
    "handler": "_outreach_exclude_list",
    "resolution": "resolved",
    "open_at": [
@@ -19087,7 +19087,7 @@
    ]
   },
   "GET /api/v1/outreach/log": {
-   "source": "main.py:49496",
+   "source": "main.py:49499",
    "handler": "_outreach_log",
    "resolution": "resolved",
    "open_at": [
@@ -19117,7 +19117,7 @@
    ]
   },
   "GET /api/v1/outreach/queue": {
-   "source": "main.py:49457",
+   "source": "main.py:49460",
    "handler": "_outreach_queue",
    "resolution": "resolved",
    "open_at": [
@@ -21291,14 +21291,14 @@
    "keys": []
   },
   "GET /api/v1/schema-org/audit": {
-   "source": "routes/schema_org_saturation.py:212",
+   "source": "routes/schema_org_saturation.py:211",
    "handler": "audit_endpoint",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/schema-org/missing": {
-   "source": "routes/schema_org_saturation.py:222",
+   "source": "routes/schema_org_saturation.py:221",
    "handler": "missing_endpoint",
    "resolution": "resolved",
    "open_at": [
@@ -21400,7 +21400,7 @@
    ]
   },
   "GET /api/v1/sentinel/findings": {
-   "source": "routes/site_sentinel.py:2296",
+   "source": "routes/site_sentinel.py:2297",
    "handler": "sentinel_findings",
    "resolution": "opaque",
    "open_at": [],
@@ -21441,7 +21441,7 @@
    ]
   },
   "GET /api/v1/sentinel/resolutions": {
-   "source": "routes/site_sentinel.py:1346",
+   "source": "routes/site_sentinel.py:1347",
    "handler": "sentinel_resolutions",
    "resolution": "resolved",
    "open_at": [],
@@ -21452,7 +21452,7 @@
    ]
   },
   "GET /api/v1/sentinel/scan": {
-   "source": "routes/site_sentinel.py:2278",
+   "source": "routes/site_sentinel.py:2279",
    "handler": "sentinel_scan",
    "resolution": "opaque",
    "open_at": [],
@@ -22164,14 +22164,14 @@
    ]
   },
   "GET /api/v1/sitemap.xml": {
-   "source": "routes/sitemap_auto.py:220",
+   "source": "routes/sitemap_auto.py:218",
    "handler": "sitemap_xml",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/sitemap/health": {
-   "source": "routes/sitemap_auto.py:231",
+   "source": "routes/sitemap_auto.py:229",
    "handler": "sitemap_health",
    "resolution": "resolved",
    "open_at": [
@@ -22531,12 +22531,16 @@
    "keys": []
   },
   "GET /api/v1/spare-capacity/listings": {
-   "source": "routes/spare_capacity.py:237",
+   "source": "routes/spare_capacity.py:70",
    "handler": "listings",
    "resolution": "resolved",
-   "open_at": [],
+   "open_at": [
+    "moved_to",
+    "per_page"
+   ],
    "keys": [
     "listings",
+    "moved_to",
     "note",
     "page",
     "per_page",
@@ -22720,7 +22724,7 @@
    "keys": []
   },
   "GET /api/v1/stripe/_webhook-debug": {
-   "source": "main.py:48374",
+   "source": "main.py:48377",
    "handler": "_stripe_webhook_debug",
    "resolution": "resolved",
    "open_at": [
@@ -25127,7 +25131,7 @@
    ]
   },
   "POST /api/cron/daily/preview": {
-   "source": "main.py:45792",
+   "source": "main.py:45795",
    "handler": "_v1_daily_preview",
    "resolution": "partial",
    "open_at": [
@@ -28843,7 +28847,7 @@
    ]
   },
   "POST /api/v1/dcpi/lite-recompute": {
-   "source": "main.py:45969,routes/dcpi.py:9637",
+   "source": "main.py:45972,routes/dcpi.py:9637",
    "handler": "_v216_dcpi_lite_recompute",
    "resolution": "resolved",
    "open_at": [
@@ -29414,7 +29418,7 @@
    ]
   },
   "POST /api/v1/heal/force": {
-   "source": "main.py:46233",
+   "source": "main.py:46236",
    "handler": "_heal_force",
    "resolution": "resolved",
    "open_at": [
@@ -29426,7 +29430,7 @@
    ]
   },
   "POST /api/v1/heal/log": {
-   "source": "main.py:46210",
+   "source": "main.py:46213",
    "handler": "_heal_log",
    "resolution": "resolved",
    "open_at": [
@@ -29437,7 +29441,7 @@
    ]
   },
   "POST /api/v1/heal/master-cycle": {
-   "source": "main.py:47187",
+   "source": "main.py:47190",
    "handler": "_heal_master_cycle",
    "resolution": "resolved",
    "open_at": [
@@ -29454,7 +29458,7 @@
    ]
   },
   "POST /api/v1/heal/qa-crawl": {
-   "source": "main.py:47698",
+   "source": "main.py:47701",
    "handler": "_heal_qa_crawl",
    "resolution": "resolved",
    "open_at": [
@@ -29481,7 +29485,7 @@
    ]
   },
   "POST /api/v1/heal/run": {
-   "source": "main.py:46413",
+   "source": "main.py:46416",
    "handler": "_heal_run_action",
    "resolution": "resolved",
    "open_at": [
@@ -29871,7 +29875,7 @@
    ]
   },
   "POST /api/v1/listings/<slug_or_id>/intro": {
-   "source": "routes/exclusive_listings.py:1446",
+   "source": "routes/exclusive_listings.py:1454",
    "handler": "request_intro",
    "resolution": "resolved",
    "open_at": [
@@ -29904,7 +29908,7 @@
    ]
   },
   "POST /api/v1/listings/interest": {
-   "source": "routes/exclusive_listings.py:1479",
+   "source": "routes/exclusive_listings.py:1487",
    "handler": "register_interest",
    "resolution": "resolved",
    "open_at": [
@@ -29938,7 +29942,7 @@
    ]
   },
   "POST /api/v1/listings/leads/confirm": {
-   "source": "routes/exclusive_listings.py:1512",
+   "source": "routes/exclusive_listings.py:1520",
    "handler": "confirm_lead",
    "resolution": "resolved",
    "open_at": [
@@ -30118,7 +30122,7 @@
    ]
   },
   "POST /api/v1/mcp/capture-email": {
-   "source": "main.py:48587",
+   "source": "main.py:48590",
    "handler": "_mcp_capture_email",
    "resolution": "resolved",
    "open_at": [
@@ -30265,7 +30269,7 @@
    ]
   },
   "POST /api/v1/mcp/mark-converted": {
-   "source": "main.py:48559",
+   "source": "main.py:48562",
    "handler": "_mcp_mark_converted",
    "resolution": "resolved",
    "open_at": [
@@ -30278,7 +30282,7 @@
    ]
   },
   "POST /api/v1/mcp/mark-outreach-sent": {
-   "source": "main.py:48531",
+   "source": "main.py:48534",
    "handler": "_mcp_mark_outreach_sent",
    "resolution": "resolved",
    "open_at": [
@@ -30327,7 +30331,7 @@
    ]
   },
   "POST /api/v1/mcp/upgrade-prompt": {
-   "source": "main.py:47828",
+   "source": "main.py:47831",
    "handler": "_mcp_upgrade_prompt",
    "resolution": "resolved",
    "open_at": [
@@ -30363,7 +30367,7 @@
    ]
   },
   "POST /api/v1/media/announcement": {
-   "source": "main.py:45941",
+   "source": "main.py:45944",
    "handler": "_v1_media_publish",
    "resolution": "opaque",
    "open_at": [],
@@ -30920,14 +30924,14 @@
    ]
   },
   "POST /api/v1/outreach/dispatch": {
-   "source": "main.py:49478",
+   "source": "main.py:49481",
    "handler": "_outreach_dispatch",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "POST /api/v1/outreach/exclude-list": {
-   "source": "main.py:49542",
+   "source": "main.py:49545",
    "handler": "_outreach_exclude_list",
    "resolution": "resolved",
    "open_at": [
@@ -31306,7 +31310,7 @@
    ]
   },
   "POST /api/v1/sentinel/scan-now": {
-   "source": "routes/site_sentinel.py:2310",
+   "source": "routes/site_sentinel.py:2311",
    "handler": "sentinel_scan_now",
    "resolution": "resolved",
    "open_at": [
@@ -31326,14 +31330,14 @@
    ]
   },
   "POST /api/v1/sentinel/track-failures": {
-   "source": "routes/site_sentinel.py:1708",
+   "source": "routes/site_sentinel.py:1709",
    "handler": "sentinel_track_failures",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "POST /api/v1/sentinel/verify-outcomes": {
-   "source": "routes/site_sentinel.py:1332",
+   "source": "routes/site_sentinel.py:1333",
    "handler": "sentinel_verify_outcomes",
    "resolution": "opaque",
    "open_at": [],
@@ -31847,19 +31851,11 @@
    ]
   },
   "POST /api/v1/spare-capacity/submit": {
-   "source": "routes/spare_capacity.py:147",
+   "source": "routes/spare_capacity.py:58",
    "handler": "submit_listing",
-   "resolution": "resolved",
-   "open_at": [
-    "referral_code"
-   ],
-   "keys": [
-    "message",
-    "ok",
-    "referral_code",
-    "status",
-    "tracker_url"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "POST /api/v1/sponsorships": {
    "source": "routes/sponsorships.py:118",
@@ -31972,7 +31968,7 @@
    ]
   },
   "POST /api/v1/stripe/webhook-convert": {
-   "source": "main.py:48245",
+   "source": "main.py:48248",
    "handler": "_stripe_webhook_convert",
    "resolution": "resolved",
    "open_at": [

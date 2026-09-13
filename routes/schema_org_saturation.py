@@ -44,7 +44,6 @@ _REQUIRED_SCHEMA = [
     ("/dcpi/totals",                     "Dataset"),
     ("/transactions",                    "Dataset"),
     ("/operators",                       "ItemList"),
-    ("/spare-capacity",                  "WebApplication"),
     ("/pocket-listings",                 "WebPage"),
     ("/markets/northern-virginia/deep-dive", "Article"),
     ("/reports/quarterly",               "Report"),

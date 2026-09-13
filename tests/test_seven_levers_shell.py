@@ -522,7 +522,16 @@ def test_repo_worker_is_canon_clean_and_current():
     # Verify with (want 4.9.66-fallback-tools-90):
     #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.66-fallback-tools-90'" in src
+    #
+    # 4.9.66 -> 4.9.67-capacity-source (2026-09-13): dchub-mcp-server #409
+    # renamed get_pocket_listings / request_listing_intro to source_capacity /
+    # request_capacity_intro (the count stays 90; the old names resolve through
+    # its TOOL_ALIASES). MCP_FALLBACK_TOOLS carries the new names, DERIVED from
+    # that branch's toolspec.json. #409 is live, so the paste can follow this merge.
+    # ⚠ PASTE OUTSTANDING. Verify with (want 4.9.67-capacity-source):
+    #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.67-capacity-source'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

@@ -211,7 +211,11 @@ def test_the_dynamic_list_is_actually_parsed():
     reshaped literal matches nothing and every assertion below passes on an
     empty list."""
     paths = _dynamic_pages()
-    assert len(paths) >= 40, (
+    # ★2026-09-13: 41 -> 39 when /pocket-listings (a stub that now declares
+    # /listings canonical) and /spare-capacity (now a 301 to /listings) left the
+    # list. The floor exists to catch a parse that finds nothing, so it tracks the
+    # real count rather than a round number.
+    assert len(paths) >= 39, (
         f"only {len(paths)} paths parsed out of routes/sitemap_auto.py — the "
         f"_STATIC_PAGES literal moved or changed shape, and this guard is blind")
     assert "/" in paths and "/pricing" in paths, "parsed something, but not the list"

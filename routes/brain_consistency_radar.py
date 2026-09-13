@@ -7429,7 +7429,7 @@ def check_page_brand_uniformity() -> list[dict]:
         '/dc-hub-media', '/tax-incentives', '/ai', '/ai-deals',
         '/ai-pipeline', '/ai-integrations', '/ai-inventory',
         '/state-of-the-data-center', '/system-status', '/grid-intelligence',
-        '/platform', '/sites', '/spare-capacity', '/capacity-pipeline',
+        '/platform', '/sites', '/capacity-pipeline',  # /spare-capacity left 2026-09-13: it 301s to /listings
         # r86: dropped "/mcp" — it is the MCP JSON-RPC endpoint
         # (application/json), not an HTML page, so brand needles never matched
         # and it false-flagged "missing dchub nav js" every pass.

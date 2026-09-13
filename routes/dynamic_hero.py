@@ -96,8 +96,8 @@ _SEED_MESSAGES = [
         "power-stack",
     ),
     (
-        "Off-market pocket listings.<br>[GRAD]Live deal flow.[/GRAD]",
-        "Sub-MW capacity, brownfield campuses, {deals} tracked transactions, M&A pipeline tagged by market tier and DCPI score. The deal book operators don't post publicly.",
+        "Capacity Source.<br>[GRAD]Capacity your agents can procure.[/GRAD]",
+        "Powered land, powered shells and turnkey capacity, including sites that are not publicly marketed, beside {deals} tracked transactions and an M&A pipeline tagged by market tier and DCPI score.",
         "deal-flow",
     ),
     (

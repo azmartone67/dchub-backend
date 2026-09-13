@@ -280,7 +280,7 @@ def _developer_rationale(verdict, excess, constraint, ttp, deadline):
 # ─────────────────────────────────────────────────────────────────────
 @persona_briefs_bp.route("/api/v1/brief/buyer", methods=["GET"])
 @soft_gate(min_tier=RestTier.DEVELOPER,
-           teaser="full candidate facility roster + pocket-listing inventory (Pro+) + 10-deal transaction comparable history",
+           teaser="full candidate facility roster + Capacity Source listings + 10-deal transaction comparable history",
            truncate_to=3,
            truncate_keys=["candidate_facilities", "pocket_listings", "recent_comparables"])
 def buyer_brief():
@@ -334,7 +334,7 @@ def buyer_brief():
                     f"Candidate facility list ({len(on_market)} matching capacity ≥{min_mw} MW)",
                     "facilities", now_iso()))
 
-            # Pocket listings matching same criteria — TEASER fields only.
+            # Capacity Source listings matching same criteria — TEASER fields only.
             # 2026-09-11: asking_price is detail behind the pocket-listing
             # auth wall (routes/exclusive_listings.py), and soft_gate's
             # truncate_to=3 still served three full rows to anonymous callers.
