@@ -40,16 +40,6 @@ BASELINE = os.path.join(ROOT, "contracts", "dataset_inventory.json")
 FROZEN_FOUR = ("discovered_transmission_lines", "metro_fiber_summary",
                "usgs_water_stress", "facility_permits")
 
-# Frozen tables RETIRED FROM SERVICE: every reader was repointed or removed, so
-# the inventory finds no read of them and stops listing them. That is a stronger
-# state than "a fence can reach it" — the check below fails the moment a reader
-# comes back.
-RETIRED_FROM_SERVICE = {
-    "discovered_transmission_lines": (
-        "2026-09-13: site_planner reads transmission_lines; the KMZ export's "
-        "transmission type and /api/v2/infrastructure/hifld/transmission answer 410"),
-}
-
 
 # ── the foreign gate, unit level ───────────────────────────────────────────
 
@@ -190,14 +180,6 @@ def test_the_committed_baseline_covers_the_frozen_four():
     d = json.load(open(BASELINE))
     tables = d["tables"]
     for t in FROZEN_FOUR:
-        if t in RETIRED_FROM_SERVICE:
-            v = tables.get(t) or {}
-            assert not v.get("read_sites"), (
-                f"{t} was retired from service ({RETIRED_FROM_SERVICE[t]}), but the "
-                f"inventory finds {v.get('read_sites')} read site(s) again, first at "
-                f"{v.get('first_read')} — repoint that reader, or un-retire the table "
-                "so the fence below covers it")
-            continue
         assert t in tables, f"{t} is absent from the inventory entirely"
         v = tables[t]
         claimed_orphan = (v.get("tier") == 1 or v.get("claimed_but_ours")) \

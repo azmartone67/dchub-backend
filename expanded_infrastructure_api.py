@@ -576,22 +576,19 @@ def get_substations():
 # are near this point — is already served from maintained data by
 # /api/v1/grid/transmission-proximity, which places each line at its from_sub
 # substation.
-_HIFLD_TRANSMISSION_RETIRED = {
-    'success': False,
-    'retired': True,
-    'retired_at': '2026-09-13',
-    'error': 'route_retired',
-    'reason': ('This route served a March 2026 crawl of transmission lines that '
-               'nothing refreshes, under a fixed row count that was never a line '
-               'count.'),
-    'instead': '/api/v1/grid/transmission-proximity?lat=<lat>&lon=<lon>&radius_km=<km>&min_kv=<kv>',
-}
-
-
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/transmission', methods=['GET'])
 def get_hifld_transmission():
-    """RETIRED 2026-09-13: answers 410 before any DB work. See _HIFLD_TRANSMISSION_RETIRED."""
-    return jsonify(_HIFLD_TRANSMISSION_RETIRED), 410
+    """RETIRED 2026-09-13: answers 410 before any DB work (see the note above)."""
+    return jsonify({
+        'success': False,
+        'retired': True,
+        'retired_at': '2026-09-13',
+        'error': 'route_retired',
+        'reason': ('This route served a March 2026 crawl of transmission lines that '
+                   'nothing refreshes, under a fixed row count that was never a line '
+                   'count.'),
+        'instead': '/api/v1/grid/transmission-proximity?lat=<lat>&lon=<lon>&radius_km=<km>&min_kv=<kv>',
+    }), 410
 
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/gas-pipelines', methods=['GET'])
