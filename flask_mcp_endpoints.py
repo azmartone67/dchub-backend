@@ -50,6 +50,7 @@ from routes.handoff_definition import (
     HUMAN_ACTED_DEFINITION_VERSION as _HUMAN_ACTED_VERSION,
     biggest_leak as _biggest_leak,
     biggest_leak_detail as _biggest_leak_detail,
+    human_acted_count_sql as _human_acted_count_sql,
     human_acted_definition as _human_acted_definition,
     redeem_stage_basis as _redeem_stage_basis,
 )
@@ -460,9 +461,21 @@ def handoff_funnel():
             "or exists (select 1 from relay_opens ro where "
             "ro.session_id = s.mcp_session_id and ro.session_id <> '' "
             "and " + _ro_real + "))")
-        opened = one(("select count(distinct s.mcp_session_id) "
-                      + _v3_body + " and " + _not_self) % iv)
+        # The v5 lane, published alongside since v8 (below) became the headline.
+        opened_v5 = one(("select count(distinct s.mcp_session_id) "
+                         + _v3_body + " and " + _not_self) % iv)
         opened_v3 = one(("select count(distinct s.mcp_session_id) " + _v3_body) % iv)
+        # ── human_acted DEFINITION v8 (2026-09-13) — THE LINK AGENTS RELAY ──
+        # A gated tools/call puts /go/c/<token> in content[0].text, and v5 could
+        # only see /upgrade/h/ and /relay opens. The headline is the canonical
+        # UNION from routes/handoff_definition — the v5 lane above plus signed
+        # /go/c/ clicks on a bare session ref (the v7 lane) — CALLED, never
+        # assembled here. opened_incl_self is the same union with the operator
+        # exclusion dropped from BOTH lanes; excluded.human_acted_removed
+        # subtracts from it, because v3 minus a union goes negative the first
+        # time a click lands that v3 cannot see.
+        opened = one(_human_acted_count_sql(iv))
+        opened_incl_self = one(_human_acted_count_sql(iv, include_self_traffic=True))
         # r-seed-rotation (2026-09-03) — human_acted DEFINITION v5. v4 named
         # ONE operator session and the operator's client rotated its id on
         # 2026-08-20 (8c8e1d0d, first call 10.1s after 88e20dac's last, same
@@ -816,7 +829,8 @@ def handoff_funnel():
                 "session_id, so a row without one cannot be tested against it. "
                 "Opens with no session_id are counted separately as "
                 "`human_acted_v6_links_opened` rather than folded in here. "
-                "PUBLISHED ALONGSIDE: `human_acted` is still v5."),
+                "PUBLISHED ALONGSIDE, NOT PROMOTED: the headline "
+                "`human_acted` does not read this lane."),
             "human_acted_v6_links_opened": opened_v6_links,
             "human_acted_v6_links_opened_basis": (
                 "COUNT(DISTINCT coalesce(nullif(session_id,''), token_hash)) "
@@ -855,6 +869,16 @@ def handoff_funnel():
             "human_acted_v2_all_view_opens": opened_v2,
             "human_acted_v3_including_self_traffic": opened_v3,
             "human_acted_v4_before_rotation": opened_v4,
+            # ── since v8: the two figures the headline is built from ──────
+            "human_acted_v5_before_relayed_checkout": opened_v5,
+            "human_acted_including_self_traffic": opened_incl_self,
+            "human_acted_including_self_traffic_basis": (
+                "The headline union with the operator self-traffic exclusion "
+                "dropped from BOTH lanes; excluded.human_acted_removed is this "
+                "minus human_acted. It is the LABELLED PROVE-OUT PATH: an "
+                "operator verification click on a declared session moves this "
+                "figure and human_acted_removed, and leaves the headline "
+                "alone."),
             # ★ What the source table actually contains. Buckets are mutually
             # exclusive and sum to `total`; see the r-relay-provenance block.
             "relay_open_provenance": {
@@ -933,8 +957,9 @@ def handoff_funnel():
             "excluded": {
                 "self_traffic_sessions": _deloop_self_traffic_prefixes(),
                 "human_acted_removed": (
-                    (opened_v3 - opened)
-                    if (opened_v3 is not None and opened is not None) else None),
+                    (opened_incl_self - opened)
+                    if (opened_incl_self is not None and opened is not None)
+                    else None),
                 # The version is INTERPOLATED, not typed: this sentence said
                 # "(v4)" beside a dict that had just become v4, and the next
                 # bump would have left it describing the wrong stage in the
@@ -952,7 +977,11 @@ def handoff_funnel():
                          "conversion here gets quoted back by every partner who reads the "
                          "dashboard — but it is an inference and is labelled as one. "
                          "human_acted_v4_before_rotation is the figure without it; "
-                         "human_acted_v3_including_self_traffic is unfiltered."
+                         "human_acted_v3_including_self_traffic is unfiltered. "
+                         "Both of those are relay-lane figures: since the /go/c/ "
+                         "lane joined the headline the subtraction applies to "
+                         "BOTH lanes, and human_acted_removed is "
+                         "human_acted_including_self_traffic minus human_acted."
                          % _HUMAN_ACTED_VERSION,
             },
             # ONE WRITER (r-definition-one-writer, 2026-08-18). This block was

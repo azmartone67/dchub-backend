@@ -76,15 +76,27 @@ def test_v6_carries_no_literal_percent():
         f"v6 body carries a literal % besides the interval placeholder: {body!r}")
 
 
-def test_human_acted_is_still_v5_not_silently_promoted():
+def test_v6_is_not_silently_promoted_onto_the_headline():
     """A stage that has been wrong-non-zero twice does not get a new definition
-    installed on the headline before its number is read against live data."""
+    installed on the headline before its number is read against live data.
+
+    ★ 2026-09-13: this was `test_human_acted_is_still_v5_…`. v8 promoted the
+    /go/c/ lane (v7, read live since 09-10) and deliberately NOT this one, so
+    the invariant is "v6 is not on the headline", not "the headline is v5".
+    The headline's lanes are pinned in
+    tests/test_human_acted_v8_counts_the_relayed_checkout.py."""
     src = _src()
     steps = src[src.index('steps = {"paywall_hit"'):src.index("return {", src.index('steps = {"paywall_hit"'))]
     assert '"human_acted": opened,' in steps, (
         "the headline stage was repointed at v6 in the same change that "
         "introduced it")
     assert "opened_v6" not in steps, "v6 leaked into the published steps dict"
+    from routes.handoff_definition import human_acted_count_sql
+    anchors = [re.search(r"\bfrom ([a-z_]+) ", lane).group(1)
+               for lane in human_acted_count_sql("30 days").split(" union ")]
+    assert "relay_opens" not in anchors, (
+        "a headline lane is anchored FROM relay_opens — that is v6, promoted "
+        "through the canonical builder instead of the steps dict: %r" % anchors)
 
 
 def test_v6_is_published_with_a_basis():
