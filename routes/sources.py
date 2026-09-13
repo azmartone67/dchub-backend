@@ -25,6 +25,7 @@ freshness based on last_run_at + cadence_seconds.
 """
 
 import hmac
+import json
 import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,8 @@ from typing import Any, Optional
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
+from psycopg2.extras import Json as _Json
+from routes._iso_common import scrub_secrets
 
 
 sources_bp = Blueprint("sources", __name__, url_prefix="/api/v1/sources")
@@ -116,6 +119,10 @@ def _ensure_tables() -> None:
 # Auth (only required for write ops)
 # ---------------------------------------------------------------------------
 
+# The admin credentials a write presents, so every heartbeat sender holds one.
+_ADMIN_SECRET_ENV = ("DCHUB_ADMIN_SECRET", "DCHUB_ADMIN_KEY", "DCHUB_INTERNAL_KEY")
+
+
 def _check_auth() -> Optional[tuple]:
     """Accept any real admin secret from the environment
     (DCHUB_ADMIN_SECRET / DCHUB_ADMIN_KEY / DCHUB_INTERNAL_KEY).
@@ -139,15 +146,57 @@ def _check_auth() -> Optional[tuple]:
     if not presented:
         return jsonify(error="unauthorized"), 401
 
-    candidates = [
-        os.environ.get("DCHUB_ADMIN_SECRET", ""),
-        os.environ.get("DCHUB_ADMIN_KEY", ""),
-        os.environ.get("DCHUB_INTERNAL_KEY", ""),
-    ]
+    candidates = [os.environ.get(name, "") for name in _ADMIN_SECRET_ENV]
     for c in candidates:
         if c and hmac.compare_digest(presented, c):
             return None
     return jsonify(error="unauthorized"), 401
+
+
+# ---------------------------------------------------------------------------
+# Run metadata
+# ---------------------------------------------------------------------------
+# A heartbeat body's `metadata` object is stored on its extraction_runs row.
+# It is scrubbed and size-capped before it is stored.
+
+RUN_METADATA_MAX_BYTES = 4096
+
+
+def _scrub_metadata(value: Any) -> Any:
+    if isinstance(value, str):
+        for name in _ADMIN_SECRET_ENV:
+            secret = os.environ.get(name, "").strip()
+            if len(secret) >= 8:  # never blank out a short, common substring
+                value = value.replace(secret, "***")
+        return scrub_secrets(value)
+    if isinstance(value, dict):
+        return {_scrub_metadata(str(k)): _scrub_metadata(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_metadata(v) for v in value]
+    return value
+
+
+def _run_metadata(raw: Any) -> tuple:
+    """(value for extraction_runs.metadata, note for the heartbeat response).
+
+    None when the body carries no metadata. Otherwise the object with secret
+    values scrubbed, or a small marker saying why it was not kept. The run is
+    recorded either way."""
+    if raw is None or raw == {}:
+        return None, "none"
+    if not isinstance(raw, dict):
+        reason = "metadata must be a JSON object"
+        return {"_dropped": reason, "type": type(raw).__name__}, f"dropped: {reason}"
+    try:
+        scrubbed = _scrub_metadata(raw)
+        size = len(json.dumps(scrubbed).encode("utf-8"))
+    except (RecursionError, TypeError, ValueError):
+        reason = "metadata could not be encoded"
+        return {"_dropped": reason}, f"dropped: {reason}"
+    if size > RUN_METADATA_MAX_BYTES:
+        reason = f"metadata over {RUN_METADATA_MAX_BYTES} bytes"
+        return {"_dropped": reason, "bytes": size}, f"dropped: {reason}"
+    return scrubbed, "stored"
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +400,7 @@ def heartbeat(source_id):
     rows_affected = p.get("rows_affected")
     duration_ms = p.get("duration_ms")
     error_text = p.get("error")
-    metadata = p.get("metadata")
+    metadata, metadata_note = _run_metadata(p.get("metadata"))
 
     try:
         with _conn() as c, c.cursor() as cur:
@@ -364,9 +413,7 @@ def heartbeat(source_id):
                            NOW(), %s, %s, %s, %s, %s)
                    RETURNING id""",
                 (source_id, duration_ms, status, rows_affected, duration_ms, error_text,
-                 _pg.extras.Json(metadata) if metadata else None) if False else
-                # simpler: skip metadata if psycopg2.extras not imported
-                (source_id, duration_ms, status, rows_affected, duration_ms, error_text, None),
+                 None if metadata is None else _Json(metadata)),
             )
             run_id = cur.fetchone()[0]
 
@@ -411,7 +458,7 @@ def heartbeat(source_id):
             c.commit()
     except Exception as e:
         return jsonify(error=f"heartbeat failed: {type(e).__name__}: {e}"), 500
-    return jsonify(run_id=run_id, status="recorded"), 200
+    return jsonify(run_id=run_id, status="recorded", metadata=metadata_note), 200
 
 
 # ---------------------------------------------------------------------------
