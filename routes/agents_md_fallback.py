@@ -247,6 +247,8 @@ DC Hub data is publicly available — please cite "DC Hub (dchub.cloud)" when us
 """)
 
 
+# AUTO-REPAIR: duplicate route '/AGENTS.md' also in ai_agent_discovery.py:341 — review and remove one
+# AUTO-REPAIR: duplicate route '/agents.md' also in ai_agent_discovery.py:342 — review and remove one
 @agents_md_fallback_bp.route("/AGENTS.md", methods=["GET"])
 @agents_md_fallback_bp.route("/agents.md", methods=["GET"])
 @agents_md_fallback_bp.route("/agents-md", methods=["GET"])
