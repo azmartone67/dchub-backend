@@ -129,25 +129,64 @@ def test_v7_uses_the_canonical_real_ua_predicate():
 def test_v7_deloops_only_where_the_exclusion_can_bind():
     """★ THE v6 LESSON. Two numbers, not one wider number.
 
-    The de-loopable count restricts to the one ref_kind the operator
-    self-traffic exclusion can actually test. The ceiling applies NEITHER, and
-    must not pretend to: an exclusion that passes vacuously is worse than an
-    absent one, because the basis then claims a filter that is not filtering.
+    The de-loopable count keys on the one identity the operator self-traffic
+    exclusion can actually test — a session id — and applies the exclusion to
+    THAT. Since v9 the identity is the session a click's token carried, else a
+    bare session ref (RELAYED_CHECKOUT_SESSION_ID), so a keyed click is
+    de-loopable exactly when it carries a session. The ceiling applies
+    NEITHER, and must not pretend to: an exclusion that passes vacuously is
+    worse than an absent one, because the basis then claims a filter that is
+    not filtering.
     """
     sqls = _sqls()
-    deloop = external_session_predicate("cc.ref")
+    ident = H.RELAYED_CHECKOUT_SESSION_ID
+    deloop = external_session_predicate(ident)
     kind_clause = "cc.ref_kind = '%s'" % H.RELAYED_CHECKOUT_DELOOPABLE_REF_KIND
 
     assert deloop in sqls["count"], "the de-loopable count does not de-loop"
-    assert kind_clause in sqls["count"], (
-        "the de-loopable count is not restricted to the ref_kind the "
-        "exclusion can bind to — on a 'pk-'/'k-'/'a-' ref it passes vacuously")
+    assert (ident + " is not null") in sqls["count"], (
+        "the de-loopable count admits clicks with no session identity — on a "
+        "'pk-'/'k-'/'a-' ref alone the exclusion passes vacuously")
+    assert external_session_predicate("cc.ref") not in sqls["count"], (
+        "the exclusion is bound to the bare ref, which tests nothing on a "
+        "key-hash ref")
 
     assert deloop not in sqls["links"], (
         "the ceiling applies the self-traffic exclusion to refs it cannot "
         "test; that is the v6 widening bug arriving through a new door")
-    assert kind_clause not in sqls["links"], (
-        "the ceiling is restricted to one ref_kind, so it is not a ceiling")
+    assert ident not in sqls["links"] and kind_clause not in sqls["links"], (
+        "the ceiling is restricted to clicks with a session identity, so it "
+        "is not a ceiling")
+
+
+def test_the_session_identity_prefers_the_token_session_then_a_bare_session_ref():
+    """What a click is counted AS: the session its token carried — the only
+    session a keyed click can carry — else its ref, but only where the ref IS
+    a session. Its behaviour over NULL and '' is executed in
+    tests/test_human_acted_relayed_checkout_sql.py; this pins the parts."""
+    ident = H.RELAYED_CHECKOUT_SESSION_ID
+    assert ident.startswith("coalesce(nullif(cc.session_id,''), "), ident
+    assert ("case when cc.ref_kind = '%s' then nullif(cc.ref,'') end"
+            % H.RELAYED_CHECKOUT_DELOOPABLE_REF_KIND) in ident, ident
+    assert "%" not in ident
+
+
+def test_the_session_id_the_lane_reads_is_a_column_the_writer_stores():
+    """A lane keyed on a column nothing writes silently counts zero. Read from
+    the writer: its INSERT names session_id and its DDL adds it to a table that
+    already exists (CREATE TABLE IF NOT EXISTS never would)."""
+    table = _written_table()
+    tree = ast.parse(open(_TRACKER, encoding="utf-8").read())
+    strings = [n.value for n in ast.walk(tree)
+               if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    insert_columns = [s.split("VALUES")[0] for s in strings
+                      if re.search(r"INSERT\s+INTO\s+" + table + r"\b", s, re.I)]
+    assert any(re.search(r"\bsession_id\b", c) for c in insert_columns), insert_columns
+    assert any(re.search(r"ALTER\s+TABLE\s+" + table
+                         + r"\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+session_id\b",
+                         s, re.I) for s in strings), (
+        "the writer never adds session_id to the live table")
+    assert "cc.session_id" in H.RELAYED_CHECKOUT_SESSION_ID
 
 
 def test_the_deloopable_ref_kind_is_one_the_writer_actually_mints():
@@ -208,7 +247,7 @@ def test_provenance_names_every_subset_as_a_subset():
     whatever the module declared would pass on an empty tuple.
     """
     subsets = H.relayed_checkout_provenance_subsets()
-    assert len(subsets) >= 2, subsets
+    assert len(subsets) >= 3, subsets
     sql = H.relayed_checkout_provenance_sql(_IV)
     branch_names = [n for n, _ in H.relayed_checkout_provenance_branches()]
     for name, _cond in subsets:
@@ -220,6 +259,23 @@ def test_provenance_names_every_subset_as_a_subset():
     assert "SUBSET" in basis and "ORTHOGONAL" in basis, basis
     for name, _cond in subsets:
         assert name in basis, "%s is published with no basis entry" % name
+
+
+def test_token_bound_sessions_are_published_as_their_own_subset():
+    """★ minted_link_clicks_session_from_token reads 0 until the MCP server
+    mints the session field. Its first non-zero is the evidence this change
+    exists for, so it is named rather than left inside the de-loopable count.
+    """
+    subsets = dict(H.relayed_checkout_provenance_subsets())
+    cond = subsets.get("minted_link_clicks_session_from_token")
+    assert cond, sorted(subsets)
+    for part in (H.relayed_checkout_real_ua(), H.relayed_checkout_signed(),
+                 "coalesce(cc.session_id,'') <> ''",
+                 "cc.ref_kind is distinct from '%s'"
+                 % H.RELAYED_CHECKOUT_DELOOPABLE_REF_KIND):
+        assert part in cond, (part, cond)
+    assert (H.RELAYED_CHECKOUT_SESSION_ID + " is not null") in \
+        subsets["minted_link_clicks_deloopable"]
 
 
 def test_the_ceiling_and_the_no_ref_subset_reconcile():

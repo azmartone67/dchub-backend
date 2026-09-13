@@ -13,7 +13,9 @@ GET /upgrade/h/<token> — a short-lived, HUMAN-readable page an agent can
 relay verbatim ("open this link"). It shows what the agent was doing, which
 tool hit the boundary, what unlocks, and ONE upgrade button that rides the
 EXISTING attribution machinery (/pricing/upgrade?from=mcp&tool=&sid=&direct=1
-— the sid-preserve → pack-webhook → claim→paid bridge already built).
+— the sid-preserve → pack-webhook → claim→paid bridge already built). For a
+keyed caller the button is the signed /go/c/ link bound to its key instead
+(2026-09-13, see relay_page).
 Every open is logged to relay_opens — the first-ever measurement of
 "a human actually saw the payment surface from the agent channel".
 Success metric (from the digest): human_open_rate > 3% in 4 weeks and ≥1
@@ -22,12 +24,15 @@ attributed paid conversion carrying a relay token.
 TOKEN CONTRACT (shared with the mcp-server's for_your_human builder)
 ====================================================================
   payload  = base64url("<sid>|<tool>|<tier>|<unix_ts>")
+         or  base64url("<sid>|<tool>|<tier>|<unix_ts>|pk-<sha256 hex>")
   sig      = hex(HMAC_SHA256(DCHUB_INTERNAL_KEY, payload))[:32]
   token    = payload + "." + sig
 Stateless at mint (a paywall envelope costs no DB write); validated and
 logged only on OPEN. Age cap 14 days. A bad/expired token still renders a
 useful generic upgrade page (never a dead end for a paying-curious human) —
-it just logs with valid=false.
+it just logs with valid=false. The optional fifth field (2026-09-13) is a
+keyed caller's durable-key reference; a fifth field of any other shape is
+ignored and the open stays valid.
 
 Read-only except relay_opens (its own append-only table, created on first
 write). Kill: DCHUB_HUMAN_RELAY_DISABLE=1 (page keeps rendering; logging
@@ -41,6 +46,7 @@ import hashlib
 import hmac as _hmac
 import logging
 import os
+import re
 import time
 
 from flask import Blueprint, jsonify, request
@@ -51,6 +57,11 @@ human_relay_bp = Blueprint("human_relay", __name__)
 
 _MAX_AGE_S = 14 * 86400
 _DDL_DONE = [False]
+
+# The only fifth token field we mint: `pk-` + the sha256 hex of the caller's
+# API key, the durable-key pack ref routes/checkout_click_tracker passes to
+# Stripe as client_reference_id.
+_KREF_OK = re.compile(r"pk-[0-9a-f]{64}")
 
 # 2026-09-02: the checkout-integrity master shell (routes/
 # checkout_integrity_master_shell.py, lane 3) now reads THIS page live every
@@ -68,19 +79,30 @@ def _secret() -> bytes:
 
 
 def make_relay_token(sid: str, tool: str, tier: str,
-                     ts: int | None = None) -> str:
+                     ts: int | None = None, kref: str | None = None) -> str:
     """Mint a token (used by tests + any backend emitter; the mcp-server
-    mints its own with the identical contract)."""
+    mints its own with the identical contract).
+
+    `kref` is appended as the fifth field exactly as given: parse_relay_token
+    is the gate, so a test can mint a malformed one and watch it be ignored."""
     raw = "%s|%s|%s|%d" % (sid or "", tool or "", tier or "",
                            int(ts if ts is not None else time.time()))
+    if kref:
+        raw += "|" + kref
     payload = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
     sig = _hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()[:32]
     return payload + "." + sig
 
 
 def parse_relay_token(token: str) -> dict | None:
-    """→ {sid, tool, tier, ts} iff signature and age check out, else None.
-    Never raises."""
+    """→ {sid, tool, tier, ts, kref} iff signature and age check out, else None.
+    Never raises.
+
+    Four fields is the original contract. A fifth is kept as `kref` only when
+    it is exactly `pk-<64 hex>`; any other fifth field reads as kref "" and the
+    open stays valid — the signature already proved we minted the link, so a
+    bad key reference costs the key binding, not the measurement. Any other
+    field count is None."""
     try:
         payload, sig = (token or "").rsplit(".", 1)
         want = _hmac.new(_secret(), payload.encode(),
@@ -88,11 +110,17 @@ def parse_relay_token(token: str) -> dict | None:
         if not _hmac.compare_digest(sig, want):
             return None
         pad = payload + "=" * (-len(payload) % 4)
-        sid, tool, tier, ts = base64.urlsafe_b64decode(pad).decode().split("|", 3)
+        fields = base64.urlsafe_b64decode(pad).decode().split("|")
+        if len(fields) not in (4, 5):
+            return None
+        sid, tool, tier, ts = fields[:4]
+        kref = fields[4] if len(fields) == 5 else ""
+        if not _KREF_OK.fullmatch(kref):
+            kref = ""
         ts = int(ts)
         if time.time() - ts > _MAX_AGE_S:
             return None
-        return {"sid": sid, "tool": tool, "tier": tier, "ts": ts}
+        return {"sid": sid, "tool": tool, "tier": tier, "ts": ts, "kref": kref}
     except Exception:  # noqa: BLE001
         return None
 
@@ -195,6 +223,7 @@ def relay_page(token):
     _log_open(info, token, valid=info is not None)
     tool = (info or {}).get("tool") or ""
     sid = (info or {}).get("sid") or ""
+    kref = (info or {}).get("kref") or ""
     # ONE button, riding the existing attribution chain (sid-preserve →
     # pack webhook claim→paid bridge). direct=1 skips the tier wall.
     #
@@ -206,13 +235,29 @@ def relay_page(token):
     # all under a "$10 one-time" label. `metered` IS a key, so it wins on the
     # first branch. (Not `pack5`: same Stripe URL, but the webhook still reads
     # pack5 as the legacy $5 SKU by amount.)
+    #
+    # ★ 2026-09-13 — A KEYED CALLER'S PACK IS BOUND TO ITS KEY. /pricing/upgrade
+    # binds the purchase to the session alone. When the token carries the
+    # caller's `pk-` key reference, the button is the signed /go/c/ link
+    # instead: ref = that key, the client_reference_id the durable-key pack
+    # binds, with the session beside it so the click is measurable against a
+    # session. If no link can be minted (no DCHUB_INTERNAL_KEY) the session
+    # button below is served, and it still sells the pack.
     from urllib.parse import urlencode
-    q = {"from": "mcp_relay", "tier": "metered", "direct": "1"}
-    if tool:
-        q["tool"] = tool
-    if sid:
-        q["sid"] = sid
-    upgrade = "https://api.dchub.cloud/pricing/upgrade?" + urlencode(q)
+    upgrade = None
+    if kref:
+        from routes.checkout_click_tracker import mint_checkout_token
+        _go = mint_checkout_token("metered", kref, sid)
+        if _go:
+            upgrade = "https://dchub.cloud/go/c/" + _go
+    keyed = upgrade is not None
+    if not keyed:
+        q = {"from": "mcp_relay", "tier": "metered", "direct": "1"}
+        if tool:
+            q["tool"] = tool
+        if sid:
+            q["sid"] = sid
+        upgrade = "https://api.dchub.cloud/pricing/upgrade?" + urlencode(q)
     playground = ("https://dchub.cloud/playground?ref=relay"
                   + ("-" + tool if tool else ""))
     tool_line = (
@@ -222,6 +267,14 @@ def relay_page(token):
         if tool else
         "Your AI assistant was using DC Hub — live data-center, grid, fiber "
         "and M&amp;A intelligence — and hit the paid data boundary.")
+    pack_line = (
+        "The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
+        "unlocks the full dataset, and the credits land on the API key your "
+        "agent is already using."
+        if keyed else
+        "The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
+        "unlocks the full dataset — your agent's very next call returns "
+        "complete data, no reconnect needed.")
     html = ("<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<meta name='robots' content='noindex'>"
@@ -235,16 +288,14 @@ def relay_page(token):
             "small{color:#888}</style></head><body>"
             "<h1>Your AI agent found data worth unlocking</h1>"
             "<p>%s</p>"
-            "<p>The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
-            "unlocks the full dataset — your agent's very next call returns "
-            "complete data, no reconnect needed.</p>"
+            "<p>%s</p>"
             "<a class='btn' href='%s'>Unlock full data — $10 one-time</a>"
             "<p class='alt'>Prefer to look first? <a href='%s'>Explore the live "
             "data free in your browser</a> — no signup.</p>"
             "<p><small>DC Hub · dchub.cloud · data licensed CC-BY-4.0 · this "
             "link was generated for your agent's session%s</small></p>"
             "</body></html>"
-            % (tool_line, _esc(upgrade), _esc(playground),
+            % (tool_line, pack_line, _esc(upgrade), _esc(playground),
                "" if info else " (link expired — the button still works)"))
     from flask import make_response
     resp = make_response(html, 200)

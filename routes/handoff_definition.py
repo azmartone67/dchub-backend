@@ -56,7 +56,7 @@ from mcp_calls_deloop import (
 # ── the published definition ────────────────────────────────────────────────
 # Bump BOTH together. The guard in tests/test_handoff_truth_shell.py asserts
 # every version 1..N carries an entry, so a bump with no explanation fails.
-HUMAN_ACTED_DEFINITION_VERSION = 8
+HUMAN_ACTED_DEFINITION_VERSION = 9
 
 HUMAN_ACTED_DEFINITION_CHANGELOG = {
     1: (
@@ -170,6 +170,32 @@ HUMAN_ACTED_DEFINITION_CHANGELOG = {
         'on 2026-09-13 it read 0 over 24h, 7d and 30d. This changes what the '
         'stage CAN count, not what it has counted.'
     ),
+    9: (
+        'v8 with the /go/c/ lane keyed on the SESSION a click is bound to, not '
+        'only on a bare session ref. On 2026-09-13 the operator\'s own keyed '
+        'test click on /go/c/ carried a durable-key ref (k-/pk-), which v8 '
+        'could not count: its lane was restricted to ref_kind=session because '
+        'the operator self-traffic exclusion declared in '
+        'mcp_calls_deloop.self_traffic_session_prefixes keys on session ids and '
+        'passes vacuously on a key hash. The MCP server now appends the '
+        "caller's session id to the token beside a key (plan|ref|sid), and "
+        'routes/checkout_click_tracker stores it in '
+        'mcp_checkout_clicks.session_id. v9 reads ONE identity, '
+        'handoff_definition.RELAYED_CHECKOUT_SESSION_ID: that session_id when '
+        'present, else the ref when it is a bare session id (the v8 identity). '
+        'The lane filter, the exclusion, the distinct count, the headline union '
+        'and the per-session predicate all bind to it, so a keyed click counts '
+        'exactly when it carries a session the exclusion can test. The relay '
+        'lane is unchanged and still published as '
+        'human_acted_v5_before_relayed_checkout. ★ STILL LEFT OUT: pk-/k-/a- '
+        'clicks WITHOUT a session id, on which the exclusion would pass '
+        'vacuously; they stay in human_acted_v7_links_clicked. ★ This moves no '
+        'published number until the MCP server mints the session field: rows '
+        'written before that carry session_id NULL and fall back to the v8 '
+        'identity. relayed_checkout_provenance.'
+        'minted_link_clicks_session_from_token shows when token-bound sessions '
+        'start arriving.'
+    ),
 }
 
 
@@ -246,16 +272,19 @@ def human_acted_relay_predicate(alias: str = "s") -> str:
 def human_acted_session_predicate(alias: str = "s") -> str:
     """TRUE when session `alias` acted on ANY human artifact, on a real UA.
 
-    The relay predicate OR a signed /go/c/ click whose ref is this session's
-    id: the per-session form of the headline, for readers that start FROM
-    mcp_high_intent_sessions. adoption_master_shell's `abandoned` reads it, and
-    a session that clicked the relayed checkout link did not abandon. No window
-    on the click, as the relay_opens exists carries none on the open.
+    The relay predicate OR a signed /go/c/ click bound to this session — the
+    session its token carried, else a bare session ref
+    (RELAYED_CHECKOUT_SESSION_ID): the per-session form of the headline, for
+    readers that start FROM mcp_high_intent_sessions. adoption_master_shell's
+    `abandoned` reads it, and a session that clicked the relayed checkout link
+    did not abandon. No window on the click, as the relay_opens exists carries
+    none on the open.
     """
     return ("(" + human_acted_relay_predicate(alias)
             + " or exists (select 1 " + _RELAYED_CHECKOUT_FROM + " where "
             + relayed_checkout_session_filters()
-            + " and cc.ref = " + alias + ".mcp_session_id))")
+            + " and " + RELAYED_CHECKOUT_SESSION_ID + " = "
+            + alias + ".mcp_session_id))")
 
 
 def human_acted_not_self_predicate(alias: str = "s") -> str:
@@ -296,7 +325,7 @@ def human_acted_count_sql(interval_sql: str, *,
     """
     return ("select count(distinct u.sid) from (select s.mcp_session_id as sid "
             + _relay_lane_body(interval_sql, include_self_traffic)
-            + " union select cc.ref as sid "
+            + " union select " + RELAYED_CHECKOUT_SESSION_ID + " as sid "
             + _relayed_checkout_lane_body(interval_sql, include_self_traffic)
             + ") u")
 
@@ -581,6 +610,20 @@ def biggest_leak(steps: dict) -> str:
 # wider number. Same here.
 RELAYED_CHECKOUT_DELOOPABLE_REF_KIND = "session"
 
+# ★ 2026-09-13 (v9) — THE ONE IDENTITY THE LANE COUNTS. A keyed caller's ref is
+# a key hash, so v8 could not count its click at all. The MCP server now mints
+# the caller's session beside the key (`plan|ref|sid`) and
+# routes/checkout_click_tracker stores it in mcp_checkout_clicks.session_id. A
+# click counts AS that session; a row without one falls back to the v8
+# identity, the ref when it is a bare session id. A key or anon ref with no
+# session is NULL here, and stays out for the reason above. Every consumer
+# reads this one string — the lane filter, the exclusion, the distinct count,
+# the headline union, the per-session predicate, the de-loopable subset — so
+# the identity cannot be one thing in the count and another in the exclusion.
+RELAYED_CHECKOUT_SESSION_ID = (
+    "coalesce(nullif(cc.session_id,''), case when cc.ref_kind = '"
+    + RELAYED_CHECKOUT_DELOOPABLE_REF_KIND + "' then nullif(cc.ref,'') end)")
+
 
 _RELAYED_CHECKOUT_FROM = "from mcp_checkout_clicks cc"
 
@@ -613,15 +656,14 @@ def relayed_checkout_signed() -> str:
 
 
 def relayed_checkout_session_filters() -> str:
-    """The relayed-checkout lane's row filters: signed, real UA, bare session ref.
+    """The relayed-checkout lane's row filters: signed, real UA, a session identity.
 
     No window and no exclusion, so the v7 count, the headline's lane and the
     per-session predicate all read this ONE copy.
     """
     return (relayed_checkout_signed()
             + " and " + relayed_checkout_real_ua()
-            + " and coalesce(cc.ref,'') <> ''"
-            + " and cc.ref_kind = '" + RELAYED_CHECKOUT_DELOOPABLE_REF_KIND + "'")
+            + " and " + RELAYED_CHECKOUT_SESSION_ID + " is not null")
 
 
 def _relayed_checkout_lane_body(interval_sql: str,
@@ -629,19 +671,21 @@ def _relayed_checkout_lane_body(interval_sql: str,
     body = (_relayed_checkout_window(interval_sql)
             + " and " + relayed_checkout_session_filters())
     if not include_self_traffic:
-        body += " and " + _external_session_predicate("cc.ref")
+        body += " and " + _external_session_predicate(RELAYED_CHECKOUT_SESSION_ID)
     return body
 
 
 def human_acted_v7_count_sql(interval_sql: str) -> str:
     """DE-LOOPABLE clicks on the relayed checkout link, over `interval_sql`.
 
-    Restricted to ref_kind='session' precisely BECAUSE that is the only ref the
-    operator self-traffic exclusion can bind to. Everything else is reported by
-    human_acted_v7_links_sql, whose basis says it is un-de-loopable, rather
-    than folded in here under a filter that would pass vacuously on it.
+    Counts DISTINCT RELAYED_CHECKOUT_SESSION_ID — the session a click is bound
+    to — precisely BECAUSE a session id is the only identity the operator
+    self-traffic exclusion can bind to. Clicks with no session identity are
+    reported by human_acted_v7_links_sql, whose basis says it is
+    un-de-loopable, rather than folded in here under a filter that would pass
+    vacuously on them.
     """
-    return ("select count(distinct cc.ref) "
+    return ("select count(distinct " + RELAYED_CHECKOUT_SESSION_ID + ") "
             + _relayed_checkout_lane_body(interval_sql, False))
 
 
@@ -689,8 +733,7 @@ def relayed_checkout_provenance_subsets() -> tuple:
         relayed_checkout_signed() + ")"
     return (
         ("minted_link_clicks_deloopable",
-         minted + " and cc.ref_kind = '"
-         + RELAYED_CHECKOUT_DELOOPABLE_REF_KIND + "'"),
+         minted + " and " + RELAYED_CHECKOUT_SESSION_ID + " is not null"),
         # ★ 2026-09-10, the FIRST live read of this block: 30d showed
         # minted_link_clicks 1 beside human_acted_v7_links_clicked 0, and
         # nothing published said why. The ceiling counts DISTINCT refs and a
@@ -702,11 +745,18 @@ def relayed_checkout_provenance_subsets() -> tuple:
         # relay_open_provenance.minted_link_opens_no_session_id, which exists
         # for exactly this reason one table over.
         ("minted_link_clicks_no_ref", minted + " and coalesce(cc.ref,'') = ''"),
+        # ★ 2026-09-13 (v9): minted clicks whose session came from the token's
+        # session field, not from the ref. Contained in the de-loopable subset;
+        # reads 0 until the MCP server mints that field.
+        ("minted_link_clicks_session_from_token",
+         minted + " and coalesce(cc.session_id,'') <> ''"
+         " and cc.ref_kind is distinct from '"
+         + RELAYED_CHECKOUT_DELOOPABLE_REF_KIND + "'"),
     )
 
 
 def relayed_checkout_provenance_sql(interval_sql: str) -> str:
-    """total + the three-way split + the de-loopable subset, in one pass.
+    """total + the three-way split + the named subsets, in one pass.
 
     ★ `minted_link_clicks_deloopable` is a SUBSET of minted_link_clicks, not a
     fourth branch — it partitions by whether the self-traffic exclusion can
@@ -725,7 +775,7 @@ def relayed_checkout_provenance_sql(interval_sql: str) -> str:
 
 
 HUMAN_ACTED_V7_BASIS = (
-    "COUNT(DISTINCT ref) FROM mcp_checkout_clicks — the table "
+    "COUNT(DISTINCT session identity) FROM mcp_checkout_clicks — the table "
     "/go/c/<token> writes (routes/checkout_click_tracker) — with the same "
     "real-UA predicate and the same declared operator self-traffic exclusion "
     "the published stage applies, plus sig_ok, which is TRUE only for a link "
@@ -737,11 +787,16 @@ HUMAN_ACTED_V7_BASIS = (
     "is written by /upgrade/h/ alone, and this endpoint had no read of "
     "mcp_checkout_clicks at all, so a human clicking the link their agent put "
     "in front of them could not move this stage for any click, ever. "
-    "★ RESTRICTED TO ref_kind='session' on purpose: that is the only ref the "
-    "self-traffic exclusion can bind to. On a 'pk-'/'k-' durable-key hash or an "
-    "'a-' anonymous offer id it would pass vacuously — the v6 widening hit "
-    "exactly that and the answer was two numbers, not one wider number. Those "
-    "refs are counted in `human_acted_v7_links_clicked` instead. "
+    "★ KEYED ON A SESSION on purpose: a session id is the only identity the "
+    "self-traffic exclusion can bind to. A click counts AS the session its "
+    "token carried (mcp_checkout_clicks.session_id, minted beside a "
+    "'pk-'/'k-' durable-key ref since 2026-09-13), else as its ref when that "
+    "ref is a bare session id. On a durable-key hash or an 'a-' anonymous offer "
+    "id with no session beside it the exclusion would pass vacuously — the v6 "
+    "widening hit exactly that and the answer was two numbers, not one wider "
+    "number — so those clicks are counted in `human_acted_v7_links_clicked` "
+    "instead. Rows written before the token carried a session have session_id "
+    "NULL and are read exactly as before. "
     "It is one of the two lanes the headline `human_acted` now unions (see "
     "definitions.human_acted); published alone here so its share of the "
     "headline stays readable.")
@@ -757,10 +812,13 @@ HUMAN_ACTED_V7_LINKS_BASIS = (
     "and the table is append-only, so one human clicking twice is one ref and "
     "two rows. Read it as a ceiling on how many relayed checkout links were "
     "opened at all, never as a count of humans reached. "
-    "\u2605 IT REQUIRES A REF, and the ref is the ONLY identity a /go/c row "
-    "carries — routes/human_relay stores a per-mint token hash as a fallback, "
+    "\u2605 IT REQUIRES A REF, and the ref is the only identity this ceiling "
+    "reads — routes/human_relay stores a per-mint token hash as a fallback, "
     "routes/checkout_click_tracker stores none — so a signed click minted with "
-    "an empty ref is real and permanently uncountable here. When this number "
+    "an empty ref is real and permanently uncountable here. Since 2026-09-13 "
+    "its unit and the de-loopable count's differ: that count reads the session "
+    "a click is bound to, so one durable key clicked from two sessions is two "
+    "there and one here — a ceiling on links, not on that count. When this number "
     "is below relayed_checkout_provenance.minted_link_clicks the difference is "
     "published as minted_link_clicks_no_ref; measured on the first live read, "
     "2026-09-10 over 30d, that difference was the whole of it (1 and 0).")
@@ -774,7 +832,8 @@ RELAYED_CHECKOUT_PROVENANCE_BASIS = (
     "count. The three partition `total` exhaustively and are mutually "
     "exclusive. ★ minted_link_clicks_deloopable is a SUBSET of "
     "minted_link_clicks, NOT a fourth branch: it partitions by whether the "
-    "self-traffic exclusion can bind (ref_kind='session'), which is ORTHOGONAL "
+    "self-traffic exclusion can bind (the click carries a session identity: the "
+    "session its token named, or a bare session ref), which is ORTHOGONAL "
     "to the split above — do not add a field from each. READ minted_link_clicks "
     "AGAINST THE PUBLISHED STAGE: a non-zero there while the stage reads 0 "
     "means humans are clicking the link agents actually relay and the funnel "
@@ -787,4 +846,10 @@ RELAYED_CHECKOUT_PROVENANCE_BASIS = (
     "minted_link_clicks_no_ref is the population the ceiling can see. Without "
     "this field the pair (minted_link_clicks 1, links_clicked 0) reads as an "
     "arithmetic error in the split, which is what it looked like on the first "
-    "live read of this block.")
+    "live read of this block. "
+    "★ minted_link_clicks_session_from_token is the THIRD subset: minted "
+    "clicks whose session came from the token's session field rather than from "
+    "the ref (session_id present, ref_kind not 'session'). It is contained in "
+    "minted_link_clicks_deloopable and reads 0 until the MCP server mints that "
+    "field; a non-zero is the first sign that keyed clicks carry a session the "
+    "exclusion can test.")

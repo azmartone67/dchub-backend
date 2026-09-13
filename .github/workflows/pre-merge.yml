@@ -799,6 +799,30 @@ jobs:
             echo "::error::the resolve-arms SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── human_acted's relayed-checkout lane, against the same Postgres ───
+      # The v7 and v8 lane tests prove the lane's session identity is spelled
+      # once and read by every consumer. Only a real Postgres shows what it
+      # COUNTS: a keyed click that carries its session, a key or anonymous
+      # click that does not, an unsigned click, a probe UA and a declared
+      # operator session, written through the real /go/c/ endpoint into a
+      # click table created in its pre-session_id shape. Owns and recreates
+      # only the click, relay-open and high-intent tables.
+      - name: Relayed-checkout lane SQL against a real Postgres
+        env:
+          RELAYED_CHECKOUT_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_human_acted_relayed_checkout_sql.py -v --tb=short
+
+      - name: Prove the relayed-checkout SQL test actually RAN
+        env:
+          RELAYED_CHECKOUT_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_human_acted_relayed_checkout_sql.py \
+            -q -rs --tb=no > rc.txt 2>&1 || { cat rc.txt; exit 1; }
+          cat rc.txt
+          if grep -qi "skipped" rc.txt; then
+            echo "::error::the relayed-checkout SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -839,6 +863,7 @@ jobs:
             si.txt
             ou.txt
             ra.txt
+            rc.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do

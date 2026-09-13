@@ -64,6 +64,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from routes.handoff_definition import (  # noqa: E402
     HUMAN_ACTED_DEFINITION_CHANGELOG,
     HUMAN_ACTED_DEFINITION_VERSION,
+    RELAYED_CHECKOUT_SESSION_ID,
     human_acted_count_sql,
     human_acted_definition,
     human_acted_sentence,
@@ -311,7 +312,9 @@ def test_the_v4_exclusion_is_the_only_difference():
     each lane's own identity column."""
     from mcp_calls_deloop import external_session_predicate
     ext_s = external_session_predicate("s.mcp_session_id")
-    ext_cc = external_session_predicate("cc.ref")
+    # ★ Since v9 the checkout lane's identity is the session a click is bound
+    # to, not the bare ref.
+    ext_cc = external_session_predicate(RELAYED_CHECKOUT_SESSION_ID)
     v4 = human_acted_v5_count_sql("30 days")
     v3 = human_acted_v5_count_sql("30 days", include_self_traffic=True)
     assert v4 == v3 + " and " + ext_s
@@ -319,6 +322,7 @@ def test_the_v4_exclusion_is_the_only_difference():
     incl = human_acted_count_sql("30 days", include_self_traffic=True)
     assert excl.count(ext_s) == 1 and excl.count(ext_cc) == 1, excl
     assert ext_s not in incl and ext_cc not in incl, incl
+    assert external_session_predicate("cc.ref") not in excl, excl
     assert excl.replace(" and " + ext_s, "", 1).replace(
         " and " + ext_cc, "", 1) == incl
 
