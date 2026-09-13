@@ -13,11 +13,11 @@
  "stats": {
   "python_files_scanned": 1462,
   "endpoints_total": 1799,
-  "endpoints_resolved": 1291,
+  "endpoints_resolved": 1289,
   "endpoints_partial": 65,
-  "endpoints_opaque_not_covered": 443,
-  "keys_total": 10676,
-  "keys_strictly_protected": 9710,
+  "endpoints_opaque_not_covered": 445,
+  "keys_total": 10669,
+  "keys_strictly_protected": 9703,
   "keys_open_level_unmeasured_on_removal": 940,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 115
@@ -6605,7 +6605,7 @@
    ]
   },
   "GET /api/v1/agent/tools-manifest": {
-   "source": "routes/tools_manifest.py:109",
+   "source": "routes/tools_manifest.py:110",
    "handler": "tools_manifest",
    "resolution": "resolved",
    "open_at": [
@@ -12313,20 +12313,11 @@
    ]
   },
   "GET /api/v1/energy/compare-sites": {
-   "source": "energy_infrastructure_routes.py:1113",
+   "source": "energy_infrastructure_routes.py:1135",
    "handler": "compare_sites",
-   "resolution": "resolved",
-   "open_at": [
-    "bestSite",
-    "count",
-    "data"
-   ],
-   "keys": [
-    "bestSite",
-    "count",
-    "data",
-    "success"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "GET /api/v1/energy/discovery/status": {
    "source": "main.py:21330",
@@ -12459,7 +12450,7 @@
    ]
   },
   "GET /api/v1/energy/pipelines": {
-   "source": "energy_infrastructure_routes.py:721",
+   "source": "energy_infrastructure_routes.py:743",
    "handler": "get_pipelines",
    "resolution": "resolved",
    "open_at": [
@@ -12473,7 +12464,7 @@
    ]
   },
   "GET /api/v1/energy/power-plants": {
-   "source": "energy_infrastructure_routes.py:854",
+   "source": "energy_infrastructure_routes.py:862",
    "handler": "get_power_plants",
    "resolution": "resolved",
    "open_at": [
@@ -12563,7 +12554,7 @@
    "keys": []
   },
   "GET /api/v1/energy/site-analysis": {
-   "source": "energy_infrastructure_routes.py:467",
+   "source": "energy_infrastructure_routes.py:489",
    "handler": "energy_site_analysis",
    "resolution": "resolved",
    "open_at": [
@@ -12638,18 +12629,11 @@
    ]
   },
   "GET /api/v1/energy/substations": {
-   "source": "energy_infrastructure_routes.py:770",
+   "source": "energy_infrastructure_routes.py:808",
    "handler": "get_substations",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "data"
-   ],
-   "keys": [
-    "count",
-    "data",
-    "success"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "GET /api/v1/energy/summary": {
    "source": "main.py:40622",
@@ -12659,7 +12643,7 @@
    "keys": []
   },
   "GET /api/v1/energy/texas-pipelines": {
-   "source": "energy_infrastructure_routes.py:1070",
+   "source": "energy_infrastructure_routes.py:1078",
    "handler": "get_texas_pipelines",
    "resolution": "resolved",
    "open_at": [
@@ -12673,7 +12657,7 @@
    ]
   },
   "GET /api/v1/energy/transmission": {
-   "source": "energy_infrastructure_routes.py:813",
+   "source": "energy_infrastructure_routes.py:821",
    "handler": "get_transmission_lines",
    "resolution": "resolved",
    "open_at": [
@@ -12687,7 +12671,7 @@
    ]
   },
   "GET /api/v1/energy/wells": {
-   "source": "energy_infrastructure_routes.py:996",
+   "source": "energy_infrastructure_routes.py:1004",
    "handler": "get_wells",
    "resolution": "resolved",
    "open_at": [
@@ -17505,14 +17489,14 @@
    ]
   },
   "GET /api/v1/mcp/tools": {
-   "source": "routes/mcp_tool_catalog.py:538",
+   "source": "routes/mcp_tool_catalog.py:541",
    "handler": "api_tool_manifest",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/mcp/tools.json": {
-   "source": "routes/mcp_tool_catalog.py:538",
+   "source": "routes/mcp_tool_catalog.py:541",
    "handler": "api_tool_manifest",
    "resolution": "opaque",
    "open_at": [],
@@ -21766,7 +21750,7 @@
    ]
   },
   "GET /api/v1/site-planner/climate-intel": {
-   "source": "site_planner.py:2064",
+   "source": "site_planner.py:2087",
    "handler": "site_planner_climate_intel",
    "resolution": "resolved",
    "open_at": [
@@ -21801,7 +21785,7 @@
    ]
   },
   "GET /api/v1/site-planner/composite-score": {
-   "source": "site_planner.py:1713",
+   "source": "site_planner.py:1736",
    "handler": "site_planner_composite_score",
    "resolution": "resolved",
    "open_at": [
@@ -21872,7 +21856,7 @@
    ]
   },
   "GET /api/v1/site-planner/disaster-risk": {
-   "source": "site_planner.py:1908",
+   "source": "site_planner.py:1931",
    "handler": "site_planner_disaster_risk",
    "resolution": "resolved",
    "open_at": [
@@ -21912,7 +21896,7 @@
    ]
   },
   "GET /api/v1/site-planner/queue-depth": {
-   "source": "site_planner.py:2328",
+   "source": "site_planner.py:2351",
    "handler": "site_planner_queue_depth",
    "resolution": "resolved",
    "open_at": [
@@ -21936,7 +21920,7 @@
    ]
   },
   "GET /api/v1/site-report": {
-   "source": "routes/site_report.py:1993",
+   "source": "routes/site_report.py:1995",
    "handler": "site_report",
    "resolution": "resolved",
    "open_at": [
@@ -21957,7 +21941,7 @@
    ]
   },
   "GET /api/v1/site-report/portal": {
-   "source": "routes/site_report.py:1920",
+   "source": "routes/site_report.py:1922",
    "handler": "site_report_portal",
    "resolution": "opaque",
    "open_at": [],
@@ -22012,7 +21996,7 @@
    ]
   },
   "GET /api/v1/site-study": {
-   "source": "routes/site_report.py:1993",
+   "source": "routes/site_report.py:1995",
    "handler": "site_report",
    "resolution": "resolved",
    "open_at": [
@@ -22033,7 +22017,7 @@
    ]
   },
   "GET /api/v1/site-study/portal": {
-   "source": "routes/site_report.py:1920",
+   "source": "routes/site_report.py:1922",
    "handler": "site_report_portal",
    "resolution": "opaque",
    "open_at": [],
@@ -31475,14 +31459,14 @@
    ]
   },
   "POST /api/v1/site-planner/analyze": {
-   "source": "site_planner.py:1515",
+   "source": "site_planner.py:1524",
    "handler": "site_planner_analyze",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "POST /api/v1/site-planner/climate-intel": {
-   "source": "site_planner.py:2064",
+   "source": "site_planner.py:2087",
    "handler": "site_planner_climate_intel",
    "resolution": "resolved",
    "open_at": [
@@ -31517,7 +31501,7 @@
    ]
   },
   "POST /api/v1/site-planner/compare": {
-   "source": "site_planner.py:2228",
+   "source": "site_planner.py:2251",
    "handler": "site_planner_compare",
    "resolution": "resolved",
    "open_at": [
@@ -31538,7 +31522,7 @@
    ]
   },
   "POST /api/v1/site-planner/composite-score": {
-   "source": "site_planner.py:1713",
+   "source": "site_planner.py:1736",
    "handler": "site_planner_composite_score",
    "resolution": "resolved",
    "open_at": [
@@ -31609,7 +31593,7 @@
    ]
   },
   "POST /api/v1/site-planner/disaster-risk": {
-   "source": "site_planner.py:1908",
+   "source": "site_planner.py:1931",
    "handler": "site_planner_disaster_risk",
    "resolution": "resolved",
    "open_at": [
@@ -31649,7 +31633,7 @@
    ]
   },
   "POST /api/v1/site-report": {
-   "source": "routes/site_report.py:1993",
+   "source": "routes/site_report.py:1995",
    "handler": "site_report",
    "resolution": "resolved",
    "open_at": [
@@ -31718,7 +31702,7 @@
    ]
   },
   "POST /api/v1/site-study": {
-   "source": "routes/site_report.py:1993",
+   "source": "routes/site_report.py:1995",
    "handler": "site_report",
    "resolution": "resolved",
    "open_at": [

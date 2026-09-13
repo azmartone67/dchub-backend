@@ -110,7 +110,6 @@ def require_plan(min_plan='pro'):
 HIFLD_BASE = 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services'
 
 # Alternative HIFLD endpoints (if primary fails)
-HIFLD_ALT_SUBSTATIONS = 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/US_Electric_Substations_Transmission_Lines/FeatureServer/0'
 HIFLD_ALT_TRANSMISSION = 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/US_Electric_Power_Transmission_Lines/FeatureServer/0'
 HIFLD_ALT_POWERPLANTS = 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/US_Power_Plants/FeatureServer/0'
 
@@ -147,15 +146,27 @@ def set_cache(key, data):
 # HELPER FUNCTIONS
 # =============================================================================
 
+class ArcGISQueryError(RuntimeError):
+    """An ArcGIS query that did not return a feature set."""
+
+
 def query_arcgis(base_url, params, timeout=30):
-    """Query an ArcGIS REST API endpoint"""
+    """Query an ArcGIS REST API endpoint and return its JSON body.
+
+    Raises ArcGISQueryError unless the body is a feature set. ArcGIS reports a
+    failed query in the body of an HTTP 200, e.g. {"error": {"code": 400,
+    "message": "Invalid URL"}} from a service that no longer exists, and
+    raise_for_status() lets that through. Until 2026-09-13 this function returned
+    that body, and any transport error, as data: every caller read `features` off
+    it, found none, and answered success with a count of 0.
+    """
     default_params = {
         'f': 'json',
         'outSR': '4326',
         'returnGeometry': 'true',
     }
     default_params.update(params)
-    
+
     try:
         response = requests.get(
             f"{base_url}/query",
@@ -163,10 +174,21 @@ def query_arcgis(base_url, params, timeout=30):
             timeout=timeout
         )
         response.raise_for_status()
-        return response.json()
+        data = response.json()
     except Exception as e:
         print(f"ArcGIS query error: {e}")
-        return {'features': [], 'error': str(e)}
+        raise ArcGISQueryError(f"ArcGIS query failed: {type(e).__name__}") from e
+
+    if isinstance(data, dict) and 'error' in data:
+        err = data['error']
+        detail = (f"{err.get('code')} {err.get('message')}" if isinstance(err, dict)
+                  else str(err))[:200]
+        print(f"ArcGIS query error: {base_url}: {detail}")
+        raise ArcGISQueryError(f"ArcGIS answered with error {detail}")
+    if not isinstance(data, dict) or not isinstance(data.get('features'), list):
+        print(f"ArcGIS query error: {base_url}: no features list in the response")
+        raise ArcGISQueryError("ArcGIS answered without a features list")
+    return data
 
 def bounds_to_envelope(min_lat, max_lat, min_lng, max_lng):
     """Convert bounds to ArcGIS envelope string"""
@@ -766,49 +788,35 @@ def setup_energy_routes(app):
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500
     
+    # ── RETIRED 2026-09-13 ──────────────────────────────────────────────────
+    # This route passed its bounding box to the Electric_Substations service on
+    # services1.arcgis.com/Hp6G80Pky0om7QvQ, which no longer exists: ArcGIS answers
+    # HTTP 200 with {"error":{"code":400,"message":"Invalid URL"}}, and that org's
+    # 527-service directory lists no substations service. query_arcgis returned the
+    # error body as data, so the route answered success:true, count:0 on every call.
+    #
+    # Retired rather than repointed. dchub-frontend defines two fetches of this path
+    # that nothing invokes, and both send arguments this route rejected with 400
+    # (lat/lng/radius, state/limit); dchub-mcp-server does not call it. Railway
+    # logged one request in the seven days to 2026-09-13, the probe behind this
+    # change. The national layer that still answers (services5 HDRa0B57OVrv2E1q) is
+    # the one routes/substation_ingest.py refuses to write: 38,479 of its 75,328
+    # names are UNKNOWN<id> placeholders, 18,433 rows carry MAX_VOLT -999999, and its
+    # data was last edited 2021-02-25. The substations table is already served by
+    # the route named in `instead`, which the Land & Power map reads.
     @app.route('/api/v1/energy/substations', methods=['GET'])
     def get_substations():
-        """
-        Get electrical substations in an area
-        
-        Query params:
-        - minLat, maxLat, minLng, maxLng: Bounding box
-        - minVoltage: Minimum voltage in kV (default: 0)
-        """
-        min_lat = request.args.get('minLat', type=float)
-        max_lat = request.args.get('maxLat', type=float)
-        min_lng = request.args.get('minLng', type=float)
-        max_lng = request.args.get('maxLng', type=float)
-        min_voltage = request.args.get('minVoltage', 0, type=int)
-        
-        if not all([min_lat, max_lat, min_lng, max_lng]):
-            return jsonify({'success': False, 'error': 'Bounds required'}), 400
-        
-        envelope = bounds_to_envelope(min_lat, max_lat, min_lng, max_lng)
-        
-        where_clause = '1=1'
-        if min_voltage > 0:
-            where_clause = f'MAX_VOLT >= {min_voltage}'
-        
-        try:
-            data = query_arcgis(f"{HIFLD_BASE}/Electric_Substations/FeatureServer/0", {
-                'where': where_clause,
-                'geometry': envelope,
-                'geometryType': 'esriGeometryEnvelope',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': '*',
-                'inSR': '4326',
-                'resultRecordCount': '1000'
-            })
-            
-            return jsonify({
-                'success': True,
-                'count': len(data.get('features', [])),
-                'data': data.get('features', [])
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
-    
+        """RETIRED 2026-09-13: answers 410 before any network work (see the note above)."""
+        return jsonify({
+            'success': False,
+            'retired': True,
+            'retired_at': '2026-09-13',
+            'error': 'route_retired',
+            'reason': ('This route queried an ArcGIS substations service that no longer '
+                       'exists, and answered every request with zero substations.'),
+            'instead': '/api/v2/infrastructure/hifld/substations?lat=<lat>&lng=<lng>&radius=<miles>',
+        }), 410
+
     @app.route('/api/v1/energy/transmission', methods=['GET'])
     def get_transmission_lines():
         """
@@ -1109,113 +1117,33 @@ def setup_energy_routes(app):
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500
     
+    # ── RETIRED 2026-09-13 ──────────────────────────────────────────────────
+    # This route scored each site from four live ArcGIS layers, and three returned
+    # nothing when measured on 2026-09-13: the services1 Electric_Substations and
+    # Power_Plants services no longer exist (HTTP 200, error 400 "Invalid URL"), and
+    # the DOT natural-gas pipelines server answered HTTP 500. Each query sat in its
+    # own `except: pass`, so a site was scored on transmission lines alone and served
+    # as a success. Ashburn, VA came back with 0 substations, 0 pipelines, 0 power
+    # plants and an overallScore of 37 ("Challenging").
+    #
+    # No caller: dchub-frontend's one fetch of this path is never invoked and sends a
+    # POST, which this GET-only route refused with 405; dchub-mcp-server's
+    # compare_sites tool reads /api/site-score. Railway logged one request in the
+    # seven days to 2026-09-13, the probe behind this change. Sites are compared from
+    # maintained tables by the route named in `instead`.
     @app.route('/api/v1/energy/compare-sites', methods=['GET'])
     def compare_sites():
-        """
-        Compare multiple sites for energy infrastructure
-        
-        Query params:
-        - sites: Comma-separated lat,lng pairs (e.g., "33.45,-112.87;32.88,-111.76")
-        - radius: Search radius in meters (default: 25000)
-        """
-        sites_param = request.args.get('sites', '')
-        radius = request.args.get('radius', 25000, type=int)
-        
-        if not sites_param:
-            return jsonify({'success': False, 'error': 'sites parameter required (format: lat,lng;lat,lng)'}), 400
-        
-        # Parse sites
-        sites = []
-        for site_str in sites_param.split(';'):
-            try:
-                lat, lng = map(float, site_str.split(','))
-                sites.append({'lat': lat, 'lng': lng})
-            except:
-                continue
-        
-        if not sites:
-            return jsonify({'success': False, 'error': 'No valid sites provided'}), 400
-        
-        # Analyze each site
-        results = []
-        for site in sites:
-            lat, lng = site['lat'], site['lng']
-            
-            # Calculate bounds
-            lat_delta = radius / 111000
-            lng_delta = radius / (111000 * abs(cos(radians(lat))))
-            envelope = bounds_to_envelope(lat - lat_delta, lat + lat_delta, lng - lng_delta, lng + lng_delta)
-            
-            # Query infrastructure
-            substations = []
-            pipelines = []
-            transmission = []
-            power_plants = []
-            
-            try:
-                sub_data = query_arcgis(f"{HIFLD_BASE}/Electric_Substations/FeatureServer/0", {
-                    'where': '1=1', 'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope', 'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': 'NAME,MAX_VOLT', 'inSR': '4326', 'resultRecordCount': '100'
-                })
-                substations = sub_data.get('features', [])
-            except:
-                pass
-            
-            try:
-                pipe_data = query_arcgis(DOT_PIPELINES, {
-                    'where': '1=1', 'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope', 'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': 'typepipe,operator', 'inSR': '4326', 'resultRecordCount': '100'
-                })
-                pipelines = pipe_data.get('features', [])
-            except:
-                pass
-            
-            try:
-                trans_data = query_arcgis(f"{HIFLD_BASE}/Electric_Power_Transmission_Lines/FeatureServer/0", {
-                    'where': 'VOLTAGE >= 69', 'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope', 'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': 'VOLTAGE', 'inSR': '4326', 'resultRecordCount': '50'
-                })
-                transmission = trans_data.get('features', [])
-            except:
-                pass
-            
-            try:
-                plant_data = query_arcgis(f"{HIFLD_BASE}/Power_Plants/FeatureServer/0", {
-                    'where': '1=1', 'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope', 'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': 'NAME,TOTAL_MW,PRIM_FUEL', 'inSR': '4326', 'resultRecordCount': '50'
-                })
-                power_plants = plant_data.get('features', [])
-            except:
-                pass
-            
-            # Calculate score
-            score_data = calculate_infrastructure_score(lat, lng, substations, pipelines, transmission, power_plants)
-            
-            results.append({
-                'location': {'lat': lat, 'lng': lng},
-                'scores': score_data,
-                'counts': {
-                    'substations': len(substations),
-                    'pipelines': len(pipelines),
-                    'transmissionLines': len(transmission),
-                    'powerPlants': len(power_plants)
-                }
-            })
-        
-        # Sort by overall score
-        results.sort(key=lambda x: x['scores']['overallScore'], reverse=True)
-        
+        """RETIRED 2026-09-13: answers 410 before any network work (see the note above)."""
         return jsonify({
-            'success': True,
-            'count': len(results),
-            'data': results,
-            'bestSite': results[0] if results else None
-        })
-    
+            'success': False,
+            'retired': True,
+            'retired_at': '2026-09-13',
+            'error': 'route_retired',
+            'reason': ('This route scored sites from live ArcGIS layers, three of the four '
+                       'of which no longer answer, and served the result as a success.'),
+            'instead': 'POST /api/v1/site-planner/compare {"sites": [{"lat": <lat>, "lng": <lng>}, ...]} (2 or 3 sites)',
+        }), 410
+
     def detect_state_from_coords(lat, lng):
         """Simple state detection from coordinates"""
         state_bounds = {
@@ -1241,9 +1169,9 @@ def setup_energy_routes(app):
     print("✅ Energy Infrastructure API v3 routes registered (with fallback endpoints):")
     print("   GET /api/v1/energy/site-analysis")
     print("   GET /api/v1/energy/pipelines")
-    print("   GET /api/v1/energy/substations")
+    print("   GET /api/v1/energy/substations - RETIRED 2026-09-13 (410)")
     print("   GET /api/v1/energy/transmission")
     print("   GET /api/v1/energy/power-plants")
     print("   GET /api/v1/energy/wells")
     print("   GET /api/v1/energy/texas-pipelines")
-    print("   GET /api/v1/energy/compare-sites")
+    print("   GET /api/v1/energy/compare-sites - RETIRED 2026-09-13 (410)")
