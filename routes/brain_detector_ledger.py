@@ -180,15 +180,22 @@ def record_sweep(cur, sweep: dict, findings: list) -> dict:
                 "FROM brain_detector_runs", (LEDGER_MIN_INTERVAL_MIN,))
     if (cur.fetchone() or (False,))[0]:
         return {"recorded": 0, "skipped": "throttled"}
-    swept_at = datetime.fromtimestamp(float(sweep["at"]), tz=timezone.utc)
-    values, params = [], []
-    for r in rows:
-        values.append("(%s, %s, %s, %s, %s::jsonb, %s, %s)")
-        params += [sweep_id, swept_at, r["detector_fn"], r["outcome"],
-                   json.dumps(r["reported"]), r["reported_count"], r["reported_truncated"]]
-    cur.execute("INSERT INTO brain_detector_runs (sweep_id, swept_at, detector_fn, outcome, "
-                "reported, reported_count, reported_truncated) VALUES " + ", ".join(values),
-                params)
+    # One statement for the whole sweep. (sweep_id, detector_fn) is the natural
+    # key, so re-recording a sweep — a retried persist — adds nothing.
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS brain_detector_runs_sweep_fn "
+                "ON brain_detector_runs (sweep_id, detector_fn)")
+    swept_at = datetime.fromtimestamp(float(sweep["at"]), tz=timezone.utc).isoformat()
+    cur.execute("""
+        INSERT INTO brain_detector_runs
+               (sweep_id, swept_at, detector_fn, outcome, reported, reported_count,
+                reported_truncated)
+        SELECT sweep_id, swept_at, detector_fn, outcome, reported, reported_count,
+               reported_truncated
+          FROM jsonb_to_recordset(%s::jsonb) AS r(
+               sweep_id text, swept_at timestamptz, detector_fn text, outcome text,
+               reported jsonb, reported_count integer, reported_truncated boolean)
+        ON CONFLICT (sweep_id, detector_fn) DO NOTHING
+    """, (json.dumps([{"sweep_id": sweep_id, "swept_at": swept_at, **r} for r in rows]),))
     cur.execute("DELETE FROM brain_detector_runs "
                 "WHERE swept_at < NOW() - make_interval(days => %s)", (LEDGER_RETENTION_DAYS,))
     return {"recorded": len(rows), "skipped": None}

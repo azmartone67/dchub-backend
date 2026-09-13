@@ -159,12 +159,20 @@ SWEEP = {"sweep_id": "s1", "at": 1_790_000_000.0, "completed_fns": ["a", "b"],
 
 
 def test_a_sweep_is_recorded_with_its_outcomes_and_old_rows_pruned(m):
+    import json
     cur = FakeCur(fetches=[(True,), (False,)])
     res = m.record_sweep(cur, SWEEP, [{"issue": "x", "url": "u", "_detector_fn": "a"}])
     assert res == {"recorded": 3, "skipped": None}
     [(q, params)] = cur.inserts()
-    assert q.count("(%s, %s, %s, %s, %s::jsonb, %s, %s)") == 3 and len(params) == 21
-    assert params[0] == "s1" and params[1] == datetime.fromtimestamp(SWEEP["at"], tz=timezone.utc)
+    assert q.endswith("ON CONFLICT (sweep_id, detector_fn) DO NOTHING"), q
+    rows = json.loads(params[0])
+    assert [(r["detector_fn"], r["outcome"], r["reported"]) for r in rows] == [
+        ("a", "completed", ["x|u"]), ("b", "completed", []), ("c", "abandoned", [])]
+    assert {r["sweep_id"] for r in rows} == {"s1"}
+    assert {r["swept_at"] for r in rows} == {
+        datetime.fromtimestamp(SWEEP["at"], tz=timezone.utc).isoformat()}
+    assert any("CREATE UNIQUE INDEX IF NOT EXISTS brain_detector_runs_sweep_fn" in q
+               for q, _ in cur.sql), "ON CONFLICT needs its unique index"
     assert any(q.startswith("DELETE FROM brain_detector_runs") for q, _ in cur.sql)
 
 
