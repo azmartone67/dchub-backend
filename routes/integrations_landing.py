@@ -1739,9 +1739,10 @@ _WEBMCP_TOOLS = [
     },
     {
         "name": "search-datacenter-facilities",
-        "description": (canon_text("Search DC Hub's live database of {canon_facilities} distinct data-center "
+        # @@CANON_FAC@@ is filled per request by _webmcp_tools_resolved() below.
+        "description": ("Search DC Hub's live database of @@CANON_FAC@@ distinct data-center "
                         "facilities by city, country or operator. Mirrors the "
-                        "MCP tool search_facilities (lite).")),
+                        "MCP tool search_facilities (lite)."),
         "schema": {"type": "object", "properties": {
             "query": {"type": "string",
                       "description": "City, state, country or operator, e.g. \"ashburn\""},
@@ -1768,10 +1769,31 @@ _WEBMCP_TOOLS = [
 ]
 
 
+def _webmcp_tools_resolved():
+    """_WEBMCP_TOOLS with canon resolved NOW, not when the module was imported.
+
+    ★2026-09-13: the search tool's description was the last canon_text() call
+    in this module that still ran at import. It sat INSIDE the list literal, and
+    tests/test_canon_resolved_per_request.py only scans `X = canon_text(...)`
+    assignments, so nothing flagged it. Measured live on /integrations the same
+    day: the page body, resolved per request, carried the live facility floor
+    five times, while the WebMCP tool registered on that same page carried the
+    cold-start pinned floor the worker booted with.
+
+    The copy carries an @@CANON_FAC@@ token rather than the {canon_*}
+    placeholder (routes/partner_landing.py's idiom), so the placeholder stays
+    lexically inside the canon_text() call that runs here, where
+    tests/test_canon_placeholders_resolved.py can see it.
+    """
+    fac = canon_text("{canon_facilities}")
+    return [dict(t, description=t["description"].replace("@@CANON_FAC@@", fac))
+            for t in _WEBMCP_TOOLS]
+
+
 @integrations_landing_bp.route("/integrations/mcp", strict_slashes=False, methods=["GET"])
 @integrations_landing_bp.route("/integrations", strict_slashes=False, methods=["GET"])
 def integrations_mcp():
-    return _webmcp_inject(render_mcp_landing(), _WEBMCP_TOOLS), 200, {
+    return _webmcp_inject(render_mcp_landing(), _webmcp_tools_resolved()), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
