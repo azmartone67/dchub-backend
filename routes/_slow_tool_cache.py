@@ -32,8 +32,10 @@ if that ever changes, this decorator is the wrong tool.
 THREE GUARDS, because a cache that serves the wrong thing is worse than a slow
 tool:
   1. Only HTTP 200 is stored, and only when the JSON body does not carry
-     `success: false`. Errors, 4xx and 5xx stay uncached, so a transient failure
-     cannot be pinned for the whole TTL. (`cached_endpoint` stores any JSON it
+     `success: false` and the view did not mark it `Cache-Control: no-store`.
+     Errors, 4xx and 5xx stay uncached, so a transient failure cannot be pinned
+     for the whole TTL; a 200 that declares one of its lookups did not run marks
+     itself no-store for the same reason. (`cached_endpoint` stores any JSON it
      can parse, including a 500.)
   2. Every key part is normalised through `_norm`, so `lat=33.45` and
      `lat=33.4500` share one entry, and floats round to `_COORD_DP` decimals
@@ -144,6 +146,23 @@ def _payload_of(result):
     return None, None
 
 
+def _marked_no_store(result) -> bool:
+    """True when the view marked its response `Cache-Control: no-store`: on the
+    Response, bare or first in a tuple, or in a (body, status, headers) tuple."""
+    body = result[0] if isinstance(result, tuple) and result else result
+    candidates = [getattr(body, "headers", None)]
+    if isinstance(result, tuple) and len(result) >= 3:
+        candidates.append(result[2])
+    for headers in candidates:
+        try:
+            value = headers.get("Cache-Control") if headers is not None else None
+        except Exception:
+            value = None
+        if value and "no-store" in str(value).lower():
+            return True
+    return False
+
+
 def cache_tool_response(ttl: int, prefix: str, arg_names, coord_args=()):
     """Memo a slow, caller-independent tool response in Redis.
 
@@ -187,6 +206,9 @@ def cache_tool_response(ttl: int, prefix: str, arg_names, coord_args=()):
 
             # Store ONLY a clean 200. An error cached is an error served for the
             # whole TTL, which is the failure mode this guard exists to prevent.
+            # So is a 200 the view marked `Cache-Control: no-store`: an answer that
+            # declares one of its lookups did not run is true when it is served,
+            # and false for the rest of the TTL once that lookup would run again.
             try:
                 if cache_key:
                     data, status = _payload_of(result)
@@ -195,6 +217,7 @@ def cache_tool_response(ttl: int, prefix: str, arg_names, coord_args=()):
                         and isinstance(data, (dict, list))
                         and not (isinstance(data, dict) and data.get("success") is False)
                         and not (isinstance(data, dict) and data.get("error"))
+                        and not _marked_no_store(result)
                     )
                     if storable:
                         from redis_cache import cache_set
