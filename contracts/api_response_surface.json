@@ -13,12 +13,12 @@
  "stats": {
   "python_files_scanned": 1462,
   "endpoints_total": 1799,
-  "endpoints_resolved": 1289,
+  "endpoints_resolved": 1284,
   "endpoints_partial": 65,
-  "endpoints_opaque_not_covered": 445,
-  "keys_total": 10669,
-  "keys_strictly_protected": 9703,
-  "keys_open_level_unmeasured_on_removal": 940,
+  "endpoints_opaque_not_covered": 450,
+  "keys_total": 10648,
+  "keys_strictly_protected": 9686,
+  "keys_open_level_unmeasured_on_removal": 936,
   "parse_errors": 0,
   "endpoints_attributed_by_url_map": 115
  },
@@ -12313,7 +12313,7 @@
    ]
   },
   "GET /api/v1/energy/compare-sites": {
-   "source": "energy_infrastructure_routes.py:1135",
+   "source": "energy_infrastructure_routes.py:777",
    "handler": "compare_sites",
    "resolution": "opaque",
    "open_at": [],
@@ -12450,40 +12450,18 @@
    ]
   },
   "GET /api/v1/energy/pipelines": {
-   "source": "energy_infrastructure_routes.py:743",
+   "source": "energy_infrastructure_routes.py:621",
    "handler": "get_pipelines",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "data"
-   ],
-   "keys": [
-    "count",
-    "data",
-    "success"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "GET /api/v1/energy/power-plants": {
-   "source": "energy_infrastructure_routes.py:862",
+   "source": "energy_infrastructure_routes.py:701",
    "handler": "get_power_plants",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "data",
-    "data.plants",
-    "data.total_capacity_mw",
-    "data.total_count",
-    "data.total_generation_mwh"
-   ],
-   "keys": [
-    "count",
-    "data",
-    "data.plants",
-    "data.total_capacity_mw",
-    "data.total_count",
-    "data.total_generation_mwh",
-    "success"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "GET /api/v1/energy/power-plants/nearby": {
    "source": "power_plant_intel.py:272",
@@ -12554,7 +12532,7 @@
    "keys": []
   },
   "GET /api/v1/energy/site-analysis": {
-   "source": "energy_infrastructure_routes.py:489",
+   "source": "energy_infrastructure_routes.py:357",
    "handler": "energy_site_analysis",
    "resolution": "resolved",
    "open_at": [
@@ -12629,7 +12607,7 @@
    ]
   },
   "GET /api/v1/energy/substations": {
-   "source": "energy_infrastructure_routes.py:808",
+   "source": "energy_infrastructure_routes.py:650",
    "handler": "get_substations",
    "resolution": "opaque",
    "open_at": [],
@@ -12643,49 +12621,25 @@
    "keys": []
   },
   "GET /api/v1/energy/texas-pipelines": {
-   "source": "energy_infrastructure_routes.py:1078",
+   "source": "energy_infrastructure_routes.py:751",
    "handler": "get_texas_pipelines",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "data"
-   ],
-   "keys": [
-    "count",
-    "data",
-    "success"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "GET /api/v1/energy/transmission": {
-   "source": "energy_infrastructure_routes.py:821",
+   "source": "energy_infrastructure_routes.py:673",
    "handler": "get_transmission_lines",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "data"
-   ],
-   "keys": [
-    "count",
-    "data",
-    "success"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "GET /api/v1/energy/wells": {
-   "source": "energy_infrastructure_routes.py:1004",
+   "source": "energy_infrastructure_routes.py:725",
    "handler": "get_wells",
-   "resolution": "resolved",
-   "open_at": [
-    "count",
-    "data",
-    "state"
-   ],
-   "keys": [
-    "count",
-    "data",
-    "message",
-    "state",
-    "success"
-   ]
+   "resolution": "opaque",
+   "open_at": [],
+   "keys": []
   },
   "GET /api/v1/engines/prewarm": {
    "source": "routes/engine_prewarm.py:93",
