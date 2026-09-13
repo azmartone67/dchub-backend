@@ -39,6 +39,7 @@ from psycopg2.extras import execute_values  # r-batch (2026-06-18): batched rout
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from math import radians, sin, cos, sqrt, atan2
+from urllib.parse import quote
 from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
@@ -167,9 +168,9 @@ def _release(conn):
 # 'success'. An unreadable layer is now reported as a failure
 # (_arcgis_feature_page), and the cycle row records it (_cycle_status).
 #
-# The two EIA layers below whose object-id field is FID rather than OBJECTID
-# are live, but the query this module sends (orderByFields=OBJECTID) fails on
-# both. They stay listed: the query is what is broken, and the cycle now says so.
+# The EIA gas and crude layers below name their object-id field FID. The
+# OBJECTID ordering sent from 2026-08-22 failed every page of both; pages are
+# now ordered by each layer's own field (_arcgis_object_id_field).
 PUBLIC_KMZ_SOURCES = [
     # ── FEDERAL FIBER / BROADBAND ────────────────────────────────
     {
@@ -185,7 +186,8 @@ PUBLIC_KMZ_SOURCES = [
         'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0',
         'type': 'arcgis_kml',
         'provider': 'HIFLD',
-        'category': 'power'
+        'category': 'power',
+        'route_type': 'transmission'
     },
     # ── GAS PIPELINE INFRASTRUCTURE ──────────────────────────────
     {
@@ -193,21 +195,24 @@ PUBLIC_KMZ_SOURCES = [
         'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0',
         'type': 'arcgis_kml',
         'provider': 'EIA',
-        'category': 'gas'
+        'category': 'gas',
+        'route_type': 'gas'
     },
     {
         'name': 'EIA Crude Oil Trunk Pipelines',
         'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Crude_Oil_Trunk_Pipelines_1/FeatureServer/0',
         'type': 'arcgis_kml',
         'provider': 'EIA',
-        'category': 'gas'
+        'category': 'gas',
+        'route_type': 'gas'
     },
     {
         'name': 'EIA Gulf Oil and Gas Pipelines',
         'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Oil_And_Natural_Gas_Pipelines_Gulf_2024Q4/FeatureServer/0',
         'type': 'arcgis_kml',
         'provider': 'EIA',
-        'category': 'gas'
+        'category': 'gas',
+        'route_type': 'gas'
     },
 ]
 
@@ -370,14 +375,13 @@ STATE_BROADBAND_GIS = [
 ]
 
 
-def _arcgis_feature_page(response):
-    """(features, None) for a readable ArcGIS /query page, else (None, reason).
+def _arcgis_json_body(response):
+    """(body, None) for an HTTP 200 JSON answer that is not an ArcGIS error,
+    else (None, reason).
 
-    ★ ArcGIS reports a failed query INSIDE an HTTP 200. A deleted service
+    ★ ArcGIS reports a failed request INSIDE an HTTP 200. A deleted service
     answers {"error": {"code": 400, "message": "Invalid URL"}} and a bad query
-    parameter answers the same shape, so a 200 says nothing on its own, and
-    `.get('features', [])` turns the failure into a layer with no features.
-    Only a body that carries a features list is a page.
+    parameter answers the same shape, so a 200 says nothing on its own.
     """
     if response.status_code != 200:
         return None, f"HTTP {response.status_code}"
@@ -396,9 +400,48 @@ def _arcgis_feature_page(response):
         else:
             detail = str(err)
         return None, f"HTTP 200 with an error body: {detail}"[:300]
+    return data, None
+
+
+def _arcgis_feature_page(response):
+    """(features, None) for a readable ArcGIS /query page, else (None, reason).
+
+    `.get('features', [])` turns a failed query into a layer with no features.
+    Only a body that carries a features list is a page.
+    """
+    data, reason = _arcgis_json_body(response)
+    if reason:
+        return None, reason
     if not isinstance(data, dict) or not isinstance(data.get('features'), list):
         return None, "HTTP 200 without a features list"
     return data['features'], None
+
+
+def _arcgis_object_id_field(response):
+    """(field, None) naming a layer's object-id field from its ?f=json
+    metadata, else (None, reason).
+
+    ★ It is not always OBJECTID. Measured 2026-09-13: the EIA gas and crude
+    pipeline layers call it FID, hosted views objectid, and the HIFLD
+    transmission layer OBJECTID_1 (its OBJECTID is an ordinary integer).
+    Feature services publish objectIdField. Map service layers (10.81 to 12.1)
+    omit it and type the field esriFieldTypeOID in `fields`, so that is read
+    when objectIdField is absent.
+    """
+    data, reason = _arcgis_json_body(response)
+    if reason:
+        return None, reason
+    if not isinstance(data, dict):
+        return None, "HTTP 200 with metadata that is not an object"
+    field = data.get('objectIdField')
+    if isinstance(field, str) and field:
+        return field, None
+    oid_fields = [f.get('name') for f in (data.get('fields') or [])
+                  if isinstance(f, dict) and f.get('type') == 'esriFieldTypeOID']
+    if len(oid_fields) == 1 and isinstance(oid_fields[0], str) and oid_fields[0]:
+        return oid_fields[0], None
+    return None, (f"HTTP 200 with metadata that names no object-id field "
+                  f"(objectIdField {field!r}, {len(oid_fields)} esriFieldTypeOID fields)")
 
 
 def _cycle_status(results: Dict) -> str:
@@ -406,9 +449,8 @@ def _cycle_status(results: Dict) -> str:
 
     Judged on the curated PUBLIC_KMZ_SOURCES lane: 'failed' when that stage
     raised or every layer it queried was unreadable, 'partial' when some were
-    or another stage raised. Unreadable DISCOVERED sources are counted in the
-    export stage's results but do not set the status: that stage re-checks
-    uncurated ArcGIS search results.
+    or another stage raised. A layer that declares no route_type is counted
+    as unreadable.
 
     Not 'success': every row written before 2026-09-13 says 'success' whatever
     the cycle found, and a reader must be able to tell a measured outcome from
@@ -420,7 +462,7 @@ def _cycle_status(results: Dict) -> str:
     if 'error' in known or (failed and failed >= queried):
         return 'failed'
     other_stage_raised = any('error' in (results.get(stage) or {})
-                             for stage in ('arcgis_search', 'state_broadband', 'arcgis_kml_export'))
+                             for stage in ('arcgis_search', 'state_broadband'))
     if failed or other_stage_raised:
         return 'partial'
     return 'ok'
@@ -439,7 +481,6 @@ class KMZAutoDiscovery:
         self._cache = {
             'last_cycle': None,
             'total_routes_discovered': 0,
-            'total_kmz_processed': 0,
             'sources_checked': 0
         }
         self.init_tables()
@@ -555,7 +596,6 @@ class KMZAutoDiscovery:
             'arcgis_search': {'checked': 0, 'new_sources': 0},
             'known_sources': {'checked': 0, 'routes_found': 0, 'total_km': 0},
             'state_broadband': {'checked': 0, 'services_found': 0},
-            'arcgis_kml_export': {'exported': 0, 'routes_parsed': 0, 'total_km': 0},
             'total_new_routes': 0,
             'total_new_km': 0
         }
@@ -583,14 +623,14 @@ class KMZAutoDiscovery:
             logger.error(f"State broadband error: {e}")
             results['state_broadband']['error'] = str(e)
 
-        try:
-            r = self._export_arcgis_as_kml()
-            results['arcgis_kml_export'] = r
-            results['total_new_routes'] += r.get('routes_parsed', 0)
-            results['total_new_km'] += r.get('total_km', 0)
-        except Exception as e:
-            logger.error(f"ArcGIS KML export error: {e}")
-            results['arcgis_kml_export']['error'] = str(e)
+        # ★ 2026-09-13: no export stage. It fetched up to 30 DISCOVERED layers a
+        # cycle and wrote their features as route_type 'fiber'. Those layers are
+        # ArcGIS search results, and their category names the search that found
+        # them, not what they hold. Measured in production: 33,292 rows, 6 of them
+        # from layers whose title names fiber, broadband, telecom, conduit or
+        # cable. The rest came from oil and gas wells and pipelines, flood zones,
+        # water mains, power stations, service territories and railroads. A layer
+        # is written only from PUBLIC_KMZ_SOURCES, under its declared route_type.
 
         cycle_duration = round(time.time() - cycle_start, 1)
         results['cycle_duration_seconds'] = cycle_duration
@@ -598,7 +638,6 @@ class KMZAutoDiscovery:
         self._cache['last_cycle'] = datetime.now().isoformat()
         self._cache['last_results'] = results
         self._cache['total_routes_discovered'] += results['total_new_routes']
-        self._cache['total_kmz_processed'] += results['arcgis_kml_export'].get('exported', 0)
 
         self._log_cycle(results)
 
@@ -662,9 +701,9 @@ class KMZAutoDiscovery:
     # ── Process Known Sources ──────────────────────────────────
 
     def _process_known_sources(self) -> Dict:
-        # `queried` counts the layers fetched and `failed` the ones that could
-        # not be read, so a lane whose layers are all gone cannot read the same
-        # as one whose layers are merely unchanged.
+        # `queried` counts the layers taken up and `failed` the ones that could
+        # not be read or labelled, so a lane whose layers are all gone cannot
+        # read the same as one whose layers are merely unchanged.
         results = {'checked': 0, 'queried': 0, 'failed': 0, 'failed_sources': [],
                    'routes_found': 0, 'total_km': 0}
 
@@ -673,8 +712,15 @@ class KMZAutoDiscovery:
                 results['checked'] += 1
 
                 if source['type'] == 'arcgis_kml':
-                    route_type = 'gas' if source.get('category') == 'gas' else 'fiber'
                     results['queried'] += 1
+                    # ★ 2026-09-13: each curated layer declares what its rows are. The
+                    # label was 'gas' for category gas and 'fiber' for any other
+                    # category, so the HIFLD transmission lines were stored as fiber
+                    # (7,748 rows). A layer that declares no route_type is refused,
+                    # never given a default.
+                    route_type = source.get('route_type')
+                    if not route_type:
+                        raise ValueError("no route_type declared, so its rows cannot be labelled")
                     r = self._fetch_arcgis_routes(source['url'], source['provider'], source['name'], route_type=route_type)
                     results['routes_found'] += r.get('routes_found', 0)
                     results['total_km'] += r.get('total_km', 0)
@@ -702,12 +748,14 @@ class KMZAutoDiscovery:
 
     # ── Fetch ArcGIS Routes (Paginated) ──────────────────────────
 
-    def _fetch_arcgis_routes(self, url: str, provider: str, source_name: str, route_type: str = 'fiber') -> Dict:
+    def _fetch_arcgis_routes(self, url: str, provider: str, source_name: str, route_type: str) -> Dict:
         """Fetch routes from ArcGIS FeatureServer with pagination. Pulls up to MAX_FEATURES per source.
 
         Returns routes_found and total_km, plus `error` when a page could not be
         read: a status other than 200, a body that is not a feature page, or a
         transport failure. Rows buffered from earlier pages are still written.
+        Also `error`, with no page requested, when the layer's metadata does not
+        name its object-id field: pages cannot be ordered without it.
         """
         results = {'routes_found': 0, 'total_km': 0}
         MAX_FEATURES = 5000     # Max total features per source per cycle
@@ -736,6 +784,21 @@ class KMZAutoDiscovery:
             # path but not the hold). conn is now opened only in phase 2.
             pending = []  # list of (params_tuple, distance_km)
 
+            # 2026-09-13: order by the layer's OWN object-id field, read once per
+            # source. The literal OBJECTID is not a field on every layer: the EIA
+            # gas and crude layers answered every page HTTP 200 with "'OBJECTID'
+            # parameter is invalid". Unordered paging overlaps, so a field that
+            # cannot be read is reported, never replaced by no ordering.
+            try:
+                oid_field, meta_error = _arcgis_object_id_field(
+                    self.session.get(f"{url}?f=json", timeout=30))
+            except Exception as e:
+                oid_field, meta_error = None, f"{type(e).__name__}: {str(e)[:200]}"
+            if meta_error:
+                results['error'] = f"layer metadata unreadable, so no page was requested: {meta_error}"
+                return results
+            order_by = quote(oid_field, safe='')
+
             while total_fetched < MAX_FEATURES:
                 query_url = (
                     f"{url}/query?where=1%3D1&outFields=*"
@@ -747,7 +810,7 @@ class KMZAutoDiscovery:
                     f"&returnGeometry=true&outSR=4326&f=json"
                     # 2026-08-22: stable paging. Without an ORDER BY, ArcGIS pages
                     # overlap (682 exact duplicate features per 15k-row cycle).
-                    f"&orderByFields=OBJECTID"
+                    f"&orderByFields={order_by}"
                 )
 
                 try:
@@ -943,63 +1006,6 @@ class KMZAutoDiscovery:
         logger.info(f"State Broadband: checked={results['checked']}, services={results['services_found']}, new={results['new_sources']}")
         return results
 
-    # ── Export ArcGIS as KML ───────────────────────────────────
-
-    def _export_arcgis_as_kml(self) -> Dict:
-        results = {'exported': 0, 'routes_parsed': 0, 'total_km': 0, 'errors': 0}
-
-        conn = None
-        sources = []
-        try:
-            conn = _conn()
-            cur = conn.cursor()
-            cur.execute('''
-                SELECT id, name, url, provider FROM kmz_discovered_sources
-                WHERE source_type IN ('arcgis', 'state_gis')
-                AND (
-                    last_checked IS NULL
-                    OR NULLIF(last_checked::text, '') IS NULL
-                    OR NULLIF(last_checked::text, '')::timestamptz < NOW() - INTERVAL '3 days'
-                )
-                AND status != 'failed'
-                LIMIT 30
-            ''')
-            sources = cur.fetchall()
-            cur.close()
-        except Exception as e:
-            logger.error(f"ArcGIS KML export query error: {e}")
-        finally:
-            _release(conn)
-
-        for row in sources:
-            src_id, name, url, provider = row[0], row[1], row[2], row[3]
-            try:
-                r = self._fetch_arcgis_routes(url, provider or 'Unknown', name or 'Unknown')
-                results['routes_parsed'] += r.get('routes_found', 0)
-                results['total_km'] += r.get('total_km', 0)
-
-                if r.get('error'):
-                    # 'error', not 'empty': the layer could not be read. Not
-                    # 'failed' either — the query above never re-checks that
-                    # status, and one timeout should not retire a source.
-                    results['errors'] += 1
-                    self._update_source_status(src_id, 'error', r.get('routes_found', 0))
-                    logger.info(f"ArcGIS export source unreadable: {name}: {r['error']}")
-                elif r.get('routes_found', 0) > 0:
-                    results['exported'] += 1
-                    self._update_source_status(src_id, 'active', r['routes_found'])
-                else:
-                    self._update_source_status(src_id, 'empty', 0)
-
-                time.sleep(2)
-            except Exception as e:
-                results['errors'] += 1
-                self._update_source_status(src_id, 'failed', 0)
-                logger.debug(f"ArcGIS export error for {name}: {e}")
-
-        logger.info(f"ArcGIS Export: exported={results['exported']}, errors={results['errors']}, routes={results['routes_parsed']}, km={results['total_km']:.1f}")
-        return results
-
     # ── Helpers ─────────────────────────────────────────────────
 
     def _add_discovered_source(self, source: Dict) -> bool:
@@ -1026,24 +1032,6 @@ class KMZAutoDiscovery:
         except Exception:
             note_swallowed_write("kmz_discovered_sources", where="kmz_auto_discovery._add_discovered_source")
             return False
-        finally:
-            _release(conn)
-
-    def _update_source_status(self, source_id: int, status: str, routes_count: int):
-        conn = None
-        try:
-            conn = _conn()
-            cur = conn.cursor()
-            cur.execute('''
-                UPDATE kmz_discovered_sources
-                SET status = %s, routes_count = %s, last_checked = NOW()
-                WHERE id = %s
-            ''', (status, routes_count, source_id))
-            conn.commit()
-            cur.close()
-        except Exception:
-            note_swallowed_write("kmz_discovered_sources", where="kmz_auto_discovery._update_source_status")
-            pass
         finally:
             _release(conn)
 
@@ -1143,7 +1131,6 @@ class KMZAutoDiscovery:
             # 'success', which measured nothing. None when it cannot be read.
             'last_cycle_status': None,
             'total_routes_discovered': self._cache.get('total_routes_discovered', 0),
-            'total_kmz_processed': self._cache.get('total_kmz_processed', 0),
         }
 
         conn = None

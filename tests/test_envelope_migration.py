@@ -94,10 +94,11 @@ def test_l8_keeps_its_tuple_timeout_budget():
         "L8 lost its (connect, read) tuple timeout"
 
 
-def test_probe_forwards_a_tuple_timeout_untouched():
+def test_probe_forwards_a_tuple_timeout_untouched(monkeypatch):
     """The claim L8's guard depends on, verified against the real function
     rather than assumed from the call site."""
     import importlib
+    import sys
     m = importlib.import_module("util.internal_fetch")
     seen = {}
 
@@ -114,12 +115,13 @@ def test_probe_forwards_a_tuple_timeout_untouched():
             seen["timeout"] = timeout
             return _FakeResp()
 
-    import sys
-    sys.modules["requests"] = _FakeRequests
-    try:
-        env = m.probe("/x", (1, 3))
-    finally:
-        del sys.modules["requests"]
+    # ★2026-09-13: setitem, not assign-then-`del`. `del` does not put back the
+    # module that was there, so the next `import requests` built a SECOND
+    # module object. A file that imported requests at collection and later
+    # patched it was patching a module that code importing requests inside a
+    # function no longer saw, and that code reached the real network.
+    monkeypatch.setitem(sys.modules, "requests", _FakeRequests)
+    env = m.probe("/x", (1, 3))
     assert seen["timeout"] == (1, 3), "probe mangled a tuple timeout"
     assert env["ok"] is True
 

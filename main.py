@@ -30503,9 +30503,9 @@ def job_fiber_sync():
     try:
         from infrastructure_discovery import FiberRouteDiscovery
         frd = FiberRouteDiscovery()
-        # Read the window BEFORE sync(): _sync_hifld_transmission_lines
-        # advances _market_index, so reading it afterwards reports the NEXT
-        # window rather than the one this run actually covered.
+        # Read the window before sync(), so the report names the window this
+        # run started from. (The HIFLD transmission lane, which advanced
+        # _market_index inside sync(), was removed 2026-09-13.)
         window_start = frd._market_index
         new_routes = frd.sync()
         results['sources']['fiber_routes'] = {
@@ -36017,7 +36017,7 @@ _STANDALONE_LOADERS = {
     'load_substations':        {'entry': 'load',            'needs': 'none'},
     'hifld_substation_loader': {'entry': 'main',            'needs': 'none'},
     'pipeline_sync':           {'entry': 'main',            'needs': 'none'},
-    'facility_ingestion':      {'entry': 'main',            'needs': 'none'},
+    # (the facility ingestion loader was deleted 2026-09-13; it fetched and never wrote)
     'eia_generator_reseed':    {'entry': 'main',            'needs': 'none'},
     'eia_gas_bulk_loader':     {'entry': 'main',            'needs': 'none'},
     'subsea_cable_ingestion':  {'entry': 'run_subsea_sync', 'needs': 'get_db'},
@@ -36123,7 +36123,7 @@ def phase12c_admin_load_all():
         'eia860_bulk_loader',
         'eia_gas_bulk_loader',
         'pipeline_sync',
-        'facility_ingestion',
+        # (the facility ingestion loader was deleted 2026-09-13; it fetched and never wrote)
         'subsea_cable_ingestion',
         'eia_generator_reseed',
     ]
@@ -36265,12 +36265,12 @@ def phase12g_load_pipelines_live():
 
 @app.route('/api/admin/load-facilities-live', methods=['POST'])
 def phase12g_load_facilities_live():
-    if not _phase12g_check_auth():
-        return jsonify({'error': 'forbidden'}), 403
-    return jsonify(phase12g_loader_async(
-        'facility_ingestion',
-        ['ingest_all_sources','run_all','sync_all','fetch_peeringdb'],
-        'facilities'))
+    """RETIRED 2026-09-13: answers 410 before any work. See tests/test_load_facilities_live_retired.py."""
+    return jsonify({'success': False, 'retired': True, 'retired_at': '2026-09-13', 'error': 'route_retired',
+                    'reason': ('This loader fetched PeeringDB, OpenStreetMap, news and Cloudscene facility '
+                               'rows and wrote none of them. PeeringDB and OpenStreetMap facilities are '
+                               'ingested by the facility discovery run.'),
+                    'instead': 'POST /api/discovery/run?sources=peeringdb,osm'}), 410
 
 
 @app.route('/api/admin/loader-status', methods=['GET'])

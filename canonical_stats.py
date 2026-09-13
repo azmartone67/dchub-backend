@@ -97,8 +97,16 @@ _FALLBACK = {
     "substations": 127289,    # COUNT(*) FROM substations, measured 2026-09-07
     # ★2026-09-07 seeds for the two new floor specs. Raw measured ints, same
     # convention as `substations` above; _floor_phrase(step=1000) is what turns
-    # them into publishable floors (66,699 -> "66,000+", 94,633 -> "94,000+").
-    "fiber_routes": 66699,          # COUNT(*) FROM fiber_routes, measured 2026-09-07
+    # them into publishable floors (58,141 -> "58,000+", 94,633 -> "94,000+").
+    # ★2026-09-13 fiber_routes re-seeded 66,699 -> 58,141. The table held 9,695
+    # HIFLD power transmission lines (route_type 'transmission', source 'hifld',
+    # no geometry), written by the fiber lane between 2026-03-30 and 2026-08-14.
+    # They are not fiber. 58,141 = COUNT(*) WHERE route_type <> 'transmission',
+    # measured 2026-09-13 against a raw COUNT(*) of 67,836.
+    # repair_fiber_routes_hifld_transmission.py deletes them, after which the live
+    # COUNT(*) below counts the same basis. Until then this seed is below live, so
+    # a cold start under-claims rather than publishing power lines as fiber.
+    "fiber_routes": 58141,
     "transmission_lines": 94633,    # COUNT(*) FROM transmission_lines (EIA population)
     "pipeline_gw": 369,       # construction pipeline GW (had no SoT home before)
 }

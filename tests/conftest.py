@@ -223,3 +223,31 @@ def _reset_process_sticky_ddl_flags():
         except Exception:
             pass
     yield
+
+
+# ── a test must put back the library it swapped (2026-09-13) ─────────────
+# tests/test_envelope_migration.py faked requests with
+# `sys.modules["requests"] = fake` and cleaned up with `del`. Deleting is not
+# restoring: the next `import requests` built a second module object, while
+# every file that imported requests at collection still held the first. A
+# later `monkeypatch.setattr(requests, "get", fake)` in such a file patched an
+# object that code importing requests inside a function never saw, so the
+# stubbed call went to the real network — and only when both files shared a
+# process, so each one passed alone.
+#
+# The session ledger (tests/_stub_sentinel.py) could not see it; its docstring
+# says why. This compares the registered objects around every test instead.
+#
+# ★ Autouse in the ROOT conftest, so it is set up before every function-scoped
+# fixture the test or its module requests — monkeypatch included — and torn
+# down after them. The check runs once monkeypatch has already put things
+# back, which is what lets monkeypatch.setitem(sys.modules, ...) pass.
+@pytest.fixture(autouse=True)
+def _watched_libraries_keep_their_identity(request):
+    before = {name: sys.modules.get(name) for name in _stub_sentinel.WATCHED}
+    yield
+    after = {name: sys.modules.get(name) for name in _stub_sentinel.WATCHED}
+    changes = _stub_sentinel.identity_changes(before, after)
+    if changes:
+        pytest.fail(_stub_sentinel.describe_identity_changes(
+            changes, request.node.nodeid), pytrace=False)

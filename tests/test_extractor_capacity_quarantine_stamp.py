@@ -467,8 +467,9 @@ def test_brain_insert_classifies_and_placeholders_match_the_call_site():
     assert "CASE " + cp_classify_arms("s") + " ELSE NULL END" in sql, (
         "the brain writer's CASE is not the canonical arms")
     _no_restatement(sql, "_BRAIN_CAP_INSERT_SQL")
-    assert sql.rstrip().endswith("ON CONFLICT DO NOTHING"), (
-        "the brain writer lost its ON CONFLICT guard")
+    # RETURNING 1: the writer counts a row only when the INSERT hands one back.
+    assert " ".join(sql.split()).endswith("ON CONFLICT DO NOTHING RETURNING 1"), (
+        "the brain writer lost its ON CONFLICT guard or its RETURNING count")
 
     # The parameters are named by a one-row subquery; a bare %s there has no
     # inferable type, so every cast must survive.

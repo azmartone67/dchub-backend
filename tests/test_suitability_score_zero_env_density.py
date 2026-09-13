@@ -19,7 +19,8 @@ Measured on origin/main 79de5480b, before the fix:
   half reaches a score only through a caller that passes its own env.
 - estimate_congestion serves density_score 0 when both of its counts are 0, and a count that
   fails is counted as 0: execute_query returns None and the producer reads None as 0. This file
-  pins how the scorer reads a 0, not what the producer means by it.
+  pins how the scorer reads a 0, not what the producer means by it. (Since fixed in the producer:
+  a count that did not run is served as density_score None, which scores as the default.)
 
   Z1  env_score 0 and 0.0 score the tier that holds risk 100, which the default 50 does not
   Z2  density_score 0 and 0.0 score the tier that holds density 0, which the default 50 does not
@@ -119,7 +120,7 @@ def test_p1_nothing_counted_scores_the_tier_the_producer_named(sp, monkeypatch):
 
 @pytest.mark.parametrize("reading", list(NOT_A_READING.values()), ids=list(NOT_A_READING))
 def test_m1_an_env_score_it_cannot_read_scores_as_the_default_and_raises_nothing(sp, reading):
-    served = "N/A" if reading is ABSENT else reading
+    served = "N/A" if reading is ABSENT or reading is None else reading
     assert _environmental(sp, reading) == dict(_environmental(sp, 50), value=f"Score {served}")
 
 
