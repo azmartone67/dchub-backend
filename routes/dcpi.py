@@ -6716,50 +6716,10 @@ body {
 }
 code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
 
-/* ===== TOP NAV ===== */
-.top-nav {
-  border-bottom: 1px solid var(--bd);
-  background: rgba(10,10,18,0.85);
-  backdrop-filter: blur(8px);
-  position: sticky;
-  top: 0;
-  z-index: 100;
-}
-.top-nav-inner {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 1rem 1.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1.5rem;
-}
-.logo {
-  font-weight: 800;
-  font-size: 1.05rem;
-  color: var(--tx);
-  text-decoration: none;
-  letter-spacing: -0.01em;
-}
-.logo span { color: var(--acc); }
-.nav-links { display: flex; gap: 1.5rem; flex-wrap: wrap; }
-.nav-links a {
-  color: var(--tx2);
-  text-decoration: none;
-  font-size: 0.92rem;
-  font-weight: 500;
-  position: relative;
-}
-.nav-links a:hover { color: var(--tx); }
-.nav-links a.active { color: var(--tx); }
-.nav-links a sup {
-  color: var(--green);
-  font-size: 0.55rem;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  margin-left: 0.2rem;
-  vertical-align: super;
-}
+/* r-dcpi-single-header (2026-09-12): this page used to draw its own sticky header
+   directly under the shared site nav it also loads in <head>, so two headers were
+   stacked. The shared nav is now the only header; the old header's styles were
+   used nowhere else in this template. */
 
 /* ===== STATUS PULSE ===== */
 .status-strip {
@@ -7071,27 +7031,9 @@ footer {
 footer a { color: var(--tx2); }
 footer a:hover { color: var(--acc-light); }
 
-@media (max-width: 600px) {
-  .nav-links { display: none; }
-}
 </style>
 </head>
 <body>
-<nav class="top-nav">
-  <div class="top-nav-inner">
-    <a class="logo" href="/">DC <span>Hub</span></a>
-    <div class="nav-links">
-      <a href="/">Home</a>
-      <a href="/markets">Markets</a>
-      <a href="/dcpi" class="active">DCPI<sup>NEW</sup></a>
-      <a href="/land-power">Land &amp; Power</a>
-      <a href="/ai">AI Platform</a>
-      <a href="/news">News</a>
-      <a href="/pricing">Pricing</a>
-    </div>
-  </div>
-</nav>
-
 <div class="status-strip">
   {# r-hero-total (2026-07-26): coverage claims use the TOTAL catalog, not the
      tier-capped card count — anon mobile read "LIVE · 25 MARKETS SCORED",
