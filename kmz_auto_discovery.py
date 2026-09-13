@@ -39,6 +39,7 @@ from psycopg2.extras import execute_values  # r-batch (2026-06-18): batched rout
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from math import radians, sin, cos, sqrt, atan2
+from urllib.parse import quote
 from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
@@ -167,9 +168,9 @@ def _release(conn):
 # 'success'. An unreadable layer is now reported as a failure
 # (_arcgis_feature_page), and the cycle row records it (_cycle_status).
 #
-# The two EIA layers below whose object-id field is FID rather than OBJECTID
-# are live, but the query this module sends (orderByFields=OBJECTID) fails on
-# both. They stay listed: the query is what is broken, and the cycle now says so.
+# The EIA gas and crude layers below name their object-id field FID. The
+# OBJECTID ordering sent from 2026-08-22 failed every page of both; pages are
+# now ordered by each layer's own field (_arcgis_object_id_field).
 PUBLIC_KMZ_SOURCES = [
     # ── FEDERAL FIBER / BROADBAND ────────────────────────────────
     {
@@ -374,14 +375,13 @@ STATE_BROADBAND_GIS = [
 ]
 
 
-def _arcgis_feature_page(response):
-    """(features, None) for a readable ArcGIS /query page, else (None, reason).
+def _arcgis_json_body(response):
+    """(body, None) for an HTTP 200 JSON answer that is not an ArcGIS error,
+    else (None, reason).
 
-    ★ ArcGIS reports a failed query INSIDE an HTTP 200. A deleted service
+    ★ ArcGIS reports a failed request INSIDE an HTTP 200. A deleted service
     answers {"error": {"code": 400, "message": "Invalid URL"}} and a bad query
-    parameter answers the same shape, so a 200 says nothing on its own, and
-    `.get('features', [])` turns the failure into a layer with no features.
-    Only a body that carries a features list is a page.
+    parameter answers the same shape, so a 200 says nothing on its own.
     """
     if response.status_code != 200:
         return None, f"HTTP {response.status_code}"
@@ -400,9 +400,48 @@ def _arcgis_feature_page(response):
         else:
             detail = str(err)
         return None, f"HTTP 200 with an error body: {detail}"[:300]
+    return data, None
+
+
+def _arcgis_feature_page(response):
+    """(features, None) for a readable ArcGIS /query page, else (None, reason).
+
+    `.get('features', [])` turns a failed query into a layer with no features.
+    Only a body that carries a features list is a page.
+    """
+    data, reason = _arcgis_json_body(response)
+    if reason:
+        return None, reason
     if not isinstance(data, dict) or not isinstance(data.get('features'), list):
         return None, "HTTP 200 without a features list"
     return data['features'], None
+
+
+def _arcgis_object_id_field(response):
+    """(field, None) naming a layer's object-id field from its ?f=json
+    metadata, else (None, reason).
+
+    ★ It is not always OBJECTID. Measured 2026-09-13: the EIA gas and crude
+    pipeline layers call it FID, hosted views objectid, and the HIFLD
+    transmission layer OBJECTID_1 (its OBJECTID is an ordinary integer).
+    Feature services publish objectIdField. Map service layers (10.81 to 12.1)
+    omit it and type the field esriFieldTypeOID in `fields`, so that is read
+    when objectIdField is absent.
+    """
+    data, reason = _arcgis_json_body(response)
+    if reason:
+        return None, reason
+    if not isinstance(data, dict):
+        return None, "HTTP 200 with metadata that is not an object"
+    field = data.get('objectIdField')
+    if isinstance(field, str) and field:
+        return field, None
+    oid_fields = [f.get('name') for f in (data.get('fields') or [])
+                  if isinstance(f, dict) and f.get('type') == 'esriFieldTypeOID']
+    if len(oid_fields) == 1 and isinstance(oid_fields[0], str) and oid_fields[0]:
+        return oid_fields[0], None
+    return None, (f"HTTP 200 with metadata that names no object-id field "
+                  f"(objectIdField {field!r}, {len(oid_fields)} esriFieldTypeOID fields)")
 
 
 def _cycle_status(results: Dict) -> str:
@@ -715,6 +754,8 @@ class KMZAutoDiscovery:
         Returns routes_found and total_km, plus `error` when a page could not be
         read: a status other than 200, a body that is not a feature page, or a
         transport failure. Rows buffered from earlier pages are still written.
+        Also `error`, with no page requested, when the layer's metadata does not
+        name its object-id field: pages cannot be ordered without it.
         """
         results = {'routes_found': 0, 'total_km': 0}
         MAX_FEATURES = 5000     # Max total features per source per cycle
@@ -743,6 +784,21 @@ class KMZAutoDiscovery:
             # path but not the hold). conn is now opened only in phase 2.
             pending = []  # list of (params_tuple, distance_km)
 
+            # 2026-09-13: order by the layer's OWN object-id field, read once per
+            # source. The literal OBJECTID is not a field on every layer: the EIA
+            # gas and crude layers answered every page HTTP 200 with "'OBJECTID'
+            # parameter is invalid". Unordered paging overlaps, so a field that
+            # cannot be read is reported, never replaced by no ordering.
+            try:
+                oid_field, meta_error = _arcgis_object_id_field(
+                    self.session.get(f"{url}?f=json", timeout=30))
+            except Exception as e:
+                oid_field, meta_error = None, f"{type(e).__name__}: {str(e)[:200]}"
+            if meta_error:
+                results['error'] = f"layer metadata unreadable, so no page was requested: {meta_error}"
+                return results
+            order_by = quote(oid_field, safe='')
+
             while total_fetched < MAX_FEATURES:
                 query_url = (
                     f"{url}/query?where=1%3D1&outFields=*"
@@ -754,7 +810,7 @@ class KMZAutoDiscovery:
                     f"&returnGeometry=true&outSR=4326&f=json"
                     # 2026-08-22: stable paging. Without an ORDER BY, ArcGIS pages
                     # overlap (682 exact duplicate features per 15k-row cycle).
-                    f"&orderByFields=OBJECTID"
+                    f"&orderByFields={order_by}"
                 )
 
                 try:

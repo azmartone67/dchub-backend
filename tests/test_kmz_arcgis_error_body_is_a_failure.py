@@ -14,6 +14,7 @@ recording database stub. Nothing here touches the network or a database.
 import json
 import os
 import sys
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import requests
@@ -119,6 +120,11 @@ class _Session:
         return answer
 
 
+# The ?f=json answer every fetch reads first, for a layer whose field is OBJECTID.
+META = _Response(200, {"objectIdField": "OBJECTID",
+                       "fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"}]})
+
+
 def _engine(session=None):
     inst = object.__new__(kad.KMZAutoDiscovery)
     inst.session = session
@@ -182,21 +188,21 @@ def recording_db(monkeypatch):
 # ── _fetch_arcgis_routes ─────────────────────────────────────────────────────
 
 def test_an_error_body_on_http_200_is_reported_not_read_as_an_empty_layer(no_db):
-    session = _Session(_Response(200, INVALID_URL))
+    session = _Session(META, _Response(200, INVALID_URL))
     r = _fetch(session)
-    assert len(session.urls) == 1 and "/query?" in session.urls[0], session.urls
+    assert len(session.urls) == 2 and "/query?" in session.urls[1], session.urls
     assert r["routes_found"] == 0, r
     assert "error" in r, f"an ArcGIS error body was read as a layer with no features: {r}"
     assert "Invalid URL" in r["error"], r
 
 
 def test_the_error_names_the_parameter_arcgis_rejected(no_db):
-    r = _fetch(_Session(_Response(200, BAD_ORDER_FIELD)))
+    r = _fetch(_Session(META, _Response(200, BAD_ORDER_FIELD)))
     assert "'OBJECTID' parameter is invalid" in r.get("error", ""), r
 
 
 def test_a_layer_that_really_is_empty_is_not_an_error(no_db):
-    r = _fetch(_Session(_Response(200, {"features": []})))
+    r = _fetch(_Session(META, _Response(200, {"features": []})))
     assert r == {"routes_found": 0, "total_km": 0}, r
 
 
@@ -207,22 +213,22 @@ def test_a_layer_that_really_is_empty_is_not_an_error(no_db):
     (requests.exceptions.ConnectionError("Failed to resolve maps.nccs.nasa.gov"), "ConnectionError"),
 ], ids=["http-500", "non-json-body", "no-features-list", "transport-failure"])
 def test_every_other_unreadable_answer_is_an_error(no_db, answer, expected):
-    r = _fetch(_Session(answer))
+    r = _fetch(_Session(META, answer))
     assert r["routes_found"] == 0, r
     assert expected in r.get("error", ""), r
 
 
 def test_a_readable_page_is_written_and_is_not_an_error(recording_db):
-    r = _fetch(_Session(_Response(200, {"features": [_feature(1), _feature(2)]})))
+    r = _fetch(_Session(META, _Response(200, {"features": [_feature(1), _feature(2)]})))
     assert "error" not in r, r
     assert r["routes_found"] == 2 and len(recording_db) == 2, (r, len(recording_db))
 
 
 def test_an_error_on_a_later_page_keeps_the_rows_already_read(recording_db):
     first = _Response(200, {"features": [_feature(i) for i in range(1000)]})
-    session = _Session(first, _Response(200, INVALID_URL))
+    session = _Session(META, first, _Response(200, INVALID_URL))
     r = _fetch(session)
-    assert len(session.urls) == 2, session.urls
+    assert len(session.urls) == 3, session.urls
     assert r["routes_found"] == 1000 and len(recording_db) == 1000, r
     assert "Invalid URL" in r.get("error", ""), r
 
@@ -236,9 +242,41 @@ def test_a_failure_outside_the_page_loop_is_an_error(monkeypatch):
 
     monkeypatch.setattr(kad, "_conn", _pool_exhausted)
     monkeypatch.setattr(kad.time, "sleep", lambda s: None)
-    r = _fetch(_Session(_Response(200, {"features": [_feature(1)]})))
+    r = _fetch(_Session(META, _Response(200, {"features": [_feature(1)]})))
     assert r["routes_found"] == 0, r
     assert "RuntimeError" in r.get("error", ""), r
+
+
+# ── the layer's object-id field ──────────────────────────────────────────────
+
+@pytest.mark.parametrize("answer, expected", [
+    (_Response(200, INVALID_URL), "Invalid URL"),
+    (_Response(500, None), "HTTP 500"),
+    (_Response(200, raw="<html>"), "not JSON"),
+    (_Response(200, {"currentVersion": 11.3, "layers": [{"id": 0}]}), "names no object-id field"),
+    (_Response(200, {"fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"},
+                                {"name": "FID", "type": "esriFieldTypeOID"}]}), "2 esriFieldTypeOID"),
+    (requests.exceptions.ReadTimeout("read timed out"), "ReadTimeout"),
+], ids=["deleted-service", "http-500", "non-json", "service-root-not-a-layer",
+        "two-oid-fields", "transport-failure"])
+def test_metadata_that_names_no_object_id_field_fails_before_any_page(no_db, answer, expected):
+    """Paging without an order overlaps, so a layer whose object-id field cannot
+    be read is a failure: no page is requested and the reason is reported."""
+    session = _Session(answer)
+    r = _fetch(session)
+    assert session.urls == [LAYER + "?f=json"], session.urls
+    assert r["routes_found"] == 0, r
+    assert "metadata" in r.get("error", "") and expected in r["error"], r
+
+
+def test_the_object_id_field_is_sent_encoded_not_spliced_into_the_query(recording_db):
+    """The field name comes from a third party's metadata."""
+    session = _Session(_Response(200, {"objectIdField": "OID&where=0=1"}),
+                       _Response(200, {"features": [_feature(1)]}))
+    r = _fetch(session)
+    q = parse_qs(urlsplit(session.urls[1]).query)
+    assert q["orderByFields"] == ["OID&where=0=1"] and q["where"] == ["1=1"], q
+    assert r["routes_found"] == 1, r
 
 
 # ── _process_known_sources ───────────────────────────────────────────────────
@@ -253,12 +291,13 @@ def test_known_sources_count_and_name_the_layers_they_could_not_read(monkeypatch
         {"name": "not a layer", "url": "https://example.test/api",
          "type": "api_discover", "provider": "P", "category": "federal"},
     ])
-    session = _Session(_Response(200, {"features": [_feature(1)]}),
+    # The dead layer fails at its metadata read, as a deleted service does.
+    session = _Session(META, _Response(200, {"features": [_feature(1)]}),
                        _Response(200, INVALID_URL))
     inst = _engine(session)
     inst._add_discovered_source = lambda source: False
     r = inst._process_known_sources()
-    assert len(session.urls) == 2, session.urls
+    assert len(session.urls) == 3, session.urls
     assert (r["checked"], r["queried"], r["failed"]) == (3, 2, 1), r
     assert [s["name"] for s in r["failed_sources"]] == ["dead layer"], r
     assert "Invalid URL" in r["failed_sources"][0]["error"], r
