@@ -626,6 +626,9 @@ class AutonomousBrain:
                                     conn.commit()
                                 except Exception as ins_err:
                                     conn.rollback()
+                                    # Counted, so a cycle whose INSERTs all fail
+                                    # is not reported as one that found nothing.
+                                    results['insert_errors'] = results.get('insert_errors', 0) + 1
                                     logger.debug(f"Gas pipeline insert skipped: {ins_err}")
                             break
 
@@ -698,6 +701,8 @@ class AutonomousBrain:
                                     conn.commit()
                                 except Exception as ins_err:
                                     conn.rollback()
+                                    # Counted: see the gas_pipelines writer above.
+                                    results['insert_errors'] = results.get('insert_errors', 0) + 1
                                     logger.debug(f"Transmission line insert skipped: {ins_err}")
                             break
 
@@ -1020,7 +1025,30 @@ class AutonomousBrain:
             logger.warning(f"_save_last_processed_announcement failed: {e}")
 
     def run_autonomous_cycle(self) -> Dict:
-        """Run a complete autonomous learning cycle"""
+        """Run a complete autonomous learning cycle.
+
+        A full cycle beats backend-autonomous-brain when it completes. A cycle
+        that raised sent no beat at all, so it is reported here as a failure,
+        naming the exception type only: the source registry serves error text
+        publicly, and an exception message can carry a DSN or SQL.
+        """
+        started = time.monotonic()
+        try:
+            return self._run_autonomous_cycle()
+        except Exception as e:
+            try:
+                from dchub_heartbeat import heartbeat as _hb
+                _hb(
+                    "backend-autonomous-brain",
+                    status="failure",
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    error=f"cycle raised {type(e).__name__}",
+                )
+            except Exception:
+                pass  # best-effort, never replaces the cycle's own exception
+            raise
+
+    def _run_autonomous_cycle(self) -> Dict:
         start_time = datetime.now()
 
         results = {
@@ -1133,6 +1161,10 @@ class AutonomousBrain:
         except Exception as e:
             logger.error(f"   Power plant extraction failed: {e}")
 
+        # A step whose slot still holds its {} placeholder raised past its own
+        # handler (the excepts above only log). 'apis' has not run yet.
+        steps_raised = [k for k, v in results.items() if v == {} and k != 'apis']
+
         if self.state['total_cycles'] % 10 == 0:
             try:
                 infra_sync = self.sync_infrastructure()
@@ -1189,18 +1221,75 @@ class AutonomousBrain:
         # `backend-autonomous-brain` row stops showing "never ran".
         try:
             from dchub_heartbeat import heartbeat as _hb
-            rows = int(results.get("total_new_rows", 0) or 0)
+            status, rows, error = self._heartbeat_verdict(results, steps_raised)
             _hb(
                 "backend-autonomous-brain",
-                status="success",
+                status=status,
                 rows_affected=rows,
                 duration_ms=int(duration * 1000),
+                error=error,
                 metadata={"cycle_id": results.get("cycle_id")},
             )
         except Exception:
             pass  # best-effort, never blocks the cycle
 
         return results
+
+    # Steps that write rows, with the tally each increments once per INSERT.
+    # Every other counter in a step's result is a per-cycle pattern bucket
+    # (pipelines, dark_fiber, fiber_mentions, ...) or, for quality, an UPDATE
+    # count. fiber_infrastructure still initialises 'added' but has had no
+    # INSERT since GUARD #2 (2026-06-11), so it can never add a row.
+    _HEARTBEAT_ROW_TALLIES = (
+        ('capacity', 'new_pipeline'),
+        ('deals', 'deals_found'),
+        ('gas_infrastructure', 'added'),
+        ('transmission_infrastructure', 'added'),
+    )
+
+    @classmethod
+    def _heartbeat_verdict(cls, results: Dict, steps_raised: List[str]):
+        """(status, rows_affected, error) for the backend-autonomous-brain beat.
+
+        A step failed if it raised, recorded an 'error', or had an INSERT
+        rejected ('insert_errors'). The cycle is 'success' with no failed step,
+        'failure' when every row-writing step failed, and 'partial' otherwise.
+
+        rows_affected is None, not 0, when the count was not measured: a
+        row-writing step failed (capacity and deals count INSERTs before their
+        one commit), or infrastructure sync ran (it writes rows, every 10th
+        cycle, with no committed count). 0 means every writer ran and added
+        nothing.
+
+        error names the failed steps only. The registry serves it publicly, and
+        an extractor's message can carry a DSN or SQL.
+        """
+        failed = set(steps_raised)
+        for key, value in results.items():
+            if isinstance(value, dict) and (value.get('error') or value.get('insert_errors')):
+                failed.add(key)
+        writers = [key for key, _ in cls._HEARTBEAT_ROW_TALLIES]
+        if not failed:
+            status = 'success'
+        elif failed.issuperset(writers):
+            status = 'failure'
+        else:
+            status = 'partial'
+
+        rows = 0
+        for key, tally in cls._HEARTBEAT_ROW_TALLIES:
+            step = results.get(key)
+            count = step.get(tally) if isinstance(step, dict) else None
+            if key in failed or type(count) is not int or count < 0:
+                rows = None
+                break
+            rows += count
+        infra = results.get('infrastructure')
+        if isinstance(infra, dict) and 'sync' in infra:
+            rows = None
+
+        error = ('steps failed: ' + ', '.join(sorted(failed))) if failed else None
+        return status, rows, error
 
     def _record_cycle_to_extraction_intelligence(self, results: Dict, duration: float):
         """Phase ZZZZZ-round6c: instrument each domain extractor's output
