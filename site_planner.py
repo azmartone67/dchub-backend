@@ -433,8 +433,11 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
     # ★ 2026-09-13 — _query_hifld_transmission_live used to run here on every
     # miss, the common case, behind paid routes. It was removed, not repointed.
     # It asked the superseded services1 HIFLD layer for a field that layer does
-    # not have (SHAPE_Leng), so ArcGIS answered 400 "'outFields' parameter is
-    # invalid" and it returned None after the round trip. Had it succeeded, its
+    # not have (SHAPE_Leng), so ArcGIS answered with error 400 "'outFields'
+    # parameter is invalid" and it returned None after the round trip. Fixing
+    # the field would not have helped: its lon/lat envelope carried no inSR and
+    # both layers are Web Mercator, so it matched 0 lines around Ashburn (198 on
+    # services1 and 256 on the EIA layer with inSR=4326). Had it succeeded, its
     # distance_miles of 'N/A (live query)' would have raised in
     # compute_suitability_score's float() and failed the composite score's
     # power_grid factor.
