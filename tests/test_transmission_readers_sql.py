@@ -19,6 +19,8 @@ say either statement is right.
   K3  the summary runs and publishes no transmission count
   C1  control: Postgres rejects the statement type=all used to send, with and
       without a market, so this file can catch the defect it exists for
+  C2  control: a statement that cannot run comes back None AND reaches the
+      error log the L tests read, so their no-SQL-error check can fail
 
 Tables are created with the column lists and types production reported through
 /api/v1/admin/schema on 2026-09-13 (transmission_lines, discovered_power_plants,
@@ -103,14 +105,35 @@ def db(monkeypatch):
     conn.close()
 
 
+class _ErrorLog(logging.Handler):
+    """What site_planner logs at ERROR — where execute_query puts the SQL errors
+    it swallows. Attached to the logger itself: caplog.records read after a
+    fixture's yield holds only the TEARDOWN stage, and a check written that way
+    never saw an error raised during the test (measured: it let a statement with
+    a column that does not exist pass L3)."""
+
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
 @pytest.fixture
-def no_sql_errors(caplog):
+def error_log():
+    handler = _ErrorLog()
+    logger = logging.getLogger("site_planner")
+    logger.addHandler(handler)
+    yield handler
+    logger.removeHandler(handler)
+
+
+@pytest.fixture
+def no_sql_errors(error_log):
     """execute_query swallows SQL errors into a log line; make that line a failure."""
-    caplog.set_level(logging.ERROR, logger="site_planner")
     yield
-    logged = [r.getMessage() for r in caplog.records
-              if r.name == "site_planner" and r.levelno >= logging.ERROR]
-    assert not logged, f"site_planner swallowed an SQL error: {logged}"
+    assert not error_log.messages, f"site_planner swallowed an SQL error: {error_log.messages}"
 
 
 def _seed_lines(cur, lines, substations=(ASHBURN,)):
@@ -167,6 +190,15 @@ def test_l3_a_miss_runs_cleanly_and_falls_through(db, no_sql_errors, monkeypatch
     _seed_lines(db, ASHBURN_LINES, substations=(("OSM-917634654", 39.0438, -77.4874),))
 
     assert sp.find_nearest_transmission(*SITE) is sentinel
+
+
+def test_c2_control_a_swallowed_sql_error_reaches_the_error_log(db, error_log):
+    """Anti-vacuity for no_sql_errors: a statement that cannot run comes back as
+    None AND lands in the log that fixture reads."""
+    import site_planner as sp
+    assert sp.execute_query("SELECT owner FROM transmission_lines") is None
+    assert any('column "owner" does not exist' in m for m in error_log.messages), \
+        error_log.messages
 
 
 def _real_get_db():
