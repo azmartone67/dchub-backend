@@ -173,8 +173,20 @@ def test_human_acted_applies_the_session_exclusion():
     assert "_deloop_external_session_predicate" in src, \
         "human_acted no longer filters operator self-traffic"
     # It must be applied to the COUNTED query, not merely imported.
-    assert re.search(r"opened\s*=\s*one\(\(.*?_not_self", src, re.S), \
-        "the session predicate is imported but not applied to human_acted"
+    # ★ 2026-09-13 (v8): the headline is `opened = one(_human_acted_count_sql(iv))`
+    # and the exclusion is applied INSIDE the canonical builder, so this binds
+    # to the builder's output and to a headline call that does not opt out.
+    # The relay lane is still assembled inline and still carries it verbatim.
+    assert re.search(r"opened_v5\s*=\s*one\(\(.*?_not_self", src, re.S), \
+        "the session predicate is imported but not applied to the relay lane"
+    m = re.search(r"\n\s*opened\s*=\s*one\((_human_acted_count_sql\([^)]*\))\)", src)
+    assert m and "include_self_traffic" not in m.group(1), \
+        "the headline is not the canonical union with the exclusion applied"
+    from mcp_calls_deloop import external_session_predicate
+    from routes.handoff_definition import human_acted_count_sql
+    headline = human_acted_count_sql("30 days")
+    for column in ("s.mcp_session_id", "cc.ref"):
+        assert external_session_predicate(column) in headline, column
 
 
 def test_human_acted_publishes_what_it_removed():

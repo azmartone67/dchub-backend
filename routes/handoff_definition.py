@@ -56,7 +56,7 @@ from mcp_calls_deloop import (
 # ── the published definition ────────────────────────────────────────────────
 # Bump BOTH together. The guard in tests/test_handoff_truth_shell.py asserts
 # every version 1..N carries an entry, so a bump with no explanation fails.
-HUMAN_ACTED_DEFINITION_VERSION = 5
+HUMAN_ACTED_DEFINITION_VERSION = 8
 
 HUMAN_ACTED_DEFINITION_CHANGELOG = {
     1: (
@@ -129,6 +129,47 @@ HUMAN_ACTED_DEFINITION_CHANGELOG = {
         'structural catches the next rotation. Treat a 0 on this stage as '
         '"none of the sessions we have named", not as "verified external".'
     ),
+    6: (
+        'DEFINED, NEVER PROMOTED. human_acted_v6_from_relay_opens (2026-09-07) '
+        'counts FROM relay_opens, the table the /upgrade/h/ open is written '
+        'to, instead of FROM mcp_high_intent_sessions. Published alongside and '
+        'kept off the headline on purpose: a stage that had already published '
+        'a wrong first non-zero twice does not get a new anchor before that '
+        'anchor is read against live data. Recorded so every version 1..N '
+        'stays described; the headline never carried it.'
+    ),
+    7: (
+        'DEFINED, NEVER PROMOTED. human_acted_v7_from_checkout_clicks '
+        '(2026-09-10) counts signed, real-UA clicks FROM mcp_checkout_clicks, '
+        'the table /go/c/<token> writes, restricted to ref_kind=session. '
+        'Published alongside; the headline stayed on v5 until v8.'
+    ),
+    8: (
+        'v5 UNION v7, so the link agents actually relay can move the '
+        'headline. Measured 2026-09-09 from outside: one gated tools/call '
+        'puts https://dchub.cloud/go/c/<token> in content[0].text, the block '
+        'a client renders and a model relays, and the /upgrade/h/ link only in '
+        'structuredContent. v5 read relay_opens, which only /upgrade/h/ '
+        'writes, so a human clicking the link their agent showed them could '
+        'not move this stage. v8 counts DISTINCT session ids over the UNION of '
+        'two lanes, each exactly as already published and read against live '
+        'data: (a) the v5 lane, sessions in mcp_high_intent_sessions that '
+        'opened /relay/<token> or /upgrade/h/ on a real UA, windowed on '
+        'first_hit_at and kept alongside as '
+        'human_acted_v5_before_relayed_checkout; (b) the v7 lane, signed '
+        '/go/c/ clicks on a real UA whose ref is a bare session id, windowed '
+        'on clicked_at. A session in both lanes counts once. Both lanes apply '
+        'the operator self-traffic exclusion declared in '
+        'mcp_calls_deloop.self_traffic_session_prefixes, each on its own '
+        'identity column. ★ LEFT OUT ON PURPOSE: pk-/k- key-hash refs and a- '
+        'anonymous refs, because that exclusion passes vacuously on them (they '
+        'stay published as human_acted_v7_links_clicked); and the v6 '
+        'relay_opens anchor, which read 1 over 30d at 15:00 PT on 2026-09-13 '
+        'on a session this change did not attribute, so promoting it would '
+        'publish an unexamined non-zero. ★ Promoting v7 moved no published number: '
+        'on 2026-09-13 it read 0 over 24h, 7d and 30d. This changes what the '
+        'stage CAN count, not what it has counted.'
+    ),
 }
 
 
@@ -181,12 +222,12 @@ def human_acted_sentence(block: dict | None = None, *, prefix: str = "") -> str:
 # disagreed by construction while both called themselves human_acted.
 
 
-def human_acted_session_predicate(alias: str = "s") -> str:
-    """TRUE when session `alias` opened EITHER human artifact on a real UA.
+def human_acted_relay_predicate(alias: str = "s") -> str:
+    """TRUE when session `alias` opened /relay/<token> or /upgrade/h/ on a real UA.
 
-    This is the v3 body — the union — WITHOUT the v4 self-traffic exclusion, so
-    callers can express both the filtered stage and the unfiltered diagnostic
-    from one place. Carries no literal `%`: both predicates are the anchored
+    This is the v3 body — the headline's relay lane — WITHOUT the v4
+    self-traffic exclusion, so callers can express both the filtered stage and
+    the unfiltered diagnostic from one place. Carries no literal `%`: both predicates are the anchored
     regex forms, which is load-bearing beside `sql % iv` window interpolation
     and beside psycopg2 bound params (see external_session_predicate's docstring
     — the LIKE form took this endpoint down inside one deploy).
@@ -202,25 +243,62 @@ def human_acted_session_predicate(alias: str = "s") -> str:
     ) % {"a": alias}
 
 
+def human_acted_session_predicate(alias: str = "s") -> str:
+    """TRUE when session `alias` acted on ANY human artifact, on a real UA.
+
+    The relay predicate OR a signed /go/c/ click whose ref is this session's
+    id: the per-session form of the headline, for readers that start FROM
+    mcp_high_intent_sessions. adoption_master_shell's `abandoned` reads it, and
+    a session that clicked the relayed checkout link did not abandon. No window
+    on the click, as the relay_opens exists carries none on the open.
+    """
+    return ("(" + human_acted_relay_predicate(alias)
+            + " or exists (select 1 " + _RELAYED_CHECKOUT_FROM + " where "
+            + relayed_checkout_session_filters()
+            + " and cc.ref = " + alias + ".mcp_session_id))")
+
+
 def human_acted_not_self_predicate(alias: str = "s") -> str:
     """The v4 delta: TRUE when the session is not declared operator traffic."""
     return _external_session_predicate("%s.mcp_session_id" % alias)
+
+
+def _relay_lane_body(interval_sql: str, include_self_traffic: bool) -> str:
+    body = ("from mcp_high_intent_sessions s "
+            "where s.first_hit_at > now() - interval '" + interval_sql +
+            "' and " + human_acted_relay_predicate("s"))
+    if not include_self_traffic:
+        body += " and " + human_acted_not_self_predicate("s")
+    return body
+
+
+def human_acted_v5_count_sql(interval_sql: str, *,
+                             include_self_traffic: bool = False) -> str:
+    """The relay lane alone, published as human_acted_v5_before_relayed_checkout.
+
+    `include_self_traffic=True` renders the v3 diagnostic that must stay
+    published beside it — never a silent subtraction.
+    """
+    return ("select count(distinct s.mcp_session_id) "
+            + _relay_lane_body(interval_sql, include_self_traffic))
 
 
 def human_acted_count_sql(interval_sql: str, *,
                           include_self_traffic: bool = False) -> str:
     """Canonical human_acted count over `interval_sql` (e.g. "30 days").
 
-    `include_self_traffic=True` renders the v3 diagnostic that must stay
-    published beside the v4 figure — never a silent subtraction.
+    DISTINCT session ids over the UNION of the relay lane and the
+    relayed-checkout lane (see the changelog entry for the current version).
+    A session in both counts once; each lane keeps the window its own
+    instrument publishes. `include_self_traffic=True` drops the exclusion from
+    BOTH lanes, so the difference is exactly what the exclusion removed and
+    cannot go negative.
     """
-    body = ("from mcp_high_intent_sessions s "
-            "where s.first_hit_at > now() - interval '" + interval_sql +
-            "' and " + human_acted_session_predicate("s"))
-    sql = "select count(distinct s.mcp_session_id) " + body
-    if not include_self_traffic:
-        sql += " and " + human_acted_not_self_predicate("s")
-    return sql
+    return ("select count(distinct u.sid) from (select s.mcp_session_id as sid "
+            + _relay_lane_body(interval_sql, include_self_traffic)
+            + " union select cc.ref as sid "
+            + _relayed_checkout_lane_body(interval_sql, include_self_traffic)
+            + ") u")
 
 
 # ── the redeem stage: a MACHINE diagnostic, never funnel progress ───────────
@@ -504,9 +582,12 @@ def biggest_leak(steps: dict) -> str:
 RELAYED_CHECKOUT_DELOOPABLE_REF_KIND = "session"
 
 
+_RELAYED_CHECKOUT_FROM = "from mcp_checkout_clicks cc"
+
+
 def _relayed_checkout_window(interval_sql: str) -> str:
-    return ("from mcp_checkout_clicks cc "
-            "where cc.clicked_at > now() - interval '" + interval_sql + "'")
+    return (_RELAYED_CHECKOUT_FROM
+            + " where cc.clicked_at > now() - interval '" + interval_sql + "'")
 
 
 def relayed_checkout_real_ua() -> str:
@@ -531,6 +612,27 @@ def relayed_checkout_signed() -> str:
     return "cc.sig_ok is true"
 
 
+def relayed_checkout_session_filters() -> str:
+    """The relayed-checkout lane's row filters: signed, real UA, bare session ref.
+
+    No window and no exclusion, so the v7 count, the headline's lane and the
+    per-session predicate all read this ONE copy.
+    """
+    return (relayed_checkout_signed()
+            + " and " + relayed_checkout_real_ua()
+            + " and coalesce(cc.ref,'') <> ''"
+            + " and cc.ref_kind = '" + RELAYED_CHECKOUT_DELOOPABLE_REF_KIND + "'")
+
+
+def _relayed_checkout_lane_body(interval_sql: str,
+                                include_self_traffic: bool) -> str:
+    body = (_relayed_checkout_window(interval_sql)
+            + " and " + relayed_checkout_session_filters())
+    if not include_self_traffic:
+        body += " and " + _external_session_predicate("cc.ref")
+    return body
+
+
 def human_acted_v7_count_sql(interval_sql: str) -> str:
     """DE-LOOPABLE clicks on the relayed checkout link, over `interval_sql`.
 
@@ -540,12 +642,7 @@ def human_acted_v7_count_sql(interval_sql: str) -> str:
     than folded in here under a filter that would pass vacuously on it.
     """
     return ("select count(distinct cc.ref) "
-            + _relayed_checkout_window(interval_sql)
-            + " and " + relayed_checkout_signed()
-            + " and " + relayed_checkout_real_ua()
-            + " and coalesce(cc.ref,'') <> ''"
-            + " and cc.ref_kind = '" + RELAYED_CHECKOUT_DELOOPABLE_REF_KIND + "'"
-            + " and " + _external_session_predicate("cc.ref"))
+            + _relayed_checkout_lane_body(interval_sql, False))
 
 
 def human_acted_v7_links_sql(interval_sql: str) -> str:
@@ -645,7 +742,9 @@ HUMAN_ACTED_V7_BASIS = (
     "'a-' anonymous offer id it would pass vacuously — the v6 widening hit "
     "exactly that and the answer was two numbers, not one wider number. Those "
     "refs are counted in `human_acted_v7_links_clicked` instead. "
-    "PUBLISHED ALONGSIDE: the headline stage is unchanged.")
+    "It is one of the two lanes the headline `human_acted` now unions (see "
+    "definitions.human_acted); published alone here so its share of the "
+    "headline stays readable.")
 
 HUMAN_ACTED_V7_LINKS_BASIS = (
     "COUNT(DISTINCT ref) FROM mcp_checkout_clicks over the SAME window with "

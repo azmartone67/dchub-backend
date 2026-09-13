@@ -573,8 +573,9 @@ def _lane_conversion(c) -> list[dict]:
             # definition block the API publishes, so this board cannot go on
             # describing a version the funnel has moved off.
             + _handoff_sentence() +
-            f" basis: mcp_high_intent_sessions, rolling {WINDOW_DAYS}d; the "
-            f"human_acted window is first_hit_at (as in the funnel), the "
+            f" basis: mcp_high_intent_sessions, rolling {WINDOW_DAYS}d; "
+            f"human_acted's relay lane is windowed on first_hit_at and its "
+            f"/go/c/ checkout lane on clicked_at (as in the funnel), the "
             f"other stages' is their own stamp"))
 
     # ── human path ────────────────────────────────────────────────────
