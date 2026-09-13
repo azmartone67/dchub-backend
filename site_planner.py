@@ -1044,68 +1044,6 @@ def assess_water_risk(state_code):
     }
 
 
-# ─── Enhancement: HIFLD Live Substation Fallback ────────────────────────────
-def query_substations_live(lat, lng, radius_miles=25):
-    """
-    Direct HIFLD API query for substations as fallback/supplement.
-    Use when local DB returns fewer than 5 results.
-    """
-    try:
-        import requests
-        # Approximate bounding box
-        deg = radius_miles / 69.0
-        bbox = f'{lng-deg},{lat-deg},{lng+deg},{lat+deg}'
-        
-        url = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query"
-        params = {
-            'geometry': bbox,
-            'geometryType': 'esriGeometryEnvelope',
-            'spatialRel': 'esriSpatialRelIntersects',
-            'outFields': 'NAME,CITY,STATE,STATUS,MAX_VOLT,MIN_VOLT,OWNER,LATITUDE,LONGITUDE',
-            'returnGeometry': 'false',
-            'f': 'json',
-            'resultRecordCount': 10,
-        }
-        resp = requests.get(url, params=params, timeout=12)
-        data = resp.json()
-        
-        if 'features' in data and data['features']:
-            results = []
-            for f in data['features']:
-                a = f.get('attributes', {})
-                sub_lat = a.get('LATITUDE')
-                sub_lng = a.get('LONGITUDE')
-                if not sub_lat or not sub_lng:
-                    continue
-                    
-                # Calculate distance
-                dist = 3959 * math.acos(
-                    min(1.0, max(-1.0,
-                        math.cos(math.radians(lat)) * math.cos(math.radians(sub_lat)) *
-                        math.cos(math.radians(sub_lng) - math.radians(lng)) +
-                        math.sin(math.radians(lat)) * math.sin(math.radians(sub_lat))
-                    ))
-                )
-                
-                results.append({
-                    'name': a.get('NAME', 'Unknown'),
-                    'state': a.get('STATE', ''),
-                    'voltage_kv': a.get('MAX_VOLT') or a.get('MIN_VOLT') or 0,
-                    'operator': a.get('OWNER', 'Unknown'),
-                    'lat': sub_lat,
-                    'lng': sub_lng,
-                    'distance_miles': round(dist, 1),
-                    'source': 'HIFLD_live',
-                })
-            
-            results.sort(key=lambda x: x['distance_miles'])
-            return results[:5]
-    except Exception as e:
-        logger.warning(f"HIFLD live substations query failed: {e}")
-    
-    return []
-
-
 def compute_suitability_score(substations, transmission, iso, env, congestion, gas=None, nearby_dcs=None, weights=None):
     """
     Compute 0-100 Interconnection Suitability Score.
@@ -1643,13 +1581,27 @@ def register_site_planner_routes(app):
                     unique_subs.append(s)
             substations = unique_subs
             
-            # If fewer than 5, supplement from HIFLD live API
-            if len(substations) < 5:
-                live_subs = query_substations_live(lat, lng)
-                for ls in live_subs:
-                    if ls.get('name') not in seen_names and len(substations) < 5:
-                        seen_names.add(ls.get('name'))
-                        substations.append(ls)
+            # No live top-up: analyze serves the substations the local lookup
+            # found, even when that is fewer than five. The queue estimate and the
+            # suitability score read substations[0] and the highest voltage here,
+            # and both handle a short or an empty list.
+            #
+            # ★ 2026-09-13 — query_substations_live used to top this list up from a
+            # live ArcGIS query whenever it held fewer than five names, which also
+            # happens when two of the nearest five share a name. It was removed,
+            # not repointed. The services1 Electric_Substations service it queried
+            # no longer exists: ArcGIS answered HTTP 200 with error 400 "Invalid
+            # URL", so it returned [] after a network round trip on every call, and
+            # its except never logged because nothing raised.
+            #
+            # The national layer that still serves substations (services5
+            # HDRa0B57OVrv2E1q) is no substitute. It has no OWNER field, so the same
+            # query is rejected there as well. 38,479 of its 75,328 names are
+            # UNKNOWN<id> placeholders, which the name dedupe above cannot match to
+            # the named row the substations table holds at the same coordinates,
+            # and that is why routes/substation_ingest.py refuses to write it. And
+            # Railway's egress to ArcGIS is unreliable (routes/transmission_ingest.py
+            # fetches on a GitHub runner). A spatial answer belongs in the table.
             
             transmission = find_nearest_transmission(lat, lng)
             
