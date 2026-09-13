@@ -21,6 +21,12 @@ from datetime import datetime
 
 import requests
 
+try:
+    from dchub_heartbeat import with_heartbeat
+except ImportError:  # heartbeat client unavailable: the sync still runs, unreported
+    def with_heartbeat(*_args, **_kwargs):
+        return lambda fn: fn
+
 logger = logging.getLogger('dchub-subsea')
 
 # ─────────────────────────────────────────────────────────────
@@ -448,6 +454,9 @@ def ingest_landing_points(get_db):
 # ─────────────────────────────────────────────────────────────
 # MAIN SYNC FUNCTION
 # ─────────────────────────────────────────────────────────────
+# The source-registry heartbeat fires from this run: rows it upserted, and a
+# failure when either half reports success=False. Never from import or exit.
+@with_heartbeat("backend-subsea-cable", rows_key="total_new")
 def run_subsea_sync(get_db):
     """Full sync: cables + landing points."""
     results = {
@@ -788,20 +797,3 @@ def register_subsea_routes(app, get_db):
                     pass
 
     logger.info("🌊 Subsea cable routes registered: /api/v1/subsea/cables, /api/v1/subsea/landing-points, /api/v1/subsea/nearby")
-
-# === phase 92: source-registry heartbeat (auto-fires on clean module exit) ===
-# Non-invasive: never crashes the script if the registry is unreachable.
-# Source ID: backend-subsea-cable
-_phase92_heartbeat_registered = True
-try:
-    import atexit as _phase92_atexit
-    from dchub_heartbeat import heartbeat as _phase92_heartbeat
-    def _phase92_emit():
-        try:
-            _phase92_heartbeat("backend-subsea-cable", status="success",
-                              metadata={"trigger": "atexit"})
-        except Exception:
-            pass
-    _phase92_atexit.register(_phase92_emit)
-except Exception:
-    pass  # heartbeat module unavailable; extractor continues normally

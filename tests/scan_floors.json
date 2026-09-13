@@ -187,6 +187,9 @@
     "test_locked_gate_manifest_post_only.py": {
       "glob": 670
     },
+    "test_no_import_time_heartbeat.py": {
+      "pglob": 2160
+    },
     "test_no_import_time_module_stubs.py": {
       "pglob": 950
     },

@@ -23,6 +23,12 @@ from datetime import datetime
 
 from flask import jsonify, request
 
+try:
+    from dchub_heartbeat import with_heartbeat
+except ImportError:  # heartbeat client unavailable: the sync still runs, unreported
+    def with_heartbeat(*_args, **_kwargs):
+        return lambda fn: fn
+
 logger = logging.getLogger('dchub-fiber')
 
 
@@ -41,6 +47,11 @@ def register_fiber_intelligence(app, get_db):
         run_carrier_sync,
         register_carrier_routes,
     )
+    # This layer's source-registry row is fed by its carrier sync (weekly, via
+    # crawler_scheduler's carrier_facility_sync): from the run, with the rows it
+    # wrote and its own success flag. Both job endpoints below call it.
+    run_carrier_sync = with_heartbeat(
+        "backend-fiber-integration", rows_key="total_records")(run_carrier_sync)
 
     # ── Initialize tables on startup ──────────────────────────
     try:
@@ -341,20 +352,3 @@ def register_fiber_intelligence(app, get_db):
                     pass
 
     logger.info("🌐 Fiber Intelligence fully registered — subsea, carriers, coverage, sync endpoints")
-
-# === phase 92: source-registry heartbeat (auto-fires on clean module exit) ===
-# Non-invasive: never crashes the script if the registry is unreachable.
-# Source ID: backend-fiber-integration
-_phase92_heartbeat_registered = True
-try:
-    import atexit as _phase92_atexit
-    from dchub_heartbeat import heartbeat as _phase92_heartbeat
-    def _phase92_emit():
-        try:
-            _phase92_heartbeat("backend-fiber-integration", status="success",
-                              metadata={"trigger": "atexit"})
-        except Exception:
-            pass
-    _phase92_atexit.register(_phase92_emit)
-except Exception:
-    pass  # heartbeat module unavailable; extractor continues normally

@@ -30,6 +30,12 @@ from typing import Optional, Dict, Any, List
 
 import requests
 
+try:
+    from dchub_heartbeat import with_heartbeat
+except ImportError:  # heartbeat client unavailable: the sync still runs, unreported
+    def with_heartbeat(*_args, **_kwargs):
+        return lambda fn: fn
+
 logger = logging.getLogger('dchub-networks')
 
 # ─────────────────────────────────────────────────────────────
@@ -795,6 +801,10 @@ def run_campus_sync(get_db) -> Dict[str, Any]:
     return results
 
 
+# This module's source-registry heartbeat fires from the full sync (the one
+# crawler_scheduler runs weekly), with the rows it upserted and its own success
+# flag. The partial syncs above refresh a subset of the tables and do not beat.
+@with_heartbeat("backend-network-ix-ingestion", rows_key="total_records")
 def run_peeringdb_full_sync(get_db) -> Dict[str, Any]:
     """Full sync: networks + IX + campus + all cross-references."""
     results = {
@@ -1361,20 +1371,3 @@ def register_network_ix_routes(app, get_db):
 # Rate limiting: 3s between paginated PeeringDB requests anonymously (20/min),
 # 1s with PEERINGDB_API_KEY set. Anonymous bulk pulls are throttled hard — set
 # that env var on Railway for reliable weekly runs.
-
-# === phase 92: source-registry heartbeat (auto-fires on clean module exit) ===
-# Non-invasive: never crashes the script if the registry is unreachable.
-# Source ID: backend-network-ix-ingestion
-_phase92_heartbeat_registered = True
-try:
-    import atexit as _phase92_atexit
-    from dchub_heartbeat import heartbeat as _phase92_heartbeat
-    def _phase92_emit():
-        try:
-            _phase92_heartbeat("backend-network-ix-ingestion", status="success",
-                              metadata={"trigger": "atexit"})
-        except Exception:
-            pass
-    _phase92_atexit.register(_phase92_emit)
-except Exception:
-    pass  # heartbeat module unavailable; extractor continues normally

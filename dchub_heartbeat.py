@@ -77,8 +77,8 @@ def _safe_warn(fmt, *args):
     """Log a warning that can never propagate.
 
     This module's contract is "never crashes the caller" — its heartbeats fire
-    from atexit hooks, where a raised exception turns a successful extractor
-    run into a non-zero exit. A logging handler CAN raise (bad handler, closed
+    from inside extractor runs, where a raised exception turns a successful
+    run into a failed one. A logging handler CAN raise (bad handler, closed
     stream, %-format mismatch), so every warning here goes through this.
     """
     try:
@@ -110,12 +110,13 @@ def _safe_warn(fmt, *args):
 #     freshness signal. Give the operator the diagnosis and let them decide
 #     which contexts are supposed to report.
 # ★ A TEST RUN MUST NOT WRITE TO THE PRODUCTION SOURCE REGISTRY.
-# ~28 extractor modules register atexit hooks that call heartbeat() when their
-# PROCESS exits. `pytest tests/` imports many of them, so the hooks register and
-# fire when pytest exits — on a developer machine (or any runner) that happens to
-# hold a real admin key, that POSTs a genuine "success" into the live registry
-# for an extractor that never ran. Measured 2026-09-03: a full local suite run
-# emitted a real POST to https://dchub.cloud/api/v1/sources/... at exit.
+# Measured 2026-09-03: a full local suite run emitted a real POST to
+# https://dchub.cloud/api/v1/sources/... at exit. Ten extractor modules then
+# registered atexit hooks at IMPORT, so the hooks fired when pytest exited — on
+# a machine holding a real admin key, a genuine "success" for an extractor that
+# never ran. Those hooks are gone (2026-09-13: a beat now fires from the run
+# itself, see with_heartbeat), but the suite still CALLS those runs with faked
+# I/O, and a faked run must not report either.
 #
 # That is the OVER-REPORT direction, and it is the dangerous one: a source that
 # looks stale gets investigated, a source that falsely looks fresh does not.
@@ -123,9 +124,9 @@ def _safe_warn(fmt, *args):
 # ran" — and nothing downstream could tell the difference.
 #
 # Detection is `pytest in sys.modules` rather than PYTEST_CURRENT_TEST, because
-# the atexit hooks fire AFTER pytest has torn that variable down; the module
-# object is still loaded. Escape hatch for tests that need the real code path:
-# DCHUB_HEARTBEAT_ALLOW_IN_TESTS=1.
+# code that runs at process exit runs AFTER pytest has torn that variable down;
+# the module object is still loaded. Escape hatch for tests that need the real
+# code path: DCHUB_HEARTBEAT_ALLOW_IN_TESTS=1.
 _ALLOW_IN_TESTS = os.environ.get("DCHUB_HEARTBEAT_ALLOW_IN_TESTS") == "1"
 _TEST_CONTEXT_LOGGED = False
 
@@ -236,6 +237,57 @@ def heartbeat(source_id, status="success", rows_affected=None,
         return False
 
 
+def _publishable_error(text, fallback):
+    """Error text as it may be shown on the PUBLIC source registry.
+
+    GET /api/v1/sources/<id> serves last_error and every run's error to anyone.
+    An exception or step message can carry a credential (userinfo in a DSN, a
+    key= parameter, an ISO basic-auth pair), so it goes through the scrubber the
+    ISO extractors already publish through. `fallback` holds no message text: it
+    is what gets sent when that scrubber cannot be loaded.
+    """
+    try:
+        from routes._iso_common import scrub_secrets
+        return scrub_secrets(str(text))
+    except Exception:
+        return fallback
+
+
+def _row_count(value):
+    """A non-negative int row count, else None. A bool is not a count."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _run_verdict(result, rows_key, use_int_return_as_rows):
+    """(status, rows_affected, error) for the value a wrapped run returned.
+
+    ★ The sync entry points in this repo catch their own failures and RETURN a
+    summary dict with `success: False` instead of raising. A wrapper that only
+    watched for exceptions would report those runs as successes — the same lie
+    the import-time atexit beats told: a fresh row for a run that wrote nothing.
+    """
+    if not isinstance(result, dict):
+        rows = _row_count(result) if use_int_return_as_rows else None
+        return "success", rows, None
+    rows = _row_count(result.get(rows_key)) if rows_key is not None else None
+    if result.get("success") is not False:
+        return "success", rows, None
+    failed_steps = [k for k, v in result.items()
+                    if isinstance(v, dict) and v.get("success") is False]
+    summary = "success=False" + (
+        " in " + ", ".join(str(k) for k in failed_steps) if failed_steps else "")
+    errors = result.get("errors")
+    if not isinstance(errors, (list, tuple)):
+        errors = [errors]
+    messages = [str(m) for m in [result.get("error"), *errors] if m]
+    messages += ["%s: %s" % (k, result[k]["error"])
+                 for k in failed_steps if result[k].get("error")]
+    return "failure", rows, _publishable_error(
+        "; ".join(messages) or summary, summary)
+
+
 @contextmanager
 def tracked_run(source_id):
     """Context manager: auto-time the block, fire success/failure heartbeat.
@@ -264,16 +316,23 @@ def tracked_run(source_id):
             source_id,
             status="failure",
             duration_ms=elapsed_ms,
-            error=f"{type(e).__name__}: {e}",
+            error=_publishable_error(f"{type(e).__name__}: {e}",
+                                     type(e).__name__),
         )
         raise
 
 
-def with_heartbeat(source_id, on_success_use_return_as_rows=True):
+def with_heartbeat(source_id, on_success_use_return_as_rows=True,
+                   rows_key=None):
     """Decorator: wrap a function with heartbeat reporting.
 
+    The beat fires when the wrapped function RUNS — never when its module is
+    imported or its process exits — so a registry row means a run happened.
+
     If `on_success_use_return_as_rows=True` and the wrapped function
-    returns an int, that int is used as rows_affected.
+    returns an int, that int is used as rows_affected. If it returns a dict,
+    `rows_key` names the entry holding rows_affected, and `success: False`
+    reports the run as a failure carrying the dict's own error text.
     """
     def deco(fn):
         @wraps(fn)
@@ -281,23 +340,33 @@ def with_heartbeat(source_id, on_success_use_return_as_rows=True):
             started = time.time()
             try:
                 result = fn(*args, **kwargs)
-                elapsed_ms = int((time.time() - started) * 1000)
-                rows = result if (on_success_use_return_as_rows and isinstance(result, int)) else None
-                heartbeat(
-                    source_id,
-                    status="success",
-                    rows_affected=rows,
-                    duration_ms=elapsed_ms,
-                )
-                return result
             except Exception as e:
                 elapsed_ms = int((time.time() - started) * 1000)
                 heartbeat(
                     source_id,
                     status="failure",
                     duration_ms=elapsed_ms,
-                    error=f"{type(e).__name__}: {e}",
+                    error=_publishable_error(f"{type(e).__name__}: {e}",
+                                             type(e).__name__),
                 )
                 raise
+            elapsed_ms = int((time.time() - started) * 1000)
+            try:
+                status, rows, error = _run_verdict(
+                    result, rows_key, on_success_use_return_as_rows)
+            except Exception as e:
+                # Reporting must never break the run it reports on, and a
+                # result it could not read must not be sent as a success.
+                _safe_warn("heartbeat %s NOT sent: could not read the run's "
+                           "result (%s)", source_id, type(e).__name__)
+                return result
+            heartbeat(
+                source_id,
+                status=status,
+                rows_affected=rows,
+                duration_ms=elapsed_ms,
+                error=error,
+            )
+            return result
         return wrapper
     return deco
