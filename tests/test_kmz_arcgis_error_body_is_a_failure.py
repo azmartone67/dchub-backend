@@ -135,7 +135,8 @@ def _feature(i):
 
 
 def _fetch(session):
-    return _engine(session)._fetch_arcgis_routes(LAYER, "HIFLD", "HIFLD Electric Substations")
+    return _engine(session)._fetch_arcgis_routes(LAYER, "HIFLD", "HIFLD Electric Substations",
+                                                 route_type="substation")
 
 
 @pytest.fixture
@@ -245,9 +246,10 @@ def test_a_failure_outside_the_page_loop_is_an_error(monkeypatch):
 def test_known_sources_count_and_name_the_layers_they_could_not_read(monkeypatch, recording_db):
     monkeypatch.setattr(kad, "PUBLIC_KMZ_SOURCES", [
         {"name": "live layer", "url": "https://example.test/live/FeatureServer/0",
-         "type": "arcgis_kml", "provider": "P", "category": "gas"},
+         "type": "arcgis_kml", "provider": "P", "category": "gas", "route_type": "gas"},
         {"name": "dead layer", "url": "https://example.test/dead/FeatureServer/0",
-         "type": "arcgis_kml", "provider": "P", "category": "power"},
+         "type": "arcgis_kml", "provider": "P", "category": "power",
+         "route_type": "transmission"},
         {"name": "not a layer", "url": "https://example.test/api",
          "type": "api_discover", "provider": "P", "category": "federal"},
     ])
@@ -263,45 +265,6 @@ def test_known_sources_count_and_name_the_layers_they_could_not_read(monkeypatch
     assert r["routes_found"] == 1, r
 
 
-# ── _export_arcgis_as_kml ────────────────────────────────────────────────────
-
-def test_export_marks_an_unreadable_discovered_source_error_not_empty(monkeypatch):
-    rows = [(7, "dead search hit", "https://example.test/dead/FeatureServer", "someone"),
-            (8, "empty layer", "https://example.test/empty/FeatureServer/0", "someone"),
-            (9, "live layer", "https://example.test/live/FeatureServer/0", "someone")]
-    fetched = {
-        rows[0][2]: {"routes_found": 0, "total_km": 0,
-                     "error": "HTTP 200 with an error body: 400 Invalid URL"},
-        rows[1][2]: {"routes_found": 0, "total_km": 0},
-        rows[2][2]: {"routes_found": 4, "total_km": 9.0},
-    }
-
-    class _Cur:
-        def execute(self, sql, params=None):
-            assert "FROM kmz_discovered_sources" in sql, sql
-
-        def fetchall(self):
-            return rows
-
-        def close(self):
-            pass
-
-    class _Conn:
-        def cursor(self):
-            return _Cur()
-
-    monkeypatch.setattr(kad, "_conn", lambda: _Conn())
-    monkeypatch.setattr(kad, "_release", lambda conn: None)
-    monkeypatch.setattr(kad.time, "sleep", lambda s: None)
-    inst = _engine()
-    inst._fetch_arcgis_routes = lambda url, provider, name, route_type="fiber": fetched[url]
-    statuses = []
-    inst._update_source_status = lambda sid, status, n: statuses.append((sid, status, n))
-    r = inst._export_arcgis_as_kml()
-    assert statuses == [(7, "error", 0), (8, "empty", 0), (9, "active", 4)], statuses
-    assert (r["errors"], r["exported"], r["routes_parsed"]) == (1, 1, 4), r
-
-
 # ── the cycle row ────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("known, other, expected", [
@@ -310,14 +273,12 @@ def test_export_marks_an_unreadable_discovered_source_error_not_empty(monkeypatc
     ({"queried": 4, "failed": 2}, {}, "partial"),
     ({"queried": 4, "failed": 4}, {}, "failed"),
     ({"checked": 0, "routes_found": 0, "total_km": 0, "error": "boom"}, {}, "failed"),
-    ({"queried": 4, "failed": 0}, {"arcgis_kml_export": {"error": "boom"}}, "partial"),
+    ({"queried": 4, "failed": 0}, {"state_broadband": {"error": "boom"}}, "partial"),
     ({"queried": 0, "failed": 0}, {}, "ok"),
 ], ids=["none-failed", "some-failed", "all-failed", "stage-raised",
         "other-stage-raised", "nothing-queried"])
 def test_cycle_status(known, other, expected):
-    # errors=3 in the export stage: unreadable DISCOVERED sources never set it.
-    results = {"known_sources": known, "arcgis_search": {}, "state_broadband": {},
-               "arcgis_kml_export": {"errors": 3}}
+    results = {"known_sources": known, "arcgis_search": {}, "state_broadband": {}}
     results.update(other)
     assert kad._cycle_status(results) == expected
 
