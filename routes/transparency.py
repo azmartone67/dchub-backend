@@ -21,7 +21,7 @@ Pulls live data from:
   /api/v1/sentinel/scan              — page-health for 52 surfaces
   /api/v1/facilities/delta           — discovery-pipeline freshness (HHHH)
   /api/v1/bots/dormant               — outreach worklist (AAAA)
-  /api/v1/spare-capacity/listings    — marketplace activity (CCCC)
+  /api/v1/listings/health            — Capacity Source listings (spare capacity folded in 2026-09-13)
   /api/v1/developers/funnel          — acquisition conversion (BBBB)
 """
 
@@ -192,9 +192,9 @@ def transparency_dashboard():
     <div class="card-sub"><span id="dormant-high">—</span> high-priority winback</div>
   </div>
   <div class="card">
-    <div class="card-label">Spare-capacity listings</div>
+    <div class="card-label">Capacity Source listings</div>
     <div class="card-metric" id="spare-count">—</div>
-    <div class="card-sub">live MW available</div>
+    <div class="card-sub">live listings</div>
   </div>
   <div class="card">
     <div class="card-label">/developers funnel</div>
@@ -230,7 +230,7 @@ def transparency_dashboard():
   <a href="/api/v1/sentinel/scan">sentinel</a> ·
   <a href="/api/v1/facilities/delta">delta</a> ·
   <a href="/api/v1/bots/dormant">dormant</a> ·
-  <a href="/api/v1/spare-capacity/listings">spare-cap</a> ·
+  <a href="/api/v1/listings">capacity-source</a> ·
   <a href="/api/v1/developers/funnel">dev-funnel</a>
   <br>Operator view: <a href="/alive">/alive</a> · Customer view: <a href="/intelligence">/intelligence</a>
 </p>
@@ -287,9 +287,10 @@ def transparency_dashboard():
     setText('dormant-high', high);
   }).catch(function(){});
 
-  // Spare capacity
-  fetch('/api/v1/spare-capacity/listings').then(r => r.json()).then(d => {
-    setText('spare-count', d.total || 0);
+  // Capacity Source (spare capacity folded in 2026-09-13): live = pocket + public
+  fetch('/api/v1/listings/health').then(r => r.json()).then(d => {
+    var b = d.by_status || {};
+    setText('spare-count', (b.pocket || 0) + (b.public || 0));
   }).catch(function(){});
 
   // Developers funnel

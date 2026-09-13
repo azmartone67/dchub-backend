@@ -347,7 +347,7 @@ def changes_since():
                  },
                  lambda n: f"{n} new transactions", "deals")
 
-            # Pocket listings: newly created
+            # Capacity Source listings: newly created
             lane("pocket_listings_new", """
                     SELECT slug, title, market, state, capacity_mw, status,
                            tier_required, created_at
@@ -362,7 +362,7 @@ def changes_since():
                      "status": r[5], "tier_required": r[6],
                      "created_at": r[7].isoformat() if r[7] else None,
                  },
-                 lambda n: f"{n} new pocket listings", "exclusive_listings")
+                 lambda n: f"{n} new Capacity Source listings", "exclusive_listings")
 
             # Facilities: newly discovered. 2026-06-06 fix: canonical table is
             # discovered_facilities (23k+ rows) — NOT the small curated

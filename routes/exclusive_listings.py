@@ -1,5 +1,5 @@
 """
-exclusive_listings.py — DC Hub Pocket Listings: off-market data center capacity,
+exclusive_listings.py — DC Hub Capacity Source (Pocket Listings until 2026-09-13): data center capacity,
 an auth wall, and a lead register operators can verify.
 
 Phase GG (2026-05-14) created the table and a Pro-only feed that handed Pro
@@ -83,7 +83,7 @@ SUPPORT_EMAIL = "hello@dchub.cloud"
 # Served from GET /api/v1/listings/terms; the web page and MCP tools render
 # them from there, so this is the one place to edit. Bump TERMS_VERSION on any
 # change — requests carry the version the prospect accepted.
-TERMS_VERSION = "2026-09-11"
+TERMS_VERSION = "2026-09-13"
 TERMS_URL = f"{SITE}/listings#terms"
 TERMS_SUMMARY = (
     "DC Hub introduces you to this opportunity and records the request in its "
@@ -92,9 +92,10 @@ TERMS_SUMMARY = (
     "through DC Hub rather than approaching its operator directly."
 )
 TERMS_TEXT = (
-    "DC Hub Pocket Listings — introduction terms (version " + TERMS_VERSION + ")\n\n"
-    "1. What DC Hub does. DC Hub publishes off-market data center capacity on "
-    "behalf of operators and introduces prospects to them. DC Hub is not a "
+    "DC Hub Capacity Source — introduction terms (version " + TERMS_VERSION + ")\n\n"
+    "1. What DC Hub does. DC Hub publishes data center capacity on behalf of "
+    "operators, including capacity that is not publicly marketed, and "
+    "introduces prospects to them. DC Hub is not a "
     "party to any agreement between you and an operator.\n\n"
     "2. Registration. When you request an introduction or register a "
     "requirement, DC Hub records who asked, when, for which listing and through "
@@ -115,16 +116,20 @@ TERMS_TEXT = (
     "separate opt-in. To withdraw a request, email " + SUPPORT_EMAIL + "."
 )
 
-PROGRAM_NAME = "DC Hub Pocket Listings"
-PROGRAM_HEADLINE = "Off-market data center capacity, introduced by DC Hub"
+PROGRAM_NAME = "DC Hub Capacity Source"
+PROGRAM_HEADLINE = "The live source for data center capacity"
 PROGRAM_SUMMARY = (
-    "Powered shells, available MW and development sites that are not publicly "
-    "marketed. Browse the teasers, sign in to open a listing, and let DC Hub "
-    "introduce you to the operator."
+    "Powered land, powered shells and turnkey capacity, including sites that "
+    "are not publicly marketed, for enterprise buyers and the AI agents that "
+    "procure for them. Every listing shows when it was last updated. Browse "
+    "the listings, sign in to open one, and let DC Hub introduce you to the "
+    "operator."
 )
 PROGRAM_STEPS = (
-    "Browse teaser cards — market, state and capacity — without an account.",
-    "Sign in, or connect an identified AI agent, to open the full listing.",
+    "Browse listings — market, state, capacity and when each was last "
+    "updated — without an account.",
+    "Sign in with a free account, or connect an identified AI agent, to open "
+    "the full listing.",
     "Request an introduction. DC Hub registers the request and introduces you "
     "to the operator; operator contact details are never published.",
 )
@@ -146,19 +151,19 @@ HOW_TO_VERIFY = (
 # not published. Every response says so in machine-readable form, because the
 # MCP gateway keeps a backend-supplied provenance/citation block over its own
 # default CC-BY-4.0 grant (dchub-mcp-server lib/attribution.mjs mergeProvenance /
-# reconcileCitation). Without these, every agent reading a pocket listing would
+# reconcileCitation). Without these, every agent reading a Capacity Source listing would
 # be told it may republish it.
 # Only `citation` is emitted. `provenance` is a data-CURRENCY claim key to
 # scripts/dataset_inventory.py, and listings are curated inventory, not an
 # ingested feed with a freshness to watch; the MCP tools force a matching
 # confidential provenance on their side (dchub-mcp-server _listingConfidential).
-LISTING_LICENSE = "LicenseRef-DCHub-Pocket-Listings-Confidential"
-LISTING_CITE_AS = ("DC Hub Pocket Listings (confidential — not for redistribution), "
+LISTING_LICENSE = "LicenseRef-DCHub-Capacity-Source-Confidential"
+LISTING_CITE_AS = ("DC Hub Capacity Source (confidential — not for redistribution), "
                    "dchub.cloud")
 
 
 def _citation():
-    return {"source": "DC Hub Pocket Listings", "url": SITE + "/listings",
+    return {"source": "DC Hub Capacity Source", "url": SITE + "/listings",
             "license": LISTING_LICENSE, "license_url": TERMS_URL,
             "redistribution": "not_permitted", "cite_as": LISTING_CITE_AS}
 
@@ -679,7 +684,7 @@ def _program(live_count):
         "how_it_works": list(PROGRAM_STEPS),
         "note": None if live_count else UPCOMING_NOTE,
         "register_interest": {"method": "POST", "path": "/api/v1/listings/interest",
-                              "mcp_tool": "request_listing_intro"},
+                              "mcp_tool": "request_capacity_intro"},
         "terms": _terms_block(),
     }
 
@@ -1026,8 +1031,8 @@ def _confirm_email(lead_id, token, name, listing, requirement):
         what = f"an introduction to the operator of <b>{_e(listing.get('title'))}</b>"
         subject = _hdr(f"Confirm your DC Hub introduction request — {listing.get('title') or lead_id}")
     else:
-        what = "first access to off-market data center capacity matching your requirement"
-        subject = "Confirm your DC Hub pocket-listing requirement"
+        what = "first access to Capacity Source listings matching your requirement"
+        subject = "Confirm your DC Hub Capacity Source requirement"
     body = (
         f"<p>Hi {_e(name, 'there')},</p>"
         f"<p>You asked DC Hub for {what}. Confirm the request so DC Hub can register it:</p>"
@@ -1059,6 +1064,9 @@ def _lead_facts(events):
 def _admin_email(lead_id, events, listing_row):
     opening, entry, confirmed = _lead_facts(events)
     title = (listing_row or {}).get("title") or "standing requirement"
+    # The subject keeps "Pocket listing lead" after the Capacity Source rename on
+    # purpose: the admin inbox may filter on it (dchub-frontend #1473 kept the
+    # /listings mailto subjects for the same reason).
     subject = _hdr(f"Pocket listing lead {lead_id} — {opening.get('company') or '?'} → {title}")
     email = opening.get("email") or ""
     mailto = quote(email, safe="@.+-_")
@@ -1414,7 +1422,7 @@ def get_listing(slug_or_id):
         "access": access,
         "introduction": {"method": "POST",
                          "path": f"/api/v1/listings/{row.get('slug')}/intro",
-                         "mcp_tool": "request_listing_intro",
+                         "mcp_tool": "request_capacity_intro",
                          "operator_contact": "never_shared"},
         "viewer": _viewer_public(v, return_path),
         "caller_tier": v["tier"],

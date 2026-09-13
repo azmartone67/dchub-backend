@@ -1,4 +1,4 @@
-"""util/listing_ledger.py — the pocket-listing lead register (2026-09-11).
+"""util/listing_ledger.py — the Capacity Source lead register (2026-09-11).
 
 WHY THIS EXISTS. DC Hub introduces prospects to the operators behind off-market
 ("pocket") capacity listings, and the program is only worth something if DC Hub

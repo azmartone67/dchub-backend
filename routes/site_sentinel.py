@@ -134,11 +134,12 @@ _MANIFEST: list[dict] = [
     # but had no HTML surface. Lowered to 'normal' category + lower
     # min_bytes so the new stub page passes; remove from manifest
     # entirely once a richer HTML browser ships.
-    {"path": "/pocket-listings",         "category": "normal", "min_bytes": 500, "label": "Pocket Listings",  "wants_nav": True},
+    {"path": "/pocket-listings",         "category": "normal", "min_bytes": 500, "label": "Capacity Source (legacy stub)",  "wants_nav": True},
     {"path": "/dc-hub-media",            "category": "high", "min_bytes": 2000, "label": "DC Hub Media",     "wants_nav": True},
 
     # Phase BBBB + CCCC (2026-05-16) — new surfaces shipped today.
-    {"path": "/spare-capacity",          "category": "high",   "min_bytes": 3000, "label": "Spare Capacity", "wants_nav": True},
+    # 2026-09-13: /spare-capacity 301s to /listings#list-capacity (folded into
+    # Capacity Source), so the page left this manifest; its read-only API stays below.
     # r41-sentinel-thresholds (2026-05-25): lowered min_bytes 200→80.
     # The endpoint returns a valid empty-state JSON shape
     # {"count":0,"listings":[],"total":0,...} ≈ 127 bytes — correct

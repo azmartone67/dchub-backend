@@ -207,6 +207,11 @@ TOOL_TIER = {
     # introduction request or a standing requirement: a lead record tied to a
     # person, so it needs an identified caller (email-bound key or OAuth).
     "request_listing_intro":        Tier.IDENTIFIED,
+    # 2026-09-13: pocket listings became Capacity Source. dchub-mcp-server
+    # advertises these names and resolves the two above to them (its
+    # TOOL_ALIASES), so both spellings stay.
+    "source_capacity":              Tier.IDENTIFIED,  # listing cards at free, full at identified+
+    "request_capacity_intro":       Tier.IDENTIFIED,
 
     # DCPI MCP tools (PR #152)
     "get_dcpi_scores":              Tier.IDENTIFIED,
@@ -927,6 +932,9 @@ TOOL_TEASER = {
     "get_pocket_listings":    "teaser cards for off-market data center capacity DC Hub is onboarding — powered shells, available capacity and development sites that are not publicly marketed. Market, state and capacity are open to anyone; the full listing needs an identified caller (a key with an email bound, or OAuth). Operator contact is never shared: request_listing_intro asks DC Hub to make the introduction.",
     "request_listing_intro":  "a registered introduction to the operator behind a pocket listing — or a standing requirement for first access to upcoming listings — recorded in DC Hub's hash-chained lead register with a public verification record. DC Hub emails a one-click confirmation and makes the introduction; operator contact is never shared. Needs an identified caller and accept_terms=true once your human has agreed to the introduction terms.",
     "get_pocket_listing":     "one pocket listing in full for an identified caller (call get_pocket_listings with slug) — DC Hub makes the operator introduction; operator contact is never shared.",
+    # 2026-09-13: the Capacity Source names (see TOOL_TIER).
+    "source_capacity":        "listing cards for DC Hub Capacity Source — powered land, powered shells and turnkey capacity to buy or lease, including sites that are not publicly marketed, each showing when it was last updated. Market, state and capacity are open to anyone; the full listing needs an identified caller (a key with an email bound, or OAuth). Operator contact is never shared: request_capacity_intro asks DC Hub to make the introduction.",
+    "request_capacity_intro": "a registered introduction to the operator behind a Capacity Source listing — or a standing requirement for first access as listings are onboarded — recorded in DC Hub's hash-chained lead register with a public verification record. DC Hub emails a one-click confirmation and makes the introduction; operator contact is never shared. Needs an identified caller and accept_terms=true once your human has agreed to the introduction terms.",
     "get_dcpi_scores":        "DCPI verdicts (BUILD/CAUTION/AVOID) + 4 numeric scores per market — DC Hub's headline build/avoid signal.",
     "get_dcpi_market":        "full DCPI snapshot for one market — verdict + scores + top risks + opportunities + queue wait.",
     "get_dcpi_movers":        "biggest DCPI movers over a window — emerging BUILD opportunities + newly-flagged AVOID markets with deltas.",

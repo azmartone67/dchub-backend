@@ -1003,7 +1003,7 @@ def _theme_for_weekday() -> tuple[str, str]:
         1: ("theme_grid_iso", "Tuesday Grid + ISO: interconnection queue, transmission headroom, reserve margins, fuel mix."),
         2: ("theme_ai_infra", "Wednesday AI Infra: MCP usage, GPU clusters, AI training sites, model-vendor data center demand."),
         3: ("theme_markets",  "Thursday Markets: which markets earn BUILD this week, top excess-power opportunities, breakout cities."),
-        4: ("theme_deals",    "Friday Deals + Listings: recent transactions, pocket-listing inventory, buyer/seller pulse."),
+        4: ("theme_deals",    "Friday Deals + Listings: recent transactions, Capacity Source listings, buyer/seller pulse."),
         5: ("theme_methodology", "Weekend Methodology: deep dive on one DCPI axis or data source."),
         6: ("theme_methodology", "Weekend Methodology: deep dive on one DCPI axis or data source."),
     }
