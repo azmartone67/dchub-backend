@@ -56,6 +56,16 @@ Endpoints:
 Listing `contact` (admin-only JSON): {name, company, email, phone,
 notify_email, auto_notify}. With auto_notify true, a confirmed lead also sends
 the operator a registration notice; otherwise the admin sends it.
+
+Listing `detail` (JSON) holds free-form keys plus six RESERVED keys, all
+optional: delivery_type, mw_schedule, power, price, provider, verification.
+Admin writes validate the reserved keys and store them normalized; a failure
+answers 400 invalid_detail with one entry per field and writes nothing
+(_validate_detail). Reads project them as typed fields: every teaser carries
+delivery_type, freshness (from verification.verified_at) and the provider's
+name when it is disclosed; the full view adds mw_schedule, power, price,
+provider and verification. The generic `detail` object never repeats a
+reserved key, so an undisclosed provider name is served nowhere.
 """
 import hashlib
 import hmac
@@ -187,6 +197,32 @@ _TOKEN_CHARS_RE = re.compile(r"[^a-z0-9._/-]+")
 _DETAIL_PRIVATE_KEYS = frozenset({"contact", "operator_contact", "operator_email",
                                   "notify_email", "internal", "internal_notes",
                                   "owner", "owner_id"})
+
+# Reserved `detail` keys: validated on admin write (_DETAIL_FIELD_CHECKS),
+# projected as typed fields by _teaser / _full, and left out of the generic
+# `detail` object.
+_DETAIL_RESERVED_KEYS = ("delivery_type", "mw_schedule", "power", "price",
+                         "provider", "verification")
+_DELIVERY_TYPES = ("land", "powered_shell", "turnkey", "colocation")
+_INTERCONNECTION_STAGES = ("not_started", "applied", "in_study",
+                           "agreement_executed", "under_construction", "energized")
+_PRICE_UNITS = ("usd_per_kw_month", "usd_per_mw", "usd_per_acre", "usd_total")
+_VERIFICATION_METHODS = ("provider_attestation", "document_review",
+                         "utility_confirmation", "site_visit")
+_FIELD_TEXT_MAX = 120
+_MW_SCHEDULE_MAX_ENTRIES = 24
+_MW_SCHEDULE_MAX_MW = 10000
+_VERIFIED_AT_MAX_AHEAD = timedelta(days=1)
+# Freshness, by whole days since verification.verified_at: up to
+# _FRESH_MAX_AGE_DAYS is fresh, up to _AGING_MAX_AGE_DAYS is aging, older is
+# stale.
+_FRESH_MAX_AGE_DAYS = 30
+_AGING_MAX_AGE_DAYS = 90
+_SCHEDULE_DATE_RE = re.compile(r"([0-9]{4})-([0-9]{2})(?:-([0-9]{2}))?")
+_VERIFIED_AT_RE = re.compile(
+    r"([0-9]{4})-([0-9]{2})-([0-9]{2})"
+    r"(?:[Tt ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]{1,6}))?)?"
+    r"([Zz]|[+-][0-9]{2}:?[0-9]{2})?)?")
 
 _LISTING_COLS = ("id", "slug", "title", "summary", "status", "tier_required",
                  "market", "state", "country", "latitude", "longitude",
@@ -332,7 +368,12 @@ def _fetch(sql, params, cols):
         _close(c)
 
 
-def _db_list_listings(market=None, state=None, min_mw=None, limit=50):
+def _db_list_listings(market=None, state=None, min_mw=None, delivery_type=None,
+                      available_by=None, limit=50):
+    """Live listings, newest first. delivery_type matches detail.delivery_type
+    exactly. available_by ('YYYY-MM' or 'YYYY-MM-DD') keeps listings with at
+    least one detail.mw_schedule entry dated in or before that month. Every
+    filter is part of the WHERE clause, so LIMIT counts matching rows only."""
     where = ["status IN ('public', 'pocket')",
              "(expires_at IS NULL OR expires_at > NOW())"]
     params = []
@@ -345,6 +386,20 @@ def _db_list_listings(market=None, state=None, min_mw=None, limit=50):
     if min_mw is not None:
         where.append("capacity_mw >= %s")
         params.append(min_mw)
+    if delivery_type:
+        where.append("detail->>'delivery_type' = %s")
+        params.append(delivery_type)
+    if available_by:
+        # The CASE hands jsonb_array_elements an empty array when a stored
+        # mw_schedule is not an array. An entry matches on its YYYY-MM prefix,
+        # compared byte-wise; a date not shaped YYYY-MM[-DD] never matches.
+        where.append(
+            "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN "
+            "jsonb_typeof(detail->'mw_schedule') = 'array' "
+            "THEN detail->'mw_schedule' ELSE '[]'::jsonb END) AS schedule(entry) "
+            "WHERE substring(entry->>'date' FROM '^([0-9]{4}-[0-9]{2})(-[0-9]{2})?$') "
+            "COLLATE \"C\" <= %s)")
+        params.append(str(available_by)[:7])
     sql = (f"SELECT {', '.join(_LISTING_COLS)} FROM exclusive_listings "
            f"WHERE {' AND '.join(where)} ORDER BY updated_at DESC LIMIT %s")
     return _fetch(sql, params + [limit], _LISTING_COLS)
@@ -745,6 +800,343 @@ def _available(detail):
     return None
 
 
+# ═════════════════════════════════════════════════════════════════════════
+#  listing fields (reserved `detail` keys)
+# ═════════════════════════════════════════════════════════════════════════
+
+def _now():
+    """The clock the listing-field rules read: the verified_at bound on
+    write, and freshness on read."""
+    return datetime.now(timezone.utc)
+
+
+def _json_number(n):
+    """A finite float as the JSON number to store: an int when it is whole."""
+    return int(n) if n.is_integer() and abs(n) < 2 ** 53 else n
+
+
+def _field_text(value, limit):
+    """Required single-line text: whitespace runs collapse to one space, then
+    1..limit characters. -> (text, None) or (None, problem)."""
+    if value is None:
+        return None, "is required"
+    if not isinstance(value, str):
+        return None, "must be text"
+    text = " ".join(value.split())
+    if not text:
+        return None, "must not be empty"
+    if len(text) > limit:
+        return None, f"must be at most {limit} characters"
+    return text, None
+
+
+def _field_choice(value, allowed):
+    """-> (value, None) when the trimmed text is one of `allowed`, else
+    (None, problem)."""
+    if isinstance(value, str) and value.strip() in allowed:
+        return value.strip(), None
+    prefix = "is required: one of " if value is None else "must be one of "
+    return None, prefix + ", ".join(allowed)
+
+
+def _schedule_date(value):
+    """A trimmed 'YYYY-MM' or 'YYYY-MM-DD' that names a real calendar date,
+    else None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    m = _SCHEDULE_DATE_RE.fullmatch(text)
+    if not m:
+        return None
+    try:
+        datetime(int(m.group(1)), int(m.group(2)), int(m.group(3) or 1))
+    except ValueError:
+        return None
+    return text
+
+
+def _parse_verified_at(value):
+    """An ISO-8601 date or date-time as an aware UTC datetime, else None. A
+    date is midnight UTC; a date-time without an offset is UTC."""
+    if not isinstance(value, str):
+        return None
+    m = _VERIFIED_AT_RE.fullmatch(value.strip())
+    if not m:
+        return None
+    year, month, day, hour, minute, second, fraction, offset = m.groups()
+    try:
+        tz = timezone.utc
+        if offset and offset not in ("Z", "z"):
+            digits = offset[1:].replace(":", "")
+            if int(digits[2:]) > 59:
+                return None
+            shift = timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+            tz = timezone(-shift if offset[0] == "-" else shift)
+        parsed = datetime(int(year), int(month), int(day), int(hour or 0),
+                          int(minute or 0), int(second or 0),
+                          int((fraction or "0").ljust(6, "0")), tzinfo=tz)
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _no_other_keys(obj, allowed, path, errors, what):
+    for key in obj:
+        if key not in allowed:
+            errors.append({"field": f"{path}.{key}",
+                           "message": f"is not a field of {what} ({', '.join(allowed)})"})
+
+
+# Each check appends {"field", "message"} entries to `errors` and returns the
+# normalized value, or None when it appended anything.
+
+def _check_delivery_type(value, path, errors, now):
+    choice, problem = _field_choice(value, _DELIVERY_TYPES)
+    if problem:
+        errors.append({"field": path, "message": problem})
+    return choice
+
+
+def _check_mw_schedule(value, path, errors, now):
+    """1..24 {date, mw} entries: cumulative MW available by each date, so
+    stored sorted by date with MW that never falls. A month entry (YYYY-MM)
+    covers every day in it, so it may not share its month with another entry."""
+    start = len(errors)
+    if not isinstance(value, list) or not 1 <= len(value) <= _MW_SCHEDULE_MAX_ENTRIES:
+        errors.append({"field": path, "message": (
+            f"must be a list of 1 to {_MW_SCHEDULE_MAX_ENTRIES} entries of {{date, mw}}")})
+        return None
+    entries = []
+    for i, raw in enumerate(value):
+        at = f"{path}[{i}]"
+        if not isinstance(raw, dict):
+            errors.append({"field": at, "message": "must be an object with date and mw"})
+            continue
+        _no_other_keys(raw, ("date", "mw"), at, errors, "an mw_schedule entry")
+        date, mw = _schedule_date(raw.get("date")), _num(raw.get("mw"))
+        if date is None:
+            errors.append({"field": f"{at}.date",
+                           "message": "must be a calendar date as YYYY-MM or YYYY-MM-DD"})
+        if mw is None or not 0 < mw <= _MW_SCHEDULE_MAX_MW:
+            errors.append({"field": f"{at}.mw", "message": (
+                f"must be a number greater than 0 and at most {_MW_SCHEDULE_MAX_MW}")})
+        entries.append((date, mw, i))
+    if len(errors) > start:
+        return None
+    entries.sort(key=lambda e: e[0])
+    for pos in range(1, len(entries)):
+        date, mw, i = entries[pos]
+        clash = next((d for d, _, _ in entries[:pos]
+                      if d == date or (7 in (len(d), len(date)) and d[:7] == date[:7])), None)
+        if clash is not None:
+            errors.append({"field": f"{path}[{i}].date", "message": (
+                f"repeats {clash}: each date appears once, and a month covers its days")})
+        prev_date, prev_mw, _ = entries[pos - 1]
+        if mw < prev_mw:
+            errors.append({"field": f"{path}[{i}].mw", "message": (
+                f"must be at least {_json_number(prev_mw)}, the MW at {prev_date}: "
+                "mw_schedule is cumulative MW available by each date")})
+    if len(errors) > start:
+        return None
+    return [{"date": d, "mw": _json_number(m)} for d, m, _ in entries]
+
+
+def _check_power(value, path, errors, now):
+    start = len(errors)
+    keys = ("utility", "substation", "interconnection_stage")
+    if not isinstance(value, dict):
+        errors.append({"field": path, "message": (
+            "must be an object with utility, substation and/or interconnection_stage")})
+        return None
+    _no_other_keys(value, keys, path, errors, "power")
+    out = {}
+    for key in keys:
+        if value.get(key) is None:
+            continue
+        if key == "interconnection_stage":
+            val, problem = _field_choice(value[key], _INTERCONNECTION_STAGES)
+        else:
+            val, problem = _field_text(value[key], _FIELD_TEXT_MAX)
+        if problem:
+            errors.append({"field": f"{path}.{key}", "message": problem})
+        else:
+            out[key] = val
+    if len(errors) == start and not out:
+        errors.append({"field": path, "message": (
+            "give at least one of utility, substation, interconnection_stage")})
+    return out if len(errors) == start else None
+
+
+def _check_price(value, path, errors, now):
+    """{"on_request": true}, or a band {"low", "high", "unit"}."""
+    start = len(errors)
+    shape = 'must be {"on_request": true} or {"low", "high", "unit"}'
+    if not isinstance(value, dict):
+        errors.append({"field": path, "message": shape})
+        return None
+    _no_other_keys(value, ("on_request", "low", "high", "unit"), path, errors, "price")
+    band = [k for k in ("low", "high", "unit") if value.get(k) is not None]
+    if value.get("on_request") is not None:
+        if value["on_request"] is not True:
+            errors.append({"field": f"{path}.on_request",
+                           "message": "must be true; send low, high and unit for a price band"})
+        elif band:
+            errors.append({"field": path,
+                           "message": "give on_request or a low/high/unit band, not both"})
+        return {"on_request": True} if len(errors) == start else None
+    if not band:
+        if len(errors) == start:
+            errors.append({"field": path, "message": shape})
+        return None
+    low, high = _num(value.get("low")), _num(value.get("high"))
+    if low is None or low < 0:
+        errors.append({"field": f"{path}.low", "message": "must be a number of at least 0"})
+    if high is None:
+        errors.append({"field": f"{path}.high", "message": "must be a number of at least low"})
+    elif low is not None and low >= 0 and high < low:
+        errors.append({"field": f"{path}.high", "message": "must be at least low"})
+    unit, problem = _field_choice(value.get("unit"), _PRICE_UNITS)
+    if problem:
+        errors.append({"field": f"{path}.unit", "message": problem})
+    if len(errors) > start:
+        return None
+    return {"low": _json_number(low), "high": _json_number(high), "unit": unit}
+
+
+def _check_provider(value, path, errors, now):
+    start = len(errors)
+    if not isinstance(value, dict):
+        errors.append({"field": path, "message": 'must be {"name", "disclosed"}'})
+        return None
+    _no_other_keys(value, ("name", "disclosed"), path, errors, "provider")
+    name, problem = _field_text(value.get("name"), _FIELD_TEXT_MAX)
+    if problem:
+        errors.append({"field": f"{path}.name", "message": problem})
+    disclosed = value.get("disclosed")
+    if not isinstance(disclosed, bool):
+        errors.append({"field": f"{path}.disclosed", "message": (
+            "is required: true or false" if disclosed is None else "must be true or false")})
+    if len(errors) > start:
+        return None
+    return {"name": name, "disclosed": disclosed}
+
+
+def _check_verification(value, path, errors, now):
+    start = len(errors)
+    if not isinstance(value, dict):
+        errors.append({"field": path,
+                       "message": 'must be {"verified_by", "verified_at", "method"}'})
+        return None
+    _no_other_keys(value, ("verified_by", "verified_at", "method"), path, errors,
+                   "verification")
+    verified_by, problem = _field_text(value.get("verified_by"), _FIELD_TEXT_MAX)
+    if problem:
+        errors.append({"field": f"{path}.verified_by", "message": problem})
+    verified_at = _parse_verified_at(value.get("verified_at"))
+    if verified_at is None:
+        errors.append({"field": f"{path}.verified_at", "message": (
+            "is required" if value.get("verified_at") is None else
+            "must be an ISO-8601 date or date-time (no offset means UTC)")})
+    elif verified_at - now > _VERIFIED_AT_MAX_AHEAD:
+        errors.append({"field": f"{path}.verified_at",
+                       "message": "must not be more than 1 day in the future"})
+    method, problem = _field_choice(value.get("method"), _VERIFICATION_METHODS)
+    if problem:
+        errors.append({"field": f"{path}.method", "message": problem})
+    if len(errors) > start:
+        return None
+    return {"verified_by": verified_by, "verified_at": ledger.iso_utc(verified_at),
+            "method": method}
+
+
+_DETAIL_FIELD_CHECKS = {
+    "delivery_type": _check_delivery_type,
+    "mw_schedule": _check_mw_schedule,
+    "power": _check_power,
+    "price": _check_price,
+    "provider": _check_provider,
+    "verification": _check_verification,
+}
+
+
+def _reserved_detail_key(key):
+    """The reserved field a `detail` key names, ignoring case and surrounding
+    whitespace; None for every other key."""
+    if not isinstance(key, str):
+        return None
+    name = key.strip().lower()
+    return name if name in _DETAIL_RESERVED_KEYS else None
+
+
+def _validate_detail(raw):
+    """Admin-write rules for `detail`. -> (value to store, errors).
+
+    `raw` is an object, a JSON string holding one, or None (stores NULL). Each
+    reserved key is checked and stored normalized: text trimmed, numbers as
+    JSON numbers, mw_schedule sorted by date. A reserved key set to null is
+    dropped, and a reserved name in other case or spacing is refused. Every
+    other key is stored as sent. Any error means nothing is stored."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, RecursionError):
+            return None, [{"field": "detail",
+                           "message": "must be a JSON object; the string is not valid JSON"}]
+    if raw is None:
+        return None, []
+    if not isinstance(raw, dict):
+        return None, [{"field": "detail", "message": "must be a JSON object"}]
+    now, errors, out = _now(), [], {}
+    for key, value in raw.items():
+        name = _reserved_detail_key(key)
+        if name is None:
+            out[key] = value
+        elif key != name:
+            errors.append({"field": f"detail.{key}",
+                           "message": f"names a reserved field; spell it {name}"})
+        elif value is not None:
+            normalized = _DETAIL_FIELD_CHECKS[name](value, "detail." + name, errors, now)
+            if normalized is not None:
+                out[name] = normalized
+    return (None, errors) if errors else (out, [])
+
+
+def _invalid_detail(errors):
+    first = errors[0]
+    summary = f"{first['field']} {first['message']}"
+    if len(errors) > 1:
+        summary += f" (and {len(errors) - 1} more)"
+    return _err(400, "invalid_detail", " ".join(summary.split()), errors=errors)
+
+
+def _freshness(verification, now):
+    """fresh / aging / stale by whole days since verification.verified_at;
+    unverified without a valid verification."""
+    if not verification:
+        return {"state": "unverified", "verified_at": None, "age_days": None}
+    age_days = max(0, (now - _parse_verified_at(verification["verified_at"])).days)
+    if age_days <= _FRESH_MAX_AGE_DAYS:
+        state = "fresh"
+    elif age_days <= _AGING_MAX_AGE_DAYS:
+        state = "aging"
+    else:
+        state = "stale"
+    return {"state": state, "verified_at": verification["verified_at"], "age_days": age_days}
+
+
+def _listing_fields(detail):
+    """The reserved fields of a stored `detail`, each checked by the write
+    rules as of now, plus `freshness`. A field that fails them (stored before
+    the rules applied) reads as None."""
+    now = _now()
+    fields = {}
+    for name, check in _DETAIL_FIELD_CHECKS.items():
+        value = detail.get(name)
+        fields[name] = None if value is None else check(value, "detail." + name, [], now)
+    fields["freshness"] = _freshness(fields["verification"], now)
+    return fields
+
+
 def _terms_ok(v):
     """Has this viewer accepted the CURRENT introduction terms? Fails CLOSED:
     no identity, or a lookup that fails, reads as not accepted."""
@@ -789,7 +1181,13 @@ def _access(row, v, return_path, terms_ok=False):
     return {"required": required, "granted": granted, "reason": reason, "unlock": unlock}
 
 
-def _teaser(row, access):
+def _teaser(row, access, fields=None):
+    """The card everyone sees, locked or not. `fields` is
+    _listing_fields(detail), when the caller already has it."""
+    detail = _json_obj(row.get("detail"))
+    if fields is None:
+        fields = _listing_fields(detail)
+    provider = fields["provider"]
     return {
         "id": row.get("id"),
         "slug": row.get("slug"),
@@ -803,7 +1201,11 @@ def _teaser(row, access):
         "state": row.get("state"),
         "country": row.get("country"),
         "capacity_mw": _num(row.get("capacity_mw")),
-        "available": _available(_json_obj(row.get("detail"))),
+        "available": _available(detail),
+        "delivery_type": fields["delivery_type"],
+        "freshness": fields["freshness"],
+        "provider": ({"name": provider["name"]}
+                     if provider and provider["disclosed"] else None),
         "created_at": _iso(row.get("created_at")),
         "updated_at": _iso(row.get("updated_at")),
         "expires_at": _iso(row.get("expires_at")),
@@ -813,9 +1215,13 @@ def _teaser(row, access):
 
 def _full(row, access):
     """Unlocked view. Never `contact` or `owner_id`; coordinates at 2 dp
-    (about a kilometre) — the site itself is what the introduction is for."""
-    item = _teaser(row, access)
+    (about a kilometre) — the site itself is what the introduction is for.
+    Reserved detail keys appear only as their typed fields, and the provider's
+    name only when it is disclosed."""
     detail = _json_obj(row.get("detail"))
+    fields = _listing_fields(detail)
+    item = _teaser(row, access, fields)
+    provider = fields["provider"]
     item.update({
         "latitude": _round2(row.get("latitude")),
         "longitude": _round2(row.get("longitude")),
@@ -823,7 +1229,14 @@ def _full(row, access):
         "asking_currency": row.get("asking_currency"),
         "detail": {k: val for k, val in detail.items()
                    if isinstance(k, str) and not k.startswith("_")
-                   and k.lower() not in _DETAIL_PRIVATE_KEYS},
+                   and k.lower() not in _DETAIL_PRIVATE_KEYS
+                   and _reserved_detail_key(k) is None},
+        "mw_schedule": fields["mw_schedule"],
+        "power": fields["power"],
+        "price": fields["price"],
+        "provider": ({"name": provider["name"] if provider["disclosed"] else None,
+                      "disclosed": provider["disclosed"]} if provider else None),
+        "verification": fields["verification"],
     })
     return item
 
@@ -1378,20 +1791,42 @@ def _safe_get_listing(slug_or_id):
 @exclusive_listings_bp.route("/api/v1/listings", methods=["GET"])
 def list_listings():
     """Teaser feed. Everyone sees every live listing's teaser; nobody sees
-    operator contact. ?market= ?state= ?min_mw= ?limit= (default 50, max 200)."""
+    operator contact.
+
+    ?market=         market name, case-insensitive
+    ?state=          state code
+    ?min_mw=         capacity_mw at least this
+    ?delivery_type=  land | powered_shell | turnkey | colocation, matched
+                     exactly; any other value is 400 invalid_request with
+                     `allowed`
+    ?available_by=   YYYY-MM or YYYY-MM-DD: listings with at least one
+                     mw_schedule entry dated in or before that month (listings
+                     without a schedule do not match); a malformed value is
+                     400 invalid_request
+    ?limit=          default 50, max 200"""
     _ensure_schema()
     v = _viewer()
     market = (request.args.get("market") or "").strip()[:80]
     state = (request.args.get("state") or "").strip().upper()[:40]
     min_mw = _num(request.args.get("min_mw"))
+    delivery_type = (request.args.get("delivery_type") or "").strip()
+    if delivery_type and delivery_type not in _DELIVERY_TYPES:
+        return _err(400, "invalid_request", "invalid delivery_type",
+                    allowed=list(_DELIVERY_TYPES))
+    available_by = (request.args.get("available_by") or "").strip()
+    if available_by and _schedule_date(available_by) is None:
+        return _err(400, "invalid_request",
+                    "available_by must be a calendar date as YYYY-MM or YYYY-MM-DD")
     try:
         limit = max(1, min(int(request.args.get("limit", "50")), 200))
     except ValueError:
         limit = 50
     try:
         rows = _db_list_listings(market=market or None, state=state or None,
-                                 min_mw=min_mw, limit=limit)
-        live_count = (len(rows) if not (market or state or min_mw is not None)
+                                 min_mw=min_mw, delivery_type=delivery_type or None,
+                                 available_by=available_by or None, limit=limit)
+        live_count = (len(rows) if not (market or state or min_mw is not None
+                                        or delivery_type or available_by)
                       else _db_count_live())
     except Exception as exc:
         logger.warning("[pocket-listings] list failed: %s", exc)
@@ -1850,7 +2285,9 @@ def _safe_slug(s):
 @exclusive_listings_bp.route("/api/v1/admin/listings", methods=["GET", "POST"])
 def admin_listings():
     """GET: every listing including drafts and operator contact.
-    POST: create (status defaults to draft, tier_required to registered)."""
+    POST: create (status defaults to draft, tier_required to registered).
+    `detail` is validated by _validate_detail: 400 invalid_detail with an
+    `errors` list, and nothing written, when a reserved key breaks a rule."""
     if not _admin_ok():
         return _admin_denied()
     _ensure_schema()
@@ -1880,7 +2317,9 @@ def admin_listings():
     if tier_required not in _ACCESS_LEVELS:
         return _err(400, "invalid_request", "invalid tier_required",
                     allowed=list(_ACCESS_LEVELS))
-    detail = body.get("detail")
+    detail, detail_errors = _validate_detail(body.get("detail"))
+    if detail_errors:
+        return _invalid_detail(detail_errors)
     contact = body.get("contact")
     try:
         c = _conn()
@@ -1900,7 +2339,7 @@ def admin_listings():
                      body.get("market"), body.get("state"), body.get("country", "US"),
                      body.get("latitude"), body.get("longitude"), body.get("capacity_mw"),
                      body.get("asking_price"), body.get("asking_currency", "USD"),
-                     json.dumps(detail) if detail is not None and not isinstance(detail, str) else detail,
+                     json.dumps(detail) if detail is not None else None,
                      json.dumps(contact) if contact is not None and not isinstance(contact, str) else contact,
                      body.get("owner_id"), body.get("expires_at")))
                 got = cur.fetchone()
@@ -1919,9 +2358,10 @@ def admin_listings():
                              methods=["PUT", "PATCH", "DELETE"])
 def update_or_delete_listing(lid):
     """PUT/PATCH = partial update; promote with {"status": "pocket"} and open
-    with {"status": "public"}. DELETE removes the listing (ledger entries keep
-    their own slug/title snapshot). One route for all three keeps the
-    duplicate-route lint happy."""
+    with {"status": "public"}. A `detail` in the body replaces the stored one
+    and is validated like a create (400 invalid_detail, nothing written).
+    DELETE removes the listing (ledger entries keep their own slug/title
+    snapshot). One route for all three keeps the duplicate-route lint happy."""
     if not _admin_ok():
         return _admin_denied()
     _ensure_schema()
@@ -1945,6 +2385,11 @@ def update_or_delete_listing(lid):
     if "tier_required" in body and body["tier_required"] not in _ACCESS_LEVELS:
         return _err(400, "invalid_request", "invalid tier_required",
                     allowed=list(_ACCESS_LEVELS))
+    detail = None
+    if "detail" in body:
+        detail, detail_errors = _validate_detail(body["detail"])
+        if detail_errors:
+            return _invalid_detail(detail_errors)
     settable = ("title", "summary", "status", "tier_required", "market", "state",
                 "country", "latitude", "longitude", "capacity_mw", "asking_price",
                 "asking_currency", "owner_id", "expires_at")
@@ -1953,11 +2398,13 @@ def update_or_delete_listing(lid):
         if key in body:
             fields.append(f"{key} = %s")
             values.append(body[key])
-    for key in ("detail", "contact"):
-        if key in body:
-            fields.append(f"{key} = %s::jsonb")
-            val = body[key]
-            values.append(val if isinstance(val, str) or val is None else json.dumps(val))
+    if "detail" in body:
+        fields.append("detail = %s::jsonb")
+        values.append(json.dumps(detail) if detail is not None else None)
+    if "contact" in body:
+        fields.append("contact = %s::jsonb")
+        val = body["contact"]
+        values.append(val if isinstance(val, str) or val is None else json.dumps(val))
     if not fields:
         return _err(400, "invalid_request", "no fields to update")
     fields.append("updated_at = NOW()")

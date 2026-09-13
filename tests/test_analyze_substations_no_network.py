@@ -40,10 +40,12 @@ get_neon_connection over a stand-in for the psycopg2 connection, or over no
 database URL, through every caller of the lookup:
 
   U1  the lookup returns [] after a query that found no rows, and None after a
-      query error or no connection, at the default 25 mi and the site report's 50 mi
+      query error or no connection, at the default 25 mi and the site report's 50 mi,
+      and opens no network connection
   U2  rows the query returns come back as it returned them, under the caller's limit
   U3  analyze serves [] and a null queue either way, with substations_coverage
-      'validated' after no rows, and 'unavailable' with the reason otherwise
+      'validated' after no rows, and 'unavailable' with the reason otherwise, and
+      opens no network connection
   U4  compare marks each site the same way, and its recommendation says a lookup
       did not run only when one did not
   U5  when the lookup did not run, the composite score declares power_grid
@@ -55,7 +57,7 @@ database URL, through every caller of the lookup:
   U7  compare with one site measured and one not names only the second
   U8  the site report prints "No mapped substation within 50 mi" only after a
       query that ran, and otherwise says the lookup did not run, a raising lookup
-      included
+      included, and opens no network connection
   U9  a composite score whose power_grid gather raised declares it unavailable
       with a caveat, and is not memoised either
   UC1 control: each empty table reaches execute_query's own failure path, and logs
@@ -63,6 +65,9 @@ database URL, through every caller of the lookup:
   UC2 control: the stand-in connection offers nothing psycopg2's lacks
   UC3 control: the error recorder still hears site_planner after a module switched
       logging off, and puts the switch back
+  UC4 control: an attempt swallowed inside the real lookup's call path, through
+      http.client (what urllib.request connects with), requests or a raw socket,
+      lands in the record U1, U3 and U8 read, while the lookup still returns []
 
 ★ 2026-09-13 — the transmission lookup, measured or not. find_nearest_transmission
 returned None both when no line is anchored near the site and when any of its three
@@ -99,10 +104,13 @@ one it is, through every caller:
   TC2 control: a statement the script has no answer for fails, so an unexpected
       statement cannot pass as a miss
 
-On this base an empty or None result still falls through to the lookup's Overpass
-fallback. The recorder refuses that connection and the fallback swallows the
-refusal, so the U tests read what the lookup and its callers return, not the
-record of attempts.
+★ 2026-09-13 — no live fallback. An empty or None result used to fall through to
+the lookup's Overpass fallback, a urllib POST to overpass.kumi.systems that served
+OpenStreetMap rows. It was removed rather than repointed; the end of
+find_nearest_substations says why. The fallback swallowed every failure and
+returned what the lookup returns now, so U1, U3 and U8 read the RECORD of
+connection attempts, and UC4 proves that record hears an attempt the lookup
+swallows.
 """
 import contextlib
 import logging
@@ -521,7 +529,7 @@ def composite(monkeypatch):
 def test_u1_the_lookup_returns_none_only_when_its_query_did_not_run(monkeypatch, sp, case, miles):
     set_up, returned, _logged = EMPTY[case]
     set_up(monkeypatch, sp)
-    _record_connections(monkeypatch)
+    attempts = _record_connections(monkeypatch)
 
     found = sp.find_nearest_substations(*LATLNG, limit=5, max_distance_miles=miles)
 
@@ -530,6 +538,7 @@ def test_u1_the_lookup_returns_none_only_when_its_query_did_not_run(monkeypatch,
         f"{case} at {miles} mi: expected {returned!r} "
         f"({'the query did not run' if returned is None else 'the query ran and found none'}), "
         f"got {found!r}")
+    assert not attempts, f"find_nearest_substations opened a network connection: {attempts}"
 
 
 def test_u2_rows_from_the_table_come_back_as_the_query_returned_them(monkeypatch, sp):
@@ -551,11 +560,12 @@ def test_u3_analyze_says_whether_its_substations_were_measured(analyze, monkeypa
     set_up(monkeypatch, sp)
     opened = _count_opened(monkeypatch, sp)
 
-    _attempts, status, body = analyze(None)
+    attempts, status, body = analyze(None)
 
     # With no substations, the lookup is the only phase here that reaches the
     # connection, so exactly one call means the real lookup ran.
     assert opened == [True], "analyze did not run the real lookup"
+    assert not attempts, f"analyze opened a network connection: {attempts}"
     assert status == 200 and body["success"] is True, body
     analysis = body["analysis"]
     assert analysis["substations"] == [] and analysis["queue"] is None
@@ -676,11 +686,12 @@ def test_u8_the_site_report_prints_no_mapped_substation_only_after_a_query_that_
         set_up(monkeypatch, sp)
         measured = returned is not None
     opened = _count_opened(monkeypatch, sp)
-    _record_connections(monkeypatch)
+    attempts = _record_connections(monkeypatch)
 
     power = site_report._gather_power(*LATLNG, "VA")
 
     assert opened == ([] if case == "raises" else [True]), "the report did not run the lookup"
+    assert not attempts, f"the site report's power section opened a network connection: {attempts}"
     assert power["substation"] == "—" and power["_dist"] is None and power["_score"] is None
     if measured:
         assert power["substation_coverage"] == "validated"
@@ -768,6 +779,35 @@ def test_uc2_control_the_stand_in_offers_nothing_psycopg2_lacks():
     assert connection_api == {"cursor", "close"}
     assert all(hasattr(psycopg2.extensions.cursor, n) for n in cursor_api), cursor_api
     assert all(hasattr(psycopg2.extensions.connection, n) for n in connection_api), connection_api
+
+
+def _http_client_and_swallow():
+    """The removed fallback's stack: urllib.request connects through http.client."""
+    try:
+        import http.client
+
+        conn = http.client.HTTPSConnection("overpass.example.invalid", timeout=3)
+        conn.request("POST", "/api/interpreter", body=b"data=",
+                     headers={"User-Agent": "DCHub/1.0"})
+    except Exception:
+        pass
+
+
+@pytest.mark.parametrize("attempt",
+                         [_http_client_and_swallow, _fetch_and_swallow, _connect_and_swallow],
+                         ids=["http.client", "requests-get", "raw-socket"])
+def test_uc4_control_a_swallowed_attempt_in_the_real_lookup_is_recorded(monkeypatch, sp, attempt):
+    """Anti-vacuity for U1, U3 and U8's record: an attempt made and swallowed while
+    the real lookup runs is recorded, and the lookup's return value could not show it."""
+    def connect():
+        attempt()
+        return _Connection()
+
+    monkeypatch.setattr(sp, "get_neon_connection", connect)
+    attempts = _record_connections(monkeypatch)
+
+    assert sp.find_nearest_substations(*LATLNG) == []
+    assert attempts, "nothing was recorded, so U1 could not catch a fallback coming back"
 
 
 # ── Measured, or not measured: the transmission lookup ──────────────────────

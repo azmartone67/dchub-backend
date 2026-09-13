@@ -67,6 +67,7 @@ from routes.handoff_definition import (  # noqa: E402
     human_acted_count_sql,
     human_acted_definition,
     human_acted_sentence,
+    human_acted_v5_count_sql,
 )
 
 REPO = os.path.join(os.path.dirname(__file__), "..")
@@ -292,20 +293,34 @@ def test_shell_and_funnel_count_the_same_sessions(iv):
     """Two writers are tolerable only while a test proves they agree. The
     adoption shell used to count the v2 instrument under the canonical name;
     this is what stops that from coming back through a well-meaning edit to
-    either side."""
-    assert human_acted_count_sql(iv) == _shipped_funnel_sql(iv)
-    assert (human_acted_count_sql(iv, include_self_traffic=True)
+    either side.
+
+    ★ Since v8 the endpoint's INLINE assembly is the relay lane only
+    (human_acted_v5_before_relayed_checkout); the headline calls
+    human_acted_count_sql, whose lanes are pinned in
+    tests/test_human_acted_v8_counts_the_relayed_checkout.py."""
+    assert human_acted_v5_count_sql(iv) == _shipped_funnel_sql(iv)
+    assert (human_acted_v5_count_sql(iv, include_self_traffic=True)
             == _shipped_funnel_sql(iv, include_self_traffic=True))
 
 
 def test_the_v4_exclusion_is_the_only_difference():
     """The v3 diagnostic must stay published beside v4 — a silent subtraction
     is the original defect in a new coat — and it must differ ONLY by the
-    self-traffic predicate."""
+    self-traffic predicate. Since v8 the headline applies it once per lane, on
+    each lane's own identity column."""
     from mcp_calls_deloop import external_session_predicate
-    v4 = human_acted_count_sql("30 days")
-    v3 = human_acted_count_sql("30 days", include_self_traffic=True)
-    assert v4 == v3 + " and " + external_session_predicate("s.mcp_session_id")
+    ext_s = external_session_predicate("s.mcp_session_id")
+    ext_cc = external_session_predicate("cc.ref")
+    v4 = human_acted_v5_count_sql("30 days")
+    v3 = human_acted_v5_count_sql("30 days", include_self_traffic=True)
+    assert v4 == v3 + " and " + ext_s
+    excl = human_acted_count_sql("30 days")
+    incl = human_acted_count_sql("30 days", include_self_traffic=True)
+    assert excl.count(ext_s) == 1 and excl.count(ext_cc) == 1, excl
+    assert ext_s not in incl and ext_cc not in incl, incl
+    assert excl.replace(" and " + ext_s, "", 1).replace(
+        " and " + ext_cc, "", 1) == incl
 
 
 def test_the_count_sql_carries_no_literal_percent():

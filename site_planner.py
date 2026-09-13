@@ -219,15 +219,15 @@ def execute_query(query, params=None, fetchone=False):
 
 def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
     """
-    Find nearest substations using PostGIS spatial queries.
-    Falls back to Haversine if PostGIS not available.
-    
-    Uses the substations table in Neon (populated from HIFLD).
+    Find the nearest substations in the substations table, nearest first.
+    PostGIS is not installed in Neon, so this is a Haversine query behind a
+    bounding-box pre-filter. The table is the only source: there is no live
+    fallback.
 
     Returns the rows nearest first; [] when the query ran and found no substation
     in the box; None when it did not run (execute_query logged a query error or a
-    missing connection) and nothing else answered. None is not "no substation
-    nearby": nothing near the site was looked at. See the end.
+    missing connection). None is not "no substation nearby": nothing near the site
+    was looked at. See the end.
     """
     # Skip PostGIS (not installed in Neon) — go straight to Haversine
 
@@ -271,65 +271,26 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
     if result:
         return result
 
-    logger.warning("Local substations query returned empty — trying internal API fallback")
-    
-    # Internal API fallback: call our own /api/v2/infrastructure/hifld/substations
-    # This queries the same Neon DB but also has its own fallback logic
-    # If that also fails, try Overpass with a minimal count-only query
-    try:
-        import urllib.request, urllib.parse, json as _json, math as _math
-        # Use Overpass count query first (fast, <1s)
-        deg = max_distance_miles / 69.0
-        deg_lng_adj = max_distance_miles / (69.0 * max(0.1, abs(_math.cos(_math.radians(lat)))))
-        south, north = lat - deg, lat + deg
-        west, east = lng - deg_lng_adj, lng + deg_lng_adj
-        
-        # Fast node-only query with minimal output
-        query = f'[out:json][timeout:3];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out tags center qt 10;'
-        post_data = ('data=' + urllib.parse.quote(query)).encode()
-        try:
-            req = urllib.request.Request('https://overpass.kumi.systems/api/interpreter', data=post_data, headers={
-                'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'DCHub/1.0'
-            })
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                osm_data = _json.loads(resp.read().decode())
-            elements = osm_data.get('elements', [])
-            if elements:
-                results = []
-                for el in elements:
-                    tags = el.get('tags', {})
-                    s_lat = el.get('lat') or (el.get('center', {}) or {}).get('lat')
-                    s_lng = el.get('lon') or (el.get('center', {}) or {}).get('lon')
-                    if not s_lat or not s_lng:
-                        continue
-                    voltage_str = tags.get('voltage', '0')
-                    try:
-                        v = float(voltage_str.split(';')[0])
-                        voltage_kv = v / 1000 if v > 999 else v
-                    except (ValueError, IndexError):
-                        voltage_kv = 0
-                    dist = 3959 * _math.acos(min(1.0, max(-1.0,
-                        _math.cos(_math.radians(lat)) * _math.cos(_math.radians(s_lat)) *
-                        _math.cos(_math.radians(s_lng) - _math.radians(lng)) +
-                        _math.sin(_math.radians(lat)) * _math.sin(_math.radians(s_lat))
-                    )))
-                    results.append({
-                        'name': tags.get('name', 'Substation'),
-                        'state': tags.get('addr:state', ''),
-                        'voltage_kv': voltage_kv,
-                        'operator': tags.get('operator', 'Unknown'),
-                        'lat': s_lat, 'lng': s_lng,
-                        'distance_miles': round(dist, 2),
-                        'source': 'OpenStreetMap'
-                    })
-                results.sort(key=lambda x: x['distance_miles'])
-                if results:
-                    logger.info(f"Overpass fallback: found {len(results)} substations near {lat},{lng}")
-                    return results[:limit]
-        except Exception as e:
-            logger.warning(f"Overpass substation fallback failed: {e}")
-    except Exception as e:
-        logger.warning(f"Substation fallback setup failed: {e}")
+    # ★ 2026-09-13 — no live fallback. When this query found no rows or did not run,
+    # the lookup used to POST the same box to overpass.kumi.systems (urllib,
+    # timeout=3) and serve OpenStreetMap rows tagged source 'OpenStreetMap'. It was
+    # removed, not repointed:
+    #  - It cost its whole timeout and returned nothing. The host accepted
+    #    connections and answered none of 12 requests from a Mac within 3 s or 20 s;
+    #    from Railway, 3 of 4 timed out at 30 s and the fourth took ~3 s to report
+    #    an empty box.
+    #  - overpass-api.de is no steadier from Railway (a 504 after ~12 s, 200s after
+    #    1.3-4.4 s), and the backend's OSM loaders log 504s, 429s and 30 s read
+    #    timeouts against it from the same egress. A request path would compete
+    #    with them for the same per-IP slots.
+    #  - An answer would not be the nearest. `out tags center qt 10` returns the
+    #    first ten elements in quadtile order: around Ashburn, VA the box holds 380
+    #    OpenStreetMap substations, the nearest 0.78 mi away, and the nearest of
+    #    the ten returned was 16.1 mi.
+    #  - Its rows scored missing tags as readings. No voltage tag became
+    #    voltage_kv 0, the lowest voltage tier and a shallower queue estimate; no
+    #    name became 'Substation', which the name dedupe in analyze and compare
+    #    collapses to one row.
 
     # [] and None are different answers, and every caller has to keep them apart.
     # [] is a measurement: the query ran and the table holds no substation within
