@@ -62,7 +62,8 @@ _BRAIN_CAP_INSERT_SQL = f"""INSERT INTO capacity_pipeline
                    %s::text AS market, %s::text AS status,
                    %s::text AS source_url, %s::text AS source,
                    CURRENT_TIMESTAMP::text AS created_at) s
-    ON CONFLICT DO NOTHING"""
+    ON CONFLICT DO NOTHING
+    RETURNING 1"""
 
 
 class AutonomousBrain:
@@ -323,7 +324,11 @@ class AutonomousBrain:
                                         cur.execute(_BRAIN_CAP_INSERT_SQL, (
                                             operator, value, location, 'announced',
                                             article['source_url'], 'auto_extracted'))
-                                        results['new_pipeline'] += 1
+                                        # RETURNING hands a row back only for an
+                                        # insert; a conflict on any unique key is
+                                        # not one, so it is not counted.
+                                        if cur.fetchone():
+                                            results['new_pipeline'] += 1
 
                             except (ValueError, TypeError):
                                 continue
@@ -406,9 +411,14 @@ class AutonomousBrain:
                                  source_url, notes, created_at)
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                                 ON CONFLICT DO NOTHING
+                                RETURNING 1
                             """, (str(uuid.uuid4())[:8], buyer, target, deal_value, 'acquisition', 'announced',
                                   article['source_url'], article['title'][:300]))
-                            results['deals_found'] += 1
+                            # Counted only when RETURNING hands a row back: the
+                            # SELECT above checks source_url, but the INSERT can
+                            # still conflict on id or another unique key.
+                            if cur.fetchone():
+                                results['deals_found'] += 1
 
                 conn.commit()
                 cur.close()
@@ -1196,31 +1206,38 @@ class AutonomousBrain:
         """Phase ZZZZZ-round6c: instrument each domain extractor's output
         into the extraction_intelligence table so the brain dashboard
         actually has more than 1 active source."""
-        # Map: domain key in results → source_id + canonical rows-count getter.
+        # Map: domain key in results → source_id + the step's tally key.
         #
-        # rows_key MUST be the real committed-insert count, NOT a per-cycle
-        # regex sub-bucket counter (those re-zero every cycle and increment on
-        # every pattern match regardless of whether a row was actually written,
-        # so the dashboard showed inflated noise — or, post INSERT-fix, 0 — for
-        # the gas/transmission/fiber domains). Use 'added' (the dedup-guarded
-        # rowcount>0 tally) for those three. capacity('new_pipeline') and
-        # deals('deals_found') are already only incremented inside their
-        # committed-INSERT branches, so they are the real counts.
+        # rows_inserted MUST be a committed-insert count, NOT a per-cycle regex
+        # sub-bucket counter (those re-zero every cycle and increment on every
+        # pattern match regardless of whether a row was actually written).
+        # capacity('new_pipeline'), deals('deals_found') and gas/transmission
+        # ('added') count the rows their INSERT ... RETURNING handed back.
         #
-        # substation_infrastructure + power_plants are intentionally DROPPED:
-        # their extractors have NO INSERT (they only re-scan articles each
-        # cycle), so their counters are pure per-cycle inflation and they can
-        # never write a row. That data is sourced from HIFLD/EIA elsewhere, not
-        # article-extracted, so they don't belong in the extraction dashboard.
+        # Each of those counts is taken BEFORE the commit that makes it true,
+        # and a failed statement rolls the connection back. So when a step
+        # recorded an 'error', had INSERTs rejected ('insert_errors'), or never
+        # returned a result (it raised), rows_inserted is NULL: not measured,
+        # rather than a number that may include rolled-back rows.
+        #
+        # quality('fixed') counts UPDATEd rows and inserts none: rows_inserted
+        # is NULL and the update count goes to observations.rows_updated.
+        #
+        # Intentionally DROPPED, because none of them has an INSERT:
+        # substation_infrastructure + power_plants (they only re-scan articles;
+        # that data comes from HIFLD/EIA elsewhere), infrastructure
+        # ('fiber_mentions' is a regex match counter) and fiber_infrastructure
+        # (its fiber_routes write was removed by GUARD #2, 2026-06-11, so
+        # 'added' never moves). routes/extractor_brain.py _RETIRED_SOURCES
+        # lists their source ids so the stale check does not call them failing.
         domains = [
             ('capacity',                   'autonomous-brain-capacity',     'new_pipeline'),
             ('deals',                      'autonomous-brain-deals',        'deals_found'),
             ('quality',                    'autonomous-brain-quality',      'fixed'),
-            ('infrastructure',             'autonomous-brain-infra-news',   'fiber_mentions'),
             ('gas_infrastructure',         'autonomous-brain-gas',          'added'),
             ('transmission_infrastructure','autonomous-brain-transmission', 'added'),
-            ('fiber_infrastructure',       'autonomous-brain-fiber',        'added'),
         ]
+        updates_not_inserts = {'quality'}
         try:
             import os, psycopg2
             db = os.environ.get('DATABASE_URL')
@@ -1277,22 +1294,34 @@ class AutonomousBrain:
                     written = 0
                     for key, source_id, rows_key in domains:
                         dr = results.get(key) or {}
-                        rows = int(dr.get(rows_key) or 0)
-                        # Outcome honesty: 'success' ONLY when a row was actually
-                        # written this cycle. A non-empty result dict with 0 rows
-                        # is a no-op (nothing new in the article feed), not a
-                        # success — report it as 'idle' so the dashboard stops
-                        # showing healthy 100% for extractors that wrote nothing.
-                        # If the extractor surfaced an exception (it stores the
-                        # message under an 'error' key), record it in the error
-                        # column and mark the run as failed.
+                        tally = dr.get(rows_key)
                         err = dr.get('error')
-                        if err:
+                        rejected = int(dr.get('insert_errors') or 0)
+                        observations = {"cycle": results.get('cycle_id')}
+                        rows = None
+                        # Outcome honesty: 'success' ONLY when a row was actually
+                        # written this cycle; a step that ran clean and wrote
+                        # nothing is 'idle'. A step that surfaced an exception
+                        # (the message under 'error') is 'error', and so is one
+                        # whose result never arrived: run_autonomous_cycle logs
+                        # a raised step and leaves its {} in results. Rejected
+                        # INSERTs make the run 'failure' when nothing was
+                        # counted and 'partial' when something was.
+                        if tally is None:
                             outcome = 'error'
-                        elif rows > 0:
-                            outcome = 'success'
+                            err = err or 'step returned no result'
+                        elif err:
+                            outcome = 'error'
+                        elif rejected:
+                            outcome = 'partial' if int(tally) > 0 else 'failure'
+                            err = f"insert_errors={rejected}"
+                            observations['insert_errors'] = rejected
                         else:
-                            outcome = 'idle'
+                            outcome = 'success' if int(tally) > 0 else 'idle'
+                            if key in updates_not_inserts:
+                                observations['rows_updated'] = int(tally)
+                            else:
+                                rows = int(tally)
                         # SAVEPOINT-per-row: a single bad row (e.g. a future
                         # constraint mismatch) must NOT abort the whole batch and
                         # silently kill every feed again — the exact failure mode
@@ -1305,7 +1334,7 @@ class AutonomousBrain:
                                 VALUES (%s, %s, %s, %s, %s, %s)
                             """, (source_id, outcome, rows, per_domain_ms,
                                   (str(err)[:2000] if err else None),
-                                  __import__('json').dumps({"cycle": results.get('cycle_id')})))
+                                  __import__('json').dumps(observations)))
                             cur.execute("RELEASE SAVEPOINT ei_row")
                             written += 1
                         except Exception as _row_e:
