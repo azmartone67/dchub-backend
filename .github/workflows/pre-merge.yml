@@ -435,9 +435,12 @@ jobs:
   # this job reports green when the service container never comes up — the
   # green-but-blind shape this repo keeps rediscovering.
   #
-  # Not a required check: it is a new job with a service container, so let it
-  # prove itself on a few PRs before anything gates on it. Nothing here can
-  # touch prod — the DSN is the throwaway container, and bootstrap is flagged.
+  # ★ A REQUIRED check on main. It began advisory, a new job with a service
+  # container left to prove itself on a few PRs; branch protection has since
+  # made it required, so a red lane here blocks the merge. To re-check:
+  #   gh api repos/azmartone67/dchub-backend/branches/main/protection/required_status_checks --jq .contexts
+  # Nothing here can touch prod — the DSN is the throwaway container, and
+  # bootstrap is flagged.
   db-parity:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -781,17 +784,43 @@ jobs:
           DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          # out.txt, cc.txt, pt.txt, tg.txt, lp.txt, pk.txt, hp.txt, tu.txt, ss.txt, si.txt and
-          # ou.txt are written by the ELEVEN prove-it-RAN steps above, each of which
-          # already fails the job on a
-          # skip. N sums the SAME files those checks read, so the count and the
-          # skip checks cannot disagree — a lane that ran but is not counted here
-          # reports fewer tests than the job actually proved.
-          # Same empty-vs-zero rule as unit-tests: present-but-unparseable => 0.
-          # 2026-09-12: pt.txt and tg.txt ran but were never summed — the comment
-          # above states the invariant this line now actually keeps.
-          if [ -f out.txt ] || [ -f cc.txt ] || [ -f pt.txt ] || [ -f tg.txt ] || [ -f lp.txt ] || [ -f pk.txt ] || [ -f hp.txt ] || [ -f tu.txt ] || [ -f ss.txt ] || [ -f si.txt ] || [ -f ou.txt ]; then
-            N=$(cat out.txt cc.txt pt.txt tg.txt lp.txt pk.txt hp.txt tu.txt ss.txt si.txt ou.txt 2>/dev/null \
+          # Each "Prove ... actually RAN" step above writes one proof file and
+          # already fails the job on a skip. N sums the SAME files those checks
+          # read, so the count and the skip checks cannot disagree. A lane that
+          # ran but is missing from PROOFS reports fewer tests than the job
+          # proved, and when only missing lanes wrote a proof the beat sends
+          # empty, which the board reads as unknown.
+          # ★ ONE list, read by the presence test AND the sum, so those two
+          # cannot drift apart. A new lane adds its file here:
+          # scripts/gate_beat_selftest.py (run by unit-tests) reads every proof
+          # file this job's steps write, and fails, naming the file, when this
+          # beat does not count it exactly.
+          # Same empty-vs-zero rule as unit-tests: no proof file at all => empty;
+          # present but unparseable => 0.
+          # History: the list was hand-copied and fell behind twice. 2026-09-12:
+          # pt.txt and tg.txt ran but were never summed. er.txt (#4515) and
+          # tx.txt (#4520) landed after that fix and were not summed either.
+          PROOFS=(
+            out.txt
+            cc.txt
+            pt.txt
+            tg.txt
+            lp.txt
+            pk.txt
+            hp.txt
+            er.txt
+            tx.txt
+            tu.txt
+            ss.txt
+            si.txt
+            ou.txt
+          )
+          PRESENT=()
+          for f in "${PROOFS[@]}"; do
+            if [ -f "$f" ]; then PRESENT+=("$f"); fi
+          done
+          if [ "${#PRESENT[@]}" -gt 0 ]; then
+            N=$(cat "${PRESENT[@]}" \
                 | grep -oE '[0-9]+ (passed|failed)' \
                 | awk '{t+=$1} END{if(NR)print t; else print 0}')
           else
