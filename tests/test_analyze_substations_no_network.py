@@ -56,6 +56,8 @@ database URL, through every caller of the lookup:
   U8  the site report prints "No mapped substation within 50 mi" only after a
       query that ran, and otherwise says the lookup did not run, a raising lookup
       included
+  U9  a composite score whose power_grid gather raised declares it unavailable
+      with a caveat, and is not memoised either
   UC1 control: each empty table reaches execute_query's own failure path, and logs
       what that path logs, the way its id says
   UC2 control: the stand-in connection offers nothing psycopg2's lacks
@@ -538,6 +540,9 @@ def test_u5_the_composite_score_declares_power_grid_unavailable_when_the_lookup_
         assert not any(c.startswith("power_grid:") for c in caveats), caveats
         assert "no-store" not in headers.get("Cache-Control", ""), dict(headers)
         assert len(stored) == 1, "control: the memo stores an answer whose lookups ran"
+    # A miss is marked whether or not the memo kept the answer: the view returns
+    # (resp, 200), and the header goes on the Response that tuple carries.
+    assert headers.get("X-Tool-Cache") == "MISS", dict(headers)
 
 
 def test_u6_the_composite_score_scores_the_substations_a_lookup_found(composite, monkeypatch, sp):
@@ -611,6 +616,28 @@ def test_u8_the_site_report_prints_no_mapped_substation_only_after_a_query_that_
         assert power["substation_note"].startswith("Not measured"), power["substation_note"]
         assert "No mapped substation" not in power["substation_note"], power["substation_note"]
         assert "substation lookup did not run" in power["assessment"], power["assessment"]
+
+
+def test_u9_the_composite_score_does_not_memoise_a_power_grid_gather_that_raised(
+        composite, monkeypatch, sp):
+    def lookup(lat, lng, limit=5, max_distance_miles=25):
+        return [dict(ASHBURN)]
+
+    def transmission(*args, **kwargs):
+        raise RuntimeError("the transmission lookup raised")
+
+    monkeypatch.setattr(sp, "find_nearest_substations", lookup)
+    monkeypatch.setattr(sp, "find_nearest_transmission", transmission)
+
+    status, body, headers, stored = composite()
+
+    assert status == 200 and body["success"] is True, body
+    power_grid = body["sub_scores"]["power_grid"]
+    assert power_grid == {"score": None, "coverage": "unavailable",
+                          "basis": "gather failed: RuntimeError"}, power_grid
+    assert "power_grid: gather failed: RuntimeError." in body["caveats"], body["caveats"]
+    assert "no-store" in headers.get("Cache-Control", ""), dict(headers)
+    assert stored == {}, "the memo kept an answer whose power_grid gather raised"
 
 
 @pytest.mark.parametrize("case", list(EMPTY), ids=list(EMPTY))
