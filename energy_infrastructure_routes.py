@@ -19,6 +19,8 @@ import requests
 from flask import request, jsonify
 from functools import wraps
 from api_data_protection import protect_data
+import copy
+import re
 import time
 import logging
 from math import cos, radians, sin, sqrt, atan2, inf
@@ -482,6 +484,56 @@ def calculate_infrastructure_score(lat, lng, substations, pipelines, transmissio
 # FLASK ROUTES
 # =============================================================================
 
+# Substation detail on /api/v1/energy/site-analysis follows the caller, matching
+# the HIFLD substations feeder (expanded_infrastructure_api.get_substations).
+# Callers that are not privileged get coordinates rounded to 0.1 degree (~11 km),
+# no OWNER or ZIP, and the distance to the nearest substation as a band instead
+# of a figure, in the score details and in the recommendation text. Scores are
+# computed from the full data first, so every caller gets the same scores.
+_SUBSTATION_DISTANCE_TEXT = re.compile(r'Substation (within )?(\d+(?:\.\d+)?)km')
+
+
+def _substation_distance_band(match):
+    km = float(match.group(2))
+    if km < 5:
+        return 'Substation within 5km'
+    if km < 10:
+        return 'Substation within 10km'
+    if km < 20:
+        return 'Substation 10-20km'
+    return 'Substation 20km+'
+
+
+def _coarsen_site_analysis(data):
+    """Reduce a site-analysis payload to public precision, IN PLACE.
+
+    Pass a dict nothing else holds: the fresh result is cached as a copy, and a
+    cached payload is copied before it gets here."""
+    for sub in (data.get('infrastructure') or {}).get('substations') or []:
+        geom = sub.get('geometry') or {}
+        for axis in ('x', 'y'):
+            if geom.get(axis) is not None:
+                geom[axis] = round(geom[axis], 1)
+        attrs = sub.get('attributes') or {}
+        attrs['OWNER'] = None
+        attrs['ZIP'] = None
+    scores = data.get('scores') or {}
+    details = scores.get('details') or {}
+    if 'nearestSubstationKm' in details:
+        details['nearestSubstationKm'] = None
+    if isinstance(scores.get('recommendations'), list):
+        scores['recommendations'] = [
+            _SUBSTATION_DISTANCE_TEXT.sub(_substation_distance_band, r) if isinstance(r, str) else r
+            for r in scores['recommendations']
+        ]
+    data['_gated'] = True
+    data['_upgrade_cta'] = (
+        "Free preview: substation locations are approximate (~11 km). Exact "
+        "coordinates, owner and distance require a free key or sign-in — "
+        "dchub.cloud/pricing")
+    return data
+
+
 def setup_energy_routes(app):
     """Register energy infrastructure routes with Flask app"""
     
@@ -504,8 +556,18 @@ def setup_energy_routes(app):
         
         # Check cache
         cache_key = f"site-analysis:{lat:.4f}:{lng:.4f}:{radius}"
+
+        # Precision follows the caller (see _coarsen_site_analysis). Fails closed.
+        try:
+            from routes.tier_gate import caller_is_privileged
+            _full = caller_is_privileged('IDENTIFIED')
+        except Exception:
+            _full = False
+
         cached = get_cached(cache_key)
         if cached:
+            if not _full:
+                cached = _coarsen_site_analysis(copy.deepcopy(cached))
             return jsonify({'success': True, 'data': cached, 'cached': True})
         
         # Calculate bounds
@@ -736,7 +798,9 @@ def setup_energy_routes(app):
             }
         }
         
-        set_cache(cache_key, result)
+        set_cache(cache_key, copy.deepcopy(result))
+        if not _full:
+            _coarsen_site_analysis(result)
         return jsonify({'success': True, 'data': result})
     
     @app.route('/api/v1/energy/pipelines', methods=['GET'])
