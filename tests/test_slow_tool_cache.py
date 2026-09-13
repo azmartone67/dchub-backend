@@ -162,6 +162,44 @@ def test_successful_response_is_stored_and_then_served(stc, app):
     assert json.loads(r2.get_data(as_text=True)) == {"score": 77}
 
 
+@pytest.mark.parametrize("shape, marked", [
+    ("response", True),
+    ("response-status", True),
+    ("status-headers", True),
+    ("response-status", False),
+], ids=["response", "response-status", "status-headers", "control-unmarked"])
+def test_a_response_marked_no_store_is_served_and_never_stored(stc, app, shape, marked):
+    """A 200 that declares one of its lookups did not run (the composite score's
+    power_grid) marks itself `Cache-Control: no-store`. Stored, it would keep
+    saying the lookup did not run for the whole TTL after it recovered. The
+    control is the same body unmarked, so this isolates the no-store guard from
+    the success/error guards above."""
+    fake = _FakeRedis()
+    _install(fake)
+    calls = {"n": 0}
+    body = {"success": True, "score": None, "coverage": "unavailable"}
+
+    @stc.cache_tool_response(ttl=60, prefix="t", arg_names=("lat",))
+    def view():
+        calls["n"] += 1
+        if shape == "status-headers":
+            return flask.jsonify(body), 200, {"Cache-Control": "no-store"}
+        resp = flask.jsonify(body)
+        if marked:
+            resp.headers["Cache-Control"] = "no-store"
+        return resp if shape == "response" else (resp, 200)
+
+    for _ in range(2):
+        with app.test_request_context("/x?lat=1.0"):
+            view()
+
+    if marked:
+        assert fake.sets == 0 and fake.store == {}, "a no-store 200 was stored"
+        assert calls["n"] == 2, "a no-store 200 must be answered live every time"
+    else:
+        assert fake.sets == 1 and calls["n"] == 1, "control: the unmarked body is stored"
+
+
 def test_different_inputs_do_not_share_an_entry(stc, app):
     fake = _FakeRedis()
     _install(fake)

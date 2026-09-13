@@ -318,12 +318,19 @@ def _gather_power(lat, lon, state):
         iso = {}
     iso_name = iso.get("name") or "—"
 
+    # The lookup returns None when its query did not run; raising means the same.
+    # Either way nothing near the site was looked at, which is not "no mapped
+    # substation within 50 mi" and must not be printed as that.
     subs = []
+    measured = False
     try:
-        subs = find_nearest_substations(lat, lon, limit=3, max_distance_miles=50) or []
+        found = find_nearest_substations(lat, lon, limit=3, max_distance_miles=50)
+        measured = found is not None
+        subs = found or []
     except Exception:
         subs = []
     sub = subs[0] if subs else None
+    out["substation_coverage"] = "validated" if measured else "unavailable"
     real_name = False
 
     if sub:
@@ -348,7 +355,10 @@ def _gather_power(lat, lon, state):
         out["_volt"] = sub.get("voltage_kv") or 0
     else:
         out["substation"] = "—"
-        out["substation_note"] = "No mapped substation within 50 mi in DC Hub's grid layer."
+        out["substation_note"] = (
+            "No mapped substation within 50 mi in DC Hub's grid layer." if measured else
+            "Not measured: DC Hub's grid layer could not be queried for this report, so "
+            "whether a substation stands within 50 mi is unknown.")
         out["voltage"] = "—"
         out["operator"] = "—"
         out["substation_source"] = "DC Hub grid layer · HIFLD/Neon"
@@ -399,6 +409,9 @@ def _gather_power(lat, lon, state):
         parts.append(f"The nearest mapped substation, {out['substation']}{vtxt}, is "
                      f"{_fmt_mi(out['_dist']) or '—'} from the site"
                      + (f" — operated by {out['operator']}" if out['operator'] != '—' else "") + ".")
+    elif not measured:
+        parts.append("The substation lookup did not run for this report, so the distance to the "
+                     "nearest substation is unmeasured, not absent.")
     if iso_name != "—":
         parts.append(f"The site sits in the {iso_name} territory.")
     parts.append("DC Hub does not publish per-substation transfer headroom, so a load study with "
