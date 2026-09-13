@@ -249,6 +249,122 @@ def test_does_not_backfill_retroactively():
     assert "NOT retroactive" in header
 
 
+# ── ★ 2026-09-13: one issue per PROBLEM ─────────────────────────────────────
+# Filing once per PR turned 71 problems into 171 issues, and nothing closed any
+# of them. These tests RUN the tracker's shell with `gh` and `python3` stubbed on
+# PATH, so they check what the step does rather than which strings it holds.
+
+_STUB_GH = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$STUB_LOG"
+case "$1 $2" in
+  "issue list")    printf '%s' "${FAKE_EXISTING:-}" ;;
+  "label create")  exit 1 ;;
+  "issue comment") exit "${FAKE_COMMENT_RC:-0}" ;;
+  "issue create")  exit "${FAKE_CREATE_RC:-0}" ;;
+esac
+"""
+
+_STUB_PYTHON = """#!/usr/bin/env bash
+printf 'python3 %s\\n' "$*" >> "$STUB_LOG"
+printf '%s' "${FAKE_CLASS_ISSUE:-}"
+exit "${FAKE_CLASS_RC:-0}"
+"""
+
+_PR_TITLE = ("[brain-spec] inv #100625: facility_duplicates_unmarked (observed at: "
+             "/api/v1/admin/facility-dedu")
+
+
+def _run_tracker(workdir, **fake):
+    """Run the tracker step's real shell in `workdir`; return (process, calls)."""
+    bindir = os.path.join(workdir, "bin")
+    os.makedirs(bindir)
+    for name, text in (("gh", _STUB_GH), ("python3", _STUB_PYTHON)):
+        path = os.path.join(bindir, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.chmod(path, 0o755)
+    log = os.path.join(workdir, "calls.log")
+    open(log, "w", encoding="utf-8").close()
+    env = {"PATH": bindir + ":/usr/bin:/bin", "STUB_LOG": log,
+           "PR_NUMBER": "4242", "PR_TITLE": _PR_TITLE, "PR_BODY": REAL_BODY,
+           "PR_URL": "https://github.com/o/r/pull/4242", "GATE_DISABLE": "",
+           "GITHUB_REPOSITORY": "o/r"}
+    env.update({k: str(v) for k, v in fake.items()})
+    proc = subprocess.run(["bash", "-c", _run_block().replace("/tmp/", workdir + "/")],
+                          capture_output=True, text=True, env=env, timeout=60)
+    with open(log, encoding="utf-8") as fh:
+        return proc, fh.read().splitlines()
+
+
+def _writes(calls):
+    return [c for c in calls if c.startswith(("issue comment", "issue create"))]
+
+
+def test_a_repeat_problem_is_appended_to_its_issue_not_filed_again():
+    with tempfile.TemporaryDirectory() as d:
+        proc, calls = _run_tracker(d, FAKE_CLASS_ISSUE="2702")
+        assert proc.returncode == 0, proc.stderr
+        assert [c for c in _writes(calls) if c.startswith("issue comment 2702 ")], calls
+        assert not [c for c in calls if c.startswith("issue create")], calls
+        with open(os.path.join(d, "spec-debt-comment.md"), encoding="utf-8") as fh:
+            assert "spec-debt-for-pr-4242" in fh.read(), (
+                "the appended comment must carry the marker the idempotency search finds")
+
+
+def test_a_new_problem_still_gets_its_own_issue():
+    with tempfile.TemporaryDirectory() as d:
+        proc, calls = _run_tracker(d, FAKE_CLASS_ISSUE="")
+    assert proc.returncode == 0, proc.stderr
+    assert [c.split(" ")[:2] for c in _writes(calls)] == [["issue", "create"]], calls
+
+
+def test_a_failed_problem_lookup_files_instead_of_dropping_the_obligation():
+    with tempfile.TemporaryDirectory() as d:
+        proc, calls = _run_tracker(d, FAKE_CLASS_ISSUE="2702", FAKE_CLASS_RC="2")
+    assert proc.returncode == 0, proc.stderr
+    assert [c.split(" ")[:2] for c in _writes(calls)] == [["issue", "create"]], calls
+    assert "::warning::" in proc.stdout
+
+
+def test_an_already_tracked_pr_writes_nothing_and_looks_nothing_up():
+    with tempfile.TemporaryDirectory() as d:
+        proc, calls = _run_tracker(d, FAKE_EXISTING="77", FAKE_CLASS_ISSUE="2702")
+    assert proc.returncode == 0, proc.stderr
+    assert not _writes(calls) and not [c for c in calls if c.startswith("python3")], calls
+
+
+def test_a_failed_append_fails_the_job():
+    with tempfile.TemporaryDirectory() as d:
+        proc, calls = _run_tracker(d, FAKE_CLASS_ISSUE="2702", FAKE_COMMENT_RC="1")
+    assert proc.returncode != 0, "a swallowed append would record debt nowhere"
+    assert not [c for c in calls if c.startswith("issue create")], (
+        "a failed append must fail loudly, not quietly file a duplicate instead")
+
+
+def test_the_marker_search_reads_comments_too():
+    with tempfile.TemporaryDirectory() as d:
+        _, calls = _run_tracker(d, FAKE_CLASS_ISSUE="2702")
+    [search] = [c for c in calls if c.startswith("issue list")]
+    assert "spec-debt-for-pr-4242" in search and "in:body,comments" in search, search
+
+
+def test_the_problem_lookup_is_the_script_the_reconciler_uses():
+    with tempfile.TemporaryDirectory() as d:
+        _, calls = _run_tracker(d, FAKE_CLASS_ISSUE="")
+    assert [c for c in calls if c.startswith("python3 ")] == [
+        f"python3 scripts/spec_debt_issues.py find-class-issue --repo o/r --title {_PR_TITLE}"]
+    assert os.path.exists(os.path.join(ROOT, "scripts", "spec_debt_issues.py"))
+
+
+def test_the_checkout_is_the_base_branch():
+    """A spec PR branched before scripts/spec_debt_issues.py landed has no copy
+    at its own ref, so the lookup would fail on every merge and quietly fall
+    back to one issue per PR."""
+    steps = _wf()["jobs"]["file-spec-debt"]["steps"]
+    [co] = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout")]
+    assert (co.get("with") or {}).get("ref") == "${{ github.event.pull_request.base.ref }}"
+
+
 if __name__ == "__main__":
     _failed = 0
     for _name, _fn in sorted(globals().items()):
