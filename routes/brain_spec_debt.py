@@ -24,7 +24,10 @@ READ-ONLY. This module observes and surfaces; it opens, merges, closes and
 modifies NOTHING (Phase 0: feedback before autonomy — zero new actuation).
 
 Surface:  GET /api/v1/brain/spec-debt          (JSON; admin-gated)
-          — mounted under /api/v1/brain/ to inherit CF bypass rule 6407517b;
+          POST /api/v1/brain/spec-debt/finding-evidence   (JSON; admin-gated)
+            — has the finding behind a spec provably stopped firing? The
+              verdicts live in routes/brain_detector_ledger.py.
+          — both mounted under /api/v1/brain/ to inherit CF bypass rule 6407517b;
             a NEW /api/v1/* prefix launches STALE (CF Rule #3).
 Kill:     SPEC_DEBT_QUEUE_DISABLE=1
 Consumers: the squasher portal verdict (routes/squasher_portal.py) reads
@@ -246,5 +249,35 @@ try:
             s["open_obligations_total"] = len(rows)
             s["open_obligations"] = rows[:limit]
         return _no_store(jsonify(ok=True, **s))
+
+    # ★ 2026-09-13 — has the finding behind a spec STOPPED FIRING, provably?
+    #   Read-only. The verdict rules live in routes/brain_detector_ledger.py;
+    #   scripts/spec_debt_issues.py is the consumer. POST because a reconcile
+    #   run asks about a few hundred findings at once. Any read failure is a
+    #   503 with state UNMEASURED — never an empty 200 that reads as "quiet".
+    @brain_spec_debt_bp.post("/api/v1/brain/spec-debt/finding-evidence")
+    def spec_debt_finding_evidence():
+        if os.environ.get("SPEC_DEBT_QUEUE_DISABLE", "0") == "1":
+            return _no_store(jsonify(ok=False, error="disabled")), 503
+        if not _admin_ok():
+            return _no_store(jsonify(ok=False, error="admin key required")), 401
+        body = request.get_json(silent=True) or {}
+        targets = body.get("findings") if isinstance(body, dict) else None
+        if not isinstance(targets, list) or not 1 <= len(targets) <= 400:
+            return _no_store(jsonify(ok=False, error="findings must be a list of 1-400 "
+                                                     "{issue, url, url_prefix}")), 400
+        clean = []
+        for t in targets:
+            if not isinstance(t, dict) or not str(t.get("issue") or "").strip():
+                return _no_store(jsonify(ok=False, error="every finding needs an issue")), 400
+            clean.append({"issue": str(t["issue"])[:200], "url": str(t.get("url") or "")[:500],
+                          "url_prefix": bool(t.get("url_prefix"))})
+        try:
+            from routes.brain_detector_ledger import read_evidence
+            result = read_evidence(clean)
+        except Exception as e:  # noqa: BLE001
+            result = {"state": "UNMEASURED", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
+        code = 200 if result.get("state") == "MEASURED" else 503
+        return _no_store(jsonify(ok=code == 200, **result)), code
 except Exception:  # pragma: no cover — no-flask test env
     brain_spec_debt_bp = None
