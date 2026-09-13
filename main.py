@@ -6285,6 +6285,7 @@ def require_plan(min_plan='pro'):
                 "/api/v1/infrastructure/substations",
                 "/api/v1/infrastructure/transmission",
                 "/api/v1/infrastructure/power-plants",
+                # "/api/v1/energy/power-plants" retired 2026-09-13: it answers 410 with no plan gate.
                 "/api/v1/energy/power-plants/nearby",
                 "/api/v1/energy/rto/demand",
                 "/api/v1/energy/rto/fuelmix",
@@ -36892,8 +36893,7 @@ LOCKED_GATE_MANIFEST = {
         '/api/autopilot/capacity-pipeline',
         '/api/v1/fiber/sources',
         '/api/v1/fiber/routes',
-        # /api/v1/energy/power-plants left this list 2026-09-13: it is retired and
-        # answers 410 to every caller, which the canary below counts as UNGATED.
+        # '/api/v1/energy/power-plants' left 2026-09-13: retired, it answers 410, which this canary counts as UNGATED.
         '/api/v1/energy/power-plants/nearby',
         '/api/v1/connectivity/ixps',
         '/api/v1/connectivity/facilities',
