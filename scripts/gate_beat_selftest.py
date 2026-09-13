@@ -104,9 +104,52 @@ PYTEST_OK = "tests/test_a.py::test_x PASSED\n= 12419 passed, 59 skipped in 1351.
 PYTEST_ABORT = ("INTERNALERROR> ... sys.exit(1 if fail else 0)\n"
                 "INTERNALERROR> SystemExit: 0\n")
 
+# A db-parity lane proves it RAN in a step of its own: pytest's output goes to a
+# relative .txt file, and that file is grepped for "skipped". The beat sums a
+# list of those files kept by hand in the beat step, so the proof files are read
+# out of the job itself here and the db-parity cases below check the list
+# against them. A prove-it step is recognised by its name OR by that skip check,
+# so a lane named some other way is still covered.
+_PROOF_WRITE = re.compile(r"(?:>>?\s*|\btee\s+(?:-a\s+)?)([A-Za-z0-9_.-][A-Za-z0-9_./-]*\.txt)\b")
+_SKIP_CHECK = re.compile(r"\bgrep\b[^\n]*skipped", re.I)
+
+
+def proof_files(workflow: str, job: str) -> list[str]:
+    """Every proof file the job's prove-it steps write, in step order.
+
+    Raises when there is nothing to read, or when a prove-it step writes no
+    proof this parser can see. A lane that silently dropped out of the
+    population here would be a lane nobody checks, which is the defect the
+    db-parity cases exist to catch.
+    """
+    with open(os.path.join(WF, workflow)) as fh:
+        steps = yaml.safe_load(fh)["jobs"][job]["steps"]
+    files: list[str] = []
+    blind: list[str] = []
+    for s in steps:
+        name, run = str(s.get("name", "")), str(s.get("run", ""))
+        if name.startswith("Beat the gate"):
+            continue
+        if not (name.startswith("Prove ") or _SKIP_CHECK.search(run)):
+            continue
+        found = _PROOF_WRITE.findall(run)
+        if not found:
+            blind.append(name)
+        for f in found:
+            if f not in files:
+                files.append(f)
+    if blind:
+        raise KeyError("%s:%s prove-it step(s) write no proof file this control "
+                       "can read: %s" % (workflow, job, "; ".join(blind)))
+    if not files:
+        raise KeyError("no prove-it steps in %s:%s" % (workflow, job))
+    return files
+
+
 try:
     ut = beat_run("pre-merge.yml", "unit-tests")
     dbp = beat_run("pre-merge.yml", "db-parity")
+    dbp_proofs = proof_files("pre-merge.yml", "db-parity")
     acg = beat_run("app-contract-gate.yml", "app-contract-gate")
     sg = beat_run("brain-pr-substance-gate.yml", "substance-gate")
     sd = beat_run("brain-spec-debt-tracker.yml", "file-spec-debt")
@@ -135,6 +178,32 @@ expect("db-parity: counts the parity tests that ran",
 expect("db-parity: log present but unparseable reports ZERO",
        run_beat(dbp, {"JOB_STATUS": "failure"}, {"out.txt": "boom\n"}),
        "verdict=fail checked=[0]")
+expect("db-parity: no proof file at all reports empty (unknown, not zero)",
+       run_beat(dbp, {"JOB_STATUS": "cancelled"}, {}),
+       "verdict=unmeasured checked=[]")
+
+# ★ The cases above only ever feed out.txt, so a lane missing from the beat's
+# list was invisible here, and it went missing twice: pt.txt and tg.txt were
+# found never summed on 2026-09-12, then er.txt and tx.txt landed after that
+# fix and were not summed either. So every proof file the job writes is fed to
+# the real beat ALONE, with a count no other file carries, and must come back
+# as exactly that count:
+#   ALONE  nothing else present can be the reason it was counted;
+#   EXACT  a file the presence test sees but the sum never reads sends
+#          checked=[0], which a merely non-empty check would pass.
+_proof_n = {f: 1000 + i for i, f in enumerate(dbp_proofs)}
+for _f, _n in _proof_n.items():
+    _out = run_beat(dbp, {"JOB_STATUS": "success"}, {_f: "= %d passed in 0.01s =\n" % _n})
+    _sent = next((ln for ln in reversed(_out.splitlines()) if ln.startswith("BEAT ")),
+                 "(no beat line)")
+    _ok = ("verdict=pass checked=[%d]" % _n) in _sent
+    results.append((_ok, "★ db-parity: counts %s when it is the only proof" % _f,
+                    _sent if _ok else "%s, want checked=[%d]: add %s to PROOFS in the "
+                    "db-parity beat step" % (_sent, _n, _f)))
+expect("★ db-parity: every proof file at once sums to exactly their total",
+       run_beat(dbp, {"JOB_STATUS": "success"},
+                {f: "= %d passed in 0.01s =\n" % n for f, n in _proof_n.items()}),
+       "verdict=pass checked=[%d]" % sum(_proof_n.values()))
 
 # ── app-contract-gate ───────────────────────────────────────────────────────
 expect("app-contract-gate: reads the booted route count",
