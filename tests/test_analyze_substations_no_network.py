@@ -87,8 +87,9 @@ one it is, through every caller:
       'validated' after a lookup that ran, and 'unavailable' with the reason otherwise
   T6  compare marks each row the same way, and its recommendation says the
       transmission lookup did not complete only when it did not
-  T7  compare with one site missing each lookup names each lookup for its own site,
-      and says the scores are not like-for-like
+  T7  compare names each lookup that did not run for its own site, and says the
+      scores are not like-for-like when sites miss different lookups, the
+      transmission lookup alone included
   T8  the site report fills the line from the substation only after a lookup that
       ran; after a statement that did not run, a raised lookup or its timeout, it
       prints the line as not measured
@@ -1013,6 +1014,16 @@ def test_t7_compare_names_each_lookup_that_did_not_run_for_its_own_site(compare,
             "substation proximity, voltage and queue depth. The transmission lookup did not "
             f"complete for {second['address']}, so its score leaves out transmission proximity; "
             "the scores are not like-for-like.") in reason, reason
+
+    # With every site's substations measured, the transmission lookup alone still
+    # makes the scores unlike.
+    monkeypatch.setattr(sp, "find_nearest_substations",
+                        lambda lat, lng, limit=5, max_distance_miles=25: [dict(ASHBURN)])
+    _status, body = compare()
+    reason = body["recommendation"]["reason"]
+    assert reason.endswith(f" The transmission lookup did not complete for {second['address']}, so its "
+                           "score leaves out transmission proximity; the scores are not like-for-like."), \
+        reason
 
 
 @pytest.mark.parametrize("case", list(TX_CASES) + ["raises", "times-out"],
