@@ -189,15 +189,20 @@ def test_a_response_marked_no_store_is_served_and_never_stored(stc, app, shape, 
             resp.headers["Cache-Control"] = "no-store"
         return resp if shape == "response" else (resp, 200)
 
+    served = []
     for _ in range(2):
         with app.test_request_context("/x?lat=1.0"):
-            view()
+            served.append(view())
 
     if marked:
         assert fake.sets == 0 and fake.store == {}, "a no-store 200 was stored"
         assert calls["n"] == 2, "a no-store 200 must be answered live every time"
     else:
         assert fake.sets == 1 and calls["n"] == 1, "control: the unmarked body is stored"
+    # The first answer is a miss whatever shape the view returned it in: a
+    # (resp, status) tuple carries the Response the X-Tool-Cache header goes on.
+    first = served[0][0] if isinstance(served[0], tuple) else served[0]
+    assert first.headers.get("X-Tool-Cache") == "MISS", dict(first.headers)
 
 
 def test_different_inputs_do_not_share_an_entry(stc, app):

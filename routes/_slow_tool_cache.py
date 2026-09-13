@@ -225,10 +225,12 @@ def cache_tool_response(ttl: int, prefix: str, arg_names, coord_args=()):
             except Exception as e:  # noqa: BLE001
                 logger.debug("slow-tool cache write skipped (%s): %s", prefix, e)
 
-            # Mark the miss when we can do it without rebuilding the response.
+            # Mark the miss when we can do it without rebuilding the response: on
+            # the Response itself, or on the one a (resp, status) tuple carries.
             try:
-                if hasattr(result, "headers"):
-                    result.headers["X-Tool-Cache"] = "MISS"
+                resp = result[0] if isinstance(result, tuple) and result else result
+                if hasattr(resp, "headers"):
+                    resp.headers["X-Tool-Cache"] = "MISS"
             except Exception:
                 pass
             return result
