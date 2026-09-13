@@ -6285,7 +6285,7 @@ def require_plan(min_plan='pro'):
                 "/api/v1/infrastructure/substations",
                 "/api/v1/infrastructure/transmission",
                 "/api/v1/infrastructure/power-plants",
-                "/api/v1/energy/power-plants",
+                # "/api/v1/energy/power-plants" retired 2026-09-13: it answers 410 with no plan gate.
                 "/api/v1/energy/power-plants/nearby",
                 "/api/v1/energy/rto/demand",
                 "/api/v1/energy/rto/fuelmix",
@@ -26291,7 +26291,7 @@ def ai_discover_endpoint():
         ],
         "pro_endpoints": [
             {"method": "GET", "path": "/api/v1/energy/site-analysis", "description": "Full site energy analysis", "tier": "pro"},
-            {"method": "GET", "path": "/api/v1/energy/power-plants", "description": "Nearby power plants", "tier": "pro"},
+            {"method": "GET", "path": "/api/v1/energy/power-plants/nearby", "description": "Nearby power plants", "tier": "pro"},
             {"method": "GET", "path": "/api/v1/risk/composite", "description": "Composite site risk score"},
             {"method": "GET", "path": "/api/v1/risk/compare", "description": "Multi-site risk comparison"},
             {"method": "GET", "path": "/api/v2/infrastructure/layers", "description": "40+ infrastructure layers"},
@@ -36878,7 +36878,7 @@ LOCKED_GATE_MANIFEST = {
         '/api/autopilot/capacity-pipeline',
         '/api/v1/fiber/sources',
         '/api/v1/fiber/routes',
-        '/api/v1/energy/power-plants',
+        # '/api/v1/energy/power-plants' left 2026-09-13: retired, it answers 410, which this canary counts as UNGATED.
         '/api/v1/energy/power-plants/nearby',
         '/api/v1/connectivity/ixps',
         '/api/v1/connectivity/facilities',

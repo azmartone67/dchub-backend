@@ -660,7 +660,7 @@ def init_free_tier_gate(app, get_db_conn):
                     # matching note in api_tier_gating._MAP_BYPASS_PATHS.
                     '/api/v1/infrastructure/nearby',
                     '/api/v1/infrastructure/summary',
-                    '/api/v1/energy/power-plants',
+                    # '/api/v1/energy/power-plants' retired 2026-09-13: it answers 410 with no plan gate.
                     '/api/v1/energy/power-plants/nearby',
                     '/api/v1/energy/rto/demand',
                     '/api/v1/energy/rto/fuelmix',
