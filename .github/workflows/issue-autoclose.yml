@@ -138,7 +138,57 @@ jobs:
               }
             }
 
-            const line = `${DRY ? '[DRY] ' : ''}owned=${owned.length} ` +
+            // ★ 2026-09-13 — REUSED failure issues were invisible to everything
+            // above. `owned` needs a [workflow-failed]/[STATUS] TITLE as well as
+            // the label, but two filers label workflow-failure and title ONE
+            // reused issue their own way: failover-canary.yml ("[failover-canary]
+            // the failover drill is failing") and post-deploy-smoke.yml
+            // ("Post-Deploy Smoke Test failing on main"). This logged owned=0
+            // every hour while #3378 stayed open through 15 passes in a row.
+            // Those filers link the run that failed, so key on THAT: the newest
+            // actions/runs/<id> in the body or comments names the workflow.
+            // Resolution only. A reused issue is bumped on each failure, so its
+            // age says nothing (no stale arm), and #3378's own text says "not
+            // when one run passes" — so it takes REUSED_PASSES consecutive
+            // completed runs on the default branch, every one successful and
+            // newer than that failure.
+            const REUSED_PASSES = 3;
+            const reused = all.filter(i => {
+              if (i.pull_request) return false;
+              const labels = (i.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+              if (labels.some(l => NEVER.has(l)) || !labels.includes('workflow-failure')) return false;
+              return !(i.title.startsWith('[workflow-failed] ') || i.title.startsWith('[STATUS]'));
+            });
+            for (const i of reused) {
+              try {
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  owner, repo, issue_number: i.number, per_page: 100,
+                });
+                const text = [i.body || '', ...comments.map(c => c.body || '')].join('\n');
+                const ids = [...text.matchAll(/\/actions\/runs\/(\d+)/g)].map(m => Number(m[1]));
+                if (!ids.length) { acted.kept.push(i.number); continue; }
+                const failed = (await github.rest.actions.getWorkflowRun({
+                  owner, repo, run_id: Math.max(...ids),
+                })).data;
+                const since = (await github.rest.actions.listWorkflowRuns({
+                  owner, repo, workflow_id: failed.workflow_id, branch: DEFAULT_BRANCH,
+                  status: 'completed', per_page: REUSED_PASSES,
+                })).data.workflow_runs;
+                const green = since.length === REUSED_PASSES && since.every(r =>
+                  r.conclusion === 'success' && new Date(r.created_at) > new Date(failed.created_at));
+                if (!green) { acted.kept.push(i.number); continue; }
+                await close(i, 'resolved',
+                  `✅ Auto-closed by issue-autoclose: \`${failed.name}\` has passed its last ` +
+                  `${REUSED_PASSES} runs on ${DEFAULT_BRANCH}, all after the failure this issue ` +
+                  `last reported ([run ${failed.id}](${failed.html_url})): ` +
+                  since.map(r => `[${r.id}](${r.html_url})`).join(', ') + '. ' +
+                  `Reopen if it regresses — the workflow files a new issue on its next failure.`);
+              } catch (e) {
+                core.warning(`#${i.number}: ${e.message}`);
+              }
+            }
+
+            const line = `${DRY ? '[DRY] ' : ''}owned=${owned.length} reused=${reused.length} ` +
               `resolved=${acted.resolved.length} duplicate=${acted.duplicate.length} ` +
               `stale=${acted.stale.length} kept=${acted.kept.length}`;
             core.notice(line);

@@ -1,0 +1,686 @@
+[
+{
+"number": 2640,
+"title": "[spec-debt] agenda #100193: [reliability] Brain finding: ai_platform_crawl_drop:meta @ ai_requests"
+},
+{
+"number": 2658,
+"title": "[spec-debt] inv #100123: audit_M /api/v1/reveal-* partner feeds still Rule-#3 edge-cached (know"
+},
+{
+"number": 2659,
+"title": "[spec-debt] inv #100124: audit_M Drip CTA sells $299 Pro while 11 Founding licenses at $99 — th"
+},
+{
+"number": 2666,
+"title": "[spec-debt] agenda #100194: [reliability] Brain finding: mcp_tool_zero_conversion @ /admin/per-too"
+},
+{
+"number": 2694,
+"title": "[spec-debt] inv #100145: glama advertises 2,000 deals (canon 1,845) — observed from the none se"
+},
+{
+"number": 2695,
+"title": "[spec-debt] inv #100146: glama advertises 21,000 facilities (canon 17,866) — observed from the "
+},
+{
+"number": 2696,
+"title": "[spec-debt] prop #100046: [reliability] Brain finding: runtime_error:PG query failed, sql snippe"
+},
+{
+"number": 2697,
+"title": "[spec-debt] inv #100134: data_stale: 'news' — newest row 128.79h old — exceeds SLA 24h (observe"
+},
+{
+"number": 2698,
+"title": "[spec-debt] inv #100137: customer_activation_systemic_failure (observed at: /api/v1/admin/custo"
+},
+{
+"number": 2699,
+"title": "[spec-debt] inv #100138: iso_metric_count_zero_24h (observed at: grid_data: iso=LGEE). What is "
+},
+{
+"number": 2700,
+"title": "[spec-debt] inv #100139: mcp_tool_sunset_candidate (observed at: tool:plan_query). What is the "
+},
+{
+"number": 2701,
+"title": "[spec-debt] inv #100141: detector_runtime_slow (observed at: detector:check_mcp_funnel_leak). W"
+},
+{
+"number": 2702,
+"title": "[spec-debt] inv #100142: facility_duplicates_unmarked (observed at: /api/v1/admin/facility-dedu"
+},
+{
+"number": 2704,
+"title": "[spec-debt] inv #100143: audit_M The /markets worker ASSETS-rewrite failure mode is silent — no"
+},
+{
+"number": 2705,
+"title": "[spec-debt] agenda #100195: [reliability] Brain finding: stripe_webhook_lag @ table:stripe_webhook"
+},
+{
+"number": 2715,
+"title": "[spec-debt] inv #100153: facility_duplicates_unmarked (observed at: /api/v1/admin/facility-dedu"
+},
+{
+"number": 2716,
+"title": "[spec-debt] agenda #100196: [data_coverage] facilities span 178 countries"
+},
+{
+"number": 2725,
+"title": "[spec-debt] agenda #100197: [developer_ux] Brain finding: micro_anomaly_medium @ /api/v1/admin/bra"
+},
+{
+"number": 2746,
+"title": "[spec-debt] agenda #100198: [data_coverage] 320 DCPI markets across 7 live ISOs"
+},
+{
+"number": 2747,
+"title": "[spec-debt] agenda #100199: [developer_ux] Brain finding: ai_surface_drift:mcp_json:pro_period @ h"
+},
+{
+"number": 2755,
+"title": "[spec-debt] inv #100164: facility_duplicates_unmarked (observed at: /api/v1/admin/facility-dedu"
+},
+{
+"number": 2787,
+"title": "[spec-debt] agenda #100202: [developer_ux] Brain finding: fast_qa_freshness_drift:news @ dchub://f"
+},
+{
+"number": 2788,
+"title": "[spec-debt] inv #100170: These are the measured, currently-failing critical constraints on DC H"
+},
+{
+"number": 2811,
+"title": "[spec-debt] agenda #100204: [reliability] Brain finding: site_sentinel_unhealthy:/mcp#workos-oauth"
+},
+{
+"number": 2841,
+"title": "[spec-debt] inv #100177: audit_H Power-plants twin divergence live: /api/energy-discovery/statu"
+},
+{
+"number": 2842,
+"title": "[spec-debt] inv #100180: linkedin_engagement_readback_stale (observed at: table:linkedin_posts)"
+},
+{
+"number": 2843,
+"title": "[spec-debt] agenda #100205: [developer_ux] Brain finding: ai_surface_drift:mcp_json:starter_period"
+},
+{
+"number": 2855,
+"title": "[spec-debt] inv #100185: audit_H /markets and /markets/ serve the stale Railway 'Market Intelli"
+},
+{
+"number": 2863,
+"title": "[spec-debt] inv #100190: cron_silently_dead (observed at: /api/jobs/site-baseline). What is the"
+},
+{
+"number": 2864,
+"title": "[spec-debt] inv #100193: audit_M Unauthenticated /api/jobs/* requests stamp cron_last_run compl"
+},
+{
+"number": 2865,
+"title": "[spec-debt] inv #100194: detector_runtime_slow (observed at: detector:check_llms_txt_contract)."
+},
+{
+"number": 2887,
+"title": "[spec-debt] inv #100210: cron_schedule_collision (observed at: 11 14 * * 1). What is the root c"
+},
+{
+"number": 2888,
+"title": "[spec-debt] inv #100213: stripe_webhook_lag (observed at: table:stripe_webhook_events). What is"
+},
+{
+"number": 2890,
+"title": "[spec-debt] inv #100214: site_sentinel_unhealthy:/mcp#workos-oauth-challenge (observed at: http"
+},
+{
+"number": 2891,
+"title": "[spec-debt] inv #100215: facility_duplicates_unmarked (observed at: /api/v1/admin/facility-dedu"
+},
+{
+"number": 2892,
+"title": "[spec-debt] inv #100216: contract_critical: one quantity, one number: real_external_agents_7d ("
+},
+{
+"number": 2893,
+"title": "[spec-debt] inv #100217: required_env_var_missing (observed at: env://LINKEDIN_ACCESS_TOKEN). W"
+},
+{
+"number": 2894,
+"title": "[spec-debt] inv #100218: audit_H llms.txt self-contradicts on facilities and deals — re-diverge"
+},
+{
+"number": 2895,
+"title": "[spec-debt] inv #100219: audit_M llms.txt contradicts its own facility and deal counts (15,700+"
+},
+{
+"number": 2896,
+"title": "[spec-debt] inv #100220: api_contract_unreachable: daily_returns_html (observed at: https://dch"
+},
+{
+"number": 2897,
+"title": "[spec-debt] inv #100221: repeated_404_pattern (observed at: /api/v1/infrastructure/transmission"
+},
+{
+"number": 2898,
+"title": "[spec-debt] inv #100222: detector_runtime_slow (observed at: detector:check_cron_endpoint_unsch"
+},
+{
+"number": 2899,
+"title": "[spec-debt] inv #100223: detector_runtime_slow (observed at: detector:check_shadowed_routes). W"
+},
+{
+"number": 2907,
+"title": "[spec-debt] inv #100224: 1 published number(s) disagree with canon — observed from the anon sea"
+},
+{
+"number": 2908,
+"title": "[spec-debt] inv #100226: repeated_404_pattern (observed at: /js/dchub-webmcp.js). What is the r"
+},
+{
+"number": 2909,
+"title": "[spec-debt] inv #100228: consistency_radar_detector_crashed:check_auto_trial_conversion_rate (o"
+},
+{
+"number": 2932,
+"title": "[spec-debt] inv #100247: facility_duplicates_unmarked (observed at: /api/v1/admin/facility-dedu"
+},
+{
+"number": 2948,
+"title": "[spec-debt] inv #100258: A paying key receives FEWER data fields than an anonymous caller (8 vs"
+},
+{
+"number": 2973,
+"title": "[spec-debt] inv #100272: inspector_l22_handoff (observed at: /api/v1/brain/brief/100356/draft-p"
+},
+{
+"number": 2974,
+"title": "[spec-debt] prop #100140: [developer_ux] Brain finding: ai_surface_drift:server_card:developer_p"
+},
+{
+"number": 2975,
+"title": "[spec-debt] inv #100274: ai_platform_crawl_drop:chatgpt (observed at: ai_requests). What is the"
+},
+{
+"number": 2976,
+"title": "[spec-debt] inv #100273: cron_failing_with_errors: 2/5 recent dcpi_runs have error_count>0 or m"
+},
+{
+"number": 3031,
+"title": "[spec-debt] inv #100307: facility_duplicates_unmarked (observed at: /api/v1/admin/facility-dedu"
+},
+{
+"number": 3067,
+"title": "[spec-debt] inv #100322: facility_duplicates_unmarked (observed at: /api/v1/admin/facility-dedu"
+},
+{
+"number": 3068,
+"title": "[spec-debt] inv #100325: frontend_endpoint_slow (observed at: /pricing). What is the root cause"
+},
+{
+"number": 3069,
+"title": "[spec-debt] agenda #100214: [developer_ux] Brain finding: ai_surface_drift:server_card:starter_per"
+},
+{
+"number": 3122,
+"title": "[spec-debt] inv #100359: auto_trial_signup_rate_low (observed at: auto_trial_keys: minted 8-37d"
+},
+{
+"number": 3141,
+"title": "[spec-debt] inv #100362: csp_violation_recurring (observed at: csp://script-src-elem/appassets."
+},
+{
+"number": 3147,
+"title": "[spec-debt] inv #100369: These are the measured, currently-failing critical constraints on DC H"
+},
+{
+"number": 3148,
+"title": "[spec-debt] agenda #100223: work-plan: lift the 'now_text_cast' fix-class"
+},
+{
+"number": 3183,
+"title": "[spec-debt] agenda #100224: [developer_ux] Brain finding: ai_surface_drift:agents_md:starter_perio"
+},
+{
+"number": 3184,
+"title": "[spec-debt] agenda #100227: [developer_ux] Brain finding: ai_surface_drift:server_card:free_tier_a"
+},
+{
+"number": 3185,
+"title": "[spec-debt] agenda #100226: [developer_ux] Brain finding: ai_surface_drift:server_card:pro_period "
+},
+{
+"number": 3186,
+"title": "[spec-debt] inv #100375: citation_score_dropped (observed at: /api/v1/citations/score). What is"
+},
+{
+"number": 3212,
+"title": "[spec-debt] agenda #100229: [reliability] Brain finding: mcp_tool_zero_conversion @ /admin/per-too"
+},
+{
+"number": 3214,
+"title": "[spec-debt] agenda #100230: [developer_ux] Brain finding: ai_surface_drift:llms_txt:stale_value @ "
+},
+{
+"number": 3241,
+"title": "[spec-debt] agenda #100232: [reliability] Brain finding: cron_silently_dead @ /api/jobs/market-rep"
+},
+{
+"number": 3242,
+"title": "[spec-debt] inv #100383: 5 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 3257,
+"title": "[spec-debt] inv #100385: frontend_endpoint_slow (observed at: /snapshot). What is the root caus"
+},
+{
+"number": 3280,
+"title": "[spec-debt] inv #100388: mcp_growth_declining (observed at: mcp_growth_snapshots: latest 2). Wh"
+},
+{
+"number": 3281,
+"title": "[spec-debt] inv #100389: cf_cache_rate_low (observed at: cache_rate:24.57%). What is the root c"
+},
+{
+"number": 3282,
+"title": "[spec-debt] inv #100387: 5 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 3371,
+"title": "[spec-debt] inv #100395: audit_H Known-false press release still live: 'NESO 609 GW = 35% of al"
+},
+{
+"number": 3403,
+"title": "[spec-debt] inv #100397: 5 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 3404,
+"title": "[spec-debt] agenda #100238: [developer_ux] Brain finding: ai_surface_drift:mcp_json:developer_peri"
+},
+{
+"number": 3456,
+"title": "[spec-debt] inv #100399: 6 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 3468,
+"title": "[spec-debt] inv #100402: — placeholder (observed at: https://dchub.cloud/grid/ERCOT). What is t"
+},
+{
+"number": 3508,
+"title": "[spec-debt] inv #100410: operator_profile_gap:Equinix, Inc. (observed at: /operators/equinix,-i"
+},
+{
+"number": 3509,
+"title": "[spec-debt] inv #100407: approved_backlog_unpublished (observed at: table:social_media_posts). "
+},
+{
+"number": 3510,
+"title": "[spec-debt] inv #100405: 6 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 3587,
+"title": "[spec-debt] inv #100443: 6 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 3588,
+"title": "[spec-debt] inv #100445: iso_metric_count_zero_24h (observed at: grid_data: iso=EU_IT_SICI). Wh"
+},
+{
+"number": 3589,
+"title": "[spec-debt] inv #100438: env_drift_backend_vs_worker (observed at: /api/v1/internal/env-fingerp"
+},
+{
+"number": 3591,
+"title": "[spec-debt] inv #100437: report_no_narrative:monthly (observed at: http://localhost:8080/api/v1"
+},
+{
+"number": 3592,
+"title": "[spec-debt] inv #100441: iso_metric_count_zero_24h (observed at: grid_data: iso=EU_IT_NORD). Wh"
+},
+{
+"number": 3605,
+"title": "[spec-debt] inv #100447: iso_metric_count_zero_24h (observed at: grid_data: iso=EU_RO). What is"
+},
+{
+"number": 3634,
+"title": "[spec-debt] inv #100451: iso_metric_count_zero_24h (observed at: grid_data: iso=EU_HU). What is"
+},
+{
+"number": 3689,
+"title": "[spec-debt] inv #100457: iso_metric_count_zero_24h (observed at: grid_data: iso=EU_DK_1). What "
+},
+{
+"number": 3690,
+"title": "[spec-debt] inv #100458: operator_profile_gap:Equinix (observed at: /operators/equinix). What i"
+},
+{
+"number": 3691,
+"title": "[spec-debt] inv #100462: audit_H llms-full.txt is three canon generations stale (15,000+ facili"
+},
+{
+"number": 3692,
+"title": "[spec-debt] inv #100463: audit_H Detect→propose is the loop's stall point: 55 actionable findin"
+},
+{
+"number": 3693,
+"title": "[spec-debt] inv #100466: A paying key receives FEWER data fields than an anonymous caller (9 vs"
+},
+{
+"number": 3694,
+"title": "[spec-debt] inv #100465: plead_product_gap:get_interconnection_queue (observed at: dchub://prod"
+},
+{
+"number": 3695,
+"title": "[spec-debt] inv #100461: market_deep_dive_stale (observed at: /api/v1/markets/deep-dive/cron). "
+},
+{
+"number": 3696,
+"title": "[spec-debt] inv #100464: plead_product_gap:get_grid_intelligence (observed at: dchub://product-"
+},
+{
+"number": 3697,
+"title": "[spec-debt] inv #100460: operator_profile_gap:Digital Realty (observed at: /operators/digital-r"
+},
+{
+"number": 3722,
+"title": "[spec-debt] inv #100477: iso_metric_count_zero_24h (observed at: grid_data: iso=GVL). What is t"
+},
+{
+"number": 3723,
+"title": "[spec-debt] inv #100476: iso_metric_count_zero_24h (observed at: grid_data: iso=SOCO). What is "
+},
+{
+"number": 3724,
+"title": "[spec-debt] inv #100485: iso_metric_count_zero_24h (observed at: grid_data: iso=PSCO). What is "
+},
+{
+"number": 3725,
+"title": "[spec-debt] inv #100489: iso_metric_count_zero_24h (observed at: grid_data: iso=TIDC). What is "
+},
+{
+"number": 3726,
+"title": "[spec-debt] inv #100490: iso_metric_count_zero_24h (observed at: grid_data: iso=SEC). What is t"
+},
+{
+"number": 3727,
+"title": "[spec-debt] inv #100480: iso_metric_count_zero_24h (observed at: grid_data: iso=FPL). What is t"
+},
+{
+"number": 3728,
+"title": "[spec-debt] inv #100484: iso_metric_count_zero_24h (observed at: grid_data: iso=SC). What is th"
+},
+{
+"number": 3729,
+"title": "[spec-debt] inv #100486: iso_metric_count_zero_24h (observed at: grid_data: iso=AECI). What is "
+},
+{
+"number": 3730,
+"title": "[spec-debt] inv #100481: iso_metric_count_zero_24h (observed at: grid_data: iso=PNM). What is t"
+},
+{
+"number": 3732,
+"title": "[spec-debt] inv #100478: iso_metric_count_zero_24h (observed at: grid_data: iso=PACE). What is "
+},
+{
+"number": 3733,
+"title": "[spec-debt] inv #100483: iso_metric_count_zero_24h (observed at: grid_data: iso=GCPD). What is "
+},
+{
+"number": 3734,
+"title": "[spec-debt] inv #100482: iso_metric_count_zero_24h (observed at: grid_data: iso=DUK). What is t"
+},
+{
+"number": 3735,
+"title": "[spec-debt] inv #100479: iso_metric_count_zero_24h (observed at: grid_data: iso=NEVP). What is "
+},
+{
+"number": 3749,
+"title": "[spec-debt] inv #100493: iso_metric_count_dropped (observed at: grid_data: iso=CHPD). What is t"
+},
+{
+"number": 3750,
+"title": "[spec-debt] inv #100499: report_unreachable:monthly (observed at: /api/v1/reports/monthly). Wha"
+},
+{
+"number": 3751,
+"title": "[spec-debt] inv #100504: operator_profile_gap:Equinix, Inc. (observed at: /operators/equinix-in"
+},
+{
+"number": 3752,
+"title": "[spec-debt] agenda #100246: [developer_ux] Brain finding: ai_surface_drift:agents_md:developer_per"
+},
+{
+"number": 3768,
+"title": "[spec-debt] inv #100505: db_pool_pressure (observed at: /api/v1/brain/db-pool-pressure). What i"
+},
+{
+"number": 3769,
+"title": "[spec-debt] inv #100506: deploy_queue_churn (observed at: https://github.com/azmartone67/dchub-"
+},
+{
+"number": 3783,
+"title": "[spec-debt] inv #100507: iso_metric_count_zero_24h (observed at: grid_data: iso=WAUW). What is "
+},
+{
+"number": 3784,
+"title": "[spec-debt] inv #100509: plead_product_gap:campus center hyperscale northern virginia (observed"
+},
+{
+"number": 3785,
+"title": "[spec-debt] inv #100511: qa_major 3 of 8 published story link(s) are dead (observed at: dchub:/"
+},
+{
+"number": 3787,
+"title": "[spec-debt] inv #100508: data_freshness_sla_breach (observed at: table:news_articles). What is "
+},
+{
+"number": 3788,
+"title": "[spec-debt] inv #100510: qa_critical A paying key receives FEWER data fields than an anonymous "
+},
+{
+"number": 3818,
+"title": "[spec-debt] inv #100518: iso_metric_count_dropped (observed at: grid_data: iso=TPWR). What is t"
+},
+{
+"number": 3819,
+"title": "[spec-debt] inv #100517: population_shift_unmarked (observed at: week:2026-08-24). What is the "
+},
+{
+"number": 3825,
+"title": "[spec-debt] inv #100502: nav_missing:/markets/ (observed at: https://dchub.cloud/markets/). Wha"
+},
+{
+"number": 3826,
+"title": "[spec-debt] inv #100513: 3 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 3901,
+"title": "[spec-debt] inv #100534: 3 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 3902,
+"title": "[spec-debt] inv #100529: plead_product_gap:list_transactions (observed at: dchub://product-lead"
+},
+{
+"number": 3903,
+"title": "[spec-debt] inv #100528: coverage_gap_iso:WACM (observed at: dchub://coverage/iso). What is the"
+},
+{
+"number": 3904,
+"title": "[spec-debt] inv #100523: iso_metric_count_dropped (observed at: grid_data: iso=SCL). What is th"
+},
+{
+"number": 3949,
+"title": "[spec-debt] inv #100545: iso_metric_count_zero_24h (observed at: grid_data: iso=FPC). What is t"
+},
+{
+"number": 3950,
+"title": "[spec-debt] agenda #100249: [reliability] Brain finding: map_layer_outside_coverage_error @ power_"
+},
+{
+"number": 3952,
+"title": "[spec-debt] inv #100537: iso_metric_count_zero_24h (observed at: grid_data: iso=PJM). What is t"
+},
+{
+"number": 3953,
+"title": "[spec-debt] inv #100541: iso_metric_count_zero_24h (observed at: grid_data: iso=TVA). What is t"
+},
+{
+"number": 3954,
+"title": "[spec-debt] inv #100535: iso_metric_count_zero_24h (observed at: grid_data: iso=TAL). What is t"
+},
+{
+"number": 3957,
+"title": "[spec-debt] inv #100544: iso_metric_count_zero_24h (observed at: grid_data: iso=SCEG). What is "
+},
+{
+"number": 3983,
+"title": "[spec-debt] inv #100548: 3 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 4028,
+"title": "[spec-debt] agenda #100251: [reliability] Brain finding: enterprise_bot_present @ mcp_tool_calls: "
+},
+{
+"number": 4058,
+"title": "[spec-debt] inv #100550: 4 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 4082,
+"title": "[spec-debt] inv #100554: approve_directive_waf_blocked (observed at: /api/v1/brain/innovation/d"
+},
+{
+"number": 4084,
+"title": "[spec-debt] inv #100555: enterprise_bot_present (observed at: mcp_tool_calls: ip_hash=ca46aa0b5"
+},
+{
+"number": 4085,
+"title": "[spec-debt] inv #100552: 5 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 4089,
+"title": "[spec-debt] inv #100553: worker_source_unreachable (observed at: https://raw.githubusercontent."
+},
+{
+"number": 4091,
+"title": "[spec-debt] inv #100556: iso_metric_count_zero_24h (observed at: grid_data: iso=EU_IE_SEM). Wha"
+},
+{
+"number": 4137,
+"title": "[spec-debt] inv #100561: iso_metric_count_zero_24h (observed at: grid_data: iso=CPLE). What is "
+},
+{
+"number": 4139,
+"title": "[spec-debt] inv #100559: These are the measured, currently-failing critical constraints on DC H"
+},
+{
+"number": 4154,
+"title": "[spec-debt] inv #100566: 7 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 4155,
+"title": "[spec-debt] inv #100570: iso_metric_count_dropped (observed at: grid_data: iso=SEC). What is th"
+},
+{
+"number": 4156,
+"title": "[spec-debt] inv #100573: iso_metric_count_dropped (observed at: grid_data: iso=TAL). What is th"
+},
+{
+"number": 4157,
+"title": "[spec-debt] inv #100572: iso_metric_count_dropped (observed at: grid_data: iso=GCPD). What is t"
+},
+{
+"number": 4159,
+"title": "[spec-debt] inv #100575: iso_metric_count_dropped (observed at: grid_data: iso=TIDC). What is t"
+},
+{
+"number": 4160,
+"title": "[spec-debt] inv #100568: iso_metric_count_dropped (observed at: grid_data: iso=DOPD). What is t"
+},
+{
+"number": 4161,
+"title": "[spec-debt] inv #100569: iso_metric_count_dropped (observed at: grid_data: iso=SPA). What is th"
+},
+{
+"number": 4175,
+"title": "[spec-debt] inv #100580: mcp_tool_sunset_candidate (observed at: tool:search). What is the root"
+},
+{
+"number": 4176,
+"title": "[spec-debt] inv #100579: iso_metric_count_dropped (observed at: grid_data: iso=TEC). What is th"
+},
+{
+"number": 4191,
+"title": "[spec-debt] inv #100584: coverage_gap_iso:AEC (observed at: dchub://coverage/iso). What is the "
+},
+{
+"number": 4192,
+"title": "[spec-debt] inv #100583: iso_metric_count_dropped (observed at: grid_data: iso=GVL). What is th"
+},
+{
+"number": 4260,
+"title": "[spec-debt] agenda #100255: [developer_ux] Brain finding: ai_surface_drift:chatgpt_instructions:st"
+},
+{
+"number": 4305,
+"title": "[spec-debt] agenda #100257: [reliability] Brain finding: cross_surface_metric_divergence @ routes/"
+},
+{
+"number": 4306,
+"title": "[spec-debt] inv #100593: 8 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 4307,
+"title": "[spec-debt] inv #100591: 1 published number(s) disagree with canon — observed from the anon sea"
+},
+{
+"number": 4358,
+"title": "[spec-debt] inv #100596: 8 of 8 published story link(s) are dead — observed from the none seat "
+},
+{
+"number": 4374,
+"title": "[spec-debt] inv #100610: iso_metric_count_dropped (observed at: grid_data: iso=EPE). What is th"
+},
+{
+"number": 4375,
+"title": "[spec-debt] inv #100604: iso_metric_count_zero_24h (observed at: grid_data: iso=WACM). What is "
+},
+{
+"number": 4376,
+"title": "[spec-debt] inv #100603: iso_metric_count_zero_24h (observed at: grid_data: iso=EU_BE). What is"
+},
+{
+"number": 4384,
+"title": "[spec-debt] inv #100615: cross_surface_metric_divergence (observed at: routes/mcp_presence_craw"
+},
+{
+"number": 4492,
+"title": "[spec-debt] inv #100632: — placeholder (observed at: https://dchub.cloud/grid/CAISO). What is t"
+},
+{
+"number": 4493,
+"title": "[spec-debt] agenda #100260: [reliability] Brain finding: operator_profile_gap:Digital Realty @ /op"
+},
+{
+"number": 4495,
+"title": "[spec-debt] inv #100630: — placeholder (observed at: https://dchub.cloud/grid/PJM). What is the"
+},
+{
+"number": 4496,
+"title": "[spec-debt] inv #100627: plead_product_gap:get_water_risk (observed at: dchub://product-lead/ga"
+},
+{
+"number": 4497,
+"title": "[spec-debt] inv #100626: facility_duplicates_unmarked (observed at: /api/v1/admin/facility-dedu"
+},
+{
+"number": 4498,
+"title": "[spec-debt] inv #100621: glama_origin_publishes_email_ownership (observed at: https://dchub.clo"
+},
+{
+"number": 4499,
+"title": "[spec-debt] inv #100625: facility_duplicates_unmarked (observed at: /api/v1/admin/facility-dedu"
+}
+]

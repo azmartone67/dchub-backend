@@ -1,0 +1,74 @@
+name: spec-debt-reconcile
+
+# WHY (2026-09-13): brain-spec-debt-tracker.yml files a `spec-debt` issue for a
+# merged [brain-*] PR whose checklist is still unchecked, and nothing ever
+# closed one — 171 filed from 2026-08-13 to 2026-09-12, 0 closed, not one
+# comment. Neither issue closer owned the label (brain_issue_janitor.py owns
+# brain-l15/l22/l23/mirror; issue-autoclose.yml owns workflow-failure/STATUS),
+# and the ledger sweeps that closed 132 docs in docs/brain-proposals/ closed no
+# issues. The 171 were also only 71 problems: the tracker filed once per PR.
+#
+# This is the owner. Every run, over the OPEN spec-debt issues:
+#   close  an issue once every spec it tracks is CLOSED in the ledger. A doc
+#          closed "as a class member of X" or "as an exact re-file of X" counts
+#          only once X is closed — on 2026-09-12, 13 of the 14 closed docs behind
+#          open issues had handed their obligation to a doc still OPEN.
+#   fold   issues about the same problem into the oldest one, which carries
+#          their spec PRs from then on. The tracker now appends to that issue
+#          instead of filing, so this catches races and anything filed earlier.
+# Decisions live in scripts/spec_debt_issues.py, shared with the tracker.
+#
+# Fail-closed: an unreadable corpus, a PR whose files cannot be listed, or a doc
+# missing from the corpus keeps the issue OPEN. Closes are capped per run.
+# Kill switch: repo variable SPEC_DEBT_RECONCILE_DISABLE=1.
+# A manual run defaults to a DRY RUN that writes nothing.
+
+on:
+  schedule:
+    - cron: '29 3,9,15,21 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/brain-proposals/**'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only — print the plan, write nothing'
+        type: boolean
+        default: true
+      max_closes:
+        description: 'Most issues this run may close'
+        default: '30'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: spec-debt-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fold repeated problems and close issues the ledger has closed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECONCILE_DISABLE: ${{ vars.SPEC_DEBT_RECONCILE_DISABLE }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          MAX_CLOSES: ${{ inputs.max_closes || '30' }}
+        run: |
+          set -euo pipefail
+          if [ "${RECONCILE_DISABLE:-0}" = "1" ]; then
+            echo "spec-debt reconcile disabled via SPEC_DEBT_RECONCILE_DISABLE"; exit 0
+          fi
+          set -- reconcile --repo "$GITHUB_REPOSITORY" --corpus docs/brain-proposals \
+            --max-closes "$MAX_CLOSES" --summary "$GITHUB_STEP_SUMMARY"
+          if [ "$DRY_RUN" != "true" ]; then
+            set -- "$@" --apply
+          fi
+          python3 scripts/spec_debt_issues.py "$@"

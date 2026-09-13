@@ -83,9 +83,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # Checked out only so the ledger beat can run scripts/gate_beat.sh — this
-      # job otherwise works entirely through the gh API and needs no source.
+      # Checked out for scripts/gate_beat.sh (the ledger beat) and
+      # scripts/spec_debt_issues.py (which open issue is this PR's problem).
+      # The BASE branch, not the PR's own ref: a spec PR branched before a
+      # script change landed would otherwise run the old copy, or none.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
       - name: Re-file the unchecked checklist as tracked debt
         env:
           GH_TOKEN: ${{ github.token }}
@@ -108,10 +112,12 @@ jobs:
 
           # Idempotent by PR number, not by fingerprint: a re-merge of the same
           # PR must not open a second issue, and the PR number is the one
-          # identifier that cannot drift.
+          # identifier that cannot drift. The search reads COMMENTS as well: a
+          # spec appended to its problem's existing issue (below) leaves its
+          # marker in a comment, not in any issue body.
           MARKER="spec-debt-for-pr-${PR_NUMBER}"
           EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
-                       --search "\"$MARKER\" in:body" --limit 1 --json number \
+                       --search "\"$MARKER\" in:body,comments" --limit 1 --json number \
                        --jq '.[0].number // ""')
           if [ -n "$EXISTING" ]; then
             echo "Already tracked as issue #$EXISTING — nothing to do."; exit 0
@@ -127,6 +133,33 @@ jobs:
             2>/dev/null || echo "label spec-debt already exists"
 
           CHECKLIST=$(printf '%s' "$PR_BODY" | grep '^- \[ \]' || true)
+
+          # ★ 2026-09-13 — ONE ISSUE PER PROBLEM, not one per PR. Filing per PR
+          # made 171 issues out of 71 problems (29 for iso_metric_count_zero_24h,
+          # one per grid region), and nothing ever closed one. When an open
+          # spec-debt issue is already about this PR's problem, append to it.
+          # The key is class_key() in scripts/spec_debt_issues.py, the same one
+          # spec-debt-reconcile.yml folds on. A failed lookup files a new issue
+          # rather than dropping the obligation; the reconciler folds it later.
+          if ! CLASS_ISSUE=$(python3 scripts/spec_debt_issues.py find-class-issue \
+                               --repo "$GITHUB_REPOSITORY" --title "$PR_TITLE"); then
+            echo "::warning::problem lookup failed, so filing a new issue; spec-debt-reconcile folds it later"
+            CLASS_ISSUE=""
+          fi
+
+          if [ -n "$CLASS_ISSUE" ]; then
+            {
+              printf '%s\n\n' "Another merged spec for this same problem: **$PR_URL** — tracked here instead of in a new issue."
+              printf '%s\n\n' "$CHECKLIST"
+              printf '<sub>%s · brain-spec-debt-tracker</sub>\n' "$MARKER"
+            } > /tmp/spec-debt-comment.md
+            # Not `|| true` either; the create below says why.
+            gh issue comment "$CLASS_ISSUE" --repo "$GITHUB_REPOSITORY" \
+              --body-file /tmp/spec-debt-comment.md
+
+            echo "Appended PR #$PR_NUMBER to spec-debt issue #$CLASS_ISSUE (same problem)"
+            exit 0
+          fi
 
           {
             printf '%s\n\n' "Merged spec **$PR_URL** left its human checklist unchecked, so the work it describes has no other home."
