@@ -197,6 +197,7 @@ HARDENED = [
     ("main.py", "seed_serverfarm_facilities", "facilities"),
     ("autonomous_brain.py", "extract_gas_infrastructure_from_news", "gas_pipelines"),
     ("autonomous_brain.py", "extract_transmission_infrastructure_from_news", "transmission_lines"),
+    ("autonomous_brain.py", "extract_deals_from_news", "deals"),
     ("api_auto_discovery.py", "seed_known_apis", "discovered_apis"),
 ]
 
