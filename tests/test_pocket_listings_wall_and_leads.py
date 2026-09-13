@@ -261,7 +261,10 @@ def test_a_signed_in_user_opens_the_listing_without_operator_contact(env):
     assert j["locked"] is False and j["access"]["granted"] is True
     assert (listing["latitude"], listing["longitude"]) == (32.78, -96.8)
     assert listing["asking_price"] == 1250000.0
-    assert listing["detail"] == {"available": "Q2 2027", "power": "dual feed"}
+    # `power` is a reserved detail key (routes/exclusive_listings.py
+    # _DETAIL_RESERVED_KEYS). Free text there fails its rules, so it reads as
+    # null and the generic detail does not repeat it.
+    assert listing["detail"] == {"available": "Q2 2027"} and listing["power"] is None
     assert "contact" not in listing and "owner_id" not in listing
     for secret in (OPERATOR_SENTINEL, OWNER_SENTINEL, "hidden-note"):
         assert secret not in body
