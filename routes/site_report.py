@@ -350,8 +350,9 @@ def _gather_power(lat, lon, state):
                                    f"Nearest mapped substation — {_fmt_mi(dist) or '—'} from the site.")
         out["voltage"] = volt_label or "—"
         out["operator"] = sub.get("operator") or "—"
-        out["substation_source"] = ("OpenStreetMap (live)" if sub.get("source") == "OpenStreetMap"
-                                     else "DC Hub grid layer · HIFLD/Neon")
+        # find_nearest_substations serves only the substations table, whose rows
+        # carry no source; its live OpenStreetMap fallback was removed 2026-09-13.
+        out["substation_source"] = "DC Hub grid layer · HIFLD/Neon"
         out["_dist"] = dist
         out["_volt"] = sub.get("voltage_kv") or 0
     else:
