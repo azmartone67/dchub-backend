@@ -126,14 +126,14 @@ PROGRAM_SUMMARY = (
     "Powered land, powered shells and turnkey capacity, including sites that "
     "are not publicly marketed, for enterprise buyers and the AI agents that "
     "procure for them. Every listing shows when it was last updated. Browse "
-    "the listings, sign in to open one, and let DC Hub introduce you to the "
-    "operator."
+    "the listings, sign in and accept the introduction terms once to open "
+    "them, and let DC Hub introduce you to the operator."
 )
 PROGRAM_STEPS = (
     "Browse listings — market, state, capacity and when each was last "
     "updated — without an account.",
-    "Sign in with a free account, or connect an identified AI agent, to open "
-    "the full listing.",
+    "Sign in with a free account, or connect an identified AI agent, and "
+    "accept the introduction terms once to open the full listing.",
     "Request an introduction. DC Hub registers the request and introduces you "
     "to the operator; operator contact details are never published.",
 )
