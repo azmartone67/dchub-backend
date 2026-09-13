@@ -330,7 +330,7 @@ def _facility_scan(monkeypatch, status_code):
     monkeypatch.setattr(news_facility_extractor, "extract_facility_from_article",
                         lambda *args: {"name": "Ohio campus"})
     monkeypatch.setattr(news_facility_extractor, "insert_discovered_facility",
-                        lambda conn, facility: 101)
+                        lambda conn, facility, failures=None: 101)
     return _record_beats(monkeypatch, news_facility_extractor)
 
 
@@ -351,15 +351,15 @@ def test_a_scan_no_source_answered_is_a_failure_not_an_empty_success(monkeypatch
 def test_a_scan_without_a_database_connection_is_a_failure(monkeypatch):
     beats = _facility_scan(monkeypatch, 200)
 
-    def read_pool_exhausted():
-        raise RuntimeError("read pool exhausted")
+    def primary_pool_exhausted():
+        raise RuntimeError("primary pool exhausted")
 
     monkeypatch.setitem(sys.modules, "main",
-                        types.SimpleNamespace(get_read_db=read_pool_exhausted))
+                        types.SimpleNamespace(get_db=primary_pool_exhausted))
     result = news_facility_extractor.scan_news_sources()
     assert (result["success"], result["sources_read"]) == (False, 0)
     beat = _only_beat(beats, "backend-news-facility-extractor", "failure", 0)
-    assert "read pool exhausted" in beat["error"], beat
+    assert "primary pool exhausted" in beat["error"], beat
 
 
 # ── eia_gas_bulk_loader.main ─────────────────────────────────────────────────

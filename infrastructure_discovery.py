@@ -561,7 +561,17 @@ def hifld_line_name(owner, voltage, market):
 
 
 class FiberRouteDiscovery:
-    """Discover fiber routes from HIFLD transmission lines, PeeringDB, and OSM"""
+    """Discover fiber routes from PeeringDB, OSM and learned APIs.
+
+    ★ 2026-09-13: this class also swept the HIFLD Electric_Power_Transmission_Lines
+    layer and saved each line to fiber_routes as route_type 'transmission'. Those
+    are power lines, not fiber: the lane read no fiber attribute, requested no
+    geometry and stamped every line with its market's centroid. Measured on
+    production: 9,695 rows, all source 'hifld', none with coordinates or an end
+    point, 101 of their 102 providers owning no other row, and 14.3% of the table's
+    COUNT(*). The lane is removed; transmission lines are published from the
+    transmission_lines table.
+    """
 
     PEERINGDB_API = "https://www.peeringdb.com/api"
     OVERPASS_API = "https://overpass-api.de/api/interpreter"
@@ -622,109 +632,11 @@ class FiberRouteDiscovery:
     def sync(self):
         logger.info("🔌 Syncing fiber routes...")
         self.new_routes = 0
-        self._sync_hifld_transmission_lines()
         self._sync_peeringdb_exchanges()
         self._sync_osm_fiber_cables()
         self._sync_from_learned_apis()
         logger.info(f"   ✅ Fiber routes: {self.new_routes} new")
         return self.new_routes
-
-    # ★★★ SH52-057 (2026-08-12) — THE LANE'S HARD CEILING, AND WHY IT IS THIS
-    # NUMBER. This sweep is bounded by DC_MARKETS × HIFLD_MAX_RECORDS, and
-    # nothing else: 20 markets × 100 records meant the lane could never hold
-    # more than 2,000 distinct transmission lines, EVER. Measured on the live
-    # Neon table 2026-08-12 it held 1,826 rows over 1,742 distinct upstream
-    # ids — 87% of its own ceiling, so it was within weeks of flat-lining for
-    # a reason no dashboard would have named.
-    #
-    # What 100 was actually costing, measured per market against the
-    # (correct) 89,744-feature layer at the same 50 km radius:
-    #
-    #     19 of 20 markets returned exceededTransferLimit=true at 100
-    #     lines reachable at 50 km, summed over all 20 markets:  9,573
-    #     largest single market (Dallas-Fort Worth):               792
-    #
-    # 1000 clears the largest market with ~25% headroom, so every market is
-    # collected COMPLETE in one request and the truncation flag goes quiet —
-    # which is the point: the new ceiling is the population itself, not an
-    # arbitrary constant, and the warning above now means something when it
-    # fires. It is deliberately NOT the server's own maxRecordCount (2,000):
-    # this is sized to the measured need, leaving the server's limit as
-    # headroom rather than as the target.
-    #
-    # ★ THIS IS NOT A BACKFILL AND MUST NOT BECOME ONE. The lane still sweeps
-    # MARKETS_PER_RUN=2 markets per run on the existing rotation, so the work
-    # per run rises from ~200 upsert attempts to at most 2,000 — bounded,
-    # idempotent (ON CONFLICT DO NOTHING against the upstream_uid index), and
-    # spread over the full rotation rather than landing at once. Do not "just
-    # loop over DC_MARKETS" to catch up faster: a runaway INSERT loop in this
-    # module is why infra_sync was disabled in the scheduler (v3.7), and it
-    # only came back pool-gated at 1×/day as infra_sync_safe.
-    HIFLD_MAX_RECORDS = 1000
-
-    def _sync_hifld_transmission_lines(self):
-        markets = DC_MARKETS[self._market_index:self._market_index + self.MARKETS_PER_RUN]
-        self._market_index = (self._market_index + self.MARKETS_PER_RUN) % len(DC_MARKETS)
-
-        for market in markets:
-            try:
-                features = _query_hifld_nearby(
-                    HIFLD_APIS['transmission_lines'],
-                    market['lat'], market['lng'],
-                    radius_m=50000, max_records=self.HIFLD_MAX_RECORDS,
-                    return_geometry=False
-                )
-                for feat in features:
-                    attrs = feat.get('attributes', {})
-                    voltage = hifld_voltage(attrs.get('VOLTAGE'))
-                    owner = hifld_owner(attrs.get('OWNER'), attrs.get('OPERATOR'))
-                    # ★ SH52-054 — `or attrs.get('OBJECTID')` USED TO BE HERE
-                    # AND IS DELIBERATELY GONE. OBJECTID is the row number of
-                    # one ArcGIS export, not an asset id; keying on it is the
-                    # fault that destroyed substation identity (SH52-056).
-                    # Re-verified 2026-08-12 against the CANONICAL layer this
-                    # lane now reads (SH52-057 repointed it): ID is populated
-                    # on 89,744 of 89,744 features, 0 null, 0 empty and 0
-                    # 'NOT AVAILABLE'/'UNKNOWN' sentinel — so this fallback
-                    # never fired anyway, and removing it costs no coverage
-                    # while removing the landmine. (The same check passed on
-                    # the superseded 52,244-feature layer; the property held
-                    # across the swap, it was not assumed.)
-                    #
-                    # When ID really is absent the fallback is the PHYSICAL
-                    # identity of a transmission line: the ordered pair of
-                    # substations it terminates on plus its voltage. SUB_1/SUB_2
-                    # are populated on 100/100 and 99/100 of a live NoVA sample
-                    # with 76 distinct SUB_1 values over 100 lines, so the
-                    # composite discriminates where owner+voltage (14 distinct
-                    # keys over those same 100 lines) does not.
-                    line_id = str(attrs.get('ID', '') or '').strip()
-                    if not line_id:
-                        sub1 = str(attrs.get('SUB_1', '') or '').strip()
-                        sub2 = str(attrs.get('SUB_2', '') or '').strip()
-                        if sub1 and sub2:
-                            line_id = f"{sub1}~{sub2}~{voltage}"
-                    route = {
-                        "name": hifld_line_name(owner, voltage, market['name'])[:200],
-                        "provider": str(owner)[:100],
-                        "type": "transmission",
-                        "start": market['name'],
-                        "end": market['name'],
-                        # NB: this is the MARKET centroid, not the line's
-                        # geometry (return_geometry=False above). It is stored
-                        # as a locator and must never re-enter the identity —
-                        # see _save_route.
-                        "start_lat": market['lat'],
-                        "start_lng": market['lng'],
-                        "voltage_kv": voltage,
-                        "uid": line_id,
-                        "source_id": f"hifld_tl_{line_id}"
-                    }
-                    self._save_route(route, source='hifld')
-                logger.info(f"   📡 HIFLD transmission {market['name']}: {len(features)} lines found")
-                time.sleep(1)
-            except Exception as e:
-                logger.warning(f"   ⚠️ HIFLD transmission failed for {market['name']}: {e}")
 
     def _sync_peeringdb_exchanges(self):
         try:
@@ -890,7 +802,7 @@ class FiberRouteDiscovery:
             # THAT IS FALSE IS NOW MEASURED. The fix above DID un-cap the lane:
             # hifld went 109 rows -> 1,826 in three days. But it over-splits,
             # because `geo` is NOT the segment's geometry.
-            # _sync_hifld_transmission_lines calls the HIFLD layer with
+            # _sync_hifld_transmission_lines (removed 2026-09-13) called the HIFLD layer with
             # return_geometry=False and then fills start_lat/start_lng with
             # market['lat']/market['lng'] — the MARKET CENTROID, identical for
             # every line in that market, and different for the same line seen

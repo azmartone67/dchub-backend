@@ -50,10 +50,11 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 # Every module that carried the import-time block, and the source it reported.
+# facility_ingestion (backend-facility-ingestion) carried it too; #4552 deleted
+# that module, so there is nothing left to import.
 FORMERLY_BEAT_AT_EXIT = {
     "eia_api": "backend-eia-api",
     "eia_gas_bulk_loader": "backend-eia-bulk-loader",
-    "facility_ingestion": "backend-facility-ingestion",
     "fiber_integration": "backend-fiber-integration",
     "network_ix_ingestion": "backend-network-ix-ingestion",
     "news_engine": "backend-news-engine",

@@ -15,7 +15,9 @@ Scheduler integration (add to dchub-scheduler.py):
 """
 
 import re
+import html
 import json
+import hashlib
 import logging
 import traceback
 from datetime import datetime
@@ -277,6 +279,70 @@ def extract_facility_from_article(title, body, source_url, source_name):
     return facility
 
 
+# ────────────────────────────────────────────────────────
+# ARTICLES — what one fetched feed or page is split into
+# ────────────────────────────────────────────────────────
+#
+# r-news-scan-per-article (2026-09-13): scan_news_sources handed every
+# candidate the FEED's URL as its source_url and the whole fetched page as its
+# body. insert_discovered_facility dedups on source_url, so once a feed had one
+# row every later candidate from it was dropped at DEBUG: one row per feed,
+# ever (dchub-worker, 2026-09-13 07:01 UTC: 24 found, 0 inserted, 18 refused by
+# the write gate, 6 dropped without a line). And a page-wide body read power_mw
+# / investment / state off whichever article mentioned one, and made every
+# title on a page "found" once anything on it said "under construction".
+
+_FEED_ITEM_RE = re.compile(r'<item\b[^>]*>(.*?)</item\s*>', re.I | re.S)
+_PAGE_HEADING_RE = re.compile(r'<(?:h[23]|title)[^>]*>([^<]+)</(?:h[23]|title)>')
+
+
+def _feed_text(fragment):
+    """Plain text of a feed field: CDATA unwrapped, entities decoded, tags
+    dropped. Decoded on both sides of the tag strip, because feeds escape the
+    HTML inside <description> (DCD sends `&lt;p&gt;`)."""
+    text = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', fragment or '', flags=re.S)
+    text = re.sub(r'<[^>]+>', ' ', html.unescape(text))
+    return ' '.join(html.unescape(text).split())
+
+
+def _feed_field(item, tag):
+    m = re.search(r'<%s(?:\s[^>]*)?>(.*?)</%s\s*>' % (tag, tag), item, re.I | re.S)
+    return _feed_text(m.group(1)) if m else ''
+
+
+def _article_url(feed_url, title, link='', guid=''):
+    """The source_url of ONE article: the key a re-scan must land on again.
+
+    The item's <link>, else its <guid> when that is a URL. With neither, the
+    feed URL plus a stable hash of the title as a fragment, so the column still
+    holds a URL and the same article read tomorrow gets the same key."""
+    for candidate in (link, guid):
+        if candidate.startswith(('http://', 'https://')):
+            return candidate
+    digest = hashlib.sha256(title.encode('utf-8')).hexdigest()
+    return f'{feed_url}#article-{digest[:16]}'
+
+
+def _feed_articles(content, feed_url):
+    """Yield (title, body, article_url) for each article in a fetched feed.
+
+    An RSS feed yields one per <item>, from that item's own title, description
+    and link. A page with no <item> keeps the heading scrape, where a heading
+    is all the text an article has, so its body is empty rather than the page."""
+    items = _FEED_ITEM_RE.findall(content)
+    for item in items:
+        title = _feed_field(item, 'title')
+        body = ' '.join(filter(None, (_feed_field(item, 'description'),
+                                      _feed_field(item, 'content:encoded'))))
+        yield title, body, _article_url(feed_url, title,
+                                        _feed_field(item, 'link'),
+                                        _feed_field(item, 'guid'))
+    if not items:
+        for heading in _PAGE_HEADING_RE.findall(content):
+            title = _feed_text(heading)
+            yield title, '', _article_url(feed_url, title)
+
+
 # ─────────────────────────────────────────────────────────
 # DATABASE INSERT HELPER
 # ─────────────────────────────────────────────────────────
@@ -332,10 +398,14 @@ def _facility_already_staged(conn, cur, facility) -> bool:
     return True
 
 
-def insert_discovered_facility(conn, facility):
+def insert_discovered_facility(conn, facility, failures=None):
     """
     Insert an extracted facility into discovered_facilities.
     Returns the new row ID, or None if duplicate/error.
+
+    None means BOTH "skipped" (rejected name, already known) and "the write
+    failed", so a caller that counts outcomes passes `failures`, a list: a
+    failed write appends its error there, a skip appends nothing.
     """
     # r-headline-reject (2026-08-09): the choke point every news path funnels
     # through — this module's own scan, routes/news_entity_extraction's NER
@@ -411,6 +481,8 @@ def insert_discovered_facility(conn, facility):
         return new_id
 
     except Exception as e:
+        if failures is not None:
+            failures.append(f"{type(e).__name__}: {e}")
         conn.rollback()
         logger.error(f"Error inserting facility: {e}\n{traceback.format_exc()}")
         return None
@@ -421,7 +493,8 @@ def insert_discovered_facility(conn, facility):
 # ─────────────────────────────────────────────────────────
 
 # The source-registry heartbeat fires from this scan: rows = facilities inserted,
-# and a failure when no connection was obtained or no source could be read.
+# and a failure when no connection was obtained, no source could be read, or a
+# write failed.
 @with_heartbeat("backend-news-facility-extractor", rows_key="facilities_inserted")
 def scan_news_sources(conn=None):
     """
@@ -433,9 +506,10 @@ def scan_news_sources(conn=None):
 
     Returns:
         dict with scan results: articles_scanned, facilities_found,
-        facilities_inserted, sources_read, errors, and success — False when no
-        connection was obtained or no source answered, so a scan that could not
-        look is not reported as a scan that found nothing.
+        facilities_inserted, facilities_insert_failed, sources_read, errors, and
+        success — False when no connection was obtained, no source answered, or
+        a write failed, so a scan that could not look (or could not write) is
+        not reported as a scan that found nothing.
     """
     import requests
 
@@ -443,19 +517,30 @@ def scan_news_sources(conn=None):
         'articles_scanned': 0,
         'facilities_found': 0,
         'facilities_inserted': 0,
+        # Counted apart from "not inserted": insert_discovered_facility returns
+        # None for a skip AND for a failed write, so without this a run whose
+        # every INSERT was refused reported 0 new facilities and nothing else.
+        'facilities_insert_failed': 0,
         'sources_read': 0,
         'errors': [],
         'success': False,
     }
 
-    # Get DB connection if not provided
-    if conn is None:
+    # This scan WRITES. With no connection given it takes one from the primary
+    # pool (main.get_db, as the other insert_discovered_facility callers do),
+    # never main.get_read_db, which hands out the read-replica pool whenever
+    # DATABASE_READ_URL / NEON_REPLICA_URL is set; dchub-worker, where the
+    # scheduler calls this, sets one. A connection the scan took it gives
+    # back; a caller's stays open.
+    owned = conn is None
+    if owned:
         try:
-            from main import get_read_db
-            conn = get_read_db()
+            from main import get_db
+            conn = get_db()
         except Exception as e:
             logger.error(f"Could not get DB connection: {e}")
             results['errors'].append(str(e))
+            results['success'] = False
             return results
 
     for source in NEWS_SOURCES:
@@ -477,35 +562,47 @@ def scan_news_sources(conn=None):
 
             content = resp.text
 
-            # Simple extraction: find article-like blocks
-            # For RSS feeds, parse XML; for HTML, use regex on <article> or <h2>/<h3> tags
-            # This is a basic implementation — enhance with proper RSS/HTML parsing
-
-            # Extract title-like strings (h2/h3 tags or RSS <title> tags)
-            titles = re.findall(r'<(?:h[23]|title)[^>]*>([^<]+)</(?:h[23]|title)>', content)
-
-            for title in titles:
-                title = title.strip()
+            # One candidate per ARTICLE: its own link is its source_url (the key
+            # insert_discovered_facility dedups on) and its own text is what it
+            # is judged and measured on; never the feed's URL or the whole page.
+            for title, body, article_url in _feed_articles(content, url):
                 if not title or len(title) < 20:
                     continue
 
                 results['articles_scanned'] += 1
 
-                # Use title as both title and body for now
                 # TODO: Fetch individual article pages for full body text
-                facility = extract_facility_from_article(title, content, url, source['name'])
+                facility = extract_facility_from_article(
+                    title, body, article_url, source['name'])
                 if facility:
                     results['facilities_found'] += 1
-                    new_id = insert_discovered_facility(conn, facility)
+                    failed = []
+                    new_id = insert_discovered_facility(conn, facility, failures=failed)
                     if new_id:
                         results['facilities_inserted'] += 1
+                    elif failed:
+                        results['facilities_insert_failed'] += 1
+                        if results['facilities_insert_failed'] == 1:
+                            # One message, not one per candidate: a refused
+                            # write refuses every insert the same way.
+                            results['errors'].append(
+                                f"discovered_facilities write failed: {failed[0][:200]}")
 
         except Exception as e:
             error_msg = f"Error scanning {source['name']}: {e}"
             logger.error(error_msg)
             results['errors'].append(error_msg)
 
-    results['success'] = results['sources_read'] > 0
+    if owned:
+        # Each source's work sits inside its own try, so no Exception from the
+        # loop can skip this.
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    results['success'] = (results['sources_read'] > 0
+                          and results['facilities_insert_failed'] == 0)
     logger.info(f"News scan complete: {results}")
     return results
 

@@ -19,7 +19,7 @@ from routes._iso_common import (
 )
 # ws2 (2026-07-29): one shared EIA-930 URL builder instead of a 5th copy of
 # the same query string. See routes/eia930.py.
-from routes.eia930 import eia930_url
+from routes.eia930 import eia930_request
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -46,12 +46,11 @@ def _tva_urls():
     reports 0 rows for TVA.
     """
     return [
-        # EIA v2 — primary (api_key required; otherwise 403 → next URL).
-        # ws2 (2026-07-29): built by routes/eia930.eia930_url; byte-identical
-        # to the literal that used to sit here.
-        eia930_url("TVA"),
+        # EIA v2 — primary (key required, sent as X-Api-Key; otherwise 403 →
+        # next URL). ws2 (2026-07-29): built by routes/eia930 as (url, headers).
+        eia930_request("TVA"),
         # EIA v2 region-data variant (different aggregation)
-        eia930_url("TVA", dataset="region-data", length=24),
+        eia930_request("TVA", dataset="region-data", length=24),
         # Legacy EIA mirror — keeps returning 301/503 in 2026 but harmless to try last
         "https://www.eia.gov/electricity/data/eia930/api/region/TVA/fuel-type-data",
     ]

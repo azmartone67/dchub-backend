@@ -485,6 +485,10 @@ class APIAutoDiscovery:
         conn.close()
         return results
 
+    def _eia_headers(self) -> Dict:
+        """EIA reads the key from the X-Api-Key header."""
+        return {'X-Api-Key': self.eia_api_key} if self.eia_api_key else {}
+
     def test_api(self, url: str, api_type: str = 'arcgis') -> Dict:
         result = {'success': False, 'record_count': 0, 'sample_fields': [], 'response_time_ms': 0}
 
@@ -510,8 +514,8 @@ class APIAutoDiscovery:
                             result['sample_fields'] = [f['name'] for f in fields_data['fields'][:10]]
 
             elif api_type == 'eia':
-                params = {'api_key': self.eia_api_key, 'length': 1} if self.eia_api_key else {'length': 1}
-                response = self.session.get(url, params=params, timeout=15)
+                response = self.session.get(url, params={'length': 1},
+                                            headers=self._eia_headers(), timeout=15)
                 result['response_time_ms'] = round((time.time() - start) * 1000, 1)
 
                 if response.status_code == 200:
@@ -598,8 +602,7 @@ class APIAutoDiscovery:
                 logger.debug(f"EIA catalog error for {route_info['name']}: {e}")
 
         try:
-            catalog_url = f"{base_url}?api_key={self.eia_api_key}"
-            response = self.session.get(catalog_url, timeout=15)
+            response = self.session.get(base_url, headers=self._eia_headers(), timeout=15)
             if response.status_code == 200:
                 data = response.json()
                 routes = data.get('response', {}).get('routes', [])

@@ -1947,7 +1947,13 @@ def _run_facility_discovery():
         from news_facility_extractor import scan_news_sources
         result = scan_news_sources()
         if isinstance(result, dict):
-            logger.info(f"   [1/4] News extraction: {result.get('facilities_extracted', 0)} extracted, {result.get('pending_review', 0)} pending")
+            # The keys the scan returns. The two this line used to read were
+            # never in its result, so it printed 0 and 0 whatever the run did.
+            failed = result.get('facilities_insert_failed', 0)
+            (logger.warning if failed else logger.info)(
+                f"   [1/4] News extraction: {result.get('facilities_found', 0)} found, "
+                f"{result.get('facilities_inserted', 0)} inserted, "
+                f"{failed} insert failures")
         else:
             logger.info(f"   [1/4] News extraction: completed")
     except ImportError:

@@ -425,6 +425,11 @@ def _compute_source_quality():
             # substations: live data flows via the active infra-sync
             # (autonomous_brain substation_infrastructure / infra .sync())
             "autonomous-brain-substations",
+            # infra-news and fiber: dropped from the recorder because neither
+            # step has an INSERT — infra-news counted regex matches, and the
+            # fiber step's fiber_routes write was removed (GUARD #2, 2026-06-11).
+            "autonomous-brain-infra-news",
+            "autonomous-brain-fiber",
         }
         for src_id, last_obs, stale_hours in cur.fetchall():
             if src_id in out:

@@ -542,11 +542,12 @@ def _caiso_fuel_mix(entry: dict) -> dict:
 _ERCOT_DASH = "https://www.ercot.com/api/1/services/read/dashboards"
 
 
-def _http_json(url: str, timeout: int = 10):
+def _http_json(url: str, timeout: int = 10, headers: dict | None = None):
     """Fetch JSON. None on anything unexpected (fail-soft)."""
     import urllib.request as _u
     try:
-        req = _u.Request(url, headers={"User-Agent": "dchub-grid-shell/1.0"})
+        req = _u.Request(url, headers={"User-Agent": "dchub-grid-shell/1.0",
+                                       **(headers or {})})
         with _u.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read(4_000_000).decode("utf-8", "replace"))
     except Exception:
@@ -1043,9 +1044,9 @@ def _miso_load_forecast(entry: dict) -> dict:
 #   actually needed was the key prod already holds.
 #
 # ★ THE KEY NEVER REACHES `raw`. _EIA_HH_URL is keyless and is what gets stored;
-#   the api_key is appended at call time only. `raw` is written into
-#   grid_ext_metrics as JSON, so a keyed source_url would persist a live
-#   credential into a table that plenty of readers can select.
+#   the key is sent at call time only, in the X-Api-Key header. `raw` is
+#   written into grid_ext_metrics as JSON, so a keyed source_url would persist
+#   a live credential into a table that plenty of readers can select.
 #
 # ★ THE ROUTE ALSO CARRIES THE FUTURES STRIP (RNGC1..RNGC4, the NYMEX contracts)
 #   on the same product/process pair. The facet asks for spot, but the row-level
@@ -1082,13 +1083,12 @@ def _eia_henry_hub(entry: dict) -> dict:
     now, and never a day that has not started.
     """
     import os as _os
-    from urllib.parse import quote as _quote
     key = (_os.environ.get("EIA_API_KEY") or "").strip()
     if not key:
         # api.eia.gov answers 403 API_KEY_MISSING, which _http_json would turn
         # into an indistinguishable None. Say which of the two it was.
         return {"ok": False, "error": "eia_api_key_absent"}
-    d = _http_json("%s&api_key=%s" % (_EIA_HH_URL, _quote(key, safe="")), timeout=15)
+    d = _http_json(_EIA_HH_URL, timeout=15, headers={"X-Api-Key": key})
     # every level is isinstance-checked: a JSON body that parses but is not the
     # shape we expect (a bare string, a list, a null `response`) must be a
     # refusal, and `.get` on a str raises rather than returning None.
