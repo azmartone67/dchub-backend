@@ -234,16 +234,20 @@ def _connect_and_swallow():
 @pytest.mark.parametrize("attempt", [_fetch_and_swallow, _connect_and_swallow],
                          ids=["requests-get", "raw-socket"])
 def test_c2_control_a_swallowed_attempt_inside_a_request_is_recorded(energy, monkeypatch, attempt):
-    """Anti-vacuity for R, in its harness: an attempt made and swallowed while a
-    view runs is recorded, although the response is a plain 200."""
+    """Anti-vacuity for R, in its harness: when the view R requests makes an attempt
+    and swallows it, the attempt is recorded, although the response is a plain 200.
+
+    The view is swapped in app.view_functions rather than registered under a new
+    URL rule: scripts/check_route_table_coherence.py reads the route literals in
+    tests/ too, and reports a fixture path as a new route the edge does not serve."""
     _eir, app, get = energy
 
-    def swallowing_view(anything):
+    def swallowing_view():
         attempt()
         return flask.jsonify(success=True)
 
-    app.add_url_rule("/control/<path:anything>", "control_swallow", swallowing_view)
+    monkeypatch.setitem(app.view_functions, "get_substations", swallowing_view)
     attempts = _record_connections(monkeypatch)
-    status, body = get("/control/swallow")
+    status, body = get(RETIRED["substations"][0])
     assert status == 200 and body == {"success": True}, body
     assert attempts, "nothing was recorded, so R could not catch a live query"
