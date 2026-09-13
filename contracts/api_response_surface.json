@@ -11,7 +11,7 @@
   "note": "Only endpoints with resolution=resolved|partial are PROTECTED. resolution=opaque endpoints are IN SCOPE BUT NOT COVERED \u2014 their response dict cannot be reconstructed statically. They are listed so the uncovered set is explicit."
  },
  "stats": {
-  "python_files_scanned": 1462,
+  "python_files_scanned": 1463,
   "endpoints_total": 1799,
   "endpoints_resolved": 1284,
   "endpoints_partial": 65,
@@ -12313,7 +12313,7 @@
    ]
   },
   "GET /api/v1/energy/compare-sites": {
-   "source": "energy_infrastructure_routes.py:777",
+   "source": "energy_infrastructure_routes.py:841",
    "handler": "compare_sites",
    "resolution": "opaque",
    "open_at": [],
@@ -12450,14 +12450,14 @@
    ]
   },
   "GET /api/v1/energy/pipelines": {
-   "source": "energy_infrastructure_routes.py:621",
+   "source": "energy_infrastructure_routes.py:685",
    "handler": "get_pipelines",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/energy/power-plants": {
-   "source": "energy_infrastructure_routes.py:701",
+   "source": "energy_infrastructure_routes.py:765",
    "handler": "get_power_plants",
    "resolution": "opaque",
    "open_at": [],
@@ -12532,7 +12532,7 @@
    "keys": []
   },
   "GET /api/v1/energy/site-analysis": {
-   "source": "energy_infrastructure_routes.py:357",
+   "source": "energy_infrastructure_routes.py:409",
    "handler": "energy_site_analysis",
    "resolution": "resolved",
    "open_at": [
@@ -12607,7 +12607,7 @@
    ]
   },
   "GET /api/v1/energy/substations": {
-   "source": "energy_infrastructure_routes.py:650",
+   "source": "energy_infrastructure_routes.py:714",
    "handler": "get_substations",
    "resolution": "opaque",
    "open_at": [],
@@ -12621,21 +12621,21 @@
    "keys": []
   },
   "GET /api/v1/energy/texas-pipelines": {
-   "source": "energy_infrastructure_routes.py:751",
+   "source": "energy_infrastructure_routes.py:815",
    "handler": "get_texas_pipelines",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/energy/transmission": {
-   "source": "energy_infrastructure_routes.py:673",
+   "source": "energy_infrastructure_routes.py:737",
    "handler": "get_transmission_lines",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "GET /api/v1/energy/wells": {
-   "source": "energy_infrastructure_routes.py:725",
+   "source": "energy_infrastructure_routes.py:789",
    "handler": "get_wells",
    "resolution": "opaque",
    "open_at": [],
@@ -21704,7 +21704,7 @@
    ]
   },
   "GET /api/v1/site-planner/climate-intel": {
-   "source": "site_planner.py:2087",
+   "source": "site_planner.py:2100",
    "handler": "site_planner_climate_intel",
    "resolution": "resolved",
    "open_at": [
@@ -21739,7 +21739,7 @@
    ]
   },
   "GET /api/v1/site-planner/composite-score": {
-   "source": "site_planner.py:1736",
+   "source": "site_planner.py:1749",
    "handler": "site_planner_composite_score",
    "resolution": "resolved",
    "open_at": [
@@ -21810,7 +21810,7 @@
    ]
   },
   "GET /api/v1/site-planner/disaster-risk": {
-   "source": "site_planner.py:1931",
+   "source": "site_planner.py:1944",
    "handler": "site_planner_disaster_risk",
    "resolution": "resolved",
    "open_at": [
@@ -21850,7 +21850,7 @@
    ]
   },
   "GET /api/v1/site-planner/queue-depth": {
-   "source": "site_planner.py:2351",
+   "source": "site_planner.py:2364",
    "handler": "site_planner_queue_depth",
    "resolution": "resolved",
    "open_at": [
@@ -31413,14 +31413,14 @@
    ]
   },
   "POST /api/v1/site-planner/analyze": {
-   "source": "site_planner.py:1524",
+   "source": "site_planner.py:1537",
    "handler": "site_planner_analyze",
    "resolution": "opaque",
    "open_at": [],
    "keys": []
   },
   "POST /api/v1/site-planner/climate-intel": {
-   "source": "site_planner.py:2087",
+   "source": "site_planner.py:2100",
    "handler": "site_planner_climate_intel",
    "resolution": "resolved",
    "open_at": [
@@ -31455,7 +31455,7 @@
    ]
   },
   "POST /api/v1/site-planner/compare": {
-   "source": "site_planner.py:2251",
+   "source": "site_planner.py:2264",
    "handler": "site_planner_compare",
    "resolution": "resolved",
    "open_at": [
@@ -31476,7 +31476,7 @@
    ]
   },
   "POST /api/v1/site-planner/composite-score": {
-   "source": "site_planner.py:1736",
+   "source": "site_planner.py:1749",
    "handler": "site_planner_composite_score",
    "resolution": "resolved",
    "open_at": [
@@ -31547,7 +31547,7 @@
    ]
   },
   "POST /api/v1/site-planner/disaster-risk": {
-   "source": "site_planner.py:1931",
+   "source": "site_planner.py:1944",
    "handler": "site_planner_disaster_risk",
    "resolution": "resolved",
    "open_at": [
