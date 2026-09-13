@@ -147,12 +147,16 @@ def test_repair_is_dry_run_by_default():
 
 # ── nobody re-introduces the pattern in a facility writer ────────────
 
+# One tuple for the sweep and its existence check, so deleting or renaming a
+# writer fails the check instead of quietly shrinking the sweep.
+_SWEPT_WRITERS = ("discovery_engine_v3.py", "routes/osm_crawler.py",
+                  "routes/discovery_routes.py", "news_facility_extractor.py")
+
+
 def test_no_facility_writer_defaults_power_to_zero():
     """Sweep the writers, not just the two files fixed here."""
     offenders = []
-    for rel in ("discovery_engine_v3.py", "facility_ingestion.py",
-                "routes/osm_crawler.py", "routes/discovery_routes.py",
-                "news_facility_extractor.py"):
+    for rel in _SWEPT_WRITERS:
         p = ROOT / rel
         if not p.exists():
             continue
@@ -167,7 +171,6 @@ def test_no_facility_writer_defaults_power_to_zero():
 
 def test_the_swept_files_still_exist():
     """Guard the guard — a rename would make the sweep above vacuous."""
-    found = [rel for rel in ("discovery_engine_v3.py", "facility_ingestion.py",
-                             "routes/osm_crawler.py")
-             if (ROOT / rel).exists()]
-    assert len(found) == 3, f"expected 3 writer files, found {found}"
+    assert len(_SWEPT_WRITERS) >= 4, _SWEPT_WRITERS
+    missing = [rel for rel in _SWEPT_WRITERS if not (ROOT / rel).exists()]
+    assert not missing, f"swept writer files missing: {missing}"

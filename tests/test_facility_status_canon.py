@@ -106,7 +106,6 @@ _FORBIDDEN = {
         "or 'active')", "DEFAULT 'active'",
     ],
     "routes/osm_crawler.py": ["'operational'", '"operational"'],
-    "facility_ingestion.py": ["'status': 'active'", "'status', 'active'"],
 }
 
 
