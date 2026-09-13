@@ -8,11 +8,13 @@ It passed while the fix was still wrong, because every case it feeds
 _save_route supplies DIFFERENT geometry per segment, and the real caller
 does not.
 
-_sync_hifld_transmission_lines queries HIFLD with return_geometry=False and
-then fills start_lat/start_lng with market['lat']/market['lng'] — the market
+_sync_hifld_transmission_lines queried HIFLD with return_geometry=False and
+then filled start_lat/start_lng with market['lat']/market['lng'] — the market
 centroid. So the fingerprint's "geometry" is a constant within a market and
 differs for the SAME line seen from a neighbouring market. DC_MARKETS are
-swept at 50 km and the radii overlap.
+swept at 50 km and the radii overlap. (That lane was removed 2026-09-13: it
+wrote power transmission lines into fiber_routes. G1-G3 and G6 still guard
+_save_route for the lanes that remain.)
 
 Measured on the live Neon table 2026-08-12:
 
@@ -36,7 +38,7 @@ CONTRACT
       identity for the same row on every worker restart.
   G5. NO ArcGIS OBJECTID IN IDENTITY. OBJECTID is an export row number; keying
       on it is the fault that holds substations.hifld_objectid hostage
-      (SH52-056).
+      (SH52-056). Retired 2026-09-13 with the HIFLD lane it guarded.
   G6. upstream_uid is actually written by the INSERT, and the write is still a
       single INSERT ... ON CONFLICT DO NOTHING (bare, so it arbitrates EVERY
       unique index including the new partial one).
@@ -109,7 +111,7 @@ def _make_saver():
 
 def _hifld_route(uid, market_lat, market_lng, owner="VIRGINIA ELECTRIC & POWER CO",
                  voltage=230, market="Northern Virginia"):
-    """Exactly the shape _sync_hifld_transmission_lines builds."""
+    """Exactly the shape _sync_hifld_transmission_lines built (removed 2026-09-13)."""
     return {
         "name": f"{owner} {voltage}kV Line - {market}"[:200],
         "provider": owner[:100],
@@ -148,147 +150,6 @@ def test_g2_same_line_from_two_markets_shares_one_upstream_uid():
         "the same physical line got different upstream_uid depending on which "
         f"market we saw it from: {p_nova[_UID_I]!r} vs {p_balt[_UID_I]!r} — "
         "identity is being derived from the crawl, not the asset")
-
-
-
-def _func_or_none(name):
-    """The module-level helper `name`, executed standalone. Returns None if it
-    is absent, so a rename surfaces as the `assert captured` failure this file
-    already explains rather than an import-time crash."""
-    tree = ast.parse(open(SRC).read())
-    node = next((n for n in tree.body
-                 if isinstance(n, ast.FunctionDef) and n.name == name), None)
-    if node is None:
-        return None
-    # hifld_owner closes over the module-level _HIFLD_NULL_STRINGS set, so the
-    # FunctionDef alone is not executable. Carry the module-level constants it
-    # depends on; without them the helper raises NameError inside the caller's
-    # per-market try/except and the whole thing reads as "no routes".
-    consts = [n for n in tree.body
-              if isinstance(n, ast.Assign)
-              and any(isinstance(t, ast.Name) and t.id.startswith("_HIFLD")
-                      for t in n.targets)]
-    ns = {"re": __import__("re")}
-    exec(compile(ast.Module(body=consts + [node], type_ignores=[]), SRC, "exec"), ns)
-    return ns[name]
-
-def _drive_hifld_sync(features_by_market):
-    """Run the REAL _sync_hifld_transmission_lines against a stubbed upstream.
-
-    ★ WHY THIS EXISTS. The first cut of G2 built its own route dict and handed
-    it straight to _save_route — so deleting `"uid": line_id` from the actual
-    caller left G2 GREEN. Mutation-tested 2026-08-12: that mutation passed.
-    That is precisely how the previous guard
-    (test_fiber_route_dedup_no_collapse.py) stayed green while the market-
-    centroid bug shipped: it fed _save_route inputs the real caller never
-    produces. A guard must fail when the CALLER stops supplying identity.
-    """
-    fn = _func("_sync_hifld_transmission_lines")
-    captured = []
-    markets = [{"name": m, "lat": la, "lng": lo, "state": "XX"}
-               for m, la, lo in features_by_market]
-
-    def _query_hifld_nearby(api_url, lat, lng, **kw):
-        for m in markets:
-            if (m["lat"], m["lng"]) == (lat, lng):
-                return _UPSTREAM_FEATURES
-        return []
-
-    ns = {
-        "DC_MARKETS": markets,
-        "HIFLD_APIS": {"transmission_lines": "stub://tl"},
-        "_query_hifld_nearby": _query_hifld_nearby,
-        # 2026-08-15: the caller now scrubs HIFLD's sentinels (-999999 kV,
-        # 'NOT AVAILABLE' owner) through these three module-level helpers before
-        # it builds a name. They are supplied here for exactly the reason
-        # MARKETS_PER_RUN is: a missing name raises inside the per-market
-        # try/except and reads as "no routes", which is the failure mode the
-        # `assert captured` below exists to catch — and did catch, on the very
-        # commit that added them.
-        "hifld_voltage": _func_or_none("hifld_voltage"),
-        "hifld_owner": _func_or_none("hifld_owner"),
-        "hifld_line_name": _func_or_none("hifld_line_name"),
-        "logger": types.SimpleNamespace(info=lambda *a, **k: None,
-                                        warning=lambda *a, **k: None),
-        "time": types.SimpleNamespace(sleep=lambda *a: None),
-    }
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), SRC, "exec"), ns)
-    self = types.SimpleNamespace(
-        _market_index=0, MARKETS_PER_RUN=len(markets),
-        # SH52-057 raised the per-market record cap off a hardcoded 100 and onto
-        # a class attribute (the old value capped the lane at 20 markets x 100 =
-        # 2,000 distinct lines forever). Supplied here for the same reason
-        # MARKETS_PER_RUN is: this stub self stands in for the real class, and a
-        # missing attribute would raise inside the per-market try/except and
-        # read as "no duplicates found" — which the `assert captured` below
-        # exists to catch, and did.
-        #
-        # The VALUE is irrelevant to what this test proves (identity survives
-        # being seen from two markets). That the shipped cap is large enough to
-        # not truncate a real market is asserted in
-        # tests/test_hifld_transmission_layer_canon.py, against the real class
-        # attribute — so nothing is left unguarded by hardcoding it here.
-        HIFLD_MAX_RECORDS=1000,
-        _save_route=lambda route, source='discovery': captured.append(route))
-    ns["_sync_hifld_transmission_lines"](self)
-    # The real function wraps each market in try/except and only logs a warning,
-    # so an exploding stub would otherwise read as "no duplicates found".
-    assert captured, ("the sync produced NO routes at all — the stub or the "
-                      "function signature drifted; this test proves nothing "
-                      "until routes flow")
-    return captured
-
-
-# One physical HIFLD line, exactly as the live FeatureServer returns it
-# (verified 2026-08-12: ID populated on 89,744/89,744 on the canonical layer
-# SH52-057 repointed this lane onto — 0 null, 0 empty, 0 sentinel; the same
-# property held on the superseded 52,244-feature layer, so the fixture is
-# valid across the swap. OBJECTID is 1..N on both, which is why it is not the
-# identity.)
-_UPSTREAM_FEATURES = [{
-    "attributes": {"ID": "141463", "OBJECTID": 541,
-                   "OWNER": "VIRGINIA ELECTRIC & POWER CO", "VOLTAGE": 230,
-                   "SUB_1": "BENNING (69KV)", "SUB_2": "BENNING (230KV)",
-                   "TYPE": "AC; OVERHEAD", "STATUS": "IN SERVICE"},
-}]
-
-
-def test_g2_caller_end_to_end_same_line_two_markets_one_identity():
-    """The market-centroid bug, driven through the REAL caller."""
-    routes = _drive_hifld_sync([
-        ("Northern Virginia", 39.0, -77.4),
-        ("Baltimore", 39.29, -76.61),
-    ])
-    assert len(routes) == 2, f"expected the line once per market, got {len(routes)}"
-    nova, balt = routes
-
-    # The centroids really do differ — otherwise this test is trivially true.
-    assert (nova["start_lat"], nova["start_lng"]) != (balt["start_lat"], balt["start_lng"])
-
-    _, _, ns = _make_saver()
-    uid_nova = ns["_route_uid"](nova)
-    uid_balt = ns["_route_uid"](balt)
-    assert uid_nova == uid_balt == "141463", (
-        f"the caller gave the same physical line two identities "
-        f"({uid_nova!r} vs {uid_balt!r}) — it is keying on the market centroid, "
-        "not on the upstream HIFLD ID. Measured live 2026-08-12: 1,826 hifld "
-        "rows over 1,742 distinct upstream ids.")
-
-
-def test_g2c_caller_falls_back_to_the_substation_pair_not_objectid():
-    """With ID absent, identity must come from SUB_1/SUB_2/VOLTAGE — never the
-    export row number."""
-    global _UPSTREAM_FEATURES
-    saved = _UPSTREAM_FEATURES
-    try:
-        _UPSTREAM_FEATURES = [{"attributes": dict(saved[0]["attributes"], ID="")}]
-        routes = _drive_hifld_sync([("Northern Virginia", 39.0, -77.4)])
-    finally:
-        _UPSTREAM_FEATURES = saved
-    uid = routes[0].get("uid") or ""
-    assert "541" != uid, "fell back to OBJECTID — an export row number"
-    assert "BENNING (69KV)" in uid and "BENNING (230KV)" in uid, (
-        f"expected the substation-pair composite, got {uid!r}")
 
 
 def test_g3_different_lines_keep_different_upstream_uid():
@@ -339,19 +200,6 @@ def test_g4b_the_hazard_g4_guards_against_is_real():
     assert len(seen) > 1, (
         "hash() returned the same value under different PYTHONHASHSEED — this "
         "guard's premise no longer holds and G4 needs re-deriving, not deleting")
-
-
-# ── G5 — OBJECTID must never become identity ─────────────────────────────────
-def test_g5_hifld_caller_never_keys_on_arcgis_objectid():
-    fn = _func("_sync_hifld_transmission_lines")
-    consts = [n.value for n in ast.walk(fn)
-              if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-    assert "OBJECTID" not in consts, (
-        "the HIFLD caller reads OBJECTID into the route key. OBJECTID is the row "
-        "number of ONE ArcGIS export — re-export in a different order and it "
-        "names a different line. That is exactly what substations.hifld_objectid "
-        "holds for 78,356 of 79,686 rows (SH52-056).")
-    assert "ID" in consts, "the HIFLD caller no longer reads the upstream ID field"
 
 
 # ── G6 — the write itself ────────────────────────────────────────────────────
