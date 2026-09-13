@@ -127,10 +127,9 @@ def test_the_reseed_placeholder_stays_gone():
     """
     assert not os.path.exists(os.path.join(SCRIPTS, "eia_generator_reseed.py")), (
         "scripts/eia_generator_reseed.py is back. Its module scope raises "
-        "NotImplementedError, and it shadows the real 436-line "
-        "eia_generator_reseed.py at the repo root — which main.py imports by "
-        "bare name behind /api/admin/load-power-plants-live and two other "
-        "loader endpoints.")
+        "NotImplementedError, so any `import eia_generator_reseed` fails. The "
+        "root loader it once shadowed was deleted on 2026-09-13, when "
+        "/api/admin/load-power-plants-live was retired; its history is in git.")
 
 
 def test_the_corrupted_download_stays_gone():
