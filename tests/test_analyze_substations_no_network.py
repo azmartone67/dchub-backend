@@ -61,6 +61,8 @@ database URL, through every caller of the lookup:
   UC1 control: each empty table reaches execute_query's own failure path, and logs
       what that path logs, the way its id says
   UC2 control: the stand-in connection offers nothing psycopg2's lacks
+  UC3 control: the error recorder still hears site_planner after a module switched
+      logging off, and puts the switch back
 
 ★ 2026-09-13 — the transmission lookup, measured or not. find_nearest_transmission
 returned None both when no line is anchored near the site and when any of its three
@@ -102,6 +104,7 @@ fallback. The recorder refuses that connection and the fallback swallows the
 refusal, so the U tests read what the lookup and its callers return, not the
 record of attempts.
 """
+import contextlib
 import logging
 import os
 import socket
@@ -373,13 +376,29 @@ class _Errors(logging.Handler):
         self.messages.append(record.getMessage())
 
 
-@pytest.fixture
-def errors():
+@contextlib.contextmanager
+def _site_planner_errors():
+    """Record what site_planner logs at ERROR, even after a module switched logging
+    off. tests/test_dcpi_slug_case_insensitive.py and
+    tests/test_facilities_country_aliases.py call logging.disable(logging.CRITICAL)
+    at import, so in `pytest tests/` no record reached this handler: UC1 failed in
+    CI and passed alone. The switch is lifted for the test and put back after."""
     handler = _Errors()
     logger = logging.getLogger("site_planner")
+    switched_off_at = logging.root.manager.disable
+    logging.disable(logging.NOTSET)
     logger.addHandler(handler)
-    yield handler
-    logger.removeHandler(handler)
+    try:
+        yield handler
+    finally:
+        logger.removeHandler(handler)
+        logging.disable(switched_off_at)
+
+
+@pytest.fixture
+def errors():
+    with _site_planner_errors() as handler:
+        yield handler
 
 
 @pytest.fixture
@@ -721,6 +740,20 @@ def test_uc1_control_each_empty_table_takes_the_path_its_id_names(monkeypatch, s
         assert not errors.messages, errors.messages
     else:
         assert any(m.startswith(logged) for m in errors.messages), errors.messages
+
+
+def test_uc3_control_the_error_recorder_hears_site_planner_after_logging_was_switched_off():
+    """Anti-vacuity for UC1, T1 and TC2 in the full suite, where two modules call
+    logging.disable(logging.CRITICAL) at import and silenced every record they read."""
+    before = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        with _site_planner_errors() as heard:
+            logging.getLogger("site_planner").error("Query error: heard")
+        assert heard.messages == ["Query error: heard"], heard.messages
+        assert logging.root.manager.disable == logging.CRITICAL, "the recorder did not put the switch back"
+    finally:
+        logging.disable(before)
 
 
 def test_uc2_control_the_stand_in_offers_nothing_psycopg2_lacks():
