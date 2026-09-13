@@ -2,18 +2,19 @@
 real Postgres (2026-09-13).
 
 site_planner.find_nearest_transmission swallows every SQL error: execute_query
-logs it and returns None, and a None falls through to a live ArcGIS fallback. A
-wrong column name in the repointed lookup would therefore fail nothing — the
-composite score, the site report, analyze and compare would quietly lose their
-transmission line. And the KMZ export's type=all shipped a statement Postgres
-rejects, on every request; a fake cursor accepts any string. Only a database can
-say either statement is right.
+logs it and returns None, and a None reads as a miss. A wrong column name in the
+repointed lookup would therefore fail nothing — the composite score, the site
+report, analyze and compare would quietly lose their transmission line. And the
+KMZ export's type=all shipped a statement Postgres rejects, on every request; a
+fake cursor accepts any string. Only a database can say either statement is
+right.
 
   L1  a substation's line comes back from transmission_lines, keyed the way the
       analyze route serves it, with volt_class None
   L2  a higher voltage matched on the OTHER endpoint wins, and a NULL voltage
       never does (Postgres sorts NULLs first under DESC)
-  L3  a miss runs without an SQL error and falls through to the fallback
+  L3  a miss (a name no endpoint carries, or no substation in range) runs
+      without an SQL error, returns None, and opens no network connection
   K1  type=all runs against real tables and exports plants and pipelines only
   K2  the exact request that returned 500 in production now exports
   K3  the summary runs and publishes no transmission count
@@ -21,6 +22,14 @@ say either statement is right.
       without a market, so this file can catch the defect it exists for
   C2  control: a statement that cannot run comes back None AND reaches the
       error log the L tests read, so their no-SQL-error check can fail
+  C3  control: a connection attempt whose error the caller swallows still lands
+      in the record the L tests read, so their no-network check can fail
+
+★ 2026-09-13 — a miss used to fall through to _query_hifld_transmission_live, a
+live ArcGIS query that ArcGIS rejected on every call (400: an outFields name the
+layer does not have), so it returned None after a network round trip. It was
+removed rather than repointed; the end of find_nearest_transmission says why.
+L1-L3 fail if the lookup reaches the network again, whatever it returns.
 
 Tables are created with the column lists and types production reported through
 /api/v1/admin/schema on 2026-09-13 (transmission_lines, discovered_power_plants,
@@ -34,6 +43,7 @@ transmission_lines, substations, discovered_power_plants and discovered_pipeline
 """
 import logging
 import os
+import socket
 import sys
 import xml.etree.ElementTree as ET
 
@@ -136,6 +146,36 @@ def no_sql_errors(error_log):
     assert not error_log.messages, f"site_planner swallowed an SQL error: {error_log.messages}"
 
 
+def _record_connections(monkeypatch):
+    """Refuse and record every outbound connection attempt for one test.
+
+    Patched at the socket layer, so any HTTP client counts, not only requests.
+    psycopg2 is unaffected: libpq resolves and connects in C."""
+    attempts = []
+
+    def resolve(host, *args, **kwargs):
+        attempts.append(host)
+        raise OSError(f"network disabled in this test: resolve {host!r}")
+
+    def connect(sock, address, *args, **kwargs):
+        attempts.append(address)
+        raise OSError(f"network disabled in this test: connect {address!r}")
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    return attempts
+
+
+@pytest.fixture
+def no_network(monkeypatch):
+    """The lookup must not reach the network. Reads the RECORD, not an exception:
+    the removed fallback caught every exception and returned None, so refusing
+    the connection alone would have let it pass."""
+    attempts = _record_connections(monkeypatch)
+    yield
+    assert not attempts, f"the transmission lookup opened a network connection: {attempts}"
+
+
 def _seed_lines(cur, lines, substations=(ASHBURN,)):
     cur.executemany("INSERT INTO substations (name, lat, lng) VALUES (%s, %s, %s)",
                     list(substations))
@@ -146,13 +186,8 @@ def _seed_lines(cur, lines, substations=(ASHBURN,)):
         [(h, op, op, kv, f, t, st) for h, op, kv, f, t, st in lines])
 
 
-def _no_fallback(lat, lng):
-    pytest.fail("a lookup that matched a line reached the live ArcGIS fallback")
-
-
-def test_l1_the_lookup_reads_the_maintained_table(db, no_sql_errors, monkeypatch):
+def test_l1_the_lookup_reads_the_maintained_table(db, no_sql_errors, no_network):
     import site_planner as sp
-    monkeypatch.setattr(sp, "_query_hifld_transmission_live", _no_fallback)
     _seed_lines(db, ASHBURN_LINES)
 
     tx = sp.find_nearest_transmission(*SITE)
@@ -168,9 +203,8 @@ def test_l1_the_lookup_reads_the_maintained_table(db, no_sql_errors, monkeypatch
     assert isinstance(tx["distance_miles"], float) and tx["distance_miles"] < 1.0
 
 
-def test_l2_the_other_endpoint_and_voltage_order_are_honoured(db, no_sql_errors, monkeypatch):
+def test_l2_the_other_endpoint_and_voltage_order_are_honoured(db, no_sql_errors, no_network):
     import site_planner as sp
-    monkeypatch.setattr(sp, "_query_hifld_transmission_live", _no_fallback)
     _seed_lines(db, ASHBURN_LINES + [
         ("900001", "NO VOLTAGE ON RECORD", None, "ASHBURN", "NOWHERE", "IN SERVICE"),
         ("900002", "A 500 KV OPERATOR", 500.0, "LOUDOUN", "ASHBURN", "IN SERVICE"),
@@ -183,13 +217,22 @@ def test_l2_the_other_endpoint_and_voltage_order_are_honoured(db, no_sql_errors,
     assert tx["line_name"] == "LOUDOUN", "line_name is the matched line's from_sub"
 
 
-def test_l3_a_miss_runs_cleanly_and_falls_through(db, no_sql_errors, monkeypatch):
-    import site_planner as sp
-    sentinel = {"from": "fallback"}
-    monkeypatch.setattr(sp, "_query_hifld_transmission_live", lambda lat, lng: sentinel)
-    _seed_lines(db, ASHBURN_LINES, substations=(("OSM-917634654", 39.0438, -77.4874),))
+# The two ways to reach the end of the lookup: step 2 runs and matches nothing (an
+# import placeholder name, the common case), or step 1 finds no substation in its
+# box (this site is ~31 mi north of ASHBURN; the default box is ±15 mi).
+_MISSES = {
+    "placeholder-name": ((("OSM-917634654", 39.0438, -77.4874),), SITE),
+    "no-substation-in-range": ((ASHBURN,), (39.5, -77.4874)),
+}
 
-    assert sp.find_nearest_transmission(*SITE) is sentinel
+
+@pytest.mark.parametrize("substations, site", list(_MISSES.values()), ids=list(_MISSES))
+def test_l3_a_miss_runs_cleanly_and_returns_none(db, no_sql_errors, no_network,
+                                                 substations, site):
+    import site_planner as sp
+    _seed_lines(db, ASHBURN_LINES, substations=substations)
+
+    assert sp.find_nearest_transmission(*site) is None
 
 
 def test_c2_control_a_swallowed_sql_error_reaches_the_error_log(db, error_log):
@@ -199,6 +242,35 @@ def test_c2_control_a_swallowed_sql_error_reaches_the_error_log(db, error_log):
     assert sp.execute_query("SELECT owner FROM transmission_lines") is None
     assert any('column "owner" does not exist' in m for m in error_log.messages), \
         error_log.messages
+
+
+def _fetch_and_swallow():
+    """The removed fallback's shape: requests.get inside an except-everything."""
+    try:
+        import requests
+        requests.get("https://example.invalid/arcgis/rest/services/query", timeout=2)
+    except Exception:
+        pass
+
+
+def _connect_and_swallow():
+    """A client that skips name resolution and connects to an address."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            s.connect(("192.0.2.1", 443))  # TEST-NET-1: reserved, never routed
+    except Exception:
+        pass
+
+
+@pytest.mark.parametrize("attempt", [_fetch_and_swallow, _connect_and_swallow],
+                         ids=["requests-get", "raw-socket"])
+def test_c3_control_a_swallowed_connection_attempt_is_recorded(monkeypatch, attempt):
+    """Anti-vacuity for no_network: each patched entry point records an attempt
+    even when the caller swallows the refusal."""
+    attempts = _record_connections(monkeypatch)
+    attempt()
+    assert attempts, "nothing was recorded, so no_network could not catch a fallback"
 
 
 def _real_get_db():

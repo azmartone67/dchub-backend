@@ -333,7 +333,7 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
     """
     Find nearest transmission line by finding the nearest substation
     and looking up what transmission lines connect to it.
-    Falls back to HIFLD live API.
+    Returns None when nothing matches. There is no live fallback; see the end.
     """
     # Step 1: Find nearest substation name
     deg_lat = max_distance_miles / 69.0
@@ -426,39 +426,30 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
                 tx['matched_substation'] = sub_name
                 return tx
     
-    # Fallback: direct HIFLD API query
-    return _query_hifld_transmission_live(lat, lng)
-
-
-def _query_hifld_transmission_live(lat, lng):
-    """Direct HIFLD API query for transmission lines as fallback."""
-    try:
-        import requests
-        # HIFLD transmission lines endpoint
-        url = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0/query"
-        params = {
-            'geometry': f'{lng-0.3},{lat-0.3},{lng+0.3},{lat+0.3}',
-            'geometryType': 'esriGeometryEnvelope',
-            'spatialRel': 'esriSpatialRelIntersects',
-            'outFields': 'VOLTAGE,OWNER,SUB_1,SUB_2,STATUS,SHAPE_Leng',
-            'returnGeometry': 'false',
-            'f': 'json',
-            'resultRecordCount': 1,
-            'orderByFields': 'VOLTAGE DESC',
-        }
-        resp = requests.get(url, params=params, timeout=15)
-        data = resp.json()
-        if 'features' in data and data['features']:
-            f = data['features'][0]['attributes']
-            return {
-                'line_name': f.get('SUB_1', 'Unknown'),
-                'voltage_kv': f.get('VOLTAGE', 0),
-                'owner': f.get('OWNER', 'Unknown'),
-                'status': f.get('STATUS', 'Unknown'),
-                'distance_miles': 'N/A (live query)',
-            }
-    except Exception as e:
-        logger.warning(f"HIFLD transmission live query failed: {e}")
+    # No live fallback: a miss returns None, and every caller handles that. The
+    # site report shows the substation's own voltage and operator, the scorer
+    # awards no transmission points, and analyze and compare serve null.
+    #
+    # ★ 2026-09-13 — _query_hifld_transmission_live used to run here on every
+    # miss, the common case, behind paid routes. It was removed, not repointed.
+    # It asked the superseded services1 HIFLD layer for a field that layer does
+    # not have (SHAPE_Leng), so ArcGIS answered with error 400 "'outFields'
+    # parameter is invalid" and it returned None after the round trip. Fixing
+    # the field would not have helped: its lon/lat envelope carried no inSR and
+    # both layers are Web Mercator, so it matched 0 lines around Ashburn (198 on
+    # services1 and 256 on the EIA layer with inSR=4326). Had it succeeded, its
+    # distance_miles of 'N/A (live query)' would have raised in
+    # compute_suitability_score's float() and failed the composite score's
+    # power_grid factor.
+    #
+    # Pointing it at the EIA layer would add no lines: transmission_lines is
+    # ingested from that layer, by a GitHub runner, because Railway's egress to
+    # ArcGIS is unreliable (routes/transmission_ingest.py). And its query asked a
+    # different question. The highest voltage in a ±0.3° box is not the nearest
+    # line: on the EIA layer that record sat 15-24 mi from the site at Ashburn,
+    # Phoenix, Columbus, Dallas and Quincy, while the nearest line was under a
+    # mile away. A true distance needs every line's geometry in the box, 139-353
+    # KB per call. A spatial answer belongs in the database.
     return None
 
 
@@ -1078,13 +1069,11 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     # 4. Transmission proximity
     if transmission:
         tx_dist = float(transmission.get('distance_miles') or 999)
-        if isinstance(tx_dist, str):
-            tx_dist = 999
         for tier_name, tier in w['transmission_proximity']['thresholds'].items():
             if tx_dist <= tier['max_miles']:
                 points = tier['points']
                 score += points
-                breakdown['transmission_proximity'] = {'points': points, 'tier': tier_name, 'value': f"{tx_dist:.1f} mi" if isinstance(tx_dist, float) else str(tx_dist)}
+                breakdown['transmission_proximity'] = {'points': points, 'tier': tier_name, 'value': f"{tx_dist:.1f} mi"}
                 break
     
     # 5. Environmental
