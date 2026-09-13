@@ -20,7 +20,9 @@ THE DEFECT THIS PINS (measured live 2026-08-12):
   max_records=100, a hard ceiling of 2,000 distinct lines FOREVER. It held
   1,826 rows / 1,742 distinct upstream ids — 87% saturated. 19 of the 20
   markets came back with ArcGIS's exceededTransferLimit flag set, which the
-  code discarded, so the ceiling was invisible.
+  code discarded, so the ceiling was invisible. The lane itself was removed
+  2026-09-13 (it wrote power lines into fiber_routes), and its record-cap
+  guard with it.
 
 ★ WHY THESE TESTS ARE AST-ONLY. The unit-tests job (.github/workflows/
 pre-merge.yml) installs a deliberately light dep set — pytest, requests, flask,
@@ -54,11 +56,6 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The superseded org. Any transmission URL on it, in either module, is the bug.
 _SUPERSEDED_ORG = "Hp6G80Pky0om7QvQ"
 _CANON_ORG = "HDRa0B57OVrv2E1q"
-
-# Largest single DC_MARKETS market measured at radius_m=50000 against the
-# canonical layer on 2026-08-12 (Dallas-Fort Worth, 792 lines). A record cap
-# at or below this truncates a real market, which is the ceiling being fixed.
-_LARGEST_MARKET_LINES = 792
 
 
 def _parse(relpath, min_nodes=3):
@@ -149,7 +146,7 @@ def test_canonical_registry_declares_the_maintained_transmission_layer():
     assert spec["min_rows"] >= 70000, (
         f"min_rows={spec['min_rows']} no longer excludes the 52,244-feature "
         "layer, which is the floor's entire purpose")
-    # The fields _sync_hifld_transmission_lines actually reads, plus the two
+    # The fields the fiber lane read before its removal (2026-09-13), plus the two
     # the crawler's parser needs. Losing any of them silently degrades identity.
     for f in ("ID", "OWNER", "VOLTAGE", "SUB_1", "SUB_2", "TYPE", "STATUS"):
         assert f in spec["required_fields"], f"required field {f} dropped"
@@ -197,49 +194,6 @@ def test_infra_discovery_transmission_url_is_resolved_not_literal():
         "util.hifld_layers so there is one definition, not two")
     assert isinstance(value, ast.Call) and getattr(value.func, "id", "") == "layer_url", (
         "expected layer_url('hifld-transmission') from util.hifld_layers")
-
-
-# ── 4. the lane's record cap clears the largest real market ────────────────
-def test_hifld_sweep_record_cap_does_not_truncate_a_real_market():
-    """max_records must exceed the biggest market, or the lane is capped.
-
-    20 markets x 100 records was a permanent ceiling of 2,000 distinct lines
-    and the table sat at 1,742. This asserts the cap is sized to the measured
-    population rather than to a round number someone typed once.
-    """
-    tree, _ = _parse("infrastructure_discovery.py")
-    fn = _func(tree, "_sync_hifld_transmission_lines", cls="FiberRouteDiscovery")
-
-    calls = [n for n in ast.walk(fn)
-             if isinstance(n, ast.Call)
-             and getattr(n.func, "id", "") == "_query_hifld_nearby"]
-    assert len(calls) == 1, f"expected 1 _query_hifld_nearby call, found {len(calls)}"
-
-    kw = {k.arg: k.value for k in calls[0].keywords}
-    assert "max_records" in kw, "_query_hifld_nearby called without max_records"
-
-    node = kw["max_records"]
-    if isinstance(node, ast.Constant):
-        cap = node.value
-    else:
-        # e.g. self.HIFLD_MAX_RECORDS — resolve the class attribute literal.
-        attr = getattr(node, "attr", None)
-        assert attr, f"max_records is neither a literal nor an attribute: {ast.dump(node)}"
-        cls = next(n for n in tree.body
-                   if isinstance(n, ast.ClassDef) and n.name == "FiberRouteDiscovery")
-        consts = [a.value.value for a in cls.body
-                  if isinstance(a, ast.Assign)
-                  and any(getattr(t, "id", "") == attr for t in a.targets)
-                  and isinstance(a.value, ast.Constant)]
-        assert consts, f"{attr} not found as a literal class attribute"
-        cap = consts[0]
-
-    assert isinstance(cap, int), f"max_records resolved to non-int {cap!r}"
-    assert cap > _LARGEST_MARKET_LINES, (
-        f"max_records={cap} truncates the largest DC market "
-        f"({_LARGEST_MARKET_LINES} lines within 50km, measured 2026-08-12). "
-        "The lane's ceiling is len(DC_MARKETS) * max_records — at 100 that was "
-        "2,000 distinct lines forever, against 1,742 already held.")
 
 
 # ── 5. the truncation signal is no longer discarded ────────────────────────

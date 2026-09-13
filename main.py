@@ -30503,9 +30503,9 @@ def job_fiber_sync():
     try:
         from infrastructure_discovery import FiberRouteDiscovery
         frd = FiberRouteDiscovery()
-        # Read the window BEFORE sync(): _sync_hifld_transmission_lines
-        # advances _market_index, so reading it afterwards reports the NEXT
-        # window rather than the one this run actually covered.
+        # Read the window before sync(), so the report names the window this
+        # run started from. (The HIFLD transmission lane, which advanced
+        # _market_index inside sync(), was removed 2026-09-13.)
         window_start = frd._market_index
         new_routes = frd.sync()
         results['sources']['fiber_routes'] = {
