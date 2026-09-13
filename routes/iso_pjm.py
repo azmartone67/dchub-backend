@@ -29,7 +29,7 @@ from routes._iso_common import (
     scrub_secrets,
 )
 # ws2 (2026-07-29): one shared EIA-930 URL builder. See routes/eia930.py.
-from routes.eia930 import eia930_url
+from routes.eia930 import eia930_request
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -58,8 +58,8 @@ def _pjm_urls():
     return [
         # PRIMARY: api.eia.gov v2 PJM region (authenticated; ~800ms from Railway).
         # Parsed by parse_eia_v2_fuel_mix in run_extraction (same as BPA).
-        # ws2 (2026-07-29): built by routes/eia930.eia930_url; byte-identical.
-        eia930_url("PJM"),
+        # ws2 (2026-07-29): built by routes/eia930 as (url, X-Api-Key header).
+        eia930_request("PJM"),
         # Fallback: PJM API (subscription) — sends key via Ocp-Apim-Subscription-Key
         # if DCHUB_PJM_API_KEY is set. The fetch helper handles the header.
         "https://api.pjm.com/api/v1/gen_by_fuel/data?rowCount=24&order=desc&download=true",
@@ -88,7 +88,7 @@ def run_extraction():
         # arbitrary headers; the PJM API key goes through env-aware
         # urllib path below if needed.
         text, url = fetch_first_working(_pjm_urls(), ua="dchub-iso-pjm/1.0")
-        # scrub_url hides the embedded EIA api_key from the echoed /extract response
+        # scrub_url is a backstop: the EIA key travels in a header, not the URL
         summary["fetched_url"] = scrub_url(url)
         summary["html_size"]   = len(text)
 

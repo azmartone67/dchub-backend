@@ -32,6 +32,7 @@ from typing import Any, Optional
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
+from routes._iso_common import scrub_secrets
 
 
 sources_bp = Blueprint("sources", __name__, url_prefix="/api/v1/sources")
@@ -116,6 +117,10 @@ def _ensure_tables() -> None:
 # Auth (only required for write ops)
 # ---------------------------------------------------------------------------
 
+# The admin credentials a write presents, so every heartbeat sender holds one.
+_ADMIN_SECRET_ENV = ("DCHUB_ADMIN_SECRET", "DCHUB_ADMIN_KEY", "DCHUB_INTERNAL_KEY")
+
+
 def _check_auth() -> Optional[tuple]:
     """Accept any real admin secret from the environment
     (DCHUB_ADMIN_SECRET / DCHUB_ADMIN_KEY / DCHUB_INTERNAL_KEY).
@@ -139,15 +144,42 @@ def _check_auth() -> Optional[tuple]:
     if not presented:
         return jsonify(error="unauthorized"), 401
 
-    candidates = [
-        os.environ.get("DCHUB_ADMIN_SECRET", ""),
-        os.environ.get("DCHUB_ADMIN_KEY", ""),
-        os.environ.get("DCHUB_INTERNAL_KEY", ""),
-    ]
+    candidates = [os.environ.get(name, "") for name in _ADMIN_SECRET_ENV]
     for c in candidates:
         if c and hmac.compare_digest(presented, c):
             return None
     return jsonify(error="unauthorized"), 401
+
+
+# ---------------------------------------------------------------------------
+# Run error text
+# ---------------------------------------------------------------------------
+# A heartbeat body's `error` is stored on its extraction_runs row and, for a
+# failure, as source_registry.last_error; the GET endpoints and the dashboard
+# show both. It is scrubbed and length-capped before it is stored.
+
+RUN_ERROR_MAX_CHARS = 500
+
+
+def _scrub_text(text: str) -> str:
+    """`text` without the admin credential values or the values scrub_secrets knows."""
+    for name in _ADMIN_SECRET_ENV:
+        secret = os.environ.get(name, "").strip()
+        if len(secret) >= 8:  # never blank out a short, common substring
+            text = text.replace(secret, "***")
+    return scrub_secrets(text)
+
+
+def _run_error(raw: Any) -> Optional[str]:
+    """The value stored for a heartbeat body's `error`.
+
+    Scrubbed before it is capped: a cut through a secret value would leave a
+    fragment the scrub no longer recognises."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return f"(error omitted: expected a string, got {type(raw).__name__})"
+    return _scrub_text(raw)[:RUN_ERROR_MAX_CHARS]
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +382,7 @@ def heartbeat(source_id):
 
     rows_affected = p.get("rows_affected")
     duration_ms = p.get("duration_ms")
-    error_text = p.get("error")
+    error_text = _run_error(p.get("error"))
     metadata = p.get("metadata")
 
     try:

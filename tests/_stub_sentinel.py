@@ -32,13 +32,26 @@ it cannot be the only guard, and it is not. The detector is the static scan in
 code and so fires in a full run and a subset run alike. This file also ships
 :func:`compare` as a pure function so its own can-it-fail control does not
 depend on a leak actually occurring.
+
+The per-test half (2026-09-13)
+------------------------------
+The ledger is blind to a library being DELETED at run time. It pins
+``absent`` for any watched name not imported by ``pytest_configure`` — the
+usual case — and an ``absent -> module`` change is a first import, so it does
+not re-baseline. ``del sys.modules["requests"]`` then reads as absent ->
+absent, and the re-import that follows as one more first import. That is
+exactly what tests/test_envelope_migration.py did. :func:`identity_changes`
+closes it by comparing the registered OBJECTS around every single test —
+tests/conftest.py::_watched_libraries_keep_their_identity.
 """
 from __future__ import annotations
 
 import sys
+import types
 
 __all__ = ["WATCHED", "snapshot", "checkpoint", "compare",
-           "violations", "fingerprint", "reset"]
+           "violations", "fingerprint", "reset",
+           "identity_changes", "describe_identity_changes"]
 
 # Third-party libraries that live in requirements.txt and are installed in CI
 # (see .github/workflows/pre-merge.yml, job `unit-tests`), so a fake standing in
@@ -155,5 +168,113 @@ def describe(records=None) -> str:
         "install the fake through a fixture that restores it "
         "(monkeypatch.setitem(sys.modules, ...)). Never assign at module scope: "
         "collection has no teardown hook, so nothing can undo it.",
+    ]
+    return "\n".join(lines)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Per test: the library a test swapped must be the SAME object afterwards
+# ═════════════════════════════════════════════════════════════════════
+def _file_of(obj):
+    """``__file__`` read from a module's own namespace, else None.
+
+    Not ``getattr``: a PEP 562 module answers ``__file__`` like any other name
+    (tests._import_shims placeholders do), so getattr can hand back a value for
+    a module that was never loaded from a file.
+    """
+    if isinstance(obj, types.ModuleType):
+        return vars(obj).get("__file__")
+    return None
+
+
+def _label(obj) -> str:
+    if obj is None:
+        return "absent"
+    path = _file_of(obj)
+    what = f"module from {path}" if path else f"{type(obj).__name__} with no __file__"
+    return f"{what} (id 0x{id(obj):x})"
+
+
+def identity_changes(before: dict, after: dict) -> list[dict]:
+    """What one test did to the watched names and did not put back.
+
+    ``before`` and ``after`` map each name to the object registered under it
+    (``None`` when absent), read immediately around a single test. Objects,
+    compared by identity, because the incident leaves a module from the SAME
+    file under the name: after ``del sys.modules["requests"]`` the next
+    ``import requests`` builds a second module object — same ``__file__``,
+    different ``id``. Everything that bound the first (test modules at
+    collection, route modules at import) keeps it, so a patch applied through
+    one reference is invisible through the other.
+
+    ========================  ======================================
+    before -> after           verdict
+    ========================  ======================================
+    the same object           fine
+    absent -> real module     fine: an ordinary first import
+    present -> absent         ``deleted``
+    present -> another obj    ``replaced``
+    absent -> no __file__     ``stub left behind``
+    ========================  ======================================
+    """
+    out = []
+    for name, was in before.items():
+        now = after.get(name)
+        if now is was:
+            continue
+        if was is None:
+            if _file_of(now):
+                continue  # a genuine first import
+            change = "stub left behind"
+        elif now is None:
+            change = "deleted"
+        else:
+            change = "replaced"
+        out.append({"module": name, "change": change,
+                    "was": _label(was), "now": _label(now)})
+    return out
+
+
+_WHY = {
+    "deleted": (
+        "Deleting an entry does not restore it. The next import builds a SECOND "
+        "module object, while every module that bound the first (test modules "
+        "at collection, route modules at import) keeps it. A later "
+        "monkeypatch.setattr(requests, 'get', fake) then patches an object that "
+        "code importing requests inside a function no longer sees, and that "
+        "code reaches the real network."),
+    "replaced": (
+        "Every module that bound the original keeps it, and every module "
+        "imported afterwards gets the replacement, so a patch applied through "
+        "one reference is invisible through the other."),
+    "stub left behind": (
+        "Every later import of that name in this process gets the stub, so a "
+        "file that needs the library fails — but only in a run where nothing "
+        "had imported the real one first, which is why a full run stays green."),
+}
+
+
+def describe_identity_changes(changes: list[dict], test: str) -> str:
+    """The teardown failure. Names the test, the module, and the fix."""
+    lines = [
+        f"{test} changed what sys.modules holds for a real library and did "
+        f"not put it back:",
+        "",
+    ]
+    for c in changes:
+        lines.append(f"  · sys.modules[{c['module']!r}] {c['change'].upper()}")
+        lines.append(f"      before the test: {c['was']}")
+        lines.append(f"      after the test:  {c['now']}")
+    for change in dict.fromkeys(c["change"] for c in changes):
+        lines += ["", _WHY[change]]
+    lines += [
+        "",
+        "Fix: monkeypatch.setitem(sys.modules, name, fake), or "
+        "monkeypatch.delitem(sys.modules, name) to simulate a missing library; "
+        "pytest puts the ORIGINAL object back on teardown. To import a module "
+        "that needs a library which may not be installed, use "
+        "tests._import_shims.real_or_stub. A hand-written finally must "
+        "re-assign the saved object, and `del` only a name that was absent "
+        "before.",
     ]
     return "\n".join(lines)

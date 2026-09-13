@@ -116,7 +116,7 @@ def get_facilities():
         SELECT * FROM facilities 
         WHERE {where_clause}
         ORDER BY 
-            CASE WHEN city LIKE ? THEN 0 ELSE 1 END,
+            CASE WHEN city LIKE %s THEN 0 ELSE 1 END,
             power_mw DESC,
             name ASC
         LIMIT %s OFFSET %s

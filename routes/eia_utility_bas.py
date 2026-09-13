@@ -41,7 +41,7 @@ from routes._iso_common import (
 )
 # ws2 (2026-07-29): the EIA-930 URL builder + fetch/parse now live in ONE
 # module instead of a per-extractor copy. See routes/eia930.py.
-from routes.eia930 import eia930_url, fetch_eia930_ba
+from routes.eia930 import eia930_request, fetch_eia930_ba
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -123,10 +123,10 @@ def _eia_urls(eia_respondent: str):
     """EIA-930 v2 fuel-type-data for one balancing authority — same authed
     endpoint + parser that fixed PJM/BPA, just a different respondent.
 
-    ws2 (2026-07-29): the query string moved to routes/eia930.eia930_url, which
-    builds the byte-identical URL for all five EIA-930 extractors. Kept as a
-    thin shim so anything holding a URL list keeps working."""
-    return [eia930_url(eia_respondent)]
+    ws2 (2026-07-29): the query string moved to routes/eia930, which builds it
+    for all five EIA-930 extractors. Kept as a thin shim; each entry is the
+    (url, headers) pair fetch_first_working takes, the key in X-Api-Key."""
+    return [eia930_request(eia_respondent)]
 
 
 def extract_one(ba: dict) -> dict:

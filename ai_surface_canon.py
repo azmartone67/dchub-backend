@@ -346,11 +346,13 @@ PINNED = {
         #  the SUPERSEDED services1 ArcGIS layer — the literal had drifted in
         #  WHICH POPULATION it named, not merely in freshness.
         #  Floored DOWN from the measured pair, same as `substations` above:
-        #  66,699 -> 66,000+ and 94,633 -> 94,000+. canonical_stats now queries
+        #  58,141 -> 58,000+ and 94,633 -> 94,000+. canonical_stats now queries
         #  BOTH tables in _query_live, so these are genuine cold-start floors and
         #  not the permanent answer — which is what `substations` silently was
         #  until today, its floor spec having never fired for want of a query.
-        "fiber_routes": "66,000+",
+        #  ★2026-09-13 fiber 66,000+ -> 58,000+: the 66,699 seed counted 9,695
+        #  HIFLD power transmission lines. See canonical_stats._FALLBACK.
+        "fiber_routes": "58,000+",
         "transmission_lines": "94,000+",
         # ── DCPI scoring-universe span (r-dcpi-regions, 2026-09-03) ──
         # Cold-start floors ONLY; canonical_stats' derivation publishes.

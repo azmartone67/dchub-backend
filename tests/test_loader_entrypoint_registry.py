@@ -185,8 +185,9 @@ def test_extraction_itself_works():
     tree, reg = _registry()
     assert len(reg) >= 8, 'expected >=8 registered loader modules, got %d' % len(reg)
     sites = _phase12g_call_sites(tree)
-    # 3 since 2026-09-13: /api/admin/load-power-plants-live answers 410 and starts nothing.
-    assert len(sites) >= 3, ('expected >=3 phase12g_loader_async call sites, '
+    # 2 since 2026-09-13: /api/admin/load-power-plants-live answers 410 and starts
+    # nothing, and /api/admin/load-facilities-live answers 410 and runs no loader.
+    assert len(sites) >= 2, ('expected >=2 phase12g_loader_async call sites, '
                              'found %d — extraction is broken' % len(sites))
     for mod in reg:
         assert _top_level_callables(mod) is not None, \

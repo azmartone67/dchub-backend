@@ -713,11 +713,46 @@ def estimate_queue_depth(iso_name, substation_voltage_kv):
     }
 
 
+def _in_us_data_coverage(lat, lng):
+    """True when the US datasets estimate_congestion and screen_environmental read reach
+    this point: the 50 states, DC and the five inhabited territories.
+
+    The same predicate the air-permitting (#3880) and water (#3895) scores use, not a
+    third copy of it: Census state polygons, falling back to boxes when the committed
+    geometry cannot load. Imported when called, because routes/site_report.py imports
+    this module inside its own functions.
+    """
+    from routes.site_report import _usdm_in_coverage
+    return _usdm_in_coverage(lat, lng)
+
+
 def estimate_congestion(lat, lng, radius_miles=15):
     """
     Estimate grid congestion from local infrastructure density.
     High density of substations + generation = potential congestion.
+
+    Both counts must be readings. Outside US data coverage, or when a count did not run,
+    level is 'Unknown' and density_score None, and a count that did not run is served as
+    None. A count that ran keeps its value, 0 included.
     """
+    # ★ 2026-09-13 — a count that did not run was served as 0. execute_query returns None
+    # when it has no connection or the query raises, and this read
+    # `result.get('sub_count', 0) if result else 0`, so the failure served density_score 0
+    # and level 'Low', the least congested reading there is. A site outside the US served
+    # the same 0: the substations table's HIFLD slice spans CONUS, AK, HI and the Pacific
+    # (routes/substation_ingest.py), and discovered_power_plants loads from US sources
+    # (EIA-860, and OSM queried by US state).
+    unknown = {
+        'level': 'Unknown',
+        'density_score': None,
+        'substations_within_radius': None,
+        'power_plants_within_radius': None,
+        'total_generation_mw': None,
+        'radius_miles': radius_miles,
+    }
+    if not _in_us_data_coverage(lat, lng):
+        return unknown
+
     # Bounding box pre-filter
     deg_lat = radius_miles / 69.0
     deg_lng = radius_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
@@ -733,7 +768,7 @@ def estimate_congestion(lat, lng, radius_miles=15):
         lat - deg_lat, lat + deg_lat,
         lng - deg_lng, lng + deg_lng
     ), fetchone=True)
-    sub_count = result.get('sub_count', 0) if result else 0
+    sub_count = result.get('sub_count') if result else None
     
     # Also count power plants nearby
     plant_query = """
@@ -747,8 +782,14 @@ def estimate_congestion(lat, lng, radius_miles=15):
         lat - deg_lat, lat + deg_lat,
         lng - deg_lng, lng + deg_lng
     ), fetchone=True)
-    plant_count = plant_result.get('plant_count', 0) if plant_result else 0
-    total_gen_mw = plant_result.get('total_mw', 0) if plant_result else 0
+    plant_count = plant_result.get('plant_count') if plant_result else None
+    total_gen_mw = plant_result.get('total_mw') if plant_result else None
+
+    if sub_count is None or plant_count is None:
+        return dict(unknown,
+                    substations_within_radius=sub_count,
+                    power_plants_within_radius=plant_count,
+                    total_generation_mw=None if total_gen_mw is None else int(total_gen_mw))
     
     # Density scoring (using local DB data only — no external API calls for speed)
     density_score = min(100, (sub_count * 3) + (plant_count * 2))
@@ -770,12 +811,34 @@ def estimate_congestion(lat, lng, radius_miles=15):
     }
 
 
+def _arcgis_query_features(resp):
+    """The features list of an ArcGIS REST query answer.
+
+    Raises ValueError when the answer is not a query result, so the lookup reads Unknown
+    instead of taking the branch for a query that matched nothing: an HTTP error, a body
+    that is not JSON, an error object (which ArcGIS sends with HTTP 200), or no features
+    list.
+    """
+    if resp.status_code != 200:
+        raise ValueError(f"HTTP {resp.status_code}")
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError("the answer is not a JSON object")
+    if 'error' in data:
+        raise ValueError(f"ArcGIS error {data['error']}")
+    features = data.get('features')
+    if not isinstance(features, list):
+        raise ValueError("the answer has no features list")
+    return features
+
+
 def screen_environmental(lat, lng):
     """
     Environmental screening using federal APIs.
     Checks: FEMA flood zones, FWS critical habitat, NWI wetlands.
     
-    Returns risk scores for each category.
+    Returns risk scores for each category. A category that was not measured is
+    'Unknown', and env_score is None when none of the three was.
     """
     env = {
         'flood_risk': 'Unknown',
@@ -785,6 +848,31 @@ def screen_environmental(lat, lng):
         'env_score': 50,  # default neutral
     }
     
+    # ★ 2026-09-13 — a lookup that measured nothing was screened as 'Low'. Three answers
+    # took the branch meant for "nothing found here":
+    #  - A point outside US data coverage. FEMA NFHL, FWS critical habitat and NWI cover
+    #    the US and its territories and answer no features anywhere else. Measured at
+    #    50.363083, 9.307306 (Hesse, DE): env_score 90, "No significant environmental
+    #    risks identified", and composite-score served it as a validated risk_resilience.
+    #  - A query that failed. ArcGIS reports one with HTTP 200 and an error object, which
+    #    has no 'features'. Measured 2026-09-13 for US and non-US points alike: the FWS URL
+    #    below (layer 1, which that service no longer has) answers {"error": {"code": 400,
+    #    "message": "Invalid URL"}}, the NWI URL {"error": {"code": 500, ...}}, and FEMA's
+    #    /gis/nfhl base HTTP 404, the base risk_assessment_api.py already records as dead.
+    #    So every site screened flood Unknown, species Low and wetlands Low: env_score 90
+    #    and the "clear" environmental tier, whatever was at the point.
+    #  - FEMA with no flood hazard area at the point. NFHL maps none where no flood map is
+    #    in effect (risk_assessment_api.py measured Alaska's interior and Ireland).
+    # Each now reads Unknown, and outside coverage the screen sends no request. The three
+    # URLs are unchanged here, so while they answer as measured above, every screen inside
+    # coverage reads Unknown on all three.
+    if not _in_us_data_coverage(lat, lng):
+        env['risks_identified'].append(
+            'Not checked: FEMA flood zone, FWS critical habitat, NWI wetlands '
+            '(their data covers only the US and its territories)')
+        env['env_score'] = None
+        return env
+
     # ── FEMA Flood Zone Check ──
     try:
         import requests
@@ -798,10 +886,10 @@ def screen_environmental(lat, lng):
             'f': 'json',
         }
         resp = requests.get(fema_url, params=params, timeout=4)
-        data = resp.json()
-        if 'features' in data and data['features']:
-            zone = data['features'][0]['attributes'].get('FLD_ZONE', '')
-            is_sfha = data['features'][0]['attributes'].get('SFHA_TF', 'F')
+        features = _arcgis_query_features(resp)
+        if features:
+            zone = features[0]['attributes'].get('FLD_ZONE', '')
+            is_sfha = features[0]['attributes'].get('SFHA_TF', 'F')
             if zone in ('A', 'AE', 'AH', 'AO', 'V', 'VE'):
                 env['flood_risk'] = 'High'
                 env['risks_identified'].append(f'FEMA Flood Zone {zone} (Special Flood Hazard Area)')
@@ -811,7 +899,8 @@ def screen_environmental(lat, lng):
                 env['flood_risk'] = 'Moderate'
                 env['risks_identified'].append(f'FEMA Flood Zone {zone}')
         else:
-            env['flood_risk'] = 'Low'
+            # No flood hazard area: no flood map is in effect here, which is not low risk.
+            env['flood_risk'] = 'Unknown'
     except Exception as e:
         logger.warning(f"FEMA flood check failed: {e}")
         env['flood_risk'] = 'Unknown'
@@ -829,10 +918,10 @@ def screen_environmental(lat, lng):
             'f': 'json',
         }
         resp = requests.get(fws_url, params=params, timeout=4)
-        data = resp.json()
-        if 'features' in data and data['features']:
+        features = _arcgis_query_features(resp)
+        if features:
             env['species_risk'] = 'High'
-            for f in data['features'][:3]:
+            for f in features[:3]:
                 species = f['attributes'].get('comname', 'Unknown species')
                 env['risks_identified'].append(f'Critical Habitat: {species}')
         else:
@@ -855,10 +944,10 @@ def screen_environmental(lat, lng):
             'resultRecordCount': 5,
         }
         resp = requests.get(nwi_url, params=params, timeout=4)
-        data = resp.json()
-        if 'features' in data and data['features']:
+        features = _arcgis_query_features(resp)
+        if features:
             env['wetland_risk'] = 'Moderate'
-            wetland_type = data['features'][0]['attributes'].get('WETLAND_TYPE', 'Wetland')
+            wetland_type = features[0]['attributes'].get('WETLAND_TYPE', 'Wetland')
             env['risks_identified'].append(f'NWI Wetlands: {wetland_type} within 0.6 miles')
         else:
             env['wetland_risk'] = 'Low'
@@ -867,13 +956,23 @@ def screen_environmental(lat, lng):
         env['wetland_risk'] = 'Unknown'
     
     # ── Compute composite environmental score ──
-    risk_scores = {'High': 30, 'Moderate': 15, 'Low': 0, 'Unknown': 10}
-    total_risk = (
-        risk_scores.get(env['flood_risk'], 10) +
-        risk_scores.get(env['species_risk'], 10) +
-        risk_scores.get(env['wetland_risk'], 10)
-    )
-    env['env_score'] = max(0, min(100, 100 - total_risk))
+    not_checked = [name for name, key in (('FEMA flood zone', 'flood_risk'),
+                                          ('FWS critical habitat', 'species_risk'),
+                                          ('NWI wetlands', 'wetland_risk'))
+                   if env[key] == 'Unknown']
+    if len(not_checked) == 3:
+        # Nothing was measured, so there is no score to serve.
+        env['env_score'] = None
+    else:
+        risk_scores = {'High': 30, 'Moderate': 15, 'Low': 0, 'Unknown': 10}
+        total_risk = (
+            risk_scores.get(env['flood_risk'], 10) +
+            risk_scores.get(env['species_risk'], 10) +
+            risk_scores.get(env['wetland_risk'], 10)
+        )
+        env['env_score'] = max(0, min(100, 100 - total_risk))
+    if not_checked:
+        env['risks_identified'].append('Not checked: ' + ', '.join(not_checked))
     
     if not env['risks_identified']:
         env['risks_identified'].append('No significant environmental risks identified')
@@ -1155,8 +1254,8 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
         # - the environmental and congestion tiers defaulted to 50, so an env_score of 0,
         #   the worst score on its scale, was scored as risk 50 (moderate_risk), and a
         #   density_score of 0, nothing counted within the radius, as moderate while its
-        #   level read Low. estimate_congestion also serves 0 when both of its counts
-        #   fail, and this reads that 0 the same way.
+        #   level read Low. A count that did not run is not a 0: estimate_congestion
+        #   serves it as density_score None, which scores as the default.
         # None and anything float() cannot read still score as the default; a label such as
         # 'N/A (live query)' used to raise.
         try:
@@ -1213,7 +1312,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
             if env_risk <= tier['max_risk_score']:
                 points = tier['points']
                 score += points
-                breakdown['environmental'] = {'points': points, 'tier': tier_name, 'value': f"Score {env.get('env_score', 'N/A')}"}
+                breakdown['environmental'] = {'points': points, 'tier': tier_name, 'value': 'Score N/A' if env.get('env_score') is None else f"Score {env['env_score']}"}
                 break
     
     # 6. Congestion
@@ -1993,7 +2092,9 @@ def register_site_planner_routes(app):
             else:
                 sub['risk_resilience'] = {'score': env_score,
                                           'coverage': 'validated' if isinstance(env_score, (int, float)) else 'unavailable',
-                                          'basis': 'FEMA flood + FWS critical habitat + NWI wetlands (NRI out of coverage)'}
+                                          'basis': ('FEMA flood + FWS critical habitat + NWI wetlands (NRI out of coverage)'
+                                                    if isinstance(env_score, (int, float)) else
+                                                    'no FEMA NRI county score here, and the FEMA flood + FWS critical habitat + NWI wetlands screen measured nothing')}
         except Exception as e:
             sub['risk_resilience'] = {'score': None, 'coverage': 'unavailable', 'basis': f'{type(e).__name__}'}
 

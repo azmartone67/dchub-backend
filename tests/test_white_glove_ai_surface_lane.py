@@ -25,17 +25,16 @@ if ROOT not in sys.path:
 
 
 def _shell():
-    """Import the shell module, shimming flask if it is absent."""
-    import types
-    if "flask" not in sys.modules:
-        fake = types.ModuleType("flask")
-        fake.Blueprint = lambda *a, **k: types.SimpleNamespace(
-            route=lambda *a, **k: (lambda f: f))
-        fake.Response = object
-        fake.jsonify = lambda *a, **k: None
-        fake.request = types.SimpleNamespace(headers={}, args={})
-        sys.modules["flask"] = fake
-    import routes.white_glove_loop_master_shell as m
+    """Import the shell module against real flask, or a placeholder where flask
+    is not installed.
+
+    ★It used to install a fake flask whenever flask was not imported YET, and
+    never removed it: run alone, this file left the fake in sys.modules for
+    every test after the first. real_or_stub imports the library when it exists
+    and removes anything it installed."""
+    from tests._import_shims import real_or_stub
+    with real_or_stub("flask"):
+        import routes.white_glove_loop_master_shell as m
     return m
 
 
@@ -231,15 +230,9 @@ def test_lane_is_wired_into_the_tick():
 
 # ── Sentinel persistence ─────────────────────────────────────────────
 def _sentinel():
-    import types
-    if "flask" not in sys.modules:
-        fake = types.ModuleType("flask")
-        fake.Blueprint = lambda *a, **k: types.SimpleNamespace(
-            route=lambda *a, **k: (lambda f: f))
-        fake.jsonify = lambda *a, **k: None
-        fake.request = types.SimpleNamespace(headers={}, args={})
-        sys.modules["flask"] = fake
-    import ai_surface_sentinel as s
+    from tests._import_shims import real_or_stub
+    with real_or_stub("flask"):  # same leak as _shell() had; see its docstring
+        import ai_surface_sentinel as s
     return s
 
 
