@@ -7,9 +7,10 @@ against is not a missing record — it is a record the operator has no reason to
 trust: a row DC Hub could have inserted, edited or back-dated after the prospect
 turned up at the operator's door on their own.
 
-So every lead event — a requirement registered, a listing opened by an
-identified user, an introduction requested, an inbox confirmed, an operator
-notified — is one entry in a single append-only hash chain:
+So every lead event — a requirement registered, the introduction terms
+accepted, a listing opened by an identified user, an introduction requested, an
+inbox confirmed, an operator notified — is one entry in a single append-only
+hash chain:
 
     entry_json = canonical JSON of the event, including prev_hash and key_id
     entry_hash = sha256(entry_json)
@@ -71,6 +72,7 @@ LEAD_ID_PREFIX = "LD-"
 
 EVENTS = (
     "interest_registered",   # a standing requirement for upcoming listings
+    "terms_accepted",        # an identified user accepted the introduction terms; the version is in terms_version
     "listing_viewed",        # an identified user opened a walled listing
     "intro_requested",       # an introduction to one listing's operator
     "email_confirmed",       # the prospect proved the inbox from the request
