@@ -216,8 +216,9 @@ def _clean_name(name, fallback):
 
 def _call_with_timeout(fn, timeout, *args, **kwargs):
     """Run fn with a hard wall-clock cap. Returns None on timeout/error — keeps
-    a flaky external fallback (e.g. the 15s HIFLD transmission probe) from
-    blowing the whole report's latency budget / holding a worker too long.
+    a slow lookup from blowing the whole report's latency budget / holding a
+    worker too long. (Written for the 15s HIFLD transmission probe, which was
+    removed from find_nearest_transmission 2026-09-13.)
 
     r-realcap (2026-08-25): this used `with _cf.ThreadPoolExecutor(...) as ex:`.
     ThreadPoolExecutor.__exit__ calls shutdown(wait=True), which JOINS the worker
@@ -229,7 +230,7 @@ def _call_with_timeout(fn, timeout, *args, **kwargs):
     Build the executor by hand and shut it down WITHOUT waiting. Python cannot
     kill a thread, so the orphan still runs to completion in the background —
     but it no longer holds the request. Its DB work is bounded by the query
-    itself and its one external call by requests(timeout=15).
+    itself.
     """
     ex = _cf.ThreadPoolExecutor(max_workers=1)
     try:
@@ -354,9 +355,10 @@ def _gather_power(lat, lon, state):
         out["_dist"] = None
         out["_volt"] = 0
 
-    # Transmission line — only probe when we have a REAL substation name. A junk
-    # placeholder name guarantees find_nearest_transmission's internal fuzzy
-    # match misses and falls back to a ~15s HIFLD live call. Hard-cap at 6s too.
+    # Transmission line — only probe when we have a REAL substation name: a
+    # placeholder is no basis for matching a line by name. (A miss here used to
+    # fall back to a ~15s HIFLD live call; that fallback was removed 2026-09-13.)
+    # Hard-cap at 6s too.
     tx = None
     if sub and real_name:
         tx = _call_with_timeout(find_nearest_transmission, 6, lat, lon, max_distance_miles=25)
@@ -364,7 +366,7 @@ def _gather_power(lat, lon, state):
     if tx:
         out["line_voltage"] = _fmt_kv(tx.get("voltage_kv")) or out.get("voltage", "—")
         out["line_owner"] = tx.get("owner") or out.get("operator", "—")
-        out["line_source"] = "HIFLD electric grid (live)" if tx.get("distance_miles") == "N/A (live query)" else "HIFLD electric grid"
+        out["line_source"] = "HIFLD electric grid"
         # Backfill the substation operator from the line owner when the
         # substation record lacks one (common in HIFLD).
         if out.get("operator") in (None, "—") and tx.get("owner"):
