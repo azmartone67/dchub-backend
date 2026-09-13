@@ -59,7 +59,8 @@ database URL, through every caller of the lookup:
   U9  a composite score whose power_grid gather raised declares it unavailable
       with a caveat, and is not memoised either
   UC1 control: each empty table reaches execute_query's own failure path, and logs
-      what that path logs, the way its id says
+      what that path logs, the way its id says. Read at the logger call: two other
+      test modules disable logging process-wide at import
   UC2 control: the stand-in connection offers nothing psycopg2's lacks
 
 On this base an empty or None result still falls through to the lookup's Overpass
@@ -311,25 +312,35 @@ EMPTY = {
 }
 
 
-class _Errors(logging.Handler):
-    """What site_planner logs at ERROR during one test. Attached to the logger
-    itself: caplog.records read after a fixture's yield holds only the teardown."""
+class _Errors:
+    """What site_planner's own code passes to logger.error during one test.
 
-    def __init__(self):
-        super().__init__(level=logging.ERROR)
+    Recorded at the call, not through a logging handler. Two test modules run
+    logging.disable(logging.CRITICAL) at import (tests/test_dcpi_slug_case_insensitive.py
+    and tests/test_facilities_country_aliases.py), and pytest imports every module
+    before it runs a test, so in a whole-suite run no handler receives anything. A
+    handler here read [] there: the two cases that must log failed, and the one that
+    must not passed without having been able to fail. Every other attribute is the
+    real logger's, so the stand-in can do nothing the logger cannot."""
+
+    def __init__(self, logger):
+        self._logger = logger
         self.messages = []
 
-    def emit(self, record):
-        self.messages.append(record.getMessage())
+    def error(self, msg, *args, **kwargs):
+        self.messages.append(str(msg) % args if args else str(msg))
+        self._logger.error(msg, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._logger, name)
 
 
 @pytest.fixture
-def errors():
-    handler = _Errors()
-    logger = logging.getLogger("site_planner")
-    logger.addHandler(handler)
-    yield handler
-    logger.removeHandler(handler)
+def errors(monkeypatch, sp):
+    assert isinstance(sp.logger, logging.Logger), f"site_planner.logger is {sp.logger!r}"
+    recorder = _Errors(sp.logger)
+    monkeypatch.setattr(sp, "logger", recorder)
+    return recorder
 
 
 @pytest.fixture
@@ -665,6 +676,10 @@ def test_uc1_control_each_empty_table_takes_the_path_its_id_names(monkeypatch, s
         assert not errors.messages, errors.messages
     else:
         assert any(m.startswith(logged) for m in errors.messages), errors.messages
+    # The recorder is live in this process, whatever another module did to logging.
+    # Without this the no-rows case would also pass over a recorder that records nothing.
+    sp.logger.error("uc1 probe %s", case)
+    assert errors.messages[-1] == f"uc1 probe {case}", errors.messages
 
 
 def test_uc2_control_the_stand_in_offers_nothing_psycopg2_lacks():
