@@ -223,6 +223,11 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
     Falls back to Haversine if PostGIS not available.
     
     Uses the substations table in Neon (populated from HIFLD).
+
+    Returns the rows nearest first; [] when the query ran and found no substation
+    in the box; None when it did not run (execute_query logged a query error or a
+    missing connection) and nothing else answered. None is not "no substation
+    nearby": nothing near the site was looked at. See the end.
     """
     # Skip PostGIS (not installed in Neon) — go straight to Haversine
 
@@ -325,8 +330,54 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
             logger.warning(f"Overpass substation fallback failed: {e}")
     except Exception as e:
         logger.warning(f"Substation fallback setup failed: {e}")
-    
-    return []
+
+    # [] and None are different answers, and every caller has to keep them apart.
+    # [] is a measurement: the query ran and the table holds no substation within
+    # max_distance_miles. None is not: the query did not run, so nothing near the
+    # site was looked at. The composite score declares power_grid unavailable
+    # instead of scoring it, analyze and compare mark their substations
+    # unavailable, and the site report does not print "No mapped substation".
+    #
+    # ★ 2026-09-13 — this returned [] on both paths, so a query error or a missing
+    # connection was served as "no substation within 25 mi". The composite score
+    # then published power_grid as validated (compute_suitability_score always
+    # returns a number) with the substation proximity, voltage and queue depth
+    # points silently scored as absent.
+    return None if result is None else []
+
+
+# What the site planner says in place of substations when find_nearest_substations
+# returned None. No trailing period: the composite score's caveats append one.
+SUBSTATIONS_NOT_MEASURED = (
+    "substation lookup did not run: DC Hub's substations table could not be queried, "
+    "so no substation near the site was measured (which is not the same as none being "
+    "there)")
+
+
+def _substations_coverage(found, miles=25):
+    """(coverage, basis) for what find_nearest_substations returned to a caller that
+    searched `miles` around the site, in the composite score's vocabulary."""
+    if found is None:
+        return 'unavailable', SUBSTATIONS_NOT_MEASURED
+    return 'validated', f"DC Hub substations table (HIFLD), within {miles} mi of the site"
+
+
+# What the site planner says in place of a transmission line when
+# find_nearest_transmission_measured reports that it measured nothing. No trailing
+# period, for the same reason.
+TRANSMISSION_NOT_MEASURED = (
+    "transmission lookup did not complete: DC Hub's substations or transmission_lines "
+    "table could not be queried, so no transmission line near the site was measured "
+    "(which is not the same as none being there)")
+
+
+def _transmission_coverage(measured, miles=15):
+    """(coverage, basis) for what find_nearest_transmission_measured reported to a
+    caller that searched `miles` around the site."""
+    if not measured:
+        return 'unavailable', TRANSMISSION_NOT_MEASURED
+    return 'validated', (f"DC Hub transmission_lines table (EIA), anchored at substations "
+                         f"within {miles} mi of the site")
 
 
 # A line's two endpoint substations sit within this many miles of each other in
@@ -355,8 +406,34 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
     radius box, nearest first, matched by exact name to line endpoints, keeping a
     line only where its endpoint names place it at that substation.
     distance_miles is the anchoring substation's distance.
-    Returns None when nothing matches. There is no live fallback; see the end.
+    Returns None when nothing matches, and also when a statement the lookup needs
+    did not run. A caller that has to tell those apart reads
+    find_nearest_transmission_measured, which does the work. There is no live
+    fallback; see the end of that function.
     """
+    return find_nearest_transmission_measured(lat, lng, max_distance_miles)[0]
+
+
+def find_nearest_transmission_measured(lat, lng, max_distance_miles=15):
+    """
+    find_nearest_transmission, and whether the lookup measured anything:
+      (line, True)  a line anchored near the site
+      (None, True)  every statement it needed ran, and no line is anchored there
+      (None, False) a statement did not run (execute_query logged a query error or
+                    a missing connection), so nothing near the site was measured
+    """
+    # ★ 2026-09-13 — measured, or not measured. execute_query returns None for a
+    # statement that did not run, and this lookup read that as a miss at each of its
+    # three statements: step 1 as no substation nearby, step 2 as no line
+    # (`if not lines`), step 3 by returning None outright. So a query error or a
+    # missing connection was served as "no transmission line near the site". The
+    # composite score published power_grid as validated with transmission proximity
+    # (up to 15 of its points) scored as absent, and its memo kept that for 6 h;
+    # analyze and compare served null either way; the site report filled the line in
+    # from the substation's own voltage and operator, after its 6 s cap as well.
+    # find_nearest_transmission still answers None for both, the miss contract
+    # tests/test_transmission_readers_sql.py pins; every caller reads this instead.
+
     # Step 1: substations near the site, nearest first
     deg_lat = max_distance_miles / 69.0
     deg_lng = max_distance_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
@@ -385,13 +462,21 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
         _TX_NEARBY_SUBSTATIONS
     ))
 
-    tx = _anchored_transmission_line(subs) if subs else None
-    if tx:
-        return tx
+    if subs is None:
+        return None, False
 
-    # No live fallback: a miss returns None, and every caller handles that. The
-    # site report shows the substation's own voltage and operator, the scorer
-    # awards no transmission points, and analyze and compare serve null.
+    tx, measured = _anchored_transmission_line(subs) if subs else (None, True)
+    if tx or not measured:
+        return tx, measured
+
+    # No live fallback: a miss returns (None, True), and every caller handles that.
+    # The site report shows the substation's own voltage and operator, the scorer
+    # awards no transmission points, and analyze and compare serve null with
+    # transmission_coverage 'validated'. A statement that did not run returns
+    # (None, False) instead, above and in _anchored_transmission_line: the composite
+    # score declares power_grid unavailable and does not memoise it, analyze and
+    # compare serve transmission_coverage 'unavailable', and the site report prints
+    # the line as not measured.
     #
     # ★ 2026-09-13 — _query_hifld_transmission_live used to run here on every
     # miss, the common case, behind paid routes. It was removed, not repointed.
@@ -413,11 +498,12 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
     # Phoenix, Columbus, Dallas and Quincy, while the nearest line was under a
     # mile away. A true distance needs every line's geometry in the box, 139-353
     # KB per call. A spatial answer belongs in the database.
-    return None
+    return None, True
 
 
 def _anchored_transmission_line(subs):
-    """Steps 2-3 of find_nearest_transmission. `subs` is step 1's rows, nearest first."""
+    """Steps 2-3 of find_nearest_transmission_measured. `subs` is step 1's rows,
+    nearest first. Returns (line, measured) the way that function does."""
     # ★ 2026-09-13 — anchored at nearby substations, not a first-word prefix.
     #
     # This reads the MAINTAINED transmission_lines: the EIA set that
@@ -463,8 +549,10 @@ def _anchored_transmission_line(subs):
           AND voltage_kv > 0;
     """
     lines = execute_query(lines_query, (names, names))
+    if lines is None:
+        return None, False  # the statement did not run: no endpoint was matched
     if not lines:
-        return None
+        return None, True
 
     candidates = []
     for line in lines:
@@ -488,7 +576,9 @@ def _anchored_transmission_line(subs):
     """
     placed = execute_query(places_query, (sorted(spellings),))
     if placed is None:
-        return None
+        # No endpoint name could be placed, so no candidate can be checked: none is
+        # served, and nothing was measured.
+        return None, False
     places = {}
     for row in placed:
         places.setdefault(row['name'], []).append((row['lat'], row['lng']))
@@ -504,8 +594,8 @@ def _anchored_transmission_line(subs):
                 'volt_class': None,  # not stored by the maintained table; see above
                 'distance_miles': round(distance, 1),
                 'matched_substation': sub['name'],
-            }
-    return None
+            }, True
+    return None, True
 
 
 def _line_is_at(sub, anchor, other, places):
@@ -1591,6 +1681,10 @@ def register_site_planner_routes(app):
         try:
             # Phase 1: Proximity Analysis
             substations = find_nearest_substations(lat, lng, limit=5)
+            # Read before the dedupe turns None into []: None means the lookup did
+            # not run, so the empty list and the null queue served below are
+            # unmeasured, not absent, and the response says which.
+            substations_coverage, substations_basis = _substations_coverage(substations)
             
             # Deduplicate substations by name
             seen_names = set()
@@ -1623,7 +1717,10 @@ def register_site_planner_routes(app):
             # Railway's egress to ArcGIS is unreliable (routes/transmission_ingest.py
             # fetches on a GitHub runner). A spatial answer belongs in the table.
             
-            transmission = find_nearest_transmission(lat, lng)
+            transmission, transmission_measured = find_nearest_transmission_measured(lat, lng)
+            # None both when no line is anchored near the site and when a statement
+            # did not run; transmission_coverage says which.
+            transmission_coverage, transmission_basis = _transmission_coverage(transmission_measured)
             
             # Phase 2: Queue Depth & Scoring
             iso = identify_iso_region(lat, lng, state)
@@ -1704,7 +1801,11 @@ def register_site_planner_routes(app):
                         'state': state,
                     },
                     'substations': substations or [],
+                    'substations_coverage': substations_coverage,
+                    'substations_basis': substations_basis,
                     'transmission': transmission,
+                    'transmission_coverage': transmission_coverage,
+                    'transmission_basis': transmission_basis,
                     'iso': iso,
                     'queue': queue_data,
                     'congestion': congestion,
@@ -1794,23 +1895,50 @@ def register_site_planner_routes(app):
 
         sub = {}
         env = None
+        # True when power_grid is unavailable because a lookup failed, not because of
+        # anything about the site. Such an answer is not memoised; see the return.
+        power_grid_failed = False
         # ── power_grid (real: HIFLD substations/transmission + ISO queue + congestion + gas) ──
         try:
-            substations = find_nearest_substations(lat, lng, limit=5) or []
-            transmission = find_nearest_transmission(lat, lng)
+            substations = find_nearest_substations(lat, lng, limit=5)
+            transmission, transmission_measured = find_nearest_transmission_measured(lat, lng)
             iso = identify_iso_region(lat, lng, state)
             congestion = estimate_congestion(lat, lng)
             env = screen_environmental(lat, lng)
             gas = find_nearby_gas_pipelines(lat, lng)
             nearby_dcs = find_nearby_facilities(lat, lng)
-            scoring = compute_suitability_score(substations, transmission, iso, env,
-                                                congestion, gas=gas, nearby_dcs=nearby_dcs) or {}
-            pg = scoring.get('score')
-            sub['power_grid'] = {'score': pg,
-                                 'coverage': 'validated' if isinstance(pg, (int, float)) else 'unavailable',
-                                 'basis': 'substation proximity/voltage, ISO queue depth, transmission, congestion, gas access, DC corridor (HIFLD + ISO)'}
+            # Each lookup that did not run, and the factors compute_suitability_score
+            # would have scored as absent without it. That scorer returns a number for
+            # any input, so scoring past a lookup that did not run published
+            # power_grid as validated with those factors silently missing: substation
+            # proximity, voltage and queue depth (up to 60 of its points) for the
+            # substations lookup, transmission proximity (up to 15) for the
+            # transmission lookup.
+            unmeasured = []
+            if substations is None:
+                unmeasured.append((SUBSTATIONS_NOT_MEASURED,
+                                   ['substation proximity', 'voltage', 'queue depth']))
+            if not transmission_measured:
+                unmeasured.append((TRANSMISSION_NOT_MEASURED, ['transmission proximity']))
+            if unmeasured:
+                power_grid_failed = True
+                left_out = [factor for _, factors in unmeasured for factor in factors]
+                sub['power_grid'] = {
+                    'score': None, 'coverage': 'unavailable',
+                    'basis': ('; '.join(reason for reason, _ in unmeasured)
+                              + '; power_grid is declared unavailable rather than scored without '
+                              + ', '.join(left_out[:-1])
+                              + (' and ' if len(left_out) > 1 else '') + left_out[-1])}
+            else:
+                scoring = compute_suitability_score(substations, transmission, iso, env,
+                                                    congestion, gas=gas, nearby_dcs=nearby_dcs) or {}
+                pg = scoring.get('score')
+                sub['power_grid'] = {'score': pg,
+                                     'coverage': 'validated' if isinstance(pg, (int, float)) else 'unavailable',
+                                     'basis': 'substation proximity/voltage, ISO queue depth, transmission, congestion, gas access, DC corridor (HIFLD + ISO)'}
         except Exception as e:
             logger.warning(f"composite power_grid failed: {e}")
+            power_grid_failed = True
             sub['power_grid'] = {'score': None, 'coverage': 'unavailable', 'basis': f'gather failed: {type(e).__name__}'}
 
         # ── fiber (carrier presence + FCC hex) ──
@@ -1921,13 +2049,16 @@ def register_site_planner_routes(app):
             verdict = 'BUILD' if composite >= 70 else 'CAUTION' if composite >= 45 else 'AVOID'
 
         caveats = [c for c in [
+            None if 'power_grid' in validated else f"power_grid: {(sub.get('power_grid') or {}).get('basis') or 'unavailable'}.",
             None if 'water' in validated else f"water: {(sub.get('water') or {}).get('basis') or 'unavailable'}.",
             'market_dcpi: unavailable in v1 — use rank_markets / get_market_dcpi_rank.',
             'natural-hazard layer is FEMA flood + FWS habitat + NWI wetlands only (no seismic/climate-projection layer yet).',
             'advisory only — pair with analyze_site (raw data), get_water_risk, and rank_markets.',
         ] if c]
 
-        return jsonify({
+        # Bound once and returned with its status: the response contract gate reads
+        # a success payload through `resp = jsonify(...)` and `return resp, 200`.
+        resp = jsonify({
             'success': True,
             '_entity': 'site',
             'location': {'lat': lat, 'lng': lng, 'state': state, 'address': address},
@@ -1944,6 +2075,12 @@ def register_site_planner_routes(app):
             'caveats': caveats,
             'meta': {'version': 'v1.0', 'timestamp': datetime.utcnow().isoformat()},
         })
+        if power_grid_failed:
+            # The memo keeps a 200 for 6 h. This one says a lookup failed, which
+            # stops being true when the database answers again, so it goes out
+            # no-store and the memo leaves it out (routes/_slow_tool_cache.py).
+            resp.headers['Cache-Control'] = 'no-store'
+        return resp, 200
 
     # ── GET/POST /api/v1/site-planner/disaster-risk ──
     @app.route('/api/v1/site-planner/disaster-risk', methods=['GET', 'POST'])
@@ -2305,11 +2442,17 @@ def register_site_planner_routes(app):
                 continue
             
             subs = find_nearest_substations(lat, lng, limit=5)
+            # Read before the dedupe turns None into []: None means the lookup did not
+            # run for this site, which its row and the recommendation both say.
+            subs_coverage, subs_basis = _substations_coverage(subs)
             # Deduplicate
             seen = set()
             subs = [s for s in (subs or []) if s.get('name') not in seen and not seen.add(s.get('name'))]
             
-            tx = find_nearest_transmission(lat, lng)
+            tx, tx_measured = find_nearest_transmission_measured(lat, lng)
+            # None both when no line is anchored near this site and when a statement did
+            # not run, which its row and the recommendation both say.
+            tx_coverage, tx_basis = _transmission_coverage(tx_measured)
             state_code = site_input.get('state', '')
             iso = identify_iso_region(lat, lng, state_code)
             env = screen_environmental(lat, lng)
@@ -2329,8 +2472,12 @@ def register_site_planner_routes(app):
                 'nearest_sub_miles': subs[0]['distance_miles'] if subs else None,
                 'nearest_sub_voltage': subs[0]['voltage_kv'] if subs else None,
                 'nearest_sub_name': subs[0]['name'] if subs else None,
+                'substations_coverage': subs_coverage,
+                'substations_basis': subs_basis,
                 'nearest_tx_miles': tx.get('distance_miles') if tx else None,
                 'nearest_tx_voltage': tx.get('voltage_kv') if tx else None,
+                'transmission_coverage': tx_coverage,
+                'transmission_basis': tx_basis,
                 'iso': iso.get('name'),
                 'queue_mw': estimate_queue_depth(iso.get('name','SERC'), subs[0].get('voltage_kv',0)).get('queue_mw') if subs else None,
                 'congestion': congestion.get('level'),
@@ -2405,6 +2552,15 @@ def register_site_planner_routes(app):
     logger.info("✅ Site Planner routes registered (Pro-only)")
 
 
+# The lookups compare marks on each row: the coverage field the row carries, what the
+# recommendation says when that lookup did not run, and the score factors it leaves out.
+_UNMEASURED_LOOKUPS = (
+    ('substations_coverage', 'substation lookup did not run',
+     'substation proximity, voltage and queue depth'),
+    ('transmission_coverage', 'transmission lookup did not complete', 'transmission proximity'),
+)
+
+
 def _generate_recommendation_reason(best, all_sites):
     """Generate a human-readable recommendation."""
     reasons = []
@@ -2420,4 +2576,21 @@ def _generate_recommendation_reason(best, all_sites):
     if not reasons:
         reasons.append("highest composite interconnection suitability")
     
-    return f"Recommended due to {', '.join(reasons)}."
+    reason = f"Recommended due to {', '.join(reasons)}."
+    # A site whose substation or transmission lookup did not run is scored without
+    # that lookup's factors. Say so, and name it. The scores are like-for-like only
+    # when every site is missing the same lookups.
+    sentences = []
+    for field, what, left_out in _UNMEASURED_LOOKUPS:
+        unmeasured = [s.get('address') or f"{s.get('lat')}, {s.get('lng')}"
+                      for s in all_sites if s.get(field) == 'unavailable']
+        if unmeasured:
+            sentences.append(
+                f"The {what} for {' and '.join(unmeasured)}, so "
+                f"{'its score leaves' if len(unmeasured) == 1 else 'their scores leave'} out {left_out}")
+    if sentences:
+        gaps = {tuple(s.get(field) == 'unavailable' for field, _, _ in _UNMEASURED_LOOKUPS)
+                for s in all_sites}
+        reason += (' ' + '. '.join(sentences)
+                   + ('; the scores are not like-for-like.' if len(gaps) > 1 else '.'))
+    return reason

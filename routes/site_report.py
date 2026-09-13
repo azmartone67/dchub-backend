@@ -17,7 +17,7 @@ unknown we render "—" / "Not published" rather than inventing it, and all
 estimates are labelled point-in-time — same contract as the template footer.
 
 Data sources (imported directly — NO synchronous self-HTTP calls):
-  • Power   : site_planner.find_nearest_substations / find_nearest_transmission
+  • Power   : site_planner.find_nearest_substations / find_nearest_transmission_measured
   • Gas     : site_planner.find_nearby_gas_pipelines
   • Fiber   : fiber_routes table (via site_planner.execute_query)
   • Air     : main._ap_score_site  (EPA Green Book / AQS / NPS / NEI scorer)
@@ -305,7 +305,8 @@ def _pdf_diag():
 def _gather_power(lat, lon, state):
     out = {"_score": None}
     try:
-        from site_planner import (find_nearest_substations, find_nearest_transmission,
+        from site_planner import (find_nearest_substations,
+                                   find_nearest_transmission_measured,
                                    identify_iso_region)
     except Exception as e:
         out["assessment"] = f"Power layer unavailable ({type(e).__name__})."
@@ -318,12 +319,19 @@ def _gather_power(lat, lon, state):
         iso = {}
     iso_name = iso.get("name") or "—"
 
+    # The lookup returns None when its query did not run; raising means the same.
+    # Either way nothing near the site was looked at, which is not "no mapped
+    # substation within 50 mi" and must not be printed as that.
     subs = []
+    measured = False
     try:
-        subs = find_nearest_substations(lat, lon, limit=3, max_distance_miles=50) or []
+        found = find_nearest_substations(lat, lon, limit=3, max_distance_miles=50)
+        measured = found is not None
+        subs = found or []
     except Exception:
         subs = []
     sub = subs[0] if subs else None
+    out["substation_coverage"] = "validated" if measured else "unavailable"
     real_name = False
 
     if sub:
@@ -348,7 +356,10 @@ def _gather_power(lat, lon, state):
         out["_volt"] = sub.get("voltage_kv") or 0
     else:
         out["substation"] = "—"
-        out["substation_note"] = "No mapped substation within 50 mi in DC Hub's grid layer."
+        out["substation_note"] = (
+            "No mapped substation within 50 mi in DC Hub's grid layer." if measured else
+            "Not measured: DC Hub's grid layer could not be queried for this report, so "
+            "whether a substation stands within 50 mi is unknown.")
         out["voltage"] = "—"
         out["operator"] = "—"
         out["substation_source"] = "DC Hub grid layer · HIFLD/Neon"
@@ -359,9 +370,21 @@ def _gather_power(lat, lon, state):
     # placeholder is no basis for matching a line by name. (A miss here used to
     # fall back to a ~15s HIFLD live call; that fallback was removed 2026-09-13.)
     # Hard-cap at 6s too.
-    tx = None
-    if sub and real_name:
-        tx = _call_with_timeout(find_nearest_transmission, 6, lat, lon, max_distance_miles=25)
+    #
+    # A lookup that ran and matched no line leaves the line to the substation's own
+    # voltage and operator, as before. One that did not finish does not:
+    # _call_with_timeout returns None when the lookup raised or outran the cap, and
+    # the lookup reports measured=False when a statement it needs did not run.
+    # Nothing about the line was looked at then, so filling it in from the
+    # substation would print a guess as the line.
+    probed = bool(sub) and real_name
+    tx, tx_measured = None, False
+    if probed:
+        found_tx = _call_with_timeout(find_nearest_transmission_measured, 6, lat, lon,
+                                      max_distance_miles=25)
+        if found_tx is not None:
+            tx, tx_measured = found_tx
+    out["transmission_coverage"] = "validated" if tx_measured else "unavailable"
 
     if tx:
         out["line_voltage"] = _fmt_kv(tx.get("voltage_kv")) or out.get("voltage", "—")
@@ -371,6 +394,13 @@ def _gather_power(lat, lon, state):
         # substation record lacks one (common in HIFLD).
         if out.get("operator") in (None, "—") and tx.get("owner"):
             out["operator"] = tx.get("owner")
+    elif probed and not tx_measured:
+        out["line_voltage"] = "—"
+        out["line_owner"] = "—"
+        out["line_note"] = ("Not measured: the transmission lookup did not complete for this "
+                            "report, so which line serves this substation, and at what voltage, "
+                            "is unknown.")
+        out["line_source"] = "HIFLD electric grid"
     else:
         out["line_voltage"] = out.get("voltage", "—")
         out["line_owner"] = out.get("operator", "—")
@@ -399,6 +429,12 @@ def _gather_power(lat, lon, state):
         parts.append(f"The nearest mapped substation, {out['substation']}{vtxt}, is "
                      f"{_fmt_mi(out['_dist']) or '—'} from the site"
                      + (f" — operated by {out['operator']}" if out['operator'] != '—' else "") + ".")
+    elif not measured:
+        parts.append("The substation lookup did not run for this report, so the distance to the "
+                     "nearest substation is unmeasured, not absent.")
+    if probed and not tx_measured:
+        parts.append("The transmission lookup did not complete for this report, so the line "
+                     "serving that substation is unmeasured, not absent.")
     if iso_name != "—":
         parts.append(f"The site sits in the {iso_name} territory.")
     parts.append("DC Hub does not publish per-substation transfer headroom, so a load study with "
@@ -1575,6 +1611,7 @@ def _render_html(S):
         + '</div>'
         '<div class="card amb"><p class="lab">Transmission Line</p>'
         f'<div class="big">{_esc(p.get("line_voltage","—"))}</div>'
+        + (f'<p class="note">{_esc(p.get("line_note"))}</p>' if p.get("line_note") else "")
         + _kv("Est. transfer capacity", _esc(p.get("transfer", "—")))
         + _kv("Owner", _esc(p.get("line_owner", "—")))
         + _kv("Headroom status", headroom_pill)

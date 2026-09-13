@@ -278,7 +278,10 @@ def test_s2_control_the_scan_finds_the_transmission_query():
         "scan found the table but no predicate on from_sub/to_sub — S1 would pass vacuously"
     )
     names = {name for name, *_ in scope}
-    assert "find_nearest_transmission" in names, (
+    # The entry point runs step 1 and hands its rows to the endpoint query. Since
+    # 2026-09-13 that is find_nearest_transmission_measured; find_nearest_transmission
+    # only unwraps its answer and builds nothing.
+    assert "find_nearest_transmission_measured" in names, (
         f"S1's scope {sorted(names)} misses the lookup's entry point, where a pattern "
         "could be built and passed in"
     )
