@@ -16,8 +16,9 @@ So this module keeps the evidence a closer needs, and judges it.
   ledger   One row per detector per recorded radar sweep: its outcome
            (completed | degraded | crashed | timeout | abandoned) and, for a
            completed detector, exactly which issue|url keys it reported.
-           degraded = returned normally without a database connection from
-           _db(); crashed includes a detector that reported its own crash.
+           degraded = returned normally after _db() or _ro_conn() gave it no
+           connection or one of its queries raised; crashed includes a
+           detector that reported its own crash.
   verdict  firing | quiet_proven | quiet_unproven | unmeasured, for one finding.
 
 quiet_proven requires ALL of:
@@ -40,7 +41,8 @@ WRITE  brain_consistency_radar._persist_findings_to_db (full sweeps only) calls
        replicas; rows older than LEDGER_RETENTION_DAYS are pruned.
        Kill switch: BRAIN_DETECTOR_LEDGER_DISABLE=1.
 READ   POST /api/v1/brain/spec-debt/finding-evidence (routes/brain_spec_debt.py)
-       calls read_evidence().
+       calls read_evidence(). The radar's resolve-on-absence arms
+       (routes/brain_findings_resolve.py) query brain_detector_runs directly.
 """
 from __future__ import annotations
 
@@ -68,7 +70,8 @@ FIRING, QUIET_PROVEN, QUIET_UNPROVEN, UNMEASURED = (
 #   spec-debt issue). None qualifies yet:
 #   · _db() swallows a failed connection and most DB detectors then return [] —
 #     indistinguishable from healthy. The ledger now records that as
-#     "degraded", but only for connections made through _db().
+#     "degraded", and a query that raised on such a connection too, but only
+#     for connections made through _db() or _ro_conn().
 #   · check_operator_profile_gap, check_repeated_404_patterns,
 #     check_mcp_tool_sunset_candidate and check_cross_surface_value_drift pick
 #     their targets from recent data (top-N, rolling windows, file:line keys),
