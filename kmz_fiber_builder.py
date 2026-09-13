@@ -301,7 +301,9 @@ def run_export_source(output_dir, state_filter=None):
     log.info(f"Export mode: {url}")
     out = ensure_dir(output_dir / "export")
     paths = []
-    for etype, fname in [("power-plants","dchub_power_plants"),("transmission-lines","dchub_transmission_lines"),("pipelines","dchub_pipelines")]:
+    # type=transmission-lines was retired 2026-09-13 and answers 410: the export
+    # has no line geometry to place. See energy_kmz_export.TRANSMISSION_RETIRED.
+    for etype, fname in [("power-plants","dchub_power_plants"),("pipelines","dchub_pipelines")]:
         dest = out / f"{fname}.kmz"
         log.info(f"  Downloading {etype}...")
         try:

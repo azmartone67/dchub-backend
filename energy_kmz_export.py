@@ -8,7 +8,9 @@ Usage:
     GET /api/energy-discovery/export/kmz%stype=power-plants&market=chicago
     GET /api/energy-discovery/export/kmz%stype=all
     GET /api/energy-discovery/export/kmz%stype=pipelines
-    GET /api/energy-discovery/export/kmz%stype=transmission-lines&market=northern_virginia
+
+  Transmission lines are not exported (retired 2026-09-13):
+  type=transmission-lines answers 410. See TRANSMISSION_RETIRED.
 
   - Standalone: DATABASE_URL=$NEON_DATABASE_URL python3 energy_kmz_export.py
     Generates files in /workspace/exports/
@@ -59,7 +61,6 @@ FUEL_ICONS = {
 }
 
 PIPELINE_COLOR = 'ff0055ff'  # red-orange
-TX_LINE_COLOR  = 'ff00ccff'  # yellow-orange
 
 
 def get_fuel_color(fuel_type):
@@ -259,66 +260,32 @@ def generate_pipelines_kml(state=None):
     return kml, len(pipelines)
 
 
-def generate_transmission_kml(market=None, min_voltage=None):
-    """Generate KML for transmission lines"""
-    conn = get_db()
-    try:
-        c = conn.cursor()
-
-        query = "SELECT * FROM discovered_transmission_lines WHERE 1=1"
-        params = []
-        if market:
-            query += " AND market = %s"; params.append(market)
-        if min_voltage:
-            query += " AND voltage_kv >= %s"; params.append(float(min_voltage))
-        query += " ORDER BY voltage_kv DESC LIMIT 1000"
-
-        c.execute(query, params)
-        lines = _dict_rows(c)
-    finally:
-        conn.close()
-
-    title = "DC Hub — Transmission Lines"
-    if market:
-        title += f" ({market})"
-
-    kml = _build_kml_header(title, f"Transmission lines. Generated {utc_now().strftime('%Y-%m-%d %H:%M UTC')}. Total: {len(lines)} lines. Note: Point markers only (line geometry not stored).")
-
-    kml += f"""  <Style id="tx-style">
-    <IconStyle>
-      <color>{TX_LINE_COLOR}</color>
-      <scale>0.6</scale>
-      <Icon><href>http://maps.google.com/mapfiles/kml/shapes/target.png</href></Icon>
-    </IconStyle>
-    <LabelStyle><scale>0.6</scale></LabelStyle>
-  </Style>
-"""
-
-    for line in lines:
-        owner = _xml_escape(line.get('owner', 'Unknown'))
-        voltage = line.get('voltage_kv', 0) or 0
-        volt_class = line.get('volt_class', '')
-        sub1 = _xml_escape(line.get('sub_1', ''))
-        sub2 = _xml_escape(line.get('sub_2', ''))
-        mkt = line.get('market', '')
-
-        desc = f"""<![CDATA[
-<b>Owner:</b> {owner}<br/>
-<b>Voltage:</b> {voltage:,.0f} kV ({volt_class})<br/>
-<b>Substations:</b> {sub1} → {sub2}<br/>
-<b>Market:</b> {mkt}<br/>
-<b>Data:</b> <a href="https://dchub.cloud">DC Hub</a>
-]]>"""
-
-        kml += f"""  <Placemark>
-    <name>{owner} ({voltage:,.0f} kV)</name>
-    <description>{desc}</description>
-    <styleUrl>#tx-style</styleUrl>
-  </Placemark>
-"""
-
-    kml += _build_kml_footer()
-    return kml, len(lines)
+# ── Transmission lines: not exported. Retired 2026-09-13. ────────────────────
+# Both transmission paths read discovered_transmission_lines, a March 2026 crawl
+# with no writer anywhere in the repo, TEXT timestamps (it could not date its own
+# freeze) and 2,821,162 rows in which one line recurs hundreds of times. Neither
+# path produced a usable layer:
+#   - type=transmission-lines wrote placemarks with no <Point>, which Google
+#     Earth cannot place (measured: 1,000 placemarks and 0 points for dallas);
+#   - type=all, which the Land & Power "Export KMZ" button opens, appended a
+#     second ORDER BY ... LIMIT to a finished statement, so Postgres rejected it
+#     on every request and the button returned 500 for the whole export, power
+#     plants and pipelines included.
+# Nothing maintained can take its place. transmission_lines, refreshed weekly
+# from EIA, stores no geometry; the only transmission table with coordinates,
+# transmission_lines_eia, is itself a snapshot with no writer
+# (util/transmission_tables.py). A transmission export would have to invent
+# positions, so the export says it has none.
+TRANSMISSION_RETIRED = {
+    'success': False,
+    'retired': True,
+    'retired_at': '2026-09-13',
+    'error': 'transmission_export_retired',
+    'reason': ("Transmission lines are not exported: DC Hub's maintained "
+               "transmission table stores no line geometry, so an export could "
+               "not place a line on a map."),
+    'instead': '/api/v1/grid/transmission-proximity?lat=<lat>&lon=<lon>&radius_km=<km>',
+}
 
 
 def generate_all_kml(market=None):
@@ -340,15 +307,6 @@ def generate_all_kml(market=None):
         c.execute("SELECT * FROM discovered_pipelines ORDER BY capacity_mdth DESC")
         pipelines = _dict_rows(c)
 
-        # Get transmission lines
-        tx_query = "SELECT * FROM discovered_transmission_lines WHERE 1=1 ORDER BY voltage_kv DESC LIMIT 1000"
-        tx_params = []
-        if market:
-            tx_query += " AND market = %s"; tx_params.append(market)
-        tx_query += " ORDER BY voltage_kv DESC LIMIT 500"
-        c.execute(tx_query, tx_params)
-        tx_lines = _dict_rows(c)
-
         # Get stats
         c.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM discovered_power_plants WHERE lat IS NOT NULL")
         total_mw = float(c.fetchone()[0])
@@ -361,7 +319,8 @@ def generate_all_kml(market=None):
         title += f" ({market})"
 
     desc = f"Complete energy infrastructure from DC Hub. Generated {utc_now().strftime('%Y-%m-%d %H:%M UTC')}."
-    desc += f" {len(plants):,} power plants ({total_mw:,.0f} MW), {len(pipelines)} pipelines, {len(tx_lines):,} transmission lines."
+    desc += f" {len(plants):,} power plants ({total_mw:,.0f} MW), {len(pipelines)} pipelines."
+    desc += " Transmission lines are not included: DC Hub's maintained transmission table stores no line geometry."
 
     kml = _build_kml_header(title, desc)
 
@@ -381,10 +340,6 @@ def generate_all_kml(market=None):
     kml += f"""  <Style id="pipeline-style">
     <IconStyle><color>{PIPELINE_COLOR}</color><scale>1.0</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/gas_stations.png</href></Icon></IconStyle>
     <LabelStyle><scale>0.8</scale></LabelStyle>
-  </Style>
-  <Style id="tx-style">
-    <IconStyle><color>{TX_LINE_COLOR}</color><scale>0.5</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/target.png</href></Icon></IconStyle>
-    <LabelStyle><scale>0</scale></LabelStyle>
   </Style>
 """
 
@@ -438,25 +393,8 @@ def generate_all_kml(market=None):
 """
     kml += "  </Folder>\n"
 
-    # Transmission folder
-    if tx_lines:
-        kml += f"""  <Folder>
-    <name>Transmission Lines ({len(tx_lines):,})</name>
-    <open>0</open>
-    <description>Point markers — line geometry not stored</description>
-"""
-        for line in tx_lines:
-            owner = _xml_escape(line.get('owner', 'Unknown'))
-            voltage = line.get('voltage_kv', 0) or 0
-            kml += f"""    <Placemark>
-      <name>{owner} ({voltage:,.0f} kV)</name>
-      <styleUrl>#tx-style</styleUrl>
-    </Placemark>
-"""
-        kml += "  </Folder>\n"
-
     kml += _build_kml_footer()
-    total = len(plants) + len(pipelines) + len(tx_lines)
+    total = len(plants) + len(pipelines)
     return kml, total
 
 
@@ -515,6 +453,10 @@ def register_kmz_export_routes(app):
         min_capacity = request.args.get('min_capacity')
         format_type = request.args.get('format', 'kmz')  # kmz or kml
 
+        if export_type == 'transmission-lines':
+            # Retired 2026-09-13, answered before any DB work. See TRANSMISSION_RETIRED.
+            return jsonify(TRANSMISSION_RETIRED), 410
+
         try:
             if export_type == 'power-plants':
                 kml, count = generate_power_plants_kml(market, state, fuel_type, min_capacity)
@@ -522,9 +464,6 @@ def register_kmz_export_routes(app):
             elif export_type == 'pipelines':
                 kml, count = generate_pipelines_kml(state)
                 fname = f"dchub_pipelines{'_' + state if state else ''}"
-            elif export_type == 'transmission-lines':
-                kml, count = generate_transmission_kml(market)
-                fname = f"dchub_transmission{'_' + market if market else ''}"
             else:
                 kml, count = generate_all_kml(market)
                 fname = f"dchub_energy_infrastructure{'_' + market if market else ''}"
@@ -558,8 +497,6 @@ def register_kmz_export_routes(app):
             total_mw = float(c.fetchone()[0])
             c.execute("SELECT COUNT(*) FROM discovered_pipelines")
             total_pipelines = c.fetchone()[0]
-            c.execute("SELECT COUNT(*) FROM discovered_transmission_lines")
-            total_tx = c.fetchone()[0]
             c.execute("SELECT COUNT(DISTINCT market) FROM discovered_power_plants")
             total_markets = c.fetchone()[0]
 
@@ -573,14 +510,15 @@ def register_kmz_export_routes(app):
                     'total_capacity_mw': round(total_mw, 1),
                     'total_capacity_gw': round(total_mw / 1000, 1),
                     'pipelines': total_pipelines,
-                    'transmission_lines': total_tx,
                     'markets': total_markets,
                 },
+                # This used to publish COUNT(*) of the retired crawl — 2,821,162
+                # rows, one line repeated hundreds of times — as a line count.
+                'not_exported': {'transmission_lines': TRANSMISSION_RETIRED['reason']},
                 'endpoints': {
                     'all': '/api/energy-discovery/export/kmz?type=all',
                     'power_plants': '/api/energy-discovery/export/kmz?type=power-plants',
                     'pipelines': '/api/energy-discovery/export/kmz?type=pipelines',
-                    'transmission': '/api/energy-discovery/export/kmz?type=transmission-lines',
                     'by_market': '/api/energy-discovery/export/kmz?type=all&market=chicago',
                     'kml_format': '/api/energy-discovery/export/kmz?type=all&format=kml',
                 },

@@ -26,6 +26,12 @@ timeout that was never a timeout.
    endpoint. Anchoring the pattern lets Postgres rewrite it into a real index
    range (BitmapOr over idx_transmission_sub1/sub_2): 2.29s -> 26ms.
 
+   ★ 2026-09-13: the lookup moved to the maintained transmission_lines (EIA,
+   ~94.6K rows, endpoints from_sub/to_sub). discovered_transmission_lines was a
+   frozen March 2026 crawl with no writer. A leading wildcard is a full scan on
+   any table, so S1-S3 follow the new table with the same intent — and S2 also
+   fails if a SQL literal in site_planner.py still reads the crawl.
+
 2. THE CAP THAT NEVER CAPPED.  _call_with_timeout promised "a hard wall-clock
    cap" so a slow probe could not blow the report's budget. It was written as
 
@@ -50,9 +56,10 @@ THE CONTRACT
   T2. Anti-vacuity control for T1: the victim function really is slow, and the
       unpatched `with`-form really does block (so T1 can fail).
   T3. _call_with_timeout still returns the value on the happy path.
-  S1. No SQL literal reading discovered_transmission_lines uses a LEADING
-      wildcard in a LIKE against sub_1/sub_2.
-  S2. Anti-vacuity control for S1: the scan actually finds that query.
+  S1. No SQL literal reading transmission_lines uses a LEADING wildcard in a
+      LIKE against its endpoint columns (from_sub/to_sub).
+  S2. Anti-vacuity control for S1: the scan actually finds that query, and no
+      SQL literal still reads the retired discovered_transmission_lines.
   S3. Positive control: the anchored prefix form is the one in use.
   P1. _build_survey_data's section pool is not a `with` block — otherwise its
       per-section _grab(timeout=18) cannot bound the request either.
@@ -149,30 +156,39 @@ def test_t3_call_with_timeout_still_returns_the_value():
 _LEADING_WILDCARD = re.compile(r"""['"]%\{?[A-Za-z_]""")
 
 
+# The maintained table as a whole word, so the retired crawl's name
+# (discovered_transmission_lines) can never satisfy it.
+_TX_TABLE = r"(?<![A-Za-z0-9_])transmission_lines(?![A-Za-z0-9_])"
+_RETIRED_TX_TABLE = "discovered_transmission_lines"
+
+
+def _sql_literals(src):
+    return re.findall(r'"""(.*?)"""', src, re.S)
+
+
 def _tx_query_blocks(src):
-    """Every SQL literal in src that reads discovered_transmission_lines."""
-    return [m for m in re.findall(r'"""(.*?)"""', src, re.S)
-            if "discovered_transmission_lines" in m]
+    """Every SQL literal in src that reads the maintained transmission_lines."""
+    return [m for m in _sql_literals(src)
+            if re.search(r"(FROM|JOIN)\s+" + _TX_TABLE, m, re.I)]
 
 
 def test_s1_no_leading_wildcard_like_against_transmission_endpoints():
-    """S1: sub_1/sub_2 LIKE patterns must be anchored, not '%term%'."""
+    """S1: from_sub/to_sub LIKE patterns must be anchored, not '%term%'."""
     src = SITE_PLANNER.read_text()
     offenders = []
     for block in _tx_query_blocks(src):
         if "LIKE" not in block.upper():
             continue
-        # find the argument tuple passed alongside this query
-        if re.search(r"LOWER\(sub_[12]\)\s+LIKE", block, re.I):
-            offenders.append("LOWER(sub_N) LIKE — column-side LOWER() defeats "
-                             "idx_transmission_sub1/sub_2")
+        if re.search(r"LOWER\((from_sub|to_sub)\)\s+LIKE", block, re.I):
+            offenders.append("LOWER(from_sub/to_sub) LIKE — column-side LOWER() "
+                             "defeats any index on the endpoint columns")
     for m in _LEADING_WILDCARD.finditer(src):
         line = src[:m.start()].count("\n") + 1
         ctx = src[max(0, m.start() - 400):m.start()]
-        if "discovered_transmission_lines" in ctx:
+        if re.search(_TX_TABLE, ctx):
             offenders.append(f"site_planner.py:{line} leading-wildcard LIKE param")
     assert not offenders, (
-        "un-indexable LIKE against discovered_transmission_lines (2.8M rows): "
+        "un-indexable LIKE against transmission_lines: "
         + "; ".join(offenders)
         + ". Anchor the pattern (term.upper() + '%') so Postgres can rewrite it "
           "into an index range. Do NOT add COLLATE \"C\" — that defeats the index."
@@ -181,18 +197,24 @@ def test_s1_no_leading_wildcard_like_against_transmission_endpoints():
 
 def test_s2_control_the_scan_finds_the_transmission_query():
     """S2: anti-vacuity. If this fails, S1 proved nothing."""
-    blocks = _tx_query_blocks(SITE_PLANNER.read_text())
-    assert blocks, "scan found no SQL literal reading discovered_transmission_lines"
+    src = SITE_PLANNER.read_text()
+    blocks = _tx_query_blocks(src)
+    assert blocks, "scan found no SQL literal reading transmission_lines"
     assert any("LIKE" in b.upper() for b in blocks), (
         "scan found the table but no LIKE query — S1 would pass vacuously"
+    )
+    stale = [b for b in _sql_literals(src) if _RETIRED_TX_TABLE in b]
+    assert not stale, (
+        "a SQL literal in site_planner.py still reads discovered_transmission_lines, "
+        "the frozen March 2026 crawl retired 2026-09-13 — read transmission_lines"
     )
 
 
 def test_s3_positive_control_the_anchored_prefix_is_in_use():
     """S3: the replacement is present, not merely the offender absent."""
     src = SITE_PLANNER.read_text()
-    assert re.search(r"sub_1 LIKE %s OR sub_2 LIKE %s", src), (
-        "expected the anchored `sub_1 LIKE %s OR sub_2 LIKE %s` form"
+    assert re.search(r"from_sub LIKE %s OR to_sub LIKE %s", src), (
+        "expected the anchored `from_sub LIKE %s OR to_sub LIKE %s` form"
     )
     assert re.search(r"search_term\.upper\(\)\s*\+\s*'%'", src), (
         "expected the prefix pattern to be built as search_term.upper() + '%'"
