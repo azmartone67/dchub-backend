@@ -2597,11 +2597,13 @@ def _ro_conn():
     for dsn in dsns:
         try:
             c = _pg2.connect(dsn, sslmode="require",
-                             connect_timeout=_RO_CONNECT_TIMEOUT_S)
+                             connect_timeout=_RO_CONNECT_TIMEOUT_S,
+                             **_query_tracking_kwargs())
             c.autocommit = False
             return c
         except Exception:
             continue
+    _DB_UNAVAILABLE.hit = True
     return None
 
 
@@ -3590,10 +3592,74 @@ def check_csp_drift() -> list[dict]:
 # ★ 2026-09-13 — a detector that could not get a connection returns [] and looks
 #   exactly like a healthy one. _run_detectors reads this thread-local after each
 #   detector and records the run as "degraded" (routes/brain_detector_ledger.py),
-#   so the detector ledger never takes an empty result from a detector that had
-#   no database as evidence that its targets are healthy. Only connections made
-#   through _db(), on the detector's own thread, are seen.
+#   so neither the detector ledger nor resolve-on-absence
+#   (routes/brain_findings_resolve.py) takes an empty result from a detector that
+#   had no database as evidence that its targets are healthy.
+#   A connection is not a measurement either: most detectors catch a failed query
+#   (a statement timeout, a missing column) and return [] or skip the target. So
+#   connections from _db() and _ro_conn() hand out cursors that set the same
+#   marker when the database raises. Only those two connections, and queries run
+#   on the detector's own thread, are seen.
 _DB_UNAVAILABLE = __import__("threading").local()
+_QUERY_TRACKING_CURSORS: dict = {}
+_QUERY_TRACKING_CONNECTION: list = []
+
+
+def _query_tracking_cursor(base):
+    """A subclass of the psycopg2 cursor class `base` whose execute() and
+    executemany() mark _DB_UNAVAILABLE on the calling thread when they raise."""
+    cls = _QUERY_TRACKING_CURSORS.get(base)
+    if cls is None:
+        class _Tracked(base):
+            def execute(self, *args, **kwargs):
+                try:
+                    return super().execute(*args, **kwargs)
+                except Exception:
+                    _DB_UNAVAILABLE.hit = True
+                    raise
+
+            def executemany(self, *args, **kwargs):
+                try:
+                    return super().executemany(*args, **kwargs)
+                except Exception:
+                    _DB_UNAVAILABLE.hit = True
+                    raise
+
+        _Tracked.__name__ = _Tracked.__qualname__ = f"QueryTracking{base.__name__}"
+        cls = _QUERY_TRACKING_CURSORS.setdefault(base, _Tracked)
+    return cls
+
+
+def _query_tracking_connection():
+    """A psycopg2 connection class whose cursors are _query_tracking_cursor()s of
+    whatever cursor_factory the caller asks for (the hook
+    psycopg2.extras.LoggingConnection uses)."""
+    if not _QUERY_TRACKING_CONNECTION:
+        import psycopg2.extensions as _pgx
+
+        class QueryTrackingConnection(_pgx.connection):
+            def cursor(self, *args, **kwargs):
+                if len(args) > 1:  # cursor(name, cursor_factory, ...)
+                    args = (args[0], _query_tracking_cursor(
+                        args[1] or self.cursor_factory or _pgx.cursor)) + args[2:]
+                else:
+                    kwargs["cursor_factory"] = _query_tracking_cursor(
+                        kwargs.get("cursor_factory") or self.cursor_factory or _pgx.cursor)
+                return super().cursor(*args, **kwargs)
+
+        _QUERY_TRACKING_CONNECTION.append(QueryTrackingConnection)
+    return _QUERY_TRACKING_CONNECTION[0]
+
+
+def _query_tracking_kwargs() -> dict:
+    """psycopg2.connect() kwargs for a query-tracking connection. If the class
+    cannot be built the connection still works, but the run is marked degraded:
+    nothing would see its queries fail."""
+    try:
+        return {"connection_factory": _query_tracking_connection()}
+    except Exception:
+        _DB_UNAVAILABLE.hit = True
+        return {}
 
 
 def _db():
@@ -3605,7 +3671,8 @@ def _db():
         _DB_UNAVAILABLE.hit = True
         return None
     try:
-        c = _pg2.connect(db, sslmode="require", connect_timeout=5)
+        c = _pg2.connect(db, sslmode="require", connect_timeout=5,
+                         **_query_tracking_kwargs())
         c.autocommit = True
         return c
     except Exception:
@@ -12231,6 +12298,14 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
     #   these findings to a sweep that another scan_all() has since replaced.
     _crashed_fns: list = []
     _timeout_fns: list = []
+    # ★ 2026-09-13 — every detector submitted, and those whose outcome was read. A
+    #   detector whose result was never read is abandoned whether or not its
+    #   thread had finished: one that finished between the last read and the tally
+    #   below used to land in no list at all, and the orphan arm in
+    #   routes/brain_findings_resolve.py reads a detector missing from
+    #   registered_fns as one that no longer exists.
+    _registered_fns = list(dict.fromkeys(fn.__name__ for fn in detectors))
+    _read_fns: set = set()
     import uuid as _scan_uuid
     _sweep_id = _scan_uuid.uuid4().hex
     ex = _cf.ThreadPoolExecutor(max_workers=8,
@@ -12242,6 +12317,7 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
                 fn = futs[fut]
                 try:
                     status, name, result = fut.result(timeout=5)
+                    _read_fns.add(name)
                     _completed += 1
                     if status == "ok":
                         # ★ Stamp provenance. The resolve-on-absence sweep may
@@ -12256,27 +12332,35 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
                         out.extend(result)
                     else:
                         _crashed_fns.append(name)
+                        # `_about_fn`, not `_detector_fn`: the runner wrote this
+                        # finding ABOUT `name`. The persist step stores it as the
+                        # row's detector_fn, so it closes once `name` runs clean.
                         out.append({
                             "issue":  f"consistency_radar_detector_crashed:{name}",
                             "url":    name,
                             "count":  1,
                             "detail": result,
+                            "_about_fn": name,
                         })
                 except _cf.TimeoutError:
+                    _read_fns.add(fn.__name__)
                     _timeout_fns.append(fn.__name__)
                     out.append({
                         "issue":  f"consistency_radar_detector_timeout:{fn.__name__}",
                         "url":    fn.__name__,
                         "count":  1,
                         "detail": "Detector exceeded per-future 5s collection cap.",
+                        "_about_fn": fn.__name__,
                     })
                 except Exception as e:
+                    _read_fns.add(fn.__name__)
                     _crashed_fns.append(fn.__name__)
                     out.append({
                         "issue":  f"consistency_radar_detector_crashed:{fn.__name__}",
                         "url":    fn.__name__,
                         "count":  1,
                         "detail": f"{type(e).__name__}: {str(e)[:200]}",
+                        "_about_fn": fn.__name__,
                     })
                 if _scan_time.time() >= _deadline:
                     break
@@ -12308,7 +12392,8 @@ def _run_detectors(detectors: list, budget_s: float | None = None) -> list[dict]
             if isinstance(_f, dict):
                 _f["_sweep_id"] = _sweep_id
         _LAST_SWEEP["completed_fns"] = list(_completed_fns)
-        _LAST_SWEEP["abandoned_fns"] = list(not_done)
+        _LAST_SWEEP["abandoned_fns"] = [n for n in _registered_fns if n not in _read_fns]
+        _LAST_SWEEP["registered_fns"] = list(_registered_fns)
         _LAST_SWEEP["crashed_fns"] = list(_crashed_fns)
         _LAST_SWEEP["timeout_fns"] = list(_timeout_fns)
         _LAST_SWEEP["degraded_fns"] = list(_degraded_fns)
@@ -13309,8 +13394,10 @@ def _persist_release_sp(cur, name: str) -> None:
 #   scan_all() abandons every detector still running at its 25s budget, and
 #   which ones varies run to run (measured: 15, 16, 42, 42, 53 of ~140).
 #   resolve-on-absence must therefore never read "absent" as "fixed" for a
-#   detector that did not report — see the guard in _persist_findings_to_db.
-_LAST_SWEEP: dict = {"completed_fns": [], "abandoned_fns": [], "at": 0.0}
+#   detector that did not report. ★ 2026-09-13: _persist_findings_to_db no longer
+#   reads this dict — any scan_all() overwrites it, persisting or not. It finds
+#   its own sweep in _SWEEP_OUTCOMES by the sweep id its findings carry.
+_LAST_SWEEP: dict = {"completed_fns": [], "abandoned_fns": [], "registered_fns": [], "at": 0.0}
 
 
 def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> int:
@@ -13328,7 +13415,8 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
 
     Now: instead of deleting, findings ABSENT from the current sweep but
     still marked open are RESOLVED (status='resolved', resolved_at=NOW()),
-    preserving their first_seen / seen_count history. A reappearing
+    preserving their first_seen / seen_count history — only on evidence that
+    their producer looked (routes/brain_findings_resolve.py). A reappearing
     finding is reopened by the canonical writer (clears resolved_at). The
     two live consumers (autopilot worklist read + outcome verifier) both
     already gate on `last_seen > NOW()-INTERVAL '10 minutes'`, so they
@@ -13375,9 +13463,9 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                             "TEXT NOT NULL DEFAULT 'open'")
                         # Per-row provenance: WHICH check function produced
                         # this finding. Nullable — legacy rows carry NULL and
-                        # are simply never closed by the scoped 2-min arm
-                        # below (they still resolve on the 24h arm), so the
-                        # migration cannot itself close anything.
+                        # close only on the 24h "unattributed" arm
+                        # (routes/brain_findings_resolve.py), so the migration
+                        # cannot itself close anything.
                         cur.execute(
                             "ALTER TABLE brain_findings "
                             "ADD COLUMN IF NOT EXISTS detector_fn TEXT")
@@ -13426,7 +13514,9 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                         count_kind=f.get("count_kind") or "",
                         detail=(f.get("detail") or "")[:2000],
                         detector="consistency_radar",
-                        detector_fn=f.get("_detector_fn") or "")
+                        # The runner's crash/timeout findings name the detector
+                        # they are ABOUT, so they close once it runs clean.
+                        detector_fn=f.get("_detector_fn") or f.get("_about_fn") or "")
                     if res == "inserted":
                         inserted += 1
                     if res in ("inserted", "updated"):
@@ -13435,118 +13525,62 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                 # were open but are ABSENT from this sweep. This preserves
                 # first_seen/seen_count history and makes the open→resolved
                 # trajectory measurable, which the incentive system rewards.
+                # Only rows currently 'open' transition (idempotent; never
+                # re-stamps an already-resolved row's resolved_at).
                 #
-                # "Absent from this sweep" == an OPEN row whose last_seen
-                # was NOT just bumped by an upsert this run. The upserts
-                # above set last_seen=NOW(), so any open row with
-                # last_seen older than a small grace window (2 min — well
-                # under the scan cadence, comfortably above this run's own
-                # write latency) is one we did not re-detect. We only
-                # transition rows that are currently 'open' (idempotent;
-                # never re-stamps an already-resolved row's resolved_at).
-                #
-                # FAIL-SAFE: savepoint-wrapped. If it errors we roll back
-                # just this step and leave the rows untouched (open) — the
-                # OLD code would have DELETED them, so "leave open" is the
-                # strictly safer degraded behavior.
-                resolved_now = 0
                 # r-incentives FIX: resolve-on-absence ONLY during a FULL sweep.
-                # _persist_findings_to_db has PARTIAL callers (e.g. the Inspector
-                # persisting just its degrading/attention items) — running the
-                # resolve from those would mark every finding NOT in that partial
-                # set as resolved (they're all >2min old), falsely closing the
-                # radar's open findings. Only the canonical full radar sweep
-                # passes full_sweep=True, where "open + stale last_seen" really
-                # does mean "not re-detected this sweep".
-                # EPISODE SCOPING (stateful-detector layer, 2026-07-17): the
-                # 2-min absence window is only valid for findings THIS sweep
-                # could have re-detected — the radar's own. Other detectors
-                # (fast_qa, master shells, sentinels…) write on slower
-                # cadences; resolving their rows 2 min after each write
-                # churned them resolved→open every cycle, which under episode
-                # semantics would mint a fake new episode per sighting (the
-                # exact inflation the episode ledger exists to kill). Radar
-                # rows keep the per-sweep window; foreign/NULL-detector rows
-                # only resolve after 24h of silence (detector had many
-                # chances to re-emit and didn't → the incident really ended).
+                # _persist_findings_to_db has PARTIAL callers (the Inspector
+                # persisting just its degrading/attention items) — resolving from
+                # those would close every finding NOT in that partial set.
                 #
-                # ★★ 2026-09-05 — SCOPED TO THE DETECTORS THAT ACTUALLY RAN.
-                #   The call site passes full_sweep=True and its comment calls
-                #   this "the canonical scan_all() over ALL detectors, so
-                #   resolve-on-absence is valid here". It is not: scan_all
-                #   abandons everything still running at its 25s budget, and
-                #   the abandoned set VARIES per run (measured 2026-09-05:
-                #   15, 16, 42, 42, 53 of ~140, membership shifting each time).
-                #   So a finding whose detector never reported was being read
-                #   as "gone" and closed, then reopened on a later sweep where
-                #   that detector did run — and the writer books a reopen as a
-                #   NEW EPISODE. Measured churn on live rows over 4h, each +1
-                #   episode AND +1 seen_count (the new-episode branch; an
-                #   ongoing finding freezes seen_count):
-                #     gated_endpoint_missing_coaching      1099 -> 1100
-                #     facility_country_mislabeled           106 -> 107
-                #     customer_activation_systemic_failure   88 -> 89
-                #   1,100 episodes in 67 days is ~16 fabricated closures a day
-                #   for one continuously-present issue — and the open/resolved
-                #   trajectory is exactly the signal this table exists to
-                #   measure. Controls that sweep (detectors that completed):
-                #   consistency_radar_scan_partial and env_drift_backend_vs_worker,
-                #   both +0.
+                # ★★ 2026-09-13 — ABSENT IS NOT EVIDENCE. Each earlier fix narrowed
+                #   which rows "absent" could close — radar rows only (2026-07-17,
+                #   episode scoping), then detectors that completed this sweep
+                #   (2026-09-05, after gated_endpoint_missing_coaching reached 1,100
+                #   fabricated episodes in 67 days) — and it still closed live
+                #   findings. A detector that got no database, or whose query raised
+                #   and was swallowed into [], counted as completed. So did one that
+                #   reported its own crash. The completed set came from _LAST_SWEEP,
+                #   which a scan that never persists can replace between this sweep
+                #   and this write. And a 24h arm closed ANY open row not re-written
+                #   for a day, from any detector, whether or not it had run.
                 #
-                #   ABSENCE ONLY MEANS SOMETHING FOR A DETECTOR THAT RAN. The
-                #   2-min arm is now restricted to rows whose producing
-                #   function reported this sweep; everything else is left open
-                #   (the 24h arm still catches genuinely dead rows). Fails
-                #   CLOSED in every degraded case — no completed set, no
-                #   detector_fn column, or an empty list all resolve NOTHING,
-                #   because leaving a fixed finding open is a visible nuisance
-                #   while closing a live one is a silent lie.
-                _completed_fns = [str(x) for x in (_LAST_SWEEP.get("completed_fns") or [])]
-                _scope_ok = bool(_completed_fns) and _fn_col_live
-                if full_sweep and _persist_savepoint(cur, "bf_resolve_absent"):
+                #   Now every arm needs evidence that the producer looked and did
+                #   not see the row — for a radar row, two clean runs, the earlier
+                #   one recorded by the detector ledger — and anything unprovable
+                #   stays open. The arms: routes/brain_findings_resolve.py. Each runs
+                #   in its own savepoint; a failure leaves rows open, the safe
+                #   direction (the pre-2026-06 code DELETED them).
+                resolved_now = 0
+                resolved_by_arm: dict = {}
+                # This sweep's own outcomes, found by the sweep id every finding
+                # carries. Not _LAST_SWEEP: the heal-findings refresh thread and
+                # the force-scan endpoint both run scan_all() without persisting
+                # and can replace it between this scan and this write.
+                _sweep_ids = {f.get("_sweep_id") for f in findings
+                              if isinstance(f, dict)}
+                _outcomes = (_SWEEP_OUTCOMES.get(next(iter(_sweep_ids)))
+                             if len(_sweep_ids) == 1 and None not in _sweep_ids
+                             else None)
+                if full_sweep:
                     try:
-                        if _scope_ok:
-                            cur.execute("""
-                                UPDATE brain_findings
-                                   SET status = 'resolved',
-                                       resolved_at = NOW()
-                                 WHERE status = 'open'
-                                   AND ((detector = 'consistency_radar'
-                                         AND last_seen < NOW() - INTERVAL '2 minutes'
-                                         AND detector_fn = ANY(%s))
-                                        OR last_seen < NOW() - INTERVAL '24 hours')
-                            """, (_completed_fns,))
-                        else:
-                            # Cannot tell "ran and found nothing" from "never
-                            # ran" → close nothing on the per-sweep arm.
-                            cur.execute("""
-                                UPDATE brain_findings
-                                   SET status = 'resolved',
-                                       resolved_at = NOW()
-                                 WHERE status = 'open'
-                                   AND last_seen < NOW() - INTERVAL '24 hours'
-                            """)
-                        resolved_now = cur.rowcount or 0
-                        _persist_release_sp(cur, "bf_resolve_absent")
+                        from routes.brain_findings_resolve import resolve_absent
+                        resolved_by_arm = resolve_absent(
+                            cur, dict(_outcomes) if _outcomes else None, findings,
+                            fn_col_live=_fn_col_live)
+                        resolved_now = sum(resolved_by_arm.values())
                     except Exception:
                         note_swallowed_write("brain_findings", where="brain_consistency_radar._persist_findings_to_db")
-                        _persist_rollback_sp(cur, "bf_resolve_absent")
-                        resolved_now = 0
+                        resolved_by_arm, resolved_now = {}, 0
                 # ★ 2026-09-13 — THE DETECTOR LEDGER (routes/brain_detector_ledger.py).
                 #   _LAST_SWEEP lives in this process, so nothing durable recorded
                 #   that a detector RAN — and "absent" means nothing once the
                 #   process is gone. Full sweeps only, and only when every finding
                 #   here belongs to ONE sweep whose outcomes _run_detectors kept in
-                #   _SWEEP_OUTCOMES. Not _LAST_SWEEP: the heal-findings refresh
-                #   thread and the force-scan endpoint both run scan_all() without
-                #   persisting and can replace it between this scan and this write.
+                #   _SWEEP_OUTCOMES. Recorded AFTER the resolve arms: the
+                #   clean-absence arm needs an EARLIER recorded run, never this one.
                 if full_sweep and _persist_savepoint(cur, "bf_detector_ledger"):
                     try:
-                        _sweep_ids = {f.get("_sweep_id") for f in findings
-                                      if isinstance(f, dict)}
-                        _outcomes = (_SWEEP_OUTCOMES.get(next(iter(_sweep_ids)))
-                                     if len(_sweep_ids) == 1 and None not in _sweep_ids
-                                     else None)
                         if _outcomes:
                             from routes.brain_detector_ledger import record_sweep
                             record_sweep(cur, dict(_outcomes), findings)
@@ -13575,10 +13609,10 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                                     if denom else 0.0)
                         logger.info(
                             "brain_findings durable persist: upserted=%d "
-                            "new=%d resolved_this_run=%d | open_now=%d "
+                            "new=%d resolved_this_run=%d by_arm=%s | open_now=%d "
                             "resolved_total=%d resolved_24h=%d "
                             "new_rate=%.3f",
-                            rows, inserted, resolved_now, open_now,
+                            rows, inserted, resolved_now, resolved_by_arm, open_now,
                             resolved_total, resolved_24h, new_rate)
                         # 2026-06-15: RELEASE is now the LAST statement in the try.
                         # Previously it ran BEFORE logger.info(); when that line
@@ -13662,8 +13696,8 @@ def scan_summary() -> dict:
             # only caller allowed to run resolve-on-absence at all.
             # It does NOT assert the sweep was complete: it never is (the 25s
             # budget abandons 15-53 of ~140 detectors, varying per run). The
-            # flag gates WHICH caller may resolve; _LAST_SWEEP gates WHICH
-            # ROWS, scoped to the detectors that actually reported.
+            # flag gates WHICH caller may resolve; the evidence rules in
+            # routes/brain_findings_resolve.py gate WHICH ROWS.
             _persist_findings_to_db(findings or [], full_sweep=True)
         except Exception as _e:
             try:
