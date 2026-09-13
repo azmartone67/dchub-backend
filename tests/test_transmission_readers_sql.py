@@ -16,12 +16,22 @@ endpoints, and serves a line only where its endpoint names place it at the
 substation it is attributed to. L4-L12 pin one rule each, on production rows;
 each fails on the prefix lookup or on the mutation that deletes its rule.
 
+★ 2026-09-13, measured. execute_query returns None for a statement that did not
+run, and the lookup read that as a miss at each of its three statements, so a
+query error was served as "no transmission line near the site".
+find_nearest_transmission_measured returns (line, measured);
+find_nearest_transmission still returns None for both, as L3, L10, L11 and L12
+pin. Those four and L1 also read the measured variant, and L13 fails each
+statement in turn.
+
   L1  a substation's line comes back from transmission_lines, keyed the way the
-      analyze route serves it, with volt_class None; ties break on the lowest id
+      analyze route serves it, with volt_class None; ties break on the lowest id;
+      the measured variant serves the same line, measured
   L2  a higher voltage matched on the OTHER endpoint wins, and a NULL voltage
       never does (Postgres sorts NULLs first under DESC)
   L3  a miss (a name no endpoint carries, or no substation in range) runs
-      without an SQL error, returns None, and opens no network connection
+      without an SQL error, returns None, and opens no network connection; the
+      measured variant reports the miss as measured
   L4  a first-word coincidence elsewhere is not served (WEST% -> WEST VERNON, AL)
   L5  a far end found only far away rules the line out (WEST -> BARCOLA, FL)
   L6  when BOTH names also occur far away, finding the pair nearby is not enough
@@ -29,11 +39,14 @@ each fails on the prefix lookup or on the mutation that deletes its rule.
       names, and over a farther, higher voltage — and its distance is served
   L8  the EIA 'not available' voltage (-999999) is never served
   L9  a substation stored in mixed case matches its uppercase endpoint name
-  L10 a case-folded match with nothing to place the far end is not served
+  L10 a case-folded match with nothing to place the far end is not served, and
+      the miss is measured
   L11 an anchor name that also occurs far away, with nothing to place the far
-      end, is not served
+      end, is not served, and the miss is measured
   L12 when the statement that places the endpoint names fails, no unverified
-      line is served
+      line is served, and the answer is not measured
+  L13 when any one of the lookup's three statements cannot run, nothing is served
+      and the answer is not measured; each case fails its statement exactly once
   K1  type=all runs against real tables and exports plants and pipelines only
   K2  the exact request that returned 500 in production now exports
   K3  the summary runs and publishes no transmission count
@@ -49,7 +62,8 @@ each fails on the prefix lookup or on the mutation that deletes its rule.
 ★ 2026-09-13 — a miss used to fall through to _query_hifld_transmission_live, a
 live ArcGIS query that ArcGIS rejected on every call (400: an outFields name the
 layer does not have), so it returned None after a network round trip. It was
-removed rather than repointed; the end of find_nearest_transmission says why.
+removed rather than repointed; the end of find_nearest_transmission_measured says
+why.
 Every L test fails if the lookup reaches the network again, whatever it returns.
 
 Tables are created with the column lists and types production reported through
@@ -278,6 +292,7 @@ def test_l1_the_lookup_reads_the_maintained_table(db, no_sql_errors, no_network)
     assert tx["volt_class"] is None
     assert tx["matched_substation"] == "ASHBURN"
     assert isinstance(tx["distance_miles"], float) and tx["distance_miles"] < 1.0
+    assert sp.find_nearest_transmission_measured(*SITE) == (tx, True)
 
 
 def test_l2_the_other_endpoint_and_voltage_order_are_honoured(db, no_sql_errors, no_network):
@@ -310,6 +325,7 @@ def test_l3_a_miss_runs_cleanly_and_returns_none(db, no_sql_errors, no_network,
     _seed_lines(db, ASHBURN_LINES, substations=substations)
 
     assert sp.find_nearest_transmission(*site) is None
+    assert sp.find_nearest_transmission_measured(*site) == (None, True)
 
 
 def test_l4_a_first_word_coincidence_elsewhere_is_not_served(db, no_sql_errors, no_network):
@@ -417,6 +433,7 @@ def test_l10_a_case_folded_match_with_nothing_to_place_the_far_end_is_not_served
     _seed_lines(db, [LINE_MAGLEY_ADAMS, LINE_ADAMS_PENNVILLE], substations=(ADAMS_MA,))
 
     assert sp.find_nearest_transmission(ADAMS_MA[1], ADAMS_MA[2]) is None
+    assert sp.find_nearest_transmission_measured(ADAMS_MA[1], ADAMS_MA[2]) == (None, True)
 
 
 def test_l11_an_anchor_name_found_far_away_with_nothing_to_place_the_far_end_is_not_served(
@@ -428,6 +445,7 @@ def test_l11_an_anchor_name_found_far_away_with_nothing_to_place_the_far_end_is_
     _seed_lines(db, [LINE_WEST_HORSESHOE], substations=(WEST_AR, WEST_CO))
 
     assert sp.find_nearest_transmission(WEST_AR[1], WEST_AR[2]) is None
+    assert sp.find_nearest_transmission_measured(WEST_AR[1], WEST_AR[2]) == (None, True)
 
 
 def test_l12_a_failed_placing_statement_serves_no_unverified_line(db, error_log, no_network,
@@ -448,6 +466,42 @@ def test_l12_a_failed_placing_statement_serves_no_unverified_line(db, error_log,
     assert sp.find_nearest_transmission(*SITE) is None
     assert any('"substations_that_do_not_exist" does not exist' in m for m in error_log.messages), \
         error_log.messages
+    assert sp.find_nearest_transmission_measured(*SITE) == (None, False)
+
+
+# Each statement the lookup sends, by what only that statement carries, and the table
+# it reads, renamed below to one that does not exist so that statement alone fails.
+_STATEMENTS = {
+    "nearby-substations": (lambda q: "FROM substations" in q and "name IS NOT NULL" in q,
+                           "substations"),
+    "endpoint-lines": (lambda q: "FROM transmission_lines" in q, "transmission_lines"),
+    "placing-names": (lambda q: "FROM substations" in q and "name = ANY(" in q, "substations"),
+}
+
+
+@pytest.mark.parametrize("statement", list(_STATEMENTS), ids=list(_STATEMENTS))
+def test_l13_a_statement_that_cannot_run_is_not_measured(db, error_log, no_network, monkeypatch,
+                                                         statement):
+    """ASHBURN_LINES at SITE serve L1's line. With any one statement failing, no line is
+    served, and the answer says nothing was measured rather than that no line is there."""
+    import site_planner as sp
+    real = sp.execute_query
+    matches, table = _STATEMENTS[statement]
+    failed = []
+
+    def one_statement_fails(query, params=None, fetchone=False):
+        if matches(query):
+            failed.append(statement)
+            query = query.replace(f"FROM {table}", f"FROM {table}_that_do_not_exist")
+        return real(query, params, fetchone)
+
+    monkeypatch.setattr(sp, "execute_query", one_statement_fails)
+    _seed_lines(db, ASHBURN_LINES)
+
+    assert sp.find_nearest_transmission_measured(*SITE) == (None, False)
+    assert failed == [statement], f"expected {statement} to be sent, and fail, once: {failed}"
+    assert len(error_log.messages) == 1, error_log.messages
+    assert f'"{table}_that_do_not_exist" does not exist' in error_log.messages[0], error_log.messages
 
 
 def test_c2_control_a_swallowed_sql_error_reaches_the_error_log(db, error_log):

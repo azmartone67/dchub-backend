@@ -62,6 +62,40 @@ database URL, through every caller of the lookup:
       what that path logs, the way its id says
   UC2 control: the stand-in connection offers nothing psycopg2's lacks
 
+★ 2026-09-13 — the transmission lookup, measured or not. find_nearest_transmission
+returned None both when no line is anchored near the site and when any of its three
+statements did not run. Its success value is a dict, so no empty value could carry
+"ran, found nothing". find_nearest_transmission_measured returns (line, measured),
+and find_nearest_transmission still returns None for both. The fixtures above stub
+the measured variant with a measured miss, so N1-U9 stay about substations. The T
+tests run it for real, over a stand-in that answers each of its statements by which
+one it is, through every caller:
+
+  T1  the lookup returns (line, True) for a line, (None, True) for each way a lookup
+      that ran matches no line, and (None, False) when step 1, 2 or 3 raised or there
+      is no connection; each case sends and logs exactly what its id names, and
+      find_nearest_transmission returns the line or None throughout
+  T2  when a transmission statement did not run, the composite score declares
+      power_grid unavailable with the reason and a caveat, weighs the composite
+      without it, and marks the answer no-store so its memo keeps none of it; after
+      a measured miss or a line, power_grid is validated and memoised
+  T3  a line scores exactly the nearest transmission tier's 15 points over the same
+      site's measured miss, so a validated power_grid in T2 scored the line
+  T4  when neither lookup ran, power_grid's basis gives both reasons and every
+      factor left out
+  T5  analyze serves the line or null, as before, with transmission_coverage
+      'validated' after a lookup that ran, and 'unavailable' with the reason otherwise
+  T6  compare marks each row the same way, and its recommendation says the
+      transmission lookup did not complete only when it did not
+  T7  compare with one site missing each lookup names each lookup for its own site,
+      and says the scores are not like-for-like
+  T8  the site report fills the line from the substation only after a lookup that
+      ran; after a statement that did not run, a raised lookup or its timeout, it
+      prints the line as not measured
+  TC1 control: the scripted stand-in offers nothing psycopg2's lacks
+  TC2 control: a statement the script has no answer for fails, so an unexpected
+      statement cannot pass as a miss
+
 On this base an empty or None result still falls through to the lookup's Overpass
 fallback. The recorder refuses that connection and the fallback swallows the
 refusal, so the U tests read what the lookup and its callers return, not the
@@ -71,6 +105,7 @@ import logging
 import os
 import socket
 import sys
+import time
 import types
 
 import flask
@@ -105,10 +140,11 @@ FOUND = {
     "five-rows-four-names": [ASHBURN, TAP_NEAR, BEAUMEADE, TAP_FAR, LOUDOUN],
 }
 
-# Every phase of analyze, other than the substations, that reaches a database or a
-# remote service. score_connectivity is imported inside the handler, from
-# routes.connectivity_score, and is stubbed there.
-_IO_PHASES = ("geocode_address", "reverse_geocode", "find_nearest_transmission",
+# Every phase of analyze, other than the substations and the transmission lookup,
+# that reaches a database or a remote service. score_connectivity is imported inside
+# the handler, from routes.connectivity_score, and is stubbed there. The transmission
+# lookup returns a pair, so each fixture stubs it on its own (TX, below).
+_IO_PHASES = ("geocode_address", "reverse_geocode",
               "estimate_congestion", "screen_environmental", "get_generation_mix",
               "find_nearby_facilities", "check_fiber_proximity",
               "find_nearby_gas_pipelines", "find_major_pipelines",
@@ -117,6 +153,16 @@ _IO_PHASES = ("geocode_address", "reverse_geocode", "find_nearest_transmission",
 
 def _nothing(*args, **kwargs):
     return None
+
+
+# The transmission lookup every caller reads since 2026-09-13. The fixtures stub it
+# with a measured miss, which is what the None their old stub returned stood for; the
+# T tests put the real one back.
+TX = "find_nearest_transmission_measured"
+
+
+def _transmission_missed(*args, **kwargs):
+    return None, True
 
 
 def _record_connections(monkeypatch):
@@ -153,8 +199,10 @@ def analyze(monkeypatch):
     sp.register_site_planner_routes(app)
     view = app.view_functions["site_planner_analyze"].__wrapped__
 
+    real_transmission_lookup = getattr(sp, TX)
     for name in _IO_PHASES:
         monkeypatch.setattr(sp, name, _nothing)
+    monkeypatch.setattr(sp, TX, _transmission_missed)
     monkeypatch.setattr(connectivity_score, "score_connectivity", _nothing)
     # With no connection execute_query returns None, so estimate_queue_depth falls
     # back to its regional estimate rather than reaching a database.
@@ -173,6 +221,7 @@ def analyze(monkeypatch):
         response, status = rv if isinstance(rv, tuple) else (rv, rv.status_code)
         return attempts, status, response.get_json()
 
+    run.real_transmission_lookup = real_transmission_lookup
     return run
 
 
@@ -361,7 +410,7 @@ def _empty(*args, **kwargs):
 
 # Every phase of compare, other than the substations, that reaches a database or a
 # remote service. compare calls .get() on what most of them return, so they answer {}.
-_COMPARE_IO_PHASES = ("geocode_address", "find_nearest_transmission", "screen_environmental",
+_COMPARE_IO_PHASES = ("geocode_address", "screen_environmental",
                       "estimate_congestion", "get_generation_mix", "find_nearby_facilities",
                       "find_nearby_gas_pipelines", "check_fiber_proximity")
 
@@ -381,8 +430,10 @@ def compare(monkeypatch):
     sp.register_site_planner_routes(app)
     view = app.view_functions["site_planner_compare"].__wrapped__
 
+    real_transmission_lookup = getattr(sp, TX)
     for name in _COMPARE_IO_PHASES:
         monkeypatch.setattr(sp, name, _empty)
+    monkeypatch.setattr(sp, TX, _transmission_missed)
     monkeypatch.setattr(sp, "get_neon_connection", _nothing)
 
     def run():
@@ -392,13 +443,14 @@ def compare(monkeypatch):
         response, status = rv if isinstance(rv, tuple) else (rv, rv.status_code)
         return status, response.get_json()
 
+    run.real_transmission_lookup = real_transmission_lookup
     return run
 
 
 # Every phase of the composite score, other than the substations, that reaches a
 # database or a remote service. Its FEMA NRI and WRI Aqueduct queries are inline
 # urllib calls: the recorder refuses them, and those factors come back unavailable.
-_COMPOSITE_IO_PHASES = ("geocode_address", "reverse_geocode", "find_nearest_transmission",
+_COMPOSITE_IO_PHASES = ("geocode_address", "reverse_geocode",
                         "estimate_congestion", "screen_environmental",
                         "find_nearby_gas_pipelines", "find_nearby_facilities",
                         "check_fiber_proximity")
@@ -419,8 +471,10 @@ def composite(monkeypatch):
     # @require_pro's wrapper holds the memo's, which holds the handler.
     view = app.view_functions["site_planner_composite_score"].__wrapped__
 
+    real_transmission_lookup = getattr(sp, TX)
     for name in _COMPOSITE_IO_PHASES:
         monkeypatch.setattr(sp, name, _nothing)
+    monkeypatch.setattr(sp, TX, _transmission_missed)
     monkeypatch.setattr(connectivity_score, "score_connectivity", _nothing)
     monkeypatch.setattr(sp, "get_neon_connection", _nothing)
 
@@ -438,6 +492,7 @@ def composite(monkeypatch):
         response, status = (rv[0], rv[1]) if isinstance(rv, tuple) else (rv, rv.status_code)
         return status, response.get_json(), response.headers, stored
 
+    run.real_transmission_lookup = real_transmission_lookup
     return run
 
 
@@ -627,7 +682,7 @@ def test_u9_the_composite_score_does_not_memoise_a_power_grid_gather_that_raised
         raise RuntimeError("the transmission lookup raised")
 
     monkeypatch.setattr(sp, "find_nearest_substations", lookup)
-    monkeypatch.setattr(sp, "find_nearest_transmission", transmission)
+    monkeypatch.setattr(sp, TX, transmission)
 
     status, body, headers, stored = composite()
 
@@ -679,3 +734,361 @@ def test_uc2_control_the_stand_in_offers_nothing_psycopg2_lacks():
     assert connection_api == {"cursor", "close"}
     assert all(hasattr(psycopg2.extensions.cursor, n) for n in cursor_api), cursor_api
     assert all(hasattr(psycopg2.extensions.connection, n) for n in connection_api), connection_api
+
+
+# ── Measured, or not measured: the transmission lookup ──────────────────────
+
+# The columns each statement of the transmission lookup selects, in its order, and
+# estimate_queue_depth's, which the route tests below also reach.
+TX_COLUMNS = {
+    "nearby": ("name", "lat", "lng", "distance_miles"),
+    "lines": ("id", "from_sub", "to_sub", "voltage_kv", "owner", "status"),
+    "places": ("name", "lat", "lng"),
+    "queue": ("total_queue_mw", "project_count", "avg_age_years"),
+}
+
+
+def _tx_step(query):
+    """Which statement `query` is, by a phrase only that statement carries."""
+    if "FROM transmission_lines" in query:
+        return "lines"
+    if "FROM substations" in query and "name = ANY(" in query:
+        return "places"
+    if "FROM substations" in query and "name IS NOT NULL" in query:
+        return "nearby"
+    if "FROM queue_entries" in query:
+        return "queue"
+    return None
+
+
+class _TxDatabase:
+    """The tables behind the lookup. `answers` maps a step to the rows its statement
+    returns, in TX_COLUMNS order, or to the exception it raises. A step with no answer
+    raises, so an unexpected statement cannot pass as a miss."""
+
+    def __init__(self, **answers):
+        self.answers = answers
+        self.steps = []
+
+    def connect(self):
+        return _TxConnection(self)
+
+
+class _TxCursor:
+    """What execute_query uses of a psycopg2 cursor: `with`, execute, description,
+    fetchall and fetchone."""
+
+    def __init__(self, db):
+        self._db = db
+        self._rows = []
+        self.description = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def execute(self, query, params=None):
+        step = _tx_step(query)
+        self._db.steps.append(step)
+        answer = self._db.answers.get(step, LookupError(f"no answer scripted for {step!r}"))
+        if isinstance(answer, Exception):
+            raise answer
+        self.description = [(name,) for name in TX_COLUMNS[step]]
+        self._rows = [tuple(row) for row in answer]
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _TxConnection:
+    """A stand-in for the psycopg2 connection get_neon_connection returns."""
+
+    def __init__(self, db):
+        self._db = db
+
+    def cursor(self):
+        return _TxCursor(self._db)
+
+    def close(self):
+        pass
+
+
+# ASHBURN and the 230 kV line from PLEASANT VIEW that ends there, the line
+# tests/test_transmission_readers_sql.py serves in L1, with its far end 3 mi away.
+TX_ANSWERS = {
+    "nearby": [("ASHBURN", 39.0438, -77.4874, 0.03)],
+    "lines": [(1, "PLEASANT VIEW", "ASHBURN", 230.0, "VIRGINIA ELECTRIC & POWER CO", "IN SERVICE")],
+    "places": [("ASHBURN", 39.0438, -77.4874), ("PLEASANT VIEW", 39.07591, -77.528824)],
+    "queue": [],
+}
+LINE = {"line_name": "PLEASANT VIEW", "voltage_kv": 230.0, "owner": "VIRGINIA ELECTRIC & POWER CO",
+        "status": "IN SERVICE", "volt_class": None, "distance_miles": 0.0,
+        "matched_substation": "ASHBURN"}
+
+# Each way the lookup ends: the answers that differ from TX_ANSWERS, what it returns,
+# the statements it sends, and the start of what site_planner logs at ERROR (None:
+# nothing). BARCOLA's coordinates put PLEASANT VIEW's only copy in Florida.
+TX_CASES = {
+    "line": ({}, (LINE, True), ["nearby", "lines", "places"], None),
+    "no-substation-nearby": ({"nearby": []}, (None, True), ["nearby"], None),
+    "no-line-named": ({"lines": []}, (None, True), ["nearby", "lines"], None),
+    "line-not-placed": (
+        {"places": [("ASHBURN", 39.0438, -77.4874), ("PLEASANT VIEW", 27.823994, -81.887856)]},
+        (None, True), ["nearby", "lines", "places"], None),
+    "nearby-raises": (
+        {"nearby": psycopg2.OperationalError("canceling statement due to statement timeout")},
+        (None, False), ["nearby"], "Query error: canceling statement due to statement timeout"),
+    "lines-raises": (
+        {"lines": psycopg2.OperationalError("SSL connection has been closed unexpectedly")},
+        (None, False), ["nearby", "lines"], "Query error: SSL connection has been closed unexpectedly"),
+    "places-raises": (
+        {"places": psycopg2.OperationalError("terminating connection due to administrator command")},
+        (None, False), ["nearby", "lines", "places"],
+        "Query error: terminating connection due to administrator command"),
+}
+
+
+def _tx_tables(monkeypatch, sp, overrides):
+    """Answer the lookup's statements from TX_ANSWERS, with `overrides` applied."""
+    db = _TxDatabase(**{**TX_ANSWERS, **overrides})
+    monkeypatch.setattr(sp, "get_neon_connection", db.connect)
+    return db
+
+
+def _substations_found(lat, lng, limit=5, max_distance_miles=25):
+    return [dict(ASHBURN), dict(LOUDOUN)]
+
+
+@pytest.mark.parametrize("case", list(TX_CASES) + ["no-connection"],
+                         ids=list(TX_CASES) + ["no-connection"])
+def test_t1_the_transmission_lookup_says_whether_it_measured(monkeypatch, sp, errors, case):
+    if case == "no-connection":
+        _no_connection(monkeypatch, sp)
+        db, returned, steps, logged = _TxDatabase(), (None, False), [], "No NEON_DATABASE_URL configured"
+    else:
+        overrides, returned, steps, logged = TX_CASES[case]
+        db = _tx_tables(monkeypatch, sp, overrides)
+    _record_connections(monkeypatch)
+
+    assert sp.find_nearest_transmission_measured(*LATLNG) == returned
+    assert db.steps == steps, f"{case} sent {db.steps}"
+    if logged is None:
+        assert not errors.messages, errors.messages
+    else:
+        assert len(errors.messages) == 1 and errors.messages[0].startswith(logged), errors.messages
+    # The wrapper keeps the contract tests/test_transmission_readers_sql.py pins.
+    assert sp.find_nearest_transmission(*LATLNG) == returned[0]
+
+
+@pytest.mark.parametrize("case", list(TX_CASES), ids=list(TX_CASES))
+def test_t2_the_composite_score_declares_power_grid_unavailable_when_a_transmission_statement_did_not_run(
+        composite, monkeypatch, sp, case):
+    overrides, (_line, measured), _steps, _logged = TX_CASES[case]
+    monkeypatch.setattr(sp, "find_nearest_substations", _substations_found)
+    monkeypatch.setattr(sp, TX, composite.real_transmission_lookup)
+    db = _tx_tables(monkeypatch, sp, overrides)
+
+    status, body, headers, stored = composite()
+
+    assert db.steps.count("nearby") == 1, f"the composite score did not run the real lookup: {db.steps}"
+    assert status == 200 and body["success"] is True, body
+    power_grid = body["sub_scores"]["power_grid"]
+    caveats = body["caveats"]
+    if measured:
+        assert power_grid["coverage"] == "validated", power_grid
+        assert isinstance(power_grid["score"], (int, float)), power_grid
+        assert "power_grid" in body["weights_over_validated"], body["weights_over_validated"]
+        assert not any(c.startswith("power_grid:") for c in caveats), caveats
+        assert "no-store" not in headers.get("Cache-Control", ""), dict(headers)
+        assert len(stored) == 1, "control: the memo stores an answer whose lookups ran"
+    else:
+        assert power_grid["coverage"] == "unavailable" and power_grid["score"] is None, power_grid
+        assert power_grid["basis"].startswith("transmission lookup did not complete"), power_grid
+        assert power_grid["basis"].endswith(
+            "rather than scored without transmission proximity"), power_grid
+        assert body["coverage"]["power_grid"] == "unavailable"
+        assert "power_grid" not in body["weights_over_validated"], body["weights_over_validated"]
+        assert any(c.startswith("power_grid: transmission lookup did not complete") for c in caveats), \
+            caveats
+        assert "no-store" in headers.get("Cache-Control", ""), dict(headers)
+        assert stored == {}, "the memo kept an answer that says a lookup did not complete"
+
+
+def test_t3_a_line_scores_the_nearest_transmission_tier_over_a_measured_miss(composite, monkeypatch, sp):
+    monkeypatch.setattr(sp, "find_nearest_substations", _substations_found)
+    monkeypatch.setattr(sp, TX, composite.real_transmission_lookup)
+    scores = {}
+    for case in ("line", "no-line-named"):
+        _tx_tables(monkeypatch, sp, TX_CASES[case][0])
+        _status, body, _headers, _stored = composite()
+        scores[case] = body["sub_scores"]["power_grid"]["score"]
+
+    # LINE is anchored 0.0 mi from the site: the 'excellent' tier, 15 points.
+    assert scores["line"] - scores["no-line-named"] == 15, scores
+
+
+def test_t4_when_neither_lookup_ran_power_grid_gives_both_reasons(composite, monkeypatch, sp):
+    monkeypatch.setattr(sp, "find_nearest_substations", lambda lat, lng, limit=5, max_distance_miles=25: None)
+    monkeypatch.setattr(sp, TX, composite.real_transmission_lookup)
+    _tx_tables(monkeypatch, sp, TX_CASES["lines-raises"][0])
+
+    status, body, headers, stored = composite()
+
+    assert status == 200 and body["success"] is True, body
+    basis = body["sub_scores"]["power_grid"]["basis"]
+    assert basis.startswith("substation lookup did not run"), basis
+    assert "; transmission lookup did not complete: " in basis, basis
+    assert basis.endswith("rather than scored without substation proximity, voltage, queue depth "
+                          "and transmission proximity"), basis
+    assert "no-store" in headers.get("Cache-Control", "") and stored == {}, dict(headers)
+
+
+@pytest.mark.parametrize("case", list(TX_CASES), ids=list(TX_CASES))
+def test_t5_analyze_says_whether_its_transmission_line_was_measured(analyze, monkeypatch, sp, case):
+    overrides, (line, measured), _steps, _logged = TX_CASES[case]
+    monkeypatch.setattr(sp, TX, analyze.real_transmission_lookup)
+    db = _tx_tables(monkeypatch, sp, overrides)
+
+    _attempts, status, body = analyze([ASHBURN])
+
+    assert db.steps.count("nearby") == 1, f"analyze did not run the real lookup: {db.steps}"
+    assert status == 200 and body["success"] is True, body
+    analysis = body["analysis"]
+    # The same values as before, the line or null: js/site-planner-panel.js reads
+    # `a.transmission || {}`.
+    assert analysis["transmission"] == line
+    if measured:
+        assert analysis["transmission_coverage"] == "validated", analysis
+        assert "did not complete" not in analysis["transmission_basis"], analysis
+    else:
+        assert analysis["transmission_coverage"] == "unavailable", analysis
+        assert analysis["transmission_basis"].startswith("transmission lookup did not complete"), analysis
+
+
+@pytest.mark.parametrize("case", list(TX_CASES), ids=list(TX_CASES))
+def test_t6_compare_says_whether_each_sites_transmission_line_was_measured(compare, monkeypatch, sp, case):
+    overrides, (line, measured), _steps, _logged = TX_CASES[case]
+    monkeypatch.setattr(sp, "find_nearest_substations", _substations_found)
+    monkeypatch.setattr(sp, TX, compare.real_transmission_lookup)
+    db = _tx_tables(monkeypatch, sp, overrides)
+
+    status, body = compare()
+
+    assert db.steps.count("nearby") == 2, f"compare did not run the real lookup for both sites: {db.steps}"
+    assert status == 200 and body["success"] is True, body
+    for site in body["comparison"]:
+        assert site["nearest_tx_miles"] == (line or {}).get("distance_miles"), site
+        assert site["transmission_coverage"] == ("validated" if measured else "unavailable"), site
+    reason = body["recommendation"]["reason"]
+    assert ("transmission lookup did not complete" in reason) == (not measured), reason
+    # Both sites miss the same lookup, so their scores stay comparable.
+    assert "not like-for-like" not in reason, reason
+
+
+def test_t7_compare_names_each_lookup_that_did_not_run_for_its_own_site(compare, monkeypatch, sp):
+    first, second = SITES
+
+    def substations(lat, lng, limit=5, max_distance_miles=25):
+        return None if lat == first["lat"] else [dict(ASHBURN)]
+
+    def transmission(lat, lng, max_distance_miles=15):
+        return None, lat == first["lat"]
+
+    monkeypatch.setattr(sp, "find_nearest_substations", substations)
+    monkeypatch.setattr(sp, TX, transmission)
+
+    status, body = compare()
+
+    assert status == 200 and body["success"] is True, body
+    by_address = {site["address"]: site for site in body["comparison"]}
+    assert by_address[first["address"]]["transmission_coverage"] == "validated"
+    assert by_address[second["address"]]["transmission_coverage"] == "unavailable"
+    reason = body["recommendation"]["reason"]
+    assert (f" The substation lookup did not run for {first['address']}, so its score leaves out "
+            "substation proximity, voltage and queue depth. The transmission lookup did not "
+            f"complete for {second['address']}, so its score leaves out transmission proximity; "
+            "the scores are not like-for-like.") in reason, reason
+
+
+@pytest.mark.parametrize("case", list(TX_CASES) + ["raises", "times-out"],
+                         ids=list(TX_CASES) + ["raises", "times-out"])
+def test_t8_the_site_report_fills_the_line_from_the_substation_only_after_a_lookup_that_ran(
+        monkeypatch, sp, case):
+    from routes import site_report
+
+    assert os.path.samefile(site_report.__file__, os.path.join(ROOT, "routes", "site_report.py")), \
+        site_report.__file__
+    # A real name, so the report probes for its line: 115 kV, Dominion Energy.
+    monkeypatch.setattr(sp, "find_nearest_substations",
+                        lambda lat, lng, limit=5, max_distance_miles=25: [dict(TAP_NEAR)])
+    if case == "raises":
+        def lookup(*args, **kwargs):
+            raise RuntimeError("the lookup raised")
+
+        monkeypatch.setattr(sp, TX, lookup)
+        line, measured = None, False
+    elif case == "times-out":
+        def lookup(*args, **kwargs):
+            time.sleep(0.5)
+            return dict(LINE), True
+
+        cap = site_report._call_with_timeout
+        monkeypatch.setattr(sp, TX, lookup)
+        # The real cap, shortened from 6 s so the lookup outlives it.
+        monkeypatch.setattr(site_report, "_call_with_timeout",
+                            lambda fn, timeout, *args, **kwargs: cap(fn, 0.05, *args, **kwargs))
+        line, measured = None, False
+    else:
+        overrides, (line, measured), _steps, _logged = TX_CASES[case]
+        _tx_tables(monkeypatch, sp, overrides)
+    _record_connections(monkeypatch)
+
+    power = site_report._gather_power(*LATLNG, "VA")
+
+    assert (power["substation"], power["voltage"], power["operator"]) == ("TAP", "115 kV", "Dominion Energy"), \
+        power
+    assert power["transmission_coverage"] == ("validated" if measured else "unavailable"), power
+    if line:
+        assert (power["line_voltage"], power["line_owner"]) == ("230 kV", "VIRGINIA ELECTRIC & POWER CO"), power
+    elif measured:
+        # A lookup that ran and matched no line leaves the line to the substation, as before.
+        assert (power["line_voltage"], power["line_owner"]) == ("115 kV", "Dominion Energy"), power
+    else:
+        assert (power["line_voltage"], power["line_owner"]) == ("—", "—"), power
+        assert power["line_note"].startswith("Not measured"), power
+        assert "transmission lookup did not complete" in power["assessment"], power["assessment"]
+    if measured:
+        assert "line_note" not in power and "did not complete" not in power["assessment"], power
+
+
+def test_tc1_control_the_scripted_stand_in_offers_nothing_psycopg2_lacks():
+    """Anti-vacuity for the T tests: execute_query swallows an AttributeError like any
+    other error, so a stand-in offering what psycopg2 does not could keep a measured
+    case green over a path that cannot run."""
+    cursor_api = ({n for n in vars(_TxCursor) if not n.startswith("_")}
+                  | {"__enter__", "__exit__", "description"})
+    connection_api = {n for n in vars(_TxConnection) if not n.startswith("_")}
+
+    assert cursor_api == {"execute", "fetchall", "fetchone", "__enter__", "__exit__", "description"}
+    assert connection_api == {"cursor", "close"}
+    assert all(hasattr(psycopg2.extensions.cursor, n) for n in cursor_api), cursor_api
+    assert all(hasattr(psycopg2.extensions.connection, n) for n in connection_api), connection_api
+
+
+def test_tc2_control_a_statement_with_no_scripted_answer_fails(monkeypatch, sp, errors):
+    """Anti-vacuity for the stand-in: a statement it has no answer for raises, and the
+    lookup reports it unmeasured, so no route test can pass over an unexpected
+    statement answered with an empty list."""
+    db = _TxDatabase(nearby=TX_ANSWERS["nearby"])
+    monkeypatch.setattr(sp, "get_neon_connection", db.connect)
+    _record_connections(monkeypatch)
+
+    assert sp.find_nearest_transmission_measured(*LATLNG) == (None, False)
+    assert db.steps == ["nearby", "lines"], db.steps
+    assert errors.messages and errors.messages[0].startswith("Query error: no answer scripted for 'lines'"), \
+        errors.messages
