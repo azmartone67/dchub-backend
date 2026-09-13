@@ -10,7 +10,8 @@ places to fix a URL change and five different truncation limits.
 
 What lives here:
   resolve_respondent(region_code) — our label → EIA-930 respondent
-  eia930_url(region_code, ...)    — the single URL builder
+  eia930_url(region_code, ...)    — the single URL builder (no key in it)
+  eia930_request(region_code, ...) — (url, headers), the key in X-Api-Key
   fetch_eia930_ba(region_code, ...) — fetch + parse one BA. NEVER raises.
 
 What deliberately does NOT live here:
@@ -151,22 +152,39 @@ def resolve_respondent(region_code):
     return code, "identity"
 
 
-def eia930_url(region_code, dataset="fuel-type-data", length=12, api_key=None):
-    """Build the ONE api.eia.gov/v2 EIA-930 URL.
+def eia930_url(region_code, dataset="fuel-type-data", length=12):
+    """Build the ONE api.eia.gov/v2 EIA-930 URL. It carries no credential: the
+    key goes in the X-Api-Key header (eia930_request / eia930_headers).
 
-    At the defaults this is BYTE-IDENTICAL to the five hand-written copies it
-    replaces — a drifting query string returns 0 rows with no exception and no
-    log, so tests/test_eia930_adapter.py freezes the exact string.
+    At the defaults this is the five hand-written copies it replaced, less
+    their api_key parameter. A drifting query string returns 0 rows with no
+    exception and no log, so tests/test_eia930_adapter.py freezes the exact
+    string.
     """
     if dataset not in _DATASETS:
         raise ValueError("unknown EIA-930 dataset: %r" % (dataset,))
     respondent, _basis = resolve_respondent(region_code)
-    key = api_key if api_key is not None else os.environ.get("EIA_API_KEY", "")
     return (
-        f"{EIA_V2_BASE}/{dataset}/data/?api_key={key}"
-        f"&frequency=hourly&data[0]=value&facets[respondent][]={respondent}"
+        f"{EIA_V2_BASE}/{dataset}/data/?frequency=hourly&data[0]=value"
+        f"&facets[respondent][]={respondent}"
         f"&sort[0][column]=period&sort[0][direction]=desc&length={int(length)}"
     )
+
+
+def eia930_headers(api_key=None):
+    """The header EIA reads the key from, as eia_retirements._eia_headers sends
+    it. Empty without a key, so a keyless request still gets EIA's 403."""
+    key = api_key if api_key is not None else os.environ.get("EIA_API_KEY", "")
+    return {"X-Api-Key": key} if key else {}
+
+
+def eia930_request(region_code, dataset="fuel-type-data", length=12,
+                   api_key=None):
+    """(url, headers): the entry shape _iso_common.fetch_first_working takes for
+    a request that needs a header. Fetch with this; eia930_url alone sends no
+    key."""
+    return (eia930_url(region_code, dataset=dataset, length=length),
+            eia930_headers(api_key))
 
 
 def _eia_rows(json_text):
@@ -231,9 +249,8 @@ def fetch_eia930_ba(region_code, dataset="fuel-type-data", length=12,
                         fuels we never saw. length=12 against EIA's ~13 fuel
                         codes leaves a one-row margin (main.py:4026 uses 400).
       cached / cache_age_s / cache_scope
-      fetched_url       ALWAYS scrub_url()'d — the api_key rides in the query
-                        string and leaked through /extract once already
-                        (routes/_iso_common.py:160-172).
+      fetched_url       scrub_url()'d. The key goes in the X-Api-Key header, so
+                        the URL carries none; the scrub stays as a backstop.
       bytes / preview / no_metrics_reason / error
     """
     respondent, basis = resolve_respondent(region_code)
@@ -285,8 +302,9 @@ def fetch_eia930_ba(region_code, dataset="fuel-type-data", length=12,
                 return cached
 
     try:
-        url = eia930_url(respondent, dataset=dataset, length=length, api_key=key)
-        text, used = fetch_first_working([url], ua=ua, timeout=timeout,
+        req = eia930_request(respondent, dataset=dataset, length=length,
+                             api_key=key)
+        text, used = fetch_first_working([req], ua=ua, timeout=timeout,
                                          total_budget=total_budget)
         out["fetched_url"] = scrub_url(used)
         out["bytes"] = len(text)

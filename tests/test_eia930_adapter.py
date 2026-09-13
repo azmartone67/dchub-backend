@@ -3,9 +3,10 @@
 Locks in the five things that can silently break ingestion for 43 balancing
 authorities plus PJM/MISO/TVA/BPA:
 
-  1. the built URL is BYTE-IDENTICAL to the five hand-written copies it
-     replaced. A drifting query string returns 0 rows with no exception and no
-     log — exactly the failure that kept PJM at 0 rows for weeks.
+  1. the built URL is the five hand-written copies it replaced, less their
+     api_key parameter. A drifting query string returns 0 rows with no
+     exception and no log — exactly the failure that kept PJM at 0 rows for
+     weeks.
   2. our code → EIA respondent divergences (APS→AZPS, BPA→BPAT, ERCOT→ERCO,
      CAISO→CISO, NYISO→NYIS, SPP→SWPP, ISONE→ISNE). Forwarding our own label
      returns an empty 200 for six of the seven ISOs.
@@ -57,7 +58,8 @@ def _load(stub_fetch=None, stub_parse=None):
     # Prove the module actually parsed into the functions we are about to test.
     # An empty/renamed module would otherwise pass every assertion below by
     # never being exercised.
-    for name in ("resolve_respondent", "eia930_url", "fetch_eia930_ba",
+    for name in ("resolve_respondent", "eia930_url", "eia930_request",
+                 "eia930_headers", "fetch_eia930_ba",
                  "cache_stats", "_CACHE", "_NEG_TTL_S", "_ttl_s"):
         assert name in ns, f"routes/eia930.py does not define {name}"
     ns["scrub_url"] = _real_scrub_url()
@@ -65,6 +67,12 @@ def _load(stub_fetch=None, stub_parse=None):
     ns["parse_eia_v2_fuel_mix"] = stub_parse or (lambda t, prefix="fuel_": {})
     ns["_CACHE"].clear()
     return ns
+
+
+def _url_of(entry):
+    """What the real fetch_first_working returns as the working URL: the url
+    of a (url, headers) entry, or a bare URL as given."""
+    return entry[0] if isinstance(entry, tuple) else entry
 
 
 class _Key:
@@ -91,24 +99,38 @@ class _Key:
 
 # ── the URL, frozen ────────────────────────────────────────────────
 
-def test_url_is_byte_identical_to_the_copies_it_replaced():
+def test_url_is_the_copies_it_replaced_less_the_key():
     """These five strings are what routes/iso_{tva,bpa,pjm,miso}.py and
-    routes/eia_utility_bas.py sent before the refactor."""
+    routes/eia_utility_bas.py sent before the refactor, with the api_key
+    parameter taken out: the key goes in the X-Api-Key header instead."""
     ns = _load()
     u = ns["eia930_url"]
     base = "https://api.eia.gov/v2/electricity/rto"
     tail = "&sort[0][column]=period&sort[0][direction]=desc&length=12"
     for code, respondent in [("TVA", "TVA"), ("BPA", "BPAT"), ("PJM", "PJM"),
                              ("MISO", "MISO"), ("AZPS", "AZPS")]:
-        assert u(code, api_key="K") == (
-            f"{base}/fuel-type-data/data/?api_key=K"
-            f"&frequency=hourly&data[0]=value&facets[respondent][]={respondent}"
-            f"{tail}"), code
-    # routes/iso_tva.py:50 — the region-data variant, length=24
-    assert u("TVA", dataset="region-data", length=24, api_key="K") == (
-        f"{base}/region-data/data/?api_key=K"
-        "&frequency=hourly&data[0]=value&facets[respondent][]=TVA"
+        assert u(code) == (
+            f"{base}/fuel-type-data/data/?frequency=hourly&data[0]=value"
+            f"&facets[respondent][]={respondent}{tail}"), code
+    # routes/iso_tva.py — the region-data variant, length=24
+    assert u("TVA", dataset="region-data", length=24) == (
+        f"{base}/region-data/data/?frequency=hourly&data[0]=value"
+        "&facets[respondent][]=TVA"
         "&sort[0][column]=period&sort[0][direction]=desc&length=24")
+
+
+def test_the_request_carries_the_key_in_x_api_key_not_the_url():
+    ns = _load()
+    with _Key("SENTINEL-EIA-KEY-9999"):
+        url, headers = ns["eia930_request"]("PJM")
+        assert headers == {"X-Api-Key": "SENTINEL-EIA-KEY-9999"}
+        assert url == ns["eia930_url"]("PJM")
+        assert "SENTINEL-EIA-KEY-9999" not in url and "api_key" not in url
+        # an explicit key wins over the environment
+        assert ns["eia930_request"]("PJM", api_key="K")[1] == {"X-Api-Key": "K"}
+    with _Key(None):
+        # no key, no header — the same 403 a keyless request always got
+        assert ns["eia930_request"]("PJM")[1] == {}
 
 
 def test_url_rejects_an_unknown_dataset():
@@ -147,15 +169,20 @@ def test_api_key_is_sent_but_never_returned():
     seen = {}
 
     def _fetch(urls, **kw):
-        seen["url"] = urls[0]
-        return _BODY_OK, urls[0]
+        seen["entry"] = urls[0]
+        return _BODY_OK, _url_of(urls[0])
 
     ns = _load(stub_fetch=_fetch,
                stub_parse=lambda t, prefix="fuel_": {
                    "fuel_ng": {"value": 2437.0, "unit": "megawatthours"}})
     with _Key("SENTINEL-EIA-KEY-9999"):
         res = ns["fetch_eia930_ba"]("APS")
-    assert "SENTINEL-EIA-KEY-9999" in seen["url"], "the key must actually be sent"
+    assert isinstance(seen["entry"], tuple), \
+        "the adapter must hand fetch_first_working a (url, headers) entry"
+    url, headers = seen["entry"]
+    assert headers == {"X-Api-Key": "SENTINEL-EIA-KEY-9999"}, \
+        "the key must actually be sent, in the header EIA reads"
+    assert "SENTINEL-EIA-KEY-9999" not in url and "api_key" not in url
     assert "SENTINEL-EIA-KEY-9999" not in repr(res)
     assert res["status"] == "ok"
     assert res["respondent"] == "AZPS"
@@ -167,7 +194,7 @@ def test_no_key_means_no_request():
 
     def _fetch(urls, **kw):
         calls.append(urls)
-        return _BODY_OK, urls[0]
+        return _BODY_OK, _url_of(urls[0])
 
     ns = _load(stub_fetch=_fetch)
     with _Key(None):
@@ -183,7 +210,7 @@ def test_no_key_means_no_request():
 def test_observation_period_is_carried_out_of_the_envelope():
     """grid_data.timestamp is the INSERT time (DEFAULT NOW()), so the EIA
     observation hour is the only honest freshness basis we have."""
-    ns = _load(stub_fetch=lambda urls, **kw: (_BODY_OK, urls[0]),
+    ns = _load(stub_fetch=lambda urls, **kw: (_BODY_OK, _url_of(urls[0])),
                stub_parse=lambda t, prefix="fuel_": {"fuel_ng": {"value": 1.0}})
     with _Key("K"):
         res = ns["fetch_eia930_ba"]("APS")
@@ -197,7 +224,7 @@ def test_full_page_of_rows_raises_truncation_risk():
         '{"period": "2026-07-29T02", "fueltype": "F%d", "value": %d}' % (i, i + 1)
         for i in range(3))
     ns = _load(stub_fetch=lambda urls, **kw: ('{"response": {"data": [%s]}}' % rows,
-                                              urls[0]),
+                                              _url_of(urls[0])),
                stub_parse=lambda t, prefix="fuel_": {"fuel_f0": {"value": 1.0}})
     with _Key("K"):
         res = ns["fetch_eia930_ba"]("APS", length=3)
@@ -207,7 +234,7 @@ def test_full_page_of_rows_raises_truncation_risk():
 
 
 def test_zero_metrics_reports_a_reason_not_a_verdict():
-    ns = _load(stub_fetch=lambda urls, **kw: ('{"response": {"data": []}}', urls[0]),
+    ns = _load(stub_fetch=lambda urls, **kw: ('{"response": {"data": []}}', _url_of(urls[0])),
                stub_parse=lambda t, prefix="fuel_": {})
     with _Key("K"):
         res = ns["fetch_eia930_ba"]("APS")
@@ -224,7 +251,7 @@ def test_second_call_inside_the_ttl_does_not_refetch():
 
     def _fetch(urls, **kw):
         n["calls"] += 1
-        return _BODY_OK, urls[0]
+        return _BODY_OK, _url_of(urls[0])
 
     ns = _load(stub_fetch=_fetch,
                stub_parse=lambda t, prefix="fuel_": {"fuel_ng": {"value": 2437.0}})
@@ -238,7 +265,7 @@ def test_second_call_inside_the_ttl_does_not_refetch():
 
 
 def test_cached_result_cannot_be_mutated_by_a_caller():
-    ns = _load(stub_fetch=lambda urls, **kw: (_BODY_OK, urls[0]),
+    ns = _load(stub_fetch=lambda urls, **kw: (_BODY_OK, _url_of(urls[0])),
                stub_parse=lambda t, prefix="fuel_": {"fuel_ng": {"value": 1.0}})
     with _Key("K"):
         a = ns["fetch_eia930_ba"]("APS")
@@ -252,7 +279,7 @@ def test_max_age_zero_bypasses_the_cache():
 
     def _fetch(urls, **kw):
         n["calls"] += 1
-        return _BODY_OK, urls[0]
+        return _BODY_OK, _url_of(urls[0])
 
     ns = _load(stub_fetch=_fetch,
                stub_parse=lambda t, prefix="fuel_": {"fuel_ng": {"value": 1.0}})
@@ -266,8 +293,8 @@ def test_separate_respondents_do_not_share_a_cache_entry():
     seen = []
 
     def _fetch(urls, **kw):
-        seen.append(urls[0])
-        return _BODY_OK, urls[0]
+        seen.append(_url_of(urls[0]))
+        return _BODY_OK, _url_of(urls[0])
 
     ns = _load(stub_fetch=_fetch,
                stub_parse=lambda t, prefix="fuel_": {"fuel_ng": {"value": 1.0}})
@@ -306,7 +333,7 @@ def test_a_failure_never_serves_a_stale_success():
     def _fetch(urls, **kw):
         if state["fail"]:
             raise RuntimeError("upstream down")
-        return _BODY_OK, urls[0]
+        return _BODY_OK, _url_of(urls[0])
 
     ns = _load(stub_fetch=_fetch,
                stub_parse=lambda t, prefix="fuel_": {"fuel_ng": {"value": 1.0}})

@@ -44,7 +44,7 @@ from routes._iso_common import (
     scrub_secrets,
 )
 # ws2 (2026-07-29): one shared EIA-930 URL builder. See routes/eia930.py.
-from routes.eia930 import eia930_url
+from routes.eia930 import eia930_request
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -113,8 +113,8 @@ def _miso_urls():
         # PRIMARY: MISO public real-time API (keyless, 5-min intervals).
         MISO_PUBLIC_FUELMIX,
         # Fallback 1: api.eia.gov v2 MISO region (authenticated, ~27h lag).
-        # ws2 (2026-07-29): built by routes/eia930.eia930_url; byte-identical.
-        eia930_url("MISO"),
+        # ws2 (2026-07-29): built by routes/eia930 as (url, X-Api-Key header).
+        eia930_request("MISO"),
         # Fallback 2/3: MISO public Data Broker (retired 2026-05-31, returns
         # {"error": "no data"} — kept in case MISO restores the public feed).
         "https://api.misoenergy.org/MISORTWDDataBroker/DataBrokerServices.asmx?messageType=getfuelmix&returnType=json",
@@ -202,7 +202,7 @@ def run_extraction():
     summary = {"iso": "MISO", "metrics_extracted": 0, "rows_inserted": 0}
     try:
         text, url = fetch_first_working(_miso_urls(), ua="dchub-iso-miso/1.0")
-        # scrub_url hides the embedded EIA api_key from the echoed /extract response
+        # scrub_url is a backstop: the EIA key travels in a header, not the URL
         summary["fetched_url"] = scrub_url(url)
         summary["html_size"] = len(text)
         # EIA v2 parser first when the winning URL is api.eia.gov/v2 (same path
