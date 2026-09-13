@@ -329,18 +329,40 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
     return []
 
 
+# A line's two endpoint substations sit within this many miles of each other in
+# all but the tail of the EIA set: of 51,948 lines whose endpoint names each occur
+# at one place in `substations`, half span 2.1 mi and 99% span 42.5 mi
+# (production rows, 2026-09-13). _line_is_at reads a same-named substation
+# farther away than this as a different substation.
+_TX_ENDPOINT_MILES = 50.0
+
+# How many of the nearest substation rows step 1 hands to step 2. Over 2,025
+# sampled sites at 15 and 25 mi, the anchoring substation was at most row 88.
+_TX_NEARBY_SUBSTATIONS = 500
+
+
+def _haversine_miles(lat1, lng1, lat2, lng2):
+    """Great-circle miles by the substation queries' own formula (3959 * acos)."""
+    v = (math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.cos(math.radians(lng2) - math.radians(lng1))
+         + math.sin(math.radians(lat1)) * math.sin(math.radians(lat2)))
+    return 3959 * math.acos(max(-1.0, min(1.0, v)))
+
+
 def find_nearest_transmission(lat, lng, max_distance_miles=15):
     """
-    Find nearest transmission line by finding the nearest substation
-    and looking up what transmission lines connect to it.
+    Find the transmission line anchored nearest the site: substations inside the
+    radius box, nearest first, matched by exact name to line endpoints, keeping a
+    line only where its endpoint names place it at that substation.
+    distance_miles is the anchoring substation's distance.
     Returns None when nothing matches. There is no live fallback; see the end.
     """
-    # Step 1: Find nearest substation name
+    # Step 1: substations near the site, nearest first
     deg_lat = max_distance_miles / 69.0
     deg_lng = max_distance_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
-    
-    nearest_sub_query = """
-        SELECT name,
+
+    nearby_subs_query = """
+        SELECT name, lat, lng,
             (3959 * acos(
                 LEAST(1.0, GREATEST(-1.0,
                     cos(radians(%s)) * cos(radians(lat)) *
@@ -352,80 +374,21 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
         WHERE lat IS NOT NULL
           AND lat BETWEEN %s AND %s
           AND lng BETWEEN %s AND %s
+          AND name IS NOT NULL
         ORDER BY distance_miles ASC
-        LIMIT 1;
+        LIMIT %s;
     """
-    sub_result = execute_query(nearest_sub_query, (
+    subs = execute_query(nearby_subs_query, (
         lat, lng, lat,
         lat - deg_lat, lat + deg_lat,
-        lng - deg_lng, lng + deg_lng
+        lng - deg_lng, lng + deg_lng,
+        _TX_NEARBY_SUBSTATIONS
     ))
-    
-    if sub_result and len(sub_result) > 0:
-        sub_name = sub_result[0].get('name', '')
-        sub_distance = sub_result[0].get('distance_miles', 0)
-        
-        # Step 2: Find transmission line connected to that substation
-        # Match the first word of the substation name against the line endpoints.
-        #
-        # ★ 2026-09-13 — this lookup reads the MAINTAINED table. It used to read
-        # discovered_transmission_lines, a March 2026 crawl with no writer in the
-        # repo and TEXT timestamps (it could not date its own freeze), whose
-        # 2,821,162 rows repeat one line hundreds of times — its top 1,000 rows by
-        # voltage were 2 distinct lines. transmission_lines is the EIA set that
-        # routes/transmission_ingest.py refreshes weekly, one row per line
-        # (~94.6K). Columns: sub_1/sub_2 -> from_sub/to_sub, owner -> operator.
-        #
-        # This is not the spatial repoint util/transmission_tables.py rules out:
-        # nothing here reads a coordinate. It matches endpoint NAMES, which the
-        # maintained table carries; distance_miles is the substation's, as before.
-        #
-        # volt_class is served as None. The maintained table does not store
-        # HIFLD's VOLT_CLASS, and it cannot be derived from voltage_kv: in the EIA
-        # source the classes overlap ("100-161" holds lines up to 218 kV, "UNDER
-        # 100" up to 161 kV, and DC lines sit in three different classes).
-        #
-        # r-txprefix (2026-08-25, measured on the crawl): the pattern was
-        # `LOWER(sub_1) LIKE LOWER('%term%')`. A LEADING wildcard can never become
-        # an index qual, so the planner walked the whole table — "Rows Removed by
-        # Filter: 2821162", 2.29s warm, up to 18s under load. A MISS pays the full
-        # scan, and a miss is the COMMON case: most `substations` names are import
-        # placeholders (OSM-917634654, RISER167166) that match no endpoint.
-        # Anchoring made it an index range there (2.29s -> 26ms). Keep it anchored:
-        # the repo DDL indexes only transmission_lines.hifld_id, and the anchored
-        # form is what lets an index on from_sub/to_sub serve this lookup at all.
-        # Dropping LOWER() on the column side stays exact: the DB is C.UTF-8 (byte
-        # order), and 0 of the EIA source's 94,619 lines carry a SUB_1 or SUB_2
-        # that differs from its UPPER() (measured 2026-09-13; the ingest only
-        # trims them). Do NOT add COLLATE "C" to 'harden' it — an explicit
-        # collation is a different collation object and DEFEATS a plain index
-        # (see be#3086).
-        #
-        # ! SEMANTIC NARROWING, substring -> prefix. A line whose endpoint merely
-        # CONTAINS the term does not match; on no match every caller already
-        # falls back to the substation's own voltage/operator. A first word is
-        # still a broad key — WEST% matches 797 EIA lines, NORTH% 917 — so the
-        # highest-voltage hit can belong to a different substation.
-        search_term = sub_name.split(' ')[0] if sub_name else ''
-        if search_term and len(search_term) > 2:
-            tx_query = """
-                SELECT from_sub AS line_name, voltage_kv, operator AS owner, status
-                FROM transmission_lines
-                WHERE (from_sub LIKE %s OR to_sub LIKE %s)
-                  AND voltage_kv IS NOT NULL
-                ORDER BY voltage_kv DESC
-                LIMIT 1;
-            """
-            _prefix = search_term.upper() + '%'
-            tx_result = execute_query(tx_query, (_prefix, _prefix))
-            
-            if tx_result and len(tx_result) > 0:
-                tx = tx_result[0]
-                tx['volt_class'] = None  # not stored by the maintained table; see above
-                tx['distance_miles'] = round(sub_distance, 1)
-                tx['matched_substation'] = sub_name
-                return tx
-    
+
+    tx = _anchored_transmission_line(subs) if subs else None
+    if tx:
+        return tx
+
     # No live fallback: a miss returns None, and every caller handles that. The
     # site report shows the substation's own voltage and operator, the scorer
     # awards no transmission points, and analyze and compare serve null.
@@ -451,6 +414,125 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
     # mile away. A true distance needs every line's geometry in the box, 139-353
     # KB per call. A spatial answer belongs in the database.
     return None
+
+
+def _anchored_transmission_line(subs):
+    """Steps 2-3 of find_nearest_transmission. `subs` is step 1's rows, nearest first."""
+    # ★ 2026-09-13 — anchored at nearby substations, not a first-word prefix.
+    #
+    # This reads the MAINTAINED transmission_lines: the EIA set that
+    # routes/transmission_ingest.py refreshes weekly, endpoints in from_sub/to_sub,
+    # owner in operator. volt_class is served as None — the table does not store
+    # HIFLD's VOLT_CLASS, and voltage_kv cannot derive it (the EIA classes overlap).
+    #
+    # Until this change step 2 served the highest-voltage line NATIONWIDE whose
+    # endpoint started with the nearest substation's first word: 797 EIA lines
+    # start with WEST, 917 with NORTH. Judged against the EIA line geometry at
+    # 1,000 seeded real-named substations (production rows), 473 of the 732 lines
+    # it served ran more than 25 mi from the substation they were attributed to;
+    # WEST in Arkansas got a 500 kV Alabama Power line into WEST VERNON.
+    #
+    # Now, the pattern /api/v1/grid/transmission-proximity uses:
+    #   1. the substations in the radius box, nearest first (step 1);
+    #   2. lines whose from_sub or to_sub EQUALS one of their names, each anchored
+    #      at its nearest matching endpoint, voltage_kv > 0 (-999999 is EIA's
+    #      'not available', on 15,127 lines);
+    #   3. the nearest anchor wins, then the highest voltage, then the lowest id —
+    #      but only a line whose endpoint names place it at the anchor
+    #      (_line_is_at). A name is still not an identity: nine substations are
+    #      named WEST, in six states.
+    # Same 1,000 sites: 980 lines served, 963 within 2 mi of their substation.
+    # The before/after table is in the PR.
+    #
+    # Endpoint names are uppercase (0 of 95,569 lines differ from UPPER()); 31,016
+    # substation names are not. So names are uppercased HERE, on the parameter
+    # side. Never wrap from_sub/to_sub in UPPER()/LOWER(): a function on the column
+    # cannot use an index on it, and the DB is C.UTF-8 (byte order), so equality
+    # needs none. Do NOT add COLLATE "C" to 'harden' it — an explicit collation is
+    # a different collation object and DEFEATS a plain index (see be#3086).
+    anchors = {}
+    for sub in subs:
+        anchors.setdefault(sub['name'].upper(), sub)
+    names = list(anchors)
+
+    # Step 2: lines with an endpoint named like a nearby substation
+    lines_query = """
+        SELECT id, from_sub, to_sub, voltage_kv, operator AS owner, status
+        FROM transmission_lines
+        WHERE (from_sub = ANY(%s) OR to_sub = ANY(%s))
+          AND voltage_kv > 0;
+    """
+    lines = execute_query(lines_query, (names, names))
+    if not lines:
+        return None
+
+    candidates = []
+    for line in lines:
+        ends = [(end, other) for end, other in ((line['from_sub'], line['to_sub']),
+                                                (line['to_sub'], line['from_sub']))
+                if end in anchors]
+        anchor, other = min(ends, key=lambda e: anchors[e[0]]['distance_miles'])
+        candidates.append((anchors[anchor]['distance_miles'], -line['voltage_kv'],
+                           line['id'], anchor, other, line))
+    candidates.sort(key=lambda c: c[:3])
+
+    # Step 3: where do the endpoint names occur?
+    spellings = set()
+    for _, _, _, anchor, other, _ in candidates:
+        spellings.update((anchor, anchors[anchor]['name']))
+        if other:
+            spellings.add(other)
+    places_query = """
+        SELECT name, lat, lng FROM substations
+        WHERE name = ANY(%s) AND lat IS NOT NULL AND lng IS NOT NULL;
+    """
+    placed = execute_query(places_query, (sorted(spellings),))
+    if placed is None:
+        return None
+    places = {}
+    for row in placed:
+        places.setdefault(row['name'], []).append((row['lat'], row['lng']))
+
+    for distance, _, _, anchor, other, line in candidates:
+        sub = anchors[anchor]
+        if _line_is_at(sub, anchor, other, places):
+            return {
+                'line_name': line['from_sub'],
+                'voltage_kv': line['voltage_kv'],
+                'owner': line['owner'],
+                'status': line['status'],
+                'volt_class': None,  # not stored by the maintained table; see above
+                'distance_miles': round(distance, 1),
+                'matched_substation': sub['name'],
+            }
+    return None
+
+
+def _line_is_at(sub, anchor, other, places):
+    """Do a line's endpoint names place it at `sub`, the substation whose name matched
+    `anchor`? `other` is the far endpoint's name, None when none is recorded.
+    `places` maps a substation name to the coordinates it occurs at."""
+    def miles(name):
+        return [_haversine_miles(sub['lat'], sub['lng'], lat, lng)
+                for lat, lng in places.get(name, ())]
+
+    anchor_elsewhere = any(d > _TX_ENDPOINT_MILES
+                           for d in miles(anchor) + miles(sub['name']))
+    other_miles = miles(other) if other else []
+    if any(d <= _TX_ENDPOINT_MILES for d in other_miles):
+        # The far end is a substation near this one, unless BOTH names also occur
+        # elsewhere: substations named ALLEN and LINCOLN stand 7 mi apart in
+        # Nevada, and the ALLEN -> LINCOLN line is in Indiana. (A self-loop lands
+        # here on its own anchor, and stands or falls on that one name.)
+        return not (anchor_elsewhere
+                    and any(d > _TX_ENDPOINT_MILES for d in other_miles))
+    if other_miles:
+        return False  # the far end occurs, but nowhere near this substation
+    # Nothing places the far end (none recorded, or a name absent from
+    # `substations`), so the anchor's own name is the only evidence. Trust it only
+    # if it occurs nowhere farther away and matched as stored: a case-folded match
+    # cannot see copies kept under the other spelling.
+    return not anchor_elsewhere and sub['name'] == anchor
 
 
 def identify_iso_region(lat, lng, state=None):
