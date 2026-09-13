@@ -2636,16 +2636,6 @@
     "enhanced_promotion"
    ]
   },
-  "GET /api/proxy": {
-   "modules": [
-    "cors_proxy_routes"
-   ]
-  },
-  "GET /api/proxy/health": {
-   "modules": [
-    "cors_proxy_routes"
-   ]
-  },
   "GET /api/public/mcp-count": {
    "modules": [
     "main"
@@ -14587,11 +14577,6 @@
   "POST /api/promotion/run": {
    "modules": [
     "enhanced_promotion"
-   ]
-  },
-  "POST /api/proxy": {
-   "modules": [
-    "cors_proxy_routes"
    ]
   },
   "POST /api/reports/generate": {
