@@ -71,7 +71,19 @@ logger = logging.getLogger(__name__)
 # radar cycle, spamming the log + producing a false
 # `worker_source_unreachable` finding every scan. Fixed path now
 # resolves to the actual checkout.
-_WORKER_SOURCE_URL = "https://raw.githubusercontent.com/azmartone67/dchub-backend/main/dchub-frontend/_worker.js"
+# ★ 2026-09-12 — read the worker from the repo that deploys it. This used to read
+# a vendored copy at dchub-backend/dchub-frontend/_worker.js. #3871 retired that
+# mirror on 2026-09-04 ("one copy, in the repo that owns it"); from then on every
+# scan filed worker_source_unreachable telling the reader to check whether
+# raw.githubusercontent.com was reachable. It was. The file was gone.
+# azmartone67/dchub-frontend is PRIVATE, and raw.githubusercontent.com answers
+# 404 for no token, an invalid token, a token without access and a missing file
+# alike (measured 2026-09-12). _http_get's GITHUB_TOKEN header is what makes the
+# fetch work at all; the marker — same repo and branch, a file that is always
+# there — is how a 404 gets told apart.
+_WORKER_REPO_RAW = "https://raw.githubusercontent.com/azmartone67/dchub-frontend/main"
+_WORKER_SOURCE_URL = f"{_WORKER_REPO_RAW}/_worker.js"
+_WORKER_REPO_MARKER_URL = f"{_WORKER_REPO_RAW}/_routes.json"
 _WORKER_PROBE_URL  = "https://dchub.cloud/api/v1/dcpi/scores?limit=1"
 
 
@@ -360,25 +372,63 @@ def check_inline_script_truncated() -> list[dict]:
     return findings
 
 
+def worker_source_failure_finding() -> dict:
+    """Say WHY the worker source could not be read, not just that it could not.
+
+    For eight days after #3871 this finding told its reader to check whether
+    raw.githubusercontent.com was reachable. It was; the file it pointed at had
+    been deleted. A private repo makes every failure look like the same 404, so
+    the diagnosis happens here instead of being left to the reader. It runs only
+    on the failure path — a healthy scan still spends exactly two fetches."""
+    err = _LAST_FETCH_ERROR.get(_WORKER_SOURCE_URL, "unknown error")
+    has_token = bool((os.environ.get("GITHUB_TOKEN")
+                      or os.environ.get("BACKEND_PAT") or "").strip())
+    if not has_token:
+        cause, why = ("no_token",
+                      "neither GITHUB_TOKEN nor BACKEND_PAT is set on this service, "
+                      "and azmartone67/dchub-frontend is private, so every fetch "
+                      "404s. Set a token with contents:read on that repo.")
+    elif not err.startswith("HTTP 404"):
+        cause, why = ("fetch_error",
+                      "this is not the 404 a private repo gives for a missing or "
+                      "unreadable file — a network or GitHub-side failure. Re-run; "
+                      "if it persists, check egress from the Railway runtime.")
+    else:
+        marker_body, _ = _http_get(_WORKER_REPO_MARKER_URL, timeout=15)
+        if marker_body is not None:
+            cause, why = ("file_moved",
+                          "the token CAN read azmartone67/dchub-frontend (its "
+                          "_routes.json fetched), but _worker.js is not at that "
+                          "path on main — it moved or was renamed. Update "
+                          "_WORKER_SOURCE_URL.")
+        else:
+            cause, why = ("token_cannot_read_repo",
+                          "neither _worker.js nor _routes.json could be read from "
+                          "azmartone67/dchub-frontend. GitHub answers 404 for a "
+                          "missing, invalid or unscoped token alike, so the token "
+                          "on this service most likely lacks contents:read on that "
+                          "repo — or the repo or branch moved.")
+    return {
+        "issue": "worker_source_unreachable",
+        "url": _WORKER_SOURCE_URL,
+        "count": 1,
+        "cause": cause,
+        "detail": f"Could not read _worker.js ({err}): {why}",
+    }
+
+
 def check_worker_version_drift() -> list[dict]:
     """Compare _worker.js source's WORKER_VERSION vs the live header
     value. Flag if they diverge."""
     findings = []
-    # Phase RR+1: bumped to 30s timeout — raw.githubusercontent.com can be
-    # slow from Railway's network. Also echoes the actual urllib error in
-    # the finding detail instead of a generic 'unreachable'.
+    # raw.githubusercontent.com can be slow from Railway's network, so 15s.
+    # `is None`, not falsy: _http_get returns None only from its except
+    # branches, each of which records a FRESH _LAST_FETCH_ERROR for this call.
+    # An empty body is a successful fetch and falls through to the constant
+    # check below rather than reading a stale error from an earlier scan.
     source_body, _ = _http_get(_WORKER_SOURCE_URL, timeout=15)
-    if not source_body:
-        err = _LAST_FETCH_ERROR.get(_WORKER_SOURCE_URL, "unknown error")
-        return [{
-            "issue": "worker_source_unreachable",
-            "url": _WORKER_SOURCE_URL,
-            "count": 1,
-            "detail": (f"Could not fetch _worker.js source from GitHub "
-                       f"({err}). Radar fails closed — re-run later. "
-                       f"If this persists, check that raw.githubusercontent.com "
-                       f"is reachable from the Railway runtime."),
-        }]
+    if source_body is None:
+        return [worker_source_failure_finding()]
     m = re.search(r"const\s+WORKER_VERSION\s*=\s*['\"]([\w\d\.\-]+)['\"]",
                    source_body)
     if not m:
