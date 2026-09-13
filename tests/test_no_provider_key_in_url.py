@@ -25,6 +25,8 @@ SCOPE, deliberately narrow to stay actionable:
     was added after that gap hid three live sites from the first one.
   · requests(params=...) is covered by a third, including a dict picked by a
     conditional expression.
+  · both of those also follow a key written into the dict after it was built
+    (`params["api_key"] = KEY`), within one scope.
   · Anything not listed here is not seen.
 """
 import ast
@@ -142,7 +144,7 @@ def scan_source(src: str, label: str):
     return hits
 
 
-def _query_bound_urlencode_args(tree):
+def _query_bound_urlencode_args(nodes, ctx):
     """Names passed to a urlencode() whose RESULT lands in a query string.
 
     ★ urlencode IS NOT A QUERY-STRING SIGNAL ON ITS OWN. An OAuth token
@@ -152,41 +154,51 @@ def _query_bound_urlencode_args(tree):
     leak is the result being concatenated into a URL, so that is what we look
     for: a "?" or "&" literal beside the call, either directly or through the
     variable the call was assigned to.
+
+    `nodes` is what to read: ast.walk(tree) for the whole module, or
+    _scope_nodes() for one scope; `ctx()` gives the module's _Ctx. A URL whose
+    base _resolve() places on one of _OURS is not counted, whether the query
+    is joined where the link is built or after it was assigned — the exemption
+    scan_source() gives our own links. A base that cannot be followed is
+    counted, as in shape 4.
     """
     def has_q(node):
         return any(isinstance(n, ast.Constant) and isinstance(n.value, str)
                    and ("?" in n.value or "&" in n.value) for n in ast.walk(node))
 
-    def calls(node):
+    def encoded(node):
+        # the names urlencode() is called on anywhere inside node
+        out = set()
         for n in ast.walk(node):
             if isinstance(n, ast.Call):
                 fn = n.func
                 if (isinstance(fn, ast.Name) and fn.id == "urlencode") or \
                    (isinstance(fn, ast.Attribute) and fn.attr == "urlencode"):
-                    yield n
+                    out.update(a.id for a in n.args[:1] if isinstance(a, ast.Name))
+        return out
 
-    direct, via_var, qs_vars = set(), {}, set()
-    for node in ast.walk(tree):
+    def ours(node):
+        return _where(_resolve(ctx(), node)) == "ours"
+
+    direct, via_var, joined = set(), {}, []
+    for node in nodes:
         # (a) urlencode() sitting inside a concat / f-string that has ? or &
         if isinstance(node, (ast.BinOp, ast.JoinedStr)) and has_q(node):
-            for c in calls(node):
-                for a in c.args[:1]:
-                    if isinstance(a, ast.Name):
-                        direct.add(a.id)
-        # (b) q = urlencode(params)   ... later   f"{base}?{q}"
+            joined.append(node)
+        # (b) q = urlencode(params)   ... later   f"{base}?{q}"  — unless the
+        #     value is already a whole link on our own host
         if isinstance(node, ast.Assign) and len(node.targets) == 1 \
                 and isinstance(node.targets[0], ast.Name):
-            for c in calls(node.value):
-                for a in c.args[:1]:
-                    if isinstance(a, ast.Name):
-                        via_var.setdefault(node.targets[0].id, set()).add(a.id)
-        if isinstance(node, (ast.BinOp, ast.JoinedStr)) and has_q(node):
-            for n in ast.walk(node):
-                if isinstance(n, ast.Name):
-                    qs_vars.add(n.id)
-    for var, params in via_var.items():
-        if var in qs_vars:
-            direct |= params
+            names = encoded(node.value)
+            if names and not (has_q(node.value) and ours(node.value)):
+                via_var.setdefault(node.targets[0].id, set()).update(names)
+    for node in joined:
+        names = encoded(node)
+        for n in ast.walk(node):
+            if isinstance(n, ast.Name) and n.id in via_var:
+                names |= via_var[n.id]
+        if names and not ours(node):
+            direct |= names
     return direct
 
 
@@ -208,7 +220,19 @@ def scan_source_urlencode(src: str, label: str):
         tree = ast.parse(src)
     except SyntaxError:
         return hits
-    wanted = _query_bound_urlencode_args(tree)
+    ctx = functools.cache(lambda: _Ctx(tree))
+    # ★ A key written in AFTER the literal — `params = dict(params)` then
+    # `params["api_key"] = KEY` — is in no dict literal, so the loop below
+    # cannot see it. Followed within one scope, for the reason _scope_nodes
+    # gives: a name as common as `params` collides across functions.
+    for sc in _scopes(tree):
+        nodes = _scope_nodes(sc)
+        written = _secret_subscript_writes(nodes)
+        if not written:
+            continue
+        for name in sorted(written.keys() & _query_bound_urlencode_args(nodes, ctx)):
+            hits += [(label, ln, key) for ln, key in written[name]]
+    wanted = _query_bound_urlencode_args(ast.walk(tree), ctx)
     if not wanted:
         return hits
     for node in ast.walk(tree):
@@ -219,7 +243,7 @@ def scan_source_urlencode(src: str, label: str):
             for k, v in zip(node.value.keys, node.value.values):
                 if (isinstance(k, ast.Constant) and isinstance(k.value, str)
                         and _SECRET_PARAM.search("?" + k.value + "=")
-                        and isinstance(v, (ast.Name, ast.Attribute))):
+                        and _is_variable(v)):
                     hits.append((label, k.lineno, k.value))
     return hits
 
@@ -271,6 +295,35 @@ def _dicts(expr):
     return []
 
 
+def _scopes(tree):
+    """The module and every function in it, each to be read with _scope_nodes."""
+    return [tree] + [n for n in ast.walk(tree)
+                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _is_variable(value):
+    """A value computed at run time. A literal is a test fixture."""
+    if isinstance(value, ast.JoinedStr):
+        return any(isinstance(v, ast.FormattedValue) for v in value.values)
+    return not isinstance(value, ast.Constant)
+
+
+def _secret_subscript_writes(nodes):
+    """name -> [(line, key)] for each `name["api_key"] = <variable>` among
+    nodes: a credential written into a dict after the dict was built."""
+    out = {}
+    for n in nodes:
+        if not isinstance(n, ast.Assign) or not _is_variable(n.value):
+            continue
+        for t in n.targets:
+            if (isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name)
+                    and isinstance(t.slice, ast.Constant)
+                    and isinstance(t.slice.value, str)
+                    and _SECRET_PARAM.search("?" + t.slice.value + "=")):
+                out.setdefault(t.value.id, []).append((n.lineno, t.slice.value))
+    return out
+
+
 def scan_source_params(src: str, label: str):
     """Credentials handed to requests(params=...), which become a query string."""
     hits = []
@@ -278,10 +331,12 @@ def scan_source_params(src: str, label: str):
         tree = ast.parse(src)
     except SyntaxError:
         return hits
-    scopes = [tree] + [n for n in ast.walk(tree)
-                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-    for sc in scopes:
+    for sc in _scopes(tree):
         nodes = _scope_nodes(sc)
+        # ★ A key written in after the literal was built, or into a dict that
+        # arrived as an argument — `if key: params["api_key"] = key` — is in
+        # no literal `local` holds.
+        written = _secret_subscript_writes(nodes)
         local = {n.targets[0].id: n.value for n in nodes
                  if isinstance(n, ast.Assign) and len(n.targets) == 1
                  and isinstance(n.targets[0], ast.Name)
@@ -305,8 +360,10 @@ def scan_source_params(src: str, label: str):
                     for k, v in zip(d.keys, d.values):
                         if (isinstance(k, ast.Constant) and isinstance(k.value, str)
                                 and _SECRET_PARAM.search("?" + k.value + "=")
-                                and isinstance(v, (ast.Name, ast.Attribute))):
+                                and _is_variable(v)):
                             hits.append((label, n.lineno, k.value))
+                for _ln, key in written.get(getattr(kw.value, "id", ""), ()):
+                    hits.append((label, n.lineno, key))
     return hits
 
 
@@ -775,6 +832,79 @@ def test_the_urlencode_detector_ignores_fixtures_and_json_bodies():
     assert scan_source_urlencode(_ENC_NO_URLENCODE_OK, "<synthetic>") == []
 
 
+# ── a key written into the dict after it was built ──────────────────────────
+_BAD_ENC_WRITTEN = (
+    "def _request(path, params):\n"
+    "    params = dict(params)\n"
+    "    params['api_key'] = _api_key()\n"
+    "    qs = urllib.parse.urlencode(params)\n"
+    "    return urllib.request.urlopen(API_BASE + path + '?' + qs)\n")
+_BAD_ENC_WRITTEN_HOST = (
+    "def link(key):\n"
+    "    params = {'source': 'cta'}\n"
+    "    if key:\n"
+    "        params['key'] = key\n"
+    "    return f'https://api.example.com/v1/opt-in?{urlencode(params)}'\n")
+_ENC_WRITTEN_OURS_OK = _BAD_ENC_WRITTEN_HOST.replace("api.example.com", "dchub.cloud")
+_ENC_WRITTEN_FIXTURE_OK = _BAD_ENC_WRITTEN.replace("_api_key()", "'literal-fixture'")
+_ENC_WRITTEN_OURS_ASSIGNED_OK = (
+    "def cta(key):\n"
+    "    params = {'source': 'cta'}\n"
+    "    if key:\n"
+    "        params['key'] = key\n"
+    "    link = f'https://dchub.cloud/opt-in?{urlencode(params)}'\n"
+    "    return 'Power user? Confirm here: ' + link\n")
+_ENC_WRITTEN_OTHER_SCOPE_OK = (
+    "def token(key):\n"
+    "    params = {}\n"
+    "    params['api_key'] = key\n"
+    "    return requests.post(TOKEN_URL, data=urlencode(params))\n"
+    "def search(term):\n"
+    "    params = {'q': term}\n"
+    "    return urlopen(BASE + '?' + urlencode(params))\n")
+
+
+def test_the_urlencode_detector_follows_a_key_written_after_the_literal():
+    assert [h[1:] for h in scan_source_urlencode(_BAD_ENC_WRITTEN, "<s>")] == [(3, "api_key")]
+    assert [h[1:] for h in scan_source_urlencode(_BAD_ENC_WRITTEN_HOST, "<s>")] == [(4, "key")]
+
+
+def test_the_urlencode_detector_skips_a_written_key_in_our_link_a_fixture_or_another_scope():
+    assert _ENC_WRITTEN_OURS_OK != _BAD_ENC_WRITTEN_HOST
+    assert _ENC_WRITTEN_FIXTURE_OK != _BAD_ENC_WRITTEN
+    assert scan_source_urlencode(_ENC_WRITTEN_OURS_OK, "<s>") == []
+    assert scan_source_urlencode(_ENC_WRITTEN_OURS_ASSIGNED_OK, "<s>") == []
+    moved = _ENC_WRITTEN_OURS_ASSIGNED_OK.replace("dchub.cloud", "api.example.com")
+    assert [h[1:] for h in scan_source_urlencode(moved, "<s>")] == [(4, "key")]
+    assert scan_source_urlencode(_ENC_WRITTEN_FIXTURE_OK, "<s>") == []
+    assert scan_source_urlencode(_ENC_WRITTEN_OTHER_SCOPE_OK, "<s>") == []
+
+
+def _function_source(rel, name):
+    src = (_ROOT / rel).read_text(encoding="utf-8")
+    fns = [n for n in ast.walk(ast.parse(src))
+           if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name]
+    assert len(fns) == 1, (rel, name, len(fns))
+    return ast.get_source_segment(src, fns[0]), fns[0]
+
+
+_OPTIN_LINK = "https://dchub.cloud/api/v1/marketing/opt-in/request?"
+
+
+def test_our_own_opt_in_link_carries_a_key_and_is_not_reported():
+    """Negative control on the real by-design site: _optin_cta_block writes the
+    caller's key into an opt-in link on our own host. It must read clean, and
+    the same function pointed at another host must not — otherwise the clean
+    read shows only that the detector cannot see the function."""
+    seg, fn = _function_source("mcp_gatekeeper.py", "_optin_cta_block")
+    written = _secret_subscript_writes(_scope_nodes(fn))
+    assert [k for w in written.values() for _ln, k in w] == ["key"], written
+    assert scan_source_urlencode(seg, "mcp_gatekeeper.py") == []
+    assert seg.count(_OPTIN_LINK) == 1
+    moved = seg.replace(_OPTIN_LINK, "https://api.example.com/v1/opt-in/request?")
+    assert [h[2] for h in scan_source_urlencode(moved, "<moved>")] == ["key"]
+
+
 def test_no_credential_reaches_a_query_string_via_urlencode():
     _, _, _, enc, _, _ = scan_repo()
     assert not enc, "credential urlencoded into a query string:\n" + "\n".join(
@@ -821,6 +951,67 @@ def test_a_dict_in_another_function_does_not_match():
     from the module makes this report TWO."""
     hits = scan_source_params(_SCOPE_COLLISION, "<s>")
     assert len(hits) == 1, hits
+
+
+_BAD_PARAMS_WRITTEN = (
+    "def demand(rto):\n"
+    "    key = os.environ.get('EIA_API_KEY', '')\n"
+    "    params = {'frequency': 'hourly', 'length': 48}\n"
+    "    if key: params['api_key'] = key\n"
+    "    return _rq.get('https://api.eia.gov/v2/x', params=params, headers=H)\n")
+_BAD_PARAMS_WRITTEN_ARG = (
+    "def make_request(endpoint, params=None):\n"
+    "    if params is None:\n"
+    "        params = {}\n"
+    "    params['api_key'] = EIA_API_KEY\n"
+    "    return requests.get(BASE + endpoint, params=params, timeout=30)\n")
+_PARAMS_WRITTEN_OK = (
+    "def demand(rto):\n"
+    "    key = os.environ.get('EIA_API_KEY', '')\n"
+    "    params = {'frequency': 'hourly'}\n"
+    "    params['length'] = 48\n"
+    "    h = {**H, 'X-Api-Key': key} if key else H\n"
+    "    return _rq.get('https://api.eia.gov/v2/x', params=params, headers=h)\n")
+_PARAMS_WRITTEN_FIXTURE_OK = (
+    "def demand(rto):\n"
+    "    params = {'frequency': 'hourly'}\n"
+    "    params['api_key'] = 'literal-fixture'\n"
+    "    return requests.get(u, params=params)\n")
+_PARAMS_WRITTEN_OTHER_SCOPE_OK = (
+    "def a(KEY):\n"
+    "    params = {}\n"
+    "    params['api_key'] = KEY\n"
+    "    return requests.post(u, json=params)\n"
+    "def b(lat):\n"
+    "    params = {'latitude': lat}\n"
+    "    return requests.get(u2, params=params)\n")
+
+
+def test_the_params_detector_follows_a_key_written_after_the_literal():
+    """Both read clean from the literal alone: a key added under a condition,
+    and a key added to a dict that arrived as an argument."""
+    assert [h[1:] for h in scan_source_params(_BAD_PARAMS_WRITTEN, "<s>")] == [(5, "api_key")]
+    assert [h[1:] for h in scan_source_params(_BAD_PARAMS_WRITTEN_ARG, "<s>")] == [(5, "api_key")]
+
+
+def test_the_params_detector_skips_a_header_a_plain_field_a_fixture_or_another_scope():
+    assert scan_source_params(_PARAMS_WRITTEN_OK, "<s>") == []
+    assert scan_source_params(_PARAMS_WRITTEN_FIXTURE_OK, "<s>") == []
+    assert scan_source_params(_PARAMS_WRITTEN_OTHER_SCOPE_OK, "<s>") == []
+
+
+_BAD_PARAMS_CALL = "r = requests.get(url, params={'api_key': _api_key()}, timeout=5)\n"
+_BAD_ENC_CALL = (
+    "from urllib.parse import urlencode\n"
+    "params = {'api_key': os.environ.get('EIA_API_KEY'), 'frequency': 'monthly'}\n"
+    "url = base + '?' + urlencode(params)\n")
+
+
+def test_a_key_computed_by_a_call_is_a_credential_not_a_fixture():
+    """Only a literal is a fixture: a key read through a call counts in a dict
+    literal exactly as it does when written in afterwards."""
+    assert [h[2] for h in scan_source_params(_BAD_PARAMS_CALL, "<s>")] == ["api_key"]
+    assert [h[2] for h in scan_source_urlencode(_BAD_ENC_CALL, "<s>")] == ["api_key"]
 
 
 def test_no_credential_reaches_a_query_string_via_requests_params():

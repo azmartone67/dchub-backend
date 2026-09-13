@@ -74,11 +74,11 @@ def _api_key() -> str:
 
 def _request(path: str, params: Dict) -> Optional[dict]:
     """Hit regulations.gov v4 API; return parsed JSON or None on error."""
-    params = dict(params)
-    params["api_key"] = _api_key()
     qs = urllib.parse.urlencode(params)
     url = API_BASE + path + "?" + qs
-    req = urllib.request.Request(url, headers={"User-Agent": "DCHub-NEPA-Scraper/1.0"})
+    # api.data.gov reads the key from X-Api-Key; it stays out of the query string.
+    req = urllib.request.Request(url, headers={"User-Agent": "DCHub-NEPA-Scraper/1.0",
+                                               "X-Api-Key": _api_key()})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())

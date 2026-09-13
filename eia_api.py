@@ -16,14 +16,12 @@ def make_eia_request(endpoint, params=None):
     """Make authenticated request to EIA API"""
     if not EIA_API_KEY:
         return None, "EIA_API_KEY not configured"
-    
-    if params is None:
-        params = {}
-    params['api_key'] = EIA_API_KEY
-    
+
     try:
         url = f"{EIA_BASE_URL}/{endpoint}"
-        response = requests.get(url, params=params, timeout=30)
+        # EIA reads the key from X-Api-Key; it stays out of the query string.
+        response = requests.get(url, params=params,
+                                headers={'X-Api-Key': EIA_API_KEY}, timeout=30)
         if response.status_code == 200:
             return response.json(), None
         else:
