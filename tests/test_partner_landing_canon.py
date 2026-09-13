@@ -13,6 +13,7 @@ looks equally trustworthy. A partner who checked the emailed claim landed here
 and found a *different* wrong number.
 """
 import ast
+import json
 import re
 
 SRC = open("routes/partner_landing.py", encoding="utf-8").read()
@@ -71,6 +72,49 @@ def test_every_entity_claim_is_canon_derived():
     assert "CANON_MOVED" in moved, (
         "the page ignored a canon change — the claims are latched at import"
     )
+
+
+def test_partner_copy_fills_canon_tokens_per_request(monkeypatch):
+    """★2026-09-13 — the cohere and gemini heroes and cohere's first bullet
+    wrapped {canon_facilities} in canon_text() INSIDE _PARTNERS, which runs
+    once, at import (tests/test_canon_resolved_per_request.py could not see a
+    call nested in a literal). They carry @@CANON_FAC@@ now, so every surface
+    that reads the copy must fill tokens per request: the page, whose hero was
+    interpolated raw, and /api/v1/partners/<slug>, which returned the copy raw
+    and served @@CANON_*@@ literally for perplexity and gemini (measured live
+    the same day). Checked for every curated partner, then made to follow a
+    canon move.
+    """
+    import flask
+    import routes.partner_landing as pl
+
+    def surfaces(slug):
+        p = pl._PARTNERS[slug]
+        render = (pl._render_pre_execution_stub if p.get("pre_execution")
+                  else pl._render_partner_page)
+        html = render(slug, p)
+        with flask.Flask(__name__).app_context():
+            body = pl.partner_json(slug)[0].get_json()
+        return html, body
+
+    for slug in pl._PARTNERS:
+        html, body = surfaces(slug)
+        for where, text in (("page", html), ("json", json.dumps(body))):
+            assert not re.search(r"@@[A-Z_]+@@", text), (
+                f"/partners/{slug} {where}: an unresolved token reached the reader")
+            assert "{canon_" not in text, f"/partners/{slug} {where}: raw placeholder"
+
+    monkeypatch.setattr(
+        pl, "canon_text",
+        lambda t: re.sub(r"\{canon_[a-z_]+\}", "CANON_MOVED", t) if t else t)
+    for slug in ("cohere", "gemini"):
+        html, body = surfaces(slug)
+        hero = html.split('<p class="hero">', 1)[1].split("</p>", 1)[0]
+        assert "CANON_MOVED" in hero, f"/partners/{slug} hero ignored a canon move"
+        assert "CANON_MOVED" in body["hero"], (
+            f"/api/v1/partners/{slug} hero ignored a canon move")
+    _, cohere = surfaces("cohere")
+    assert "CANON_MOVED" in cohere["value_bullets"][0]
 
 
 def test_no_bare_thousands_figure_next_to_a_fenced_noun():

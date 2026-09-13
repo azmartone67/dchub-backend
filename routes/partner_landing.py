@@ -103,6 +103,22 @@ def _resolve_canon(text: str) -> str:
     return text
 
 
+def _fill_tokens(value, canon: dict):
+    """Fill @@CANON_*@@ tokens in a string, or in every string inside a
+    dict/list/tuple, from ONE _canon_values() read so a response cannot
+    disagree with itself."""
+    if isinstance(value, str):
+        for tok, val in canon.items():
+            if tok in value:
+                value = value.replace(tok, val)
+        return value
+    if isinstance(value, dict):
+        return {k: _fill_tokens(v, canon) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_fill_tokens(v, canon) for v in value]
+    return value
+
+
 partner_landing_bp = Blueprint("partner_landing", __name__)
 
 
@@ -117,14 +133,14 @@ _PARTNERS = {
         # returns a key, /mcp live. (NOT /api/v1/market-intel — that 404s.)
         "name":     "Cohere",
         "tagline":  "Ground-truth data-center intelligence for Cohere's enterprise RAG.",
-        "hero":     (canon_text("Cohere's enterprise RAG customers in infrastructure, energy, and "
+        "hero":     ("Cohere's enterprise RAG customers in infrastructure, energy, and "
                        "real estate need ground truth on data-center capacity — not "
-                       "hallucinated numbers. DC Hub is the live tool: {canon_facilities} distinct facilities "
+                       "hallucinated numbers. DC Hub is the live tool: @@CANON_FAC@@ distinct facilities "
                        "across 170+ countries, live grid / fiber / water / market data, "
                        "every record citation-ready. Wire it into command-a tool-use or "
-                       "your RAG document pipeline in minutes.")),
+                       "your RAG document pipeline in minutes."),
         "value_bullets": [
-            canon_text("{canon_facilities} distinct facilities, 170+ countries — daily-refreshed, every record carries a citation URL for grounded generation"),
+            "@@CANON_FAC@@ distinct facilities, 170+ countries — daily-refreshed, every record carries a citation URL for grounded generation",
             "Two paths: MCP server (dchub.cloud/mcp, 48 tools) for command-a tool-use, or REST for classic RAG documents",
             "Live DCPI market verdicts (BUILD/CAUTION/AVOID), grid headroom, fiber routes, 650+ GW pipeline",
             "Free dev key in one API call (no email); Enterprise partner key available for evaluation",
@@ -274,8 +290,12 @@ _PARTNERS = {
         # tests/test_canon_placeholders_resolved.py because that guard walks the
         # AST for {canon_*} PLACEHOLDERS that escaped canon_text() — a bare
         # numeric literal has no placeholder to find. Wrapped now.
-        "hero":     canon_text("DC Hub is now a Vertex AI Extension. Eight tools covering "
-                       "DCPI market verdicts, {canon_facilities} facility lookups, live 21-ISO "
+        # ★2026-09-13: wrapped at IMPORT, though. canon_text() inside this dict
+        # ran once at boot, so the hero froze at whatever canon said then. It
+        # carries @@CANON_FAC@@ now; _render_partner_page() and partner_json()
+        # fill it per request.
+        "hero":     ("DC Hub is now a Vertex AI Extension. Eight tools covering "
+                       "DCPI market verdicts, @@CANON_FAC@@ facility lookups, live 21-ISO "
                        "grid scoreboard, water risk, and the 3-scenario site valuation "
                        "engine — all importable into Vertex AI Console with one URL "
                        "or wired into the Gemini SDK via raw functionDeclarations. "
@@ -622,6 +642,7 @@ def _render_partner_page(slug: str, p: dict) -> str:
     _CANON_FAC = _canon["@@CANON_FAC@@"]
     _CANON_MKTS = _canon["@@CANON_MKTS@@"]
     _CANON_ISOS = _canon["@@CANON_ISOS@@"]
+    hero = _fill(p["hero"])
     bullets_html = "\n".join(
         f"      <li><span class=\"check\">✓</span> {_fill(b)}</li>"
         for b in p["value_bullets"]
@@ -663,7 +684,7 @@ def _render_partner_page(slug: str, p: dict) -> str:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DC Hub × {p['name']} — {p['tagline']}</title>
-  <meta name="description" content="{p['hero'][:200]}" />
+  <meta name="description" content="{hero[:200]}" />
   <meta name="robots" content="index,follow" />
   <link rel="canonical" href="https://dchub.cloud/partners/{slug}" />
   <meta property="og:title" content="DC Hub × {p['name']}" />
@@ -790,7 +811,7 @@ def _render_partner_page(slug: str, p: dict) -> str:
 
     <h1>DC Hub × {p['name']}</h1>
     <p class="tagline">{p['tagline']}</p>
-    <p class="hero">{p['hero']}</p>
+    <p class="hero">{hero}</p>
 
     <div class="livestrip" id="dch-live" aria-live="polite">
       <span class="ls-item"><span class="ls-live">●</span> live</span>
@@ -971,7 +992,9 @@ def partner_json(slug):
     if not p:
         return jsonify({"ok": False, "error": "unknown_partner",
                           "valid_slugs": list(_PARTNERS.keys()) + list(_PARTNERS_AUTO.keys())}), 404
-    return jsonify({"ok": True, "slug": slug, **p}), 200
+    # ★2026-09-13 — the copy carries @@CANON_*@@ tokens the page fills per
+    # request, and this JSON returned them raw. Fill them from one canon read.
+    return jsonify({"ok": True, "slug": slug, **_fill_tokens(p, _canon_values())}), 200
 
 
 @partner_landing_bp.route("/api/v1/partners", methods=["GET"])
