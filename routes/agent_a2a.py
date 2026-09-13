@@ -26,6 +26,36 @@ from workos_authkit import authkit_endpoints as _ak, AUTHKIT_SCOPES  # noqa: F40
 agent_a2a_bp = Blueprint("agent_a2a", __name__)
 
 
+# ★2026-09-13 — CANON IS RESOLVED WHEN THE CARD IS SERVED, NOT WHEN THIS MODULE
+# IS IMPORTED. AGENT_CARD below is a module-level dict, so canon_text() used to
+# run exactly once, at import, when every canon cache is cold. It resolved
+# {canon_facilities} to the PINNED floor and the card kept serving that for the
+# life of the process. Measured cache-busted, with and without the edge:
+# /.well-known/agent-card.json said "21,500+ distinct facilities" while
+# /api/v1/canon/phrases, /AGENTS.md and the MCP server card all said 21,800+.
+# Same defect #4320 fixed on /connect, same fix: keep the template raw and let
+# _card() resolve it per request. The deal count was hand-typed "1,400+" against
+# a canon of 2,100+, so it moves to a placeholder in the same change.
+_AGENT_DESCRIPTION = (
+    "Data center intelligence agent — {canon_facilities} distinct facilities, "
+    "M&A deals, grid data across live grid operators on 5 continents "
+    "(7 US ISOs plus TVA, BPA and Ontario's IESO) and 43 US utility "
+    "balancing authorities, (Hydro-Québec, AESO, Nord Pool remain modeled), "
+    "fiber routes, water risk, tax incentives. AI-capex deal tracker. "
+    "AI Compute Capacity Index."
+)
+_FACILITY_SKILL_SUMMARY = (
+    "Search {canon_facilities} distinct data center facilities, get detailed profiles, find alternatives."
+)
+_DEAL_SKILL_SUMMARY = "{canon_deals} tracked M&A deals, hyperscaler capex events."
+
+# Skill name -> the function that renders its summary on each request.
+_LIVE_SKILL_SUMMARIES = {
+    "facility_intelligence": lambda: canon_text(_FACILITY_SKILL_SUMMARY),
+    "deal_flow":             lambda: canon_text(_DEAL_SKILL_SUMMARY),
+}
+
+
 AGENT_CARD = {
     "schema_version": "1.0",
     "spec":           "A2A (Agent-to-Agent) v1",
@@ -36,12 +66,9 @@ AGENT_CARD = {
     "agent": {
         "name":         "DC Hub Intelligence",
         "version":      "2.1.2",
-        "description":  (canon_text("Data center intelligence agent — {canon_facilities} distinct facilities, "
-                         "M&A deals, grid data across live grid operators on 5 continents "
-                         "(7 US ISOs plus TVA, BPA and Ontario's IESO) and 43 US utility "
-                         "balancing authorities, (Hydro-Québec, AESO, Nord Pool remain modeled), "
-                         "fiber routes, water risk, tax incentives. AI-capex deal tracker. "
-                         "AI Compute Capacity Index.")),
+        # Import-time value, kept for callers that read AGENT_CARD directly.
+        # What an agent is SERVED is re-rendered in _card().
+        "description":  canon_text(_AGENT_DESCRIPTION),
         "vendor":       "DC Hub",
         "homepage":     "https://dchub.cloud",
         "contact":      "api@dchub.cloud",
@@ -112,7 +139,7 @@ AGENT_CARD = {
     "skills": [
         {
             "name":     "facility_intelligence",
-            "summary":  canon_text("Search {canon_facilities} distinct data center facilities, get detailed profiles, find alternatives."),
+            "summary":  canon_text(_FACILITY_SKILL_SUMMARY),
             "tools":    ["search_facilities", "get_facility", "find_alternatives", "semantic_search"],
             "examples": ["Find hyperscale campuses over 500MW in Virginia",
                           "Get full profile for facility #3000",
@@ -150,7 +177,7 @@ AGENT_CARD = {
         },
         {
             "name":     "deal_flow",
-            "summary":  "1,400+ tracked M&A deals, hyperscaler capex events.",
+            "summary":  canon_text(_DEAL_SKILL_SUMMARY),
             "tools":    ["list_transactions", "get_pipeline", "hyperscaler_deals"],
             "examples": ["All AWS acquisitions over $1B",
                           "Q1 2026 M&A in EMEA"],
@@ -184,7 +211,10 @@ def _card():
     # Gemini Enterprise / Spark ingestion requires. Add them ADDITIVELY so ONE
     # card satisfies both the marketplace OAuth path and A2A v0.3 discovery —
     # nothing existing is removed.
-    _agent = AGENT_CARD["agent"]
+    # A fresh dict, never AGENT_CARD["agent"] mutated in place: dict() above is
+    # shallow, and the module card is shared by every request.
+    _agent = {**AGENT_CARD["agent"], "description": canon_text(_AGENT_DESCRIPTION)}
+    out["agent"]              = _agent
     out["protocolVersion"]    = "0.3.0"
     out["name"]               = _agent["name"]
     out["description"]        = _agent["description"]
@@ -198,12 +228,16 @@ def _card():
     out["defaultOutputModes"] = ["application/json"]
     # A2A skills require id/name/description/tags; map from the proprietary
     # name/summary/tools shape without dropping the existing fields.
+    _skills = [
+        {**s, "summary": _LIVE_SKILL_SUMMARIES[s["name"]]()} if s["name"] in _LIVE_SKILL_SUMMARIES else s
+        for s in AGENT_CARD["skills"]
+    ]
     out["skills"] = [
         {**s,
          "id":          s["name"],
          "description": s.get("summary", s.get("description", "")),
          "tags":        s.get("tags") or (list(s.get("tools", [])) + [s["name"].replace("_", " ")])}
-        for s in AGENT_CARD["skills"]
+        for s in _skills
     ]
     # r-a2a-0725: advertise the auth surface so Gemini Enterprise Custom-MCP /
     # Spark ingestion knows how to connect. The empty {} in `security` FIRST
