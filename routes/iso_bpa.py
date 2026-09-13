@@ -18,7 +18,7 @@ from routes._iso_common import (
     scrub_secrets,
 )
 # ws2 (2026-07-29): one shared EIA-930 URL builder. See routes/eia930.py.
-from routes.eia930 import eia930_url
+from routes.eia930 import eia930_request
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -44,9 +44,9 @@ def _bpa_urls():
     """
     return [
         # PRIMARY: api.eia.gov v2 BPAT region (fast from Railway, ~800ms).
-        # ws2 (2026-07-29): built by routes/eia930.eia930_url, whose registry
-        # holds the BPA → BPAT divergence. Byte-identical to the old literal.
-        eia930_url("BPA"),
+        # ws2 (2026-07-29): built by routes/eia930 as (url, X-Api-Key header);
+        # its registry holds the BPA → BPAT divergence.
+        eia930_request("BPA"),
         # Fallback 1: small .aspx variant (~13KB)
         "https://transmission.bpa.gov/business/operations/Wind/baltwg.aspx?format=txt",
         # Fallback 2: larger raw text

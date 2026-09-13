@@ -34,7 +34,8 @@ production key: $2.90/MMBtu for trading day 2026-09-01, stamped
   downstream either crashes or compares lexically.
 
 ★ THE KEY IS NEVER PERSISTED. `raw` is written into grid_ext_metrics as JSON, so
-  source_url is the KEYLESS url and the api_key is appended at call time only.
+  source_url is the KEYLESS url and the key is sent in the X-Api-Key header at
+  call time only.
 
 House rules: no DB, no network, never import main, nothing runs at module scope.
 
@@ -102,9 +103,10 @@ def hh(monkeypatch):
     seen: dict = {}
 
     def _install(rows_or_payload):
-        def fake(url, timeout=10):
+        def fake(url, timeout=10, headers=None):
             seen["url"] = url
             seen["timeout"] = timeout
+            seen["headers"] = dict(headers or {})
             return rows_or_payload
         monkeypatch.setattr(g, "_http_json", fake)
 
@@ -176,7 +178,8 @@ def test_todays_own_day_is_allowed_because_it_has_started(monkeypatch, entry):
     monkeypatch.setenv("EIA_API_KEY", KEY)
     monkeypatch.setattr(g, "_utcnow", lambda: NOW)
     monkeypatch.setattr(g, "_http_json",
-                        lambda url, timeout=10: _payload([_row("2026-09-03", "3.01")]))
+                        lambda url, timeout=10, headers=None:
+                        _payload([_row("2026-09-03", "3.01")]))
     out = g._eia_henry_hub(entry)
     assert out["ok"] and out["as_of"] == dt.datetime(2026, 9, 3, tzinfo=UTC)
 
@@ -240,7 +243,8 @@ def test_the_key_is_read_at_call_time_not_frozen_at_import(monkeypatch, entry):
     monkeypatch.setenv("EIA_API_KEY", KEY)
     monkeypatch.setattr(g, "_utcnow", lambda: NOW)
     monkeypatch.setattr(g, "_http_json",
-                        lambda url, timeout=10: _payload(list(LIVE_ROWS)))
+                        lambda url, timeout=10, headers=None:
+                        _payload(list(LIVE_ROWS)))
     assert g._eia_henry_hub(entry)["ok"] is True
 
 
@@ -253,7 +257,8 @@ def test_the_key_is_sent_upstream_but_never_stored(hh, entry):
     """
     out = g._eia_henry_hub(entry)
     assert KEY in json.dumps(_payload(list(LIVE_ROWS))), "fixture must carry the echo"
-    assert "api_key=%s" % KEY in hh.seen["url"], "the key must reach upstream"
+    assert hh.seen["headers"] == {"X-Api-Key": KEY}, "the key must reach upstream"
+    assert hh.seen["url"] == g._EIA_HH_URL and KEY not in hh.seen["url"]
     blob = json.dumps(out["raw"])
     assert KEY not in blob
     assert "api_key" not in blob

@@ -117,8 +117,8 @@ def _call_openai(config, api_key, prompt, timeout):
     return r.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
 def _call_google(config, api_key, prompt, timeout):
-    url = config["url"].replace("{model}", config["model"]) + f"?key={api_key}"
-    r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 2000}}, headers={"Content-Type": "application/json"}, timeout=timeout)
+    url = config["url"].replace("{model}", config["model"])
+    r = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 2000}}, headers={"Content-Type": "application/json", "x-goog-api-key": api_key}, timeout=timeout)
     r.raise_for_status()
     candidates = r.json().get("candidates", [])
     if candidates:

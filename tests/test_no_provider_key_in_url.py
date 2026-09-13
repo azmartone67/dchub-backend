@@ -14,19 +14,25 @@ none of them, which is why this is a rule and not a preference.
 SCOPE, deliberately narrow to stay actionable:
   · only EXTERNAL hosts — dchub.cloud's own `/upgrade?key={api_key}` hands a
     user their OWN key over TLS and is not this defect;
-  · only f-strings whose literal text ends in a secret-ish `?param=` right
-    before an interpolation. A hard-coded `?key=test-key` in a test is inert
-    and is not flagged.
+  · only formatted strings — f-strings, and %-formatting or str.format() on a
+    literal — whose text ends in a secret-ish `?param=` right before a field.
+    A hard-coded `?key=test-key` in a test is inert and is not flagged.
+  · the host does not have to sit in the same literal: a base URL held in a
+    constant, a variable, a parameter default or the left side of a `+` is
+    followed (shape 4 below), and a base that cannot be followed is REPORTED,
+    not assumed to be ours.
   · urlencode() dict building IS covered, by a second detector below — it
     was added after that gap hid three live sites from the first one.
-  · %-formatting and .format() are still NOT seen. Real gaps, stated so they
-    are not mistaken for a clean sweep.
+  · requests(params=...) is covered by a third, including a dict picked by a
+    conditional expression.
+  · Anything not listed here is not seen.
 """
 import ast
 import collections
 import functools
 import pathlib
 import re
+import string
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -50,6 +56,68 @@ def _is_external(url_head: str) -> bool:
     return not any(o in host for o in _OURS)
 
 
+# A %-conversion: %s, %(name)s, %-10.3f ... and %% for a literal percent sign.
+_PCT_FIELD = re.compile(
+    r"%(?:\((?P<key>[^)]*)\))?[-#0 +]*(?:\*|\d+)?(?:\.(?:\*|\d+))?[hlL]?"
+    r"(?P<conv>[a-zA-Z%])")
+
+
+def _format_parts(node):
+    """A formatted string as a list of literal text (str) and fields (the
+    field's expression, or None when it cannot be named): an f-string,
+    `"literal" % args` or `"literal".format(...)`. None for any other node.
+    """
+    if isinstance(node, ast.JoinedStr):
+        return [v.value if isinstance(v, ast.Constant) else
+                getattr(v, "value", None) for v in node.values]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) \
+            and isinstance(node.left, ast.Constant) \
+            and isinstance(node.left.value, str):
+        fmt, args = node.left.value, node.right
+        named = ({k.value: v for k, v in zip(args.keys, args.values)
+                  if isinstance(k, ast.Constant)}
+                 if isinstance(args, ast.Dict) else {})
+        positional = list(args.elts) if isinstance(args, ast.Tuple) else [args]
+        parts, pos, i = [], 0, 0
+        for m in _PCT_FIELD.finditer(fmt):
+            parts.append(fmt[pos:m.start()])
+            pos = m.end()
+            if m.group("conv") == "%":
+                parts.append("%")
+            elif m.group("key") is not None:
+                parts.append(named.get(m.group("key")))
+            else:
+                parts.append(positional[i] if i < len(positional) else None)
+                i += 1
+        parts.append(fmt[pos:])
+        return parts
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+            and node.func.attr == "format" \
+            and isinstance(node.func.value, ast.Constant) \
+            and isinstance(node.func.value.value, str):
+        try:
+            fields = list(string.Formatter().parse(node.func.value.value))
+        except ValueError:
+            return None
+        keywords = {k.arg: k.value for k in node.keywords if k.arg}
+        parts, auto = [], 0
+        for literal, field, _spec, _conv in fields:
+            parts.append(literal)
+            if field is None:
+                continue
+            name = re.split(r"[.\[]", field, maxsplit=1)[0]
+            if name == "":
+                parts.append(node.args[auto] if auto < len(node.args) else None)
+                auto += 1
+            elif name.isdigit():
+                idx = int(name)
+                parts.append(node.args[idx] if idx < len(node.args) else None)
+            else:
+                parts.append(keywords.get(name))
+        return parts
+    return None
+
+
 def scan_source(src: str, label: str):
     """Return [(label, lineno, param)] for secrets interpolated into a URL."""
     hits = []
@@ -58,14 +126,15 @@ def scan_source(src: str, label: str):
     except SyntaxError:
         return hits
     for node in ast.walk(tree):
-        if not isinstance(node, ast.JoinedStr):
+        parts = _format_parts(node)
+        if parts is None:
             continue
         head = ""
-        for part in node.values:
-            if isinstance(part, ast.Constant) and isinstance(part.value, str):
-                head += part.value
+        for part in parts:
+            if isinstance(part, str):
+                head += part
                 continue
-            # an interpolation: does the literal just before it name a secret?
+            # a field: does the literal just before it name a secret?
             m = _SECRET_PARAM.search(head)
             if m and _is_external(head):
                 hits.append((label, node.lineno, m.group(1)))
@@ -192,6 +261,16 @@ def _scope_nodes(root):
     return out
 
 
+def _dicts(expr):
+    """The dict literals an expression can evaluate to: the dict itself, or
+    each branch of a conditional expression."""
+    if isinstance(expr, ast.Dict):
+        return [expr]
+    if isinstance(expr, ast.IfExp):
+        return _dicts(expr.body) + _dicts(expr.orelse)
+    return []
+
+
 def scan_source_params(src: str, label: str):
     """Credentials handed to requests(params=...), which become a query string."""
     hits = []
@@ -206,7 +285,7 @@ def scan_source_params(src: str, label: str):
         local = {n.targets[0].id: n.value for n in nodes
                  if isinstance(n, ast.Assign) and len(n.targets) == 1
                  and isinstance(n.targets[0], ast.Name)
-                 and isinstance(n.value, ast.Dict)}
+                 and _dicts(n.value)}
         for n in nodes:
             if not isinstance(n, ast.Call):
                 continue
@@ -217,16 +296,309 @@ def scan_source_params(src: str, label: str):
             for kw in n.keywords:
                 if kw.arg != "params":
                     continue
-                d = kw.value if isinstance(kw.value, ast.Dict) \
-                    else local.get(getattr(kw.value, "id", ""))
-                if d is None:
-                    continue
-                for k, v in zip(d.keys, d.values):
-                    if (isinstance(k, ast.Constant) and isinstance(k.value, str)
-                            and _SECRET_PARAM.search("?" + k.value + "=")
-                            and isinstance(v, (ast.Name, ast.Attribute))):
-                        hits.append((label, n.lineno, k.value))
+                # ★ A conditional expression picks between dicts, and both
+                # count: `{"api_key": K, ...} if K else {...}` passed the
+                # Dict-only version of this check.
+                dicts = _dicts(kw.value) or \
+                    _dicts(local.get(getattr(kw.value, "id", "")))
+                for d in dicts:
+                    for k, v in zip(d.keys, d.values):
+                        if (isinstance(k, ast.Constant) and isinstance(k.value, str)
+                                and _SECRET_PARAM.search("?" + k.value + "=")
+                                and isinstance(v, (ast.Name, ast.Attribute))):
+                            hits.append((label, n.lineno, k.value))
     return hits
+
+
+# ── shape 4: the host is somewhere else ─────────────────────────────────────
+# scan_source() reads a URL only when its https://host sits in the SAME
+# literal as the secret parameter, so a URL built like these was never
+# examined at all:
+#
+#     f"{EIA_V2_BASE}/{dataset}/data/?api_key={key}"   host in a constant
+#     f"{base_url}?api_key={self.eia_api_key}"         host in a variable
+#     config["url"] + f"?key={api_key}"                host left of a `+`
+#     "%s&api_key=%s" % (_EIA_HH_URL, key)             host in a %-field
+#
+# The base is followed through assignments, parameter defaults,
+# os.environ.get(NAME, default), `or`, `+` and the str methods that keep a
+# string's start, then placed: an external host, one of _OURS, a relative
+# path — or UNRESOLVED. Unresolved is reported exactly like external: a base
+# this reading cannot follow is where every site above sat, and calling it
+# ours would rebuild the blind spot one level up.
+_SCHEME = re.compile(r"https?://", re.I)
+# Where a URL starts inside prose: after whitespace, a quote, `<` or `(`.
+_URL_BREAK = re.compile(r"[\s'\"<(]")
+# The places that fail the build, and how a mixed reading ranks (worst first).
+_REPORTED = ("external", "unresolved")
+_RANK = ("external", "unresolved", "ours", "relative")
+# str methods that leave the start of a string — and so its host — alone.
+_KEEPS_START = {"strip", "rstrip", "replace", "lower", "removesuffix", "format"}
+
+
+def _hostless_candidates(parts):
+    """Yield (param, token, at_start, value) for each secret ?param= directly
+    before a field, when the URL's own text carries no scheme.
+
+    `token` is the run of parts that URL occupies up to the parameter — it
+    starts after the last break in the literal text — and `at_start` says
+    whether it runs back to the start of the string, i.e. whether the base may
+    lie outside the string altogether. `value` is the field's expression.
+    """
+    head, token, at_start = "", [], True
+    for part in parts:
+        if isinstance(part, str):
+            head += part
+            breaks = list(_URL_BREAK.finditer(part))
+            if breaks:
+                token, at_start = [part[breaks[-1].end():]], False
+            else:
+                token.append(part)
+            continue
+        m = _SECRET_PARAM.search(head)
+        if m and not _SCHEME.search("".join(p for p in token if isinstance(p, str))):
+            yield m.group(1), list(token), at_start, part
+        head += "\x00"
+        token.append(part)
+
+
+class _Ctx:
+    """Parent links for one parsed module — built only once a candidate needs
+    them, which almost no file does."""
+
+    def __init__(self, tree):
+        self.tree = tree
+        self.parents = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                self.parents[child] = node
+
+    def chain(self, node):
+        """The nodes enclosing `node`, innermost first."""
+        node = self.parents.get(node)
+        while node is not None:
+            yield node
+            node = self.parents.get(node)
+
+    def scopes(self, node):
+        """Where a name used at `node` is looked up: the enclosing functions,
+        innermost first, then the module. Class bodies are skipped, as Python
+        skips them for a name used inside a method."""
+        return [n for n in self.chain(node)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.Lambda))] + [self.tree]
+
+    def qualname(self, node):
+        names = [n.name for n in self.chain(node)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                   ast.ClassDef))]
+        return ".".join(reversed(names)) or "<module>"
+
+
+def _bindings(ctx, scope, name):
+    """What `name` is bound to directly in `scope`: expressions, and None for
+    a binding whose value cannot be read (a parameter with no default, a loop
+    or `with` target, an import, a `global`). An empty list means `scope` does
+    not bind the name at all."""
+    found = []
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        a = scope.args
+        positional = a.posonlyargs + a.args
+        defaults = [None] * (len(positional) - len(a.defaults)) + list(a.defaults)
+        for arg, default in (list(zip(positional, defaults))
+                             + list(zip(a.kwonlyargs, a.kw_defaults))):
+            if arg.arg == name:
+                found.append(default)
+        for arg in (a.vararg, a.kwarg):
+            if arg is not None and arg.arg == name:
+                found.append(None)
+    for n in _scope_nodes(scope):
+        if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store):
+            parent = ctx.parents.get(n)
+            if isinstance(parent, ast.Assign) and n in parent.targets:
+                found.append(parent.value)
+            elif isinstance(parent, ast.AnnAssign) and parent.value is not None:
+                found.append(parent.value)
+            else:
+                found.append(None)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
+                and n.name == name:
+            found.append(None)
+        elif isinstance(n, ast.alias) and \
+                (n.asname or n.name).split(".")[0] == name:
+            found.append(None)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)) and name in n.names:
+            found.append(None)
+        elif isinstance(n, ast.ExceptHandler) and n.name == name:
+            found.append(None)
+    return found
+
+
+def _dotted(expr):
+    names = []
+    while isinstance(expr, ast.Attribute):
+        names.append(expr.attr)
+        expr = expr.value
+    if isinstance(expr, ast.Name):
+        names.append(expr.id)
+    return ".".join(reversed(names))
+
+
+def _resolve(ctx, expr, depth=0):
+    """The statically readable start of a string expression, with "\\x00"
+    standing for an unreadable tail — or None when not even the start can be
+    read."""
+    if expr is None or depth > 8:
+        return None
+    if isinstance(expr, ast.Constant):
+        return expr.value if isinstance(expr.value, str) else None
+    parts = _format_parts(expr)
+    if parts is not None:
+        out = ""
+        for part in parts:
+            if isinstance(part, str):
+                out += part
+                continue
+            value = _resolve(ctx, part, depth + 1)
+            if value is None and not out:
+                return None
+            out += "\x00" if value is None else value
+        return out
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+        left = _resolve(ctx, expr.left, depth + 1)
+        if left is None:
+            return None
+        right = _resolve(ctx, expr.right, depth + 1)
+        return left + ("\x00" if right is None else right)
+    if isinstance(expr, ast.Name):
+        for scope in ctx.scopes(expr):
+            bound = _bindings(ctx, scope, expr.id)
+            if bound:
+                return _agree([_resolve(ctx, b, depth + 1) for b in bound])
+        return None
+    if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name) \
+            and expr.value.id == "self":
+        cls = next((n for n in ctx.chain(expr) if isinstance(n, ast.ClassDef)), None)
+        bound = [] if cls is None else [
+            n.value for n in ast.walk(cls) if isinstance(n, ast.Assign)
+            for t in n.targets if isinstance(t, ast.Attribute)
+            and t.attr == expr.attr and isinstance(t.value, ast.Name)
+            and t.value.id == "self"]
+        return _agree([_resolve(ctx, b, depth + 1) for b in bound])
+    if isinstance(expr, ast.Call):
+        fn = _dotted(expr.func)
+        if fn.endswith("environ.get") or fn.split(".")[-1] == "getenv":
+            default = expr.args[1] if len(expr.args) > 1 else next(
+                (k.value for k in expr.keywords if k.arg == "default"), None)
+            return _resolve(ctx, default, depth + 1)
+        if isinstance(expr.func, ast.Attribute) and expr.func.attr in _KEEPS_START:
+            return _resolve(ctx, expr.func.value, depth + 1)
+        return None
+    if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.Or):
+        return _agree([v for v in (_resolve(ctx, x, depth + 1)
+                                   for x in expr.values) if v is not None])
+    if isinstance(expr, ast.IfExp):
+        return _agree([_resolve(ctx, expr.body, depth + 1),
+                       _resolve(ctx, expr.orelse, depth + 1)])
+    return None
+
+
+def _where(value):
+    """external / ours / relative / unresolved, for a resolved base."""
+    if value is None:
+        return "unresolved"
+    value = value.lstrip()
+    m = re.match(r"(?:https?:)?//([^/?#\s\x00]*)", value, re.I)
+    if m:
+        host = m.group(1).lower()
+        if not host:
+            return "unresolved"
+        return "ours" if any(o in host for o in _OURS) else "external"
+    return "relative" if value.startswith("/") else "unresolved"
+
+
+def _agree(values):
+    """One reading when every value can be read and all land in the same
+    place; None when any cannot, or when they disagree."""
+    if not values or any(v is None for v in values):
+        return None
+    return values[0] if len({_where(v) for v in values}) == 1 else None
+
+
+def _outer_bases(ctx, node):
+    """For a string that starts at its query ("?key=..."): the expressions its
+    base is joined from — the left side of `base + <string>`, or of `base + q`
+    when the string was assigned to `q` first."""
+    parent = ctx.parents.get(node)
+    if isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add) \
+            and parent.right is node:
+        return [parent.left]
+    if isinstance(parent, ast.Assign) and len(parent.targets) == 1 \
+            and isinstance(parent.targets[0], ast.Name):
+        name = parent.targets[0].id
+        return [n.left for n in _scope_nodes(ctx.scopes(parent)[0])
+                if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add)
+                and isinstance(n.right, ast.Name) and n.right.id == name]
+    return []
+
+
+def _place(ctx, node, token, at_start):
+    """Where the URL a candidate belongs to points."""
+    parts = [p for p in token if p != ""]
+    if not parts:
+        return "unresolved"
+    first = parts[0]
+    if not isinstance(first, str):
+        return _where(_resolve(ctx, first))
+    if first.startswith("/") and not first.startswith("//"):
+        return "relative"
+    if first[0] in "?&" and at_start:
+        places = {_where(_resolve(ctx, b)) for b in _outer_bases(ctx, node)}
+        return min(places, key=_RANK.index) if places else "unresolved"
+    return "unresolved"
+
+
+def _is_literal(ctx, expr, depth=0):
+    """True when the value is text written in the source — a fixture — rather
+    than a credential read at run time. Every binding of a name must be one."""
+    if expr is None or depth > 8:
+        return False
+    if isinstance(expr, ast.Constant):
+        return isinstance(expr.value, str)
+    if isinstance(expr, ast.Name):
+        for scope in ctx.scopes(expr):
+            bound = _bindings(ctx, scope, expr.id)
+            if bound:
+                return all(_is_literal(ctx, b, depth + 1) for b in bound)
+    return False
+
+
+def scan_source_hostless(src: str, label: str, tree=None):
+    """[(label, lineno, param, function, place)] for every secret ?param= in a
+    formatted string whose own text carries no scheme.
+
+    place: external, unresolved, ours, relative — or fixture, when the secret
+    field's value is a string written in the source. The repo rule fails on
+    _REPORTED."""
+    found = []
+    if tree is None:
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            return found
+    ctx = None
+    for node in ast.walk(tree):
+        parts = _format_parts(node)
+        if parts is None:
+            continue
+        for param, token, at_start, value in _hostless_candidates(parts):
+            if ctx is None:
+                ctx = _Ctx(tree)
+            place = _place(ctx, node, token, at_start)
+            if place in _REPORTED and _is_literal(ctx, value):
+                place = "fixture"
+            found.append((label, node.lineno, param, ctx.qualname(node), place))
+    return found
 
 
 def _hit_is_ai_host(hit) -> bool:
@@ -247,25 +619,28 @@ def _python_files():
         yield p
 
 
-@functools.lru_cache(maxsize=1)   # four tests, one walk of 2,400+ files
+@functools.lru_cache(maxsize=1)   # every repo test below shares one walk
 def scan_repo():
-    hits, enc, prm, files, fstrings = [], [], [], 0, 0
+    hits, enc, prm, hostless, files, fstrings = [], [], [], [], 0, 0
     for p in _python_files():
         try:
             src = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         files += 1
-        try:
-            fstrings += sum(1 for n in ast.walk(ast.parse(src))
-                            if isinstance(n, ast.JoinedStr))
-        except SyntaxError:
-            pass
         rel = str(p.relative_to(_ROOT))
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            tree = None
+        if tree is not None:
+            fstrings += sum(1 for n in ast.walk(tree)
+                            if isinstance(n, ast.JoinedStr))
+            hostless += scan_source_hostless(src, rel, tree=tree)
         hits += scan_source(src, rel)
         enc += scan_source_urlencode(src, rel)
         prm += scan_source_params(src, rel)
-    return tuple(hits), files, fstrings, tuple(enc), tuple(prm)
+    return tuple(hits), files, fstrings, tuple(enc), tuple(prm), tuple(hostless)
 
 
 # ── the checker must be able to SEE a violation ──────────────────────────────
@@ -277,6 +652,8 @@ _HEADER_OK = (
     "r = requests.post('https://api.example.com/v1/x',\n"
     "                  headers={'x-goog-api-key': key})\n")
 _LITERAL_OK = "url = f'https://api.example.com/v1/{thing}?key=not-a-real-secret'\n"
+_BAD_PCT = "url = 'https://api.example.com/v1/x?key=%s' % key\n"
+_BAD_FMT = "url = 'https://api.example.com/v1/x?api_key={}'.format(key)\n"
 
 
 def test_the_checker_flags_the_shape_that_actually_shipped():
@@ -293,6 +670,11 @@ def test_the_checker_does_not_flag_our_own_upgrade_link():
 def test_the_checker_does_not_flag_a_header_or_an_inert_literal():
     assert scan_source(_HEADER_OK, "<synthetic>") == []
     assert scan_source(_LITERAL_OK, "<synthetic>") == []
+
+
+def test_the_checker_reads_percent_and_format_strings_too():
+    assert [h[2] for h in scan_source(_BAD_PCT, "<synthetic>")] == ["key"]
+    assert [h[2] for h in scan_source(_BAD_FMT, "<synthetic>")] == ["api_key"]
 
 
 # ── the repo itself ──────────────────────────────────────────────────────────
@@ -324,7 +706,7 @@ _KNOWN_DEBT: dict[tuple[str, str], int] = {}
 
 def test_the_scan_actually_reads_the_repo():
     """Floors, so a broken glob cannot make the rules below vacuously green."""
-    _, files, fstrings, _, _ = scan_repo()
+    _, files, fstrings, _, _, _ = scan_repo()
     assert files >= _MIN_FILES, (
         f"scanned only {files} python files (floor {_MIN_FILES}) — this guard "
         "is not reading the repo any more, so its green means nothing")
@@ -335,7 +717,7 @@ def test_the_scan_actually_reads_the_repo():
 
 def test_no_ai_provider_key_is_ever_in_a_url():
     """ABSOLUTE. This is the surface the leak was observed on."""
-    hits, _, _, _, _ = scan_repo()
+    hits, _, _, _, _, _ = scan_repo()
     bad = [h for h in hits if _hit_is_ai_host(h)]
     assert not bad, (
         "AI provider credential in a URL query string — it will be written "
@@ -346,7 +728,7 @@ def test_no_ai_provider_key_is_ever_in_a_url():
 def test_no_new_credential_in_url_outside_the_known_debt():
     """RATCHET. A new site fails — including a new one in a file already on
     the list, which a name-only allowlist would have waved through."""
-    hits, _, _, _, _ = scan_repo()
+    hits, _, _, _, _, _ = scan_repo()
     seen = collections.Counter((f, p) for f, _ln, p in hits)
     extra = []
     for key, n in seen.items():
@@ -363,7 +745,7 @@ def test_the_known_debt_list_does_not_rot():
     """If a listed site is fixed, its entry must be updated or removed —
     otherwise the list slowly stops describing anything and the ratchet
     loosens for free."""
-    hits, _, _, _, _ = scan_repo()
+    hits, _, _, _, _, _ = scan_repo()
     seen = collections.Counter((f, p) for f, _ln, p in hits)
     stale = [f"  {k[0]}  ?{k[1]}=  (recorded {n}, now {seen.get(k, 0)})"
              for k, n in _KNOWN_DEBT.items() if seen.get(k, 0) < n]
@@ -394,7 +776,7 @@ def test_the_urlencode_detector_ignores_fixtures_and_json_bodies():
 
 
 def test_no_credential_reaches_a_query_string_via_urlencode():
-    _, _, _, enc, _ = scan_repo()
+    _, _, _, enc, _, _ = scan_repo()
     assert not enc, "credential urlencoded into a query string:\n" + "\n".join(
         f"  {f}:{ln}  {param}" for f, ln, param in enc)
 
@@ -402,6 +784,10 @@ def test_no_credential_reaches_a_query_string_via_urlencode():
 _BAD_PARAMS = ("r = requests.get(url, params={'api_key': EIA_API_KEY}, timeout=5)\n")
 _BAD_PARAMS_VAR = ("p = {'api_key': KEY, 'x': 1}\n"
                    "r = requests.get(url, params=p, timeout=5)\n")
+_BAD_PARAMS_IFEXP = ("p = {'api_key': KEY, 'length': 1} if KEY else {'length': 1}\n"
+                     "r = session.get(url, params=p, timeout=5)\n")
+_BAD_PARAMS_IFEXP_INLINE = (
+    "r = requests.get(url, params={'api_key': KEY} if KEY else {}, timeout=5)\n")
 _PARAMS_OK = ("r = requests.get(url, params={'state': st}, "
               "headers={'X-Api-Key': KEY}, timeout=5)\n")
 _PARAMS_FIXTURE_OK = "r = requests.get(url, params={'api_key': 'literal-fixture'})\n"
@@ -419,6 +805,11 @@ def test_the_params_detector_sees_both_inline_and_variable_dicts():
     assert len(scan_source_params(_BAD_PARAMS_VAR, "<s>")) == 1
 
 
+def test_the_params_detector_sees_a_dict_picked_by_a_conditional():
+    assert len(scan_source_params(_BAD_PARAMS_IFEXP, "<s>")) == 1
+    assert len(scan_source_params(_BAD_PARAMS_IFEXP_INLINE, "<s>")) == 1
+
+
 def test_the_params_detector_ignores_headers_and_fixtures():
     assert scan_source_params(_PARAMS_OK, "<s>") == []
     assert scan_source_params(_PARAMS_FIXTURE_OK, "<s>") == []
@@ -433,9 +824,172 @@ def test_a_dict_in_another_function_does_not_match():
 
 
 def test_no_credential_reaches_a_query_string_via_requests_params():
-    _, _, _, _, prm = scan_repo()
+    _, _, _, _, prm, _ = scan_repo()
     unexpected = [h for h in prm if (h[0], h[2]) not in _NO_HEADER_AUTH]
     assert not unexpected, (
         "credential handed to requests(params=...), which makes it a query "
         "string:\n" + "\n".join(f"  {f}:{ln}  params[{p}]"
                                  for f, ln, p in unexpected))
+
+
+# ── shape 4 controls: one per shape, each must be SEEN ───────────────────────
+_HL_CONSTANT = (
+    "import os\n"
+    "EIA_V2_BASE = 'https://api.eia.gov/v2/electricity/rto'\n"
+    "def url(dataset, respondent):\n"
+    "    key = os.environ.get('EIA_API_KEY', '')\n"
+    "    return f'{EIA_V2_BASE}/{dataset}/data/?api_key={key}"
+    "&facets[respondent][]={respondent}'\n")
+_HL_LOCAL = (
+    "class Discovery:\n"
+    "    def catalog(self):\n"
+    "        base_url = 'https://api.eia.gov/v2/'\n"
+    "        return self.session.get(f'{base_url}?api_key={self.eia_api_key}')\n")
+_HL_CONCAT = (
+    "def call(config, api_key):\n"
+    "    return config['url'] + f'?key={api_key}'\n")
+_HL_ASSIGNED = (
+    "import os\n"
+    "KEY = os.environ.get('EIA_API_KEY')\n"
+    "BASE = 'https://api.eia.gov/v2/electricity/operating-generator-capacity/data/'\n"
+    "def page(offset):\n"
+    "    params = (f'?api_key={KEY}' f'&offset={offset}')\n"
+    "    url = BASE + params\n"
+    "    return url\n")
+_HL_PERCENT = (
+    "HH = 'https://api.eia.gov/v2/natural-gas/pri/fut/data/?frequency=daily'\n"
+    "def hh(key):\n"
+    "    return '%s&api_key=%s' % (HH, key)\n")
+_HL_FORMAT = (
+    "BASE = 'https://generativelanguage.googleapis.com/v1beta/models/x:generateContent'\n"
+    "def g(key):\n"
+    "    return '{}?key={}'.format(BASE, key)\n")
+_HL_OURS = (
+    "import os\n"
+    "SITE = os.environ.get('DCHUB_SITE', 'https://dchub.cloud')\n"
+    "_PUBLIC = (os.environ.get('DCHUB_PUBLIC_BASE_URL') or 'https://dchub.cloud').rstrip('/')\n"
+    "def links(e, tok, sig, base='https://dchub.cloud'):\n"
+    "    return [f'{SITE}/api/v1/opt-in/confirm?email={e}&token={tok}',\n"
+    "            f'{_PUBLIC}/api/v1/admin/feedback/1/approve?token={tok}',\n"
+    "            f'{base}/api/v1/site-report?lat=1&sig={sig}',\n"
+    "            f'/api/v1/listings/x/leads?token={tok}']\n")
+_HL_PARAM = "def link(base, tok):\n    return f'{base}/x?token={tok}'\n"
+_HL_DISAGREE = (
+    "def link(prod, tok):\n"
+    "    base = 'https://dchub.cloud'\n"
+    "    if prod:\n"
+    "        base = 'https://api.example.com'\n"
+    "    return f'{base}/x?token={tok}'\n")
+_HL_FIXTURE = (
+    "SECRET = 'not-a-real-key'\n"
+    "def get(url):\n"
+    "    raise OSError(f'502 for url: {url}?api_key={SECRET}&lat=1')\n")
+_HL_ENV = (
+    "import os\n"
+    "KEY = os.environ.get('EIA_API_KEY', 'placeholder')\n"
+    "def get(url):\n"
+    "    return f'{url}?api_key={KEY}'\n")
+
+
+def _placed(src):
+    return [(h[2], h[4]) for h in scan_source_hostless(src, "<s>")]
+
+
+def test_hostless_a_base_in_a_module_constant_is_followed():
+    assert _placed(_HL_CONSTANT) == [("api_key", "external")]
+
+
+def test_hostless_a_base_in_a_local_variable_is_followed():
+    assert _placed(_HL_LOCAL) == [("api_key", "external")]
+
+
+def test_hostless_a_query_appended_to_an_unreadable_base_is_reported():
+    """config["url"] + f"?key=..." — nothing here says where it goes, and that
+    must fail rather than pass."""
+    assert _placed(_HL_CONCAT) == [("key", "unresolved")]
+
+
+def test_hostless_a_query_built_first_and_joined_later_is_followed():
+    assert _placed(_HL_ASSIGNED) == [("api_key", "external")]
+
+
+def test_hostless_percent_formatting_is_read():
+    assert _placed(_HL_PERCENT) == [("api_key", "external")]
+
+
+def test_hostless_str_format_is_read():
+    assert _placed(_HL_FORMAT) == [("key", "external")]
+
+
+def test_hostless_our_own_links_are_found_and_not_reported():
+    """A negative control with teeth: four candidates are FOUND and placed as
+    ours or relative, so an empty result cannot pass for a clean one."""
+    assert sorted(pl for _p, pl in _placed(_HL_OURS)) == \
+        ["ours", "ours", "ours", "relative"]
+
+
+def test_hostless_a_base_that_cannot_be_followed_is_not_assumed_ours():
+    assert _placed(_HL_PARAM) == [("token", "unresolved")]
+    assert _placed(_HL_DISAGREE) == [("token", "unresolved")]
+
+
+def test_hostless_a_literal_secret_is_a_fixture_an_environment_read_is_not():
+    assert _placed(_HL_FIXTURE) == [("api_key", "fixture")]
+    assert _placed(_HL_ENV) == [("api_key", "unresolved")]
+
+
+# Host-less sites whose base cannot be followed and that are correct as they
+# stand, keyed by (file, function, param) -> count. A decision with evidence
+# per entry, like _NO_HEADER_AUTH above.
+_HOSTLESS_BY_DESIGN = {
+    # The /me diagnostics report which channel the caller's own key arrived
+    # on, as masked text ("?api_key=" + _mask(key)) in the JSON response. It
+    # is text for a reader, not a URL anything requests.
+    ("dchub_me.py", "_observed_header", "api_key"): 1,
+}
+
+# Floors for the reading itself, at ~80% of the counts MEASURED 2026-09-13
+# once the host-less provider sites sent their keys as headers: 17 candidates,
+# 9 of them resolved to our own host. A reading that stopped finding
+# candidates, or stopped following our own base constants, trips these.
+_MIN_HOSTLESS = 13
+_MIN_HOSTLESS_OURS = 7
+
+
+def test_the_hostless_reading_actually_reads_the_repo():
+    _, _, _, _, _, hostless = scan_repo()
+    ours = [h for h in hostless if h[4] == "ours"]
+    assert len(hostless) >= _MIN_HOSTLESS, (
+        f"the host-less reading found {len(hostless)} candidates (floor "
+        f"{_MIN_HOSTLESS}) — it has stopped seeing the links it exists to judge")
+    assert len(ours) >= _MIN_HOSTLESS_OURS, (
+        f"only {len(ours)} links resolved to our own host (floor "
+        f"{_MIN_HOSTLESS_OURS}) — the reading no longer follows the constants "
+        "those links are built from")
+
+
+def test_no_credential_reaches_a_url_whose_host_is_elsewhere():
+    """ABSOLUTE, like the rules above: a URL whose base resolves to an
+    external host — or cannot be followed at all — must not carry a key."""
+    _, _, _, _, _, hostless = scan_repo()
+    reported = [h for h in hostless if h[4] in _REPORTED]
+    seen = collections.Counter((f, fn, p) for f, _ln, p, fn, _pl in reported)
+    bad = [h for h in reported if seen[(h[0], h[3], h[2])]
+           > _HOSTLESS_BY_DESIGN.get((h[0], h[3], h[2]), 0)]
+    assert not bad, (
+        "credential in the query string of a URL built from a base held "
+        "elsewhere — send it in a header instead. If the host is ours, build "
+        "the link from a module constant this reading can follow; a base it "
+        "cannot follow is reported, not assumed to be ours:\n" + "\n".join(
+            f"  {f}:{ln}  {fn}  ?{p}=  ({pl})" for f, ln, p, fn, pl in bad))
+
+
+def test_the_by_design_hostless_list_does_not_rot():
+    _, _, _, _, _, hostless = scan_repo()
+    seen = collections.Counter((f, fn, p) for f, _ln, p, fn, pl in hostless
+                               if pl in _REPORTED)
+    stale = [f"  {k[0]}  {k[1]}  ?{k[2]}=  (recorded {n}, now {seen.get(k, 0)})"
+             for k, n in _HOSTLESS_BY_DESIGN.items() if seen.get(k, 0) < n]
+    assert not stale, (
+        "recorded as by design but no longer present that many times — "
+        "tighten _HOSTLESS_BY_DESIGN:\n" + "\n".join(stale))

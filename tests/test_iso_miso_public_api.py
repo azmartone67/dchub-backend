@@ -67,7 +67,8 @@ LIVE = json.dumps({
 def test_the_public_api_is_tried_before_eia():
     urls = m._miso_urls()
     assert urls[0] == m.MISO_PUBLIC_FUELMIX, urls[0]
-    assert "api.eia.gov" in urls[1], "EIA-930 must remain the fallback"
+    fallback = urls[1][0] if isinstance(urls[1], tuple) else urls[1]
+    assert "api.eia.gov" in fallback, "EIA-930 must remain the fallback"
 
 
 def test_the_retired_broker_is_last():

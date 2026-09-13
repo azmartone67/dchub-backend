@@ -62,8 +62,7 @@ MAX_PAGES = 100   # Safety limit (500K rows max)
 def fetch_eia_page(offset=0):
     """Fetch one page of generator data from EIA API v2."""
     params = (
-        f"?api_key={EIA_API_KEY}"
-        f"&frequency=monthly"
+        f"?frequency=monthly"
         f"&data[0]=nameplate-capacity-mw"
         f"&data[1]=latitude"
         f"&data[2]=longitude"
@@ -74,10 +73,13 @@ def fetch_eia_page(offset=0):
     )
     url = EIA_BASE + params
     
-    req = Request(url, headers={
+    headers = {
         'User-Agent': 'DCHub/3.0 (+https://dchub.cloud)',
         'Accept': 'application/json',
-    })
+    }
+    if EIA_API_KEY:
+        headers['X-Api-Key'] = EIA_API_KEY  # EIA reads the key from this header
+    req = Request(url, headers=headers)
     
     try:
         with urlopen(req, timeout=60) as resp:
