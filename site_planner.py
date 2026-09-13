@@ -1054,22 +1054,29 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     score = 0
     breakdown = {}
 
-    def _miles(distance):
-        # A served distance as a float, or 999 (the farthest tier) when there is none.
-        # ★ 2026-09-13 — the three distance tiers used to default a falsy distance to
-        # 999 before converting it. 0.0 is falsy, so a site 0.0 mi away scored in the
-        # farthest tier while 0.04 mi scored "excellent". Transmission and gas
-        # distances are rounded to 0.1 before they are served, so any line or pipeline
-        # within 0.05 mi of the site hit it. None and anything float() cannot read
-        # still count as missing; a label such as 'N/A (live query)' used to raise.
+    def _reading(value, default):
+        # A served reading as a float, or the default when there is none.
+        # ★ 2026-09-13 — five tiers used to default a falsy reading before converting it,
+        # and 0 is falsy, so a real 0 scored as missing:
+        # - the three distance tiers defaulted to 999, so a site 0.0 mi away scored in the
+        #   farthest tier while 0.04 mi scored "excellent". Transmission and gas distances
+        #   are rounded to 0.1 before they are served, so any line or pipeline within
+        #   0.05 mi of the site hit it.
+        # - the environmental and congestion tiers defaulted to 50, so an env_score of 0,
+        #   the worst score on its scale, was scored as risk 50 (moderate_risk), and a
+        #   density_score of 0, nothing counted within the radius, as moderate while its
+        #   level read Low. estimate_congestion also serves 0 when both of its counts
+        #   fail, and this reads that 0 the same way.
+        # None and anything float() cannot read still score as the default; a label such as
+        # 'N/A (live query)' used to raise.
         try:
-            return float(distance)
+            return float(value)
         except (TypeError, ValueError):
-            return 999.0
+            return float(default)
 
     # 1. Substation proximity
     if substations:
-        nearest_dist = _miles(substations[0].get('distance_miles'))
+        nearest_dist = _reading(substations[0].get('distance_miles'), 999)
         for tier_name, tier in w['substation_proximity']['thresholds'].items():
             if nearest_dist <= tier['max_miles']:
                 points = tier['points']
@@ -1101,7 +1108,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 4. Transmission proximity
     if transmission:
-        tx_dist = _miles(transmission.get('distance_miles'))
+        tx_dist = _reading(transmission.get('distance_miles'), 999)
         for tier_name, tier in w['transmission_proximity']['thresholds'].items():
             if tx_dist <= tier['max_miles']:
                 points = tier['points']
@@ -1111,7 +1118,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 5. Environmental
     if env:
-        env_risk = 100 - float(env.get('env_score') or 50)
+        env_risk = 100 - _reading(env.get('env_score'), 50)
         for tier_name, tier in w['environmental']['thresholds'].items():
             if env_risk <= tier['max_risk_score']:
                 points = tier['points']
@@ -1121,7 +1128,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 6. Congestion
     if congestion:
-        density = int(congestion.get('density_score') or 50)
+        density = int(_reading(congestion.get('density_score'), 50))
         for tier_name, tier in w['congestion']['thresholds'].items():
             if density <= tier['max_density']:
                 points = tier['points']
@@ -1131,7 +1138,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 7. Gas access
     if gas:
-        gas_dist = _miles((gas.get('nearest_pipeline', {}) or {}).get('distance_miles'))
+        gas_dist = _reading((gas.get('nearest_pipeline', {}) or {}).get('distance_miles'), 999)
         for tier_name, tier in w['gas_access']['thresholds'].items():
             if gas_dist <= tier['max_miles']:
                 points = tier['points']
