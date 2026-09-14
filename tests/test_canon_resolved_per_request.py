@@ -106,27 +106,13 @@ _KNOWN_LATCHED = {
     'routes/dchub_media_hub.py': ['_CANON_FAC'],
     'routes/demo.py': ['DEMO_SYSTEM_PROMPT'],
     'routes/devrel_targets.py': ['PLATFORM_BLUEPRINTS'],            # (09-13)
-    # ★2026-09-10: MCP_LANDING_HTML came off. It was the latch that
-    # SHIPPED on this module — /integrations/mcp served "20,700+" six
-    # times against a live resolver saying 21,400+, in the same process,
-    # the same second. It is now _MCP_LANDING_TEMPLATE, a raw constant
-    # resolved per request in render_mcp_landing(), and
-    # tests/test_integrations_mcp_derives_price_and_canon.py renders the
-    # page to prove it.
-    # ★2026-09-10 (same day, second pass): MCP_SEO_PAGE_HTML and
-    # META_LANDING_HTML came off too — the two siblings that first pass
-    # named and deliberately left. Same treatment: raw
-    # _MCP_SEO_PAGE_TEMPLATE / _META_LANDING_TEMPLATE constants resolved
-    # per request in render_mcp_seo_page() / render_meta_landing(), each
-    # with its retyped "$9/mo" entry price derived from tier_registry.
-    # ★2026-09-13: the seven *_RECIPE_HTML names were always latched — each
-    # nests canon_text() inside its value, which the old scan could not see.
-    'routes/integrations_landing.py': [
-        'BEDROCK_RECIPE_HTML', 'CLOUDFLARE_PORTAL_RECIPE_HTML',     # (09-13)
-        'COPILOT_RECIPE_HTML', 'GEMINI_RECIPE_HTML', 'GROK_RECIPE_HTML',
-        'MISTRAL_RECIPE_HTML', 'PERPLEXITY_RECIPE_HTML',
-        '_RECIPE_PAGE_TEMPLATE',
-    ],
+    # routes/integrations_landing.py came off 2026-09-13. MCP_LANDING_HTML
+    # (the latch that SHIPPED "20,700+" on /integrations/mcp), MCP_SEO_PAGE_HTML
+    # and META_LANDING_HTML went first, on 09-10, as raw templates resolved in
+    # render_*(). The seven *_RECIPE_HTML pages and _RECIPE_PAGE_TEMPLATE
+    # followed: slot dicts whose canon slots are lambdas, rendered by
+    # _recipe_page() inside each handler. tests/test_integrations_recipes_
+    # follow_canon.py moves canon and requires every placeholder to follow.
     # routes/mcp_connect.py came off 2026-09-10. Its _PAGE_TEMPLATE was the
     # LATCH THAT SHIPPED: the install pages served the cold-start pinned floor
     # while /api/v1/canon/phrases in the same process served the live one. The

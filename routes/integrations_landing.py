@@ -738,7 +738,7 @@ def render_meta_landing() -> str:
     return canon_text(_META_LANDING_TEMPLATE).replace(
         "__PAID_FROM__", _entry_price_token())
 
-_RECIPE_PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
+_RECIPE_PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
@@ -861,30 +861,44 @@ function copyUrl(){
   });
 }
 </script>
-</body></html>""")
+</body></html>"""
 
 
-def _recipe_page(**slots: str) -> str:
-    html = _RECIPE_PAGE_TEMPLATE
+def _recipe_page(slots: dict) -> str:
+    """One recipe page, canon resolved AT REQUEST TIME. Call it from a handler.
+
+    ★2026-09-13: the seven pages used to be module constants built at import
+    by this function, over a canon_text()-resolved _RECIPE_PAGE_TEMPLATE and
+    slots wrapped in canon_text(). All of it ran once, while every canon cache
+    was cold, and /integrations/grok and /integrations/cloudflare served
+    "21,500+" beside /api/v1/canon/phrases saying 21,800+ (same origin, same
+    second). A page is now a slot dict. A slot that carries canon is a lambda,
+    called here, per request.
+
+    Same ordering rule as render_mcp_landing(): canon_text() on the template
+    BEFORE the token replaces. The canon pass owns the `{canon_*}` markers and
+    the token pass owns the `__NAME__` ones.
+    """
+    html = canon_text(_RECIPE_PAGE_TEMPLATE)
     # The front door is NOT a per-page slot on purpose: a platform page must not
     # be able to ship without it, or omit it by forgetting to pass it.
     html = html.replace("__FRONT_DOOR_HTML__", _FRONT_DOOR_HTML)
     for key, val in slots.items():
-        html = html.replace("__" + key.upper() + "__", val)
+        html = html.replace("__" + key.upper() + "__", val() if callable(val) else val)
     return html
 
 
-GROK_RECIPE_HTML = _recipe_page(
+_GROK_RECIPE = dict(
     slug="grok",
     title="Add DC Hub to Grok — xAI MCP connector for live data-center &amp; grid intelligence",
-    description=canon_text("Connect DC Hub to Grok (xAI) as a custom MCP connector: paste https://dchub.cloud/mcp, auth blank or Authorization: Bearer. Live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues and hyperscaler deals inside Grok. Free tier: 10 calls/day, no signup."),
+    description=lambda: canon_text("Connect DC Hub to Grok (xAI) as a custom MCP connector: paste https://dchub.cloud/mcp, auth blank or Authorization: Bearer. Live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues and hyperscaler deals inside Grok. Free tier: 10 calls/day, no signup."),
     og_title="Add DC Hub to Grok (xAI) — MCP connector in 4 steps",
     og_desc="Live grid + data-center intelligence in Grok · paste one URL · Bearer or keyless · free tier no signup",
     jsonld_altname="DC Hub for Grok (xAI)",
-    jsonld_desc=canon_text("Model Context Protocol server that connects to Grok (xAI) as a consumer custom connector or an API Remote MCP tool — live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup."),
+    jsonld_desc=lambda: canon_text("Model Context Protocol server that connects to Grok (xAI) as a consumer custom connector or an API Remote MCP tool — live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup."),
     eyebrow="Grok · xAI · Model Context Protocol",
     h1="Add DC Hub to Grok.",
-    lead=canon_text("Lead with one call: execute_plan(intent=\"your question\") — it routes, runs the full graph server-side, and returns every step plus an auditable replay. Behind it: real-time grid scoreboards, {canon_facilities} data-center sites, interconnection queues, hyperscaler deal flow. Individual tools are for lookups and debugging. One URL. Bearer or keyless."),
+    lead=lambda: canon_text("Lead with one call: execute_plan(intent=\"your question\") — it routes, runs the full graph server-side, and returns every step plus an auditable replay. Behind it: real-time grid scoreboards, {canon_facilities} data-center sites, interconnection queues, hyperscaler deal flow. Individual tools are for lookups and debugging. One URL. Bearer or keyless."),
     steps_heading="Connect in Grok (consumer)",
     steps_html="""<ol>
     <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
@@ -914,7 +928,7 @@ GROK_RECIPE_HTML = _recipe_page(
   Grok surfaces send: the consumer custom-connector auth field and the API's Remote MCP block. No key?
   Leave auth blank and use the keyless free tier.</p>
 </div>""",
-    extra_html=canon_text("""<div class="pane" id="custom-instructions">
+    extra_html=lambda: canon_text("""<div class="pane" id="custom-instructions">
   <h2>Grok custom instructions &mdash; copy-paste</h2>
   <p style="color:var(--dch-text-mute);margin:0 0 10px">Short enough for Grok&rsquo;s custom-instructions field, and it leads with the
   branching decision rather than a tool list. Drafted by Grok itself after the 2026-07-28 front-door audit.
@@ -1009,14 +1023,14 @@ ask your human to paste it as the DC Hub connector URL.</pre>
 </div>"""),
 )
 
-GEMINI_RECIPE_HTML = _recipe_page(
+_GEMINI_RECIPE = dict(
     slug="gemini",
     title="Add DC Hub to Gemini — function calling, Vertex AI &amp; a DC Hub Gem for live data-center intelligence",
-    description=canon_text("Use DC Hub with Google Gemini three ways: native function calling via the google-genai SDK (real REST endpoints, keyless free tier), Vertex AI Agent Builder tools, or a DC Hub Gem for gemini.google.com. Live grid telemetry, {canon_facilities} distinct data-center sites, DCPI market verdicts."),
+    description=lambda: canon_text("Use DC Hub with Google Gemini three ways: native function calling via the google-genai SDK (real REST endpoints, keyless free tier), Vertex AI Agent Builder tools, or a DC Hub Gem for gemini.google.com. Live grid telemetry, {canon_facilities} distinct data-center sites, DCPI market verdicts."),
     og_title="Add DC Hub to Gemini — function calling + Gem in minutes",
     og_desc="Live data-center + grid intelligence in Gemini · google-genai function calling · Vertex AI · DC Hub Gem",
     jsonld_altname="DC Hub for Google Gemini",
-    jsonld_desc=canon_text("Live data-center and power-grid intelligence for Google Gemini: native function-calling tool definitions against DC Hub's REST API, Vertex AI Agent Builder integration, and a grounding-first Gem template for consumer Gemini — {canon_facilities} distinct data-center sites, DCPI market verdicts, live grid telemetry, with per-response citations."),
+    jsonld_desc=lambda: canon_text("Live data-center and power-grid intelligence for Google Gemini: native function-calling tool definitions against DC Hub's REST API, Vertex AI Agent Builder integration, and a grounding-first Gem template for consumer Gemini — {canon_facilities} distinct data-center sites, DCPI market verdicts, live grid telemetry, with per-response citations."),
     eyebrow="Gemini · Google AI · function calling",
     h1="Add DC Hub to Gemini.",
     lead="Give Gemini live, citable data-center and power-grid intelligence — three ways, depending on where you run it: the google-genai SDK, Vertex AI, or a Gem in gemini.google.com.",
@@ -1115,17 +1129,17 @@ print(response.text)</pre>
 )
 
 
-MISTRAL_RECIPE_HTML = _recipe_page(
+_MISTRAL_RECIPE = dict(
     slug="mistral",
     title="Connect DC Hub to Mistral Le Chat — MCP connector for live data-center &amp; grid intelligence",
-    description=canon_text("Add DC Hub to Mistral's Le Chat as a custom MCP connector: paste https://dchub.cloud/mcp and authenticate with Authorization: Bearer (Le Chat ignores X-API-Key). Live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues and hyperscaler deals. Free tier: 10 calls/day, no signup."),
+    description=lambda: canon_text("Add DC Hub to Mistral's Le Chat as a custom MCP connector: paste https://dchub.cloud/mcp and authenticate with Authorization: Bearer (Le Chat ignores X-API-Key). Live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues and hyperscaler deals. Free tier: 10 calls/day, no signup."),
     og_title="Connect DC Hub to Mistral Le Chat — MCP connector in 5 steps",
     og_desc="Live grid + data-center intelligence in Le Chat · paste one URL · Authorization: Bearer · free tier no signup",
     jsonld_altname="DC Hub for Mistral Le Chat",
-    jsonld_desc=canon_text("Model Context Protocol server that connects to Mistral's Le Chat as a custom MCP connector (Authorization: Bearer) — live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup."),
+    jsonld_desc=lambda: canon_text("Model Context Protocol server that connects to Mistral's Le Chat as a custom MCP connector (Authorization: Bearer) — live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup."),
     eyebrow="Mistral · Le Chat · Model Context Protocol",
     h1="Connect DC Hub to Le Chat.",
-    lead=canon_text("Give Le Chat live, citable data-center and power-grid intelligence — real-time grid scoreboards, {canon_facilities} data-center sites, interconnection queues, hyperscaler deal flow. One URL. Bearer auth (or keyless)."),
+    lead=lambda: canon_text("Give Le Chat live, citable data-center and power-grid intelligence — real-time grid scoreboards, {canon_facilities} data-center sites, interconnection queues, hyperscaler deal flow. One URL. Bearer auth (or keyless)."),
     steps_heading="Connect in Le Chat",
     steps_html="""<ol>
     <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
@@ -1143,17 +1157,17 @@ MISTRAL_RECIPE_HTML = _recipe_page(
     extra_html="",
 )
 
-PERPLEXITY_RECIPE_HTML = _recipe_page(
+_PERPLEXITY_RECIPE = dict(
     slug="perplexity",
     title="Add DC Hub as a custom connector in Perplexity — MCP server for live data-center &amp; grid intelligence",
-    description=canon_text("Add DC Hub as a custom connector in Perplexity: Settings → Connectors → Add connector, paste the MCP server URL https://dchub.cloud/mcp. Live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues and hyperscaler deals. Plus Sonar/Search API grounding via llms.txt. Free tier: 10 calls/day, no signup."),
+    description=lambda: canon_text("Add DC Hub as a custom connector in Perplexity: Settings → Connectors → Add connector, paste the MCP server URL https://dchub.cloud/mcp. Live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues and hyperscaler deals. Plus Sonar/Search API grounding via llms.txt. Free tier: 10 calls/day, no signup."),
     og_title="Add DC Hub as a custom connector in Perplexity — MCP in 5 steps",
     og_desc="Live grid + data-center intelligence in Perplexity · paste one MCP server URL · free tier no signup",
     jsonld_altname="DC Hub for Perplexity",
-    jsonld_desc=canon_text("Model Context Protocol server that connects to Perplexity as a custom connector (Settings → Connectors → Add connector → MCP server URL) — live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Also groundable via the Perplexity Sonar/Search API using https://dchub.cloud/llms.txt. Free tier: 10 calls/day, no signup."),
+    jsonld_desc=lambda: canon_text("Model Context Protocol server that connects to Perplexity as a custom connector (Settings → Connectors → Add connector → MCP server URL) — live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Also groundable via the Perplexity Sonar/Search API using https://dchub.cloud/llms.txt. Free tier: 10 calls/day, no signup."),
     eyebrow="Perplexity · Model Context Protocol",
     h1="Add DC Hub as a custom connector in Perplexity.",
-    lead=canon_text("Give Perplexity live, citable data-center and power-grid intelligence — real-time grid scoreboards, {canon_facilities} data-center sites, interconnection queues, hyperscaler deal flow. One MCP server URL."),
+    lead=lambda: canon_text("Give Perplexity live, citable data-center and power-grid intelligence — real-time grid scoreboards, {canon_facilities} data-center sites, interconnection queues, hyperscaler deal flow. One MCP server URL."),
     steps_heading="Connect in Perplexity",
     steps_html="""<ol>
     <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
@@ -1361,19 +1375,19 @@ def integrations_meta():
     }
 
 
-BEDROCK_RECIPE_HTML = _recipe_page(
+_BEDROCK_RECIPE = dict(
     slug="bedrock",
     title="Add DC Hub to Amazon Bedrock AgentCore — Gateway target for live data-center &amp; grid intelligence",
-    description=canon_text("Register https://dchub.cloud/mcp as an Amazon Bedrock AgentCore Gateway target: live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues and hyperscaler deals for any Bedrock agent. Bearer or keyless free tier."),
+    description=lambda: canon_text("Register https://dchub.cloud/mcp as an Amazon Bedrock AgentCore Gateway target: live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues and hyperscaler deals for any Bedrock agent. Bearer or keyless free tier."),
     og_title="DC Hub on Amazon Bedrock AgentCore — register one Gateway target",
     og_desc="Live grid + data-center intelligence for Bedrock agents · one MCP URL · Bearer or keyless",
     jsonld_altname="DC Hub for Amazon Bedrock AgentCore",
-    jsonld_desc=canon_text("Model Context Protocol server registerable as an Amazon Bedrock AgentCore Gateway target — live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup."),
+    jsonld_desc=lambda: canon_text("Model Context Protocol server registerable as an Amazon Bedrock AgentCore Gateway target — live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup."),
     eyebrow="Amazon Bedrock · AgentCore Gateway · Model Context Protocol",
     h1="Add DC Hub to Bedrock AgentCore.",
     lead="Give any Bedrock agent live, citable data-center and power-grid intelligence — register one MCP Gateway target. Bearer or keyless.",
     steps_heading="Register as a Gateway target",
-    steps_html=canon_text("""<ol>
+    steps_html=lambda: canon_text("""<ol>
     <li>In the AgentCore console, open <b>Gateways</b> and create (or pick) a gateway for your agent.</li>
     <li>Add a target of type <b>MCP server</b> with the endpoint <code>https://dchub.cloud/mcp</code> (Streamable HTTP).</li>
     <li>For outbound auth, choose <b>API key / Bearer</b> and supply <code>Bearer &lt;your-dchub-key&gt;</code> — or leave it unauthenticated for the keyless free tier (10 calls/day).</li>
@@ -1408,14 +1422,14 @@ try:
 except Exception:  # pragma: no cover - defensive
     _COPILOT_TOOLS_APPEAR = "the full DC Hub tool catalog appears"
 
-COPILOT_RECIPE_HTML = _recipe_page(
+_COPILOT_RECIPE = dict(
     slug="copilot-studio",
     title="Add DC Hub to Microsoft Copilot Studio — custom MCP server for live data-center &amp; grid intelligence",
-    description=canon_text("Wire https://dchub.cloud/mcp into Microsoft Copilot Studio: the 3-step Tools wizard (MCP support is GA) or a Power Platform custom connector. Live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues and hyperscaler deals inside your copilots."),
+    description=lambda: canon_text("Wire https://dchub.cloud/mcp into Microsoft Copilot Studio: the 3-step Tools wizard (MCP support is GA) or a Power Platform custom connector. Live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues and hyperscaler deals inside your copilots."),
     og_title="DC Hub in Copilot Studio — one custom MCP server",
     og_desc="Live grid + data-center intelligence for Copilot Studio agents · 3-step wizard or custom connector · Bearer or keyless",
     jsonld_altname="DC Hub for Microsoft Copilot Studio",
-    jsonld_desc=canon_text("Model Context Protocol server connectable to Microsoft Copilot Studio via the Tools onboarding wizard or a Power Platform custom connector — live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup."),
+    jsonld_desc=lambda: canon_text("Model Context Protocol server connectable to Microsoft Copilot Studio via the Tools onboarding wizard or a Power Platform custom connector — live grid scoreboards, {canon_facilities} distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup."),
     eyebrow="Microsoft Copilot Studio · Custom MCP · Model Context Protocol",
     h1="Add DC Hub to Copilot Studio.",
     lead="Give your copilots live, citable data-center and power-grid intelligence. The Tools wizard attaches DC Hub's MCP server in three steps; a Power Platform custom connector is the pro-dev alternative. Streamable HTTP, Bearer or keyless.",
@@ -1480,17 +1494,17 @@ paths:
 # same canon-binding rule the Copilot Studio page follows, because a hardcoded
 # "83 tools" / "2.12.x" rots the day canon moves and nothing in CI scans this
 # module for version literals.
-CLOUDFLARE_PORTAL_RECIPE_HTML = _recipe_page(
+_CLOUDFLARE_PORTAL_RECIPE = dict(
     slug="cloudflare",
     title="Add DC Hub to a Cloudflare MCP Server Portal &mdash; Zero Trust upstream for live data-center &amp; grid intelligence",
-    description=canon_text("Add https://dchub.cloud/mcp as an upstream server in your Cloudflare Zero Trust MCP Server Portal: OAuth with automatic client registration, a custom X-API-Key header, or keyless. {canon_tools} tools over {canon_facilities} distinct data-center sites, grid, fiber and gas intelligence, behind your own Access policies."),
+    description=lambda: canon_text("Add https://dchub.cloud/mcp as an upstream server in your Cloudflare Zero Trust MCP Server Portal: OAuth with automatic client registration, a custom X-API-Key header, or keyless. {canon_tools} tools over {canon_facilities} distinct data-center sites, grid, fiber and gas intelligence, behind your own Access policies."),
     og_title="DC Hub in a Cloudflare MCP Server Portal — one upstream URL",
     og_desc="Live grid + data-center intelligence behind your own Zero Trust Access policies · OAuth dynamic client registration supported · Cloudflare-side limits documented",
     jsonld_altname="DC Hub for Cloudflare Zero Trust MCP Server Portals",
-    jsonld_desc=canon_text("Model Context Protocol server addable as an upstream server inside a Cloudflare Zero Trust MCP Server Portal — {canon_tools} tools covering {canon_facilities} distinct data-center sites, live grid scoreboards, interconnection queues, fiber and gas intelligence, with per-response citations. Supports OAuth dynamic client registration, custom headers, or keyless access. Free tier: {canon_free_calls} calls/day, no signup."),
+    jsonld_desc=lambda: canon_text("Model Context Protocol server addable as an upstream server inside a Cloudflare Zero Trust MCP Server Portal — {canon_tools} tools covering {canon_facilities} distinct data-center sites, live grid scoreboards, interconnection queues, fiber and gas intelligence, with per-response citations. Supports OAuth dynamic client registration, custom headers, or keyless access. Free tier: {canon_free_calls} calls/day, no signup."),
     eyebrow="Cloudflare Zero Trust · MCP Server Portal · Model Context Protocol",
     h1="Add DC Hub to your Cloudflare portal.",
-    lead=canon_text("Run DC Hub as an upstream server inside your own Cloudflare Zero Trust MCP Server Portal &mdash; your portal URL, your Access policies, your audit trail. {canon_tools} tools and 13 prompts over Streamable HTTP, MCP protocol 2025-06-18. Nothing changes on our side, and the Cloudflare-side limits are written down below rather than left out."),
+    lead=lambda: canon_text("Run DC Hub as an upstream server inside your own Cloudflare Zero Trust MCP Server Portal &mdash; your portal URL, your Access policies, your audit trail. {canon_tools} tools and 13 prompts over Streamable HTTP, MCP protocol 2025-06-18. Nothing changes on our side, and the Cloudflare-side limits are written down below rather than left out."),
     steps_heading="Register DC Hub as an MCP server",
     steps_html="""<p><b>Before you start:</b> a Cloudflare Zero Trust account with Access configured and at
   least one identity provider connected &mdash; and, if you want more than the keyless free tier,
@@ -1580,7 +1594,7 @@ CLOUDFLARE_PORTAL_RECIPE_HTML = _recipe_page(
   for unattended agents. You cannot have both through one entry &mdash; though nothing stops you
   registering DC Hub twice, once each way.</p>
 </div>""",
-    extra_html=canon_text("""<div class="pane" id="portal-limits">
+    extra_html=lambda: canon_text("""<div class="pane" id="portal-limits">
   <h2>Two documented limits of portal-based access</h2>
   <p>Both are Cloudflare&rsquo;s own documented behaviour, and both matter before you treat a portal
   as a control boundary:</p>
@@ -1655,7 +1669,7 @@ CLOUDFLARE_PORTAL_RECIPE_HTML = _recipe_page(
 
 @integrations_landing_bp.route("/integrations/bedrock", strict_slashes=False, methods=["GET"])
 def integrations_bedrock():
-    return BEDROCK_RECIPE_HTML, 200, {
+    return _recipe_page(_BEDROCK_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1663,7 +1677,7 @@ def integrations_bedrock():
 
 @integrations_landing_bp.route("/integrations/copilot-studio", strict_slashes=False, methods=["GET"])
 def integrations_copilot_studio():
-    return COPILOT_RECIPE_HTML, 200, {
+    return _recipe_page(_COPILOT_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1676,7 +1690,7 @@ def integrations_cloudflare():
     # /integrations/<platform>/ package handler, which answers
     # {"error": "Integration package not found for cloudflare"} with a 404.
     # Same reason every sibling on this blueprint sets it.
-    return CLOUDFLARE_PORTAL_RECIPE_HTML, 200, {
+    return _recipe_page(_CLOUDFLARE_PORTAL_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1684,7 +1698,7 @@ def integrations_cloudflare():
 
 @integrations_landing_bp.route("/integrations/grok", strict_slashes=False, methods=["GET"])
 def integrations_grok():
-    return GROK_RECIPE_HTML, 200, {
+    return _recipe_page(_GROK_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1692,7 +1706,7 @@ def integrations_grok():
 
 @integrations_landing_bp.route("/integrations/gemini", strict_slashes=False, methods=["GET"])
 def integrations_gemini():
-    return GEMINI_RECIPE_HTML, 200, {
+    return _recipe_page(_GEMINI_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1700,7 +1714,7 @@ def integrations_gemini():
 
 @integrations_landing_bp.route("/integrations/mistral", strict_slashes=False, methods=["GET"])
 def integrations_mistral():
-    return MISTRAL_RECIPE_HTML, 200, {
+    return _recipe_page(_MISTRAL_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1708,7 +1722,7 @@ def integrations_mistral():
 
 @integrations_landing_bp.route("/integrations/perplexity", strict_slashes=False, methods=["GET"])
 def integrations_perplexity():
-    return PERPLEXITY_RECIPE_HTML, 200, {
+    return _recipe_page(_PERPLEXITY_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }

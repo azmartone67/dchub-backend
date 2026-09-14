@@ -66,7 +66,7 @@ def _blob(name):
 
 
 def test_the_cloudflare_recipe_links_the_cloudflare_dashboard():
-    blob = _blob("CLOUDFLARE_PORTAL_RECIPE_HTML")
+    blob = _blob("_CLOUDFLARE_PORTAL_RECIPE")
     assert CF_DASH in blob, (
         "/integrations/cloudflare tells the reader to open the Cloudflare dashboard "
         "but gives them no link to it"
@@ -88,9 +88,9 @@ def test_the_main_mcp_page_links_the_cloudflare_dashboard():
 def test_the_two_slices_are_actually_different_pages():
     """Non-vacuity: proves neither assertion above is reading the other page."""
     mcp = _blob("_MCP_LANDING_TEMPLATE")
-    cf = _blob("CLOUDFLARE_PORTAL_RECIPE_HTML")
+    cf = _blob("_CLOUDFLARE_PORTAL_RECIPE")
     assert CF_DOCS not in mcp, "_MCP_LANDING_TEMPLATE slice is bleeding into the recipe page"
-    assert "CLOUDFLARE_PORTAL_RECIPE_HTML" not in mcp
+    assert "_CLOUDFLARE_PORTAL_RECIPE" not in mcp
     assert "60-second quickstarts" not in cf, "recipe slice is bleeding into the landing page"
 
 
