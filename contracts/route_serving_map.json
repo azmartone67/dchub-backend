@@ -8854,6 +8854,11 @@
     "routes.exclusive_listings"
    ]
   },
+  "GET /api/v1/listings/summary": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
   "GET /api/v1/listings/terms": {
    "modules": [
     "routes.exclusive_listings"
