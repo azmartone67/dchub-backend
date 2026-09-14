@@ -129,6 +129,24 @@ def _hash_key(k: str) -> str:
     return hashlib.sha256((k or "").encode()).hexdigest()[:32]
 
 
+def normalize_key_hash(h) -> str:
+    """The ledger's key-hash format is _hash_key's: the first 32 hex chars of
+       sha256(key), lower-case. A full 64-hex digest folds to that form; any
+       other value is only trimmed and lower-cased, never cut."""
+    s = (h or "").strip().lower()
+    if len(s) == 64 and all(ch in "0123456789abcdef" for ch in s):
+        return s[:32]
+    return s
+
+
+def _key_hash_forms(k: str) -> list:
+    """Both spellings a ledger row for this key can hold: the 32-char form and
+       the full 64-hex digest that key-bound grants stored before
+       normalize_key_hash existed. Bound as a list for `api_key_hash = ANY(%s)`."""
+    full = hashlib.sha256((k or "").encode()).hexdigest()
+    return [full[:32], full]
+
+
 _SCHEMA_DDL = """
 -- Play 3: top-ups (one-time $5 = N call credits)
 CREATE TABLE IF NOT EXISTS mcp_topups (
@@ -359,7 +377,7 @@ def consume_topup_credit(api_key: str, count: int = 1) -> bool:
         return False
     c = _conn()
     if c is None: return False
-    h = _hash_key(api_key)
+    forms = _key_hash_forms(api_key)
     try:
         with c, c.cursor() as cur:
             cur.execute("""
@@ -367,13 +385,13 @@ def consume_topup_credit(api_key: str, count: int = 1) -> bool:
                 SET credits_remaining = credits_remaining - %s
                 WHERE id = (
                     SELECT id FROM mcp_topups
-                    WHERE api_key_hash = %s
+                    WHERE api_key_hash = ANY(%s)
                       AND paid_at IS NOT NULL
                       AND credits_remaining >= %s
                     ORDER BY paid_at DESC LIMIT 1
                 )
                 RETURNING credits_remaining;
-            """, (count, h, count))
+            """, (count, forms, count))
             return cur.fetchone() is not None
     except Exception as e:
         print(f"[mcp_conversion_plays] consume_topup_credit: {e}", file=sys.stderr)
@@ -444,11 +462,12 @@ def grant_credit_pack(api_key, mcp_session_id, credits,
        webhook retry never double-grants. Keys the balance on BOTH the durable
        api_key AND the buying mcp session (same-session instant unlock +
        durable-key reuse). Returns {ok, credits_granted, topup_id, idempotent}.
-       Pass api_key_hash (a precomputed _hash_key(key) = sha256[:32]) to credit a
-       key by its HASH without the raw key — the move-#3 key-bound $5 pack path,
-       where the 'pk-<hash>' Stripe ref carries only the hash (raw key never
-       reaches Stripe). get_credit_balance hashes the caller's key the same way,
-       so the balance is found.
+       Pass api_key_hash (sha256 of the key, either the 32-char _hash_key form or
+       the full 64-hex digest) to credit a key by its HASH without the raw key —
+       the move-#3 key-bound pack path, where the 'pk-<hash>' Stripe ref carries
+       only the hash (raw key never reaches Stripe). It is stored as
+       normalize_key_hash() returns it, the form get_credit_balance hashes the
+       caller's key into, so the balance is found.
 
        ★2026-09-10 — price_cents IS A PARAMETER NOW. It was hardcoded to
        PACK5_PRICE_CENTS while `credits` and `expires_days` were already
@@ -461,7 +480,7 @@ def grant_credit_pack(api_key, mcp_session_id, credits,
        expires_at = PACK_NEVER_EXPIRES, the promise /pricing makes; no argument
        and no env var is left that can shorten it."""
     out = {"ok": False}
-    h = api_key_hash or _hash_key(api_key)
+    h = normalize_key_hash(api_key_hash) if api_key_hash else _hash_key(api_key)
     if not h:
         out["error"] = "missing_api_key"; return out
     sid = (mcp_session_id or "").strip()[:200] or None
@@ -571,6 +590,7 @@ def get_credit_balance(api_key, mcp_session_id):
        session. Excludes expired/unpaid grants. Returns 0 on any failure
        (fail-soft → the gateway falls back to the free-taste path)."""
     h = _hash_key(api_key) if api_key else None
+    forms = _key_hash_forms(api_key) if api_key else None
     sid = (mcp_session_id or "").strip()[:200] or None
     if not h and not sid:
         return 0
@@ -585,9 +605,9 @@ def get_credit_balance(api_key, mcp_session_id):
                 WHERE paid_at IS NOT NULL
                   AND credits_remaining > 0
                   AND (expires_at IS NULL OR expires_at > NOW())
-                  AND ((%s IS NOT NULL AND api_key_hash = %s)
+                  AND ((%s IS NOT NULL AND api_key_hash = ANY(%s))
                        OR (%s IS NOT NULL AND mcp_session_id = %s));
-            """, (h, h, sid, sid))
+            """, (h, forms, sid, sid))
             row = cur.fetchone()
             return int(row[0]) if row and row[0] else 0
     except Exception as e:
@@ -613,6 +633,7 @@ def get_credit_status(api_key, mcp_session_id):
        set tests/test_pack_credits_never_expire.py pins to every caller's source=.
        Bound as a list: psycopg2 sends a tuple as a record, which ANY() rejects."""
     h = _hash_key(api_key) if api_key else None
+    forms = _key_hash_forms(api_key) if api_key else None
     sid = (mcp_session_id or "").strip()[:200] or None
     if not h and not sid:
         return {"credits": 0, "had_pack": False}
@@ -629,9 +650,9 @@ def get_credit_status(api_key, mcp_session_id):
                   bool_or(source = ANY(%s))
                 FROM mcp_topups
                 WHERE paid_at IS NOT NULL
-                  AND ((%s IS NOT NULL AND api_key_hash = %s)
+                  AND ((%s IS NOT NULL AND api_key_hash = ANY(%s))
                        OR (%s IS NOT NULL AND mcp_session_id = %s));
-            """, (list(PACK_SOURCES), h, h, sid, sid))
+            """, (list(PACK_SOURCES), h, forms, sid, sid))
             row = cur.fetchone()
             return {"credits": int(row[0]) if row and row[0] else 0,
                     "had_pack": bool(row[1]) if row else False}
@@ -650,6 +671,7 @@ def consume_credits(api_key, mcp_session_id, count=1):
        consume_topup_credit, extended to also match the session key."""
     out = {"ok": False, "remaining": 0}
     h = _hash_key(api_key) if api_key else None
+    forms = _key_hash_forms(api_key) if api_key else None
     sid = (mcp_session_id or "").strip()[:200] or None
     count = max(1, int(count or 1))
     if not h and not sid:
@@ -667,12 +689,12 @@ def consume_credits(api_key, mcp_session_id, count=1):
                     WHERE paid_at IS NOT NULL
                       AND credits_remaining >= %s
                       AND (expires_at IS NULL OR expires_at > NOW())
-                      AND ((%s IS NOT NULL AND api_key_hash = %s)
+                      AND ((%s IS NOT NULL AND api_key_hash = ANY(%s))
                            OR (%s IS NOT NULL AND mcp_session_id = %s))
                     ORDER BY paid_at DESC LIMIT 1
                 )
                 RETURNING credits_remaining;
-            """, (count, count, h, h, sid, sid))
+            """, (count, count, h, forms, sid, sid))
             row = cur.fetchone()
             if row is None:
                 out.update(ok=False, error="insufficient_credits", remaining=0)

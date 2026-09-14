@@ -18,6 +18,7 @@ predicate matches a pack10 row and not a tu- top-up once psycopg2 has adapted
 the parameter is a question only Postgres answers:
 tests/test_had_pack_reads_every_pack_source_sql.py, which the db-parity job runs.
 """
+import hashlib
 import pathlib
 import sys
 
@@ -95,7 +96,8 @@ def test_had_pack_is_membership_in_pack_sources(monkeypatch):
 
 def test_the_identity_is_still_bound_where_it_was(monkeypatch):
     _out, (sql, params) = _status(monkeypatch, row=(0, True))
-    assert _bound_after(sql, params, "api_key_hash =") == mcp._hash_key(KEY)
+    full = hashlib.sha256(KEY.encode()).hexdigest()
+    assert _bound_after(sql, params, "api_key_hash = ANY(") == [full[:32], full]
     assert _bound_after(sql, params, "mcp_session_id =") == SESSION
 
 
