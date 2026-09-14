@@ -879,6 +879,31 @@ jobs:
             echo "::error::the paid_attributed SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── keys_used_day2 on the /connect stats, against the same Postgres ─
+      # The count joins the key an install page minted to the MCP call log on
+      # a later UTC day. Only a real Postgres shows the day boundary under a
+      # session TimeZone 14 hours ahead of UTC, the event-type filter, one key
+      # on two page views counting once, the 30-day window, the plan reaching
+      # the call log through its api_key index, and the statement timeout
+      # giving up under a held lock while the rest of the stats still serve.
+      # Views and mints go through the real endpoints. Owns and recreates only
+      # connect_landing_views and mcp_call_log.
+      - name: keys_used_day2 SQL against a real Postgres
+        env:
+          CONNECT_STATS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_connect_keys_used_day2_sql.py -v --tb=short
+
+      - name: Prove the keys_used_day2 SQL test actually RAN
+        env:
+          CONNECT_STATS_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_connect_keys_used_day2_sql.py \
+            -q -rs --tb=no > kd.txt 2>&1 || { cat kd.txt; exit 1; }
+          cat kd.txt
+          if grep -qi "skipped" kd.txt; then
+            echo "::error::the keys_used_day2 SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -922,6 +947,7 @@ jobs:
             ra.txt
             rc.txt
             pa.txt
+            kd.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
