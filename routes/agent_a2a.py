@@ -66,9 +66,9 @@ AGENT_CARD = {
     "agent": {
         "name":         "DC Hub Intelligence",
         "version":      "2.1.2",
-        # Import-time value, kept for callers that read AGENT_CARD directly.
-        # What an agent is SERVED is re-rendered in _card().
-        "description":  canon_text(_AGENT_DESCRIPTION),
+        # RAW template. Only _card() reads it, and resolves it per request;
+        # canon_text() here would run once, at import (see the note above).
+        "description":  _AGENT_DESCRIPTION,
         "vendor":       "DC Hub",
         "homepage":     "https://dchub.cloud",
         "contact":      "api@dchub.cloud",
@@ -139,7 +139,7 @@ AGENT_CARD = {
     "skills": [
         {
             "name":     "facility_intelligence",
-            "summary":  canon_text(_FACILITY_SKILL_SUMMARY),
+            "summary":  _FACILITY_SKILL_SUMMARY,   # raw; _LIVE_SKILL_SUMMARIES renders it
             "tools":    ["search_facilities", "get_facility", "find_alternatives", "semantic_search"],
             "examples": ["Find hyperscale campuses over 500MW in Virginia",
                           "Get full profile for facility #3000",
@@ -177,7 +177,7 @@ AGENT_CARD = {
         },
         {
             "name":     "deal_flow",
-            "summary":  canon_text(_DEAL_SKILL_SUMMARY),
+            "summary":  _DEAL_SKILL_SUMMARY,       # raw; _LIVE_SKILL_SUMMARIES renders it
             "tools":    ["list_transactions", "get_pipeline", "hyperscaler_deals"],
             "examples": ["All AWS acquisitions over $1B",
                           "Q1 2026 M&A in EMEA"],

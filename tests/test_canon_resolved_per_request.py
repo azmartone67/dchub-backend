@@ -64,9 +64,8 @@ _SKIP = ("node_modules", "/.git/", "/tests/", "dchub-frontend/")
 # request serves: the seven *_RECIPE_HTML pages (which also sit behind the
 # already-listed _RECIPE_PAGE_TEMPLATE), A2A_AGENT_CARD, main.py's
 # _MCP_LANDING_HTML, NAV_LINKS, the paywall hint _VARIANTS and _DCHUB_FACTS.
-# routes/agent_a2a.py AGENT_CARD is served through _card(), which re-resolves
-# the description and the two canon summaries per request; the dict still
-# resolves its own copies at import.
+# routes/agent_a2a.py came off the same day: AGENT_CARD's copies are raw
+# templates now, and only _card() resolves them, per request.
 # routes/partner_landing.py was FIXED instead: three _PARTNERS strings still
 # wrapped {canon_facilities} in canon_text() beside @@CANON_*@@ copy the page
 # already resolves per request. They carry the token now, so
@@ -97,7 +96,6 @@ _KNOWN_LATCHED = {
     'main.py': ['_MCP_LANDING_HTML'],                               # (09-13)
     'moltbook_integration.py': ['AGENT_DESCRIPTION'],
     'populate_press_bodies.py': ['PRESS_RELEASES'],                 # (09-13)
-    'routes/agent_a2a.py': ['AGENT_CARD'],                          # (09-13)
     'routes/ai_platform_tool_tuner.py': ['GENERIC_DESCRIPTIONS'],   # (09-13)
     'routes/brain_answer_cache.py': ['_VERIFY_SYSTEM'],
     'routes/competitive_vs.py': ['_DCHUB_FACTS'],                   # (09-13)

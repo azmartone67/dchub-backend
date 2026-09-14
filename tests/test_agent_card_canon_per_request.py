@@ -14,6 +14,7 @@ These tests swap canon_text for a stub that answers whatever canon "is now".
 They need no DB, no network and no main.py, and every one of them fails if
 _card() goes back to reading the import-time strings.
 """
+import json
 import pathlib
 import re
 
@@ -67,6 +68,17 @@ def test_every_live_skill_names_a_skill_that_exists():
     # A renamed skill would silently fall back to its import-time summary.
     names = {s["name"] for s in agent_a2a.AGENT_CARD["skills"]}
     assert set(agent_a2a._LIVE_SKILL_SUMMARIES) <= names
+
+
+def test_the_module_card_templates_never_reach_the_wire():
+    """★ AGENT_CARD holds RAW templates, and only _card() resolves them.
+
+    A field _card() stopped overriding would serve literal {canon_*} braces to
+    every agent, which is worse than the stale number the templates replaced.
+    """
+    # Floor: with no raw template on the module card, "none on the wire" is vacuous.
+    assert "{canon_" in json.dumps(agent_a2a.AGENT_CARD)
+    assert "{canon_" not in json.dumps(agent_a2a._card())
 
 
 def test_no_hand_typed_deal_count_on_the_card():
