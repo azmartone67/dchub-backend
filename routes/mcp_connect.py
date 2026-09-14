@@ -189,10 +189,20 @@ _CLIENTS = {
         "install_path":   "ChatGPT → Settings → Connectors → Add custom connector",
         "install_path_win": "ChatGPT → Settings → Connectors → Add custom connector",
         "snippet_lang":   "text",
-        "snippet":        """Connector URL:  https://dchub.cloud/mcp
-Header (optional, unlocks 50/day):  X-API-Key: {{TRIAL_KEY}}
+        # r-connect-return (2026-09-14): the key rides IN the connector URL.
+        # ChatGPT runs MCP server-side and its connector form has no header
+        # field, so "Header: X-API-Key" was an instruction nobody on this page
+        # could follow, and a key that never reaches us cannot be the "same
+        # key" a returning user comes back with. POST /mcp reads ?apiKey= and
+        # validates it like the header; it is the connect_url shape
+        # claim_free_key already hands header-less MCP clients (dchub-mcp-server
+        # _connectUrl; chatgpt is in _BYO_MCP_PLATFORMS).
+        "snippet":        """Connector URL:  https://dchub.cloud/mcp?apiKey={{TRIAL_KEY}}
 
+ChatGPT has no header field, so the key rides in the URL.
 In ChatGPT: Settings -> Connectors -> Add custom connector -> paste the URL.""",
+        # One line under the install step (see _return_nudge_html).
+        "return_nudge":   "Come back tomorrow: same key, new chat. The key lives in the connector URL, so every new ChatGPT chat already has DC Hub.",
         "deep_link":      "",
         "deep_link_label": "",
         "examples": [
@@ -740,6 +750,7 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
  .key-action-btn{{background:var(--border);color:var(--text);border:none;padding:6px 12px;border-radius:6px;font-size:.78rem;cursor:pointer;font-family:inherit}}
  .key-action-btn:hover{{background:var(--accent);color:#fff}}
  .upgrade-note{{font-size:.84rem;color:var(--muted);margin-top:10px}}
+ .return-nudge{{margin:12px 0 0;font-size:.9rem;color:var(--text)}}
 </style></head><body>
 <div class="container">
 
@@ -793,7 +804,7 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
   <p style="margin:14px 0 0;color:var(--muted);font-size:.85rem">
     After saving, restart {NAME} and DC Hub will appear in the MCP connector list.
   </p>
-</div>
+{RETURN_NUDGE_HTML}</div>
 
 <!-- STEP 3: Try-it prompts ──────────────────────────────────────────── -->
 <div class="card">
@@ -846,9 +857,38 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
 const CLIENT_KEY  = {CLIENT_KEY_JSON};
 const VIEW_ID     = {VIEW_ID_JSON};
 const RAW_SNIPPET = {SNIPPET_JSON};
+const KEY_SENTINEL = {KEY_SENTINEL_JSON};
 const STRIPE_M    = {STRIPE_M_JSON};
 const STRIPE_A    = {STRIPE_A_JSON};
 let mintedKey = "";
+
+// r-connect-return (2026-09-14): a key's day 1 -> day 2, as Clarity events.
+// connect_key_day1 fires when this page mints a key; connect_key_day2 when the
+// same browser opens this client's page again on the next UTC day, and
+// connect_key_return_later on any later day. It measures a RETURN VISIT to the
+// install page, not a call made with the key. The key never reaches
+// localStorage or Clarity: only the client name and the UTC day do.
+const KEY_DAY_STORE = "dchub-connect-key-day1:" + CLIENT_KEY;
+function utcDay() {{ return new Date().toISOString().slice(0, 10); }}
+function clarityTag(kind, name, value) {{
+  try {{ if (typeof window.clarity === "function") window.clarity(kind, name, value); }} catch (_) {{}}
+}}
+function markKeyDay1() {{
+  clarityTag("set", "connect_client", CLIENT_KEY);
+  clarityTag("event", "connect_key_day1");
+  try {{ if (!localStorage.getItem(KEY_DAY_STORE)) localStorage.setItem(KEY_DAY_STORE, utcDay()); }} catch (_) {{}}
+}}
+(function keyDayReturn() {{
+  let day1 = null;
+  try {{ day1 = localStorage.getItem(KEY_DAY_STORE); }} catch (_) {{ return; }}
+  const t1 = day1 ? Date.parse(day1) : NaN;
+  if (isNaN(t1)) return;
+  const days = Math.round((Date.parse(utcDay()) - t1) / 86400000);
+  if (!(days >= 1)) return;
+  clarityTag("set", "connect_client", CLIENT_KEY);
+  clarityTag("set", "connect_key_day", days === 1 ? "d2" : "d3plus");
+  clarityTag("event", days === 1 ? "connect_key_day2" : "connect_key_return_later");
+}})();
 
 async function mintKey(again) {{
   const btn = document.getElementById("mint-btn");
@@ -863,6 +903,7 @@ async function mintKey(again) {{
     const j = await r.json();
     if (j && j.ok && j.api_key) {{
       mintedKey = j.api_key;
+      markKeyDay1();
       document.getElementById("key-box").innerText = mintedKey;
       document.getElementById("key-box").classList.add("shown");
       const meta = document.getElementById("key-meta");
@@ -872,9 +913,13 @@ async function mintKey(again) {{
                      + (j.trial_days || 7) + "-day trial";
       document.getElementById("key-actions").style.display = "flex";
 
-      // Swap {{TRIAL_KEY}} in the install snippet
+      // Swap the minted key into the install snippet. ★ r-connect-return
+      // (2026-09-14): the sentinel arrives as a format ARGUMENT. Typed into
+      // this template it went through .format(), which halved its braces, so
+      // replaceAll matched INSIDE the snippet's sentinel and every copied
+      // snippet carried the key with a brace left on each side of it.
       const body = document.getElementById("snippet-body");
-      body.innerText = RAW_SNIPPET.replaceAll("{{TRIAL_KEY}}", mintedKey);
+      body.innerText = RAW_SNIPPET.replaceAll(KEY_SENTINEL, mintedKey);
 
       // Bind Stripe links via the /api/v1/connect/click proxy: it stamps
       // connect_landing_views.stripe_clicked_at BEFORE 302ing to Stripe so
@@ -973,6 +1018,26 @@ function copySnippet() {{
 # happens per request in _render_page().
 
 
+# The literal every _CLIENTS snippet carries where the minted key goes. The
+# page's script receives it as a format argument (KEY_SENTINEL_JSON), never as
+# text typed into _PAGE_TEMPLATE_RAW, because .format() rewrites braces there.
+TRIAL_KEY_SENTINEL = "{{TRIAL_KEY}}"
+
+
+def _return_nudge_html(c: dict) -> str:
+    """The one-line "come back tomorrow" nudge under the install step, or "".
+
+    r-connect-return (2026-09-14). Only a client whose install puts the key
+    somewhere the client keeps between chats carries one; on ChatGPT that is
+    the connector URL. Escaped like the snippet: it is page text, not markup.
+    """
+    nudge = (c.get("return_nudge") or "").strip()
+    if not nudge:
+        return ""
+    safe = nudge.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return '  <p class="return-nudge">&#8635; ' + safe + "</p>\n"
+
+
 def _render_page(client_key: str, view_id: int | None) -> str:
     c = _CLIENTS[client_key]
     # Render examples as <div class="example"> lines
@@ -1014,12 +1079,14 @@ def _render_page(client_key: str, view_id: int | None) -> str:
         SNIPPET_RENDERED=snippet_rendered,
         EXAMPLES_HTML=examples_html,
         DEEP_LINK_HTML=deep_link_html,
+        RETURN_NUDGE_HTML=_return_nudge_html(c),
         STRIPE_MONTHLY=_STRIPE_MONTHLY,
         STRIPE_ANNUAL=_STRIPE_ANNUAL,
         VIEW_ID=(str(view_id) if view_id else ""),
         CLIENT_KEY_JSON=json.dumps(client_key),
         VIEW_ID_JSON=json.dumps(view_id),
         SNIPPET_JSON=json.dumps(c["snippet"]),
+        KEY_SENTINEL_JSON=json.dumps(TRIAL_KEY_SENTINEL),
         STRIPE_M_JSON=json.dumps(_STRIPE_MONTHLY),
         STRIPE_A_JSON=json.dumps(_STRIPE_ANNUAL),
     )
