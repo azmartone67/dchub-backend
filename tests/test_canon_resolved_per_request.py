@@ -125,7 +125,6 @@ _KNOWN_LATCHED = {
     'routes/quick_redirects.py': ['_AGENTS_MD'],
     'routes/seo_pages.py': ['_CANON_DEALS', '_CANON_FAC'],
     'seo_agents.py': ['OUTREACH_TEMPLATES', 'SOCIAL_TEMPLATES'],    # (09-13)
-    'seo_meta_tags.py': ['HOME_META', 'TOOL_META'],                 # (09-13)
     'seo_promotion_engine.py': ['_CANON_FAC'],
     'welcome_emails.py': ['EMAILS', '_CANON_SUBSTATIONS'],          # (09-13)
 }

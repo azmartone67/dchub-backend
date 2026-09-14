@@ -30,11 +30,11 @@ from ai_surface_canon import canon_text
 
 # Homepage
 HOME_META = {
-    "title": canon_text("DC Hub | Data Center Intelligence Platform | {canon_facilities} distinct Facilities Worldwide"),
-    "description": canon_text("Track {canon_facilities} distinct data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals."),
+    "title": lambda: canon_text("DC Hub | Data Center Intelligence Platform | {canon_facilities} distinct Facilities Worldwide"),
+    "description": lambda: canon_text("Track {canon_facilities} distinct data center facilities across 170+ countries. Real-time capacity tracking, AI-powered site selection, M&A deal intelligence, and market analytics for hyperscale buyers, investors, and infrastructure professionals."),
     "keywords": "data center, colocation, site selection, market intelligence, data center map, capacity tracking, M&A deals, construction pipeline, hyperscale",
     "og_title": "DC Hub — Data Center Intelligence Platform",
-    "og_description": canon_text("Real-time intelligence for {canon_facilities} distinct data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries."),
+    "og_description": lambda: canon_text("Real-time intelligence for {canon_facilities} distinct data centers. Capacity tracking, site selection, M&A deals, and market analytics across 170+ countries."),
     "og_type": "website",
     "og_url": "https://dchub.cloud/",
     "canonical": "https://dchub.cloud/",
@@ -166,10 +166,10 @@ TOOL_META = {
         "schema_type": "Dataset"
     },
     "transactions": {
-        "title": canon_text("Data Center Transactions & Deal Flow | {canon_deals} Deals Since 2019 | DC Hub"),
+        "title": lambda: canon_text("Data Center Transactions & Deal Flow | {canon_deals} Deals Since 2019 | DC Hub"),
         "description": "Browse 100+ data center transactions including sales, leases, and joint ventures. $61B+ in 2025 deal volume. Transaction details, pricing comps, cap rates, and market analysis.",
         "keywords": "data center transactions, data center deal flow, colocation sales, data center cap rates, real estate transactions data center",
-        "og_title": canon_text("Data Center Transactions — {canon_deals} Deals Since 2019 | DC Hub"),
+        "og_title": lambda: canon_text("Data Center Transactions — {canon_deals} Deals Since 2019 | DC Hub"),
         "og_description": "100+ tracked transactions, $61B+ in 2025 volume. Deal details, pricing comps, and market analysis.",
         "schema_type": "Dataset"
     },
@@ -199,7 +199,7 @@ TOOL_META = {
     },
     "ai-agents": {
         "title": "AI Research Agents for Data Center Intelligence | DC Hub",
-        "description": canon_text("4 AI-powered agents for data center research: Sales intelligence, data enrichment, social media analytics, and ecosystem analysis. Ask questions, get instant answers backed by facility database of {canon_facilities} distinct facilities."),
+        "description": lambda: canon_text("4 AI-powered agents for data center research: Sales intelligence, data enrichment, social media analytics, and ecosystem analysis. Ask questions, get instant answers backed by facility database of {canon_facilities} distinct facilities."),
         "keywords": "AI data center agent, data center research assistant, AI market intelligence, data center chatbot, automated research",
         "og_title": "AI Research Agents — Data Center Intelligence | DC Hub",
         "og_description": "4 AI agents providing instant data center intelligence. Sales, enrichment, social, and ecosystem analysis.",
@@ -231,23 +231,23 @@ TOOL_META = {
     },
     "pricing": {
         "title": "DC Hub Pricing | Data Center Intelligence from $9/month",
-        "description": canon_text("Pricing from $9/month for full access to {canon_facilities} distinct facilities, Land & Power mapping, AI agents, M&A deal tracker, and API."),
+        "description": lambda: canon_text("Pricing from $9/month for full access to {canon_facilities} distinct facilities, Land & Power mapping, AI agents, M&A deal tracker, and API."),
         "keywords": "DC Hub pricing, data center intelligence pricing, colocation data subscription, data center SaaS",
         "og_title": "DC Hub Pricing — Plans from $9/month",
-        "og_description": canon_text("Data center intelligence from $9/month. {canon_facilities} distinct facilities, AI agents, deal tracker, site selection tools."),
+        "og_description": lambda: canon_text("Data center intelligence from $9/month. {canon_facilities} distinct facilities, AI agents, deal tracker, site selection tools."),
         "schema_type": "WebPage"
     },
     "assets": {
         "title": "Data Center Asset Explorer | 20,000+ Global Facilities | DC Hub",
-        "description": canon_text("Browse and search {canon_facilities} distinct data center facilities worldwide. Filter by provider, location, power capacity, tier level, and status. Detailed profiles with satellite imagery and infrastructure data."),
+        "description": lambda: canon_text("Browse and search {canon_facilities} distinct data center facilities worldwide. Filter by provider, location, power capacity, tier level, and status. Detailed profiles with satellite imagery and infrastructure data."),
         "keywords": "data center database, facility explorer, colocation directory, data center search, global data centers, facility profiles",
         "og_title": "Asset Explorer — 20,000+ Data Centers | DC Hub",
-        "og_description": canon_text("Search and compare {canon_facilities} distinct data center facilities worldwide. Filter by provider, power, tier, and location."),
+        "og_description": lambda: canon_text("Search and compare {canon_facilities} distinct data center facilities worldwide. Filter by provider, power, tier, and location."),
         "schema_type": "Dataset"
     },
     "ai-inventory": {
         "title": "AI Inventory Analysis | Data Center Supply Intelligence | DC Hub",
-        "description": canon_text("AI-powered supply analysis across data center markets. Track available capacity, absorption rates, pre-lease status, and inventory trends. Powered by real-time facility data from {canon_facilities} locations."),
+        "description": lambda: canon_text("AI-powered supply analysis across data center markets. Track available capacity, absorption rates, pre-lease status, and inventory trends. Powered by real-time facility data from {canon_facilities} locations."),
         "keywords": "data center inventory, supply analysis, capacity tracking, absorption rate, data center availability, colocation inventory",
         "og_title": "AI Inventory Analysis — Supply Intelligence | DC Hub",
         "og_description": "Track data center capacity, absorption, and supply trends with AI-powered analysis.",
@@ -255,10 +255,10 @@ TOOL_META = {
     },
     "about": {
         "title": "About DC Hub | Data Center Intelligence Platform",
-        "description": canon_text("DC Hub is the comprehensive data center intelligence platform tracking {canon_facilities} distinct facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ."),
+        "description": lambda: canon_text("DC Hub is the comprehensive data center intelligence platform tracking {canon_facilities} distinct facilities across 170+ countries. Built for hyperscale buyers, investors, and infrastructure professionals. Based in Phoenix, AZ."),
         "keywords": "about DC Hub, data center platform, DC Hub team, data center intelligence company",
         "og_title": "About DC Hub — Data Center Intelligence Platform",
-        "og_description": canon_text("Tracking {canon_facilities} distinct data centers across 170+ countries. Built for hyperscale buyers and infrastructure professionals."),
+        "og_description": lambda: canon_text("Tracking {canon_facilities} distinct data centers across 170+ countries. Built for hyperscale buyers and infrastructure professionals."),
         "schema_type": "AboutPage"
     }
 }
@@ -365,17 +365,30 @@ def generate_head_html(meta, page_url="https://dchub.cloud/"):
     return html
 
 
+def _live(meta):
+    """A copy of `meta` with its canon fields rendered for THIS request.
+
+    ★2026-09-13: HOME_META and TOOL_META called canon_text() at module scope,
+    which runs once, at import. /api/seo/meta-tags/home served "21,500+" while
+    /api/v1/canon/phrases said 21,800+ (same origin, same second). Canon fields
+    are lambdas now, so every reader of those dicts must come through here;
+    jsonify() raises on a lambda that skipped it.
+    """
+    return {k: v() if callable(v) else v for k, v in meta.items()}
+
+
 def setup_meta_routes(app):
     """Register meta tag API routes with Flask app."""
     
     @app.route('/api/seo/meta-tags/home')
     def meta_home():
         """Get meta tags for homepage."""
+        meta = _live(HOME_META)
         return jsonify({
             "success": True,
             "page": "home",
-            "meta": HOME_META,
-            "html": generate_head_html(HOME_META, "https://dchub.cloud/"),
+            "meta": meta,
+            "html": generate_head_html(meta, "https://dchub.cloud/"),
             "timestamp": __import__('datetime').datetime.utcnow().isoformat()
         })
     
@@ -405,6 +418,7 @@ def setup_meta_routes(app):
         meta = TOOL_META.get(tool_slug)
         if not meta:
             return jsonify({"success": False, "error": f"Unknown tool: {tool_slug}"}), 404
+        meta = _live(meta)
         
         url = f"https://dchub.cloud/{tool_slug}"
         meta["canonical"] = url
@@ -460,7 +474,7 @@ def setup_meta_routes(app):
         all_pages = {}
         
         # Home
-        all_pages["home"] = {"url": "https://dchub.cloud/", "meta": HOME_META}
+        all_pages["home"] = {"url": "https://dchub.cloud/", "meta": _live(HOME_META)}
         
         # Markets
         for slug, meta in MARKET_META.items():
@@ -473,7 +487,7 @@ def setup_meta_routes(app):
         for slug, meta in TOOL_META.items():
             all_pages[f"tool/{slug}"] = {
                 "url": f"https://dchub.cloud/{slug}",
-                "meta": meta
+                "meta": _live(meta)
             }
         
         return jsonify({
@@ -490,14 +504,14 @@ def setup_meta_routes(app):
         page = request.args.get('page', 'home')
         
         if page == 'home':
-            meta = HOME_META
+            meta = _live(HOME_META)
             url = "https://dchub.cloud/"
         elif page.startswith('market/'):
             slug = page.replace('market/', '')
-            meta = MARKET_META.get(slug, HOME_META)
+            meta = _live(MARKET_META.get(slug, HOME_META))
             url = f"https://dchub.cloud/markets/{slug}"
         else:
-            meta = TOOL_META.get(page, HOME_META)
+            meta = _live(TOOL_META.get(page, HOME_META))
             url = f"https://dchub.cloud/{page}"
         
         meta["canonical"] = url
@@ -515,13 +529,14 @@ if __name__ == "__main__":
     """Run standalone to generate meta_tags.json for Cloudflare Pages build."""
     all_tags = {}
     
-    all_tags["/"] = HOME_META
+    all_tags["/"] = _live(HOME_META)
     
     for slug, meta in MARKET_META.items():
         meta["canonical"] = f"https://dchub.cloud/markets/{slug}"
         all_tags[f"/markets/{slug}"] = meta
     
     for slug, meta in TOOL_META.items():
+        meta = _live(meta)
         meta["canonical"] = f"https://dchub.cloud/{slug}"
         all_tags[f"/{slug}"] = meta
     
