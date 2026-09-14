@@ -121,7 +121,6 @@ _KNOWN_LATCHED = {
     'routes/nav_config_routes.py': ['NAV_LINKS'],                   # (09-13)
     'routes/onboard_auto_approve.py': ['_CANON_FAC'],
     'routes/onboarding_recover.py': ['_CANON_DEALS', '_CANON_FAC'],
-    'routes/paywall_hint_middleware.py': ['_VARIANTS'],             # (09-13)
     'routes/quick_redirects.py': ['_AGENTS_MD'],
     'routes/seo_pages.py': ['_CANON_DEALS', '_CANON_FAC'],
     'seo_agents.py': ['OUTREACH_TEMPLATES', 'SOCIAL_TEMPLATES'],    # (09-13)

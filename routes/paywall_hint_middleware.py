@@ -128,7 +128,7 @@ _VARIANTS = {
               "= 200/day. $49/mo Developer = 500/day."),
     },
     "C": {
-        401: (canon_text("You just hit DC Hub's paywall. With a free key (10 "
+        401: (lambda: canon_text("You just hit DC Hub's paywall. With a free key (10 "
               "calls/day) you'd get: {canon_facilities} distinct data center facilities, "
               "daily DCPI power scores for 32+ markets, 4,000+ tracked "
               "M&A deals, 10-ISO interconnection queues, fiber routes. Claim "
@@ -183,10 +183,18 @@ def _pick_variant(ip: str, ua: str) -> str:
     return ["A", "B", "C", "D"][bucket]
 
 
+def _copy(copy) -> str:
+    """One variant's copy as served. Copy that carries canon is a lambda in
+    _VARIANTS, so its count resolves on THIS response: canon_text() inside the
+    dict ran once, at import, and quoted the cold-start floor for the life of
+    the process (★2026-09-13)."""
+    return copy() if callable(copy) else copy
+
+
 def _agent_quotable_for(variant: str, status: int) -> str:
     """Status-specific copy keyed by variant. Falls back to A."""
     v = _VARIANTS.get(variant) or _VARIANTS["A"]
-    return v.get(status) or v.get(401)
+    return _copy(v.get(status) or v.get(401))
 
 
 # DDL is bootstrapped ONCE per process (guarded below) and kept OUT of the
@@ -684,7 +692,7 @@ def funnel_ab_variants():
     return jsonify({
         "ok":       True,
         "variants": {
-            v: {str(k): copy for k, copy in body.items()}
+            v: {str(k): _copy(copy) for k, copy in body.items()}
             for v, body in _VARIANTS.items()
         },
         "selection_rule": "hash(ip + ua) % 3",
