@@ -864,7 +864,7 @@ function copyUrl(){
 </body></html>"""
 
 
-def _recipe_page(slots: dict) -> str:
+def _recipe_page(**slots) -> str:
     """One recipe page, canon resolved AT REQUEST TIME. Call it from a handler.
 
     ★2026-09-13: the seven pages used to be module constants built at import
@@ -873,7 +873,9 @@ def _recipe_page(slots: dict) -> str:
     was cold, and /integrations/grok and /integrations/cloudflare served
     "21,500+" beside /api/v1/canon/phrases saying 21,800+ (same origin, same
     second). A page is now a slot dict. A slot that carries canon is a lambda,
-    called here, per request.
+    called here, per request. Slots stay KEYWORD arguments:
+    routes/onboard_auto_approve.build_stub_html renders partner stub pages
+    through this function too.
 
     Same ordering rule as render_mcp_landing(): canon_text() on the template
     BEFORE the token replaces. The canon pass owns the `{canon_*}` markers and
@@ -1669,7 +1671,7 @@ _CLOUDFLARE_PORTAL_RECIPE = dict(
 
 @integrations_landing_bp.route("/integrations/bedrock", strict_slashes=False, methods=["GET"])
 def integrations_bedrock():
-    return _recipe_page(_BEDROCK_RECIPE), 200, {
+    return _recipe_page(**_BEDROCK_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1677,7 +1679,7 @@ def integrations_bedrock():
 
 @integrations_landing_bp.route("/integrations/copilot-studio", strict_slashes=False, methods=["GET"])
 def integrations_copilot_studio():
-    return _recipe_page(_COPILOT_RECIPE), 200, {
+    return _recipe_page(**_COPILOT_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1690,7 +1692,7 @@ def integrations_cloudflare():
     # /integrations/<platform>/ package handler, which answers
     # {"error": "Integration package not found for cloudflare"} with a 404.
     # Same reason every sibling on this blueprint sets it.
-    return _recipe_page(_CLOUDFLARE_PORTAL_RECIPE), 200, {
+    return _recipe_page(**_CLOUDFLARE_PORTAL_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1698,7 +1700,7 @@ def integrations_cloudflare():
 
 @integrations_landing_bp.route("/integrations/grok", strict_slashes=False, methods=["GET"])
 def integrations_grok():
-    return _recipe_page(_GROK_RECIPE), 200, {
+    return _recipe_page(**_GROK_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1706,7 +1708,7 @@ def integrations_grok():
 
 @integrations_landing_bp.route("/integrations/gemini", strict_slashes=False, methods=["GET"])
 def integrations_gemini():
-    return _recipe_page(_GEMINI_RECIPE), 200, {
+    return _recipe_page(**_GEMINI_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1714,7 +1716,7 @@ def integrations_gemini():
 
 @integrations_landing_bp.route("/integrations/mistral", strict_slashes=False, methods=["GET"])
 def integrations_mistral():
-    return _recipe_page(_MISTRAL_RECIPE), 200, {
+    return _recipe_page(**_MISTRAL_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
@@ -1722,7 +1724,7 @@ def integrations_mistral():
 
 @integrations_landing_bp.route("/integrations/perplexity", strict_slashes=False, methods=["GET"])
 def integrations_perplexity():
-    return _recipe_page(_PERPLEXITY_RECIPE), 200, {
+    return _recipe_page(**_PERPLEXITY_RECIPE), 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
