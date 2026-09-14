@@ -183,10 +183,15 @@ def test_human_acted_applies_the_session_exclusion():
     assert m and "include_self_traffic" not in m.group(1), \
         "the headline is not the canonical union with the exclusion applied"
     from mcp_calls_deloop import external_session_predicate
-    from routes.handoff_definition import human_acted_count_sql
+    from routes.handoff_definition import (RELAYED_CHECKOUT_SESSION_ID,
+                                           human_acted_count_sql)
     headline = human_acted_count_sql("30 days")
-    for column in ("s.mcp_session_id", "cc.ref"):
+    # ★ 2026-09-13 (v9): the checkout lane's identity is the session a click is
+    # bound to, so that is where the exclusion binds. On the bare ref it would
+    # pass vacuously for every key-hash ref.
+    for column in ("s.mcp_session_id", RELAYED_CHECKOUT_SESSION_ID):
         assert external_session_predicate(column) in headline, column
+    assert external_session_predicate("cc.ref") not in headline
 
 
 def test_human_acted_publishes_what_it_removed():

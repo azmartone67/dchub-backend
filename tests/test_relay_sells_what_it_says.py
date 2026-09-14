@@ -157,6 +157,73 @@ def test_relay_button_carries_the_pack_tier_for_a_bad_token(relay_app):
     assert logged and logged[0][1] is False
 
 
+# ── 2b · a keyed caller's pack is bound to its key (2026-09-13) ──────
+
+KREF = "pk-" + "0123456789abcdef" * 4
+
+
+def _anchor(html):
+    """The page's one button, href unescaped. Lane 3's regex only knows the
+    /pricing/upgrade shape, and a keyed button is deliberately not that shape."""
+    from html import unescape
+    found = re.findall(r"<a class='btn' href='([^']*)'>(.*?)</a>", html)
+    assert len(found) == 1, "the relay page has exactly one upgrade button"
+    return unescape(found[0][0]), found[0][1]
+
+
+def test_a_keyed_callers_button_binds_the_pack_to_its_key(relay_app):
+    """★ /pricing/upgrade binds the purchase to the session alone. A token that
+    carries the caller's `pk-` reference sells the pack through the signed
+    /go/c/ link whose ref IS that key, with the session beside it."""
+    app, relay, logged = relay_app
+    from routes._stripe_links import PACK_TIER
+    from routes.checkout_click_tracker import _verify
+    tok = relay.make_relay_token("sess-k", "get_dchub_recommendation", "free",
+                                 kref=KREF)
+    html = app.test_client().get(f"/upgrade/h/{tok}",
+                                 headers={"User-Agent": HUMAN_UA}).get_data(as_text=True)
+    href, label = _anchor(html)
+    assert href.startswith("https://dchub.cloud/go/c/"), href
+    assert _verify(href.rsplit("/", 1)[1]) == (PACK_TIER, KREF, "sess-k", True)
+    assert "$10 one-time" in label
+    assert "/pricing/upgrade" not in html
+    assert "the credits land on the API key your agent is already using" in html
+    assert "no reconnect needed" not in html, \
+        "the session-bound promise does not describe a key-bound purchase"
+    assert logged and logged[0][0]["kref"] == KREF and logged[0][1] is True
+
+
+def test_a_keyed_token_still_sells_the_pack_when_no_link_can_be_minted(relay_app, monkeypatch):
+    """No /go/c/ token (e.g. DCHUB_INTERNAL_KEY unset where the tracker reads it)
+    falls back to the session button — never to no button."""
+    app, relay, _ = relay_app
+    from routes import checkout_click_tracker
+    from routes._stripe_links import PACK_TIER
+    monkeypatch.setattr(checkout_click_tracker, "mint_checkout_token",
+                        lambda *a, **k: None)
+    tok = relay.make_relay_token("sess-k", "get_dchub_recommendation", "free",
+                                 kref=KREF)
+    q, label = _button(app.test_client().get(f"/upgrade/h/{tok}").get_data(as_text=True))
+    assert q["tier"] == [PACK_TIER] and q["sid"] == ["sess-k"]
+    assert "$10 one-time" in label
+
+
+def test_a_keyless_page_serves_the_bytes_it_always_served(relay_app):
+    """Four-field links are in the wild. Their button and pack copy are pinned
+    as the exact bytes the page served before the fifth field existed."""
+    app, relay, _ = relay_app
+    tok = relay.make_relay_token("sess-1", "get_dchub_recommendation", "free")
+    html = app.test_client().get(f"/upgrade/h/{tok}").get_data(as_text=True)
+    assert ("<a class='btn' href='https://api.dchub.cloud/pricing/upgrade?"
+            "from=mcp_relay&amp;tier=metered&amp;direct=1&amp;"
+            "tool=get_dchub_recommendation&amp;sid=sess-1'>"
+            "Unlock full data — $10 one-time</a>") in html
+    assert ("<p>The <b>$10 one-time pack</b> (1,000 API calls, no subscription) "
+            "unlocks the full dataset — your agent's very next call returns "
+            "complete data, no reconnect needed.</p>") in html
+    assert "/go/c/" not in html
+
+
 def test_the_shells_audit_costume_is_not_logged_as_a_human_open(monkeypatch):
     """★ Lane 3 now opens the relay page every 120 s. The revenue shell scores
     relay_opens as 'real human opens' — the audit must not write a row."""

@@ -11,6 +11,9 @@ were unregistered _proposed_ scaffolds by design):
 CI-SAFETY: no DATABASE_URL/JWT_SECRET; direct module imports (never main);
 DB paths only via fail-soft contracts.
 """
+import base64
+import hashlib
+import hmac
 import os
 import time
 
@@ -43,6 +46,19 @@ def test_wave_blueprints_registered():
 
 
 # ── relay token contract ─────────────────────────────────────────────
+# ★ 2026-09-13: four fields, or five for a keyed caller
+# (`sid|tool|tier|ts|pk-<64 hex>`). Four-field links are already in the wild.
+
+KREF = "pk-" + hashlib.sha256(b"dch_live_example_key").hexdigest()
+
+
+def _signed(raw):
+    """A payload signed under the relay contract, for shapes make_relay_token
+    would never build."""
+    payload = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+    return payload + "." + hmac.new(b"test-secret", payload.encode(),
+                                    hashlib.sha256).hexdigest()[:32]
+
 
 def test_relay_token_roundtrip(relay, monkeypatch):
     monkeypatch.setenv("DCHUB_INTERNAL_KEY", "test-secret")
@@ -50,6 +66,38 @@ def test_relay_token_roundtrip(relay, monkeypatch):
     info = relay.parse_relay_token(tok)
     assert info and info["sid"] == "sess-1"
     assert info["tool"] == "get_grid_intelligence" and info["tier"] == "free"
+    assert info["kref"] == "", "a four-field token carries no key reference"
+
+
+def test_relay_token_carries_a_keyed_callers_key_reference(relay, monkeypatch):
+    monkeypatch.setenv("DCHUB_INTERNAL_KEY", "test-secret")
+    info = relay.parse_relay_token(relay.make_relay_token(
+        "sess-1", "get_grid_intelligence", "free", kref=KREF))
+    assert info is not None
+    assert (info["sid"], info["tool"], info["tier"], info["kref"]) == \
+        ("sess-1", "get_grid_intelligence", "free", KREF)
+
+
+@pytest.mark.parametrize("fifth", [
+    "", "pk-short", "k-" + KREF[3:], "pk-" + KREF[3:].upper(), KREF + "0",
+    "pk-" + "g" * 64,
+], ids=["empty", "short", "sub_key_prefix", "uppercase_hex", "too_long", "not_hex"])
+def test_a_malformed_fifth_field_keeps_the_open_valid(relay, monkeypatch, fifth):
+    """The signature already proves we minted the link. A key reference that is
+    not exactly `pk-<64 hex>` costs the key binding, never the open."""
+    monkeypatch.setenv("DCHUB_INTERNAL_KEY", "test-secret")
+    ts = int(time.time())
+    info = relay.parse_relay_token(_signed("s|t|free|%d|%s" % (ts, fifth)))
+    assert info is not None, "a valid open was discarded over its fifth field"
+    assert (info["sid"], info["tool"], info["tier"], info["ts"], info["kref"]) == \
+        ("s", "t", "free", ts, "")
+
+
+@pytest.mark.parametrize("fields", ["s|t|%d", "s|t|free|%d|" + KREF + "|x"],
+                         ids=["three_fields", "six_fields"])
+def test_relay_token_rejects_any_other_field_count(relay, monkeypatch, fields):
+    monkeypatch.setenv("DCHUB_INTERNAL_KEY", "test-secret")
+    assert relay.parse_relay_token(_signed(fields % int(time.time()))) is None
 
 
 def test_relay_token_rejects_tamper_and_age(relay, monkeypatch):
@@ -59,8 +107,14 @@ def test_relay_token_rejects_tamper_and_age(relay, monkeypatch):
     old = relay.make_relay_token("s", "t", "free",
                                  ts=int(time.time()) - 15 * 86400)
     assert relay.parse_relay_token(old) is None, "15d-old token must expire"
+    old_keyed = relay.make_relay_token("s", "t", "free", kref=KREF,
+                                       ts=int(time.time()) - 15 * 86400)
+    assert relay.parse_relay_token(old_keyed) is None, \
+        "the age cap applies to a five-field token too"
+    keyed = relay.make_relay_token("s", "t", "free", kref=KREF)
     monkeypatch.setenv("DCHUB_INTERNAL_KEY", "DIFFERENT")
     assert relay.parse_relay_token(tok) is None, "wrong secret must fail"
+    assert relay.parse_relay_token(keyed) is None, "wrong secret must fail"
 
 
 def test_relay_page_never_dead_ends(relay):

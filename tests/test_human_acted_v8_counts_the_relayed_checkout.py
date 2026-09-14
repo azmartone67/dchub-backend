@@ -55,26 +55,31 @@ def test_each_lane_is_the_published_instrument_not_a_copy():
     assert relay == H.human_acted_v5_count_sql(_IV).replace(
         "select count(distinct s.mcp_session_id) ",
         "select s.mcp_session_id as sid ", 1)
+    ident = H.RELAYED_CHECKOUT_SESSION_ID
     assert checkout == H.human_acted_v7_count_sql(_IV).replace(
-        "select count(distinct cc.ref) ", "select cc.ref as sid ", 1)
+        "select count(distinct " + ident + ") ", "select " + ident + " as sid ", 1)
 
 
 def test_the_exclusion_binds_once_per_lane_on_that_lanes_identity():
     ext_s = external_session_predicate("s.mcp_session_id")
-    ext_cc = external_session_predicate("cc.ref")
+    ext_cc = external_session_predicate(H.RELAYED_CHECKOUT_SESSION_ID)
     relay, checkout = _lanes(H.human_acted_count_sql(_IV))
     assert relay.count(ext_s) == 1 and ext_cc not in relay
     assert checkout.count(ext_cc) == 1 and ext_s not in checkout
+    # ★ v9: never on the bare ref, where every key-hash ref passes it.
+    assert external_session_predicate("cc.ref") not in checkout
     for lane in _lanes(H.human_acted_count_sql(_IV, include_self_traffic=True)):
         assert ext_s not in lane and ext_cc not in lane, lane
 
 
 def test_the_checkout_lane_keeps_the_v6_lesson():
-    """A bare session ref only: on pk-/k-/a- refs the exclusion passes
-    vacuously, so those clicks stay in human_acted_v7_links_clicked."""
+    """A click counts only AS A SESSION: the one its token carried, else a bare
+    session ref. A pk-/k-/a- click with no session has no identity here, since
+    the exclusion passes vacuously on it; those clicks stay in
+    human_acted_v7_links_clicked."""
     checkout = _lanes(H.human_acted_count_sql(_IV))[1]
-    assert ("cc.ref_kind = '%s'"
-            % H.RELAYED_CHECKOUT_DELOOPABLE_REF_KIND) in checkout
+    assert checkout.startswith("select " + H.RELAYED_CHECKOUT_SESSION_ID + " as sid ")
+    assert (H.RELAYED_CHECKOUT_SESSION_ID + " is not null") in checkout
     assert H.relayed_checkout_signed() in checkout
     assert H.relayed_checkout_real_ua() in checkout
 
@@ -82,12 +87,15 @@ def test_the_checkout_lane_keeps_the_v6_lesson():
 def test_a_session_that_clicked_the_relayed_checkout_did_not_abandon():
     """adoption_master_shell's `abandoned` is NOT this predicate. Exact shape,
     built from the parts: a containment check survives `and false` appended to
-    the click join, which silently re-abandons every /go/c/ clicker."""
+    the click join, which silently re-abandons every /go/c/ clicker. Since v9
+    the join is on the session a click is bound to, so a keyed click carrying
+    this session is not an abandonment either."""
     pred = H.human_acted_session_predicate("s")
     assert pred == ("(" + H.human_acted_relay_predicate("s")
                     + " or exists (select 1 " + H._RELAYED_CHECKOUT_FROM
                     + " where " + H.relayed_checkout_session_filters()
-                    + " and cc.ref = s.mcp_session_id))"), pred
+                    + " and " + H.RELAYED_CHECKOUT_SESSION_ID
+                    + " = s.mcp_session_id))"), pred
 
 
 @pytest.mark.parametrize("iv", ["24 hours", "7 days", "30 days"])
@@ -175,3 +183,50 @@ def test_the_promoting_version_is_described_and_the_unpromoted_ones_say_so():
     for v in (6, 7):
         assert H.HUMAN_ACTED_DEFINITION_CHANGELOG[v].startswith(
             "DEFINED, NEVER PROMOTED."), v
+
+
+def test_the_funnel_asks_for_the_click_schema_before_it_counts():
+    """★ v9 reads session_id, which the tracker adds with its own DDL at import.
+    A process that never imported the tracker would count the lane against a
+    table without the column, and publish human_acted: null. The ensure is
+    called once in the handler, before any window is counted."""
+    tree = ast.parse(open(_ENDPOINT, encoding="utf-8").read())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "handoff_funnel")
+    calls = [n for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    ensure = [c.lineno for c in calls
+              if c.func.id == "_ensure_checkout_click_schema"]
+    windows = [c.lineno for c in calls if c.func.id == "_win"]
+    assert len(ensure) == 1 and windows and ensure[0] < min(windows), \
+        (ensure, windows)
+
+
+def test_the_schema_ensure_is_once_per_process_and_cannot_raise(monkeypatch):
+    """Executed, not read: the helper and its flag, out of the endpoint's AST,
+    against a tracker whose ensure raises. The funnel must neither fail nor
+    retry the DDL on every request."""
+    import sys
+    import types
+    tree = ast.parse(open(_ENDPOINT, encoding="utf-8").read())
+    parts = [n for n in tree.body
+             if (isinstance(n, ast.FunctionDef)
+                 and n.name == "_ensure_checkout_click_schema")
+             or (isinstance(n, ast.Assign)
+                 and any(getattr(t, "id", None) == "_CHECKOUT_CLICK_SCHEMA_TRIED"
+                         for t in n.targets))]
+    assert len(parts) == 2, [type(p).__name__ for p in parts]
+    ns = {}
+    exec(compile(ast.Module(body=parts, type_ignores=[]), _ENDPOINT, "exec"), ns)
+    calls = []
+
+    def _unreachable():
+        calls.append(1)
+        raise RuntimeError("database unreachable")
+
+    fake = types.ModuleType("routes.checkout_click_tracker")
+    fake.ensure_schema = _unreachable
+    monkeypatch.setitem(sys.modules, "routes.checkout_click_tracker", fake)
+    ns["_ensure_checkout_click_schema"]()
+    ns["_ensure_checkout_click_schema"]()
+    assert calls == [1]

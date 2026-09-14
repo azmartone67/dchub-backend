@@ -368,6 +368,27 @@ def _funnel_ttl():
         return 30
 
 
+# ★ 2026-09-13 (human_acted v9). The relayed-checkout lane reads a session_id
+# column that routes/checkout_click_tracker adds with its own DDL when it is
+# imported. In a process that never imported it, the lane would query a table
+# the ALTER never reached: the query fails inside one() and the headline
+# publishes null. So the funnel asks for the schema before it counts — once per
+# process (attempted, not retried per request) and fail-soft, because a DDL
+# that cannot land must not cost the endpoint.
+_CHECKOUT_CLICK_SCHEMA_TRIED = [False]
+
+
+def _ensure_checkout_click_schema():
+    if _CHECKOUT_CLICK_SCHEMA_TRIED[0]:
+        return
+    _CHECKOUT_CLICK_SCHEMA_TRIED[0] = True
+    try:
+        from routes.checkout_click_tracker import ensure_schema
+        ensure_schema()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ── GET /api/v1/mcp/handoff-funnel ──────────────────────────────────────────
 # r-handoff (2026-06-21): the agent→human conversion funnel, end to end, on
 # DISTINCT sessions — surfaces WHERE the handoff leaks. paywall-hit → high-intent
@@ -469,7 +490,8 @@ def handoff_funnel():
         # A gated tools/call puts /go/c/<token> in content[0].text, and v5 could
         # only see /upgrade/h/ and /relay opens. The headline is the canonical
         # UNION from routes/handoff_definition — the v5 lane above plus signed
-        # /go/c/ clicks on a bare session ref (the v7 lane) — CALLED, never
+        # /go/c/ clicks bound to a session (the v7 lane; since v9 the session a
+        # keyed click's token carries, else a bare session ref) — CALLED, never
         # assembled here. opened_incl_self is the same union with the operator
         # exclusion dropped from BOTH lanes; excluded.human_acted_removed
         # subtracts from it, because v3 minus a union goes negative the first
@@ -1153,6 +1175,8 @@ def handoff_funnel():
         }
         return jsonify(_cached), 200
 
+    # Before any window counts the relayed-checkout lane; see the helper.
+    _ensure_checkout_click_schema()
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             out["last_24h"] = _win(cur, 1)

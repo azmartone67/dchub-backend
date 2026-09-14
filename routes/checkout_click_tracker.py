@@ -33,25 +33,39 @@ AND in the _worker.js backend-proxy prefix list (added 2026-07-11 for
 TOKEN FORMAT — mirrors server.mjs buildHumanRelay exactly:
 
     <base64url(plan|ref)>.<hmac_sha256(DCHUB_INTERNAL_KEY, payload)[:32]>
+    <base64url(plan|ref|sid)>.<hmac_sha256(DCHUB_INTERNAL_KEY, payload)[:32]>
 
 `plan` is a KEY of routes._stripe_links.STRIPE_LINKS, never a URL. The
 destination is therefore an allowlist lookup and this endpoint cannot be
 turned into an open redirect no matter what the token says. `ref` is the
 client_reference_id the MCP server already binds (`pk-<sha256>` durable-key
-pack, `k-<sha256>` durable-key subscription, or a bare mcp_session_id) and
-is passed through untouched so Fix-E / r-durable-key attribution is
-unaffected: the same value reaches Stripe either way.
+pack, `k-<sha256>` durable-key subscription, `a-<hex>` anonymous offer id,
+or a bare mcp_session_id) and is passed through untouched so Fix-E /
+r-durable-key attribution is unaffected: the same value reaches Stripe
+either way.
+
+`sid` (2026-09-13) is an optional THIRD field: the caller's Mcp-Session-Id,
+minted only when a session exists and it is not the ref itself, i.e. beside
+a `pk-`/`k-` key ref. It never reaches Stripe. It is stored in
+mcp_checkout_clicks.session_id because the operator self-traffic exclusion
+keys on session ids and a key-hash ref gives it nothing to test
+(routes/handoff_definition.RELAYED_CHECKOUT_SESSION_ID reads it). Two-field
+tokens already in the wild verify exactly as before, with sid "".
 
 FAIL-OPEN EVERYWHERE. A human mid-click must never see an error page for a
 telemetry blip:
   * DB down            -> log nothing, still 302 to Stripe
   * bad/absent sig     -> stamp ok=false, 302 to /pricing (we cannot know
                           the plan, so /pricing is the honest landing)
+  * other field count  -> stamp ok=false, 302 to /pricing (nothing we mint
+                          has that shape, so no reading of it is trusted)
   * unknown plan       -> stamp ok=false, 302 to /pricing
 And on the MCP side, an unset DCHUB_INTERNAL_KEY makes _goUrl() emit the
 DIRECT Stripe link, i.e. exactly today's behaviour — this can degrade to
 un-measured, never to un-payable.
 """
+from __future__ import annotations
+
 import os
 import re
 import hmac
@@ -83,6 +97,19 @@ _PRICING_URL = "https://dchub.cloud/pricing"
 # emit. (Belt and braces: the signature already gates this path.)
 _REF_OK = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 
+# ★ 2026-09-13. True once mcp_checkout_clicks.session_id is CONFIRMED on this
+# database by reading the catalog back — never inferred from an ALTER having
+# returned, which reports success whether or not it did anything. _log_click
+# picks its INSERT from it, so a database the ALTER has not reached keeps
+# stamping clicks (without the session) instead of failing every INSERT on an
+# unknown column.
+_SCHEMA_READY = [False]
+
+_SESSION_ID_COLUMN_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM pg_attribute"
+    " WHERE attrelid = to_regclass('mcp_checkout_clicks')"
+    " AND attname = 'session_id' AND NOT attisdropped)")
+
 
 def _dsn():
     return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
@@ -98,9 +125,26 @@ def _conn():
         c.close()
 
 
-def _ensure_table():
+def _session_id_column(cur) -> bool:
+    cur.execute(_SESSION_ID_COLUMN_SQL)
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def _ensure_table() -> bool:
+    """Create the table and add session_id. True once the column is confirmed.
+
+    ★ 2026-09-13. CREATE TABLE IF NOT EXISTS is a no-op on the live table, so
+    session_id needs its own ALTER (routes/human_relay._log_open's token_hash
+    is the precedent). Measured on Postgres 18 before writing this: ADD COLUMN
+    IF NOT EXISTS waits for ACCESS EXCLUSIVE even when the column already
+    exists. So the catalog is asked first, and the ALTER runs only when the
+    column is absent, under a short lock_timeout inside a real transaction
+    (SET LOCAL does nothing under autocommit). A /go/c INSERT queued behind a
+    stalled ALTER is a human waiting on a redirect. Never raises.
+    """
     if not (_pg and _dsn()):
-        return
+        return False
     try:
         with _conn() as c, c.cursor() as cur:
             cur.execute("""
@@ -113,17 +157,46 @@ def _ensure_table():
                     sig_ok       BOOLEAN DEFAULT TRUE,
                     ip           TEXT,
                     user_agent   TEXT,
-                    referrer     TEXT
+                    referrer     TEXT,
+                    session_id   TEXT
                 );
                 CREATE INDEX IF NOT EXISTS ix_mcc_ts   ON mcp_checkout_clicks(clicked_at DESC);
                 CREATE INDEX IF NOT EXISTS ix_mcc_ref  ON mcp_checkout_clicks(ref, clicked_at DESC);
                 CREATE INDEX IF NOT EXISTS ix_mcc_plan ON mcp_checkout_clicks(plan, clicked_at DESC);
             """)
+            if not _session_id_column(cur):
+                c.autocommit = False
+                try:
+                    cur.execute("SET LOCAL lock_timeout = '2s'")
+                    cur.execute("ALTER TABLE mcp_checkout_clicks"
+                                " ADD COLUMN IF NOT EXISTS session_id TEXT")
+                    c.commit()
+                except Exception:
+                    c.rollback()
+                    raise
+                finally:
+                    c.autocommit = True
+            cur.execute("CREATE INDEX IF NOT EXISTS ix_mcc_session"
+                        " ON mcp_checkout_clicks(session_id, clicked_at DESC)")
+            _SCHEMA_READY[0] = _session_id_column(cur)
     except Exception:
         pass
+    return _SCHEMA_READY[0]
 
 
 _ensure_table()
+
+
+def ensure_schema() -> bool:
+    """True once session_id is confirmed present. Never raises.
+
+    For a reader about to query the column: the handoff funnel calls it once
+    per process before counting the relayed-checkout lane. Re-runs the DDL
+    only while the column is unconfirmed.
+    """
+    if not _SCHEMA_READY[0]:
+        _ensure_table()
+    return _SCHEMA_READY[0]
 
 
 def _ref_kind(ref: str) -> str:
@@ -148,62 +221,117 @@ def _ref_kind(ref: str) -> str:
     return "session" if ref else "none"
 
 
-def _log_click(plan: str, ref: str, sig_ok: bool) -> None:
+def _log_click(plan: str, ref: str, sid: str, sig_ok: bool) -> None:
     try:
         with _conn() as c, c.cursor() as cur:
             ip = request.headers.get("CF-Connecting-IP") or request.remote_addr or ""
             ua = (request.headers.get("User-Agent", "") or "")[:300]
             rf = (request.headers.get("Referer", "") or "")[:300]
-            cur.execute(
-                # ON CONFLICT DO NOTHING satisfies the insert-no-on-conflict
-                # lint and is a genuine no-op here: this is an append-only
-                # event log keyed by SERIAL, with no unique constraint for a
-                # row to collide with. It must STAY that way — a human who
-                # clicks the same link twice is two clicks, and deduping them
-                # would re-introduce the undercount this table exists to fix.
-                """INSERT INTO mcp_checkout_clicks
-                     (plan, ref, ref_kind, sig_ok, ip, user_agent, referrer)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)
-                   ON CONFLICT DO NOTHING""",
-                (plan[:40], ref[:200], _ref_kind(ref), bool(sig_ok), ip[:80], ua, rf),
-            )
+            row = (plan[:40], ref[:200], _ref_kind(ref), bool(sig_ok), ip[:80], ua, rf)
+            # ★ 2026-09-13: the column list comes from a CONFIRMED column.
+            # Unconfirmed in this process, the catalog is asked again on this
+            # connection (a read; DDL never runs on a human's click). Still
+            # absent, the click is stamped without its session, not dropped.
+            if not _SCHEMA_READY[0]:
+                try:
+                    _SCHEMA_READY[0] = _session_id_column(cur)
+                except Exception:
+                    pass
+            if _SCHEMA_READY[0]:
+                cur.execute(
+                    # ON CONFLICT DO NOTHING satisfies the insert-no-on-conflict
+                    # lint and is a genuine no-op here: this is an append-only
+                    # event log keyed by SERIAL, with no unique constraint for a
+                    # row to collide with. It must STAY that way — a human who
+                    # clicks the same link twice is two clicks, and deduping them
+                    # would re-introduce the undercount this table exists to fix.
+                    """INSERT INTO mcp_checkout_clicks
+                         (plan, ref, ref_kind, sig_ok, ip, user_agent, referrer,
+                          session_id)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT DO NOTHING""",
+                    row + ((sid or "")[:200] or None,),
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO mcp_checkout_clicks
+                         (plan, ref, ref_kind, sig_ok, ip, user_agent, referrer)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT DO NOTHING""",
+                    row,
+                )
     except Exception:
         note_swallowed_write("mcp_checkout_clicks",
                              where="checkout_click_tracker._log_click")
 
 
 def _verify(token: str):
-    """(plan, ref, sig_ok). plan is '' unless the signature verified.
+    """(plan, ref, sid, sig_ok). plan is '' unless the signature verified.
 
     A token whose signature does not check out is NEVER trusted for the
     destination — that is what keeps the allowlist meaningful.
+
+    The payload is `plan|ref` (sid "") or, since 2026-09-13, `plan|ref|sid`.
+    Any other field count is unverified even under a good signature.
     """
     secret = (os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
     if not secret or not token or "." not in token:
-        return "", "", False
+        return "", "", "", False
     payload, _, sig = token.rpartition(".")
     try:
         expect = hmac.new(secret.encode(), payload.encode(),
                           hashlib.sha256).hexdigest()[:32]
     except Exception:
-        return "", "", False
+        return "", "", "", False
     if not hmac.compare_digest(expect, sig):
-        return "", "", False
+        return "", "", "", False
     try:
         raw = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
     except Exception:
-        return "", "", False
-    plan, _, ref = raw.partition("|")
-    ref = ref.strip()
+        return "", "", "", False
+    fields = raw.split("|")
+    if len(fields) not in (2, 3):
+        return "", "", "", False
+    plan, ref = fields[0], fields[1].strip()
+    sid = fields[2].strip() if len(fields) == 3 else ""
     if ref and not _REF_OK.match(ref):
         ref = ""
-    return plan.strip(), ref, True
+    # Same charset as ref, for the same reason: it is written to the database,
+    # so it must be a shape we mint, never whatever a payload happens to carry.
+    if sid and not _REF_OK.match(sid):
+        sid = ""
+    return plan.strip(), ref, sid, True
+
+
+def mint_checkout_token(plan: str, ref: str, sid: str = "") -> str | None:
+    """A /go/c/ token built the way the MCP server builds one, or None.
+
+    Payload `plan|ref`, or `plan|ref|sid` when a session is present and is not
+    the ref itself. None when DCHUB_INTERNAL_KEY is unset, when `plan` is not a
+    checkout this endpoint resolves, or when `ref` is outside the charset
+    _verify keeps: a link that verifies to something other than what the
+    caller asked for is worse than none, because a caller given None falls
+    back to a link it knows works. A `sid` outside that charset is dropped,
+    exactly as _verify would drop it.
+    """
+    secret = (os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+    ref = (ref or "").strip()
+    sid = (sid or "").strip()
+    if not secret or plan not in STRIPE_LINKS or (ref and not _REF_OK.match(ref)):
+        return None
+    if sid and not _REF_OK.match(sid):
+        sid = ""
+    raw = plan + "|" + ref + ("|" + sid if sid and sid != ref else "")
+    payload = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+    sig = hmac.new(secret.encode(), payload.encode(),
+                   hashlib.sha256).hexdigest()[:32]
+    return payload + "." + sig
 
 
 @checkout_click_bp.route("/go/c/<token>", methods=["GET"])
 def checkout_click(token):
     """Stamp the click, then 302 to the canonical Stripe Payment Link."""
-    plan, ref, sig_ok = _verify(token or "")
+    plan, ref, sid, sig_ok = _verify(token or "")
 
     target = STRIPE_LINKS.get(plan) if (sig_ok and plan) else None
     if not target:
@@ -211,12 +339,14 @@ def checkout_click(token):
         # the human on pricing rather than guessing a checkout. Still stamped
         # (sig_ok=False) so a broken/mismatched secret shows up as a spike
         # instead of as silence.
-        _log_click(plan or "unknown", ref, False)
+        _log_click(plan or "unknown", ref, sid, False)
         return redirect(_PRICING_URL, code=302)
 
+    # The session never joins the Location: Stripe gets client_reference_id
+    # and nothing else, exactly as for a two-field token.
     if ref:
         sep = "&" if "?" in target else "?"
         target = target + sep + "client_reference_id=" + ref
 
-    _log_click(plan, ref, True)
+    _log_click(plan, ref, sid, True)
     return redirect(target, code=302)
