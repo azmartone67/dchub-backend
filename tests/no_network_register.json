@@ -1,0 +1,101 @@
+{
+  "why": "Known debt for the unit-tests step's no-network rule (.github/workflows/pre-merge.yml): each test file, or module, and the hosts it reached with the network refused, measured 2026-09-14. scripts/no_network_verdict.py fails the step on any (file, host) not listed here. Do not add an entry to make a new test pass: stub the fetch. Remove an entry when its file is fixed; retire one that merely went quiet only after every run compared (at least three) was quiet.",
+  "known": {
+    "ai_surface_canon.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_agent_surfaces_withdrawn_dcgi.py": [
+      "dchub-backend-production.up.railway.app",
+      "dchub.cloud"
+    ],
+    "tests/test_agents_md_live_floors.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_agreement_shell.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_app_contract_gate.py": [
+      "dchub-backend-production.up.railway.app",
+      "dchub.cloud"
+    ],
+    "tests/test_brain_ascension_shell.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_brain_consistency_radar.py": [
+      "api.github.com",
+      "dchub-backend-production.up.railway.app",
+      "dchub-backend-render.onrender.com",
+      "dchub.cloud",
+      "glama.ai",
+      "raw.githubusercontent.com"
+    ],
+    "tests/test_brain_gather_enhancements.py": [
+      "api.github.com",
+      "dchub.cloud"
+    ],
+    "tests/test_canon_phrases_publishes_every_key.py": [
+      "dchub-backend-production.up.railway.app",
+      "dchub.cloud"
+    ],
+    "tests/test_canon_placeholders_resolved.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_canonical_counts_drift.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_card_brand_tokens.py": [
+      "images.unsplash.com"
+    ],
+    "tests/test_front_door_execute_plan.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_gas_index_copy_has_one_authority.py": [
+      "dchub-backend-production.up.railway.app",
+      "dchub.cloud"
+    ],
+    "tests/test_grid_inventory_card.py": [
+      "images.unsplash.com"
+    ],
+    "tests/test_lane_triage.py": [
+      "api.dchub.cloud",
+      "dchub.cloud"
+    ],
+    "tests/test_llms_txt_names_real_tools.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_og_card_fonts.py": [
+      "images.unsplash.com"
+    ],
+    "tests/test_published_truth_shell_54.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_recommend_serves_live_facility_floor.py": [
+      "dchub-backend-production.up.railway.app",
+      "dchub.cloud"
+    ],
+    "tests/test_registry_truth_defunct.py": [
+      "dchub-backend-production.up.railway.app",
+      "dchub.cloud"
+    ],
+    "tests/test_webmcp_master_shell.py": [
+      "api.dchub.cloud"
+    ],
+    "tests/test_well_known_publishes_call_examples.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_wellknown_manifest_version_derived.py": [
+      "dchub.cloud"
+    ],
+    "tests/test_white_glove_auto_path_closure.py": [
+      "dchub-backend-production.up.railway.app",
+      "dchub.cloud"
+    ],
+    "tests/test_white_glove_canon_source.py": [
+      "dchub-backend-production.up.railway.app"
+    ],
+    "tests/test_white_glove_drift_detector.py": [
+      "dchub-backend-production.up.railway.app",
+      "dchub.cloud"
+    ]
+  }
+}

@@ -380,9 +380,18 @@ jobs:
         # the ledger beat can read the real passed/failed COUNTS. Counts, not the
         # exit code: a collection abort exits 3 with ZERO tests run, which is the
         # bug that hid an absent unit-test gate for weeks (#1797).
+        # No network, for every test file: tests/_no_network/sitecustomize.py
+        # refuses and logs each lookup or connect off loopback, and
+        # scripts/no_network_verdict.py fails the step on a (file, host) that
+        # tests/no_network_register.json does not list. See both docstrings.
         run: |
           set -o pipefail
-          python3 -m pytest tests/ -v --tb=short | tee /tmp/unit-tests.log
+          log="$RUNNER_TEMP/unit-tests-no-network.jsonl"
+          rm -f "$log"
+          status=0
+          PYTHONPATH="$PWD/tests/_no_network${PYTHONPATH:+:$PYTHONPATH}" DCHUB_NO_NETWORK_LOG="$log" python3 -m pytest tests/ -v --tb=short | tee /tmp/unit-tests.log || status=$?
+          python3 scripts/no_network_verdict.py "$log" || status=1
+          exit $status
 
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf — a second
