@@ -10,13 +10,28 @@ The description is a lambda now, rendered by Surface.to_dict(), which is the
 dict list_surfaces() spreads into every surface it serves.
 """
 import ast
+import importlib.util
 import json
 import pathlib
 import re
 
 import pytest
 
-sb = pytest.importorskip("routes.surface_brain")
+def _surface_brain_from_disk():
+    """routes/surface_brain.py loaded FROM DISK, bypassing sys.modules.
+
+    tests/test_market_brief_guard.py installs a stub ModuleType under
+    routes.surface_brain at collection time, and an import that finds it tests a
+    fake (here, it raised AttributeError in the full suite).
+    """
+    path = pathlib.Path(__file__).resolve().parents[1] / "routes" / "surface_brain.py"
+    spec = importlib.util.spec_from_file_location("_surface_brain_from_disk", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+sb = _surface_brain_from_disk()
 _PH = re.compile(r"\{canon_[a-z_]+\}")
 
 
