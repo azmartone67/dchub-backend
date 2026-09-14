@@ -206,7 +206,7 @@ Auth: OAuth → Automatic (DC Hub supports DCR)</pre>
 
 <div class="pane">
   <h2>Agent recipes — guided workflows, zero guessing</h2>
-  <p style="color:var(--dch-text-mute);margin:0 0 12px">Connected clients that support MCP <code>prompts/list</code> (Claude Desktop, Cursor, Gemini builders&hellip;) surface 13 DC Hub prompts natively as slash-commands (<code>/dchub:&hellip;</code>). The five biggest intents:</p>
+  <p style="color:var(--dch-text-mute);margin:0 0 12px">Connected clients that support MCP <code>prompts/list</code> (Claude Desktop, Cursor, Gemini builders&hellip;) surface 14 DC Hub prompts natively as slash-commands (<code>/dchub:&hellip;</code>). The five biggest intents:</p>
   <ul style="margin:0 0 14px;padding-left:20px;line-height:2">
     <li><b>/dchub:site_analysis</b> — one site, multi-factor: composite score, FEMA hazards, water risk, verdict.</li>
     <li><b>/dchub:market_selection</b> — DCPI shortlist &rarr; per-finalist verdict &rarr; grid reality-check.</li>
