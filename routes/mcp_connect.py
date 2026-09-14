@@ -1341,6 +1341,95 @@ def connect_click_proxy():
     return redirect(redirect_url, code=302)
 
 
+# ── keys_used_day2: a /connect key used again on a later UTC day ────────
+# r-connect-day2 (2026-09-14). The page script's Clarity events
+# (connect_key_day1 / connect_key_day2) count a RETURN VISIT to the install
+# page. This counts what the page exists for: the key it minted turning up in
+# mcp_call_log on a UTC calendar day after the day it was minted.
+#
+# ★ The join rides the api_key index. Production planned this exact statement
+#   (EXPLAIN, 2026-09-14) as a Nested Loop Semi Join over a Bitmap Index Scan
+#   on idx_mcp_log_apikey. Wrap m.api_key in a function and the plan becomes a
+#   scan of the whole call log, behind a public route with a ~15s edge
+#   timeout. tests/test_connect_keys_used_day2_sql.py EXPLAINs the text this
+#   module sends.
+# ★ The day boundary is taken in timestamp space (AT TIME ZONE 'UTC', + 1 day,
+#   back to timestamptz), so neither the session TimeZone nor a DST change can
+#   move it.
+# ★ Only MCP calls count. mcp_call_log also holds page events (key_issued,
+#   key_first_use) and bulk REST rows (bulk:<tier>). These four are the
+#   event_type values flask_mcp_endpoints.track_tool_call maps a call status
+#   to; a status it does not map is stored as NULL, and is still a call.
+MCP_CALL_EVENT_TYPES = ("tool_call", "tool_error", "paywall_block", "trial_preview")
+
+# Well inside the edge's route timeout, on top of the stats read itself.
+KEYS_USED_DAY2_TIMEOUT_MS = 4000
+
+_KEYS_USED_DAY2_SQL = """
+    SELECT k.client, COUNT(*) AS keys_used_day2
+      FROM (SELECT client, key_minted_for, MIN(key_minted_at) AS minted_at
+              FROM connect_landing_views
+             WHERE viewed_at > NOW() - INTERVAL '30 days'
+               AND key_minted_for IS NOT NULL
+               AND key_minted_at IS NOT NULL
+             GROUP BY client, key_minted_for) k
+     WHERE EXISTS (SELECT 1
+                     FROM mcp_call_log m
+                    WHERE m.api_key = k.key_minted_for
+                      AND m.timestamp >= (date_trunc('day', k.minted_at AT TIME ZONE 'UTC')
+                                          + INTERVAL '1 day') AT TIME ZONE 'UTC'
+                      AND (m.event_type IS NULL OR m.event_type = ANY(%s)))
+     GROUP BY k.client
+"""
+
+KEYS_USED_DAY2_BASIS = (
+    "keys_used_day2 counts distinct API keys this client's /connect page "
+    "attached to a page view inside the same 30-day window as keys_minted, "
+    "that appear as mcp_call_log.api_key on at least one MCP call (event_type "
+    "tool_call, tool_error, paywall_block, trial_preview, or NULL) timestamped "
+    "on a UTC calendar day after the key's mint day (its earliest "
+    "key_minted_at in the window). It measures reuse of a key in the MCP call "
+    "log: not people, not devices, and not return visits to the page. A key "
+    "minted on the current UTC day cannot count before the next one. "
+    "keys_minted counts page views carrying a key, and a second key minted on "
+    "the same view replaces the first. Calls from DC Hub's own testing are not "
+    "excluded. When keys_used_day2_status is not 'measured', keys_used_day2 is "
+    "null for every client, never 0."
+)
+
+
+def _keys_used_day2(db):
+    """({client: keys_used_day2}, "measured"), or (None, "timeout" | "query_failed").
+
+    Fail-soft: the stats read has already succeeded and this count must never
+    take it down. It runs in a transaction of its own, because SET LOCAL is a
+    no-op under autocommit, and main.get_db() lends a POOLED connection, so
+    autocommit goes back to what it was before the connection returns.
+    """
+    prev = None
+    try:
+        db.rollback()                    # end the stats read's transaction; it wrote nothing
+        prev = db.autocommit
+        db.autocommit = False
+        with db.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = %d" % KEYS_USED_DAY2_TIMEOUT_MS)
+            cur.execute(_KEYS_USED_DAY2_SQL, (list(MCP_CALL_EVENT_TYPES),))
+            counts = {r[0]: int(r[1]) for r in cur.fetchall()}
+        db.rollback()                    # read only; also drops the SET LOCAL
+        return counts, "measured"
+    except Exception as e:
+        try: db.rollback()
+        except Exception: pass
+        # statement_timeout cancels with SQLSTATE 57014 (query_canceled).
+        status = "timeout" if getattr(e, "pgcode", None) == "57014" else "query_failed"
+        logger.warning("connect_stats keys_used_day2 %s: %s", status, e)
+        return None, status
+    finally:
+        if prev is not None:
+            try: db.autocommit = prev
+            except Exception: pass
+
+
 # Public admin/stats endpoint for the funnel dashboard.
 @mcp_connect_bp.route("/api/v1/connect/stats", methods=["GET"])
 def connect_stats():
@@ -1373,7 +1462,13 @@ def connect_stats():
                 "last_view":   r[5].isoformat() if r[5] else None,
                 "mint_rate":   round((r[2] / r[1]) * 100, 2) if r[1] else 0.0,
             })
-        return jsonify(ok=True, by_client=out, window="30d"), 200
+        day2, day2_status = _keys_used_day2(db)
+        for row in out:
+            row["keys_used_day2"] = (day2.get(row["client"], 0)
+                                     if day2 is not None else None)
+        return jsonify(ok=True, by_client=out, window="30d",
+                       keys_used_day2_status=day2_status,
+                       keys_used_day2_basis=KEYS_USED_DAY2_BASIS), 200
     except Exception as e:
         return jsonify(ok=False, error="query_failed",
                        detail=str(e)[:200]), 500
