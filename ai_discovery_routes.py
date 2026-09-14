@@ -11,6 +11,7 @@ NOTE: /api/v1/discovery route is NOT included here — it already exists in main
 from flask import Flask, Response, jsonify, request, current_app
 from datetime import datetime, timezone
 import json
+import re
 import time
 from utc_clock import utc_now
 
@@ -100,6 +101,92 @@ def _canon_int(placeholder, default):
         return int(raw) if raw else default
     except Exception:
         return default
+
+
+# ── Capacity Source availability in llms.txt ────────────────────────────────
+# While listings are live, the Capacity Source block reads live: its heading
+# drops "(upcoming)", the program sentence says the listings are live, and one
+# availability line sits under the heading. All three follow
+# routes.exclusive_listings' cached summary, the same in-process copy that
+# GET /api/v1/listings/summary serves. Otherwise the block renders as written.
+_CAPACITY_SOURCE_HEADING = "\n## Capacity Source"
+_CAPACITY_SOURCE_UPCOMING_SUFFIX = " (upcoming)"
+_CAPACITY_SOURCE_UPCOMING = ("The program is UPCOMING while the first listings are\n"
+                             "onboarded, and GET /api/v1/listings says so in `program.status`")
+_CAPACITY_SOURCE_LIVE = ("Listings are live; GET /api/v1/listings returns them\n"
+                         "with `program.status`")
+_AVAILABILITY_NAMED_MARKETS = 3
+# Canon scanners read a digit followed by the word for tools as a tool count,
+# so a market name of that shape is never written into the line.
+_TOOL_COUNT_SHAPE = re.compile(r"\d[\s_-]*(?:live\s+|mcp\s+)?tools?\b", re.I)
+
+
+def _format_mw(value):
+    """1250 -> '1,250'; 12.5 -> '12.5'."""
+    return f"{float(value):,.2f}".rstrip("0").rstrip(".")
+
+
+def _join_names(names):
+    """['A'] -> 'A'; ['A', 'B', 'C'] -> 'A, B and C'."""
+    if len(names) < 2:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _availability_text(summary):
+    """The availability line for a summary with live listings, else ''."""
+    live = int((summary or {}).get("live_count") or 0)
+    if live <= 0:
+        return ""
+    markets = summary.get("markets") or []
+    names = []
+    for market in markets:
+        name = market.get("market") or market.get("state") or market.get("country")
+        if (not isinstance(name, str) or _TOOL_COUNT_SHAPE.search(name)
+                or name.casefold() in {n.casefold() for n in names}):
+            continue
+        names.append(name)
+        if len(names) == _AVAILABILITY_NAMED_MARKETS:
+            break
+    unnamed = max(0, int(summary.get("market_count") or len(markets)) - len(names))
+    if names and unnamed:
+        names.append("%d more market%s" % (unnamed, "" if unnamed == 1 else "s"))
+    line = "Available now: %d listing%s" % (live, "" if live == 1 else "s")
+    if summary.get("total_mw") is not None:
+        line += ", %s MW" % _format_mw(summary["total_mw"])
+    if names:
+        line += " across " + _join_names(names)
+    updated = summary.get("latest_updated_at")
+    if isinstance(updated, str) and len(updated) >= 10:
+        line += ", last updated " + updated[:10]
+    return line + ". Browse with source_capacity."
+
+
+def _capacity_source_availability_line():
+    """The availability line, or '' when no listing is live or the summary
+    cannot be read. Never raises into /llms.txt."""
+    try:
+        from routes.exclusive_listings import cached_listings_summary
+        return _availability_text(cached_listings_summary())
+    except Exception:
+        return ""
+
+
+def _with_capacity_source_availability(content):
+    """llms.txt with the Capacity Source block in its live form while any
+    listing is live: the heading without "(upcoming)", the availability line
+    under it, and the program sentence in live wording. `content` itself when
+    no listing is live or the summary cannot be read."""
+    line = _capacity_source_availability_line()
+    start = content.find(_CAPACITY_SOURCE_HEADING)
+    end = content.find("\n", start + 1) if start >= 0 else -1
+    if not line or end < 0:
+        return content
+    stop = content.find("\n## ", end)
+    stop = len(content) if stop < 0 else stop
+    heading = content[start + 1:end].removesuffix(_CAPACITY_SOURCE_UPCOMING_SUFFIX)
+    body = content[end + 1:stop].replace(_CAPACITY_SOURCE_UPCOMING, _CAPACITY_SOURCE_LIVE, 1)
+    return content[:start + 1] + heading + "\n" + line + "\n" + body + content[stop:]
 
 
 # r37 (2026-05-25): module-level cache for dynamic stats so we don't
@@ -1094,6 +1181,9 @@ learn the tools existed but not how to install them anywhere.
 - [Mistral](https://dchub.cloud/integrations/mistral): Mistral agent connector setup
 - [Perplexity](https://dchub.cloud/integrations/perplexity): Perplexity connector setup
 """)
+        # Capacity Source availability, only while listings are live; the
+        # block above is served as written otherwise.
+        content = _with_capacity_source_availability(content)
         # P2-1 (2026-08-28): Product 2's labelled sponsor block. Appended AFTER
         # canon_text() so sponsor copy is never scanned for {canon_*}
         # placeholders, and LAST in the document so a paid placement can never

@@ -37,6 +37,7 @@ Endpoints:
     GET  /api/v1/listings/terms                    introduction terms
     POST /api/v1/listings/terms/accept             accept them, once per terms version
     GET  /api/v1/listings/health
+    GET  /api/v1/listings/summary                  live listings by market and delivery type
     GET  /api/v1/listings/<slug_or_id>             detail (walled)
     POST /api/v1/listings/<slug_or_id>/intro       request an introduction
     POST /api/v1/listings/interest                 register a requirement
@@ -191,7 +192,7 @@ _TIER_RANK = {"anonymous": 0, "": 0, "free": 1, "identified": 1,
 _VALID_STATUSES = ("draft", "pocket", "public")
 # Path words under /api/v1/listings/ that must never become a listing slug.
 _RESERVED_SLUGS = frozenset({"interest", "leads", "terms", "health", "admin",
-                             "verify", "confirm", "intro"})
+                             "verify", "confirm", "intro", "summary"})
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
 _TOKEN_CHARS_RE = re.compile(r"[^a-z0-9._/-]+")
 _DETAIL_PRIVATE_KEYS = frozenset({"contact", "operator_contact", "operator_email",
@@ -368,14 +369,19 @@ def _fetch(sql, params, cols):
         _close(c)
 
 
+# The listings the public feed shows. Every read of live listings filters on
+# these, so the feed, its counts and the summary describe the same set.
+_LIVE_WHERE = ("status IN ('public', 'pocket')",
+               "(expires_at IS NULL OR expires_at > NOW())")
+
+
 def _db_list_listings(market=None, state=None, min_mw=None, delivery_type=None,
                       available_by=None, limit=50):
     """Live listings, newest first. delivery_type matches detail.delivery_type
     exactly. available_by ('YYYY-MM' or 'YYYY-MM-DD') keeps listings with at
     least one detail.mw_schedule entry dated in or before that month. Every
     filter is part of the WHERE clause, so LIMIT counts matching rows only."""
-    where = ["status IN ('public', 'pocket')",
-             "(expires_at IS NULL OR expires_at > NOW())"]
+    where = list(_LIVE_WHERE)
     params = []
     if market:
         where.append("LOWER(market) = LOWER(%s)")
@@ -406,15 +412,25 @@ def _db_list_listings(market=None, state=None, min_mw=None, delivery_type=None,
 
 
 def _db_count_live():
-    rows = _fetch("SELECT COUNT(*) FROM exclusive_listings "
-                  "WHERE status IN ('public', 'pocket') "
-                  "AND (expires_at IS NULL OR expires_at > NOW())", [], ("n",))
+    rows = _fetch(f"SELECT COUNT(*) FROM exclusive_listings WHERE {' AND '.join(_LIVE_WHERE)}",
+                  [], ("n",))
     return int(rows[0]["n"] or 0) if rows else 0
 
 
+_SUMMARY_COLS = ("market", "state", "country", "capacity_mw", "delivery_type", "updated_at")
+
+
+def _db_live_listing_facts():
+    """Market, capacity, delivery type and last update of every live listing,
+    newest first: the teaser-level columns the summary aggregates."""
+    return _fetch("SELECT market, state, country, capacity_mw, detail->>'delivery_type', "
+                  "updated_at FROM exclusive_listings "
+                  f"WHERE {' AND '.join(_LIVE_WHERE)} ORDER BY updated_at DESC",
+                  [], _SUMMARY_COLS)
+
+
 def _db_count_matching(requirement):
-    where = ["status IN ('public', 'pocket')",
-             "(expires_at IS NULL OR expires_at > NOW())"]
+    where = list(_LIVE_WHERE)
     params = []
     markets = [m.lower() for m in requirement.get("markets") or []]
     states = [s.upper() for s in requirement.get("states") or []]
@@ -1241,6 +1257,91 @@ def _full(row, access):
     return item
 
 
+# ═════════════════════════════════════════════════════════════════════════
+#  live availability summary
+# ═════════════════════════════════════════════════════════════════════════
+# GET /api/v1/listings/summary and the llms.txt Capacity Source block read one
+# in-process copy, rebuilt at most once per _SUMMARY_TTL_S. It aggregates the
+# teaser-level columns _db_live_listing_facts selects and nothing else.
+
+_SUMMARY_TTL_S = 60
+_SUMMARY_MAX_MARKETS = 50
+_SUMMARY_LOCK = threading.Lock()
+_SUMMARY_CACHE = {"at": None, "value": None}
+
+
+def _summary_label(value):
+    """Stored market / state / country text, whitespace collapsed, or None."""
+    text = " ".join(value.split()) if isinstance(value, str) else ""
+    return text or None
+
+
+def _summary_mw(value):
+    return None if value is None else _json_number(round(value, 2))
+
+
+def _build_summary(rows, now):
+    """Aggregate live listing rows, newest first. Markets group
+    case-insensitively under the newest listing's spelling; a delivery type
+    counts only when the listing-field rules accept it."""
+    groups, delivery_types = {}, {}
+    total_mw, latest = None, None
+    for row in rows:
+        place = tuple(_summary_label(row.get(k)) for k in ("market", "state", "country"))
+        key = tuple(p.casefold() if p else None for p in place)
+        group = groups.get(key)
+        if group is None:
+            group = groups[key] = {"market": place[0], "state": place[1], "country": place[2],
+                                   "count": 0, "mw": None, "delivery_types": set()}
+        group["count"] += 1
+        mw = _num(row.get("capacity_mw"))
+        if mw is not None:
+            group["mw"] = mw if group["mw"] is None else group["mw"] + mw
+            total_mw = mw if total_mw is None else total_mw + mw
+        raw_type = row.get("delivery_type")
+        if raw_type is not None:
+            delivery_type = _check_delivery_type(raw_type, "detail.delivery_type", [], now)
+            if delivery_type:
+                group["delivery_types"].add(delivery_type)
+                delivery_types[delivery_type] = delivery_types.get(delivery_type, 0) + 1
+        updated = row.get("updated_at")
+        if isinstance(updated, datetime) and (latest is None or updated > latest):
+            latest = updated
+    ranked = sorted(groups.values(), key=lambda g: (
+        -g["count"], g["mw"] is None, -(g["mw"] or 0.0),
+        tuple((p or "").casefold() for p in (g["market"], g["state"], g["country"]))))
+    return {
+        "program_status": _program(len(rows))["status"],
+        "live_count": len(rows),
+        "total_mw": _summary_mw(total_mw),
+        "markets": [dict(g, mw=_summary_mw(g["mw"]), delivery_types=sorted(g["delivery_types"]))
+                    for g in ranked[:_SUMMARY_MAX_MARKETS]],
+        "market_count": len(groups),
+        "delivery_types": delivery_types,
+        "latest_updated_at": _iso(latest),
+        "generated_at": ledger.iso_utc(now),
+    }
+
+
+def cached_listings_summary():
+    """The live availability summary, or None when the listings cannot be
+    read. GET /api/v1/listings/summary and llms.txt share it; it is rebuilt at
+    most once per _SUMMARY_TTL_S per process, a failed read included."""
+    with _SUMMARY_LOCK:
+        at = _SUMMARY_CACHE["at"]
+        if at is not None and time.monotonic() - at < _SUMMARY_TTL_S:
+            return _SUMMARY_CACHE["value"]
+        value = None
+        if _dsn():
+            try:
+                _ensure_schema()
+                value = _build_summary(_db_live_listing_facts(), datetime.now(timezone.utc))
+            except Exception as exc:
+                logger.warning("[pocket-listings] summary failed: %s", exc)
+        _SUMMARY_CACHE.update(at=time.monotonic(), value=value)
+        return value
+
+
 def _listing_ref(row):
     return {"id": row.get("id"), "slug": row.get("slug"), "title": row.get("title")} if row else None
 
@@ -1928,6 +2029,33 @@ def accept_terms():
                         f"Terms acceptance cannot be recorded right now. Email {SUPPORT_EMAIL}.")
         out["accepted_at"] = rec["created_at"]
         out["ledger"] = {"seq": rec["seq"], "entry_hash": rec["entry_hash"]}
+    resp = jsonify(out)
+    _no_store(resp)
+    return resp, 200
+
+
+@exclusive_listings_bp.route("/api/v1/listings/summary", methods=["GET"])
+def listings_summary():
+    """Live availability across the listings the teaser feed shows: how many,
+    how many MW, in which markets, of which delivery types, and when they last
+    changed. Never a listing's title, slug, provider or price. Public."""
+    summary = cached_listings_summary()
+    if summary is None:
+        unavailable = jsonify({"ok": False, "error": "listings_unavailable"})
+        _no_store(unavailable)
+        return unavailable, 200
+    out = {
+        "ok": True,
+        "program_status": summary["program_status"],
+        "live_count": summary["live_count"],
+        "total_mw": summary["total_mw"],
+        "markets": summary["markets"],
+        "delivery_types": summary["delivery_types"],
+        "latest_updated_at": summary["latest_updated_at"],
+        "generated_at": summary["generated_at"],
+        "url": SITE + "/listings",
+        "mcp_tool": "source_capacity",
+    }
     resp = jsonify(out)
     _no_store(resp)
     return resp, 200
