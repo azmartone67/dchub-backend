@@ -145,6 +145,20 @@ def _is_non_human_client(mcp_client: str | None, user_agent: str | None) -> bool
     return bool(_SCRIPT_UA_RE.search(user_agent or ""))
 
 
+# r-hi-needs-session (2026-09-14): the mcp-server sends the literal "no-session" for a
+# tools/call that carries no Mcp-Session-Id. Keyed on that string, every sessionless
+# caller shared ONE (session, tool) row. Read on Neon 2026-09-14: 17 such rows, 15 claims
+# minted on them between 07-26 and 09-13, 14 auto-redeemed within seconds, from callers
+# as different as ChatGPT, Codex, node clients and a QA script, with the operator notify
+# slot claimed for each. A high-intent count is per session and a placeholder is not one,
+# so neither endpoint counts or mints for it.
+NO_SESSION_PLACEHOLDER = "no-session"
+
+
+def _is_placeholder_session(sid: str | None) -> bool:
+    return (sid or "").strip().lower() == NO_SESSION_PLACEHOLDER
+
+
 # SQL twin of _is_non_human_client for the step-drop METRIC query, so the
 # dashboard counts exactly the real prospects the mint gate admits. POSIX ~*
 # has no \b, so internal tokens are bare; this errs toward UNDER-counting (a
@@ -466,6 +480,9 @@ def track_paid_hit():
     tool = str(body.get("tool") or "").strip()[:64]
     if not sid or not tool:
         return jsonify(ok=False, error="missing_session_or_tool"), 400
+    if _is_placeholder_session(sid):
+        return jsonify(ok=True, count=0, is_high_intent=False,
+                       threshold=HIGH_INTENT_THRESHOLD, skipped="no_session")
     ua = str(body.get("user_agent") or "")[:300] or None
     mcp_client = str(body.get("mcp_client") or "")[:80] or None
     # r-claim-internal-guard (2026-06-21) + r-claim-script-guard (2026-06-23):
@@ -568,6 +585,9 @@ def should_mint_claim():
     variant = _norm_variant(variant_in) if variant_in else None
     if not sid or not tool:
         return jsonify(ok=False, error="missing_session_or_tool"), 400
+    if _is_placeholder_session(sid):
+        return jsonify(should_mint=False, count=0, threshold=HIGH_INTENT_THRESHOLD,
+                       reason="no_session")
 
     c = _conn()
     if c is None:
