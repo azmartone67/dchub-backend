@@ -39,14 +39,14 @@ def _split(sql: str):
 
 def _anchor(lane: str) -> str:
     """The table a lane reads FROM at its own top level (not a subquery's)."""
-    depth, i = 0, 0
+    depth, i, low = 0, 0, lane.lower()
     while i < len(lane):
         ch = lane[i]
         if ch == "(":
             depth += 1
         elif ch == ")":
             depth -= 1
-        elif depth == 0 and lane.startswith(" from ", i):
+        elif depth == 0 and low.startswith(" from ", i):
             return lane[i + len(" from "):].split(" ", 1)[0]
         i += 1
     raise AssertionError("no top-level FROM in: " + lane[:120])
@@ -55,8 +55,26 @@ def _anchor(lane: str) -> str:
 # ── composition ──────────────────────────────────────────────────────────
 def test_the_headline_is_the_two_v1_tables_union_the_relayed_checkout_lane():
     lanes, _ = _split(H.paid_attributed_count_sql(IV))
-    assert [_anchor(x) for x in lanes] == [
-        "mcp_session_upgrades", "mcp_topups", "mcp_checkout_payments"]
+    assert len(lanes) == 3
+    assert [_anchor(x) for x in lanes[:2]] == ["mcp_session_upgrades", "mcp_topups"]
+    payments = H._paid_payments_sql(IV)
+    assert lanes[2].endswith(" from " + payments)
+    assert _anchor(payments[1:]) == "mcp_checkout_payments"
+
+
+def test_the_payments_read_is_one_literal_the_dataset_inventory_can_see():
+    """CI's dataset inventory reads a table only where ONE string literal holds
+    both the SELECT and the FROM; the first push split them and failed it."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "dataset_inventory", os.path.join(REPO, "scripts", "dataset_inventory.py"))
+    inv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inv)
+    reads = set()
+    for node in ast.walk(_parse("routes/handoff_definition.py")):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            reads |= inv.sql_tables(node.value)[0]
+    assert "mcp_checkout_payments" in reads
 
 
 def test_the_relayed_lane_reuses_the_human_acted_click_definition():
@@ -66,13 +84,13 @@ def test_the_relayed_lane_reuses_the_human_acted_click_definition():
     for part in (H.RELAYED_CHECKOUT_SESSION_ID, H.relayed_checkout_session_filters(),
                  "from mcp_checkout_clicks cc"):
         assert part in lane, part[:80]
-    for clause in ("cc.ref = p.client_reference_id",
-                   "cc.clicked_at <= p.paid_at",
-                   "cc.clicked_at > p.paid_at - interval '"
+    for clause in ("cc.ref = pay.client_reference_id",
+                   "cc.clicked_at <= pay.paid_at",
+                   "cc.clicked_at > pay.paid_at - interval '"
                    + H.PAID_RELAYED_CHECKOUT_LOOKBACK + "'",
                    "order by cc.clicked_at desc, cc.id desc limit 1",
                    "p.paid_at > now() - interval '" + IV + "'",
-                   "p.livemode is not false"):
+                   "p.livemode IS NOT FALSE"):
         assert clause in lane, clause
 
 
@@ -81,7 +99,8 @@ def test_the_exclusion_binds_once_on_the_unions_identity():
     lanes, tail = _split(H.paid_attributed_count_sql(IV))
     assert tail.count(ext) == 1
     assert all(ext not in lane for lane in lanes)
-    for col in ("cc.ref", "p.client_reference_id", "su.mcp_session_id", "tp.mcp_session_id"):
+    for col in ("cc.ref", "pay.client_reference_id", "p.client_reference_id",
+                "su.mcp_session_id", "tp.mcp_session_id"):
         assert external_session_predicate(col) not in H.paid_attributed_count_sql(IV), col
     incl_lanes, incl_tail = _split(H.paid_attributed_count_sql(IV, include_self_traffic=True))
     assert incl_lanes == lanes and ext not in incl_tail

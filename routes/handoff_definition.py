@@ -820,17 +820,23 @@ PAID_ATTRIBUTED_DEFINITION_CHANGELOG = {
         "paid_attributed_v1_session_rows publishes the previous figure."),
 }
 
-_PAID_PAYMENTS_FROM = "from mcp_checkout_payments p"
+def _paid_payments_sql(interval_sql: str) -> str:
+    """Paid checkouts in the window, as the derived table `pay`.
 
-
-def _paid_payments_window(interval_sql: str) -> str:
-    return (_PAID_PAYMENTS_FROM
-            + " where p.paid_at > now() - interval '" + interval_sql + "'"
-            + " and p.livemode is not false")
+    One string literal (adjacent literals, no `+`), keywords in UPPERCASE, on
+    purpose: scripts/dataset_inventory.py counts a table as read only where a
+    single literal carries a SELECT and an uppercase FROM <table>. The first CI
+    run of this change failed NEW_WRITE_ONLY on mcp_checkout_payments because
+    this read was spelled as a lowercase fragment the scanner cannot see.
+    """
+    return ("(SELECT p.stripe_session_id, p.client_reference_id, p.paid_at"
+            " FROM mcp_checkout_payments p"
+            " WHERE p.livemode IS NOT FALSE"
+            " AND p.paid_at > now() - interval '" + interval_sql + "') pay")
 
 
 def paid_relayed_click_session_sql() -> str:
-    """Scalar subquery: the session payment `p` is attributed to, or NULL.
+    """Scalar subquery: the session payment `pay` is attributed to, or NULL.
 
     The latest click on the link that sold it (same ref) that human_acted's
     /go/c/ lane would count — signed, real UA, a session identity — made at or
@@ -838,10 +844,10 @@ def paid_relayed_click_session_sql() -> str:
     """
     return ("(select " + RELAYED_CHECKOUT_SESSION_ID + " "
             + _RELAYED_CHECKOUT_FROM
-            + " where cc.ref = p.client_reference_id"
+            + " where cc.ref = pay.client_reference_id"
             + " and " + relayed_checkout_session_filters()
-            + " and cc.clicked_at <= p.paid_at"
-            + " and cc.clicked_at > p.paid_at - interval '"
+            + " and cc.clicked_at <= pay.paid_at"
+            + " and cc.clicked_at > pay.paid_at - interval '"
             + PAID_RELAYED_CHECKOUT_LOOKBACK + "'"
             + " order by cc.clicked_at desc, cc.id desc limit 1)")
 
@@ -858,8 +864,8 @@ def _paid_session_row_lanes(interval_sql: str) -> list:
 
 
 def _paid_relayed_checkout_lane(interval_sql: str) -> str:
-    return ("select " + paid_relayed_click_session_sql() + " as sid "
-            + _paid_payments_window(interval_sql))
+    return ("select " + paid_relayed_click_session_sql() + " as sid from "
+            + _paid_payments_sql(interval_sql))
 
 
 def _paid_count(lanes: list, include_self_traffic: bool) -> str:
@@ -906,16 +912,16 @@ def relayed_checkout_payments_sql(interval_sql: str) -> str:
     session, before the operator exclusion. Both are subsets of payments.
     """
     matched = ("exists (select 1 " + _RELAYED_CHECKOUT_FROM
-               + " where cc.ref = p.client_reference_id"
+               + " where cc.ref = pay.client_reference_id"
                + " and " + relayed_checkout_signed()
                + " and " + relayed_checkout_real_ua()
-               + " and cc.clicked_at <= p.paid_at)")
+               + " and cc.clicked_at <= pay.paid_at)")
     return ("select count(*) as payments,"
             " count(*) filter (where x.matched) as matched_a_relayed_click,"
             " count(*) filter (where x.sid is not null) as attributable_to_a_session"
             " from (select " + matched + " as matched, "
-            + paid_relayed_click_session_sql() + " as sid "
-            + _paid_payments_window(interval_sql) + ") x")
+            + paid_relayed_click_session_sql() + " as sid from "
+            + _paid_payments_sql(interval_sql) + ") x")
 
 
 PAID_ATTRIBUTED_BASIS = (

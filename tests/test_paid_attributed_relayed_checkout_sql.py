@@ -215,7 +215,7 @@ def db():
                     " stripe_session_id, amount_cents) VALUES (%s, 'pro', 'cs_test_p4', 9900)",
                     (S5,))
         out["grant"] = mcp.grant_credit_pack(
-            "dch_live_paid_attributed_v1", S15, 1000,
+            "test-key-paid-attributed-v1", S15, 1000,
             stripe_session_id="cs_test_v1", source="pack10", price_cents=1000)
 
         cur.execute("SELECT " + real_ua_predicate("v.ua")
@@ -239,8 +239,8 @@ def db():
             out[name] = cur.fetchone()[0]
         cur.execute(H.relayed_checkout_payments_sql(IV))
         out["payments_raw"] = dict(zip([d[0] for d in cur.description], cur.fetchone()))
-        cur.execute("SELECT p.stripe_session_id, " + H.paid_relayed_click_session_sql()
-                    + " FROM mcp_checkout_payments p")
+        cur.execute("SELECT pay.stripe_session_id, " + H.paid_relayed_click_session_sql()
+                    + " FROM mcp_checkout_payments pay")
         out["attributed_to"] = dict(cur.fetchall())
         one, row = _endpoint_executors(cur)
         out["published"] = {name: one(sql) for name, sql in built.items()}
