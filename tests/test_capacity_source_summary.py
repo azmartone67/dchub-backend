@@ -1,5 +1,5 @@
 """Capacity Source live availability: GET /api/v1/listings/summary, and the
-llms.txt line that reads the same cached summary.
+llms.txt Capacity Source block that reads the same cached summary.
 
 What these pin:
   * the summary counts exactly the listings the teaser feed shows (drafts and
@@ -12,7 +12,8 @@ What these pin:
   * /api/v1/listings/summary is served by its own view, not the listing
     route, and "summary" can never become a listing slug;
   * llms.txt's Capacity Source block is its source text, byte for byte, until
-    a listing is live, and then gains exactly one line.
+    a listing is live. Then it reads live: no "(upcoming)" in the heading, the
+    program sentence in live wording, and one availability line.
 
 Storage is a stand-in for Postgres behind the module's own _fetch seam. It
 evaluates the WHERE clause the module actually sends (the status list and the
@@ -47,6 +48,11 @@ PRICE_LOW, PRICE_HIGH = 4321.5, 4999.5
 OPERATOR = "operator-private@sentinel.example"
 OWNER = "owner-private-sentinel"
 HEADING = "\n## Capacity Source"
+UPCOMING_SUFFIX = " (upcoming)"
+UPCOMING_SENTENCE = ("The program is UPCOMING while the first listings are\n"
+                     "onboarded, and GET /api/v1/listings says so in `program.status`")
+LIVE_SENTENCE = ("Listings are live; GET /api/v1/listings returns them\n"
+                 "with `program.status`")
 
 _SELECT_RE = re.compile(
     r"^SELECT (?P<cols>.+?) FROM exclusive_listings"
@@ -398,7 +404,7 @@ def test_llms_block_is_served_as_written_while_nothing_is_live(env, llms_txt):
     assert _block(body) == _source_block()
 
 
-def test_llms_block_gains_exactly_one_line_while_listings_are_live(env, llms_txt):
+def test_llms_block_reads_live_while_listings_are_live(env, llms_txt):
     env.listings = [
         _listing(id=1, slug="dfw-a", capacity_mw=40.0,
                  updated_at=datetime(2026, 9, 3, tzinfo=timezone.utc)),
@@ -408,12 +414,31 @@ def test_llms_block_gains_exactly_one_line_while_listings_are_live(env, llms_txt
                  updated_at=datetime(2026, 9, 5, 18, 0, tzinfo=timezone.utc)),
     ]
     heading, rest = _source_block().split("\n", 1)
+    # As written, the block carries the upcoming wording the live form replaces.
+    assert heading.endswith(UPCOMING_SUFFIX) and rest.count(UPCOMING_SENTENCE) == 1
     line = ("Available now: 3 listings, 105 MW across Dallas and Phoenix, "
             "last updated 2026-09-05. Browse with source_capacity.")
-    assert _block(llms_txt()) == heading + "\n" + line + "\n" + rest
+    block = _block(llms_txt())
+    assert block == (heading[:-len(UPCOMING_SUFFIX)] + "\n" + line + "\n"
+                     + rest.replace(UPCOMING_SENTENCE, LIVE_SENTENCE))
+    assert "upcoming" not in block.lower()
     # llms.txt and the endpoint share one read.
     _, j = _get_summary(env)
     assert j["live_count"] == 3 and len(env.summary_reads()) == 1
+
+
+def test_llms_program_wording_is_live_only_while_listings_are_live(env, llms_txt, clock):
+    upcoming = _block(llms_txt())
+    assert el._SUMMARY_CACHE["value"]["live_count"] == 0
+    assert upcoming.split("\n", 1)[0].endswith(UPCOMING_SUFFIX)
+    assert UPCOMING_SENTENCE in upcoming and LIVE_SENTENCE not in upcoming
+
+    env.listings = [_listing()]
+    clock["t"] += el._SUMMARY_TTL_S + 1
+    live = _block(llms_txt())
+    assert el._SUMMARY_CACHE["value"]["live_count"] == 1
+    assert not live.split("\n", 1)[0].endswith(UPCOMING_SUFFIX)
+    assert LIVE_SENTENCE in live and "upcoming" not in live.lower()
 
 
 def test_llms_line_names_three_markets_and_counts_the_rest(env, llms_txt):

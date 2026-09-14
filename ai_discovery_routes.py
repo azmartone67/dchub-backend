@@ -104,10 +104,17 @@ def _canon_int(placeholder, default):
 
 
 # ── Capacity Source availability in llms.txt ────────────────────────────────
-# While listings are live, the Capacity Source block carries one line built
-# from routes.exclusive_listings' cached summary, the same in-process copy that
+# While listings are live, the Capacity Source block reads live: its heading
+# drops "(upcoming)", the program sentence says the listings are live, and one
+# availability line sits under the heading. All three follow
+# routes.exclusive_listings' cached summary, the same in-process copy that
 # GET /api/v1/listings/summary serves. Otherwise the block renders as written.
 _CAPACITY_SOURCE_HEADING = "\n## Capacity Source"
+_CAPACITY_SOURCE_UPCOMING_SUFFIX = " (upcoming)"
+_CAPACITY_SOURCE_UPCOMING = ("The program is UPCOMING while the first listings are\n"
+                             "onboarded, and GET /api/v1/listings says so in `program.status`")
+_CAPACITY_SOURCE_LIVE = ("Listings are live; GET /api/v1/listings returns them\n"
+                         "with `program.status`")
 _AVAILABILITY_NAMED_MARKETS = 3
 # Canon scanners read a digit followed by the word for tools as a tool count,
 # so a market name of that shape is never written into the line.
@@ -166,14 +173,20 @@ def _capacity_source_availability_line():
 
 
 def _with_capacity_source_availability(content):
-    """llms.txt with the availability line directly under the Capacity Source
-    heading; `content` itself when there is no line to add."""
+    """llms.txt with the Capacity Source block in its live form while any
+    listing is live: the heading without "(upcoming)", the availability line
+    under it, and the program sentence in live wording. `content` itself when
+    no listing is live or the summary cannot be read."""
     line = _capacity_source_availability_line()
     start = content.find(_CAPACITY_SOURCE_HEADING)
     end = content.find("\n", start + 1) if start >= 0 else -1
     if not line or end < 0:
         return content
-    return content[:end + 1] + line + "\n" + content[end + 1:]
+    stop = content.find("\n## ", end)
+    stop = len(content) if stop < 0 else stop
+    heading = content[start + 1:end].removesuffix(_CAPACITY_SOURCE_UPCOMING_SUFFIX)
+    body = content[end + 1:stop].replace(_CAPACITY_SOURCE_UPCOMING, _CAPACITY_SOURCE_LIVE, 1)
+    return content[:start + 1] + heading + "\n" + line + "\n" + body + content[stop:]
 
 
 # r37 (2026-05-25): module-level cache for dynamic stats so we don't
