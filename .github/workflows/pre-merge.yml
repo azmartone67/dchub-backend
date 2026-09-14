@@ -845,6 +845,31 @@ jobs:
             echo "::error::the relayed-checkout SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── paid_attributed's relayed-checkout lane, against the same Postgres ──
+      # routes/handoff_definition joins a paid Checkout Session to the /go/c/
+      # click that sold it (client_reference_id = ref) and counts the session
+      # that click carried. Only a real Postgres shows the latest-click pick,
+      # the lookback, livemode, the union's DISTINCT and the exclusion counting
+      # what the test claims, over clicks written through the real /go/c/
+      # endpoint and payments written by the real webhook writer. Owns and
+      # recreates only mcp_checkout_clicks, mcp_checkout_payments,
+      # mcp_session_upgrades, mcp_topups and mcp_trial_emails.
+      - name: paid_attributed relayed-checkout SQL against a real Postgres
+        env:
+          PAID_ATTRIBUTED_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_paid_attributed_relayed_checkout_sql.py -v --tb=short
+
+      - name: Prove the paid_attributed SQL test actually RAN
+        env:
+          PAID_ATTRIBUTED_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_paid_attributed_relayed_checkout_sql.py \
+            -q -rs --tb=no > pa.txt 2>&1 || { cat pa.txt; exit 1; }
+          cat pa.txt
+          if grep -qi "skipped" pa.txt; then
+            echo "::error::the paid_attributed SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -887,6 +912,7 @@ jobs:
             ou.txt
             ra.txt
             rc.txt
+            pa.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do

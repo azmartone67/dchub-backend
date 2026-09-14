@@ -73,6 +73,14 @@ from routes.handoff_definition import (  # r-third-artifact (2026-09-10)
     human_acted_v7_links_sql as _human_acted_v7_links_sql,
     relayed_checkout_provenance_sql as _relayed_checkout_provenance_sql,
 )
+from routes.handoff_definition import (  # r-paid-join (2026-09-14)
+    RELAYED_CHECKOUT_PAYMENTS_BASIS as _PAID_RELAYED_PAYMENTS_BASIS,
+    paid_attributed_count_sql as _paid_attributed_count_sql,
+    paid_attributed_definition as _paid_attributed_definition,
+    paid_attributed_v1_sql as _paid_attributed_v1_sql,
+    paid_relayed_checkout_count_sql as _paid_relayed_checkout_count_sql,
+    relayed_checkout_payments_sql as _relayed_checkout_payments_sql,
+)
 from mcp_calls_deloop import (
     PLATFORM_CASE as _DELOOP_PLATFORM_CASE,
     PROBE_PLATFORMS as _DELOOP_PROBE_PLATFORMS,
@@ -389,6 +397,20 @@ def _ensure_checkout_click_schema():
         pass
 
 
+# ★ 2026-09-14 (paid_attributed v2), the same reasoning one table over. The
+# stage's relayed-checkout lane reads mcp_checkout_payments, which
+# routes/checkout_payment_refs creates. A union over a missing table fails
+# inside one(); ensure_schema() is asked first (it stops asking once the table
+# exists), and when the union still cannot run the stage falls back to its v1
+# figure and says so, rather than publishing null.
+def _ensure_checkout_payment_schema() -> bool:
+    try:
+        from routes.checkout_payment_refs import ensure_schema
+        return bool(ensure_schema())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # ── GET /api/v1/mcp/handoff-funnel ──────────────────────────────────────────
 # r-handoff (2026-06-21): the agent→human conversion funnel, end to end, on
 # DISTINCT sessions — surfaces WHERE the handoff leaks. paywall-hit → high-intent
@@ -640,11 +662,26 @@ def handoff_funnel():
         captured = one("select count(distinct lower(email)) from mcp_dev_keys "
                        "where email is not null and email <> '' "
                        "and created_at > now() - interval '%s'" % iv)
-        paid_su = one("select count(distinct mcp_session_id) from mcp_session_upgrades "
-                      "where upgraded_at > now() - interval '%s'" % iv)
-        paid_tp = one("select count(distinct mcp_session_id) from mcp_topups "
-                      "where mcp_session_id is not null and created_at > now() - interval '%s'" % iv)
-        paid = (paid_su or 0) + (paid_tp or 0)
+        # ── paid_attributed DEFINITION v2 (r-paid-join, 2026-09-14) ─────────
+        # v1 summed two session-bound tables, and neither holds a session for a
+        # purchase made through a durable-key ref (pk- pack, k- subscription),
+        # so a keyed caller paying from an agent unlock could not reach the
+        # stage. v2 is the canonical UNION from routes/handoff_definition,
+        # CALLED here: the v1 tables plus each paid checkout joined by
+        # client_reference_id to the relayed /go/c/ click that sold it, counted
+        # as that click's session. v1 is published beside it. If the union
+        # cannot run, the stage falls back to v1 and
+        # paid_attributed_definition_applied says so.
+        paid_v1 = one(_paid_attributed_v1_sql(iv))
+        paid_v2 = (one(_paid_attributed_count_sql(iv))
+                   if _ensure_checkout_payment_schema() else None)
+        if paid_v2 is not None:
+            paid_incl_self = one(_paid_attributed_count_sql(iv, include_self_traffic=True))
+            paid_relayed = one(_paid_relayed_checkout_count_sql(iv))
+            paid_relayed_payments = row(_relayed_checkout_payments_sql(iv))
+        else:
+            paid_incl_self = paid_relayed = paid_relayed_payments = None
+        paid = paid_v2 if paid_v2 is not None else paid_v1
         # Bound ONCE per window, beside the block that publishes it, so the
         # basis sentence and the stage it describes cannot disagree.
         _hi_threshold = _live_high_intent_threshold()
@@ -901,6 +938,13 @@ def handoff_funnel():
                 "operator verification click on a declared session moves this "
                 "figure and human_acted_removed, and leaves the headline "
                 "alone."),
+            # ── paid_attributed v2 (r-paid-join): what the stage is built from ─
+            "paid_attributed_definition_applied": 2 if paid_v2 is not None else 1,
+            "paid_attributed_v1_session_rows": paid_v1,
+            "paid_attributed_from_relayed_checkout": paid_relayed,
+            "paid_attributed_including_self_traffic": paid_incl_self,
+            "relayed_checkout_payments": paid_relayed_payments,
+            "relayed_checkout_payments_basis": _PAID_RELAYED_PAYMENTS_BASIS,
             # ★ What the source table actually contains. Buckets are mutually
             # exclusive and sum to `total`; see the r-relay-provenance block.
             "relay_open_provenance": {
@@ -982,6 +1026,10 @@ def handoff_funnel():
                     (opened_incl_self - opened)
                     if (opened_incl_self is not None and opened is not None)
                     else None),
+                "paid_attributed_removed": (
+                    (paid_incl_self - paid_v2)
+                    if (paid_incl_self is not None and paid_v2 is not None)
+                    else None),
                 # The version is INTERPOLATED, not typed: this sentence said
                 # "(v4)" beside a dict that had just become v4, and the next
                 # bump would have left it describing the wrong stage in the
@@ -1029,6 +1077,7 @@ def handoff_funnel():
             # what makes the number readable without a code dive; publishing a
             # basis that restates config is what makes it readable and WRONG.
             "definitions": {"human_acted": _human_acted_definition(),
+                            "paid_attributed": _paid_attributed_definition(),
                             "redeemed": _redeem_stage_basis(),
                             "paywall_hit": {
                                 "basis": (
