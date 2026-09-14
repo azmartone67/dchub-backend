@@ -16031,6 +16031,20 @@ def stripe_webhook():
             except Exception as _cae:
                 print(f"⚠️ conversion-attribution error (non-fatal): {_cae}")
 
+            # r-paid-join (2026-09-14): keep this paid checkout's
+            # client_reference_id. The key branches above bind no MCP session
+            # to a pk-/k- purchase; the relayed /go/c/ click that sold it holds
+            # the same ref beside the session, and routes/handoff_definition
+            # joins the two for paid_attributed. Paid sessions only, idempotent
+            # on the Checkout Session id. Fail-soft.
+            try:
+                from routes.checkout_payment_refs import record_checkout_payment as _rcp
+                _rcp_out = _rcp(data)
+                if _rcp_out.get("ok") and not _rcp_out.get("idempotent"):
+                    print(f"🧾 Checkout ref recorded (kind={_rcp_out.get('ref_kind')})")
+            except Exception as _rcpe:
+                print(f"⚠️ checkout-ref record error (non-fatal): {_rcpe}")
+
             # r62-conv (2026-06-01): self-serve auto-key for the usage-based
             # (metered) payment link (prod_UccyUrO1iq7LrN). Issues + emails a
             # key sized to the purchased quantity. Fail-soft — never breaks the

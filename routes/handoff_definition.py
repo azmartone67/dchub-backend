@@ -774,6 +774,198 @@ def relayed_checkout_provenance_sql(interval_sql: str) -> str:
             + _relayed_checkout_window(interval_sql))
 
 
+# ── paid_attributed: a payment joins the relayed click that sold it ─────────
+# r-paid-join (2026-09-14). Through v1, `paid_attributed` read the two tables
+# the payment webhook binds to a session: mcp_session_upgrades (Fix E, a bare
+# session ref) and mcp_topups.mcp_session_id (the pack grant). A caller that
+# holds an API key is sold through a KEY ref instead, `pk-<sha256>` for the $10
+# pack and `k-<sha256>` for a subscription, and neither key branch writes a
+# session: the pack grant passes mcp_session_id None, and the k- branch stamps
+# mcp_dev_keys.tier and nothing else. So a keyed caller paying from an agent
+# unlock could not move this stage for any purchase.
+#
+# The session is on record one table over. The relayed link is a signed
+# /go/c/<plan|ref|sid> token; routes/checkout_click_tracker stores its ref and
+# session in mcp_checkout_clicks and hands Stripe that same ref as
+# client_reference_id. routes/checkout_payment_refs now keeps each paid
+# checkout's client_reference_id, so the join is an equality:
+#
+#     mcp_checkout_payments.client_reference_id = mcp_checkout_clicks.ref
+#
+# ★ ONE SESSION PER PAYMENT. One key clicked from two sessions and paid once
+#   is one purchase, so the payment takes the session of the LATEST qualifying
+#   click at or before it, within PAID_RELAYED_CHECKOUT_LOOKBACK.
+# ★ THE CLICK QUALIFIES THE WAY human_acted's /go/c lane does (signed, real UA,
+#   a session identity), through relayed_checkout_session_filters(), called
+#   here and never restated. A payment whose ref matches only clicks without a
+#   session has nothing the operator exclusion can test; it is published in
+#   relayed_checkout_payments as a ceiling and not counted.
+# ★ The exclusion binds ONCE, on the union's identity, so the v1 lanes get it
+#   too (they carried none).
+PAID_ATTRIBUTED_DEFINITION_VERSION = 2
+PAID_RELAYED_CHECKOUT_LOOKBACK = "7 days"
+PAID_ATTRIBUTED_DEFINITION_CHANGELOG = {
+    1: ("COUNT(DISTINCT mcp_session_id) FROM mcp_session_upgrades plus "
+        "COUNT(DISTINCT mcp_session_id) FROM mcp_topups where it is set: a sum "
+        "of two distinct counts with no operator exclusion. Neither table holds "
+        "a session for a purchase made through a durable-key ref (pk- or k-)."),
+    2: ("2026-09-14. COUNT(DISTINCT session) over the UNION of those two tables "
+        "and the relayed-checkout lane: a paid Checkout Session in "
+        "mcp_checkout_payments (livemode not false) whose client_reference_id "
+        "equals the ref of a signed, real-UA /go/c/ click with a session "
+        "identity, made at or before the payment and within "
+        + PAID_RELAYED_CHECKOUT_LOOKBACK + " of it, counted as the latest such "
+        "click's session. A session in two lanes counts once. The operator "
+        "self-traffic exclusion applies to the whole union; "
+        "paid_attributed_v1_session_rows publishes the previous figure."),
+}
+
+def _paid_payments_sql(interval_sql: str) -> str:
+    """Paid checkouts in the window, as the derived table `pay`.
+
+    One string literal (adjacent literals, no `+`), keywords in UPPERCASE, on
+    purpose: scripts/dataset_inventory.py counts a table as read only where a
+    single literal carries a SELECT and an uppercase FROM <table>. The first CI
+    run of this change failed NEW_WRITE_ONLY on mcp_checkout_payments because
+    this read was spelled as a lowercase fragment the scanner cannot see.
+    """
+    return ("(SELECT p.stripe_session_id, p.client_reference_id, p.paid_at"
+            " FROM mcp_checkout_payments p"
+            " WHERE p.livemode IS NOT FALSE"
+            " AND p.paid_at > now() - interval '" + interval_sql + "') pay")
+
+
+def paid_relayed_click_session_sql() -> str:
+    """Scalar subquery: the session payment `pay` is attributed to, or NULL.
+
+    The latest click on the link that sold it (same ref) that human_acted's
+    /go/c/ lane would count — signed, real UA, a session identity — made at or
+    before the payment and inside the lookback.
+    """
+    return ("(select " + RELAYED_CHECKOUT_SESSION_ID + " "
+            + _RELAYED_CHECKOUT_FROM
+            + " where cc.ref = pay.client_reference_id"
+            + " and " + relayed_checkout_session_filters()
+            + " and cc.clicked_at <= pay.paid_at"
+            + " and cc.clicked_at > pay.paid_at - interval '"
+            + PAID_RELAYED_CHECKOUT_LOOKBACK + "'"
+            + " order by cc.clicked_at desc, cc.id desc limit 1)")
+
+
+def _paid_session_row_lanes(interval_sql: str) -> list:
+    """The two v1 tables, as union lanes."""
+    return [
+        ("select su.mcp_session_id as sid from mcp_session_upgrades su"
+         " where su.upgraded_at > now() - interval '" + interval_sql + "'"),
+        ("select tp.mcp_session_id as sid from mcp_topups tp"
+         " where tp.mcp_session_id is not null"
+         " and tp.created_at > now() - interval '" + interval_sql + "'"),
+    ]
+
+
+def _paid_relayed_checkout_lane(interval_sql: str) -> str:
+    return ("select " + paid_relayed_click_session_sql() + " as sid from "
+            + _paid_payments_sql(interval_sql))
+
+
+def _paid_count(lanes: list, include_self_traffic: bool) -> str:
+    sql = ("select count(distinct u.sid) from (" + " union ".join(lanes)
+           + ") u where coalesce(u.sid,'') <> ''")
+    if not include_self_traffic:
+        sql += " and " + _external_session_predicate("u.sid")
+    return sql
+
+
+def paid_attributed_count_sql(interval_sql: str, *,
+                              include_self_traffic: bool = False) -> str:
+    """Canonical paid_attributed over `interval_sql`: the v1 tables UNION the
+    relayed-checkout lane, DISTINCT sessions, operator exclusion once.
+    `include_self_traffic=True` drops the exclusion, so the difference is
+    exactly what it removed."""
+    return _paid_count(_paid_session_row_lanes(interval_sql)
+                       + [_paid_relayed_checkout_lane(interval_sql)],
+                       include_self_traffic)
+
+
+def paid_relayed_checkout_count_sql(interval_sql: str, *,
+                                    include_self_traffic: bool = False) -> str:
+    """The relayed-checkout lane alone, published beside the headline."""
+    return _paid_count([_paid_relayed_checkout_lane(interval_sql)],
+                       include_self_traffic)
+
+
+def paid_attributed_v1_sql(interval_sql: str) -> str:
+    """The v1 figure as it was published: a SUM of two distinct counts."""
+    return ("select (select count(distinct mcp_session_id) from mcp_session_upgrades"
+            " where upgraded_at > now() - interval '" + interval_sql + "')"
+            " + (select count(distinct mcp_session_id) from mcp_topups"
+            " where mcp_session_id is not null"
+            " and created_at > now() - interval '" + interval_sql + "')")
+
+
+def relayed_checkout_payments_sql(interval_sql: str) -> str:
+    """payments / matched_a_relayed_click / attributable_to_a_session, one pass.
+
+    matched_a_relayed_click is a CEILING: the payment's ref equals the ref of a
+    signed, real-UA click at or before it, whatever identity that click carried.
+    attributable_to_a_session is the subset whose qualifying click carried a
+    session, before the operator exclusion. Both are subsets of payments.
+    """
+    matched = ("exists (select 1 " + _RELAYED_CHECKOUT_FROM
+               + " where cc.ref = pay.client_reference_id"
+               + " and " + relayed_checkout_signed()
+               + " and " + relayed_checkout_real_ua()
+               + " and cc.clicked_at <= pay.paid_at)")
+    return ("select count(*) as payments,"
+            " count(*) filter (where x.matched) as matched_a_relayed_click,"
+            " count(*) filter (where x.sid is not null) as attributable_to_a_session"
+            " from (select " + matched + " as matched, "
+            + paid_relayed_click_session_sql() + " as sid from "
+            + _paid_payments_sql(interval_sql) + ") x")
+
+
+PAID_ATTRIBUTED_BASIS = (
+    "COUNT(DISTINCT session) over the UNION of three lanes: "
+    "mcp_session_upgrades.mcp_session_id (the webhook's same-session unlock row "
+    "for a bare session ref), mcp_topups.mcp_session_id (a pack granted to a "
+    "session), and the RELAYED CHECKOUT lane: a paid Checkout Session "
+    "(mcp_checkout_payments, recorded at checkout.session.completed when "
+    "payment_status is 'paid'; livemode false excluded) whose "
+    "client_reference_id equals the ref of a signed, real-UA /go/c/ click with a "
+    "session identity, made at or before the payment and inside the lookback, "
+    "counted as the latest such click's session. WHY: a caller holding an API "
+    "key is sold through a durable-key ref (pk- for the pack, k- for a "
+    "subscription) and the webhook binds no session to either, so through v1 a "
+    "keyed caller's purchase from an agent unlock could not reach this stage. "
+    "The click that sold it carries the session (the /go/c/ token's third field "
+    "since 2026-09-13), so the payment joins that click by ref. The operator "
+    "self-traffic exclusion applies to the union; "
+    "paid_attributed_including_self_traffic drops it, and "
+    "excluded.paid_attributed_removed is the difference. A payment recorded "
+    "before 2026-09-14 has no stored client_reference_id and can reach only the "
+    "v1 lanes.")
+
+RELAYED_CHECKOUT_PAYMENTS_BASIS = (
+    "Paid Checkout Sessions in the window (mcp_checkout_payments, livemode not "
+    "false). matched_a_relayed_click: the payment's client_reference_id equals "
+    "the ref of a signed, real-UA /go/c/ click made at or before it, whatever "
+    "identity that click carried: a CEILING on purchases that followed a "
+    "relayed link. attributable_to_a_session: the subset whose matching click, "
+    "inside the lookback, carried a session, before the operator exclusion; "
+    "paid_attributed_from_relayed_checkout is that set after it. Both are "
+    "subsets of payments, not a partition of it.")
+
+
+def paid_attributed_definition() -> dict:
+    """The published paid_attributed definition, for the funnel payload."""
+    return {
+        "definition_version": PAID_ATTRIBUTED_DEFINITION_VERSION,
+        "definition_changelog": dict(PAID_ATTRIBUTED_DEFINITION_CHANGELOG),
+        "relayed_checkout_lookback": PAID_RELAYED_CHECKOUT_LOOKBACK,
+        "basis": PAID_ATTRIBUTED_BASIS,
+    }
+
+
 HUMAN_ACTED_V7_BASIS = (
     "COUNT(DISTINCT session identity) FROM mcp_checkout_clicks — the table "
     "/go/c/<token> writes (routes/checkout_click_tracker) — with the same "
