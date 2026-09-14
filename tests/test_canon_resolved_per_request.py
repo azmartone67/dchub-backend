@@ -35,6 +35,12 @@ pinned facility floor on the live /integrations page that way (fixed in
 anywhere, except inside a lambda body, which runs per call
 (routes/agent_a2a.py `_LIVE_SKILL_SUMMARIES`). test_scanner_contract pins
 exactly which shapes count.
+
+★2026-09-13 (later) — NOR DOES A LATCH NEED A NAME. A module-scope
+`register_surface(Surface(description=canon_text(...)))` binds nothing, yet the
+registry keeps the value for the life of the process: /api/v1/surfaces served
+the cold-start floor that way. test_no_import_time_canon_handed_to_a_call
+fences expression statements, with no register.
 """
 import ast
 import pathlib
@@ -60,13 +66,21 @@ _SKIP = ("node_modules", "/.git/", "/tests/", "dchub-frontend/")
 # ★2026-09-13 — entries marked (09-13) were found when the scan learned to
 # see NESTED calls, class bodies and an aliased canon_text (main.py imports it
 # as _canon_text). They are written down as found, not fixed. Most are one-shot
-# scripts, outreach/SEO copy generators and email templates. The ones a web
-# request serves: the seven *_RECIPE_HTML pages (which also sit behind the
-# already-listed _RECIPE_PAGE_TEMPLATE), A2A_AGENT_CARD, main.py's
-# _MCP_LANDING_HTML, NAV_LINKS, the paywall hint _VARIANTS and _DCHUB_FACTS.
-# routes/agent_a2a.py AGENT_CARD is served through _card(), which re-resolves
-# the description and the two canon summaries per request; the dict still
-# resolves its own copies at import.
+# scripts, outreach/SEO copy generators and email templates.
+# Every one a public request can reach came off the same day, each with a test
+# that moves canon and requires the served body to follow: the seven recipe
+# pages and _RECIPE_PAGE_TEMPLATE, A2A_AGENT_CARD, seo_meta_tags.py
+# HOME_META/TOOL_META, the paywall hint _VARIANTS, and routes/agent_a2a.py
+# AGENT_CARD (raw templates now, resolved only by _card()). Three stay because
+# no public request reaches them (probed live, cache-busted, 09-13). If one
+# gets routed, fix it in that change:
+#   main.py _MCP_LANDING_HTML — GET /mcp as text/html on dchub.cloud and
+#     api.dchub.cloud is dchub-mcp-server's page, because the zone worker sends
+#     /mcp to MCP_BACKEND. Its <title> is not this template's.
+#   routes/nav_config_routes.py NAV_LINKS — never registered; main.py serves
+#     /api/nav-config from nav_config.py.
+#   routes/competitive_vs.py _DCHUB_FACTS — its blueprint is never registered;
+#     /api/v1/competitive/vs/<slug> answers 404.
 # routes/partner_landing.py was FIXED instead: three _PARTNERS strings still
 # wrapped {canon_facilities} in canon_text() beside @@CANON_*@@ copy the page
 # already resolves per request. They carry the token now, so
@@ -74,8 +88,7 @@ _SKIP = ("node_modules", "/.git/", "/tests/", "dchub-frontend/")
 _KNOWN_LATCHED = {
     'agent_hub.py': ['SALES_SYSTEM_PROMPT', 'SEO_POST_TEMPLATES',   # (09-13)
                      '_CANON_FAC'],
-    'ai_agent_discovery.py': ['A2A_AGENT_CARD',                     # (09-13)
-                              'AGENTS_MD_FALLBACK'],
+    'ai_agent_discovery.py': ['AGENTS_MD_FALLBACK'],
     'ai_interconnection.py': ['_CANON_FAC'],
     'ai_outreach_agent.py': ['AI_PLATFORMS', 'MCP_SERVICE_HEADERS',  # (09-13)
                              'SOCIAL_PLATFORMS', '_CANON_FAC'],
@@ -97,7 +110,6 @@ _KNOWN_LATCHED = {
     'main.py': ['_MCP_LANDING_HTML'],                               # (09-13)
     'moltbook_integration.py': ['AGENT_DESCRIPTION'],
     'populate_press_bodies.py': ['PRESS_RELEASES'],                 # (09-13)
-    'routes/agent_a2a.py': ['AGENT_CARD'],                          # (09-13)
     'routes/ai_platform_tool_tuner.py': ['GENERIC_DESCRIPTIONS'],   # (09-13)
     'routes/brain_answer_cache.py': ['_VERIFY_SYSTEM'],
     'routes/competitive_vs.py': ['_DCHUB_FACTS'],                   # (09-13)
@@ -106,27 +118,13 @@ _KNOWN_LATCHED = {
     'routes/dchub_media_hub.py': ['_CANON_FAC'],
     'routes/demo.py': ['DEMO_SYSTEM_PROMPT'],
     'routes/devrel_targets.py': ['PLATFORM_BLUEPRINTS'],            # (09-13)
-    # ★2026-09-10: MCP_LANDING_HTML came off. It was the latch that
-    # SHIPPED on this module — /integrations/mcp served "20,700+" six
-    # times against a live resolver saying 21,400+, in the same process,
-    # the same second. It is now _MCP_LANDING_TEMPLATE, a raw constant
-    # resolved per request in render_mcp_landing(), and
-    # tests/test_integrations_mcp_derives_price_and_canon.py renders the
-    # page to prove it.
-    # ★2026-09-10 (same day, second pass): MCP_SEO_PAGE_HTML and
-    # META_LANDING_HTML came off too — the two siblings that first pass
-    # named and deliberately left. Same treatment: raw
-    # _MCP_SEO_PAGE_TEMPLATE / _META_LANDING_TEMPLATE constants resolved
-    # per request in render_mcp_seo_page() / render_meta_landing(), each
-    # with its retyped "$9/mo" entry price derived from tier_registry.
-    # ★2026-09-13: the seven *_RECIPE_HTML names were always latched — each
-    # nests canon_text() inside its value, which the old scan could not see.
-    'routes/integrations_landing.py': [
-        'BEDROCK_RECIPE_HTML', 'CLOUDFLARE_PORTAL_RECIPE_HTML',     # (09-13)
-        'COPILOT_RECIPE_HTML', 'GEMINI_RECIPE_HTML', 'GROK_RECIPE_HTML',
-        'MISTRAL_RECIPE_HTML', 'PERPLEXITY_RECIPE_HTML',
-        '_RECIPE_PAGE_TEMPLATE',
-    ],
+    # routes/integrations_landing.py came off 2026-09-13. MCP_LANDING_HTML
+    # (the latch that SHIPPED "20,700+" on /integrations/mcp), MCP_SEO_PAGE_HTML
+    # and META_LANDING_HTML went first, on 09-10, as raw templates resolved in
+    # render_*(). The seven *_RECIPE_HTML pages and _RECIPE_PAGE_TEMPLATE
+    # followed: slot dicts whose canon slots are lambdas, rendered by
+    # _recipe_page() inside each handler. tests/test_integrations_recipes_
+    # follow_canon.py moves canon and requires every placeholder to follow.
     # routes/mcp_connect.py came off 2026-09-10. Its _PAGE_TEMPLATE was the
     # LATCH THAT SHIPPED: the install pages served the cold-start pinned floor
     # while /api/v1/canon/phrases in the same process served the live one. The
@@ -137,11 +135,9 @@ _KNOWN_LATCHED = {
     'routes/nav_config_routes.py': ['NAV_LINKS'],                   # (09-13)
     'routes/onboard_auto_approve.py': ['_CANON_FAC'],
     'routes/onboarding_recover.py': ['_CANON_DEALS', '_CANON_FAC'],
-    'routes/paywall_hint_middleware.py': ['_VARIANTS'],             # (09-13)
     'routes/quick_redirects.py': ['_AGENTS_MD'],
     'routes/seo_pages.py': ['_CANON_DEALS', '_CANON_FAC'],
     'seo_agents.py': ['OUTREACH_TEMPLATES', 'SOCIAL_TEMPLATES'],    # (09-13)
-    'seo_meta_tags.py': ['HOME_META', 'TOOL_META'],                 # (09-13)
     'seo_promotion_engine.py': ['_CANON_FAC'],
     'welcome_emails.py': ['EMAILS', '_CANON_SUBSTATIONS'],          # (09-13)
 }
@@ -213,17 +209,44 @@ def _latched_names(body, resolvers, prefix=""):
         elif isinstance(node, ast.ClassDef):
             names += _latched_names(node.body, resolvers, f"{prefix}{node.name}.")
         elif isinstance(node, _IMPORT_TIME_BLOCKS):
-            inner = (node.body + getattr(node, "orelse", [])
-                     + getattr(node, "finalbody", []))
-            for handler in getattr(node, "handlers", []):
-                inner = inner + handler.body
-            names += _latched_names(inner, resolvers, prefix)
+            names += _latched_names(_block_body(node), resolvers, prefix)
     return names
 
 
-def _latched_modules():
-    """{relpath: [names]} for every name a module latches canon into at import."""
-    found = {}
+def _block_body(node):
+    """Every statement an import-time block runs: body, else, finally, handlers."""
+    inner = node.body + getattr(node, "orelse", []) + getattr(node, "finalbody", [])
+    for handler in getattr(node, "handlers", []):
+        inner = inner + handler.body
+    return inner
+
+
+def _latched_calls(body, resolvers):
+    """Lines of import-time EXPRESSION statements that hand canon to a call.
+
+    `register_surface(Surface(description=canon_text(...)))` binds no name, so
+    _latched_names cannot see it, but whatever it calls keeps the value.
+    `REGISTRY.append(canon_text(...))` is the same shape. A bare
+    `canon_text(...)` statement is not counted: its result is discarded.
+    """
+    lines = []
+    for node in body:
+        if isinstance(node, ast.Expr):
+            value = node.value
+            discarded = isinstance(value, ast.Call) and (
+                getattr(value.func, "id", None) in resolvers
+                or getattr(value.func, "attr", None) == "canon_text")
+            if not discarded and _resolves_canon(value, resolvers):
+                lines.append(node.lineno)
+        elif isinstance(node, ast.ClassDef):
+            lines += _latched_calls(node.body, resolvers)
+        elif isinstance(node, _IMPORT_TIME_BLOCKS):
+            lines += _latched_calls(_block_body(node), resolvers)
+    return lines
+
+
+def _canon_modules():
+    """(relpath, tree) for every shippable module that names canon_text."""
     for p in sorted(_ROOT.rglob("*.py")):
         rel = str(p.relative_to(_ROOT))
         if any(x in "/" + rel for x in _SKIP):
@@ -232,9 +255,15 @@ def _latched_modules():
         if "canon_text" not in text:     # every shape above names it somewhere
             continue
         try:
-            tree = ast.parse(text)
+            yield rel, ast.parse(text)
         except Exception:
             continue
+
+
+def _latched_modules():
+    """{relpath: [names]} for every name a module latches canon into at import."""
+    found = {}
+    for rel, tree in _canon_modules():
         names = _latched_names(tree.body, _resolvers(tree))
         if names:
             found[rel] = sorted(set(names))
@@ -279,6 +308,27 @@ def test_scanner_contract():
     for src in per_request:
         assert _latched_in(src) == [], f"scanner flagged a per-request resolve: {src!r}"
 
+    # Expression statements bind no name; _latched_calls reports their lines.
+    handed_to_a_call = {
+        'register(Surface(description=canon_text(T)))': [1],
+        'REGISTRY.append(canon_text(T))': [1],
+        'if True:\n    register(canon_text(T))': [2],
+        'class C:\n    register([canon_text(T)])': [2],
+    }
+    not_handed = [
+        'canon_text(T)',                                          # result discarded
+        'register(Surface(description=lambda: canon_text(T)))',  # routes/surface_brain.py
+        'def boot():\n    register(canon_text(T))',
+    ]
+    for src, lines in handed_to_a_call.items():
+        tree = ast.parse(src)
+        assert _latched_calls(tree.body, _resolvers(tree)) == lines, (
+            f"scanner missed canon handed to a call at import: {src!r}")
+    for src in not_handed:
+        tree = ast.parse(src)
+        assert _latched_calls(tree.body, _resolvers(tree)) == [], (
+            f"scanner flagged a statement that keeps no import-time canon: {src!r}")
+
 
 def test_no_new_import_time_canon_latch():
     """A module not already in the register may not latch canon at import."""
@@ -291,6 +341,30 @@ def test_no_new_import_time_canon_latch():
         + "\n\nResolve inside the render/response path instead. See "
           "routes/partner_landing.py::_canon_values or "
           "routes/competitive_intel.py::_resolved_differentiators."
+    )
+
+
+def test_no_import_time_canon_handed_to_a_call():
+    """★ No module may hand an import-time canon_text() to a call. No register.
+
+    An expression binds no name. The only exact register key would be a line
+    number, which drifts, and the callee (`register_surface`) is coarser than
+    the defect: it would exempt every later registration in its file. Defer the
+    value instead. Pass a lambda and call it per request, as the map surface in
+    routes/surface_brain.py and Surface.to_dict() do.
+    """
+    modules = dict(_canon_modules())
+    # Floor: a walk that parsed nothing passes vacuously. Every registered latch
+    # lives in a module that names canon_text, so each must have been walked.
+    unwalked = sorted(set(_KNOWN_LATCHED) - set(modules))
+    assert not unwalked, f"the walk never parsed registered module(s): {unwalked}"
+    found = {rel: lines for rel, tree in modules.items()
+             for lines in [_latched_calls(tree.body, _resolvers(tree))] if lines}
+    assert not found, (
+        "import-time canon_text() handed to a call — whatever keeps the value "
+        "serves the cold-start canon for the life of the process:\n"
+        + "\n".join(f"  {f}: line {', '.join(map(str, n))}"
+                    for f, n in sorted(found.items()))
     )
 
 

@@ -225,10 +225,16 @@ Free API at https://dchub.cloud/api/v1
 # an env change plus a restart, not an edit to this file.
 _AK = authkit_endpoints()
 
+# ★2026-09-13 — canon resolves when the card is SERVED, in _a2a_agent_card().
+# canon_text() inside the dict below ran once, at import, while every canon
+# cache was cold, so the card holds these two as raw templates.
+_A2A_DESCRIPTION = "Data center intelligence platform - {canon_facilities} distinct facilities, 1,400+ M&A deals, real-time grid data from 7 ISOs, site scoring, market intelligence across 170+ countries."
+_A2A_FACILITY_SEARCH = "Search {canon_facilities} distinct data center facilities worldwide by name, location, provider, or capacity."
+
 A2A_AGENT_CARD = {
     "protocolVersion": "0.2.1",
     "name": "DC Hub Intelligence Agent",
-    "description": canon_text("Data center intelligence platform - {canon_facilities} distinct facilities, 1,400+ M&A deals, real-time grid data from 7 ISOs, site scoring, market intelligence across 170+ countries."),
+    "description": _A2A_DESCRIPTION,
     "url": "https://dchub.cloud",
     "iconUrl": "https://dchub.cloud/favicon.ico",
     "version": "86.0.0",
@@ -244,7 +250,7 @@ A2A_AGENT_CARD = {
         {
             "id": "facility-search",
             "name": "Data Center Facility Search",
-            "description": canon_text("Search {canon_facilities} distinct data center facilities worldwide by name, location, provider, or capacity."),
+            "description": _A2A_FACILITY_SEARCH,
             "tags": ["data center", "colocation", "facility", "infrastructure"],
             "examples": ["Find Equinix data centers in Dallas", "List hyperscale data centers in Arizona"]
         },
@@ -323,6 +329,17 @@ A2A_AGENT_CARD = {
     }
 }
 
+def _a2a_agent_card():
+    """A2A_AGENT_CARD as served, its canon templates resolved for THIS request."""
+    live = {"facility-search": canon_text(_A2A_FACILITY_SEARCH)}
+    return {
+        **A2A_AGENT_CARD,
+        "description": canon_text(_A2A_DESCRIPTION),
+        "skills": [{**s, "description": live[s["id"]]} if s["id"] in live else s
+                   for s in A2A_AGENT_CARD["skills"]],
+    }
+
+
 SECURITY_TXT = """Contact: mailto:api@dchub.cloud
 Preferred-Languages: en
 Canonical: https://dchub.cloud/.well-known/security.txt
@@ -356,7 +373,7 @@ def serve_agents_md():
 def serve_a2a_agent_card():
     """Serve A2A Agent Card for Google Agent2Agent Protocol discovery"""
     log_ai_access('agent.json')
-    response = jsonify(A2A_AGENT_CARD)
+    response = jsonify(_a2a_agent_card())
     response.headers['Cache-Control'] = 'public, max-age=3600'
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response

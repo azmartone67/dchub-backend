@@ -77,7 +77,7 @@ def _grok_card() -> str:
 
 def _grok_steps() -> str:
     """The consumer step list on /integrations/grok — not the whole recipe."""
-    html = il.GROK_RECIPE_HTML
+    html = il.integrations_grok()[0]
     start = html.index("Connect in Grok (consumer)")
     end = html.index("</ol>", start)
     return _flat(html[start:end])
@@ -132,7 +132,7 @@ def test_integrations_grok_rate_guidance_does_not_call_the_bare_key_durable():
     """`claim_free_key` alone is NOT persistence on Grok. The rate-guidance
     pane used to say the key made "the connector recognised next session",
     which is the opposite of what was measured there."""
-    html = il.GROK_RECIPE_HTML
+    html = il.integrations_grok()[0]
     assert "durable key so the connector is recognised next" not in html
 
 
@@ -140,7 +140,7 @@ def test_grok_custom_instructions_tell_the_agent_to_relay_the_url():
     """The copy-paste custom-instructions block is what the MODEL follows. If
     it says only "call claim_free_key and continue", the agent pockets a key
     it cannot keep and the human never sees the URL that would have worked."""
-    html = il.GROK_RECIPE_HTML
+    html = il.integrations_grok()[0]
     start = html.index("Grok custom instructions")
     block = html[start:html.index("</pre>", start)]
     assert "connect_url" in block

@@ -100,7 +100,7 @@ class Surface:
     Each instance can compute pulse / demand-gaps / growth from the
     shared surface_telemetry table. No per-surface DB infrastructure.
     """
-    def __init__(self, surface_id: str, name: str, description: str,
+    def __init__(self, surface_id: str, name: str, description: "str | Callable[[], str]",
                   routes: list[str] | None = None,
                   paid_tools: list[str] | None = None,
                   expected_event_types: list[str] | None = None):
@@ -115,7 +115,8 @@ class Surface:
         return {
             "surface_id":  self.surface_id,
             "name":        self.name,
-            "description": self.description,
+            # A lambda defers canon to THIS request; see the "map" registration.
+            "description": self.description() if callable(self.description) else self.description,
             "routes":      self.routes,
             "paid_tools":  self.paid_tools,
             "expected_event_types": self.expected_event_types,
@@ -532,7 +533,8 @@ register_surface(Surface(
 register_surface(Surface(
     surface_id="map",
     name="Facility Map",
-    description=canon_text("The /map facility browser — {canon_facilities} distinct data centers worldwide"),
+    # A lambda, not a string: canon_text() called here runs once, at import.
+    description=lambda: canon_text("The /map facility browser — {canon_facilities} distinct data centers worldwide"),
     routes=["/map"],
     paid_tools=["search_facilities", "search_facilities_semantic", "get_facility"],
     expected_event_types=["view", "zoom", "search", "facility_click", "filter"],

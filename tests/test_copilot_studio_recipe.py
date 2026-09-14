@@ -20,7 +20,7 @@ il = pytest.importorskip("routes.integrations_landing")
 
 
 def test_wizard_path_is_described():
-    html = il.COPILOT_RECIPE_HTML
+    html = il.integrations_copilot_studio()[0]
     assert "wizard" in html
     assert "Model Context Protocol server" in html
     assert "Streamable HTTP" in html
@@ -28,7 +28,7 @@ def test_wizard_path_is_described():
 
 
 def test_custom_connector_alternative_carries_protocol_tag():
-    html = il.COPILOT_RECIPE_HTML
+    html = il.integrations_copilot_studio()[0]
     assert "custom connector" in html
     assert "x-ms-agentic-protocol: mcp-streamable-1.0" in html
     # The OpenAPI snippet must point the tagged operation at the real endpoint.
@@ -38,7 +38,7 @@ def test_custom_connector_alternative_carries_protocol_tag():
 
 def test_tool_count_is_canon_bound_not_a_fresh_literal():
     canon = pytest.importorskip("ai_surface_canon")
-    html = il.COPILOT_RECIPE_HTML
+    html = il.integrations_copilot_studio()[0]
     assert "__CANON_TOOLS_APPEAR__" not in html  # placeholder substituted
     assert f"all {canon.PINNED['tools_advertised']} DC Hub tools appear" in html
 
@@ -47,7 +47,7 @@ def test_front_door_guidance_survives():
     # The operator-prompt/front-door block must stay: execute_plan first,
     # plan_query inspect-only. _recipe_page injects it unconditionally; this
     # pins that the Copilot Studio page still renders it.
-    html = il.COPILOT_RECIPE_HTML
+    html = il.integrations_copilot_studio()[0]
     assert 'id="front-door"' in html
     assert "execute_plan" in html
     assert "plan_query" in html

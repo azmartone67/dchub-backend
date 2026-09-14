@@ -37,7 +37,7 @@ il = pytest.importorskip("routes.integrations_landing")
 
 
 def _html():
-    return il.CLOUDFLARE_PORTAL_RECIPE_HTML
+    return il.integrations_cloudflare()[0]   # rendered per request, as served
 
 
 def test_the_cloudflare_form_is_walked_field_by_field():
@@ -166,7 +166,7 @@ def test_tool_count_and_version_are_canon_bound_not_fresh_literals():
 
 
 def _cloudflare_block_source():
-    """The source text of the CLOUDFLARE_PORTAL_RECIPE_HTML assignment.
+    """The source text of the _CLOUDFLARE_PORTAL_RECIPE assignment.
 
     Rendered-output checks cannot tell a canon placeholder from a literal that
     happens to equal canon today — "83 tools" and "{canon_tools} tools" render
@@ -179,11 +179,11 @@ def _cloudflare_block_source():
     for node in ast.walk(tree):
         if (isinstance(node, ast.Assign)
                 and any(isinstance(t, ast.Name)
-                        and t.id == "CLOUDFLARE_PORTAL_RECIPE_HTML"
+                        and t.id == "_CLOUDFLARE_PORTAL_RECIPE"
                         for t in node.targets)):
             lines = text.splitlines()
             return "\n".join(lines[node.lineno - 1:node.end_lineno])
-    raise AssertionError("CLOUDFLARE_PORTAL_RECIPE_HTML assignment not found")
+    raise AssertionError("_CLOUDFLARE_PORTAL_RECIPE assignment not found")
 
 
 def test_the_source_uses_canon_placeholders_not_typed_numbers():
