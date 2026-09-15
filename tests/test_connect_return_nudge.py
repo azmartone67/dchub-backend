@@ -20,6 +20,10 @@ reads bytes that ship.
      and a copied snippet carried a key no server accepts. The sentinel now
      reaches the script as a format argument, and the swap is EXECUTED below
      on the constants the rendered page defines.
+   * r-connect-bind (2026-09-15): past its free calls the same key serves
+     only once an email is bound; unbound, /api/v1/keys/validate refuses it
+     and the call is served anonymously. The nudge now says so, and the real
+     validator is run below on both sides of that line.
 
 3. CLARITY sees day 1 -> day 2: the page marks the UTC day it mints a key and
    fires connect_key_day2 when the same browser opens the page the next day.
@@ -77,6 +81,7 @@ def test_chatgpt_page_carries_the_nudge_once(stats_state):
     html = _page()
     assert html.count(NUDGE) == 1
     assert "Come back tomorrow: same key, new chat." in html
+    assert "Once an email is bound to it, the key keeps working past its free calls." in html
 
 
 def test_the_nudge_sits_under_the_install_snippet(stats_state):
@@ -133,6 +138,49 @@ def test_the_swap_leaves_exactly_the_key(client, stats_state):
     assert mc.TRIAL_KEY_SENTINEL not in swapped
     if client == "chatgpt":
         assert "https://dchub.cloud/mcp?apiKey=" + KEY in swapped
+
+
+class _TrialRow:
+    """validate_trial_key's SELECT answered with one row; its UPDATE is a no-op."""
+
+    def __init__(self, row):
+        self.row, self.sql = row, ""
+
+    def cursor(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.sql = sql
+
+    def fetchone(self):
+        return self.row if self.sql.lstrip().upper().startswith("SELECT") else None
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("operator_email, verdict", [
+    (None, (False, "bind_email_required")),
+    ("someone@example.invalid", (True, "ok")),
+])
+def test_past_its_free_calls_the_key_serves_only_once_an_email_is_bound(
+        monkeypatch, operator_email, verdict):
+    """The nudge's condition, run through the real validator: the same key,
+    past its free unbound calls, is refused while unbound and served once bound."""
+    import datetime
+
+    import routes.auto_trial as at
+
+    row = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3),
+           None, operator_email, 0, None, at.TRIAL_FREE_CALLS_UNBOUND + 5)
+    monkeypatch.setattr(at, "_conn", lambda: _TrialRow(row))
+    assert at.validate_trial_key(KEY) == verdict
 
 
 # ── 3. Clarity's day 1 -> day 2 ───────────────────────────────────────────
