@@ -908,6 +908,39 @@ jobs:
             echo "::error::the keys_used_day2 SQL test SKIPPED — it proves nothing"; exit 1
           fi
 
+      # ── Capacity Source search SQL, against the same Postgres ───────────
+      # The size and place predicates are SQL no fake cursor can judge. A CASE
+      # sizes a colocation listing by detail.colocation.kw_available and every
+      # other listing by capacity_mw * 1000, casting the JSON value only when
+      # it IS a number — so a listing advertising 40 MW with 1,200 kW of
+      # colocation space on offer must FAIL a 1,500 kW search, and only a real
+      # Postgres shows which of those two numbers the CASE read. Place is
+      # ILIKE ANY over escaped patterns and country codes and names matched
+      # through text arrays; a fake cursor accepts every one of them.
+      # The tests seed exclusive_listings and read it back through the module's
+      # own _db_list_listings and _db_count_matching, so the statements checked
+      # are the ones the feed and the requirement count send.
+      #
+      # Safe to share the `parity` database: this test owns and recreates only
+      # exclusive_listings, and runs after the lanes above have reported.
+      - name: Capacity Source search SQL against a real Postgres
+        env:
+          CAPACITY_SOURCE_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: python3 -m pytest tests/test_capacity_source_search_sql.py -v --tb=short
+
+      - name: Prove the Capacity Source search SQL test actually RAN
+        # It skips itself when no DSN is set, which is exactly how it would
+        # ride green here. A skipped proof is not a proof.
+        env:
+          CAPACITY_SOURCE_SQL_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+        run: |
+          python3 -m pytest tests/test_capacity_source_search_sql.py \
+            -q -rs --tb=no > cs.txt 2>&1 || { cat cs.txt; exit 1; }
+          cat cs.txt
+          if grep -qi "skipped" cs.txt; then
+            echo "::error::the Capacity Source search SQL test SKIPPED — it proves nothing"; exit 1
+          fi
+
       # ── Gate liveness ledger ─────────────────────────────────────────────
       # This job beats for ITSELF. Nothing beats on its behalf.
       # Values go through env, never inlined into run: — ${{ }} is raw TEXT.
@@ -952,6 +985,7 @@ jobs:
             rc.txt
             pa.txt
             kd.txt
+            cs.txt
           )
           PRESENT=()
           for f in "${PROOFS[@]}"; do
