@@ -51,26 +51,30 @@ FR5_DUP = ("Equinix FR5", "Equinix", "Frankfurt", None, "DE")
 PLAN_B = ("Plan B Tawa", "Plan B Limited", "Wellington", None, "NZ")
 
 # row · the page's facts · the approved <title> · the approved description
+# r-facility-facts (2026-09-15): four descriptions changed when the operator
+# became a fact the snippet always states (owner-approved SEO Step 1, the
+# handoff of 2026-09-15). Council Bluffs, both FR5 rows and Mars now say who
+# operates them; no title moved, and test_the_approved_title_renders pins all.
 APPROVED = [
     (COUNCIL_BLUFFS,
      dict(power_mw=350, status="Operational", iso="MISO",
           time_to_power_months=19.2),
      "Google Council Bluffs Data Center · Iowa · 350 MW | DC Hub",
-     "350 MW operational data center in Council Bluffs, Iowa, on the MISO "
-     "grid. ~19 months to power for new builds here. Specs, nearby power and "
-     "peer sites on DC Hub."),
+     "350 MW operational data center in Council Bluffs, Iowa, operated by "
+     "Google, on the MISO grid. ~19 months to power for new builds here."),
     (FR5_KEEPER,
      dict(power_mw=None, status="Operational", iso="ENTSOE-DE",
           time_to_power_months=117.6),
      "Equinix FR5 · Frankfurt, Germany · ENTSOE-DE | DC Hub",
      "Equinix FR5 - Frankfurt, KleyerStrasse: operational data center in "
-     "Frankfurt, Germany, on the ENTSOE-DE grid. ~9.8 years to power for new "
-     "builds here."),
+     "Frankfurt, Germany, operated by Equinix, on the ENTSOE-DE grid. Specs, "
+     "nearby power & peers."),
     (MARS,
      dict(power_mw=None, status="Operational", nearby_generation_mw=1628),
      "Mars Datacenter Ankara-1 · Turkey | DC Hub",
-     "Operational data center in Ankara, Turkey. 1,628 MW of operating "
-     "generation within 50 km. Specs, nearby power and peer sites on DC Hub."),
+     "Operational data center in Ankara, Turkey, operated by Mars Datacenter. "
+     "1,628 MW of operating generation within 50 km. Specs, nearby power & "
+     "peers."),
     (COMPASS,
      dict(power_mw=100, status="Under Construction", iso="WECC",
           time_to_power_months=12.4),
@@ -89,9 +93,9 @@ APPROVED = [
      dict(power_mw=40, status="Operational", iso="ENTSOE-DE",
           time_to_power_months=117.6),
      "Equinix FR5 · Frankfurt, Germany · 40 MW | DC Hub",
-     "40 MW operational data center in Frankfurt, Germany, on the ENTSOE-DE "
-     "grid. ~9.8 years to power for new builds here. Specs, nearby power & "
-     "peers."),
+     "40 MW operational data center in Frankfurt, Germany, operated by "
+     "Equinix, on the ENTSOE-DE grid. ~9.8 years to power for new builds "
+     "here."),
     (PLAN_B,
      dict(power_mw=None, status="Operational", nearby_generation_mw=203),
      "Plan B Tawa · Wellington, New Zealand | DC Hub",
@@ -203,7 +207,7 @@ def test_an_implausible_mw_never_reaches_the_title_or_the_description(mw):
 def test_the_cap_is_inclusive_at_5000():
     assert _segments(compose_title(*ROOMY, power_mw=5000))[-1] == "5,000 MW"
     assert compose_description(*ROOMY, power_mw=5000).startswith(
-        "5,000 MW data center in Tulsa, Oklahoma.")
+        "5,000 MW data center in Tulsa, Oklahoma, operated by Acme.")
 
 
 @pytest.mark.parametrize("mw", [None, 350])
@@ -270,7 +274,7 @@ def test_announced_is_never_a_title_phase_but_stays_in_the_description():
                                    status="Announced"))[-1] == "120 MW"
     assert compose_description(*ROOMY, power_mw=120,
                                status="Announced").startswith(
-        "120 MW announced data center in Tulsa, Oklahoma.")
+        "120 MW announced data center in Tulsa, Oklahoma, operated by Acme.")
     # the approved phases are still admitted
     assert _segments(compose_title(*ROOMY, power_mw=120,
                                    status="Planned"))[-1] == "120 MW planned"
@@ -285,22 +289,26 @@ def test_the_name_prefix_is_used_only_for_a_site_code_lead():
     d = compose_description(*FR5_KEEPER, status="Operational")
     assert d.startswith(
         "Equinix FR5 - Frankfurt, KleyerStrasse: operational data center in "
-        "Frankfurt, Germany."), d
+        "Frankfurt, Germany, operated by Equinix."), d
     # a lead that IS the name gets no prefix, and a capital first letter
     d = compose_description(*PLAN_B, status="Operational")
     assert d.startswith("Operational data center in Wellington, New Zealand"), d
     d = compose_description(*COUNCIL_BLUFFS)
-    assert d.startswith("Data center in Council Bluffs, Iowa."), d
+    assert d.startswith("Data center in Council Bluffs, Iowa, operated by Google."), d
 
 
-def test_the_operator_is_named_only_when_real_and_not_in_the_name():
+def test_the_operator_is_named_whenever_it_is_real():
     # a brand-matched but DIFFERENT operator string is named
     assert ", operated by Compass Datacenters, on the WECC grid." in \
         compose_description(*COMPASS, iso="WECC")
-    # an operator the name already contains is not
-    assert "operated by" not in compose_description(*COUNCIL_BLUFFS)
-    # the "Operator" placeholder and an empty provider are not operators
-    for provider in ("Operator", "", None):
+    # r-facility-facts (2026-09-15): REVERSED. An operator the name contains is
+    # named too: the snippet is where "who owns/operates X" gets its answer.
+    # be#4386 left it out here, and "kanobe llc bothell data center owner" then
+    # sat at #5 with a snippet that never said who runs the building.
+    assert ", operated by Google." in compose_description(*COUNCIL_BLUFFS)
+    # the "Operator" placeholder, an empty provider and a provider that only
+    # repeats the name are not operators
+    for provider in ("Operator", "", None, "Unknown", "pipeline site"):
         d = compose_description("Pipeline Site", provider, "Tulsa", "OK", "US")
         assert "operated by" not in d, (provider, d)
 
@@ -346,11 +354,13 @@ def test_the_generation_sentence_is_the_fallback_not_an_addition():
 
 
 def test_the_description_never_exceeds_160():
-    # exactly at the limit: the approved Council Bluffs snippet is 160
-    row, facts, _t, desc = APPROVED[0]
-    assert len(compose_description(*row, **facts)) == 160 == len(desc)
-    # a long operator sheds its clause first; the grid clause and the
-    # time-to-power sentence still fit
+    # exactly at the limit: Council Bluffs with no operator on file is the
+    # 160-character snippet be#4386 approved, so the limit is inclusive
+    row, facts, _t, _desc = APPROVED[0]
+    d = compose_description(row[0], "Operator", *row[2:], **facts)
+    assert len(d) == 160, (len(d), d)
+    # r-facility-facts (2026-09-15): a long operator is KEPT. The grid clause
+    # goes first, and the time-to-power sentence no longer fits
     long_op = ("Vantage Data Centers Germany Holdings GmbH & Co. KG — "
                "Frankfurt Operations")
     d = compose_description("Vantage Frankfurt Campus", long_op,
@@ -358,8 +368,8 @@ def test_the_description_never_exceeds_160():
                             status="Under Construction", iso="ENTSOE-DE",
                             time_to_power_months=117.6)
     assert d == ("1,200 MW under-construction data center in Frankfurt am "
-                 "Main, Germany, on the ENTSOE-DE grid. ~9.8 years to power "
-                 "for new builds here."), d
+                 "Main, Germany, operated by Vantage Data Centers Germany "
+                 "Holdings GmbH & Co. KG — Frankfurt Operations."), d
     # pathological rows still fit
     for row in (("Equinix FR5 - " + "Campus Building " * 20, "Equinix",
                  "Frankfurt", None, "DE"),
@@ -382,7 +392,8 @@ def test_a_placeholder_city_reaches_neither_text(placeholder):
         assert placeholder.lower() not in text.lower(), text
     # and the country — the floor — is still published in both
     assert _segments(t)[1] == "China", t
-    assert d.startswith("20 MW planned data center in China, on the CSG grid."), d
+    assert d.startswith("20 MW planned data center in China, operated by "
+                        "China Telecom, on the CSG grid."), d
 
 
 # ── through the page ─────────────────────────────────────────────────────

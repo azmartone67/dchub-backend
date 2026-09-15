@@ -39,6 +39,12 @@ from util.thin_content import is_placeholder_city as _placeholder_city
 # place. MW_PLAUSIBLE_MAX has always lived in util/facility_headline; only the
 # <title> asked it. The body tile below asks it now too.
 from util.facility_headline import plausible_mw as _plausible_mw
+from util.facility_facts import (change_items as _change_items,
+                                 display_day as _display_day,
+                                 is_fleet_row as _is_fleet_row,
+                                 real_operator as _real_operator,
+                                 real_status as _real_status,
+                                 street_address as _street_address)
 import datetime as _dt
 
 logger = logging.getLogger(__name__)
@@ -1303,6 +1309,89 @@ def _fiber_connectivity_html(names, place: str = "") -> str:
     )
 
 
+# r-facility-facts (2026-09-15): entity_changes rows read per page. The list
+# shows util.facility_facts.CHANGE_LIST_MAX items, so the newest candidates
+# are enough; values that are not real are dropped after the read.
+_CHANGE_ROWS_LIMIT = 25
+
+
+def _facility_change_rows(fac: dict):
+    """The newest entity_changes rows for the row serving this page, as
+    (kind, field, old_value, new_value, detected_at) tuples. [] on any failure.
+
+    Only a discovered_facilities row has a history: that is the table
+    routes/temporal_capture tracks, keyed by `id` through the capture's own
+    _entity_key, so this asks for the key the writer wrote rather than a copy
+    of its spelling. The legacy `facilities` table is not captured. The WHERE +
+    ORDER BY is the shape of ix_echg_entity (layer, entity_key, detected_at
+    DESC), and only the kinds and fields the page can state are fetched."""
+    if fac.get("_src_table") != "discovered_facilities" or fac.get("id") is None:
+        return []
+    try:
+        from routes.temporal_capture import _entity_key
+        from util.facility_facts import CHANGE_FIELDS, CHANGE_LAYER
+        key = _entity_key({"id": fac.get("id")}, ("id",))
+    except Exception:
+        return []
+    if not key:
+        return []
+    conn = None
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+        if conn is None:
+            return []
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT kind, field, old_value, new_value, detected_at"
+                "  FROM entity_changes"
+                " WHERE layer = %s AND entity_key = %s"
+                "   AND (kind = 'appeared'"
+                "        OR (kind = 'field_change' AND field = ANY(%s)))"
+                " ORDER BY detected_at DESC, id DESC"
+                " LIMIT %s",
+                (CHANGE_LAYER, key, list(CHANGE_FIELDS), _CHANGE_ROWS_LIMIT))
+            rows = c.fetchall() or []
+    except Exception as _chg_err:
+        logger.warning("facility_profile change history unavailable (%s) — "
+                       "section omitted", _chg_err)
+        return []
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return [tuple(r) for r in rows if isinstance(r, (list, tuple))]
+
+
+def _facts_html(operator: str, street: str, status: str) -> str:
+    """The Operator / Address / Status line under the <h1>. PURE. The values
+    arrive vetted by util.facility_facts; an empty one is left out, and with
+    none there is no line."""
+    facts = [(label, value) for label, value in (
+        ("Operator", operator), ("Address", street), ("Status", status))
+        if value]
+    if not facts:
+        return ""
+    return '<ul class="facts">' + "".join(
+        f'<li><span class="fact-label">{label}</span> {_esc(value)}</li>'
+        for label, value in facts) + "</ul>"
+
+
+def _changes_html(items) -> str:
+    """"What changed": util.facility_facts.change_items, newest first. PURE."""
+    if not items:
+        return ""
+    lis = "".join(
+        f'<li><time datetime="{day.isoformat()}">{_esc(_display_day(day))}'
+        f'</time> &mdash; {_esc(text)}</li>' for day, text in items)
+    return ('<div class="section"><div class="section-head"><h2>What changed'
+            '</h2></div><p class="section-sub">Changes DC Hub has recorded to '
+            'this facility&rsquo;s record, newest first.</p>'
+            f'<ul class="changes">{lis}</ul></div>')
+
+
 def _brand_already_in_name(provider: str, name: str) -> bool:
     """Delegates to util.facility_headline.brand_already_in_name.
 
@@ -1421,6 +1510,18 @@ def _render_profile(fac: dict, slug: str) -> str:
     _disp = _hl["disp"]
     _h1 = _hl["h1"]
     _og_title = _hl["og_title"]
+    # r-facility-facts (2026-09-15): the operator, street address and status
+    # this page states in its first lines and its meta description, and the
+    # record's recorded changes. Each only when util.facility_facts accepts the
+    # stored value, and none on a fleet-sized row. The Address tile and the
+    # Place JSON-LD read the same `_street`, so the page cannot print an
+    # address in one place that it refuses in another.
+    _fleet = _is_fleet_row(power)
+    _operator = "" if _fleet else _real_operator(fac.get("provider"), name)
+    _street = "" if _fleet else _street_address(address)
+    _status = "" if _fleet else _real_status(fac.get("status"))
+    _changes = [] if _fleet else _change_items(fac.get("_changes"))
+    _last_updated = _changes[0][0] if _changes else None
     # r-title-facts (2026-09-10): `title` and `desc` are NOT composed here. Both
     # now carry facts that are only known further down — the DCPI market's ISO
     # and time-to-power, and the nearby-generation total — so they are built
@@ -1514,7 +1615,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     _hash8 = slug.rsplit("-", 1)[-1] if "-" in slug else slug
     _addr = {k: v for k, v in {
         "@type": "PostalAddress",
-        "streetAddress": address or None,
+        "streetAddress": _street or None,
         # r-placeholder-city (2026-09-07): the comment above says "no
         # fabricated fields", and this line was publishing a PostalAddress
         # whose locality is 'Regional' — a machine-readable claim, to the
@@ -1529,7 +1630,11 @@ def _render_profile(fac: dict, slug: str) -> str:
         "@id": canonical + "#place",
         "url": canonical,
         "name": _disp,
-        "description": f"Data center facility operated by {provider} in {loc_short}. Source: DC Hub (dchub.cloud), CC-BY-4.0.",
+        # r-facility-facts: "operated by Operator" was the renderer's own
+        # placeholder, published as a name on ~1 page in 6.
+        "description": (f"Data center facility operated by {_real_operator(provider)} in {loc_short}. Source: DC Hub (dchub.cloud), CC-BY-4.0."
+                        if _real_operator(provider) else
+                        f"Data center facility in {loc_short}. Source: DC Hub (dchub.cloud), CC-BY-4.0."),
         "identifier": _hash8,
         "isAccessibleForFree": True,
         "license": "https://creativecommons.org/licenses/by/4.0/",
@@ -1555,6 +1660,10 @@ def _render_profile(fac: dict, slug: str) -> str:
         "isAccessibleForFree": True,
         "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
         "citation": "DC Hub, dchub.cloud",
+        # r-facility-facts (2026-09-15): the date of the newest change the page
+        # lists under "What changed", absent when it lists none. Never the
+        # render date, which would claim every page changed today.
+        **({"dateModified": _last_updated.isoformat()} if _last_updated else {}),
         # r-facility-entity (2026-09-03): this Dataset node carried a CC-BY
         # "you may cite this" envelope around numbers that existed only in
         # PROSE — variableMeasured was absent on all 20,300+ facility pages.
@@ -1605,7 +1714,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     if _has(state):                    stats.append(("State", state))
     if _has(country):                  stats.append(("Country", country))
     if lat and lng:                    stats.append(("Coordinates", f"{float(lat):.4f}, {float(lng):.4f}"))
-    if _has(address):                  stats.append(("Address", address))
+    if _street:                        stats.append(("Address", _street))
     # r82 (2026-06-30): Clarity showed DEAD CLICKS on the metric tiles — they're
     # styled like buttons but were plain <div>s. Make the tap-worthy ones real
     # links (Market → its DCPI page, Coordinates → the map). Doubles as onward-nav
@@ -1746,6 +1855,16 @@ def _render_profile(fac: dict, slug: str) -> str:
         logger.warning(f"facility_profile fiber connectivity failed: {_fib_err}")
         fiber_html = ""
 
+    # r-facility-facts (2026-09-15): the Operator / Address / Status line under
+    # the <h1>, "Last updated" and the "What changed" list. The rows are fetched
+    # by the ROUTE (_facility_change_rows), like _fiber_carriers; a render
+    # without them lists nothing and states no date.
+    facts_html = _facts_html(_operator, _street, _status)
+    updated_html = (
+        f'<div class="updated">Last updated <time datetime="{_last_updated.isoformat()}">'
+        f'{_esc(_display_day(_last_updated))}</time></div>' if _last_updated else "")
+    changes_html = _changes_html(_changes)
+
     # r-title-facts (2026-09-10): the SERP <title> and meta description, built
     # ONCE, now that every fact they may carry is known — the market's ISO and
     # time-to-power (`_dcpi`, above) and the nearby-generation total. DISPLAY-
@@ -1765,7 +1884,8 @@ def _render_profile(fac: dict, slug: str) -> str:
                          power_mw=power, status=status, iso=_iso,
                          time_to_power_months=_ttp,
                          nearby_generation_mw=_gen_mw,
-                         radius_km=int(_RADIUS_KM))
+                         radius_km=int(_RADIUS_KM),
+                         address=address)
 
     # r-soft404-rag: RAG market-narrative snippet — turns a thin facility page into
     # substantive, indexable content when its market has a deep-dive (fail-soft '').
@@ -1889,6 +2009,13 @@ def _render_profile(fac: dict, slug: str) -> str:
   .hero .loc{{color:var(--mut);font-size:15px}}
   .hero .loc .loc-link{{color:inherit;text-decoration:none;border-bottom:1px dotted var(--dim)}}
   .hero .loc .loc-link:hover{{color:var(--ind);border-bottom-color:var(--ind)}}
+  .hero .facts{{list-style:none;display:flex;flex-wrap:wrap;gap:4px 20px;margin:0 0 10px;padding:0;font-size:15px;color:var(--tx)}}
+  .hero .fact-label{{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-right:2px;font-family:'JetBrains Mono',monospace}}
+  .hero .updated{{color:var(--dim);font-size:13px;margin-top:6px}}
+  .changes{{list-style:none;margin:0;padding:0}}
+  .changes li{{padding:7px 0;border-top:1px solid var(--b);color:var(--mut);font-size:14px}}
+  .changes li:first-child{{border-top:0}}
+  .changes time{{color:var(--tx);margin-right:4px;font-family:'JetBrains Mono',monospace;font-size:12px}}
   .stats-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin:24px 0}}
   .stat-card{{background:var(--surf);border:1px solid var(--b);border-radius:14px;padding:18px 20px}}
   a.stat-card.stat-link{{text-decoration:none;color:inherit;cursor:pointer;transition:border-color .15s}}
@@ -1939,13 +2066,16 @@ def _render_profile(fac: dict, slug: str) -> str:
   <div class="container">
     <div class="hero">
       <h1>{_esc(_h1)}</h1>
-      {f'<div class="prov">{_esc(provider)}</div>' if (provider and provider.strip().lower() != name.strip().lower()) else ''}
+      {facts_html}
       <div class="loc">📍 {f'<a href="/dcpi/{_esc(_mslug0)}" class="loc-link">{_esc(loc_short)}</a>' if _mslug0 else _esc(loc_short)}</div>
+      {updated_html}
     </div>
 
     {narrative_html}
 
     <div class="stats-grid">{stats_html}</div>
+
+    {changes_html}
 
     {dcpi_html}
 
@@ -2801,6 +2931,12 @@ text-align:center;padding:80px 20px">
         fac["_fiber_carriers"] = _fiber_carrier_names(fac)
     except Exception:
         fac["_fiber_carriers"] = []
+    # r-facility-facts (2026-09-15): the change history, same rule, same
+    # fail-soft shape — a failure costs the list and the date, never the page.
+    try:
+        fac["_changes"] = _facility_change_rows(fac)
+    except Exception:
+        fac["_changes"] = []
     html = _render_profile(fac, slug)
     # r-page-onramp (2026-07-04): citation header with as-of stamp. ASCII only
     # (headers are latin-1; the industry-pulse em-dash 502 is the trap).

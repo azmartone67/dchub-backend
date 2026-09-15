@@ -559,18 +559,26 @@ def _generation_mw_text(mw) -> str:
 def compose_description(name, provider, city, state, country, power_mw=None,
                         status=None, iso=None, time_to_power_months=None,
                         nearby_generation_mw=None, radius_km=50,
-                        limit=DESCRIPTION_LIMIT) -> str:
+                        limit=DESCRIPTION_LIMIT, address=None) -> str:
     """The meta description (also og:/twitter:description). DISPLAY-ONLY.
 
-    `[{name}: ]{MW} {status} data center in {City, Region}[, operated by
-    {operator}][, on the {ISO} grid]. [{time-to-power} to power for new builds
-    here. | {N} MW of operating generation within {radius} km.] Specs, nearby
-    power and peer sites on DC Hub.`
+    `[{name}: ]{MW} {status} data center {at {street}, | in }{City, Region}[,
+    operated by {operator}][, on the {ISO} grid]. [{time-to-power} to power for
+    new builds here. | {N} MW of operating generation within {radius} km.]
+    Specs, nearby power and peer sites on DC Hub.`
 
     * `{name}: ` only when the title shows a SHORTENED lead (a site code —
       "Equinix FR5"), so the snippet still carries the full name;
-    * the operator only when it is real and the name does not already contain
-      it; the grid only for a registered ISO label;
+    * r-facility-facts (2026-09-15): the operator, the street address and the
+      status are what owner and address searches ask for, so they are never
+      shed — the grid goes first, then the name prefix, then a word-boundary
+      cut. The operator is named whenever util.facility_facts.real_operator
+      accepts it, including when the name CONTAINS it: "Bothell Data Services
+      Kanobe, LLC" ranked #5 for "kanobe llc bothell data center owner" with a
+      snippet that never said who runs it. The address is stated only when
+      util.facility_facts.street_address accepts it, and a fleet-sized row
+      states neither;
+    * the grid only for a registered ISO label;
     * time-to-power comes from the DCPI market. The generation sentence is the
       fallback, and its total must be the one the page's own section prints —
       the caller passes it only when that section rendered;
@@ -580,6 +588,7 @@ def compose_description(name, provider, city, state, country, power_mw=None,
       only when they fit, and the tail falls back to a shorter form.
     """
     from util.iso_taxonomy import is_registered_label
+    from util.facility_facts import is_fleet_row, real_operator, street_address
     hl = facility_headline(name, provider, city, state, country)
     disp, lead = hl["disp"], hl["lead"]
     city = _real_city(city)
@@ -593,27 +602,36 @@ def compose_description(name, provider, city, state, country, power_mw=None,
     adjective = _DESCRIPTION_ADJECTIVES.get(str(status or "").strip().lower(), "")
     head = " ".join(p for p in (display_mw(power_mw), adjective, "data center")
                     if p)
-    operator = str(provider or "").strip()
-    by = (f", operated by {operator}"
-          if (operator and operator != "Operator"
-              and operator.lower() not in disp.lower()) else "")
+    fleet = is_fleet_row(power_mw)
+    operator = "" if fleet else real_operator(provider, name)
+    street = "" if fleet else street_address(address)
+    by = f", operated by {operator}" if operator else ""
     grid = (f", on the {str(iso).strip()} grid"
             if is_registered_label(iso) else "")
     prefix = f"{disp}: " if disp.lower() != lead.lower() else ""
-    at = f" in {where}" if where else ""
+    if street and city and any(seg.strip().lower().startswith(city.lower())
+                               for seg in street.split(",")[1:]):
+        # "705 Development Court, Poughkeepsie, NY, 12601" already places it.
+        # Only a LATER segment counts: "3180 Irving Blvd" is in Irving, Texas.
+        at = f" at {street}"
+    elif street:
+        at = f" at {street}" + (f", {where}" if where else "")
+    else:
+        at = f" in {where}" if where else ""
 
-    def first_sentence(prefix, by, grid):
+    def first_sentence(prefix, grid):
         h = head if prefix else head[:1].upper() + head[1:]
         return f"{prefix}{h}{at}{by}{grid}."
 
-    text = first_sentence(prefix, by, grid)
+    text = first_sentence(prefix, grid)
     # The first sentence has to fit on its own. A pathological row (a very
-    # long name or operator) sheds the operator clause, then the grid clause,
-    # then the name prefix — and only then is cut at a word boundary.
-    for p_, b_, g_ in ((prefix, "", grid), (prefix, "", ""), ("", "", "")):
+    # long name, operator or address) sheds the grid clause, then the name
+    # prefix — and only then is cut at a word boundary. The operator and the
+    # address are never shed: they are what this snippet exists to state.
+    for p_, g_ in ((prefix, ""), ("", "")):
         if len(text) <= limit:
             break
-        text = first_sentence(p_, b_, g_)
+        text = first_sentence(p_, g_)
     if len(text) > limit:
         text = text[:limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
 
