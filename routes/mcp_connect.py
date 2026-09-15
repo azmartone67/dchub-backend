@@ -224,7 +224,12 @@ In ChatGPT: Settings -> Connectors -> Add custom connector -> paste the URL.""",
         "snippet":        """MCP endpoint:  https://dchub.cloud/mcp
 Gemini function declarations:  https://dchub.cloud/api/v1/gemini-functions.json
 OpenAPI (Vertex):  https://dchub.cloud/openapi-vertex.yaml
-Header (optional, unlocks 50/day):  X-API-Key: {{TRIAL_KEY}}""",
+Header (optional):  X-API-Key: {{TRIAL_KEY}}""",
+        # ★ r-connect-quota-copy: the header line said the key "unlocks" the
+        # email-bound daily quota, which an unbound key never gets. The page
+        # appends step 4's trial terms under it instead, read from
+        # routes.auto_trial on every render (see _snippet).
+        "snippet_trial_terms": True,
         "deep_link":      "",
         "deep_link_label": "",
         "examples": [
@@ -841,7 +846,7 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
   <div class="step"><span class="step-num">4</span> Trial limits + upgrade</div>
   <p style="margin:0 0 6px;color:var(--muted);font-size:.95rem">
     {TRIAL_TERMS_STEP4_HTML}
-    Need more? Upgrade to Pro — gets you unlimited daily quota, all {canon_tools} tools,
+    Need more? Upgrade to Pro — gets you {canon_pro_mcp_calls} MCP calls/day, all {canon_tools} tools,
     and removes the free-tier truncation on grid + fiber intel.
   </p>
   <div class="upgrade-grid{ANNUAL_GRID_MOD}">
@@ -853,7 +858,7 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
     <a id="upg-monthly" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pro_monthly&view_id={VIEW_ID}">
       <h3>Pro Monthly</h3>
       <div class="price">${PRO_PRICE}<span style="font-size:.7em;color:var(--muted)">/mo</span></div>
-      <div class="desc">Cancel anytime. Same unlimited access, monthly billing.</div>
+      <div class="desc">Cancel anytime. Same Pro access, monthly billing.</div>
     </a>
 {ANNUAL_TILE_HTML}  </div>
   <p class="upgrade-note" id="ref-note" style="display:none">
@@ -880,6 +885,9 @@ const CLIENT_KEY  = {CLIENT_KEY_JSON};
 const VIEW_ID     = {VIEW_ID_JSON};
 const RAW_SNIPPET = {SNIPPET_JSON};
 const KEY_SENTINEL = {KEY_SENTINEL_JSON};
+// The trial terms this page was rendered with (_trial_terms), or null when
+// routes.auto_trial could not be read.
+const TRIAL_TERMS = {TRIAL_TERMS_JSON};
 const STRIPE_M    = {STRIPE_M_JSON};
 const STRIPE_A    = {STRIPE_A_JSON};
 let mintedKey = "";
@@ -921,12 +929,20 @@ function markKeyDay1() {{
 // install snippet until POST /api/v1/keys/auto-trial/bind accepts an email.
 let mintAnswer = null;
 
+// ★ r-connect-quota-copy: an answer without daily_calls or trial_days got
+// figures typed here. The caller now passes a daily figure it can stand
+// behind, or none, and the trial length falls back to the rendered
+// TRIAL_DAYS, which every trial key runs, bound or not. A figure neither
+// source has is left out.
 function showTierLine(j, calls) {{
+  const days = (typeof j.trial_days === "number") ? j.trial_days
+             : (TRIAL_TERMS ? TRIAL_TERMS.days : null);
+  const parts = [(j.tier || "IDENTIFIED") + " tier"];
+  if (typeof calls === "number") parts.push(calls + " req/day");
+  if (typeof days === "number") parts.push(days + "-day trial");
   const meta = document.getElementById("key-meta");
   meta.style.display = "flex";
-  meta.innerText = (j.tier || "IDENTIFIED") + " tier ·  "
-                 + (calls || 50) + " req/day · "
-                 + (j.trial_days || 7) + "-day trial";
+  meta.innerText = parts.join(" · ");
 }}
 
 // Swap the minted key into the install snippet. ★ r-connect-return
@@ -982,7 +998,11 @@ async function bindEmail(ev) {{
         "Email bound: the same key keeps working. A client that already holds it may take a few minutes to notice.";
       status.innerText = "";
       document.getElementById("bind-step").classList.add("done");
-      showTierLine(j, j.daily_calls_when_email_bound);
+      // The key is bound now, so an answer without the bound figure gets the
+      // one this page was rendered with.
+      showTierLine(j, (typeof j.daily_calls_when_email_bound === "number")
+                      ? j.daily_calls_when_email_bound
+                      : (TRIAL_TERMS ? TRIAL_TERMS.daily_bound : null));
       swapKeyIntoSnippet();
       document.getElementById("mint-btn").innerText = "Email bound -- paste in step 2 ↑";
     }} else {{
@@ -1129,6 +1149,12 @@ function copySnippet() {{
 # to fill. ★2026-09-10: this used to say "already wrapped in canon_text() at
 # import" — that import-time wrap was itself the stale-floor bug; the wrap now
 # happens per request in _render_page().
+#
+# ★ r-connect-quota-copy: step 4 said Pro "gets you unlimited daily quota" and
+# the Pro Monthly tile said "Same unlimited access", while tier_registry gives
+# Pro a finite mcp_daily. Step 4 now quotes it through canon's Pro MCP quota
+# placeholder and names the MCP lane, the way /connect's Pro tier card does:
+# Pro's REST rate limit is a different number. The tile states no figure.
 
 
 # The literal every _CLIENTS snippet carries where the minted key goes. The
@@ -1183,33 +1209,54 @@ def _trial_terms() -> dict | None:
         return None
 
 
-def _trial_terms_html() -> tuple[str, str]:
-    """(step 1, step 4) sentences stating the trial terms.
+def _trial_clauses(t: dict | None, b: str = "", b_end: str = "") -> tuple[str, str]:
+    """(free, keeps): what a trial key gets without an email, and what binding one keeps.
 
-    With the terms unreadable they say the same things without a figure: no
-    figure beats a wrong one, the asymmetry _pro_price_usd keeps for the price.
+    b and b_end wrap each figure: the steps pass markup, the snippet passes none.
+    With the terms unreadable (t is None) the clauses say the same things without
+    a figure: no figure beats a wrong one, the asymmetry _pro_price_usd keeps for
+    the price.
     """
-    t = _trial_terms()
     if t is None:
-        free = "a limited number of free calls"
-        keeps = "the same key keeps working"
-    else:
-        # The unbound daily cap needs naming only when it bites before the free
-        # calls run out, i.e. with TRIAL_FREE_CALLS_UNBOUND tuned above it.
-        per_day = (f", at most {t['daily_unbound']} a day"
-                   if t["daily_unbound"] < t["free_calls"] else "")
-        free = f"{_TRIAL_B}{t['free_calls']} free calls</b>{per_day}"
-        keeps = (f"the same key keeps working, at {_TRIAL_B}{t['daily_bound']} "
-                 f"requests/day</b> for the rest of its {t['days']}-day trial")
+        return "a limited number of free calls", "the same key keeps working"
+    # The unbound daily cap needs naming only when it bites before the free
+    # calls run out, i.e. with TRIAL_FREE_CALLS_UNBOUND tuned above it.
+    per_day = (f", at most {t['daily_unbound']} a day"
+               if t["daily_unbound"] < t["free_calls"] else "")
+    return (f"{b}{t['free_calls']} free calls{b_end}{per_day}",
+            f"the same key keeps working, at {b}{t['daily_bound']} requests/day{b_end} "
+            f"for the rest of its {t['days']}-day trial")
+
+
+def _trial_terms_html(t: dict | None) -> tuple[str, str]:
+    """(step 1, step 4) sentences stating the trial terms in t."""
+    free, keeps = _trial_clauses(t, _TRIAL_B, "</b>")
     return (f"Without an email it gets {free}. Bind an email (free, no card) and "
             f"{keeps}. Free calls are counted per network: if this one has already "
             f"used them, a new key needs the email from its first call.",
             f"Without an email, a trial key gets {free}. Bind an email and {keeps}.")
 
 
+def _snippet(c: dict, t: dict | None) -> str:
+    """c's install snippet as the page serves it: in the <pre> and as RAW_SNIPPET.
+
+    A client flagged snippet_trial_terms gets step 4's terms under its snippet,
+    one sentence a line, as plain text. The key sentinel is left as it is, so the
+    page script's swap still finds it, and these lines survive the swap.
+    """
+    if not c.get("snippet_trial_terms"):
+        return c["snippet"]
+    free, keeps = _trial_clauses(t)
+    return (f"{c['snippet']}\nWithout an email, a trial key gets {free}.\n"
+            f"Bind an email and {keeps}.")
+
+
 def _render_page(client_key: str, view_id: int | None) -> str:
     c = _CLIENTS[client_key]
-    trial_step1_html, trial_step4_html = _trial_terms_html()
+    # One read of the trial terms per render, for steps 1 and 4, the snippet and
+    # the page script, so no two of them can state different terms.
+    terms = _trial_terms()
+    trial_step1_html, trial_step4_html = _trial_terms_html(terms)
     # Render examples as <div class="example"> lines
     examples_html = "\n".join(
         f'    <div class="example">{e}</div>' for e in c["examples"]
@@ -1222,8 +1269,9 @@ def _render_page(client_key: str, view_id: int | None) -> str:
     # The snippet body still has the literal {{TRIAL_KEY}} sentinel — JS
     # swaps it after the mint POST. Server-side we just escape any HTML
     # characters that would break <pre> rendering.
+    snippet = _snippet(c, terms)
     snippet_rendered = (
-        c["snippet"]
+        snippet
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
@@ -1257,8 +1305,9 @@ def _render_page(client_key: str, view_id: int | None) -> str:
         VIEW_ID=(str(view_id) if view_id else ""),
         CLIENT_KEY_JSON=json.dumps(client_key),
         VIEW_ID_JSON=json.dumps(view_id),
-        SNIPPET_JSON=json.dumps(c["snippet"]),
+        SNIPPET_JSON=json.dumps(snippet),
         KEY_SENTINEL_JSON=json.dumps(TRIAL_KEY_SENTINEL),
+        TRIAL_TERMS_JSON=json.dumps(terms),
         STRIPE_M_JSON=json.dumps(_STRIPE_MONTHLY),
         STRIPE_A_JSON=json.dumps(_STRIPE_ANNUAL),
     )
