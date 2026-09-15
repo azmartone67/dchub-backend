@@ -1347,39 +1347,85 @@ def connect_click_proxy():
 # page. This counts what the page exists for: the key it minted turning up in
 # mcp_call_log on a UTC calendar day after the day it was minted.
 #
-# ★ The join rides the api_key index. Production planned this exact statement
-#   (EXPLAIN, 2026-09-14) as a Nested Loop Semi Join over a Bitmap Index Scan
-#   on idx_mcp_log_apikey. Wrap m.api_key in a function and the plan becomes a
-#   scan of the whole call log, behind a public route with a ~15s edge
-#   timeout. tests/test_connect_keys_used_day2_sql.py EXPLAINs the text this
-#   module sends.
-# ★ The day boundary is taken in timestamp space (AT TIME ZONE 'UTC', + 1 day,
-#   back to timestamptz), so neither the session TimeZone nor a DST change can
-#   move it.
+# r-connect-return (2026-09-15). The same read answers days 4 and 7
+# (keys_used_by_day) and says which minted keys the validator refuses now
+# (keys_refused_now). Without that, a 0 cannot say whether anyone came back.
+#
+# ★ A call is logged under a key only when /api/v1/keys/validate ACCEPTED the
+#   key for that call. The MCP server drops a refused key and serves the call
+#   anonymously (server.mjs _effectiveCallerKey; dchub-mcp-server
+#   test/connect-query-key-reaches-track.test.mjs). An unbound trial key is
+#   refused once it has used its free unbound calls, and a key minted from an
+#   IP that already used them is refused from its first call
+#   (auto_trial.mint_trial_for_request). Such a key's return cannot count.
+# ★ The join rides the api_key index. Production planned the day-2 statement
+#   this read replaced (EXPLAIN, 2026-09-14) as a Nested Loop Semi Join over a
+#   Bitmap Index Scan on idx_mcp_log_apikey; this read keeps the same
+#   correlated EXISTS on m.api_key. Wrap m.api_key in a function and the plan
+#   becomes a scan of the whole call log, behind a public route with a ~15s
+#   edge timeout. tests/test_connect_keys_used_day2_sql.py EXPLAINs the text
+#   this module sends.
+# ★ Day boundaries are taken in timestamp space (AT TIME ZONE 'UTC', + N - 1
+#   days, back to timestamptz), so neither the session TimeZone nor a DST
+#   change can move them.
 # ★ Only MCP calls count. mcp_call_log also holds page events (key_issued,
 #   key_first_use) and bulk REST rows (bulk:<tier>). These four are the
 #   event_type values flask_mcp_endpoints.track_tool_call maps a call status
 #   to; a status it does not map is stored as NULL, and is still a call.
+# ★ keys_refused_now follows validate_key: an active mcp_dev_keys row serves;
+#   otherwise validate_trial_key refuses a key that is not a dch_trial_ key
+#   with a row, then an expired one, then an unbound one at its free-call
+#   allowance. That allowance is read from routes.auto_trial on each request,
+#   the value the validator reads, never a copy of it.
 MCP_CALL_EVENT_TYPES = ("tool_call", "tool_error", "paywall_block", "trial_preview")
 
-# Well inside the edge's route timeout, on top of the stats read itself.
-KEYS_USED_DAY2_TIMEOUT_MS = 4000
+# Day 1 is a key's mint day, so day 2 is keys_used_day2.
+KEYS_USED_BY_DAY = (2, 4, 7)
 
-_KEYS_USED_DAY2_SQL = """
-    SELECT k.client, COUNT(*) AS keys_used_day2
-      FROM (SELECT client, key_minted_for, MIN(key_minted_at) AS minted_at
+# validate_trial_key's refusals, in its order. A daily cap ends at the next UTC
+# day and is not one of them.
+KEYS_REFUSED_REASONS = ("unknown_key", "expired", "bind_email_required")
+
+# Well inside the edge's route timeout, on top of the stats read itself.
+KEYS_RETURN_TIMEOUT_MS = 4000
+
+# One row per distinct key: the days that have begun for it, the days on or
+# after which it was called, and why the validator refuses it now (NULL when it
+# serves). The key itself is never selected.
+_KEYS_RETURN_SQL = """
+    SELECT k.client,
+           ARRAY(SELECT d.day
+                   FROM unnest(%(days)s::int[]) AS d(day)
+                  WHERE (k.mint_day + (d.day - 1) * INTERVAL '1 day') AT TIME ZONE 'UTC' <= NOW()
+                  ORDER BY d.day) AS eligible_days,
+           ARRAY(SELECT d.day
+                   FROM unnest(%(days)s::int[]) AS d(day)
+                  WHERE EXISTS (SELECT 1
+                                  FROM mcp_call_log m
+                                 WHERE m.api_key = k.key_minted_for
+                                   AND m.timestamp >= (k.mint_day + (d.day - 1) * INTERVAL '1 day')
+                                                      AT TIME ZONE 'UTC'
+                                   AND (m.event_type IS NULL OR m.event_type = ANY(%(event_types)s)))
+                  ORDER BY d.day) AS used_days,
+           CASE
+             WHEN EXISTS (SELECT 1
+                            FROM mcp_dev_keys dk
+                           WHERE dk.api_key = k.key_minted_for
+                             AND dk.status = 'active') THEN NULL
+             WHEN left(k.key_minted_for, 10) <> 'dch_trial_' OR t.api_key IS NULL THEN 'unknown_key'
+             WHEN t.expires_at < NOW() THEN 'expired'
+             WHEN COALESCE(t.signed_up_email, '') = ''
+                  AND COALESCE(t.operator_email, '') = ''
+                  AND COALESCE(t.call_count, 0) >= %(free_calls)s THEN 'bind_email_required'
+           END AS refused
+      FROM (SELECT client, key_minted_for,
+                   date_trunc('day', MIN(key_minted_at) AT TIME ZONE 'UTC') AS mint_day
               FROM connect_landing_views
              WHERE viewed_at > NOW() - INTERVAL '30 days'
                AND key_minted_for IS NOT NULL
                AND key_minted_at IS NOT NULL
              GROUP BY client, key_minted_for) k
-     WHERE EXISTS (SELECT 1
-                     FROM mcp_call_log m
-                    WHERE m.api_key = k.key_minted_for
-                      AND m.timestamp >= (date_trunc('day', k.minted_at AT TIME ZONE 'UTC')
-                                          + INTERVAL '1 day') AT TIME ZONE 'UTC'
-                      AND (m.event_type IS NULL OR m.event_type = ANY(%s)))
-     GROUP BY k.client
+      LEFT JOIN auto_trial_keys t ON t.api_key = k.key_minted_for
 """
 
 KEYS_USED_DAY2_BASIS = (
@@ -1389,40 +1435,91 @@ KEYS_USED_DAY2_BASIS = (
     "tool_call, tool_error, paywall_block, trial_preview, or NULL) timestamped "
     "on a UTC calendar day after the key's mint day (its earliest "
     "key_minted_at in the window). It measures reuse of a key in the MCP call "
-    "log: not people, not devices, and not return visits to the page. A key "
-    "minted on the current UTC day cannot count before the next one. "
+    "log: not people, not devices, and not return visits to the page. A call "
+    "is logged under a key only when DC Hub accepted the key for that call; a "
+    "refused key is served anonymously and logged without it, so its reuse "
+    "cannot count (see keys_refused_now). A key minted on the current UTC day "
+    "cannot count before the next one. "
     "keys_minted counts page views carrying a key, and a second key minted on "
     "the same view replaces the first. Calls from DC Hub's own testing are not "
     "excluded. When keys_used_day2_status is not 'measured', keys_used_day2 is "
     "null for every client, never 0."
 )
 
+KEYS_USED_BY_DAY_BASIS = (
+    "keys_used_by_day covers the same keys as keys_used_day2, for days 2, 4 "
+    "and 7, where day 1 is a key's mint day and day N begins N - 1 UTC "
+    "calendar days after it. eligible counts the keys whose day N has begun. "
+    "used counts the eligible keys that appear on an MCP call timestamped on "
+    "day N or later, under the rules of keys_used_day2, so used for day 2 is "
+    "keys_used_day2. A key refused when it comes back cannot count (see "
+    "keys_refused_now), and an unbound trial key is refused once its trial "
+    "expires. keys_used_by_day comes from the same read as keys_used_day2: "
+    "when keys_used_day2_status is not 'measured', it is null for every "
+    "client, never 0."
+)
 
-def _keys_used_day2(db):
-    """({client: keys_used_day2}, "measured"), or (None, "timeout" | "query_failed").
+KEYS_REFUSED_NOW_BASIS = (
+    "keys_refused_now counts, among the same keys as keys_used_day2, those "
+    "/api/v1/keys/validate refuses as of this read, by the first reason that "
+    "applies in its order. A key with an active mcp_dev_keys row is served "
+    "and never counted. unknown_key: not a dch_trial_ key with an "
+    "auto_trial_keys row. expired: the trial's expires_at has passed. "
+    "bind_email_required: a trial bound to no email that has used its free "
+    "unbound calls. total is their sum. A daily-cap refusal, which ends at "
+    "the next UTC day, is not counted. It describes each key now, not when it "
+    "was used, so a key counted in keys_used_day2 may have been refused "
+    "since. A refused key's calls are served anonymously and logged without "
+    "the key, so they cannot count in keys_used_day2 or keys_used_by_day. "
+    "keys_refused_now comes from the same read as keys_used_day2: when "
+    "keys_used_day2_status is not 'measured', it is null for every client, "
+    "never 0."
+)
 
-    Fail-soft: the stats read has already succeeded and this count must never
+
+def _no_keys():
+    return {"by_day": {day: {"eligible": 0, "used": 0} for day in KEYS_USED_BY_DAY},
+            "refused": dict.fromkeys(KEYS_REFUSED_REASONS, 0)}
+
+
+def _keys_return(db):
+    """({client: {"by_day": {day: {"eligible", "used"}}, "refused": {reason: n}}},
+    "measured"), or (None, "timeout" | "query_failed").
+
+    Fail-soft: the stats read has already succeeded and this read must never
     take it down. It runs in a transaction of its own, because SET LOCAL is a
     no-op under autocommit, and main.get_db() lends a POOLED connection, so
     autocommit goes back to what it was before the connection returns.
     """
     prev = None
     try:
+        from routes.auto_trial import TRIAL_FREE_CALLS_UNBOUND
         db.rollback()                    # end the stats read's transaction; it wrote nothing
         prev = db.autocommit
         db.autocommit = False
         with db.cursor() as cur:
-            cur.execute("SET LOCAL statement_timeout = %d" % KEYS_USED_DAY2_TIMEOUT_MS)
-            cur.execute(_KEYS_USED_DAY2_SQL, (list(MCP_CALL_EVENT_TYPES),))
-            counts = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute("SET LOCAL statement_timeout = %d" % KEYS_RETURN_TIMEOUT_MS)
+            cur.execute(_KEYS_RETURN_SQL, {"days": list(KEYS_USED_BY_DAY),
+                                           "event_types": list(MCP_CALL_EVENT_TYPES),
+                                           "free_calls": int(TRIAL_FREE_CALLS_UNBOUND)})
+            rows = cur.fetchall()
         db.rollback()                    # read only; also drops the SET LOCAL
-        return counts, "measured"
+        keys = {}
+        for client, eligible_days, used_days, refused in rows:
+            got = keys.setdefault(client, _no_keys())
+            for day in eligible_days:
+                got["by_day"][day]["eligible"] += 1
+                if day in used_days:
+                    got["by_day"][day]["used"] += 1
+            if refused is not None:
+                got["refused"][refused] += 1
+        return keys, "measured"
     except Exception as e:
         try: db.rollback()
         except Exception: pass
         # statement_timeout cancels with SQLSTATE 57014 (query_canceled).
         status = "timeout" if getattr(e, "pgcode", None) == "57014" else "query_failed"
-        logger.warning("connect_stats keys_used_day2 %s: %s", status, e)
+        logger.warning("connect_stats keys read %s: %s", status, e)
         return None, status
     finally:
         if prev is not None:
@@ -1462,13 +1559,22 @@ def connect_stats():
                 "last_view":   r[5].isoformat() if r[5] else None,
                 "mint_rate":   round((r[2] / r[1]) * 100, 2) if r[1] else 0.0,
             })
-        day2, day2_status = _keys_used_day2(db)
+        keys, keys_status = _keys_return(db)
         for row in out:
-            row["keys_used_day2"] = (day2.get(row["client"], 0)
-                                     if day2 is not None else None)
+            if keys is None:
+                row["keys_used_day2"] = None
+                row["keys_used_by_day"] = None
+                row["keys_refused_now"] = None
+                continue
+            got = keys.get(row["client"]) or _no_keys()
+            row["keys_used_day2"] = got["by_day"][2]["used"]
+            row["keys_used_by_day"] = {str(day): got["by_day"][day] for day in KEYS_USED_BY_DAY}
+            row["keys_refused_now"] = dict(got["refused"], total=sum(got["refused"].values()))
         return jsonify(ok=True, by_client=out, window="30d",
-                       keys_used_day2_status=day2_status,
-                       keys_used_day2_basis=KEYS_USED_DAY2_BASIS), 200
+                       keys_used_day2_status=keys_status,
+                       keys_used_day2_basis=KEYS_USED_DAY2_BASIS,
+                       keys_used_by_day_basis=KEYS_USED_BY_DAY_BASIS,
+                       keys_refused_now_basis=KEYS_REFUSED_NOW_BASIS), 200
     except Exception as e:
         return jsonify(ok=False, error="query_failed",
                        detail=str(e)[:200]), 500
