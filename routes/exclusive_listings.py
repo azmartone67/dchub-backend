@@ -535,7 +535,7 @@ def _size_sql(min_kw, unknown_matches=False):
     unknown = "TRUE" if unknown_matches else "FALSE"
     sql = ("(CASE WHEN detail->>'delivery_type' = 'colocation' THEN "
            "CASE WHEN jsonb_typeof(detail->'colocation'->'kw_available') = 'number' "
-           "THEN (detail->'colocation'->>'kw_available')::numeric >= %s::numeric "
+           "THEN capacity_mw::numeric * 1000 >= %s::numeric "
            f"ELSE {unknown} END "
            f"WHEN capacity_mw IS NULL THEN {unknown} "
            "ELSE capacity_mw::numeric * 1000 >= %s::numeric END)")
