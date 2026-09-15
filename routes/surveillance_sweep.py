@@ -679,3 +679,154 @@ def deals_drift_audit():
     finally:
         try: c.close()
         except Exception: pass
+
+
+# ── fiber_routes drift audit + safe re-baseline (2026-09-15) ─────────────
+# WHY THIS EXISTS — the sweep hard-failed red on
+#   "fiber_routes dropped 14.23%: baseline=67,836 (baseline_at 2026-09-10),
+#    current=58,183"
+# and that drop is CORRECT. #4565 stopped the fiber lane writing HIFLD power
+# transmission lines into fiber_routes, and the owner then ran
+# repair_fiber_routes_hifld_transmission.py, deleting the 9,695 rows the lane
+# had written between 2026-03-30 and 2026-08-14. Those rows were never fiber:
+# route_type 'transmission', source 'hifld', no geometry, start point pinned to
+# one of 20 market centroids. Transmission lines are published from the
+# transmission_lines table — a different table, a different population.
+#
+#   67,836 baseline  −  9,695 removed  =  58,141   (canonical_stats._FALLBACK)
+#   58,183 current   =  58,141 + 42 genuine fiber rows ingested since
+#
+# canonical_stats moved to 58,141 on 2026-09-13. The only store still holding
+# 67,836 is sentinel_row_baselines, which ratchets UP and never down — so a
+# deliberate re-scope reads as data_loss forever. That is the bug the
+# 'announcements' note above already predicted for any pruned table.
+#
+# This does NOT silence the check. fiber_routes stays in _DRIFT_TABLES and any
+# future unexplained drop still fires red. It moves the baseline ONCE, and only
+# after proving the shrink is that removal and NOTHING ELSE:
+#
+#   * shape, not size — zero rows may still match the removal predicate. A
+#     count alone cannot tell a finished repair from an unrelated DELETE that
+#     happens to be the same size, and it cannot tell you the writer stayed
+#     removed. If the lane regressed and is re-inserting, removable_left > 0
+#     and this refuses. The predicate is IMPORTED from the repair script so
+#     there is one definition of "these rows", not two that can drift.
+#
+#   * a second loss stays visible — the floor is the DOCUMENTED post-repair
+#     count, not the current count. Comparing current against itself is
+#     vacuous. If another 5,000 fiber rows had gone missing on top of the
+#     repair, current would sit below 58,141 and this refuses.
+#
+# Both numbers are READ from their existing source of truth rather than pasted
+# here. An unreadable source refuses — it never falls back to a literal that
+# would quietly go stale while still being asserted.
+
+
+def _fiber_removable_sql():
+    """The removal predicate, from the script that defined it. None if unreadable."""
+    try:
+        from repair_fiber_routes_hifld_transmission import REMOVABLE_SQL
+        return REMOVABLE_SQL if isinstance(REMOVABLE_SQL, str) and REMOVABLE_SQL else None
+    except Exception:
+        return None
+
+
+def _fiber_post_repair_floor():
+    """The documented post-repair count, from its one source of truth."""
+    try:
+        from canonical_stats import _FALLBACK
+        v = _FALLBACK.get("fiber_routes")
+        return v if isinstance(v, int) and v > 0 else None
+    except Exception:
+        return None
+
+
+def fiber_shrink_verdict(total, removable_left, floor):
+    """Pure. Is this shrink the documented HIFLD removal, and only that?
+
+    total           live COUNT(*) FROM fiber_routes
+    removable_left  rows still matching the removal predicate
+    floor           documented post-repair count (None when unreadable)
+
+    Benign requires BOTH that the repair finished and stayed finished, and that
+    the table did not fall below what the repair was supposed to leave behind.
+    Anything unreadable is not benign: this fails closed.
+
+    Returns (benign: bool, reason: str).
+    """
+    if not isinstance(total, int) or not isinstance(removable_left, int):
+        return False, "live counts unreadable — refusing"
+    if not isinstance(floor, int):
+        return False, ("post-repair floor unreadable from canonical_stats — refusing "
+                       "rather than comparing against a pasted literal")
+    if removable_left != 0:
+        return False, (f"{removable_left:,} rows still match the HIFLD transmission "
+                       "predicate — the removal is incomplete, or the fiber lane is "
+                       "writing power lines again")
+    if total < floor:
+        return False, (f"{total:,} is below the documented post-repair count "
+                       f"{floor:,} — this drop is larger than that removal explains")
+    return True, (f"HIFLD transmission rows gone (0 remain) and {total:,} >= the "
+                  f"documented post-repair {floor:,}")
+
+
+@surveillance_bp.route("/api/v1/admin/sentinel/fiber-audit", methods=["GET", "POST"])
+def fiber_drift_audit():
+    """GET = audit the fiber_routes shrink (re-scope, not loss).
+    POST ?rebaseline=1 = audit + move the stale baseline (refused unless benign)."""
+    if not _internal_ok():
+        return jsonify(error="unauthorized"), 401
+    removable_sql = _fiber_removable_sql()
+    c = _drift_conn()
+    if c is None:
+        return jsonify(error="db_unreachable"), 503
+    audit = {}
+    try:
+        def _scalar(sql):
+            try:
+                with c.cursor() as cur:
+                    cur.execute(sql)
+                    return (cur.fetchone() or [None])[0]
+            except Exception as e:
+                try: c.rollback()
+                except Exception: pass
+                return f"err:{type(e).__name__}"
+
+        audit["total"] = _scalar("SELECT COUNT(*) FROM fiber_routes")
+        audit["removable_left"] = (
+            _scalar("SELECT COUNT(*) FROM fiber_routes WHERE " + removable_sql)
+            if removable_sql else "err:PredicateUnreadable")
+        # Reported, not gated: the repair only ever claimed the hifld ones. A
+        # non-zero remainder here is a different population and a human call.
+        audit["transmission_any"] = _scalar(
+            "SELECT COUNT(*) FROM fiber_routes WHERE route_type = 'transmission'")
+        with c.cursor() as cur:
+            cur.execute("SELECT baseline_count, baseline_at, last_seen_count "
+                        "FROM sentinel_row_baselines WHERE table_name='fiber_routes'")
+            row = cur.fetchone()
+        audit["baseline"] = ({"count": int(row[0]) if row[0] is not None else None,
+                              "at": str(row[1])[:19],
+                              "last_seen": int(row[2]) if row[2] is not None else None}
+                             if row else None)
+        floor = _fiber_post_repair_floor()
+        audit["post_repair_floor"] = floor
+        benign, why = fiber_shrink_verdict(audit["total"], audit["removable_left"], floor)
+        audit["verdict"] = "benign_rescope" if benign else "needs_human_review"
+        audit["reason"] = why
+
+        rebaselined = False
+        if request.method == "POST" and request.args.get("rebaseline") == "1":
+            if not benign:
+                return jsonify(audit=audit, rebaselined=False,
+                               refused=f"verdict not benign — {why}"), 409
+            with c.cursor() as cur:
+                cur.execute("UPDATE sentinel_row_baselines "
+                            "SET baseline_count=%s, last_seen_count=%s, "
+                            "    last_seen_at=NOW(), baseline_at=NOW() "
+                            "WHERE table_name='fiber_routes'", (audit["total"], audit["total"]))
+                c.commit()
+            rebaselined = True
+        return jsonify(audit=audit, rebaselined=rebaselined), 200
+    finally:
+        try: c.close()
+        except Exception: pass
