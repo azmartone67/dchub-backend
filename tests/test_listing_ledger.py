@@ -328,9 +328,32 @@ def test_the_ledger_key_fails_closed():
       {"event": "operator_notified"}, {"event": "introduced"}], "introduced"),
     ([{"event": "interest_registered"}, {"event": "email_confirmed"},
       {"event": "withdrawn"}, {"event": "introduced"}], "withdrawn"),
+    # Deal registration (2026-09-15): accepted ranks between operator_notified and introduced.
+    ([{"event": "intro_requested"}, {"event": "email_confirmed"}, {"event": "operator_notified"},
+      {"event": "registration_accepted"}], "accepted"),
+    ([{"event": "intro_requested", "email_verified": True}, {"event": "registration_accepted"},
+      {"event": "operator_notified"}], "accepted"),
+    ([{"event": "intro_requested"}, {"event": "email_confirmed"}, {"event": "registration_accepted"},
+      {"event": "introduced"}], "introduced"),
+    # declined is terminal like withdrawn, and the first terminal event wins.
+    ([{"event": "intro_requested"}, {"event": "email_confirmed"},
+      {"event": "registration_declined"}], "declined"),
+    ([{"event": "intro_requested"}, {"event": "email_confirmed"}, {"event": "registration_declined"},
+      {"event": "registration_accepted"}, {"event": "introduced"}], "declined"),
+    ([{"event": "intro_requested"}, {"event": "email_confirmed"}, {"event": "registration_declined"},
+      {"event": "withdrawn"}], "declined"),
+    ([{"event": "intro_requested"}, {"event": "email_confirmed"}, {"event": "withdrawn"},
+      {"event": "registration_declined"}], "withdrawn"),
 ])
 def test_lead_status_is_the_furthest_step_and_withdrawal_is_final(events, expected):
     assert L.lead_status(events) == expected
+
+
+def test_the_decision_events_are_ledger_events():
+    assert {"registration_accepted", "registration_declined"} <= set(L.EVENTS)
+    assert set(L.DECISION_BLOCKING_EVENTS) == {"registration_accepted", "registration_declined",
+                                               "withdrawn"}
+    assert set(L.DECISION_BLOCKING_EVENTS) <= set(L.EVENTS)
 
 
 def test_display_helpers():

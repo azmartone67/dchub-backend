@@ -73,6 +73,13 @@ class _Cursor:
         s = " ".join(sql.split())
         if s.startswith("SELECT pg_advisory_xact_lock("):
             self._one = ("",)
+        elif s == ("SELECT event FROM listing_lead_ledger WHERE lead_id = %s AND event = ANY(%s) "
+                   "ORDER BY seq ASC LIMIT 1"):
+            # append's decision guard: the first blocking event this lead has, if any.
+            lead_id, names = params
+            found = next((r["event"] for r in self.store.rows
+                          if r["lead_id"] == lead_id and r["event"] in names), None)
+            self._one = (found,) if found else None
         elif s == "SELECT entry_hash FROM listing_lead_ledger ORDER BY seq DESC LIMIT 1":
             self._one = (self.store.rows[-1]["entry_hash"],) if self.store.rows else None
         elif s.startswith("INSERT INTO listing_lead_ledger"):
@@ -172,6 +179,13 @@ def env(monkeypatch):
         for r in e.rows))
     monkeypatch.setattr(el, "_db_chain_rows", lambda limit: [dict(r) for r in e.rows][:limit])
     monkeypatch.setattr(el, "_db_verified_via", lambda viewer: e.verified_via)
+
+    def viewer_lead_events(user_ref, listing_id):
+        opened = {r["lead_id"] for r in e.rows if r["user_ref"] == user_ref
+                  and r["listing_id"] == listing_id and r["event"] == "intro_requested"}
+        return [dict(r) for r in e.rows if r["lead_id"] in opened]
+
+    monkeypatch.setattr(el, "_db_viewer_lead_events", viewer_lead_events)
     monkeypatch.setattr(el, "_send_email", lambda to, subject, body: e.sent.append(
         {"to": to, "subject": subject, "body": body}) or True)
     monkeypatch.setattr(el, "_dispatch", lambda fn: fn())
@@ -259,7 +273,9 @@ def test_a_signed_in_user_opens_the_listing_without_operator_contact(env):
     body, j = r.get_data(as_text=True), r.get_json()
     listing = j["listing"]
     assert j["locked"] is False and j["access"]["granted"] is True
-    assert (listing["latitude"], listing["longitude"]) == (32.78, -96.8)
+    # The specs view: no coordinates until the provider accepts a registration (2026-09-15).
+    assert (listing["latitude"], listing["longitude"]) == (None, None)
+    assert j["disclosure"]["released"] is False and j["disclosure"]["status"] == "none"
     assert listing["asking_price"] == 1250000.0
     # `power` is a reserved detail key (routes/exclusive_listings.py
     # _DETAIL_RESERVED_KEYS). Free text there fails its rules, so it reads as
@@ -268,7 +284,7 @@ def test_a_signed_in_user_opens_the_listing_without_operator_contact(env):
     assert "contact" not in listing and "owner_id" not in listing
     for secret in (OPERATOR_SENTINEL, OWNER_SENTINEL, "hidden-note"):
         assert secret not in body
-    assert j["introduction"]["operator_contact"] == "never_shared"
+    assert j["introduction"]["operator_contact"] == "shared_after_acceptance"
     assert j["viewer"]["email_masked"] == "j***@acme.com"
     assert "jane@acme.com" not in body.lower()
 
@@ -583,7 +599,7 @@ def test_every_listing_answer_says_confidential_and_never_cc_by(env):
         assert "CC-BY" not in body, label
 
 
-def test_the_operator_ledger_is_scoped_and_hides_email_until_introduced(env):
+def test_the_operator_ledger_is_scoped_and_hides_the_buyer_until_accepted(env):
     env.listings.append(_listing(id=2, slug="phx-60", title="Phoenix"))
     lead_id = _register_and_confirm(env)
     secret = ledger.ledger_secret()
@@ -592,16 +608,26 @@ def test_the_operator_ledger_is_scoped_and_hides_email_until_introduced(env):
     token = ledger.operator_token(secret, 1)
     j = env.client.get(f"/api/v1/listings/dfw-40/leads?token={token}").get_json()
     assert [lead["lead_id"] for lead in j["leads"]] == [lead_id]
-    assert (j["leads"][0]["name"], j["leads"][0]["email_domain"], j["leads"][0]["email"]) == (
-        "Jane Doe", "acme.com", None)
+    # Deal registration (2026-09-15): company and requirement only until the operator accepts.
+    lead = j["leads"][0]
+    assert (lead["company"], lead["name"], lead["role"], lead["email_domain"], lead["email"]) == (
+        "Acme Capital", None, None, None, None)
     # the operator sees HOW the inbox was proven, so a Google-verified lead does
     # not read as "not yet confirmed" merely because no link was clicked
-    assert (j["leads"][0]["email_verified"], j["leads"][0]["verified_via"]) == (True, "email_link")
+    assert (lead["email_verified"], lead["verified_via"]) == (True, "email_link")
+    # An introduction needs the operator's acceptance first.
+    r = env.client.post(f"/api/v1/admin/listings/leads/{lead_id}/status",
+                        json={"status": "introduced"}, headers={"X-Admin-Key": ADMIN_KEY})
+    assert (r.status_code, r.get_json()["error"]) == (409, "not_accepted")
+    r = env.client.post(f"/api/v1/listings/dfw-40/leads/{lead_id}/decision",
+                        json={"token": token, "decision": "accept"})
+    assert r.status_code == 200, r.get_data(as_text=True)
     r = env.client.post(f"/api/v1/admin/listings/leads/{lead_id}/status",
                         json={"status": "introduced"}, headers={"X-Admin-Key": ADMIN_KEY})
     assert r.status_code == 200
     j = env.client.get(f"/api/v1/listings/dfw-40/leads?token={token}").get_json()
-    assert j["leads"][0]["email"] == "jane@acme.com" and j["leads"][0]["status"] == "introduced"
+    assert (j["leads"][0]["name"], j["leads"][0]["email"], j["leads"][0]["status"]) == (
+        "Jane Doe", "jane@acme.com", "introduced")
 
 
 # ── admin ─────────────────────────────────────────────────────────────────

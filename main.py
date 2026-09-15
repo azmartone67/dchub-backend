@@ -44349,7 +44349,7 @@ try:
         html = """<!doctype html>
 <html><head><meta charset="utf-8">
 <title>Capacity Source — DC Hub</title>
-<meta name="description" content="DC Hub Capacity Source: data center capacity for enterprise and AI-agent procurement. Browse listings, sign in to open one, and let DC Hub introduce you to the operator.">
+<meta name="description" content="DC Hub Capacity Source: data center capacity for enterprise and AI-agent procurement. Search listings by size and location, sign in to see a listing's specs, and register: when the provider accepts, DC Hub shares the site details and contacts.">
 <link rel="canonical" href="https://dchub.cloud/listings">
 <style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;
 margin:0 auto;padding:2rem 1rem;color:#1f2937;line-height:1.55;background:#fafbfc}
@@ -44369,9 +44369,9 @@ text-decoration:none;margin-top:1rem}</style>
 <div class="card">
 <h2>How it works</h2>
 <ul>
- <li><strong>Browse</strong> — listing cards (market, state, capacity and when each was last updated) are open to everyone at <a href="https://dchub.cloud/listings">dchub.cloud/listings</a>.</li>
- <li><strong>Sign in to open a listing</strong> — full listing detail needs a signed-in account, or an AI agent using a key with an email bound or an OAuth connection, and a one-time acceptance of the introduction terms.</li>
- <li><strong>Request an introduction</strong> — DC Hub makes the introduction to the operator. Operator contact details are never published, and every registered lead has a public verification record.</li>
+ <li><strong>Search</strong> — search listings by size (kW or MW) and location; listing cards (market, state, capacity and when each was last updated) are open to everyone at <a href="https://dchub.cloud/listings">dchub.cloud/listings</a>.</li>
+ <li><strong>Sign in to open a listing</strong> — a listing's specs need a signed-in account, or an AI agent using a key with an email bound or an OAuth connection, and a one-time acceptance of the introduction terms.</li>
+ <li><strong>Register for a listing</strong> — DC Hub sends the provider your company name and requirement. When the provider accepts, DC Hub shares the site details and contacts with both sides; if it declines, neither side's contact details are shared. Every registered lead has a public verification record.</li>
  <li><strong>Nothing that fits yet?</strong> Register a requirement to get first access when matching listings open.</li>
 </ul>
 <a class="cta" href="https://dchub.cloud/listings">Open Capacity Source →</a>

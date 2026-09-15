@@ -15,12 +15,24 @@ DC Hub.
     accepts the introduction terms once, before the first walled listing opens,
     and the acceptance is recorded in the lead register with the terms version;
     an introduction or requirement registered under the current version counts.
-  * Operator contact is never served. A buyer holding the operator's phone
-    number has no reason to let DC Hub make the introduction, and leaves no
-    trace that DC Hub did. Prospects request an introduction instead, and the
-    operator's details stay admin-only.
-  * Every request, identified view, confirmation and operator notice is an
-    entry in util/listing_ledger.py's hash chain.
+  * SPECS, NO IDENTITY (2026-09-15). An open listing is its specs: market,
+    size, schedule, delivery type, power stage, price, verification. The
+    provider's name (unless provider.disclosed), the site (`site`, legacy
+    address-like detail keys, coordinates, substation) and the provider's
+    contact are held back until the provider accepts THAT viewer's
+    registration; get_listing then returns them in `disclosure`.
+  * DEAL REGISTRATION. A registration (POST .../intro) reaches the provider as
+    the buyer's company name and requirement only. The provider accepts or
+    declines it (POST .../leads/<lead_id>/decision, with its ledger token). On
+    accept, DC Hub emails each side the other's contact and the buyer the site
+    identity; on decline, no contact details go either way. Every decision is
+    a ledger entry, and _decide is the one place that records it.
+  * SEARCH. The feed filters by size (min_kw, min_mw) and location (region,
+    country, location), every filter in the parameterised WHERE clause. Regions
+    are derived from canonical_stats' country map, so they agree with DC Hub's
+    own region stats.
+  * Every request, identified view, confirmation, operator notice and decision
+    is an entry in util/listing_ledger.py's hash chain.
     GET /api/v1/listings/leads/<id>/verify shows any party that record.
 
 ★ THE TRANSPORT TRAP. dchub-mcp-server's callAPI() sends X-Internal-Key on
@@ -33,42 +45,50 @@ admin endpoints accept ONLY X-Admin-Key == DCHUB_ADMIN_KEY for the same reason:
 the gateway holds the internal key, and lead records carry prospect PII.
 
 Endpoints:
-    GET  /api/v1/listings                          teaser feed + program + viewer
+    GET  /api/v1/listings                          teaser feed + program + viewer + filters
     GET  /api/v1/listings/terms                    introduction terms
     POST /api/v1/listings/terms/accept             accept them, once per terms version
     GET  /api/v1/listings/health
     GET  /api/v1/listings/summary                  live listings by market and delivery type
-    GET  /api/v1/listings/<slug_or_id>             detail (walled)
-    POST /api/v1/listings/<slug_or_id>/intro       request an introduction
+    GET  /api/v1/listings/<slug_or_id>             specs (walled) + the viewer's identity block
+    POST /api/v1/listings/<slug_or_id>/intro       register for a listing
     POST /api/v1/listings/interest                 register a requirement
     POST /api/v1/listings/leads/confirm            prospect confirms from inbox
     GET  /api/v1/listings/leads/<lead_id>/verify   public registration record
     GET  /api/v1/listings/<slug_or_id>/leads       operator ledger (?token=)
+    POST /api/v1/listings/<slug_or_id>/leads/<lead_id>/decision
+                                                   operator accepts or declines (token in body)
   admin (X-Admin-Key):
     GET  /api/v1/admin/listings                    every listing incl. contact
     POST /api/v1/admin/listings                    create
     PUT|PATCH|DELETE /api/v1/admin/listings/<id>
     GET  /api/v1/admin/listings/leads              ledger rows with PII
     POST /api/v1/admin/listings/leads/<lead_id>/notify-operator
-    POST /api/v1/admin/listings/leads/<lead_id>/status   introduced | withdrawn
+    POST /api/v1/admin/listings/leads/<lead_id>/status
+                                                   accepted | declined | introduced | withdrawn
     POST /api/v1/admin/listings/<id>/operator-link
     GET  /api/v1/admin/listings/ledger/verify
 
-Listing `contact` (admin-only JSON): {name, company, email, phone,
-notify_email, auto_notify}. With auto_notify true, a confirmed lead also sends
-the operator a registration notice; otherwise the admin sends it.
+Listing `contact` (admin-only JSON): {name, title, company, email, phone,
+notify_email, auto_notify, co_marketing}. With auto_notify true, a confirmed
+lead also sends the operator a registration notice; otherwise the admin sends
+it. Once the operator accepts a registration, the buyer gets name, title, email
+and phone (notify_email only when it is the only address). co_marketing
+({linkedin_post_url, posted_at, website_url}) records the provider's
+co-marketing and is served only to admin and the tokenized operator ledger.
 
-Listing `detail` (JSON) holds free-form keys plus seven RESERVED keys, all
+Listing `detail` (JSON) holds free-form keys plus nine RESERVED keys, all
 optional: colocation, delivery_type, mw_schedule, power, price, provider,
-verification. colocation belongs only to a listing whose delivery_type is
-colocation. Admin writes validate the reserved keys and store them normalized;
-a failure answers 400 invalid_detail with one entry per field and writes
-nothing (_validate_detail). Reads project them as typed fields: every teaser
-carries delivery_type, freshness (from verification.verified_at) and the
-provider's name when it is disclosed; the full view adds colocation,
-mw_schedule, power, price, provider and verification. The generic `detail`
-object never repeats a reserved key, so an undisclosed provider name is served
-nowhere.
+site, update_cadence, verification. colocation belongs only to a listing whose
+delivery_type is colocation. Admin writes validate the reserved keys and store
+them normalized; a failure answers 400 invalid_detail with one entry per field
+and writes nothing (_validate_detail). Reads project them as typed fields:
+every teaser carries delivery_type, update_cadence, freshness (from
+verification.verified_at) and the provider's name when it is disclosed; the
+specs view adds colocation, mw_schedule, power without its substation, price,
+provider and verification. The generic `detail` object never repeats a reserved
+key or an address-like identity key (_IDENTITY_DETAIL_KEYS), so an undisclosed
+provider name and the site are served only in a released `disclosure` block.
 """
 import hashlib
 import hmac
@@ -82,10 +102,15 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from flask import Blueprint, jsonify, request
 
+# Regions are derived from DC Hub's own country -> region map, so a Capacity
+# Source region and a region in DC Hub's published stats name the same
+# countries. location_names.US_STATES is the state map the location pages use.
+from canonical_stats import _COUNTRY_NAME, _COUNTRY_REGION, _REGION_ORDER
+from location_names import US_STATES
 from util import listing_ledger as ledger
 
 logger = logging.getLogger(__name__)
@@ -100,13 +125,17 @@ SUPPORT_EMAIL = "hello@dchub.cloud"
 # Served from GET /api/v1/listings/terms; the web page and MCP tools render
 # them from there, so this is the one place to edit. Bump TERMS_VERSION on any
 # change — requests carry the version the prospect accepted.
-TERMS_VERSION = "2026-09-13"
+TERMS_VERSION = "2026-09-15"
 TERMS_URL = f"{SITE}/listings#terms"
 TERMS_SUMMARY = (
-    "DC Hub introduces you to this opportunity and records the request in its "
-    "lead register. DC Hub may share your name, company, role and requirement "
-    "with the operator. For 12 months you agree to pursue a listed opportunity "
-    "through DC Hub rather than approaching its operator directly."
+    "DC Hub records your registration in its lead register and sends the "
+    "operator your company name and stated requirement so it can accept or "
+    "decline the registration. Only if the operator accepts does DC Hub share "
+    "your name, role, email and message with the operator, and the operator's "
+    "identity, site details and contact with you. If it declines, neither "
+    "side's contact details are shared. For 12 months you agree to pursue a "
+    "listed opportunity through DC Hub rather than approaching its operator "
+    "directly."
 )
 TERMS_TEXT = (
     "DC Hub Capacity Source — introduction terms (version " + TERMS_VERSION + ")\n\n"
@@ -117,10 +146,12 @@ TERMS_TEXT = (
     "2. Registration. When you request an introduction or register a "
     "requirement, DC Hub records who asked, when, for which listing and through "
     "which channel (the website or an AI agent) in a tamper-evident lead "
-    "register, and asks you to confirm the request from your inbox. DC Hub may "
-    "give the operator your name, company, role, the domain of your email "
-    "address and your stated requirement so the operator can verify the "
-    "registration.\n\n"
+    "register, and asks you to confirm the request from your inbox. DC Hub "
+    "sends the operator your company name and stated requirement so it can "
+    "accept or decline the registration. Only if the operator accepts does DC "
+    "Hub share your name, role, email address and message with the operator, "
+    "and the operator's identity, site details and contact with you. If the "
+    "operator declines, neither side's contact details are shared.\n\n"
     "3. Confidentiality and introductions. Listing details are provided only "
     "for evaluating the opportunity. For 12 months from your registration you "
     "agree not to contact the operator about a listed opportunity except "
@@ -138,17 +169,19 @@ PROGRAM_HEADLINE = "The live source for data center capacity"
 PROGRAM_SUMMARY = (
     "Powered land, powered shells and turnkey capacity, including sites that "
     "are not publicly marketed, for enterprise buyers and the AI agents that "
-    "procure for them. Every listing shows when it was last updated. Browse "
-    "the listings, sign in and accept the introduction terms once to open "
-    "them, and let DC Hub introduce you to the operator."
+    "procure for them. Search by size and location; every listing shows when "
+    "it was last updated. Sign in and accept the introduction terms once to "
+    "see a listing's specs, then register for it: when the provider accepts, "
+    "DC Hub shares the site details and contacts."
 )
 PROGRAM_STEPS = (
-    "Browse listings — market, state, capacity and when each was last "
-    "updated — without an account.",
+    "Search listings by size (kW or MW) and location — region, country, state "
+    "or market — and see when each was last updated, without an account.",
     "Sign in with a free account, or connect an identified AI agent, and "
-    "accept the introduction terms once to open the full listing.",
-    "Request an introduction. DC Hub registers the request and introduces you "
-    "to the operator; operator contact details are never published.",
+    "accept the introduction terms once to see a listing's specs.",
+    "Register for a listing. DC Hub sends the provider your company name and "
+    "requirement; when the provider accepts, DC Hub shares the site details "
+    "and contacts with both sides.",
 )
 UPCOMING_NOTE = (
     "The first listings are being onboarded. Register a requirement to get "
@@ -205,7 +238,23 @@ _DETAIL_PRIVATE_KEYS = frozenset({"contact", "operator_contact", "operator_email
 # projected as typed fields by _teaser / _full, and left out of the generic
 # `detail` object.
 _DETAIL_RESERVED_KEYS = ("colocation", "delivery_type", "mw_schedule", "power",
-                         "price", "provider", "verification")
+                         "price", "provider", "site", "update_cadence", "verification")
+_SITE_KEYS = ("name", "address", "city", "postal_code", "parcel_id")
+_UPDATE_CADENCES = ("real_time", "weekly", "monthly")
+# freshness.overdue once verification.verified_at is more than this many days old.
+_CADENCE_OVERDUE_DAYS = {"real_time": 2, "weekly": 9, "monthly": 35}
+_CADENCE_PHRASE = {"real_time": "in real time", "weekly": "every week", "monthly": "every month"}
+# Free-form `detail` keys that identify the site or its provider, matched
+# ignoring case and surrounding whitespace. The specs view never serves them; a
+# released identity block reads each as the `site` field it names, after the
+# reserved `site` itself and in this order.
+_IDENTITY_DETAIL_KEYS = {
+    "site_name": "name", "facility_name": "name",
+    "address": "address", "street_address": "address", "site_address": "address",
+    "city": "city", "provider_city": "city",
+    "postal_code": "postal_code", "zip": "postal_code",
+    "parcel_id": "parcel_id", "parcel": "parcel_id", "apn": "parcel_id",
+}
 _DELIVERY_TYPES = ("land", "powered_shell", "turnkey", "colocation")
 _INTERCONNECTION_STAGES = ("not_started", "applied", "in_study",
                            "agreement_executed", "under_construction", "energized")
@@ -228,6 +277,87 @@ _VERIFIED_AT_RE = re.compile(
     r"([0-9]{4})-([0-9]{2})-([0-9]{2})"
     r"(?:[Tt ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]{1,6}))?)?"
     r"([Zz]|[+-][0-9]{2}:?[0-9]{2})?)?")
+
+# ── search: regions ───────────────────────────────────────────────────────
+REGION_KEYS = ("north_america", "latin_america", "europe", "asia_pacific",
+               "middle_east_africa")
+_REGION_LABELS = {"north_america": "North America", "latin_america": "Latin America",
+                  "europe": "Europe", "asia_pacific": "Asia-Pacific",
+                  "middle_east_africa": "Middle East and Africa"}
+# canonical_stats names six regions for prose (_REGION_ORDER). Capacity Source
+# searches five: four map one to one, and "the Middle East" and "Africa" share
+# middle_east_africa. tests pin that every _REGION_ORDER label is mapped.
+_CANONICAL_REGION_KEY = {"North America": "north_america", "Latin America": "latin_america",
+                         "Europe": "europe", "Asia-Pacific": "asia_pacific",
+                         "the Middle East": "middle_east_africa", "Africa": "middle_east_africa"}
+# A region value, lowercased with runs of spaces, hyphens and underscores read
+# as one underscore (_region_token), -> the keys it stands for.
+_REGION_ALIASES = {
+    "north_america": ("north_america",), "na": ("north_america",),
+    "latin_america": ("latin_america",), "latam": ("latin_america",),
+    "south_america": ("latin_america",),
+    "europe": ("europe",),
+    "asia_pacific": ("asia_pacific",), "apac": ("asia_pacific",),
+    "middle_east_africa": ("middle_east_africa",), "mea": ("middle_east_africa",),
+    "middle_east": ("middle_east_africa",), "africa": ("middle_east_africa",),
+    "emea": ("europe", "middle_east_africa"),
+    "americas": ("north_america", "latin_america"),
+}
+
+
+def _build_region_tables():
+    """ISO-2 code -> region key, lowercased country name -> region key, and
+    lowercased name -> its first ISO-2 code, from canonical_stats' maps."""
+    code_region, name_region, code_by_name = {}, {}, {}
+    for name, label in _COUNTRY_REGION.items():
+        if label in _CANONICAL_REGION_KEY:
+            name_region[name.lower()] = _CANONICAL_REGION_KEY[label]
+    for code, name in _COUNTRY_NAME.items():
+        code_by_name.setdefault(name.lower(), code)
+        if name.lower() in name_region:
+            code_region[code.upper()] = name_region[name.lower()]
+    return code_region, name_region, code_by_name
+
+
+_COUNTRY_CODE_REGION, _COUNTRY_NAME_REGION, _COUNTRY_CODE_BY_NAME = _build_region_tables()
+_STATE_CODE_BY_NAME = {name.lower(): code for code, name in US_STATES.items()}
+_SEARCH_MAX_VALUES = 20
+_SEARCH_VALUE_MAX = 80
+_MARKET_SUBSTRING_MIN = 3
+_REQUIREMENT_MAX_KW = 5_000_000
+
+# ── deal registration ─────────────────────────────────────────────────────
+_DECISIONS = ("accept", "decline")
+_DECISION_EVENT = {"accept": "registration_accepted", "decline": "registration_declined"}
+_DECISION_STATUS = {"accept": "accepted", "decline": "declined"}
+# A provider can accept or decline only while a confirmed registration awaits it.
+_DECIDABLE_STATUSES = ("registered", "operator_notified")
+# The statuses that share the buyer's contact with the provider and the site
+# identity with the buyer.
+_RELEASED_STATUSES = ("accepted", "introduced")
+_DECISION_NOTE_MAX = 500
+_DISCLOSURE_STATUS = {"pending_email_confirmation": "pending", "registered": "pending",
+                    "operator_notified": "pending", "declined": "declined",
+                    "accepted": "accepted", "introduced": "introduced"}
+
+# Before acceptance, a requirement's free text reaches the provider with email
+# addresses, links and phone numbers taken out.
+_SCRUB_TEXT_FIELDS = ("timeline", "use_case", "notes")
+_SCRUB_EMAIL_RE = re.compile(r"[^\s@<>()\[\]{}\"',;:]+@[^\s@<>()\[\]{}\"',;:]+")
+_SCRUB_URL_RE = re.compile(
+    r"(?i)(?:\b[a-z][a-z0-9+.-]*://|\bwww\.)\S+"
+    r"|\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+"
+    r"(?:com|net|org|io|ai|co|us|uk|ca|de|fr|nl|au|in|jp|sg|ie|eu|dev|app|cloud|biz|"
+    r"info|tech|xyz|me|energy|capital|partners|group|global|digital|systems|solutions|"
+    r"network|holdings|ventures|services|link|site|online)\b(?:/\S*)?")
+_SCRUB_PHONE_RE = re.compile(r"(?<![\w+(])[+(]?(?:\d[\s().-]{0,2}){6,14}\d(?!\w)")
+_SCRUB_LOCAL_PHONE_RE = re.compile(r"(?<!\d)\d{3}[\s.-]\d{4}$")
+
+# ── provider co-marketing ─────────────────────────────────────────────────
+_CO_MARKETING_KEYS = ("linkedin_post_url", "posted_at", "website_url")
+_LINKEDIN_HOSTS = ("linkedin.com", "www.linkedin.com")
+_URL_MAX = 500
+_POSTED_AT_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})")
 
 _LISTING_COLS = ("id", "slug", "title", "summary", "status", "tier_required",
                  "market", "state", "country", "latitude", "longitude",
@@ -379,12 +509,144 @@ _LIVE_WHERE = ("status IN ('public', 'pocket')",
                "(expires_at IS NULL OR expires_at > NOW())")
 
 
+# ── search predicates ─────────────────────────────────────────────────────
+# ONE matcher for size and ONE for place, shared by the feed filters
+# (_db_list_listings) and the standing-requirement count (_db_count_matching).
+# No predicate contains " AND " at its top level, so a WHERE clause joined with
+# " AND " splits back into its predicates.
+
+# Stored `country` is mostly an ISO-2 code but admin input is free text, so a
+# country matches by code (upper case) or by name (lower case), spaces trimmed.
+_COUNTRY_MATCH_SQL = ("(UPPER(TRIM(country)) = ANY(%s::text[]) "
+                      "OR LOWER(TRIM(country)) = ANY(%s::text[]))")
+_LOCATION_MATCH_SQL = ("(UPPER(TRIM(country)) = ANY(%s::text[]) "
+                       "OR LOWER(TRIM(country)) = ANY(%s::text[]) "
+                       "OR UPPER(TRIM(state)) = ANY(%s::text[]) "
+                       "OR LOWER(TRIM(state)) = ANY(%s::text[]) "
+                       "OR market ILIKE ANY(%s::text[]))")
+
+
+def _size_sql(min_kw, unknown_matches=False):
+    """-> (predicate, params): the listing offers at least min_kw kW. A
+    colocation listing is sized by detail.colocation.kw_available, cast only
+    when it is a JSON number; any other listing by capacity_mw * 1000.
+    unknown_matches decides a listing whose size is not recorded: the feed
+    leaves it out, a requirement count keeps it as a possible match."""
+    unknown = "TRUE" if unknown_matches else "FALSE"
+    sql = ("(CASE WHEN detail->>'delivery_type' = 'colocation' THEN "
+           "CASE WHEN jsonb_typeof(detail->'colocation'->'kw_available') = 'number' "
+           "THEN (detail->'colocation'->>'kw_available')::numeric >= %s::numeric "
+           f"ELSE {unknown} END "
+           f"WHEN capacity_mw IS NULL THEN {unknown} "
+           "ELSE capacity_mw::numeric * 1000 >= %s::numeric END)")
+    return sql, [min_kw, min_kw]
+
+
+def _region_token(value):
+    """'North-America', 'north america' and 'NORTH_AMERICA' -> 'north_america'."""
+    return re.sub(r"[\s_-]+", "_", str(value).strip().lower()).strip("_")
+
+
+def _region_keys(values):
+    """-> (the region keys `values` name, as keys or aliases, in REGION_KEYS
+    order; the values that name no region)."""
+    keys, unknown = set(), []
+    for value in values:
+        found = _REGION_ALIASES.get(_region_token(value))
+        if found:
+            keys.update(found)
+        else:
+            unknown.append(value)
+    return [k for k in REGION_KEYS if k in keys], unknown
+
+
+def _region_of(country):
+    """The region key of a stored `country`, or None when canonical_stats does
+    not place it. Reads the value as _COUNTRY_MATCH_SQL does: spaces trimmed, a
+    code by upper case, a name by lower case."""
+    if not isinstance(country, str):
+        return None
+    text = country.strip(" ")
+    if not text:
+        return None
+    return _COUNTRY_CODE_REGION.get(text.upper()) or _COUNTRY_NAME_REGION.get(text.lower())
+
+
+def _region_countries(keys):
+    """[ISO-2 codes, lowercased country names] of the countries in these regions."""
+    wanted = set(keys)
+    return [sorted(c for c, k in _COUNTRY_CODE_REGION.items() if k in wanted),
+            sorted(n for n, k in _COUNTRY_NAME_REGION.items() if k in wanted)]
+
+
+def _country_values(values):
+    """country values -> (ISO-2 codes, lowercased names, normalized labels). A
+    two-letter value is a code, and also matches the name canonical_stats gives
+    that code when it is the name's first code; a name canonical_stats knows
+    also matches its code; any other text matches stored text equal to it."""
+    codes, names, labels = set(), set(), []
+    for value in values:
+        text = " ".join(str(value).split())
+        if not text:
+            continue
+        if len(text) == 2 and text.isalpha():
+            label = text.upper()
+            codes.add(label)
+            name = _COUNTRY_NAME.get(label)
+            if name and _COUNTRY_CODE_BY_NAME.get(name.lower()) == label:
+                names.add(name.lower())
+        else:
+            names.add(text.lower())
+            code = _COUNTRY_CODE_BY_NAME.get(text.lower())
+            if code:
+                codes.add(code)
+            label = code or text
+        if label not in labels:
+            labels.append(label)
+    return sorted(codes), sorted(names), labels
+
+
+def _like_escape(text):
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _location_params(terms):
+    """location terms -> the five arrays _LOCATION_MATCH_SQL binds. A term
+    matches a region name or alias, a country code or name, a US state code or
+    name, or a market containing it (terms of 3+ characters; LIKE wildcards in
+    the term are escaped). A listing matches when ANY term does."""
+    codes, names, state_codes, state_names, patterns = set(), set(), set(), set(), []
+    for term in terms:
+        keys, _ = _region_keys([term])
+        region_codes, region_names = _region_countries(keys)
+        country_codes, country_names, _ = _country_values([term])
+        codes.update(region_codes, country_codes)
+        names.update(region_names, country_names)
+        low = term.lower()
+        state_names.add(low)
+        if len(term) == 2 and term.isalpha():
+            state_codes.add(term.upper())
+            if term.upper() in US_STATES:
+                state_names.add(US_STATES[term.upper()].lower())
+        if low in _STATE_CODE_BY_NAME:
+            state_codes.add(_STATE_CODE_BY_NAME[low])
+        if len(term) >= _MARKET_SUBSTRING_MIN:
+            pattern = "%" + _like_escape(low) + "%"
+            if pattern not in patterns:
+                patterns.append(pattern)
+    return [sorted(codes), sorted(names), sorted(state_codes), sorted(state_names), patterns]
+
+
 def _db_list_listings(market=None, state=None, min_mw=None, delivery_type=None,
-                      available_by=None, limit=50):
+                      available_by=None, min_kw=None, regions=None, countries=None,
+                      location=None, limit=50):
     """Live listings, newest first. delivery_type matches detail.delivery_type
     exactly. available_by ('YYYY-MM' or 'YYYY-MM-DD') keeps listings with at
-    least one detail.mw_schedule entry dated in or before that month. Every
-    filter is part of the WHERE clause, so LIMIT counts matching rows only."""
+    least one detail.mw_schedule entry dated in or before that month. min_kw is
+    _size_sql; regions are region keys, countries country values
+    (_country_values), location terms any one of which matches
+    (_location_params). The families AND together. Every filter is part of the
+    WHERE clause, so LIMIT counts matching rows only."""
     where = list(_LIVE_WHERE)
     params = []
     if market:
@@ -396,6 +658,20 @@ def _db_list_listings(market=None, state=None, min_mw=None, delivery_type=None,
     if min_mw is not None:
         where.append("capacity_mw >= %s")
         params.append(min_mw)
+    if min_kw is not None:
+        size_sql, size_params = _size_sql(min_kw)
+        where.append(size_sql)
+        params += size_params
+    if regions:
+        where.append(_COUNTRY_MATCH_SQL)
+        params += _region_countries(regions)
+    if countries:
+        codes, names, _ = _country_values(countries)
+        where.append(_COUNTRY_MATCH_SQL)
+        params += [codes, names]
+    if location:
+        where.append(_LOCATION_MATCH_SQL)
+        params += _location_params(location)
     if delivery_type:
         where.append("detail->>'delivery_type' = %s")
         params.append(delivery_type)
@@ -434,16 +710,36 @@ def _db_live_listing_facts():
 
 
 def _db_count_matching(requirement):
+    """Live listings a standing requirement could match: in ANY of its places
+    (markets, states, regions, countries) and of its size. Regions, countries
+    and capacity_kw use the feed's own matchers (_COUNTRY_MATCH_SQL,
+    _size_sql); a listing whose size is not recorded counts as a possible
+    match, as it always has for capacity_mw."""
     where = list(_LIVE_WHERE)
     params = []
+    places, place_params = [], []
     markets = [m.lower() for m in requirement.get("markets") or []]
     states = [s.upper() for s in requirement.get("states") or []]
     if markets or states:
-        where.append("(LOWER(market) = ANY(%s) OR UPPER(state) = ANY(%s))")
-        params += [markets, states]
+        places.append("LOWER(market) = ANY(%s) OR UPPER(state) = ANY(%s)")
+        place_params += [markets, states]
+    if requirement.get("regions"):
+        places.append(_COUNTRY_MATCH_SQL)
+        place_params += _region_countries(requirement["regions"])
+    if requirement.get("countries"):
+        codes, names, _ = _country_values(requirement["countries"])
+        places.append(_COUNTRY_MATCH_SQL)
+        place_params += [codes, names]
+    if places:
+        where.append("(" + " OR ".join(places) + ")")
+        params += place_params
     if requirement.get("capacity_mw") is not None:
         where.append("(capacity_mw IS NULL OR capacity_mw >= %s)")
         params.append(requirement["capacity_mw"])
+    if requirement.get("capacity_kw") is not None:
+        size_sql, size_params = _size_sql(requirement["capacity_kw"], unknown_matches=True)
+        where.append(size_sql)
+        params += size_params
     rows = _fetch(f"SELECT COUNT(*) FROM exclusive_listings WHERE {' AND '.join(where)}",
                   params, ("n",))
     return int(rows[0]["n"] or 0) if rows else 0
@@ -477,6 +773,29 @@ def _db_listing_events(listing_id):
     return _fetch(f"SELECT {', '.join(_LEDGER_COLS)} FROM listing_lead_ledger "
                   "WHERE listing_id = %s ORDER BY seq ASC LIMIT 5000",
                   [listing_id], _LEDGER_COLS)
+
+
+_VIEWER_LEAD_COLS = ("seq", "lead_id", "event", "listing_id", "user_ref",
+                     "email_verified", "created_at", "entry_json")
+
+
+def _db_viewer_lead_events(user_ref, listing_id):
+    """Every ledger event of the registrations `user_ref` opened for this
+    listing, of any age, oldest first."""
+    return _fetch("SELECT seq, lead_id, event, listing_id, user_ref, email_verified, created_at, "
+                  "entry_json FROM listing_lead_ledger WHERE lead_id IN (SELECT lead_id "
+                  "FROM listing_lead_ledger WHERE user_ref = %s AND listing_id = %s "
+                  "AND event = 'intro_requested') ORDER BY seq ASC LIMIT 2000",
+                  [user_ref, listing_id], _VIEWER_LEAD_COLS)
+
+
+def _db_provider_live_countries(provider_name):
+    """`country` of every live listing whose detail.provider.name is this
+    name, ignoring case."""
+    rows = _fetch(f"SELECT country FROM exclusive_listings WHERE {' AND '.join(_LIVE_WHERE)} "
+                  "AND LOWER(detail->'provider'->>'name') = LOWER(%s)",
+                  [provider_name], ("country",))
+    return [r["country"] for r in rows]
 
 
 def _db_user_openings(user_ref, event, listing_id, since):
@@ -730,13 +1049,15 @@ def _admin_ok():
 #  shaping
 # ═════════════════════════════════════════════════════════════════════════
 
-def _err(status, code, message, **extra):
+def _err(http_status, code, message, **extra):
+    """An error answer. `extra` becomes top-level keys, so a caller can pass
+    status= — a lead's status, say — without colliding with the HTTP status."""
     body = {"ok": False, "error": code, "message": message,
             "citation": _citation()}
     body.update(extra)
     resp = jsonify(body)
     resp.headers["Cache-Control"] = "private, no-store"
-    return resp, status
+    return resp, http_status
 
 
 def _no_store(resp):
@@ -1119,6 +1440,38 @@ def _check_verification(value, path, errors, now):
             "method": method}
 
 
+def _check_site(value, path, errors, now):
+    """The site itself: name, address, city, postal_code and/or parcel_id. Only
+    a released identity block serves it."""
+    start = len(errors)
+    if not isinstance(value, dict):
+        errors.append({"field": path, "message": (
+            "must be an object with name, address, city, postal_code and/or parcel_id")})
+        return None
+    _no_other_keys(value, _SITE_KEYS, path, errors, "site")
+    out = {}
+    for key in _SITE_KEYS:
+        if value.get(key) is None:
+            continue
+        val, problem = _field_text(value[key], _FIELD_TEXT_MAX)
+        if problem:
+            errors.append({"field": f"{path}.{key}", "message": problem})
+        else:
+            out[key] = val
+    if len(errors) == start and not out:
+        errors.append({"field": path, "message": (
+            "give at least one of name, address, city, postal_code, parcel_id")})
+    return out if len(errors) == start else None
+
+
+def _check_update_cadence(value, path, errors, now):
+    """How often the provider updates the listing: real_time, weekly or monthly."""
+    choice, problem = _field_choice(value, _UPDATE_CADENCES)
+    if problem:
+        errors.append({"field": path, "message": problem})
+    return choice
+
+
 _DETAIL_FIELD_CHECKS = {
     "colocation": _check_colocation,
     "delivery_type": _check_delivery_type,
@@ -1126,6 +1479,8 @@ _DETAIL_FIELD_CHECKS = {
     "power": _check_power,
     "price": _check_price,
     "provider": _check_provider,
+    "site": _check_site,
+    "update_cadence": _check_update_cadence,
     "verification": _check_verification,
 }
 
@@ -1137,6 +1492,12 @@ def _reserved_detail_key(key):
         return None
     name = key.strip().lower()
     return name if name in _DETAIL_RESERVED_KEYS else None
+
+
+def _identity_detail_key(key):
+    """True for a free-form `detail` key that identifies the site or provider
+    (_IDENTITY_DETAIL_KEYS), ignoring case and surrounding whitespace."""
+    return isinstance(key, str) and key.strip().lower() in _IDENTITY_DETAIL_KEYS
 
 
 def _validate_detail(raw):
@@ -1176,27 +1537,102 @@ def _validate_detail(raw):
     return (None, errors) if errors else (out, [])
 
 
-def _invalid_detail(errors):
+def _invalid(code, errors):
     first = errors[0]
     summary = f"{first['field']} {first['message']}"
     if len(errors) > 1:
         summary += f" (and {len(errors) - 1} more)"
-    return _err(400, "invalid_detail", " ".join(summary.split()), errors=errors)
+    return _err(400, code, " ".join(summary.split()), errors=errors)
 
 
-def _freshness(verification, now):
+def _invalid_detail(errors):
+    return _invalid("invalid_detail", errors)
+
+
+def _https_url(value, hosts=None):
+    """An https URL with a host (one of `hosts` when given), no credentials and
+    no whitespace, of at most _URL_MAX characters."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text or len(text) > _URL_MAX or any(ch.isspace() for ch in text):
+        return False
+    try:
+        parts = urlsplit(text)
+        host = (parts.hostname or "").lower()
+        credentials = parts.username or parts.password
+    except ValueError:
+        return False
+    if parts.scheme.lower() != "https" or not host or credentials:
+        return False
+    return host in hosts if hosts else "." in host
+
+
+def _calendar_date(value):
+    """A trimmed 'YYYY-MM-DD' that names a real calendar date, else None."""
+    if not isinstance(value, str):
+        return None
+    m = _POSTED_AT_RE.fullmatch(value.strip())
+    if not m:
+        return None
+    try:
+        datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+    return value.strip()
+
+
+def _validate_contact(raw):
+    """Admin-write rules for `contact`. Only its co_marketing record is checked;
+    every other key is stored as sent. -> errors (nothing is stored on any)."""
+    contact = raw
+    if isinstance(raw, str):
+        try:
+            contact = json.loads(raw)
+        except (ValueError, RecursionError):
+            return []
+    if not isinstance(contact, dict) or contact.get("co_marketing") is None:
+        return []
+    value, path, errors = contact["co_marketing"], "contact.co_marketing", []
+    if not isinstance(value, dict):
+        return [{"field": path, "message": (
+            "must be an object with linkedin_post_url, posted_at and/or website_url")}]
+    _no_other_keys(value, _CO_MARKETING_KEYS, path, errors, "co_marketing")
+    if (value.get("linkedin_post_url") is not None
+            and not _https_url(value["linkedin_post_url"], _LINKEDIN_HOSTS)):
+        errors.append({"field": f"{path}.linkedin_post_url",
+                       "message": "must be an https URL on linkedin.com or www.linkedin.com"})
+    if value.get("posted_at") is not None and _calendar_date(value["posted_at"]) is None:
+        errors.append({"field": f"{path}.posted_at",
+                       "message": "must be a calendar date as YYYY-MM-DD"})
+    if value.get("website_url") is not None and not _https_url(value["website_url"]):
+        errors.append({"field": f"{path}.website_url", "message": "must be an https URL"})
+    return errors
+
+
+def _freshness(verification, now, cadence=None):
     """fresh / aging / stale by whole days since verification.verified_at;
-    unverified without a valid verification."""
+    unverified without a valid verification. With an update_cadence and a
+    verification, next_update_due is verified_at plus that cadence's allowance
+    (_CADENCE_OVERDUE_DAYS) and overdue is whether now is past it. A badge
+    only: an overdue listing is still served."""
+    out = {"state": "unverified", "verified_at": None, "age_days": None,
+           "update_cadence": cadence, "next_update_due": None, "overdue": False}
     if not verification:
-        return {"state": "unverified", "verified_at": None, "age_days": None}
-    age_days = max(0, (now - _parse_verified_at(verification["verified_at"])).days)
+        return out
+    verified = _parse_verified_at(verification["verified_at"])
+    age_days = max(0, (now - verified).days)
     if age_days <= _FRESH_MAX_AGE_DAYS:
         state = "fresh"
     elif age_days <= _AGING_MAX_AGE_DAYS:
         state = "aging"
     else:
         state = "stale"
-    return {"state": state, "verified_at": verification["verified_at"], "age_days": age_days}
+    out.update(state=state, verified_at=verification["verified_at"], age_days=age_days)
+    if cadence in _CADENCE_OVERDUE_DAYS:
+        due = verified + timedelta(days=_CADENCE_OVERDUE_DAYS[cadence])
+        out.update(next_update_due=ledger.iso_utc(due), overdue=now > due)
+    return out
 
 
 def _listing_fields(detail):
@@ -1210,7 +1646,7 @@ def _listing_fields(detail):
         fields[name] = None if value is None else check(value, "detail." + name, [], now)
     if not _colocation_allowed(fields["delivery_type"]):
         fields["colocation"] = None
-    fields["freshness"] = _freshness(fields["verification"], now)
+    fields["freshness"] = _freshness(fields["verification"], now, fields["update_cadence"])
     return fields
 
 
@@ -1258,9 +1694,19 @@ def _access(row, v, return_path, terms_ok=False):
     return {"required": required, "granted": granted, "reason": reason, "unlock": unlock}
 
 
+def _capacity_kw(row, fields):
+    """kW on offer, as _size_sql sizes a listing: a colocation listing's
+    colocation.kw_available (None without one), any other listing's
+    capacity_mw * 1000, else None."""
+    if fields["delivery_type"] == "colocation":
+        return (fields["colocation"] or {}).get("kw_available")
+    mw = _num(row.get("capacity_mw"))
+    return None if mw is None else _json_number(round(mw * 1000, 3))
+
+
 def _teaser(row, access, fields=None):
-    """The card everyone sees, locked or not. `fields` is
-    _listing_fields(detail), when the caller already has it."""
+    """The card everyone sees, locked or not. Never any site identity.
+    `fields` is _listing_fields(detail), when the caller already has it."""
     detail = _json_obj(row.get("detail"))
     if fields is None:
         fields = _listing_fields(detail)
@@ -1277,9 +1723,12 @@ def _teaser(row, access, fields=None):
         "market": row.get("market"),
         "state": row.get("state"),
         "country": row.get("country"),
+        "region": _region_of(row.get("country")),
         "capacity_mw": _num(row.get("capacity_mw")),
+        "capacity_kw": _capacity_kw(row, fields),
         "available": _available(detail, fields["mw_schedule"]),
         "delivery_type": fields["delivery_type"],
+        "update_cadence": fields["update_cadence"],
         "freshness": fields["freshness"],
         "provider": ({"name": provider["name"]}
                      if provider and provider["disclosed"] else None),
@@ -1291,32 +1740,145 @@ def _teaser(row, access, fields=None):
 
 
 def _full(row, access):
-    """Unlocked view. Never `contact` or `owner_id`; coordinates at 2 dp
-    (about a kilometre) — the site itself is what the introduction is for.
-    Reserved detail keys appear only as their typed fields, and the provider's
-    name only when it is disclosed."""
+    """The specs view: what an open listing shows until the viewer's own
+    registration on it is accepted. Never `contact` or `owner_id`, and no site
+    identity: latitude and longitude read null, power carries no substation,
+    and the generic `detail` drops reserved keys and the address-like keys of
+    _IDENTITY_DETAIL_KEYS. The provider's name appears only when it is
+    disclosed. get_listing's `disclosure` block carries the rest once released."""
     detail = _json_obj(row.get("detail"))
     fields = _listing_fields(detail)
     item = _teaser(row, access, fields)
     provider = fields["provider"]
+    power = {k: val for k, val in (fields["power"] or {}).items() if k != "substation"}
     item.update({
-        "latitude": _round2(row.get("latitude")),
-        "longitude": _round2(row.get("longitude")),
+        "latitude": None,
+        "longitude": None,
         "asking_price": _num(row.get("asking_price")),
         "asking_currency": row.get("asking_currency"),
         "detail": {k: val for k, val in detail.items()
                    if isinstance(k, str) and not k.startswith("_")
-                   and k.lower() not in _DETAIL_PRIVATE_KEYS
-                   and _reserved_detail_key(k) is None},
+                   and k.strip().lower() not in _DETAIL_PRIVATE_KEYS
+                   and _reserved_detail_key(k) is None
+                   and not _identity_detail_key(k)},
         "colocation": fields["colocation"],
         "mw_schedule": fields["mw_schedule"],
-        "power": fields["power"],
+        "power": power or None,
         "price": fields["price"],
         "provider": ({"name": provider["name"] if provider["disclosed"] else None,
                       "disclosed": provider["disclosed"]} if provider else None),
         "verification": fields["verification"],
     })
     return item
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  disclosure (released only by an accepted registration)
+# ═════════════════════════════════════════════════════════════════════════
+
+def _identity_text(value):
+    """A stored identity value as single-line text of at most _FIELD_TEXT_MAX
+    characters, or None."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    return " ".join(str(value).split())[:_FIELD_TEXT_MAX] or None
+
+
+def _site_identity(detail, site):
+    """The reserved `site`, completed from the legacy identity keys for the
+    fields it lacks. None when there is nothing to share."""
+    out = dict(site or {})
+    stored = {}
+    for key, value in detail.items():
+        if _identity_detail_key(key):
+            stored.setdefault(key.strip().lower(), value)
+    for legacy, field in _IDENTITY_DETAIL_KEYS.items():
+        text = None if field in out else _identity_text(stored.get(legacy))
+        if text:
+            out[field] = text
+    return {key: out[key] for key in _SITE_KEYS if key in out} or None
+
+
+def _contact_address(value):
+    text = str(value or "").strip()
+    return text if "@" in text and not any(ch.isspace() for ch in text) else None
+
+
+def _provider_contact(raw):
+    """The provider's contact, for a buyer whose registration it accepted:
+    name, email, phone and title from the listing's `contact`. notify_email
+    stands in for email only when it is the only address; auto_notify,
+    co_marketing and every other key are never read."""
+    contact = _json_obj(raw)
+    out = {"name": _identity_text(contact.get("name")),
+           "email": (_contact_address(contact.get("email"))
+                     or _contact_address(contact.get("notify_email"))),
+           "phone": _identity_text(contact.get("phone")),
+           "title": _identity_text(contact.get("title"))}
+    return out if any(out.values()) else None
+
+
+def _disclosed_values(row):
+    """What an accepted registration shares with the buyer about the listing."""
+    detail = _json_obj(row.get("detail"))
+    fields = _listing_fields(detail)
+    provider, power = fields["provider"], fields["power"] or {}
+    lat, lon = _num(row.get("latitude")), _num(row.get("longitude"))
+    return {"provider": {"name": provider["name"]} if provider else None,
+            "site": _site_identity(detail, fields["site"]),
+            "latitude": None if lat is None else round(lat, 6),
+            "longitude": None if lon is None else round(lon, 6),
+            "substation": power.get("substation"),
+            "contact": _provider_contact(row.get("contact"))}
+
+
+def _viewer_lead(rows):
+    """(lead_id, status, events) of the latest registration in `rows` — one
+    viewer's registrations for one listing — that is not withdrawn, else
+    (None, None, [])."""
+    by_lead = {}
+    for ev in sorted(rows, key=lambda r: r.get("seq") or 0):
+        if ev.get("lead_id"):
+            by_lead.setdefault(ev["lead_id"], []).append(ev)
+    latest = None
+    for lead_id, events in by_lead.items():
+        opening = _opening(events)
+        if not opening or opening.get("event") != "intro_requested":
+            continue
+        status = ledger.lead_status(events)
+        if status == "withdrawn":
+            continue
+        if latest is None or (opening.get("seq") or 0) > latest[3]:
+            latest = (lead_id, status, events, opening.get("seq") or 0)
+    return latest[:3] if latest else (None, None, [])
+
+
+def _disclosure(row, v, access):
+    """get_listing's `disclosure` block. Its values are present only when the
+    viewer's own registration on this listing is accepted or introduced. A
+    locked or unidentified caller gets {"released": false} and nothing more,
+    and so does a lookup that fails."""
+    locked = {"released": False}
+    if not (access["granted"] and v["identified"] and v["user_ref"]):
+        return locked
+    try:
+        rows = _db_viewer_lead_events(v["user_ref"], row.get("id"))
+    except Exception as exc:
+        logger.warning("[pocket-listings] disclosure lookup failed: %s", exc)
+        return locked
+    lead_id, lead_status, events = _viewer_lead(rows)
+    status = _DISCLOSURE_STATUS.get(lead_status, "none")
+    out = {"released": lead_status in _RELEASED_STATUSES, "status": status,
+           "lead_id": lead_id, "accepted_at": None, "provider": None, "site": None,
+           "latitude": None, "longitude": None, "substation": None, "contact": None}
+    if status == "none":
+        out["how"] = {"method": "POST", "path": f"/api/v1/listings/{row.get('slug')}/intro",
+                      "mcp_tool": "request_capacity_intro"}
+    if out["released"]:
+        accepted = _first(events, "registration_accepted")
+        out["accepted_at"] = _entry(accepted).get("created_at") if accepted else None
+        out.update(_disclosed_values(row))
+    return out
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1523,12 +2085,36 @@ def _clean_lead_fields(body, need_requirement):
             problems["requirement.capacity_mw"] = "must be a number of MW between 0 and 5000"
         else:
             requirement["capacity_mw"] = round(n, 3)
+    kw = raw_req.get("capacity_kw")
+    if kw not in (None, ""):
+        n = _num(kw)
+        if n is None or not (0 < n <= _REQUIREMENT_MAX_KW):
+            problems["requirement.capacity_kw"] = (
+                f"must be a number of kW greater than 0 and at most {_REQUIREMENT_MAX_KW}")
+        else:
+            requirement["capacity_kw"] = _json_number(round(n, 3))
     for key, max_items, limit in (("markets", 10, 60), ("states", 15, 40)):
         vals = _string_list(raw_req.get(key), max_items, limit)
         if vals is False:
             problems[f"requirement.{key}"] = "must be a list of names"
         elif vals:
             requirement[key] = vals
+    regions = _string_list(raw_req.get("regions"), _SEARCH_MAX_VALUES, 60)
+    if regions is False:
+        problems["requirement.regions"] = "must be a list of regions"
+    elif regions:
+        keys, unknown = _region_keys(regions)
+        if unknown:
+            problems["requirement.regions"] = "must be regions: " + ", ".join(REGION_KEYS)
+        else:
+            requirement["regions"] = keys
+    countries = _string_list(raw_req.get("countries"), _SEARCH_MAX_VALUES + 1, 60)
+    if countries is False:
+        problems["requirement.countries"] = "must be a list of ISO country codes or names"
+    elif len(countries) > _SEARCH_MAX_VALUES:
+        problems["requirement.countries"] = f"must list at most {_SEARCH_MAX_VALUES} countries"
+    elif countries:
+        requirement["countries"] = _country_values(countries)[2]
     for key, limit in (("timeline", 80), ("use_case", 120)):
         val = _line(raw_req.get(key), limit)
         if val is False:
@@ -1540,8 +2126,10 @@ def _clean_lead_fields(body, need_requirement):
         problems["requirement.notes"] = "must be text"
     elif notes:
         requirement["notes"] = notes
-    if need_requirement and not any(k in requirement for k in ("capacity_mw", "markets", "states")):
-        problems.setdefault("requirement", "give at least one of capacity_mw, markets or states")
+    if need_requirement and not any(k in requirement for k in (
+            "capacity_mw", "capacity_kw", "markets", "states", "regions", "countries")):
+        problems.setdefault("requirement", "give at least one of capacity_mw, capacity_kw, "
+                                           "markets, states, regions or countries")
 
     client = {}
     raw_client = body.get("client")
@@ -1625,13 +2213,16 @@ def _admin_inbox():
 def _requirement_html(req):
     req = req or {}
     rows = []
-    labels = (("capacity_mw", "Capacity (MW)"), ("markets", "Markets"),
-              ("states", "States"), ("timeline", "Timeline"),
+    labels = (("capacity_mw", "Capacity (MW)"), ("capacity_kw", "Capacity (kW)"),
+              ("markets", "Markets"), ("states", "States"), ("regions", "Regions"),
+              ("countries", "Countries"), ("timeline", "Timeline"),
               ("use_case", "Use case"), ("notes", "Notes"))
     for key, label in labels:
         val = req.get(key)
         if val in (None, "", []):
             continue
+        if key == "regions" and isinstance(val, list):
+            val = [_REGION_LABELS.get(x, x) for x in val]
         if isinstance(val, list):
             val = ", ".join(str(x) for x in val)
         rows.append(f"<tr><td style='padding:2px 12px 2px 0;color:#555'>{_e(label)}</td>"
@@ -1644,9 +2235,16 @@ def _confirm_email(lead_id, token, name, listing, requirement):
     if listing:
         what = f"an introduction to the operator of <b>{_e(listing.get('title'))}</b>"
         subject = _hdr(f"Confirm your DC Hub introduction request — {listing.get('title') or lead_id}")
+        after = ("Once you confirm, DC Hub records the request in its lead register and sends "
+                 "the operator your company name and requirement so it can accept or decline "
+                 "the registration. If it accepts, DC Hub shares your name, role, email and "
+                 "message with the operator, and the site details and the operator's contact "
+                 "with you. If it declines, neither side's contact details are shared.")
     else:
         what = "first access to Capacity Source listings matching your requirement"
         subject = "Confirm your DC Hub Capacity Source requirement"
+        after = ("Once you confirm, DC Hub records your requirement in its lead register and "
+                 "emails you when a matching listing opens.")
     body = (
         f"<p>Hi {_e(name, 'there')},</p>"
         f"<p>You asked DC Hub for {what}. Confirm the request so DC Hub can register it:</p>"
@@ -1655,9 +2253,7 @@ def _confirm_email(lead_id, token, name, listing, requirement):
         f"text-decoration:none\">Confirm my request</a></p>"
         f"<p>Lead reference: <b>{_e(lead_id)}</b></p>"
         f"{_requirement_html(requirement)}"
-        f"<p>Once you confirm, DC Hub records the request in its lead register, "
-        f"shares your name, company, role and requirement with the operator, and "
-        f"makes the introduction. Operator contact details are never published.</p>"
+        f"<p>{_e(after)}</p>"
         f"<p style='color:#555;font-size:13px'><b>Introduction terms "
         f"(version {_e(TERMS_VERSION)}):</b> {_e(TERMS_SUMMARY)} "
         f"<a href=\"{html.escape(TERMS_URL, quote=True)}\">Full terms</a></p>"
@@ -1702,43 +2298,135 @@ def _admin_email(lead_id, events, listing_row):
         f"<p><b>Verify:</b> {_e(_verify_url(lead_id))}<br>"
         f"<b>Latest ledger entry:</b> #{_e(head.get('seq'))} {_e(head.get('entry_hash'))}</p>"
         f"<p style='color:#555;font-size:12px'>Send the operator notice: POST "
-        f"/api/v1/admin/listings/leads/{_e(lead_id)}/notify-operator · mark introduced: "
-        f"POST /api/v1/admin/listings/leads/{_e(lead_id)}/status {{\"status\":\"introduced\"}}</p>"
+        f"/api/v1/admin/listings/leads/{_e(lead_id)}/notify-operator · record the operator's "
+        f"decision: POST /api/v1/admin/listings/leads/{_e(lead_id)}/status "
+        f"{{\"status\":\"accepted\"}} or {{\"status\":\"declined\"}} · once accepted, mark "
+        f"introduced: {{\"status\":\"introduced\"}}</p>"
     )
     return subject, body
 
 
-def _operator_email(lead_id, events, listing_row):
+def _scrub_phone(match):
+    text = match.group(0)
+    digits = sum(ch.isdigit() for ch in text)
+    if digits > 15:
+        return text
+    if ((text[0] in "+(" and digits >= 7) or digits >= 10
+            or _SCRUB_LOCAL_PHONE_RE.search(text)):
+        return "[phone removed]"
+    return text
+
+
+def _scrub_text(text):
+    """Free text with email addresses, links and phone numbers taken out.
+    Dates and year ranges (2027-06-15, 2026-2028) stay."""
+    if not isinstance(text, str):
+        return text
+    text = _SCRUB_EMAIL_RE.sub("[email removed]", text)
+    text = _SCRUB_URL_RE.sub("[link removed]", text)
+    return _SCRUB_PHONE_RE.sub(_scrub_phone, text)
+
+
+def _scrub_requirement(req):
+    """A requirement as the provider sees it before accepting: the free-text
+    fields (_SCRUB_TEXT_FIELDS) scrubbed, the rest as registered."""
+    if not isinstance(req, dict):
+        return req
+    return {k: (_scrub_text(val) if k in _SCRUB_TEXT_FIELDS else val) for k, val in req.items()}
+
+
+def _operator_lead_view(lead_id, events):
+    """What the provider sees of one registration, in its notice and its
+    ledger alike: lead id, status, registered and confirmed times, company,
+    requirement, arrival channel and platform, register entries and the verify
+    URL. The buyer's name, role, email, email domain and message are added only
+    once the registration is accepted (_RELEASED_STATUSES); until then the
+    requirement's free text is scrubbed as well."""
     opening, entry, confirmed = _lead_facts(events)
+    status = ledger.lead_status(events)
+    released = status in _RELEASED_STATUSES
+    requirement = _requirement_of(opening)
+    return {
+        "lead_id": lead_id,
+        "status": status,
+        "registered_at": entry.get("created_at"),
+        "confirmed_at": _entry(confirmed).get("created_at") if confirmed else None,
+        "company": opening.get("company"),
+        "requirement": requirement if released else _scrub_requirement(requirement),
+        "channel": entry.get("channel"),
+        "platform": entry.get("platform"),
+        "email_verified": bool(entry.get("email_verified") or confirmed),
+        "verified_via": entry.get("verified_via") or ("email_link" if confirmed else None),
+        "name": opening.get("name") if released else None,
+        "role": opening.get("role") if released else None,
+        "email": opening.get("email") if released else None,
+        "email_domain": entry.get("email_domain") if released else None,
+        "message": opening.get("message") if released else None,
+        "entries": [{"seq": ev.get("seq"), "event": ev.get("event"),
+                     "at": _entry(ev).get("created_at"), "entry_hash": ev.get("entry_hash")}
+                    for ev in events],
+        "verify_url": _verify_url(lead_id),
+    }
+
+
+def _operator_link(secret, row):
+    """(token, url) of the provider's lead page for this listing, with a fresh
+    operator token, in the form admin_operator_link hands out. Opening the page
+    changes nothing: a decision is a POST from it."""
+    token = ledger.operator_token(secret, row["id"])
+    return token, (f"{SITE}/listings?ledger={quote(str(row.get('slug')), safe='')}"
+                   f"&token={quote(token, safe='')}")
+
+
+def _operator_email(lead_id, events, listing_row, secret=None):
+    view = _operator_lead_view(lead_id, events)
+    status = view["status"]
     title = listing_row.get("title") or listing_row.get("slug")
     subject = _hdr(f"Lead registration notice {lead_id} — {title}")
     entries = "".join(
-        f"<tr><td style='padding:2px 12px 2px 0'>#{_e(ev.get('seq'))}</td>"
-        f"<td style='padding:2px 12px 2px 0'>{_e(ev.get('event'))}</td>"
-        f"<td style='padding:2px 12px 2px 0'>{_e(_entry(ev).get('created_at'))}</td>"
-        f"<td style='font-family:monospace;font-size:12px'>{_e(ev.get('entry_hash'))}</td></tr>"
-        for ev in events)
-    channel = entry.get("channel")
-    via = ("an AI agent" + (f" ({entry.get('platform')})" if entry.get("platform") else "")
-           if channel == "mcp" else "dchub.cloud")
+        f"<tr><td style='padding:2px 12px 2px 0'>#{_e(ev['seq'])}</td>"
+        f"<td style='padding:2px 12px 2px 0'>{_e(ev['event'])}</td>"
+        f"<td style='padding:2px 12px 2px 0'>{_e(ev['at'])}</td>"
+        f"<td style='font-family:monospace;font-size:12px'>{_e(ev['entry_hash'])}</td></tr>"
+        for ev in view["entries"])
+    via = ("an AI agent" + (f" ({view['platform']})" if view["platform"] else "")
+           if view["channel"] == "mcp" else "dchub.cloud")
+    prospect = f"<b>Company:</b> {_e(view['company'])}<br>"
+    if status in _RELEASED_STATUSES:
+        prospect = (f"<b>Name:</b> {_e(view['name'])}<br><b>Role:</b> {_e(view['role'])}<br>"
+                    f"{prospect}<b>Email:</b> {_e(view['email'])}<br>"
+                    f"<b>Message:</b> {_e(view['message']).replace(chr(10), '<br>')}<br>")
+    link = (_operator_link(secret, listing_row)[1]
+            if secret is not None and listing_row.get("id") is not None else None)
+    page = (f"<a href=\"{html.escape(link, quote=True)}\">your lead page</a>" if link
+            else f"a reply to {_e(SUPPORT_EMAIL)}")
+    if status in _DECIDABLE_STATUSES:
+        decision = (f"<p><b>Accept or decline this registration</b> on {page}. If you accept, "
+                    f"DC Hub shares the prospect's name, role, email and message with you, and "
+                    f"your site details and contact with the prospect. If you decline, neither "
+                    f"side's contact details are shared.</p>")
+    elif status in _RELEASED_STATUSES:
+        decision = f"<p>You accepted this registration. Your lead page: {page}.</p>"
+    elif status == "declined":
+        decision = "<p>This registration was declined. No contact details were shared.</p>"
+    else:
+        decision = ""
     body = (
         f"<p>DC Hub has registered the following prospect for your listing "
         f"<b>{_e(title)}</b>.</p>"
         f"<p><b>Lead:</b> {_e(lead_id)}<br>"
-        f"<b>Prospect:</b> {_e(opening.get('name'))}, {_e(opening.get('role'), '')} "
-        f"{_e(opening.get('company'))}<br>"
-        f"<b>Email domain:</b> {_e(entry.get('email_domain'))}<br>"
+        f"<b>Status:</b> {_e(status)}<br>"
+        f"{prospect}"
         f"<b>Arrived via:</b> {_e(via)}<br>"
-        f"<b>Registered (UTC):</b> {_e(entry.get('created_at'))}<br>"
-        f"<b>Inbox confirmed (UTC):</b> "
-        f"{_e(_entry(confirmed).get('created_at') if confirmed else None, 'verified at request')}</p>"
-        f"{_requirement_html(_requirement_of(opening))}"
+        f"<b>Registered (UTC):</b> {_e(view['registered_at'])}<br>"
+        f"<b>Inbox confirmed (UTC):</b> {_e(view['confirmed_at'], 'verified at request')}</p>"
+        f"{_requirement_html(view['requirement'])}"
+        f"{decision}"
         f"<p><b>Register entries for this lead</b></p><table>{entries}</table>"
-        f"<p>Check the live record at any time: {_e(_verify_url(lead_id))}. Keep "
+        f"<p>Check the live record at any time: {_e(view['verify_url'])}. Keep "
         f"this email: its receipt time and the hashes above are your own record "
         f"that DC Hub registered this prospect for your listing.</p>"
-        f"<p>DC Hub will make the introduction. Reply to {_e(SUPPORT_EMAIL)} "
-        f"about this lead.</p>"
+        f"<p>Reply to {_e(SUPPORT_EMAIL)} about this lead.</p>"
     )
     return subject, body
 
@@ -1751,12 +2439,152 @@ def _operator_address(contact):
     return None
 
 
+# ── decision emails ──────────────────────────────────────────────────────
+
+def _h(value):
+    """Escaped text, or None for an empty value (a row _facts_html leaves out)."""
+    return None if value in (None, "") else _e(value)
+
+
+def _facts_html(pairs):
+    rows = "".join(f"<tr><td style='padding:2px 12px 2px 0;color:#555'>{_e(label)}</td>"
+                   f"<td>{value}</td></tr>" for label, value in pairs if value)
+    return f"<table>{rows}</table>" if rows else ""
+
+
+def _mailto(address):
+    if not address:
+        return None
+    href = html.escape("mailto:" + quote(address, safe="@.+-_"), quote=True)
+    return f"<a href=\"{href}\">{_e(address)}</a>"
+
+
+def _accepted_buyer_email(lead_id, listing_row, opening, note):
+    """To the buyer: the provider accepted. The provider's name, the site, its
+    map location and substation, the provider's contact, and the listing link."""
+    values = _disclosed_values(listing_row)
+    title = listing_row.get("title") or listing_row.get("slug")
+    site, contact = values["site"] or {}, values["contact"] or {}
+    lat, lon = values["latitude"], values["longitude"]
+    location = None
+    if lat is not None and lon is not None:
+        maps = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+        location = f"{_e(lat)}, {_e(lon)} (<a href=\"{html.escape(maps, quote=True)}\">map</a>)"
+    contact_html = _facts_html([
+        ("Name", _h(contact.get("name"))), ("Title", _h(contact.get("title"))),
+        ("Email", _mailto(contact.get("email"))), ("Phone", _h(contact.get("phone")))])
+    subject = _hdr(f"Registration accepted — {title}")
+    body = (
+        f"<p>Hi {_e(opening.get('name'), 'there')},</p>"
+        f"<p>The provider accepted your registration <b>{_e(lead_id)}</b> for "
+        f"<b>{_e(title)}</b>. Here are the site details and the provider's contact.</p>"
+        + _facts_html([
+            ("Provider", _h((values["provider"] or {}).get("name"))),
+            ("Site", _h(site.get("name"))), ("Address", _h(site.get("address"))),
+            ("City", _h(site.get("city"))), ("Postal code", _h(site.get("postal_code"))),
+            ("Parcel", _h(site.get("parcel_id"))), ("Map location", location),
+            ("Substation", _h(values["substation"]))])
+        + "<p><b>Provider contact</b></p>"
+        + (contact_html or f"<p>No provider contact is on file for this listing. Reply to "
+                           f"{_e(SUPPORT_EMAIL)} and DC Hub will put you in touch.</p>")
+        + (f"<p><b>Note from the provider:</b><br>{_e(note).replace(chr(10), '<br>')}</p>"
+           if note else "")
+        + f"<p><a href=\"{html.escape(_listing_url(listing_row.get('slug')), quote=True)}\">"
+          f"Open the listing on DC Hub</a></p>"
+        + f"<p style='color:#555;font-size:13px'>Registration record: {_e(_verify_url(lead_id))}</p>"
+    )
+    return subject, body
+
+
+def _accepted_provider_email(lead_id, listing_row, opening):
+    """To the provider's contact address: the buyer's name, role, company,
+    email, message and requirement."""
+    title = listing_row.get("title") or listing_row.get("slug")
+    message = opening.get("message")
+    subject = _hdr(f"Registration accepted {lead_id} — {title}: buyer contact")
+    body = (
+        f"<p>You accepted registration <b>{_e(lead_id)}</b> for <b>{_e(title)}</b>. DC Hub "
+        f"has sent the buyer your site details and contact. The buyer:</p>"
+        + _facts_html([
+            ("Name", _h(opening.get("name"))), ("Role", _h(opening.get("role"))),
+            ("Company", _h(opening.get("company"))), ("Email", _mailto(opening.get("email"))),
+            ("Message", _h(message).replace(chr(10), "<br>") if message else None)])
+        + _requirement_html(_requirement_of(opening))
+        + f"<p style='color:#555;font-size:13px'>Registration record: {_e(_verify_url(lead_id))}</p>"
+    )
+    return subject, body
+
+
+def _declined_buyer_email(lead_id, listing_row, opening):
+    """To the buyer: the provider could not take the registration. No provider
+    identity, no contact."""
+    title = listing_row.get("title") or listing_row.get("slug")
+    subject = _hdr(f"Update on your registration — {title}")
+    body = (
+        f"<p>Hi {_e(opening.get('name'), 'there')},</p>"
+        f"<p>The provider could not take your registration <b>{_e(lead_id)}</b> for "
+        f"<b>{_e(title)}</b>. No contact details were shared with either side.</p>"
+        f"<p><a href=\"{SITE}/listings#listings\">Browse the other listings</a>, or "
+        f"<a href=\"{SITE}/listings#register\">register your requirement</a> and DC Hub "
+        f"will email you when matching capacity opens.</p>"
+    )
+    return subject, body
+
+
+def _decision_admin_email(lead_id, listing_row, decision, channel, note, copies):
+    verb = _DECISION_STATUS[decision]
+    title = listing_row.get("title") or listing_row.get("slug")
+    # "Pocket listing lead" keeps the admin inbox's filter working (see _admin_email).
+    subject = _hdr(f"Pocket listing lead {lead_id} {verb} — {title}")
+    sent = "".join(
+        f"<hr><p><b>{_e(label)}</b> — to {_e(to, 'no address on file, not sent')}<br>"
+        f"<b>Subject:</b> {_e(copy_subject)}</p>{copy_body}"
+        for label, to, copy_subject, copy_body in copies)
+    body = (
+        f"<h2>Registration {_e(verb)}: {_e(lead_id)}</h2>"
+        f"<p><b>Listing:</b> {_e(title)} {_e(listing_row.get('slug'), '')}<br>"
+        f"<b>Recorded via:</b> {_e(channel)}<br>"
+        f"<b>Note:</b> {_e(note)}</p>{sent}"
+    )
+    return subject, body
+
+
+def _on_decision(decision, lead_id, listing_row, opening, channel, note):
+    """Off-request: the emails a recorded decision sends. Accept: the buyer
+    gets the site and the provider's contact, the provider the buyer's details.
+    Decline: the buyer hears the registration was not taken, and nothing about
+    the provider. The admin inbox gets a copy of each. Never blocks the
+    response; a failure is logged."""
+    def work():
+        try:
+            buyer = opening.get("email")
+            if decision == "accept":
+                copies = [("To the buyer", buyer,
+                           *_accepted_buyer_email(lead_id, listing_row, opening, note)),
+                          ("To the provider", _operator_address(_json_obj(listing_row.get("contact"))),
+                           *_accepted_provider_email(lead_id, listing_row, opening))]
+            else:
+                copies = [("To the buyer", buyer,
+                           *_declined_buyer_email(lead_id, listing_row, opening))]
+            for label, to, subject, body in copies:
+                if to:
+                    _send_email(to, subject, body)
+                else:
+                    logger.warning("[pocket-listings] %s: no address for %s", lead_id, label.lower())
+            subject, body = _decision_admin_email(lead_id, listing_row, decision, channel, note,
+                                                  copies)
+            _send_email(_admin_inbox(), subject, body)
+        except Exception as exc:  # noqa: BLE001 — a mail failure never reaches the response
+            logger.warning("[pocket-listings] decision emails for %s failed: %s", lead_id, exc)
+    _dispatch(work)
+
+
 def _notify_operator(lead_id, listing_row, secret, events, to=None):
     contact = _json_obj(listing_row.get("contact"))
     address = to or _operator_address(contact)
     if not address:
         return {"sent": False, "reason": "no_operator_address", "ledger": None}
-    subject, body = _operator_email(lead_id, events, listing_row)
+    subject, body = _operator_email(lead_id, events, listing_row, secret)
     if not _send_email(address, subject, body):
         return {"sent": False, "reason": "send_failed", "ledger": None}
     opening = _opening(events) or {}
@@ -1911,13 +2739,23 @@ def _register_lead(row):
         if confirmation.get("sent") is False and confirmation.get("required") and not duplicate:
             nxt = (f"The request is recorded as {lead_id}, but the confirmation email "
                    f"could not be sent. Try again shortly or email {SUPPORT_EMAIL}.")
+        elif row is not None:
+            nxt = (f"A confirmation link was sent to {masked}. Once it is confirmed, DC Hub "
+                   f"sends the provider your company name and requirement to accept or decline.")
         else:
-            nxt = (f"A confirmation link was sent to {masked}. The request is registered "
-                   f"once it is confirmed; DC Hub then makes the introduction.")
+            nxt = (f"A confirmation link was sent to {masked}. The requirement is registered "
+                   f"once it is confirmed.")
     elif status == "withdrawn":
         nxt = f"This request was withdrawn. Email {SUPPORT_EMAIL} to reopen it."
+    elif status == "declined":
+        nxt = ("The provider could not take this registration. Browse the other listings or "
+               "register your requirement.")
+    elif status in _RELEASED_STATUSES:
+        nxt = ("The provider accepted this registration. Open the listing for the site details "
+               "and the provider's contact.")
     elif row is not None:
-        nxt = "Registered. DC Hub will introduce you to the operator and email you when it does."
+        nxt = ("Registered. DC Hub sends the provider your company name and requirement; if it "
+               "accepts, you get the site details and its contact by email.")
     else:
         nxt = "Registered. DC Hub will email you when a matching listing opens."
 
@@ -1951,14 +2789,52 @@ def _safe_get_listing(slug_or_id):
 #  public routes
 # ═════════════════════════════════════════════════════════════════════════
 
+def _search_values(name):
+    """A comma-list query parameter, given once or repeated -> (values with
+    whitespace collapsed, first spelling of each kept; problem or None)."""
+    values, given = [], 0
+    for raw in request.args.getlist(name):
+        for part in raw.split(","):
+            text = " ".join(part.split())
+            if not text:
+                continue
+            given += 1
+            if len(text) > _SEARCH_VALUE_MAX:
+                return None, f"each {name} value must be at most {_SEARCH_VALUE_MAX} characters"
+            if text.lower() not in (x.lower() for x in values):
+                values.append(text)
+    if given > _SEARCH_MAX_VALUES:
+        return None, f"{name} takes at most {_SEARCH_MAX_VALUES} values"
+    return values, None
+
+
 @exclusive_listings_bp.route("/api/v1/listings", methods=["GET"])
 def list_listings():
     """Teaser feed. Everyone sees every live listing's teaser; nobody sees
-    operator contact.
+    operator contact or site identity.
 
+    Size — give one of:
+    ?min_kw=         kW on offer at least this: a colocation listing's
+                     colocation.kw_available (a colocation listing without one
+                     does not match), any other listing's capacity_mw * 1000.
+                     A number greater than 0, else 400 invalid_request
+    ?min_mw=         capacity_mw at least this. With min_kw, 400 invalid_request
+    Location — comma lists, repeatable, at most 20 values of 80 characters:
+    ?region=         north_america | latin_america | europe | asia_pacific |
+                     middle_east_africa, or an alias: na, north america,
+                     latam, latin america, south america, emea (europe +
+                     middle_east_africa), apac, americas (north_america +
+                     latin_america), mea, middle east, africa. Case, spaces
+                     and hyphens do not matter; an unknown value is 400
+                     invalid_request with `allowed`. Countries are placed by
+                     canonical_stats' map
+    ?country=        ISO-2 codes or country names
+    ?location=       free text; a listing matches when ANY term is a region
+                     name or alias, a country code or name, a US state code or
+                     name, or part of its market (3+ characters)
     ?market=         market name, case-insensitive
     ?state=          state code
-    ?min_mw=         capacity_mw at least this
+    Other:
     ?delivery_type=  land | powered_shell | turnkey | colocation, matched
                      exactly; any other value is 400 invalid_request with
                      `allowed`
@@ -1966,12 +2842,27 @@ def list_listings():
                      mw_schedule entry dated in or before that month (listings
                      without a schedule do not match); a malformed value is
                      400 invalid_request
-    ?limit=          default 50, max 200"""
+    ?limit=          default 50, max 200
+
+    The filter families AND together, and every filter is in the SQL WHERE
+    clause, so LIMIT counts matching rows only. `filters` echoes the
+    normalised filters applied, e.g. {"min_kw": 500, "regions":
+    ["north_america", "europe"], "location": ["Dallas"]}. Every teaser carries
+    capacity_kw and region."""
     _ensure_schema()
     v = _viewer()
     market = (request.args.get("market") or "").strip()[:80]
     state = (request.args.get("state") or "").strip().upper()[:40]
-    min_mw = _num(request.args.get("min_mw"))
+    raw_min_mw = (request.args.get("min_mw") or "").strip()
+    raw_min_kw = (request.args.get("min_kw") or "").strip()
+    if raw_min_mw and raw_min_kw:
+        return _err(400, "invalid_request", "give min_mw or min_kw, not both")
+    min_mw = _num(raw_min_mw) if raw_min_mw else None
+    min_kw = None
+    if raw_min_kw:
+        min_kw = _num(raw_min_kw)
+        if min_kw is None or min_kw <= 0:
+            return _err(400, "invalid_request", "min_kw must be a number greater than 0")
     delivery_type = (request.args.get("delivery_type") or "").strip()
     if delivery_type and delivery_type not in _DELIVERY_TYPES:
         return _err(400, "invalid_request", "invalid delivery_type",
@@ -1980,17 +2871,36 @@ def list_listings():
     if available_by and _schedule_date(available_by) is None:
         return _err(400, "invalid_request",
                     "available_by must be a calendar date as YYYY-MM or YYYY-MM-DD")
+    searched = {}
+    for name in ("region", "country", "location"):
+        values, problem = _search_values(name)
+        if problem:
+            return _err(400, "invalid_request", problem)
+        searched[name] = values
+    regions, unknown = _region_keys(searched["region"])
+    if unknown:
+        return _err(400, "invalid_request", "unknown region: " + ", ".join(unknown),
+                    allowed=list(REGION_KEYS))
+    countries, location = searched["country"], searched["location"]
     try:
         limit = max(1, min(int(request.args.get("limit", "50")), 200))
     except ValueError:
         limit = 50
+    applied = (("market", market or None), ("state", state or None),
+               ("min_mw", None if min_mw is None else _json_number(min_mw)),
+               ("min_kw", None if min_kw is None else _json_number(min_kw)),
+               ("delivery_type", delivery_type or None), ("available_by", available_by or None),
+               ("regions", regions or None),
+               ("countries", _country_values(countries)[2] or None),
+               ("location", location or None))
+    filters = {key: value for key, value in applied if value is not None}
     try:
         rows = _db_list_listings(market=market or None, state=state or None,
                                  min_mw=min_mw, delivery_type=delivery_type or None,
-                                 available_by=available_by or None, limit=limit)
-        live_count = (len(rows) if not (market or state or min_mw is not None
-                                        or delivery_type or available_by)
-                      else _db_count_live())
+                                 available_by=available_by or None, min_kw=min_kw,
+                                 regions=regions or None, countries=countries or None,
+                                 location=location or None, limit=limit)
+        live_count = len(rows) if not filters else _db_count_live()
     except Exception as exc:
         logger.warning("[pocket-listings] list failed: %s", exc)
         return jsonify(ok=False, error="listings_unavailable", caller_tier=v["tier"]), 200
@@ -2009,6 +2919,7 @@ def list_listings():
         "citation": _citation(),
         "program": _program(live_count),
         "viewer": _viewer_public(v, "/listings"),
+        "filters": filters,
         "count": len(items),
         "items": items,
         "pocket_locked_count": sum(1 for i in items if i["locked"]),
@@ -2125,7 +3036,10 @@ def listings_summary():
 
 @exclusive_listings_bp.route("/api/v1/listings/<slug_or_id>", methods=["GET"])
 def get_listing(slug_or_id):
-    """One listing. Locked callers get the teaser plus the way in."""
+    """One listing. Locked callers get the teaser plus the way in. An open
+    listing is its specs view (_full); `disclosure` carries the provider, the
+    site and its contact once the provider accepts this viewer's own
+    registration on this listing, and {"released": false} for a locked caller."""
     _ensure_schema()
     v = _viewer()
     try:
@@ -2146,10 +3060,11 @@ def get_listing(slug_or_id):
         "locked": not access["granted"],
         "listing": _full(row, access) if access["granted"] else _teaser(row, access),
         "access": access,
+        "disclosure": _disclosure(row, v, access),
         "introduction": {"method": "POST",
                          "path": f"/api/v1/listings/{row.get('slug')}/intro",
                          "mcp_tool": "request_capacity_intro",
-                         "operator_contact": "never_shared"},
+                         "operator_contact": "shared_after_acceptance"},
         "viewer": _viewer_public(v, return_path),
         "caller_tier": v["tier"],
     }
@@ -2322,7 +3237,11 @@ def confirm_lead():
 @exclusive_listings_bp.route("/api/v1/listings/leads/<lead_id>/verify", methods=["GET"])
 def verify_lead(lead_id):
     """Public registration record. Company and email DOMAIN only — never the
-    prospect's name or address."""
+    prospect's name or address, and never the provider's identity, the site or
+    either side's contact. `status` is pending_email_confirmation, registered,
+    operator_notified, accepted, introduced, declined or withdrawn, and a
+    decision shows as its own event (registration_accepted or
+    registration_declined)."""
     _ensure_schema()
     lead_id = str(lead_id or "").strip().upper()
     allowed, retry = _rate_ok("verify", _ip_hash(), _READ_RATE_LIMIT)
@@ -2387,11 +3306,189 @@ def verify_lead(lead_id):
     return resp, 200
 
 
+# ── provider co-marketing ────────────────────────────────────────────────
+
+def _co_marketing_status(contact_raw):
+    """linkedin_posted | website_link | missing, from contact.co_marketing."""
+    record = _json_obj(contact_raw).get("co_marketing")
+    if isinstance(record, dict):
+        if _https_url(record.get("linkedin_post_url"), _LINKEDIN_HOSTS):
+            return "linkedin_posted"
+        if _https_url(record.get("website_url")):
+            return "website_link"
+    return "missing"
+
+
+def _provider_regions(provider, row):
+    """Region keys of this provider's live listings, in REGION_KEYS order; the
+    listing's own region when there is no provider name to group listings by,
+    or when none of them has a country canonical_stats places."""
+    found = set()
+    if provider:
+        try:
+            countries = _db_provider_live_countries(provider["name"])
+        except Exception as exc:
+            logger.warning("[pocket-listings] provider regions failed: %s", exc)
+            countries = []
+        found = {_region_of(country) for country in countries}
+    keys = [key for key in REGION_KEYS if key in found]
+    if keys:
+        return keys
+    own = _region_of(row.get("country"))
+    return [own] if own else []
+
+
+def _co_marketing(row, fields):
+    """The post DC Hub asks the provider for. Company-level on purpose: it
+    names no market, state or site, so one draft fits every listing they have,
+    and its search URL carries region keys alone."""
+    provider = fields["provider"]
+    regions = _provider_regions(provider, row)
+    search_url = f"{SITE}/listings" + (f"?region={','.join(regions)}" if regions else "")
+    company = provider["name"] if provider else "[Company]"
+    cadence = _CADENCE_PHRASE.get(fields["update_cadence"], "regularly")
+    draft = (f"{company} now lists its available data center capacity on DC Hub Capacity "
+             f"Source. Buyers and their AI agents can search it by size and location, and we "
+             f"update it {cadence}.\n\nLooking for capacity? Search by kW or MW and region: "
+             f"{search_url}\n\n#datacenters #AIinfrastructure")
+    return {"required": True, "status": _co_marketing_status(row.get("contact")),
+            "draft": draft, "search_url": search_url}
+
+
+# ── the operator's decision ──────────────────────────────────────────────
+
+def _decide(lead_id, events, listing_row, decision, channel, secret, note=None, retry=True):
+    """Record one accept or decline. -> (result, error response).
+
+    The ONE place a registration is decided: the provider's route and the
+    admin status route both come through here, so the transitions, the ledger
+    entry and the emails cannot drift apart. The append is guarded
+    (ledger.append's unless_lead_has), so a decision that landed while this one
+    was being made is never written over: the guard sends this back for a fresh
+    read, and the answer describes what is actually recorded."""
+    opening = _opening(events)
+    if (not opening or opening.get("event") != "intro_requested" or not listing_row
+            or opening.get("listing_id") != listing_row.get("id")):
+        return None, _err(404, "not_found", "No registration with that id for this listing.")
+    status = ledger.lead_status(events)
+    if status == "withdrawn":
+        return None, _err(409, "lead_withdrawn", "This registration was withdrawn.")
+    if status in (None, "pending_email_confirmation"):
+        return None, _err(409, "not_registered",
+                          "The prospect has not confirmed this registration yet.")
+    event = _DECISION_EVENT[decision]
+    already = _first(events, event)
+    if already is not None or (decision == "accept" and status in _RELEASED_STATUSES):
+        return {"decision": decision, "status": status, "duplicate": True,
+                "decided_at": _entry(already).get("created_at") if already else None,
+                "ledger": ({"seq": already.get("seq"), "entry_hash": already.get("entry_hash")}
+                           if already else None)}, None
+    if status in _RELEASED_STATUSES or status == "declined":
+        return None, _err(409, "already_decided", "This registration was already decided.",
+                          status=status)
+    try:
+        rec = _append_event(
+            secret=secret, lead_id=lead_id, event=event, listing=_listing_ref(listing_row),
+            user_ref=opening.get("user_ref"), email_verified=True, channel=channel,
+            meta={"note": note} if note else None,
+            unless_lead_has=ledger.DECISION_BLOCKING_EVENTS)
+    except ledger.LedgerConflict:
+        # A decision landed between the read above and this write. Read the
+        # lead again and answer from what the register now holds.
+        fresh = None
+        if retry:
+            try:
+                fresh = _db_lead_events(lead_id)
+            except Exception as exc:
+                logger.warning("[pocket-listings] decision re-read failed: %s", exc)
+        if fresh is None:
+            return None, _err(409, "already_decided", "This registration was already decided.",
+                              status=status)
+        return _decide(lead_id, fresh, listing_row, decision, channel, secret, note, retry=False)
+    except ledger.LedgerUnavailable as exc:
+        logger.error("[pocket-listings] decision write failed: %s", exc)
+        return None, _err(503, "ledger_unavailable",
+                          f"The decision could not be recorded. Email {SUPPORT_EMAIL}.")
+    _on_decision(decision, lead_id, listing_row, opening, channel, note)
+    return {"decision": decision, "status": _DECISION_STATUS[decision], "duplicate": False,
+            "decided_at": rec["created_at"],
+            "ledger": {"seq": rec["seq"], "entry_hash": rec["entry_hash"]}}, None
+
+
+@exclusive_listings_bp.route("/api/v1/listings/<slug_or_id>/leads/<lead_id>/decision",
+                             methods=["POST"])
+def operator_decision(slug_or_id, lead_id):
+    """The provider accepts or declines ONE registration for its listing.
+
+    {"token": the listing's operator token — the one its ledger link carries,
+     "decision": "accept" | "decline", "note": up to 500 characters}
+
+    The token travels in the BODY and the decision is a POST: mail scanners
+    prefetch links, and a prefetch must never decide anything. Accepting
+    exchanges contact details and sends the buyer the site identity; declining
+    shares neither side's."""
+    _ensure_schema()
+    allowed, retry = _rate_ok("decision", _ip_hash(), _READ_RATE_LIMIT)
+    if not allowed:
+        return _err(429, "rate_limited", "Too many requests — try again later.",
+                    retry_after_s=retry)
+    body = request.get_json(silent=True)
+    body = body if isinstance(body, dict) else {}
+    decision = str(body.get("decision") or "").strip().lower()
+    if decision not in _DECISIONS:
+        return _err(400, "invalid_request", "decision must be accept or decline",
+                    allowed=list(_DECISIONS))
+    note = _para(body.get("note"), _DECISION_NOTE_MAX + 1)
+    if note is False or (note and len(note) > _DECISION_NOTE_MAX):
+        return _err(400, "invalid_request",
+                    f"note must be text of at most {_DECISION_NOTE_MAX} characters")
+    secret = ledger.ledger_secret()
+    if secret is None:
+        return _err(503, "ledger_unavailable", "The register is unavailable right now.")
+    token = str(body.get("token") or "").strip()[:200]
+    try:
+        row = _safe_get_listing(slug_or_id)
+    except Exception:
+        return _err(503, "listing_unavailable", "Listings are unavailable right now.")
+    if not row or not ledger.check_operator_token(secret, row.get("id") or 0, token):
+        return _err(403, "invalid_token", "This ledger link is not valid or has expired.")
+    lead_id = str(lead_id or "").strip().upper()
+    if not ledger.looks_like_lead_id(lead_id):
+        return _err(404, "not_found", "No registration with that id for this listing.")
+    try:
+        events = _db_lead_events(lead_id)
+    except Exception:
+        return _err(503, "ledger_unavailable", "The register is unavailable right now.")
+    result, error = _decide(lead_id, events, row, decision, "operator", secret, note)
+    if error:
+        return error
+    out = {
+        "ok": True,
+        "citation": _citation(),
+        "lead_id": lead_id,
+        "listing": {"slug": row.get("slug"), "title": row.get("title")},
+        "decision": result["decision"],
+        "status": result["status"],
+        "duplicate": result["duplicate"],
+        "decided_at": result["decided_at"],
+        "ledger": result["ledger"],
+        "next": ("DC Hub has sent the prospect your site details and contact, and you their "
+                 "details." if decision == "accept" else
+                 "DC Hub has told the prospect this registration was not taken. No contact "
+                 "details were shared."),
+    }
+    resp = jsonify(out)
+    _no_store(resp)
+    return resp, 200
+
+
 @exclusive_listings_bp.route("/api/v1/listings/<slug_or_id>/leads", methods=["GET"])
 def operator_ledger(slug_or_id):
     """The operator's view of registered leads for one listing (?token= from
-    the admin operator-link endpoint). Email addresses appear only once DC Hub
-    has made the introduction."""
+    the admin operator-link endpoint, or from the link in its notices). The
+    company and the requirement until the operator accepts a registration; the
+    prospect's name, role, email and message once it has. `decision` says where
+    to accept or decline, and `co_marketing` carries the post DC Hub asks for."""
     _ensure_schema()
     token = (request.args.get("token") or "").strip()[:200]
     allowed, retry = _rate_ok("ledger", _ip_hash(), _READ_RATE_LIMIT)
@@ -2422,33 +3519,17 @@ def operator_ledger(slug_or_id):
         status = ledger.lead_status(evs)
         if not opening or status in (None, "pending_email_confirmation"):
             continue        # an unconfirmed request is not a registration yet
-        entry = _entry(opening)
-        confirmed = _first(evs, "email_confirmed")
-        introduced = _first(evs, "introduced") is not None
-        leads.append({
-            "lead_id": lead_id,
-            "status": status,
-            "registered_at": entry.get("created_at"),
-            "confirmed_at": _entry(confirmed).get("created_at") if confirmed else None,
-            "name": opening.get("name"),
-            "company": opening.get("company"),
-            "role": opening.get("role"),
-            "email_domain": entry.get("email_domain"),
-            "email_verified": bool(entry.get("email_verified") or confirmed),
-            "verified_via": (entry.get("verified_via")
-                             or ("email_link" if confirmed else None)),
-            "email": opening.get("email") if introduced else None,
-            "requirement": _requirement_of(opening),
-            "channel": entry.get("channel"),
-            "platform": entry.get("platform"),
-            "verify_url": _verify_url(lead_id),
-        })
+        lead = _operator_lead_view(lead_id, evs)
+        lead["decision"] = {"allowed": status in _DECIDABLE_STATUSES, "method": "POST",
+                            "path": f"/api/v1/listings/{row.get('slug')}/leads/{lead_id}/decision"}
+        leads.append(lead)
     views = [ev for ev in events if ev.get("event") == "listing_viewed"]
     out = {
         "ok": True,
         "citation": _citation(),
         "listing": {"slug": row.get("slug"), "title": row.get("title")},
         "leads": leads,
+        "co_marketing": _co_marketing(row, _listing_fields(_json_obj(row.get("detail")))),
         "identified_views": {"count": len(views),
                              "unique_viewers": len({ev.get("user_ref") for ev in views}),
                              "last_viewed_at": _entry(views[-1]).get("created_at") if views else None},
@@ -2472,12 +3553,52 @@ def _safe_slug(s):
     return _SLUG_RE.sub("-", (s or "").strip().lower()).strip("-")[:80]
 
 
+def _identity_warnings(title, summary, slug, provider):
+    """Public text carrying an UNDISCLOSED provider's name. Title, summary and
+    slug are on the teaser every caller sees before a registration is
+    accepted, so a provider name there undoes the wall the listing sits
+    behind. A disclosed provider is that provider's own opt-in, and warns
+    about nothing."""
+    if not isinstance(provider, dict) or provider.get("disclosed") is True:
+        return []
+    name = " ".join(str(provider.get("name") or "").split())
+    if not name:
+        return []
+    message = ("contains the provider name, which every caller sees before a "
+               "registration is accepted")
+    folded, slugged, warnings = name.casefold(), _safe_slug(name), []
+    for field, text in (("title", title), ("summary", summary)):
+        if isinstance(text, str) and folded in " ".join(text.split()).casefold():
+            warnings.append({"field": field, "message": message})
+    if slugged and isinstance(slug, str) and slugged in slug.casefold():
+        warnings.append({"field": "slug", "message": message})
+    return warnings
+
+
+def _stored_warnings(lid):
+    """_identity_warnings for the listing as it stands now, so a write that
+    touched only `status` is still judged on what it publishes."""
+    try:
+        row = _db_get_listing(str(lid))
+    except Exception as exc:
+        logger.warning("[pocket-listings] warning check failed: %s", exc)
+        return []
+    if not row:
+        return []
+    provider = _listing_fields(_json_obj(row.get("detail")))["provider"]
+    return _identity_warnings(row.get("title"), row.get("summary"), row.get("slug"), provider)
+
+
 @exclusive_listings_bp.route("/api/v1/admin/listings", methods=["GET", "POST"])
 def admin_listings():
-    """GET: every listing including drafts and operator contact.
+    """GET: every listing including drafts and operator contact, each with its
+    co_marketing_status.
     POST: create (status defaults to draft, tier_required to registered).
     `detail` is validated by _validate_detail: 400 invalid_detail with an
-    `errors` list, and nothing written, when a reserved key breaks a rule."""
+    `errors` list, and nothing written, when a reserved key breaks a rule.
+    `contact.co_marketing` is validated the same way (400 invalid_contact).
+    The answer carries `warnings` when the title, summary or slug names an
+    undisclosed provider."""
     if not _admin_ok():
         return _admin_denied()
     _ensure_schema()
@@ -2491,6 +3612,7 @@ def admin_listings():
                 r[k] = _iso(r.get(k))
             for k in ("capacity_mw", "asking_price", "latitude", "longitude"):
                 r[k] = _num(r.get(k))
+            r["co_marketing_status"] = _co_marketing_status(r.get("contact"))
         return jsonify({"ok": True, "count": len(rows), "listings": rows}), 200
 
     body = request.get_json(silent=True) or {}
@@ -2511,6 +3633,9 @@ def admin_listings():
     if detail_errors:
         return _invalid_detail(detail_errors)
     contact = body.get("contact")
+    contact_errors = _validate_contact(contact)
+    if contact_errors:
+        return _invalid("invalid_contact", contact_errors)
     try:
         c = _conn()
         try:
@@ -2541,7 +3666,9 @@ def admin_listings():
     if not got:
         return _err(409, "slug_exists", "slug already exists", slug=slug)
     return jsonify({"ok": True, "id": got[0], "slug": got[1], "status": status,
-                    "tier_required": tier_required}), 200
+                    "tier_required": tier_required,
+                    "warnings": _identity_warnings(title, body.get("summary"), slug,
+                                                   (detail or {}).get("provider"))}), 200
 
 
 @exclusive_listings_bp.route("/api/v1/admin/listings/<int:lid>",
@@ -2549,7 +3676,10 @@ def admin_listings():
 def update_or_delete_listing(lid):
     """PUT/PATCH = partial update; promote with {"status": "pocket"} and open
     with {"status": "public"}. A `detail` in the body replaces the stored one
-    and is validated like a create (400 invalid_detail, nothing written).
+    and is validated like a create (400 invalid_detail, nothing written), and
+    so is a `contact`'s co_marketing record (400 invalid_contact). The answer
+    carries `warnings` when the listing, as it stands after the write, has an
+    undisclosed provider's name in its title, summary or slug.
     DELETE removes the listing (ledger entries keep their own slug/title
     snapshot). One route for all three keeps the duplicate-route lint happy."""
     if not _admin_ok():
@@ -2580,6 +3710,10 @@ def update_or_delete_listing(lid):
         detail, detail_errors = _validate_detail(body["detail"])
         if detail_errors:
             return _invalid_detail(detail_errors)
+    if "contact" in body:
+        contact_errors = _validate_contact(body["contact"])
+        if contact_errors:
+            return _invalid("invalid_contact", contact_errors)
     settable = ("title", "summary", "status", "tier_required", "market", "state",
                 "country", "latitude", "longitude", "capacity_mw", "asking_price",
                 "asking_currency", "owner_id", "expires_at")
@@ -2614,7 +3748,7 @@ def update_or_delete_listing(lid):
     if not got:
         return _err(404, "not_found", "No such listing.")
     return jsonify({"ok": True, "id": got[0], "slug": got[1], "status": got[2],
-                    "tier_required": got[3]}), 200
+                    "tier_required": got[3], "warnings": _stored_warnings(lid)}), 200
 
 
 @exclusive_listings_bp.route("/api/v1/admin/listings/leads", methods=["GET"])
@@ -2663,7 +3797,7 @@ def admin_notify_operator(lead_id):
     opening = _opening(events)
     if not opening or opening.get("listing_id") is None:
         return _err(404, "not_found", "No introduction request with that id.")
-    if ledger.lead_status(events) in (None, "pending_email_confirmation", "withdrawn"):
+    if ledger.lead_status(events) in (None, "pending_email_confirmation", "withdrawn", "declined"):
         return _err(409, "not_registered",
                     "Only a confirmed, open lead can be sent to an operator.")
     try:
@@ -2692,11 +3826,25 @@ def admin_lead_status(lead_id):
     if not _admin_ok():
         return _admin_denied()
     _ensure_schema()
+    """Record where a lead stands: accepted | declined | introduced | withdrawn.
+
+    accepted and declined are the OPERATOR's decision, recorded on its behalf
+    with channel admin and through the same _decide as the operator's own
+    route, so the transitions, the ledger entry and the emails are the same
+    ones. introduced follows an acceptance: on a listing registration the
+    operator has not accepted it answers 409 not_accepted, because an
+    introduction the operator never agreed to would handroll the site identity
+    to the prospect anyway."""
     lead_id = str(lead_id or "").strip().upper()
     body = request.get_json(silent=True) or {}
     new_status = str(body.get("status") or "").strip().lower()
-    if new_status not in ("introduced", "withdrawn"):
-        return _err(400, "invalid_request", "status must be introduced or withdrawn")
+    if new_status not in ("accepted", "declined", "introduced", "withdrawn"):
+        return _err(400, "invalid_request",
+                    "status must be accepted, declined, introduced or withdrawn")
+    note = _para(body.get("note"), _DECISION_NOTE_MAX + 1)
+    if note is False or (note and len(note) > _DECISION_NOTE_MAX):
+        return _err(400, "invalid_request",
+                    f"note must be text of at most {_DECISION_NOTE_MAX} characters")
     secret = ledger.ledger_secret()
     if secret is None:
         return _err(503, "ledger_unavailable", "no ledger secret configured")
@@ -2707,11 +3855,37 @@ def admin_lead_status(lead_id):
     opening = _opening(events)
     if not opening:
         return _err(404, "not_found", "No such lead.")
+    listing_row = None
+    if opening.get("listing_id") is not None:
+        try:
+            listing_row = _db_get_listing(str(opening["listing_id"]))
+        except Exception as exc:
+            return _err(503, "listing_unavailable", str(exc)[:200])
+
+    if new_status in ("accepted", "declined"):
+        if opening.get("event") != "intro_requested" or opening.get("listing_id") is None:
+            return _err(404, "not_found", "No listing registration with that id.")
+        if not listing_row:
+            return _err(404, "not_found", "The listing no longer exists.")
+        decision = "accept" if new_status == "accepted" else "decline"
+        result, error = _decide(lead_id, events, listing_row, decision, "admin", secret, note)
+        if error:
+            return error
+        return jsonify({"ok": True, "lead_id": lead_id, "status": result["status"],
+                        "decision": result["decision"], "duplicate": result["duplicate"],
+                        "ledger": result["ledger"]}), 200
+
     current = ledger.lead_status(events)
     if current == "withdrawn":
         return _err(409, "lead_withdrawn", "This lead was withdrawn.")
-    if new_status == "introduced" and current == "pending_email_confirmation":
-        return _err(409, "not_registered", "The prospect has not confirmed the request.")
+    if current == "declined":
+        return _err(409, "lead_declined", "The operator declined this registration.")
+    if new_status == "introduced":
+        if current == "pending_email_confirmation":
+            return _err(409, "not_registered", "The prospect has not confirmed the request.")
+        if opening.get("listing_id") is not None and current not in _RELEASED_STATUSES:
+            return _err(409, "not_accepted",
+                        "The operator has not accepted this registration yet.")
     try:
         rec = _append_event(
             secret=secret, lead_id=lead_id, event=new_status,
@@ -2721,7 +3895,8 @@ def admin_lead_status(lead_id):
             user_ref=opening.get("user_ref"), email_verified=True, channel="admin")
     except ledger.LedgerUnavailable as exc:
         return _err(503, "ledger_unavailable", str(exc)[:200])
-    return jsonify({"ok": True, "lead_id": lead_id, "status": new_status,
+    return jsonify({"ok": True, "lead_id": lead_id, "status": new_status, "decision": None,
+                    "duplicate": False,
                     "ledger": {"seq": rec["seq"], "entry_hash": rec["entry_hash"]}}), 200
 
 
@@ -2740,13 +3915,14 @@ def admin_operator_link(lid):
         return _err(503, "listing_unavailable", str(exc)[:200])
     if not row:
         return _err(404, "not_found", "No such listing.")
-    token = ledger.operator_token(secret, row["id"])
+    token, url = _operator_link(secret, row)
     expires = datetime.now(timezone.utc) + timedelta(seconds=ledger.OPERATOR_TOKEN_TTL_S)
     return jsonify({
         "ok": True,
         "listing": {"id": row["id"], "slug": row.get("slug"), "title": row.get("title")},
-        "url": f"{SITE}/listings?ledger={quote(str(row.get('slug')), safe='')}&token={quote(token, safe='')}",
+        "url": url,
         "api": f"/api/v1/listings/{row.get('slug')}/leads?token={quote(token, safe='')}",
+        "decision": f"/api/v1/listings/{row.get('slug')}/leads/<lead_id>/decision",
         "expires_at": ledger.iso_utc(expires),
     }), 200
 
