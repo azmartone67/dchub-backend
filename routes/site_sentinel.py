@@ -462,6 +462,80 @@ def _extract_page_age_days(body_str: str, response_last_modified: str | None) ->
     return None, None
 
 
+# ── Scan window ───────────────────────────────────────────────────────────
+# The nav / age / payload checks below ASSERT ON ABSENCE — they conclude "this
+# marker is not on the page". That conclusion is only sound over bytes we
+# actually read. The window was 64 KiB, and /markets/ is 129,740 bytes with its
+# nav tag at byte 77,126: the checker reported "200 with 65536 bytes but does
+# NOT include dchub-nav" for 325.7 hours (~13 days) about a page that was never
+# broken. Measured 2026-09-15: 9 of the 30 wants_nav pages already exceed
+# 64 KiB, and several more carry the nav tag in the last 1% of the body
+# (/news 39,517 of 39,683; /operators 14,992 of 15,039), so they sit one growth
+# spurt from the same false alarm.
+#
+# A cap is still needed (a probe must not buffer an unbounded body), so the cap
+# stays — but reaching it now yields INDETERMINATE, never "absent". See
+# _nav_verdict.
+_SCAN_CAP_BYTES = int(os.environ.get("SENTINEL_SCAN_CAP_BYTES", 2 * 1024 * 1024))
+
+
+def _read_body(r) -> tuple[bytes, bool]:
+    """Read a response body for scanning. Returns (body, truncated).
+
+    `truncated` is True only when the page is genuinely LARGER than the window,
+    so it means "we could not see all of it" and never "we happened to stop
+    exactly on the boundary" — it reads one byte past the cap to tell those
+    apart. Never raises: a read problem must not masquerade as a page problem.
+    """
+    limit = _SCAN_CAP_BYTES
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        for chunk in r.iter_content(chunk_size=min(65536, limit + 1)):
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                break
+    except Exception:
+        # Stream absent (r.raw is None) or died mid-read — fall back to
+        # whatever requests already buffered.
+        try:
+            buf = r.content or b""
+        except Exception:
+            buf = b""
+        chunks, total = [buf], len(buf)
+    buf = b"".join(chunks)
+    if len(buf) > limit:
+        return buf[:limit], True
+    return buf, False
+
+
+def _nav_verdict(body_str: str, truncated: bool) -> tuple[bool | None, str | None]:
+    """Decide the nav check. THREE outcomes, not two. Returns (has_nav, reason).
+
+      True,  None            — marker found; the page is fine.
+      False, "nav_missing"   — marker absent from a body we read IN FULL. This
+                               is the only case where absence is a claim the
+                               probe actually earned.
+      None,  "nav_indeterm…" — the marker was not in the bytes we read AND the
+                               page is bigger than the window. Presence is
+                               UNKNOWN. has_nav is None so it persists as SQL
+                               NULL — the column already allows it — rather than
+                               as a false `false`.
+
+    The old code collapsed the last two into `nav_missing`, which made the
+    failure silent in both directions: a page over the cap could never pass, and
+    a page that really lost its nav was indistinguishable from one that had not.
+    """
+    if _has_dchub_nav(body_str):
+        return True, None
+    if truncated:
+        return None, f"nav_indeterminate:page_exceeds_{_SCAN_CAP_BYTES}B_read_window"
+    return False, "nav_missing"
+
+
 def _has_dchub_nav(body_str: str) -> bool:
     """Phase ZZZ: True if body contains a reference to dchub-nav.js or
     the nav-config object. Case-insensitive cheap substring check —
@@ -539,6 +613,7 @@ def _scan_one(entry: dict) -> dict:
         "status_code": 0, "bytes": 0, "elapsed_ms": 0,
         "healthy": False, "reason": "",
         "has_nav": None, "stale_days": None, "data_age_src": None,
+        "truncated": False,
     }
     try:
         # Phase FFFF (2026-05-16): timeout 10s → 15s. The brain
@@ -631,10 +706,15 @@ def _scan_one(entry: dict) -> dict:
                 t0 = time.time()
                 continue
             break
-        body = r.raw.read(64 * 1024, decode_content=True) if r.raw else r.content[:64*1024]
+        body, truncated = _read_body(r)
+        out["truncated"] = truncated
         out["elapsed_ms"] = int((time.time() - t0) * 1000)
         out["status_code"] = r.status_code
-        out["bytes"] = len(body) if body else len(r.content)
+        # `bytes` is what we READ. When truncated it is the window, not the page
+        # — which is why the old finding text said "65536 bytes" about a 129,740
+        # byte page. Content-Length is not substituted here: on a gzipped
+        # response it is the COMPRESSED size and would sink the min_bytes floor.
+        out["bytes"] = len(body)
         # Track the URL we ended up at (for the dashboard's transparency)
         if r.url and r.url != url:
             out["final_url"] = r.url
@@ -734,9 +814,9 @@ def _scan_one(entry: dict) -> dict:
             body_str = ""
 
         if wants_nav:
-            out["has_nav"] = _has_dchub_nav(body_str)
-            if not out["has_nav"]:
-                out["reason"] = "nav_missing"
+            out["has_nav"], _nav_reason = _nav_verdict(body_str, truncated)
+            if _nav_reason:
+                out["reason"] = _nav_reason
                 return out
 
         if max_age_days is not None:
@@ -1174,6 +1254,28 @@ def unhealthy_findings() -> list[dict]:
         # always "include dchub-nav.js in the page template" not "fix
         # the route", so separate it from generic site_sentinel_unhealthy
         # to make the autopilot pattern lookup unambiguous.
+        # 2026-09-15: nav_indeterminate is a CHECKER limit, not a page defect.
+        # The scan window ended before the body did, so "no nav tag" is not a
+        # conclusion this probe earned. It gets its own finding type so the
+        # limit is visible and fixable — and so it can never reach the
+        # nav_missing branch below, which sends the autopilot to edit a page
+        # template that is already correct (that is what /markets/ got for 13
+        # days). has_nav is NULL on these rows, not false.
+        if reason.startswith("nav_indeterminate"):
+            findings.append({
+                "issue":  f"nav_indeterminate:{r['path']}",
+                "url":    f"{_SITE_BASE}{r['path']}",
+                "count":  1,
+                "detail": (f"Page '{r.get('label') or r['path']}' is larger than "
+                           f"Site Sentinel's {_SCAN_CAP_BYTES}-byte scan window, "
+                           f"so the nav check did not read the whole body. This "
+                           f"is NOT a finding about the page: nav presence is "
+                           f"UNKNOWN, not absent. Fix the CHECKER — raise "
+                           f"SENTINEL_SCAN_CAP_BYTES — not the page template. "
+                           f"Category: {cat}."),
+            })
+            continue
+
         if reason == "nav_missing":
             findings.append({
                 "issue":  f"nav_missing:{r['path']}",
