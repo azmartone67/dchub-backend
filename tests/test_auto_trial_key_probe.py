@@ -292,13 +292,179 @@ def test_bots_are_still_skipped_before_any_of_this():
 
 # ── ordering: the probe is worthless if it runs after the ip probes ──
 
-def test_probe_precedes_the_ip_hash_probes_in_source_order():
-    """Order is the entire point. Behind the ip_hash probes this would only ever
-    see requests those already missed AND that happened to hold a key — which is
-    every case it was written for, so a reorder would silently un-fix it."""
+# ── ordering + the removed cross-UA block ────────────────────────────
+
+def test_probe_precedes_the_ip_hash_reuse_in_source_order():
+    """Order is the point: behind the ip_hash reuse the presented-key probe
+    would only ever see requests it already missed AND that held a key — every
+    case it exists for — so a reorder would silently un-fix it.
+
+    The old cross-UA gated re-mint block that used to sit between the two (it
+    returned an EXISTING key by ip_hash alone, under any UA) was removed; a
+    gated network now falls through to the fresh born-gated mint below."""
     i_probe = TEXT.find('"reuse_basis": "presented_key"')
-    i_leak1 = TEXT.find("leak #1: RE-MINT ESCAPE")
     i_legacy = TEXT.find("Check for existing recent trial key for this caller")
-    assert i_probe > 0 and i_leak1 > 0 and i_legacy > 0
-    assert i_probe < i_leak1 < i_legacy, \
-        "presented-key probe must run before both ip_hash probes"
+    i_carry = TEXT.find("CARRY THE COUNTER FORWARD")
+    assert i_probe > 0 and i_legacy > 0 and i_carry > 0
+    assert i_probe < i_legacy < i_carry, (
+        "presented-key probe must precede the ip_hash reuse, which precedes "
+        "the carry-forward mint")
+    # the removed block must not come back — it is the whole bug this closes
+    assert "leak #1: RE-MINT ESCAPE" not in TEXT, (
+        "the cross-UA gated re-mint (returned an existing key by ip alone) "
+        "must stay removed")
+
+
+# ── a gated network no longer hands back a key it was not shown ──────────
+#
+# The removed block returned an existing GATED unbound key to whoever POSTed
+# auto-mint from the same ip_hash under ANY user agent — so on a shared egress
+# IP a second caller received the first caller's live key. These execute the
+# real function against a cursor that WOULD serve that stranger's key if the
+# code asked for it, and assert it never does: the caller gets a fresh key,
+# born past the gate via the existing carry-forward path.
+
+EXISTING  = "dch_trial_" + "E" * 32     # a stranger's live gated key
+EXISTING2 = "dch_trial_" + "F" * 32     # the caller's own key, same ip+ua
+
+
+class _Cur2:
+    def __init__(self, *, carried, expires, ua_match=None):
+        self.carried = carried          # gate-carry MAX(call_count) for this ip
+        self.expires = expires
+        self.ua_match = ua_match         # block-3 (ip+ua) answer, or None
+        self.queries = []
+        self.inserted = []               # api_keys minted via INSERT
+        self.insert_params = []
+        self._last = None
+
+    def execute(self, sql, params=None):
+        q = " ".join(sql.split()).lower()
+        self.queries.append((q, params))
+        if q.startswith("update"):
+            self._last = None
+            return
+        if q.startswith("insert into auto_trial_keys"):
+            self.inserted.append(params[0])
+            self.insert_params.append(params)
+            self._last = (self.expires,)
+            return
+        if "max(coalesce(call_count, 0))" in q:            # gate-carry (this table)
+            self._last = (self.carried,)
+            return
+        if "from mcp_dev_keys" in q:                        # gate-carry (claim keys)
+            self._last = (0,)
+            return
+        if "coalesce(call_count, 0) >= %s" in q and "order by minted_at desc" in q:
+            # ★ TRAP: the exact query of the removed cross-UA gated-return block.
+            # A mutant that re-adds it reads THIS — a stranger's key — and the
+            # behavioural asserts below then fail, killing the mutant.
+            self._last = (EXISTING, self.expires)
+            return
+        if "where api_key = %s and expires_at > now()" in q:   # presented-key probe
+            self._last = None
+            return
+        if "request_ua = %s" in q:                          # block-3 legacy ip+ua
+            self._last = (self.ua_match, self.expires) if self.ua_match else None
+            return
+        self._last = None
+
+    def fetchone(self):
+        return self._last
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _run2(*, carried, ua="a-fresh-ua", ua_match=None, presented=None,
+          operator_email=""):
+    import datetime as _dt
+    import secrets as _secrets
+    expires = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=5)
+    cur = _Cur2(carried=carried, expires=expires, ua_match=ua_match)
+    conn = _Conn(cur)
+    headers = {"User-Agent": ua}
+    if presented:
+        headers["X-API-Key"] = presented
+    req = _Req(headers)
+    ns = {
+        "os": types.SimpleNamespace(environ={}),
+        "hashlib": hashlib, "secrets": _secrets, "request": req,
+        "_conn": lambda: conn, "_ensure_schema": lambda c: None,
+        "_mirror_trial_to_mcp_dev_keys":
+            lambda k, e: cur.__dict__.setdefault("mirrored", []).append((k, e)),
+        "note_swallowed_write": lambda *a, **k: None,
+        "TRIAL_FREE_CALLS_UNBOUND": 5, "TRIAL_DAILY_CALLS": 50,
+        "TRIAL_DAILY_UNBOUND": 10, "TRIAL_DAYS": 7, "datetime": _dt,
+    }
+    mod = ast.Module(body=[_extract("mint_trial_for_request")], type_ignores=[])
+    exec(compile(mod, str(SRC), "exec"), ns)              # noqa: S102
+    try:
+        out = ns["mint_trial_for_request"](req=req, tool_name="t",
+                                           client_name="c",
+                                           operator_email=operator_email)
+    except Exception as e:                                # pragma: no cover
+        out = {"_fell_through": type(e).__name__, "_err": repr(e)}
+    return out, cur
+
+
+def _block2_query_was_issued(cur):
+    return any("coalesce(call_count, 0) >= %s" in q and "order by minted_at desc" in q
+               for q, _ in cur.queries)
+
+
+def test_a_gated_network_no_longer_hands_back_an_existing_key():
+    """The fix, stated as behaviour: a caller that presents no key, on a network
+    already past the free-call gate, must be MINTED a fresh key — never handed
+    the existing one the cursor is holding for that ip."""
+    out, cur = _run2(carried=8)   # 8 >= TRIAL_FREE_CALLS_UNBOUND(5) -> born gated
+    assert out.get("api_key", "").startswith("dch_trial_"), out
+    assert out.get("api_key") != EXISTING, "a stranger's key was handed back"
+    assert out.get("reused") is False, "a fresh mint, not a re-use"
+    assert cur.inserted and cur.inserted[0] == out["api_key"], "must mint fresh"
+    assert not _block2_query_was_issued(cur), (
+        "the cross-UA gated-return query ran — the removed block is back")
+
+
+def test_the_fresh_key_is_born_past_the_gate():
+    """Closing the hand-back must not reopen the free-call gate: the fresh key
+    still demands a bind, and carries the seed the validator reads as gated."""
+    out, cur = _run2(carried=8)
+    assert out.get("bind_required") is True
+    assert out.get("gate") == "bind_email_required"
+    assert out.get("free_calls_unbound") == 5
+    call_count, notes = cur.insert_params[0][7], cur.insert_params[0][8]
+    assert call_count == 8, cur.insert_params[0]
+    assert (notes or "").startswith("gate_carry:8"), notes
+
+
+def test_a_partly_used_network_gets_a_clean_fresh_key_not_a_handback():
+    """Below the gate the carry-forward seeds nothing, so the caller gets a
+    clean fresh key. Still never the stranger's key."""
+    out, cur = _run2(carried=2)   # 2 < 5 -> not carried
+    assert out.get("api_key", "").startswith("dch_trial_")
+    assert out.get("api_key") != EXISTING
+    assert out.get("reused") is False
+    assert out.get("bind_required") is None, out
+    assert cur.insert_params[0][8] is None, "no gate_carry seed below the gate"
+    assert not _block2_query_was_issued(cur)
+
+
+def test_same_ip_and_ua_still_reuses_its_own_key():
+    """Surgical: only the cross-UA hand-back was removed. The same-(ip, ua)
+    reuse that dedupes a returning caller's OWN key is unchanged."""
+    out, cur = _run2(carried=8, ua_match=EXISTING2)
+    assert out.get("api_key") == EXISTING2
+    assert out.get("reused") is True
+    assert not cur.inserted, "an ip+ua match must reuse, not mint"
+
+
+def test_a_held_key_is_still_returned_through_the_presented_probe():
+    """The presented-key probe is untouched: a caller that SHOWS its key still
+    gets it back (that caller already holds it)."""
+    out, _ = _run(presented="dch_trial_ABC", key_row=_live_key_row())
+    assert out.get("api_key") == "dch_trial_ABC"
+    assert out.get("reuse_basis") == "presented_key"

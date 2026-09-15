@@ -3,10 +3,10 @@
 r-connect-bind (2026-09-15). routes/auto_trial.mint_trial_for_request can hand
 an install page a key that /api/v1/keys/validate refuses from its first call:
 
-  * this network already holds an unbound key past its free calls, and the
-    mint returns that same key (reused: true);
-  * a fresh key minted from such a network is seeded with that count
-    (notes "gate_carry:N", reused: false).
+  * this network has already crossed its free-call gate, so the mint seeds a
+    FRESH key with the carried count (notes "gate_carry:N", reused: false) —
+    born past the gate. Re-minting keeps that gate; it never resets it, and it
+    never hands back a key the caller did not present.
 
 Both answers carry bind_required: true and gate: "bind_email_required". The MCP
 server drops a refused key and serves the call anonymously, yet the page wrote
@@ -66,11 +66,6 @@ def TYPE(value):
     return {"type": {"id": "bind-email", "value": value}}
 
 
-def _existing_key():
-    # Built, not typed: a key-shaped literal trips scripts/check_no_leaked_credentials.py.
-    return "dch_trial_" + "r" * 32
-
-
 # ── the database behind the real handlers ────────────────────────────────
 class _Db:
     """Answers the statements the mint, bind and mint-update handlers run, by
@@ -78,12 +73,13 @@ class _Db:
     unscripted statement is recorded and answers None rather than raising,
     and every test asserts there were none."""
 
-    def __init__(self, gated=(), carried=0):
+    def __init__(self, carried=0):
         self.expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=5)
-        # One answer per run of the gated-identity probe, in order; None after.
-        self.gated = [(key, self.expires) if key else None for key in gated]
-        self.carried = carried
-        self.keys = {key for key in gated if key}
+        # gate-carry MAX(call_count) for this network: an int used on every mint,
+        # or a list read one entry per mint, to script a sequence of clean (0) /
+        # gated (>= the free-call allowance) answers for the page-transition tests.
+        self._carry = list(carried) if isinstance(carried, (list, tuple)) else carried
+        self.keys = set()
         self.executed = []
         self.unscripted = []
 
@@ -92,12 +88,12 @@ class _Db:
             return (self.expires,) if params[2] in self.keys else None
         if sql.startswith("update connect_landing_views set key_minted_for"):
             return None
-        if "coalesce(call_count, 0) >= %s" in sql:            # the gated-identity probe
-            return self.gated.pop(0) if self.gated else None
         if "and request_ua = %s" in sql:                      # same ip + user agent
             return None
-        if "max(coalesce(call_count, 0))" in sql:             # count carried from this ip
-            return (self.carried,)
+        if "max(coalesce(call_count, 0))" in sql:             # gate-carry count for this ip
+            if isinstance(self._carry, list):
+                return (self._carry.pop(0) if self._carry else 0,)
+            return (self._carry,)
         if "from mcp_dev_keys" in sql:                        # ...and from its claim keys
             return (0,)
         if sql.startswith("insert into auto_trial_keys"):
@@ -145,9 +141,12 @@ class _Conn:
         pass
 
 
+# A gated mint now arises one way only: a fresh key seeded past the gate by the
+# carry-forward path (the cross-UA hand-back of an existing key was removed
+# 2026-09-14). GATED is any count at or above the free-call allowance.
+GATED = at.TRIAL_FREE_CALLS_UNBOUND + 3
 SCENARIOS = {
-    "reused": lambda: _Db(gated=[_existing_key()]),
-    "born_gated": lambda: _Db(carried=at.TRIAL_FREE_CALLS_UNBOUND + 3),
+    "born_gated": lambda: _Db(carried=GATED),
 }
 
 
@@ -492,7 +491,7 @@ def test_binding_an_email_puts_the_same_key_in_the_snippet(backend, tmp_path, st
 
 
 def test_a_refused_email_leaves_the_bind_step_up(backend, tmp_path, stats_state):
-    db = SCENARIOS["reused"]()
+    db = SCENARIOS["born_gated"]()
     out = _run_page(tmp_path, backend(db), [MINT, TYPE("not-an-email"), BIND])
     key = _mint_answer(out)["api_key"]
     (bind,) = _sent(out, "/api/v1/keys/auto-trial/bind")
@@ -509,20 +508,22 @@ def test_a_refused_email_leaves_the_bind_step_up(backend, tmp_path, stats_state)
 
 
 # ── 4. minting again moves the page with the answer ──────────────────────
-def test_a_clean_mint_after_a_gated_one_takes_the_bind_step_down(backend, tmp_path, stats_state):
-    db = SCENARIOS["reused"]()            # the gated key is answered once
+def test_re_minting_a_gated_network_keeps_the_bind_step_up(backend, tmp_path, stats_state):
+    # Re-minting can no longer escape the gate: the carried count seeds every
+    # fresh key, so a second mint is gated too and the bind step stays up.
+    db = _Db(carried=[GATED, GATED])
     out = _run_page(tmp_path, backend(db), [MINT, MINT_AGAIN])
     first, second = _mint_answer(out, 0), _mint_answer(out, 1)
-    assert first.get("bind_required") and not second.get("bind_required")
+    assert first.get("bind_required") and second.get("bind_required")
     page = out["snapshots"][-1]
-    assert page["bind-step"]["display"] == "none"
-    assert page["key-meta"]["display"] == "flex"
-    assert second["api_key"] in page["snippet-body"]["text"]
+    assert page["bind-step"]["display"] == "block"
+    assert page["key-meta"]["display"] == "none"
+    assert second["api_key"] not in page["snippet-body"]["text"]
 
 
 def test_a_gated_mint_after_a_clean_one_takes_the_key_out_of_the_snippet(
         backend, tmp_path, stats_state):
-    db = _Db(gated=[None, _existing_key()])
+    db = _Db(carried=[0, GATED])
     out = _run_page(tmp_path, backend(db), [MINT, MINT_AGAIN])
     first, second = _mint_answer(out, 0), _mint_answer(out, 1)
     assert not first.get("bind_required") and second.get("bind_required")

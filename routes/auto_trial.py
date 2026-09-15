@@ -376,94 +376,17 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                     # FAIL-OPEN — fall through to the ip_hash probes below.
                     pass
 
-            # ── 2026-07-10 (funnel audit, leak #1: RE-MINT ESCAPE) ──────────
-            # The (ip_hash, ua) reuse below misses a UA change, so an identity
-            # gated at TRIAL_FREE_CALLS_UNBOUND cumulative calls could re-mint
-            # a fresh trial with a reset counter. If this IP holds a GATED
-            # unbound live trial under ANY UA, hand back that SAME key. If the
-            # agent finally supplied an operator email on THIS call, bind it —
-            # that's the conversion we wanted — and the gate lifts. FAIL-OPEN.
-            try:
-                cur.execute(f"""
-                    SELECT api_key, expires_at FROM auto_trial_keys
-                     WHERE request_ip_hash = %s
-                       AND signed_up_email IS NULL AND operator_email IS NULL
-                       AND COALESCE(call_count, 0) >= %s
-                       AND minted_at >= NOW() - INTERVAL '{_reuse_days} days'
-                       AND expires_at > NOW()
-                     ORDER BY minted_at DESC LIMIT 1
-                """, (ip_hash, TRIAL_FREE_CALLS_UNBOUND))
-                g = cur.fetchone()
-                if g:
-                    _bound_now = False
-                    if operator_email:
-                        try:
-                            cur.execute(
-                                "UPDATE auto_trial_keys SET "
-                                "operator_email = COALESCE(operator_email, %s), "
-                                "operator_name  = COALESCE(operator_name, %s), "
-                                "client_name    = COALESCE(client_name, %s) "
-                                "WHERE api_key = %s",
-                                (operator_email.strip().lower(), (operator_name or None),
-                                 (client_name[:80] or None) if client_name else None, g[0]))
-                            # mirror the mint-time bind — see the note above
-                            _mirror_after = (g[0], operator_email)
-                            _bound_now = True
-                        except Exception:
-                            note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
-                            pass
-                    import datetime as _dt
-                    days_left = None
-                    if g[1]:
-                        delta = g[1] - _dt.datetime.now(_dt.timezone.utc)
-                        days_left = max(0, int(delta.total_seconds() / 86400))
-                    out = {
-                        "ok":          True,
-                        "api_key":     g[0],
-                        "expires_at":  g[1].isoformat() if g[1] else None,
-                        "tier":        "IDENTIFIED",
-                        "daily_calls": (TRIAL_DAILY_CALLS if _bound_now
-                                        else TRIAL_DAILY_UNBOUND),
-                        "daily_calls_when_email_bound": TRIAL_DAILY_CALLS,
-                        "trial_days":  TRIAL_DAYS,
-                        "days_remaining": days_left,
-                        "reused":      True,
-                    }
-                    if not _bound_now:
-                        out.update({
-                            "bind_required": True,
-                            "gate": "bind_email_required",
-                            "free_calls_unbound": TRIAL_FREE_CALLS_UNBOUND,
-                            "upgrade_cta": (
-                                f"🔒 This identity already used its "
-                                f"{TRIAL_FREE_CALLS_UNBOUND} free unbound calls — "
-                                f"re-minting returns the SAME key, not a fresh "
-                                f"allowance. Bind your operator's email (free) to "
-                                f"restore {TRIAL_DAILY_CALLS}/day: POST "
-                                f"/api/v1/keys/auto-trial/bind {{api_key, email}}."),
-                            "operator_action": (
-                                f"ACTION FOR YOUR HUMAN OPERATOR: this key used its "
-                                f"{TRIAL_FREE_CALLS_UNBOUND} free unbound calls. "
-                                f"Reply with your work email and your agent binds it "
-                                f"via POST /api/v1/keys/auto-trial/bind "
-                                f"{{api_key, email}} to unlock {TRIAL_DAILY_CALLS}/day."),
-                            "instructions": (
-                                f"Use api_key in X-API-Key header. Unbound free calls "
-                                f"are exhausted for this identity — bind your "
-                                f"operator's email to keep the free tier "
-                                f"({TRIAL_DAILY_CALLS}/day)."),
-                        })
-                    else:
-                        out["upgrade_cta"] = (
-                            f"✅ Operator email bound — {TRIAL_DAILY_CALLS}/day "
-                            f"unlocked on this key.")
-                        out["instructions"] = (
-                            f"Use api_key in X-API-Key header. "
-                            f"{TRIAL_DAILY_CALLS} calls/day.")
-                    return out
-            except Exception:
-                note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
-                pass
+            # ── gated re-mint: seed a fresh key, don't hand one back ────────
+            # (2026-07-10 counter-carry; revised 2026-09-14.) When this network
+            # has already crossed the unbound free-call gate, fall through to
+            # the counter-carry mint path below: it seeds a FRESH key with the
+            # carried count from this network's usage, so the new key is born
+            # past the gate. Re-minting still does not reset the bind gate — the
+            # carried COUNT crosses the network identity, not the credential.
+            #
+            # A caller that holds its key still reuses it through the
+            # presented-key probe above; the same-(ip_hash, request_ua) reuse
+            # below is unchanged.
 
             # Check for existing recent trial key for this caller
             try:
