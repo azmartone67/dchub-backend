@@ -294,25 +294,28 @@ def test_bots_are_still_skipped_before_any_of_this():
 
 # ── ordering + the removed cross-UA block ────────────────────────────
 
-def test_probe_precedes_the_ip_hash_reuse_in_source_order():
-    """Order is the point: behind the ip_hash reuse the presented-key probe
-    would only ever see requests it already missed AND that held a key — every
-    case it exists for — so a reorder would silently un-fix it.
+def test_presented_probe_precedes_the_mint_and_the_ip_reuse_is_gone():
+    """Order is the point: behind any reuse the presented-key probe would only
+    ever see requests it already missed AND that held a key — every case it
+    exists for — so it must run first, ahead of the carry-forward mint.
 
-    The old cross-UA gated re-mint block that used to sit between the two (it
-    returned an EXISTING key by ip_hash alone, under any UA) was removed; a
-    gated network now falls through to the fresh born-gated mint below."""
+    Both ip_hash re-mint blocks that used to sit between them are gone now: the
+    cross-UA gated return (an existing key by ip alone) and the
+    same-(ip_hash, request_ua) reuse (an existing key — a bound one included —
+    by network attributes). A caller without its key falls through to the fresh
+    born-gated mint. This is the structural companion to the behavioural
+    hand-back tests below."""
     i_probe = TEXT.find('"reuse_basis": "presented_key"')
-    i_legacy = TEXT.find("Check for existing recent trial key for this caller")
     i_carry = TEXT.find("CARRY THE COUNTER FORWARD")
-    assert i_probe > 0 and i_legacy > 0 and i_carry > 0
-    assert i_probe < i_legacy < i_carry, (
-        "presented-key probe must precede the ip_hash reuse, which precedes "
-        "the carry-forward mint")
-    # the removed block must not come back — it is the whole bug this closes
+    assert i_probe > 0 and i_carry > 0
+    assert i_probe < i_carry, "presented-key probe must precede the carry mint"
+    # neither ip_hash handback may come back — they are the whole bug this closes
     assert "leak #1: RE-MINT ESCAPE" not in TEXT, (
-        "the cross-UA gated re-mint (returned an existing key by ip alone) "
-        "must stay removed")
+        "the cross-UA gated re-mint (an existing key by ip alone) must stay gone")
+    assert "Check for existing recent trial key for this caller" not in TEXT, (
+        "the same-(ip_hash, request_ua) reuse must stay removed")
+    assert "request_ua = %s" not in TEXT, (
+        "the (ip_hash, request_ua) reuse SELECT predicate must stay removed")
 
 
 # ── a gated network no longer hands back a key it was not shown ──────────
@@ -416,6 +419,12 @@ def _block2_query_was_issued(cur):
                for q, _ in cur.queries)
 
 
+def _block3_query_was_issued(cur):
+    # The (ip_hash, request_ua) reuse SELECT — the removed same-fingerprint
+    # handback. Its signature is the `request_ua = %s` predicate.
+    return any("request_ua = %s" in q for q, _ in cur.queries)
+
+
 def test_a_gated_network_no_longer_hands_back_an_existing_key():
     """The fix, stated as behaviour: a caller that presents no key, on a network
     already past the free-call gate, must be MINTED a fresh key — never handed
@@ -453,13 +462,21 @@ def test_a_partly_used_network_gets_a_clean_fresh_key_not_a_handback():
     assert not _block2_query_was_issued(cur)
 
 
-def test_same_ip_and_ua_still_reuses_its_own_key():
-    """Surgical: only the cross-UA hand-back was removed. The same-(ip, ua)
-    reuse that dedupes a returning caller's OWN key is unchanged."""
+def test_same_ip_and_ua_no_longer_hands_back_the_matching_key():
+    """The (ip_hash, request_ua) reuse is removed. A caller that presents no key
+    but shares a coarse (ip, ua) fingerprint with an existing key — a BOUND one
+    included, since the removed SELECT had no bound/gated filter — is minted a
+    FRESH key, never handed the matching one. The cursor here WOULD serve
+    EXISTING2 if that SELECT still ran; the code must not ask for it."""
     out, cur = _run2(carried=8, ua_match=EXISTING2)
-    assert out.get("api_key") == EXISTING2
-    assert out.get("reused") is True
-    assert not cur.inserted, "an ip+ua match must reuse, not mint"
+    assert out.get("api_key", "").startswith("dch_trial_"), out
+    assert out.get("api_key") != EXISTING2, "the (ip, ua) match was handed back"
+    assert out.get("reused") is False, "a fresh mint, not a re-use"
+    assert cur.inserted and cur.inserted[0] == out["api_key"], "must mint fresh"
+    assert not _block3_query_was_issued(cur), (
+        "the (ip_hash, request_ua) reuse SELECT ran — the removed block is back")
+    # and closing the hand-back must not reopen the gate: 8 >= 5 -> born gated
+    assert out.get("bind_required") is True
 
 
 def test_a_held_key_is_still_returned_through_the_presented_probe():

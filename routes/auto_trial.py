@@ -185,12 +185,12 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
     and creates the human-conversion bridge handle — agents don't pay, humans
     do, so we capture the operator at the moment of maximum intent.
 
-    Reuses an existing trial key for the SAME (ip_hash, ua) within
-    AUTO_TRIAL_REUSE_DAYS (default 30, but capped by the key's expires_at —
-    so effectively ~TRIAL_DAYS=7d for unbound trials; the full 30d only bites
-    once a key is email-redeemed to 365d) instead of minting a new one —
-    prevents N-keys-per-user AND lets a returning agent re-bind its durable
-    key across sessions."""
+    Reuses an existing trial key only when the caller PRESENTS it (the
+    presented-key probe below) — the key is the identifier that survives IP
+    rotation, so a returning agent that still holds its key keeps it across
+    sessions. A caller that presents no key is minted a FRESH one, seeded past
+    the bind gate when this network already crossed it (counter-carry), rather
+    than being matched to an existing key by network attributes alone."""
     req = req or request
     ip = (req.headers.get("CF-Connecting-IP")
           or req.headers.get("X-Forwarded-For", "").split(",")[0].strip()
@@ -376,95 +376,14 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                     # FAIL-OPEN — fall through to the ip_hash probes below.
                     pass
 
-            # ── gated re-mint: seed a fresh key, don't hand one back ────────
-            # (2026-07-10 counter-carry; revised 2026-09-14.) When this network
-            # has already crossed the unbound free-call gate, fall through to
-            # the counter-carry mint path below: it seeds a FRESH key with the
-            # carried count from this network's usage, so the new key is born
-            # past the gate. Re-minting still does not reset the bind gate — the
-            # carried COUNT crosses the network identity, not the credential.
-            #
-            # A caller that holds its key still reuses it through the
-            # presented-key probe above; the same-(ip_hash, request_ua) reuse
-            # below is unchanged.
-
-            # Check for existing recent trial key for this caller
-            try:
-                # r-retention (2026-06-19): widen the same-(ip_hash,ua) reuse
-                # window 24h -> AUTO_TRIAL_REUSE_DAYS (default 30, capped by
-                # expires_at → effectively ~7d for unbound keys, full 30d once
-                # email-redeemed) so a returning agent on a STABLE IP re-binds the SAME
-                # durable key across sessions instead of minting a fresh throwaway
-                # each visit. That is what lets call_count / last_used_at accumulate
-                # and makes the key-reuse retention metric meaningful (avg 0.67
-                # calls/key today = re-mint churn, not real one-shot use). Web hosts
-                # on ROTATING egress IPs still won't match — email-bind is their
-                # durable path. _reuse_days is int()-built (hoisted above), so
-                # the f-string is injection-safe.
-                cur.execute(f"""
-                    SELECT api_key, expires_at FROM auto_trial_keys
-                     WHERE request_ip_hash = %s
-                       AND request_ua = %s
-                       AND minted_at >= NOW() - INTERVAL '{_reuse_days} days'
-                       AND expires_at > NOW()
-                     ORDER BY minted_at DESC LIMIT 1
-                """, (ip_hash, ua))
-                r = cur.fetchone()
-                if r:
-                    # r71-conv: backfill the operator handle onto the reused key
-                    # if the agent supplied one this call (capture at first chance).
-                    if operator_email:
-                        try:
-                            cur.execute(
-                                "UPDATE auto_trial_keys SET "
-                                "operator_email = COALESCE(operator_email, %s), "
-                                "operator_name  = COALESCE(operator_name, %s), "
-                                "client_name    = COALESCE(client_name, %s) "
-                                "WHERE api_key = %s",
-                                (operator_email.strip().lower(), (operator_name or None),
-                                 (client_name[:80] or None) if client_name else None, r[0]))
-                            # mirror the backfilled bind — see the note above
-                            _mirror_after = (r[0], operator_email)
-                        except Exception:
-                            note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
-                            pass
-                    # Compute days_remaining for the countdown CTA
-                    import datetime as _dt
-                    days_left = None
-                    if r[1]:
-                        delta = r[1] - _dt.datetime.now(_dt.timezone.utc)
-                        days_left = max(0, int(delta.total_seconds() / 86400))
-                    return {
-                        "ok":          True,
-                        "api_key":     r[0],
-                        "expires_at":  r[1].isoformat() if r[1] else None,
-                        "tier":        "IDENTIFIED",
-                        "daily_calls": (TRIAL_DAILY_CALLS if operator_email
-                                        else TRIAL_DAILY_UNBOUND),
-                        "daily_calls_when_email_bound": TRIAL_DAILY_CALLS,
-                        "trial_days":  TRIAL_DAYS,
-                        "days_remaining": days_left,
-                        "reused":      True,
-                        "upgrade_cta": (
-                            f"⏳ {days_left}d left on this trial ({TRIAL_DAILY_UNBOUND}/day). "
-                            f"Bind your operator's email — POST /api/v1/keys/auto-trial/bind "
-                            f"{{api_key, email}} — for a PERMANENT key, {TRIAL_DAILY_CALLS}/day, "
-                            f"limit alerts, and first access to new tools."
-                        ),
-                        "operator_action": (
-                            f"ACTION FOR YOUR HUMAN OPERATOR: this key is capped at "
-                            f"{TRIAL_DAILY_UNBOUND}/day until you add your work email "
-                            f"— reply with it to unlock {TRIAL_DAILY_CALLS}/day "
-                            f"(agent binds via POST /api/v1/keys/auto-trial/bind "
-                            f"{{api_key, email}})."
-                        ),
-                        "instructions":(f"Use api_key in X-API-Key header. "
-                                         f"{TRIAL_DAILY_UNBOUND} calls/day; bind your "
-                                         f"operator email to unlock {TRIAL_DAILY_CALLS}/day."),
-                    }
-            except Exception:
-                note_swallowed_write("auto_trial_keys", where="auto_trial.mint_trial_for_request")
-                pass
+            # ── no (ip_hash, ua) reuse: mint fresh, don't hand a key back ──────
+            # (revised 2026-09-15.) The durable identifier is the key the caller
+            # holds — read above by the presented-key probe, and it survives IP
+            # rotation. A caller that does NOT present a key is no longer matched
+            # back to an existing key by (request_ip_hash, request_ua): that pair
+            # is a coarse fingerprint — a shared egress under one common client UA
+            # looks identical across callers — so instead of reusing a key minted
+            # for a different session, fall through to the counter-carry mint below.
 
             # ── 2026-07-10 (leak #1, part 2): CARRY THE COUNTER FORWARD. Even
             # when no live gated trial exists (expired, or the identity's usage

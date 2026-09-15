@@ -2207,60 +2207,20 @@ def claim_key():
     except Exception:
         _reuse_hours = 720
 
-    # ── 2026-07-10 (funnel audit, leak #1: RE-MINT ESCAPE) ──────────────────
-    # A key gated at TRIAL_FREE_CALLS_UNBOUND cumulative unbound calls could
-    # simply call claim_free_key again (with a different client_name — the
-    # response even suggested it) and get a fresh anonymous dch_live_ key with
-    # a reset counter, making re-minting strictly cheaper than binding. Close
-    # it: if this IP already holds a GATED unbound claim key (ANY client_name,
-    # ANY UA — the per-tuple dedupe below is exactly the hole), return the SAME
-    # gated key with the bind CTA instead of minting. FAIL-OPEN on any error.
+    # The bind-gate threshold, shared with routes.auto_trial so both mint doors
+    # use one number. Read here because the born-gated carry mint below announces
+    # it (see "CARRY THE COUNTER FORWARD").
     try:
         from routes.auto_trial import TRIAL_FREE_CALLS_UNBOUND as _BIND_GATE_CALLS
     except Exception:
         _BIND_GATE_CALLS = int(os.environ.get("TRIAL_FREE_CALLS_UNBOUND", "10") or 10)
-    try:
-        with _pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """SELECT api_key, tier,
-                          COALESCE((metadata->>'validate_calls')::int, 0)
-                     FROM mcp_dev_keys
-                    WHERE metadata->>'source' = 'claim_api'
-                      AND metadata->>'ip' = %s
-                      AND (email IS NULL OR email = '')
-                      AND status = 'active'
-                      AND COALESCE((metadata->>'validate_calls')::int, 0) >= %s
-                      AND created_at > NOW() - make_interval(hours => %s)
-                    ORDER BY created_at DESC
-                    LIMIT 1""",
-                (ip, _BIND_GATE_CALLS, _reuse_hours),
-            )
-            _gated = cur.fetchone()
-        if _gated:
-            _restamp_claim_session(_gated[0])
-            return jsonify(
-                ok=True,
-                api_key=_gated[0],
-                tier=(_gated[1] or "free"),
-                reused=True,
-                bind_required=True,
-                gate="bind_email_required",
-                free_calls_unbound=_BIND_GATE_CALLS,
-                bind_endpoint="https://dchub.cloud/api/v1/keys/identify",
-                note=(f"This identity already used its {_BIND_GATE_CALLS} free "
-                      f"unbound calls, so re-claiming returns the SAME key — a "
-                      f"fresh mint would not reset the counter. The key keeps "
-                      f"working FREE the moment it's bound to your operator's "
-                      f"email: call the bind_email tool, or POST "
-                      f"/api/v1/keys/identify {{api_key, email}}. Ask your "
-                      f"human for the address — never invent one."),
-            ), 200
-    except Exception as e:
-        try:
-            import logging as _lg
-            _lg.getLogger(__name__).warning("claim_key gated-identity check failed: %s", e)
-        except Exception:
-            pass
+
+    # A gated identity is no longer handed back an existing key by IP. Matching a
+    # gated unbound key on metadata->>'ip' alone (any client_name, any UA) is a
+    # coarse fingerprint on a shared egress, so rather than reuse a key minted for
+    # a different session we fall through to the counter-carry mint below: it seeds
+    # a FRESH key with this network's carried unbound count, so re-minting still
+    # does not reset the gate. The (client_name, ip) dedupe below is unchanged.
 
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
