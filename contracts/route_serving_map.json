@@ -17842,6 +17842,11 @@
     "routes.exclusive_listings"
    ]
   },
+  "POST /api/v1/listings/<slug_or_id>/leads/<lead_id>/decision": {
+   "modules": [
+    "routes.exclusive_listings"
+   ]
+  },
   "POST /api/v1/listings/interest": {
    "modules": [
     "routes.exclusive_listings"

@@ -84,9 +84,13 @@ TEASER_KEYS = {"id", "slug", "title", "summary", "status", "access_required", "l
                "lock_reason", "market", "state", "country", "capacity_mw", "available",
                "created_at", "updated_at", "expires_at", "url"}
 FULL_KEYS = TEASER_KEYS | {"latitude", "longitude", "asking_price", "asking_currency", "detail"}
-NEW_TEASER_KEYS = {"delivery_type", "freshness", "provider"}
+# 2026-09-15: search by size and location adds capacity_kw and region, and
+# co-marketing adds update_cadence, to every teaser.
+NEW_TEASER_KEYS = {"delivery_type", "freshness", "provider", "capacity_kw", "region",
+                   "update_cadence"}
 NEW_FULL_KEYS = NEW_TEASER_KEYS | {"colocation", "mw_schedule", "power", "price", "verification"}
-UNVERIFIED = {"state": "unverified", "verified_at": None, "age_days": None}
+NO_CADENCE = {"update_cadence": None, "next_update_due": None, "overdue": False}
+UNVERIFIED = {"state": "unverified", "verified_at": None, "age_days": None, **NO_CADENCE}
 
 
 def _decode_jsonb(values):
@@ -194,10 +198,13 @@ def env(monkeypatch):
     monkeypatch.setattr(el, "_db_count_live", count_live)
     monkeypatch.setattr(el, "_db_get_listing", lambda ident: next(
         (dict(r) for r in e.listings if str(r["id"]) == str(ident) or r["slug"] == str(ident)), None))
-    # Terms acceptance and view recording have their own tests
-    # (test_pocket_listings_wall_and_leads.py); here a signed-in buyer has accepted.
+    # Terms acceptance, view recording and the disclosure block have their own
+    # tests (test_pocket_listings_wall_and_leads.py,
+    # test_capacity_source_deal_registration.py); here a signed-in buyer has
+    # accepted the terms and holds no registration.
     monkeypatch.setattr(el, "_db_terms_accepted", lambda user_ref, version: True)
     monkeypatch.setattr(el, "_record_view", lambda row, v: None)
+    monkeypatch.setattr(el, "_db_viewer_lead_events", lambda user_ref, listing_id: [])
 
     app = Flask(__name__)
     app.register_blueprint(el.exclusive_listings_bp)
@@ -245,7 +252,8 @@ def _surfaces(env):
 
 def test_every_reserved_key_has_a_rule():
     assert set(el._DETAIL_FIELD_CHECKS) == set(el._DETAIL_RESERVED_KEYS) == {
-        "colocation", "delivery_type", "mw_schedule", "power", "price", "provider", "verification"}
+        "colocation", "delivery_type", "mw_schedule", "power", "price", "provider", "site",
+        "update_cadence", "verification"}
 
 
 def test_a_full_listing_round_trips_through_create_teaser_and_full_view(env):
@@ -261,12 +269,15 @@ def test_a_full_listing_round_trips_through_create_teaser_and_full_view(env):
         '{"date": "2028-01", "mw": 60}]')
     assert json.dumps(stored["price"]) == '{"low": 120, "high": 145.5, "unit": "usd_per_kw_month"}'
 
-    fresh = {"state": "fresh", "verified_at": "2026-09-01T14:30:00.000000+00:00", "age_days": 11}
+    fresh = {"state": "fresh", "verified_at": "2026-09-01T14:30:00.000000+00:00", "age_days": 11,
+             **NO_CADENCE}
     locked = env.client.get("/api/v1/listings/dfw-40").get_json()
     assert locked["locked"] is True
     teaser = locked["listing"]
     assert (teaser["delivery_type"], teaser["freshness"], teaser["provider"]) == (
         "powered_shell", fresh, {"name": "Lone Star Data Partners"})
+    assert (teaser["capacity_kw"], teaser["region"], teaser["update_cadence"]) == (
+        40000, "north_america", None)
     assert set(teaser) == TEASER_KEYS | NEW_TEASER_KEYS      # nothing walled on the card
 
     item = env.client.get("/api/v1/listings").get_json()["items"][0]
@@ -276,8 +287,14 @@ def test_a_full_listing_round_trips_through_create_teaser_and_full_view(env):
     assert opened["locked"] is False
     full = opened["listing"]
     assert set(full) == FULL_KEYS | NEW_FULL_KEYS
-    for key in ("delivery_type", "mw_schedule", "power", "price", "verification"):
+    for key in ("delivery_type", "mw_schedule", "price", "verification"):
         assert full[key] == NORMALIZED[key], key
+    # The specs view (2026-09-15): power without its substation, and no
+    # coordinates. The site is disclosed only once the provider accepts the
+    # viewer's registration.
+    assert full["power"] == {"utility": "Oncor Electric", "interconnection_stage": "agreement_executed"}
+    assert (full["latitude"], full["longitude"]) == (None, None)
+    assert "Seagoville" not in json.dumps(opened)
     assert full["provider"] == {"name": "Lone Star Data Partners", "disclosed": True}
     assert full["freshness"] == fresh
     assert full["detail"] == {"available": "Q2 2027"}        # reserved keys only as typed fields
@@ -519,16 +536,20 @@ def test_a_listing_without_the_reserved_keys_reads_as_before(env):
         "updated_at": "2026-09-02T00:00:00.000000+00:00", "expires_at": None,
         "url": "https://dchub.cloud/listings?l=dfw-40"}
     assert {k: teaser[k] for k in NEW_TEASER_KEYS} == {
-        "delivery_type": None, "freshness": UNVERIFIED, "provider": None}
+        "delivery_type": None, "freshness": UNVERIFIED, "provider": None,
+        "capacity_kw": 40000, "region": "north_america", "update_cadence": None}
 
     full = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()["listing"]
     assert set(full) == FULL_KEYS | NEW_FULL_KEYS
+    # Coordinates are site identity: the specs view carries the keys, as null
+    # (2026-09-15), until the provider accepts the viewer's registration.
     assert (full["latitude"], full["longitude"], full["asking_price"], full["asking_currency"]) == (
-        32.78, -96.8, 1250000.0, "USD")
+        None, None, 1250000.0, "USD")
     assert full["detail"] == {"available": "Q2 2027", "feeds": "dual feed"}
     assert {k: full[k] for k in NEW_FULL_KEYS} == {
         "delivery_type": None, "freshness": UNVERIFIED, "provider": None, "mw_schedule": None,
-        "power": None, "price": None, "verification": None, "colocation": None}
+        "power": None, "price": None, "verification": None, "colocation": None,
+        "capacity_kw": 40000, "region": "north_america", "update_cadence": None}
 
 
 def test_stored_values_that_break_the_rules_read_as_null_without_failing(env):
@@ -543,7 +564,8 @@ def test_stored_values_that_break_the_rules_read_as_null_without_failing(env):
     full = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()["listing"]
     assert {k: full[k] for k in NEW_FULL_KEYS} == {
         "delivery_type": None, "freshness": UNVERIFIED, "provider": None, "mw_schedule": None,
-        "power": {"utility": "Oncor"}, "price": None, "verification": None, "colocation": None}
+        "power": {"utility": "Oncor"}, "price": None, "verification": None, "colocation": None,
+        "capacity_kw": 40000, "region": "north_america", "update_cadence": None}
     assert full["detail"] == {}
 
 
@@ -563,7 +585,7 @@ def test_freshness_counts_whole_days_since_verification(env, ago, state, age_day
     env.listings.append(_row(detail={"verification": {**VERIFICATION,
                                                       "verified_at": verified_at.isoformat()}}))
     expected = {"state": state, "age_days": age_days,
-                "verified_at": verified_at.strftime("%Y-%m-%dT%H:%M:%S.000000+00:00")}
+                "verified_at": verified_at.strftime("%Y-%m-%dT%H:%M:%S.000000+00:00"), **NO_CADENCE}
     assert env.client.get("/api/v1/listings").get_json()["items"][0]["freshness"] == expected
     assert env.client.get("/api/v1/listings/dfw-40").get_json()["listing"]["freshness"] == expected
 
@@ -750,3 +772,130 @@ def test_the_filters_are_bound_parameters_of_the_listing_query(monkeypatch):
     assert "detail->>'delivery_type' = %s" in where
     assert "jsonb_array_elements(" in where and "<= %s)" in where
     assert plain_params == ["TX", 7] and "detail" not in plain_sql.split(" WHERE ", 1)[1]
+
+
+# ── site, update_cadence, capacity_kw and region (2026-09-15) ─────────────
+
+SITE = {"name": "Seagoville Campus", "address": "100 Industrial Blvd", "city": "Seagoville",
+        "postal_code": "75159", "parcel_id": "APN 42-17"}
+
+
+@pytest.mark.parametrize("detail,field", [
+    pytest.param({"site": "Seagoville"}, "detail.site", id="site not an object"),
+    pytest.param({"site": {}}, "detail.site", id="site empty"),
+    pytest.param({"site": {"name": "Campus", "county": "Dallas"}}, "detail.site.county",
+                 id="site with another key"),
+    pytest.param({"site": {"postal_code": 75159}}, "detail.site.postal_code", id="postal_code not text"),
+    pytest.param({"site": {"address": "   "}}, "detail.site.address", id="address blank"),
+    pytest.param({"site": {"parcel_id": "P" * 121}}, "detail.site.parcel_id",
+                 id="parcel_id over 120 characters"),
+    pytest.param({"Site": {"name": "Campus"}}, "detail.Site", id="site in other case"),
+    pytest.param({"update_cadence": "daily"}, "detail.update_cadence", id="update_cadence outside the enum"),
+    pytest.param({"update_cadence": 7}, "detail.update_cadence", id="update_cadence not text"),
+])
+def test_site_and_update_cadence_refuse_with_the_field_they_name(env, detail, field):
+    r = _create(env, detail)
+    assert (r.status_code, r.get_json().get("error"), _fields(r)) == (400, "invalid_detail", [field])
+    assert env.statements == [] and env.listings == []
+
+
+def test_site_and_update_cadence_are_stored_normalized(env):
+    r = _create(env, {"site": {"name": "  Seagoville   Campus ", "city": "Seagoville", "address": None},
+                      "update_cadence": " weekly "})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert env.listings[0]["detail"] == {"site": {"name": "Seagoville Campus", "city": "Seagoville"},
+                                         "update_cadence": "weekly"}
+    r = _create(env, {"site": SITE}, slug="dfw-41")
+    assert r.status_code == 200 and env.listings[1]["detail"] == {"site": SITE}
+
+
+IDENTITY_DETAIL = {
+    "available": "Q3 2027", "feeds": "dual feed", "site": SITE,
+    " City ": "Seagoville", "ADDRESS": "100 Industrial Blvd", "zip": "75159", "apn": "42-17",
+    "Site_Name": "Seagoville Campus", "facility_name": "SGV-1", "street_address": "9 Rail Spur",
+    "site_address": "Gate 4", "postal_code": "75159", "parcel": "P-77", "parcel_id": "Q-88",
+    "provider_city": "Plano",
+    "power": {"utility": "Oncor", "substation": "Seagoville 345kV", "interconnection_stage": "energized"},
+    "provider": {"name": HIDDEN_PROVIDER, "disclosed": False},
+}
+
+
+def test_the_specs_view_serves_no_site_identity_on_any_surface(env):
+    env.listings.append(_row(detail=IDENTITY_DETAIL))
+    surfaces = _surfaces(env)
+    opened = surfaces["full view"].get_json()
+    assert opened["locked"] is False
+    full = opened["listing"]
+    assert full["detail"] == {"available": "Q3 2027", "feeds": "dual feed"}
+    assert full["power"] == {"utility": "Oncor", "interconnection_stage": "energized"}
+    assert (full["latitude"], full["longitude"]) == (None, None) and "site" not in full
+    assert opened["disclosure"]["released"] is False
+    for label, r in surfaces.items():
+        body = r.get_data(as_text=True)
+        assert r.status_code == 200, label
+        for secret in ("Seagoville", "Industrial Blvd", "75159", "42-17", "SGV-1", "Rail Spur",
+                       "Gate 4", "P-77", "Q-88", "Plano", HIDDEN_PROVIDER, "32.77", "96.79"):
+            assert secret not in body, (label, secret)
+
+
+def test_a_disclosed_provider_name_still_shows_in_the_specs_view(env):
+    """Control for the test above: provider.disclosed is the provider's own
+    opt-in, so its name stays on every surface while the site stays hidden."""
+    env.listings.append(_row(detail={**IDENTITY_DETAIL,
+                                     "provider": {"name": HIDDEN_PROVIDER, "disclosed": True}}))
+    for label, r in _surfaces(env).items():
+        body = r.get_data(as_text=True)
+        assert HIDDEN_PROVIDER in body and "Seagoville" not in body, label
+
+
+@pytest.mark.parametrize("cadence,ago,overdue", [
+    pytest.param("real_time", timedelta(days=2), False, id="real_time at 2 days"),
+    pytest.param("real_time", timedelta(days=2, seconds=1), True, id="real_time past 2 days"),
+    pytest.param("weekly", timedelta(days=9), False, id="weekly at 9 days"),
+    pytest.param("weekly", timedelta(days=9, seconds=1), True, id="weekly past 9 days"),
+    pytest.param("monthly", timedelta(days=35), False, id="monthly at 35 days"),
+    pytest.param("monthly", timedelta(days=35, seconds=1), True, id="monthly past 35 days"),
+])
+def test_update_cadence_marks_a_listing_overdue_past_its_allowance(env, cadence, ago, overdue):
+    verified_at = NOW - ago
+    env.listings.append(_row(detail={"update_cadence": cadence, "verification": {
+        **VERIFICATION, "verified_at": verified_at.isoformat()}}))
+    due = verified_at + timedelta(days={"real_time": 2, "weekly": 9, "monthly": 35}[cadence])
+    feed = env.client.get("/api/v1/listings").get_json()["items"]
+    full = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()["listing"]
+    assert [i["slug"] for i in feed] == ["dfw-40"]            # a badge, never a filter
+    for listing in (feed[0], full):
+        freshness = listing["freshness"]
+        assert listing["update_cadence"] == freshness["update_cadence"] == cadence
+        assert freshness["overdue"] is overdue
+        assert freshness["next_update_due"] == due.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+
+
+def test_update_cadence_without_a_verification_is_not_overdue(env):
+    env.listings.append(_row(detail={"update_cadence": "weekly"}))
+    freshness = env.client.get("/api/v1/listings").get_json()["items"][0]["freshness"]
+    assert freshness == {**UNVERIFIED, "update_cadence": "weekly"}
+
+
+@pytest.mark.parametrize("detail,capacity_mw,kw", [
+    pytest.param({"delivery_type": "colocation", "colocation": {"kw_available": 1200}}, 40.0, 1200,
+                 id="colocation by kw_available"),
+    pytest.param({"delivery_type": "colocation"}, 40.0, None, id="colocation without kw_available"),
+    pytest.param({"delivery_type": "powered_shell"}, 40.5, 40500, id="a MW listing"),
+    pytest.param(None, 0.25, 250, id="no delivery type"),
+    pytest.param({"delivery_type": "land"}, None, None, id="no capacity"),
+])
+def test_capacity_kw_sizes_colocation_by_kw_and_everything_else_by_mw(env, detail, capacity_mw, kw):
+    env.listings.append(_row(detail=detail, capacity_mw=capacity_mw))
+    assert env.client.get("/api/v1/listings").get_json()["items"][0]["capacity_kw"] == kw
+
+
+@pytest.mark.parametrize("country,region", [
+    ("US", "north_america"), (" us ", "north_america"), ("United States", "north_america"),
+    ("PR", "north_america"), ("MX", "north_america"), ("Germany", "europe"), ("gb", "europe"),
+    ("ZA", "middle_east_africa"), ("SG", "asia_pacific"), ("Brazil", "latin_america"),
+    ("Atlantis", None), ("", None), (None, None),
+])
+def test_teaser_region_reads_codes_and_names(env, country, region):
+    env.listings.append(_row(detail=None, country=country))
+    assert env.client.get("/api/v1/listings").get_json()["items"][0]["region"] == region

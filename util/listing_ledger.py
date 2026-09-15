@@ -74,13 +74,17 @@ EVENTS = (
     "interest_registered",   # a standing requirement for upcoming listings
     "terms_accepted",        # an identified user accepted the introduction terms; the version is in terms_version
     "listing_viewed",        # an identified user opened a walled listing
-    "intro_requested",       # an introduction to one listing's operator
+    "intro_requested",       # a registration for one listing, sent to its operator to accept or decline
     "email_confirmed",       # the prospect proved the inbox from the request
     "operator_notified",     # DC Hub sent the operator a registration notice
+    "registration_accepted", # the operator accepted the registration: contacts and site identity are shared
+    "registration_declined", # the operator declined the registration: no contact details go either way
     "introduced",            # DC Hub made the introduction
     "withdrawn",             # the request was withdrawn
 )
 LEAD_OPENING_EVENTS = ("interest_registered", "intro_requested")
+# The events after which an operator's decision can no longer be recorded.
+DECISION_BLOCKING_EVENTS = ("registration_accepted", "registration_declined", "withdrawn")
 
 CONFIRM_TOKEN_TTL_S = 14 * 24 * 3600
 OPERATOR_TOKEN_TTL_S = 180 * 24 * 3600
@@ -181,6 +185,16 @@ GUARD_STATEMENTS = (
 class LedgerUnavailable(RuntimeError):
     """The register cannot take a write. Callers must refuse to register a lead
     rather than record one they cannot evidence."""
+
+
+class LedgerConflict(LedgerUnavailable):
+    """A guarded append (append(..., unless_lead_has=...)) found one of the
+    named events already on the lead, so nothing was written. `event` is the
+    first such event."""
+
+    def __init__(self, event):
+        super().__init__(f"the lead already has {event}")
+        self.event = event
 
 
 # ── keys ──────────────────────────────────────────────────────────────────
@@ -346,11 +360,16 @@ def append(conn, secret: bytes | None, *, lead_id, event: str,
            listing: dict | None = None, user_ref=None, pii: dict | None = None,
            email_verified=False, verified_via=None, channel=None, platform=None,
            client=None, session_hash=None, ip_hash=None, user_agent=None,
-           terms_version=None, meta=None, now: datetime | None = None) -> dict:
+           terms_version=None, meta=None, unless_lead_has=None,
+           now: datetime | None = None) -> dict:
     """Append one entry. Lock, read head, insert and commit in ONE transaction.
 
     Raises LedgerUnavailable when no secret is configured or the row did not
     land — a lead is never reported registered on a write that did not happen.
+
+    unless_lead_has: event names. When the lead already carries one, nothing is
+    written and LedgerConflict names it. The check runs under the append lock,
+    so two concurrent decisions on one lead cannot both land.
     """
     if secret is None:
         raise LedgerUnavailable("no ledger secret configured")
@@ -359,6 +378,13 @@ def append(conn, secret: bytes | None, *, lead_id, event: str,
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (LEDGER_LOCK_KEY,))
+            if unless_lead_has and lead_id:
+                cur.execute("SELECT event FROM listing_lead_ledger WHERE lead_id = %s "
+                            "AND event = ANY(%s) ORDER BY seq ASC LIMIT 1",
+                            (lead_id, list(unless_lead_has)))
+                found = cur.fetchone()
+                if found:
+                    raise LedgerConflict(found[0])
             cur.execute("SELECT entry_hash FROM listing_lead_ledger "
                         "ORDER BY seq DESC LIMIT 1")
             head = cur.fetchone()
@@ -517,19 +543,23 @@ def verify_chain(rows, keys) -> dict:
 # ── lead status ───────────────────────────────────────────────────────────
 
 _STATUS_RANK = {"pending_email_confirmation": 0, "registered": 1,
-                "operator_notified": 2, "introduced": 3}
+                "operator_notified": 2, "accepted": 3, "introduced": 4}
 _STATUS_BY_EVENT = {"email_confirmed": "registered",
                     "operator_notified": "operator_notified",
+                    "registration_accepted": "accepted",
                     "introduced": "introduced"}
+# Terminal events. The first one on a lead is its status, whatever follows it.
+_TERMINAL_STATUS = {"withdrawn": "withdrawn", "registration_declined": "declined"}
 
 
 def lead_status(events) -> str | None:
-    """Furthest-along status a lead has reached; `withdrawn` is terminal."""
+    """Furthest-along status a lead has reached. `withdrawn` and `declined` are
+    terminal, and the first terminal event wins."""
     status = None
     for ev in events:
         name = ev.get("event")
-        if name == "withdrawn":
-            return "withdrawn"
+        if name in _TERMINAL_STATUS:
+            return _TERMINAL_STATUS[name]
         if name in LEAD_OPENING_EVENTS:
             candidate = ("registered" if ev.get("email_verified")
                          else "pending_email_confirmation")
