@@ -199,10 +199,11 @@ def test_the_finder_still_finds_the_known_paths():
     n_binds = len(re.findall(r"UPDATE\s+auto_trial_keys\s+SET",
                              flat_body("routes/auto_trial.py",
                                        "mint_trial_for_request"), re.I))
-    assert n_binds >= 2, (
-        f"mint_trial_for_request() binds in 2 branches (the presented-key probe "
-        f"and the same-(ip_hash, request_ua) reuse); the counter sees {n_binds}. "
-        "A counter that undercounts lets an unmirrored branch through.")
+    assert n_binds >= 1, (
+        f"mint_trial_for_request() binds in 1 branch (the presented-key probe; "
+        f"the same-(ip_hash, request_ua) reuse that also bound was removed "
+        f"2026-09-15); the counter sees {n_binds}. A counter that undercounts "
+        "lets an unmirrored branch through.")
     assert len(found) >= 4, (
         f"expected at least the 4 known bind paths (2 in auto_trial, identify, "
         f"and mint_trial_for_request), found {len(found)}: "
@@ -210,8 +211,10 @@ def test_the_finder_still_finds_the_known_paths():
 
 
 # ★ A KNOWN, TRACKED GAP — not an exemption. mint_trial_for_request() also sets
-# operator_email (2 branches, since the cross-UA gated re-mint was removed
-# 2026-09-14) and does not mirror, so it carries the same leak.
+# operator_email on the fresh-mint INSERT path (down to 1 bind UPDATE now that
+# both ip_hash re-mint reuses were removed — cross-UA 2026-09-14, and the
+# (ip_hash, request_ua) reuse 2026-09-15) and does not mirror there, so it
+# carries the same leak.
 # It is a large function with several return points; threading the call through
 # every success path is a different and riskier change than the one this PR
 # makes, so it is marked strict-xfail rather than half-fixed. strict=True means
@@ -251,11 +254,11 @@ def test_every_trial_bind_path_mirrors_into_mcp_dev_keys(rel, name, lineno, body
         "(A comment naming the symbol does not count.)")
 
     # ★ ONE CALL IS NOT ENOUGH IN A FUNCTION THAT BINDS IN SEVERAL BRANCHES.
-    # mint_trial_for_request() binds in TWO (the presented-key probe and the
-    # same-(ip_hash, request_ua) reuse); mirroring in only one leaves the other
-    # leaking exactly as before, and a `>= 1` assertion cannot see it. Require
-    # one mirror per bind UPDATE. (A third branch, the cross-UA gated re-mint,
-    # was removed 2026-09-14; it used to bind-and-mirror here too.)
+    # The rule is one mirror trigger per bind UPDATE, so a function that grows a
+    # second bind branch cannot mirror only one of them and pass. mint_trial_for_
+    # request() is down to ONE bind UPDATE (the presented-key probe) now that both
+    # ip_hash re-mint reuses were removed (cross-UA 2026-09-14, and the
+    # (ip_hash, request_ua) reuse 2026-09-15); each used to bind-and-mirror here.
     binds = len(re.findall(r"UPDATE\s+auto_trial_keys\s+SET", flat_body(rel, name),
                            re.I))
     # ★ GUARD THE GUARD. _binding_functions() only yields functions that DO issue
