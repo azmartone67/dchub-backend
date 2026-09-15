@@ -316,6 +316,148 @@ def stale_approvals_without_pr(cur, older_than_hours: int = 24,
     return out
 
 
+# ── What became of an approval's PR — one derivation, two transports ─────────
+# ★ 2026-09-15. The operator approved the top of the board and nothing reached
+# GitHub, and the page could not say why. Measured on production
+# brain_approvals: of the 32 approvals since #4479 merged (09-12 11:56Z), 2 have
+# a PR and 30 carry no attempt at all. The verdict gate held those back, the
+# page painted its reply as a green "recorded (no code change)", and after a
+# refresh every approval drew the same "✓ approved" from a kind/id/decision
+# list capped at 500 of 880 rows. approval_view() is what the approve reply and
+# the digest now carry per item; the page draws it and never re-derives it.
+def _short(text, n: int = 280) -> str:
+    return str(text or "").strip()[:n]
+
+
+def _pr_link(number) -> str | None:
+    """The GitHub URL of a PR a producer named by number (a dedup hit)."""
+    try:
+        n = int(number)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    try:
+        from routes.brain_pr_opener import _GITHUB_REPO
+    except Exception:
+        return None
+    return f"https://github.com/{_GITHUB_REPO}/pull/{n}" if _GITHUB_REPO else None
+
+
+def approval_view(decision, pr_url, attempt) -> dict:
+    """What became of one approval's PR, from the persisted row.
+
+    pr_state   when                                              the page shows
+      opened    a PR landed                                       its link
+      withheld  the verdict gate held it back                     why + override
+      declined  the drafter refused and the spec-PR fallback      its answer
+                filed nothing (e.g. the condition is specced)
+      failed    the attempt errored — the redrive retries these   the error
+      refused   the drafter refused, fallback answer not kept     the rationale
+                (every attempt persisted before 2026-09-15)
+      recorded  answered without a PR (e.g. no directive)         the note
+      none      no attempt on record                              may ask for one
+    """
+    a = attempt if isinstance(attempt, dict) else {}
+    view = {"decision": str(decision or "approved"), "pr_state": "none",
+            "pr_url": None, "pr_ref_url": None, "pr_note": "",
+            "can_request_pr": False, "can_override": False}
+    spec = a.get("fallback_spec_pr")
+    spec = spec if isinstance(spec, dict) else {}
+    url = pr_url or _pr_url_of(a)
+    if url:
+        view.update(pr_state="opened", pr_url=url)
+    elif not a:
+        view.update(can_request_pr=True)
+    elif a.get("acted"):
+        view.update(pr_state="opened",
+                    pr_note="a PR was opened but its link was not recorded")
+    elif a.get("withheld"):
+        view.update(pr_state="withheld", pr_note=_short(a.get("note")),
+                    can_override=True)
+    elif spec.get("note") and spec.get("ok") is not False:
+        view.update(pr_state="declined", pr_note=_short(spec.get("note")),
+                    pr_ref_url=_pr_link(spec.get("dup_pr")
+                                        or spec.get("landed_spec_pr")))
+    elif a.get("ok") is False:
+        view.update(pr_state="failed", can_request_pr=True,
+                    pr_note=_short(a.get("error") or a.get("reason")
+                                   or "the draft attempt failed"))
+    elif a.get("refused"):
+        view.update(pr_state="refused", can_request_pr=True,
+                    pr_note=_short(a.get("rationale")
+                                   or "not expressible as a single-file edit"))
+    else:
+        view.update(pr_state="recorded", can_request_pr=True,
+                    pr_note=_short(a.get("note") or "answered without a PR"))
+    return view
+
+
+def _approval_states(pairs) -> dict | None:
+    """{'kind:id': approval_view(...)} for the APPROVED items among `pairs` —
+    read for exactly the (kind, id) pairs asked about, never a capped slice of
+    the whole ledger. {} when nothing is asked or nothing is approved; None when
+    the ledger could not be read (unknown is not 'not approved')."""
+    wanted: set[str] = set()
+    ids: set[int] = set()
+    for kind, item_id in pairs or ():
+        try:
+            iid = int(item_id)
+        except (TypeError, ValueError):
+            continue
+        if kind in _VALID_KINDS:
+            wanted.add(f"{kind}:{iid}")
+            ids.add(iid)
+    if not wanted:
+        return {}
+    conn = _conn()
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            if not _ensure_approval_columns(cur):
+                return {}                   # no ledger table yet: nothing approved
+            cur.execute(
+                "SELECT kind, item_id, decision, pr_url, pr_attempt "
+                "FROM brain_approvals WHERE item_id = ANY(%s)",
+                (sorted(ids),))
+            rows = cur.fetchall() or []
+        conn.commit()
+    except Exception as e:
+        logger.warning("brain_innovation_dashboard: approval states read failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return None
+    finally:
+        try: conn.close()
+        except Exception: pass
+    out: dict = {}
+    for kind, item_id, decision, pr_url, attempt in rows:
+        key = f"{kind}:{item_id}"
+        if key in wanted:
+            out[key] = approval_view(decision, pr_url, _as_obj(attempt))
+    return out
+
+
+_DIGEST_SECTIONS = (("agenda", "agenda"), ("investigations", "inv"),
+                    ("proposals", "prop"))
+
+
+def _attach_approval_states(digest) -> None:
+    """Put each board item's approval_view() ON the item (None = not approved)
+    and record whether the ledger answered: `approvals_read: False` means
+    unknown, never 'nothing approved'. The page's only source of approval state."""
+    if not isinstance(digest, dict):
+        return
+    items = [(kind, it) for section, kind in _DIGEST_SECTIONS
+             for it in (digest.get(section) or [])
+             if isinstance(it, dict) and it.get("id") is not None]
+    states = _approval_states([(kind, it["id"]) for kind, it in items])
+    digest["approvals_read"] = states is not None
+    for kind, it in items:
+        it["approval"] = (states or {}).get(f"{kind}:{it['id']}")
+
+
 def _as_obj(v) -> dict:
     """Coerce a JSONB column (already a dict on psycopg2, or a str) to a dict.
     Empty dict on anything unparseable."""
@@ -463,15 +605,26 @@ def _item_verdict(kind: str, item_id: int) -> dict:
 
 def _pr_block_reason(verdict: dict) -> str:
     """Why this item must NOT auto-draft a PR, or '' when it may.
-    Only an EXPLICIT refutation or an EXPLICIT sub-floor confidence blocks;
-    unknown/None never blocks (fail open)."""
+    An EXPLICIT refutation blocks. The confidence floor applies only to an item
+    that did not SURVIVE refutation (never tested, or inconclusive); a survivor
+    drafts at any confidence. unknown/None never blocks (fail open).
+
+    ★ SURVIVORS SKIP THE FLOOR (2026-09-15, owner decision). The floor was
+    holding back items the refuter had already failed to break, and on the live
+    board that shut a whole column: the six self-directed agenda items that
+    survived stored confidence 0.23–0.37, every one under 0.40, so 0 of 15
+    agenda items could open a PR from Approve. The refuter's verdict is the
+    signal this gate exists to honour — a number must not overrule it."""
     if verdict.get("refutation_survived") is False:
         return ("the adversarial refuter REFUTED this item — approval recorded, "
                 "but a refuted analysis does not auto-draft a PR")
+    if verdict.get("refutation_survived") is True:
+        return ""
     conf = verdict.get("confidence")
     if conf is not None and conf < PR_MIN_CONFIDENCE:
         return (f"confidence {conf:.2f} is below the {PR_MIN_CONFIDENCE:.2f} "
-                "floor for auto-drafting a PR — approval recorded only")
+                "floor for auto-drafting a PR, and the item did not survive a "
+                "refutation pass — approval recorded only")
     return ""
 
 
@@ -633,7 +786,9 @@ def _no_store(resp):
 def innovation_digest():
     """READ-ONLY consolidated digest of the three brain-innovation streams —
     self-agenda, investigations, ranked proposals — each item flattened for
-    display. Admin-gated. Best-effort: a missing table yields [] not a 500."""
+    display. Admin-gated. Best-effort: a missing table yields [] not a 500.
+    Each item also carries `approval` — approval_view(), or None when it is not
+    approved — and the digest says `approvals_read` (False = unknown)."""
     if not _admin_ok():
         return jsonify(ok=False, error="admin only — internal brain dashboard",
                        hint="append ?admin_key= or send X-Admin-Key"), 403
@@ -641,14 +796,18 @@ def innovation_digest():
         limit = int(request.args.get("limit", "15"))
     except Exception:
         limit = 15
-    return jsonify(build_digest(limit)), 200
+    digest = build_digest(limit)
+    _attach_approval_states(digest)
+    return jsonify(digest), 200
 
 
 @brain_innovation_dashboard_bp.route("/api/v1/brain/innovation/approvals", methods=["GET"])
 def innovation_approvals():
     """READ-ONLY list of the operator's greenlight decisions from brain_approvals
-    (newest first, LIMIT 500). The page uses this to keep approved items marked
-    across the 60s auto-refresh. Admin-gated; 503 if no DB."""
+    (newest first, LIMIT 500). Admin-gated; 503 if no DB. The dashboard page no
+    longer reads it: it takes each card's approval from the digest, because by
+    2026-09-15 the ledger held 880 rows and approvals older than the newest 500
+    drew the approve button again."""
     if not _admin_ok():
         return jsonify(ok=False, error="admin only — internal brain dashboard",
                        hint="append ?admin_key= or send X-Admin-Key"), 403
@@ -847,10 +1006,20 @@ def innovation_approve():
         resp["verdict"] = _verdict
         if _blocked:
             # Approval row is already committed above — only the PR is withheld.
+            # ★ 2026-09-15: the hold is PERSISTED and handed back as a hold.
+            # This branch used to return before _record_pr_attempt, and the
+            # page painted the reply as a green "recorded (no code change)",
+            # dropping the reason and override_with. Measured on production:
+            # 30 of the 32 approvals since #4479 merged carried no attempt at
+            # all — after a refresh, indistinguishable from an approval that
+            # never asked for a PR. {ok: True} keeps it out of the redrive.
+            _held = {"ok": True, "acted": False, "withheld": True,
+                     "note": _blocked,
+                     "override_with": "re-POST with override=true"}
             resp["pr_blocked"] = _blocked
-            resp["pr_attempt"] = {"ok": True, "acted": False,
-                                  "note": _blocked,
-                                  "override_with": "re-POST with override=true"}
+            resp["pr_attempt"] = _held
+            resp["pr_attempt_persisted"] = _record_pr_attempt(kind, item_id, _held)
+            resp["approval"] = approval_view(decision, None, _held)
             return jsonify(**resp), 200
         if bool(body.get("override")) and _pr_block_reason(_verdict):
             resp["pr_override"] = _pr_block_reason(_verdict)
@@ -859,6 +1028,7 @@ def innovation_approve():
         resp["pr_attempt"] = _pr
         resp["pr_url"] = _pr_url_of(_pr)
         resp["pr_attempt_persisted"] = _record_pr_attempt(kind, item_id, _pr)
+        resp["approval"] = approval_view(decision, resp["pr_url"], _pr)
 
     return jsonify(**resp), 200
 
@@ -891,6 +1061,23 @@ def _attempt_pr(kind: str, item_id: int, operator_directive: str = "") -> dict:
                     _pr = {**_pr, "acted": True,
                            "note": "filed as draft spec PR for a human",
                            "fallback_spec_pr": _spec}
+                elif isinstance(_spec, dict):
+                    # ★ 2026-09-15: keep the fallback's answer when it files
+                    # nothing. It was dropped, so the attempt persisted as the
+                    # drafter's bare refusal when the real answer was the
+                    # fallback's — "already specced and MERGED as PR #N", or a
+                    # closed daily cap. 10 of the 45 approvals on the 09-15
+                    # board are stored that way, reason unrecoverable. A
+                    # fallback that FAILED makes the attempt a failure, so the
+                    # redrive retries it rather than filing a closed cap as the
+                    # drafter's judgement.
+                    _pr = {**_pr, "fallback_spec_pr": _spec}
+                    if _spec.get("ok") is False:
+                        _pr["ok"] = False
+                        _pr["error"] = _pr.get("error") or (
+                            "spec PR fallback failed: "
+                            + str(_spec.get("reason") or _spec.get("error")
+                                  or "unknown"))[:300]
             except Exception as _se:
                 logger.warning(
                     "brain_innovation_dashboard: approve→spec-PR fallback failed: %s", _se)
@@ -935,10 +1122,16 @@ def redrive_approved_without_pr(max_rows: int = 3, window_days: int = 7,
     try:
         with conn.cursor() as cur:
             _ensure_approval_columns(cur)
+            # ★ 2026-09-15: FAILURES ONLY, in SQL — the predicate _redrive_wanted
+            # applies. Answered rows (refusals, and now every held-back PR)
+            # matched this SELECT and were skipped one at a time in Python,
+            # inside a LIMIT of 4x the per-tick cap — so a burst of held-back
+            # approvals could fill the window and starve the failures behind it.
             cur.execute(
                 "SELECT kind, item_id, pr_attempt FROM brain_approvals "
                 "WHERE decision = 'approved' AND pr_url IS NULL "
                 "AND pr_attempt IS NOT NULL "
+                "AND pr_attempt->>'ok' = 'false' "
                 "AND approved_at > NOW() - (%s * INTERVAL '1 day') "
                 "AND COALESCE(pr_redrives, 0) < %s "
                 "AND (pr_attempted_at IS NULL "
@@ -1066,7 +1259,7 @@ h1{margin:0 0 .35rem;font-size:1.9rem;font-weight:800;letter-spacing:-.02em;
   border-radius:6px;padding:.5rem .7rem;font-size:.82rem;color:#e2e8f0}
 .weak{margin:.3rem 0 0;padding-left:1.1rem;font-size:.8rem;color:var(--tx2)}
 .weak li{margin:.15rem 0}
-.grades{display:flex;align-items:center;gap:.5rem;margin-top:.85rem;
+.grades{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-top:.85rem;
   padding-top:.7rem;border-top:1px solid var(--bd)}
 button.g{font-family:inherit;font-size:.8rem;font-weight:600;cursor:pointer;
   border-radius:7px;padding:.35rem .8rem;border:1px solid var(--bd);
@@ -1088,6 +1281,19 @@ button.approve:disabled{cursor:default;opacity:.7}
 .approved-pill{font-family:var(--mono);font-size:.72rem;font-weight:700;
   padding:.2rem .55rem;border-radius:99px;margin-left:auto;color:var(--green);
   background:#10b9811a;border:1px solid #10b98155;white-space:nowrap}
+.approved-pill a{color:inherit;text-decoration:underline}
+.approved-pill.warn{color:var(--amber);background:#f59e0b1a;border-color:#f59e0b55}
+.approved-pill.err{color:var(--red);background:#ef44441a;border-color:#ef444455}
+.appr{margin-left:auto;display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;
+  justify-content:flex-end}
+.appr .approved-pill,.appr button.approve{margin-left:0}
+button.pr-act{font-family:inherit;font-size:.74rem;font-weight:600;cursor:pointer;
+  border-radius:7px;padding:.25rem .6rem;border:1px solid var(--bd);
+  background:var(--surface2);color:var(--tx2);transition:all .12s}
+button.pr-act:hover{border-color:#3a3d55;color:var(--tx)}
+button.pr-act.override{color:var(--amber);border-color:#f59e0b55;background:#f59e0b1a}
+.appr-note{font-size:.76rem;color:var(--tx2);margin-top:.45rem;line-height:1.45}
+.appr-note:empty{display:none}
 .meta{font-family:var(--mono);font-size:.68rem;color:var(--tx3);margin-top:.55rem}
 .empty{color:var(--tx3);font-size:.85rem;padding:1.1rem;text-align:center;
   background:var(--surface);border:1px dashed var(--bd);border-radius:10px}
@@ -1097,6 +1303,7 @@ button.approve:disabled{cursor:default;opacity:.7}
   transition:transform .25s;z-index:50}
 .toast.show{transform:translateX(-50%) translateY(0)}
 .toast.ok{border-color:#10b98188}.toast.err{border-color:#ef444488;color:#fca5a5}
+.toast.warn{border-color:#f59e0b88;color:#fcd34d}
 footer{margin-top:2.5rem;padding-top:1.25rem;border-top:1px solid var(--bd);
   color:var(--tx3);font-size:.8rem;text-align:center}
 </style></head><body><div class="wrap">
@@ -1108,7 +1315,9 @@ chose for itself, the investigations it ran, and the ranked improvements it prop
 <b>approve + open PR</b> asks for the instruction to draft from (pre-filled with the
 item's own text — edit it to name the branch you want) and turns it into a guardrailed draft PR
 (human-merged, daily-capped; advisory insights that aren't a concrete single-file edit
-are just recorded).</p>
+are filed as a spec PR, or recorded). Every approved card says what became of its PR:
+the link, or why none opened. A <b>refuted</b> item's PR is held back until you choose
+<b>open PR anyway</b>.</p>
 <div class="bar">
   <span id="status">Loading…</span>
   <span class="dot">·</span>
@@ -1140,11 +1349,12 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
   // query-param is the fallback that makes the whole thing browser-openable.
   function getCookie(n){var m=document.cookie.match(new RegExp('(?:^|; )'+n.replace(/([.*+?^${}()|[\]\\])/g,'\\$1')+'=([^;]*)'));return m?decodeURIComponent(m[1]):'';}
   var KEY = new URLSearchParams(location.search).get('admin_key') || getCookie('dchub_innov_key') || '';
-  // APPROVE ledger — operator GREENLIGHT decisions, keyed "kind:id". Populated
-  // from /api/v1/brain/innovation/approvals before each render so approved items
-  // stay marked across the 60s auto-refresh. Propose-only: approving RECORDS the
-  // decision; it never triggers any action.
-  var APPROVED = {};
+  // APPROVAL STATE, keyed "kind:id". BOARD holds what the digest said about each
+  // card's approval and its PR (the server's approval_view — the page draws it
+  // and never re-derives it); SEEN holds a click's reply until the next digest;
+  // INFLIGHT marks a card whose POST has not answered, so a refresh mid-draft
+  // cannot hand back a live button.
+  var BOARD = {}, SEEN = {}, INFLIGHT = {}, LAST_DIRECTIVE = {};
   function authq(url){ return KEY ? (url + (url.indexOf('?')<0?'?':'&') + 'admin_key=' + encodeURIComponent(KEY)) : url; }
   function authh(){ var h={'Content-Type':'application/json'}; if(KEY){h['X-Admin-Key']=KEY;} return h; }
   function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
@@ -1235,14 +1445,11 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
       parts.push('<button class="g good" data-grade="good">👍 good</button>');
       parts.push('<button class="g bad" data-grade="bad">👎 bad</button>');
     }
-    // APPROVE — operator greenlights the brain's guidance. Propose-only: this
-    // RECORDS the decision; it never triggers any action / merge / send.
-    if(APPROVED[kind+':'+it.id]){
-      parts.push('<span class="approved-pill" data-approved-pill>✓ approved</span>');
-    } else {
-      parts.push('<button class="approve" data-approve>✓ approve + open PR</button>');
-    }
+    // APPROVE — the greenlight, and what became of its PR.
+    BOARD[kind+':'+it.id] = it.approval || null;
+    parts.push('<span class="appr" data-appr>'+approvalControl(kind, it.id)+'</span>');
     parts.push('</div>');
+    parts.push('<div class="appr-note" data-appr-note>'+approvalNote(kind, it.id)+'</div>');
     if(it.created_at) parts.push('<div class="meta">#'+esc(it.id)+' · '+esc(String(it.created_at).slice(0,19))+'</div>');
     parts.push('</div>');
     return parts.join('');
@@ -1254,10 +1461,13 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
     el.innerHTML = items.map(function(it){ return card(kind,it); }).join('');
   }
 
-  function toast(msg, ok){
+  // tone: true = ok, false = err, or 'warn'. A warning or an error stays up long
+  // enough to read the reason it carries.
+  function toast(msg, tone){
+    var cls = tone===true ? 'ok' : (tone===false ? 'err' : String(tone||'ok'));
     var t=document.getElementById('toast');
-    t.textContent=msg; t.className='toast show '+(ok?'ok':'err');
-    setTimeout(function(){ t.className='toast '+(ok?'ok':'err'); }, 2600);
+    t.textContent=msg; t.className='toast show '+cls;
+    setTimeout(function(){ t.className='toast '+cls; }, cls==='ok' ? 2600 : 7000);
   }
 
   // Grade buttons — POST to the EXISTING admin grade endpoints, then confirm.
@@ -1287,106 +1497,145 @@ brain_self_agenda · brain_investigations · brain_enhancement_proposals</footer
       });
   });
 
-  // Approve button — POSTs the operator's GREENLIGHT to the propose-only approve
-  // endpoint, then swaps the button for the "✓ approved" pill. Carries the same
-  // admin key as the grade flow. RECORDS the decision only — never acts on it.
-  document.addEventListener('click', function(ev){
-    var btn = ev.target.closest && ev.target.closest('button.approve');
-    if(!btn) return;
-    var card = btn.closest('.card'); if(!card) return;
-    var kind = card.getAttribute('data-kind');
-    var id   = card.getAttribute('data-id');
-    // The item's own "decision for human" is usually a MENU ("Choose (A) or
-    // (B)…"), and approving a menu records agreement without recording WHICH
-    // branch — which is why those approvals drafted nothing. Pre-fill it and
-    // let the operator turn it into the instruction Layer-5 will actually act
-    // on. Cancel aborts; leaving it unchanged is the old behaviour.
+  // What became of an approval's PR, drawn from the server's approval_view:
+  // {decision, pr_state, pr_url, pr_ref_url, pr_note, can_request_pr,
+  // can_override}. No view = not approved.
+  var PR_STATE_LABEL = {opened:'draft PR', withheld:'PR held back',
+    declined:'no new PR', failed:'PR draft failed', refused:'drafter declined',
+    recorded:'no PR opened', none:'no PR on record'};
+  function viewOf(key){ return SEEN[key] || BOARD[key] || null; }
+  function prNumber(url){ var m=/\/pull\/(\d+)/.exec(String(url||'')); return m ? '#'+m[1] : ''; }
+  function approvalControl(kind, id){
+    var key = kind+':'+id;
+    if(INFLIGHT[key]) return '<button class="approve" disabled>⏳ drafting…</button>';
+    var v = viewOf(key);
+    if(!v) return '<button class="approve" data-approve>✓ approve + open PR</button>';
+    var st = v.pr_state || 'none';
+    var tone = st==='opened' ? '' : (st==='failed' ? ' err' : ' warn');
+    var label = PR_STATE_LABEL[st] || st;
+    var href = v.pr_url || v.pr_ref_url || '';
+    var h = '<span class="approved-pill'+tone+'" data-approved-pill data-pr-state="'+esc(st)+'">✓ '+esc(v.decision||'approved')+' · ';
+    h += href ? '<a href="'+esc(href)+'" target="_blank" rel="noopener">'+esc(label+(prNumber(href) ? ' '+prNumber(href) : ''))+' ↗</a>' : esc(label);
+    h += '</span>';
+    if(v.can_override){
+      h += '<button class="pr-act override" data-pr-act="override">open PR anyway</button>';
+    } else if(v.can_request_pr){
+      h += '<button class="pr-act" data-pr-act="request">open PR</button>';
+    }
+    return h;
+  }
+  function approvalNote(kind, id){
+    var key = kind+':'+id;
+    var v = INFLIGHT[key] ? null : viewOf(key);
+    return (v && v.pr_note) ? esc(v.pr_note) : '';
+  }
+  function renderApproval(kind, id){
+    var c = document.querySelector('.card[data-kind="'+kind+'"][data-id="'+id+'"]');
+    if(!c) return;
+    var box = c.querySelector('[data-appr]'); if(box){ box.innerHTML = approvalControl(kind, id); }
+    var note = c.querySelector('[data-appr-note]'); if(note){ note.innerHTML = approvalNote(kind, id); }
+  }
+  function approvalToast(id, v){
+    var st = v.pr_state || 'none';
+    var why = v.pr_note ? ' — '+v.pr_note : '';
+    if(st==='opened')   return ['Approved #'+id+' · draft PR opened'+(v.pr_url ? ' '+prNumber(v.pr_url) : ''), true];
+    if(st==='withheld') return ['Approved #'+id+' · PR held back'+why+'. "open PR anyway" overrides it.', 'warn'];
+    if(st==='failed')   return ['Approved #'+id+' · PR draft failed'+why, false];
+    return ['Approved #'+id+' · '+(PR_STATE_LABEL[st]||st)+why, 'warn'];
+  }
+
+  // The item's own "decision for human" is usually a MENU ("Choose (A) or
+  // (B)…"), and approving a menu records agreement without recording WHICH
+  // branch — which is why those approvals drafted nothing. Pre-fill it (or the
+  // last instruction given for this card) and let the operator turn it into the
+  // instruction Layer-5 will actually act on. null = cancelled.
+  function askDirective(card, key){
     var dnode = card.querySelector('.decision');
-    var seed  = dnode ? (dnode.textContent || '').trim() : '';
+    var seed  = LAST_DIRECTIVE[key] || (dnode ? (dnode.textContent || '').trim() : '');
     var directive = window.prompt(
       'Instruction for the drafter — say WHICH branch to take, in the '
       + 'imperative. It becomes the directive Layer-5 drafts from.', seed);
-    if(directive === null) return;            // cancelled: record nothing
+    if(directive === null) return null;
     directive = (directive || '').trim();
-    btn.disabled = true; btn.textContent = '⏳ drafting…';
+    LAST_DIRECTIVE[key] = directive;
+    return directive;
+  }
+
+  // One POST for every PR action on a card: the first approve, "open PR" on an
+  // approval with no PR, and "open PR anyway" past the verdict gate. The reply
+  // carries the server's approval_view, drawn as-is. Same admin key as grading.
+  function submitApproval(kind, id, directive, override){
+    var key = kind+':'+id;
+    INFLIGHT[key] = true; renderApproval(kind, id);
     // The directive never travels in the clear — see directivePayload.
     directivePayload(directive).then(function(dp){
       var payload = {kind:kind, id:Number(id), decision:'approved', open_pr:true};
+      if(override){ payload.override = true; }
       for(var k in dp){ if(Object.prototype.hasOwnProperty.call(dp,k)){ payload[k]=dp[k]; } }
       return fetch(authq('/api/v1/brain/innovation/approve'), {method:'POST', headers:authh(), body:JSON.stringify(payload)});
     })
       .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, jsonOk:true, j:j}; }).catch(function(){ return {ok:r.ok, status:r.status, jsonOk:false, j:{}}; }); })
       .then(function(res){
+        delete INFLIGHT[key];
         if(res.ok && res.j && res.j.ok!==false){
-          APPROVED[kind+':'+id] = 'approved';
-          var pa = (res.j && res.j.pr_attempt) || {};
-          var pr = pa.pr || {};
-          var prUrl = pr.pr_url || pr.url || '';
-          var pill = document.createElement('span');
-          pill.className = 'approved-pill';
-          pill.setAttribute('data-approved-pill','');
-          if(pa.acted && prUrl){
-            pill.innerHTML = '✓ approved · <a href="'+esc(prUrl)+'" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">draft PR ↗</a>';
-            toast('Approved #'+id+' · draft PR opened', true);
-          } else if(pa.refused){
-            pill.textContent = '✓ approved (recorded)';
-            toast('Approved #'+id+' — not a single-file edit; recorded only', true);
-          } else if(pa.note){
-            pill.textContent = '✓ approved (recorded)';
-            toast('Approved #'+id+' — recorded (no code change)', true);
-          } else if(pa.error || pa.ok===false){
-            pill.textContent = '✓ approved';
-            toast('Approved #'+id+' · PR draft skipped: '+esc(pa.error||pa.reason||'gate closed'), false);
-          } else {
-            pill.textContent = '✓ approved';
-            toast('Approved #'+id, true);
-          }
-          btn.parentNode.replaceChild(pill, btn);
+          var v = res.j.approval || {decision:'approved', pr_state:'none', can_request_pr:true};
+          SEEN[key] = v;
+          renderApproval(kind, id);
+          var t = approvalToast(id, v); toast(t[0], t[1]);
         } else {
-          btn.disabled = false; btn.textContent = '✓ approve + open PR';
+          renderApproval(kind, id);
           toast('Approve failed: '+approveErr(res), false);
         }
       })
       .catch(function(e){
-        btn.disabled = false; btn.textContent = '✓ approve + open PR';
+        delete INFLIGHT[key];
+        renderApproval(kind, id);
         toast('Approve failed: '+e, false);
       });
-  });
-
-  // Pull the operator's greenlight ledger so approved items stay marked across
-  // refreshes. Best-effort: a failure just leaves APPROVED empty (no crash).
-  function loadApprovals(){
-    return fetch(authq('/api/v1/brain/innovation/approvals'), {headers:authh()})
-      .then(function(r){ return r.ok ? r.json() : {}; })
-      .then(function(d){
-        APPROVED = {};
-        var rows = (d && d.approved) || [];
-        rows.forEach(function(a){ if(a && a.key){ APPROVED[a.key] = a.decision || 'approved'; } });
-      })
-      .catch(function(){ /* leave APPROVED as-is */ });
   }
+
+  document.addEventListener('click', function(ev){
+    var btn = ev.target.closest && ev.target.closest('button[data-approve], button[data-pr-act]');
+    if(!btn || btn.disabled) return;
+    var card = btn.closest('.card'); if(!card) return;
+    var kind = card.getAttribute('data-kind');
+    var id   = card.getAttribute('data-id');
+    var key  = kind+':'+id;
+    var override = btn.getAttribute('data-pr-act') === 'override';
+    if(override){
+      var held = viewOf(key) || {};
+      if(!window.confirm('The verdict gate held this PR back:\n\n'
+          + (held.pr_note || '(no reason recorded)')
+          + '\n\nOpen a draft PR anyway? A human still merges it.')) return;
+    }
+    var directive = askDirective(card, key);
+    if(directive === null) return;            // cancelled: record nothing
+    submitApproval(kind, id, directive, override);
+  });
 
   function load(){
     document.getElementById('status').textContent='Loading…';
-    loadApprovals().then(function(){
     return fetch(authq('/api/v1/brain/innovation/digest'), {headers:authh()})
       .then(function(r){
         if(r.status===403){ document.getElementById('status').textContent='Admin key required — append ?admin_key=…'; throw new Error('403'); }
         return r.json();
       })
       .then(function(d){
-        document.getElementById('status').textContent='Live';
+        // approvals_read false = the ledger did not answer, so a card cannot say
+        // whether it was approved — say that rather than draw "not approved".
+        document.getElementById('status').textContent =
+          d.approvals_read===false ? 'Live · approval state unreadable' : 'Live';
         document.getElementById('updated').textContent='as of '+String(d.generated_at||'').slice(0,19);
         var c=d.counts||{};
         document.getElementById('cnt-agenda').textContent=c.agenda||0;
         document.getElementById('cnt-inv').textContent=c.investigations||0;
         document.getElementById('cnt-prop').textContent=c.proposals||0;
+        SEEN = {};
         fill('col-agenda','agenda', d.agenda, 'No self-directed agenda items yet.');
         fill('col-inv','inv', d.investigations, 'No investigations yet.');
         fill('col-prop','prop', d.proposals, 'No proposals yet.');
       })
       .catch(function(){ /* status already set */ });
-    });
   }
   document.getElementById('refreshNow').addEventListener('click', function(e){ e.preventDefault(); load(); });
   load();
