@@ -789,8 +789,8 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
 <div class="card">
   <div class="step"><span class="step-num">1</span> Mint your free trial key</div>
   <p style="margin:0 0 14px;color:var(--muted);font-size:.95rem">
-    One click. No email required. Key works immediately in {NAME}'s MCP config.
-    Trial gives you <b style="color:var(--text)">50 requests/day for 7 days</b>.
+    One click, no email to start. The key works in {NAME}'s MCP config right away.
+    {TRIAL_TERMS_STEP1_HTML}
   </p>
   <button id="mint-btn" class="mint-btn" onclick="mintKey()">
     Mint trial key &rarr;
@@ -840,7 +840,7 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
 <div class="card">
   <div class="step"><span class="step-num">4</span> Trial limits + upgrade</div>
   <p style="margin:0 0 6px;color:var(--muted);font-size:.95rem">
-    Your trial gives <b style="color:var(--text)">50 requests/day for 7 days</b>.
+    {TRIAL_TERMS_STEP4_HTML}
     Need more? Upgrade to Pro — gets you unlimited daily quota, all {canon_tools} tools,
     and removes the free-tier truncation on grid + fiber intel.
   </p>
@@ -1151,8 +1151,65 @@ def _return_nudge_html(c: dict) -> str:
     return '  <p class="return-nudge">&#8635; ' + safe + "</p>\n"
 
 
+# ── Trial terms ─────────────────────────────────────────────────────────
+# ★ r-connect-trial-terms (2026-09-15). Steps 1 and 4 typed the trial's terms
+# into _PAGE_TEMPLATE_RAW, and what they typed were the EMAIL-BOUND terms, a
+# line below a promise that no email was needed. routes/auto_trial.py enforces:
+#   * an unbound key: TRIAL_DAILY_UNBOUND calls a day, and validate_trial_key
+#     refuses it (bind_email_required) once it has used TRIAL_FREE_CALLS_UNBOUND
+#     calls in all, until POST /api/v1/keys/auto-trial/bind takes an email;
+#   * a bound key: TRIAL_DAILY_CALLS a day until expires_at, which the mint sets
+#     TRIAL_DAYS out and binding does not move;
+#   * a mint seeds a new key with its network's spent count once that reaches
+#     the gate, so that key is refused from its first call.
+# Read from routes.auto_trial on EVERY render, the way _keys_return reads
+# TRIAL_FREE_CALLS_UNBOUND: both unbound figures are env-tunable without a
+# deploy, and a value copied here would outlive a retune. No digits in this
+# block: tests/test_canonical_counts_drift.py reads this file line by line for
+# free-path quota claims.
+_TRIAL_B = '<b style="color:var(--text)">'
+
+
+def _trial_terms() -> dict | None:
+    """The trial terms routes.auto_trial enforces right now, or None."""
+    try:
+        from routes.auto_trial import (TRIAL_DAILY_CALLS, TRIAL_DAILY_UNBOUND,
+                                       TRIAL_DAYS, TRIAL_FREE_CALLS_UNBOUND)
+        return {"free_calls": int(TRIAL_FREE_CALLS_UNBOUND),
+                "daily_unbound": int(TRIAL_DAILY_UNBOUND),
+                "daily_bound": int(TRIAL_DAILY_CALLS),
+                "days": int(TRIAL_DAYS)}
+    except Exception:
+        return None
+
+
+def _trial_terms_html() -> tuple[str, str]:
+    """(step 1, step 4) sentences stating the trial terms.
+
+    With the terms unreadable they say the same things without a figure: no
+    figure beats a wrong one, the asymmetry _pro_price_usd keeps for the price.
+    """
+    t = _trial_terms()
+    if t is None:
+        free = "a limited number of free calls"
+        keeps = "the same key keeps working"
+    else:
+        # The unbound daily cap needs naming only when it bites before the free
+        # calls run out, i.e. with TRIAL_FREE_CALLS_UNBOUND tuned above it.
+        per_day = (f", at most {t['daily_unbound']} a day"
+                   if t["daily_unbound"] < t["free_calls"] else "")
+        free = f"{_TRIAL_B}{t['free_calls']} free calls</b>{per_day}"
+        keeps = (f"the same key keeps working, at {_TRIAL_B}{t['daily_bound']} "
+                 f"requests/day</b> for the rest of its {t['days']}-day trial")
+    return (f"Without an email it gets {free}. Bind an email (free, no card) and "
+            f"{keeps}. Free calls are counted per network: if this one has already "
+            f"used them, a new key needs the email from its first call.",
+            f"Without an email, a trial key gets {free}. Bind an email and {keeps}.")
+
+
 def _render_page(client_key: str, view_id: int | None) -> str:
     c = _CLIENTS[client_key]
+    trial_step1_html, trial_step4_html = _trial_terms_html()
     # Render examples as <div class="example"> lines
     examples_html = "\n".join(
         f'    <div class="example">{e}</div>' for e in c["examples"]
@@ -1193,6 +1250,8 @@ def _render_page(client_key: str, view_id: int | None) -> str:
         EXAMPLES_HTML=examples_html,
         DEEP_LINK_HTML=deep_link_html,
         RETURN_NUDGE_HTML=_return_nudge_html(c),
+        TRIAL_TERMS_STEP1_HTML=trial_step1_html,
+        TRIAL_TERMS_STEP4_HTML=trial_step4_html,
         STRIPE_MONTHLY=_STRIPE_MONTHLY,
         STRIPE_ANNUAL=_STRIPE_ANNUAL,
         VIEW_ID=(str(view_id) if view_id else ""),
