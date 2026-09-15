@@ -249,11 +249,16 @@ def _slug(s: str) -> str:
 # r-page-onramp (2026-07-04): crawl->tool crossover pack.
 # Every crawled page carries (a) JSON-LD pointing at the LIVE query
 # surfaces (SearchAction -> /api/v1/rag/search, Dataset distribution ->
-# the /mcp endpoint), (b) a visible-but-subtle footer onramp line whose
-# src=page-onramp param is the measurement marker (recorded into
-# connect_landing_views by routes/mcp_connect.py), and (c) an X-Cite-As
-# header with an as-of stamp. ASCII ONLY in headers — the industry-pulse
+# the /mcp endpoint), (b) a visible-but-subtle footer onramp line naming
+# /connect, and (c) an X-Cite-As header with an as-of stamp. ASCII ONLY in headers — the industry-pulse
 # em-dash made gunicorn 502 every response (routes/industry_pulse.py).
+#
+# ★2026-09-15: the onramp line linked /connect?src=page-onramp&entity=<slug>,
+# a separate URL per entity, so every crawled page handed crawlers its own copy
+# of /connect to fetch and canonicalise back. Search Console listed some of those
+# copies as pages in their own right, and the views the marker recorded were
+# crawlers (one IP per view, no keys). The line links /connect itself now, on
+# facility, market and DCPI pages alike; the entity stays in the sentence.
 # ═════════════════════════════════════════════════════════════════════
 MCP_ENDPOINT = "https://dchub.cloud/mcp"
 RAG_SEARCH_URL_TEMPLATE = "https://dchub.cloud/api/v1/rag/search?q={search_term_string}"
@@ -291,7 +296,7 @@ def _onramp_footer_html(noun: str, entity: str) -> str:
     """One subtle footer line: the machine-readable MCP onramp hint."""
     if not entity:
         return ""
-    u = f"https://dchub.cloud/connect?src=page-onramp&entity={entity}"
+    u = "https://dchub.cloud/connect"
     return (f'<p class="dc-onramp" style="font-size:0.8rem">'
             f'Query this {_h(noun)} live via MCP: '
             f'<a href="{_esc_attr(u)}">{_h(u)}</a></p>')

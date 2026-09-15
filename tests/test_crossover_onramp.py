@@ -8,8 +8,8 @@ measurement wiring:
      and the crossover nodes are present: a Dataset whose distribution
      contentUrl is the MCP endpoint, and a SearchAction potentialAction
      targeting /api/v1/rag/search?q={search_term_string}.
-  2. Onramp footer line — /connect?src=page-onramp&entity=<slug> with the
-     page's own slug interpolated.
+  2. Onramp footer line — links the canonical https://dchub.cloud/connect,
+     never a per-entity /connect?src=… URL (2026-09-15).
   3. X-Cite-As header — present, carries an as-of stamp, and is ASCII-safe
      (headers must be latin-1; the industry-pulse em-dash 502 is the trap).
   4. connect_landing_views measurement — _record_view folds the marker
@@ -91,14 +91,25 @@ FAC = {
 FAC_SLUG = "testco-test-facility-one-abcd1234"
 
 
+def _assert_onramp_links_canonical_connect(html, lead):
+    """★2026-09-15: the onramp line linked /connect?src=page-onramp&entity=<slug>,
+    one URL per entity, so every crawled page minted its own copy of /connect for
+    crawlers to fetch and canonicalise back. The line must link /connect itself.
+    `lead` anchors the match to the onramp sentence, so a /connect link anywhere
+    else on the page cannot satisfy it."""
+    assert re.search(lead + r'<a href="https://dchub\.cloud/connect"[^>]*>'
+                     r'https://dchub\.cloud/connect</a>', html), \
+        "onramp line does not link the canonical /connect"
+    assert "dchub.cloud/connect?" not in html, "a per-query /connect URL is emitted"
+    assert "page-onramp" not in html, "the page-onramp marker is emitted"
+
+
 # ── 1. facility profile page (/facilities/<slug>) ────────────────────────
 def test_facility_profile_jsonld_and_onramp():
     html = fpp._render_profile(dict(FAC), FAC_SLUG)
     nodes = _flatten(_ld_blocks(html))
     _assert_crossover_nodes(nodes)
-    # onramp line, slug interpolated (& is HTML-escaped in the anchor)
-    assert (f"https://dchub.cloud/connect?src=page-onramp&amp;entity={FAC_SLUG}"
-            in html)
+    _assert_onramp_links_canonical_connect(html, r"Connect:\s*")
     # r-geo-headers (2026-07-30): the footer carries Meta's extraction-surviving
     # line — the named tool + slug + endpoint survive Meta AI's extractor even
     # while its live-crawl allowlist blocks the domain. Pin all three parts.
@@ -144,9 +155,7 @@ def test_market_render_jsonld_and_onramp():
     _assert_crossover_nodes(nodes)
     assert any(n.get("@type") == "Place" and n.get("potentialAction")
                for n in nodes), "Place node lost its potentialAction"
-    assert ("https://dchub.cloud/connect?src=page-onramp&amp;entity=ashburn-va"
-            in html)
-    assert "Query this market live via MCP" in html
+    _assert_onramp_links_canonical_connect(html, r"Query this market live via MCP: ")
 
 
 class _FakeCursor:
@@ -195,7 +204,7 @@ def test_market_route_cite_header(monkeypatch):
     # rendered body carries the crossover pack end-to-end
     body = r.get_data(as_text=True)
     _assert_crossover_nodes(_flatten(_ld_blocks(body)))
-    assert "src=page-onramp&amp;entity=ashburn-va" in body
+    _assert_onramp_links_canonical_connect(body, r"Query this market live via MCP: ")
 
 
 # ── 3. SEO facility page (/facility/<id>, rare no-canonical-slug render) ─
@@ -207,8 +216,7 @@ def test_seo_facility_render_jsonld_and_onramp():
     html = seo._render_facility(row, nearby=[])
     nodes = _flatten(_ld_blocks(html))   # unicode + quotes must still parse
     _assert_crossover_nodes(nodes)
-    assert ("https://dchub.cloud/connect?src=page-onramp&amp;entity=osm_9f3a"
-            in html)
+    _assert_onramp_links_canonical_connect(html, r"Query this \w+ live via MCP: ")
 
 
 # ── 4. DCPI market page (/dcpi/<slug>) ───────────────────────────────────
@@ -251,9 +259,7 @@ def test_dcpi_template_jsonld_and_onramp_gated_and_paid():
         blocks = _ld_blocks(html)      # Dataset + BreadcrumbList + FAQPage
         assert len(blocks) >= 3
         _assert_crossover_nodes(_flatten(blocks))
-        assert ("https://dchub.cloud/connect?src=page-onramp&amp;entity=ashburn"
-                in html)
-        assert "Query this market live via MCP" in html
+        _assert_onramp_links_canonical_connect(html, r"Query this market live via MCP: ")
 
 
 # ── 5. /connect measurement wiring ───────────────────────────────────────
