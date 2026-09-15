@@ -21,6 +21,12 @@ What these pin:
     future-dated verification reading unverified;
   * an undisclosed provider name appears in no feed, teaser or full view,
     generic detail included;
+  * colocation is written and read only on a listing whose delivery_type is
+    colocation, and only the full view carries it: never the teaser, the feed
+    or the generic detail;
+  * available falls back to the earliest date of a valid mw_schedule, as
+    stored, and an explicit available, available_date, energization or
+    delivery wins;
   * a malformed filter is refused before any query, and valid filters reach
     the SQL as bound parameters.
 """
@@ -79,7 +85,7 @@ TEASER_KEYS = {"id", "slug", "title", "summary", "status", "access_required", "l
                "created_at", "updated_at", "expires_at", "url"}
 FULL_KEYS = TEASER_KEYS | {"latitude", "longitude", "asking_price", "asking_currency", "detail"}
 NEW_TEASER_KEYS = {"delivery_type", "freshness", "provider"}
-NEW_FULL_KEYS = NEW_TEASER_KEYS | {"mw_schedule", "power", "price", "verification"}
+NEW_FULL_KEYS = NEW_TEASER_KEYS | {"colocation", "mw_schedule", "power", "price", "verification"}
 UNVERIFIED = {"state": "unverified", "verified_at": None, "age_days": None}
 
 
@@ -220,6 +226,10 @@ def _schedule(*pairs):
     return [{"date": date, "mw": mw} for date, mw in pairs]
 
 
+def _colocation(block, delivery_type="colocation"):
+    return {"delivery_type": delivery_type, "colocation": block}
+
+
 def _surfaces(env):
     """Every public answer that carries the listing: the feed and the detail
     route, anonymous and as a signed-in buyer who has accepted the terms."""
@@ -235,7 +245,7 @@ def _surfaces(env):
 
 def test_every_reserved_key_has_a_rule():
     assert set(el._DETAIL_FIELD_CHECKS) == set(el._DETAIL_RESERVED_KEYS) == {
-        "delivery_type", "mw_schedule", "power", "price", "provider", "verification"}
+        "colocation", "delivery_type", "mw_schedule", "power", "price", "provider", "verification"}
 
 
 def test_a_full_listing_round_trips_through_create_teaser_and_full_view(env):
@@ -355,6 +365,30 @@ _REFUSALS = [
                  "detail.verification.verified_at", id="verified_at not a calendar day"),
     pytest.param({"verification": {**VERIFICATION, "verified_at": "2026-09-14T12:00:01Z"}},
                  "detail.verification.verified_at", id="verified_at over a day ahead"),
+    pytest.param(_colocation("1200 kW"), "detail.colocation", id="colocation not an object"),
+    pytest.param(_colocation({}), "detail.colocation.kw_available", id="colocation without kw_available"),
+    pytest.param(_colocation({"kw_available": 0}), "detail.colocation.kw_available",
+                 id="kw_available of zero"),
+    pytest.param(_colocation({"kw_available": 100001}), "detail.colocation.kw_available",
+                 id="kw_available over 100000"),
+    pytest.param(_colocation({"kw_available": True}), "detail.colocation.kw_available",
+                 id="kw_available as a boolean"),
+    pytest.param(_colocation({"kw_available": 900, "cabinets_available": -1}),
+                 "detail.colocation.cabinets_available", id="cabinets_available negative"),
+    pytest.param(_colocation({"kw_available": 900, "cabinets_available": 12.5}),
+                 "detail.colocation.cabinets_available", id="cabinets_available not whole"),
+    pytest.param(_colocation({"kw_available": 900, "cabinets_available": "a dozen"}),
+                 "detail.colocation.cabinets_available", id="cabinets_available not a number"),
+    pytest.param(_colocation({"kw_available": 900, "max_kw_per_cabinet": 0}),
+                 "detail.colocation.max_kw_per_cabinet", id="max_kw_per_cabinet of zero"),
+    pytest.param(_colocation({"kw_available": 900, "max_kw_per_cabinet": 300.5}),
+                 "detail.colocation.max_kw_per_cabinet", id="max_kw_per_cabinet over 300"),
+    pytest.param(_colocation({"kw_available": 900, "racks": 4}), "detail.colocation.racks",
+                 id="colocation with another key"),
+    pytest.param(_colocation({"kw_available": 900}, "powered_shell"), "detail.colocation",
+                 id="colocation on a powered_shell listing"),
+    pytest.param({"colocation": {"kw_available": 900}}, "detail.colocation",
+                 id="colocation without a delivery_type"),
     pytest.param({"Provider": {"name": "Acme", "disclosed": False}}, "detail.Provider",
                  id="reserved key in other case"),
     pytest.param(["delivery_type", "land"], "detail", id="detail not an object"),
@@ -410,6 +444,13 @@ def test_a_refusal_counts_every_broken_field(env):
     pytest.param({"verification": VERIFICATION},
                  {"verification": {**VERIFICATION, "verified_at": "2026-09-01T00:00:00.000000+00:00"}},
                  id="a date is midnight UTC"),
+    pytest.param(_colocation({"kw_available": 100000, "cabinets_available": 0, "max_kw_per_cabinet": 300}),
+                 _colocation({"kw_available": 100000, "cabinets_available": 0, "max_kw_per_cabinet": 300}),
+                 id="colocation at its bounds"),
+    pytest.param(_colocation({"kw_available": " 0.5 ", "cabinets_available": None,
+                              "max_kw_per_cabinet": "7.50"}, " colocation "),
+                 _colocation({"kw_available": 0.5, "max_kw_per_cabinet": 7.5}),
+                 id="colocation without cabinets, numbers as text"),
 ])
 def test_edge_values_are_accepted_and_stored_normalized(env, detail, stored):
     r = _create(env, detail)
@@ -487,7 +528,7 @@ def test_a_listing_without_the_reserved_keys_reads_as_before(env):
     assert full["detail"] == {"available": "Q2 2027", "feeds": "dual feed"}
     assert {k: full[k] for k in NEW_FULL_KEYS} == {
         "delivery_type": None, "freshness": UNVERIFIED, "provider": None, "mw_schedule": None,
-        "power": None, "price": None, "verification": None}
+        "power": None, "price": None, "verification": None, "colocation": None}
 
 
 def test_stored_values_that_break_the_rules_read_as_null_without_failing(env):
@@ -495,13 +536,14 @@ def test_stored_values_that_break_the_rules_read_as_null_without_failing(env):
     env.listings.append(_row(detail={
         "delivery_type": "Powered Shell", "mw_schedule": [{"date": "soon", "mw": 20}],
         "power": {"utility": "Oncor"}, "price": {"low": 5, "high": 1, "unit": "usd_total"},
-        "provider": {"name": "Acme", "disclosed": "yes"}, "verification": {"verified_by": "desk"}}))
+        "provider": {"name": "Acme", "disclosed": "yes"}, "verification": {"verified_by": "desk"},
+        "colocation": {"kw_available": "lots"}}))
     for label, r in _surfaces(env).items():
         assert r.status_code == 200, label
     full = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()["listing"]
     assert {k: full[k] for k in NEW_FULL_KEYS} == {
         "delivery_type": None, "freshness": UNVERIFIED, "provider": None, "mw_schedule": None,
-        "power": {"utility": "Oncor"}, "price": None, "verification": None}
+        "power": {"utility": "Oncor"}, "price": None, "verification": None, "colocation": None}
     assert full["detail"] == {}
 
 
@@ -571,6 +613,101 @@ def test_a_disclosed_provider_name_is_served_on_every_surface(env):
     for label, r in surfaces.items():
         assert r.status_code == 200, label
         assert HIDDEN_PROVIDER in r.get_data(as_text=True), label
+
+
+# ── colocation ────────────────────────────────────────────────────────────
+
+COLOCATION = {"kw_available": 1200, "cabinets_available": 48, "max_kw_per_cabinet": 30}
+
+
+def test_a_colocation_listing_round_trips_into_the_full_view_only(env):
+    r = _create(env, {"available": "Now", "delivery_type": "colocation",
+                      "colocation": {"kw_available": "1200", "cabinets_available": 48.0,
+                                     "max_kw_per_cabinet": 30},
+                      "price": {"low": 140, "high": 165, "unit": "usd_per_kw_month"}})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert json.dumps(env.listings[0]["detail"]["colocation"]) == (
+        '{"kw_available": 1200, "cabinets_available": 48, "max_kw_per_cabinet": 30}')
+
+    surfaces = _surfaces(env)
+    opened = surfaces["full view"].get_json()
+    assert opened["locked"] is False
+    full = opened["listing"]
+    assert full["colocation"] == COLOCATION
+    assert (full["delivery_type"], full["price"]) == (
+        "colocation", {"low": 140, "high": 165, "unit": "usd_per_kw_month"})
+    assert full["detail"] == {"available": "Now"}            # not repeated as a generic key
+    assert "kw_available" in surfaces["full view"].get_data(as_text=True)
+    for label in ("feed (anonymous)", "feed (signed in)", "teaser"):
+        r, body = surfaces[label], surfaces[label].get_json()
+        listings = body["items"] if label.startswith("feed") else [body["listing"]]
+        assert r.status_code == 200 and [i["slug"] for i in listings] == ["dfw-40"], label
+        assert "colocation" not in listings[0], label
+        assert "kw_available" not in r.get_data(as_text=True), label
+    assert set(surfaces["teaser"].get_json()["listing"]) == TEASER_KEYS | NEW_TEASER_KEYS
+
+
+def test_colocation_on_any_other_delivery_type_is_refused_on_create_and_update(env):
+    for delivery_type in ("land", "powered_shell", "turnkey"):
+        r = _create(env, _colocation(COLOCATION, delivery_type))
+        assert (r.status_code, r.get_json().get("error"), _fields(r)) == (
+            400, "invalid_detail", ["detail.colocation"]), delivery_type
+    assert env.statements == [] and env.listings == []
+
+    env.listings.append(_row(detail=_colocation(COLOCATION)))
+    r = env.client.patch("/api/v1/admin/listings/1", headers=ADMIN,
+                         json={"detail": _colocation(COLOCATION, "turnkey")})
+    assert (r.status_code, _fields(r)) == (400, ["detail.colocation"])
+    r = env.client.put("/api/v1/admin/listings/1", headers=ADMIN,
+                       json={"detail": json.dumps({"colocation": COLOCATION})})
+    assert (r.status_code, _fields(r)) == (400, ["detail.colocation"])
+    assert env.statements == []
+
+    # Control: the same block on a colocation listing is written.
+    r = env.client.patch("/api/v1/admin/listings/1", headers=ADMIN,
+                         json={"detail": _colocation(COLOCATION, " colocation ")})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert env.listings[0]["detail"] == _colocation(COLOCATION)
+
+
+@pytest.mark.parametrize("detail,expected", [
+    pytest.param(_colocation(COLOCATION), COLOCATION, id="on a colocation listing"),
+    pytest.param(_colocation(COLOCATION, "turnkey"), None, id="on a turnkey listing"),
+    pytest.param({"colocation": COLOCATION}, None, id="without a delivery_type"),
+    pytest.param(_colocation({**COLOCATION, "max_kw_per_cabinet": 350}), None,
+                 id="a stored value over a bound"),
+])
+def test_a_stored_colocation_reads_only_on_a_colocation_listing_within_the_rules(env, detail, expected):
+    env.listings.append(_row(detail={**detail, " Colocation ": COLOCATION}))   # a stored case variant, too
+    full = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()["listing"]
+    assert full["colocation"] == expected
+    assert full["detail"] == {}
+
+
+# ── available ─────────────────────────────────────────────────────────────
+
+LATE_FIRST = _schedule(("2027-06-15", 40), ("2026-12", 20))      # stored out of date order
+
+
+@pytest.mark.parametrize("detail,available", [
+    pytest.param({"mw_schedule": LATE_FIRST}, "2026-12", id="the earliest schedule date, as stored"),
+    pytest.param({"mw_schedule": _schedule(("2027-06-15", 40))}, "2027-06-15", id="a schedule day"),
+    pytest.param({"available": " Q2 2027 ", "mw_schedule": LATE_FIRST}, "Q2 2027", id="available wins"),
+    pytest.param({"available_date": "2027-03-01", "mw_schedule": LATE_FIRST}, "2027-03-01",
+                 id="available_date wins"),
+    pytest.param({"energization": "Q4 2026", "mw_schedule": LATE_FIRST}, "Q4 2026", id="energization wins"),
+    pytest.param({"delivery": 2028, "mw_schedule": LATE_FIRST}, "2028", id="delivery wins"),
+    pytest.param({"available": " ", "mw_schedule": LATE_FIRST}, "2026-12", id="a blank available falls back"),
+    pytest.param({"mw_schedule": [{"date": "soon", "mw": 20}]}, None, id="an invalid schedule gives none"),
+    pytest.param({"mw_schedule": _schedule(("2027-06", 20), ("2027-09", 10))}, None,
+                 id="a falling schedule gives none"),
+])
+def test_available_falls_back_to_the_earliest_schedule_date_and_an_explicit_key_wins(env, detail, available):
+    env.listings.append(_row(detail=detail))
+    for label, r in _surfaces(env).items():
+        body = r.get_json()
+        listing = body["items"][0] if label.startswith("feed") else body["listing"]
+        assert (r.status_code, listing["available"]) == (200, available), label
 
 
 # ── feed filters ──────────────────────────────────────────────────────────

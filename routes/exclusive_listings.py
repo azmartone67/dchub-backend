@@ -58,15 +58,17 @@ Listing `contact` (admin-only JSON): {name, company, email, phone,
 notify_email, auto_notify}. With auto_notify true, a confirmed lead also sends
 the operator a registration notice; otherwise the admin sends it.
 
-Listing `detail` (JSON) holds free-form keys plus six RESERVED keys, all
-optional: delivery_type, mw_schedule, power, price, provider, verification.
-Admin writes validate the reserved keys and store them normalized; a failure
-answers 400 invalid_detail with one entry per field and writes nothing
-(_validate_detail). Reads project them as typed fields: every teaser carries
-delivery_type, freshness (from verification.verified_at) and the provider's
-name when it is disclosed; the full view adds mw_schedule, power, price,
-provider and verification. The generic `detail` object never repeats a
-reserved key, so an undisclosed provider name is served nowhere.
+Listing `detail` (JSON) holds free-form keys plus seven RESERVED keys, all
+optional: colocation, delivery_type, mw_schedule, power, price, provider,
+verification. colocation belongs only to a listing whose delivery_type is
+colocation. Admin writes validate the reserved keys and store them normalized;
+a failure answers 400 invalid_detail with one entry per field and writes
+nothing (_validate_detail). Reads project them as typed fields: every teaser
+carries delivery_type, freshness (from verification.verified_at) and the
+provider's name when it is disclosed; the full view adds colocation,
+mw_schedule, power, price, provider and verification. The generic `detail`
+object never repeats a reserved key, so an undisclosed provider name is served
+nowhere.
 """
 import hashlib
 import hmac
@@ -202,8 +204,8 @@ _DETAIL_PRIVATE_KEYS = frozenset({"contact", "operator_contact", "operator_email
 # Reserved `detail` keys: validated on admin write (_DETAIL_FIELD_CHECKS),
 # projected as typed fields by _teaser / _full, and left out of the generic
 # `detail` object.
-_DETAIL_RESERVED_KEYS = ("delivery_type", "mw_schedule", "power", "price",
-                         "provider", "verification")
+_DETAIL_RESERVED_KEYS = ("colocation", "delivery_type", "mw_schedule", "power",
+                         "price", "provider", "verification")
 _DELIVERY_TYPES = ("land", "powered_shell", "turnkey", "colocation")
 _INTERCONNECTION_STAGES = ("not_started", "applied", "in_study",
                            "agreement_executed", "under_construction", "energized")
@@ -213,6 +215,8 @@ _VERIFICATION_METHODS = ("provider_attestation", "document_review",
 _FIELD_TEXT_MAX = 120
 _MW_SCHEDULE_MAX_ENTRIES = 24
 _MW_SCHEDULE_MAX_MW = 10000
+_COLOCATION_MAX_KW = 100000
+_COLOCATION_MAX_KW_PER_CABINET = 300
 _VERIFIED_AT_MAX_AHEAD = timedelta(days=1)
 # Freshness, by whole days since verification.verified_at: up to
 # _FRESH_MAX_AGE_DAYS is fresh, up to _AGING_MAX_AGE_DAYS is aging, older is
@@ -808,12 +812,16 @@ def _iso(value):
     return value if isinstance(value, str) else None
 
 
-def _available(detail):
+def _available(detail, schedule):
+    """The listing's own availability wording: the first of available,
+    available_date, energization and delivery that holds a value. Without one,
+    the earliest date of `schedule` (the checked mw_schedule) as stored, such
+    as "2026-12"; otherwise None."""
     for key in ("available", "available_date", "energization", "delivery"):
         val = detail.get(key)
         if isinstance(val, (str, int, float)) and not isinstance(val, bool) and str(val).strip():
             return str(val).strip()[:80]
-    return None
+    return schedule[0]["date"] if schedule else None
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -905,6 +913,52 @@ def _no_other_keys(obj, allowed, path, errors, what):
 
 # Each check appends {"field", "message"} entries to `errors` and returns the
 # normalized value, or None when it appended anything.
+
+def _check_colocation(value, path, errors, now):
+    """The colocation space on offer: kw_available, plus cabinets_available
+    and max_kw_per_cabinet when known. Only a colocation listing carries it
+    (_colocation_allowed)."""
+    start = len(errors)
+    if not isinstance(value, dict):
+        errors.append({"field": path, "message": (
+            "must be an object with kw_available, and optionally cabinets_available "
+            "and max_kw_per_cabinet")})
+        return None
+    _no_other_keys(value, ("kw_available", "cabinets_available", "max_kw_per_cabinet"),
+                   path, errors, "colocation")
+    out = {}
+    kw = _num(value.get("kw_available"))
+    if kw is None or not 0 < kw <= _COLOCATION_MAX_KW:
+        errors.append({"field": f"{path}.kw_available", "message": (
+            ("is required: " if value.get("kw_available") is None else "must be ")
+            + f"a number greater than 0 and at most {_COLOCATION_MAX_KW}")})
+    else:
+        out["kw_available"] = kw
+    if value.get("cabinets_available") is not None:
+        cabinets = _num(value["cabinets_available"])
+        if cabinets is None or cabinets < 0 or not cabinets.is_integer():
+            errors.append({"field": f"{path}.cabinets_available",
+                           "message": "must be a whole number of at least 0"})
+        else:
+            out["cabinets_available"] = cabinets
+    if value.get("max_kw_per_cabinet") is not None:
+        density = _num(value["max_kw_per_cabinet"])
+        if density is None or not 0 < density <= _COLOCATION_MAX_KW_PER_CABINET:
+            errors.append({"field": f"{path}.max_kw_per_cabinet", "message": (
+                "must be a number greater than 0 and at most "
+                f"{_COLOCATION_MAX_KW_PER_CABINET}")})
+        else:
+            out["max_kw_per_cabinet"] = density
+    if len(errors) > start:
+        return None
+    return {key: _json_number(n) for key, n in out.items()}
+
+
+def _colocation_allowed(delivery_type):
+    """colocation describes colocation space, so it belongs only to a listing
+    whose delivery_type is colocation: refused on write, None on read."""
+    return delivery_type == "colocation"
+
 
 def _check_delivery_type(value, path, errors, now):
     choice, problem = _field_choice(value, _DELIVERY_TYPES)
@@ -1066,6 +1120,7 @@ def _check_verification(value, path, errors, now):
 
 
 _DETAIL_FIELD_CHECKS = {
+    "colocation": _check_colocation,
     "delivery_type": _check_delivery_type,
     "mw_schedule": _check_mw_schedule,
     "power": _check_power,
@@ -1090,8 +1145,9 @@ def _validate_detail(raw):
     `raw` is an object, a JSON string holding one, or None (stores NULL). Each
     reserved key is checked and stored normalized: text trimmed, numbers as
     JSON numbers, mw_schedule sorted by date. A reserved key set to null is
-    dropped, and a reserved name in other case or spacing is refused. Every
-    other key is stored as sent. Any error means nothing is stored."""
+    dropped, and a reserved name in other case or spacing is refused, as is
+    colocation unless delivery_type is colocation. Every other key is stored
+    as sent. Any error means nothing is stored."""
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -1114,6 +1170,9 @@ def _validate_detail(raw):
             normalized = _DETAIL_FIELD_CHECKS[name](value, "detail." + name, errors, now)
             if normalized is not None:
                 out[name] = normalized
+    if raw.get("colocation") is not None and not _colocation_allowed(out.get("delivery_type")):
+        errors.append({"field": "detail.colocation",
+                       "message": "is allowed only when delivery_type is colocation"})
     return (None, errors) if errors else (out, [])
 
 
@@ -1149,6 +1208,8 @@ def _listing_fields(detail):
     for name, check in _DETAIL_FIELD_CHECKS.items():
         value = detail.get(name)
         fields[name] = None if value is None else check(value, "detail." + name, [], now)
+    if not _colocation_allowed(fields["delivery_type"]):
+        fields["colocation"] = None
     fields["freshness"] = _freshness(fields["verification"], now)
     return fields
 
@@ -1217,7 +1278,7 @@ def _teaser(row, access, fields=None):
         "state": row.get("state"),
         "country": row.get("country"),
         "capacity_mw": _num(row.get("capacity_mw")),
-        "available": _available(detail),
+        "available": _available(detail, fields["mw_schedule"]),
         "delivery_type": fields["delivery_type"],
         "freshness": fields["freshness"],
         "provider": ({"name": provider["name"]}
@@ -1247,6 +1308,7 @@ def _full(row, access):
                    if isinstance(k, str) and not k.startswith("_")
                    and k.lower() not in _DETAIL_PRIVATE_KEYS
                    and _reserved_detail_key(k) is None},
+        "colocation": fields["colocation"],
         "mw_schedule": fields["mw_schedule"],
         "power": fields["power"],
         "price": fields["price"],
