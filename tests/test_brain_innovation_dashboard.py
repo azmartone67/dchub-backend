@@ -317,13 +317,16 @@ def test_approvals_list_admin_gated_and_reads_rows(client, monkeypatch):
 
 
 def test_page_renders_approve_control(client, monkeypatch):
-    """The self-contained page must carry the approve affordance + the approvals
-    fetch so approved items stay marked across the auto-refresh."""
+    """The self-contained page must carry the approve affordance, and keep
+    approved items marked across the auto-refresh from the approval each digest
+    item now carries. 2026-09-15: /approvals was capped at 500 rows of an
+    880-row ledger, so older approvals drew the approve button again."""
     monkeypatch.setattr(dash, "_admin_ok", lambda: True)
     body = client.get("/api/v1/brain/innovation/dashboard").get_data(as_text=True)
     assert "data-approve" in body
     assert "/api/v1/brain/innovation/approve" in body
-    assert "/api/v1/brain/innovation/approvals" in body
+    assert "BOARD[kind+':'+it.id] = it.approval" in body
+    assert "/api/v1/brain/innovation/approvals" not in body
 
 
 # ── wiring guard ─────────────────────────────────────────────────────

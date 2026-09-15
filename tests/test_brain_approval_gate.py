@@ -61,8 +61,10 @@ def test_a_refuted_item_does_not_auto_draft_a_pr():
 
 
 def test_a_low_confidence_item_does_not_auto_draft_a_pr():
+    """An item that did not SURVIVE refutation — never tested, or
+    inconclusive — still needs the floor."""
     why = _pr_block_reason(
-        {"refutation_survived": True, "confidence": PR_MIN_CONFIDENCE - 0.01})
+        {"refutation_survived": None, "confidence": PR_MIN_CONFIDENCE - 0.01})
     assert why
     assert "confidence" in why.lower()
 
@@ -70,6 +72,23 @@ def test_a_low_confidence_item_does_not_auto_draft_a_pr():
 def test_a_survived_high_confidence_item_is_allowed_through():
     assert _pr_block_reason(
         {"refutation_survived": True, "confidence": 0.66}) == ""
+
+
+def test_surviving_the_refuter_skips_the_floor():
+    """2026-09-15, owner decision. The six agenda survivors on the live board
+    stored 0.23–0.37, all under the floor, so 0 of 15 agenda items could open
+    a PR from Approve. agenda #100256 as served: survived, confidence 0.23."""
+    assert _pr_block_reason(
+        {"refutation_survived": True, "confidence": 0.23}) == ""
+    assert _pr_block_reason(
+        {"refutation_survived": True, "confidence": 0.0}) == ""
+
+
+def test_a_refutation_blocks_at_any_confidence():
+    """The exemption is SURVIVAL, not a high number: refuted at 0.66 is still
+    held back."""
+    why = _pr_block_reason({"refutation_survived": False, "confidence": 0.66})
+    assert why and "refut" in why.lower()
 
 
 def test_an_unknown_verdict_fails_open():
@@ -81,11 +100,12 @@ def test_an_unknown_verdict_fails_open():
 
 def test_the_floor_is_a_real_threshold_not_a_rubber_stamp():
     """Exactly AT the floor passes; a hair under it blocks. Pins the
-    comparison direction so an inverted '>' cannot pass this file."""
+    comparison direction so an inverted '>' cannot pass this file. Asked of
+    an item that did not survive refutation — a survivor skips the floor."""
     assert _pr_block_reason(
-        {"refutation_survived": True, "confidence": PR_MIN_CONFIDENCE}) == ""
+        {"refutation_survived": None, "confidence": PR_MIN_CONFIDENCE}) == ""
     assert _pr_block_reason(
-        {"refutation_survived": True, "confidence": PR_MIN_CONFIDENCE - 0.001})
+        {"refutation_survived": None, "confidence": PR_MIN_CONFIDENCE - 0.001})
 
 
 # ── the detector that would have caught this ─────────────────────────
