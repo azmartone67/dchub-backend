@@ -610,6 +610,9 @@ def _record_view(client_key: str) -> int | None:
         # most agent fetches — so fold the marker query-string into the same
         # TEXT column (zero DDL). Funnel queries can then filter
         # referer LIKE '%src=page-onramp%' and parse entity= for the page.
+        # ★2026-09-15: the pages link the canonical /connect now (see the
+        # r-page-onramp note in routes/seo_pages.py); this fold still records
+        # any fetch that arrives carrying a src= marker.
         try:
             _qs = (request.query_string or b"").decode("utf-8", "ignore")
             if "src=" in _qs:
@@ -643,8 +646,11 @@ def _record_view(client_key: str) -> int | None:
 # r-page-onramp (2026-07-04): bare /connect is a STATIC file served from
 # main.py (send_from_directory('static','connect.html')) with NO telemetry —
 # only the /connect/<client> pages call _record_view. The crossover-pack
-# onramp lines point at /connect?src=page-onramp&entity=<slug>, so without
+# onramp lines pointed at /connect?src=page-onramp&entity=<slug>, so without
 # this hook the measurement marker would never reach connect_landing_views.
+# ★2026-09-15: those lines link the canonical /connect now, so this hook only
+# sees the old URL fetched from cached pages, copies elsewhere, or crawlers
+# re-walking what they already found.
 # before_app_request fires even though the /connect route lives in main.py
 # (Flask runs before_request hooks prior to dispatch). Cost: one string
 # compare per request. Never raises.

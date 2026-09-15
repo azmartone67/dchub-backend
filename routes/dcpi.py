@@ -8045,7 +8045,7 @@ h1 {
   <a href="/dcpi/methodology" style="color:#5aa3ff;font-size:14px;text-decoration:none">View methodology + BibTeX →</a>
 </div>
 <div style="margin:12px auto 32px;max-width:760px;font-family:system-ui;font-size:12.5px;color:#9eb5d8">
-  Query this market live via MCP: <a href="https://dchub.cloud/connect?src=page-onramp&amp;entity={{ s.market_slug }}" style="color:#5aa3ff;text-decoration:none">https://dchub.cloud/connect?src=page-onramp&amp;entity={{ s.market_slug }}</a>
+  Query this market live via MCP: <a href="https://dchub.cloud/connect" style="color:#5aa3ff;text-decoration:none">https://dchub.cloud/connect</a>
 </div>
 </body>
 </html>"""
