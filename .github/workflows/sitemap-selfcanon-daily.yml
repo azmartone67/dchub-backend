@@ -260,3 +260,93 @@ jobs:
           say(f"Not failed: inside the {grace}-day grace window.")
           sys.exit(0)
           PY
+
+  keep_rule_dryrun:
+    # ★ Step 2's keep-or-drop rule (owner-approved 2026-09-15), MEASURED. It
+    # changes nothing and publishes nothing. It rides this workflow because the
+    # inputs are the two the self-canon checker already has — the live shards
+    # and a read-only DSN — and because a removal PR must never be written from
+    # a number nobody else can re-run.
+    # ★ A SECOND JOB, not another step: the residual budget and the keep rule
+    # fail for different reasons, and a reader must be able to tell which one
+    # went red without opening the log.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the two dependencies
+        run: pip install --quiet psycopg2-binary 'requests==2.32.5'
+
+      - name: Refuse to run unconfigured
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          # Wiring is this job's own problem and fails immediately, separately
+          # from "the data could not be read".
+          if [ -z "${DATABASE_URL:-}" ] && [ -z "${NEON_DATABASE_URL:-}" ]; then
+            echo "::error title=Not configured::neither DATABASE_URL nor NEON_DATABASE_URL is set for this job. This is a wiring failure, not an unreachable database."
+            exit 1
+          fi
+
+      - name: Dry-run the keep rule
+        id: dryrun
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          # No pipe: a pipeline reports the LAST command's status and would turn
+          # "could not measure" into a pass. Redirect, then read $?.
+          set +e
+          python3 scripts/sitemap_keep_rule_dryrun.py --json > keeprule.json 2> keeprule.err
+          CODE=$?
+          set -e
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "dry-run exit: $CODE"
+          cat keeprule.err || true
+
+      - name: Upload the dry-run
+        if: steps.dryrun.outputs.code == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: keep-rule-dryrun
+          path: keeprule.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Report
+        env:
+          CODE: ${{ steps.dryrun.outputs.code }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          sys.path.insert(0, "scripts")
+          import sitemap_keep_rule_dryrun as kr
+
+          summary = open(os.environ["GITHUB_STEP_SUMMARY"], "a")
+          try:
+              data = json.load(open("keeprule.json"))
+          except Exception as e:
+              data = {"measured": False, "error": f"no JSON from the dry-run: {e}"}
+
+          if not data.get("measured"):
+              # ★ This job exists to produce a number a removal PR can quote. An
+              # unmeasured run is the failure it must surface, not a quiet pass:
+              # "could not run" is not "ran and found nothing to drop".
+              print("::error title=Keep-rule dry-run could not measure::"
+                    f"{data.get('error')}")
+              summary.write("### Step 2 keep-or-drop dry-run\n\n"
+                            f"COULD NOT MEASURE: {data.get('error')}\n")
+              sys.exit(1)
+
+          summary.write(kr.markdown_summary(data) + "\n")
+          print(kr.markdown_summary(data))
+          PY
