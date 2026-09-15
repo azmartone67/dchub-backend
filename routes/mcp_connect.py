@@ -202,7 +202,11 @@ _CLIENTS = {
 ChatGPT has no header field, so the key rides in the URL.
 In ChatGPT: Settings -> Connectors -> Add custom connector -> paste the URL.""",
         # One line under the install step (see _return_nudge_html).
-        "return_nudge":   "Come back tomorrow: same key, new chat. The key lives in the connector URL, so every new ChatGPT chat already has DC Hub.",
+        # ★ r-connect-bind (2026-09-15): "same key" holds past the key's free
+        # calls only once an email is bound. /api/v1/keys/validate refuses an
+        # unbound trial key after TRIAL_FREE_CALLS_UNBOUND calls, and a refused
+        # key is served anonymously, so the nudge states the condition.
+        "return_nudge":   "Come back tomorrow: same key, new chat. The key lives in the connector URL, so every new ChatGPT chat already has DC Hub. Once an email is bound to it, the key keeps working past its free calls.",
         "deep_link":      "",
         "deep_link_label": "",
         "examples": [
@@ -751,6 +755,15 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
  .key-action-btn:hover{{background:var(--accent);color:#fff}}
  .upgrade-note{{font-size:.84rem;color:var(--muted);margin-top:10px}}
  .return-nudge{{margin:12px 0 0;font-size:.9rem;color:var(--text)}}
+ .bind-step{{margin-top:12px;background:#0d1117;border:1px solid var(--warn);border-radius:10px;padding:16px}}
+ .bind-step.done{{border-color:var(--ok)}}
+ .bind-why{{margin:0 0 10px;font-size:.92rem;color:var(--text)}}
+ .bind-form{{display:flex;flex-wrap:wrap;gap:8px}}
+ .bind-form input{{flex:1 1 220px;min-width:0;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:.95rem;font-family:inherit}}
+ .bind-form button{{background:var(--accent);color:#fff;border:none;padding:10px 18px;border-radius:8px;font-size:.95rem;font-weight:600;cursor:pointer;font-family:inherit}}
+ .bind-form button[disabled]{{opacity:.7;cursor:not-allowed}}
+ .bind-note{{margin:8px 0 0;font-size:.78rem;color:var(--muted)}}
+ .bind-status{{margin:8px 0 0;font-size:.85rem;color:var(--warn)}}
 </style></head><body>
 <div class="container">
 
@@ -784,6 +797,15 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
   </button>
   <div id="key-box" class="key-box"></div>
   <div id="key-meta" class="key-meta" style="display:none"></div>
+  <div id="bind-step" class="bind-step" style="display:none">
+    <p id="bind-why" class="bind-why"></p>
+    <form id="bind-form" class="bind-form" onsubmit="bindEmail(event)">
+      <input id="bind-email" type="email" required autocomplete="email" placeholder="Your email" aria-label="Email to bind to this key">
+      <button id="bind-btn" type="submit">Bind email &rarr;</button>
+    </form>
+    <p class="bind-note">Free, no card. Your email is used only to recover this key and send its receipts, never for marketing.</p>
+    <p id="bind-status" class="bind-status" role="status"></p>
+  </div>
   <div id="key-actions" class="key-actions" style="display:none">
     <button class="key-action-btn" onclick="copyKey()">Copy key</button>
     <button class="key-action-btn" onclick="mintKey(true)">Mint another</button>
@@ -890,6 +912,91 @@ function markKeyDay1() {{
   clarityTag("event", days === 1 ? "connect_key_day2" : "connect_key_return_later");
 }})();
 
+// ★ r-connect-bind (2026-09-15). A mint can hand back a key that
+// /api/v1/keys/validate refuses from its first call: this network's unbound
+// key already past its free calls (reused), or a fresh key seeded with that
+// count. routes/auto_trial.py marks both answers with bind_required and gate.
+// The MCP server drops a refused key and serves the call anonymously, so such
+// a key gets the bind step in place of the tier line, and stays out of the
+// install snippet until POST /api/v1/keys/auto-trial/bind accepts an email.
+let mintAnswer = null;
+
+function showTierLine(j, calls) {{
+  const meta = document.getElementById("key-meta");
+  meta.style.display = "flex";
+  meta.innerText = (j.tier || "IDENTIFIED") + " tier ·  "
+                 + (calls || 50) + " req/day · "
+                 + (j.trial_days || 7) + "-day trial";
+}}
+
+// Swap the minted key into the install snippet. ★ r-connect-return
+// (2026-09-14): the sentinel arrives as a format ARGUMENT. Typed into
+// this template it went through .format(), which halved its braces, so
+// replaceAll matched INSIDE the snippet's sentinel and every copied
+// snippet carried the key with a brace left on each side of it.
+function swapKeyIntoSnippet() {{
+  document.getElementById("snippet-body").innerText = RAW_SNIPPET.replaceAll(KEY_SENTINEL, mintedKey);
+}}
+
+function showBindStep(j) {{
+  document.getElementById("key-meta").style.display = "none";
+  document.getElementById("snippet-body").innerText = RAW_SNIPPET;
+  const n = (typeof j.free_calls_unbound === "number") ? j.free_calls_unbound + " " : "";
+  const bound = j.daily_calls_when_email_bound
+    ? " (" + j.daily_calls_when_email_bound + " req/day)" : "";
+  document.getElementById("bind-why").innerText =
+    (j.reused ? "This key has used its " + n + "free calls without an email."
+              : "This network has used its " + n + "free calls without an email, and a new key starts from that count.")
+    + " Until an email is bound, DC Hub answers this key anonymously, with trimmed previews."
+    + " Bind one and the same key keeps working" + bound + ".";
+  document.getElementById("bind-form").style.display = "";
+  document.getElementById("bind-btn").disabled = false;
+  document.getElementById("bind-status").innerText = "";
+  const step = document.getElementById("bind-step");
+  step.classList.remove("done");
+  step.style.display = "block";
+}}
+
+async function bindEmail(ev) {{
+  if (ev) ev.preventDefault();
+  const status = document.getElementById("bind-status");
+  const bindBtn = document.getElementById("bind-btn");
+  const email = document.getElementById("bind-email").value.trim();
+  if (!mintedKey || !email) {{
+    status.innerText = "Enter the email to bind to this key.";
+    return;
+  }}
+  bindBtn.disabled = true;
+  status.innerText = "Binding...";
+  try {{
+    const r = await fetch("/api/v1/keys/auto-trial/bind", {{
+      method: "POST",
+      headers: {{ "Content-Type": "application/json" }},
+      body: JSON.stringify({{ api_key: mintedKey, email: email }}),
+    }});
+    const b = await r.json();
+    if (b && b.ok && b.bound) {{
+      const j = mintAnswer || {{}};
+      document.getElementById("bind-form").style.display = "none";
+      document.getElementById("bind-why").innerText =
+        "Email bound: the same key keeps working. A client that already holds it may take a few minutes to notice.";
+      status.innerText = "";
+      document.getElementById("bind-step").classList.add("done");
+      showTierLine(j, j.daily_calls_when_email_bound);
+      swapKeyIntoSnippet();
+      document.getElementById("mint-btn").innerText = "Email bound -- paste in step 2 ↑";
+    }} else {{
+      bindBtn.disabled = false;
+      status.innerText = (b && b.error === "valid_email_required")
+        ? "That email was not accepted. Check it and try again."
+        : "Bind failed — try again.";
+    }}
+  }} catch (e) {{
+    bindBtn.disabled = false;
+    status.innerText = "Bind failed — try again.";
+  }}
+}}
+
 async function mintKey(again) {{
   const btn = document.getElementById("mint-btn");
   btn.disabled = true;
@@ -903,23 +1010,23 @@ async function mintKey(again) {{
     const j = await r.json();
     if (j && j.ok && j.api_key) {{
       mintedKey = j.api_key;
+      mintAnswer = j;
       markKeyDay1();
       document.getElementById("key-box").innerText = mintedKey;
       document.getElementById("key-box").classList.add("shown");
-      const meta = document.getElementById("key-meta");
-      meta.style.display = "flex";
-      meta.innerText = (j.tier || "IDENTIFIED") + " tier ·  "
-                     + (j.daily_calls || 50) + " req/day · "
-                     + (j.trial_days || 7) + "-day trial";
       document.getElementById("key-actions").style.display = "flex";
 
-      // Swap the minted key into the install snippet. ★ r-connect-return
-      // (2026-09-14): the sentinel arrives as a format ARGUMENT. Typed into
-      // this template it went through .format(), which halved its braces, so
-      // replaceAll matched INSIDE the snippet's sentinel and every copied
-      // snippet carried the key with a brace left on each side of it.
-      const body = document.getElementById("snippet-body");
-      body.innerText = RAW_SNIPPET.replaceAll(KEY_SENTINEL, mintedKey);
+      // ★ r-connect-bind (2026-09-15): a gated answer (see showBindStep) gets
+      // the bind step where the tier line goes, and its key stays out of the
+      // install snippet until an email is bound.
+      const gated = !!(j.bind_required || j.gate);
+      if (gated) {{
+        showBindStep(j);
+      }} else {{
+        document.getElementById("bind-step").style.display = "none";
+        showTierLine(j, j.daily_calls);
+        swapKeyIntoSnippet();
+      }}
 
       // Bind Stripe links via the /api/v1/connect/click proxy: it stamps
       // connect_landing_views.stripe_clicked_at BEFORE 302ing to Stripe so
@@ -943,9 +1050,15 @@ async function mintKey(again) {{
       }}
       document.getElementById("ref-note").style.display = "block";
 
-      btn.innerText = again ? "Mint another" : "Key minted -- paste in step 2 ↑";
+      btn.innerText = gated ? "Key needs an email -- bind it below ↓"
+                            : (again ? "Mint another" : "Key minted -- paste in step 2 ↑");
 
-      // Best-effort tell the backend which key this view minted
+      // Best-effort tell the backend which key this view minted.
+      // ★ r-connect-bind (2026-09-15): a gated key is attributed too. This view
+      // handed it out, and /api/v1/connect/stats reports the validator's verdict
+      // beside the count (keys_refused_now), so a key nobody binds shows there
+      // as refused instead of dropping out of the stats. Bound later, it is the
+      // same key, and its later calls count for this view.
       if (VIEW_ID) {{
         try {{
           await fetch("/api/v1/connect/mint-update", {{
