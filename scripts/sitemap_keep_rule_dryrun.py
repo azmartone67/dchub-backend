@@ -132,8 +132,21 @@ def _shard_membership(index_url):
             fam = "gated"
         for loc in csc._LOC.findall(csc._get(shard)):
             m = csc._FAC.match(loc)
-            if m:
-                fams[fam].add(m.group(1))
+            if not m:
+                continue
+            slug = m.group(1).strip("/")
+            # ★ PROFILE URLs only. `_FAC` matches everything under /facilities/,
+            #   which includes the HUB pages — /facilities/in/<market> and
+            #   /facilities/<country>/<page> — that the static shard carries.
+            #   They have no facility row, so they land in `unresolved` and
+            #   inflate the published count: measured 311 of them on the first
+            #   live run (19,326 published against a walked 19,016).
+            #   check_sitemap_selfcanon never sees them because it skips any
+            #   shard whose URL lacks "facilit"; this script reads those shards
+            #   on purpose, so it has to do the filtering the shard choice did.
+            if "/" in slug:
+                continue
+            fams[fam].add(slug)
     return fams
 
 

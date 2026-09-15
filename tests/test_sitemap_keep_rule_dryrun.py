@@ -161,6 +161,32 @@ def test_the_group_detail_probe_names_absent_columns_instead_of_failing():
     assert detail == {}
 
 
+def test_hub_pages_are_not_counted_as_published_facility_urls(monkeypatch):
+    """`_FAC` matches everything under /facilities/, and the static shard
+    carries the HUB pages (/facilities/in/<market>, /facilities/<country>/<n>).
+    They have no facility row, so counting them inflates the published total and
+    lands every one of them in `unresolved`. Measured on the first live run:
+    19,326 published against a walked 19,016, and unresolved_slugs 311 — which
+    is exactly the hub-page count, not 311 broken URLs.
+    """
+    pages = {
+        "https://dchub.cloud/sitemap.xml":
+            "<loc>https://dchub.cloud/sitemap-static.xml</loc>"
+            "<loc>https://dchub.cloud/sitemap-ai-facilities-1.xml</loc>",
+        "https://dchub.cloud/sitemap-static.xml":
+            "<loc>https://dchub.cloud/facilities/in/us-virginia</loc>"
+            "<loc>https://dchub.cloud/facilities/us/2</loc>"
+            "<loc>https://dchub.cloud/facilities/real-profile-aabbccdd</loc>",
+        "https://dchub.cloud/sitemap-ai-facilities-1.xml":
+            "<loc>https://dchub.cloud/facilities/another-one-11223344</loc>",
+    }
+    monkeypatch.setattr(csc, "_get", lambda url, timeout=60: pages[url])
+    fams = kr._shard_membership("https://dchub.cloud/sitemap.xml")
+    assert fams["other"] == {"real-profile-aabbccdd"}
+    assert fams["ai"] == {"another-one-11223344"}
+    assert not any("/" in s for fam in fams.values() for s in fam)
+
+
 def test_the_summary_states_the_drop_count():
     """The workflow renders this string into the step summary, and a summary
     that omits the number the removal PR quotes is worse than none."""
