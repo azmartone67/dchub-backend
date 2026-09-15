@@ -428,7 +428,7 @@ def test_a_gated_mint_shows_the_bind_step_instead_of_the_tier_line(
     assert "%d req/day" % j["daily_calls_when_email_bound"] in why, why
     assert page["bind-btn"]["disabled"] is False
     # ...and not in the install snippet, which is copied as a working install.
-    assert page["snippet-body"]["text"] == mc._CLIENTS[client]["snippet"]
+    assert page["snippet-body"]["text"] == mc._snippet(mc._CLIENTS[client], mc._trial_terms())
     assert key not in page["snippet-body"]["text"]
     assert "paste" not in page["mint-btn"]["text"].lower()
     assert not _sent(out, "/api/v1/keys/auto-trial/bind"), "nothing binds until the person asks"
@@ -530,4 +530,80 @@ def test_a_gated_mint_after_a_clean_one_takes_the_key_out_of_the_snippet(
     assert first["api_key"] in out["snapshots"][0]["snippet-body"]["text"]
     page = out["snapshots"][-1]
     assert page["bind-step"]["display"] == "block"
-    assert page["snippet-body"]["text"] == mc._CLIENTS["chatgpt"]["snippet"]
+    assert page["snippet-body"]["text"] == mc._snippet(mc._CLIENTS["chatgpt"], mc._trial_terms())
+
+
+# ── 5. a figure the answer lacks comes from the render, or is left out ────
+# r-connect-quota-copy. showTierLine typed a daily figure and a trial length for
+# an answer without daily_calls or trial_days. The terms are patched to values
+# the defaults never take, so neither a typed figure nor a default can pass.
+ODD_TERMS = {"TRIAL_FREE_CALLS_UNBOUND": 7, "TRIAL_DAILY_UNBOUND": 23,
+             "TRIAL_DAILY_CALLS": 61, "TRIAL_DAYS": 9}
+
+
+def _odd_terms(monkeypatch):
+    for name, value in ODD_TERMS.items():
+        monkeypatch.setattr(at, name, value)
+
+
+def _answer_without(monkeypatch, *fields):
+    """Serve the real mint's answer with `fields` taken out."""
+    real = at.mint_trial_for_request
+
+    def answer(*args, **kwargs):
+        out = real(*args, **kwargs)
+        for field in fields:
+            out.pop(field, None)
+        return out
+
+    monkeypatch.setattr(at, "mint_trial_for_request", answer)
+
+
+def test_an_answer_without_figures_gets_no_typed_figure(backend, tmp_path, stats_state, monkeypatch):
+    _odd_terms(monkeypatch)
+    _answer_without(monkeypatch, "daily_calls", "trial_days")
+    out = _run_page(tmp_path, backend(_Db()), [MINT])
+    j = _mint_answer(out)
+    assert not j.get("bind_required") and "daily_calls" not in j and "trial_days" not in j, j
+    meta = out["snapshots"][-1]["key-meta"]
+    assert meta["display"] == "flex"
+    # Only the answer knows whether this key is bound, so no daily figure; every
+    # trial key runs TRIAL_DAYS, so the render's trial length stands in.
+    assert meta["text"] == "IDENTIFIED tier · 9-day trial", meta["text"]
+
+
+def test_a_bound_key_without_the_bound_figure_gets_the_rendered_one(
+        backend, tmp_path, stats_state, monkeypatch):
+    _odd_terms(monkeypatch)
+    _answer_without(monkeypatch, "daily_calls_when_email_bound", "trial_days")
+    out = _run_page(tmp_path, backend(SCENARIOS["born_gated"]()), [MINT, TYPE(BIND_EMAIL), BIND])
+    j = _mint_answer(out)
+    assert j.get("bind_required") and "daily_calls_when_email_bound" not in j, j
+    page = out["snapshots"][-1]
+    assert "done" in page["bind-step"]["classes"], "the bind has to succeed for this to test anything"
+    assert page["key-meta"]["display"] == "flex"
+    assert page["key-meta"]["text"] == "IDENTIFIED tier · 61 req/day · 9-day trial", page["key-meta"]["text"]
+
+
+def test_unreadable_terms_leave_an_answer_s_missing_figures_out(
+        backend, tmp_path, stats_state, monkeypatch):
+    monkeypatch.setattr(mc, "_trial_terms", lambda: None)
+    _answer_without(monkeypatch, "daily_calls", "trial_days")
+    out = _run_page(tmp_path, backend(_Db()), [MINT])
+    meta = out["snapshots"][-1]["key-meta"]
+    assert meta["display"] == "flex"
+    assert meta["text"] == "IDENTIFIED tier", meta["text"]
+
+
+def test_the_gemini_snippet_keeps_its_terms_through_the_key_swap(
+        backend, tmp_path, stats_state, monkeypatch):
+    _odd_terms(monkeypatch)
+    out = _run_page(tmp_path, backend(_Db()), [MINT], client="gemini")
+    key = _mint_answer(out)["api_key"]
+    snippet = out["snapshots"][-1]["snippet-body"]["text"]
+    assert snippet.splitlines()[-3:] == [
+        "Header (optional):  X-API-Key: " + key,
+        "Without an email, a trial key gets 7 free calls.",
+        "Bind an email and the same key keeps working, at 61 requests/day "
+        "for the rest of its 9-day trial.",
+    ], snippet

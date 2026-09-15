@@ -116,7 +116,7 @@ def test_every_snippet_marks_the_key_with_the_sentinel_the_script_gets(client, s
     assert mc.TRIAL_KEY_SENTINEL in snippet
     script = _script(_page(client))
     assert _js_const(script, "KEY_SENTINEL") == mc.TRIAL_KEY_SENTINEL
-    assert _js_const(script, "RAW_SNIPPET") == snippet
+    assert _js_const(script, "RAW_SNIPPET") == mc._snippet(mc._CLIENTS[client], mc._trial_terms())
 
 
 @pytest.mark.parametrize("client", ALL_CLIENTS)
