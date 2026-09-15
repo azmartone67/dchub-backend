@@ -198,6 +198,24 @@ _COUNTRY_NAME = {
     "TH": "Thailand", "PH": "Philippines", "VN": "Vietnam",
     "AU": "Australia", "NZ": "New Zealand",
     "ZA": "South Africa",
+    # ── Countries facilities_hub already named, plus the rest of the Gulf ──
+    # AE, AR, CN, IL, RO, RU and SA are in facilities_hub._COUNTRY_NAMES but
+    # were missing here, so the two country maps disagreed: a Capacity Source
+    # listing in those countries resolved to no region at all (see
+    # routes/exclusive_listings._region_of, which reads THIS map). The
+    # remaining Gulf states complete the set that route searches as
+    # middle_east_africa. Spellings match facilities_hub exactly so the two
+    # maps stay joinable by name.
+    #
+    # These are FORWARD entries in the sense the region block below
+    # documents: routes.dcpi.market_country cannot emit any of these codes
+    # today, so none of them can enter the DCPI span until a market under
+    # such an operator is actually scored. Adding them changes no published
+    # count.
+    "AE": "United Arab Emirates", "SA": "Saudi Arabia", "QA": "Qatar",
+    "KW": "Kuwait", "BH": "Bahrain", "OM": "Oman", "IL": "Israel",
+    "TR": "Turkey", "RU": "Russia", "RO": "Romania",
+    "CN": "China", "AR": "Argentina",
 }
 
 
@@ -239,7 +257,22 @@ _COUNTRY_REGION = {
     "Malaysia": "Asia-Pacific", "Indonesia": "Asia-Pacific",
     "Thailand": "Asia-Pacific", "Philippines": "Asia-Pacific",
     "Vietnam": "Asia-Pacific", "Australia": "Asia-Pacific",
-    "New Zealand": "Asia-Pacific",
+    "New Zealand": "Asia-Pacific", "China": "Asia-Pacific",
+    "Argentina": "Latin America",
+    "Romania": "Europe",
+    # Turkey and Russia sit across the conventional Europe line. Both are
+    # placed by the thing this platform actually models — the grid their
+    # markets draw on, and the market reports those markets are tracked in:
+    # Istanbul with Europe, Moscow and St Petersburg with Europe.
+    "Turkey": "Europe", "Russia": "Europe",
+    # The Gulf. _REGION_ORDER has always listed the Middle East so it would
+    # publish itself on the first recompute after a Gulf market is scored;
+    # these are the countries that make that possible, and they are what
+    # routes/exclusive_listings.py searches as middle_east_africa.
+    "United Arab Emirates": "the Middle East", "Saudi Arabia": "the Middle East",
+    "Qatar": "the Middle East", "Kuwait": "the Middle East",
+    "Bahrain": "the Middle East", "Oman": "the Middle East",
+    "Israel": "the Middle East",
 }
 
 #: Reading order for the phrase. A region absent from the live set is simply
