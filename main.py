@@ -7958,8 +7958,16 @@ def handle_well_known():
                         "(min_kw in kilowatts, or min_mw in megawatts) AND BY "
                         "LOCATION (region such as North America or Europe, "
                         "country, US state, or metro through free-text "
-                        "location). Teaser facts only: market, state, country, "
-                        "size, delivery type, availability and freshness. Never "
+                        "location). The size filter matches what a listing can "
+                        "actually DELIVER, not just its headline: a listing "
+                        "states its largest single CONTIGUOUS block "
+                        "(contiguous_kw) and the SMALLEST CHUNK it will "
+                        "contract (min_contract_kw), and it comes back only "
+                        "when the requested size fits between them; a listing "
+                        "stating neither is matched on its total. Teaser facts "
+                        "only: market, state, country, size, contiguous_kw, "
+                        "min_contract_kw, delivery type, availability and "
+                        "freshness. Never "
                         "the site address, its coordinates or its substation; a "
                         "provider's name appears only where that provider opted "
                         "in to being named."),
@@ -44711,7 +44719,7 @@ text-decoration:none;margin-top:1rem}</style>
 <div class="card">
 <h2>Search by size and location</h2>
 <ul>
- <li><strong>Size</strong> — <code>min_kw</code> in kilowatts, or <code>min_mw</code> in megawatts: the floor a listing has to meet.</li>
+ <li><strong>Size</strong> — <code>min_kw</code> in kilowatts, or <code>min_mw</code> in megawatts: matched against what a listing can actually deliver, not just its headline. A listing states its largest single <em>contiguous</em> block (<code>contiguous_kw</code>) and the smallest chunk it will <em>contract</em> (<code>min_contract_kw</code>), and comes back only when your size fits between them — so 2 MW with 500 kW contiguous is not a 1 MW answer, and 40 MW that contracts from 1 MW is not a 500 kW answer. A listing stating neither is matched on its total, as before.</li>
  <li><strong>Location</strong> — <code>region</code> (North America, Latin America, Europe, Asia-Pacific, Middle East &amp; Africa; EMEA, APAC, LATAM and Americas resolve too), <code>country</code>, US state, or <code>location</code> as free text over region, country, state and metro.</li>
  <li><strong>Also</strong> — <code>delivery_type</code> and <code>available_by</code>.</li>
  <li><strong>Try it</strong> — <code>https://dchub.cloud/listings?min_kw=500&amp;region=europe</code> · <code>https://dchub.cloud/api/v1/listings?min_mw=5&amp;region=north_america</code> · <code>https://dchub.cloud/api/v1/listings?location=Dallas</code></li>

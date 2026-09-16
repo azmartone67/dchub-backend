@@ -81,16 +81,43 @@ def _detail_text(row, key):
     return value if value is None or isinstance(value, str) else json.dumps(value)
 
 
+def _json_number_at(row, *path):
+    """The JSON number at detail-><path>, or None when it is absent or is any
+    other JSON type — what the module's `jsonb_typeof(...) = 'number'` guard
+    decides before it casts."""
+    value = row["detail"] if isinstance(row["detail"], dict) else {}
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
 def _size(row, min_kw, unknown):
+    """The fit rule _size_sql sends: min_kw clears the smallest contractable
+    chunk and fits the largest contiguous block, or failing a declared block,
+    the listing total."""
+    min_contract = _json_number_at(row, "min_contract_kw")
+    if min_contract is not None and min_contract > min_kw:
+        return False
+    contiguous = _json_number_at(row, "contiguous_kw")
+    if contiguous is not None:
+        return contiguous >= min_kw
     if _detail_text(row, "delivery_type") == "colocation":
-        colocation = (row["detail"] or {}).get("colocation")
-        kw = colocation.get("kw_available") if isinstance(colocation, dict) else None
-        if isinstance(kw, (int, float)) and not isinstance(kw, bool):
-            return kw >= min_kw
-        return unknown
+        kw = _json_number_at(row, "colocation", "kw_available")
+        return unknown if kw is None else kw >= min_kw
     if row["capacity_mw"] is None:
         return unknown
     return row["capacity_mw"] * 1000 >= min_kw
+
+
+def _size_bound(row, params, unknown):
+    """Every branch of the size predicate is bound the SAME requested size, so
+    a helper that bound one branch a different value fails here."""
+    assert len(set(params)) == 1, f"the size predicate binds one size: {params}"
+    return _size(row, params[0], unknown=unknown)
 
 
 def _text_in(value, codes, names):
@@ -122,12 +149,12 @@ def _known_predicates():
         "LOWER(market) = LOWER(%s)": (
             1, lambda row, p: row["market"] is not None and row["market"].lower() == p[0].lower()),
         "UPPER(state) = %s": (1, lambda row, p: row["state"] is not None and row["state"].upper() == p[0]),
-        "capacity_mw >= %s": (1, lambda row, p: row["capacity_mw"] is not None and row["capacity_mw"] >= p[0]),
-        "(capacity_mw IS NULL OR capacity_mw >= %s)": (
-            1, lambda row, p: row["capacity_mw"] is None or row["capacity_mw"] >= p[0]),
+        # min_mw and a requirement's capacity_mw go through _size_sql too (x
+        # 1000), so no bare capacity_mw comparison is registered: a size filter
+        # that regressed to one would read as an unexpected predicate.
         "detail->>'delivery_type' = %s": (1, lambda row, p: _detail_text(row, "delivery_type") == p[0]),
-        el._size_sql(1)[0]: (2, lambda row, p: _size(row, p[0], unknown=False)),
-        el._size_sql(1, unknown_matches=True)[0]: (2, lambda row, p: _size(row, p[0], unknown=True)),
+        el._size_sql(1)[0]: (4, lambda row, p: _size_bound(row, p, unknown=False)),
+        el._size_sql(1, unknown_matches=True)[0]: (4, lambda row, p: _size_bound(row, p, unknown=True)),
         el._COUNTRY_MATCH_SQL: (2, lambda row, p: _text_in(row["country"], p[0], p[1])),
         el._LOCATION_MATCH_SQL: (5, lambda row, p: (
             _text_in(row["country"], p[0], p[1]) or _text_in(row["state"], p[2], p[3])
@@ -224,8 +251,11 @@ def test_min_kw_sizes_colocation_by_kw_available_and_other_listings_by_mw(env):
     # The colocation listing offers 1,200 kW, so 1,500 kW leaves it out though it reads 40 MW.
     assert _feed(env, "min_kw=1500")[0] == ["data-park", "dfw-shell", "jnb", "sgp"]
     assert _feed(env, "min_kw=300")[0] == ["data-park", "dfw-colo", "dfw-shell", "fra-land", "jnb", "sgp"]
-    # Control: min_mw still reads capacity_mw alone, so the colocation listing's 40 MW counts there.
-    assert _feed(env, "min_mw=30")[0] == ["dfw-colo", "dfw-shell"]
+    # min_mw is the same question in the bigger unit (2026-09-16), so it sizes
+    # the colocation listing by its 1,200 kW of space, not by the 40 MW on its
+    # row: 30 MW of colocation space is not what that listing has.
+    assert _feed(env, "min_mw=30")[0] == ["dfw-shell"]
+    assert _feed(env, "min_mw=1")[0] == _feed(env, "min_kw=1000")[0]
 
 
 @pytest.mark.parametrize("query,message", [
@@ -376,7 +406,10 @@ def test_search_text_reaches_the_sql_only_as_bound_parameters(env):
     statement, params = env.statements[0]
     for text in ("250", "Germany", "germany", "Dal'las", "dal'las", "SG"):
         assert text not in statement, text
-    assert ["%dal'las\\%%"] in params and params.count(250.0) == 2
+    # The size predicate binds the requested size once per branch that
+    # compares against it (2026-09-16: the contract floor, the contiguous
+    # ceiling, and the two totals).
+    assert ["%dal'las\\%%"] in params and params.count(250.0) == 4
 
 
 # ── requirements ──────────────────────────────────────────────────────────

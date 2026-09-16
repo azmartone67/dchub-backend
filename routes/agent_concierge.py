@@ -743,7 +743,8 @@ _COOKBOOK = [
                      "introduce me", "introduction to the operator"],
         "tools": [
             {"tool": "source_capacity",
-             "args": {"min_kw": "<kilowatt floor, or min_mw for megawatts>",
+             "args": {"min_kw": "<kilowatts you need as one block, or min_mw "
+                                 "for megawatts>",
                       "region": "<north_america|latin_america|europe|"
                                 "asia_pacific|middle_east_africa>",
                       "location": "<country, US state or metro — free text>",
@@ -751,8 +752,17 @@ _COOKBOOK = [
                       "available_by": "<optional>"},
              "why":  "Search DC Hub Capacity Source by SIZE (min_kw or "
                      "min_mw) and LOCATION (region, country, US state or "
-                     "metro). Returns teaser cards — market, state, country, "
-                     "size, delivery type, availability and freshness — plus "
+                     "metro). SIZE matches what a listing can actually "
+                     "DELIVER, not just its headline: a listing states its "
+                     "largest single CONTIGUOUS block (contiguous_kw) and the "
+                     "SMALLEST CHUNK it will contract (min_contract_kw), and "
+                     "comes back only when your size fits between them — 2 MW "
+                     "with 500 kW contiguous is not a 1 MW answer, and 40 MW "
+                     "contracting from 1 MW is not a 500 kW answer. A listing "
+                     "stating neither is matched on its total. Returns teaser "
+                     "cards — market, state, country, size, contiguous_kw, "
+                     "min_contract_kw, delivery type, availability and "
+                     "freshness — plus "
                      "`program.status` and a `filters` echo of what was "
                      "actually applied. A card never carries the site "
                      "address, its coordinates or its substation, and names a "
@@ -784,7 +794,9 @@ _COOKBOOK = [
         "sample_answer": (
             "DC Hub Capacity Source is searchable by size and location: "
             "source_capacity(min_kw=500, region=\"europe\") returns the "
-            "matching teaser cards — market, state, country, size, delivery "
+            "matching teaser cards — market, state, country, size, the "
+            "largest contiguous block on offer, the smallest chunk the "
+            "provider will contract, delivery "
             "type, availability and how fresh each one is — with "
             "program.status telling you whether listings are live or the "
             "first ones are still being onboarded. The site is never in a "

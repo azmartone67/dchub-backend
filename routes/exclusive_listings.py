@@ -37,9 +37,14 @@ DC Hub.
     identity; on decline, no contact details go either way. Every decision is
     a ledger entry, and _decide is the one place that records it.
   * SEARCH. The feed filters by size (min_kw, min_mw) and location (region,
-    country, location), every filter in the parameterised WHERE clause. Regions
-    are derived from canonical_stats' country map, so they agree with DC Hub's
-    own region stats.
+    country, location), every filter in the parameterised WHERE clause. Size
+    asks whether the listing can DELIVER the requested block, not just whether
+    its headline is big enough: detail.contiguous_kw (the largest single
+    contiguous block) is the ceiling when it is declared, and
+    detail.min_contract_kw (the smallest chunk the provider will contract) is
+    the floor. _size_sql is the one matcher, shared by the feed and the
+    standing-requirement count. Regions are derived from canonical_stats'
+    country map, so they agree with DC Hub's own region stats.
   * Every request, identified view, confirmation, operator notice and decision
     is an entry in util/listing_ledger.py's hash chain.
     GET /api/v1/listings/leads/<id>/verify shows any party that record.
@@ -86,17 +91,22 @@ and phone (notify_email only when it is the only address). co_marketing
 ({linkedin_post_url, posted_at, website_url}) records the provider's
 co-marketing and is served only to admin and the tokenized operator ledger.
 
-Listing `detail` (JSON) holds free-form keys plus nine RESERVED keys, all
-optional: colocation, delivery_type, mw_schedule, power, price, provider,
-site, update_cadence, verification. colocation belongs only to a listing whose
-delivery_type is colocation. Admin writes validate the reserved keys and store
-them normalized; a failure answers 400 invalid_detail with one entry per field
-and writes nothing (_validate_detail). Reads project them as typed fields:
-every teaser carries delivery_type, update_cadence, freshness (from
-verification.verified_at) and the provider's name when it is disclosed; the
-specs view adds colocation, mw_schedule, power without its substation, price,
-provider and verification. The generic `detail` object never repeats a reserved
-key or an address-like identity key (_IDENTITY_DETAIL_KEYS), so an undisclosed
+Listing `detail` (JSON) holds free-form keys plus eleven RESERVED keys, all
+optional: colocation, contiguous_kw, delivery_type, min_contract_kw,
+mw_schedule, power, price, provider, site, update_cadence, verification.
+colocation belongs only to a listing whose delivery_type is colocation.
+contiguous_kw is the largest single contiguous block on offer and
+min_contract_kw the smallest chunk the provider will contract, both in kW: the
+two facts a headline capacity hides, so both are teaser-level (a 2 MW listing
+may have only 500 kW contiguous; a 40 MW one may contract from 1 MW). Admin
+writes validate the reserved keys and store them normalized; a failure answers
+400 invalid_detail with one entry per field and writes nothing
+(_validate_detail). Reads project them as typed fields: every teaser carries
+delivery_type, update_cadence, freshness (from verification.verified_at),
+contiguous_kw, min_contract_kw and the provider's name when it is disclosed;
+the specs view adds colocation, mw_schedule, power without its substation,
+price, provider and verification. The generic `detail` object never repeats a
+reserved key or an address-like identity key (_IDENTITY_DETAIL_KEYS), so an undisclosed
 provider name and the site are served only in a released `disclosure` block.
 """
 import hashlib
@@ -291,8 +301,9 @@ _DETAIL_PRIVATE_KEYS = frozenset({"contact", "operator_contact", "operator_email
 # Reserved `detail` keys: validated on admin write (_DETAIL_FIELD_CHECKS),
 # projected as typed fields by _teaser / _full, and left out of the generic
 # `detail` object.
-_DETAIL_RESERVED_KEYS = ("colocation", "delivery_type", "mw_schedule", "power",
-                         "price", "provider", "site", "update_cadence", "verification")
+_DETAIL_RESERVED_KEYS = ("colocation", "contiguous_kw", "delivery_type", "min_contract_kw",
+                         "mw_schedule", "power", "price", "provider", "site",
+                         "update_cadence", "verification")
 _SITE_KEYS = ("name", "address", "city", "postal_code", "parcel_id")
 _UPDATE_CADENCES = ("real_time", "weekly", "monthly")
 # freshness.overdue once verification.verified_at is more than this many days old.
@@ -320,6 +331,10 @@ _MW_SCHEDULE_MAX_ENTRIES = 24
 _MW_SCHEDULE_MAX_MW = 10000
 _COLOCATION_MAX_KW = 100000
 _COLOCATION_MAX_KW_PER_CABINET = 300
+# contiguous_kw and min_contract_kw are kW like min_kw, so a buyer's
+# requirement needs no conversion to be compared with them; they take the same
+# ceiling a requirement does (_REQUIREMENT_MAX_KW).
+_BLOCK_MAX_KW = 5_000_000
 _VERIFIED_AT_MAX_AHEAD = timedelta(days=1)
 # Freshness, by whole days since verification.verified_at: up to
 # _FRESH_MAX_AGE_DAYS is fresh, up to _AGING_MAX_AGE_DAYS is aging, older is
@@ -581,19 +596,51 @@ _LOCATION_MATCH_SQL = ("(UPPER(TRIM(country)) = ANY(%s::text[]) "
 
 
 def _size_sql(min_kw, unknown_matches=False):
-    """-> (predicate, params): the listing offers at least min_kw kW. A
-    colocation listing is sized by detail.colocation.kw_available, cast only
-    when it is a JSON number; any other listing by capacity_mw * 1000.
-    unknown_matches decides a listing whose size is not recorded: the feed
-    leaves it out, a requirement count keeps it as a possible match."""
+    """-> (predicate, params): the listing can DELIVER a block of min_kw kW —
+    does this fit the requirement, not merely is the headline big enough.
+
+    A headline capacity hides two facts, so the listing may declare them
+    (both kW, like min_kw, so nothing has to convert):
+      * detail.contiguous_kw   — the largest single contiguous block;
+      * detail.min_contract_kw — the smallest chunk it will contract.
+    min_kw has to clear the floor and fit under the ceiling:
+
+      both declared      min_contract_kw <= min_kw <= contiguous_kw
+      contiguous only    min_kw <= contiguous_kw
+      min_contract only  min_contract_kw <= min_kw <= total
+      neither            total >= min_kw   (the original rule, unchanged)
+
+    `total` is _total_kw's: a colocation listing's
+    detail.colocation.kw_available, any other listing's capacity_mw * 1000. So
+    a 2 MW listing with 500 kW contiguous does not match a 1 MW search, and a
+    40 MW listing contracting from 1 MW does not match 500 kW.
+
+    Written as one CASE, read top to bottom: a declared floor above min_kw
+    settles it, then a declared contiguous block is the ceiling, then the
+    total is. Every JSON number is cast only where jsonb_typeof says it is a
+    number, so text in any of these fields raises nothing; an undeclared key
+    is not a number either, which is what makes each branch fall through.
+    unknown_matches decides a listing that declares no contiguous block and
+    whose total is not recorded: the feed leaves it out, a requirement count
+    keeps it as a possible match.
+
+    The predicate is one parenthesised expression and holds no " AND ", so a
+    WHERE clause joined with " AND " still splits back into its predicates.
+    It carries no SQL comment: callers normalise whitespace, and a `--` would
+    swallow the rest of the statement."""
     unknown = "TRUE" if unknown_matches else "FALSE"
-    sql = ("(CASE WHEN detail->>'delivery_type' = 'colocation' THEN "
+    sql = ("(CASE WHEN (CASE WHEN jsonb_typeof(detail->'min_contract_kw') = 'number' "
+           "THEN (detail->>'min_contract_kw')::numeric > %s::numeric "
+           "ELSE FALSE END) THEN FALSE "
+           "WHEN jsonb_typeof(detail->'contiguous_kw') = 'number' "
+           "THEN (detail->>'contiguous_kw')::numeric >= %s::numeric "
+           "WHEN detail->>'delivery_type' = 'colocation' THEN "
            "CASE WHEN jsonb_typeof(detail->'colocation'->'kw_available') = 'number' "
            "THEN (detail->'colocation'->>'kw_available')::numeric >= %s::numeric "
            f"ELSE {unknown} END "
            f"WHEN capacity_mw IS NULL THEN {unknown} "
            "ELSE capacity_mw::numeric * 1000 >= %s::numeric END)")
-    return sql, [min_kw, min_kw]
+    return sql, [min_kw, min_kw, min_kw, min_kw]
 
 
 def _region_token(value):
@@ -696,8 +743,10 @@ def _db_list_listings(market=None, state=None, min_mw=None, delivery_type=None,
                       location=None, limit=50):
     """Live listings, newest first. delivery_type matches detail.delivery_type
     exactly. available_by ('YYYY-MM' or 'YYYY-MM-DD') keeps listings with at
-    least one detail.mw_schedule entry dated in or before that month. min_kw is
-    _size_sql; regions are region keys, countries country values
+    least one detail.mw_schedule entry dated in or before that month. min_kw
+    and min_mw (x 1000) are both _size_sql, so the two units ask the same
+    "can this listing deliver that block?" question; regions are region keys,
+    countries country values
     (_country_values), location terms any one of which matches
     (_location_params). The families AND together. Every filter is part of the
     WHERE clause, so LIMIT counts matching rows only."""
@@ -710,8 +759,9 @@ def _db_list_listings(market=None, state=None, min_mw=None, delivery_type=None,
         where.append("UPPER(state) = %s")
         params.append(state)
     if min_mw is not None:
-        where.append("capacity_mw >= %s")
-        params.append(min_mw)
+        size_sql, size_params = _size_sql(min_mw * 1000)
+        where.append(size_sql)
+        params += size_params
     if min_kw is not None:
         size_sql, size_params = _size_sql(min_kw)
         where.append(size_sql)
@@ -765,10 +815,12 @@ def _db_live_listing_facts():
 
 def _db_count_matching(requirement):
     """Live listings a standing requirement could match: in ANY of its places
-    (markets, states, regions, countries) and of its size. Regions, countries
-    and capacity_kw use the feed's own matchers (_COUNTRY_MATCH_SQL,
-    _size_sql); a listing whose size is not recorded counts as a possible
-    match, as it always has for capacity_mw."""
+    (markets, states, regions, countries) and of a size that fits it. Regions
+    and countries use the feed's own matcher (_COUNTRY_MATCH_SQL); capacity_kw
+    and capacity_mw (x 1000) both go through _size_sql, the SAME size matcher
+    the feed uses, so a requirement counts exactly the listings the feed would
+    show for it. A listing whose size is not recorded counts as a possible
+    match, as it always has."""
     where = list(_LIVE_WHERE)
     params = []
     places, place_params = [], []
@@ -788,8 +840,10 @@ def _db_count_matching(requirement):
         where.append("(" + " OR ".join(places) + ")")
         params += place_params
     if requirement.get("capacity_mw") is not None:
-        where.append("(capacity_mw IS NULL OR capacity_mw >= %s)")
-        params.append(requirement["capacity_mw"])
+        size_sql, size_params = _size_sql(requirement["capacity_mw"] * 1000,
+                                          unknown_matches=True)
+        where.append(size_sql)
+        params += size_params
     if requirement.get("capacity_kw") is not None:
         size_sql, size_params = _size_sql(requirement["capacity_kw"], unknown_matches=True)
         where.append(size_sql)
@@ -1358,6 +1412,65 @@ def _colocation_allowed(delivery_type):
     return delivery_type == "colocation"
 
 
+def _check_block_kw(value, path, errors):
+    """A kW block size: a number greater than 0 and at most _BLOCK_MAX_KW."""
+    kw = _num(value)
+    if kw is None or not 0 < kw <= _BLOCK_MAX_KW:
+        errors.append({"field": path, "message": (
+            f"must be a number of kW greater than 0 and at most {_BLOCK_MAX_KW}")})
+        return None
+    return _json_number(round(kw, 3))
+
+
+def _check_contiguous_kw(value, path, errors, now):
+    """The largest single contiguous block on offer, in kW. A listing may have
+    far less contiguous than its headline: 2 MW available, 500 kW in one
+    block. _size_sql reads it as the ceiling a requirement has to fit under."""
+    return _check_block_kw(value, path, errors)
+
+
+def _check_min_contract_kw(value, path, errors, now):
+    """The smallest chunk the provider will contract, in kW. A 40 MW provider
+    willing to cut it up contracts from, say, 1,000 kW. _size_sql reads it as
+    the floor a requirement has to clear."""
+    return _check_block_kw(value, path, errors)
+
+
+def _total_kw(delivery_type, colocation, capacity_mw):
+    """The listing total in kW, as _size_sql's SQL sizes a listing: a
+    colocation listing's colocation.kw_available (None without one), any other
+    listing's capacity_mw * 1000, else None. ONE definition, read by the
+    teaser's capacity_kw and by the write rules that bound contiguous_kw and
+    min_contract_kw."""
+    if delivery_type == "colocation":
+        return _num((colocation or {}).get("kw_available"))
+    mw = _num(capacity_mw)
+    return None if mw is None else round(mw * 1000, 3)
+
+
+def _check_block_sizes(out, capacity_mw, errors):
+    """Cross-field rules for contiguous_kw and min_contract_kw, appended to
+    `errors`. A buyer reads these as what the listing can deliver, so a
+    combination that would mislead is refused rather than stored: the smallest
+    contractable chunk may not exceed the largest contiguous block, and
+    neither may exceed the listing total when the total is known."""
+    contiguous, min_contract = out.get("contiguous_kw"), out.get("min_contract_kw")
+    if contiguous is not None and min_contract is not None and min_contract > contiguous:
+        errors.append({"field": "detail.min_contract_kw", "message": (
+            f"is {min_contract} kW but detail.contiguous_kw is {contiguous} kW: the smallest "
+            "chunk the provider will contract must not exceed the largest contiguous block")})
+    total = _total_kw(out.get("delivery_type"), out.get("colocation"), capacity_mw)
+    if total is None:
+        return
+    basis = ("detail.colocation.kw_available" if out.get("delivery_type") == "colocation"
+             else "capacity_mw")
+    for name, kw in (("contiguous_kw", contiguous), ("min_contract_kw", min_contract)):
+        if kw is not None and kw > total:
+            errors.append({"field": f"detail.{name}", "message": (
+                f"is {kw} kW but the listing offers {_json_number(total)} kW in total "
+                f"({basis}): it must not exceed what the listing has")})
+
+
 def _check_delivery_type(value, path, errors, now):
     choice, problem = _field_choice(value, _DELIVERY_TYPES)
     if problem:
@@ -1551,7 +1664,9 @@ def _check_update_cadence(value, path, errors, now):
 
 _DETAIL_FIELD_CHECKS = {
     "colocation": _check_colocation,
+    "contiguous_kw": _check_contiguous_kw,
     "delivery_type": _check_delivery_type,
+    "min_contract_kw": _check_min_contract_kw,
     "mw_schedule": _check_mw_schedule,
     "power": _check_power,
     "price": _check_price,
@@ -1577,15 +1692,19 @@ def _identity_detail_key(key):
     return isinstance(key, str) and key.strip().lower() in _IDENTITY_DETAIL_KEYS
 
 
-def _validate_detail(raw):
+def _validate_detail(raw, capacity_mw=None):
     """Admin-write rules for `detail`. -> (value to store, errors).
 
     `raw` is an object, a JSON string holding one, or None (stores NULL). Each
     reserved key is checked and stored normalized: text trimmed, numbers as
     JSON numbers, mw_schedule sorted by date. A reserved key set to null is
     dropped, and a reserved name in other case or spacing is refused, as is
-    colocation unless delivery_type is colocation. Every other key is stored
-    as sent. Any error means nothing is stored."""
+    colocation unless delivery_type is colocation. contiguous_kw and
+    min_contract_kw are checked against each other and against the listing
+    total (_check_block_sizes); `capacity_mw` is the total's basis for a
+    non-colocation listing, so pass the value the write leaves on the row and
+    the bound is skipped only when the total is genuinely unknown. Every other
+    key is stored as sent. Any error means nothing is stored."""
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -1611,7 +1730,21 @@ def _validate_detail(raw):
     if raw.get("colocation") is not None and not _colocation_allowed(out.get("delivery_type")):
         errors.append({"field": "detail.colocation",
                        "message": "is allowed only when delivery_type is colocation"})
+    _check_block_sizes(out, capacity_mw, errors)
     return (None, errors) if errors else (out, [])
+
+
+def _declares_block_sizes(raw):
+    """True when a `detail` write sets contiguous_kw or min_contract_kw, so the
+    listing total has to be known to bound them. Reads the JSON-string form the
+    same way _validate_detail does."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, RecursionError):
+            return False
+    return isinstance(raw, dict) and any(
+        raw.get(key) is not None for key in ("contiguous_kw", "min_contract_kw"))
 
 
 def _invalid(code, errors):
@@ -1772,13 +1905,10 @@ def _access(row, v, return_path, terms_ok=False):
 
 
 def _capacity_kw(row, fields):
-    """kW on offer, as _size_sql sizes a listing: a colocation listing's
-    colocation.kw_available (None without one), any other listing's
-    capacity_mw * 1000, else None."""
-    if fields["delivery_type"] == "colocation":
-        return (fields["colocation"] or {}).get("kw_available")
-    mw = _num(row.get("capacity_mw"))
-    return None if mw is None else _json_number(round(mw * 1000, 3))
+    """kW on offer, as _size_sql sizes a listing: _total_kw of the listing's
+    delivery_type, colocation and capacity_mw, as a JSON number."""
+    total = _total_kw(fields["delivery_type"], fields["colocation"], row.get("capacity_mw"))
+    return None if total is None else _json_number(total)
 
 
 def _teaser(row, access, fields=None):
@@ -1803,6 +1933,11 @@ def _teaser(row, access, fields=None):
         "region": _region_of(row.get("country")),
         "capacity_mw": _num(row.get("capacity_mw")),
         "capacity_kw": _capacity_kw(row, fields),
+        # What the headline hides, so it travels with the headline: the
+        # largest single contiguous block, and the smallest chunk the provider
+        # will contract. Null when the listing has not declared it.
+        "contiguous_kw": fields["contiguous_kw"],
+        "min_contract_kw": fields["min_contract_kw"],
         "available": _available(detail, fields["mw_schedule"]),
         "delivery_type": fields["delivery_type"],
         "update_cadence": fields["update_cadence"],
@@ -2890,12 +3025,23 @@ def list_listings():
     """Teaser feed. Everyone sees every live listing's teaser; nobody sees
     operator contact or site identity.
 
-    Size — give one of:
-    ?min_kw=         kW on offer at least this: a colocation listing's
-                     colocation.kw_available (a colocation listing without one
-                     does not match), any other listing's capacity_mw * 1000.
-                     A number greater than 0, else 400 invalid_request
-    ?min_mw=         capacity_mw at least this. With min_kw, 400 invalid_request
+    Size — give one of. Both mean "a listing that can actually deliver this",
+    not "a listing whose headline is at least this":
+    ?min_kw=         kW the listing can deliver as one block. A listing that
+                     declares detail.contiguous_kw (its largest single
+                     contiguous block) matches only up to that, so 2 MW with
+                     500 kW contiguous does not match min_kw=1000; one that
+                     declares detail.min_contract_kw (the smallest chunk it
+                     will contract) matches only from there, so 40 MW
+                     contracting from 1 MW does not match min_kw=500. A
+                     listing declaring NEITHER falls back to its total —
+                     a colocation listing's colocation.kw_available (a
+                     colocation listing without one does not match), any
+                     other listing's capacity_mw * 1000 — which is the rule
+                     that has always applied. A number greater than 0, else
+                     400 invalid_request
+    ?min_mw=         the same rule in megawatts (min_mw * 1000 kW). With
+                     min_kw, 400 invalid_request
     Location — comma lists, repeatable, at most 20 values of 80 characters:
     ?region=         north_america | latin_america | europe | asia_pacific |
                      middle_east_africa, or an alias: na, north america,
@@ -2925,7 +3071,7 @@ def list_listings():
     clause, so LIMIT counts matching rows only. `filters` echoes the
     normalised filters applied, e.g. {"min_kw": 500, "regions":
     ["north_america", "europe"], "location": ["Dallas"]}. Every teaser carries
-    capacity_kw and region."""
+    capacity_kw, contiguous_kw, min_contract_kw and region."""
     _ensure_schema()
     v = _viewer()
     market = (request.args.get("market") or "").strip()[:80]
@@ -3715,7 +3861,7 @@ def admin_listings():
     if tier_required not in _ACCESS_LEVELS:
         return _err(400, "invalid_request", "invalid tier_required",
                     allowed=list(_ACCESS_LEVELS))
-    detail, detail_errors = _validate_detail(body.get("detail"))
+    detail, detail_errors = _validate_detail(body.get("detail"), body.get("capacity_mw"))
     if detail_errors:
         return _invalid_detail(detail_errors)
     contact = body.get("contact")
@@ -3793,7 +3939,17 @@ def update_or_delete_listing(lid):
                     allowed=list(_ACCESS_LEVELS))
     detail = None
     if "detail" in body:
-        detail, detail_errors = _validate_detail(body["detail"])
+        # contiguous_kw and min_contract_kw are bounded by the listing total,
+        # so the capacity this write LEAVES on the row is the basis: the new
+        # one when the same request sets it, otherwise the stored one. Only a
+        # write that declares them pays for that read.
+        capacity_mw = body.get("capacity_mw")
+        if "capacity_mw" not in body and _declares_block_sizes(body["detail"]):
+            try:
+                capacity_mw = (_db_get_listing(lid) or {}).get("capacity_mw")
+            except Exception as exc:
+                return _err(503, "listings_unavailable", str(exc)[:200])
+        detail, detail_errors = _validate_detail(body["detail"], capacity_mw)
         if detail_errors:
             return _invalid_detail(detail_errors)
     if "contact" in body:
