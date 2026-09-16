@@ -310,16 +310,26 @@ def _main_capacity_strings() -> list:
                     and isinstance(value, ast.Dict)):
                 return [n.value for n in ast.walk(value)
                         if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-    pytest.fail("no `capacity_source` block in main.py — /api/v1/ai-agents.json "
-                "is the first surface an agent reads and it names every other "
-                "agent-facing endpoint")
+    # Returns EMPTY rather than raising: a pytest.fail inside a module-scoped
+    # fixture surfaces as an ERROR, which reads like a broken environment. A
+    # missing block is a product defect, and it should report as a FAILURE with
+    # the test below naming it.
+    return []
 
 
 @pytest.fixture(scope="module")
 def manifest_strings():
-    values = _main_capacity_strings()
-    assert len(values) >= 15, f"capacity_source parsed to {len(values)} strings"
-    return values
+    return _main_capacity_strings()
+
+
+def test_the_agent_manifest_has_a_capacity_source_block(manifest_strings):
+    """Floor for everything below, which loops over this set."""
+    assert len(manifest_strings) >= 15, (
+        f"main.py's ai-agents.json carries {len(manifest_strings)} "
+        "capacity_source string(s). /api/v1/ai-agents.json (and its "
+        "/.well-known twin) is the first surface an agent reads, and it names "
+        "every other agent-facing endpoint — an agent asked where to FIND "
+        "capacity has nothing here to follow.")
 
 
 def test_the_agent_manifest_carries_the_search_contract(manifest_strings):
