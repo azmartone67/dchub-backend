@@ -55,16 +55,20 @@ _checked: set = set()
 # has not changed since 2026-09-05, and on a different one of its tests each
 # time.
 #
+# Nine test modules start these threads in a full suite, 18 starts in all, so
+# the file that takes the blame is whichever one is running when a lookup
+# lands — not a property of the blamed file at all.
+#
 # ★ WHY THE FIX IS HERE AND NOT IN THE HOOK'S ATTRIBUTION. The obvious repair
 # looks like "stop reading PYTEST_CURRENT_TEST off the main thread" — it names
-# the test pytest runs in the MAIN thread. Measured across a full suite before
-# writing that: 650+ refusals come off a worker thread, nearly all of them pool
-# threads inside a call the running test makes and joins (site_sentinel,
-# brain_consistency_radar, schema_org_saturation). For those the running test
-# IS the owner and the label is right; the hook cannot tell a bounded worker
-# from a fire-and-forget daemon, so that change would have mislabelled hundreds
-# of correct attributions to fix six. What is actually wrong is the UNBOUNDED
-# refresh, so that is what is stopped.
+# the test pytest runs in the MAIN thread. Measured over a full suite before
+# writing that: of 822 refusals, 660 come off a worker thread, and only 21 of
+# those 660 are these unbounded refreshers. The rest are pool threads inside a
+# call the running test makes and joins (site_sentinel 410, radar 189,
+# schema_org_saturation 12). For those the running test IS the owner and the
+# label is right; the hook cannot tell a bounded worker from a fire-and-forget
+# daemon, so that change would have mislabelled 639 correct attributions to
+# fix 21. What is wrong is the UNBOUNDED refresh, so that is what is stopped.
 #
 # The guard is per-THREAD, not per-module: a test that calls a refresher
 # DIRECTLY still gets the real function, because that call is on the main
