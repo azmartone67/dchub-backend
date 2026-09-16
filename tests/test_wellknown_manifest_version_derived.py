@@ -741,13 +741,26 @@ def test_fallback_tool_descriptions_carry_no_facility_count():
 
     Scoped to the array so the `*`-prefixed changelog header above it, which
     RECORDS retired counts on purpose, is never scanned.
+
+    ★2026-09-15 — THE PATTERN NOW COVERS EVERY SPELLING IT CLAIMS TO. It read
+    `<count> [distinct] facilit…`, which matched only `why_dchub`'s "21,900+
+    distinct facilities". The 4.9.69 re-sync landed the same magnitude in two
+    more descriptions the old pattern walked straight past — search_facilities'
+    "21,900+ global data center facilities" and semantic_search's "21,900+
+    discovered facilities" — and the guard stayed green over both. All three are
+    the SAME defect and the SAME sentence the backend builds through
+    canon_text("{canon_facilities}"), so the noun-phrase between the number and
+    "facilit" is now allowed to be any short run of words. Only facility
+    magnitudes are refused: the array's other comma-grouped counts (deals, grid
+    assets, queue projects, call quotas) are different nouns and different
+    guards' business.
     """
     w = _WORKER.read_text()
     m = re.search(r"const MCP_FALLBACK_TOOLS = \[\n(.*?)\n\];", w, re.S)
     assert m, "MCP_FALLBACK_TOOLS array missing from worker.js"
     body = m.group(1)
     assert len(body) > 10_000, f"array sliced to {len(body)}b — extraction failed"
-    hits = re.findall(r"\d{1,3}(?:,\d{3})+\+?\s*(?:distinct\s+)?facilit\w*", body)
+    hits = re.findall(r"\d{1,3}(?:,\d{3})+\+?\s*(?:[a-z][a-z-]*\s+){0,4}facilit\w*", body)
     assert not hits, (
         f"a fallback tool description states a facility count {hits} — the "
         "backend catalog builds the same text through canon_text('{canon_facilities}') "

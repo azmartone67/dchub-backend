@@ -534,8 +534,34 @@ def test_repo_worker_is_canon_clean_and_current():
     #
     # 4.9.67 -> 4.9.68-capacity-terms (2026-09-13): dchub-mcp-server #411 adds
     # accept_capacity_terms (90 -> 91); MCP_FALLBACK_TOOLS carries it, derived from
-    # #411's toolspec.json. ⚠ PASTE OUTSTANDING: paste after #411 deploys.
-    assert "WORKER_VERSION = '4.9.68-capacity-terms'" in src
+    # #411's toolspec.json.
+    # ✓ PASTED — live confirmed 2026-09-15 (see the 4.9.69 note below).
+    #
+    # 4.9.68 -> 4.9.69-capacity-search (2026-09-15): MCP_FALLBACK_TOOLS re-synced
+    # to the deployed tools/list with scripts/sync_cf_worker_manifest.py — count
+    # unchanged at 91, but source_capacity now advertises min_kw/region/location/
+    # delivery_type/available_by and request_capacity_intro advertises
+    # capacity_kw/regions/countries. ✓ PASTED AND VERIFIED LIVE 2026-09-15:
+    # 6/6 cache-busted probes of /.well-known/mcp.json returned
+    # X-DC-Worker-Version: 4.9.69-capacity-search (one probe can hit a single PoP
+    # mid-propagation and "confirm" either answer, so one is never enough).
+    #
+    # 4.9.69 -> 4.9.70-capacity-search (2026-09-15): three re-synced descriptions
+    # (search_facilities, semantic_search, why_dchub) arrived carrying a baked
+    # "21,900+" facility magnitude. The backend catalog builds those same three
+    # sentences through canon_text("{canon_facilities}") so they move with canon;
+    # this file cannot import canon, and it deploys by hand, so a literal here
+    # re-freezes for months — the exact shape that served "15,700+ facilities"
+    # under a green fence. The worker copy now states NO facility count, which is
+    # also what canon_text() itself degrades to when the canon is unreadable.
+    # Fenced by tests/test_wellknown_manifest_version_derived.py::
+    # test_fallback_tool_descriptions_carry_no_facility_count.
+    # ⚠ PASTE OUTSTANDING as of this commit: production still serves 4.9.69, so a
+    # version-drift report against this repo is EXPECTED until the paste lands.
+    # Verify with (want 4.9.70-capacity-search):
+    #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
+    #     | grep -i x-dc-worker-version
+    assert "WORKER_VERSION = '4.9.70-capacity-search'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

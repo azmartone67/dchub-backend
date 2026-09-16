@@ -470,10 +470,20 @@ def _worker_tool_schemas():
 # ★ SELF-CLEANING: test_mirror_lag_entries_are_still_lagging FAILS once the
 # mirror declares one, which forces the exception out instead of letting it
 # calcify into a permanent hole in the guard.
-_MIRROR_LAGS = {
-    ("execute_plan", "state"): "dchub-mcp-server #255 — canvas geography args",
-    ("execute_plan", "iso"): "dchub-mcp-server #255 — canvas geography args",
-}
+#
+# EMPTY IS THE HEALTHY STATE, and it is the state the design aims at: every
+# entry is a hole in test_every_published_input_is_declared_by_its_tool, so the
+# allowlist earns its keep by shrinking. The last two — ("execute_plan","state")
+# and ("execute_plan","iso"), both dchub-mcp-server #255 canvas geography args —
+# were retired on 2026-09-15 when the 4.9.69 re-sync brought the mirror level
+# with the live surface. VERIFIED AGAINST LIVE, not merely against the file the
+# guard reads: POST https://dchub.cloud/mcp tools/list (91 tools) returns
+# execute_plan.inputSchema.properties containing BOTH `state` ("US state code,
+# e.g. \"VA\".") and `iso` ("ISO/RTO code to pin geography, e.g. \"PJM\",
+# \"ERCOT\"."), so the real tool declares them and the guard now covers both
+# names directly. (/.well-known/mcp.json publishes `params`, not inputSchema —
+# it cannot answer this question; tools/list is the only surface that can.)
+_MIRROR_LAGS: dict = {}
 
 
 def test_every_published_input_is_declared_by_its_tool():
