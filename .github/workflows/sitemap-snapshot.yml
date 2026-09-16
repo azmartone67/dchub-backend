@@ -102,9 +102,12 @@ on:
     # with no deploy at all, which is what the 4-hourly cron above is for.
     paths:
       - '.github/workflows/sitemap-snapshot.yml'
+      - 'canonical_stats.py'
       - 'db_utils.py'
       - 'facilities_hub.py'
+      - 'location_names.py'
       - 'main.py'
+      - 'routes/exclusive_listings.py'
       - 'routes/facility_dedup_v4.py'
       - 'routes/facility_profile_page.py'
       - 'routes/facility_slug.py'
@@ -115,6 +118,7 @@ on:
       - 'routes/operator_brief.py'
       - 'routes/pockets.py'
       - 'scripts/workflow_trigger_modules.py'
+      - 'util/__init__.py'
       - 'util/dcpi_score_row.py'
       - 'util/deployability_rank.py'
       - 'util/facility_facts.py'
@@ -145,6 +149,20 @@ on:
 # timeout-minutes: 20 on the job covers the worst observed run 3.3x over, and
 # sitemap-snapshot-rebuild is not a required check on main, so an extra run
 # cannot block a merge.
+#
+# ★ 2026-09-16 — THE FILTER IS 27 ENTRIES NOW. The 21 above is the 2026-09-12
+# count and is left as measured; it had already reached 23 before today.
+#
+# The builder publishes every live Capacity Source listing, and it takes the
+# liveness rule from routes.exclusive_listings._LIVE_WHERE rather than
+# retyping it — so that module, and the three it reaches (canonical_stats.py,
+# location_names.py, util/__init__.py), can change which <loc> elements exist
+# and must retrigger the rebuild. tests/test_workflow_trigger_paths_match_
+# imports.py caught all four; the list was REGENERATED, not hand-extended:
+#     python3 scripts/workflow_trigger_modules.py --workflow sitemap-snapshot.yml
+# Four more modules, all low-churn, do not change the cost conclusion above —
+# and re-stating that measurement from memory would be worse than leaving the
+# real number with its real date.
 concurrency:
   group: sitemap-snapshot
   cancel-in-progress: false
