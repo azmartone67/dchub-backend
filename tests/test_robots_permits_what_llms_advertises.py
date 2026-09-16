@@ -389,11 +389,24 @@ def test_removing_the_api_allow_lines_reblocks_everything():
     at all. Removing only the prefix form would leave Bingbot fetchable and this
     control would fail for the wrong reason — reporting a leak where the design
     changed.
+
+    ★ 2026-09-15 — THE ANCHORED SWEEP IS NO LONGER `/api/`-SHAPED. llms.txt now
+    advertises the Capacity Source search at /listings?min_kw=...&region=...,
+    which sits OUTSIDE /api/ and therefore outside the prefix Allow: it is
+    unblocked by an end-anchored line in both the assistant group and Bingbot's.
+    Collecting only `Allow: /api/...$` would have left that URL fetchable after
+    the mutation and reported a leak that is really this control's own blind
+    spot. Select on the SHAPE that does the unblocking — an end-anchored Allow
+    carrying a `*` wildcard, which is exactly the query-string exception form —
+    so the next advertised path outside /api/ is swept without an edit here.
+    `Allow: /sites/$` is anchored but has no `*`: it is a clean-path exception,
+    unrelated to query strings, and is deliberately left in place.
     """
     prefix = "Allow: /api/"
     anchored = [
         l.strip() for l in BODY.splitlines()
-        if l.strip().startswith("Allow: /api/") and l.strip().endswith("$")
+        if l.strip().startswith("Allow: /") and l.strip().endswith("$")
+        and "*" in l.strip()
     ]
     assert prefix in BODY, (
         "`Allow: /api/` is not in the served robots body — either the fix was "
@@ -401,8 +414,8 @@ def test_removing_the_api_allow_lines_reblocks_everything():
         "about to test nothing."
     )
     assert len(anchored) >= 10, (
-        f"only {len(anchored)} end-anchored `Allow: /api/...$` lines in the "
-        "served body, but Bingbot's 14 advertised URLs depend on them. Either "
+        f"only {len(anchored)} end-anchored wildcard `Allow: ...$` lines in the "
+        "served body, but Bingbot's advertised URLs depend on them. Either "
         "they were removed or the emitter changed shape."
     )
 

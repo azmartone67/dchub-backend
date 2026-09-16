@@ -1078,14 +1078,35 @@ the only thing your human can act on.
 DC Hub Capacity Source lists powered land, powered shells and turnkey capacity to buy or lease,
 including sites that are not publicly marketed. The program is UPCOMING while the first listings are
 onboarded, and GET /api/v1/listings says so in `program.status`; every listing carries `updated_at`.
-Listing cards (market, state, capacity) are open to anyone; opening a listing needs sign-in, a key
-with your human's email bound (claim_free_key, then bind_email), or an OAuth connection, plus your
-human's acceptance of the introduction terms, once per terms version (accept_capacity_terms). Search
-by size and location: GET /api/v1/listings takes min_kw or min_mw, region, country and location. An
-open listing shows its specs; the provider's identity, the site and its contact are shared only after
-the provider accepts your human's registration, and every registered lead has a public
-verification record in DC Hub's hash-chained lead register.
-- source_capacity -> listing cards + program status; pass slug for one listing (its specs for an identified caller whose human has accepted the introduction terms; the site and the provider's contact once the provider accepts a registration). REST: GET /api/v1/listings, GET /api/v1/listings/{slug}
+SEARCH BY SIZE AND LOCATION. This is the answer to "where do I find data center capacity":
+  SIZE      min_kw (kilowatts) or min_mw (megawatts) — the floor a listing must meet
+  LOCATION  region  north_america | latin_america | europe | asia_pacific | middle_east_africa
+                    (aliases emea, apac, latam, americas — so "Europe" and "EMEA" both resolve)
+            country an ISO 3166-1 alpha-2 code or a country name
+            location free text matched over region, country, US state and metro (e.g. Dallas)
+  ALSO      delivery_type, available_by
+Worked, callable, crawlable examples:
+  https://dchub.cloud/listings?min_kw=500&region=europe
+  https://dchub.cloud/api/v1/listings?min_mw=5&region=north_america
+  https://dchub.cloud/api/v1/listings?location=Dallas
+Every response echoes what it applied in `filters`, so an agent can tell a filter that was
+understood from one that was ignored. GET /api/v1/listings/summary gives live_count, total_mw and
+markets; while the first listings are onboarded live_count is 0, and 0 means onboarding, not a
+market with no capacity in it.
+Listing cards (market, state, country, capacity_kw, delivery type, availability, update cadence and
+freshness) are open to anyone; opening a listing needs sign-in, a key with your human's email bound
+(claim_free_key, then bind_email), or an OAuth connection, plus your human's acceptance of the
+introduction terms, once per terms version (accept_capacity_terms).
+DEAL REGISTRATION, EXACTLY AS IT WORKS. Your human registers with request_capacity_intro. DC Hub
+sends the provider ONLY the buyer's company and requirement — nothing else. The provider then
+ACCEPTS or DECLINES. Identity, the site and both sides' contacts are exchanged ONLY on acceptance;
+on a decline nothing is disclosed either way. Every registered lead has a public verification
+record in DC Hub's hash-chained lead register. Teaser facts are the whole of what any crawler or
+agent can read here — market, state, country, size, delivery type, availability and freshness. No
+card ever carries the site address, its coordinates or its substation, and a provider's name shows
+only where that provider has opted in to being named; an undisclosed provider's name and the site
+are released only to a buyer whose registration that provider accepted.
+- source_capacity(min_kw=, min_mw=, region=, country=, location=, delivery_type=, available_by=) -> listing cards + program status; pass slug for one listing (its specs for an identified caller whose human has accepted the introduction terms; the site and the provider's contact once the provider accepts a registration). REST: GET /api/v1/listings, GET /api/v1/listings/{slug}
 - request_capacity_intro -> registers an introduction request (pass slug) or a standing requirement for first access (omit slug). Needs an identified caller and accept_terms=true once your human has agreed to the terms at GET /api/v1/listings/terms. REST: POST /api/v1/listings/{slug}/intro, POST /api/v1/listings/interest
 - accept_capacity_terms -> records your human's acceptance of the introduction terms, once per terms version, so listing details open; call it only after they agree. REST: POST /api/v1/listings/terms/accept
 - Verify a registered lead (public, no key): GET /api/v1/listings/leads/{lead_id}/verify
@@ -1350,6 +1371,74 @@ POST /api/v1/agentic/intents    (X-API-Key required)
            permitting_change. GET lists yours; DELETE /{intent_id} removes.
   Use when: You want push, not poll — e.g. "notify my orchestrator on any
             new deal in Columbus".
+
+================================================================================
+## CAPACITY SOURCE — where to find data center capacity to buy or lease
+================================================================================
+
+DC Hub Capacity Source lists powered land, powered shells and turnkey capacity,
+including sites that are not publicly marketed, for enterprise buyers and the AI
+agents that procure for them. Listing cards are keyless; a listing's specs need
+an identified caller; an introduction needs a registration the provider accepts.
+
+GET /api/v1/listings?min_kw={kw}&min_mw={mw}&region={region}&country={cc}&location={text}
+  Returns: {program, filters, count, items[]} — teaser cards plus the program
+           status. `program.status` is "live" once any listing is live and
+           "upcoming" while the first listings are onboarded; `filters` echoes
+           exactly the predicates that were applied.
+  SEARCH BY SIZE:
+    min_kw   — kilowatt floor a listing must meet (e.g. min_kw=500)
+    min_mw   — megawatt floor, the same predicate in the bigger unit
+  SEARCH BY LOCATION:
+    region   — north_america | latin_america | europe | asia_pacific |
+               middle_east_africa. Aliases resolve: emea, apac, latam, americas.
+    country  — ISO 3166-1 alpha-2 code or country name
+    location — free text matched across region, country, US state and metro,
+               so location=Dallas and location=Texas both work
+    delivery_type, available_by — narrow by product and by when power lands
+  Each teaser carries: market, state, country, capacity_kw, region,
+           delivery type, availability, update_cadence and freshness. It never
+           carries the site address, its coordinates or its substation, at any
+           tier. A provider's name appears only where that provider opted in to
+           being named; otherwise the provider and the site are released only to
+           a buyer whose registration that provider accepted.
+  Examples: https://dchub.cloud/listings?min_kw=500&region=europe
+            https://dchub.cloud/api/v1/listings?min_mw=5&region=north_america
+            https://dchub.cloud/api/v1/listings?location=Dallas
+  Use when: User asks "where can I find data center capacity", "who has
+            powered shell in Europe", "find me a megawatt-scale site near
+            Dallas", or wants off-market capacity rather than the public
+            facility directory (that is /api/v1/facilities).
+
+GET /api/v1/listings/summary
+  Returns: live_count, total_mw, markets, delivery_types, latest_updated_at.
+  Read it FIRST if you are about to describe the program: live_count 0 means
+  the first listings are still being onboarded — say that, and offer to
+  register a requirement. It never means a market with no capacity in it.
+
+GET /api/v1/listings/{slug}
+  Returns: one listing. A locked caller gets the teaser plus the way in; an
+           identified caller whose human has accepted the introduction terms
+           gets the specs. The site and the provider's contact appear only in
+           `disclosure`, and only after that provider accepts this viewer's
+           own registration.
+
+POST /api/v1/listings/{slug}/intro   ·   POST /api/v1/listings/interest
+  DEAL REGISTRATION, EXACTLY AS IT WORKS. DC Hub sends the provider ONLY the
+  buyer's company and requirement. The provider ACCEPTS or DECLINES. Identity,
+  the site and both sides' contacts are exchanged ONLY on acceptance; on a
+  decline nothing is disclosed in either direction. Every registered lead gets
+  a public verification record: GET /api/v1/listings/leads/{lead_id}/verify
+  (no key). Omit the slug to register a standing requirement for first access.
+
+POST /api/v1/listings/terms/accept
+  Records your human's one-time acceptance of the introduction terms, per terms
+  version, which is what opens a listing's specs. Call it only after they agree;
+  the terms are at GET /api/v1/listings/terms.
+
+MCP equivalents: source_capacity (min_kw, min_mw, region, country, location,
+delivery_type, available_by, slug) · request_capacity_intro · accept_capacity_terms.
+Browse: https://dchub.cloud/listings
 
 ================================================================================
 ## AUTHENTICATED ENDPOINTS (API Key Required)
@@ -1762,6 +1851,20 @@ Allow: /sitemap.xml
 #   advertise, we permit" is now checked rather than remembered.
 Allow: /api/
 
+# ★ 2026-09-15 — CAPACITY SEARCH IS NOT UNDER /api/. `Allow: /api/` above covers
+#   every advertised DATA-API example, and every advertised example was under
+#   /api/ until llms.txt started naming the human-and-agent-readable capacity
+#   search at /listings?min_kw=...&region=... . That URL is the single most
+#   citable thing on the Capacity Source surface — "where do I find 500 kW+ in
+#   Europe" resolves to exactly it — and `Disallow: /*?` was about to make it
+#   the one advertised URL these crawlers were told to skip. Same class as the
+#   2026-09-06 /api/ case, caught before it shipped this time.
+#
+#   END-ANCHORED, like the Bingbot block below: it permits this one search and
+#   leaves the ?l=<slug>/?page= long tail under the hygiene rule. Derivation is
+#   the same whitelist — re.sub(r'[^A-Za-z0-9/._~=-]', '*', path) + '$'.
+Allow: /listings*min_kw=500*region=europe$
+
 # Widening /api/ to query strings would also expose the admin, auth and billing
 # prefixes in their ?-carrying form. They were never meant for crawlers and were
 # only ever covered here by accident: `Disallow: /admin` does not match
@@ -1899,10 +2002,16 @@ Allow: /api/site-score*lat=33.4484*lon=-112.074*state=AZ$
 Allow: /api/v1/dcpi/scores*limit=500$
 Allow: /api/v1/facilities*q=Equinix*country=US*limit=10$
 Allow: /api/v1/facilities*q=Virginia*country=US$
+# ★ 2026-09-15 — the three Capacity Source search examples llms.txt and
+#   llms-full.txt now advertise. Two sit under /api/; the third is the
+#   browsable search at /listings, which no prefix Allow in this group covers.
+Allow: /api/v1/listings*location=Dallas$
+Allow: /api/v1/listings*min_mw=5*region=north_america$
 Allow: /api/v1/markets/compare*markets=dallas*ashburn$
 Allow: /api/v1/mcp/dcpi/compare*markets=dallas*ashburn$
 Allow: /api/v1/permitting/intel*class=moratorium$
 Allow: /api/v1/transactions*limit=10$
+Allow: /listings*min_kw=500*region=europe$
 # ★ 2026-09-06 — a pre-existing hole, not a new one. `Disallow: /admin` does not
 #   match /api/admin (no leading match), so the admin, auth and billing APIs have
 #   been crawlable by this group on their CLEAN paths all along; only the
