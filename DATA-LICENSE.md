@@ -1,7 +1,7 @@
 # DC Hub — Data Licence
 
 **This file is the authoritative statement of what you may do with DC Hub data.**
-Last reviewed 2026-08-10.
+Last reviewed 2026-09-16.
 
 Until today DC Hub said three different things about its own licence, in three
 places, and they did not agree:
@@ -133,16 +133,55 @@ at [dchub.cloud/data-sources](https://dchub.cloud/data-sources).
 
 ---
 
-## 5. How this relates to `dchub.cloud/terms`
+## 5. Capacity Source listings → **teaser CC-BY-4.0; full detail confidential**
+
+Added 2026-09-16. This layer has two halves and one answer would be false about
+one of them, so it is stated as a split.
+
+The rule of thumb above does not decide it, and the reason is worth stating:
+the teaser is neither computed by DC Hub nor collected from an upstream
+compilation. It is **published by the operator through DC Hub, for
+publication** — an operator lists capacity here in order to be found. That is
+why the grant is ours to give on the teaser and is not ours to give on anything
+behind the wall.
+
+**Teaser level → CC-BY-4.0, quotable with attribution.** Market, state,
+country, region, size (MW / kW on offer), delivery type, availability,
+freshness, update cadence, title and summary. These are what the public
+`/listings` feed, `GET /api/v1/listings/summary` and the crawlable
+`dchub.cloud/listings/<slug>` teaser page already publish to anyone, indexed by
+search engines and served with `x-robots-tag: index, follow`. Quote them, chart
+them, put them in a client report — attribute.
+
+**Cite as:**
+
+> DC Hub Capacity Source, dchub.cloud, CC-BY-4.0. Retrieved &lt;date&gt;.
+
+**Full detail → no redistribution grant.** The unlocked specs view (schedule,
+power stage, price, verification, the generic `detail` object) and everything
+released after a provider accepts a registration — the provider's identity, the
+site, its coordinates and the operator's contact — are shared to evaluate one
+opportunity under the introduction terms at `dchub.cloud/listings#terms`. They
+carry `LicenseRef-DCHub-Capacity-Source-Confidential` and
+`redistribution: not_permitted`, and that is not a formality: an operator
+listed a site with DC Hub on the understanding that its identity is disclosed
+to a named buyer it accepted, not to the internet.
+
+Machine-readable, on every response: the `citation` block names which half you
+are holding. A response whose `citation.license` is `CC-BY-4.0` is teaser
+level; one carrying the `LicenseRef-` string is not for redistribution.
+
+## 6. How this relates to `dchub.cloud/terms`
 
 `/terms` governs your **use of the Service** — accounts, rate limits, scraping
 our endpoints, reselling *access*. It continues to apply in full.
 
-This file governs the **licence in the data**. The CC-BY-4.0 grant in §1 and §2
-is an **express exception** to the redistribution language in `/terms` §5.2, and
-it is granted by the same rights-holder that wrote `/terms`. Where the two
-appear to conflict about what you may do with a **DCPI score or our published
-methodology**, this file governs.
+This file governs the **licence in the data**. The CC-BY-4.0 grants in §1, §2
+and the teaser half of §5 are an **express exception** to the redistribution
+language in `/terms` §5.2, and they are granted by the same rights-holder that
+wrote `/terms`. Where the two appear to conflict about what you may do with a
+**DCPI score, our published methodology, or a Capacity Source teaser card**,
+this file governs.
 
 Two further points `/terms` gets wrong today, and which the pending amendment
 fixes:
@@ -155,12 +194,15 @@ fixes:
   DC Hub's own enterprise data-licence export. A prohibition the operator
   itself does not follow protects nobody.
 
-## 6. If you want more than this file grants
+## 7. If you want more than this file grants
 
 Redistribution of the facility corpus (§3) needs a written agreement, because
 it needs per-source clearance we do not yet have across the board. Ask:
-**info@dchub.cloud**. A citation partnership needs no agreement at all — §1 and
-§2 already permit it, and we would like you to take us up on it.
+**info@dchub.cloud**. Full Capacity Source detail (§5) needs the introduction
+terms and a provider who accepts your registration — there is no licence to buy
+there, because the constraint is the operator's, not ours. A citation
+partnership needs no agreement at all — §1, §2 and the §5 teaser already permit
+it, and we would like you to take us up on it.
 
 ---
 
