@@ -43,6 +43,7 @@ noindex.
 import ast
 import importlib
 import pathlib
+import re
 
 import pytest
 
@@ -259,6 +260,90 @@ class TestTheSitemapDelta:
         rows = [_row("thin-%d" % i, address="India") for i in range(30)]
         rows += [_row("real-%d" % i, city="Columbus") for i in range(970)]
         assert len(contentless_slug_set(_Cursor(rows))) == 30
+
+    # ── the QUERY, not just the verdict ─────────────────────────────────────
+    # ★★★ WHY THESE TWO EXIST. Everything above drives contentless_slug_set
+    # through _Cursor, which IGNORES the query text — it answers fetchall()
+    # with whatever rows the test handed it. So the SQL is unexercised, and two
+    # edits to it pass this entire file. Both were applied to #4646 as merged
+    # and its suite stayed GREEN at exit 0:
+    #
+    #   the address test pushed down into SQL   (`AND address IS NOT NULL`)
+    #   `address` dropped from ONE union branch (`city, NULL, latitude`)
+    #
+    # The first is the defect #4646 fixed, re-introduced one layer lower:
+    # street_address CANNOT RUN in SQL, so the sitemap side would silently go
+    # back to "is there a value" while the page's robots tag stayed correct —
+    # the exact split that left 70 noindexed URLs in both sitemaps. The second
+    # reads as "no row has an address", which de-indexes real pages.
+
+    def _sql(self):
+        """contentless_slug_set's own query text, lowercased.
+
+        ★ THE DOCSTRING IS DROPPED BY AST NODE, not by a regex over the source.
+          That docstring has to describe what the query does — "it selects the
+          five evidence columns" — and `selects` contains `select`, so a
+          text-level version of this helper swallows the prose and reports that
+          a UNION branch stopped fetching canonical_slug. It did exactly that
+          before this form. Prose that explains a query is not the query."""
+        src = (ROOT / "util" / "thin_content.py").read_text(encoding="utf-8")
+        fn = [n for n in ast.parse(src).body
+              if isinstance(n, ast.FunctionDef)
+              and n.name == "contentless_slug_set"]
+        assert fn, "contentless_slug_set is gone or was renamed"
+        body = list(fn[0].body)
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            body = body[1:]
+        assert body, "contentless_slug_set has a docstring and no code"
+        sql = " ".join(
+            n.value.lower() for stmt in body for n in ast.walk(stmt)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and "select" in n.value.lower())
+        assert sql, "contentless_slug_set no longer carries its own SQL"
+        return sql
+
+    def test_the_address_test_is_NOT_pushed_down_into_SQL(self):
+        """Fetching the column is REQUIRED — is_contentless needs it. Naming it
+        in a WHERE clause is the defect, because that is a second spelling of
+        the rule in a language street_address cannot reach."""
+        sql = self._sql()
+        assert "address" in sql, (
+            "the query stopped fetching `address`, so is_contentless cannot "
+            "see it and every row reads as address-less")
+        # A WHERE clause ENDS at the next clause keyword. `split("where", 1)[1]`
+        # swallows the SECOND union branch's SELECT list, which names `address`
+        # legitimately, and goes red on correct code — it did, on the first
+        # draft of this guard.
+        clauses = [re.split(r"\b(?:union|order by|group by|having|limit)\b",
+                            part, maxsplit=1)[0]
+                   for part in sql.split("where")[1:]]
+        assert clauses, "the query lost its WHERE clause entirely"
+        for where in clauses:
+            assert "address" not in where, (
+                "the address test moved into SQL, where street_address cannot "
+                "run: %r" % (where,))
+
+    def test_every_UNION_BRANCH_still_fetches_every_evidence_column(self):
+        """is_contentless reads five columns off each row; one missing from a
+        SELECT reads as absent evidence and de-indexes real pages.
+
+        ★ PER BRANCH, not over the concatenated string. The query is two
+          SELECTs joined by UNION ALL, and replacing `address` with `NULL` in
+          the discovered_facilities branch alone leaves `address` present in
+          the other — the whole-string form of this assertion stays green on
+          that mutation."""
+        branches = [b for b in self._sql().split("union all") if "select" in b]
+        assert len(branches) == 2, (
+            "expected the two column families, got %d branch(es)"
+            % len(branches))
+        for b in branches:
+            cols = b.split("from", 1)[0]
+            for col in ("canonical_slug", "city", "address", "latitude",
+                        "longitude", "power_mw"):
+                assert col in cols, (
+                    "a UNION branch stopped fetching %s: %r" % (col, cols))
 
 
 @pytest.mark.parametrize("mod,name", [
