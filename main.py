@@ -7531,6 +7531,20 @@ def handle_well_known():
             _ai_mcp_tools = [t["name"] for t in _fcard()]
         except Exception:
             _ai_mcp_tools = []
+        # ★2026-09-15 — Capacity Source liveness for the canonical_endpoints
+        # block below. This manifest is the FIRST surface an agent reads, and it
+        # named every agent-facing endpoint except the one an agent is sent to
+        # when its human asks where to FIND capacity.
+        # cached_listings_summary() is the same in-process cache
+        # GET /api/v1/listings/summary serves, so this adds no query of its own
+        # and costs nothing on the hot path. It returns None when the listings
+        # cannot be read, and None resolves to "upcoming" — the honest direction:
+        # an unreadable summary must never render as a claim of inventory.
+        try:
+            from routes.exclusive_listings import cached_listings_summary as _cls
+            _cap_live = int((_cls() or {}).get("live_count") or 0)
+        except Exception:
+            _cap_live = 0
         _live_counts = {}
         try:
             # Mirror the /api/health pattern exactly (main.py:13372): use
@@ -7925,6 +7939,69 @@ def handle_well_known():
                     "iso_grid": "/api/iso/{iso_id}",
                     "fiber_routes": "/api/v1/fiber/routes",
                     "substations": "/api/v1/substations",
+                },
+                # ★2026-09-15 — Capacity Source. Where an agent is sent when its
+                # human asks where to FIND data center capacity, rather than
+                # where to read about facilities that already exist.
+                # CONFIDENTIALITY IS THE PRODUCT HERE: everything named below is
+                # teaser-level. No surface a crawler or an unaccepted agent can
+                # read carries a site address, its coordinates or its substation
+                # — that is not a tier, it is the contract, and it is stated
+                # here so an agent does not go looking for those fields. A
+                # provider's NAME is the one identity that can appear, and only
+                # where that provider opted in (detail.provider.disclosed).
+                "capacity_source": {
+                    "_description": (
+                        "DC Hub Capacity Source — powered land, powered shells "
+                        "and turnkey capacity to buy or lease, including sites "
+                        "that are not publicly marketed. SEARCHABLE BY SIZE "
+                        "(min_kw in kilowatts, or min_mw in megawatts) AND BY "
+                        "LOCATION (region such as North America or Europe, "
+                        "country, US state, or metro through free-text "
+                        "location). Teaser facts only: market, state, country, "
+                        "size, delivery type, availability and freshness. Never "
+                        "the site address, its coordinates or its substation; a "
+                        "provider's name appears only where that provider opted "
+                        "in to being named."),
+                    "status": "live" if _cap_live else "upcoming",
+                    "status_means": (
+                        "listings are live — search them by size and location"
+                        if _cap_live else
+                        "the first listings are being onboarded; register a "
+                        "requirement for first access. This is an onboarding "
+                        "state, never a statement about how much capacity "
+                        "exists"),
+                    "search": "/api/v1/listings?min_kw={kw}&region={region}&location={text}",
+                    "search_examples": [
+                        "https://dchub.cloud/listings?min_kw=500&region=europe",
+                        "https://dchub.cloud/api/v1/listings?min_mw=5&region=north_america",
+                        "https://dchub.cloud/api/v1/listings?location=Dallas",
+                    ],
+                    "size_filters": ["min_kw", "min_mw"],
+                    "location_filters": ["region", "country", "location"],
+                    "regions": ["north_america", "latin_america", "europe",
+                                "asia_pacific", "middle_east_africa"],
+                    "region_aliases": ["emea", "apac", "latam", "americas"],
+                    "other_filters": ["delivery_type", "available_by"],
+                    "summary": "/api/v1/listings/summary",
+                    "listing_detail": "/api/v1/listings/{slug}",
+                    "terms": "/api/v1/listings/terms",
+                    "verify_lead": "/api/v1/listings/leads/{lead_id}/verify",
+                    "human_page": "/listings",
+                    "mcp_tools": {
+                        "search": ("source_capacity(min_kw, min_mw, region, "
+                                   "country, location, delivery_type, "
+                                   "available_by, slug)"),
+                        "register": "request_capacity_intro",
+                        "accept_terms": "accept_capacity_terms",
+                    },
+                    "deal_registration": (
+                        "DC Hub sends the provider ONLY the buyer's company and "
+                        "requirement. The provider accepts or declines. "
+                        "Identity, the site and both sides' contacts are "
+                        "exchanged ONLY on acceptance; on a decline nothing is "
+                        "disclosed in either direction. Every registered lead "
+                        "has a public verification record."),
                 },
                 "human_facing": {
                     "homepage": "/",
@@ -44346,6 +44423,23 @@ try:
     @app.route('/pocket-listings', methods=['GET'], strict_slashes=False)
     @app.route('/pocket-listings.html', methods=['GET'])
     def _pocket_listings_stub():
+        # ★2026-09-15 — the lead paragraph is LIVE-AWARE. It was a fixed "the
+        # first listings are being onboarded now", which is the safe direction
+        # while nothing is live and an understatement the moment something is.
+        # cached_listings_summary() is the same in-process cache
+        # GET /api/v1/listings/summary serves (no query of its own), and an
+        # unreadable summary falls to the onboarding wording — a page a crawler
+        # reads must never render a claim of inventory it could not verify.
+        try:
+            from routes.exclusive_listings import cached_listings_summary as _cls
+            _pl_live = int((_cls() or {}).get("live_count") or 0)
+        except Exception:
+            _pl_live = 0
+        _pl_lead = ("Listings are live: search by size and location below."
+                    if _pl_live else
+                    "The first listings are being onboarded now, so a search may "
+                    "come back empty — that is onboarding, not a market without "
+                    "capacity. Register a requirement to get first access.")
         html = """<!doctype html>
 <html><head><meta charset="utf-8">
 <title>Capacity Source — DC Hub</title>
@@ -44365,20 +44459,29 @@ color:white;padding:.6rem 1.25rem;border-radius:6px;font-weight:600;
 text-decoration:none;margin-top:1rem}</style>
 </head><body>
 <h1>Capacity Source</h1>
-<p class="lead">Pocket listings are now DC Hub Capacity Source: powered land, powered shells and turnkey capacity, including sites that are not publicly marketed, for enterprise buyers and the AI agents that procure for them. The first listings are being onboarded now.</p>
+<p class="lead">Pocket listings are now DC Hub Capacity Source: powered land, powered shells and turnkey capacity, including sites that are not publicly marketed, for enterprise buyers and the AI agents that procure for them. __PL_LEAD__</p>
 <div class="card">
-<h2>How it works</h2>
+<h2>Search by size and location</h2>
 <ul>
- <li><strong>Search</strong> — search listings by size (kW or MW) and location; listing cards (market, state, capacity and when each was last updated) are open to everyone at <a href="https://dchub.cloud/listings">dchub.cloud/listings</a>.</li>
- <li><strong>Sign in to open a listing</strong> — a listing's specs need a signed-in account, or an AI agent using a key with an email bound or an OAuth connection, and a one-time acceptance of the introduction terms.</li>
- <li><strong>Register for a listing</strong> — DC Hub sends the provider your company name and requirement. When the provider accepts, DC Hub shares the site details and contacts with both sides; if it declines, neither side's contact details are shared. Every registered lead has a public verification record.</li>
- <li><strong>Nothing that fits yet?</strong> Register a requirement to get first access when matching listings open.</li>
+ <li><strong>Size</strong> — <code>min_kw</code> in kilowatts, or <code>min_mw</code> in megawatts: the floor a listing has to meet.</li>
+ <li><strong>Location</strong> — <code>region</code> (North America, Latin America, Europe, Asia-Pacific, Middle East &amp; Africa; EMEA, APAC, LATAM and Americas resolve too), <code>country</code>, US state, or <code>location</code> as free text over region, country, state and metro.</li>
+ <li><strong>Also</strong> — <code>delivery_type</code> and <code>available_by</code>.</li>
+ <li><strong>Try it</strong> — <code>https://dchub.cloud/listings?min_kw=500&amp;region=europe</code> · <code>https://dchub.cloud/api/v1/listings?min_mw=5&amp;region=north_america</code> · <code>https://dchub.cloud/api/v1/listings?location=Dallas</code></li>
 </ul>
 <a class="cta" href="https://dchub.cloud/listings">Open Capacity Source →</a>
 </div>
 <div class="card">
+<h2>How it works</h2>
+<ul>
+ <li><strong>Browse</strong> — listing cards (market, state, country, size, delivery type, availability and when each was last updated) are open to everyone at <a href="https://dchub.cloud/listings">dchub.cloud/listings</a>. A card never carries the site address, its coordinates or its substation; a provider is named only where that provider chose to be.</li>
+ <li><strong>Sign in to open a listing</strong> — a listing's specs need a signed-in account, or an AI agent using a key with an email bound or an OAuth connection, and a one-time acceptance of the introduction terms.</li>
+ <li><strong>Register for a listing</strong> — DC Hub sends the provider your company name and requirement, and nothing else. The provider then accepts or declines. On acceptance DC Hub shares the site details and both sides' contacts; on a decline nothing is disclosed in either direction. Every registered lead has a public verification record.</li>
+ <li><strong>Nothing that fits yet?</strong> Register a requirement to get first access when matching listings open.</li>
+</ul>
+</div>
+<div class="card">
 <h2>From an AI agent</h2>
-<p>Connect to <a href="/mcp">/mcp</a> and call <code>source_capacity</code> to browse listings and open one, then <code>request_capacity_intro</code> to request an introduction or register a requirement. The REST feed is <a href="/api/v1/listings">/api/v1/listings</a>.</p>
+<p>Connect to <a href="/mcp">/mcp</a> and call <code>source_capacity</code> with <code>min_kw</code>/<code>min_mw</code>, <code>region</code>, <code>country</code> or <code>location</code> to search, and with a <code>slug</code> to open one listing; <code>accept_capacity_terms</code> records your one-time acceptance of the introduction terms; <code>request_capacity_intro</code> registers you for a listing, or registers a standing requirement. The REST feed is <a href="/api/v1/listings">/api/v1/listings</a> and its live summary is <a href="/api/v1/listings/summary">/api/v1/listings/summary</a>.</p>
 </div>
 <div class="card">
 <h2>Have capacity to list?</h2>
@@ -44389,7 +44492,7 @@ text-decoration:none;margin-top:1rem}</style>
  Part of <a href="/">DC Hub</a> · <a href="https://dchub.cloud/listings">Capacity Source</a> · <a href="/transactions">Transactions</a> · <a href="/api-docs">API docs</a>
 </p>
 <script src="/js/dchub-nav.js" defer></script>
-</body></html>"""
+</body></html>""".replace("__PL_LEAD__", _pl_lead)
         return _PL_Response(html, mimetype="text/html",
                             headers={"Cache-Control": "public, max-age=600"})
 except Exception as _e:

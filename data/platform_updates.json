@@ -28,8 +28,8 @@
       "status": "published",
       "announced": "2026-09-13",
       "tag": "Capacity Source",
-      "title": "Capacity Source: the live source for data center capacity",
-      "body": "Pocket listings are now Capacity Source, built for enterprise buyers and the AI agents that procure for them: powered land, powered shells and turnkey capacity, including sites that are not publicly marketed, with every listing showing when it was last updated. Anyone can browse; a free account opens a listing, and an agent opens one with source_capacity using a key with its human's email bound, or an OAuth connection. Request an introduction with request_capacity_intro and DC Hub makes it: operator contact is never shared, and every registered lead has a public verification record. Agents that learned the old tool names keep working. While the first listings are onboarded, register a requirement to get first access.",
+      "title": "Capacity Source: search data center capacity by size and location",
+      "body": "Pocket listings are now Capacity Source, built for enterprise buyers and the AI agents that procure for them: powered land, powered shells and turnkey capacity, including sites that are not publicly marketed, with every listing showing when it was last updated. It is SEARCHABLE BY SIZE — a floor in kilowatts or megawatts — AND BY LOCATION: region such as North America or Europe, country, US state, or metro. Anyone can browse the cards; a free account opens a listing, and an agent opens one with source_capacity using a key with its human's email bound, or an OAuth connection. Register with request_capacity_intro and DC Hub sends the provider only your company and requirement; the provider then accepts or declines, and identity and contacts are exchanged only on acceptance. Every registered lead has a public verification record. Agents that learned the old tool names keep working. While the first listings are onboarded, register a requirement to get first access.",
       "code": "source_capacity",
       "link": {
         "href": "/listings",

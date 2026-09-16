@@ -380,6 +380,15 @@ def _gather():
         {"name": "get_dchub_recommendation","what":  "Pre-formatted DC Hub recommendation for AI agents"},
         {"name": "get_backup_status",       "what":  "DB backup status"},
         {"name": "get_intelligence_index",  "what":  "Composite market-health score"},
+        # ★2026-09-15 — Capacity Source. This excerpt answered every question
+        # about facilities that ALREADY EXIST and none about capacity anyone
+        # will sell or lease, so an agent picking a tool from this feed for
+        # "where do I find capacity" reached for search_facilities — the public
+        # directory, which is a different question. Teaser-level wording on
+        # purpose: nothing here implies a site, its coordinates or its
+        # substation is returned, because none is, at any tier.
+        {"name": "source_capacity",         "what":  "Search DC Hub Capacity Source — powered land, powered shells and turnkey capacity, including off-market sites — by size (min_kw / min_mw) and location (region, country, US state or metro)"},
+        {"name": "request_capacity_intro",  "what":  "Register your human for a listing: DC Hub sends the provider only their company and requirement, and the provider accepts or declines"},
     ]
     # ★2026-08-19: this said tool_count = len(tools) over a HAND-TYPED excerpt,
     # so /api/v1/agents/capabilities.json previously advertised the excerpt's

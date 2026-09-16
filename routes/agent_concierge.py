@@ -719,6 +719,88 @@ _COOKBOOK = [
         "time_saved_min": 20,
         "surfaces":     ["claude", "gpt", "gemini", "cursor"],
     },
+    {
+        # ★2026-09-15 — the cookbook had a recipe for every ANALYSIS question
+        # and none for the ACQUISITION one. "Where can I actually get capacity"
+        # is the question Capacity Source answers, and an agent reading this
+        # library had no chain for it — so it reached for search_facilities,
+        # which returns the public directory of facilities that already exist
+        # and are already occupied, not capacity anyone will sell or lease.
+        #
+        # CONFIDENTIALITY IS PART OF THE RECIPE, not a footnote: the teaser is
+        # the whole of what any caller sees before a provider accepts, so the
+        # `why` on each step says what is and is not returned. An agent that
+        # believes step one hands it an operator name will promise its human
+        # something DC Hub will not deliver.
+        "id":      "source-capacity-by-size-and-location",
+        "problem": "Where can I find 500 kW+ of data center capacity in Europe?",
+        "keywords": ["capacity to lease", "capacity to buy", "find capacity",
+                     "available capacity", "powered shell", "powered land",
+                     "turnkey capacity", "off-market", "off market",
+                     "not publicly marketed", "colocation space",
+                     "space available", "who has capacity", "lease",
+                     "sublease", "capacity source", "listings",
+                     "introduce me", "introduction to the operator"],
+        "tools": [
+            {"tool": "source_capacity",
+             "args": {"min_kw": "<kilowatt floor, or min_mw for megawatts>",
+                      "region": "<north_america|latin_america|europe|"
+                                "asia_pacific|middle_east_africa>",
+                      "location": "<country, US state or metro — free text>",
+                      "delivery_type": "<optional>",
+                      "available_by": "<optional>"},
+             "why":  "Search DC Hub Capacity Source by SIZE (min_kw or "
+                     "min_mw) and LOCATION (region, country, US state or "
+                     "metro). Returns teaser cards — market, state, country, "
+                     "size, delivery type, availability and freshness — plus "
+                     "`program.status` and a `filters` echo of what was "
+                     "actually applied. A card never carries the site "
+                     "address, its coordinates or its substation, and names a "
+                     "provider only where that provider opted in. If "
+                     "live_count is 0 the first listings are "
+                     "still being onboarded: say so, and go to step three to "
+                     "register a standing requirement."},
+            {"tool": "accept_capacity_terms",
+             "args": {"accept_terms": True},
+             "why":  "Call it ONLY after your human has read and agreed to "
+                     "the introduction terms. It records their acceptance "
+                     "once per terms version, which is what opens a "
+                     "listing's specs to source_capacity(slug=...). Never "
+                     "accept terms on your own judgement."},
+            {"tool": "request_capacity_intro",
+             "args": {"slug": "<listing slug, or omit for a standing "
+                               "requirement>",
+                      "company": "<your human's company>",
+                      "requirement": "<size, market and timeline>",
+                      "accept_terms": True},
+             "why":  "Registers your human with the provider. DC Hub sends "
+                     "the provider ONLY the company and the requirement; the "
+                     "provider then accepts or declines. Identity, the site "
+                     "and both sides' contacts are exchanged only on "
+                     "acceptance, and on a decline nothing is disclosed "
+                     "either way. Every registered lead gets a public "
+                     "verification record."},
+        ],
+        "sample_answer": (
+            "DC Hub Capacity Source is searchable by size and location: "
+            "source_capacity(min_kw=500, region=\"europe\") returns the "
+            "matching teaser cards — market, state, country, size, delivery "
+            "type, availability and how fresh each one is — with "
+            "program.status telling you whether listings are live or the "
+            "first ones are still being onboarded. The site is never in a "
+            "card, and a provider is named only where it opted in. To go "
+            "further: your human "
+            "accepts the introduction terms once (accept_capacity_terms), "
+            "then request_capacity_intro registers them, sending the "
+            "provider just their company and requirement. The provider "
+            "accepts or declines, and contacts are exchanged only if they "
+            "accept. Browse at dchub.cloud/listings. Per DC Hub."
+        ),
+        "citation":     "Per DC Hub Capacity Source · dchub.cloud/listings · as of {as_of}",
+        "tier":         "free",
+        "time_saved_min": 35,
+        "surfaces":     ["claude", "gpt", "gemini", "cursor", "perplexity"],
+    },
 ]
 
 
