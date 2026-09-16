@@ -31,11 +31,15 @@ agent_a2a_bp = Blueprint("agent_a2a", __name__)
 # run exactly once, at import, when every canon cache is cold. It resolved
 # {canon_facilities} to the PINNED floor and the card kept serving that for the
 # life of the process. Measured cache-busted, with and without the edge:
-# /.well-known/agent-card.json said "21,500+ distinct facilities" while
-# /api/v1/canon/phrases, /AGENTS.md and the MCP server card all said 21,800+.
-# Same defect #4320 fixed on /connect, same fix: keep the template raw and let
-# _card() resolve it per request. The deal count was hand-typed "1,400+" against
-# a canon of 2,100+, so it moves to a placeholder in the same change.
+# /.well-known/agent-card.json served the PINNED cold-start floor while
+# /api/v1/canon/phrases, /AGENTS.md and the MCP server card all served the
+# higher live one. Same defect #4320 fixed on /connect, same fix: keep the
+# template raw and let _card() resolve it per request. The deal count was
+# hand-typed well under canon, so it moves to a placeholder in the same change.
+# ★2026-09-16: the two figures this note used to quote were REMOVED, not
+# updated — the ninth facilities walk turned them into exactly the stale
+# literals test_canonical_counts_drift scans this file for, which is the defect
+# the note explains, one line lower. Re-measure from /api/v1/canon/phrases.
 _AGENT_DESCRIPTION = (
     "Data center intelligence agent — {canon_facilities} distinct facilities, "
     "M&A deals, grid data across live grid operators on 5 continents "

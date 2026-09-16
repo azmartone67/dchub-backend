@@ -922,9 +922,42 @@ def test_surfaces_free_of_banned_stale_counts():
     )
 
 
+def _scannable_stale_markers():
+    """The denylist AS SERVED — the raw family minus whatever the canon
+    publishes right now.
+
+    ★2026-09-16. The list is a numeral FAMILY on purpose ("21,000+",
+    "21,900+", "22,000+", "21k+"), so that each member re-bans itself once the
+    floor walks past it; resolve_canon() subtracts the member it is currently
+    publishing before the sentinel ever scans a body. Parametrising over the RAW
+    list made this gate fire on every surface that had CORRECTLY rendered the
+    canon, the moment the ninth walk took the floor to a listed member — the
+    exact self-poisoning tests/test_canon_denylist_not_self_poisoning.py exists
+    to end, one layer down in CI.
+    """
+    from ai_surface_canon import republished_markers
+    raw = [m for m in PINNED.get("stale_markers", []) if m and m.strip()]
+    published = {p for p in (PINNED.get("public") or {}).values() if isinstance(p, str)}
+    kept, _unbanned = republished_markers(raw, published)
+    return kept
+
+
+def test_the_scannable_denylist_is_not_empty():
+    """★ The parametrised gate below is only as real as its parameter list. If
+    the subtraction ever over-reached and emptied it, pytest would report zero
+    cases and the whole gate would go green by disappearing."""
+    raw = [m for m in PINNED.get("stale_markers", []) if m and m.strip()]
+    kept = _scannable_stale_markers()
+    assert len(kept) >= max(1, len(raw) - 4), (
+        f"the served denylist collapsed from {len(raw)} markers to {len(kept)} — "
+        "republished_markers is unbanning far more than the handful of phrases "
+        "the canon publishes, and the surface scan below has almost nothing left "
+        "to check")
+
+
 @pytest.mark.parametrize(
     "marker",
-    [m for m in PINNED.get("stale_markers", []) if m and m.strip()],
+    _scannable_stale_markers(),
     ids=lambda m: m.strip().replace(" ", "_"),
 )
 def test_surfaces_clean_of_ai_surface_canon_stale_markers(marker):
@@ -2948,6 +2981,12 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     # floor overtook the old pair exactly as the note below predicts, and the
     # symptom was this test failing with `counts.facilities is None` — the feed
     # OMITTING rather than under-claiming, which is correct behaviour.
+    # ★2026-09-16: the injected pair moved with the ninth walk
+    # (21,570/2,069 -> 22,031/2,237, the live /api/v1/stats reading that day).
+    # BOTH fell under the new floors this time — facilities 21,570 < 21,900 and
+    # deals 2,069 < 2,200 — so the feed would have popped both fields and this
+    # test would fail `counts.facilities is None`, the same wrong-reason failure
+    # the 09-11 and 09-09 notes record.
     # ★2026-09-02: the injected pair moved with the canon walk (18,603/1,892 ->
     # 20,203/2,069). These are SYNTHETIC — the test's point is that the feed
     # reads facilities_verified rather than the raw COUNT(*) pile — but they must
@@ -2955,8 +2994,8 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     # it (test_capabilities_omits_rather_than_publishing_below_canon_floor), and
     # an omitted field makes the assertion below fail for the wrong reason.
     live_like = {
-        "facilities_verified": 21570, "markets": 300,
-        "deals": 2069, "countries_verified": 178,
+        "facilities_verified": 22031, "markets": 300,
+        "deals": 2237, "countries_verified": 178,
     }
     app = flask.Flask(__name__)
     app.register_blueprint(feed.agent_capabilities_bp)
@@ -2973,7 +3012,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     doc = json.loads(body)
     counts, quotable = doc.get("counts", {}), doc.get("agent_quotable")
 
-    assert counts.get("facilities") == 21570, (
+    assert counts.get("facilities") == 22031, (
         f"counts.facilities is {counts.get('facilities')!r}, not the injected "
         "verified count — the feed is not reading facilities_verified. This is "
         "the assertion that would have failed on the raw COUNT(*) basis."
@@ -2982,8 +3021,8 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
         "agent_quotable absent although every count resolved — the fence below "
         "would pass vacuously."
     )
-    for field, value in (("facilities", 21570), ("markets_scored", 300),
-                         ("deals_tracked", 2069), ("countries", 178)):
+    for field, value in (("facilities", 22031), ("markets_scored", 300),
+                         ("deals_tracked", 2237), ("countries", 178)):
         assert counts.get(field) == value, f"counts.{field} != injected {value}"
         assert f"{value:,}" in quotable or str(value) in quotable, (
             f"agent_quotable omits counts.{field}={value}. The sentence and the "
@@ -3914,9 +3953,26 @@ def test_canon_floors_are_not_on_their_own_denylist():
     own (?<![\\d,]) lookbehind exists to defeat, and a guard that fires on it
     would be un-satisfiable. Match the number with a left boundary instead.
     """
-    markers = PINNED.get("stale_markers") or []
+    from ai_surface_canon import republished_markers
+
+    raw = PINNED.get("stale_markers") or []
     public = PINNED.get("public") or {}
-    assert markers and public, "HARNESS ERROR: canon unreadable — guard would pass vacuously"
+    assert raw and public, "HARNESS ERROR: canon unreadable — guard would pass vacuously"
+
+    # ★2026-09-16 — MEASURE WHAT SHIPS, NOT THE RAW LIST. The list is a numeral
+    # FAMILY on purpose: "21,000+/21,900+/22,000+/21k+" are all on it so that
+    # each one re-bans itself once the floor walks past it. resolve_canon()
+    # subtracts whichever member it is currently publishing (republished_markers
+    # -> `stale_markers_unbanned`), and the sentinel scans that KEPT view. So a
+    # floor sitting in `raw` is not the defect — a floor surviving into `kept`
+    # is, because that is the one a served body gets flagged for.
+    #
+    # Scanning `raw` instead was tried during the ninth walk and produced the
+    # WRONG REMEDY: it says "delete the literal", which deletes the family
+    # member that must re-ban itself next walk and breaks the two tests pinning
+    # the subtraction (test_canon_denylist_not_self_poisoning).
+    published = {p for p in public.values() if isinstance(p, str)}
+    kept, unbanned = republished_markers(raw, published)
 
     hits = []
     for dimension, phrase in sorted(public.items()):
@@ -3926,9 +3982,18 @@ def test_canon_floors_are_not_on_their_own_denylist():
         # the floor as it is written, with a left boundary so 2,000+ does not
         # match inside 22,000+
         pat = re.compile(rf"(?<![\d,]){re.escape(f'{num:,}')}\+")
-        for m in markers:
+        for m in kept:
             if pat.search(m):
                 hits.append(f"  public.{dimension} = {phrase!r} is denylisted by stale_marker {m!r}")
+    # ★ NOT VACUOUS: if the subtraction ever stops running, or stops matching
+    # the phrase the canon publishes, every floor on the family list lands in
+    # `kept` and the assertion below fires with it named.
+    for dimension, phrase in sorted(public.items()):
+        if phrase in raw:
+            assert phrase in unbanned, (
+                f"public.{dimension} = {phrase!r} is on the raw denylist and "
+                "republished_markers did NOT unban it — the served list still "
+                "bans a phrase the canon publishes")
     assert not hits, (
         "The canon lists its own current floor as stale. ai_surface_sentinel "
         "scans LIVE served bodies for stale_markers, so every surface rendering "

@@ -296,7 +296,22 @@ PINNED = {
         #    value_source facilities = "pinned". A cold window publishes this
         #    literal, so a trailing pin is an under-claim on exactly the reads
         #    that land on a cold process.
-        "facilities": "21,500+",
+        # ★2026-09-16: 21,500+ -> 21,900+. The ninth walk, same drill and
+        #  same reason as the eight before it: the resolver self-heals and a
+        #  literal cannot, so the pin trails until it is walked.
+        #  Probed live 2026-09-16, cache-busted, six consecutive reads
+        #  05:12:10-05:12:15Z: /api/v1/canon/phrases facilities = "21,900+"
+        #  (source=resolve_public_floors (live), cold=False on all six),
+        #  /api/v1/stats facilities = 22,031, /api/v1/stats/canonical
+        #  facilities_distinct = 22,031. Floor rounds DOWN and never exceeds
+        #  the resolver: 21,900 == resolver, < 22,031.
+        #  ★ WHY THIS WALK, NOW: the AI-agent grounding pass measured the
+        #    gap from the agent's seat. Every warm surface (/llms.txt,
+        #    /AGENTS.md, /.well-known/mcp.json, /api/v1/ai-agents.json) already
+        #    served 21,900+; the repo's own static artifacts and every cold
+        #    window still published 21,500+ — a 531-building under-claim on
+        #    exactly the reads that land on a cold process.
+        "facilities": "21,900+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
@@ -324,7 +339,17 @@ PINNED = {
         #  — so the canon denylisted the exact phrase it resolves to. Measured
         #  2026-09-02, live bodies, six hits on four agent surfaces. See the
         #  denylist note for the full reading.
-        "deals": "2,100+",   # ★2026-09-07 WALKED, on a measurement rather than the resolver. The earlier attempt today used /api/v1/stats deals = 2,118 as the ceiling and was reverted, because that field reads canonical_stats via _canon (main.py:22841) — the same source ai_surface_canon publishes, so it certifies itself. THE INDEPENDENT NUMBER: /transactions publishes 2,118 from its OWN dedup query in routes/transactions_browser.py (SELECT COUNT(*) FROM (SELECT DISTINCT <AUTO-suffix|content-tuple> FROM deals WHERE deals_ok())), which never falls back to COUNT(*) on failure — it renders 0 on purpose, "visibly wrong rather than plausibly wrong". Cross-checked against the UPPER bound: /api/v1/transactions total_tracked = 2,408 rows WHERE DEALS_OK, NOT deduped, and distinct (2,118) < rows (2,408) as it must be. Floor rounds DOWN to the nearest 100 and never above reality: 2,100 <= 2,118. Reproduce: curl -s "https://dchub.cloud/transactions" | grep -oE "— [0-9,]+ deals tracked". ★2026-08-23: 1,800+ -> 1,900+ — and this bump is the FIRST one the ledger asked for instead of a hand-walk. Claim 100974 (canon:public.deals, expected "== 1,800+", measured against the live resolve_canon() override) was judged **refuted** at 05:51Z; 100976 carries the same frozen expectation to its 24h horizon. Probed live at 06:57Z: /api/v1/canon/phrases deals = "1,900+", /api/v1/stats deals = 1,931. Floor rounds DOWN and never above the resolver: 1,900 < 1,931. ★The literal ALSO had a second home (mcp_gateway.py data_coverage.deals_tracked fell back to a hardcoded "1,800+" while its siblings called canon_text) — that copy now reads {canon_deals}, so this line is the only place the floor is typed. ★2026-08-16: 1,700+ -> 1,800+, same PINNED-vs-resolve_canon lag as `facilities` above, one cycle later — /api/v1/canon/phrases already served 1,800+ while this floor fed the stale figure into /.well-known/mcp.json. Probed live: /api/v1/stats deals = 1,849. Floor rounds DOWN: 1,800 < 1,849. ★2026-08-08 canon-surface audit: 1,600+ -> 1,700+ (resolve_canon live = 1,700+, deals_tracked = 1,745; same PINNED-vs-resolve_canon lag as `facilities`). ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
+        # ★2026-09-16: 2,100+ -> 2,200+, walked beside `facilities` above and
+        #  cross-checked the way the 09-07 note demands — NOT off /api/v1/stats,
+        #  which reads canonical_stats via _canon and would certify itself.
+        #  THE INDEPENDENT NUMBER: /transactions publishes 2,237 from its OWN
+        #  dedup query (routes/transactions_browser.py), measured 2026-09-16
+        #  cache-busted: "2,237 deals tracked". Upper bound from
+        #  /api/v1/transactions total_tracked = 2,566 rows WHERE DEALS_OK, not
+        #  deduped, and distinct (2,237) < rows (2,566) as it must be.
+        #  /api/v1/canon/phrases deals = "2,200+" on the same six probes.
+        #  Floor rounds DOWN and never above reality: 2,200 <= 2,237.
+        "deals": "2,200+",   # ★2026-09-07 WALKED, on a measurement rather than the resolver. The earlier attempt today used /api/v1/stats deals = 2,118 as the ceiling and was reverted, because that field reads canonical_stats via _canon (main.py:22841) — the same source ai_surface_canon publishes, so it certifies itself. THE INDEPENDENT NUMBER: /transactions publishes 2,118 from its OWN dedup query in routes/transactions_browser.py (SELECT COUNT(*) FROM (SELECT DISTINCT <AUTO-suffix|content-tuple> FROM deals WHERE deals_ok())), which never falls back to COUNT(*) on failure — it renders 0 on purpose, "visibly wrong rather than plausibly wrong". Cross-checked against the UPPER bound: /api/v1/transactions total_tracked = 2,408 rows WHERE DEALS_OK, NOT deduped, and distinct (2,118) < rows (2,408) as it must be. Floor rounds DOWN to the nearest 100 and never above reality: 2,100 <= 2,118. Reproduce: curl -s "https://dchub.cloud/transactions" | grep -oE "— [0-9,]+ deals tracked". ★2026-08-23: 1,800+ -> 1,900+ — and this bump is the FIRST one the ledger asked for instead of a hand-walk. Claim 100974 (canon:public.deals, expected "== 1,800+", measured against the live resolve_canon() override) was judged **refuted** at 05:51Z; 100976 carries the same frozen expectation to its 24h horizon. Probed live at 06:57Z: /api/v1/canon/phrases deals = "1,900+", /api/v1/stats deals = 1,931. Floor rounds DOWN and never above the resolver: 1,900 < 1,931. ★The literal ALSO had a second home (mcp_gateway.py data_coverage.deals_tracked fell back to a hardcoded "1,800+" while its siblings called canon_text) — that copy now reads {canon_deals}, so this line is the only place the floor is typed. ★2026-08-16: 1,700+ -> 1,800+, same PINNED-vs-resolve_canon lag as `facilities` above, one cycle later — /api/v1/canon/phrases already served 1,800+ while this floor fed the stale figure into /.well-known/mcp.json. Probed live: /api/v1/stats deals = 1,849. Floor rounds DOWN: 1,800 < 1,849. ★2026-08-08 canon-surface audit: 1,600+ -> 1,700+ (resolve_canon live = 1,700+, deals_tracked = 1,745; same PINNED-vs-resolve_canon lag as `facilities`). ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
         # ★2026-08-01 NEW KEY. The mapped-asset total was the one headline
         # figure with NO pinned home, so it drifted unchecked: worker.js's
         # why_dchub blurb and the /faq page both still claim "500,000+" while
@@ -412,6 +437,19 @@ PINNED = {
                       # until entity-resolution shipped, then instantly became a
                       # ~1.7x over-claim (raw rows vs distinct sites). Grok caught
                       # them on our own pages before any detector did — scrub on sight.
+                      # ★2026-09-16, THE NINTH WALK: "21,900+" STAYS ON THIS
+                      # LIST even though it is now PINNED["public"]["facilities"].
+                      # Removing it was tried first and is wrong. This list is a
+                      # numeral FAMILY, and resolve_canon() subtracts whichever
+                      # member it is currently publishing — see
+                      # republished_markers() and the `stale_markers_unbanned`
+                      # override at the end of resolve_canon() — so nothing the
+                      # sentinel scans ever carries the live floor. Deleting the
+                      # literal deletes the member that must RE-BAN itself on the
+                      # next walk, and it broke the two tests that pin the
+                      # subtraction (test_canon_denylist_not_self_poisoning).
+                      # The static guard in test_canonical_counts_drift now
+                      # measures the KEPT view, which is what actually ships.
                       "21,000+", "21,900+", "22,000+", "21k+",
                       # ★2026-07-30: the 07-24..07-28 floor "12,650+" is itself
                       # retired (PINNED rebased to 15,000+, live 15,300+). It sat

@@ -119,9 +119,27 @@ def test_rendered_body_carries_the_canonical_facility_floor():
 
 
 def test_denylisted_markers_absent_from_rendered_body():
-    """The rendered body must not contain any stale_marker, not just the source."""
+    """The rendered body must not contain any stale_marker, not just the source.
+
+    ★2026-09-16 — measured against the SERVED denylist, not the raw one. The
+    list is a numeral FAMILY ("21,000+", "21,900+", "22,000+", "21k+") so that
+    each member re-bans itself once the floor walks past it, and resolve_canon()
+    subtracts the member it is currently publishing before anything scans a
+    body. Reading the raw list made this fire the moment the ninth walk took the
+    floor to a listed member — on a body that had rendered the canon CORRECTLY,
+    with the prescribed fix ("update from canon") reproducing it verbatim. See
+    tests/test_canon_denylist_not_self_poisoning.py for the class.
+
+    The test below it keeps this honest: the body must still CARRY the canonical
+    floor, so "no banned marker present" can never be satisfied by a body that
+    states no floor at all.
+    """
     body = _render()
-    markers = [m for m in asc.PINNED.get("stale_markers", []) if m and m.strip()]
+    raw = [m for m in asc.PINNED.get("stale_markers", []) if m and m.strip()]
+    published = {p for p in (asc.PINNED.get("public") or {}).values()
+                 if isinstance(p, str)}
+    markers, _unbanned = asc.republished_markers(raw, published)
+    assert markers, "the served denylist is empty — this scan would prove nothing"
     hits = [m for m in markers if m in body]
     assert not hits, f"rendered /skill.md carries denylisted stale marker(s): {hits}"
 

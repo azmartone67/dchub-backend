@@ -109,7 +109,11 @@ def _as_int(phrase) -> int:
 # above so the next walk does not immediately re-trip it.
 # ★ SYNTHETIC. This is "what if the live floor RISES above the pin", not a claim
 #   about the fleet — measured distinct today is 21,441, below this on purpose.
-RISEN_FACILITIES = "21,900+"
+# ★2026-09-16: re-based 21,900+ -> 22,400+ because the ninth walk took the pin
+# to exactly 21,900+ — EQUAL, not above, which is the inversion
+# test_the_risen_scenario_still_rises_above_the_pin exists to catch. Kept 500
+# above the pin, the same margin the 09-09 re-base used.
+RISEN_FACILITIES = "22,400+"
 
 
 # ── the overlay raises ───────────────────────────────────────────────
