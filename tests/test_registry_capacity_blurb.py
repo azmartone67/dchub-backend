@@ -161,3 +161,40 @@ def test_must_fail_control_a_blurbless_builder_fails_the_reach_test(live, monkey
     assert BLURB not in desc, (
         "the builder emits the Capacity Source line even with the blurb "
         "emptied — the reach test above cannot fail and proves nothing")
+
+
+# ── the priced rung (★2026-09-16) ────────────────────────────────────
+
+def test_the_priced_rung_reaches_the_registries_with_room(live):
+    """Registries whose cap can hold it carry the tier a reader converts on;
+    the 500-cap ones must be UNCHANGED, because the price is worth less than
+    the counts and the free-tier line it would push off."""
+    import tier_registry
+    price = tier_registry.price_display("pro")
+    roomy = [r for r, cap in mpc._DESCRIPTION_CHAR_CAPS.items() if cap >= 600]
+    assert roomy, "HARNESS ERROR: no registry has room — this test proves nothing"
+    for registry in roomy:
+        desc = mpc._build_canonical_description(registry)
+        assert price in desc, f"{registry} (cap ≥600) lost the priced rung: {desc!r}"
+        assert BLURB in desc, f"{registry}: priced rung crowded out Capacity Source"
+        assert len(desc) <= mpc._DESCRIPTION_CHAR_CAPS[registry]
+    tight = mpc._build_canonical_description("smithery")
+    assert price not in tight, (
+        "the priced rung fits a 500 cap now, so it is being paid for with copy "
+        "that was there first — re-check what it displaced")
+    assert BLURB in tight and LIVE_PUBLIC["facilities"] in tight
+
+
+def test_the_price_is_derived_not_typed(live, monkeypatch):
+    """★ MUTATION. Pro was $299 until the 2026-09-05 collapse. If this copy
+    typed the price, the listing would still say $299 and nothing would tell
+    us. Move the registry's price and the copy must move with it."""
+    import tier_registry
+    real = tier_registry.price_display
+    monkeypatch.setattr(tier_registry, "price_display",
+                        lambda tier, *a, **k: "$1234/mo" if tier == "pro" else real(tier, *a, **k))
+    desc = mpc._build_canonical_description("glama")
+    assert "$1234/mo" in desc, (
+        "the price in registry copy did not follow tier_registry — it is a "
+        "hand-typed literal, which is the defect this rung was built to avoid")
+    assert real("pro") not in desc

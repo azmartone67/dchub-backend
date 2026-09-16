@@ -2629,6 +2629,23 @@ def _build_canonical_description(registry_name: str) -> str:
         f"{lean} Free tier exposes ~10 tools; paid tiers unlock "
         f"the full {tools}."
     )
+    # ★2026-09-16: the PRICED rung, above `full`. Registries with room
+    # (mcphive 1500, lobehub 800, glama 600) now carry the tier a reader
+    # converts on instead of making them click through to find it; the
+    # 500-cap registries keep exactly the copy they had, because this rung
+    # simply will not fit and the ladder falls to `full`.
+    # ★ The price is DERIVED from tier_registry.price_display("pro"), never
+    #   typed — the same rule the counts follow. Pro was $299 until the
+    #   2026-09-05 price collapse, and a hand-typed price in registry copy is
+    #   the identical defect as a hand-typed count: a second answer with no
+    #   fence on it. If the registry is unimportable, the rung is simply
+    #   skipped and the ladder is unchanged.
+    try:
+        import tier_registry as _tiers
+        _pro = _tiers.price_display("pro")
+        full_priced = f"{full} Pro {_pro}, cancel anytime."
+    except Exception:
+        full_priced = full
     medium = (
         f"DC Hub MCP: {tools} tools, {facs_p} facilities, {mkts_p} markets, "
         f"{deals_p}. ISO-grid, interconnection, fiber, energy, water, tax."
@@ -2643,13 +2660,13 @@ def _build_canonical_description(registry_name: str) -> str:
     # still carry the canonical counts. Trading {facs_p}/{mkts_p}/{deals_p}
     # away to fit the blurb would buy one capability by dropping the three
     # floors this copy exists to publish, so `micro` never carries it.
-    for candidate in (full, lean, medium, short):
+    for candidate in (full_priced, full, lean, medium, short):
         withcap = f"{candidate} {CAPACITY_SOURCE_BLURB}"
         if len(withcap) <= cap:
             return withcap
     # No room for it anywhere: fall back to EXACTLY the pre-2026-09-16 ladder,
     # so a tight cap loses the new line and never any copy it already had.
-    for candidate in (full, lean, medium, short, micro):
+    for candidate in (full_priced, full, lean, medium, short, micro):
         if len(candidate) <= cap:
             return candidate
     # Last resort — hard truncate the micro line at the cap with ellipsis

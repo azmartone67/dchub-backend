@@ -2948,6 +2948,12 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     # floor overtook the old pair exactly as the note below predicts, and the
     # symptom was this test failing with `counts.facilities is None` — the feed
     # OMITTING rather than under-claiming, which is correct behaviour.
+    # ★2026-09-16: the injected pair moved with the ninth walk
+    # (21,570/2,069 -> 22,031/2,237, the live /api/v1/stats reading that day).
+    # BOTH fell under the new floors this time — facilities 21,570 < 21,900 and
+    # deals 2,069 < 2,200 — so the feed would have popped both fields and this
+    # test would fail `counts.facilities is None`, the same wrong-reason failure
+    # the 09-11 and 09-09 notes record.
     # ★2026-09-02: the injected pair moved with the canon walk (18,603/1,892 ->
     # 20,203/2,069). These are SYNTHETIC — the test's point is that the feed
     # reads facilities_verified rather than the raw COUNT(*) pile — but they must
@@ -2955,8 +2961,8 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     # it (test_capabilities_omits_rather_than_publishing_below_canon_floor), and
     # an omitted field makes the assertion below fail for the wrong reason.
     live_like = {
-        "facilities_verified": 21570, "markets": 300,
-        "deals": 2069, "countries_verified": 178,
+        "facilities_verified": 22031, "markets": 300,
+        "deals": 2237, "countries_verified": 178,
     }
     app = flask.Flask(__name__)
     app.register_blueprint(feed.agent_capabilities_bp)
@@ -2973,7 +2979,7 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
     doc = json.loads(body)
     counts, quotable = doc.get("counts", {}), doc.get("agent_quotable")
 
-    assert counts.get("facilities") == 21570, (
+    assert counts.get("facilities") == 22031, (
         f"counts.facilities is {counts.get('facilities')!r}, not the injected "
         "verified count — the feed is not reading facilities_verified. This is "
         "the assertion that would have failed on the raw COUNT(*) basis."
@@ -2982,8 +2988,8 @@ def test_capabilities_quotable_never_contradicts_its_own_counts():
         "agent_quotable absent although every count resolved — the fence below "
         "would pass vacuously."
     )
-    for field, value in (("facilities", 21570), ("markets_scored", 300),
-                         ("deals_tracked", 2069), ("countries", 178)):
+    for field, value in (("facilities", 22031), ("markets_scored", 300),
+                         ("deals_tracked", 2237), ("countries", 178)):
         assert counts.get(field) == value, f"counts.{field} != injected {value}"
         assert f"{value:,}" in quotable or str(value) in quotable, (
             f"agent_quotable omits counts.{field}={value}. The sentence and the "

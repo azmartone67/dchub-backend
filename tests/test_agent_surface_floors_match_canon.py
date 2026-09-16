@@ -242,10 +242,27 @@ def test_canon_values_are_what_this_guard_thinks_they_are():
     #   reason above: 21,500+ collides with none of them, and 21,400+ was canon
     #   until today — test_canonical_counts_drift's below-the-floor fence bans it
     #   on every scanned surface the moment the pin moves past it, no list edit.
-    assert CANON_FACILITIES == "21,500+", (
+    # ★2026-09-16: facilities 21,500+ -> 21,900+ (ninth walk) and deals
+    # 2,100+ -> 2,200+, both following PINNED['public'] onto the live resolver.
+    # Probed live, cache-busted, six consecutive reads 05:12:10-05:12:15Z:
+    # /api/v1/canon/phrases facilities = "21,900+", deals = "2,200+"
+    # (source=resolve_public_floors (live), cold=False on all six).
+    # Ceilings, each from a source that does NOT read canon:
+    #   facilities  /api/v1/stats/canonical facilities_distinct = 22,031
+    #   deals       /transactions own dedup query = "2,237 deals tracked",
+    #               under /api/v1/transactions total_tracked = 2,566 rows.
+    # Floors round DOWN and never exceed either: 21,900 < 22,031, 2,200 < 2,237.
+    # ★ The RETIRED_* lists were re-checked and NOT touched, same reasoning as
+    #   every walk above: neither new value collides with them
+    #   (test_retired_lists_do_not_contain_the_current_canon), and 21,500+/2,100+
+    #   were canon until today, not the live-wrong floors those lists ban.
+    # ★ RISEN_FACILITIES in tests/test_agents_md_live_floors.py WAS re-based in
+    #   the same commit: it was "21,900+", which this pin now equals, and that
+    #   file asserts it rises ABOVE the pin.
+    assert CANON_FACILITIES == "21,900+", (
         f"PINNED facilities moved to {CANON_FACILITIES}. Update the surfaces "
         f"in SURFACES and the RETIRED_* lists, then this assertion.")
-    assert CANON_DEALS == "2,100+", (
+    assert CANON_DEALS == "2,200+", (
         f"PINNED deals moved to {CANON_DEALS}. Same drill.")
 
 

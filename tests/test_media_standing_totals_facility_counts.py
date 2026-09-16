@@ -211,7 +211,28 @@ def pinned_canon(monkeypatch):
 # fence exists to catch is INTACT and still refuses the pile. Floor rounds DOWN
 # to the nearest 100: 21,400 <= 21,441, so the published phrase can never
 # exceed the basis it is floored from.
-CANON_ERA_DISTINCT, CANON_ERA_DEALS = 21441, 2118
+# ★2026-09-16 — CANON_ERA_DEALS re-measured 2,118 -> 2,237, and the
+# measurement is again what makes the walk legal. The pin walked 2,100+ ->
+# 2,200+ the same day and this gate CAUGHT it first ("a deal floor of '2,200+'
+# against 2,118 live DEDUPED deals", test_welcome_email_and_seo_footer_clear_
+# the_gate) — the fence working, not a nuisance.
+#
+# THE INDEPENDENT MEASUREMENT, same source and same command as the 09-07 note:
+#
+#   curl -s "https://dchub.cloud/transactions" | grep -oE "[0-9,]+ deals tracked"
+#   -> 2,237 deals tracked
+#
+# Cross-checked against the UPPER bound so the direction cannot be wrong:
+# /api/v1/transactions total_tracked = 2,566 = rows WHERE DEALS_OK, explicitly
+# NOT deduped. distinct 2,237 < rows 2,566, as it must be. Floor rounds DOWN to
+# the nearest 100: 2,200 <= 2,237.
+#
+# ★ CANON_ERA_DISTINCT is again deliberately NOT moved, for the reason the
+# 09-07 note gives: move only what was re-measured. It was checked, not assumed
+# — check_facility_count_claims' ceiling is 21,441 x 1.05 = 22,513, which the
+# new 21,900+ floor clears, and the whole selection was run to confirm this file
+# reports only the deals gate.
+CANON_ERA_DISTINCT, CANON_ERA_DEALS = 21441, 2237
 CANON_ERA = dict(LIVE, facilities_verified=CANON_ERA_DISTINCT,
                  deals=CANON_ERA_DEALS)
 

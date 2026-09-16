@@ -25,11 +25,11 @@
 
 DC Hub is the live data layer for data-center infrastructure — every API, MCP tool call, market brief, and AI integration on `dchub.cloud` runs through this Flask backend.
 
-- **21,500+ data center facilities** across 170+ countries (search, profile, score, alternatives)
+- **21,900+ data center facilities** across 170+ countries (search, profile, score, alternatives)
 - **300+ markets** scored daily by the DC Hub Power Index (DCPI — BUILD / CAUTION / AVOID)
 - **DC Hub Gas Index (DCGI)** — per-state natural-gas suitability for siting
 - **Live ISO grid telemetry** — PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE (fuel mix, carbon intensity, demand, prices, queue depth)
-- **2,100+ tracked M&A transactions** + hyperscaler capex tracker
+- **2,200+ tracked M&A transactions** + hyperscaler capex tracker
 - **Site factors** — fiber routes, water-stress, tax incentives, transmission & substations
 - **127,000+ substations** with voltage class + capacity estimates
 - **NEPA filings** for upcoming federal energy + data center projects

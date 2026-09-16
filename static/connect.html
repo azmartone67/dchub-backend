@@ -245,6 +245,20 @@
             <h2 id="start" style="margin-top:0;">New here? Connect your AI in 3 steps</h2>
             <p class="easy-lede">DC Hub plugs <strong>live data-center &amp; power-grid data</strong> into the AI you already use — <strong>{canon_tools} live tools</strong> covering {canon_facilities} distinct facilities in {canon_countries} countries, {canon_markets} scored markets (DC Hub Power Index), {canon_deals} tracked M&amp;A deals, and real-time grid telemetry (US &middot; EU &middot; GB &middot; TW &middot; AU). Your AI answers with today's numbers instead of guessing. No code needed, free tier included.</p>
             <p class="easy-step"><strong>Step 1</strong> — pick your AI below. <strong>Step 2</strong> — follow its card (most are one click or one pasted URL). <strong>Step 3</strong> — ask a question like the ones under the grid.</p>
+            <!-- r-grounding-pack (2026-09-16): the above-fold split. This page
+                 answers "how do I connect my chat app"; the builder wiring DC Hub
+                 into an agent, or writing its system prompt, needs the grounding
+                 pack instead — instructions, live-vs-editorial, fallback, the
+                 citation + as_of pattern and worked examples. It was reachable
+                 only from AGENTS.md and llms.txt, i.e. not from the page every
+                 integrator lands on. -->
+            <p class="easy-step" style="background:rgba(99,102,241,.08);border-left:3px solid #6366f1;padding:.7rem .9rem;border-radius:6px;">
+                <strong>Building an agent, not just connecting a chat app?</strong>
+                Go to <a href="/ai-agents"><strong>the AI agent grounding pack</strong></a> —
+                copy-paste agent instructions, what is live vs. editorial, what to do
+                when DC Hub is not connected, the citation + <code>as_of</code> pattern,
+                and five worked examples end to end.
+            </p>
             <!-- r-connect-polish (2026-07-11, Gemini feedback): chat apps and IDE
                  clients were mixed in one grid — an analyst scrolling for ChatGPT
                  could land on a JSON block and bounce. Two labeled groups now. -->
