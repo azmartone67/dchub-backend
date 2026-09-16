@@ -160,6 +160,60 @@ def _rows(cur, sql):
     return cur.fetchall() or []
 
 
+_SERVING_SQL = (
+    # /facilities/<slug> resolves discovered_facilities FIRST, then the legacy
+    # table — so load legacy first and let discovered overwrite.
+    "SELECT canonical_slug, name, provider, city, state, country, "
+    "       NULL::int AS dup, COALESCE(power_mw,0), id::text "
+    "  FROM facilities "
+    " WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''",
+    "SELECT canonical_slug, name, provider, city, state, country, "
+    "       duplicate_of_id, COALESCE(power_mw,0), id::text "
+    "  FROM discovered_facilities "
+    " WHERE canonical_slug IS NOT NULL AND canonical_slug <> '' "
+    "   AND COALESCE(is_duplicate,0) = 0",
+)
+
+
+def serving_row_by_slug(cur):
+    """{slug: row} for every publishable slug, resolved the way the PAGE does.
+
+    ★ Extracted from main() 2026-09-15 so scripts/sitemap_keep_rule_dryrun.py
+      classifies the same rows this checker publishes its number from. A second
+      implementation would be a mirror of a mirror — the real owner is
+      routes/facility_profile_page._fetch_facility_by_slug, and one copy of its
+      tiebreak in this repo is already one more than ideal.
+    """
+    row = {}
+    for sql in _SERVING_SQL:
+        for r in _rows(cur, sql):
+            # the lookup's own tiebreak: highest power, then lowest id
+            prev = row.get(r[0])
+            if prev is None or (r[7], str(prev[8])) > (prev[7], str(r[8])):
+                row[r[0]] = r
+    return row
+
+
+def group_by_identity(slugs, row_by_slug):
+    """(groups, unresolved) — published slugs bucketed by RENDERED identity.
+
+    A slug whose row declares a twin canonical never joins a group: it is
+    already consolidated, and counting it would re-report the pointer lane's own
+    output as outstanding work (v3 spent 2026-08-16 doing exactly that).
+    """
+    from util.facility_headline import identity_key
+    groups, unresolved = collections.defaultdict(list), []
+    for s in sorted(slugs):
+        r = row_by_slug.get(s)
+        if r is None:
+            unresolved.append(s)
+            continue
+        if r[6] is not None:
+            continue          # declares a twin canonical — not self-canonical
+        groups[identity_key(r[1], r[2], r[3], r[4], r[5])].append(s)
+    return groups, unresolved
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
@@ -169,7 +223,11 @@ def main():
 
     try:
         import psycopg2
-        from util.facility_headline import identity_key
+        # ★ Imported here, inside the try, ON PURPOSE. group_by_identity imports
+        #   it too, but that call sits OUTSIDE this block — an ImportError there
+        #   would be a traceback instead of this script's exit-2 "could not
+        #   measure" contract.
+        from util.facility_headline import identity_key  # noqa: F401
         dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
         if not dsn:
             raise RuntimeError("DATABASE_URL is not set")
@@ -180,25 +238,7 @@ def main():
                 "— treating as a broken fetch, not a clean sitemap")
         conn = psycopg2.connect(dsn, connect_timeout=30)
         cur = conn.cursor()
-        # /facilities/<slug> resolves discovered_facilities FIRST, then the
-        # legacy table — so load legacy first and let discovered overwrite.
-        row = {}
-        for sql in (
-            "SELECT canonical_slug, name, provider, city, state, country, "
-            "       NULL::int AS dup, COALESCE(power_mw,0), id::text "
-            "  FROM facilities "
-            " WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''",
-            "SELECT canonical_slug, name, provider, city, state, country, "
-            "       duplicate_of_id, COALESCE(power_mw,0), id::text "
-            "  FROM discovered_facilities "
-            " WHERE canonical_slug IS NOT NULL AND canonical_slug <> '' "
-            "   AND COALESCE(is_duplicate,0) = 0",
-        ):
-            for r in _rows(cur, sql):
-                # the lookup's own tiebreak: highest power, then lowest id
-                prev = row.get(r[0])
-                if prev is None or (r[7], str(prev[8])) > (prev[7], str(r[8])):
-                    row[r[0]] = r
+        row = serving_row_by_slug(cur)
         conn.close()
     except Exception as e:
         out = {"ok": False, "measured": False, "error": str(e)[:300]}
