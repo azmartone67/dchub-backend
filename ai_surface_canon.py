@@ -437,19 +437,20 @@ PINNED = {
                       # until entity-resolution shipped, then instantly became a
                       # ~1.7x over-claim (raw rows vs distinct sites). Grok caught
                       # them on our own pages before any detector did — scrub on sight.
-                      # ★2026-09-16: "21,900+" REMOVED — the ninth walk made it
-                      # the canon, and a floor cannot be its own stale marker
-                      # (test_canon_floors_are_not_on_their_own_denylist:
-                      # "retire the OUTGOING floor, never the incoming one").
-                      # The outgoing 21,500+ is NOT added: the below-the-floor
-                      # fence in test_canonical_counts_drift bans every figure
-                      # under the pin on every scanned surface the moment the
-                      # pin moves past it, with no list edit — the same
-                      # reasoning the 09-09 and 09-11 walks recorded.
-                      # "22,000+" stays: it is where facilities is heading and
-                      # republished_markers() unbans it on the walk that earns
-                      # it, exactly as it just unbanned this one.
-                      "21,000+", "22,000+", "21k+",
+                      # ★2026-09-16, THE NINTH WALK: "21,900+" STAYS ON THIS
+                      # LIST even though it is now PINNED["public"]["facilities"].
+                      # Removing it was tried first and is wrong. This list is a
+                      # numeral FAMILY, and resolve_canon() subtracts whichever
+                      # member it is currently publishing — see
+                      # republished_markers() and the `stale_markers_unbanned`
+                      # override at the end of resolve_canon() — so nothing the
+                      # sentinel scans ever carries the live floor. Deleting the
+                      # literal deletes the member that must RE-BAN itself on the
+                      # next walk, and it broke the two tests that pin the
+                      # subtraction (test_canon_denylist_not_self_poisoning).
+                      # The static guard in test_canonical_counts_drift now
+                      # measures the KEPT view, which is what actually ships.
+                      "21,000+", "21,900+", "22,000+", "21k+",
                       # ★2026-07-30: the 07-24..07-28 floor "12,650+" is itself
                       # retired (PINNED rebased to 15,000+, live 15,300+). It sat
                       # on the /ai hero CONTRADICTING the same page's live stat

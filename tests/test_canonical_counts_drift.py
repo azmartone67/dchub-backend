@@ -922,9 +922,42 @@ def test_surfaces_free_of_banned_stale_counts():
     )
 
 
+def _scannable_stale_markers():
+    """The denylist AS SERVED — the raw family minus whatever the canon
+    publishes right now.
+
+    ★2026-09-16. The list is a numeral FAMILY on purpose ("21,000+",
+    "21,900+", "22,000+", "21k+"), so that each member re-bans itself once the
+    floor walks past it; resolve_canon() subtracts the member it is currently
+    publishing before the sentinel ever scans a body. Parametrising over the RAW
+    list made this gate fire on every surface that had CORRECTLY rendered the
+    canon, the moment the ninth walk took the floor to a listed member — the
+    exact self-poisoning tests/test_canon_denylist_not_self_poisoning.py exists
+    to end, one layer down in CI.
+    """
+    from ai_surface_canon import republished_markers
+    raw = [m for m in PINNED.get("stale_markers", []) if m and m.strip()]
+    published = {p for p in (PINNED.get("public") or {}).values() if isinstance(p, str)}
+    kept, _unbanned = republished_markers(raw, published)
+    return kept
+
+
+def test_the_scannable_denylist_is_not_empty():
+    """★ The parametrised gate below is only as real as its parameter list. If
+    the subtraction ever over-reached and emptied it, pytest would report zero
+    cases and the whole gate would go green by disappearing."""
+    raw = [m for m in PINNED.get("stale_markers", []) if m and m.strip()]
+    kept = _scannable_stale_markers()
+    assert len(kept) >= max(1, len(raw) - 4), (
+        f"the served denylist collapsed from {len(raw)} markers to {len(kept)} — "
+        "republished_markers is unbanning far more than the handful of phrases "
+        "the canon publishes, and the surface scan below has almost nothing left "
+        "to check")
+
+
 @pytest.mark.parametrize(
     "marker",
-    [m for m in PINNED.get("stale_markers", []) if m and m.strip()],
+    _scannable_stale_markers(),
     ids=lambda m: m.strip().replace(" ", "_"),
 )
 def test_surfaces_clean_of_ai_surface_canon_stale_markers(marker):
@@ -3920,9 +3953,26 @@ def test_canon_floors_are_not_on_their_own_denylist():
     own (?<![\\d,]) lookbehind exists to defeat, and a guard that fires on it
     would be un-satisfiable. Match the number with a left boundary instead.
     """
-    markers = PINNED.get("stale_markers") or []
+    from ai_surface_canon import republished_markers
+
+    raw = PINNED.get("stale_markers") or []
     public = PINNED.get("public") or {}
-    assert markers and public, "HARNESS ERROR: canon unreadable — guard would pass vacuously"
+    assert raw and public, "HARNESS ERROR: canon unreadable — guard would pass vacuously"
+
+    # ★2026-09-16 — MEASURE WHAT SHIPS, NOT THE RAW LIST. The list is a numeral
+    # FAMILY on purpose: "21,000+/21,900+/22,000+/21k+" are all on it so that
+    # each one re-bans itself once the floor walks past it. resolve_canon()
+    # subtracts whichever member it is currently publishing (republished_markers
+    # -> `stale_markers_unbanned`), and the sentinel scans that KEPT view. So a
+    # floor sitting in `raw` is not the defect — a floor surviving into `kept`
+    # is, because that is the one a served body gets flagged for.
+    #
+    # Scanning `raw` instead was tried during the ninth walk and produced the
+    # WRONG REMEDY: it says "delete the literal", which deletes the family
+    # member that must re-ban itself next walk and breaks the two tests pinning
+    # the subtraction (test_canon_denylist_not_self_poisoning).
+    published = {p for p in public.values() if isinstance(p, str)}
+    kept, unbanned = republished_markers(raw, published)
 
     hits = []
     for dimension, phrase in sorted(public.items()):
@@ -3932,9 +3982,18 @@ def test_canon_floors_are_not_on_their_own_denylist():
         # the floor as it is written, with a left boundary so 2,000+ does not
         # match inside 22,000+
         pat = re.compile(rf"(?<![\d,]){re.escape(f'{num:,}')}\+")
-        for m in markers:
+        for m in kept:
             if pat.search(m):
                 hits.append(f"  public.{dimension} = {phrase!r} is denylisted by stale_marker {m!r}")
+    # ★ NOT VACUOUS: if the subtraction ever stops running, or stops matching
+    # the phrase the canon publishes, every floor on the family list lands in
+    # `kept` and the assertion below fires with it named.
+    for dimension, phrase in sorted(public.items()):
+        if phrase in raw:
+            assert phrase in unbanned, (
+                f"public.{dimension} = {phrase!r} is on the raw denylist and "
+                "republished_markers did NOT unban it — the served list still "
+                "bans a phrase the canon publishes")
     assert not hits, (
         "The canon lists its own current floor as stale. ai_surface_sentinel "
         "scans LIVE served bodies for stale_markers, so every surface rendering "
