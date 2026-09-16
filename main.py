@@ -33941,6 +33941,98 @@ def _build_sitemap_sections():
         for _pn in range(2, _math.ceil(_us_state_counts[_ss] / _hub_psize) + 1):
             sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/us/{_ss}/page/{_pn}</loc><lastmod>{_slm}</lastmod><changefreq>weekly</changefreq><priority>0.4</priority></url>')
 
+    # ── Live Capacity Source listings ───────────────────────────────────────
+    # Every LIVE listing at https://dchub.cloud/listings/<slug>, with the
+    # listing's own updated_at as <lastmod>, so a re-verified listing re-dates
+    # itself instead of riding the pinned _STATIC_LASTMOD (the lastmod-honesty
+    # note at the top of this builder, and the /facilities/in/<cc> hubs above,
+    # which carry real per-row dates for the same reason).
+    #
+    # ★ 2026-09-16 — WHY THIS BLOCK EXISTS AT ALL. Listing URLs were added to
+    #   routes/sitemap_auto.py, which registers /api/v1/sitemap.xml and
+    #   /api/v1/sitemap/health and NOTHING ELSE. That artefact carried them
+    #   (381 URLs, both live listings among them). THIS builder is the one
+    #   behind https://dchub.cloud/sitemap.xml — the sitemapindex submitted to
+    #   GSC and Bing and named in robots.txt — and it carried zero. Confirmed
+    #   from contracts/route_serving_map.json, which attributes `GET
+    #   /sitemap.xml` and `GET /sitemap-<section>.xml` to `main` alone.
+    #
+    # ★ WHY sitemap-static.xml AND NOT A NEW sitemap-listings.xml CHILD.
+    #   A new child means adding 'listings' to _SITEMAP_FIXED_SECTIONS, which
+    #   is the single tuple the index, the shard route and the snapshot
+    #   rebuild all read — so it could not 404. But the sitemap floor step
+    #   requires every shard named there to be NON-EMPTY (pinned by
+    #   tests/test_sitemap_family_floor.py::
+    #   test_a_single_EMPTY_fixed_shard_fails_even_though_the_sum_clears), and
+    #   "no live listings right now" is a NORMAL business state — there are
+    #   two today. A child shard would turn an ordinary quiet week into a red
+    #   sitemap job and an EMPTY-shard breach. static is already the DB-driven
+    #   mixed shard (302 /facilities/in/* hub URLs with real lastmods), so the
+    #   listings sit with their own kind and the index is unchanged.
+    #
+    # ONE liveness rule, imported rather than retyped.
+    # routes.exclusive_listings._LIVE_WHERE is what the /listings feed, its
+    # counts and GET /api/v1/listings/summary all filter on (status public or
+    # pocket, and not past expires_at), so the sitemap lists exactly the
+    # listings whose teaser cards are public on /listings — and a listing that
+    # stops being live leaves every one of those surfaces on the same build. A
+    # second hand-typed copy here is how the two lists would drift apart; a
+    # hand-typed `status = 'public'` is precisely what published zero listing
+    # URLs from the other generator while both live listings were `pocket`.
+    #
+    # NOT `except Exception: pass`. The other generator's copy sits inside a
+    # bare swallow, which is why it emitted nothing for weeks in silence. This
+    # block names its error like the press/DCPI loops above it and logs the
+    # count it emitted every build, so zero is visible in the logs rather than
+    # indistinguishable from a build that never ran.
+    _listings_added = 0
+    try:
+        from routes.exclusive_listings import _LIVE_WHERE as _LISTING_LIVE_WHERE
+        from urllib.parse import quote as _lquote
+        # SELECT … FROM in one uppercase literal (scripts/dataset_inventory.py
+        # reads the table out of the AST); the shared predicate is appended,
+        # never re-spelled.
+        _listings_cap = 500
+        _listings_sql = (
+            "SELECT slug, updated_at FROM exclusive_listings WHERE "
+            + " AND ".join(_LISTING_LIVE_WHERE)
+            + f" ORDER BY updated_at DESC LIMIT {_listings_cap}")
+        _lst_conn = get_read_db()
+        _lstc = _lst_conn.cursor()
+        _lstc.execute(_listings_sql)
+        _lst_rows = _lstc.fetchall()
+        # The cap bounds a per-request build; it must never truncate in
+        # silence. Two listings are live today, so hitting it means the
+        # program grew and this number needs raising — say so rather than
+        # quietly publishing a prefix of the catalogue.
+        if len(_lst_rows) >= _listings_cap:
+            logger.warning(
+                "sitemap: live listings hit the %d cap — the sitemap is "
+                "publishing a PREFIX of the live catalogue; raise the cap",
+                _listings_cap)
+        for (_lslug, _lupd) in _lst_rows:
+            if not _lslug:
+                continue
+            _llm = _STATIC_LASTMOD
+            try:
+                _lds = str(_lupd or "")[:10]
+                if _re.match(r'^\d{4}-\d{2}-\d{2}$', _lds):
+                    _llm = _lds
+            except Exception:
+                _llm = _STATIC_LASTMOD
+            sections['static'].append(
+                f'  <url><loc>https://dchub.cloud/listings/{_lquote(str(_lslug), safe="")}</loc>'
+                f'<lastmod>{_llm}</lastmod>'
+                f'<changefreq>weekly</changefreq>'
+                f'<priority>0.7</priority></url>'
+            )
+            _listings_added += 1
+        try: _lst_conn.close()
+        except Exception: pass
+    except Exception as _listings_sitemap_err:
+        logger.warning(f"sitemap live-listings DB fetch failed: {_listings_sitemap_err}")
+    logger.info(f"sitemap: {_listings_added} live listing pages added")
+
     # ★ r-thin-sitemap (2026-08-14) — COLLAPSE FLOOR. The capacity gate above is
     # the one change here that can only ever REMOVE URLs, so a bad query, a
     # renamed column or an empty power_mw backfill would quietly shrink the
