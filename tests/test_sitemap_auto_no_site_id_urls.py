@@ -138,9 +138,13 @@ def test_every_other_block_still_emits(monkeypatch):
     above and prove nothing."""
     xml = _xml(monkeypatch)
     for expected in ("https://dchub.cloud/markets/northern-virginia",
-                     # ?l= on purpose: /listings/<slug> 404s at the edge, the
-                     # same edge-routing lesson that retires /sites/<id> here
-                     "https://dchub.cloud/listings?l=a-listing",
+                     # 2026-09-16: the per-listing path, not the index with the
+                     # slug in a query string. dchub-frontend#1491 (live worker
+                     # 5.0.0) serves a crawlable teaser page per listing, so the
+                     # edge-routing reason for the old shape is gone. Which
+                     # listings belong here is pinned in
+                     # tests/test_sitemap_lists_live_listings.py.
+                     "https://dchub.cloud/listings/a-listing",
                      "https://dchub.cloud/news/a-release"):
         assert f"<loc>{expected}</loc>" in xml, (
             f"{expected} is missing — the fake database fed this generator "

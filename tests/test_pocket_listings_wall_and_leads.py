@@ -573,15 +573,43 @@ def test_the_public_record_masks_the_prospect_and_names_tampering(env):
     assert j2["chain"]["intact"] is False and j2["chain"]["first_break_seq"] == env.rows[0]["seq"]
 
 
-def test_every_listing_answer_says_confidential_and_never_cc_by(env):
-    """The MCP gateway stamps CC-BY-4.0 on any response that does not carry its
-    own citation. Listing data must not reach an agent labelled as
-    free to republish — walls included, since the tools relay them as results."""
+def _summary_live(env, monkeypatch):
+    """GET /api/v1/listings/summary answering from the fixture's listings.
+    cached_listings_summary reads a DSN and a process-wide cache, neither of
+    which the env fixture provides, so both are opened here and the REAL
+    _build_summary runs over teaser-level rows."""
+    monkeypatch.setattr(el, "_dsn", lambda: "postgres://listings-test")
+    monkeypatch.setattr(el, "_ensure_schema", lambda: None)
+    monkeypatch.setattr(el, "_db_live_listing_facts", lambda: [
+        {"market": r["market"], "state": r["state"], "country": r["country"],
+         "capacity_mw": r["capacity_mw"], "delivery_type": None,
+         "updated_at": r["updated_at"]}
+        for r in env.listings if r["status"] in ("pocket", "public")])
+    el._SUMMARY_CACHE.update(at=None, value=None)
+    r = env.client.get("/api/v1/listings/summary")
+    el._SUMMARY_CACHE.update(at=None, value=None)
+    return r
+
+
+def test_the_teaser_is_public_and_the_full_detail_stays_confidential(env, monkeypatch):
+    """The licence split (2026-09-16). The MCP gateway stamps CC-BY-4.0 on any
+    response that does not carry its own citation, so the backend citation is
+    what decides. Teaser-level facts are now on a crawlable /listings/<slug>
+    page and are QUOTABLE with attribution; full detail, released identity and
+    every registration answer stay confidential. Labelling a fact that search
+    engines already index as "not for redistribution" is one surface
+    contradicting the other."""
     lead_id = _register_and_confirm(env, headers=_bearer(user_id="u-ann", email="ann@firm.example"))
     accepted = _accept_terms(env, _bearer())
-    responses = {
+    summary = _summary_live(env, monkeypatch)
+    public = {
         "feed": env.client.get("/api/v1/listings"),
         "detail (walled)": env.client.get("/api/v1/listings/dfw-40"),
+        "detail (anonymous via our gateway)": env.client.get(
+            "/api/v1/listings/dfw-40", headers={"X-Internal-Key": INTERNAL_KEY}),
+        "summary": summary,
+    }
+    confidential = {
         "detail (open)": env.client.get("/api/v1/listings/dfw-40", headers=_bearer()),
         "terms": env.client.get("/api/v1/listings/terms"),
         "terms accepted": accepted,
@@ -591,12 +619,55 @@ def test_every_listing_answer_says_confidential_and_never_cc_by(env):
                                     json={**INTRO, "requirement": {"markets": ["Dallas"]}}),
         "record": env.client.get(f"/api/v1/listings/leads/{lead_id}/verify"),
     }
-    assert responses["detail (open)"].get_json()["locked"] is False
-    for label, r in responses.items():
+    # ★ NON-VACUITY. The confidential half is trivially satisfied by a response
+    #   that never unlocked, and the public half by a summary that failed to
+    #   build — so both are proved to be the thing they claim to be first.
+    assert confidential["detail (open)"].get_json()["locked"] is False
+    assert "asking_price" in confidential["detail (open)"].get_json()["listing"]
+    assert public["detail (walled)"].get_json()["locked"] is True
+    assert summary.get_json()["ok"] is True and summary.get_json()["live_count"] == 1
+
+    for label, r in public.items():
+        j, body = r.get_json(), r.get_data(as_text=True)
+        assert j["citation"]["license"] == el.TEASER_LICENSE == "CC-BY-4.0", label
+        assert j["citation"]["redistribution"] == "permitted_with_attribution", label
+        # Attribution is the CONDITION of the grant, so the string an agent
+        # would paste has to name DC Hub.
+        assert "DC Hub" in j["citation"]["cite_as"], label
+        assert el.LISTING_LICENSE not in body, label
+        for secret in (OPERATOR_SENTINEL, OWNER_SENTINEL, "hidden-note"):
+            assert secret not in body, label
+
+    for label, r in confidential.items():
         j, body = r.get_json(), r.get_data(as_text=True)
         assert j["citation"]["license"] == el.LISTING_LICENSE, label
         assert j["citation"]["redistribution"] == "not_permitted", label
         assert "CC-BY" not in body, label
+
+
+def test_an_anonymous_detail_response_carries_no_identity_at_any_licence(env):
+    """The teaser page is indexable, so this response is the one a crawler and
+    an unidentified agent both read. Quotable is not the same as complete: no
+    provider identity, no site, no coordinates, no contact, and a `disclosure`
+    that releases nothing."""
+    r = env.client.get("/api/v1/listings/dfw-40")
+    j, body = r.get_json(), r.get_data(as_text=True)
+    assert j["locked"] is True
+    listing = j["listing"]
+    # ★ The control: the teaser IS being served, so the absences below mean
+    #   "withheld", not "empty response".
+    assert listing["slug"] == "dfw-40" and listing["market"] == "Dallas"
+    assert listing["capacity_mw"] == 40.0 and listing["title"]
+    for private in ("latitude", "longitude", "asking_price", "detail",
+                    "contact", "owner_id", "verification", "price", "power"):
+        assert private not in listing, private
+    assert listing["provider"] is None
+    assert j["disclosure"] == {"released": False}
+    for secret in (OPERATOR_SENTINEL, OWNER_SENTINEL, "hidden-note",
+                   "32.776712", "-96.797012", "1250000"):
+        assert secret not in body, secret
+    # ...and it is the PUBLIC citation that ships with it.
+    assert j["citation"]["license"] == el.TEASER_LICENSE
 
 
 def test_the_operator_ledger_is_scoped_and_hides_the_buyer_until_accepted(env):

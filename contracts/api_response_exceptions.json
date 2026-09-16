@@ -26,6 +26,14 @@
     {
       "endpoint": "GET /api/v1/sitemap/health",
       "keys": [
+        "public_listings"
+      ],
+      "reason": "It counted `status = 'public'` exclusive_listings, the filter the sitemap's listings block used until 2026-09-16. That block now emits every LIVE listing (routes.exclusive_listings._LIVE_WHERE: status public or pocket, not past expires_at), so `public_listings` described a population the generator no longer lists — and it published 0 while both live listings were `pocket`. Every count on this endpoint maps to a block above it; the replacement `live_listings` counts exactly what the block emits. No reader: the only other occurrence in this repo was this file's own baseline, and neither dchub-frontend nor dchub-mcp-server names the key (grepped both). Same shape as the facilities_with_power removal below.",
+      "added": "2026-09-16"
+    },
+    {
+      "endpoint": "GET /api/v1/sitemap/health",
+      "keys": [
         "facilities_with_power"
       ],
       "reason": "It counted the population behind the /sites/<id> sitemap block removed in #4436 (the facilities table has no updated_at column, so that block raised on every build and emitted zero URLs; the pages are robots-blocked besides). The count described that block and nothing else the generator emits. Its only reader was GET /api/v1/status's sitemap block, which drops the mirrored key in this same PR rather than publishing a null; no reader in dchub-frontend or dchub-mcp-server (grepped both).",

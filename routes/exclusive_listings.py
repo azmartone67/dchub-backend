@@ -21,6 +21,15 @@ DC Hub.
     address-like detail keys, coordinates, substation) and the provider's
     contact are held back until the provider accepts THAT viewer's
     registration; get_listing then returns them in `disclosure`.
+  * LICENCE SPLIT (2026-09-16). Teaser-level facts — market, state, country,
+    region, size, delivery type, availability, freshness, update cadence, title
+    and summary — are PUBLIC and quotable with attribution to DC Hub
+    (CC-BY-4.0), because those are exactly the facts the crawlable
+    /listings/<slug> teaser page already publishes. Full detail and anything
+    released after a provider accepts a registration stay confidential and not
+    for redistribution. `citation` says which of the two a response is under:
+    the feed, the summary and a LOCKED detail response cite publicly;
+    _citation_for(access["granted"]) switches the detail endpoint.
   * DEAL REGISTRATION. A registration (POST .../intro) reaches the provider as
     the buyer's company name and requirement only. The provider accepts or
     declines it (POST .../leads/<lead_id>/decision, with its ledger token). On
@@ -197,25 +206,70 @@ HOW_TO_VERIFY = (
     "receipt time shows when the registration already existed."
 )
 
-# ★ Listing data is shared to evaluate ONE opportunity under the terms above,
-# not published. Every response says so in machine-readable form, because the
-# MCP gateway keeps a backend-supplied provenance/citation block over its own
-# default CC-BY-4.0 grant (dchub-mcp-server lib/attribution.mjs mergeProvenance /
-# reconcileCitation). Without these, every agent reading a Capacity Source listing would
-# be told it may republish it.
+# ★ FULL listing detail is shared to evaluate ONE opportunity under the terms
+# above, not published. Every response carrying it says so in machine-readable
+# form, because the MCP gateway keeps a backend-supplied provenance/citation
+# block over its own default CC-BY-4.0 grant (dchub-mcp-server
+# lib/attribution.mjs mergeProvenance / reconcileCitation). Without these, every
+# agent reading an unlocked Capacity Source listing would be told it may
+# republish it.
 # Only `citation` is emitted. `provenance` is a data-CURRENCY claim key to
 # scripts/dataset_inventory.py, and listings are curated inventory, not an
 # ingested feed with a freshness to watch; the MCP tools force a matching
-# confidential provenance on their side (dchub-mcp-server _listingConfidential).
+# provenance on their side (dchub-mcp-server _listingConfidential).
 LISTING_LICENSE = "LicenseRef-DCHub-Capacity-Source-Confidential"
 LISTING_CITE_AS = ("DC Hub Capacity Source (confidential — not for redistribution), "
                    "dchub.cloud")
 
+# ★ THE TEASER IS PUBLIC (2026-09-16, owner decision). The teaser-level facts —
+# market, state, country, region, size, delivery type, availability, freshness,
+# update cadence, title and summary — are the demand driver, and since
+# dchub-frontend#1491 they are also a crawlable server-rendered page per listing
+# at /listings/<slug> (200, `x-robots-tag: index, follow`). A fact published on
+# an indexable page and simultaneously labelled "not for redistribution" to the
+# agent that fetched it is one surface contradicting the other; an agent that
+# obeys the label cannot quote what any search engine already indexes.
+#
+# The grant is CC-BY-4.0 — THE REPO'S EXISTING PUBLIC GRANT, not a new licence
+# string. It is what routes/provenance.py::LICENSE stamps on DC Hub's own
+# computed work, what find_sites/radar/mcp_tier1_tools cite themselves under,
+# and the MCP gateway's own default, so the teaser citation now AGREES with the
+# gateway instead of overriding it. cite_as keeps the confidential string's
+# shape, minus the confidentiality parenthetical, so both halves of one product
+# attribute to the same name. Per-layer statement: DATA-LICENSE.md §5.
+#
+# The split is by RESPONSE, not by endpoint: the teaser feed, the summary and a
+# LOCKED detail response cite publicly; a granted `_full` detail response and a
+# released `disclosure` (provider, site, coordinates, contact) keep
+# LISTING_LICENSE, and so does every registration answer.
+TEASER_LICENSE = "CC-BY-4.0"
+TEASER_CITE_AS = "DC Hub Capacity Source, dchub.cloud"
+TEASER_LICENSE_URL = SITE + "/data-sources"
+
 
 def _citation():
+    """The CONFIDENTIAL citation: full detail, released identity, and every
+    answer in the registration flow. Not for redistribution."""
     return {"source": "DC Hub Capacity Source", "url": SITE + "/listings",
             "license": LISTING_LICENSE, "license_url": TERMS_URL,
             "redistribution": "not_permitted", "cite_as": LISTING_CITE_AS}
+
+
+def _teaser_citation():
+    """The PUBLIC citation: teaser-level facts only, quotable WITH attribution
+    to DC Hub. Carried by the list feed, the summary, and a locked detail
+    response — never by a response that carries specs or identity."""
+    return {"source": "DC Hub Capacity Source", "url": SITE + "/listings",
+            "license": TEASER_LICENSE, "license_url": TEASER_LICENSE_URL,
+            "redistribution": "permitted_with_attribution",
+            "cite_as": TEASER_CITE_AS}
+
+
+def _citation_for(granted):
+    """The citation a listing response must carry. `granted` is
+    _access(...)["granted"] — True once the viewer is past the wall, which is
+    exactly when the response stops being teaser-level."""
+    return _citation() if granted else _teaser_citation()
 
 
 _ACCESS_LEVELS = ("registered", "pro", "enterprise", "founding")
@@ -2915,8 +2969,10 @@ def list_listings():
             needs_upgrade += 1
 
     out = {
+        # Teaser-level by construction: every item here is _teaser(), locked or
+        # not, so this feed never carries specs or identity.
         "ok": True,
-        "citation": _citation(),
+        "citation": _teaser_citation(),
         "program": _program(live_count),
         "viewer": _viewer_public(v, "/listings"),
         "filters": filters,
@@ -3019,6 +3075,9 @@ def listings_summary():
         return unavailable, 200
     out = {
         "ok": True,
+        # An aggregate of teaser-level columns only (_db_live_listing_facts),
+        # and the one listings answer written to be quoted.
+        "citation": _teaser_citation(),
         "program_status": summary["program_status"],
         "live_count": summary["live_count"],
         "total_mw": summary["total_mw"],
@@ -3056,7 +3115,11 @@ def get_listing(slug_or_id):
         _record_view(row, v)
     out = {
         "ok": True,
-        "citation": _citation(),
+        # ONE predicate decides both: `granted` picks _full over _teaser on the
+        # line below, and picks the confidential citation over the public one
+        # here. A locked or anonymous response is teaser-level and quotable; an
+        # unlocked one carries specs, and `disclosure` may carry identity.
+        "citation": _citation_for(access["granted"]),
         "locked": not access["granted"],
         "listing": _full(row, access) if access["granted"] else _teaser(row, access),
         "access": access,

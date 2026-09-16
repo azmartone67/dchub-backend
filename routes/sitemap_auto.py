@@ -18,9 +18,29 @@ from html import escape
 
 from flask import Blueprint, Response, request
 
+# ONE liveness rule for Capacity Source listings, imported rather than retyped.
+# routes.exclusive_listings._LIVE_WHERE is what the /listings feed, its counts
+# and GET /api/v1/listings/summary all filter on (status public or pocket, and
+# not past expires_at), so the sitemap lists exactly the listings whose teaser
+# cards are public on /listings — and a listing that stops being live leaves
+# every one of those surfaces on the same build. A second hand-typed copy here
+# is how the two lists would drift apart.
+from routes.exclusive_listings import _LIVE_WHERE as _LISTING_LIVE_WHERE
+
 sitemap_auto_bp = Blueprint("sitemap_auto", __name__)
 
 BASE = "https://dchub.cloud"
+
+# SELECT … FROM in one uppercase literal (scripts/dataset_inventory.py reads
+# the table this module asks for out of the AST); the shared predicate is
+# appended, never re-spelled.
+_LIVE_LISTINGS_SQL = (
+    "SELECT slug, updated_at FROM exclusive_listings WHERE "
+    + " AND ".join(_LISTING_LIVE_WHERE)
+    + " ORDER BY updated_at DESC LIMIT 200")
+_LIVE_LISTINGS_COUNT_SQL = (
+    "SELECT COUNT(*) FROM exclusive_listings WHERE "
+    + " AND ".join(_LISTING_LIVE_WHERE))
 
 
 def _conn():
@@ -167,26 +187,39 @@ def _generate_sitemap():
     #   WORKS and is withheld from crawlers on purpose. `/site*` IS in the
     #   frontend's _routes.json include.
     # Reviving the block would publish 200 robots-blocked soft-404s: the
-    # /facilities/in/<cc> 676-shell lesson, and the same edge-routing lesson the
-    # listings block below already learned (it emits ?l= because /listings/<slug>
-    # 404s). Pinned by tests/test_sitemap_auto_no_site_id_urls.py.
+    # /facilities/in/<cc> 676-shell lesson. Pinned by
+    # tests/test_sitemap_auto_no_site_id_urls.py.
 
-    # Public Capacity Source listings
+    # ── Live Capacity Source listings ───────────────────────────────────────
+    # Every LIVE listing, by the feed's own rule (_LIVE_LISTINGS_SQL above),
+    # at the per-listing path.
+    #
+    # ★ CORRECTION (2026-09-16). This block used to point at the listings index
+    #   with the slug in a query string, under a comment asserting the
+    #   per-listing path was not served at the edge, and it filtered
+    #   `status = 'public'` while every live listing is `pocket` — so it
+    #   published ZERO listing URLs. Both halves are fixed here:
+    #     * The per-listing path IS SERVED. dchub-frontend#1491 (live worker
+    #       5.0.0, 2026-09-16) ships a crawlable server-rendered teaser page
+    #       per listing: 200 with `x-robots-tag: index, follow` for a live
+    #       slug, and a real not-found with `noindex` for an unknown slug.
+    #       Verified live that day. The old claim is retired, not softened.
+    #     * `status = 'public'` is NOT the liveness rule. The feed's rule is
+    #       _LIVE_WHERE, and the owner's decision is that all live listings
+    #       belong here, because their teaser cards are already public on
+    #       /listings.
+    #   lastmod is the listing's own updated_at, so a re-verified listing
+    #   re-dates itself.
+    #   Pinned by tests/test_sitemap_lists_live_listings.py.
     try:
         with _conn() as c, c.cursor() as cur:
-            rows = _safe(cur, """
-                SELECT slug, COALESCE(updated_at, created_at)
-                  FROM exclusive_listings
-                 WHERE status = 'public'
-                 ORDER BY created_at DESC LIMIT 100""")
-            # /listings/<slug> 404s at the edge (no _routes.json include
-            # reaches the worker's SPA rewrite); the static page reads ?l=.
+            rows = _safe(cur, _LIVE_LISTINGS_SQL)
             from urllib.parse import quote as _quote
             for slug, last in rows:
                 if slug:
                     lastmod = last.strftime("%Y-%m-%d") if last else now_iso
                     urls.append(_url_xml(
-                        f"{BASE}/listings?l={_quote(slug, safe='')}", lastmod, 0.7, "weekly"))
+                        f"{BASE}/listings/{_quote(slug, safe='')}", lastmod, 0.7, "weekly"))
     except Exception:
         pass
 
@@ -239,10 +272,16 @@ def sitemap_health():
             # it described nothing this generator emits — every other count
             # here maps to a block above. With it gone, this module does not
             # read `facilities` at all, which is what the module-wide AST check
-            # in tests/test_sitemap_auto_no_site_id_urls.py now pins. Audited
-            # removal: contracts/api_response_exceptions.json.
-            cur.execute("""SELECT COUNT(*) FROM exclusive_listings WHERE status = 'public'""")
-            out["public_listings"] = int(cur.fetchone()[0])
+            # in tests/test_sitemap_auto_no_site_id_urls.py now pins.
+            # `public_listings` (COUNT of status='public') went the same way on
+            # 2026-09-16: it described a filter the generator no longer uses —
+            # the listings block emits every LIVE listing — and the count it
+            # published was 0 while both live listings were `pocket`. Every
+            # count here maps to a block above; this one counts exactly the
+            # population _LIVE_LISTINGS_SQL lists.
+            # Both audited removals: contracts/api_response_exceptions.json.
+            cur.execute(_LIVE_LISTINGS_COUNT_SQL)
+            out["live_listings"] = int(cur.fetchone()[0])
             cur.execute("""SELECT COUNT(*) FROM news
                              WHERE published_date > NOW() - INTERVAL '90 days'""")
             out["recent_news"] = int(cur.fetchone()[0])
