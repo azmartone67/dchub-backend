@@ -18,7 +18,7 @@ source: scripts/generate_vault_map.py
 | **L7** | `brain_layer7_evolving.py` | Brain L7 — Self-Evolving (2026-05-19). |
 | **L8** | `brain_layer8_orchestrator.py` | Brain L8 — Orchestrator (2026-05-19). |
 | **L9** | `brain_layer9_conversational.py` | Brain L9 — Conversational (2026-05-19). |
-| **L11** | `brain_layer11_qa_agent.py` | Brain L11 — QA Agent (2026-05-18). |
+| **L11** | `brain_layer11_qa_agent.py` | Brain L11 — QA Agent (2026-05-18). ★ RETIRED 2026-09-12. |
 | **L12** | `brain_layer12_expansion.py` | Brain L12 — Site Expansion Tracker (2026-05-18). |
 | **L13** | `brain_layer13_upgrade_nudge.py` | Brain L13 — Upgrade Nudge (2026-05-18). |
 | **L14** | `brain_layer14_causal.py` | Brain L14 — Causal Reasoner (2026-05-18). |
