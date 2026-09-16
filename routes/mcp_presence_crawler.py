@@ -2463,6 +2463,25 @@ def _canonical_numbers() -> dict:
 
 
 # ── Per-registry character-capped description builder ────────────────
+# ★2026-09-16 — Capacity Source was missing from every registry description.
+# The listings are the one DC Hub capability a reader of a directory listing
+# could not discover from the copy: the page said facilities, grid and fiber,
+# and nothing said DC Hub also sources capacity to buy or lease. This line is
+# the OWNER-GIVEN wording and it is deliberately COUNT-FREE — a registry
+# listing is re-crawled on the registry's own schedule, so an inventory number
+# pasted into one is a number that goes stale where no drift detector of ours
+# can reach it. It names the capability, the tool and the page instead, all
+# three of which outlive any particular listing.
+#
+# ★ The same sentence, byte for byte, is the mcp-server's CAPACITY_BLURB in
+#   lib/capacity-source-summary.mjs. Two repos, so two literals; both are
+#   pinned by a test naming the other (tests/test_registry_capacity_blurb.py
+#   here, test/capacity-source-pointers.test.mjs there).
+CAPACITY_SOURCE_BLURB = (
+    "Capacity Source: powered land/shell/turnkey incl. off-market listings "
+    "via source_capacity; browse dchub.cloud/listings."
+)
+
 _DESCRIPTION_CHAR_CAPS = {
     "mcphive":          1500,
     "cursor_directory":  280,
@@ -2589,13 +2608,25 @@ def _build_canonical_description(registry_name: str) -> str:
     cap = _DESCRIPTION_CHAR_CAPS.get(registry_name,
                                      _DESCRIPTION_CHAR_CAPS["_default"])
 
-    full = (
+    lean = (
         f"DC Hub is the data layer for data-center infrastructure: "
         f"{tools} live MCP tools covering {facs_p} discovered facilities, "
         f"{mkts_p} DCPI markets, {deals_p}, ISO-grid headroom, "
         f"interconnection-queue snapshots, fiber intel, energy prices, "
         f"tax incentives, water risk, and renewable mix. Real-time data, "
-        f"versioned, cited. Free tier exposes ~10 tools; paid tiers unlock "
+        f"versioned, cited."
+    )
+    # ★ `lean` exists so the Capacity Source line has somewhere to fall that is
+    #   not a 245-character cliff. full+blurb is 496 against the 500 cap that
+    #   five of the seven registries use: four characters of headroom, which
+    #   the next canon move (91 -> 100 tools, or 21,900+ -> 100,000+) spends.
+    #   Without this rung the blurb's arrival would silently demote smithery,
+    #   pulsemcp, glama and every unknown registry from the full pitch to
+    #   `medium` the day a count grew a digit. The tier-pricing sentence is
+    #   what it drops, because that is the one clause a reader can get from
+    #   the pricing page the listing already links to.
+    full = (
+        f"{lean} Free tier exposes ~10 tools; paid tiers unlock "
         f"the full {tools}."
     )
     medium = (
@@ -2608,7 +2639,17 @@ def _build_canonical_description(registry_name: str) -> str:
     )
     micro = f"DC Hub: {tools} MCP tools for data-center infrastructure."
 
-    for candidate in (full, medium, short, micro):
+    # Longest first, WITH the Capacity Source line — but only onto rungs that
+    # still carry the canonical counts. Trading {facs_p}/{mkts_p}/{deals_p}
+    # away to fit the blurb would buy one capability by dropping the three
+    # floors this copy exists to publish, so `micro` never carries it.
+    for candidate in (full, lean, medium, short):
+        withcap = f"{candidate} {CAPACITY_SOURCE_BLURB}"
+        if len(withcap) <= cap:
+            return withcap
+    # No room for it anywhere: fall back to EXACTLY the pre-2026-09-16 ladder,
+    # so a tight cap loses the new line and never any copy it already had.
+    for candidate in (full, lean, medium, short, micro):
         if len(candidate) <= cap:
             return candidate
     # Last resort — hard truncate the micro line at the cap with ellipsis
