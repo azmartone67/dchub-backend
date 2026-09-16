@@ -747,6 +747,70 @@ def _mcp_server_version(timeout=20):
     return None
 
 
+def republished_markers(stale_markers, published):
+    """Split a stale_markers list into (kept, unbanned) against the phrases the
+    canon CURRENTLY publishes. Pure — no I/O.
+
+    ★ A MARKER THE CANON NOW PUBLISHES IS NOT A STALE MARKER.
+
+    stale_markers bans TEXT, and text gets re-earned. The facility floors
+    "21,000+/21,900+/22,000+/21k+" went on the list 2026-07-24 as the PRE-DEDUP
+    ROW counts — true as rows, a ~1.7x over-claim as buildings. Entity
+    resolution then shipped and the DEDUPED fleet grew back up through them: on
+    2026-09-16 facilities_verified_phrase() returns "21,900+" for 22,031
+    distinct buildings. That is the honest floor AND, verbatim, a banned marker.
+
+    Measured that day, GET /api/v1/admin/ai-surface/audit: 21 drifts, of which
+    8 were `stale_value: "21,900+"` — on llms.txt, llms-full.txt, AGENTS.md,
+    mcp.json, server-card.json, openapi.json, /connect and /ai. Every surface
+    that had correctly rendered this canon. Their prescribed remedy is
+    `update-from-canon`, which rewrites "21,900+" to "21,900+", so the class
+    could not close; it had recurred into 15 ai_surface_drift spec docs since
+    August.
+
+    ★ THIS IS THE SECOND OCCURRENCE. On 2026-09-02 the same thing happened to
+    `deals` — "2,000+ tracked deals", "2,000+ deals", "2,000+ M&A" and two
+    siblings were denylisted while resolve_canon() already published "2,000+",
+    six hits on four agent surfaces (see the `deals` pin note above). That was
+    fixed by EDITING THE LIST, and two weeks later the list poisoned itself
+    again one key over. A hand edit cannot hold an invariant: the floors walk
+    on their own, so the next bump re-earns the next banned numeral. Note
+    "22,000+" — where facilities is heading — is on the list today.
+
+    _adopt_live_version() already refuses to adopt a live VERSION that sits on
+    the denylist, for exactly this reason ("a canon that resolved to its own
+    retired version would flag every honest surface at once and bury the real
+    drift"). This is that same rule for the phrase fields, resolved the other
+    way round: the phrase is not negotiable — it is what the sources say — so
+    the BAN is what yields.
+
+    ★ The tradeoff, stated: unbanning "21,900+" also lets a surface that froze
+    on it back in July pass the scan. That is unavoidable — the string is
+    genuinely ambiguous now, and the canon's own answer today IS that string.
+    Floors round DOWN, so "21,900+" is TRUE at 22,031 however a surface
+    arrived at it. The status quo fails every surface forever, which is
+    strictly worse and is why nothing closed.
+    """
+    published = {str(v) for v in (published or set()) if isinstance(v, str) and v}
+    markers = list(stale_markers or [])
+    kept = [m for m in markers if m not in published]
+    unbanned = sorted({m for m in markers if m in published})
+    return kept, unbanned
+
+
+def published_phrases(canon) -> set:
+    """Every scalar phrase `canon` publishes, top level and under `public`.
+    These are what republished_markers() measures the denylist against."""
+    out = set()
+    for v in (canon or {}).values():
+        if isinstance(v, str) and v:
+            out.add(v)
+    for v in ((canon or {}).get("public") or {}).values():
+        if isinstance(v, str) and v:
+            out.add(v)
+    return out
+
+
 def _adopt_live_version(live, pinned, stale_markers):
     """Decide whether a live-probed version may REPLACE the pin. Pure — no I/O.
 
@@ -1287,6 +1351,19 @@ def resolve_canon() -> dict:
     # exact disagreement it existed to catch (pinned "1,800+", expected
     # "== 1,900+") and was still judged `confirmed` in production. Assert the
     # PIN — it is the one side that is not re-read from the instrument.
+    # ★2026-09-16 — the denylist may not ban what this function just published.
+    # Runs AFTER every live override above has written its phrase, so it
+    # measures the canon as served. See republished_markers() for the two
+    # occurrences (deals 09-02, facilities 09-16) and the tradeoff.
+    # Fail-soft like every other override: on error the full list stands.
+    try:
+        _kept, _unbanned = republished_markers(c.get("stale_markers"),
+                                               published_phrases(c))
+        if _unbanned:
+            c["stale_markers"] = _kept
+            c["stale_markers_unbanned"] = _unbanned
+    except Exception as e:
+        c["_stale_markers_error"] = str(e)[:120]
     try:
         from routes.claim_ledger import register_canon_claims as _register_canon_claims
         _register_canon_claims(PINNED, c)
