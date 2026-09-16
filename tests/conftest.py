@@ -20,6 +20,7 @@ disable locally while debugging — CI runs with it on.
 """
 import os
 import sys
+import threading
 
 # Make the project root importable for the test files. Avoids needing
 # a setup.py / pyproject just to land minimal smoke tests.
@@ -33,6 +34,95 @@ from tests import _stub_sentinel  # noqa: E402
 _FLOORS_ON = os.environ.get("DCHUB_SCAN_FLOORS", "1") != "0"
 _floors = _scan_floors.load_floors() if _FLOORS_ON else {}
 _checked: set = set()
+
+
+# ── Fire-and-forget cache refreshes do not fetch under the suite ──────────
+#
+# ai_surface_canon.resolve_public_floors_cached() and
+# resolve_server_version_cached() answer from cache and, when it is cold or
+# stale, start ONE daemon thread (public-floors-refresh, server-version-refresh)
+# to refill it FOR LATER. On a request path that is the whole point — the
+# docstrings there record resolve_public_floors() at 7.59s / 7.78s / 15.46s
+# against a 15s edge timeout. In a test process there is no later: nothing
+# consumes the refilled cache, and the thread outlives the test that started it.
+#
+# MEASURED 2026-09-16, 8 runs of test_agent_surfaces_withdrawn_dcgi.py followed
+# by test_agent_tool_identifier_survives_markdown.py: the first file starts both
+# threads through routes/agents_md_fallback.py, and their lookups landed while
+# the SECOND file's tests were running, every run. That file renders a Jinja
+# template and reads routes/*.py — run alone under the same hook it opens no
+# socket at all — so the unit-tests step's no-network rule failed on a file that
+# has not changed since 2026-09-05, and on a different one of its tests each
+# time.
+#
+# Nine test modules start these threads in a full suite, 18 starts in all, so
+# the file that takes the blame is whichever one is running when a lookup
+# lands — not a property of the blamed file at all.
+#
+# ★ WHY THE FIX IS HERE AND NOT IN THE HOOK'S ATTRIBUTION. The obvious repair
+# looks like "stop reading PYTEST_CURRENT_TEST off the main thread" — it names
+# the test pytest runs in the MAIN thread. Measured over a full suite before
+# writing that: of 822 refusals, 660 come off a worker thread, and only 21 of
+# those 660 are these unbounded refreshers. The rest are pool threads inside a
+# call the running test makes and joins (site_sentinel 410, radar 189,
+# schema_org_saturation 12). For those the running test IS the owner and the
+# label is right; the hook cannot tell a bounded worker from a fire-and-forget
+# daemon, so that change would have mislabelled 639 correct attributions to
+# fix 21. What is wrong is the UNBOUNDED refresh, so that is what is stopped.
+#
+# The guard is per-THREAD, not per-module: a test that calls a refresher
+# DIRECTLY still gets the real function, because that call is on the main
+# thread and is bounded by the test making it. test_recommend_serves_live_
+# facility_floor.py drives _refresh_public_floors() synchronously with
+# resolve_canon monkeypatched, and is untouched by this.
+_BACKGROUND_REFRESHERS = {
+    # module -> (function, in-flight flag, lock protecting the flag)
+    "ai_surface_canon": (
+        ("_refresh_public_floors", "_public_floors_refreshing", "_public_floors_lock"),
+        ("_refresh_server_version", "_server_version_refreshing", "_server_version_lock"),
+    ),
+}
+_guarded_refreshers: set = set()
+
+
+def _main_thread_only(module, real, flag, lock):
+    """`real` on the main thread; on any other thread, clear the in-flight flag
+    and return without fetching.
+
+    ★ Clearing the flag is not tidiness. The real function clears it in a
+    finally, and the module only ever starts a refresh when it is unset — so a
+    wrapper that left it set would silently stop every LATER spawn in the
+    process. That hides the next background fetch instead of preventing it,
+    which is exactly the failure this whole comment is about.
+    """
+    def refresh():
+        if threading.current_thread() is threading.main_thread():
+            return real()
+        with getattr(module, lock):
+            setattr(module, flag, False)
+
+    refresh.__name__ = getattr(real, "__name__", "refresh")
+    refresh.__doc__ = getattr(real, "__doc__", None)
+    refresh.__wrapped__ = real
+    return refresh
+
+
+def _no_background_fetches():
+    """Install the guard on every refresher module that has been imported.
+
+    Lazy on purpose: this file must not import a network-dependent module just
+    to patch it, and a module nothing imports needs no guard. Called from both
+    collectstart and runtest_setup so an import-time spawn is covered too.
+    """
+    for name, entries in _BACKGROUND_REFRESHERS.items():
+        module = sys.modules.get(name)
+        if module is None or name in _guarded_refreshers:
+            continue
+        _guarded_refreshers.add(name)
+        for function, flag, lock in entries:
+            real = getattr(module, function, None)
+            if real is not None:
+                setattr(module, function, _main_thread_only(module, real, flag, lock))
 
 
 def pytest_configure(config):
@@ -72,6 +162,7 @@ def pytest_collectstart(collector):
         _stub_sentinel.checkpoint()
         _scan_floors.set_current_file(base)
         _stub_sentinel.set_current_file(base)
+    _no_background_fetches()
 
 
 # Guards that must observe EVERY other file before they run, ordered to the
@@ -121,6 +212,7 @@ def pytest_collection_modifyitems(session, config, items):
 
 def pytest_runtest_setup(item):
     base = os.path.basename(str(item.fspath))
+    _no_background_fetches()
     _stub_sentinel.checkpoint()
     _scan_floors.set_current_file(base)
     _stub_sentinel.set_current_file(base)
