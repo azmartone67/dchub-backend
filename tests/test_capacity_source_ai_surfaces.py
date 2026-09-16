@@ -579,3 +579,58 @@ def test_no_ai_surface_advertises_an_identity_field(served, path):
     assert not named, (
         f"{path} advertises identity field(s) {named}. Naming a field teaches "
         "an agent to ask for it; these are never served at teaser level.")
+
+
+# ── Surface 7: the /.well-known/mcp.json TOP-LEVEL description ──────────────
+# ★2026-09-16. Everything above proves Capacity Source is findable once an agent
+# is already reading a capacity section. This is the line BEFORE that: the
+# manifest's own one-paragraph description, the first prose a connector, a
+# registry crawler or an agent choosing a server ever reads. Measured live that
+# day it listed facilities, markets, ISOs, substations and M&A deals — and said
+# nothing about the one thing on this server that ends in a transaction. The
+# tool blurbs carried it; the paragraph that decides whether anyone reads the
+# tool blurbs did not.
+def _manifest_description() -> str:
+    """The `description` of the dict that also carries the manifest's url +
+    transport, read by AST (main.py must never be imported by a test).
+
+    Keyed on url+transport rather than on position, so an edit that moves the
+    block does not silently make this vacuous.
+    """
+    with open(os.path.join(ROOT, "main.py"), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        keys = {k.value for k in node.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        if not {"description", "url", "transport", "schema_version"} <= keys:
+            continue
+        for key, value in zip(node.keys, node.values):
+            if not (isinstance(key, ast.Constant) and key.value == "description"):
+                continue
+            # description is _canon_text("...") — take its literal argument.
+            if isinstance(value, ast.Call) and value.args and isinstance(value.args[0], ast.Constant):
+                return value.args[0].value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                return value.value
+    return ""
+
+
+def test_the_mcp_manifest_description_names_capacity_source():
+    desc = _manifest_description()
+    assert len(desc) > 200, (
+        "the /.well-known/mcp.json description could not be read from main.py "
+        f"({len(desc)} chars) — the assertions below would pass vacuously")
+    missing = _missing(desc, ("Capacity Source", "source_capacity",
+                              "dchub.cloud/listings"))
+    assert not missing, (
+        "the manifest description omits %s. It is the first prose a connector, "
+        "a registry crawler and a tool-choosing agent read, and it currently "
+        "advertises five read-only datasets and no way to acquire anything."
+        % (missing,))
+    # Not publicly marketed is the differentiator, not a nicety: it is the one
+    # claim no directory or broker page can make about its own inventory.
+    assert re.search(r"not\s+publicly\s+marketed", desc, re.I), (
+        "the manifest description names Capacity Source but drops the "
+        "off-market claim, which is the part that is not available elsewhere")
