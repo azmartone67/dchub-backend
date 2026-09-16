@@ -77,6 +77,27 @@ gate got switched off the first time.  The worker half is printed as a notice,
 its measured exceptions are recorded in the baseline's
 `worker_measured_forwarded`, and only _routes.json can turn the build red.
 
+★ 2026-09-16 — THIS GATE IS TIME-DEPENDENT, AND THAT IS THE DESIGN.
+
+The frontend checkout is UNPINNED, so the CF tables it diffs against are
+whatever dchub-frontend's default branch holds AT RUN TIME.  A dchub-frontend
+merge can therefore flip this gate red on a backend commit that already passed,
+with no backend change: on 2026-09-16 the same SHA ce63775a9 passed at 01:25Z
+(run 35044024785) and failed at 02:06Z (run 35046680105) because frontend#1491
+swapped the "/spare-capacity/*" include for "/listings/*" in between.
+
+Pinning is the WRONG fix — it rebuilds the vendored mirror #3871 deleted, and a
+stale table makes this gate diff live routes against a fiction in BOTH
+directions.  The fix is attribution: cmd_route_tables records which frontend
+commit was read and the failure message names it, so a reader can tell "the PR
+did it" from "the frontend moved" instead of being told the former.  See
+_frontend_rev().
+
+★ IT ALSO DOES NOT READ _redirects.  Only _routes.json and _worker.js are
+modelled, so a path whose edge behaviour is a _redirects rule reads as uncovered
+here even though it answers correctly in production.  /spare-capacity is
+baselined for exactly that reason, not because it is broken.
+
 Run it locally exactly as CI does:
 
     python3 scripts/check_route_table_coherence.py flask-routes
@@ -422,6 +443,51 @@ def _worker_fallthrough_prefixes(src: str) -> tuple[set[str], set[str]]:
     return {p for p in exact if p.startswith("/")}, {p for p in prefix if p.startswith("/")}
 
 
+def _frontend_rev(frontend: pathlib.Path = FRONTEND) -> str:
+    r"""Which dchub-frontend commit did this run actually read?
+
+    ★ THE CHECKOUT IS NOT PINNED, ON PURPOSE.  check-route-tables.yml clones
+    azmartone67/dchub-frontend with no `ref:`, so every run reads whatever is on
+    that repo's default branch AT RUN TIME.  That is the FEATURE — #3871 removed
+    a vendored mirror precisely because a pinned copy drifted into a different
+    GENERATION of _routes.json and the gate spent weeks diffing live Flask routes
+    against a fiction.  Pinning would bring that back.
+
+    The cost of reading live is that this gate is TIME-DEPENDENT: the same
+    backend commit can pass at 01:25Z and fail at 02:06Z with no backend change
+    at all, because a dchub-frontend PR moved an include out from under it.  That
+    is exactly what happened on 2026-09-16 (frontend#1491 swapped
+    "/spare-capacity/*" for "/listings/*"); run 35044024785 and run 35046680105
+    are the same backend SHA ce63775a9 with opposite verdicts.
+
+    So the honest fix is not a pin, it is ATTRIBUTION: say which frontend commit
+    was read, so a reader can check whether that side moved instead of being told
+    the PR did it.  Returns "unknown" rather than raising — a missing rev must
+    never be able to fail a routing check.
+    """
+    try:
+        import subprocess
+
+        def _git(*args) -> str:
+            out = subprocess.run(["git", "-C", str(frontend), *args],
+                                 capture_output=True, text=True, timeout=10)
+            return out.stdout.strip() if out.returncode == 0 else ""
+
+        # ★ `git -C <dir> rev-parse HEAD` WALKS UP.  If the frontend checkout is
+        # missing and `dchub-frontend/` is just an empty directory inside THIS
+        # repo, that command cheerfully returns the BACKEND's HEAD — and we would
+        # print a dchub-backend SHA labelled as the frontend rev, in the very
+        # message whose job is to stop people blaming the wrong side.  Confirm the
+        # toplevel IS the frontend before believing the rev.
+        top = _git("rev-parse", "--show-toplevel")
+        if not top or pathlib.Path(top).resolve() != pathlib.Path(frontend).resolve():
+            return "unknown"
+        return (_git("rev-parse", "HEAD") or "unknown")[:12]
+    except Exception:
+        # A missing rev must never fail a routing check.
+        return "unknown"
+
+
 def cmd_route_tables(_args) -> int:
     raw = json.loads((FRONTEND / "_routes.json").read_text())
     routes_json = set(raw.get("include", []))
@@ -432,12 +498,16 @@ def cmd_route_tables(_args) -> int:
     extra_exact, extra_prefix = _worker_fallthrough_prefixes(src)
     worker_paths |= extra_exact
     worker_prefixes |= extra_prefix
+    rev = _frontend_rev()
     TABLES_OUT.write_text(json.dumps({
+        "frontend_rev": rev,
         "routes_json_include": sorted(routes_json),
         "routes_json_exclude": sorted(routes_json_exclude),
         "worker_paths": sorted(worker_paths),
         "worker_prefixes": sorted(worker_prefixes),
     }, indent=2))
+    print(f"read dchub-frontend @ {rev} (UNPINNED — this gate reads that repo's "
+          f"default branch at run time; see _frontend_rev())")
     print(f"_routes.json include: {len(routes_json)} entries, "
           f"exclude: {len(routes_json_exclude)} entries "
           f"({len(routes_json) + len(routes_json_exclude)}/98 rules)")
@@ -539,6 +609,9 @@ def load_baseline() -> dict[str, set[str]]:
 def cmd_diff(_args) -> int:
     flask = set(json.loads(FLASK_ROUTES_OUT.read_text()))
     tables = json.loads(TABLES_OUT.read_text())
+    # Recorded by cmd_route_tables, which is a DIFFERENT PROCESS — re-deriving it
+    # here would read whatever the checkout is now, not what was measured.
+    frontend_rev = tables.get("frontend_rev", "unknown")
     missing_routes_json, missing_worker = _uncovered(flask, tables)
     # ★ A MEASUREMENT BEATS THE MODEL. See measured_forwarded().
     missing_worker = [p for p in missing_worker if p not in measured_forwarded()]
@@ -599,7 +672,8 @@ def cmd_diff(_args) -> int:
         # Reported, NEVER fatal. Going red here would be a coin-flip: measured
         # 2026-09-05, 9 of 47 probed worker-only entries were forwarded to Flask
         # anyway, and the fix this gate would demand (an _routes.json include
-        # entry, against a 97/98 cap) is the wrong action for every one of them.
+        # entry, against a table that was FULL at 98/98 on 2026-09-16) is the wrong
+        # action for every one of them.
         print(f"::notice::{len(added['missing_worker'])} route(s) newly absent from "
               f"the _worker.js PHASE_282 tables. ADVISORY ONLY — PHASE_282 membership "
               f"is SUFFICIENT for forwarding, not NECESSARY. Confirm with a live probe "
@@ -609,20 +683,41 @@ def cmd_diff(_args) -> int:
             print(f"  - {r}")
 
     if n_added:
+        # ★ DO NOT SAY "THIS PR ADDED MIS-REGISTRATION".  It said exactly that
+        # until 2026-09-16, and it could not know it: the frontend checkout is
+        # UNPINNED (see _frontend_rev()), so the CF tables can move with no
+        # backend commit at all.  On 2026-09-16 they did — frontend#1491 swapped
+        # the "/spare-capacity/*" include for "/listings/*", and this gate went
+        # red on backend SHA ce63775a9, which it had passed 41 minutes earlier
+        # (runs 35044024785 pass → 35046680105 fail, same SHA).  Every backend PR
+        # open at the time was told it had added mis-registration.  A guard that
+        # names the wrong cause gets ignored, and this one is not even required,
+        # so being ignored is all it takes to kill it.  Name BOTH candidates and
+        # hand over the rev that decides between them.
         print(f"::error::route-table coherence ADVISORY — {n_added} NEW Flask route(s) "
-              f"are not in the CF tables. This PR added mis-registration; the "
-              f"{n_known - n_added} pre-existing uncovered route(s) are baselined "
-              f"and ignored.")
+              f"are not in the CF tables, read against dchub-frontend @ {frontend_rev}. "
+              f"CAUSE IS NOT ASSUMED — it is one of TWO, and this gate cannot tell them "
+              f"apart: (a) this PR added a route with no edge entry, or (b) dchub-frontend "
+              f"moved an include/exclude out from under it, which needs NO backend commit "
+              f"and will fail every open backend PR identically. Check that rev first: if "
+              f"its _routes.json changed recently, this is (b) and the PR is innocent. The "
+              f"{n_known - n_added} pre-existing uncovered route(s) are baselined and ignored.")
         for r in added["missing_routes_json"]:
             print(f"  ★NEW UNCOVERED [missing_routes_json]: {r}")
         print("")
-        print("  Fix: add the path to dchub-frontend/_routes.json 'include' — but MIND "
+        print("  Fix A: add the path to dchub-frontend/_routes.json 'include' — but MIND "
               "THE CAP. It is 98 rules counting include AND exclude TOGETHER (not 100, "
-              "not include-only), it sits at 97/98, and rule 99 is dropped SILENTLY. "
-              "Run `node scripts/check-edge-caps.mjs` in dchub-frontend before adding; "
-              "do not read the cap off _routes.json, nothing in the file states it. "
-              "With no slot free, the answer is usually to serve the page under an "
-              "already-included prefix instead.")
+              "not include-only), it was FULL at 98/98 on 2026-09-16, and the rule past "
+              "the cap is dropped SILENTLY. MEASURE it, do not trust this sentence: run "
+              "`node scripts/check-edge-caps.mjs` in dchub-frontend before adding, and do "
+              "not read the cap off _routes.json — nothing in the file states it. With no "
+              "slot free, serving the page under an already-included prefix, or evicting a "
+              "rule that has stopped earning its place, beats spending one.")
+        print("  Fix B: if the path only needs to REDIRECT, put it in dchub-frontend/"
+              "_redirects instead. That is a separate table with far more room "
+              "(124/2000 static on 2026-09-16) and it costs nothing against the 98. "
+              "★ But this checker does NOT read _redirects, so a path handled there "
+              "still reports here — baseline it with that as the reason.")
         print(f"  Or, if the route genuinely should not be edge-routed, add it to "
               f"{BASELINE.relative_to(ROOT)} WITH A REASON.")
         return 1
