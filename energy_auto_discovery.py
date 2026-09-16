@@ -638,6 +638,7 @@ def register_energy_discovery_routes(app):
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500
 
+# AUTO-REPAIR: duplicate route '/api/energy-discovery/health' also in energy_auto_discovery_pg.py:752 — review and remove one
     @app.route('/api/energy-discovery/health', methods=['GET'])
     def energy_discovery_health():
         """Check if HIFLD endpoints are alive."""
@@ -648,6 +649,7 @@ def register_energy_discovery_routes(app):
             'all_healthy': all_alive,
             'sources': results
         })
+# AUTO-REPAIR: duplicate route '/api/energy-discovery/sync-now' also in energy_auto_discovery_pg.py:763 — review and remove one
 
     @app.route('/api/energy-discovery/sync-now', methods=['POST'])
     def energy_discovery_sync_now():
