@@ -1079,7 +1079,14 @@ DC Hub Capacity Source lists powered land, powered shells and turnkey capacity t
 including sites that are not publicly marketed. The program is UPCOMING while the first listings are
 onboarded, and GET /api/v1/listings says so in `program.status`; every listing carries `updated_at`.
 SEARCH BY SIZE AND LOCATION. This is the answer to "where do I find data center capacity":
-  SIZE      min_kw (kilowatts) or min_mw (megawatts) — the floor a listing must meet
+  SIZE      min_kw (kilowatts) or min_mw (megawatts) — matched against what the listing can
+            actually DELIVER, not just its headline: a listing states its largest single
+            CONTIGUOUS block (contiguous_kw) and the SMALLEST CHUNK it will contract
+            (min_contract_kw), and the search returns it only when your size fits between
+            them. So 2 MW with 500 kW contiguous does not come back for min_kw=1000, and
+            40 MW contracting from 1 MW does not come back for min_kw=500. A listing that
+            states neither is matched on its total, as before. Both fields ride on every
+            teaser, so an agent can see the fit without asking
   LOCATION  region  north_america | latin_america | europe | asia_pacific | middle_east_africa
                     (aliases emea, apac, latam, americas — so "Europe" and "EMEA" both resolve)
             country an ISO 3166-1 alpha-2 code or a country name
@@ -1386,9 +1393,15 @@ GET /api/v1/listings?min_kw={kw}&min_mw={mw}&region={region}&country={cc}&locati
            status. `program.status` is "live" once any listing is live and
            "upcoming" while the first listings are onboarded; `filters` echoes
            exactly the predicates that were applied.
-  SEARCH BY SIZE:
-    min_kw   — kilowatt floor a listing must meet (e.g. min_kw=500)
-    min_mw   — megawatt floor, the same predicate in the bigger unit
+  SEARCH BY SIZE — "can this listing deliver my block?", not "is its headline
+  big enough?". A listing may declare contiguous_kw (its largest single
+  CONTIGUOUS block) and min_contract_kw (the SMALLEST CHUNK it will contract);
+  it comes back only when your size fits between them. A listing declaring
+  neither is matched on its total, as before. Both ride on every teaser.
+    min_kw   — kilowatts you need as one block (e.g. min_kw=500). A 2 MW
+               listing with 500 kW contiguous does NOT match min_kw=1000
+    min_mw   — the same rule in the bigger unit. A 40 MW listing that
+               contracts from 1 MW does NOT match min_kw=500
   SEARCH BY LOCATION:
     region   — north_america | latin_america | europe | asia_pacific |
                middle_east_africa. Aliases resolve: emea, apac, latam, americas.
@@ -1396,8 +1409,10 @@ GET /api/v1/listings?min_kw={kw}&min_mw={mw}&region={region}&country={cc}&locati
     location — free text matched across region, country, US state and metro,
                so location=Dallas and location=Texas both work
     delivery_type, available_by — narrow by product and by when power lands
-  Each teaser carries: market, state, country, capacity_kw, region,
-           delivery type, availability, update_cadence and freshness. It never
+  Each teaser carries: market, state, country, capacity_kw, contiguous_kw,
+           min_contract_kw, region, delivery type, availability, update_cadence
+           and freshness (contiguous_kw and min_contract_kw are null where the
+           listing has not declared them). It never
            carries the site address, its coordinates or its substation, at any
            tier. A provider's name appears only where that provider opted in to
            being named; otherwise the provider and the site are released only to

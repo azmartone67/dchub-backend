@@ -150,7 +150,10 @@ def test_s6_filter_families_and_together_and_limit_counts_matches(db):
     assert _slugs(regions=["europe", "middle_east_africa"], min_kw=1000) == ["jnb"]
     assert _slugs(countries=["US"], location=["Phoenix", "Reno"], min_kw=1) == []
     assert _slugs(countries=["US"], location=["Phoenix", "Reno"]) == ["colo-text-kw", "phx-colo-unsized"]
-    assert _slugs(state="TX", min_mw=40, regions=["north_america"]) == ["dfw-colo", "dfw-shell"]
+    # min_mw is min_kw in the bigger unit (2026-09-16): it asks the same
+    # "can this deliver 40 MW?" question, so the colocation listing is sized by
+    # its 1,200 kW of colocation space and not by the 40 MW on its row.
+    assert _slugs(state="TX", min_mw=40, regions=["north_america"]) == ["dfw-shell"]
     rows = el._db_list_listings(min_kw=1000, limit=2)
     assert len(rows) == 2 and {r["slug"] for r in rows} <= {"dfw-colo", "dfw-shell", "jnb", "sgp"}
 
@@ -181,3 +184,91 @@ def test_s8_teaser_region_and_capacity_kw_agree_with_the_sql(db):
         for threshold in (1, 299.999, 300, 1200, 1200.5, 40000):
             selected = row["slug"] in _slugs(min_kw=threshold)
             assert selected == (kw is not None and kw >= threshold), (row["slug"], threshold, kw)
+
+
+# ── the fit rule, against real Postgres (2026-09-16) ──────────────────────
+# contiguous_kw and min_contract_kw are JSON numbers a stand-in cannot judge:
+# the predicate has to cast each only behind jsonb_typeof, compare it with a
+# REAL capacity_mw in kW, and fall through to the total when a key is absent or
+# holds text. These seed extra rows on top of the fixture, so S1..S8 keep
+# describing the same set.
+
+_FIT_LISTINGS = [
+    # 2 MW of colocation space, largest single block 500 kW.
+    ("fit-colo-2mw-500", 2.0, {"delivery_type": "colocation",
+                               "colocation": {"kw_available": 2000}, "contiguous_kw": 500}),
+    # 40 MW, cut up no smaller than 1 MW.
+    ("fit-shell-40mw-from-1mw", 40.0,
+     {"delivery_type": "powered_shell", "min_contract_kw": 1000}),
+    # Both: deals between 250 kW and 5 MW.
+    ("fit-band-250-5000", 30.0,
+     {"delivery_type": "turnkey", "contiguous_kw": 5000, "min_contract_kw": 250}),
+    # Text in both fields: no cast may be attempted, and the total decides.
+    ("fit-text-blocks", 10.0,
+     {"delivery_type": "land", "contiguous_kw": "half the hall", "min_contract_kw": "1 MW"}),
+]
+
+
+@pytest.fixture
+def fit_db(db):
+    conn = psycopg2.connect(DSN)
+    try:
+        with conn.cursor() as cur:
+            for slug, mw, detail in _FIT_LISTINGS:
+                cur.execute(
+                    "INSERT INTO exclusive_listings (slug, title, status, market, state, "
+                    "country, capacity_mw, detail) VALUES (%s, %s, 'pocket', 'Austin', 'TX', "
+                    "'US', %s, %s::jsonb)", (slug, slug, mw, json.dumps(detail)))
+        conn.commit()
+    finally:
+        conn.close()
+    yield
+
+
+@pytest.mark.parametrize("slug,min_kw,matches", [
+    # contiguous only: the ceiling is the block, not the 2 MW total.
+    ("fit-colo-2mw-500", 400, True), ("fit-colo-2mw-500", 500, True),
+    ("fit-colo-2mw-500", 501, False), ("fit-colo-2mw-500", 1000, False),
+    ("fit-colo-2mw-500", 2000, False),
+    # min_contract only: the floor is the chunk, the ceiling the total.
+    ("fit-shell-40mw-from-1mw", 500, False), ("fit-shell-40mw-from-1mw", 999, False),
+    ("fit-shell-40mw-from-1mw", 1000, True), ("fit-shell-40mw-from-1mw", 2000, True),
+    ("fit-shell-40mw-from-1mw", 40000, True), ("fit-shell-40mw-from-1mw", 40001, False),
+    # both: the requirement sits in the band.
+    ("fit-band-250-5000", 249, False), ("fit-band-250-5000", 250, True),
+    ("fit-band-250-5000", 5000, True), ("fit-band-250-5000", 5001, False),
+    # text in both fields falls through to capacity_mw * 1000, raising nothing.
+    ("fit-text-blocks", 10000, True), ("fit-text-blocks", 10001, False),
+])
+def test_s9_the_fit_rule_holds_in_postgres(fit_db, slug, min_kw, matches):
+    assert (slug in _slugs(min_kw=min_kw)) is matches
+
+
+def test_s9_min_mw_is_the_same_rule_in_the_bigger_unit(fit_db):
+    for mw in (0.25, 0.5, 1, 2, 5, 30, 40):
+        assert _slugs(min_mw=mw) == _slugs(min_kw=mw * 1000), mw
+
+
+def test_s9_the_requirement_count_agrees_with_the_feed(fit_db):
+    """One matcher: the count is the feed's rows plus the listings whose size
+    is not recorded, which a standing requirement keeps as possible matches."""
+    unsized = {"phx-colo-unsized", "colo-text-kw", "sao-unsized"}
+    for kw in (250, 500, 501, 1000, 2000, 5000, 40000, 40001):
+        shown = set(_slugs(min_kw=kw))
+        assert shown & unsized == set(), kw
+        assert el._db_count_matching({"capacity_kw": kw}) == len(shown) + len(unsized), kw
+
+
+def test_s9_a_listing_declaring_neither_key_is_sized_exactly_as_before(fit_db):
+    """The original rule for every listing that declares neither key: the feed
+    returns it when its total reaches the requirement, and not otherwise."""
+    declaring = {slug for slug, _, detail in _FIT_LISTINGS
+                 if isinstance(detail.get("contiguous_kw"), (int, float))
+                 or isinstance(detail.get("min_contract_kw"), (int, float))}
+    access = {"required": "registered", "granted": False, "reason": "sign_in_required"}
+    rows = [r for r in el._db_list_listings(limit=200) if r["slug"] not in declaring]
+    for row in rows:
+        kw = el._teaser(row, access)["capacity_kw"]
+        for threshold in (1, 300, 1200, 10000, 40000, 40001):
+            assert (row["slug"] in _slugs(min_kw=threshold)) == (
+                kw is not None and kw >= threshold), (row["slug"], threshold, kw)

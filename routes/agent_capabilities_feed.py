@@ -387,7 +387,7 @@ def _gather():
         # directory, which is a different question. Teaser-level wording on
         # purpose: nothing here implies a site, its coordinates or its
         # substation is returned, because none is, at any tier.
-        {"name": "source_capacity",         "what":  "Search DC Hub Capacity Source — powered land, powered shells and turnkey capacity, including off-market sites — by size (min_kw / min_mw) and location (region, country, US state or metro)"},
+        {"name": "source_capacity",         "what":  "Search DC Hub Capacity Source — powered land, powered shells and turnkey capacity, including off-market sites — by size (min_kw / min_mw) and location (region, country, US state or metro). Size matches what a listing can actually deliver: it comes back only when your size fits between its largest contiguous block (contiguous_kw) and the smallest chunk it will contract (min_contract_kw)"},
         {"name": "request_capacity_intro",  "what":  "Register your human for a listing: DC Hub sends the provider only their company and requirement, and the provider accepts or declines"},
     ]
     # ★2026-08-19: this said tool_count = len(tools) over a HAND-TYPED excerpt,

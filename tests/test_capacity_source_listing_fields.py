@@ -86,8 +86,11 @@ TEASER_KEYS = {"id", "slug", "title", "summary", "status", "access_required", "l
 FULL_KEYS = TEASER_KEYS | {"latitude", "longitude", "asking_price", "asking_currency", "detail"}
 # 2026-09-15: search by size and location adds capacity_kw and region, and
 # co-marketing adds update_cadence, to every teaser.
+# 2026-09-16: the two facts a headline capacity hides — the largest single
+# contiguous block and the smallest chunk the provider will contract — are
+# teaser-level too, because they decide whether a listing fits at all.
 NEW_TEASER_KEYS = {"delivery_type", "freshness", "provider", "capacity_kw", "region",
-                   "update_cadence"}
+                   "update_cadence", "contiguous_kw", "min_contract_kw"}
 NEW_FULL_KEYS = NEW_TEASER_KEYS | {"colocation", "mw_schedule", "power", "price", "verification"}
 NO_CADENCE = {"update_cadence": None, "next_update_due": None, "overdue": False}
 UNVERIFIED = {"state": "unverified", "verified_at": None, "age_days": None, **NO_CADENCE}
@@ -252,8 +255,8 @@ def _surfaces(env):
 
 def test_every_reserved_key_has_a_rule():
     assert set(el._DETAIL_FIELD_CHECKS) == set(el._DETAIL_RESERVED_KEYS) == {
-        "colocation", "delivery_type", "mw_schedule", "power", "price", "provider", "site",
-        "update_cadence", "verification"}
+        "colocation", "contiguous_kw", "delivery_type", "min_contract_kw", "mw_schedule",
+        "power", "price", "provider", "site", "update_cadence", "verification"}
 
 
 def test_a_full_listing_round_trips_through_create_teaser_and_full_view(env):
@@ -409,6 +412,25 @@ _REFUSALS = [
     pytest.param({"Provider": {"name": "Acme", "disclosed": False}}, "detail.Provider",
                  id="reserved key in other case"),
     pytest.param(["delivery_type", "land"], "detail", id="detail not an object"),
+    # contiguous_kw / min_contract_kw: a number greater than 0, at most
+    # 5,000,000, and the smallest contractable chunk never above the largest
+    # contiguous block. These listings carry no capacity_mw, so the total bound
+    # has nothing to measure against and only the named rule fires.
+    pytest.param({"contiguous_kw": 0}, "detail.contiguous_kw", id="contiguous_kw of zero"),
+    pytest.param({"contiguous_kw": -500}, "detail.contiguous_kw", id="contiguous_kw negative"),
+    pytest.param({"contiguous_kw": 5_000_001}, "detail.contiguous_kw",
+                 id="contiguous_kw over 5000000"),
+    pytest.param({"contiguous_kw": "500 kW"}, "detail.contiguous_kw",
+                 id="contiguous_kw not a number"),
+    pytest.param({"contiguous_kw": True}, "detail.contiguous_kw",
+                 id="contiguous_kw as a boolean"),
+    pytest.param({"min_contract_kw": 0}, "detail.min_contract_kw", id="min_contract_kw of zero"),
+    pytest.param({"min_contract_kw": 5_000_001}, "detail.min_contract_kw",
+                 id="min_contract_kw over 5000000"),
+    pytest.param({"min_contract_kw": "1 MW"}, "detail.min_contract_kw",
+                 id="min_contract_kw not a number"),
+    pytest.param({"contiguous_kw": 500, "min_contract_kw": 501}, "detail.min_contract_kw",
+                 id="min_contract_kw above contiguous_kw"),
 ]
 
 
@@ -537,7 +559,8 @@ def test_a_listing_without_the_reserved_keys_reads_as_before(env):
         "url": "https://dchub.cloud/listings?l=dfw-40"}
     assert {k: teaser[k] for k in NEW_TEASER_KEYS} == {
         "delivery_type": None, "freshness": UNVERIFIED, "provider": None,
-        "capacity_kw": 40000, "region": "north_america", "update_cadence": None}
+        "capacity_kw": 40000, "region": "north_america", "update_cadence": None,
+        "contiguous_kw": None, "min_contract_kw": None}
 
     full = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()["listing"]
     assert set(full) == FULL_KEYS | NEW_FULL_KEYS
@@ -549,7 +572,8 @@ def test_a_listing_without_the_reserved_keys_reads_as_before(env):
     assert {k: full[k] for k in NEW_FULL_KEYS} == {
         "delivery_type": None, "freshness": UNVERIFIED, "provider": None, "mw_schedule": None,
         "power": None, "price": None, "verification": None, "colocation": None,
-        "capacity_kw": 40000, "region": "north_america", "update_cadence": None}
+        "capacity_kw": 40000, "region": "north_america", "update_cadence": None,
+        "contiguous_kw": None, "min_contract_kw": None}
 
 
 def test_stored_values_that_break_the_rules_read_as_null_without_failing(env):
@@ -558,14 +582,16 @@ def test_stored_values_that_break_the_rules_read_as_null_without_failing(env):
         "delivery_type": "Powered Shell", "mw_schedule": [{"date": "soon", "mw": 20}],
         "power": {"utility": "Oncor"}, "price": {"low": 5, "high": 1, "unit": "usd_total"},
         "provider": {"name": "Acme", "disclosed": "yes"}, "verification": {"verified_by": "desk"},
-        "colocation": {"kw_available": "lots"}}))
+        "colocation": {"kw_available": "lots"},
+        "contiguous_kw": "half the hall", "min_contract_kw": 0}))
     for label, r in _surfaces(env).items():
         assert r.status_code == 200, label
     full = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()["listing"]
     assert {k: full[k] for k in NEW_FULL_KEYS} == {
         "delivery_type": None, "freshness": UNVERIFIED, "provider": None, "mw_schedule": None,
         "power": {"utility": "Oncor"}, "price": None, "verification": None, "colocation": None,
-        "capacity_kw": 40000, "region": "north_america", "update_cadence": None}
+        "capacity_kw": 40000, "region": "north_america", "update_cadence": None,
+        "contiguous_kw": None, "min_contract_kw": None}
     assert full["detail"] == {}
 
 
@@ -888,6 +914,86 @@ def test_update_cadence_without_a_verification_is_not_overdue(env):
 def test_capacity_kw_sizes_colocation_by_kw_and_everything_else_by_mw(env, detail, capacity_mw, kw):
     env.listings.append(_row(detail=detail, capacity_mw=capacity_mw))
     assert env.client.get("/api/v1/listings").get_json()["items"][0]["capacity_kw"] == kw
+
+
+# ── contiguous_kw and min_contract_kw ─────────────────────────────────────
+# The two facts a headline capacity hides. A buyer reads them as what the
+# listing can deliver, so a combination that would mislead is refused on write
+# rather than stored (2026-09-16).
+
+@pytest.mark.parametrize("detail,capacity_mw,field", [
+    pytest.param({"delivery_type": "powered_shell", "contiguous_kw": 2001}, 2.0,
+                 "detail.contiguous_kw", id="contiguous_kw above capacity_mw * 1000"),
+    pytest.param({"delivery_type": "powered_shell", "min_contract_kw": 2001}, 2.0,
+                 "detail.min_contract_kw", id="min_contract_kw above capacity_mw * 1000"),
+    pytest.param({"delivery_type": "colocation", "colocation": {"kw_available": 2000},
+                  "contiguous_kw": 2001}, 40.0,
+                 "detail.contiguous_kw", id="contiguous_kw above the colocation space"),
+    pytest.param({"delivery_type": "colocation", "colocation": {"kw_available": 2000},
+                  "min_contract_kw": 2001}, 40.0,
+                 "detail.min_contract_kw", id="min_contract_kw above the colocation space"),
+])
+def test_a_block_larger_than_the_listing_total_is_refused(env, detail, capacity_mw, field):
+    r = _create(env, detail, capacity_mw=capacity_mw)
+    assert (r.status_code, r.get_json().get("error")) == (400, "invalid_detail"), r.get_json()
+    assert _fields(r) == [field]
+    assert env.statements == [] and env.listings == []
+
+
+@pytest.mark.parametrize("detail,capacity_mw", [
+    pytest.param({"delivery_type": "powered_shell", "contiguous_kw": 2000,
+                  "min_contract_kw": 2000}, 2.0, id="both exactly the total"),
+    pytest.param({"delivery_type": "colocation", "colocation": {"kw_available": 2000},
+                  "contiguous_kw": 500, "min_contract_kw": 500}, 40.0,
+                 id="a colocation listing bounded by its own space, not the row"),
+    pytest.param({"delivery_type": "powered_shell", "contiguous_kw": 5_000_000}, None,
+                 id="no capacity_mw, so no total to exceed"),
+])
+def test_a_block_within_the_listing_total_is_stored(env, detail, capacity_mw):
+    r = _create(env, detail, capacity_mw=capacity_mw)
+    assert r.status_code == 200, r.get_data(as_text=True)
+    stored = env.listings[0]["detail"]
+    for key in ("contiguous_kw", "min_contract_kw"):
+        if key in detail:
+            assert stored[key] == detail[key]
+
+
+def test_the_owners_two_listings_store_and_read_back_on_an_anonymous_teaser(env):
+    """The JSON a provider sends, and what an anonymous caller then sees: both
+    facts travel with the headline, on the teaser and on the full view."""
+    colo = {"delivery_type": "colocation", "colocation": {"kw_available": 2000},
+            "contiguous_kw": 500}
+    assert _create(env, colo, capacity_mw=2.0).status_code == 200
+    teaser = env.client.get("/api/v1/listings").get_json()["items"][0]
+    assert (teaser["capacity_mw"], teaser["capacity_kw"]) == (2.0, 2000)
+    assert (teaser["contiguous_kw"], teaser["min_contract_kw"]) == (500, None)
+    # A teaser is what an anonymous caller gets, so it is locked and carries
+    # them anyway: they decide whether it is worth registering at all.
+    assert teaser["locked"] is True
+
+    env.listings.clear()
+    env.statements.clear()
+    shell = {"delivery_type": "powered_shell", "min_contract_kw": 1000}
+    assert _create(env, shell, capacity_mw=40.0).status_code == 200
+    teaser = env.client.get("/api/v1/listings").get_json()["items"][0]
+    assert (teaser["contiguous_kw"], teaser["min_contract_kw"]) == (None, 1000)
+    full = env.client.get("/api/v1/listings/dfw-40", headers=_bearer()).get_json()["listing"]
+    assert (full["contiguous_kw"], full["min_contract_kw"]) == (None, 1000)
+    # Reserved keys are typed fields, never repeated in the generic object.
+    assert "min_contract_kw" not in (full["detail"] or {})
+
+
+def test_a_patch_bounds_a_block_against_the_capacity_the_write_leaves_on_the_row(env):
+    """A PATCH that sets only `detail` is bounded by the STORED capacity; one
+    that sets capacity_mw in the same request is bounded by the new value."""
+    env.listings.append(_row(detail={"delivery_type": "powered_shell"}, capacity_mw=2.0))
+    over = {"detail": {"delivery_type": "powered_shell", "contiguous_kw": 2001}}
+    r = env.client.patch("/api/v1/admin/listings/1", headers=ADMIN, json=over)
+    assert (r.status_code, _fields(r)) == (400, ["detail.contiguous_kw"]), r.get_json()
+    r = env.client.patch("/api/v1/admin/listings/1", headers=ADMIN,
+                         json={**over, "capacity_mw": 3.0})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert env.listings[0]["detail"]["contiguous_kw"] == 2001
 
 
 @pytest.mark.parametrize("country,region", [
