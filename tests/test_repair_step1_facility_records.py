@@ -953,11 +953,22 @@ def test_the_dry_run_predicts_whether_the_anthropic_page_goes_contentless(
     assert _run(FakeServer()) == 0
     assert ("PAGE OUTCOME after plan: all 2 live row(s) carrying the slug are "
             "contentless") in capsys.readouterr().out
+    # ★ r-facility-facts (2026-09-16): a STREET address rescues the page.
+    # "New York, NY" used to, and no longer does — util.thin_content.evidence
+    # asks util.facility_facts.street_address now, the same predicate the
+    # renderer asks, and a place name is not an address however it was stored.
+    # Both halves are asserted, because the pair IS the rule.
     t = fixture_tables()
-    _row(t, DISCOVERED, 8055)["address"] = "New York, NY"
+    _row(t, DISCOVERED, 8055)["address"] = "60 Hudson Street"
     assert _run(FakeServer(t)) == 0
     assert ("NOT contentless; evidence remains on discovered_facilities id=8055: "
             "address") in capsys.readouterr().out
+
+    t = fixture_tables()
+    _row(t, DISCOVERED, 8055)["address"] = "New York, NY"
+    assert _run(FakeServer(t)) == 0
+    assert ("PAGE OUTCOME after plan: all 2 live row(s) carrying the slug are "
+            "contentless") in capsys.readouterr().out
 
 
 def test_the_fake_driver_has_no_capability_psycopg2_lacks():

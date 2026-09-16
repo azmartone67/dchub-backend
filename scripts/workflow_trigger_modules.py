@@ -106,7 +106,7 @@ listing them did not.
 Used by tests/test_sitemap_snapshot_paths_match_imports.py, which fails CI when
 a module in this set is not in the workflow's `paths:` filter.
 
-Run standalone:   python3 scripts/sitemap_builder_modules.py
+Run standalone:   python3 scripts/workflow_trigger_modules.py
 """
 import argparse
 import ast

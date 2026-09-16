@@ -79,12 +79,12 @@ on:
     # the shards still served 6,846 / 10,000 / 8,886 with all 17 published,
     # while the origin already served those pages as noindex.
     #
-    # ★ THIS LIST IS DERIVED, NOT REMEMBERED. scripts/sitemap_builder_modules.py
+    # ★ THIS LIST IS DERIVED, NOT REMEMBERED. scripts/workflow_trigger_modules.py
     # slices the import graph from main._rebuild_sitemap_snapshot, and
     # tests/test_sitemap_snapshot_paths_match_imports.py fails CI when the two
     # disagree — so a predicate moved into a NEW module breaks the build
     # instead of silently missing its rebuilds. Regenerate with:
-    #     python3 scripts/sitemap_builder_modules.py
+    #     python3 scripts/workflow_trigger_modules.py --workflow sitemap-snapshot.yml
     # Do not hand-edit one side. A from-memory answer to "which modules" missed
     # three of these, including util/facility_headline — the module #4500
     # itself routes evidence() through.
@@ -117,6 +117,7 @@ on:
       - 'scripts/workflow_trigger_modules.py'
       - 'util/dcpi_score_row.py'
       - 'util/deployability_rank.py'
+      - 'util/facility_facts.py'
       - 'util/facility_headline.py'
       - 'util/facility_name_sanity.py'
       - 'util/facility_ner_noindex.py'
