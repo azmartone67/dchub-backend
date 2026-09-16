@@ -146,6 +146,10 @@ SUPPORT_EMAIL = "hello@dchub.cloud"
 # change — requests carry the version the prospect accepted.
 TERMS_VERSION = "2026-09-15"
 TERMS_URL = f"{SITE}/listings#terms"
+# The machine-readable route, carried in every _terms_block() as `full_text` so
+# an agent holding only that block can fetch the whole text rather than reading
+# its human a summary. The route below registers this same path as a literal.
+TERMS_API_PATH = "/api/v1/listings/terms"
 TERMS_SUMMARY = (
     "DC Hub records your registration in its lead register and sends the "
     "operator your company name and stated requirement so it can accept or "
@@ -1214,7 +1218,14 @@ def _verify_url(lead_id):
 
 
 def _terms_block():
-    return {"version": TERMS_VERSION, "url": TERMS_URL, "summary": TERMS_SUMMARY}
+    """Version, web link, summary — and `full_text`, the route that serves the
+    WHOLE text. An agent told to show its human the terms before accepting them
+    has only this block to work from: TERMS_URL is a web page and TERMS_SUMMARY
+    is a summary, so without the route there is nothing here to read out. The
+    text is pointed at, never copied: it moves with TERMS_VERSION, and a second
+    copy would drift from the one GET /api/v1/listings/terms serves."""
+    return {"version": TERMS_VERSION, "url": TERMS_URL, "summary": TERMS_SUMMARY,
+            "full_text": {"method": "GET", "path": TERMS_API_PATH}}
 
 
 def _program(live_count):

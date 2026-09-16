@@ -773,8 +773,10 @@ _COOKBOOK = [
             {"tool": "accept_capacity_terms",
              "args": {"accept_terms": True},
              "why":  "Call it ONLY after your human has read and agreed to "
-                     "the introduction terms. It records their acceptance "
-                     "once per terms version, which is what opens a "
+                     "the introduction terms. Read them the whole text from "
+                     "GET /api/v1/listings/terms — every locked response "
+                     "carries that path as terms.full_text. It records their "
+                     "acceptance once per terms version, which is what opens a "
                      "listing's specs to source_capacity(slug=...). Never "
                      "accept terms on your own judgement."},
             {"tool": "request_capacity_intro",
