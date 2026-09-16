@@ -479,8 +479,8 @@ def _worker_tool_schemas():
 # with the live surface. VERIFIED AGAINST LIVE, not merely against the file the
 # guard reads: POST https://dchub.cloud/mcp tools/list (91 tools) returns
 # execute_plan.inputSchema.properties containing BOTH `state` ("US state code,
-# e.g. \"VA\".") and `iso` ("ISO/RTO code to pin geography, e.g. \"PJM\",
-# \"ERCOT\"."), so the real tool declares them and the guard now covers both
+# e.g. VA.") and `iso` ("ISO/RTO code to pin geography, e.g. PJM, ERCOT."), so
+# the real tool declares them and the guard now covers both
 # names directly. (/.well-known/mcp.json publishes `params`, not inputSchema —
 # it cannot answer this question; tools/list is the only surface that can.)
 _MIRROR_LAGS: dict = {}
