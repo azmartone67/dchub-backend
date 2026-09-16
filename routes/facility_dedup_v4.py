@@ -475,10 +475,17 @@ def designators_disagree(a, b) -> bool:
     test_the_coordinate_veto_does_not_fire_on_the_class_the_gate_catches).
     Mutation-checked exactly that way. The live 0 is the renderer currently
     doing its job, not this veto being unnecessary.
+
+    ★ 2026-09-15: reads detect_MERGE_designator, not detect_site_designator.
+      The headline function drops a hall code the name attaches with a dash
+      ("Data4 Italia - Campus MIL01 - DC01" -> MIL01), so six live halls render
+      one <h1>, this veto saw MIL01 == MIL01, and `co_located` was free to
+      corroborate merging two distinct buildings. Nothing about the rendered
+      title changes — see detect_merge_designator's docstring for the census.
     """
-    from util.facility_site_code import detect_site_designator
-    da = detect_site_designator(a.get("name"), a.get("city") or "")
-    db = detect_site_designator(b.get("name"), b.get("city") or "")
+    from util.facility_site_code import detect_merge_designator
+    da = detect_merge_designator(a.get("name"), a.get("city") or "")
+    db = detect_merge_designator(b.get("name"), b.get("city") or "")
     return bool(da and db and da != db)
 
 
