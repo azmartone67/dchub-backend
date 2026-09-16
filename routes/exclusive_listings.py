@@ -1125,11 +1125,34 @@ def _sign_in_url(return_path):
 
 
 def _return_path(slug):
+    """Where web sign-in sends the caller BACK — the index form on purpose,
+    and deliberately NOT the canonical `_listing_path` below.
+
+    Measured against the live edge 2026-09-15: /listings/<slug> is served by
+    the worker (x-dc-worker-version: 5.0.0-listing-slug-teaser-pages-2026-09-15)
+    as a STATIC crawlable teaser -- 6 KB, no app bundle, no #root, ~955
+    characters of text, whose own primary CTA links back to /listings?l=<slug>.
+    It never hydrates, so it cannot show a caller the listing they just
+    authenticated for. The SPA that reads ?l= is the only form that can, so the
+    auth return path stays here even though the public URL moved.
+    """
     return f"/listings?l={quote(str(slug or ''), safe='')}"
 
 
+def _listing_path(slug):
+    """The canonical, indexable public page for ONE listing (dchub-frontend
+    #1491, live worker 5.0.0).
+
+    200 + `x-robots-tag: index, follow` and self-canonical for a live slug; a
+    real 404 + noindex for an unknown one. The ?l= form `_return_path` returns
+    canonicalises to bare /listings, so it can never be a listing's public URL.
+    """
+    seg = quote(str(slug or ''), safe='')
+    return f"/listings/{seg}" if seg else "/listings"
+
+
 def _listing_url(slug):
-    return SITE + _return_path(slug)
+    return SITE + _listing_path(slug)
 
 
 def _verify_url(lead_id):

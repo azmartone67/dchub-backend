@@ -431,6 +431,9 @@ def test_access_stays_locked_when_a_caller_does_not_pass_terms_ok(env):
               "platform": None, "session_hash": None, "api_key": None, "reason": None}
     with env.client.application.test_request_context(headers=_bearer()):
         assert set(viewer) == set(el._viewer())      # the keys _viewer() returns
+    # ?l= on purpose: this argument is the SIGN-IN RETURN path, which stays on
+    # the index form because /listings/<slug> is a static teaser that never
+    # hydrates. tests/test_listing_url_shape.py pins that split.
     access = el._access(_listing(), viewer, "/listings?l=x")
     assert (access["granted"], access["reason"]) == (False, "terms_acceptance_required")
     # Control: the same viewer passing the acceptance is let in.
