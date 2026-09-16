@@ -322,12 +322,23 @@ jobs:
           #   gated and swings with power_mw, so 4,598 sits at 73% of the
           #   LOWEST reading ever recorded here.
           MIN_RANKING_URLS: '4598'
-          # ai  ai-facilities-1 (10,000) + ai-facilities-2 (8,743) = 18,743
-          #     -> 18743 * 2 // 3 = 12495
-          #   Historical readings: 15,950 (2026-09-05), 18,064 (2026-08-14),
-          #   18,809 (2026-09-11, sitemap-selfcanon-daily.yml header). Only
-          #   ever grown. 12,495 is 78% of the lowest.
-          MIN_AI_URLS: '12495'
+          # ai  ai-facilities-1 (10,000) + ai-facilities-2 (3,243) = 13,243
+          #     -> 13243 * 2 // 3 = 8828
+          #   ★ RE-PINNED 2026-09-15 because the family was DELIBERATELY
+          #   narrowed, not because a floor went red. main.py's r-keep-rule
+          #   publishes the gated shard plus the URLs Google has surfaced, so
+          #   the family drops 19,015 -> 13,243. The old floor of 12,495 sat
+          #   6% under the new size and would have fired on ordinary
+          #   impression drift — a false alarm on a family that is fine.
+          #   BASIS: scripts/sitemap_keep_rule_dryrun.py against the live
+          #   artefact and the live seo_proven_pages, Actions run 35037597509
+          #   (2026-09-15): 6,924 gated + 6,319 AI-only with an impression.
+          #   ★ The first rebuild after this merges publishes the real number.
+          #   Restate this basis from THAT artefact rather than leaving a
+          #   prediction standing in for a measurement.
+          #   Historical readings of the UNGATED family, for the record:
+          #   15,950 (2026-09-05), 18,064 (2026-08-14), 18,809 (2026-09-11).
+          MIN_AI_URLS: '8828'
           # fixed  static 522 + markets 586 + dcpi 333 + press 163 = 1,604
           #        -> 1604 * 2 // 3 = 1069
           MIN_FIXED_URLS: '1069'

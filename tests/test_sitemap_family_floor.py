@@ -57,8 +57,16 @@ LIVE = {
     "dcpi": 333,
     "press": 163,
     "facilities-1": 6897,
+    # ★ The AI family is the keep rule's size (main.py r-keep-rule, 2026-09-15):
+    #   the gated shard plus the URLs GSC has surfaced. MEASURED by
+    #   scripts/sitemap_keep_rule_dryrun.py against the live artefact and the
+    #   live seo_proven_pages — Actions run 35037597509 — as 6,924 gated +
+    #   6,319 AI-only with an impression = 13,243, sharded 10,000 + 3,243.
+    #   It was 18,743 (10,000 + 8,743) before the rule.
+    #   ★ The first rebuild after that merge publishes the real figure. Restate
+    #   these two from the artefact then, and move MIN_AI_URLS with them.
     "ai-facilities-1": 10000,
-    "ai-facilities-2": 8743,
+    "ai-facilities-2": 3243,
 }
 LIVE_ORDER = ["static", "markets", "dcpi", "press", "facilities-1",
               "ai-facilities-1", "ai-facilities-2"]
@@ -197,7 +205,7 @@ def test_the_AI_FAMILY_VANISHING_fails_the_job():
     assert "::error" in out, "a failure with no ::error:: annotation is invisible"
     assert re.search(r"::error[^\n]*family `ai` published 0 URLs", out), (
         f"the failure does not NAME the ai family:\n{out}")
-    assert "SHORT BY 12495" in out, (
+    assert "SHORT BY 8828" in out, (
         f"the failure does not say BY HOW MUCH:\n{out}")
 
 
@@ -212,7 +220,8 @@ def test_the_error_names_the_family_and_the_shortfall_for_any_family():
 
 
 def test_the_live_artefact_passes():
-    """The floors must not red a healthy sitemap. Fixture = 2026-09-11 live."""
+    """The floors must not red a healthy sitemap. Fixture = the live gated
+    and fixed families (2026-09-11) with the AI family at its keep-rule size."""
     code, out, _ = _run(_edge())
     assert code == 0, f"the live artefact fails its own floors:\n{out}"
     assert "::error" not in out, out
@@ -321,7 +330,7 @@ def test_an_ai_shard_is_never_counted_as_a_ranking_shard():
     _, out, _ = _run(_edge())
     assert "**ranking**: 6897 URLs across 1 shards" in out, (
         f"ranking absorbed the AI shards — the pattern is not anchored:\n{out}")
-    assert "**ai**: 18743 URLs across 2 shards" in out, out
+    assert "**ai**: 13243 URLs across 2 shards" in out, out
 
 
 def test_an_unknown_shard_is_reported_and_counted_nowhere():
