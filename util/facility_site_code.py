@@ -179,6 +179,56 @@ def detect_site_designator(name: str | None, city: str = "") -> str | None:
     return code + _designator_suffix(name or "", code, city)
 
 
+# The same token class as _SUFFIX_WORD_RE, but attached with a DASH rather
+# than a bare space: " - DC10", " – ITB". Anchored at both ends for the same
+# reason — a token with prose after it is a location tail, not a building.
+_SUFFIX_DASHED_RE = re.compile(r"^ [-–—] ([A-Z]{2,4}\d{0,3})$")
+
+
+def detect_merge_designator(name: str | None, city: str = "") -> str | None:
+    """`detect_site_designator`, plus a hall code the name attaches with a DASH.
+
+    ★★★ FOR THE DEDUP VETO ONLY — routes/facility_dedup_v4.designators_disagree.
+    It is deliberately NOT what `site_code_headline` renders: that function
+    reaches `_designator_suffix` directly, so nothing here can move a live <h1>,
+    a <title> or a slug.
+
+    The defect it exists for, measured 2026-09-15 on the live sitemap. Six
+    DATA4 Milan halls publish six URLs whose h1 and title are byte-identical:
+
+        Data4 Italia - Campus MIL01 - DC01   45.47126, 9.036168
+        Data4 Italia - Campus MIL01 - DC02   45.471542, 9.037061
+        … DC03, DC05, DC06, DC10             all within ~300 m
+
+    `_SUFFIX_WORD_RE` needs a single leading space (" DC1"), so " - DC10" never
+    matches and every hall reduces to the CAMPUS code MIL01. The veto therefore
+    reads them as agreeing, and `co_located` (200 m) then CORROBORATES a merge
+    of two distinct halls — the exact class the veto was written to refuse
+    ('SecureIT DCB1.1' vs 'DCB1.2'), which survives here only because the name
+    spells the separator with a hyphen. Today only MAX_GROUP = 4 stops it, and
+    that is an accident of this campus having six halls rather than three.
+
+    ★ Over-refusing is FREE and under-refusing is not: a missed duplicate stays
+      two live self-canonical URLs, a false merge hides a real building. So a
+      country or region tail that happens to be short and upper-cased ("BAR1 -
+      USA") reads as a designator here and merely costs a refusal.
+    """
+    code = detect_site_code(name)
+    if not code:
+        return None
+    suffix = _designator_suffix(name or "", code, city)
+    if not suffix:
+        tail = (name or "").partition(code)[2]
+        m = _SUFFIX_DASHED_RE.match(tail)
+        if m:
+            word = m.group(1)
+            if (word not in DENY_SUFFIX_WORDS
+                    and word.lower() not in {w.lower()
+                                             for w in (city or "").split()}):
+                suffix = " " + word
+    return code + suffix
+
+
 def site_code_headline(name: str | None, provider: str | None,
                        city: str | None, state: str | None = None,
                        country: str | None = None) -> str | None:
