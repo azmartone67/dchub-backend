@@ -497,6 +497,171 @@ def check_worker_version_drift() -> list[dict]:
     return findings
 
 
+# ── 1b. ZONE worker drift (dchub-backend/worker.js → dchub.cloud/mcp) ──
+#
+# ★ THIS IS A DIFFERENT WORKER FROM THE ONE ABOVE. There are two, and they
+# carry INDEPENDENT version numbers on the same header name:
+#
+#   dchub-frontend/_worker.js   Pages worker   /api/v1/*  → 5.0.0-… (checked above)
+#   dchub-backend/worker.js     zone worker    /mcp       → 4.9.7x-… (checked here)
+#
+# Measured 2026-09-16, one second apart:
+#   /mcp                     x-dc-worker-version: 4.9.70-capacity-search
+#   /api/v1/dcpi/scores      x-dc-worker-version: 5.0.0-listing-slug-teaser-pages
+#
+# check_worker_version_drift() reads the FRONTEND source and probes an /api/v1/*
+# path — self-consistent, and blind to this worker by construction. Probing an
+# /api/* path for the zone worker's version reads the Pages worker instead and
+# reports the wrong number forever, which is why _ZONE_WORKER_PROBE_URL is /mcp
+# and a test pins that it is.
+#
+# ★ WHY THIS DETECTOR EXISTS AT ALL. worker.js ships by a human PASTE into the
+# Cloudflare dashboard, not by a merge, so its two halves can drift apart in
+# BOTH directions and neither is self-announcing:
+#
+#   pasted, not committed  — production runs code no commit contains. The repo
+#                            cannot reproduce, review or safely amend what is
+#                            running, and an edit made on the repo copy and
+#                            pasted REVERTS whatever was only ever pasted.
+#   committed, not pasted  — the change is merged and simply has not shipped.
+#                            Expected for a while after a merge; a problem when
+#                            it stays that way.
+#
+# They need different findings because they need different actions, and calling
+# both "drift" would send a reader to the wrong one half the time.
+#
+# ★ Source is read from the LOCAL FILE, not raw.githubusercontent.com. This repo
+# is the one that owns worker.js, so the file is already on disk beside this
+# module — no token, and none of the 404-means-four-things ambiguity that cost
+# the frontend detector eight days of silent misreporting (see above). The live
+# side needs no credential either: x-dc-worker-version is on an anonymous GET.
+_ZONE_WORKER_SOURCE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "worker.js")
+# ★ /mcp, NEVER an /api/* path — see the block comment above. Cache-busted: the
+# handler sends no-store, but a query-keyed edge cache is exactly the thing that
+# would serve us yesterday's header and call it today's.
+_ZONE_WORKER_PROBE_URL = "https://dchub.cloud/mcp"
+
+
+def _version_core(v: str) -> tuple[int, ...]:
+    """'4.9.70-capacity-search' -> (4, 9, 70). Stops at the first non-numeric
+    component, so the per-deploy suffix never affects the ordering."""
+    parts: list[int] = []
+    for tok in str(v).split("."):
+        num = ""
+        for ch in tok:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        if num == "":
+            break
+        parts.append(int(num))
+    return tuple(parts)
+
+
+def check_zone_worker_version_drift() -> list[dict]:
+    """Compare dchub-backend/worker.js's WORKER_VERSION against the version the
+    zone worker actually stamps on GET /mcp."""
+    findings: list[dict] = []
+    try:
+        with open(_ZONE_WORKER_SOURCE_PATH, encoding="utf-8") as fh:
+            source_body = fh.read()
+    except OSError as exc:
+        return [{
+            "issue": "zone_worker_source_unreadable",
+            "url": _ZONE_WORKER_SOURCE_PATH,
+            "count": 1,
+            "detail": (f"Could not read worker.js beside this module: {exc!r}. "
+                       "This is a local file in this repo, so this is a "
+                       "packaging problem, not a network one."),
+        }]
+
+    m = re.search(r"^const\s+WORKER_VERSION\s*=\s*['\"]([\w\d\.\-]+)['\"]",
+                  source_body, re.M)
+    if not m:
+        return [{
+            "issue": "zone_worker_version_constant_not_found",
+            "url": _ZONE_WORKER_SOURCE_PATH,
+            "count": 1,
+            "detail": ("`const WORKER_VERSION` not found in worker.js. The "
+                       "constant is the file's single source for what is live "
+                       "(see its title-line comment); if it was renamed, this "
+                       "detector and the header it stamps both need updating."),
+        }]
+    in_repo = m.group(1)
+
+    # `time` is not imported at module scope in this file (two functions
+    # import it locally under aliases); keep that pattern rather than
+    # adding a module-level import other code might shadow.
+    import time as _t
+    probe = f"{_ZONE_WORKER_PROBE_URL}?_={int(_t.time())}"
+    _, headers = _http_get(probe, timeout=8)
+    if not headers:
+        return findings  # transient self-probe failure; never a drift finding
+    deployed = (headers.get("x-dc-worker-version")
+                or headers.get("X-DC-Worker-Version"))
+    if not deployed:
+        return [{
+            "issue": "zone_worker_version_header_missing",
+            "url": probe,
+            "count": 1,
+            "detail": ("GET /mcp returned no X-DC-Worker-Version. Either /mcp "
+                       "stopped routing through the zone worker, or the worker "
+                       "stopped stamping the header — and with it the only "
+                       "credential-free way to tell what is running."),
+        }]
+
+    if in_repo == deployed:
+        return findings
+
+    repo_t, dep_t = _version_core(in_repo), _version_core(deployed)
+    if not (repo_t and dep_t) or repo_t == dep_t:
+        # Same numeric core, different suffix: the paste and the commit describe
+        # the same version differently. Worth saying, not worth alarming about.
+        return [{
+            "issue": "zone_worker_version_suffix_mismatch",
+            "url": probe,
+            "count": 1,
+            "detail": (f"worker.js declares '{in_repo}' and GET /mcp reports "
+                       f"'{deployed}' — same numeric version, different label. "
+                       "One of the two was edited without the other."),
+            "expected": in_repo,
+            "deployed": deployed,
+        }]
+
+    if dep_t > repo_t:
+        findings.append({
+            "issue": "zone_worker_deployed_ahead_of_repo",
+            "url": probe,
+            "count": 1,
+            "detail": (f"GET /mcp reports '{deployed}' but worker.js in this "
+                       f"repo declares an OLDER '{in_repo}'. Production is "
+                       "running code no commit contains — it was pasted into "
+                       "the Cloudflare dashboard and never committed back. Do "
+                       "NOT edit the repo copy and paste it: that would revert "
+                       "whatever only ever existed in the dashboard. Retrieve "
+                       "the live script first (Cloudflare API: GET "
+                       "/accounts/<id>/workers/scripts/dchubapiproxy), commit "
+                       "that, then amend."),
+            "expected": in_repo,
+            "deployed": deployed,
+        })
+    else:
+        findings.append({
+            "issue": "zone_worker_commit_not_pasted",
+            "url": probe,
+            "count": 1,
+            "detail": (f"worker.js declares '{in_repo}' but GET /mcp still "
+                       f"reports '{deployed}'. The change is merged and has "
+                       "NOT shipped: this worker deploys by a paste into the "
+                       "Cloudflare dashboard, which no merge performs. Paste "
+                       "worker.js into the dchubapiproxy script to ship it."),
+            "expected": in_repo,
+            "deployed": deployed,
+        })
+    return findings
+
 # ── 2. Tier inconsistency (web API ↔ MCP) ──────────────────────────
 
 # Hardcoded mapping of MCP tools → the web API endpoint that serves
@@ -12717,6 +12882,11 @@ def scan_all() -> list[dict]:
                check_canonical_floor_exceeds_live,
                check_cross_surface_value_drift,
                check_worker_version_drift,
+               # 2026-09-16: the detector above reads the FRONTEND worker and
+               # probes /api/v1/* — blind to dchub-backend's own zone worker,
+               # whose version only shows on /mcp. Live 4.9.70 vs a repo file
+               # read as 4.9.68 is what prompted this.
+               check_zone_worker_version_drift,
                # 2026-09-04: the innovation dashboard served a
                # script block truncated by a closing tag quoted
                # inside a comment — 200 OK, blank page, no JS.
