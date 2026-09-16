@@ -172,10 +172,17 @@ def _get_summary(env):
 
 def test_an_empty_table_summarizes_to_nothing_live(env):
     r, j = _get_summary(env)
-    assert j == {"ok": True, "program_status": "upcoming", "live_count": 0,
+    # ★ WHOLE-PAYLOAD equality on purpose: this is the summary's exact shape,
+    #   so a key that appears here appears in an agent's hands. `citation` is
+    #   the PUBLIC one (2026-09-16) — the summary aggregates teaser-level
+    #   columns only, and is written to be quoted.
+    assert j == {"ok": True, "citation": el._teaser_citation(),
+                 "program_status": "upcoming", "live_count": 0,
                  "total_mw": None, "markets": [], "delivery_types": {},
                  "latest_updated_at": None, "generated_at": j["generated_at"],
                  "url": "https://dchub.cloud/listings", "mcp_tool": "source_capacity"}
+    assert j["citation"]["license"] == el.TEASER_LICENSE == "CC-BY-4.0"
+    assert j["citation"]["redistribution"] == "permitted_with_attribution"
     assert j["program_status"] == el._program(0)["status"]
     assert datetime.fromisoformat(j["generated_at"]).utcoffset() == timedelta(0)
     assert r.headers["Cache-Control"] == "private, no-store"
