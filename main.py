@@ -32137,6 +32137,44 @@ _SITEMAP_PROVEN_MIN_IMPRESSIONS = _env_int('SITEMAP_PROVEN_MIN_IMPRESSIONS', 10)
 _SITEMAP_PROVEN_CAP = _env_int('SITEMAP_PROVEN_CAP', 9000)
 
 
+# ── r-keep-rule (2026-09-15) ─────────────────────────────────────────────
+# The owner's Step 2 rule, for every facility URL in any sitemap including the
+# AI shards: KEEP when the URL earned >= 1 GSC impression in the last 90 days,
+# OR it is not thin and not an undetected duplicate.
+#
+# "Thin" is the CAPACITY gate here, which is the owner's decision of
+# 2026-09-15: util/thin_content's own bar (is_contentless) was measured at
+# ZERO published URLs — those pages serve robots=noindex and r-noindex-
+# coherence has excluded them from both families since 2026-09-07, so the rule
+# as literally worded removes nothing. The ungated AI family IS the set the
+# capacity gate refuses, so the rule reduces to
+#
+#     ai family  =  the gated shard  ∪  {slugs GSC reported an impression for}
+#
+# MEASURED before this was written — scripts/sitemap_keep_rule_dryrun.py
+# against the live artefact, Actions run 35037597509, 2026-09-15:
+#
+#     published facility URLs                  19,016
+#     AI-only (the capacity gate refuses them) 12,091
+#       with >= 1 impression in the window      6,319
+#       with none                               5,772   <- what this drops
+#     AI family after the rule                 13,243
+#
+# ★ The duplicate half of the rule is deliberately NOT implemented here. The
+#   emit loop already refuses every resolved twin, and the 35 residual
+#   rendered-identity groups are facility_dedup_v4's documented refusals — a
+#   second opinion from the sitemap builder would be a lane with two owners.
+# ★ SITEMAP_KEEP_RULE_DISABLE=1 turns it off without a deploy, the same shape
+#   as the capacity gate's own switch.
+_SITEMAP_KEEP_MIN_IMPRESSIONS = 1
+_SITEMAP_KEEP_PROVEN_MAX_AGE_DAYS = _env_int(
+    'SITEMAP_KEEP_PROVEN_MAX_AGE_DAYS', 3)
+# Below this share of the ungated family the filter has lost an input
+# rather than found a collapse. The measured keep share is
+# 13,243/19,015 = 70%.
+_SITEMAP_KEEP_MIN_SHARE = 0.50
+
+
 def _build_sitemap_facilities_ungated():
     """Rebuild the facility URL list with the capacity gate OFF.
 
@@ -33951,6 +33989,120 @@ def _sitemap_entry_locs(entries):
     return out
 
 
+def _proven_recent_slugs():
+    """Slugs GSC reported >= 1 impression for in the CURRENT 90-day pull.
+
+    None means UNUSABLE, and the caller must publish today's artefact
+    unchanged. That distinction is the whole safety property: a missing, empty
+    or STALE seo_proven_pages looks exactly like "no facility URL earned an
+    impression", and read that way this rule deletes 12,091 URLs from the AI
+    family in a single rebuild.
+
+    ★ `last_seen` is stamped CURRENT_DATE by every upsert in
+      google_search_console.refresh_proven_pages, which runs daily inside the
+      GSC ingest and upserts exactly the rows the 90-day page pull returned
+      with impressions > 0. So the rows carrying MAX(last_seen) ARE the current
+      window. `impressions` is a GREATEST() ratchet across refreshes — a
+      lifetime high-water mark — so it can gate ">= 1" but must never be read
+      as a 90-day total.
+    ★ Deliberately a DIFFERENT predicate from the r-proven-exempt readmission
+      above (`impressions >= 10`, no currency test). That one READMITS past a
+      gate, where over-admitting costs one thin URL; this one REMOVES, where
+      over-refusing costs a live page its only sitemap entry.
+    """
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+        c.execute("SELECT to_regclass('public.seo_proven_pages')")
+        _reg = c.fetchone()
+        if not (_reg and _reg[0]):
+            logger.warning("sitemap: seo_proven_pages does not exist — keep "
+                           "rule NOT applied, AI family published in full")
+            return None
+        c.execute("SELECT slug, last_seen FROM seo_proven_pages "
+                  " WHERE impressions >= %s AND slug IS NOT NULL "
+                  "   AND last_seen IS NOT NULL",
+                  (_SITEMAP_KEEP_MIN_IMPRESSIONS,))
+        rows = c.fetchall() or []
+        if not rows:
+            logger.warning("sitemap: seo_proven_pages is EMPTY — keep rule NOT "
+                           "applied, AI family published in full")
+            return None
+        as_of = max(r[1] for r in rows)
+        age = (_dt.now().date() - as_of).days
+        if age > _SITEMAP_KEEP_PROVEN_MAX_AGE_DAYS:
+            logger.warning(
+                "sitemap: seo_proven_pages last_seen is %s (%d days old, limit "
+                "%d) — the daily GSC refresh has stopped, so the in-window set "
+                "cannot be read. Keep rule NOT applied.",
+                as_of, age, _SITEMAP_KEEP_PROVEN_MAX_AGE_DAYS)
+            return None
+        return {r[0] for r in rows if r[1] == as_of}
+    except Exception as _pe:
+        logger.warning("sitemap: proven-recent read failed (%s) — keep rule "
+                       "NOT applied, AI family published in full", _pe)
+        return None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _apply_keep_rule(ai_fac, gated_fac):
+    """(entries, stats) — the ungated family narrowed to the keep rule.
+
+    Fails OPEN everywhere it is not a confident measurement: no proven set, an
+    empty one, a stale one, a read error, the kill switch, or a result that
+    would drop more than half the family. Each of those publishes exactly
+    today's artefact and says so in the log.
+
+    ★ A GATED URL IS NEVER DROPPED, whatever its impressions. The gated shard
+      is what GSC and Bing read, and the ungated family must stay a superset of
+      it — the guard immediately below re-checks that as a SET, so a bug here
+      refuses the AI shards rather than retiring URLs from them.
+    """
+    before = len(ai_fac or [])
+    stats = {'applied': False, 'before': before, 'kept': before, 'dropped': 0}
+    if os.environ.get('SITEMAP_KEEP_RULE_DISABLE') == '1':
+        stats['reason'] = 'kill switch set'
+        return ai_fac, stats
+    proven = _proven_recent_slugs()
+    if not proven:
+        stats['reason'] = 'proven set unusable'
+        return ai_fac, stats
+
+    gated_locs = _sitemap_entry_locs(gated_fac)
+    kept = []
+    for _e in ai_fac or ():
+        _m = _SITEMAP_LOC_RE.search(str(_e))
+        _loc = _m.group(1) if _m else ''
+        _slug = _loc.rstrip('/').rsplit('/', 1)[-1] if _loc else ''
+        if _loc in gated_locs or (_slug and _slug in proven):
+            kept.append(_e)
+
+    share = (len(kept) / float(before)) if before else 1.0
+    if share < _SITEMAP_KEEP_MIN_SHARE:
+        logger.error(
+            "sitemap: keep rule would publish %d of %d ungated URLs (%.0f%%), "
+            "below the %.0f%% floor — treating that as a lost input, not a "
+            "collapse. AI family published in full.",
+            len(kept), before, share * 100, _SITEMAP_KEEP_MIN_SHARE * 100)
+        stats['reason'] = 'below share floor'
+        return ai_fac, stats
+
+    stats.update(applied=True, kept=len(kept), dropped=before - len(kept),
+                 share=round(share, 4), proven=len(proven))
+    logger.info(
+        "sitemap: keep rule published %d of %d ungated facility URLs — %d "
+        "dropped (capacity-thin AND no GSC impression in the current 90-day "
+        "pull), from %d proven slugs",
+        len(kept), before, stats['dropped'], len(proven))
+    return kept, stats
+
+
 def _rebuild_sitemap_snapshot():
     """Build every shard's XML ONCE and persist to sitemap_snapshot in one primary
     transaction. Runs from the 4-hourly cron / admin endpoint, NOT per request."""
@@ -33984,6 +34136,10 @@ def _rebuild_sitemap_snapshot():
     ai_shard_keys = []
     try:
         ai_fac = _build_sitemap_facilities_ungated() or []
+        # r-keep-rule (2026-09-15): narrow the ungated family to the gated
+        # shard plus the URLs Google has actually surfaced. Fails open, and the
+        # set guard below re-checks the superset property it must preserve.
+        ai_fac, _keep_stats = _apply_keep_rule(ai_fac, fac)
         # ★★★ r-superset-set (2026-09-12) — COMPARE SETS, NOT LENGTHS.
         # This guard read `if len(ai_fac) < len(fac)`, and a COUNT CANNOT SEE A
         # SET DIFFERENCE. Measured live 2026-09-12: 18,741 >= 6,897 passed
