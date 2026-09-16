@@ -185,10 +185,109 @@ def test_a_new_uncovered_route_is_reported_as_added(mod):
     assert "/kept" not in mr and "/kept" not in mw
 
 
-def test_baseline_is_two_lists_not_a_union():
+# ── _redirects: the third table ────────────────────────────────────
+
+def test_redirects_splat_does_NOT_match_the_bare_path(mod):
+    """★ THE INVERTED RULE, and the whole reason _redirect_re() is not _glob_re().
+
+    _routes.json's "/x/*" DOES route bare "/x" (test_a_slash_star_include_also_
+    routes_the_bare_path pins that). _redirects' "/x/*" does NOT answer bare
+    "/x" — dchub-frontend writes a separate bare line every time it needs one.
+    Reuse _glob_re() here and every bare "/x" reads as shadowed on the strength
+    of a rule that cannot answer it, inventing coverage for a real 404.
+    """
+    rules = [["/spare-capacity/*", "/listings", 301]]
+    assert mod.redirect_match(rules, "/spare-capacity/abc") is not None
+    assert mod.redirect_match(rules, "/spare-capacity/") is not None
+    assert mod.redirect_match(rules, "/spare-capacity") is None, (
+        "_redirect_re() picked up _routes.json's bare-path rule; a splat in "
+        "_redirects does not answer the bare path"
+    )
+    # And the two matchers must genuinely disagree, or the port drifted back.
+    assert mod._covers(["/spare-capacity/*"], "/spare-capacity"), (
+        "_glob_re() stopped routing the bare path — _routes.json semantics moved"
+    )
+
+
+def test_redirects_placeholder_is_one_segment_and_splat_crosses_slashes(mod):
+    """":slug" is a single segment; "*" is not. _routes.json has no placeholder."""
+    assert mod.redirect_match([["/press-release/:slug", "/press-release", 200]],
+                              "/press-release/abc") is not None
+    assert mod.redirect_match([["/press-release/:slug", "/press-release", 200]],
+                              "/press-release/abc/def") is None
+    assert mod.redirect_match([["/dcip/*", "/dcpi/:splat", 301]],
+                              "/dcip/a/b") is not None
+    # A splat that is not a whole segment still works: "/images/og-*".
+    assert mod.redirect_match([["/images/og-*", "/og-:splat", 200]],
+                              "/images/og-x.png") is not None
+    assert mod.redirect_match([["/images/og-*", "/og-:splat", 200]],
+                              "/images/other.png") is None
+
+
+def test_first_matching_redirect_wins(mod):
+    """Order is the semantics — CF stops at the FIRST match, so a set would lie.
+
+    ★ The two rules must BOTH match the probe path or this proves nothing. An
+    earlier version paired "/spare-capacity" with "/spare-capacity/*", which do
+    NOT overlap (that is the point of the bare-path rule), so first-vs-last was
+    indistinguishable and a last-match-wins mutant survived.
+    """
+    specific = ["/a/specific", "/first", 301]
+    splat = ["/a/*", "/second", 301]
+    assert mod.redirect_match([specific, splat], "/a/specific")[1] == "/first"
+    assert mod.redirect_match([splat, specific], "/a/specific")[1] == "/second", (
+        "reversing the file did not change the winner — order is not being honoured"
+    )
+
+
+def test_redirects_parser_drops_malformed_lines_loudly(mod, tmp_path, capsys):
+    """"could not read it" and "no such rule" must never be one outcome."""
+    (tmp_path / "_redirects").write_text(
+        "# comment\n\n/a /b 301\n/c /d\nnot-a-path /x 301\n/e /f notanumber\n")
+    rules = mod.parse_redirects(tmp_path)
+    assert ["/a", "/b", 301] in rules
+    assert ["/c", "/d", 302] in rules, "a 2-field rule is legal CF; status defaults to 302"
+    assert all(r[0] != "not-a-path" for r in rules)
+    assert len(rules) == 2
+    err = capsys.readouterr().err
+    assert "not-a-path" in err and "notanumber" in err, (
+        "malformed rules were dropped SILENTLY"
+    )
+
+
+def test_baseline_shadowed_entries_are_really_shadowed(mod):
+    """The register must not claim a redirect that is gone.
+
+    A line in shadowed_by_redirects asserts "a _redirects rule answers this".
+    If the rule is deleted the path silently 404s while the register still reads
+    as the benign case \u2014 so pin the claim against the actual file.
+    """
+    frontend = mod.FRONTEND  # resolved from ROUTE_COHERENCE_FRONTEND at import
+    if not (frontend / "_redirects").is_file():
+        pytest.skip(f"no dchub-frontend checkout at {frontend}; this test pins "
+                    f"the register against the real file, not the parser")
+    rules = mod.parse_redirects(frontend)
+    assert rules, "parsed zero rules from a file that exists"
+    listed = json.loads(BASELINE.read_text())["shadowed_by_redirects"]
+    assert listed, "the third list is empty; it should hold the measured stubs"
+    for route in listed:
+        assert mod.redirect_match(rules, mod._probe(route)) is not None, (
+            f"{route} is baselined as shadowed_by_redirects but no _redirects "
+            f"rule answers it \u2014 the register claims a redirect that is gone"
+        )
+
+
+def test_baseline_is_three_lists_not_a_union():
     """Union-baselining would let a path migrate from a 404 to a 403 silently."""
     data = json.loads(BASELINE.read_text())
     assert "missing_routes_json" in data and "missing_worker" in data
+    assert "shadowed_by_redirects" in data, (
+        "the _redirects half is gone; reachable-but-handler-dead paths would be "
+        "back in missing_routes_json recorded as 404s"
+    )
+    assert not (set(data["missing_routes_json"]) & set(data["shadowed_by_redirects"])), (
+        "a path is in both _routes.json debt lists; it would be double-counted"
+    )
     assert "uncovered" not in data, "collapsed back to a single union list"
     assert "worker_measured_forwarded" in data, (
         "the measured exception list is gone; the worker model's false positives "
@@ -395,3 +494,90 @@ def test_the_docstring_states_why_the_worker_half_cannot_block():
     assert "WHY THE WORKER HALF DOES NOT BLOCK" in doc
     for reason in ("proxyWithRetry", "x-dc-worker-version", "worker-mcp-get-health"):
         assert reason in doc, f"the {reason!r} evidence is gone"
+
+
+# ── _redirects: the third category, at the cmd_diff level ────────────────────
+#
+# ★ These drive the REAL entry point. A test that calls _uncovered() and asserts
+# the path is uncovered passes whether or not the _redirects split exists — it
+# would be green on a checker that never read the file at all.
+
+_R_TABLES = dict(_TABLES, redirects=[["/stub", "/somewhere", 301]])
+_R_EMPTY = dict(_EMPTY, shadowed_by_redirects=[])
+
+
+def test_a_shadowed_route_reports_as_shadowed_not_as_covered(tmp_path, mod, monkeypatch, capsys):
+    """★ The state that must not collapse into green.
+
+    A _redirects rule makes the path REACHABLE and the Flask handler DEAD.
+    Folding it into the covered set blinds the gate to a rule that shadowed a
+    real page — the /pockets class it exists to catch.
+    """
+    rc = _run_diff(tmp_path, mod, monkeypatch, {"/stub"}, _R_TABLES, _R_EMPTY)
+    out = capsys.readouterr().out
+    # ★ Assert the CATEGORY LABEL, not the bare key name: "shadowed_by_redirects"
+    # also appears in the ★NEW error line, so keying on it let a mutant that
+    # dropped the category from the report entirely survive.
+    assert "ANSWERED BY A _redirects RULE" in out, (
+        "the third category is not reported on its own — shadowed paths are "
+        "collapsing into another bucket"
+    )
+    assert "/stub" in out and "/somewhere" in out, (
+        "the matching rule is not printed next to the path, so a reviewer cannot "
+        "tell an intended stub from a shadowed page"
+    )
+    assert "NEVER INVOKED and nothing else replies" not in out, (
+        "a shadowed path was filed under the plain 404 label"
+    )
+    assert rc == 1, "a NEW shadowed route stopped failing the build"
+
+
+def test_a_redirect_does_not_let_a_new_route_dodge_the_ratchet(tmp_path, mod, monkeypatch, capsys):
+    """★ THE FATAL SET IS THE UNION OF BOTH _routes.json HALVES.
+
+    Read only the plain half and a route arriving with a _redirects rule already
+    in place lands silently — exactly the /spare-capacity shape this gate should
+    still make someone look at.
+    """
+    with_rule = _run_diff(tmp_path, mod, monkeypatch, {"/stub"}, _R_TABLES, _R_EMPTY)
+    capsys.readouterr()
+    without = _run_diff(tmp_path, mod, monkeypatch, {"/stub"},
+                        dict(_TABLES, redirects=[]), _R_EMPTY)
+    capsys.readouterr()
+    assert without == 1, "control: a new uncovered route must fail"
+    assert with_rule == 1, (
+        "a new route dodged the ratchet by having a _redirects rule; acquiring a "
+        "redirect must not pay off debt the route never had"
+    )
+
+
+def test_baselining_a_shadow_pays_the_debt(tmp_path, mod, monkeypatch, capsys):
+    """Or the third list is an allow-list that can never go green."""
+    rc = _run_diff(tmp_path, mod, monkeypatch, {"/stub"}, _R_TABLES,
+                   dict(_EMPTY, shadowed_by_redirects=["/stub"]))
+    out = capsys.readouterr().out
+    assert rc == 0, "a baselined shadow still failed the build"
+    assert "covered by both tables" in out, "the ledger's verdict string is gone"
+
+
+def test_a_vanished_redirect_rule_is_reported_as_a_regression(tmp_path, mod, monkeypatch, capsys):
+    """shadow → plain means the rule that answered the path is gone: it 404s now.
+    Non-fatal, because it is normally a dchub-frontend commit — but it must not
+    read as ordinary pre-existing drift."""
+    rc = _run_diff(tmp_path, mod, monkeypatch, {"/stub"},
+                   dict(_TABLES, redirects=[]),
+                   dict(_EMPTY, shadowed_by_redirects=["/stub"]))
+    out = capsys.readouterr().out
+    assert rc == 0, "a cross-repo rule removal must not fail the build"
+    assert "REGRESSION" in out, (
+        "a path that lost the redirect answering it was reported as plain drift"
+    )
+
+
+def test_a_baseline_without_the_third_key_still_loads(tmp_path, mod, monkeypatch, capsys):
+    """_EMPTY above has no shadowed_by_redirects. An older register must not
+    crash the gate — it must simply report no known shadows."""
+    rc = _run_diff(tmp_path, mod, monkeypatch, {"/stub"}, _R_TABLES,
+                   {"missing_routes_json": ["/stub"], "missing_worker": ["/stub"]})
+    capsys.readouterr()
+    assert rc == 0, "a pre-existing debt line stopped being honoured"
