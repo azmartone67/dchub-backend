@@ -105,8 +105,8 @@ writes validate the reserved keys and store them normalized; a failure answers
 delivery_type, update_cadence, freshness (from verification.verified_at),
 contiguous_kw, min_contract_kw and the provider's name when it is disclosed;
 the specs view adds colocation, mw_schedule, power without its substation,
-price, provider and verification. The generic `detail` object never repeats a reserved
-key or an address-like identity key (_IDENTITY_DETAIL_KEYS), so an undisclosed
+price, provider and verification. The generic `detail` object never repeats a
+reserved key or an address-like identity key (_IDENTITY_DETAIL_KEYS), so an undisclosed
 provider name and the site are served only in a released `disclosure` block.
 """
 import hashlib
@@ -743,8 +743,10 @@ def _db_list_listings(market=None, state=None, min_mw=None, delivery_type=None,
                       location=None, limit=50):
     """Live listings, newest first. delivery_type matches detail.delivery_type
     exactly. available_by ('YYYY-MM' or 'YYYY-MM-DD') keeps listings with at
-    least one detail.mw_schedule entry dated in or before that month. min_kw is
-    _size_sql; regions are region keys, countries country values
+    least one detail.mw_schedule entry dated in or before that month. min_kw
+    and min_mw (x 1000) are both _size_sql, so the two units ask the same
+    "can this listing deliver that block?" question; regions are region keys,
+    countries country values
     (_country_values), location terms any one of which matches
     (_location_params). The families AND together. Every filter is part of the
     WHERE clause, so LIMIT counts matching rows only."""
