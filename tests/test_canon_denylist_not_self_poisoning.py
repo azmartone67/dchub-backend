@@ -116,18 +116,71 @@ def test_an_unpublished_denylist_is_returned_unchanged():
 
 # ── ★ the general guard ───────────────────────────────────────────────────
 
+# The only fail-soft note these tests tolerate. register_canon_claims() is
+# DB-backed; everything else resolve_canon() reaches for must be stubbed.
+_ALLOWED_SOFT_ERRORS = {"_claims_error"}
+
+
 def _resolved_like_production(monkeypatch):
-    """resolve_canon() with its live overrides stubbed to the values measured
+    """resolve_canon() with EVERY outbound probe stubbed to the values measured
     on 2026-09-16, so this runs the REAL function — including the new
-    subtraction — with no network and no DB."""
-    monkeypatch.setattr(canon, "_get", lambda path: {"facilities": 22031,
-                                                      "markets": 330})
+    subtraction — with no network.
+
+    ★ ALL of them, not just the obvious one. resolve_canon() is fail-soft by
+      design: an unstubbed probe does not fail a test, it falls back to the
+      PINNED literal and adds an `_<key>_error` note. So a half-stubbed fixture
+      still goes green while asserting the PIN instead of the resolved canon —
+      the general guard below would be measuring the wrong object and could not
+      tell the difference.
+
+      The first version of this file stubbed `_get` only, and CI's no-network
+      hook caught what these assertions could not: it reached dchub.cloud 8x
+      through _mcp_tool_count() and _mcp_server_version(), which resolve_canon()
+      calls further down. tests/no_network_register.json says it plainly —
+      "Do not add an entry to make a new test pass: stub the fetch."
+
+      test_the_fixture_resolved_live_rather_than_falling_back() keeps this
+      honest from inside the suite: a probe added later lands in an
+      `_<key>_error` note, and that test fails on it.
+    """
+    monkeypatch.setattr(canon, "_get",
+                        lambda path, **kw: {"facilities": 22031, "markets": 330})
+    monkeypatch.setattr(canon, "_mcp_tool_count", lambda *a, **kw: 91)
+    monkeypatch.setattr(canon, "_mcp_server_version", lambda *a, **kw: "2.12.16")
     import canonical_stats
-    monkeypatch.setattr(canonical_stats, "facilities_verified_phrase",
-                        lambda: "21,900+")
-    monkeypatch.setattr(canonical_stats, "deals_phrase", lambda: "2,200+")
-    monkeypatch.setattr(canonical_stats, "markets_phrase", lambda: "300+")
+    for _name, _val in (("facilities_verified_phrase", "21,900+"),
+                        ("deals_phrase", "2,200+"),
+                        ("markets_phrase", "300+"),
+                        ("countries_verified_phrase", "170+"),
+                        ("news_sources_phrase", "2,000+")):
+        monkeypatch.setattr(canonical_stats, _name,
+                            (lambda v: (lambda *a, **k: v))(_val))
     return canon.resolve_canon()
+
+
+def test_the_fixture_resolved_live_rather_than_falling_back(monkeypatch):
+    """★ NON-VACUITY. Every general-guard test below asserts against the
+    RESOLVED canon. If a probe were unstubbed the pin would stand instead and
+    those tests would be measuring PINNED while still passing. Fail here,
+    loudly, rather than pass quietly there."""
+    c = _resolved_like_production(monkeypatch)
+    soft = {k for k in c if k.startswith("_") and k.endswith("_error")}
+    assert soft <= _ALLOWED_SOFT_ERRORS, (
+        "resolve_canon() fell back for %r — an outbound probe is unstubbed, so "
+        "these tests are asserting the PIN, not the resolved canon"
+        % sorted(soft - _ALLOWED_SOFT_ERRORS))
+    # ★ Pin each stub's OWN value, not just the absence of an error note. The
+    #   error-note check is environment-dependent — on a developer machine an
+    #   unstubbed probe SUCCEEDS over the real network and adds no note, so it
+    #   would only fail in CI. These equalities fail either way: a probe that
+    #   is not stubbed returns the live reading, which is not this literal.
+    assert c["facilities_verified_live"] == "21,900+"
+    assert c["public"]["facilities"] == "21,900+"
+    assert c["facilities_live"] == 22031
+    assert c["public"]["deals"] == "2,200+"
+    assert c["public"]["markets"] == "300+"
+    assert c["tools_live"] == 91, "_mcp_tool_count is not stubbed"
+    assert c["version_live"] == "2.12.16", "_mcp_server_version is not stubbed"
 
 
 def test_no_phrase_the_canon_publishes_is_on_its_own_denylist(monkeypatch):
