@@ -123,15 +123,48 @@ def evidence(fac: dict) -> dict:
       page keeps serving 200 at its frozen slug, and the facility qualifies
       again the moment it gains any one of the four — including a corrected
       capacity that lands under the cap.
+
+    ★★★ r-facility-facts (2026-09-16). The SAME defect, one field over. PR
+    #4624 gave the stored address a single owner — util.facility_facts.
+    street_address — and routed the three surfaces that PRINT one through it:
+    the facts line under the <h1>, the Address stat tile, and the Place
+    JSON-LD's streetAddress (routes/facility_profile_page builds ONE `_street`
+    and hands it to all three). `address` here still asked `_has`: "is there a
+    value", which is the question those three stopped asking. Of the 351
+    stored addresses on 3,000 live pages, that rule publishes 127 and refuses
+    224 — "India", "GB", "Mumbai, India", "Australia on", "Japan to", "MW",
+    "it has" — so since 2026-09-15 a page could be held `index, follow` by an
+    address string NO surface prints.
+
+    ★ THE FLEET GATE IS PART OF THE RULE, not an extra. The renderer spells
+      it `"" if _fleet else street_address(address)` and applies the same
+      `_fleet` to the operator and the status, so a fleet-sized row prints NO
+      facts at all. Asking street_address alone would leave such a row
+      `index, follow` on an address its own page refuses to show — the defect
+      this change exists to close, one row-class over. No live member today
+      (all 17 measured fleet rows store no address), so it would otherwise
+      ship unexercised.
+
+    ★ The import must stay function-level for a SECOND reason: util.
+      facility_facts imports THIS module at module level (is_placeholder_city).
+
+    ★ Same strict-subset property as `power`, so the direction is structural
+      rather than lucky: `_has` is False for None, '', '0', '0.0' and 'None',
+      and street_address returns '' for every one of them too. So evidence
+      ['address'] can only flip True -> False, and no page can LOSE a noindex
+      it has today.
     """
     from util.facility_headline import plausible_mw as _plausible_mw
+    from util.facility_facts import (is_fleet_row as _is_fleet_row,
+                                     street_address as _street_address)
 
     lat = fac.get("latitude", fac.get("lat"))
     lng = fac.get("longitude", fac.get("lon", fac.get("lng")))
     return {
         "power": _plausible_mw(fac.get("power_mw")) is not None,
         "coords": _has(lat) and _has(lng),
-        "address": _has(fac.get("address")),
+        "address": bool(_street_address(fac.get("address")))
+                   and not _is_fleet_row(fac.get("power_mw")),
         "city": bool(real_city(fac)),
     }
 

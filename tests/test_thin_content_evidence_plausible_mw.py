@@ -114,11 +114,30 @@ class TestNothingWithRealContentLeaves:
 
     @pytest.mark.parametrize("extra", [
         {"city": "Columbus"},
-        {"address": "1 Riverside Plaza"},
         {"latitude": 39.96, "longitude": -83.0},
     ])
     def test_any_other_fact_outranks_a_suppressed_capacity(self, extra):
         assert is_contentless(dict(FLEET_ONLY, **extra)) is False
+
+    def test_an_address_no_longer_outranks_it_because_the_page_stopped_printing_one(self):
+        """★ AMENDED 2026-09-16, and the amendment is the point.
+
+        On 2026-09-12 a street address on a fleet row WAS content: the page
+        rendered an Address tile from it. PR #4624 (2026-09-15) changed that —
+        routes/facility_profile_page now computes `_fleet = is_fleet_row(power)`
+        and suppresses the operator, the address AND the status on such a row,
+        so a fleet row prints its address NOWHERE: not the facts line, not the
+        stat tile, not the Place JSON-LD.
+
+        This case therefore stopped meaning "a fact the page shows" and started
+        meaning "a column the page refuses", which is the exact defect this
+        file's own docstring is about. r-facility-facts (2026-09-16) moved the
+        verdict with the renderer; see
+        tests/test_thin_content_evidence_street_address.py. The class has no
+        live member — all 17 measured fleet rows store no address at all."""
+        fleet_with_street = dict(FLEET_ONLY, address="1 Riverside Plaza")
+        assert is_contentless(fleet_with_street) is True
+        assert is_contentless(dict(fleet_with_street, power_mw=350.0)) is False
 
     def test_a_placeholder_city_is_still_not_a_fact(self):
         """'None'/'Regional' were never evidence and this change must not
@@ -127,12 +146,19 @@ class TestNothingWithRealContentLeaves:
         assert is_contentless(dict(FLEET_ONLY, city="Regional")) is True
 
     def test_the_other_three_evidence_fields_are_untouched(self):
-        """Only `power` moved. A change that also tightened city, address or
-        coordinates would de-index pages this measurement never looked at."""
+        """Only `power` moved HERE. A change that also tightened city, address
+        or coordinates would de-index pages this measurement never looked at —
+        so the witness is a real single site, where nothing this file did and
+        nothing r-facility-facts did touches the other three."""
         rich = {"city": "Columbus", "address": "1 Riverside Plaza",
-                "latitude": 39.96, "longitude": -83.0, "power_mw": 63000.0}
-        assert evidence(rich) == {"power": False, "coords": True,
+                "latitude": 39.96, "longitude": -83.0, "power_mw": 350.0}
+        assert evidence(rich) == {"power": True, "coords": True,
                                   "address": True, "city": True}
+        assert evidence(dict(rich, power_mw=63000.0)) == {
+            # `address` follows `power` down ONLY on a fleet row, because the
+            # renderer stopped printing it there (#4624). city/coords are
+            # untouched at any capacity.
+            "power": False, "coords": True, "address": False, "city": True}
 
     def test_the_new_predicate_can_only_REMOVE_evidence_never_ADD_it(self):
         """★ Why "0 slugs left the contentless set" is STRUCTURAL, not luck.
