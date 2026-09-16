@@ -401,6 +401,7 @@ def test_the_registration_tool_does_not_promise_permanent_secrecy(catalog):
 
 # ── Surface 5: the agent cookbook ───────────────────────────────────────────
 RECIPE_ID = "source-capacity-by-size-and-location"
+RECIPE_URL = "/api/v1/agent/recipe/" + RECIPE_ID
 
 
 @pytest.fixture(scope="module")
@@ -424,7 +425,7 @@ def test_the_cookbook_serves_a_sourcing_recipe(cookbook):
 
 
 def test_the_recipe_is_an_ORDERED_tool_chain(cookbook):
-    r = cookbook.get("/api/v1/agent/recipe/%s" % RECIPE_ID)
+    r = cookbook.get(RECIPE_URL)
     assert r.status_code == 200, r.status_code
     recipe = r.get_json()["recipe"]
     chain = [t["tool"] for t in recipe["tools"]]
@@ -449,7 +450,7 @@ def test_the_recipe_matches_the_shape_of_its_siblings(cookbook):
 
 
 def test_the_recipe_says_what_the_provider_receives(cookbook):
-    recipe = cookbook.get("/api/v1/agent/recipe/%s" % RECIPE_ID).get_json()["recipe"]
+    recipe = cookbook.get(RECIPE_URL).get_json()["recipe"]
     blob = recipe["sample_answer"] + " " + " ".join(t["why"] for t in recipe["tools"])
     assert _GIVEN_TO_PROVIDER.search(blob)
     assert _ACCEPT_OR_DECLINE.search(blob)
