@@ -19,6 +19,23 @@
  * historical entry should name the version it shipped in. Only the title line,
  * which claims to describe the file as it stands, was the lie.
  * ================================================================================
+ * v4.9.71 CHANGES (Sep 16 2026) — Phase capacity-source-on-mcp-get:
+ *   - GET /mcp `product` now NAMES Capacity Source. This payload is the first
+ *          thing an agent reads — before tools/list — and it described the
+ *          facilities/DCPI/grid/fiber data layer only. Capacity Source was live
+ *          (GET /api/v1/listings/summary: program_status live) and named on
+ *          README, server.json, the registry listing, mcp-server.json, the
+ *          GitHub About text, Smithery and /capabilities — everywhere EXCEPT the
+ *          one surface agents read first. The sentence is reused byte for byte
+ *          from CAPACITY_SOURCE_BLURB / CAPACITY_BLURB, and is COUNT-FREE: this
+ *          response is read at the edge, and an inventory number baked in here
+ *          goes stale where no drift detector of ours can reach it.
+ *   - tools_sample names source_capacity, so the tool is CALLABLE from this
+ *          payload and not merely described in prose. The slice cap moved 10 → 11
+ *          with the curated list: left at 10 it would have evicted analyze_site.
+ *   ★ This worker deploys by DASHBOARD PASTE, not by merge. Committing this file
+ *          does not change dchub.cloud/mcp; the paste does.
+ * ================================================================================
  * v4.9.68 CHANGES (Sep 13 2026) — Phase capacity-terms:
  *   - SYNC: MCP_FALLBACK_TOOLS 90 → 91 — adds accept_capacity_terms, the write
  *          of the Capacity Source terms gate (dchub-mcp-server #411), and
@@ -586,7 +603,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.70-capacity-search';
+const WORKER_VERSION = '4.9.71-capacity-source-on-mcp-get';
 
 // ★★★ VERDICT ROUTES — routes whose 5xx is an ANSWER, not a broken origin.
 // Consumed at STEP 2.4 (see the block comment there for the measurement and
@@ -3409,6 +3426,7 @@ export default {
             tools_sample: (() => {
               const have = new Set(MCP_FALLBACK_TOOLS.map(t => t.name));
               const want = ['execute_plan', 'search_facilities', 'get_facility',
+                            'source_capacity',
                             'rank_markets', 'get_market_intel',
                             'get_grid_intelligence', 'get_interconnection_queue',
                             'get_fiber_intel', 'list_transactions', 'analyze_site'];
@@ -3417,14 +3435,28 @@ export default {
                 if (out.length >= 8) break;
                 if (!out.includes(t.name)) out.push(t.name);
               }
-              return out.slice(0, 10);
+              // ★ Cap moved 10 → 11 WITH the curated list above. Left at 10, adding
+              // source_capacity would have silently evicted analyze_site — exactly
+              // the quiet drop the filter comment above warns about.
+              return out.slice(0, 11);
             })(),
             // ★ How to CALL them, not just what they are called. The manifest
             // publishes each tool's declared parameter names (see
             // resolveManifestTools); duplicating call shapes here would freeze
             // them.
             tool_examples: 'https://dchub.cloud/.well-known/mcp.json (each tool carries `params`)',
-            product: 'A read-mostly DATA LAYER about the data-center industry, for AI agents: facilities, DCPI market scores, live ISO grid feeds, fiber routes, interconnection queues, tax incentives and tracked M&A.',
+            // ★ The Capacity Source sentence is the OWNER-GIVEN wording, and it is
+            // reused BYTE FOR BYTE from the two places that already publish it:
+            // CAPACITY_SOURCE_BLURB (dchub-backend routes/mcp_presence_crawler.py)
+            // and CAPACITY_BLURB (dchub-mcp-server lib/capacity-source-summary.mjs).
+            // Three repos-worth of surfaces, so three literals; this one is pinned by
+            // tests/test_worker_mcp_get_names_capacity_source.py.
+            // ★ COUNT-FREE on purpose, and for a REASON THIS PAYLOAD MAKES SHARPER
+            // than the registries do: GET /mcp is read by agents at the edge, and a
+            // live_count or an MW total baked in here would go stale inside a cache we
+            // do not invalidate on listing writes. It names the capability, the tool
+            // and the page — all three outlive any particular inventory.
+            product: 'A read-mostly DATA LAYER about the data-center industry, for AI agents: facilities, DCPI market scores, live ISO grid feeds, fiber routes, interconnection queues, tax incentives and tracked M&A. Capacity Source: powered land/shell/turnkey incl. off-market listings via source_capacity; browse dchub.cloud/listings.',
             not: 'NOT a DCIM or monitoring product. No rack telemetry, no per-customer equipment monitoring, no workload scheduler, no webhooks, no websocket stream. Nothing here connects to or operates your infrastructure. It answers questions ABOUT data centers; it does not run one.',
             api_base: 'https://dchub.cloud/api/v1',
             openapi: 'https://dchub.cloud/openapi.json',

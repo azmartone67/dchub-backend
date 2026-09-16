@@ -556,12 +556,36 @@ def test_repo_worker_is_canon_clean_and_current():
     # also what canon_text() itself degrades to when the canon is unreadable.
     # Fenced by tests/test_wellknown_manifest_version_derived.py::
     # test_fallback_tool_descriptions_carry_no_facility_count.
-    # ⚠ PASTE OUTSTANDING as of this commit: production still serves 4.9.69, so a
-    # version-drift report against this repo is EXPECTED until the paste lands.
-    # Verify with (want 4.9.70-capacity-search):
-    #   curl -sI "https://dchub.cloud/.well-known/mcp.json?_=$(date +%s)" \
+    # ✓ PASTED — live confirmed 2026-09-16: GET /mcp returns X-DC-Worker-Version:
+    # 4.9.70-capacity-search, and the live script fetched from the Cloudflare API
+    # (accounts/<id>/workers/scripts/dchubapiproxy) is byte-for-byte identical to
+    # worker.js on origin/main — 428,379 bytes, empty diff. The line above read
+    # "PASTE OUTSTANDING; production still serves 4.9.69"; it had already landed.
+    # FIFTH time this note has lagged reality — the header is the authority.
+    #
+    # 4.9.70 -> 4.9.71-capacity-source-on-mcp-get (2026-09-16): GET /mcp — the
+    # payload an agent reads BEFORE tools/list, and the most-crawled path on the
+    # domain — did not mention Capacity Source. Measured 2026-09-16 it contained
+    # no "Capacity Source", "source_capacity", "listings" or "off-market", while
+    # the product was live (GET /api/v1/listings/summary: program_status live) and
+    # named on README, server.json, the registry listing, mcp-server.json, the
+    # GitHub About text, Smithery and /capabilities. `product` now carries the
+    # owner-given sentence byte for byte (CAPACITY_BLURB, dchub-mcp-server
+    # lib/capacity-source-summary.mjs) and tools_sample names source_capacity, so
+    # the tool is callable from the payload rather than only described in it. The
+    # sample's slice cap moved 10 -> 11 with the curated list; left at 10 it would
+    # have evicted analyze_site. Kept COUNT-FREE: this response is read at the
+    # edge, where an inventory number goes stale inside a cache no listing write
+    # invalidates. Fenced by tests/test_worker_mcp_get_names_capacity_source.py.
+    # ⚠ PASTE OUTSTANDING as of this commit: production serves 4.9.70, so a
+    # version-drift report against this repo is EXPECTED until the paste lands —
+    # and check_zone_worker_version_drift (added with this change) is what will
+    # file it, as zone_worker_commit_not_pasted.
+    # Verify with (want 4.9.71-capacity-source-on-mcp-get) — /mcp, NOT an /api/*
+    # path, which is served by the frontend Pages worker and reports ITS version:
+    #   curl -sI "https://dchub.cloud/mcp?_=$(date +%s)" \
     #     | grep -i x-dc-worker-version
-    assert "WORKER_VERSION = '4.9.70-capacity-search'" in src
+    assert "WORKER_VERSION = '4.9.71-capacity-source-on-mcp-get'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
