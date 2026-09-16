@@ -10065,15 +10065,129 @@ def check_required_env_vars() -> list[dict]:
     return findings
 
 
-def check_csp_violation_reports() -> list[dict]:
-    """Phase QQQ (2026-05-17) — flag CSP allowlist gaps that are
-    actively breaking real users.
+# CSP reports a bare KEYWORD, not a URL, when the violation has no resource:
+# an inline <script>/<style>, an eval(), or a data:/blob: URL. These are not
+# hosts and can never be added to a directive's allowlist — the lever is a
+# source keyword or a scheme, and turning either on is a security decision.
+_CSP_SOURCE_KEYWORDS = {
+    "inline":           "'unsafe-inline'",
+    "eval":             "'unsafe-eval'",
+    "wasm-eval":        "'wasm-unsafe-eval'",
+    "wasm-unsafe-eval": "'wasm-unsafe-eval'",
+    "data":             "the `data:` scheme",
+    "blob":             "the `blob:` scheme",
+    "filesystem":       "the `filesystem:` scheme",
+    "self":             "'self'",
+}
 
-    csp_report.py records every browser CSP violation report. If a
-    blocked URI shows up repeatedly in the last 24h, it's an allowlist
-    gap we should plug. Without this detector we only learn about CSP
-    drift when a user reports a broken page (the jsdelivr / unpkg
-    pattern repeated all session).
+
+def _csp_host(uri: str) -> str:
+    """Host of a URI. Accepts a bare host (what recent_blocked_uris returns in
+    blocked_uri) and a full URL (what it returns in document_uri). Returns ''
+    when there is no host to read."""
+    u = (uri or "").strip()
+    if not u or u == "-":
+        return ""
+    u = u.split("://", 1)[-1]
+    u = u.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    u = u.rsplit("@", 1)[-1]            # drop userinfo
+    if u.startswith("["):               # IPv6 literal keeps its brackets
+        u = u.split("]", 1)[0] + "]"
+    else:
+        u = u.split(":", 1)[0]          # drop port
+    return u.lower()
+
+
+def csp_violation_verdict(blocked: str, directive: str,
+                          document: str) -> tuple[str, str]:
+    """Classify ONE recurring CSP block, and say what actually fixes it.
+
+    Returns (issue, remedy_sentence).
+
+    ★ 2026-09-15. This used to be one unconditional sentence, emitted for
+      every blocked URI whatever it was:
+
+          "Likely an allowlist gap — add `{blocked}` to the `{directive}`
+           directive in dchub-frontend/_headers and redeploy."
+
+      It is wrong for most of what this detector actually sees:
+
+        · a KEYWORD block ('inline', 'eval', 'data', 'blob') is not a host,
+          so there is nothing to add to an allowlist at all;
+        · a SAME-ORIGIN block is already permitted by `'self'`, which every
+          fetch directive in the served policy carries — the edit is a no-op
+          and the violation has some other cause entirely.
+
+      Measured 2026-09-15, both on origin/main dchub-frontend/_headers and on
+      the header dchub.cloud actually serves: `script-src-elem 'self' …` and
+      `connect-src 'self' …`. Board items inv #100661 (script-src-elem /
+      dchub.cloud) and #100662 (connect-src / dchub.cloud) are both the
+      same-origin case. Each cost a ~48s investigation that asserted _headers
+      content it had never read, and each was refuted for exactly that. The
+      investigator was repeating the detector — the same shape that
+      tests/test_radar_no_invented_paths.py pins one directory over.
+
+    ★ The verdict has to ride in the ISSUE and in the finding KEY, not only in
+      the detail. routes/squasher_queue.investigation_question() builds the
+      investigator's prompt from title + finding_key ALONE, so a correction
+      left in `detail` never reaches the thing that was repeating the error.
+    """
+    blocked_host = _csp_host(blocked)
+    doc_host = _csp_host(document)
+    keyword = (blocked or "").strip().strip("'\"").lower()
+
+    if keyword in _CSP_SOURCE_KEYWORDS:
+        lever = _CSP_SOURCE_KEYWORDS[keyword]
+        return ("csp_violation_inline_or_eval",
+                f"`{keyword}` is a CSP source KEYWORD, not a host — there is "
+                f"nothing to add to an allowlist. The only lever is {lever} on "
+                f"`{directive}`, which is a security decision and not a config "
+                f"top-up. Find the code emitting the inline/eval/scheme source "
+                f"and give it a real URL or a nonce instead.")
+
+    if not doc_host:
+        return ("csp_violation_unattributed",
+                f"The reports carried no document URI, so it is NOT known "
+                f"whether `{blocked_host}` is same-origin with the page that "
+                f"blocked it — and that is the whole question. Do not edit "
+                f"dchub-frontend/_headers on this finding alone; capture a "
+                f"report carrying document_uri first (browsers POST to "
+                f"/api/csp-report; read GET /api/csp-report/stats).")
+
+    if blocked_host == doc_host:
+        return ("csp_violation_same_origin",
+                f"`{blocked_host}` is SAME-ORIGIN with the page that reported "
+                f"it (`{doc_host}`), and every fetch directive in the served "
+                f"policy already carries `'self'` — so adding `{blocked_host}` "
+                f"to `{directive}` in dchub-frontend/_headers changes NOTHING. "
+                f"Something else blocked it: a redirect off this origin, a "
+                f"scheme `'self'` does not cover (data:/blob:), or a report "
+                f"from an origin that only looks like this one (a Pages "
+                f"preview, a `www.` variant). Read the full blocked URI and "
+                f"the page URI above before touching the policy.")
+
+    return ("csp_violation_recurring",
+            f"`{blocked_host}` is CROSS-ORIGIN to the page that blocked it "
+            f"(`{doc_host}`), so `{directive}` genuinely does not permit it. "
+            f"Candidate fix: add `{blocked_host}` to `{directive}` in "
+            f"dchub-frontend/_headers and redeploy — but ONLY if this site "
+            f"actually requests that resource. Check that first: a blocked "
+            f"host on a page we serve is frequently injected by an in-app "
+            f"WebView, a browser extension or an AV proxy, and allowlisting it "
+            f"grants a third party the rights of `{directive}` (inv #100362 "
+            f"was appassets.androidplatform.net, an Android WebView's own "
+            f"asset host — filed, specced, and correctly never shipped).")
+
+
+def check_csp_violation_reports() -> list[dict]:
+    """Phase QQQ (2026-05-17) — flag CSP blocks that are actively breaking
+    real users, and say which of them an allowlist edit can actually fix.
+
+    csp_report.py records every browser CSP violation report. If a blocked URI
+    shows up repeatedly in the last 24h we want a finding. WHAT the finding
+    recommends is decided by csp_violation_verdict() — see its docstring for
+    the 2026-09-15 defect where this advised one remedy for every case and was
+    wrong for most of them.
     """
     findings: list[dict] = []
     try:
@@ -10088,18 +10202,31 @@ def check_csp_violation_reports() -> list[dict]:
             count = r.get("count", 0)
             blocked = r.get("blocked_uri") or ""
             directive = r.get("directive") or ""
+            document = r.get("document_uri") or ""
+            sample = r.get("sample_blocked_uri") or ""
             if count < 3:
                 # Single-occurrence noise (browser extensions, etc.)
                 continue
+            issue, remedy = csp_violation_verdict(blocked, directive, document)
+            doc_host = _csp_host(document)
+            # The investigator only ever sees title + finding_key, so the
+            # document the verdict turns on has to be IN the key.
+            where = f"csp://{directive}/{blocked}"
+            if doc_host:
+                where += f" on {doc_host}"
             findings.append({
-                "issue":  "csp_violation_recurring",
-                "url":    f"csp://{directive}/{blocked}",
+                "issue":  issue,
+                "url":    where,
                 "count":  count,
-                "detail": (f"CSP directive `{directive}` blocked `{blocked}` "
-                           f"{count}× in the last 24h. Likely an allowlist "
-                           f"gap — add `{blocked}` to the `{directive}` "
-                           f"directive in dchub-frontend/_headers and "
-                           f"redeploy. (Browsers POST to /api/csp-report.)"),
+                "detail": (f"CSP directive `{directive}` blocked `{blocked}` in "
+                           f"{count} deduplicated reports over the last 24h. "
+                           f"(/api/csp-report collapses an identical "
+                           f"directive+resource+page within 60s, so that is a "
+                           f"REPORT count, not a violation count, and it is one "
+                           f"replica's in-process view.) "
+                           f"Page: `{document or 'not reported'}`. "
+                           f"Full blocked URI: `{sample or blocked}`. "
+                           f"{remedy}"),
             })
     except Exception as e:
         findings.append({

@@ -176,16 +176,39 @@ def recent_blocked_uris(window_seconds: int = 86400, top_n: int = 10) -> list[di
     """Return the top-N most-blocked URIs in the last `window_seconds`.
 
     Brain `check_csp_violation_reports()` calls this each scan; if a
-    blocked URI shows up repeatedly we want a finding because that's a
-    CSP allowlist gap actively breaking real users.
+    blocked URI shows up repeatedly we want a finding.
 
-    NOTE: in-process state only. If Railway recycles the worker the
-    counts reset. Good enough — the brain runs every 6h and persistent
-    storage would require a migration; keeping this simple keeps it
-    deployable today.
+    ★ 2026-09-15 — each row now also carries `document_uri` (the page that
+      reported it; the most frequent one in the group) and
+      `sample_blocked_uri` (one full, un-stripped blocked URI). WHY: the
+      caller reduced every report to a bare HOST and then advised the same
+      remedy for all of them — "add {host} to {directive} in
+      dchub-frontend/_headers". Without the document it cannot tell a real
+      cross-origin allowlist gap from a SAME-ORIGIN block that `'self'`
+      already permits, so it advised a no-op edit for the same-origin case.
+      Three investigations were spent on that: inv #100362
+      (appassets.androidplatform.net), #100661 (script-src-elem) and #100662
+      (connect-src). `blocked_uri`, `directive` and `count` keep their old
+      names, shape and meaning — this is additive.
+
+    ★ `count` is the number of reports that SURVIVED the 60s dedupe in
+      csp_report() above, NOT the number of violations the browser raised.
+      One continuously-broken page contributes about one per minute per
+      (directive, resource, page). Callers must not render it as "blocked
+      N times".
+
+    NOTE: in-process state only. If Railway recycles the worker the counts
+    reset, and each replica only ever sees its own share of the traffic.
+    `_recent_events` is bounded by COUNT (maxlen=5000), not by time — it is
+    not pruned on a clock, so `window_seconds` is the only age filter and a
+    quiet week can still surface events older than it looks. Good enough —
+    the brain runs every 6h and persistent storage would require a
+    migration; keeping this simple keeps it deployable today.
     """
     cutoff = _now() - window_seconds
     by_blocked: dict[tuple[str, str], int] = defaultdict(int)
+    by_document: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    samples: dict[tuple[str, str], str] = {}
     for ts, directive, blocked, document in _recent_events:
         if ts < cutoff:
             continue
@@ -193,12 +216,27 @@ def recent_blocked_uris(window_seconds: int = 86400, top_n: int = 10) -> list[di
             continue
         # Strip protocol so we group cdn.x.com http vs https together
         clean = blocked.split("://", 1)[-1].split("?", 1)[0].split("/", 1)[0]
-        by_blocked[(clean, directive or "-")] += 1
+        key = (clean, directive or "-")
+        by_blocked[key] += 1
+        if document and document != "-":
+            by_document[key][document] += 1
+        # First full URI wins — enough to show the path the host-strip drops.
+        samples.setdefault(key, blocked)
     ranked = sorted(by_blocked.items(), key=lambda kv: kv[1], reverse=True)
-    return [
-        {"blocked_uri": k[0], "directive": k[1], "count": v}
-        for k, v in ranked[:top_n]
-    ]
+    out: list[dict] = []
+    for k, v in ranked[:top_n]:
+        docs = by_document.get(k) or {}
+        # Deterministic tie-break so two replicas reporting the same counts
+        # do not produce two different finding keys for one condition.
+        top_doc = sorted(docs.items(), key=lambda kv: (-kv[1], kv[0]))[0][0] if docs else ""
+        out.append({
+            "blocked_uri":        k[0],
+            "directive":          k[1],
+            "count":              v,
+            "document_uri":       top_doc,
+            "sample_blocked_uri": samples.get(k, ""),
+        })
+    return out
 
 
 @csp_report_bp.route("/api/csp-report/stats", methods=["GET"])
