@@ -369,9 +369,38 @@ def test_the_agent_manifest_zero_state_is_onboarding_not_absence(manifest_string
 # ── Surface 4: the MCP tool catalog behind /.well-known/mcp.json ────────────
 @pytest.fixture(scope="module")
 def catalog():
-    from routes.mcp_tool_catalog import _merged_tools
+    """The catalog behind /.well-known/mcp.json, with the LIVE PROBE STUBBED.
+
+    ★ _merged_tools() calls _live_tools_map(), which fetches the public MCP
+      gate at dchub.cloud. A unit test must never do that: tests/_no_network/
+      sitecustomize.py refuses the connection and scripts/no_network_verdict.py
+      fails the whole step on a (file, host) the register does not list — which
+      is what this file did on its first CI run, with every assertion passing.
+      The fix is the stub, NOT a register entry: the register is ledgered debt,
+      and adding to it would make a live reach permanent to buy one green run.
+
+    ★ The stub costs this guard NOTHING. _live_tools_map() only APPENDS tools
+      that are not curated in this repo; it cannot change a curated
+      description, and both tools asserted below are curated here. Returning {}
+      also exercises the documented "falls back to curated-only if the live
+      fetch fails" path, which is the shape that actually ships whenever the
+      gate is unreachable.
+    """
+    from routes import mcp_tool_catalog as m
+    real = m._live_tools_map
+    m._live_tools_map = lambda: {}
+    try:
+        tools = m._merged_tools()
+    finally:
+        # Restored in `finally`: this module attribute is process-global, and a
+        # stub that outlived a failing assertion would silently change what
+        # every later test in the session sees.
+        m._live_tools_map = real
+    assert len(tools) > 50, (
+        f"the catalog parsed to {len(tools)} tool(s) — the curated list moved "
+        "and every assertion below would run on almost nothing")
     return {name: (summary, example)
-            for name, _cat, _tier, summary, example in _merged_tools()}
+            for name, _cat, _tier, summary, example in tools}
 
 
 def test_the_tool_catalog_teaches_search_by_size_and_location(catalog):
