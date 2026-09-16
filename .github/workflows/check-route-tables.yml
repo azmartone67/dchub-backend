@@ -84,6 +84,14 @@ jobs:
       # missing; one removed from it read as present. Wrong in both directions,
       # quietly. ★ Every reading of this gate before 2026-09-05 is therefore
       # UNMEASURED, including the "385 of 496 missing" that kept it advisory.
+      # ★ 2026-09-16 — NO `ref:`, DELIBERATELY. This reads dchub-frontend's
+      # default branch AT RUN TIME, which makes this gate time-dependent: a
+      # frontend merge can turn it red on a backend SHA that passed minutes
+      # earlier (ce63775a9 passed 01:25Z / failed 02:06Z when frontend#1491
+      # swapped an include). Pinning would rebuild exactly the stale vendored
+      # mirror #3871 deleted, so the answer is ATTRIBUTION, not a pin: step 2
+      # prints the frontend commit that was read and the failure message names
+      # it. Do not "fix" the flakiness by adding a ref here.
       - name: Check out the canonical frontend (routing tables live there)
         id: frontend
         continue-on-error: true
