@@ -25,6 +25,7 @@ from util.deployability_rank import RANKINGS as _DEPLOY_RANKINGS
 from util.db_honesty import (DEAL_DATE, close_quietly, open_conn,
                              try_fetchall)
 from util.deals import DEALS_OK
+from urllib.parse import quote as _quote
 
 try:
     from util.provenance import src, attach_sources, now_iso
@@ -359,7 +360,10 @@ def buyer_brief():
                     "market": r[3], "state": r[4],
                     "capacity_mw": _as_float(r[5]),
                     "tier_required": r[6], "status": r[7],
-                    "url": f"https://dchub.cloud/listings?l={r[1]}",
+                    # The canonical per-listing page (dchub-frontend #1491),
+                    # not the ?l= index form: ?l= canonicalises to bare
+                    # /listings, so it is not a per-listing URL at all.
+                    "url": f"https://dchub.cloud/listings/{_quote(str(r[1] or ''), safe='')}",
                 })
             payload["pocket_listings"] = (
                 None if "pocket_listings" in errors else listings)

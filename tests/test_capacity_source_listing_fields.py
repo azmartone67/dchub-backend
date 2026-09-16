@@ -534,7 +534,7 @@ def test_a_listing_without_the_reserved_keys_reads_as_before(env):
         "capacity_mw": 40.0, "available": "Q2 2027",
         "created_at": "2026-09-01T00:00:00.000000+00:00",
         "updated_at": "2026-09-02T00:00:00.000000+00:00", "expires_at": None,
-        "url": "https://dchub.cloud/listings?l=dfw-40"}
+        "url": "https://dchub.cloud/listings/dfw-40"}
     assert {k: teaser[k] for k in NEW_TEASER_KEYS} == {
         "delivery_type": None, "freshness": UNVERIFIED, "provider": None,
         "capacity_kw": 40000, "region": "north_america", "update_cadence": None}

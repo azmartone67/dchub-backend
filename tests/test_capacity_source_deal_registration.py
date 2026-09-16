@@ -591,7 +591,7 @@ def test_accepting_sends_each_side_the_others_details_and_the_admin_a_copy(env):
     buyer, provider, admin = (m["body"] for m in mails)
     for shown in (PROVIDER, "Seagoville Campus", "100 Industrial Blvd", "75159", "APN 42-17",
                   "32.776712", "-96.797012", "Seagoville 345kV", "Dana Reyes", "VP Leasing",
-                  OPERATOR_EMAIL, "+1 214 555 0100", "https://dchub.cloud/listings?l=dfw-40",
+                  OPERATOR_EMAIL, "+1 214 555 0100", "https://dchub.cloud/listings/dfw-40",
                   "Call Dana any morning."):
         assert shown in buyer, shown
     _absent((NOTICE_EMAIL, "QH Holdings", "auto_notify", "linkedin"), buyer)
