@@ -93,10 +93,49 @@ commit was read and the failure message names it, so a reader can tell "the PR
 did it" from "the frontend moved" instead of being told the former.  See
 _frontend_rev().
 
-★ IT ALSO DOES NOT READ _redirects.  Only _routes.json and _worker.js are
-modelled, so a path whose edge behaviour is a _redirects rule reads as uncovered
-here even though it answers correctly in production.  /spare-capacity is
-baselined for exactly that reason, not because it is broken.
+★ 2026-09-16 — IT NOW READS _redirects, AS A THIRD STATE AND NOT AS COVERAGE.
+
+Until now only _routes.json and _worker.js were modelled, so a path whose edge
+behaviour is a _redirects rule read as uncovered even though it answers
+correctly in production — /spare-capacity and /spare-capacity/<ref> were
+baselined for exactly that reason, which recorded a fiction.
+
+The fix is NOT to call those covered.  "Covered by _routes.json include" and
+"answered by a _redirects rule" are OPPOSITE facts about the Flask handler:
+
+  * include  → the worker runs and forwards; the handler RUNS.
+  * redirect → the worker never runs and CF answers from the static pipeline;
+    the handler NEVER RUNS.  The path is reachable and may be doing exactly
+    what was intended (a 301 stub like /spare-capacity), or a rule may have
+    silently SHADOWED a page that was supposed to render — which is the
+    /pockets class this whole gate exists to catch.
+
+Collapsing those into one green would blind the gate to the second case, so
+they are reported as a THIRD category, `shadowed_by_redirects`, with its own
+baseline list.
+
+★ WHAT IS FATAL DID NOT CHANGE.  The blocking set is still "Flask HTML routes
+the worker is never invoked for" — exactly what it was before this paragraph.
+_redirects only SPLITS that set for reporting and explains each half; a path
+does not stop being fatal by acquiring a redirect, and does not become fatal by
+losing one.  Migration between the two halves is real (301 ↔ 404) and is
+reported loudly, but it is cross-repo and never fails the build, for the same
+reason the rot notice below does not.
+
+★ SCOPED TO THE UNCOVERED SET ON PURPOSE — AND IT IS THE FAIL-SAFE DIRECTION.
+A _redirects rule is only consulted when the worker is NOT invoked for the path.
+Measured: /news/some-article is in the `/news/*` include AND matches the
+`/news/* -> /press-release/:splat 200` rule, and it answered WITH
+x-dc-worker-version (2026-09-05) — the worker won, the rewrite never fired.
+/spare-capacity/abc-def is in no include and matches `/spare-capacity/*`, and it
+answered 301 with NO x-dc-worker-version and NO x-railway-request-id
+(2026-09-16) — the redirect won.  So shadowing is only checked for paths already
+computed as uncovered.  If that precedence is ever wrong, this under-reports
+shadows; it can never mislabel a worker-routed path as shadowed.
+
+★ AND THE MATCHER IS DELIBERATELY NOT _glob_re().  See _redirect_re():
+_redirects is a DIFFERENT SYNTAX from _routes.json and the bare-path rule is
+INVERTED between them.  Reusing _glob_re() here is the obvious mistake.
 
 Run it locally exactly as CI does:
 
@@ -499,12 +538,18 @@ def cmd_route_tables(_args) -> int:
     worker_paths |= extra_exact
     worker_prefixes |= extra_prefix
     rev = _frontend_rev()
+    # ★ ORDERED, and recorded rather than re-read. cmd_diff is a DIFFERENT
+    # PROCESS; re-parsing _redirects there would read whatever the checkout is
+    # then, not what was measured here — the same reason frontend_rev is passed
+    # through this file instead of re-derived.
+    redirects = parse_redirects()
     TABLES_OUT.write_text(json.dumps({
         "frontend_rev": rev,
         "routes_json_include": sorted(routes_json),
         "routes_json_exclude": sorted(routes_json_exclude),
         "worker_paths": sorted(worker_paths),
         "worker_prefixes": sorted(worker_prefixes),
+        "redirects": redirects,
     }, indent=2))
     print(f"read dchub-frontend @ {rev} (UNPINNED — this gate reads that repo's "
           f"default branch at run time; see _frontend_rev())")
@@ -513,6 +558,9 @@ def cmd_route_tables(_args) -> int:
           f"({len(routes_json) + len(routes_json_exclude)}/98 rules)")
     print(f"worker PHASE_282_RAILWAY_PATHS (+ dispatch-guard exacts): {len(worker_paths)} entries")
     print(f"worker PHASE_282_PREFIXES (+ dispatch-guard prefixes): {len(worker_prefixes)} entries")
+    dyn = sum(1 for r in redirects if "*" in r[0] or ":" in r[0])
+    print(f"_redirects: {len(redirects)} rules ({dyn} dynamic, {len(redirects) - dyn} static) "
+          f"— answers paths the worker is NEVER invoked for; see _redirect_re()")
     return 0
 
 
@@ -543,6 +591,133 @@ def _covers(globs, path: str) -> bool:
     return any(_glob_re(g).match(path) for g in globs)
 
 
+def _probe(route: str) -> str:
+    r"""The concrete path a Flask rule is TESTED as.
+
+    "/news/<slug>" truncated to "/news/" hits the deliberate "/news/" EXCLUDE
+    and reads as uncovered, while the paths it actually serves match the
+    "/news/*" include and are worker-routed — GET /news/some-article carries
+    x-dc-worker-version, measured 2026-09-05.  Substituting a segment keeps the
+    bare-path exclusions doing their job without condemning the children.
+
+    ★ ONE SPELLING, TWO CONSUMERS.  _uncovered() and the _redirects split must
+    probe the IDENTICAL string or a route can read as uncovered by one table and
+    shadowed by the other, which is a state this checker would then report as
+    both.  It lived inline in _uncovered() until the _redirects model needed it
+    too; do not re-inline it.
+    """
+    return re.sub(r"<[^>]+>", "_", route)
+
+
+# ── 3a. _redirects — the THIRD table ─────────────────────────────────────────
+
+_PLACEHOLDER_RE = re.compile(r":[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _redirect_re(src: str) -> re.Pattern:
+    r"""Cloudflare Pages _redirects SOURCE-path semantics.
+
+    ★ THIS IS NOT _glob_re() AND MUST NOT BECOME IT.  _glob_re() is a faithful
+    port of globToRe() in dchub-frontend/scripts/check-edge-caps.mjs, which is
+    the authority for _routes.json.  It is NOT the authority here, and
+    check-edge-caps.mjs never applies it to _redirects — that file only COUNTS
+    _redirects lines against the dynamic/static caps, it never matches a path
+    against one.  The two syntaxes differ, and the difference is INVERTED on the
+    single rule most likely to be assumed shared:
+
+      _routes.json   "/x/*" ALSO matches bare "/x".   (proven live: /redeem,
+                     /docs, /operators, /relay are listed only as "/x/*" and all
+                     answer worker-side)
+      _redirects     "/x/*" does NOT match bare "/x".  A bare-path rule must be
+                     written separately — which dchub-frontend does, three times
+                     over: "/operators → /operators/", "/transactions →
+                     /transactions/", and "/spare-capacity → /listings#..."
+                     sitting immediately above "/spare-capacity/* → /listings".
+                     That bare line exists BECAUSE the splat line does not cover
+                     it; its own comment says so ("The bare path is covered by
+                     the line above").
+
+    Borrowing _glob_re() would therefore mark every bare "/x" as shadowed on the
+    strength of an "/x/*" rule that cannot answer it — inventing coverage for a
+    path that really does 404.
+
+    Two more differences from _routes.json globs:
+      * ":name" is a PLACEHOLDER matching exactly one path segment ([^/]+).
+        _routes.json has no such syntax.  dchub-frontend uses it today
+        ("/press-release/:slug").
+      * "*" is a SPLAT and matches across "/" — "/dcip/*" answers
+        "/dcip/a/b".  Same as _routes.json's "*", but stated because the
+        placeholder right next to it does not.
+
+    Trailing slashes are matched LITERALLY: "/operators" and "/operators/" are
+    different rules in that file and are written as such.
+    """
+    body = []
+    for part in src.split("*"):
+        pos, chunk = 0, []
+        for m in _PLACEHOLDER_RE.finditer(part):
+            chunk.append(re.escape(part[pos:m.start()]))
+            chunk.append(r"[^/]+")
+            pos = m.end()
+        chunk.append(re.escape(part[pos:]))
+        body.append("".join(chunk))
+    return re.compile("^" + ".*".join(body) + "$")
+
+
+def parse_redirects(frontend: pathlib.Path = FRONTEND) -> list[list]:
+    r"""_redirects as [source, destination, status], IN FILE ORDER.
+
+    ★ ORDER IS THE SEMANTICS.  Cloudflare applies the FIRST matching rule and
+    stops, so this must stay a list; a set or dict would silently pick a
+    different winner than production for any overlapping pair, and the file has
+    overlapping pairs by design (the bare "/spare-capacity" line only wins
+    because it sits above "/spare-capacity/*").
+
+    Malformed lines are DROPPED LOUDLY, never silently: "the file had a line we
+    could not read" and "the file had no such rule" must not be one outcome.
+    All 130 rules were 3 fields on 2026-09-16; a 2-field line is legal
+    Cloudflare (status defaults to 302) and is accepted as such.
+    """
+    path = frontend / "_redirects"
+    if not path.is_file():
+        # Not fatal: the frontend checkout is optional-by-design in this gate
+        # (check-route-tables.yml marks the clone continue-on-error).  An absent
+        # file means "no shadowing known", which is the same conservative answer
+        # this checker gave before it read the file at all.
+        print(f"::warning::{path} not found — _redirects shadowing NOT modelled "
+              f"this run; routes answered there will read as plain-uncovered.",
+              file=sys.stderr)
+        return []
+    rules: list[list] = []
+    for lineno, raw in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2 or not parts[0].startswith("/"):
+            print(f"::warning::_redirects:{lineno}: unparsed rule {line!r}",
+                  file=sys.stderr)
+            continue
+        status = 302  # Cloudflare's default when the third field is omitted.
+        if len(parts) >= 3:
+            try:
+                status = int(parts[2])
+            except ValueError:
+                print(f"::warning::_redirects:{lineno}: non-numeric status "
+                      f"{parts[2]!r} in {line!r}", file=sys.stderr)
+                continue
+        rules.append([parts[0], parts[1], status])
+    return rules
+
+
+def redirect_match(rules, path: str):
+    """The FIRST _redirects rule answering `path`, or None. Order decides."""
+    for rule in rules:
+        if _redirect_re(rule[0]).match(path):
+            return rule
+    return None
+
+
 def _uncovered(flask: set[str], tables: dict) -> tuple[list[str], list[str]]:
     routes_json = list(tables["routes_json_include"])
     # ★ exclude is not decoration. 15 entries exist precisely to claw bare paths
@@ -563,13 +738,9 @@ def _uncovered(flask: set[str], tables: dict) -> tuple[list[str], list[str]]:
     missing_routes_json, missing_worker = [], []
     for r in sorted(flask):
         # ★ A dynamic route is tested as a REPRESENTATIVE CONCRETE PATH, not as
-        # the bare prefix before its first "<".  "/news/<slug>" truncated to
-        # "/news/" hits the deliberate "/news/" EXCLUDE and reads as uncovered,
-        # while the paths it actually serves match the "/news/*" include and are
-        # worker-routed — GET /news/some-article carries x-dc-worker-version,
-        # measured 2026-09-05.  Substituting a segment keeps the bare-path
-        # exclusions doing their job without condemning the children.
-        probe = re.sub(r"<[^>]+>", "_", r)
+        # the bare prefix before its first "<" — see _probe(), which the
+        # _redirects split shares so both tables judge the same string.
+        probe = _probe(r)
         if not by_routes_json(probe):
             missing_routes_json.append(r)
         if not by_worker(probe):
@@ -589,21 +760,27 @@ def measured_forwarded() -> set[str]:
 
 
 def load_baseline() -> dict[str, set[str]]:
-    """The enumerated debt.  Two lists, because the two tables fail differently.
+    """The enumerated debt.  THREE lists, because the tables fail differently.
 
     A path missing from _routes.json `include` means the worker is NEVER
     INVOKED — 404, or a same-named static file answers with no
     x-dc-worker-version header.  A path missing from the worker's own tables
     means the worker runs and refuses to forward — 403.  Baselining the union
     would let a path silently migrate from one failure to the other.
+
+    ★ shadowed_by_redirects is a SPLIT OF THE FIRST, not a fourth outcome and
+    not an allow-list of "fine" paths.  The worker is never invoked for these
+    either — the difference is that a _redirects rule answers them instead of a
+    404, so they are REACHABLE while their Flask handler is DEAD.  Kept separate
+    precisely so the 301-stub case (/spare-capacity, intended) and the
+    silently-shadowed-page case (the /pockets class, a bug) cannot report as the
+    same green.  Both halves are equally fatal when NEW — see cmd_diff().
     """
+    keys = ("missing_routes_json", "shadowed_by_redirects", "missing_worker")
     if not BASELINE.exists():
-        return {"missing_routes_json": set(), "missing_worker": set()}
+        return {k: set() for k in keys}
     data = json.loads(BASELINE.read_text())
-    return {
-        "missing_routes_json": set(data.get("missing_routes_json", [])),
-        "missing_worker": set(data.get("missing_worker", [])),
-    }
+    return {k: set(data.get(k, [])) for k in keys}
 
 
 def cmd_diff(_args) -> int:
@@ -617,38 +794,104 @@ def cmd_diff(_args) -> int:
     missing_worker = [p for p in missing_worker if p not in measured_forwarded()]
     base = load_baseline()
 
-    current = {"missing_routes_json": set(missing_routes_json),
+    # ★ SPLIT, NOT FORGIVEN. Every path here is still one the worker is never
+    # invoked for; _redirects only says whether something answers it anyway.
+    # Scoped to this set deliberately — see the docstring's "SCOPED TO THE
+    # UNCOVERED SET ON PURPOSE": for a worker-routed path the rule never fires,
+    # so asking would invent shadows that production does not have.
+    redirects = tables.get("redirects", [])
+    shadow_rule: dict[str, list] = {}
+    plain, shadowed = [], []
+    for r in missing_routes_json:
+        hit = redirect_match(redirects, _probe(r))
+        if hit:
+            shadow_rule[r] = hit
+            shadowed.append(r)
+        else:
+            plain.append(r)
+
+    # ★ THE FATAL SET IS THE UNION OF THE TWO HALVES, NOT THE PLAIN HALF.
+    # Acquiring a _redirects rule must not pay off a debt and losing one must
+    # not create one: what blocks is still, exactly as before this split
+    # existed, "a Flask HTML route the worker is newly never invoked for".
+    # Reading `added` per-half instead would let a route dodge the ratchet by
+    # arriving with a redirect already in place — the /spare-capacity shape,
+    # which is precisely the change this gate should still make someone look at.
+    routes_json_debt = base["missing_routes_json"] | base["shadowed_by_redirects"]
+    added_uncovered = sorted(set(missing_routes_json) - routes_json_debt)
+
+    # A path that only moved between the two halves is neither new debt nor a
+    # payment — it is a 404 ↔ 301 change of behaviour, reported on its own below.
+    migrated_to_shadow = sorted(base["missing_routes_json"] & set(shadowed))
+    migrated_to_plain = sorted(base["shadowed_by_redirects"] & set(plain))
+    migrated = set(migrated_to_shadow) | set(migrated_to_plain)
+
+    current = {"missing_routes_json": set(plain),
+               "shadowed_by_redirects": set(shadowed),
                "missing_worker": set(missing_worker)}
     added = {k: sorted(current[k] - base[k]) for k in current}
     fixed = {k: sorted(base[k] - current[k]) for k in current}
+    for k in ("missing_routes_json", "shadowed_by_redirects"):
+        added[k] = [r for r in added[k] if r not in migrated]
+        fixed[k] = [r for r in fixed[k] if r not in migrated]
+
     # Counted in PATHS, not in table-rows: one new route missing from both
     # tables is ONE new mis-registration, not two. Mixing the units made the
     # failure message say "2 NEW ... 129 pre-existing" for a single probe path.
     # ★ ONLY the _routes.json half can FAIL the build — see the module docstring's
     # "WHY THE WORKER HALF DOES NOT BLOCK". The worker half is reported, never fatal.
-    n_added = len(set(added["missing_routes_json"]))
+    n_added = len(added_uncovered)
     n_known = len(set(missing_routes_json) | set(missing_worker))
 
     LABEL = {
         "missing_routes_json":
-            "missing from dchub-frontend/_routes.json `include` — the worker is "
-            "NEVER INVOKED for these (404, or a same-named static file answers "
-            "with NO x-dc-worker-version header)",
+            "missing from dchub-frontend/_routes.json `include` AND unanswered by "
+            "_redirects — the worker is NEVER INVOKED and nothing else replies "
+            "(404, or a same-named static file answers with NO "
+            "x-dc-worker-version header)",
+        "shadowed_by_redirects":
+            "missing from dchub-frontend/_routes.json `include` but ANSWERED BY A "
+            "_redirects RULE — REACHABLE, and the Flask handler NEVER RUNS. Two "
+            "very different things look identical from here: a deliberate "
+            "redirect stub whose handler is meant to be dead, and a real page a "
+            "rule has silently SHADOWED. Read the rule and decide PER PATH",
         "missing_worker":
             "missing from dchub-frontend/_worker.js PHASE_282 tables — the worker "
             "runs and declines to forward (403)",
     }
-    for key in ("missing_routes_json", "missing_worker"):
+    for key in ("missing_routes_json", "shadowed_by_redirects", "missing_worker"):
         rows = sorted(current[key])
         if not rows:
             continue
         print(f"::warning::{len(rows)} Flask HTML route(s) {LABEL[key]}:")
         for r in rows[:30]:
-            print(f"  - {r}{'   ★NEW' if r in added[key] else ''}")
+            rule = shadow_rule.get(r)
+            via = f"   via _redirects `{rule[0]} {rule[1]} {rule[2]}`" if rule else ""
+            print(f"  - {r}{via}{'   ★NEW' if r in added_uncovered else ''}")
         if len(rows) > 30:
             print(f"  …and {len(rows)-30} more")
 
-    for key in ("missing_routes_json", "missing_worker"):
+    # ★ A MIGRATION IS A BEHAVIOUR CHANGE, NOT A PAYMENT AND NOT NEW DEBT.
+    # Loud, and deliberately non-fatal: both directions are normally caused by a
+    # dchub-frontend commit, and failing on a cross-repo move is the constant-red
+    # non-signal this ratchet exists to end (same reasoning as the rot notice).
+    if migrated_to_plain:
+        print(f"::warning::{len(migrated_to_plain)} baselined route(s) were ANSWERED BY "
+              f"_redirects and no longer are — the rule that covered them is gone, so "
+              f"they now 404. This is a REGRESSION, not drift. Restore the rule in "
+              f"dchub-frontend/_redirects, or move the line to `missing_routes_json` in "
+              f"{BASELINE.relative_to(ROOT)} if the 404 is intended:")
+        for r in migrated_to_plain:
+            print(f"  - {r}")
+    if migrated_to_shadow:
+        print(f"::notice::{len(migrated_to_shadow)} baselined route(s) that used to 404 are "
+              f"now answered by a _redirects rule. Move the line from `missing_routes_json` "
+              f"to `shadowed_by_redirects` in {BASELINE.relative_to(ROOT)}:")
+        for r in migrated_to_shadow:
+            rule = shadow_rule[r]
+            print(f"  - {r}   via `{rule[0]} {rule[1]} {rule[2]}`")
+
+    for key in ("missing_routes_json", "shadowed_by_redirects", "missing_worker"):
         if fixed[key]:
             # A baselined path that is now covered is a PAYMENT.  Say so and make
             # someone delete the line, or the register rots into a permanent hole
@@ -702,8 +945,15 @@ def cmd_diff(_args) -> int:
               f"and will fail every open backend PR identically. Check that rev first: if "
               f"its _routes.json changed recently, this is (b) and the PR is innocent. The "
               f"{n_known - n_added} pre-existing uncovered route(s) are baselined and ignored.")
-        for r in added["missing_routes_json"]:
-            print(f"  ★NEW UNCOVERED [missing_routes_json]: {r}")
+        for r in added_uncovered:
+            rule = shadow_rule.get(r)
+            if rule:
+                print(f"  ★NEW UNCOVERED [shadowed_by_redirects]: {r}")
+                print(f"      _redirects answers it: `{rule[0]} {rule[1]} {rule[2]}` — the "
+                      f"path is REACHABLE but the Flask handler NEVER RUNS. Intended stub, "
+                      f"or a rule that just shadowed a real page? Decide before baselining.")
+            else:
+                print(f"  ★NEW UNCOVERED [missing_routes_json]: {r}")
         print("")
         print("  Fix A: add the path to dchub-frontend/_routes.json 'include' — but MIND "
               "THE CAP. It is 98 rules counting include AND exclude TOGETHER (not 100, "
@@ -715,9 +965,11 @@ def cmd_diff(_args) -> int:
               "rule that has stopped earning its place, beats spending one.")
         print("  Fix B: if the path only needs to REDIRECT, put it in dchub-frontend/"
               "_redirects instead. That is a separate table with far more room "
-              "(124/2000 static on 2026-09-16) and it costs nothing against the 98. "
-              "★ But this checker does NOT read _redirects, so a path handled there "
-              "still reports here — baseline it with that as the reason.")
+              "(124/2000 static on 2026-09-16, MEASURE it) and it costs nothing against "
+              "the 98. This checker DOES read _redirects now: the path then reports "
+              "under `shadowed_by_redirects` rather than as a 404, and is still NEW — "
+              "baseline it in THAT list, which records what actually happens (a "
+              "reachable path with a dead Flask handler) instead of calling it uncovered.")
         print(f"  Or, if the route genuinely should not be edge-routed, add it to "
               f"{BASELINE.relative_to(ROOT)} WITH A REASON.")
         return 1
@@ -731,6 +983,15 @@ def cmd_diff(_args) -> int:
               f"the CF tables, ALL BASELINED pre-existing drift, none NEW. "
               f"See {BASELINE.relative_to(ROOT)}.")
 
+    if shadowed:
+        # ★ PRINTED ON A GREEN RUN, ON PURPOSE. These paths ARE reachable, so
+        # nothing here is failing — but their Flask handlers are dead code, and a
+        # count that only appears on red would let that quietly become normal.
+        print(f"::notice::{len(shadowed)} of those are ANSWERED BY _redirects, not by "
+              f"Flask — reachable paths whose handler never runs. Not a failure; "
+              f"listed above so a shadowed real page cannot hide among the stubs.")
+    # ★ "covered by both tables" is GREPPED by check-route-tables.yml's ledger.
+    # Do not reword it; add lines around it instead.
     print(f"OK — {len(flask)} Flask HTML routes covered by both tables or baselined "
           f"({n_known} known, 0 new).")
     return 0
