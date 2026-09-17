@@ -263,7 +263,18 @@ def _gather() -> tuple:
                     """SELECT lower(trim(email)) AS email,
                               lower(tier)        AS tier,
                               MIN(created_at)    AS bound_at,
-                              COUNT(*)           AS keys_held
+                              COUNT(*)           AS keys_held,
+                              -- r-consent (2026-09-17): CONSENT IS NOT A
+                              -- DERIVED FIELD. mcp_dev_keys.metadata->>
+                              -- 'marketing_opt_in' is set ONLY by the
+                              -- tokenized double-opt-in confirm click
+                              -- (main.py:39722); the bind path defaults it
+                              -- false and the paywall CTA explicitly never
+                              -- sets it. TRUE here for ANY of the address's
+                              -- keys, because consent attaches to the person.
+                              bool_or(metadata->>'marketing_opt_in' = 'true')
+                                AS marketing_opt_in,
+                              MAX(metadata->>'name')  AS name
                          FROM mcp_dev_keys
                         WHERE status = 'active'
                           AND email IS NOT NULL AND email <> ''
@@ -324,7 +335,7 @@ def _gather() -> tuple:
     import datetime as _dt
     now = _dt.datetime.now(_dt.timezone.utc)
     seen = set()
-    for email, tier, bound_at, keys_held in raw:
+    for email, tier, bound_at, keys_held, opt_in, name in raw:
         if not email or email in seen:
             continue
         seen.add(email)
@@ -353,6 +364,8 @@ def _gather() -> tuple:
             "wall_hits": wall_hits,
             "already_paid": email in paid_emails,
             "suppressed": email in suppressed,
+            "marketing_opt_in": bool(opt_in),
+            "name": (name or "").strip(),
         })
     meta = {"excluded_by_tier": excluded_tiers}
     if errors:
@@ -361,9 +374,28 @@ def _gather() -> tuple:
 
 
 def _mailable(r: dict) -> bool:
-    """The only predicate an outreach plan may size itself on."""
+    """REACHABLE: a real, non-customer, non-suppressed address we hold.
+
+    This is NOT permission to email. See _sendable — the two are deliberately
+    separate numbers, because conflating "we have an address" with "we may use
+    it" is how a warm-list plan becomes a compliance incident.
+    """
     return (bool(r["email"]) and r["domain_kind"] != "ours"
             and not r["already_paid"] and not r["suppressed"])
+
+
+def _sendable(r: dict) -> bool:
+    """★ MAY BE EMAILED. Mailable AND explicit marketing consent.
+
+    Transactional bind is NOT marketing opt-in. The consent flag is written
+    only by the tokenized double-opt-in confirm click; the bind endpoint
+    defaults it false and the paywall opt-in CTA explicitly never sets it. The
+    outreach engine's own segment hard-gates on the same flag, and
+    mcp_gatekeeper records that ~0 addresses carry it — so a sendable count of
+    0 beside a mailable count of many is the CORRECT reading, and it names the
+    real blocker: consent, not the size of the list.
+    """
+    return _mailable(r) and bool(r.get("marketing_opt_in"))
 
 
 def summarize(rows: list) -> dict:
@@ -396,6 +428,12 @@ def summarize(rows: list) -> dict:
                                 and r["domain_kind"] != "ours"
                                 and not r["already_paid"]),
         "mailable": n(_mailable),
+        # ★ THE NUMBER AN OUTREACH SEND MAY SIZE ITSELF ON. `mailable` is
+        # reachability; this is permission. They are different, and the gap
+        # between them is the consent gap, not a data gap.
+        "sendable_with_consent": n(_sendable),
+        "mailable_without_consent": n(lambda r: _mailable(r)
+                                      and not r.get("marketing_opt_in")),
         "mailable_corporate": n(lambda r: _mailable(r)
                                 and r["domain_kind"] == "corporate"),
         "mailable_engaged_after_bind": n(lambda r: _mailable(r)
@@ -427,6 +465,13 @@ def summarize(rows: list) -> dict:
             "cohort_total with `mailable` and nothing is double-counted. "
             "engaged_after_bind = >=1 mcp_call_log row on that key later than "
             "the key's created_at (that table's time column is `timestamp`). "
+            "★ `mailable` is REACHABILITY, never permission: "
+            "`sendable_with_consent` is the subset carrying an explicit "
+            "mcp_dev_keys.metadata->>'marketing_opt_in' = 'true', which is "
+            "written ONLY by the tokenized double-opt-in confirm click. The "
+            "bind endpoint defaults it false and the paywall opt-in CTA never "
+            "sets it, so a sendable count of 0 beside a large mailable count "
+            "is the correct reading and names consent as the blocker. "
             "top_tool_wall is the most frequent mcp_upgrade_signals."
             "tool_requested for the address, joined on user_email, which only "
             "exists where a bind wrote it back — a blank means unknown, never "
@@ -434,9 +479,9 @@ def summarize(rows: list) -> dict:
     }
 
 
-_CSV_FIELDS = ["email", "tier", "domain", "domain_kind", "days_since_bind",
-               "age_bucket", "calls_after_bind", "last_call", "top_tool_wall",
-               "wall_hits", "keys_held"]
+_CSV_FIELDS = ["email", "name", "tier", "domain", "domain_kind",
+               "days_since_bind", "age_bucket", "calls_after_bind", "last_call",
+               "top_tool_wall", "wall_hits", "keys_held", "marketing_opt_in"]
 
 
 @warm_key_cohort_bp.route("/api/v1/admin/audience/warm-keys", methods=["GET"])
@@ -455,11 +500,20 @@ def warm_keys_json():
                                "field it feeds is 0 for UNKNOWN reasons, not "
                                "because the rows are absent")
     want = (request.args.get("rows") or "").strip().lower()
-    mailable = [r for r in rows if _mailable(r)]
-    out["rows"] = mailable if want == "all" else mailable[:25]
+    consent_any = (request.args.get("consent") or "").strip().lower() == "any"
+    keep = _mailable if consent_any else _sendable
+    picked = [r for r in rows if keep(r)]
+    out["rows_consent_gated"] = not consent_any
+    out["rows"] = picked if want == "all" else picked[:25]
     out["rows_returned"] = len(out["rows"])
-    out["rows_note"] = ("mailable rows only, newest bind first. Pass rows=all "
-                        "for every row, or use the .csv route.")
+    out["rows_note"] = (
+        ("rows carrying explicit marketing consent only (the set that may be "
+         "emailed), newest bind first. Pass consent=any for the REACHABLE set "
+         "instead — that is for analysis, not for sending."
+         if not consent_any else
+         "REACHABLE rows, consent NOT required — analysis only. Every row "
+         "carries its marketing_opt_in flag; do not send to a false one.")
+        + " Pass rows=all for every row, or use the .csv route.")
     return jsonify(out), 200
 
 
@@ -473,8 +527,14 @@ def warm_keys_csv():
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=_CSV_FIELDS, extrasaction="ignore")
     w.writeheader()
+    # ★ CONSENT-GATED BY DEFAULT. This file is the thing someone pastes into a
+    # sending tool, so the default must be the set that may lawfully receive
+    # mail. `?consent=any` returns the reachable set for analysis and labels
+    # every row with its flag — it is not a send list.
+    consent_any = (request.args.get("consent") or "").strip().lower() == "any"
+    keep = _mailable if consent_any else _sendable
     for r in rows:
-        if _mailable(r):
+        if keep(r):
             w.writerow(r)
     return Response(
         buf.getvalue(), mimetype="text/csv",
