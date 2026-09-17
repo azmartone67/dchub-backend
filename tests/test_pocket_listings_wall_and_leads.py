@@ -416,6 +416,68 @@ def test_the_terms_are_not_recorded_without_identity_consent_and_the_current_ver
     assert env.rows == [] and env.sent == []
 
 
+def test_every_route_that_states_the_terms_says_where_the_full_text_is(env):
+    """An agent told to show its human the introduction terms has only the
+    block it was handed: a version, a web link and a summary cannot be read out
+    AS the terms. So the block names the route that serves them, and it is
+    asserted PER EMITTING ROUTE rather than on _terms_block() alone — a future
+    caller that hand-builds a terms block, bypassing the helper, fails here.
+    The pointer is FETCHED, not merely compared: a path that serves nothing is
+    no better than no path at all."""
+    no_accept = {**INTRO, "accept_terms": False}
+    interest = {**INTRO, "requirement": {"markets": ["Dallas"], "capacity_mw": 20}}
+    # Ordered: everything that needs the terms UNACCEPTED runs before the
+    # acceptance at the end.
+    emitters = [
+        ("GET /api/v1/listings (program)",
+         env.client.get("/api/v1/listings"), ("program", "terms")),
+        ("GET /api/v1/listings/<slug> (wall)",
+         env.client.get("/api/v1/listings/dfw-40", headers=_bearer()),
+         ("access", "unlock", "terms")),
+        ("POST /api/v1/listings/<slug>/intro (refusal)",
+         env.client.post("/api/v1/listings/dfw-40/intro", json=no_accept,
+                         headers=_bearer()), ("terms",)),
+        ("POST /api/v1/listings/interest (refusal)",
+         env.client.post("/api/v1/listings/interest", json={**interest, "accept_terms": False},
+                         headers=_bearer()), ("terms",)),
+        ("POST /api/v1/listings/terms/accept (refusal)",
+         env.client.post("/api/v1/listings/terms/accept", json={"accept_terms": False},
+                         headers=_bearer()), ("terms",)),
+        ("POST /api/v1/listings/terms/accept (version mismatch)",
+         env.client.post("/api/v1/listings/terms/accept",
+                         json={"accept_terms": True, "terms_version": "1999-01-01"},
+                         headers=_bearer()), ("terms",)),
+        ("POST /api/v1/listings/terms/accept (accepted)",
+         _accept_terms(env, _bearer()), ("terms",)),
+    ]
+    for label, r, path in emitters:
+        block = r.get_json()
+        for key in path:
+            assert isinstance(block, dict) and key in block, f"{label}: no {'.'.join(path)}"
+            block = block[key]
+        assert block["version"] == el.TERMS_VERSION, label      # this IS a terms block
+        assert block["full_text"] == {"method": "GET", "path": "/api/v1/listings/terms"}, label
+        served = env.client.get(block["full_text"]["path"])
+        assert served.status_code == 200, label
+        assert served.get_json()["terms"]["text"] == el.TERMS_TEXT, label
+
+
+def test_the_wall_points_at_the_terms_text_instead_of_copying_it(env):
+    """A pointer, not a copy. The text moves with TERMS_VERSION, so a second
+    copy in the wall payload would drift from the one the endpoint serves."""
+    anchor = "1. What DC Hub does."                  # only the full text says this
+    assert anchor in el.TERMS_TEXT and anchor not in el.TERMS_SUMMARY
+    wall = env.client.get("/api/v1/listings/dfw-40", headers=_bearer())
+    body = wall.get_data(as_text=True)
+    assert wall.get_json()["access"]["reason"] == "terms_acceptance_required"
+    assert el.TERMS_SUMMARY in body                  # the summary IS served...
+    assert anchor not in body and el.TERMS_TEXT not in body      # ...the text is not
+    # Control: the anchor exists, and the route the wall points at is where it
+    # lives — so the absence above is the wall's, not the anchor's.
+    served = env.client.get(wall.get_json()["access"]["unlock"]["terms"]["full_text"]["path"])
+    assert anchor in served.get_data(as_text=True)
+
+
 def test_the_feed_shows_a_signed_in_user_that_the_terms_keep_a_listing_locked(env):
     item = env.client.get("/api/v1/listings", headers=_bearer()).get_json()["items"][0]
     assert item["locked"] is True and item["lock_reason"] == "terms_acceptance_required"
