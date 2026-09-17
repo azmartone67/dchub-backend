@@ -279,7 +279,7 @@ _UPSERT_SQL = """
 INSERT INTO detector_scout_repos
     (full_name, html_url, description, stars, language, licence,
      pushed_at, status, reject_reason, query_slug, first_seen_at, last_seen_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW())
 ON CONFLICT (full_name) DO UPDATE SET
     html_url      = EXCLUDED.html_url,
     description   = EXCLUDED.description,

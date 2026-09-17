@@ -2401,7 +2401,7 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
                 cur.execute("""
                     INSERT INTO social_media_posts
                         (platform, content, status, press_release_id, created_at)
-                    VALUES (%s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (press_release_id, platform) DO NOTHING
                 """, ("linkedin", li_text, "approved", press_id))
 
@@ -2415,7 +2415,7 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
                 cur.execute("""
                     INSERT INTO social_media_posts
                         (platform, content, status, press_release_id, created_at)
-                    VALUES (%s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (press_release_id, platform) DO NOTHING
                 """, ("twitter", tw_text, "approved", press_id))
 
@@ -2439,7 +2439,7 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
                 cur.execute("""
                     INSERT INTO social_media_posts
                         (platform, content, status, press_release_id, created_at)
-                    VALUES (%s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (press_release_id, platform) DO NOTHING
                 """, ("bluesky", bsky_text, "approved", press_id))
         c.commit()
@@ -4337,7 +4337,7 @@ def track_event():
             cur.execute("""
                 INSERT INTO press_engagement
                     (slug, event_type, referrer, user_agent, ip_hash, t)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT DO NOTHING;
             """, (slug[:200], event_type,
                   (request.headers.get("Referer") or "")[:500],
