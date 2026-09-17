@@ -374,7 +374,7 @@ def _persist(report: dict):
             _ensure_table(conn)
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO brain_master_ticks (dry_run, tiers, report) VALUES (%s,%s,%s)",
+                    "INSERT INTO brain_master_ticks (dry_run, tiers, report) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                     (bool(report.get("dry_run")), ",".join(report.get("tiers_run", [])),
                      json.dumps(report)))
             conn.commit()
