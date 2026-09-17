@@ -343,6 +343,7 @@ DASHBOARD_HTML = """
 """
 
 # Routes
+# AUTO-REPAIR: duplicate route '/' also in diag_app.py:45 — review and remove one
 @ai_agent.route('/')
 def dashboard():
     report = agent_cache["reports"][-1]["report"] if agent_cache["reports"] else "No reports yet. Click 'Generate Report'."
