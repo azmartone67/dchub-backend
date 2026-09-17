@@ -662,6 +662,19 @@ def handoff_funnel():
         captured = one("select count(distinct lower(email)) from mcp_dev_keys "
                        "where email is not null and email <> '' "
                        "and created_at > now() - interval '%s'" % iv)
+        # ── r-identify-rung (2026-09-17) ────────────────────────────────────
+        # What the HUMAN path captured, and how much of it the rung can count.
+        # `identified` reads mcp_high_intent_sessions.claim_email, so a capture
+        # from a session that never entered that table is a real lead the stage
+        # structurally cannot show. Publishing only the rung would report those
+        # leads as zero. Fail-soft: the table is created on first capture, so
+        # before the first one this reads None and nothing claims a count.
+        try:
+            from routes.relay_identify import (
+                CAPTURES_BASIS as _IDCAP_BASIS, captures_count_sql as _idcap_sql)
+            identify_captures = row(_idcap_sql(iv))
+        except Exception:
+            identify_captures, _IDCAP_BASIS = None, ""
         # ── paid_attributed DEFINITION v2 (r-paid-join, 2026-09-14) ─────────
         # v1 summed two session-bound tables, and neither holds a session for a
         # purchase made through a durable-key ref (pk- pack, k- subscription),
@@ -945,6 +958,9 @@ def handoff_funnel():
             "paid_attributed_including_self_traffic": paid_incl_self,
             "relayed_checkout_payments": paid_relayed_payments,
             "relayed_checkout_payments_basis": _PAID_RELAYED_PAYMENTS_BASIS,
+            # ── identified: what was captured vs what the rung can count ────
+            "identify_captures": identify_captures,
+            "identify_captures_basis": _IDCAP_BASIS,
             # ★ What the source table actually contains. Buckets are mutually
             # exclusive and sum to `total`; see the r-relay-provenance block.
             "relay_open_provenance": {

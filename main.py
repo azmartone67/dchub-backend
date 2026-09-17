@@ -16130,6 +16130,27 @@ def stripe_webhook():
             except Exception as _rcpe:
                 print(f"⚠️ checkout-ref record error (non-fatal): {_rcpe}")
 
+            # r-identify-rung (2026-09-17): the buyer's email, bound to the MCP
+            # session that bought. `identified` has read 0 in every window the
+            # stage has existed — nothing on the human's path ever wrote
+            # mcp_high_intent_sessions.claim_email — so a real purchase could
+            # reach `paid_attributed` past an `identified` of zero, and the
+            # funnel would publish a paid customer we could not name or reach.
+            # The session is resolved by the SAME join paid_attributed uses
+            # (routes/handoff_definition._relayed_click_session_for), so the
+            # two stages cannot attribute one payment to two sessions.
+            # Fail-soft: never breaks provisioning above.
+            try:
+                from routes.relay_identify import capture_from_checkout as _cfc
+                _cfc_out = _cfc(data)
+                if _cfc_out.get("ok"):
+                    print(f"📧 Buyer identified to MCP session "
+                          f"(rung={_cfc_out.get('stamped_high_intent')})")
+                elif _cfc_out.get("skipped") not in (None, "not_paid"):
+                    print(f"📧 Buyer not identified: {_cfc_out.get('skipped')}")
+            except Exception as _cfce:
+                print(f"⚠️ relay-identify capture error (non-fatal): {_cfce}")
+
             # r62-conv (2026-06-01): self-serve auto-key for the usage-based
             # (metered) payment link (prod_UccyUrO1iq7LrN). Issues + emails a
             # key sized to the purchased quantity. Fail-soft — never breaks the
