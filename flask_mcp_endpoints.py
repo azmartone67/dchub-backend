@@ -73,6 +73,13 @@ from routes.handoff_definition import (  # r-third-artifact (2026-09-10)
     human_acted_v7_links_sql as _human_acted_v7_links_sql,
     relayed_checkout_provenance_sql as _relayed_checkout_provenance_sql,
 )
+from routes.handoff_definition import (  # r-identified-union (2026-09-17)
+    IDENTIFIED_BASIS as _IDENTIFIED_BASIS,
+    identified_capture_lane_sql as _identified_capture_lane_sql,
+    identified_count_sql as _identified_count_sql,
+    identified_definition as _identified_definition,
+    identified_v1_sql as _identified_v1_sql,
+)
 from routes.handoff_definition import (  # r-paid-join (2026-09-14)
     RELAYED_CHECKOUT_PAYMENTS_BASIS as _PAID_RELAYED_PAYMENTS_BASIS,
     paid_attributed_count_sql as _paid_attributed_count_sql,
@@ -403,6 +410,21 @@ def _ensure_checkout_click_schema():
 # inside one(); ensure_schema() is asked first (it stops asking once the table
 # exists), and when the union still cannot run the stage falls back to its v1
 # figure and says so, rather than publishing null.
+def _identify_capture_table_present() -> bool:
+    """True when relay_identify_captures exists. Asks the CATALOG and runs no
+    DDL: this is a read endpoint, and the table is created by the capture path
+    on its first write. Absent => the identified union cannot run and the stage
+    honestly falls back to v1, which is the whole population before the capture
+    writer existed."""
+    try:
+        with _pool.connection() as c, c.cursor() as cur:
+            cur.execute("SELECT to_regclass('relay_identify_captures') IS NOT NULL")
+            r = cur.fetchone()
+            return bool(r and r[0])
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _ensure_checkout_payment_schema() -> bool:
     try:
         from routes.checkout_payment_refs import ensure_schema
@@ -650,9 +672,24 @@ def handoff_funnel():
                         "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         opened_legacy = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                             "where claim_page_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
-        emailed = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
-                      "where claim_email is not null and claim_email <> '' "
-                      "and first_hit_at > now() - interval '%s'" % iv)
+        # ── `identified` DEFINITION v2 (r-identified-union, 2026-09-17) ─────
+        # v1 read mcp_high_intent_sessions.claim_email alone, so the funnel
+        # published paid_attributed 1 against identified 0 — a paying customer
+        # whose email we hold. A relay token is minted statelessly, so a
+        # capture can carry a valid session with no row in that table.
+        # routes/handoff_definition is the one writer of this definition; it is
+        # CALLED here, never restated. If the capture table does not exist yet
+        # the stage falls back to v1 and identified_definition_applied says so.
+        emailed_v1 = one(_identified_v1_sql(iv))
+        emailed_v2 = (one(_identified_count_sql(iv))
+                      if _identify_capture_table_present() else None)
+        if emailed_v2 is not None:
+            emailed_incl_self = one(_identified_count_sql(
+                iv, include_self_traffic=True))
+            emailed_captures = one(_identified_capture_lane_sql(iv))
+        else:
+            emailed_incl_self = emailed_captures = None
+        emailed = emailed_v2 if emailed_v2 is not None else emailed_v1
         # r-funnel-honest2 (2026-06-26): the per-session 'identified' (emailed) only
         # counts emails bound INSIDE a high-intent session — but most identity capture
         # happens on the key tables (claim_free_key, direct bind_email) with NO session
@@ -961,6 +998,12 @@ def handoff_funnel():
             # ── identified: what was captured vs what the rung can count ────
             "identify_captures": identify_captures,
             "identify_captures_basis": _IDCAP_BASIS,
+            # ── identified v2 (r-identified-union) — both writers ───────────
+            "identified_definition_applied": 2 if emailed_v2 is not None else 1,
+            "identified_v1_high_intent_rows": emailed_v1,
+            "identified_from_relay_captures": emailed_captures,
+            "identified_including_self_traffic": emailed_incl_self,
+            "identified_basis": _IDENTIFIED_BASIS,
             # ★ What the source table actually contains. Buckets are mutually
             # exclusive and sum to `total`; see the r-relay-provenance block.
             "relay_open_provenance": {
@@ -1093,6 +1136,7 @@ def handoff_funnel():
             # what makes the number readable without a code dive; publishing a
             # basis that restates config is what makes it readable and WRONG.
             "definitions": {"human_acted": _human_acted_definition(),
+                            "identified": _identified_definition(),
                             "paid_attributed": _paid_attributed_definition(),
                             "redeemed": _redeem_stage_basis(),
                             "paywall_hit": {

@@ -802,6 +802,134 @@ def relayed_checkout_provenance_sql(interval_sql: str) -> str:
 #   relayed_checkout_payments as a ceiling and not counted.
 # ★ The exclusion binds ONCE, on the union's identity, so the v1 lanes get it
 #   too (they carried none).
+# ── `identified` DEFINITION v2 (r-identified-union, 2026-09-17) ─────────────
+#
+# THE DEFECT, measured the day this shipped. The funnel published
+#     paid_attributed 1  and  identified 0
+# — a paying customer the funnel said we had never identified, whose email we
+# hold (it is on the Stripe Checkout Session). That ordering is not possible for
+# a real funnel, and the reason is that the two rungs count DIFFERENT
+# POPULATIONS:
+#
+#   paid_attributed (v2)  DISTINCT session over a UNION of lanes, including one
+#                         that reaches sessions the session-bound tables never
+#                         held. It found the sale.
+#   identified (v1)       mcp_high_intent_sessions.claim_email only.
+#
+# routes/relay_identify captured the buyer's email and reported
+# `identify_captures {captured: 2, reached_the_rung: 0}`: the write succeeded
+# and the UPDATE matched zero rows, because A RELAY TOKEN IS MINTED
+# STATELESSLY — holding one never implied the session has a high-intent row.
+# `attributable_to_a_session: 1` proves the session id itself resolved fine.
+#
+# ★ WHY NOT JUST INSERT THE MISSING ROW. Because mcp_high_intent_sessions is
+# the DENOMINATOR of the three rungs above this one. Creating a row to make
+# `identified` move would inflate paywall_hit, high_intent and relay_minted
+# by the same act — buying a green number by corrupting the stages that give
+# it meaning. The capture deliberately never INSERTs there.
+#
+# ★ THE FIX IS THE ONE PAID_ATTRIBUTED ALREADY MADE, ONE RUNG UP. v2 counts
+# DISTINCT sessions holding a bound email over the UNION of both writers. No
+# row is fabricated; a session already counted stays counted once.
+#
+# ★ `identify_captures.reached_the_rung` STAYS a separate diagnostic and will
+# keep reading 0 for a capture whose session has no high-intent row. That is
+# the mechanism being reported, not a failure — do not "fix" it to match
+# identified.
+IDENTIFIED_DEFINITION_VERSION = 2
+IDENTIFIED_DEFINITION_CHANGELOG = {
+    1: ("COUNT(DISTINCT mcp_session_id) FROM mcp_high_intent_sessions WHERE "
+        "claim_email is set and first_hit_at is in the window. Its only writers "
+        "were the /claim page form and bind_email's side-write, so no email "
+        "captured anywhere else on the human path could reach the stage — and "
+        "a session with no row in that table could never reach it at all."),
+    2: ("2026-09-17. COUNT(DISTINCT session) over the UNION of that column and "
+        "relay_identify_captures.mcp_session_id — the relay page's email form "
+        "and the paid checkout's Stripe email, both written by "
+        "routes/relay_identify. A session in both lanes counts once. The "
+        "operator self-traffic exclusion applies to the union, exactly as it "
+        "does for paid_attributed; identified_v1_high_intent_rows publishes "
+        "the previous figure beside it. WHY: the funnel read paid_attributed 1 "
+        "against identified 0 — a paying customer it claimed never to have "
+        "identified — because a relay token is minted statelessly and the v1 "
+        "column can only be stamped on a session that already had a row."),
+}
+
+
+def _identified_lanes(interval_sql: str) -> list:
+    """The two writers of a bound email, as union lanes.
+
+    Windowed on each table's OWN time column: the high-intent lane on
+    first_hit_at (the session's arrival, which is what every rung above it
+    uses) and the capture lane on captured_at (when the email was given). Using
+    one table's clock for the other would drop captures from sessions that
+    arrived before the window.
+    """
+    return [
+        ("select hs.mcp_session_id as sid from mcp_high_intent_sessions hs"
+         " where hs.claim_email is not null and hs.claim_email <> ''"
+         " and hs.first_hit_at > now() - interval '" + interval_sql + "'"),
+        ("select ric.mcp_session_id as sid from relay_identify_captures ric"
+         " where ric.email is not null and ric.email <> ''"
+         " and ric.captured_at > now() - interval '" + interval_sql + "'"),
+    ]
+
+
+def identified_count_sql(interval_sql: str, *,
+                         include_self_traffic: bool = False) -> str:
+    """Canonical `identified` over `interval_sql`: both writers, DISTINCT
+    sessions, operator exclusion once. `include_self_traffic=True` drops the
+    exclusion, so the difference is exactly what it removed."""
+    sql = ("select count(distinct u.sid) from ("
+           + " union ".join(_identified_lanes(interval_sql))
+           + ") u where coalesce(u.sid,'') <> ''")
+    if not include_self_traffic:
+        sql += " and " + _external_session_predicate("u.sid")
+    return sql
+
+
+def identified_v1_sql(interval_sql: str) -> str:
+    """The v1 figure as it was published, kept beside the headline."""
+    return ("select count(distinct mcp_session_id) from mcp_high_intent_sessions"
+            " where claim_email is not null and claim_email <> ''"
+            " and first_hit_at > now() - interval '" + interval_sql + "'")
+
+
+def identified_capture_lane_sql(interval_sql: str, *,
+                                include_self_traffic: bool = False) -> str:
+    """The capture lane ALONE, published beside the headline so the reader can
+    see which writer moved the stage."""
+    sql = ("select count(distinct u.sid) from ("
+           + _identified_lanes(interval_sql)[1]
+           + ") u where coalesce(u.sid,'') <> ''")
+    if not include_self_traffic:
+        sql += " and " + _external_session_predicate("u.sid")
+    return sql
+
+
+IDENTIFIED_BASIS = (
+    "COUNT(DISTINCT session) over the UNION of the two writers of a bound "
+    "email: mcp_high_intent_sessions.claim_email (the /claim form and "
+    "bind_email's side-write, windowed on first_hit_at) and "
+    "relay_identify_captures.mcp_session_id (the relay page's email form and "
+    "the paid checkout's Stripe email, windowed on captured_at). A session in "
+    "both lanes counts once. The operator self-traffic exclusion applies to "
+    "the union; identified_including_self_traffic drops it. WHY v2 exists: v1 "
+    "read only the first column, so the funnel published paid_attributed 1 "
+    "against identified 0 — a paying customer whose email we hold. A relay "
+    "token is minted statelessly, so a capture can carry a valid session that "
+    "has no row in mcp_high_intent_sessions; identify_captures.reached_the_rung "
+    "reports exactly that subset and is NOT this number.")
+
+
+def identified_definition() -> dict:
+    return {
+        "basis": IDENTIFIED_BASIS,
+        "definition_version": IDENTIFIED_DEFINITION_VERSION,
+        "changelog": IDENTIFIED_DEFINITION_CHANGELOG,
+    }
+
+
 PAID_ATTRIBUTED_DEFINITION_VERSION = 2
 PAID_RELAYED_CHECKOUT_LOOKBACK = "7 days"
 PAID_ATTRIBUTED_DEFINITION_CHANGELOG = {
