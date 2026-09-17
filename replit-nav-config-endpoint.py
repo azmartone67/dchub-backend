@@ -20,6 +20,7 @@ from ai_surface_canon import canon_text
 def register_nav_config_route(app, db=None):
     """Register the /api/nav-config endpoint on your Flask app."""
 
+# AUTO-REPAIR: duplicate route '/api/nav-config' also in nav_config.py:8 — review and remove one
     @app.route('/api/nav-config', methods=['GET'])
     def get_nav_config():
         """

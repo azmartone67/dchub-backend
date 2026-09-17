@@ -105,7 +105,7 @@ def create():
     _ensure()
     with _conn() as c, c.cursor() as cur:
         cur.execute("""INSERT INTO lab_experiments (name, hypothesis, signal_data)
-            VALUES (%s,%s,%s) RETURNING id""", (name, hyp, json.dumps({})))
+            VALUES (%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id""", (name, hyp, json.dumps({})))
         eid = cur.fetchone()[0]; c.commit()
     return jsonify(id=eid, ok=True), 200
 
