@@ -127,6 +127,7 @@ def list_alerts():
         'email': email
     })
 
+# AUTO-REPAIR: duplicate route '/api/v1/simple-alerts' also in simple_alerts.py:97 — review and remove one
 @simple_alerts_bp.route('/api/v1/simple-alerts', methods=['POST'])
 def create_alert():
     """Create a new alert."""
@@ -187,7 +188,7 @@ def create_alert():
     cursor = db.cursor()
     cursor.execute('''
         INSERT INTO simple_alerts (email, alert_type, name, config, frequency)
-        VALUES (%s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     ''', (email, alert_type, name, json.dumps(config), frequency))
     
     alert_id = cursor.lastrowid
@@ -234,6 +235,7 @@ def get_alert(alert_id):
         'success': True,
         'alert': result
     })
+# AUTO-REPAIR: duplicate route '/api/v1/simple-alerts/<int:alert_id>' also in simple_alerts.py:210 — review and remove one
 
 @simple_alerts_bp.route('/api/v1/simple-alerts/<int:alert_id>', methods=['DELETE'])
 def delete_alert(alert_id):
@@ -266,6 +268,7 @@ def delete_alert(alert_id):
     return jsonify({
         'success': True,
         'message': f'Alert "{alert["name"]}" deleted'
+# AUTO-REPAIR: duplicate route '/api/v1/simple-alerts/<int:alert_id>' also in simple_alerts.py:210 — review and remove one
     })
 
 @simple_alerts_bp.route('/api/v1/simple-alerts/<int:alert_id>', methods=['PUT'])
