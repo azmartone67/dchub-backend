@@ -56,7 +56,7 @@ def _already_alerted(deploy_id):
         with c, c.cursor() as cur:
             cur.execute("CREATE TABLE IF NOT EXISTS render_build_alerts ("
                         "deploy_id TEXT PRIMARY KEY, alerted_at TIMESTAMPTZ DEFAULT NOW())")
-            cur.execute("INSERT INTO render_build_alerts (deploy_id) VALUES (%s) "
+            cur.execute("INSERT INTO render_build_alerts (deploy_id) VALUES (%s) ON CONFLICT DO NOTHING "
                         "ON CONFLICT (deploy_id) DO NOTHING", (deploy_id,))
             return cur.rowcount == 0  # 0 rows inserted => conflict => already alerted
     except Exception:

@@ -53,7 +53,7 @@ def _seed(conn, key, source, expires_sql=None, remaining=1000):
         cols += ", expires_at"
         vals += ", " + expires_sql
     with conn.cursor() as cur:
-        cur.execute(f"INSERT INTO mcp_topups ({cols}) VALUES ({vals}) RETURNING id",
+        cur.execute(f"INSERT INTO mcp_topups ({cols}) VALUES ({vals}) ON CONFLICT DO NOTHING RETURNING id",
                     (f"{source or 'tu'}-{key}", mcp._hash_key(key), remaining, source))
         return cur.fetchone()[0]
 
