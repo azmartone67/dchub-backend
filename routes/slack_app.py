@@ -277,6 +277,7 @@ def slack_command():
 
 
 # ─── Bot events (app_mention, link_shared) ───────────────────────────
+# AUTO-REPAIR: duplicate route '/events' also in routes/industry_events.py:207 — review and remove one
 @slack_app_bp.route("/events", methods=["POST"])
 def slack_events():
     if not _verify_slack_signature(request):
@@ -337,6 +338,7 @@ def slack_oauth_callback():
         mimetype="text/html"
     )
 
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 
 @slack_app_bp.route("/health", methods=["GET"])
 def slack_health():
