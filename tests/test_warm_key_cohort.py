@@ -32,6 +32,24 @@ SRC = (ROOT / "routes" / "warm_key_cohort.py").read_text(encoding="utf-8")
 
 import routes.warm_key_cohort as wk  # noqa: E402
 
+# ★ EXTRACT THE STATEMENT, NEVER A BYTE WINDOW. The first version of these
+# assertions sliced SRC[i:i+1400] from a comment marker; adding two columns
+# and a comment pushed the clause they checked out of the window and four
+# guards failed for a reason that had nothing to do with the SQL. A fixed
+# slice measures LENGTH, not content.
+def _sql_literal(containing: str) -> str:
+    """The triple-quoted SQL literal in warm_key_cohort.py that contains
+    `containing`. Fails loudly rather than returning a partial match."""
+    parts = SRC.split('"""')
+    hits = [p for i, p in enumerate(parts) if i % 2 == 1 and containing in p]
+    assert len(hits) == 1, (
+        f"{containing!r} matched {len(hits)} SQL literals — anchor is ambiguous")
+    return hits[0]
+
+
+COHORT_SQL = _sql_literal("keys_held")
+
+
 
 def row(email, **kw):
     r = {"email": email, "tier": kw.get("tier", "identified"),
@@ -42,12 +60,15 @@ def row(email, **kw):
          "last_call": "", "top_tool_wall": kw.get("tool", ""),
          "wall_hits": kw.get("hits", 0),
          "already_paid": kw.get("paid", False),
-         "suppressed": kw.get("supp", False)}
+         "suppressed": kw.get("supp", False),
+         "marketing_opt_in": kw.get("optin", False),
+         "name": kw.get("name", "")}
     return r
 
 
 COHORT = [
-    row("buyer@acmepower.com", calls=4, tool="analyze_site", hits=9),
+    row("buyer@acmepower.com", calls=4, tool="analyze_site", hits=9,
+        optin=True, name="A Buyer"),
     row("dev@hyperscale.io", calls=0, tool="get_interconnection_queue", hits=3),
     row("someone@gmail.com", calls=2, tool="get_grid_intelligence", hits=1),
     row("cold@utility.co.uk", days=240, calls=0),
@@ -103,9 +124,7 @@ def test_api_key_is_never_returned():
     for r in COHORT:
         assert "api_key" not in r
     # And the cohort SELECT does not even read it into a row.
-    i = SRC.index("THE COHORT")
-    seg = SRC[i:i + 1200]
-    assert "api_key" not in seg.split("GROUP BY")[0], (
+    assert "api_key" not in COHORT_SQL.split("GROUP BY")[0], (
         "the cohort query selects api_key")
 
 
@@ -145,10 +164,8 @@ def test_the_removed_counts_partition_the_cohort():
 def test_the_partition_holds_because_every_cohort_row_has_an_email():
     """The arithmetic above is only total if a row without an address cannot
     exist — enforced in SQL, not in Python, so it is pinned in SQL."""
-    i = SRC.index("THE COHORT")
-    seg = SRC[i:i + 1200]
-    assert "email IS NOT NULL AND email <> ''" in seg
-    assert "position('@' in email) > 1" in seg
+    assert "email IS NOT NULL AND email <> ''" in COHORT_SQL
+    assert "position('@' in email) > 1" in COHORT_SQL
 
 
 def test_engaged_and_vanished_partition_the_mailable_set():
@@ -233,10 +250,8 @@ def test_an_unknown_tier_is_excluded_not_included():
 def test_the_filter_is_an_allowlist_in_sql_too():
     """A Python predicate that fails safe is no help if the SQL still
     enumerates what to exclude."""
-    i = SRC.index("THE COHORT")
-    seg = SRC[i:i + 1400]
-    assert "= ANY(%s)" in seg, "the cohort SQL is still an exclusion list"
-    assert "<> ALL(%s)" not in seg.split("GROUP BY")[0]
+    assert "= ANY(%s)" in COHORT_SQL, "the cohort SQL is still an exclusion list"
+    assert "<> ALL(%s)" not in COHORT_SQL.split("GROUP BY")[0]
     # and the already-paid read is inverted the same way
     j = SRC.index("SELECT DISTINCT lower(trim(email)) FROM mcp_dev_keys")
     assert "<> ALL(%s)" in SRC[j:j + 320], (
@@ -306,3 +321,87 @@ def test_the_csv_carries_only_mailable_rows(monkeypatch):
     for excluded in ("dchub.cloud", "already@customer.com",
                      "bounced@olddomain.com"):
         assert excluded not in body, f"{excluded} reached the outreach CSV"
+
+
+# ── consent is not reachability (r-consent, 2026-09-17) ─────────────────
+def test_sendable_is_a_strict_subset_of_mailable():
+    """★ Having an address is not permission to use it. Grok asked for
+    'marketing_opt_in = true' rows; the answer has to be a different number
+    from `mailable`, or the distinction is decorative."""
+    s = wk.summarize(COHORT)
+    assert s["sendable_with_consent"] <= s["mailable"]
+    assert (s["sendable_with_consent"] + s["mailable_without_consent"]
+            == s["mailable"])
+    # exactly one fixture row carries consent
+    assert s["sendable_with_consent"] == 1
+
+
+def test_consent_alone_does_not_make_a_customer_sendable():
+    """An opted-in address that already pays is still not an upsell target."""
+    r = row("payer@co.com", optin=True, paid=True)
+    assert wk._mailable(r) is False and wk._sendable(r) is False
+
+
+def test_consent_alone_does_not_beat_suppression():
+    r = row("bounced@co.com", optin=True, supp=True)
+    assert wk._sendable(r) is False
+
+
+def test_an_opted_in_row_of_ours_is_still_excluded():
+    r = row("probe@dchub.cloud", optin=True)
+    assert wk._sendable(r) is False
+
+
+def test_the_csv_is_consent_gated_by_default(monkeypatch):
+    """★★ THE FILE SOMEONE PASTES INTO A SENDING TOOL. Its default must be the
+    set that may lawfully receive mail."""
+    import flask
+    monkeypatch.setattr(wk, "_admin_ok", lambda: True)
+    monkeypatch.setattr(wk, "_gather", lambda: (COHORT, {}))
+    app = flask.Flask("warm-test")
+    app.register_blueprint(wk.warm_key_cohort_bp)
+    cl = app.test_client()
+    body = cl.get("/api/v1/admin/audience/warm-keys.csv").get_data(as_text=True)
+    assert "buyer@acmepower.com" in body            # consented
+    assert "someone@gmail.com" not in body          # reachable, NOT consented
+    # the analysis view is opt-in and labels every row
+    any_body = cl.get(
+        "/api/v1/admin/audience/warm-keys.csv?consent=any").get_data(as_text=True)
+    assert "someone@gmail.com" in any_body
+    assert "marketing_opt_in" in any_body.splitlines()[0]
+
+
+def test_the_json_rows_are_consent_gated_by_default_and_say_so(monkeypatch):
+    import flask
+    monkeypatch.setattr(wk, "_admin_ok", lambda: True)
+    monkeypatch.setattr(wk, "_gather", lambda: (COHORT, {}))
+    app = flask.Flask("warm-test")
+    app.register_blueprint(wk.warm_key_cohort_bp)
+    cl = app.test_client()
+    j = cl.get("/api/v1/admin/audience/warm-keys").get_json()
+    assert j["rows_consent_gated"] is True
+    assert all(r["marketing_opt_in"] for r in j["rows"])
+    assert "may be emailed" in j["rows_note"]
+    j2 = cl.get("/api/v1/admin/audience/warm-keys?consent=any").get_json()
+    assert j2["rows_consent_gated"] is False
+    assert "analysis only" in j2["rows_note"]
+    assert "do not send" in j2["rows_note"]
+
+
+def test_consent_is_read_from_the_metadata_flag_not_inferred():
+    """★ It is written ONLY by the double-opt-in confirm click. A derived
+    consent — 'they bound an email, so they agreed' — is the exact error this
+    endpoint must not make."""
+    assert "metadata->>'marketing_opt_in' = 'true'" in COHORT_SQL
+    assert "bool_or(" in COHORT_SQL, (
+        "consent must be true for ANY of the person's keys")
+    fn = next(n for n in ast.walk(ast.parse(SRC))
+              if isinstance(n, ast.FunctionDef) and n.name == "_sendable")
+    body = ast.get_source_segment(SRC, fn) or ""
+    assert '_mailable(r) and bool(r.get("marketing_opt_in"))' in body
+
+
+def test_the_basis_names_consent_as_the_blocker():
+    s = wk.summarize(COHORT)
+    assert "REACHABILITY, never permission" in s["basis"]
+    assert "double-opt-in" in s["basis"]
