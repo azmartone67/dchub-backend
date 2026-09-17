@@ -89,6 +89,66 @@ def _llms_paid_heading() -> str:
         return "## Paid API (Key Required)"
 
 
+def _llms_unlock_ladder() -> str:
+    """The three rungs, in the order a caller can take them.
+
+    ★2026-09-17 (r-ladder-ssot). Measured on the live file the day this
+    shipped: llms.txt named `claim_free_key` three times and carried NO paid
+    rung at all — no $10 pack, no Pro, no mention that a gated result hands
+    back a tokenized link to relay. The only price on the whole 23.7 KB brief
+    was Developer $49/mo, from the heading above. Meanwhile /AGENTS.md,
+    /api/v1/ai-agents.json, /pricing and every gated tool envelope lead with
+    $10 → Pro $99. llms.txt is the surface most likely to be ingested whole by
+    a model, and it was the one telling agents the least true version of the
+    offer.
+
+    ★ EVERY NUMBER IS READ, NEVER TYPED. The pack from
+    routes.mcp_conversion_plays (the constants the webhook grants on), the
+    subscription from tier_registry (what the gate and /pricing read). A
+    surface that restates a price is a surface that drifts from it — which is
+    exactly how the $49 heading above came to be wrong for six months.
+
+    Any unreadable figure drops its rung rather than guessing; if nothing can
+    be read, the block is empty and llms.txt simply says less.
+    """
+    rungs = []
+    try:
+        from routes.mcp_conversion_plays import PACK10_PRICE_CENTS, PACK10_CREDITS
+        if PACK10_PRICE_CENTS and PACK10_CREDITS:
+            rungs.append(
+                "2. **$%d one-time = %s API calls**, no subscription — the "
+                "cheapest way past a gate. A gated result hands you the "
+                "checkout link already bound to your session."
+                % (int(PACK10_PRICE_CENTS) // 100, format(int(PACK10_CREDITS), ",")))
+    except Exception:
+        pass
+    try:
+        import tier_registry as _tr
+        pro, per_day = _tr.price("pro"), _tr.calls_per_day("pro")
+        if pro:
+            rungs.append(
+                "3. **Pro $%d/mo**%s — full depth on every tool, for a caller "
+                "that queries DC Hub regularly."
+                % (int(pro),
+                   (" (%s calls/day)" % format(int(per_day), ",")) if per_day else ""))
+    except Exception:
+        pass
+    if not rungs:
+        return ""
+    free = ("1. **`claim_free_key`** — one tool call, no email, no card. A "
+            "durable key applied to the session you are already in. Start here "
+            "if you are anonymous.")
+    # No leading newline: the template already closes the block above with a
+    # blank line, and tests/test_capacity_source_summary pins that block's
+    # bytes exactly. Trailing blank line so the paid heading starts clean.
+    return ("## If a call is gated, these are the three ways through\n"
+            + "\n".join([free] + rungs)
+            + "\n\nA gated result carries a checkout link and a human relay "
+              "link MINTED FOR YOUR SESSION. Relay them verbatim. Sending your "
+              "human to a generic pricing page instead loses the binding that "
+              "would have unlocked the very next call in the same session.\n\n")
+
+
 def _canon_int(placeholder, default):
     """Resolve a {canon_*} placeholder to an INT for the numeric claim blocks.
 
@@ -1119,7 +1179,7 @@ are released only to a buyer whose registration that provider accepted.
 - Verify a registered lead (public, no key): GET /api/v1/listings/leads/{lead_id}/verify
 - Browse: https://dchub.cloud/listings
 
-""" + _llms_paid_heading() + """
+""" + _llms_unlock_ladder() + _llms_paid_heading() + """
 - [Facility Detail](https://dchub.cloud/api/v1/facilities/{id}): Full record by id — the `id` returned by /api/v1/facilities round-trips here
 - [Bulk Export](https://dchub.cloud/api/v1/mcp/tools/export_facility_csv): CSV export of filtered facilities, up to 10,000 rows/request. X-API-Key on the Developer plan or higher — anonymous and unverified callers get 401, free-tier keys get 402. Filters: ?state=ST&operator=name&min_mw=N
 - [AI Facilities](https://dchub.cloud/api/ai/query?type=facilities): AI-optimized facility data
