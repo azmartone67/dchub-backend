@@ -1012,7 +1012,13 @@ def _db_recent_view(user_ref, listing_id, since):
 def _db_recent_catalogue_read(user_ref, filters_key, since):
     """Has this identity already had an identical catalogue read recorded
     inside the window? Matches on the filters digest in meta, so a different
-    filter set is a different read."""
+    filter set is a different read.
+
+    ix_listing_lead_ledger_user (user_ref, event, created_at DESC) already
+    covers the three indexed predicates, which narrow this to one identity's
+    catalogue reads inside a short window — a handful of rows — before the
+    JSONB extraction runs. So this needs no index of its own, and therefore no
+    DDL and no ACCESS EXCLUSIVE request on boot."""
     rows = _fetch("SELECT seq FROM listing_lead_ledger WHERE user_ref = %s "
                   "AND event = 'catalogue_read' AND meta->>'filters_key' = %s "
                   "AND created_at > %s LIMIT 1",
