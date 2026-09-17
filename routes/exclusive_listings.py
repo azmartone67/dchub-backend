@@ -282,6 +282,73 @@ def _citation_for(granted):
     return _citation() if granted else _teaser_citation()
 
 
+# ── retrieval receipt ────────────────────────────────────────────────────
+#
+# PROVENANCE, NOT A RESTRICTION. The receipt says where a listings response
+# came from, when, and under which terms — it takes nothing away. The two
+# citations above are untouched by it: a teaser response still carries
+# CC-BY-4.0 / redistribution "permitted_with_attribution", and a granted
+# detail response still carries the confidential one. Nothing here narrows
+# either licence, and nothing here gates a read.
+#
+# What it adds is a handle. `reference` is an HMAC over the reading identity,
+# the retrieval time and the normalised filters, so a receipt that turns up
+# somewhere else can be matched back to the read that produced it — and, for
+# an identified read, to the `catalogue_read` entry carrying the same
+# reference (_record_catalogue_read). It commits to the identity without
+# carrying it: no user_ref, no email, no API key, in the response or the
+# entry.
+_RECEIPT_REF_HEX = 32          # 128 bits of HMAC — a handle, not a secret
+
+
+def _receipt(v, filters):
+    """The retrieval receipt for one successful listings response, or None.
+
+    `filters` is the normalised filter set for a feed read; for a read with no
+    filter vocabulary of its own (one listing, the summary) the caller passes
+    that read's normalised selector instead, so two different reads never
+    share a reference.
+
+    None when the ledger secret is unavailable — a listings response without a
+    receipt is served rather than failed, because this is evidence about a
+    read, not a condition of one."""
+    secret = ledger.ledger_secret()
+    if secret is None:
+        logger.warning(
+            "[pocket-listings] no ledger secret — serving listings without a retrieval receipt")
+        return None
+    at = ledger.iso_utc(datetime.now(timezone.utc))
+    return {
+        "source": PROGRAM_NAME,
+        "retrieved_at": at,
+        "terms_version": TERMS_VERSION,
+        "reference": _receipt_reference(secret, v, filters, at),
+    }
+
+
+def _receipt_reference(secret, v, filters, at):
+    """HMAC(ledger secret, identity | time | filters), hex-truncated.
+
+    The identity is the account ref for an identified read and the session
+    hash where there is none, so an anonymous read still gets a reference that
+    is stable for that read and different from anyone else's. Identity
+    material goes INTO the MAC and never comes out of this function."""
+    identity = (v.get("user_ref") if v.get("identified")
+                else ("session:" + v["session_hash"] if v.get("session_hash")
+                      else "anonymous"))
+    message = "receipt|" + ledger.canonical_json(
+        {"identity": identity, "at": at, "filters": filters or {}})
+    return hmac.new(secret, message.encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:_RECEIPT_REF_HEX]
+
+
+def _filters_key(filters):
+    """Digest of one normalised filter set, for the read-collapse lookup. A
+    digest rather than the JSON itself so the lookup compares one short
+    indexable value; the readable filters go in the entry's meta beside it."""
+    return ledger.sha256_hex(ledger.canonical_json(filters or {}))[:32]
+
+
 _ACCESS_LEVELS = ("registered", "pro", "enterprise", "founding")
 _REQUIRED_RANK = {"registered": 1, "pro": 3, "founding": 3, "enterprise": 4}
 _TIER_RANK = {"anonymous": 0, "": 0, "free": 1, "identified": 1,
@@ -444,6 +511,14 @@ _CONFIRM_RATE_LIMIT = (30, 3600)    # confirmation attempts per IP per hour
 _READ_RATE_LIMIT = (240, 3600)      # verify / ledger reads per IP per hour
 _DUP_WINDOW = {"intro_requested": timedelta(days=30),
                "interest_registered": timedelta(hours=24)}
+# An identical catalogue read — same identity, same normalised filters —
+# collapses into the first one inside this window. An agent keeping a capacity
+# dashboard current is a WANTED reader, and it re-runs the same query on a poll
+# loop; one entry per poll would bury the chain's lead evidence under thousands
+# of identical rows and make `verify_chain` slower for nothing. The window is
+# short enough that a real change of intent (new filters, or the same query
+# much later) still lands its own entry.
+_CATALOGUE_READ_WINDOW = timedelta(minutes=10)
 _RESEND_AFTER_S = 600
 _SEND_WAIT_S = 8.0
 _CHAIN_TTL_S = 60
@@ -526,6 +601,17 @@ END
 $$
 """
 
+# ★ The ledger's EVENT VOCABULARY IS NOT CONSTRAINED AT THE DB LEVEL, checked
+# before adding `catalogue_read`: `event` is plain `TEXT NOT NULL` in
+# ledger.SCHEMA_STATEMENTS, and the `listing_lead_ledger.guard` statements only
+# make the evidence columns immutable and the table append-only — they do not
+# enumerate events. So a new event needs no widening DDL here, and deliberately
+# gets none: an unconditional DROP/ADD CONSTRAINT would request ACCESS
+# EXCLUSIVE on every boot for a constraint that does not exist (util/ddl_once.py
+# documents what that costs). Contrast _ACCESS_WALL_DDL above, which widens
+# exclusive_listings.tier_required and therefore checks the live definition
+# first and touches nothing when it is already wide enough. The vocabulary is
+# enforced in ledger.build_entry, which raises on an event outside EVENTS.
 _SCHEMA_KEYS = ("exclusive_listings.table", "exclusive_listings.access_wall_v2",
                 "listing_lead_ledger.table", "listing_lead_ledger.guard")
 
@@ -920,6 +1006,17 @@ def _db_recent_view(user_ref, listing_id, since):
     rows = _fetch("SELECT seq FROM listing_lead_ledger WHERE user_ref = %s "
                   "AND listing_id = %s AND event = 'listing_viewed' "
                   "AND created_at > %s LIMIT 1", [user_ref, listing_id, since], ("seq",))
+    return bool(rows)
+
+
+def _db_recent_catalogue_read(user_ref, filters_key, since):
+    """Has this identity already had an identical catalogue read recorded
+    inside the window? Matches on the filters digest in meta, so a different
+    filter set is a different read."""
+    rows = _fetch("SELECT seq FROM listing_lead_ledger WHERE user_ref = %s "
+                  "AND event = 'catalogue_read' AND meta->>'filters_key' = %s "
+                  "AND created_at > %s LIMIT 1",
+                  [user_ref, filters_key, since], ("seq",))
     return bool(rows)
 
 
@@ -1886,22 +1983,55 @@ def _access(row, v, return_path, terms_ok=False):
         granted, reason = False, "terms_acceptance_required"
     else:
         granted, reason = True, None
-    unlock = None
+    return {"required": required, "granted": granted, "reason": reason,
+            "unlock": _unlock_for(reason, return_path)}
+
+
+def _unlock_for(reason, return_path):
+    """The way past `reason`, or None when there is nothing left to do.
+
+    The ONE place the steps for a reason are written down. A listing's `access`
+    block (_access) and the catalogue's caller-level block (_caller_access)
+    both come through here, so the two surfaces cannot drift into naming
+    different steps for the same reason."""
+    if reason is None:
+        return None
     if reason == "terms_acceptance_required":
-        unlock = {"web_sign_in_url": None,
-                  "mcp_steps": ["accept_capacity_terms"],
-                  "pricing_url": None,
-                  "terms": _terms_block(),
-                  "accept": {"method": "POST", "path": "/api/v1/listings/terms/accept"}}
-    elif not granted:
-        steps = {"sign_in_required": ["claim_free_key", "bind_email"],
-                 "email_binding_required": ["bind_email"],
-                 "upgrade_required": ["unlock_more_data"]}[reason]
-        unlock = {"web_sign_in_url": (None if reason == "upgrade_required"
-                                      else _sign_in_url(return_path)),
-                  "mcp_steps": steps,
-                  "pricing_url": PRICING_URL if reason == "upgrade_required" else None}
-    return {"required": required, "granted": granted, "reason": reason, "unlock": unlock}
+        return {"web_sign_in_url": None,
+                "mcp_steps": ["accept_capacity_terms"],
+                "pricing_url": None,
+                "terms": _terms_block(),
+                "accept": {"method": "POST", "path": "/api/v1/listings/terms/accept"}}
+    steps = {"sign_in_required": ["claim_free_key", "bind_email"],
+             "email_binding_required": ["bind_email"],
+             "upgrade_required": ["unlock_more_data"]}[reason]
+    return {"web_sign_in_url": (None if reason == "upgrade_required"
+                                else _sign_in_url(return_path)),
+            "mcp_steps": steps,
+            "pricing_url": PRICING_URL if reason == "upgrade_required" else None}
+
+
+def _caller_access(v, terms_ok, return_path):
+    """What THIS CALLER still has to do before any walled listing opens for
+    them, in the same {required, granted, reason, unlock} shape a single
+    listing's `access` block uses and built from the same _unlock_for.
+
+    ★ CALLER-level, NOT listing-level. It answers "is this caller through the
+    wall", not "does this caller get that listing". A listing that needs a
+    higher plan is already reported per-listing by each item's `locked` /
+    `lock_reason` and in aggregate by `upgrade_for_pocket`, so `upgrade_required`
+    is deliberately not a reason here and there is no per-item unlock: the
+    catalogue stays one flat read. Carries no identity material — the reason
+    comes from the viewer, the identity does not."""
+    if not v["identified"]:
+        reason = v["reason"] or "sign_in_required"
+    elif not terms_ok:
+        reason = "terms_acceptance_required"
+    else:
+        reason = None
+    # The wall level itself, the same default _access falls back to.
+    return {"required": "registered", "granted": reason is None,
+            "reason": reason, "unlock": _unlock_for(reason, return_path)}
 
 
 def _capacity_kw(row, fields):
@@ -3150,6 +3280,9 @@ def list_listings():
         "pocket_locked_count": sum(1 for i in items if i["locked"]),
         "caller_tier": v["tier"],
         "can_see_pocket": bool(v["identified"]),
+        # Caller-level, alongside the per-item `locked` / `lock_reason` above —
+        # see _caller_access for why it is not per listing.
+        "caller_access": _caller_access(v, terms_ok, "/listings"),
     }
     if needs_upgrade:
         out["upgrade_for_pocket"] = {
@@ -3157,6 +3290,13 @@ def list_listings():
             "url": PRICING_URL,
             "message": f"{needs_upgrade} listing(s) here open on a paid plan.",
         }
+    # Provenance for this response, and the register entry that records the
+    # read. Both carry the SAME reference, which is how a receipt traces back.
+    # Omitted, not failed, when there is no ledger secret (_receipt logs it).
+    receipt = _receipt(v, filters)
+    if receipt:
+        out["retrieval_receipt"] = receipt
+    _record_catalogue_read(v, filters, len(items), (receipt or {}).get("reference"))
     resp = jsonify(out)
     _no_store(resp)
     return resp, 200
@@ -3237,6 +3377,7 @@ def listings_summary():
     """Live availability across the listings the teaser feed shows: how many,
     how many MW, in which markets, of which delivery types, and when they last
     changed. Never a listing's title, slug, provider or price. Public."""
+    v = _viewer()
     summary = cached_listings_summary()
     if summary is None:
         unavailable = jsonify({"ok": False, "error": "listings_unavailable"})
@@ -3257,6 +3398,11 @@ def listings_summary():
         "url": SITE + "/listings",
         "mcp_tool": "source_capacity",
     }
+    # This read has no filter vocabulary, so its selector stands in for the
+    # filters in the reference — a summary receipt is never a feed receipt.
+    receipt = _receipt(v, {"view": "summary"})
+    if receipt:
+        out["retrieval_receipt"] = receipt
     resp = jsonify(out)
     _no_store(resp)
     return resp, 200
@@ -3300,6 +3446,12 @@ def get_listing(slug_or_id):
         "viewer": _viewer_public(v, return_path),
         "caller_tier": v["tier"],
     }
+    # The slug is this read's normalised selector; `citation` above is
+    # untouched by the receipt — locked responses stay quotable, granted ones
+    # stay confidential.
+    receipt = _receipt(v, {"slug": row.get("slug")})
+    if receipt:
+        out["retrieval_receipt"] = receipt
     resp = jsonify(out)
     _no_store(resp)
     return resp, 200
@@ -3321,6 +3473,53 @@ def _record_view(row, v):
                       session_hash=v["session_hash"], ip_hash=_ip_hash())
     except Exception as exc:
         logger.warning("[pocket-listings] view not recorded: %s", exc)
+
+
+def _record_catalogue_read(v, filters, count, reference):
+    """ONE `catalogue_read` entry per identified caller per filter set per
+    _CATALOGUE_READ_WINDOW: who read the catalogue, how many listings came
+    back, and under which normalised filters. One entry per READ — never one
+    per listing, or a 200-item feed would put 200 rows in the chain.
+
+    `reference` is the retrieval receipt's reference for this same response,
+    stored here so a receipt found in the wild traces back to the read that
+    produced it. It is an HMAC: no user_ref, email or key rides along with it.
+
+    ★ ANONYMOUS READS ARE NOT RECORDED, and this register therefore does NOT
+    show everyone who has seen the catalogue. There is no identity to record
+    an anonymous read against, and deriving one from an IP or a user agent
+    would be a guess stored as evidence. Do not read an absence here as
+    proof a listing was never read — only a presence means anything.
+
+    Dispatched off-request like _on_registered and never raised: reading the
+    catalogue must not slow down or depend on the register being writable."""
+    if not (v["identified"] and v["user_ref"]):
+        return
+    secret = ledger.ledger_secret()
+    if secret is None:
+        return
+    filters_key = _filters_key(filters)
+    # Read every request-bound value HERE. `work` runs on another thread, where
+    # flask's request context is gone and _ip_hash() would raise.
+    ip_hash, user_agent = _ip_hash(), _user_agent()
+
+    def work():
+        try:
+            since = datetime.now(timezone.utc) - _CATALOGUE_READ_WINDOW
+            if _db_recent_catalogue_read(v["user_ref"], filters_key, since):
+                return
+            _append_event(secret=secret, lead_id=None, event="catalogue_read",
+                          listing=None, user_ref=v["user_ref"],
+                          channel=v["channel"], platform=v["platform"],
+                          session_hash=v["session_hash"], ip_hash=ip_hash,
+                          user_agent=user_agent,
+                          meta={"count": int(count), "filters": filters or {},
+                                "filters_key": filters_key,
+                                "receipt_reference": reference})
+        except Exception as exc:  # noqa: BLE001 — evidence must not break a read
+            logger.warning("[pocket-listings] catalogue read not recorded: %s", exc)
+
+    _dispatch(work)
 
 
 @exclusive_listings_bp.route("/api/v1/listings/<slug_or_id>/intro", methods=["POST"])
