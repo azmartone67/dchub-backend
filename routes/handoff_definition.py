@@ -835,21 +835,45 @@ def _paid_payments_sql(interval_sql: str) -> str:
             " AND p.paid_at > now() - interval '" + interval_sql + "') pay")
 
 
-def paid_relayed_click_session_sql() -> str:
-    """Scalar subquery: the session payment `pay` is attributed to, or NULL.
+def _relayed_click_session_for(ref_expr: str, at_expr: str) -> str:
+    """THE click→session lookup, once. Both readers of it build from here.
 
-    The latest click on the link that sold it (same ref) that human_acted's
-    /go/c/ lane would count — signed, real UA, a session identity — made at or
-    before the payment and inside the lookback.
+    The latest click on the link that sold a purchase (same ref) that
+    human_acted's /go/c/ lane would count — signed, real UA, a session
+    identity — made at or before `at_expr` and inside the lookback.
+
+    ★ WHY THIS IS A FUNCTION AND NOT TWO QUERIES. The funnel reads it as a
+    correlated subquery over the payments table; routes/relay_identify reads
+    it live in the payment webhook, for one ref, to learn which session to
+    stamp an email onto. A second copy would let `identified` and
+    `paid_attributed` attribute the SAME payment to two different sessions —
+    the two stages would disagree about who paid while both looked measured.
+    tests/test_identify_rung_shares_the_paid_join.py holds them byte-identical
+    under the same substitutions.
     """
     return ("(select " + RELAYED_CHECKOUT_SESSION_ID + " "
             + _RELAYED_CHECKOUT_FROM
-            + " where cc.ref = pay.client_reference_id"
+            + " where cc.ref = " + ref_expr
             + " and " + relayed_checkout_session_filters()
-            + " and cc.clicked_at <= pay.paid_at"
-            + " and cc.clicked_at > pay.paid_at - interval '"
+            + " and cc.clicked_at <= " + at_expr
+            + " and cc.clicked_at > " + at_expr + " - interval '"
             + PAID_RELAYED_CHECKOUT_LOOKBACK + "'"
             + " order by cc.clicked_at desc, cc.id desc limit 1)")
+
+
+def paid_relayed_click_session_sql() -> str:
+    """Scalar subquery: the session payment `pay` is attributed to, or NULL."""
+    return _relayed_click_session_for("pay.client_reference_id", "pay.paid_at")
+
+
+def relayed_click_session_for_ref_sql() -> str:
+    """The SAME lookup, parameterised, for a live single-ref read.
+
+    One `%s` placeholder (the client_reference_id) and `now()` as the instant,
+    which at webhook time IS the payment's paid_at. Callers execute it as
+    `select <this>` with one parameter.
+    """
+    return _relayed_click_session_for("%s", "now()")
 
 
 def _paid_session_row_lanes(interval_sql: str) -> list:

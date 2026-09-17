@@ -217,33 +217,54 @@ def _esc(s) -> str:
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
-@human_relay_bp.route("/upgrade/h/<token>", methods=["GET"])
-def relay_page(token):
-    info = parse_relay_token(token)
-    _log_open(info, token, valid=info is not None)
+# ── the IDENTIFY rung (r-identify-rung, 2026-09-17) ───────────────────────
+# Measured the day this shipped, 30d: human_acted 7, identified 0,
+# paid_attributed 0. `identified` counts mcp_high_intent_sessions.claim_email
+# and nothing on the human's path had ever written it — the human opened the
+# link, decided, and left, and the only thing we ever learned was that a click
+# happened. See routes/relay_identify for the full note.
+#
+# ★ THE EMAIL IS OPTIONAL AND THE BUTTON STAYS. A gate in front of a payment
+# surface trades a measurable rung for unmeasured lost revenue, on a page whose
+# entire job is that 7 humans a month reach it. The form submits to checkout;
+# the button below it skips the form and goes to the same place.
+#
+# ★ THE SESSION COMES FROM THE SIGNED TOKEN, NEVER FROM THE FORM. A posted sid
+# would let anyone stamp any session's email — the token's HMAC is the only
+# thing proving the poster holds a link we minted.
+
+
+def _upgrade_target(info: dict | None):
+    """(url, keyed) — the ONE checkout this page sells.
+
+    Extracted 2026-09-17 so the button and the email form cannot send the same
+    human to two different checkouts: the form redirects here after capturing,
+    and a second copy of this logic would be a second price.
+
+    ONE button, riding the existing attribution chain (sid-preserve → pack
+    webhook claim→paid bridge). direct=1 skips the tier wall.
+
+    ★ SELL THE PACK THIS PAGE ADVERTISES. `resolve_tier`'s `tier` param means
+    "which plan to sell", NOT "what the visitor currently has". We used to
+    pass the visitor's own tier from the token — but `free`/`identified` are
+    not STRIPE_LINKS keys, so it fell through to the `developer` DEFAULT
+    ($49/mo), or to `pro` ($299/mo) when the token carried a pro-gated tool,
+    all under a "$10 one-time" label. `metered` IS a key, so it wins on the
+    first branch. (Not `pack5`: same Stripe URL, but the webhook still reads
+    pack5 as the legacy $5 SKU by amount.)
+
+    ★ 2026-09-13 — A KEYED CALLER'S PACK IS BOUND TO ITS KEY. /pricing/upgrade
+    binds the purchase to the session alone. When the token carries the
+    caller's `pk-` key reference, the button is the signed /go/c/ link
+    instead: ref = that key, the client_reference_id the durable-key pack
+    binds, with the session beside it so the click is measurable against a
+    session. If no link can be minted (no DCHUB_INTERNAL_KEY) the session
+    button is served, and it still sells the pack.
+    """
+    from urllib.parse import urlencode
     tool = (info or {}).get("tool") or ""
     sid = (info or {}).get("sid") or ""
     kref = (info or {}).get("kref") or ""
-    # ONE button, riding the existing attribution chain (sid-preserve →
-    # pack webhook claim→paid bridge). direct=1 skips the tier wall.
-    #
-    # ★ SELL THE PACK THIS PAGE ADVERTISES. `resolve_tier`'s `tier` param means
-    # "which plan to sell", NOT "what the visitor currently has". We used to
-    # pass the visitor's own tier from the token — but `free`/`identified` are
-    # not STRIPE_LINKS keys, so it fell through to the `developer` DEFAULT
-    # ($49/mo), or to `pro` ($299/mo) when the token carried a pro-gated tool,
-    # all under a "$10 one-time" label. `metered` IS a key, so it wins on the
-    # first branch. (Not `pack5`: same Stripe URL, but the webhook still reads
-    # pack5 as the legacy $5 SKU by amount.)
-    #
-    # ★ 2026-09-13 — A KEYED CALLER'S PACK IS BOUND TO ITS KEY. /pricing/upgrade
-    # binds the purchase to the session alone. When the token carries the
-    # caller's `pk-` key reference, the button is the signed /go/c/ link
-    # instead: ref = that key, the client_reference_id the durable-key pack
-    # binds, with the session beside it so the click is measurable against a
-    # session. If no link can be minted (no DCHUB_INTERNAL_KEY) the session
-    # button below is served, and it still sells the pack.
-    from urllib.parse import urlencode
     upgrade = None
     if kref:
         from routes.checkout_click_tracker import mint_checkout_token
@@ -258,6 +279,64 @@ def relay_page(token):
         if sid:
             q["sid"] = sid
         upgrade = "https://api.dchub.cloud/pricing/upgrade?" + urlencode(q)
+    return upgrade, keyed
+
+
+def _identify_form(token: str, info: dict | None) -> str:
+    """The email field, or '' when the token carries no session to bind to."""
+    if not (info or {}).get("sid"):
+        return ""
+    return (
+        "<form method='post' action='/upgrade/h/%s' class='cap'>"
+        "<label for='e'>Email me the receipt and the key</label>"
+        "<input id='e' type='email' name='email' required "
+        "placeholder='you@company.com' autocomplete='email'>"
+        "<button type='submit'>Continue &rarr;</button>"
+        "<span class='hint'>So the credits and the API key reach you — your "
+        "agent has no inbox. We do not sell or share it.</span>"
+        "</form>" % _esc(token))
+
+
+def _relay_identify(token: str, info: dict | None):
+    """POST handler: capture, then continue to the SAME checkout the button
+    carries. Never blocks the purchase — a failed or refused capture still
+    redirects."""
+    from flask import redirect
+    dest, _keyed = _upgrade_target(info)
+    sid = (info or {}).get("sid") or ""
+    if sid:
+        try:
+            from routes.relay_identify import capture
+            capture(sid, (request.form.get("email") or ""), "relay_page",
+                    tool=(info or {}).get("tool") or "")
+        except Exception:  # noqa: BLE001
+            logger.warning("relay identify capture failed", exc_info=True)
+    return redirect(dest, code=302)
+
+
+@human_relay_bp.route("/upgrade/h/<token>", methods=["GET", "POST"])
+def relay_page(token):
+    info = parse_relay_token(token)
+    # ★ 2026-09-17 (r-identify-rung) — THE EMAIL FORM POSTS BACK TO THIS PATH.
+    # Not a new route: _routes.json sits at 98/98 rules, the deploy cap, and a
+    # 99th is dropped silently, so a new top-level path would never reach the
+    # worker. '/upgrade*' already forwards here, POST included (verified
+    # through the edge before this shipped: POST /upgrade/h/<junk> returned
+    # Flask's own 405, i.e. it reached the origin).
+    #
+    # A POST is a submit, not an open. _log_open on it would double-count the
+    # human who filled the form in against the one who only looked, and
+    # human_acted reads that table.
+    if request.method == "POST":
+        return _relay_identify(token, info)
+    _log_open(info, token, valid=info is not None)
+    tool = (info or {}).get("tool") or ""
+    upgrade, keyed = _upgrade_target(info)
+    # Empty string when the token carries no session: with nothing to
+    # bind an email to, an email field would collect a lead we could
+    # not attach to anything, and the button below would be labelled
+    # "Skip" with nothing above it to skip.
+    form = _identify_form(token, info)
     playground = ("https://dchub.cloud/playground?ref=relay"
                   + ("-" + tool if tool else ""))
     tool_line = (
@@ -285,17 +364,35 @@ def relay_page(token):
             "padding:14px 18px;border-radius:10px;text-decoration:none;"
             "font-weight:600;font-size:17px;margin:22px 0 10px}"
             ".alt{color:#666;font-size:14px}h1{font-size:26px}"
+            "form.cap{margin:22px 0 4px}"
+            "form.cap label{display:block;font-weight:600;font-size:15px;"
+            "margin-bottom:7px}"
+            "form.cap input{width:100%%;box-sizing:border-box;padding:12px 13px;"
+            "font-size:16px;border:1px solid #ccd;border-radius:9px}"
+            "form.cap button{width:100%%;margin-top:9px;background:#3478f6;"
+            "color:#fff;border:0;padding:13px 18px;border-radius:10px;"
+            "font-weight:600;font-size:16px;cursor:pointer}"
+            "form.cap .hint{display:block;color:#888;font-size:12.5px;"
+            "margin-top:8px}"
+            # The primary action is the form. The button below it is the way
+            # PAST the form, so it reads as secondary only when a form is
+            # actually above it — a sibling rule, because the button's bytes
+            # are pinned by test_relay_sells_what_it_says and parsed live by
+            # checkout-integrity lane 3. Restyling it inline would have
+            # changed the very anchor those two read.
+            "form.cap ~ a.btn{background:#eef1f6;color:#333;font-weight:500}"
             "small{color:#888}</style></head><body>"
             "<h1>Your AI agent found data worth unlocking</h1>"
             "<p>%s</p>"
             "<p>%s</p>"
+            "%s"
             "<a class='btn' href='%s'>Unlock full data — $10 one-time</a>"
             "<p class='alt'>Prefer to look first? <a href='%s'>Explore the live "
             "data free in your browser</a> — no signup.</p>"
             "<p><small>DC Hub · dchub.cloud · data licensed CC-BY-4.0 · this "
             "link was generated for your agent's session%s</small></p>"
             "</body></html>"
-            % (tool_line, pack_line, _esc(upgrade), _esc(playground),
+            % (tool_line, pack_line, form, _esc(upgrade), _esc(playground),
                "" if info else " (link expired — the button still works)"))
     from flask import make_response
     resp = make_response(html, 200)
