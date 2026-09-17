@@ -277,7 +277,7 @@ def _log_event(event: str, key_prefix: str, tier: str | None = None) -> None:
             cur.execute(
                 """INSERT INTO upgrade_page_events
                      (key_prefix, event, tier, src, user_agent, ip_hash)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
                 (key_prefix[:32], event[:16], tier, src, ua, ip_hash))
     except Exception as e:
         logger.warning("[upgrade_handoff] event log failed: %s", e)
