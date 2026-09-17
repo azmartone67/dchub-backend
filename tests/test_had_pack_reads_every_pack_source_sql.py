@@ -75,7 +75,7 @@ def _buy_topup(key):
             cur.execute("""INSERT INTO mcp_topups
                              (topup_token, api_key_hash, credits, price_cents,
                               credits_remaining, referring_agent)
-                           VALUES (%s, %s, %s, 500, %s, 'claude')""",
+                           VALUES (%s, %s, %s, 500, %s, 'claude') ON CONFLICT DO NOTHING""",
                         (token, mcp._hash_key(key), LEGACY_TOPUP_CREDITS, LEGACY_TOPUP_CREDITS))
     finally:
         c.close()
