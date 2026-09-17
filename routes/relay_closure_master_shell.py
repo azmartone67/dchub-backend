@@ -87,7 +87,10 @@ from mcp_calls_deloop import (
 from routes.handoff_definition import (
     REDEEM_INSTRUMENT_DISABLED_ON,
     REDEEM_STAGE_IS_FUNNEL_PROGRESS,
+    human_acted_count_sql as _human_acted_count_sql,
+    paid_attributed_count_sql as _paid_attributed_count_sql,
     redeem_stage_basis as _redeem_stage_basis,
+    relayed_checkout_payments_sql as _relayed_checkout_payments_sql,
 )
 
 logger = logging.getLogger("relay_closure")
@@ -190,6 +193,79 @@ def _one(cur, sql):
 
 
 # ── PURE verdict functions ──────────────────────────────────────────────────
+
+# Lane F's window. Grok's brief asked for "7d after a known checkout"; the
+# CONTROL is the "known checkout" half, and it is the whole reason this lane
+# can mean anything — see verdict_money_reaches_the_funnel.
+MONEY_WINDOW_DAYS = 7
+
+
+def verdict_money_reaches_the_funnel(payments, human_acted, identified,
+                                     paid_attributed, matched, attributable):
+    """(status, note) for "money arrived and the funnel shows none of it".
+
+    ★★ THE CONTROL IS `payments`. A funnel that sold nothing publishes
+    paid_attributed 0, and a lane that went red on that would be red forever
+    on a true statement — the single fastest way to teach everyone to scroll
+    past this board (see routes/lane_triage on exactly that failure). So:
+
+        payments is None            -> ?     the read failed, never 0
+        payments == 0               -> ?     nothing was bought. 0 attributed
+                                             is CORRECT, not a leak.
+        payments >= 1, paid == 0    -> FAIL  money arrived, the funnel
+                                             attributes none of it
+        payments >= 1, paid >= 1    -> PASS
+
+    `matched` and `attributable` decompose the FAIL so it is actionable
+    instead of merely red:
+      matched == 0        no signed, real-UA /go/c click carries this
+                          payment's ref at all — the buyer did not come
+                          through a relayed link, or the click was never
+                          recorded.
+      matched >= 1, attributable == 0
+                          the click exists but carried NO session — the
+                          `plan|ref|sid` third field is missing, so the join
+                          has nothing to attribute TO.
+      attributable >= 1, paid == 0
+                          the click carried a session and the stage still
+                          reads 0 — the operator self-traffic exclusion
+                          removed it, which is correct for our own test click
+                          and a defect for anyone else's.
+
+    `human_acted` and `identified` ride the note rather than the verdict: a
+    human_acted that rises while paid stays 0 is the SHAPE Grok named, but it
+    is not evidence on its own — the humans who clicked and the human who paid
+    need not be the same people in a 7-day window.
+    """
+    if payments is None:
+        return "?", "payments unreadable — reported as unknown, never as 0"
+    if payments == 0:
+        return "?", (
+            "no paid checkout in %dd, so paid_attributed 0 is CORRECT and this "
+            "lane has nothing to judge. human_acted=%s identified=%s"
+            % (MONEY_WINDOW_DAYS, human_acted, identified))
+    if paid_attributed and paid_attributed > 0:
+        return "PASS", (
+            "%d payment(s) in %dd, %d attributed to an MCP session"
+            % (payments, MONEY_WINDOW_DAYS, paid_attributed))
+    if not matched:
+        where = ("no signed, real-UA /go/c click carries any of these "
+                 "payments' refs — the buyer did not arrive through a relayed "
+                 "link, or the click was not recorded")
+    elif not attributable:
+        where = ("%d payment(s) matched a relayed click, but NONE of those "
+                 "clicks carried a session — the /go/c token's third field is "
+                 "missing, so there is nothing to attribute to" % matched)
+    else:
+        where = ("%d payment(s) matched a click carrying a session and the "
+                 "stage still reads 0 — the operator self-traffic exclusion "
+                 "removed them (correct for our own test click, a defect for "
+                 "anyone else's; compare paid_attributed_including_self_traffic)"
+                 % attributable)
+    return "FAIL", (
+        "%d paid checkout(s) in %dd and paid_attributed is 0. %s. "
+        "human_acted=%s identified=%s"
+        % (payments, MONEY_WINDOW_DAYS, where, human_acted, identified))
 # Separated from the reads on purpose. The pre-merge suite installs no database
 # and sets no DATABASE_URL, so a verdict entangled with its query is a verdict
 # that CI can only skip — and a skipped guard is a silent green. Everything
@@ -606,6 +682,54 @@ def _lane_d_typed_params(cur) -> dict:
     return lane
 
 
+def _lane_f_money(cur) -> dict:
+    """Did money that arrived reach the funnel? Reads the SSOT, restates none of it.
+
+    ★ 2026-09-17. The three terminal rungs read 0/0 in every window
+    (human_acted 7 → identified 0 → paid_attributed 0, 30d) while Stripe can
+    show a sale, and nothing on the board said so. Every count here is built by
+    routes/handoff_definition — the same SQL /api/v1/mcp/handoff-funnel
+    publishes — so this lane cannot disagree with the dashboard it is meant to
+    alarm on.
+    """
+    lane = {"lane": "F/money_reaches_the_funnel",
+            "window_days": MONEY_WINDOW_DAYS,
+            "basis": "Every figure is built by routes/handoff_definition, the "
+                     "one writer of these stage definitions, so the lane and "
+                     "the published funnel read the same rows. The CONTROL is "
+                     "`payments`: with nothing bought, a paid_attributed of 0 "
+                     "is the correct answer and this lane says ? rather than "
+                     "going red on a true statement."}
+    iv = "%d days" % MONEY_WINDOW_DAYS
+    pay = _one(cur, _relayed_checkout_payments_sql(iv))
+    payments, matched, attributable = (
+        (int(pay[0] or 0), int(pay[1] or 0), int(pay[2] or 0))
+        if pay else (None, None, None))
+    ha = _one(cur, _human_acted_count_sql(iv))
+    pa = _one(cur, _paid_attributed_count_sql(iv))
+    idf = _one(cur, "select count(distinct mcp_session_id) "
+                    "from mcp_high_intent_sessions "
+                    "where claim_email is not null and claim_email <> '' "
+                    "and first_hit_at > now() - interval '%s'" % iv)
+    human_acted = int(ha[0] or 0) if ha else None
+    paid_attributed = int(pa[0] or 0) if pa else None
+    identified = int(idf[0] or 0) if idf else None
+
+    status, note = verdict_money_reaches_the_funnel(
+        payments, human_acted, identified, paid_attributed, matched, attributable)
+    lane.update(status=status, note=note,
+                # Side by side, the four the funnel publishes separately.
+                human_acted=human_acted, identified=identified,
+                paid_attributed=paid_attributed, payments=payments,
+                payments_matched_a_relayed_click=matched,
+                payments_attributable_to_a_session=attributable,
+                actuator="NONE — read-only, like every lane here. A FAIL names "
+                         "which half of the join broke; fixing it is a code "
+                         "change in the MCP server (the token's session field) "
+                         "or the backend (the click recorder), not here.")
+    return lane
+
+
 def _lane_e_asks() -> dict:
     total, trig, ex = _probe_tools()
     status, note = verdict_trigger_phrases(total, trig, ex)
@@ -657,12 +781,15 @@ def _state(include_db: bool = True) -> dict:
                  {"lane": "C/mint_attributability", "status": "?",
                   "note": "no database connection"},
                  {"lane": "D/typed_params_window", "status": d_status,
-                  "note": d_note}]
+                  "note": d_note},
+                 {"lane": "F/money_reaches_the_funnel", "status": "?",
+                  "note": "no database connection"}]
     else:
         try:
             with c.cursor() as cur:
                 lanes = [_lane_a_redeem(cur), _lane_b_demand(cur),
-                         _lane_c_attributability(cur), _lane_d_typed_params(cur)]
+                         _lane_c_attributability(cur), _lane_d_typed_params(cur),
+                         _lane_f_money(cur)]
         finally:
             try:
                 c.close()
