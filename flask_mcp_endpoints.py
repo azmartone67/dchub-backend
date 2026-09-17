@@ -80,6 +80,10 @@ from routes.handoff_definition import (  # r-identified-union (2026-09-17)
     identified_definition as _identified_definition,
     identified_v1_sql as _identified_v1_sql,
 )  # noqa: F401
+from routes.handoff_definition import (  # r-paid-signal-bridge (2026-09-17)
+    PAID_SIGNAL_RELAYED_BRIDGE_BASIS as _PS_BRIDGE_BASIS,
+    paid_signal_relayed_bridge_predicate as _ps_relayed_bridge,
+)
 from routes.handoff_definition import (  # r-paid-join (2026-09-14)
     RELAYED_CHECKOUT_PAYMENTS_BASIS as _PAID_RELAYED_PAYMENTS_BASIS,
     paid_attributed_count_sql as _paid_attributed_count_sql,
@@ -5932,6 +5936,10 @@ def mcp_funnel():
                          SELECT c.id AS conv_id,
                                 c.created_at AS conv_at,
                                 c.attribution_signal_id AS sig_id,
+                                -- r-paid-signal-bridge: the two columns the
+                                -- relayed-click lane resolves a session from.
+                                c.session_id AS session_id,
+                                c.stripe_session_id AS stripe_session_id,
                                 NULLIF(LOWER(TRIM(c.caller_id)), '') AS caller_id
                          FROM mcp_conversions c
                          WHERE c.created_at >= NOW() - INTERVAL '30 days'
@@ -5956,6 +5964,18 @@ def mcp_funnel():
                                          WHERE NULLIF(LOWER(TRIM(s.caller_id)),'') = p.caller_id
                                            AND s.created_at <= p.conv_at)
                                     THEN 'caller_bridge'
+                                  -- r-paid-signal-bridge (2026-09-17): the
+                                  -- relayed /go/c click that sold it. LAST on
+                                  -- purpose — the two lanes above are direct
+                                  -- facts and keep priority, so this one only
+                                  -- ever converts rows that were previously
+                                  -- 'unattributable'. The predicate is BUILT by
+                                  -- routes/handoff_definition (the same helper
+                                  -- paid_attributed joins on), never spelled
+                                  -- here, so the two cannot disagree about
+                                  -- which session bought.
+                                  WHEN """ + _ps_relayed_bridge() + """
+                                    THEN 'relayed_click'
                                   ELSE 'unattributable'
                                 END AS bridge
                          FROM paid p
@@ -5965,16 +5985,19 @@ def mcp_funnel():
                 _bridge = {r[0]: int(r[1] or 0) for r in (cur.fetchall() or [])}
                 _sig = _bridge.get("signal_id", 0)
                 _cal = _bridge.get("caller_bridge", 0)
+                _rel = _bridge.get("relayed_click", 0)
                 _un  = _bridge.get("unattributable", 0)
-                _paid_total = _sig + _cal + _un
+                _paid_total = _sig + _cal + _rel + _un
                 out["paid_signal_attribution_30d"] = {
                     "paid_total":                          _paid_total,
-                    "bridged_to_signal":                   _sig + _cal,
+                    "bridged_to_signal":                   _sig + _cal + _rel,
                     "bridged_via_attribution_signal_id":   _sig,
                     "bridged_via_caller_key":              _cal,
+                    "bridged_via_relayed_click":           _rel,
+                    "bridged_via_relayed_click_basis":     _PS_BRIDGE_BASIS,
                     "unattributable":                      _un,
                     "attribution_rate_pct": (
-                        round(100.0 * (_sig + _cal) / _paid_total, 1)
+                        round(100.0 * (_sig + _cal + _rel) / _paid_total, 1)
                         if _paid_total else None),
                     "definition": (
                         "honest paid = stripe_customer_id NOT NULL, seed/comp/NLR "

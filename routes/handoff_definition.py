@@ -1076,6 +1076,73 @@ def relayed_checkout_payments_sql(interval_sql: str) -> str:
             + _paid_payments_sql(interval_sql) + ") x")
 
 
+# ── paid -> signal bridge, THIRD LANE (r-paid-signal-bridge, 2026-09-17) ────
+#
+# Measured after the real $10 prove: paid_signal_attribution_30d read
+# paid_total 3, bridged_to_signal 0, unattributable 3, attribution_rate 0.0%.
+# Its two existing lanes are attribution_signal_id (the webhook never sets it
+# for an agent-channel buy) and a shared caller_id (the Stripe webhook has no
+# MCP caller_id to share). So a sale that demonstrably came from a relayed
+# /go/c link read as unattributable.
+#
+# The link exists and is already PROVEN: relayed_checkout_payments reported
+# matched_a_relayed_click 1 and attributable_to_a_session 1 on that payment.
+# This lane walks the same road — conversion -> its Stripe Checkout Session ->
+# the payment row -> the click that sold it -> that click's MCP session -> an
+# upgrade signal raised on that session at or before the sale.
+#
+# ★ IT REUSES _relayed_click_session_for, the SAME builder paid_attributed
+# joins on. A second spelling of that join would let paid_attributed and this
+# bridge disagree about which session bought, while both looked measured.
+#
+# ★ p.session_id WINS WHEN SET. If the conversion row already carries a
+# session, that is a direct fact and no inference is needed; the click walk is
+# the fallback for the agent-channel rows that have none.
+_PAID_REF_FROM_CONV = (
+    "(select pay2.client_reference_id from mcp_checkout_payments pay2"
+    " where pay2.stripe_session_id = p.stripe_session_id"
+    " order by pay2.paid_at desc limit 1)")
+
+
+def paid_signal_relayed_session_sql(conv_at: str = "p.conv_at") -> str:
+    """The MCP session a paid `mcp_conversions` row `p` belongs to, or NULL.
+
+    Its own session_id if set, else the session of the signed, real-UA /go/c
+    click that sold the Checkout Session this conversion came from.
+    """
+    return ("coalesce(nullif(p.session_id,''), "
+            + _relayed_click_session_for(_PAID_REF_FROM_CONV, conv_at) + ")")
+
+
+def paid_signal_relayed_bridge_predicate(conv_at: str = "p.conv_at") -> str:
+    """TRUE when an upgrade signal was raised on that session AT OR BEFORE the
+    sale.
+
+    The ordering matters and is not decoration: a signal raised AFTER the sale
+    is the customer hitting a wall they have already paid to pass, and counting
+    it would let a bridge point backwards in time.
+    """
+    return ("exists (select 1 from mcp_upgrade_signals s2"
+            " where nullif(s2.session_id,'') = "
+            + paid_signal_relayed_session_sql(conv_at)
+            + " and s2.created_at <= " + conv_at + ")")
+
+
+PAID_SIGNAL_RELAYED_BRIDGE_BASIS = (
+    "A third bridge lane for paid_signal_attribution. The paid row's MCP "
+    "session is its own session_id when set, otherwise the session of the "
+    "signed, real-UA /go/c/ click whose ref equals the client_reference_id of "
+    "the mcp_checkout_payments row carrying this conversion's "
+    "stripe_session_id — resolved by routes/handoff_definition."
+    "_relayed_click_session_for, the SAME builder paid_attributed joins on, so "
+    "the two cannot disagree about which session bought. The lane requires an "
+    "mcp_upgrade_signals row on that session at or before the sale: a signal "
+    "raised AFTER it is the customer hitting a wall they already paid to pass. "
+    "It is tried LAST, so attribution_signal_id and the caller_id bridge keep "
+    "priority and this lane only ever converts rows that were previously "
+    "unattributable.")
+
+
 PAID_ATTRIBUTED_BASIS = (
     "COUNT(DISTINCT session) over the UNION of three lanes: "
     "mcp_session_upgrades.mcp_session_id (the webhook's same-session unlock row "
