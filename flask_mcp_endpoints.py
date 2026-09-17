@@ -79,7 +79,7 @@ from routes.handoff_definition import (  # r-identified-union (2026-09-17)
     identified_count_sql as _identified_count_sql,
     identified_definition as _identified_definition,
     identified_v1_sql as _identified_v1_sql,
-)
+)  # noqa: F401
 from routes.handoff_definition import (  # r-paid-join (2026-09-14)
     RELAYED_CHECKOUT_PAYMENTS_BASIS as _PAID_RELAYED_PAYMENTS_BASIS,
     paid_attributed_count_sql as _paid_attributed_count_sql,
