@@ -19,6 +19,13 @@ hash chain:
 Editing, deleting, re-ordering or back-dating any entry breaks every link after
 it, and `verify_chain` names the first broken sequence number.
 
+★ NOT every entry is a step towards an introduction. `listing_viewed` and
+`catalogue_read` are READ evidence — who looked at what, and when — and they
+carry no lead_id. They share the chain because a read and the registration that
+follows it are only worth something together: an operator can see that the
+prospect was reading DC Hub's catalogue before they turned up. `lead_status`
+ignores them, so they can never make a lead look further along than it is.
+
 ★ The chain is anchored OUTSIDE DC Hub by the notices themselves. Every operator
 notice quotes the entry hashes, so the operator's own inbox holds a copy DC Hub
 cannot rewrite, and their mail server's receipt time is an independent witness
@@ -74,6 +81,8 @@ EVENTS = (
     "interest_registered",   # a standing requirement for upcoming listings
     "terms_accepted",        # an identified user accepted the introduction terms; the version is in terms_version
     "listing_viewed",        # an identified user opened a walled listing
+    "catalogue_read",        # an identified caller read the listings catalogue; the count and the
+                             # normalised filters are in meta, and lead_id is always None
     "intro_requested",       # a registration for one listing, sent to its operator to accept or decline
     "email_confirmed",       # the prospect proved the inbox from the request
     "operator_notified",     # DC Hub sent the operator a registration notice

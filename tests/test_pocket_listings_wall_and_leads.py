@@ -173,6 +173,10 @@ def env(monkeypatch):
     monkeypatch.setattr(el, "_db_recent_view", lambda user_ref, listing_id, since: any(
         r["event"] == "listing_viewed" and r["user_ref"] == user_ref
         and r["listing_id"] == listing_id and r["created_at"] > since for r in e.rows))
+    monkeypatch.setattr(el, "_db_recent_catalogue_read", lambda user_ref, filters_key, since: any(
+        r["event"] == "catalogue_read" and r["user_ref"] == user_ref
+        and (r.get("meta") or {}).get("filters_key") == filters_key
+        and r["created_at"] > since for r in e.rows))
     monkeypatch.setattr(el, "_db_terms_accepted", lambda user_ref, version: any(
         r["user_ref"] == user_ref and r["terms_version"] == version
         and r["event"] in ("terms_accepted", "intro_requested", "interest_registered")
