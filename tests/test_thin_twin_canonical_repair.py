@@ -118,7 +118,7 @@ def _db():
                  "is_duplicate INTEGER, duplicate_of_id INTEGER, "
                  "canonical_slug TEXT)")
     conn.executemany(
-        "INSERT INTO discovered_facilities (%s) VALUES (%s)"
+        "INSERT INTO discovered_facilities (%s) VALUES (%s) ON CONFLICT DO NOTHING"
         % (",".join(COLS), ",".join("?" * len(COLS))), ROWS)
     return conn
 
