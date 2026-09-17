@@ -67,10 +67,40 @@ from flask import Blueprint, Response, jsonify, request
 logger = logging.getLogger(__name__)
 warm_key_cohort_bp = Blueprint("warm_key_cohort", __name__)
 
-# The tiers that mean "already a customer". A key on one of these is not a
-# prospect. Read from tier_registry where possible so this cannot drift from
-# what the gate calls paid; the literal tuple is the fallback, not the source.
-_PAID_FALLBACK = ("paid", "pro", "founding", "enterprise", "developer", "starter")
+# ★★ 2026-09-17 — THIS WAS AN ALLOWLIST INVERSION BUG, MEASURED IN PRODUCTION.
+#
+# The first version read the paid set from `tier_registry.paid_plans()`, on the
+# principle "read the canon, never type it". The canon returned
+#     {enterprise, pro, research_seed, developer, founding, team, starter}
+# — the PLAN vocabulary. `mcp_dev_keys.tier` stores a COARSER one:
+#     free · identified · paid · enterprise
+# The literal string 'paid' is not a plan name, so every `tier='paid'` key fell
+# straight through the exclusion. Live read: 26 PAYING CUSTOMERS appeared in
+# `mailable`, and `already_paid` reported false for each of them because it was
+# built from the same list.
+#
+# The rule "read the canon" was right; the mistake was reading the WRONG
+# producer. The authority on what values this column holds is the column, not a
+# registry that happens to use the word tier for something else.
+#
+# ★ SO THE FILTER IS INVERTED. We no longer enumerate what is paid; we
+# enumerate the only tiers known NOT to be, and everything else — including a
+# tier nobody has added yet — is excluded. The failure modes are not symmetric:
+# under-mailing costs a lead, over-mailing pitches an upgrade to someone who
+# already bought. `excluded_unknown_tier` publishes what this removed, so a new
+# tier is visible rather than silently dropped.
+#
+# Measured vocabulary of mcp_dev_keys.tier on 2026-09-17 (keys_by_tier, active):
+#   free 113 · identified 540 · paid 47 · enterprise 6
+NON_PAID_TIERS = frozenset({
+    "free", "identified", "anonymous", "anon", "", "none",
+})
+
+# Kept only so a reader can see what the registry calls paid; it is NOT the
+# filter, because it does not speak this column's vocabulary.
+_REGISTRY_PLAN_NAMES_FOR_REFERENCE = (
+    "starter", "developer", "pro", "founding", "team", "enterprise",
+    "research_seed")
 
 # Consumer mailbox providers. Not a disqualifier — a founder on gmail is still a
 # founder — but the split changes what the list is worth, so it is published.
@@ -84,17 +114,21 @@ _CONSUMER_DOMAINS = {
 # Ours. An address here is the operator, a probe, or a reviewer comp — never a
 # prospect, and counting one as a lead is the failure this file's own history
 # is full of. `example.` / `test@` catch hand-typed fixtures.
-_INTERNAL_MARKERS = ("dchub.cloud", "dchub.io", "@example.", "example.com",
-                     "test@", "probe@", "+probe@", "noreply", "no-reply")
+# `dchubmail.com` and the `+qa`/`+test` plus-tags were both found in the live
+# cohort on the first read — ours, and counted as leads until they were named.
+_INTERNAL_MARKERS = ("dchub.cloud", "dchub.io", "dchubmail.com", "@example.",
+                     "example.com", "test@", "probe@", "+probe@", "+qa",
+                     "+test", "+dev", "noreply", "no-reply")
 
 
-def _paid_tiers() -> tuple:
-    try:
-        import tier_registry as _tr
-        paid = tuple(sorted({str(t).lower() for t in (_tr.paid_plans() or [])}))
-        return paid or _PAID_FALLBACK
-    except Exception:  # noqa: BLE001
-        return _PAID_FALLBACK
+def is_non_paid_tier(tier) -> bool:
+    """True ONLY for a tier positively known not to pay.
+
+    An unknown value answers False and is excluded. That is the safe direction:
+    a tier we have never seen might be paid, and the cost of guessing wrong is
+    an upgrade pitch to a customer.
+    """
+    return str(tier or "").strip().lower() in NON_PAID_TIERS
 
 
 def _admin_ok() -> bool:
@@ -172,9 +206,10 @@ def _gather() -> tuple:
     c = _conn()
     if c is None:
         return [], {"error": "no_db"}
-    paid = list(_paid_tiers())
+    non_paid = sorted(NON_PAID_TIERS)
     rows, errors = [], {}
     suppressed, paid_emails, calls, walls = set(), set(), {}, {}
+    excluded_tiers = None
     try:
         with c.cursor() as cur:
             try:
@@ -188,13 +223,35 @@ def _gather() -> tuple:
             # Addresses that ALREADY hold a paid key. Same table, so this is
             # the authoritative "is a customer", not an inference from tier.
             try:
+                # Addresses holding a key on ANY tier not known to be free.
+                # Inverted for the same reason the cohort filter is: an
+                # unrecognised tier must read as "may be a customer".
                 cur.execute(
                     "SELECT DISTINCT lower(trim(email)) FROM mcp_dev_keys "
                     "WHERE email IS NOT NULL AND email <> '' "
-                    "AND lower(tier) = ANY(%s)", (paid,))
+                    "AND lower(COALESCE(tier,'')) <> ALL(%s)", (non_paid,))
                 paid_emails = {r[0] for r in cur.fetchall() if r and r[0]}
             except Exception as e:  # noqa: BLE001
                 errors["paid_emails"] = f"{type(e).__name__}: {str(e)[:90]}"
+                c.rollback()
+
+            # What the inversion removed, BY TIER. A tier appearing here that
+            # should have been mailable is the signal that NON_PAID_TIERS needs
+            # a new member — published rather than silently dropped.
+            try:
+                cur.execute(
+                    """SELECT lower(COALESCE(tier,'')) AS tier, COUNT(*) AS n
+                         FROM mcp_dev_keys
+                        WHERE status = 'active'
+                          AND email IS NOT NULL AND email <> ''
+                          AND position('@' in email) > 1
+                          AND lower(COALESCE(tier,'')) <> ALL(%s)
+                        GROUP BY 1 ORDER BY 2 DESC""", (non_paid,))
+                excluded_tiers = {r[0] or "(none)": int(r[1] or 0)
+                                  for r in (cur.fetchall() or [])}
+            except Exception as e:  # noqa: BLE001
+                errors["excluded_tiers"] = f"{type(e).__name__}: {str(e)[:90]}"
+                excluded_tiers = None
                 c.rollback()
 
             # THE COHORT: an active key, a real address, not on a paid tier.
@@ -211,9 +268,9 @@ def _gather() -> tuple:
                         WHERE status = 'active'
                           AND email IS NOT NULL AND email <> ''
                           AND position('@' in email) > 1
-                          AND lower(COALESCE(tier,'')) <> ALL(%s)
+                          AND lower(COALESCE(tier,'')) = ANY(%s)
                         GROUP BY 1, 2
-                        ORDER BY 3 DESC NULLS LAST""", (paid,))
+                        ORDER BY 3 DESC NULLS LAST""", (non_paid,))
                 raw = cur.fetchall() or []
             except Exception as e:  # noqa: BLE001
                 _release(c, error=True)
@@ -297,7 +354,10 @@ def _gather() -> tuple:
             "already_paid": email in paid_emails,
             "suppressed": email in suppressed,
         })
-    return rows, {"errors": errors} if errors else {}
+    meta = {"excluded_by_tier": excluded_tiers}
+    if errors:
+        meta["errors"] = errors
+    return rows, meta
 
 
 def _mailable(r: dict) -> bool:
@@ -349,8 +409,17 @@ def summarize(rows: list) -> dict:
                                           key=lambda kv: -kv[1])[:12]),
         "basis": (
             "Cohort = mcp_dev_keys WHERE status='active' AND a parseable email "
-            "AND tier NOT IN the paid set (read from tier_registry.paid_plans, "
-            "not typed here), deduped by lower(email). This is the AGENT-KEY "
+            "AND tier IS ONE OF the tiers positively known not to pay "
+            "(NON_PAID_TIERS: free, identified, anonymous, anon, blank), "
+            "deduped by lower(email). ★ INVERTED ON PURPOSE, after the first "
+            "live read put 26 PAYING customers in `mailable`: the previous "
+            "version excluded tier_registry.paid_plans(), which is the PLAN "
+            "vocabulary (pro/starter/developer/...), while this column stores a "
+            "coarser one (free/identified/paid/enterprise) — so the literal "
+            "'paid' matched nothing. An unrecognised tier is now EXCLUDED, "
+            "because under-mailing costs a lead and over-mailing pitches an "
+            "upgrade to someone who already bought; excluded_unknown_or_paid_"
+            "tier publishes what that removed. This is the AGENT-KEY "
             "population; routes/audience_export reads the `users` table, which "
             "is the WEB signup population — different table, different people. "
             "removed_* are applied in the order listed and each counts only "
@@ -378,6 +447,8 @@ def warm_keys_json():
     if meta.get("error"):
         return jsonify(ok=False, error=meta["error"]), 200
     out = {"ok": True, "metric": "warm_key_cohort", **summarize(rows)}
+    out["excluded_unknown_or_paid_tier"] = meta.get("excluded_by_tier")
+    out["non_paid_tiers"] = sorted(NON_PAID_TIERS)
     if meta.get("errors"):
         out["partial_reads"] = meta["errors"]
         out["partial_note"] = ("a sub-read failed and is named above; the "

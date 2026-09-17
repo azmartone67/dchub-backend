@@ -63,6 +63,13 @@ COHORT = [
     row("comp@dchub.cloud", paid=True, calls=2),       # ours AND a customer
     row("old-probe@dchub.cloud", supp=True),           # ours AND suppressed
     row("churned@ex.com", paid=True, supp=True),       # customer AND suppressed
+    # ★ THE SHAPE THAT LEAKED IN PRODUCTION: tier='paid' on the key itself.
+    # The old fixture only ever set already_paid=True, which is the DERIVED
+    # flag — so it never exercised the tier vocabulary that was actually wrong.
+    row("customer@realco.com", tier="paid", paid=True, calls=9),
+    row("ent@bigco.com", tier="enterprise", paid=True, calls=3),
+    row("maya.chen@dchubmail.com", calls=6),           # ours, seeded domain
+    row("azmartone+qa0807@gmail.com", calls=55),       # ours, plus-tagged QA
 ]
 
 
@@ -192,16 +199,65 @@ def test_age_buckets(days, bucket):
 
 
 # ── honesty on failure ──────────────────────────────────────────────────
-def test_the_paid_set_is_read_from_the_registry_not_typed():
-    """★ A new paid tier must not silently start receiving upsell mail."""
-    import tier_registry as tr
-    paid = wk._paid_tiers()
-    for t in (tr.paid_plans() or []):
-        assert str(t).lower() in paid, f"{t} is paid and not excluded"
+# ★★ THE TEST THAT WAS VACUOUS, AND WHY.
+#
+# The first version asserted "every tier_registry.paid_plans() value is in our
+# exclusion set". True, and useless: mcp_dev_keys.tier does not USE that
+# vocabulary. It stores free/identified/paid/enterprise, and the literal
+# 'paid' is not a plan name — so the exclusion matched nothing and 26 paying
+# customers reached `mailable` in production. The assertion pointed at the
+# wrong producer, exactly like the code it was guarding.
+#
+# The replacement pins the vocabulary THE COLUMN ACTUALLY HOLDS, measured, and
+# requires an unknown value to be excluded.
+
+# Measured 2026-09-17 from keys_by_tier (mcp_dev_keys, status='active').
+MEASURED_TIER_VALUES = {"free": 113, "identified": 540, "paid": 47,
+                        "enterprise": 6}
+
+
+@pytest.mark.parametrize("tier", sorted(MEASURED_TIER_VALUES))
+def test_every_tier_the_column_actually_holds_is_classified(tier):
+    """★ THE REGRESSION. 'paid' and 'enterprise' must not be mailable."""
+    mailable_tier = wk.is_non_paid_tier(tier)
+    assert mailable_tier == (tier in ("free", "identified")), tier
+
+
+def test_an_unknown_tier_is_excluded_not_included():
+    """★ The asymmetry that decides the direction of the filter: under-mailing
+    costs a lead, over-mailing pitches an upgrade to a customer."""
+    for unknown in ("team", "research_seed", "admin", "platinum", "whatever"):
+        assert wk.is_non_paid_tier(unknown) is False, unknown
+
+
+def test_the_filter_is_an_allowlist_in_sql_too():
+    """A Python predicate that fails safe is no help if the SQL still
+    enumerates what to exclude."""
+    i = SRC.index("THE COHORT")
+    seg = SRC[i:i + 1400]
+    assert "= ANY(%s)" in seg, "the cohort SQL is still an exclusion list"
+    assert "<> ALL(%s)" not in seg.split("GROUP BY")[0]
+    # and the already-paid read is inverted the same way
+    j = SRC.index("SELECT DISTINCT lower(trim(email)) FROM mcp_dev_keys")
+    assert "<> ALL(%s)" in SRC[j:j + 320], (
+        "already_paid still enumerates paid tiers")
+
+
+def test_the_registry_vocabulary_is_kept_only_as_a_comment():
+    """It is not the filter — it does not speak this column's language."""
+    assert "_REGISTRY_PLAN_NAMES_FOR_REFERENCE" in SRC
     fn = next(n for n in ast.walk(ast.parse(SRC))
-              if isinstance(n, ast.FunctionDef) and n.name == "_paid_tiers")
+              if isinstance(n, ast.FunctionDef) and n.name == "is_non_paid_tier")
     body = ast.get_source_segment(SRC, fn) or ""
-    assert "tier_registry" in body and "paid_plans" in body
+    assert "paid_plans" not in body, "the broken source is back in the filter"
+    assert "NON_PAID_TIERS" in body
+
+
+def test_what_the_inversion_removed_is_published():
+    """★ A new paid tier must be VISIBLE, not silently dropped — otherwise the
+    list shrinks one day and nobody knows why."""
+    assert '"excluded_unknown_or_paid_tier"' in SRC
+    assert '"non_paid_tiers"' in SRC
 
 
 def test_a_failed_subread_names_itself_instead_of_publishing_zero(monkeypatch):
