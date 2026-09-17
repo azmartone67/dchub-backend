@@ -3832,6 +3832,127 @@ def _stored_warnings(lid):
     return _identity_warnings(row.get("title"), row.get("summary"), row.get("slug"), provider)
 
 
+# ═════════════════════════════════════════════════════════════════════════
+#  telling search engines a listing moved
+# ═════════════════════════════════════════════════════════════════════════
+#
+# /listings/<slug> is crawlable and sitemapped, but a sitemap only ANSWERS a
+# crawler — it does not summon one, so a listing published this morning waits
+# on the crawl schedule. IndexNow pushes the other way and Bing picks it up in
+# minutes; ChatGPT and Perplexity both read Bing's index, so this is the lever
+# that moves an AI answer rather than only a blue link.
+#
+# Google does NOT participate in IndexNow. Its equivalent lever is submitting
+# the sitemap in Search Console, which is a console action and has no code here.
+#
+# Every admin write pings the listing's own page AND the index page that lists
+# it. A WITHDRAWN listing is pinged too, on purpose: /listings/<slug> now 404s,
+# and asking for a recrawl is exactly how that dead URL leaves the index
+# instead of sitting in it as a live-looking result.
+_INDEXNOW_PING_WINDOW = timedelta(minutes=10)
+_INDEXNOW_RECENT = {}
+_INDEXNOW_RECENT_LOCK = threading.Lock()
+# A test run must not announce a listing to a live search engine. Every admin
+# write in this suite reaches the hook below, so without this the ~dozen test
+# files that create or edit a listing would each acquire a fresh dependency on
+# www.bing.com — and `tests/_no_network` fails the unit-tests step on exactly
+# that. Same detection and same reasoning as
+# dchub_heartbeat._test_context_reason: `pytest in sys.modules` rather than
+# PYTEST_CURRENT_TEST alone, because a thread dispatched here can outlive
+# pytest tearing that variable down. The escape hatch is what this feature's
+# OWN tests set, so they exercise the real dispatch rather than a stand-in.
+_ALLOW_PING_IN_TESTS = "DCHUB_INDEXNOW_ALLOW_IN_TESTS"
+
+
+def _ping_suppressed():
+    """Name the reason this process must not ping a search engine, else None."""
+    if os.environ.get(_ALLOW_PING_IN_TESTS) == "1":
+        return None
+    if "pytest" in sys.modules:
+        return "pytest is loaded in this process"
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return "PYTEST_CURRENT_TEST is set"
+    return None
+
+
+def _indexnow_fresh(urls):
+    """The subset of `urls` not already submitted inside _INDEXNOW_PING_WINDOW,
+    marking whatever it returns as submitted now.
+
+    This is what keeps a batch edit from fanning out: twenty listings edited in
+    a row ping the INDEX page once, not twenty times, and a double-save of one
+    listing pings it once. IndexNow de-prioritises a host that resubmits
+    unchanged URLs, so collapsing repeats protects the whole stream's standing,
+    not just this call's latency.
+
+    Process-local by design. A second worker keeps its own window, so the worst
+    case after a redeploy or across workers is a duplicate ping — cheap — rather
+    than a suppressed one, which would be a page that never gets recrawled.
+    """
+    window = _INDEXNOW_PING_WINDOW.total_seconds()
+    now = time.monotonic()
+    fresh = []
+    with _INDEXNOW_RECENT_LOCK:
+        # Releasing what the window has expired is the ONE place the window is
+        # applied, so membership below means "submitted recently" and nothing
+        # else. Deliberately not also re-checked in the loop: a second copy of
+        # the rule is worse than none, because it keeps agreeing with the first
+        # one after the first one breaks, and the tests stay green either way.
+        for url, seen in list(_INDEXNOW_RECENT.items()):
+            if now - seen >= window:
+                del _INDEXNOW_RECENT[url]
+        for url in urls:
+            if url in _INDEXNOW_RECENT:
+                continue
+            _INDEXNOW_RECENT[url] = now
+            fresh.append(url)
+    return fresh
+
+
+def _ping_indexnow(slug):
+    """Submit this listing's page and the index page to IndexNow, off-request.
+
+    Dispatched like _on_registered and never raised. An admin write reaches
+    this backend through the edge, which gives up at 15 seconds; a single
+    IndexNow submit is allowed up to 25 seconds PER endpoint and tries three.
+    Done inline, a slow or down search endpoint would fail an admin call whose
+    database write has already committed — the caller would read a 5xx for a
+    change that landed. So the ping runs after the response and its failures
+    are logged, never surfaced.
+    """
+    suppressed = _ping_suppressed()
+    if suppressed:
+        logger.debug("[pocket-listings] indexnow ping suppressed: %s", suppressed)
+        return
+    slug = (slug or "").strip()
+    urls = _indexnow_fresh([_listing_url(slug), _listing_url(None)] if slug
+                           else [_listing_url(None)])
+    if not urls:
+        return
+
+    def work():
+        key = ""
+        try:
+            from routes import indexnow
+            key = indexnow.indexnow_key()
+            out = indexnow.submit_to_indexnow(urls)
+            if out.get("ok"):
+                return
+            note = "{} {}".format(out.get("reason") or "", out.get("status") or "").strip()
+        except Exception as exc:  # noqa: BLE001 — indexing must never break a write
+            note = "{}: {}".format(type(exc).__name__, exc)
+        # The endpoint's own response body is deliberately NOT logged, and
+        # whatever IS logged has the key scrubbed out of it: an engine that
+        # rejects a submission tends to quote the payload back, and a log line
+        # is not where an operator should first read the key.
+        if key:
+            note = note.replace(key, "<redacted>")
+        logger.info("[pocket-listings] indexnow ping not accepted (%s): %s",
+                    note or "unknown", " ".join(urls))
+
+    _dispatch(work)
+
+
 @exclusive_listings_bp.route("/api/v1/admin/listings", methods=["GET", "POST"])
 def admin_listings():
     """GET: every listing including drafts and operator contact, each with its
@@ -3908,6 +4029,7 @@ def admin_listings():
         return _err(503, "write_failed", str(exc)[:200])
     if not got:
         return _err(409, "slug_exists", "slug already exists", slug=slug)
+    _ping_indexnow(got[1])
     return jsonify({"ok": True, "id": got[0], "slug": got[1], "status": status,
                     "tier_required": tier_required,
                     "warnings": _identity_warnings(title, body.get("summary"), slug,
@@ -3933,14 +4055,23 @@ def update_or_delete_listing(lid):
             c = _conn()
             try:
                 with c.cursor() as cur:
-                    cur.execute("DELETE FROM exclusive_listings WHERE id = %s", (lid,))
-                    n = cur.rowcount
+                    # RETURNING slug, not rowcount: the row is gone by the time
+                    # anything downstream could look it up, and the withdrawn
+                    # page still has to be handed to IndexNow so the now-404 URL
+                    # gets recrawled out of the index. len() of what came back is
+                    # the delete count, with no dependence on rowcount's
+                    # behaviour under RETURNING.
+                    cur.execute("DELETE FROM exclusive_listings WHERE id = %s "
+                                "RETURNING slug", (lid,))
+                    gone = cur.fetchall() or []
                 c.commit()
             finally:
                 _close(c)
         except Exception as exc:
             return _err(503, "write_failed", str(exc)[:200])
-        return jsonify({"ok": True, "deleted": n}), 200
+        for row in gone:
+            _ping_indexnow(row[0])
+        return jsonify({"ok": True, "deleted": len(gone)}), 200
 
     body = request.get_json(silent=True) or {}
     if "status" in body and body["status"] not in _VALID_STATUSES:
@@ -4000,6 +4131,7 @@ def update_or_delete_listing(lid):
         return _err(503, "write_failed", str(exc)[:200])
     if not got:
         return _err(404, "not_found", "No such listing.")
+    _ping_indexnow(got[1])
     return jsonify({"ok": True, "id": got[0], "slug": got[1], "status": got[2],
                     "tier_required": got[3], "warnings": _stored_warnings(lid)}), 200
 

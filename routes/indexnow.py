@@ -21,6 +21,7 @@ publish). Only https://dchub.cloud/* URLs are accepted (IndexNow rejects off-hos
 import datetime
 import hashlib
 import json
+import logging
 import os
 import re
 import urllib.error
@@ -28,6 +29,8 @@ import urllib.request
 
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+
+logger = logging.getLogger(__name__)
 
 indexnow_bp = Blueprint("indexnow", __name__)
 
@@ -48,6 +51,25 @@ _LAST = {"at": None, "submitted": 0, "status": None}
 # ?delta=1&since_id=<next_since> rather than by raising this.
 _PREVIEW_MAX_PUBLIC = 500
 _PREVIEW_MAX_ADMIN = 10000   # what submit_to_indexnow itself caps a submit at
+
+
+def indexnow_key() -> str:
+    """The configured IndexNow key, resolved PER CALL from DCHUB_INDEXNOW_KEY.
+
+    ONE key source for every caller — in-process hooks included — so a hook can
+    ask "is IndexNow configured?" without keeping its own copy of the answer.
+
+    Resolved per call, never latched into a caller's module global: a latched
+    copy cannot follow a rotation without a redeploy, and it leaves the
+    unconfigured path with no way to be exercised.
+
+    Returns "" when the variable is set to an empty value, which every caller
+    treats as SKIP — the protocol cannot prove ownership without a key, so a
+    keyless submit is a wasted round trip, not a degraded one. An ABSENT
+    variable keeps the module default above, which is published by design.
+    """
+    raw = os.environ.get("DCHUB_INDEXNOW_KEY")
+    return (KEY if raw is None else raw).strip()
 
 
 def _db_conn():
@@ -119,8 +141,18 @@ def submit_to_indexnow(urls):
             if isinstance(u, str) and u.startswith(f"https://{HOST}")][:10000]
     if not urls:
         return {"ok": False, "reason": "no valid dchub.cloud URLs"}
+    # No key configured → skip cleanly, here, before a socket is opened. The
+    # guard sits at this choke point rather than in each caller so every hook
+    # inherits it, and it never builds a half-filled payload: IndexNow rejects a
+    # submission whose key it cannot fetch at keyLocation, so sending one costs
+    # a round trip and buys nothing. The key itself is never logged.
+    key = indexnow_key()
+    if not key:
+        logger.info("[indexnow] no key configured — skipping %d URL(s)", len(urls))
+        return {"ok": False, "skipped": True, "reason": "no_key", "submitted": 0}
     payload = json.dumps({
-        "host": HOST, "key": KEY, "keyLocation": KEY_LOCATION, "urlList": urls,
+        "host": HOST, "key": key, "keyLocation": f"https://{HOST}/{key}.txt",
+        "urlList": urls,
     }).encode()
     # 2026-06-14: the shared aggregator https://api.indexnow.org/indexnow 403s our
     # submissions ("key not valid" — its key-file validator gets challenged at our
