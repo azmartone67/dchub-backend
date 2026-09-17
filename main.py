@@ -3954,6 +3954,12 @@ try:
         from routes.audience_export import audience_export_bp
         app.register_blueprint(audience_export_bp)
         print("[main] audience_export_bp registered: /api/v1/admin/audience/free-users[.csv]", flush=True)
+        # r-warm-keys (2026-09-17): the AGENT-key cohort. audience_export above
+        # reads `users` (web signups); ~493 addresses bound to an mcp_dev_keys
+        # row have never paid and nothing read them.
+        from routes.warm_key_cohort import register_warm_key_cohort
+        register_warm_key_cohort(app)
+        print("[main] warm_key_cohort_bp registered: /api/v1/admin/audience/warm-keys[.csv]", flush=True)
     except Exception as _aex:
         import logging
         logging.getLogger(__name__).warning('audience_export wiring failed: %s', _aex)
