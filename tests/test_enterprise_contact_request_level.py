@@ -42,6 +42,8 @@ import os
 
 import pytest
 
+from util.ephemeral_db_guard import assert_ephemeral
+
 pytest.importorskip("flask")
 from flask import Flask  # noqa: E402
 
@@ -159,12 +161,15 @@ def test_an_unknown_volume_is_rejected(client_nodb):
 # CLASS 2 — the success path, against a real Postgres. Opt-in.
 # ---------------------------------------------------------------------------
 DSN = os.environ.get("DCHUB_PG_TEST_DSN", "")
-if DSN and any(x in DSN.lower() for x in ("neon", "azure", "amazonaws", "railway", "prod")):
-    raise RuntimeError(
-        "DCHUB_PG_TEST_DSN looks like a real database; this file writes rows")
+if DSN:
+    # Asks the DATABASE whether it is disposable instead of pattern-matching
+    # its hostname. See util/ephemeral_db_guard for why the old substring
+    # blocklist was both too strict (every Neon host contains "neon") and too
+    # loose (a private-IP production host matched none of its five spellings).
+    assert_ephemeral(DSN)
 
 pg = pytest.mark.skipif(
-    not DSN, reason="set DCHUB_PG_TEST_DSN to a throwaway Postgres to run")
+    not DSN, reason="set DCHUB_PG_TEST_DSN to a stamped ephemeral Neon branch")
 
 
 def _reset_process_state():
