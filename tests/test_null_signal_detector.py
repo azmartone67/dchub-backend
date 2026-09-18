@@ -372,3 +372,123 @@ def test_permafail_set_matches_layer5(tmp_path):
     assert not missing, (
         f"brain_v2_layer5._PERMAFAIL emits {sorted(missing)} but the "
         f"l5_permafail_rejections signal does not count them")
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  THE RATIO FLOOR (2026-09-18)
+#
+#  A zero floor cannot see a signal that produces both values while
+#  carrying almost no information. autopilot verification read
+#  "192 of 8531 — both values occur": true, and useless.
+# ══════════════════════════════════════════════════════════════════════
+
+def test_ratio_floor_is_opt_in():
+    """★ THE LOAD-BEARING PROPERTY. Identical numbers; only the declared floor
+    differs. A signal that declares none must NEVER be starved — otherwise an
+    occurrence signal like l5_permafail_rejections (66 of 337 = 20%, perfectly
+    healthy) would be flagged forever and the check would get muted."""
+    assert d.evaluate_bounded_signal(10, 500, "low")["starved"] is False
+    assert d.evaluate_bounded_signal(
+        10, 500, "low", min_ratio=None)["starved"] is False
+    assert d.evaluate_bounded_signal(
+        10, 500, "low", min_ratio=0.50)["starved"] is True
+
+
+def test_signal_under_its_declared_floor_is_starved():
+    out = d.evaluate_bounded_signal(192, 8531, "low", min_ratio=0.50)
+    assert out["starved"] is True and out["pinned"] is False
+    assert out["ratio"] == round(192 / 8531, 4)
+    assert "carries almost no information" in out["reason"]
+
+
+def test_signal_above_its_floor_is_healthy():
+    out = d.evaluate_bounded_signal(300, 400, "low", min_ratio=0.50)
+    assert out["starved"] is False and out["pinned"] is False
+
+
+def test_pinned_takes_precedence_over_starved():
+    """0-of-N is the stronger statement; reporting both would double-count."""
+    out = d.evaluate_bounded_signal(0, 500, "low", min_ratio=0.50)
+    assert out["pinned"] is True and out["starved"] is False
+
+
+def test_small_sample_is_neither_pinned_nor_starved():
+    out = d.evaluate_bounded_signal(0, 3, "low", min_ratio=0.50)
+    assert out["pinned"] is False and out["starved"] is False
+
+
+def test_ratio_is_reported_even_without_a_floor():
+    """Reporting the ratio on every signal is what lets a floor be CALIBRATED
+    from a live run instead of guessed."""
+    assert d.evaluate_bounded_signal(66, 337, "low")["ratio"] == round(66 / 337, 4)
+    assert d.evaluate_bounded_signal(0, 0, "low")["ratio"] is None
+
+
+# ── the self-test's two new legs ──────────────────────────────────────
+
+def test_self_test_fails_if_the_floor_stops_flagging(monkeypatch):
+    real = d.evaluate_bounded_signal
+    monkeypatch.setattr(
+        d, "evaluate_bounded_signal",
+        lambda *a, **k: {**real(*a, **k), "starved": False})
+    st = d._self_test_bounded({"measured": [{"pinned": False}] * 6,
+                               "unmeasured": []})
+    assert st["passed"] is False
+    assert st["legs"]["starved_canary"]["passed"] is False
+
+
+def test_self_test_fails_if_an_unfloored_signal_gets_starved(monkeypatch):
+    """★ Guards the opt-in property structurally, every run."""
+    real = d.evaluate_bounded_signal
+    monkeypatch.setattr(
+        d, "evaluate_bounded_signal",
+        lambda *a, **k: {**real(*a, **k), "starved": True})
+    st = d._self_test_bounded({"measured": [{"pinned": False}] * 6,
+                               "unmeasured": []})
+    assert st["passed"] is False
+    assert st["legs"]["unfloored_canary"]["passed"] is False
+
+
+# ── the corrected denominator ─────────────────────────────────────────
+
+def test_autopilot_signal_counts_only_verifiable_rows():
+    """★ The old entry counted verified rows against ALL rows and reported
+    192 of 8531 (2.2%) — a coverage emergency that was ~98% bookkeeping."""
+    sig = next(x for x in d._BOUNDED_SIGNALS
+               if x["name"] == "autopilot_action_verification")
+    sql = " ".join(sig["sql"].split())
+    # denominator must be filtered, not a bare COUNT(*)
+    assert "COUNT(*) FILTER (WHERE outcome = 'executed_ok')" in sql, (
+        "denominator is not restricted to verifiable rows")
+    assert sql.count("executed_ok") >= 2, (
+        "numerator and denominator must BOTH be restricted to executed_ok")
+
+
+def test_autopilot_denominator_matches_what_the_verifier_selects():
+    """★ WRITER/READER PIN. The verifier only ever considers
+    outcome='executed_ok' — encoded in the ix_autopilot_unverified partial
+    index. If that predicate ever changes, this signal's denominator becomes
+    wrong again silently, which is the exact shape check 2 hunts."""
+    import os
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(d.__file__)))
+    src = open(os.path.join(root, "routes", "brain_autopilot.py"),
+               encoding="utf-8").read()
+    m = re.search(r"ix_autopilot_unverified[^\"']*WHERE\s+(.+?)\"", src)
+    assert m, "ix_autopilot_unverified partial index not found"
+    pred = m.group(1)
+    assert "outcome = 'executed_ok'" in pred, (
+        f"the verifier's candidate predicate changed to: {pred} — "
+        f"autopilot_action_verification's denominator must be updated to match")
+
+
+def test_only_coverage_signals_declare_a_floor():
+    """An occurrence signal with a floor would cry wolf forever. Today exactly
+    one entry is a coverage signal; this pins that deliberateness."""
+    floored = [x["name"] for x in d._BOUNDED_SIGNALS if "min_ratio" in x]
+    assert floored == ["autopilot_action_verification"], (
+        f"unexpected floored signals {floored} — a floor on an occurrence "
+        f"signal (e.g. l5_permafail_rejections at 20%) fires forever")
+    for x in d._BOUNDED_SIGNALS:
+        if "min_ratio" in x:
+            assert 0.0 < x["min_ratio"] < 1.0
