@@ -1754,9 +1754,17 @@ def _market_offer_html(slug, name, *, ref, facility_count=None,
     _mw = _offer_num(total_mw)
     if _mw:
         facts.append("%s MW" % format(int(round(_mw)), ","))
-    _dc = _offer_num(dcpi)
-    if _dc:
-        facts.append("DCPI %d/100" % int(round(_dc)))
+    # DCPI is deliberately NOT quoted here, though it is passed in.
+    # Two reasons, both measured live on 2026-09-17:
+    #  1. The page ALREADY shows it in a stat tile, to one decimal
+    #    ("43.3/100"). Restating it rounded gave one fact two numbers on
+    #    one page — Columbus served a 16.5 tile beside a "DCPI 16" line.
+    #  2. It is a composite VERDICT, not a count, and it currently reads
+    #    broken: Ashburn — the largest market on earth — scores 17.2/100
+    #    "AVOID". A sales line is the wrong place for a score that argues
+    #    against the sale. The tile can carry it; the offer should not.
+    # The facility and MW counts stay: both are hard measured numbers and
+    # both agree byte for byte with this page's own tiles.
 
     if facts:
         lead = ("%s: %s &mdash; live, cited, and queryable by API or MCP."
