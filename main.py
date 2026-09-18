@@ -18204,6 +18204,72 @@ def _sync_tables_bg(*table_names):
             logging.warning(f"Background sync failed: {e}")
     threading.Thread(target=_do, daemon=True).start()
 
+def _plan_write_floor(customer_email, user_id, plan_name, api_tier):
+    """Never let a CHECKOUT lower an account's existing plan.
+
+    handle_checkout_completed writes users.plan unconditionally, so any event
+    resolving to a lower-ranked plan silently demoted a paying customer.
+    Measured, not hypothetical: a $10.88 one-time credit-pack purchase
+    (cs_live_a1H3pe…QbC1MuHlXex, amount_total=1088, mode=payment, livemode=t)
+    resolved to 'starter' and moved admin001 pro(rank 4) → starter(rank 2) at
+    2026-09-17 18:35:34 — 189ms after that event was processed — while
+    source_plan='pro_onetime' and tier_expires_at=2027-06-24 still recorded
+    the Pro entitlement the write had just overwritten.
+
+    This floors CHECKOUT writes only. A genuine paid downgrade does not arrive
+    here: Stripe sends customer.subscription.updated/deleted for that, and
+    handle_subscription_updated / handle_subscription_deleted are untouched and
+    still demote to free on cancel. So this cannot strand a churned account on
+    a paid tier.
+
+    Returns the (plan_name, api_tier) to actually write — the incoming pair, or
+    the existing higher-ranked one when the incoming pair would lower it.
+    Fail-soft: any error returns the incoming pair so provisioning never breaks.
+    """
+    try:
+        from tier_registry import TIERS
+
+        def _rank(p):
+            return (TIERS.get((p or '').strip().lower()) or {}).get('rank', -1)
+
+        row = None
+        if user_id:
+            _, _rows = _pg_execute("SELECT plan FROM users WHERE id = %s",
+                                   (user_id,), fetch=True)
+            row = _rows[0] if _rows else None
+        if row is None and customer_email:
+            _, _rows = _pg_execute(
+                "SELECT plan FROM users WHERE LOWER(email) = LOWER(%s)",
+                (customer_email,), fetch=True)
+            row = _rows[0] if _rows else None
+        if not row:
+            return plan_name, api_tier
+        cur_plan = (row[0] or '').strip().lower()
+        if _rank(cur_plan) <= _rank(plan_name):
+            return plan_name, api_tier
+        kept_api = (TIERS.get(cur_plan) or {}).get('api_tier') or cur_plan
+        print(f"🛡️ no-downgrade floor: checkout resolved '{plan_name}' for "
+              f"{customer_email or user_id} but account holds '{cur_plan}' "
+              f"(rank {_rank(cur_plan)} > {_rank(plan_name)}) — keeping "
+              f"'{cur_plan}'. A pack/credit purchase is not a plan change.")
+        try:
+            send_admin_alert_email(
+                f'🛡️ DC Hub: checkout would have DOWNGRADED {customer_email or user_id}',
+                f'<h2>A checkout resolved to a LOWER plan — the floor kept the higher one</h2>'
+                f'<p><b>Account:</b> {customer_email or user_id}</p>'
+                f'<p><b>Held:</b> {cur_plan} (rank {_rank(cur_plan)})</p>'
+                f'<p><b>Checkout resolved:</b> {plan_name} (rank {_rank(plan_name)})</p>'
+                f'<p>Plan was left at <b>{cur_plan}</b>. If this buyer genuinely '
+                f'moved down a tier, change it by hand — subscription downgrades '
+                f'arrive as customer.subscription.updated, not as a checkout.</p>')
+        except Exception:
+            pass
+        return cur_plan, kept_api
+    except Exception as _floor_err:  # noqa: BLE001 — never block provisioning
+        print(f"⚠️ no-downgrade floor skipped (non-fatal): {str(_floor_err)[:120]}")
+        return plan_name, api_tier
+
+
 def handle_checkout_completed(session):
     """Handle successful checkout - upgrade user plan and API key tier. Writes to PostgreSQL first."""
     import traceback
@@ -18294,7 +18360,21 @@ def handle_checkout_completed(session):
             # _paid_mcp_tier map, so it does not stamp a full mcp_dev_keys tier —
             # the $9→full-MCP leak is closed without enforcing the rest of the
             # ladder, which is deferred.)
-            if amount_dollars == 9 or (8 <= amount_dollars <= 11):
+            # ★ r-pack-collision (2026-09-18): the upper bound was 11, and the
+            # $10 one-time CREDIT PACK the relay/upgrade funnel sells bills at
+            # $10.88 with tax — inside the band. Every pack buyer was therefore
+            # provisioned as a $9 Starter SUBSCRIBER, and (before the floor
+            # below) that write LOWERED anyone already on a higher plan.
+            # Measured: cs_live_a1H3pe…QbC1MuHlXex, amount_total=1088,
+            # mode=payment, livemode=t → users.plan pro→starter for admin001.
+            # A pack is metered credits, not a plan; it is recorded by
+            # routes/checkout_payment_refs.record_checkout_payment and must not
+            # resolve to a plan here. Bound is now 9.99 so $10+ can never read
+            # as Starter. A high-tax $9 Starter ($10.35, say) now falls to the
+            # 'free' default + ambiguous-amount admin alert — provisioned safe
+            # and flagged, which is the direction this handler already chose
+            # for every unrecognized amount.
+            if amount_dollars == 9 or (8 <= amount_dollars <= 9.99):
                 plan_name, api_tier = 'starter', 'starter'
             elif amount_dollars == 49 or (45 <= amount_dollars <= 55):
                 plan_name, api_tier = 'developer', 'developer'
@@ -18395,6 +18475,12 @@ def handle_checkout_completed(session):
                 source_plan_label = f"{plan_name}_onetime"
             print(f"📅 One-time payment ({session_mode}, ${amount_dollars}): "
                   f"stamping tier_expires_at=NOW()+365d, source_plan={source_plan_label}")
+
+        # ★ The floor sits AFTER set_tier_expiry/source_plan are computed (so a
+        # genuine one-time Pro still stamps its 365-day expiry) and BEFORE every
+        # users/api_keys write below, which all read plan_name/api_tier.
+        plan_name, api_tier = _plan_write_floor(
+            customer_email, user_id, plan_name, api_tier)
 
         rows_updated = 0
         if user_id:
