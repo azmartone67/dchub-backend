@@ -189,7 +189,7 @@ def run_planner_grading_tick() -> dict:
                         INSERT INTO planner_grades
                           (platform, model_id, score, breakdown, critiques,
                            top_fix, plan_intent)
-                        VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s)
+                        VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s) ON CONFLICT DO NOTHING
                     """, (platform, model, float(obj.get("score") or 0),
                           json.dumps(obj.get("breakdown") or {}),
                           json.dumps((obj.get("critiques") or [])[:8]),
