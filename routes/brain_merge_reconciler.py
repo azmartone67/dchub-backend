@@ -109,6 +109,10 @@ _QA_ORIGIN_STATE = "spec_doc_qa_red_ungraded"
 _MO_HEALTHY = "merged_healthy"
 _MO_INEFFECTIVE = "merged_ineffective"
 
+# A brain PR the operator closed WITHOUT merging. The rejection half of the
+# review signal — see list_closed_unmerged_brain_prs().
+_REJECT_STATE = "closed_unmerged_rejected"
+
 
 def investigation_ref(title: str):
     """The `inv #N` an innovation-drafted spec PR names, or None."""
@@ -264,6 +268,97 @@ def list_merged_brain_prs(lookback_days: int) -> dict:
                     "title": pr.get("title") or "",
                     "html_url": pr.get("html_url") or "",
                     "merged_at": merged_at,
+                    "created_at": _parse_ts(pr.get("created_at")),
+                    "author": ((pr.get("user") or {}).get("login") or ""),
+                })
+            if stop or len(batch) < 100:
+                break
+        return {"ok": True, "prs": out}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}:{str(e)[:160]}",
+                "prs": []}
+
+
+def list_closed_unmerged_brain_prs(lookback_days: int) -> dict:
+    """GET closed PRs into main; keep the ones CLOSED WITHOUT MERGING on a
+    brain head branch inside the window. Returns the same shape as
+    list_merged_brain_prs with `closed_at` in place of `merged_at`
+    (and `merged_at: None`, which the ledger column accepts).
+
+    ★ WHY THIS EXISTS (2026-09-18). `brain_review_decisions` had exactly ONE
+    production writer — record_review_decision() — and it hardcodes the
+    literal "approve". list_merged_brain_prs() only ever fetches MERGED PRs,
+    so the event that actually IS a rejection (the operator closing a brain
+    PR without merging it) reached the database through no path at all.
+
+    The consequence was not cosmetic. check_rejection_skip() is LIVE at
+    brain_v2_layer4.py:925 and reads
+    `brain_review_decisions WHERE decision='reject'` — so with no writer it
+    could only ever return False, and the brain re-proposed work that had
+    already been turned down. Measured 2026-09-18 before this change: 288
+    review decisions in 60d, 0 rejections, 4 false positives remembered
+    across 1168 persisted issues. /brain/self-assessment called the signal
+    "dead" and brain_consistency_radar.check_review_gate_never_disagrees()
+    had been firing on it.
+
+    Read-only, fail-closed, never raises — same contract as the merged
+    lister: a GitHub error returns ok:false so the caller cannot read it as
+    "nothing was rejected".
+    """
+    token = _token()
+    if not token:
+        return {"ok": False, "error": "no_token", "prs": []}
+    try:
+        import requests
+    except Exception as e:  # pragma: no cover
+        return {"ok": False, "error": f"deps:{e}", "prs": []}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    cutoff = _now() - _dt.timedelta(days=lookback_days)
+    out, pages = [], 0
+    try:
+        while pages < 3:
+            pages += 1
+            r = requests.get(
+                f"https://api.github.com/repos/{_GITHUB_REPO}/pulls",
+                headers=headers,
+                params={"state": "closed", "base": "main", "sort": "updated",
+                        "direction": "desc", "per_page": 100, "page": pages},
+                timeout=20)
+            if r.status_code != 200:
+                return {"ok": False,
+                        "error": f"{r.status_code}:{r.text[:160]}", "prs": []}
+            batch = r.json() or []
+            if not batch:
+                break
+            stop = False
+            for pr in batch:
+                upd = _parse_ts(pr.get("updated_at"))
+                if upd and upd < cutoff:
+                    stop = True
+                    break
+                # THE INVERSE OF THE MERGED LISTER: merged_at must be absent.
+                if _parse_ts(pr.get("merged_at")) is not None:
+                    continue
+                closed_at = _parse_ts(pr.get("closed_at"))
+                if not closed_at or closed_at < cutoff:
+                    continue
+                ref = ((pr.get("head") or {}).get("ref") or "")
+                if not (ref.startswith(_SPEC_PREFIX)
+                        or ref.startswith(_AUTOFIX_PREFIX)):
+                    continue  # INVARIANT: brain branches only
+                if _REVERT_MARKER in ref:
+                    continue  # a closed revert is not a rejected proposal
+                out.append({
+                    "number": pr.get("number"),
+                    "branch": ref,
+                    "title": pr.get("title") or "",
+                    "html_url": pr.get("html_url") or "",
+                    "merged_at": None,
+                    "closed_at": closed_at,
                     "created_at": _parse_ts(pr.get("created_at")),
                     "author": ((pr.get("user") or {}).get("login") or ""),
                 })
@@ -511,6 +606,81 @@ def record_review_decision(pid, label, pr) -> bool:
         return False
 
 
+def rejection_key(cur, pid, fallback_label):
+    """Return (issue_label, find_text, source) — the EXACT pair
+    brain_learning.check_rejection_skip() will hash when Layer 4 next
+    considers this work.
+
+    ★ THE WHOLE FIX TURNS ON THIS FUNCTION. issue_hash() is
+    sha1(f"{label.lower()}|{find_text[:200]}") and the live reader at
+    brain_v2_layer4.py:925 calls check_rejection_skip(issue["issue"], find)
+    — i.e. it keys on the finding label AND the search text. The existing
+    approve-writer hashes issue_hash(label) with find_text defaulted to "",
+    so a rejection written that way would hash to sha1("label|") while L4
+    looks up sha1("label|<find>"). They can never be equal, and the gate
+    would have stayed inert with a rejection row sitting right next to it —
+    the same class of defect this change exists to remove.
+
+    So both halves are read back off the PROPOSAL ROW (`issue_key`,
+    `search_text`), because that row is what Layer 5 wrote from the very
+    pair Layer 4 looks up. Deriving the key from the producer instead of
+    re-deriving it from the PR title is what keeps writer and reader in
+    agreement.
+
+    Falls back to the title-parsed label with an empty find only when no
+    proposal row matched; `source` names which path was used so a run is
+    auditable rather than merely plausible.
+    """
+    if pid is None:
+        return (fallback_label or ""), "", "title_label_no_proposal"
+    try:
+        cur.execute(
+            "SELECT issue_key, search_text FROM brain_proposed_code_fixes "
+            " WHERE id = %s", (pid,))
+        row = cur.fetchone()
+    except Exception:
+        return (fallback_label or ""), "", "proposal_read_failed"
+    if not row:
+        return (fallback_label or ""), "", "proposal_row_missing"
+    issue_key, search_text = row[0], row[1]
+    label = (issue_key or fallback_label or "")
+    src = "proposal_issue_key" if issue_key else "title_label_with_find"
+    return label, (search_text or ""), src
+
+
+def record_review_rejection(pid, label, find_text, pr, key_source) -> bool:
+    """The operator closing a brain PR without merging IS a human rejection —
+    record it through the canonical brain_learning table so
+    check_rejection_skip() and human_reviews_30d can both see it.
+
+    Mirror image of record_review_decision(). Keyed via rejection_key() so
+    the hash matches what Layer 4 looks up; see that function for why a
+    label-only hash would have made this write inert.
+    """
+    if not label:
+        return False  # unkeyable — a rejection nothing can look up is noise
+    try:
+        from routes.brain_learning import issue_hash, _conn as _blconn
+        with _blconn() as c, c.cursor() as cur:
+            cur.execute("""
+                INSERT INTO brain_review_decisions
+                    (proposal_kind, proposal_id, issue_hash, issue_label,
+                     decision, reviewer, reviewer_note)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                ("code", pid, issue_hash(label, find_text),
+                 (label or "")[:200], "reject",
+                 # The list API exposes the AUTHOR, not who closed the PR —
+                 # stay neutral, exactly as the approve path does.
+                 "github-close",
+                 (f"PR #{pr['number']} (author {pr['author'] or '?'}) CLOSED "
+                  f"WITHOUT MERGING on GitHub — {pr['html_url']} "
+                  f"[key={key_source}]")[:500]))
+        return True
+    except Exception as e:
+        logger.warning("[merge-reconciler] rejection write failed: %s", e)
+        return False
+
+
 def record_outcome(pid, still_broken, evidence, pr) -> bool:
     """Route through brain_learning.record_proposal_outcome — the canonical
     brain_fix_outcomes writer (wrong-column INSERTs fail silent; never
@@ -563,8 +733,13 @@ def run_reconciliation(dry: bool = False) -> dict:
         return report
     prs = listing["prs"]
     report["merged_brain_prs_in_window"] = len(prs)
-    if not prs:
-        return report
+    # ★ NO EARLY RETURN ON AN EMPTY MERGED LIST. It used to return here, which
+    # would have made the closed-unmerged (rejection) pass below unreachable in
+    # exactly the window that contains only rejections — a lane starved of its
+    # input while reporting ok:true. The merged loop below is a no-op on an
+    # empty list, so falling through costs one idle DB connection and keeps
+    # both passes reachable. cf the sentinel auto-merge lane that read as
+    # "conservative" for a month while it was in fact scanning nothing.
 
     c = None
     try:
@@ -695,6 +870,60 @@ def run_reconciliation(dry: bool = False) -> dict:
         report["qa_red_origin_uncredited"] = sum(
             1 for e in report["reconciled"] + report["pending"]
             if e.get("qa_red_origin"))
+
+        # ── SECOND PASS — the rejection half of the review signal ────────
+        # A brain PR closed WITHOUT merging is the operator disagreeing with
+        # the brain. Until 2026-09-18 nothing read that event, so
+        # brain_review_decisions could only ever contain 'approve'. This pass
+        # is deliberately separate from the merged loop above: it credits
+        # NOTHING (no mark_proposal_merged, no merge_outcome, no fix outcome)
+        # and writes exactly one row per PR, made idempotent by the same
+        # ledger the merged pass uses.
+        rej_listing = list_closed_unmerged_brain_prs(_lookback_days())
+        if not rej_listing.get("ok"):
+            # FAIL CLOSED, same as the merged listing — a GitHub error must
+            # never read as "nothing was rejected", which is precisely the
+            # false-clean this whole change exists to remove.
+            report["rejections_error"] = rej_listing.get("error")
+        else:
+            rej_prs = rej_listing["prs"]
+            report["closed_unmerged_brain_prs_in_window"] = len(rej_prs)
+            for pr in sorted(rej_prs, key=lambda p: p["closed_at"]):
+                if pr["number"] in done:
+                    continue
+                if acted >= cap:
+                    report["skipped"].append(
+                        {"pr": pr["number"], "why": f"per-run cap {cap}"})
+                    continue
+                acted += 1
+                entry = {"pr": pr["number"], "branch": pr["branch"],
+                         "closed_at": pr["closed_at"].isoformat()}
+                try:
+                    pid, method, detail = match_proposal(cur, pr)
+                    title_label = parse_finding_label(pr["title"])
+                    label, find_text, key_source = rejection_key(
+                        cur, pid, title_label)
+                    entry.update(match=method, match_detail=detail,
+                                 proposal_id=pid, issue_label=label,
+                                 key_source=key_source,
+                                 find_text_present=bool(find_text))
+                    if not dry:
+                        entry["rejection_recorded"] = record_review_rejection(
+                            pid, label, find_text, pr, key_source)
+                        _upsert_ledger(
+                            cur, pr, pid, method, label, _REJECT_STATE, None,
+                            f"closed unmerged {pr['closed_at'].isoformat()} "
+                            f"— recorded as a human rejection [{key_source}]")
+                    report.setdefault("rejected", []).append(entry)
+                except Exception as e:
+                    try:
+                        c.rollback()
+                    except Exception:
+                        pass
+                    report["errors"].append(
+                        {"pr": pr["number"],
+                         "error": f"{type(e).__name__}: {e}"[:200]})
+            report["acted"] = acted
     except Exception as e:
         report.update(ok=False, error=f"{type(e).__name__}: {str(e)[:200]}")
     finally:
