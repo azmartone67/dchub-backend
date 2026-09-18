@@ -290,6 +290,34 @@ SCHEMA_STATEMENTS = [
         """UPDATE mcp_conversions SET caller_id = LOWER(TRIM(user_email))
             WHERE caller_id IS NULL AND user_email IS NOT NULL""",
         "CREATE INDEX IF NOT EXISTS idx_mcp_conv_caller_id ON mcp_conversions(caller_id)",
+        # ★ r-paid-signal-lane3 (2026-09-17): paid_signal_attribution_30d's
+        # relayed_click lane (added by #4684) could NEVER fire, for any row.
+        # routes/handoff_definition.paid_signal_relayed_session_sql resolves
+        #     coalesce(nullif(p.session_id,''), <click session via
+        #              pay2.stripe_session_id = p.stripe_session_id>)
+        # and mcp_conversions has NEITHER session_id NOR stripe_session_id, so
+        # both arms were NULL and the predicate was never TRUE. #4696 made that
+        # silent rather than fatal (to_jsonb(c) ->> 'x' yields NULL for a key
+        # the row lacks) — correct, but the lane it cost is the one #4684
+        # existed to add. Measured live 2026-09-17: bridged_via_relayed_click 0
+        # of paid_total 3, attribution_rate_pct 0.0.
+        #
+        # The identity is ALREADY IN THE TABLE under the wrong name. Three
+        # writers — main.py's two pack branches and flask_mcp_endpoints.py's
+        # subscription-mode insert — put sess['id'] (a cs_... CHECKOUT SESSION)
+        # into stripe_subscription_id, because a one-time payment has no
+        # subscription and that column is the ON CONFLICT dedup key. So:
+        # declare the real column, backfill from those rows, index it. Same
+        # ALTER -> backfill -> INDEX trio as caller_id directly above.
+        "ALTER TABLE mcp_conversions ADD COLUMN IF NOT EXISTS stripe_session_id TEXT",
+        # left(...) = 'cs_' and NOT "LIKE 'cs_%'": in LIKE, '_' is a
+        # single-character wildcard, so 'cs_' would also match 'csX', and a
+        # bare % is the empty-tuple trap documented elsewhere in this repo.
+        """UPDATE mcp_conversions SET stripe_session_id = stripe_subscription_id
+            WHERE stripe_session_id IS NULL
+              AND left(COALESCE(stripe_subscription_id, ''), 3) = 'cs_'""",
+        "CREATE INDEX IF NOT EXISTS idx_mcp_conv_stripe_session "
+        "ON mcp_conversions(stripe_session_id)",
         # r-keybound-platform (2026-07-18, #1660 residual): the agent PLATFORM
         # that drove a key-bound (pk-/k-) conversion, resolved from per-key
         # call history (mcp_signal_canonical.resolve_key_platform over
