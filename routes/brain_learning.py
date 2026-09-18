@@ -1686,8 +1686,32 @@ def brain_self_assessment():
                 f"{weight_sum:.2f} of 1.00). Unreadable metrics are null, not "
                 "0 — scoring them 0 would publish an unread input as an F.")}
            if errors else {}),
-        "purpose": ("Brain's letter-grade self-assessment. Agents should "
-                    "fall back to deterministic logic when grade is C or below."),
+        # Positioning (2026-09-18): this payload is advertised to agents in
+        # /.well-known/ai-agents.json, and /api/v1/status re-publishes the
+        # grade + rationale to anonymous callers. Both surfaces hand a reader
+        # "grade": "C" with no way to tell WHAT was graded. This grades the
+        # brain's self-repair loop (detect -> propose -> apply -> verify), NOT
+        # the infrastructure data DC Hub serves. Absent this field the honest
+        # answer reads as "the data is unreliable", which it does not say.
+        # State the scope in the payload; the endpoint name does not carry it.
+        "scope": {
+            "grades": "brain_self_repair_loop",
+            "does_not_grade": "dchub_infrastructure_data",
+            "detail": ("Measures DC Hub's internal self-repair loop — how "
+                       "reliably the brain detects an issue, proposes a fix, "
+                       "applies it and verifies the effect. It says NOTHING "
+                       "about the accuracy or freshness of the facility, "
+                       "power, grid, fiber or market data DC Hub serves. For "
+                       "data limits read the constraint_coverage / coverage "
+                       "blocks the data tools return, or "
+                       "/api/v1/freshness/radar."),
+        },
+        "purpose": ("Brain's letter-grade self-assessment, scoped to the "
+                    "internal self-repair loop (see `scope`). Agents relying "
+                    "on brain-PROPOSED auto-fixes should fall back to "
+                    "deterministic logic when grade is C or below. This is "
+                    "NOT a signal about DC Hub's served data — do not "
+                    "downgrade trust in query results on the basis of it."),
         "drill_deeper": {
             "effectiveness": "/api/v1/brain/effectiveness",
             "outcomes":      "/api/v1/brain/outcomes",

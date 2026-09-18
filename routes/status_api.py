@@ -76,6 +76,12 @@ def _build_status_payload():
         "grade": sa.get("grade"),
         "weighted_score": sa.get("weighted_score"),
         "rationale": sa.get("rationale"),
+        # Carry the scope block through. This endpoint is the OTHER public
+        # publisher of the grade + rationale (anonymous, 200), so dropping
+        # scope here would republish the ambiguity the brain payload just
+        # fixed. Whatever self-assessment says about what it grades, /status
+        # says too.
+        "scope": sa.get("scope"),
         "component_scores": sa.get("component_scores"),
         "metrics": sa.get("metrics"),
     }
