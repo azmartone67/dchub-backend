@@ -53,6 +53,7 @@ import re
 from flask import Blueprint, Response, jsonify, request
 
 from utils.cache import BoundedCache
+from util.facility_count_basis import mw_coverage_note
 # Derived per call, never frozen at import (see #4334).
 from tier_registry import price_display
 from routes._paid_seat_heal import paid_seat_heal_html
@@ -498,7 +499,14 @@ def _section_hero(cur, slug: str, meta: dict) -> dict:
                                      THEN power_mw ELSE 0 END), 0) AS pipeline,
                    COALESCE(SUM(CASE WHEN status ILIKE %s OR status ILIKE %s
                                      THEN power_mw ELSE 0 END), 0) AS planned,
-                   COALESCE(SUM(power_mw), 0) AS total_mw
+                   COALESCE(SUM(power_mw), 0) AS total_mw,
+                   -- Denominator for the four MW sums above. power_mw is NULL
+                   -- on ~19 of every 20 discovered_facilities rows (measured
+                   -- 2026-09-18) and SUM COALESCEs it away, so "Total
+                   -- Announced" reads
+                   -- as a fleet capacity when it is the capacity of whichever
+                   -- rows happened to publish one.
+                   COUNT(*) FILTER (WHERE power_mw > 0) AS mw_reporting_count
               FROM discovered_facilities
              WHERE {where}
                AND {_FLEET_FILTER}
@@ -512,6 +520,8 @@ def _section_hero(cur, slug: str, meta: dict) -> dict:
             out["pipeline_mw"]        = _as_float(r[2])
             out["planned_mw"]         = _as_float(r[3])
             out["total_announced_mw"] = _as_float(r[4])
+            # Travels WITH the sums above and only with them.
+            out["mw_reporting_count"] = _as_int(r[5])
     except Exception:
         pass
     # Invested capital — sum of value on deals where this hyperscaler is
@@ -831,7 +841,11 @@ def _section_water(cur, meta: dict) -> dict:
         cur.execute(
             f"""
             SELECT UPPER(COALESCE(state, '')) AS state,
-                   COALESCE(SUM(power_mw), 0) AS mw
+                   COALESCE(SUM(power_mw), 0) AS mw,
+                   -- Denominator for the per-state MW split. HAVING mw > 0
+                   -- already hides states whose rows report nothing, so the
+                   -- split reads as complete when it is not.
+                   COUNT(*) FILTER (WHERE power_mw > 0) AS mw_n
               FROM discovered_facilities
              WHERE {where}
                AND COALESCE(country, 'US') IN ('US', 'United States', '')
@@ -842,7 +856,9 @@ def _section_water(cur, meta: dict) -> dict:
             """,
             params,
         )
-        state_mw = [(r[0], float(r[1] or 0)) for r in cur.fetchall() if r[0]]
+        _srows = [r for r in cur.fetchall() if r[0]]
+        state_mw = [(r[0], float(r[1] or 0)) for r in _srows]
+        out["state_mw_reporting_count"] = sum(int(r[2] or 0) for r in _srows)
     except Exception:
         state_mw = []
     if not state_mw:
@@ -1138,7 +1154,12 @@ def _section_capital_velocity(cur, meta: dict, hero: dict) -> dict:
             prov_where, prov_params = _ilike_clauses("provider", peer_aliases)
             cur.execute(
                 f"""
-                SELECT COALESCE(SUM(power_mw), 0) FROM discovered_facilities
+                SELECT COALESCE(SUM(power_mw), 0),
+                       -- Denominator: this scalar feeds the $/MW comparison
+                       -- against a peer, so a peer with sparser MW coverage
+                       -- reads as more expensive per MW.
+                       COUNT(*) FILTER (WHERE power_mw > 0) AS mw_n
+                  FROM discovered_facilities
                  WHERE {prov_where}
                    AND {_FLEET_FILTER}
                 """,
@@ -1363,6 +1384,11 @@ def _render_html(brief: dict) -> str:
     outlook = brief.get("outlook") or {}
 
     total_mw = hero.get("total_announced_mw") or 0
+    # Denominator beside "Total Announced" — a sparse SUM published
+    # without it reads as the fleet's capacity.
+    _mwcov = mw_coverage_note(hero.get("mw_reporting_count"),
+                              hero.get("facility_count"))
+    _mwcov_l = f"<small> · {_mwcov}</small>" if _mwcov and total_mw else ""
     op_mw    = hero.get("operational_mw") or 0
     pl_mw    = hero.get("pipeline_mw") or 0
     fc       = hero.get("facility_count") or 0
@@ -1567,6 +1593,7 @@ def _render_html(brief: dict) -> str:
  .kpi-v{{font-size:1.8rem;font-weight:700;font-family:'JetBrains Mono',ui-monospace,monospace;color:{color};line-height:1.1}}
  .kpi-v small{{font-size:1.1rem;color:var(--mut);font-weight:500}}
  .kpi-l{{font-size:.74rem;color:var(--dim);margin-top:6px;text-transform:uppercase;letter-spacing:.08em;font-family:'JetBrains Mono',monospace}}
+ .kpi-l small{{text-transform:none;letter-spacing:normal;font-family:inherit;color:var(--mut)}}
  table.t{{width:100%;border-collapse:collapse;margin:12px 0}}
  table.t th{{text-align:left;padding:9px 11px;background:var(--surf2);font-size:.72rem;color:var(--mut);border-bottom:1px solid var(--b);text-transform:uppercase;letter-spacing:.05em;font-family:'JetBrains Mono',monospace}}
  table.t td{{padding:9px 11px;border-bottom:1px solid var(--b);font-size:.92rem;color:#d4d4d8}}
@@ -1599,7 +1626,7 @@ def _render_html(brief: dict) -> str:
 <section>
   <h2>1 · Hero</h2>
   <div class="grid4">
-    <div class="kpi"><div class="kpi-v">{total_mw:,.0f}<small> MW</small></div><div class="kpi-l">Total Announced</div></div>
+    <div class="kpi"><div class="kpi-v">{total_mw:,.0f}<small> MW</small></div><div class="kpi-l">Total Announced{_mwcov_l}</div></div>
     <div class="kpi"><div class="kpi-v">{op_mw:,.0f}<small> MW</small></div><div class="kpi-l">Operational</div></div>
     <div class="kpi"><div class="kpi-v">{pl_mw:,.0f}<small> MW</small></div><div class="kpi-l">Under Construction</div></div>
     <div class="kpi"><div class="kpi-v">{_esc(invested_disp)}</div><div class="kpi-l">Tracked Capital</div></div>

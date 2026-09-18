@@ -162,3 +162,73 @@ def basis(population: str, unit: str, grouping: str, note: str | None = None) ->
     if note:
         out["note"] = note
     return out
+
+
+def mw_coverage_note(reporting, total) -> str:
+    """'9 of 91 report MW', or '' when the coverage is unknown.
+
+    '' whenever either half is missing, so a painter that cannot measure
+    coverage renders exactly what it renders today rather than a fabricated
+    "0 of 0". Escape-free by construction: the output is two integers.
+
+    ★ ONE COPY, SIX PAINTERS. #4710 introduced this for /markets/<slug> (the
+    cached brief and market_short_html's SEO shell). Measured 2026-09-18, four
+    more surfaces published the same bare SUM(power_mw) with no denominator:
+    routes/market_brief.py, routes/operator_brief.py, routes/operators.py and
+    routes/hyperscaler_brief.py. It lives here — beside the capacity_basis
+    vocabulary that already defines what a MW total MEANS — because a second
+    copy of this string would drift from the first.
+
+    WHY THE DENOMINATOR IS NOT COSMETIC: power_mw is NULL for 91.8% of
+    `facilities` and 94.9% of `discovered_facilities` (measured 2026-09-18),
+    and every fleet aggregate COALESCEs that NULL to 0. A market whose rows
+    mostly do not record capacity still yields a confident-looking SUM. Austin
+    reads 107 MW; 4 of its 91 facilities reported anything at all.
+    """
+    try:
+        _rep, _tot = int(reporting), int(total)
+    except (TypeError, ValueError):
+        return ""
+    if _tot <= 0:
+        return ""
+    return f"{_rep:,} of {_tot:,} report MW"
+
+
+# ── Which sources may set power_mw at all ────────────────────────────────
+#
+# A source belongs here when it identifies that a data centre EXISTS without
+# publishing its capacity. Measured 2026-09-18 against the live fleet:
+#
+#   openstreetmap  688 discovered_facilities rows carry a power_mw, and ALL
+#                  688 have raw_data IS NULL and sqft IS NULL — there is no
+#                  source record behind any of them. The values cluster on
+#                  four constants (5.0 x263, 50.0 x169, 14.0 x78, 18.0 x63)
+#                  spread across unrelated operators — atNorth, QTS, Verizon
+#                  and Universite Claude Bernard all read exactly 5.0 — which
+#                  is a flat default, not a measurement. All were written in
+#                  one closed window (2026-01-17 .. 2026-03-02); every OSM row
+#                  since reads NULL. routes/osm_crawler.py already says so in
+#                  its INSERT: "OSM tells us a data centre EXISTS; it does not
+#                  tell us its capacity."
+#
+# This is deliberately NARROW. A source is listed only once it has been
+# measured to carry no capacity basis — not because it merely looks thin.
+# PeeringDB and the provider directories publish no power_mw today, but they
+# are absent here because nothing in them has been shown to FABRICATE one.
+NON_CAPACITY_SOURCES = frozenset({"openstreetmap"})
+
+
+def source_publishes_capacity(source) -> bool:
+    """False when `source` identifies facilities but publishes no capacity.
+
+    The single predicate for "may this row's power_mw be trusted, copied or
+    backfilled". It exists so the ingest writer and any future backfill cannot
+    disagree about which values are real: a copier that trusts a source the
+    writer refuses re-introduces exactly what the writer was fixed to stop.
+
+    Unknown/empty sources return True — this refuses only what has been
+    measured to fabricate, and a blanket denial would silently drop the
+    curated feeds (seed, datacentermap, operator_website) that are the only
+    real capacity the fleet has.
+    """
+    return str(source or "").strip().lower() not in NON_CAPACITY_SOURCES
