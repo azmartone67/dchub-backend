@@ -88,6 +88,18 @@ def _preflight(key: str, project: str) -> None:
             "secret so it is not exposed, but overwrite it now that it is in "
             "the wrong place, and check nothing else received the same paste.")
 
+    # The second wrong value people paste, and the one a shape check cannot
+    # catch: a branch id is a well-formed 28-character slug that simply names
+    # the wrong KIND of object. Neon prefixes branch ids with "br-"; project
+    # ids carry no prefix.
+    if project.startswith("br-"):
+        raise SystemExit(
+            f"NEON_PROJECT_ID is a BRANCH id ({project}), not a project id — "
+            "branch ids start with 'br-'. The project id is the segment after "
+            "/projects/ in the console URL:\n"
+            "  console.neon.tech/app/projects/<THIS-IS-THE-PROJECT-ID>\n"
+            "  (a branch id IS what --parent-id takes, if you meant that)")
+
     bad = [c for c in project if c.isspace() or c in "/?#:@"]
     if bad:
         raise SystemExit(

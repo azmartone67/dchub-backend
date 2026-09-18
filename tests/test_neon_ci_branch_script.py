@@ -262,3 +262,19 @@ def test_a_connection_string_pasted_as_the_project_id_is_named_as_such(monkeypat
     assert "CONNECTION STRING" in msg
     assert "LIVE DATABASE CREDENTIAL" in msg, "must flag that the value is a credential"
     assert "neondb_owner" not in msg and "pw@" not in msg, "echoed the credential"
+
+
+def test_a_branch_id_pasted_as_the_project_id_is_named_as_such(monkeypatch):
+    """The second wrong paste, and invisible to a shape check.
+
+    `br-winter-resonance-afqm5ih8` is a well-formed 28-character slug with no
+    whitespace and no path characters — it is simply the wrong KIND of object,
+    so only the 'br-' prefix distinguishes it. Printing it is fine: a branch id
+    is an identifier, not a credential.
+    """
+    monkeypatch.setattr(nb, "_req", _projects("winter-resonance-12345678"))
+    with pytest.raises(SystemExit) as e:
+        nb._preflight("k", "br-winter-resonance-afqm5ih8")
+    msg = str(e.value)
+    assert "BRANCH id" in msg
+    assert "not among" not in msg, "must not fall through to the generic case"
