@@ -20,6 +20,7 @@ measurement wiring:
 No DB, no network — `main` is stubbed before any routes import.
 """
 import json
+import pathlib
 import re
 import sys
 import types
@@ -358,3 +359,82 @@ def test_bare_connect_onramp_hook_records(monkeypatch):
     # other paths -> no row
     client.get("/pricing?src=page-onramp")
     assert len(db.inserts) == 1
+
+
+# ── 6. robots.txt /*? — internal links must not be crawl-blocked ──────────
+# ★ #4725 (2026-09-18): robots.txt line 33 carries `Disallow: /*?` under
+# `User-agent: *`, so ANY internal href with a query string is a link Google
+# is forbidden to follow. The DCPI market page's only money-page CTA pointed
+# at /pricing?ref=dcpi&tool=<slug>, making the single conversion link on 333
+# market pages uncrawlable. #4725 moved it to a #fragment.
+#
+# That fix shipped with NO test — the property was asserted nowhere in the
+# suite (no test referenced `ref=dcpi` at all), which is why the regression
+# was invisible until it was measured by hand against live HTML.
+#
+# Two guards, because the page is composed from two sources:
+#   * the template itself (the CTA, nav, breadcrumbs) — rendered for real;
+#   * blocks injected as pre-built HTML strings (facilities_html, built by
+#     _dcpi_facility_list_html against the DB, which is what the big markets
+#     such as ashburn carry and the small ones do not). The render guard scans
+#     the COMPOSED page, so injected markup is in scope; the source guard
+#     covers that helper's own link literals without needing a database.
+
+_INTERNAL_HREF = re.compile(r'href=["\'](/[^"\']*)["\']')
+
+
+def _robots_blocked(hrefs):
+    """Internal hrefs robots.txt `Disallow: /*?` forbids Google to follow."""
+    return sorted({h for h in hrefs if "?" in h})
+
+
+def test_dcpi_emits_no_robots_blocked_internal_link():
+    for gated in (True, False):
+        html = _render_dcpi(gated)
+        hrefs = _INTERNAL_HREF.findall(html)
+        # Floor: a scan that finds nothing must fail, not pass vacuously.
+        assert len(hrefs) >= 5, (
+            f"gated={gated}: only {len(hrefs)} internal hrefs found — the "
+            "regex stopped matching the template, so this guard is vacuous")
+        blocked = _robots_blocked(hrefs)
+        assert not blocked, (
+            f"gated={gated}: /dcpi/<slug> emits internal link(s) robots.txt "
+            f"`Disallow: /*?` blocks Google from following: {blocked}. "
+            "Use a #fragment (/pricing#ref=...) instead of a query string.")
+
+
+def test_dcpi_composed_page_guard_sees_injected_blocks():
+    """The render guard must scan injected HTML, not just template literals.
+
+    facilities_html is the block big markets (ashburn) carry and small ones
+    (abilene) do not — it reaches the page as a pre-built string, so a guard
+    that only read the template source would be blind to it.
+    """
+    injected = '<ul><li><a href="/facilities/x?ref=dcpi">X</a></li></ul>'
+    app = Flask(__name__)
+    with app.app_context():
+        html = render_template_string(
+            dcpi_mod.DCPI_MARKET_TEMPLATE, s=_SDict(_DCPI_S),
+            risks=["risk one"], opps=["opp one"], gated=False,
+            narrative="test narrative",
+            place_label=dcpi_mod._place_label(_DCPI_S.get("market_name"),
+                                              _DCPI_S.get("state")),
+            facilities_html=injected)
+    assert "/facilities/x?ref=dcpi" in _robots_blocked(
+            _INTERNAL_HREF.findall(html)), (
+        "the composed-page scan did not see a robots-blocked link injected "
+        "via facilities_html — the render guard above would be blind to the "
+        "very path that serves the big markets")
+
+
+def test_dcpi_module_has_no_robots_blocked_internal_href_literal():
+    """Covers every link literal in routes/dcpi.py, DB-backed helpers included."""
+    src = pathlib.Path(dcpi_mod.__file__).read_text(encoding="utf-8")
+    hrefs = _INTERNAL_HREF.findall(src)
+    assert len(hrefs) >= 30, (
+        f"only {len(hrefs)} internal href literals found in routes/dcpi.py — "
+        "expected 37+; the scan is not reading the module it claims to cover")
+    blocked = _robots_blocked(hrefs)
+    assert not blocked, (
+        f"routes/dcpi.py emits internal link literal(s) robots.txt blocks: "
+        f"{blocked}")
