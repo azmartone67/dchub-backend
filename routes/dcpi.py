@@ -8862,8 +8862,19 @@ def public_market_page(slug):
                            ORDER BY computed_at DESC LIMIT 1""", (slug, slug))
             _alt = cur.fetchone()
         if _alt and _alt.get("market_slug"):
-            from flask import redirect
-            return redirect(f"/dcpi/{_alt['market_slug']}", code=301)
+            # Only ever redirect to a slug THIS route would serve. A stored
+            # slug containing a period is normalised away at the top of this
+            # function, which would bounce straight back down here and fold to
+            # the same requested slug again — an infinite 301 loop that every
+            # status-code check still passes. Measured 2026-09-17: 1 of the 335
+            # published dcpi slugs has any non [a-z0-9-] char (the apostrophe
+            # this fixes) and none has a period, so this latches a future row
+            # rather than fixing a live bug.
+            _target = _alt["market_slug"]
+            _tnorm, _tsuf = normalize_periods(_target)
+            if _tnorm == _target and not _tsuf:
+                from flask import redirect
+                return redirect(f"/dcpi/{_target}", code=301)
         # phase 284: even 404 should ship the CSP so it doesn't trip the watch
         r = Response(f"<h1>Market not found: {slug}</h1>", status=404, mimetype="text/html")
         r.headers["Content-Security-Policy"] = _DCPI_CSP

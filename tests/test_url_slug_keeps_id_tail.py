@@ -179,3 +179,24 @@ def test_the_dcpi_fallback_runs_before_the_404_is_returned():
     # and it must be reachable only once the exact lookup missed
     branch = src.rindex("if not s:", 0, fallback.start())
     assert branch < fallback.start()
+
+
+def test_the_dcpi_fallback_cannot_301_into_a_redirect_loop():
+    """The fallback must not hand back a slug the top of the route rewrites.
+
+    normalize_periods() strips periods and runs BEFORE the lookup. A stored
+    slug like 'st.-louis' folds to 'st-louis', so an unguarded fallback would
+    301 /dcpi/st-louis -> /dcpi/st.-louis -> (periods) /dcpi/st-louis forever.
+    Every status-code check passes on a loop, so this is guarded at the source.
+    """
+    from util.slug_suffix import normalize_periods
+    # the real canonical target is a fixed point -> safe to redirect to
+    assert normalize_periods("coeur-d'alene") == ("coeur-d'alene", "")
+    # a period slug is NOT -> redirecting to it would bounce
+    assert normalize_periods("st.-louis")[0] == "st-louis"
+
+    src = open(DCPI, encoding="utf-8").read()
+    blk = src[_SQL_FOLD.search(src).start():src.index('f"<h1>Market not found: {slug}</h1>"')]
+    assert "normalize_periods(_target)" in blk, "fallback redirects without the loop latch"
+    assert blk.index("normalize_periods(_target)") < blk.index("redirect(f\"/dcpi/{_target}\""), \
+        "the latch must run BEFORE the redirect, not after"
