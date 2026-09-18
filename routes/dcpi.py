@@ -8104,7 +8104,28 @@ h1 {
   <div class="cta-pro">
     <h2>Drill into {{ s.market_name }} at the county level.</h2>
     <p>Free alerts tell you {{ s.market_name }} moved. Pro tells you <em>where</em> — the score at the county level so you can pinpoint which sub-markets have the headroom, plus PDF export for your buyers.</p>
-    <a href="/pricing?ref=dcpi&tool={{ s.market_slug }}">Get Pro · $199/mo →</a>
+    <!-- ★ THE ATTRIBUTION MOVED TO THE FRAGMENT, and the fragment is the whole
+         point. This read `/pricing?ref=dcpi&tool={{ s.market_slug }}`, and
+         robots.txt Disallows `/*?` for EVERY crawler group, so all 333 DCPI
+         pages pointed their only money-page link at a URL we explicitly forbid
+         crawlers to fetch. Google's 2026-09-17 coverage export confirms it:
+         /pricing?ref=dcpi&tool=dc, &tool=rome and &tool=katy are all filed
+         under "Blocked by robots.txt" (5,316 URLs, up from 3,609 on 09-03).
+
+         ★ A BARE /pricing WOULD HAVE BEEN WRONG. Unlike be#4620's
+         `/connect?src=page-onramp` — where nothing read the parameter — this
+         one IS read: pricing.html composes `ref`/`tool` into the
+         client_reference_id Stripe surfaces in webhooks, and
+         routes/stripe_direct_upgrade.py reads both. Dropping them would have
+         silently cost real per-market conversion attribution to fix a crawl
+         report.
+
+         A fragment is never sent to the server and is never a separate crawl
+         target, so the crawler sees canonical /pricing while the human keeps
+         the attribution. REQUIRES fe#1506 (pricing.html reads ref/tool from
+         the hash as well as the query) to be LIVE FIRST — until it is, this
+         link carries attribution nothing parses. -->
+    <a href="/pricing#ref=dcpi&tool={{ s.market_slug }}">Get Pro · $199/mo →</a>
   </div>
 </div>
 
