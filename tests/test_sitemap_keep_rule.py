@@ -113,7 +113,16 @@ def _load(cur=None):
     assert not missing, f"main.py no longer defines {sorted(missing)}"
 
     conn = _Conn(cur) if cur is not None else None
-    ns = {"os": os, "re": re, "logger": _Log(), "_dt": datetime.datetime,
+    # ★★★ `_dt` IS DELIBERATELY NOT INJECTED HERE — injecting it is what let the
+    #     rule ship dead. `_dt` is not a module-level name in main.py, so when
+    #     _proven_recent_slugs referenced it as a global the shipped code raised
+    #     NameError on every rebuild while THIS harness, which supplied the
+    #     name, stayed green for two days. A fixture must not be more capable
+    #     than the module it stands in for: every name below is one main.py
+    #     really binds at module scope, and
+    #     test_the_harness_supplies_no_global_production_lacks asserts that.
+    #     See [[feedback_fixture_more_capable_than_the_real_object]].
+    ns = {"os": os, "re": re, "logger": _Log(),
           "get_read_db": (lambda: conn), "__name__": "main_stub"}
     exec(compile("\n\n".join(parts), SRC, "exec"), ns)
     ns["_conn"] = conn
@@ -247,3 +256,118 @@ def test_an_unparseable_entry_is_dropped_rather_than_published_blind(bad):
     ns["_proven_recent_slugs"] = lambda: set(PROVEN_10)
     kept, _ = ns["_apply_keep_rule"](AI + [bad], GATED)
     assert bad not in kept
+
+
+# ── the harness must not be more capable than the module ────────────────
+#
+# ★★★ THIS IS THE GUARD THE 2026-09-16 SHIP LACKED. #4641's keep rule was dead
+#     code in production from the moment it merged: _proven_recent_slugs read
+#     `_dt.now().date()`, `_dt` is only ever a FUNCTION-LOCAL import elsewhere in
+#     main.py and never a module-level name, so the currency test raised
+#     NameError on every rebuild. The `except Exception` around it reads any
+#     failure as "the impression side is unreadable" and fails OPEN, so the only
+#     trace was an INFO-adjacent warning and the AI family kept publishing in
+#     full — 19,145 URLs where the rule said 13,377. Measured in production
+#     2026-09-18 05:22:25Z:
+#         sitemap: proven-recent read failed (name '_dt' is not defined)
+#             — keep rule NOT applied, AI family published in full
+#
+# ★ WHY EVERY OTHER TEST IN THIS FILE STAYED GREEN. `_load()` exec's the sliced
+#   source in a namespace it builds by hand, and that namespace INJECTED
+#   `_dt`. So the suite ran a program strictly more capable than main.py:
+#   test_only_the_newest_refresh_counts_as_in_window exercised the exact line
+#   that was failing in production and passed. A fail-open plus an over-capable
+#   fixture is silent in both directions.
+#
+# ★ WHAT THIS ASSERTS, and why it is structural rather than another stub test.
+#   Slicing functions out of their module is the right call here (importing
+#   main.py opens database connections), but it severs the one check the
+#   interpreter would have done for free: that a global a function reads is a
+#   global the module actually binds. So do it explicitly — symtable gives the
+#   real per-function global set the compiler computes, and the module scope is
+#   collected from main.py's own top level. A name that appears in the former
+#   and not the latter is a NameError waiting for the next rebuild, whatever
+#   this file injects.
+#
+#   Note this test PASSES once the function imports `_dt` itself: a local import
+#   makes the name local, so it leaves the global set. That is the fix and the
+#   guard agreeing, not the guard being satisfied by the comment above it.
+import builtins
+import symtable
+
+
+def _bound_ids(target, into):
+    if isinstance(target, ast.Name):
+        into.add(target.id)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for el in target.elts:
+            _bound_ids(el, into)
+    elif isinstance(target, ast.Starred):
+        _bound_ids(target.value, into)
+
+
+def _module_scope_names():
+    """Every name main.py binds at MODULE level, plus the builtins.
+
+    Walks top-level statements and descends through if/try/with/for bodies —
+    those execute at import and do bind globals — but never into a function or
+    class body, which do not.
+    """
+    names = set(dir(builtins))
+    stack = list(_TREE.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            names.add(node.name)
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                names.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                _bound_ids(t, names)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            _bound_ids(node.target, names)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            _bound_ids(node.target, names)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    _bound_ids(item.optional_vars, names)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        for field in ("body", "orelse", "finalbody", "handlers"):
+            stack.extend(getattr(node, field, None) or [])
+    return names
+
+
+def _extracted_source():
+    parts = [ast.get_source_segment(_TEXT, node) for node in _TREE.body
+             if isinstance(node, ast.FunctionDef) and node.name in _WANT_FN]
+    assert len(parts) == len(_WANT_FN), "main.py no longer defines all _WANT_FN"
+    return "\n\n".join(parts)
+
+
+def test_the_harness_supplies_no_global_production_lacks():
+    module_names = _module_scope_names()
+    assert "_SITEMAP_LOC_RE" in module_names, (
+        "sanity: the module-scope collector found no module-level assignment, "
+        "so an empty result would make this test vacuous")
+    assert "_dt" not in module_names, (
+        "sanity: `_dt` has become a module-level name in main.py, which makes "
+        "this guard blind to the defect it exists for — re-derive it")
+
+    table = symtable.symtable(_extracted_source(), SRC, "exec")
+    sliced = {fn.get_name() for fn in table.get_children()}
+    offenders = {}
+    for fn in table.get_children():
+        reads = {s.get_name() for s in fn.get_symbols() if s.is_global()}
+        missing = sorted(n for n in reads
+                         if n not in module_names and n not in sliced)
+        if missing:
+            offenders[fn.get_name()] = missing
+    assert not offenders, (
+        "these sliced functions read globals main.py does not bind at module "
+        "scope, so they raise NameError in production no matter what this "
+        f"harness injects: {offenders}")

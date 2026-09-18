@@ -34231,7 +34231,24 @@ def _proven_recent_slugs():
       above (`impressions >= 10`, no currency test). That one READMITS past a
       gate, where over-admitting costs one thin URL; this one REMOVES, where
       over-refusing costs a live page its only sitemap entry.
+
+    ★★★ THE `_dt` IMPORT IS LOAD-BEARING, and its absence is why this whole
+      rule was dead code from 2026-09-16 to 2026-09-18. `_dt` is NOT a
+      module-level name in main.py — every other user imports it as a function
+      LOCAL. This function referenced it as a global, so the currency test
+      below raised NameError on every rebuild, the `except Exception` read that
+      as "the impression side is unreadable" and failed OPEN, and the AI family
+      published in full — 19,145 URLs instead of 13,377. Measured in production:
+        sitemap: proven-recent read failed (name '_dt' is not defined)
+            — keep rule NOT applied, AI family published in full
+      The fail-open is still correct for a LOST INPUT; it just cannot tell a
+      lost input from a typo, so nothing in the logs said "defect". The guard
+      that now makes this class visible is
+      tests/test_sitemap_keep_rule.py::test_the_harness_supplies_no_global_production_lacks
+      — the old harness INJECTED `_dt`, so the shipped tests exercised a
+      namespace strictly more capable than the module and stayed green.
     """
+    from datetime import datetime as _dt
     conn = None
     try:
         conn = get_read_db()
