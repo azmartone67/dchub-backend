@@ -369,3 +369,71 @@ def test_a_branch_with_no_databases_is_an_error_not_an_empty_dsn(monkeypatch):
     monkeypatch.setattr(nb, "_req", lambda *a, **k: {"databases": []})
     with pytest.raises(SystemExit):
         nb._resolve_db_and_role("k", "p", "br", "", "")
+
+
+# ── _create_branch: degrade the tuning, never the branch ─────────────────────
+
+def test_a_plan_that_refuses_the_tuning_still_gets_a_branch(monkeypatch, capsys):
+    """412 "suspend interval is too short for your plan" killed the fourth live
+    run. The tuning is an optimisation; the branch is the point."""
+    calls = []
+
+    def _req(method, path, key, body=None):
+        calls.append(body["endpoints"][0])
+        if len(calls) == 1:
+            raise SystemExit("neon api POST /x -> 412: suspend interval is too short")
+        return {"branch": {"id": "br-new"}}
+
+    monkeypatch.setattr(nb, "_req", _req)
+    out = nb._create_branch("k", "p", {"branch": {}, "endpoints": [
+        {"type": "read_write", "autoscaling_limit_max_cu": 0.25}]})
+
+    assert out["branch"]["id"] == "br-new"
+    assert len(calls) == 2, "should retry exactly once"
+    assert calls[1] == {"type": "read_write"}, "retry must drop the tuning"
+
+
+def test_the_fallback_says_the_branch_is_no_longer_cost_pinned(monkeypatch, capsys):
+    """A silent fallback turns a cost regression into something you learn from
+    a bill. The warning must name what was lost."""
+    state = {"n": 0}
+
+    def _req(method, path, key, body=None):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise SystemExit("neon api POST /x -> 412: suspend interval is too short")
+        return {"branch": {"id": "br-new"}}
+
+    monkeypatch.setattr(nb, "_req", _req)
+    nb._create_branch("k", "p", {"branch": {}, "endpoints": [{"type": "read_write"}]})
+    err = capsys.readouterr().err
+    assert "::warning::" in err
+    assert "0.25 CU" in err, "must name the pinning that was dropped"
+
+
+def test_a_non_412_error_is_not_retried(monkeypatch):
+    """Retrying a 401 or a 404 just doubles the failure."""
+    calls = []
+
+    def _req(method, path, key, body=None):
+        calls.append(1)
+        raise SystemExit("neon api POST /x -> 401: unauthorised")
+
+    monkeypatch.setattr(nb, "_req", _req)
+    with pytest.raises(SystemExit):
+        nb._create_branch("k", "p", {"branch": {}, "endpoints": [{}]})
+    assert len(calls) == 1, "a non-412 must surface immediately"
+
+
+def test_a_second_412_surfaces_rather_than_looping(monkeypatch):
+    """One retry. A 412 on the untuned body is about something else."""
+    calls = []
+
+    def _req(method, path, key, body=None):
+        calls.append(1)
+        raise SystemExit("neon api POST /x -> 412: something else entirely")
+
+    monkeypatch.setattr(nb, "_req", _req)
+    with pytest.raises(SystemExit):
+        nb._create_branch("k", "p", {"branch": {}, "endpoints": [{"type": "read_write"}]})
+    assert len(calls) == 2, "exactly one retry, then surface"

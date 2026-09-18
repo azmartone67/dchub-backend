@@ -194,16 +194,47 @@ def cmd_create(a: argparse.Namespace) -> None:
             # Pinning min==max removes the autoscaler's ramp entirely.
             "autoscaling_limit_min_cu": 0.25,
             "autoscaling_limit_max_cu": 0.25,
-            # Suspend hard the moment the job stops querying. CU-hours are the
-            # whole cost story for per-PR branches.
-            "suspend_timeout_seconds": 60,
+            # NO suspend_timeout_seconds. 60s drew
+            #   412: suspend interval is too short for your plan
+            # and the setting was nearly pointless here anyway: `destroy` runs
+            # at job end and removes the endpoint outright, so how quickly it
+            # would have suspended never comes up. CU pinning is the setting
+            # that actually governs cost, and it stays.
         }],
     }
-    out = _req("POST", f"/projects/{project}/branches", key, body)
+    out = _create_branch(key, project, body)
     branch_id = out["branch"]["id"]
 
     dsn = _connection_uri(out, key, project, branch_id, a.database, a.role)
     _emit(branch_id=branch_id, dsn=dsn)
+
+
+def _create_branch(key: str, project: str, body: dict) -> dict:
+    """Create the branch, degrading the endpoint tuning if the plan refuses it.
+
+    Neon answers a plan-restricted endpoint setting with 412 and names the
+    offending one. The tuning is an OPTIMISATION — 0.25 CU pinned flat — while
+    the branch itself is the point, so a plan that will not take the tuning
+    should still get a branch.
+
+    Loud, not silent: the fallback says exactly what was dropped, so a run that
+    is quietly costing more than intended is visible in the log rather than
+    inferred from a bill. Retried ONCE — a second 412 is about something this
+    does not understand and must surface.
+    """
+    try:
+        return _req("POST", f"/projects/{project}/branches", key, body)
+    except SystemExit as exc:
+        if "-> 412" not in str(exc):
+            raise
+        print(f"::warning::Neon refused the CI endpoint tuning on this plan "
+              f"({exc}). Retrying with project defaults — the branch is still "
+              f"created and still destroyed at job end, but it is NOT pinned to "
+              f"0.25 CU, so it costs whatever the project default costs.",
+              file=sys.stderr)
+        fallback = dict(body)
+        fallback["endpoints"] = [{"type": "read_write"}]
+        return _req("POST", f"/projects/{project}/branches", key, fallback)
 
 
 def _connection_uri(out: dict, key: str, project: str, branch_id: str,
