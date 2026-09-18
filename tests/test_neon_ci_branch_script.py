@@ -170,3 +170,77 @@ def test_it_refuses_rather_than_returning_a_half_built_uri(monkeypatch):
     out = {"connection_uris": [], "endpoints": [{"host": "h"}]}
     with pytest.raises(SystemExit):
         nb._connection_uri(out, "k", "p", "br", "db", "role")
+
+
+# ── _preflight: turning a bare 404 into something actionable ─────────────────
+
+def _projects(*ids):
+    return lambda *a, **k: {"projects": [{"id": i, "name": i} for i in ids]}
+
+
+def test_a_project_id_with_a_trailing_newline_is_named_as_malformed(monkeypatch):
+    """The likeliest real misconfiguration, and the one Neon reports worst.
+
+    `gh secret set` stores whatever was pasted, newline included; the stray
+    character lands in the URL PATH, and Neon answers "this route does not
+    exist" — which reads like the API moved rather than like a bad id.
+    """
+    monkeypatch.setattr(nb, "_req", _projects("winter-frost-12345678"))
+    with pytest.raises(SystemExit) as e:
+        nb._preflight("k", "winter-frost-12345678\n")
+    assert "malformed" in str(e.value)
+
+
+def test_a_console_url_pasted_instead_of_an_id_is_named_as_malformed(monkeypatch):
+    monkeypatch.setattr(nb, "_req", _projects("winter-frost-12345678"))
+    with pytest.raises(SystemExit) as e:
+        nb._preflight("k", "https://console.neon.tech/app/projects/winter-frost-12345678")
+    assert "malformed" in str(e.value)
+
+
+def test_a_wellformed_id_the_key_cannot_see_is_reported_separately(monkeypatch):
+    """Distinct from malformed: the shape is fine, the key is the problem."""
+    monkeypatch.setattr(nb, "_req", _projects("other-project-87654321"))
+    with pytest.raises(SystemExit) as e:
+        nb._preflight("k", "winter-frost-12345678")
+    msg = str(e.value)
+    assert "malformed" not in msg
+    assert "not among the 1 project" in msg
+
+
+def test_a_matching_id_passes(monkeypatch):
+    monkeypatch.setattr(nb, "_req", _projects("a-b-1", "winter-frost-12345678"))
+    nb._preflight("k", "winter-frost-12345678")        # must not raise
+
+
+def test_preflight_leaks_no_identifier_into_a_public_log(monkeypatch, capsys):
+    """CI logs on this repo are PUBLIC. The failure message may describe shape
+    and counts; it may not enumerate project ids or echo the configured one."""
+    monkeypatch.setattr(nb, "_req", _projects("secret-project-11112222",
+                                              "other-project-33334444"))
+    with pytest.raises(SystemExit) as e:
+        nb._preflight("k", "configured-id-99998888")
+    blob = str(e.value) + capsys.readouterr().out
+    for leaked in ("secret-project-11112222", "other-project-33334444",
+                   "configured-id-99998888"):
+        assert leaked not in blob, f"{leaked} reached a public log"
+
+
+def test_main_strips_a_pasted_newline_before_it_reaches_the_url(monkeypatch):
+    """`gh secret set` stores the paste verbatim, trailing newline included.
+
+    _preflight would REPORT that, but reporting a paste artefact the script can
+    simply absorb is a worse outcome than absorbing it. This covers the absorb;
+    _preflight still covers the shapes that cannot be absorbed (a console URL).
+    """
+    seen = {}
+    monkeypatch.setattr(nb, "cmd_create", lambda a: seen.update(
+        key=a.api_key, project=a.project_id))
+    monkeypatch.setenv("NEON_API_KEY", "  key-with-space \n")
+    monkeypatch.setenv("NEON_PROJECT_ID", "winter-frost-12345678\n")
+    monkeypatch.setattr("sys.argv", ["neon_ci_branch.py", "create", "--name", "x"])
+
+    nb.main()
+
+    assert seen["project"] == "winter-frost-12345678"
+    assert seen["key"] == "key-with-space"

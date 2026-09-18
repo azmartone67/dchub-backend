@@ -61,6 +61,51 @@ def _req(method: str, path: str, key: str, body: dict | None = None) -> dict:
     return r.json() if r.text.strip() else {}
 
 
+def _preflight(key: str, project: str) -> None:
+    """Explain a misconfigured NEON_PROJECT_ID before it becomes a bare 404.
+
+    Neon answers `/projects/<malformed>/branches` with "this route does not
+    exist", which reads like the API moved rather than like a bad id — the
+    first run of this workflow lost time to exactly that.
+
+    ★ PRINTS NO IDENTIFIERS. The repo is public and so are its CI logs, so
+      this reports SHAPE and COUNTS only. GitHub masks the configured id to
+      ``***`` anyway, which would make a listing unreadable in the one case
+      where it is correct. Run `neon_ci_branch.py doctor` locally to see the
+      actual ids.
+    """
+    bad = [c for c in project if c.isspace() or c in "/?#:@"]
+    if bad:
+        raise SystemExit(
+            f"NEON_PROJECT_ID is malformed: {len(project)} chars containing "
+            f"{len(bad)} whitespace/path character(s). It must be the BARE "
+            "project id (e.g. 'winter-frost-12345678') — not a console URL, "
+            "and not padded by the paste. Re-set it with:\n"
+            "  printf %s 'winter-frost-12345678' | gh secret set NEON_PROJECT_ID "
+            "--repo azmartone67/dchub-backend")
+
+    projects = _req("GET", "/projects", key).get("projects", [])
+    if not any(p.get("id") == project for p in projects):
+        raise SystemExit(
+            f"NEON_PROJECT_ID is not among the {len(projects)} project(s) this "
+            "API key can see. Either the id is wrong or the key belongs to a "
+            "different account/organization. Run `python3 "
+            "scripts/neon_ci_branch.py doctor` LOCALLY (not in CI) to list them."
+            + ("\n  The key sees 0 projects — if it is an organization-scoped "
+               "key it may not list personal projects." if not projects else ""))
+
+
+def cmd_doctor(a: argparse.Namespace) -> None:
+    """Local-only: print the project ids this key can reach. Never run in CI."""
+    projects = _req("GET", "/projects", a.api_key).get("projects", [])
+    print(f"{len(projects)} project(s) visible to this key:")
+    for p in projects:
+        mark = "  <-- NEON_PROJECT_ID" if p.get("id") == a.project_id else ""
+        print(f"  {p['id']}  {p.get('name','')}  {p.get('region_id','')}{mark}")
+    if not any(p.get("id") == a.project_id for p in projects):
+        print("\n! the configured NEON_PROJECT_ID matches none of the above")
+
+
 def _default_branch_id(key: str, project: str) -> str:
     """The production branch, resolved from the API rather than hardcoded.
 
@@ -76,6 +121,7 @@ def _default_branch_id(key: str, project: str) -> str:
 
 def cmd_create(a: argparse.Namespace) -> None:
     key, project = a.api_key, a.project_id
+    _preflight(key, project)
     parent = a.parent_id or _default_branch_id(key, project)
 
     # expires_at is the SELF-HEALING backstop for the root-branch cap. `destroy`
@@ -236,12 +282,18 @@ def main() -> None:
     d.add_argument("--branch-id", required=True)
     d.set_defaults(fn=cmd_destroy)
 
+    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+
     w = sub.add_parser("sweep")
     w.add_argument("--prefix", default="ci-")
     w.add_argument("--ttl-hours", type=int, default=6)
     w.set_defaults(fn=cmd_sweep)
 
     a = p.parse_args()
+    # `gh secret set` keeps whatever was pasted, trailing newline included, and
+    # a stray character lands in the URL PATH where it reads as a routing bug.
+    a.api_key = (a.api_key or "").strip()
+    a.project_id = (a.project_id or "").strip()
     if not a.api_key or not a.project_id:
         raise SystemExit("NEON_API_KEY and NEON_PROJECT_ID are required")
     a.fn(a)
