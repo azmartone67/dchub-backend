@@ -123,7 +123,52 @@ jobs:
                    DCHUB_PG_TEST_DSN; do
             echo "$v=$DSN" >> "$GITHUB_ENV"
           done
-          echo "FIBER_PARITY_REQUIRE=1" >> "$GITHUB_ENV"
+          # Every *_REQUIRE flag these lanes support. Only 3 of the 19 have
+          # one; the other 16 skip silently if their DSN never arrives, which
+          # is the green-no-op shape. Setting the 3 that exist is the most this
+          # can do without touching the tests themselves.
+          for r in FIBER_PARITY_REQUIRE SERVED_SLUG_PARITY_REQUIRE \
+                   ONE_URL_REPAIR_REQUIRE; do
+            echo "$r=1" >> "$GITHUB_ENV"
+          done
+
+      - name: What did the branch actually come with?
+        # `public.fiber_routes is missing` on the first green run, while 229
+        # other tests passed against the same branch. That is not a connection
+        # problem, so it is worth knowing exactly what schema-only copied
+        # before drawing any conclusion about the lane that failed.
+        # Names and counts only — no credentials.
+        env:
+          NEON_CI_DSN: ${{ steps.neon.outputs.dsn }}
+        run: |
+          python3 - <<'PY'
+          import os, psycopg2
+          c = psycopg2.connect(os.environ["NEON_CI_DSN"]); c.autocommit = True
+          with c.cursor() as cur:
+              cur.execute("SELECT current_database(), current_user")
+              db, user = cur.fetchone()
+              cur.execute("SELECT count(*) FROM pg_tables "
+                          "WHERE schemaname NOT IN ('pg_catalog','information_schema')")
+              tables = cur.fetchone()[0]
+              cur.execute("SELECT count(*) FROM pg_views "
+                          "WHERE schemaname NOT IN ('pg_catalog','information_schema')")
+              views = cur.fetchone()[0]
+              cur.execute("SELECT count(*) FROM pg_matviews")
+              matviews = cur.fetchone()[0]
+              cur.execute("SELECT extname FROM pg_extension ORDER BY 1")
+              exts = ", ".join(r[0] for r in cur.fetchall())
+              cur.execute("SELECT to_regclass('public.fiber_routes')")
+              fiber = cur.fetchone()[0]
+          print(f"database={db} role={user}")
+          print(f"tables={tables} views={views} matviews={matviews}")
+          print(f"extensions={exts}")
+          print(f"public.fiber_routes -> {fiber}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as fh:
+              fh.write(f"### Branch contents\n- database `{db}`, role `{user}`\n"
+                       f"- {tables} tables, {views} views, {matviews} matviews\n"
+                       f"- extensions: {exts}\n"
+                       f"- `public.fiber_routes`: {fiber}\n")
+          PY
 
       - name: Guard mutation — prove the sentinel can refuse
         # Runs FIRST and un-stamps/restores the branch. If the guard cannot
