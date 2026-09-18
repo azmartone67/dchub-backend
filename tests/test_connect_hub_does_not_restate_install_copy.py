@@ -81,11 +81,46 @@ def test_connect_states_no_mcp_client_config():
 
 
 def test_streamable_http_is_never_named_as_a_transport():
-    """The exact wrong value that shipped, pinned by name."""
-    assert "streamable-http" not in _html(), (
-        "'streamable-http' is back in connect.html. It is not a transport value "
-        "the Claude CLI or claude_desktop_config.json accepts — canon is 'http' "
-        "— and it appears ZERO times in dchub-mcp-server's persist_config."
+    """The exact wrong value that shipped, pinned by name.
+
+    ★ SCOPED 2026-09-18, and the scope is the whole claim. `streamable-http`
+    is wrong for the Claude CLI and claude_desktop_config.json — canon is
+    `http`, and the literal appears ZERO times in dchub-mcp-server's
+    persist_config — which is the defect this pins. It is simultaneously the
+    CORRECT value for DeepSeek Harness's `@deepseek-ai/dsh-mcp-client`, whose
+    own README takes `transport: streamable-http` with `url` + `headers`. One
+    string, right in one config language and wrong in the other. So the ban
+    holds everywhere except inside the DeepSeek section, and inside it the
+    literal still has to appear as a YAML transport key beside that plugin —
+    a JSON Claude snippet smuggled into that section fails both halves.
+    """
+    html = _html()
+    start = html.index('id="deepseek"')
+    end = html.index('id="huggingface"')
+    deepseek_section, rest = html[start:end], html[:start] + html[end:]
+
+    assert "streamable-http" not in rest, (
+        "'streamable-http' is back in connect.html outside the DeepSeek "
+        "harness section. It is not a transport value the Claude CLI or "
+        "claude_desktop_config.json accepts — canon is 'http' — and it "
+        "appears ZERO times in dchub-mcp-server's persist_config."
+    )
+    # ★ Scoped to the block the reader COPIES, not to the section. A first
+    #   pass asserted these of the whole section and stayed green while the
+    #   <pre> named a different plugin entirely — the prose beside it still
+    #   said the right name, and prose is not what gets pasted.
+    blocks = [b for b in re.findall(r"<pre>.*?</pre>", deepseek_section, re.S)
+              if "transport" in b]
+    assert blocks, "the DeepSeek section has no transport block to exempt"
+    for required in ("transport: streamable-http", "dsh-mcp-client"):
+        assert all(required in b for b in blocks), (
+            "a copyable DeepSeek config block no longer carries %r — the "
+            "streamable-http exemption exists for the harness YAML only."
+            % required
+        )
+    assert '"transport": "streamable-http"' not in deepseek_section, (
+        "a JSON-style transport value inside the exempt section — that is the "
+        "original defect wearing the exemption."
     )
 
 

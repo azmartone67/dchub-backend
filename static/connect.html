@@ -738,9 +738,38 @@ the as-of date they carry.</code><button class="copy-btn" onclick="copyCode(this
             <p style="margin: 12px 0 0; color: #8899aa; font-size: 0.9rem;">Then ask about power, grids, fiber, land &amp; power, markets or M&amp;A &mdash; Grok queries DC Hub live and cites dchub.cloud. Deeper: <a href="/install/grok" style="color: #00d4ff; text-decoration: none;">/install/grok</a> mints the keyed connector URL for you; <a href="/integrations/grok" style="color: #00d4ff; text-decoration: none;">/integrations/grok</a> covers the xAI API Remote MCP block and a starter toolkit. Prefer code? <a href="/integrations/grok/dchub-grok-integration.py" style="color: #00d4ff; text-decoration: none;">Download the Python integration script</a>.</p>
         </div>
 
+        <h2 id="deepseek" style="scroll-margin-top: 90px;">DeepSeek Integration</h2>
+
+        <div class="platform-card">
+            <h3>DeepSeek Harness &middot; DeepSeek API &middot; Cursor</h3>
+            <p style="color: #8899aa; margin-bottom: 12px;"><strong style="color: #cdd6e2;">DeepSeek&rsquo;s consumer chat has no MCP UI.</strong> There is nowhere in chat.deepseek.com to paste an MCP endpoint, so nothing below belongs there. Three places a DeepSeek user can actually hold a DC Hub key: the <strong>DeepSeek Harness</strong> (its own agent harness, which ships an MCP client), <a href="/connect/cursor" style="color: #00d4ff; text-decoration: none;">Cursor</a> pointed at a DeepSeek model, or the <strong>tool-calling API</strong> with DC Hub behind an MCP bridge &mdash; the API speaks OpenAI-style function calling, not MCP, so something has to translate. Same endpoint and same key in all three.</p>
+            <p style="color: #cdd6e2; margin: 0 0 6px;"><strong>1.</strong> Copy the DC Hub MCP endpoint (streamable HTTP):</p>
+            <pre><code>https://dchub.cloud/mcp</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+            <p style="color: #cdd6e2; margin: 12px 0 6px;"><strong>2.</strong> Harness &mdash; add one entry to your profile YAML&rsquo;s plugins list. The plugin is <code>@deepseek-ai/dsh-mcp-client</code>; transport <code>streamable-http</code> takes <code>url</code> + <code>headers</code>:</p>
+            <pre><code>- id: mcp-dchub
+  name: &#39;@deepseek-ai/dsh-mcp-client&#39;
+  config:
+    serverName: dchub
+    transport: streamable-http
+    url: https://dchub.cloud/mcp
+    headers:
+      X-API-Key: "YOUR_KEY"</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+            <p style="margin: 8px 0 14px; color: #8899aa; font-size: 0.9rem;">Tools then appear to the model as <code>mcp__dchub__&lt;tool&gt;</code>. Leave the <code>headers</code> block out entirely to run keyless on the free tier.</p>
+            <p style="color: #cdd6e2; margin: 12px 0 6px;"><strong>3.</strong> Get the key &mdash; call <code>claim_free_key</code> once the server is attached, or mint it here first:</p>
+            <p style="margin: 8px 0 14px;"><a href="/connect/deepseek-harness" style="color: #00d4ff; font-weight: 700; text-decoration: none;">&rarr; Mint a free key and copy the filled-in YAML</a></p>
+            <p style="color: #cdd6e2; margin: 12px 0 6px;"><strong>4.</strong> API route &mdash; DeepSeek&rsquo;s API does function calling, not MCP. Run any MCP&ndash;to&ndash;function-call bridge against <code>https://dchub.cloud/mcp</code> and pass the key as the <code>X-API-Key</code> header; the bridge exposes all {canon_tools} tools to <code>deepseek-chat</code> as ordinary functions. Nothing DC Hub-specific is needed on that side.</p>
+            <p style="margin: 12px 0 0; color: #8899aa; font-size: 0.9rem;">Prefer a hosted demo before wiring anything? The <a href="https://huggingface.co/spaces/dchubcloud/dchub" target="_blank" rel="noopener" style="color: #00d4ff; text-decoration: none;">DC Hub Space on Hugging Face &#8599;</a> answers the same questions in a browser and points back to this endpoint.</p>
+        </div>
+
         <h2>GitHub</h2>
         <p style="margin: 10px 0;">
             <a href="https://github.com/azmartone67/dchub-mcp-server" style="color: #00d4ff;">github.com/azmartone67/dchub-mcp-server</a>
+        </p>
+
+        <h2 id="huggingface" style="scroll-margin-top: 90px;">Hugging Face</h2>
+        <p style="margin: 10px 0;">
+            <a href="https://huggingface.co/spaces/dchubcloud/dchub" style="color: #00d4ff;">huggingface.co/spaces/dchubcloud/dchub</a>
+            <span style="color: #8899aa;"> &mdash; a hosted Space that answers live grid and facility questions in the browser. It is a door, not a second source: it reads this same endpoint, and an agent should connect to <code>https://dchub.cloud/mcp</code> directly.</span>
         </p>
     </div>
 

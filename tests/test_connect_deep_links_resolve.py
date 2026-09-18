@@ -60,8 +60,16 @@ def test_any_further_alias_is_deliberate(aliases):
     minimax (r-connect-minimax, 2026-09-09): aliased rather than carded because
     MiniMax could not be verified as an MCP CLIENT at all — every MiniMax MCP
     artifact findable that day is MiniMax acting as a SERVER. A card would have
-    asserted a capability with no evidence behind it."""
-    assert set(aliases) == _MEASURED_404 | {"minimax"}
+    asserted a capability with no evidence behind it.
+
+    deepseek + harness (r-connect-deepseek, 2026-09-18): both point at the ONE
+    /connect/deepseek-harness card. Aliases rather than two more cards for the
+    reason the block above gives — a second copy of one YAML snippet is a
+    second thing to forget when the harness renames a field. "harness" resolves
+    to DeepSeek's agent harness and NOT to harness.io, which is an unrelated
+    product that shares a word; if that vendor ever earns a door it needs its
+    own slug, not this one."""
+    assert set(aliases) == _MEASURED_404 | {"minimax", "deepseek", "harness"}
 
 
 def test_each_alias_redirects(client, aliases):
