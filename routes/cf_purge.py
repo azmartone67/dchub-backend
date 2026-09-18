@@ -121,7 +121,22 @@ def purge_endpoint():
     if not urls:
         return jsonify(ok=False, error="provide 'urls' (list) or 'url' (str)"), 400
 
-    return jsonify(_purge_urls(urls)), 200
+    # ★2026-09-17: this handed the WHOLE caller list to CF in one call. CF's
+    # purge-by-file takes 30 files per request on this plan and rejects a 31st,
+    # so a 253-URL purge (every published /markets/<slug>) came back as one
+    # opaque failure and every URL kept serving. Batch above the cap.
+    # The <=30 path returns the ORIGINAL single _purge_urls dict, unchanged, so
+    # no existing caller's response shape moves.
+    if len(urls) <= _CF_PURGE_MAX_FILES:
+        return jsonify(_purge_urls(urls)), 200
+
+    results = _purge_in_batches(urls)
+    return jsonify({
+        "ok": bool(results) and all(r.get("ok") for r in results),
+        "batches": len(results),
+        "url_count": len(urls),
+        "results": results,
+    }), 200
 
 
 @cf_purge_bp.route("/api/v1/cf/purge/markets-fix", methods=["GET", "POST"])
@@ -508,3 +523,65 @@ def inspect_routes_and_rules():
         out["worker_routes"] = "(need CLOUDFLARE_ZONE_ID)"
 
     return jsonify(out), 200
+
+
+@cf_purge_bp.route("/api/v1/cf/purge/market-pages", methods=["GET", "POST"])
+def purge_market_pages():
+    """Evict every published /markets/<slug> from the edge.
+
+    WHY THIS EXISTS (2026-09-17). be#4694 replaced the stale "19,000+ /
+    $49/mo" block on every /markets/<slug> painter with the live ladder
+    (Pro $99/mo, or $10 once for 1,000 calls). The ORIGIN was correct within
+    minutes of the merge. The EDGE was not: market HTML carries
+    stale-while-revalidate=86400, and /markets/ashburn was still serving the
+    dead $49/mo offer two hours later — cf-cache-status HIT, age 7276, on
+    three consecutive reads with age CLIMBING and no revalidation. SWR does
+    not self-heal here, and an origin that is right does not evict an edge
+    that is wrong.
+
+    Nothing could purge it, which is the actual gap this closes:
+      * dchub-frontend/scripts/cf-purge-changed.mjs declares backend-served
+        surfaces out of scope ("those belong to the backend's own deploy"),
+        and the backend's deploy has no CF purge step at all.
+      * purge/markets-fix does NOT cover market pages despite the name — it
+        purges the HUB (/markets, /markets/, /market-intelligence). It is
+        named after the 2026-05 /markets 403 incident, not after the detail
+        pages. Reading the NAME instead of the producer is what cost the
+        search; see the same trap in tier_registry.paid_plans().
+
+    PUBLIC by design, on the same rationale as the one-shots above: the URL
+    list is DERIVED from sitemapped_market_slugs() and the caller cannot
+    influence it, so this is not an arbitrary-URL zone-eviction primitive.
+    Purges are idempotent and read-side.
+
+    Re-run it after any backend deploy that changes market-page copy, until
+    that deploy purges for itself.
+    """
+    # Lazy import: market_deep_dive pulls in the deep-dive stack, and
+    # cf_purge is imported early. Same shape sponsorships.py uses to reach
+    # _purge_everything in here.
+    from routes.market_deep_dive import sitemapped_market_slugs
+
+    slugs = sitemapped_market_slugs()
+    urls = [f"https://dchub.cloud/markets/{s}" for s in slugs]
+
+    # A derived list that comes back EMPTY must not report success: all([])
+    # is True, so `all(r["ok"] for r in [])` would have called purging
+    # nothing a clean purge. Say it out loud instead.
+    if not urls:
+        return jsonify({
+            "ok": False,
+            "error": "sitemapped_market_slugs() derived no slugs; refusing to "
+                     "report a purge of nothing",
+            "batches": 0,
+            "url_count": 0,
+            "results": [],
+        }), 200
+
+    results = _purge_in_batches(urls)
+    return jsonify({
+        "ok": all(r.get("ok") for r in results),
+        "batches": len(results),
+        "url_count": len(urls),
+        "results": results,
+    }), 200
