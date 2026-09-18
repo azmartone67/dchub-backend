@@ -368,6 +368,12 @@ _MIN_MEASURED_SIGNALS = 3
 _BOUNDED_SIGNALS = [
     {
         "name": "review_gate_rejections",
+        "consumers": [
+            {"file": "routes/brain_learning.py",
+             "symbol": "check_rejection_skip",
+             "reads": "decision = 'reject'",
+             "role": "consumer"},
+        ],
         "table": "brain_review_decisions",
         "boundary": "low",
         "sql": """SELECT COUNT(*) FILTER (WHERE decision = 'reject'),
@@ -375,7 +381,9 @@ _BOUNDED_SIGNALS = [
                     FROM brain_review_decisions
                    WHERE decided_at > NOW() - INTERVAL '60 days'""",
         "why": ("a review gate that has never once disagreed carries no "
-                "information about whether the brain is right"),
+                "information about whether the brain is right; "
+                "check_rejection_skip() suppresses a re-proposal only on a "
+                "'reject' row, so with none written it cannot fire"),
     },
     {
         # ★ REPOINTED 2026-09-18, the day this check first ran live. The
@@ -396,6 +404,12 @@ _BOUNDED_SIGNALS = [
         # A detector that emits a true finding under a wrong cause sends the
         # next reader to the wrong file, which is worse than emitting nothing.
         "name": "l5_permafail_rejections",
+        "consumers": [
+            {"file": "routes/brain_v2_store.py",
+             "symbol": "last_outcomes_map",
+             "reads": 'last_outcome',
+             "role": "consumer"},
+        ],
         "table": "brain_issue_persistence",
         "boundary": "low",
         "sql": """SELECT COUNT(*) FILTER (
@@ -405,24 +419,38 @@ _BOUNDED_SIGNALS = [
                          COUNT(*) FILTER (WHERE last_outcome IS NOT NULL)
                     FROM brain_issue_persistence
                    WHERE last_seen_at > NOW() - INTERVAL '30 days'""",
-        "why": ("Layer 5's deterministic guards (SQLite-stack, compile) refuse "
-                "bad proposals before they are ever inserted; if NO finding "
-                "carries a permafail outcome then those guards are not "
-                "rejecting anything and every hallucination is reaching a PR"),
+        "why": ("Layer 5's deterministic guards (SQLite-stack, compile) "
+                "refuse bad proposals before they are ever inserted, and "
+                "last_outcomes_map() reads those verdicts to skip permafail "
+                "issues; with none recorded every one is retried forever"),
     },
     {
         "name": "fix_outcome_failures",
+        "consumers": [
+            {"file": "routes/brain_learning.py",
+             "symbol": "brain_effectiveness",
+             "reads": 'still_broken',
+             "role": "consumer"},
+        ],
         "table": "brain_fix_outcomes",
         "boundary": "low",
         "sql": """SELECT COUNT(*) FILTER (WHERE still_broken IS TRUE),
                          COUNT(*) FILTER (WHERE still_broken IS NOT NULL)
                     FROM brain_fix_outcomes
                    WHERE checked_at > NOW() - INTERVAL '30 days'""",
-        "why": ("a verifier that never returns 'still broken' is not reading "
-                "ground truth — it is agreeing with whatever it is told"),
+        "why": ("a verifier that never returns 'still broken' is not "
+                "reading ground truth — it is agreeing with whatever it is "
+                "told, and brain_effectiveness() reports that as "
+                "fix-success"),
     },
     {
         "name": "fix_outcome_successes",
+        "consumers": [
+            {"file": "routes/brain_learning.py",
+             "symbol": "brain_effectiveness",
+             "reads": 'still_broken',
+             "role": "consumer"},
+        ],
         "table": "brain_fix_outcomes",
         "boundary": "low",
         "sql": """SELECT COUNT(*) FILTER (WHERE still_broken IS FALSE),
@@ -430,7 +458,7 @@ _BOUNDED_SIGNALS = [
                     FROM brain_fix_outcomes
                    WHERE checked_at > NOW() - INTERVAL '30 days'""",
         "why": ("the mirror of the above — a verifier stuck on 'failed' is "
-                "equally uninformative"),
+                "equally uninformative to brain_effectiveness()"),
     },
     {
         # ★ DENOMINATOR CORRECTED 2026-09-18. This counted verified rows against
@@ -444,6 +472,12 @@ _BOUNDED_SIGNALS = [
         # stats query already uses executed_ok as the denominator; this now
         # matches it, and the two can finally be compared.
         "name": "autopilot_action_verification",
+        "consumers": [
+            {"file": "routes/brain_autopilot.py",
+             "symbol": "autopilot_verify",
+             "reads": 'outcome_verified',
+             "role": "consumer"},
+        ],
         "table": "brain_autopilot_actions",
         "boundary": "low",
         # Coverage SHOULD be near total: the verifier cron runs every 5 minutes
@@ -456,19 +490,39 @@ _BOUNDED_SIGNALS = [
                          COUNT(*) FILTER (WHERE outcome = 'executed_ok')
                     FROM brain_autopilot_actions
                    WHERE started_at > NOW() - INTERVAL '30 days'""",
-        "why": ("executed actions that are never verified either way cannot "
-                "feed class_success_weight, so work selection stops learning"),
+        # ★ATTRIBUTION CORRECTED 2026-09-18. The original text claimed this
+        # gates class_success_weight. It does not: _read_class_rate() reads
+        # brain_fix_outcomes, autopilot_outcomes and brain_action_class_runs
+        # — brain_autopilot_actions is in none of them. effect_ratio is also
+        # autopilot_outcomes (brain_evolution.py:396 says so outright).
+        "why": ("executed actions that are never verified either way can "
+                "neither be re-escalated by autopilot_verify() when a fix "
+                "does not hold, nor bench an always-failing pattern via "
+                "brain_pattern_quarantine, which gates on "
+                "outcome_verified IS FALSE"),
     },
     {
         "name": "autopilot_outcome_failures",
+        "consumers": [
+            {"file": "routes/brain_work_selector.py",
+             "symbol": "_read_class_rate",
+             "reads": 'succeeded',
+             "role": "consumer"},
+            {"file": "routes/brain_evolution.py",
+             "symbol": "compute_evolution_snapshot",
+             "reads": 'succeeded',
+             "role": "consumer"},
+        ],
         "table": "autopilot_outcomes",
         "boundary": "low",
         "sql": """SELECT COUNT(*) FILTER (WHERE succeeded IS FALSE),
                          COUNT(*)
                     FROM autopilot_outcomes
                    WHERE verified_at > NOW() - INTERVAL '30 days'""",
-        "why": ("class_success_weight down-weights on failures; with none "
-                "recorded every class stays neutral forever"),
+        "why": ("_read_class_rate() down-weights a class on failures, so "
+                "with none recorded every class stays neutral forever; "
+                "compute_evolution_snapshot() also derives effect_ratio "
+                "from this column"),
     },
     {
         # ★ADDED 2026-09-18 after a hand audit found what this check exists to
@@ -484,6 +538,12 @@ _BOUNDED_SIGNALS = [
         # so findings_filed=0 has an innocent reading. "Never took ANY action of
         # ANY kind" does not.
         "name": "rag_shell_actions_taken",
+        "consumers": [
+            {"file": "routes/rag_master_shell.py",
+             "symbol": "_persist",
+             "reads": 'action_taken',
+             "role": "producer"},
+        ],
         "table": "rag_snapshots",
         "boundary": "low",
         "sql": """SELECT COUNT(*) FILTER (WHERE action_taken IS NOT NULL
@@ -491,10 +551,15 @@ _BOUNDED_SIGNALS = [
                          COUNT(*)
                     FROM rag_snapshots
                    WHERE computed_at > NOW() - INTERVAL '90 days'""",
-        "why": ("a master shell that has never taken an action in any tick is "
-                "either perfectly healthy forever or it is running in SHADOW — "
-                "read the action reason on the latest snapshot before believing "
-                "the first one"),
+        # Role is PRODUCER, deliberately: _persist() writes action_taken and
+        # NOTHING in code reads it back, so this signal is read by an
+        # operator rather than gating anything. That is itself check C
+        # (computed-but-unread) and is recorded honestly rather than dressed
+        # up as a consumer.
+        "why": ("a master shell that has never taken an action in any tick "
+                "is either perfectly healthy forever or it is running in "
+                "SHADOW; _persist() records the action reason, so read the "
+                "latest snapshot before believing the first reading"),
     },
 ]
 
