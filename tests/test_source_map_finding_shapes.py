@@ -63,7 +63,7 @@ def repo(tmp_path):
     """))
     # Real production code touching the same table, once, with a WEAKER match.
     (tmp_path / "routes" / "zzz_iso_ingest.py").write_text(
-        'def w(cur):\n    cur.execute("INSERT INTO grid_data (iso) VALUES (%s)")\n')
+        'def w(cur):\n    cur.execute("INSERT INTO grid_data (iso) VALUES (%s) ON CONFLICT DO NOTHING")\n')
     return str(tmp_path)
 
 
