@@ -160,3 +160,150 @@ def test_skipping_itself_does_not_collapse_the_scan():
     probes = d.scan_table_probes()
     assert len(probes) >= d._MIN_PROBES, (
         f"{len(probes)} probes after self-exclusion, floor {d._MIN_PROBES}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  CHECK 2 — CAN'T-FAIL SIGNATURES (2026-09-18)
+#
+#  Same subject as above: the self-test, not the scan. A check that hunts
+#  "this metric can only ever produce one value" has that exact failure
+#  mode itself, so every run plants a known defect and must find it.
+# ══════════════════════════════════════════════════════════════════════
+
+class _SigCursor:
+    """Cursor over a scripted (to_regclass, row) script keyed by table."""
+
+    def __init__(self, tables, rows, raise_on=()):
+        self._tables = set(tables)     # which tables "exist"
+        self._rows = rows              # table -> (hits, total)
+        self._raise_on = set(raise_on)
+        self._pending = None
+
+    def execute(self, sql, params=None):
+        if "to_regclass" in sql:
+            name = params[0]
+            self._pending = ("regclass", name)
+            return
+        # the signal query — find which table it names
+        for t in self._rows:
+            if t in sql:
+                if t in self._raise_on:
+                    raise RuntimeError("relation exploded")
+                self._pending = ("row", self._rows[t])
+                return
+        self._pending = ("row", (0, 0))
+
+    def fetchone(self):
+        kind, val = self._pending
+        if kind == "regclass":
+            return (val if val in self._tables else None,)
+        return val
+
+
+def _reg(name, table, boundary="low"):
+    return {"name": name, "table": table, "boundary": boundary,
+            "sql": f"SELECT a, b FROM {table}", "why": "test"}
+
+
+# ── the evaluator ─────────────────────────────────────────────────────
+
+def test_pinned_low_is_flagged():
+    out = d.evaluate_bounded_signal(0, 500, "low")
+    assert out["pinned"] is True and "never once" in out["reason"]
+
+
+def test_both_values_present_is_not_flagged():
+    assert d.evaluate_bounded_signal(250, 500, "low")["pinned"] is False
+
+
+def test_small_sample_is_never_flagged():
+    """★ Crying wolf on 3 rows gets the whole check muted."""
+    out = d.evaluate_bounded_signal(0, 3, "low")
+    assert out["pinned"] is False and out["sample_ok"] is False
+
+
+def test_zero_rows_is_unmeasured_not_clean():
+    """★ The distinction the sentinel lane lost for a month."""
+    out = d.evaluate_bounded_signal(0, 0, "low")
+    assert out["pinned"] is False
+    assert "UNMEASURED" in out["reason"]
+
+
+def test_boundary_direction_is_respected():
+    """A signal declared `low` that sits at its HIGH boundary is a bad month,
+    not a null signal — flagging it would bury the real findings."""
+    assert d.evaluate_bounded_signal(500, 500, "high")["pinned"] is True
+    assert d.evaluate_bounded_signal(500, 500, "low")["pinned"] is False
+
+
+# ── the scan ──────────────────────────────────────────────────────────
+
+def test_absent_table_is_unmeasured_never_clean():
+    cur = _SigCursor(tables=set(), rows={"t_absent": (0, 900)})
+    scan = d.scan_bounded_signals(cur, [_reg("s", "t_absent")])
+    assert scan["measured"] == []
+    assert scan["unmeasured"][0]["why_unmeasured"] == "table absent"
+
+
+def test_raising_query_is_unmeasured_never_clean():
+    cur = _SigCursor(tables={"t_boom"}, rows={"t_boom": (0, 900)},
+                     raise_on={"t_boom"})
+    scan = d.scan_bounded_signals(cur, [_reg("s", "t_boom")])
+    assert scan["measured"] == []
+    assert "RuntimeError" in scan["unmeasured"][0]["why_unmeasured"]
+
+
+def test_scan_flags_a_pinned_signal():
+    cur = _SigCursor(tables={"t_live"}, rows={"t_live": (0, 900)})
+    scan = d.scan_bounded_signals(cur, [_reg("s", "t_live")])
+    assert scan["measured"][0]["pinned"] is True
+
+
+# ── the self-test: the real subject ───────────────────────────────────
+
+def test_self_test_passes_on_a_healthy_scan():
+    scan = {"measured": [{"pinned": False}] * d._MIN_MEASURED_SIGNALS,
+            "unmeasured": []}
+    assert d._self_test_bounded(scan)["passed"] is True
+
+
+def test_self_test_fails_when_nothing_was_measured():
+    """★ THE FLOOR. Every signal unmeasured means the check found nothing —
+    reporting that as a clean bill of health is the defect it hunts."""
+    st = d._self_test_bounded({"measured": [], "unmeasured": [{"name": "x"}]})
+    assert st["passed"] is False
+    assert st["legs"]["measured_floor"]["passed"] is False
+
+
+def test_self_test_fails_when_the_planted_defect_is_missed(monkeypatch):
+    """★ THE PLANTED DEFECT. If the evaluator stops detecting a pin, the
+    self-test must catch it — structurally, on every run, not in a unit
+    test that someone might delete."""
+    monkeypatch.setattr(d, "evaluate_bounded_signal",
+                        lambda *a, **k: {"pinned": False})
+    st = d._self_test_bounded(
+        {"measured": [{"pinned": False}] * 5, "unmeasured": []})
+    assert st["passed"] is False
+    assert st["legs"]["planted_defect"]["passed"] is False
+
+
+def test_self_test_fails_when_the_check_flags_everything(monkeypatch):
+    monkeypatch.setattr(d, "evaluate_bounded_signal",
+                        lambda *a, **k: {"pinned": True})
+    st = d._self_test_bounded(
+        {"measured": [{"pinned": True}] * 5, "unmeasured": []})
+    assert st["passed"] is False
+    assert st["legs"]["healthy_canary"]["passed"] is False
+    assert st["legs"]["small_sample_canary"]["passed"] is False
+
+
+def test_registry_entries_are_well_formed():
+    """Every entry must carry the keys the scanner reads — a typo here would
+    make that signal permanently unmeasured and silently so."""
+    assert len(d._BOUNDED_SIGNALS) >= d._MIN_MEASURED_SIGNALS
+    for sig in d._BOUNDED_SIGNALS:
+        assert set(sig) >= {"name", "table", "boundary", "sql", "why"}
+        assert sig["boundary"] in ("low", "high")
+        assert sig["table"] in sig["sql"], (
+            f"{sig['name']}: sql does not name its own table, so the "
+            f"to_regclass guard checks a different relation than it queries")

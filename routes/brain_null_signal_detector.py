@@ -20,11 +20,23 @@ CHECK 1 — DEAD TABLE PROBES (implemented here)
     own code-proposal arm and nothing anywhere said why.
     First live run: **8 of 65 probes were dead.**
 
-Deliberately ONE check, not four. The 2026-09-07 sweep's own lesson is that
-this system has more half-built machinery than it can keep honest; a second
-check earns its place after this one has caught something in the wild. The
-spec for the others (can't-fail signatures, computed-but-unread, overridden
-output) is in the handoff.
+CHECK 2 — CAN'T-FAIL SIGNATURES (added 2026-09-18)
+    Check A of the same spec. A bounded signal pinned at a perfect boundary
+    (0 / 1.0 / 100%) across a meaningful sample is a WRITER question, not a
+    quality result: nothing in the system can emit the other value. Four were
+    measured pinned on one morning — self_resolve_ratio 1.0, L5 rejected 0 of
+    193, human_rejection_rate 0.0% of 288, media reject rate 100% — and every
+    one of them reads as excellent on a dashboard. The rejection case is
+    proven: brain_review_decisions' only writer hardcoded 'approve'.
+
+    This check earned its place under the module's own rule below — check 1
+    has now caught things in the wild. Checks C (computed-but-unread) and D
+    (overridden output) remain unbuilt, and the same bar applies to them.
+
+The 2026-09-07 sweep's own lesson is that this system has more half-built
+machinery than it can keep honest, so a check earns its place only after the
+previous one has caught something real. The spec for the remaining two is in
+the handoff.
 
 ★★★ THE FLOOR IS THE POINT. A detector the brain writes about itself has the
 same failure mode as everything it hunts: if it silently scans nothing it
@@ -317,6 +329,262 @@ def _self_test(probes: dict, live: set[str]) -> dict:
     }
 
     return {"passed": all(l["passed"] for l in legs.values()), "legs": legs}
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  CHECK 2 — CAN'T-FAIL SIGNATURES  (2026-09-18)
+#
+#  Check A of the 2026-09-07 null-signal spec, added because check 1 has now
+#  caught things in the wild and because four signals were measured pinned at
+#  a perfect boundary on the same morning:
+#
+#    self_resolve_ratio          1.0     (perfect)
+#    L5 proposals rejected       0 of 193
+#    human_rejection_rate        0.0%    of 288 reviews
+#    media reject rate           100%
+#
+#  Every one of those reads as EXCELLENT on a dashboard. Each was in fact a
+#  writer question: nothing in the system could emit the other value. The
+#  rejection case is proven — brain_review_decisions' only writer hardcodes
+#  'approve', so check_rejection_skip() (live in brain_v2_layer4) could only
+#  ever return False.
+#
+#  So: for a bounded signal, "has it EVER produced its other value?" is a
+#  different and much better question than "what is its value now?".
+# ══════════════════════════════════════════════════════════════════════
+
+# Below this a boundary is a SMALL SAMPLE, not a dead signal. Crying wolf on
+# 3 rows would get the whole check ignored, which is how a detector dies.
+_PINNED_MIN_SAMPLE = int(os.environ.get("BRAIN_PINNED_MIN_SAMPLE") or 30)
+
+# At least this many registry entries must actually be MEASURED. If every one
+# is unmeasured the check found nothing and must not report a clean bill of
+# health — the same floor discipline as check 1's scan_floor.
+_MIN_MEASURED_SIGNALS = 3
+
+# Each entry's SQL returns exactly one row: (hits, total).
+#   boundary "low"  → hits == 0 is the suspicious pin (the value never occurs)
+#   boundary "high" → hits == total is the suspicious pin (it always occurs)
+_BOUNDED_SIGNALS = [
+    {
+        "name": "review_gate_rejections",
+        "table": "brain_review_decisions",
+        "boundary": "low",
+        "sql": """SELECT COUNT(*) FILTER (WHERE decision = 'reject'),
+                         COUNT(*)
+                    FROM brain_review_decisions
+                   WHERE decided_at > NOW() - INTERVAL '60 days'""",
+        "why": ("a review gate that has never once disagreed carries no "
+                "information about whether the brain is right"),
+    },
+    {
+        "name": "l5_proposal_rejections",
+        "table": "brain_proposed_code_fixes",
+        "boundary": "low",
+        "sql": """SELECT COUNT(*) FILTER (WHERE status = 'rejected'),
+                         COUNT(*)
+                    FROM brain_proposed_code_fixes
+                   WHERE proposed_at > NOW() - INTERVAL '30 days'""",
+        "why": ("if no proposal is ever rejected, the classifier's confidence "
+                "threshold is not being applied to anything"),
+    },
+    {
+        "name": "fix_outcome_failures",
+        "table": "brain_fix_outcomes",
+        "boundary": "low",
+        "sql": """SELECT COUNT(*) FILTER (WHERE still_broken IS TRUE),
+                         COUNT(*) FILTER (WHERE still_broken IS NOT NULL)
+                    FROM brain_fix_outcomes
+                   WHERE checked_at > NOW() - INTERVAL '30 days'""",
+        "why": ("a verifier that never returns 'still broken' is not reading "
+                "ground truth — it is agreeing with whatever it is told"),
+    },
+    {
+        "name": "fix_outcome_successes",
+        "table": "brain_fix_outcomes",
+        "boundary": "low",
+        "sql": """SELECT COUNT(*) FILTER (WHERE still_broken IS FALSE),
+                         COUNT(*) FILTER (WHERE still_broken IS NOT NULL)
+                    FROM brain_fix_outcomes
+                   WHERE checked_at > NOW() - INTERVAL '30 days'""",
+        "why": ("the mirror of the above — a verifier stuck on 'failed' is "
+                "equally uninformative"),
+    },
+    {
+        "name": "autopilot_action_verification",
+        "table": "brain_autopilot_actions",
+        "boundary": "low",
+        "sql": """SELECT COUNT(*) FILTER (WHERE outcome_verified IS NOT NULL),
+                         COUNT(*)
+                    FROM brain_autopilot_actions
+                   WHERE started_at > NOW() - INTERVAL '30 days'""",
+        "why": ("actions that are never verified either way cannot feed "
+                "class_success_weight, so work selection stops learning"),
+    },
+    {
+        "name": "autopilot_outcome_failures",
+        "table": "autopilot_outcomes",
+        "boundary": "low",
+        "sql": """SELECT COUNT(*) FILTER (WHERE succeeded IS FALSE),
+                         COUNT(*)
+                    FROM autopilot_outcomes
+                   WHERE verified_at > NOW() - INTERVAL '30 days'""",
+        "why": ("class_success_weight down-weights on failures; with none "
+                "recorded every class stays neutral forever"),
+    },
+]
+
+
+def evaluate_bounded_signal(hits, total, boundary,
+                            min_sample=None) -> dict:
+    """PURE. Is this bounded signal PINNED at a boundary it should be able to
+    leave? Returns {pinned, reason, hits, total, sample_ok}.
+
+    Deliberately conservative in three ways, because a detector that cries
+    wolf gets muted and then it is defect number nine:
+      · under `min_sample` nothing is claimed — a boundary on 3 rows is a
+        small sample, not a dead signal;
+      · `total` of 0 is UNMEASURED, never "clean";
+      · only the declared boundary is flagged. `fix_outcome_failures` pinned
+        LOW is a broken verifier; pinned HIGH is a bad month, not a null
+        signal, and is not this check's business.
+    """
+    min_sample = _PINNED_MIN_SAMPLE if min_sample is None else min_sample
+    hits, total = int(hits or 0), int(total or 0)
+    out = {"hits": hits, "total": total, "boundary": boundary,
+           "min_sample": min_sample, "pinned": False,
+           "sample_ok": total >= min_sample}
+    if total <= 0:
+        out["reason"] = "no rows in window — UNMEASURED, not clean"
+        return out
+    if not out["sample_ok"]:
+        out["reason"] = (f"only {total} rows (< {min_sample}) — a boundary "
+                         f"here is a small sample, not a dead signal")
+        return out
+    if boundary == "low" and hits == 0:
+        out["pinned"] = True
+        out["reason"] = (f"0 of {total} across the whole window — this value "
+                         f"has never once been produced")
+    elif boundary == "high" and hits == total:
+        out["pinned"] = True
+        out["reason"] = (f"{hits} of {total} — this value is produced EVERY "
+                         f"time, so the other branch never runs")
+    else:
+        out["reason"] = f"{hits} of {total} — both values occur"
+    return out
+
+
+def scan_bounded_signals(cur, registry=None) -> dict:
+    """Run the registry. Returns {measured:[...], unmeasured:[...]}.
+
+    A signal whose table is absent or whose query raises is UNMEASURED and is
+    reported as such — never folded into the clean list. That distinction is
+    the entire lesson of the sentinel lane that read as "conservative" for a
+    month while it was scanning nothing.
+    """
+    measured, unmeasured = [], []
+    for sig in (registry if registry is not None else _BOUNDED_SIGNALS):
+        try:
+            cur.execute("SELECT to_regclass(%s)", (sig["table"],))
+            row = cur.fetchone()
+            if not row or row[0] is None:
+                unmeasured.append({**{k: sig[k] for k in ("name", "table")},
+                                   "why_unmeasured": "table absent"})
+                continue
+            cur.execute(sig["sql"])
+            row = cur.fetchone() or (0, 0)
+            ev = evaluate_bounded_signal(row[0], row[1], sig["boundary"])
+            measured.append({"name": sig["name"], "table": sig["table"],
+                             "why": sig["why"], **ev})
+        except Exception as e:
+            unmeasured.append({
+                "name": sig.get("name"), "table": sig.get("table"),
+                "why_unmeasured": f"{type(e).__name__}: {str(e)[:120]}"})
+    return {"measured": measured, "unmeasured": unmeasured}
+
+
+# Synthetic rows planted into EVERY run's self-test. The spec's constraint:
+# "it MUST plant a known defect in its own fixture every run and fail loudly
+# if it does not find it" — structurally, not as a unit test.
+_CANARY_PINNED = (0, 500, "low")      # must be flagged
+_CANARY_HEALTHY = (250, 500, "low")   # must NOT be flagged
+_CANARY_SMALL = (0, 3, "low")         # must NOT be flagged (small sample)
+
+
+def _self_test_bounded(scan: dict) -> dict:
+    """Four legs. All must pass or the findings are withheld."""
+    legs = {}
+    n_measured = len(scan.get("measured") or [])
+    legs["measured_floor"] = {
+        "measured": n_measured, "min": _MIN_MEASURED_SIGNALS,
+        "passed": n_measured >= _MIN_MEASURED_SIGNALS,
+        "why": ("if every signal is unmeasured the check found nothing, and "
+                "reporting that as clean is the defect it hunts"),
+    }
+    neg = evaluate_bounded_signal(*_CANARY_PINNED)
+    legs["planted_defect"] = {
+        "input": _CANARY_PINNED, "flagged": neg["pinned"],
+        "passed": neg["pinned"] is True,
+        "why": "a comparison that always passes would miss every real pin",
+    }
+    pos = evaluate_bounded_signal(*_CANARY_HEALTHY)
+    legs["healthy_canary"] = {
+        "input": _CANARY_HEALTHY, "flagged": pos["pinned"],
+        "passed": pos["pinned"] is False,
+        "why": "a check that flags everything buries the real findings",
+    }
+    small = evaluate_bounded_signal(*_CANARY_SMALL)
+    legs["small_sample_canary"] = {
+        "input": _CANARY_SMALL, "flagged": small["pinned"],
+        "passed": small["pinned"] is False,
+        "why": "crying wolf on 3 rows gets the whole check muted",
+    }
+    return {"passed": all(l["passed"] for l in legs.values()), "legs": legs}
+
+
+@brain_null_signal_bp.route("/api/v1/admin/brain/cant-fail-signals",
+                            methods=["GET", "POST"])
+def cant_fail_signals():
+    """Check A — bounded signals pinned at a boundary they should be able to
+    leave. Read-only; writes nothing and opens no PR."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin key required"), 401
+    c = None
+    try:
+        c = _conn()
+        if c is None:
+            return jsonify(ok=False, error="no DATABASE_URL"), 200
+        with c.cursor() as cur:
+            scan = scan_bounded_signals(cur)
+    except Exception as e:
+        return jsonify(ok=False,
+                       error=f"{type(e).__name__}: {str(e)[:160]}"), 200
+    finally:
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    st = _self_test_bounded(scan)
+    body = {
+        "ok": st["passed"],
+        "check": "cant_fail_signatures",
+        "self_test": st,
+        "signals_measured": len(scan["measured"]),
+        "signals_unmeasured": scan["unmeasured"],
+        "min_sample": _PINNED_MIN_SAMPLE,
+    }
+    if not st["passed"]:
+        body["findings_withheld"] = (
+            "self-test failed — the scan cannot be trusted, so its findings "
+            "are not reported")
+        return jsonify(body), 200
+    pinned = [m for m in scan["measured"] if m["pinned"]]
+    body["pinned"] = pinned
+    body["pinned_count"] = len(pinned)
+    body["healthy"] = [m for m in scan["measured"] if not m["pinned"]]
+    return jsonify(body), 200
 
 
 @brain_null_signal_bp.route("/api/v1/admin/brain/null-signals",
