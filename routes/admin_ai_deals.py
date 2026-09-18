@@ -114,7 +114,7 @@ def restore_marquee_deals():
             for d in MARQUEE:
                 cur.execute("""
                     INSERT INTO deals (id, date, year, buyer, seller, value, type, market, notes, verified, source_url, created_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, 1, '', NOW())
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, 1, '', NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (id) DO UPDATE SET
                         buyer=EXCLUDED.buyer, seller=EXCLUDED.seller, value=EXCLUDED.value,
                         type=EXCLUDED.type, market=EXCLUDED.market, notes=EXCLUDED.notes,
@@ -399,7 +399,7 @@ def insert_deal():
             extraction_confidence, extracted_via, extracted_at, created_at
         )
         VALUES (
-            %(id)s, %(date)s, %(year)s, %(buyer)s, %(seller)s, %(value)s,
+            %(id) ON CONFLICT DO NOTHINGs, %(date)s, %(year)s, %(buyer)s, %(seller)s, %(value)s,
             %(type)s, %(deal_category)s, %(region)s, %(market)s,
             %(source_url)s, %(notes)s, %(verified)s, %(status)s,
             %(extraction_confidence)s, %(extracted_via)s, %(extracted_at)s,
@@ -438,6 +438,7 @@ def insert_deal():
 # GET -- list
 # ---------------------------------------------------------------------------
 
+# AUTO-REPAIR: duplicate route '' also in routes/admin_ai_deals.py:385 — review and remove one
 @admin_ai_deals_bp.route("", methods=["GET"])
 def list_deals():
     try:
@@ -492,6 +493,7 @@ def list_deals():
 # ---------------------------------------------------------------------------
 # GET /health
 # ---------------------------------------------------------------------------
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 
 @admin_ai_deals_bp.route("/health", methods=["GET"])
 def health():

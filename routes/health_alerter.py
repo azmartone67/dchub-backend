@@ -145,7 +145,7 @@ def _claim_alert_window(kind: str, min_interval_s: float):
                     _ALERT_STATE_DDL_DONE = True
                 cur.execute(
                     """WITH prev AS (SELECT last_sent_at FROM alert_state WHERE kind = %s)
-                       INSERT INTO alert_state (kind, last_sent_at) VALUES (%s, NOW())
+                       INSERT INTO alert_state (kind, last_sent_at) VALUES (%s, NOW() ON CONFLICT DO NOTHING)
                        ON CONFLICT (kind) DO UPDATE SET last_sent_at = NOW()
                         WHERE alert_state.last_sent_at < NOW() - make_interval(secs => %s)
                        RETURNING (SELECT last_sent_at FROM prev)""",
@@ -316,7 +316,7 @@ def _check_restart_loop():
         # rapid deploy session, 2026-06-19.)
         deploy_id = (os.environ.get("RAILWAY_DEPLOYMENT_ID")
                      or os.environ.get("RAILWAY_GIT_COMMIT_SHA") or "").strip()
-        cur.execute("INSERT INTO app_health_boots (deploy_id) VALUES (%s)", (deploy_id or None,))
+        cur.execute("INSERT INTO app_health_boots (deploy_id) VALUES (%s) ON CONFLICT DO NOTHING", (deploy_id or None,))
         n = 0
         if deploy_id:
             # distinct restart events (boots <60s apart collapse to 1) for THIS deploy_id
@@ -343,7 +343,7 @@ def _check_restart_loop():
                                f"crash/restart loop — NOT a deploy burst (those get new ids) — likely DB-pool "
                                f"exhaustion, OOM, or a boot crash.</p>"
                                f"<p>Check Railway deploy logs; consider rolling back or flipping a kill-switch.</p>"):
-                    cur.execute("INSERT INTO app_health_alerts (kind) VALUES ('restart_loop')")
+                    cur.execute("INSERT INTO app_health_alerts (kind) VALUES ('restart_loop') ON CONFLICT DO NOTHING")
                     log.warning("health_alerter: RESTART-LOOP alert sent (%s boots/%smin)", n, _RESTART_WINDOW_MIN)
         cur.execute("DELETE FROM app_health_boots WHERE boot_at < NOW() - INTERVAL '2 days'")
         cur.close()
