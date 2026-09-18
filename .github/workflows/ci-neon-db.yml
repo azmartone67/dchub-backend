@@ -235,6 +235,22 @@ jobs:
           echo "### Phase 2 — 19 lanes on a Neon branch" >> "$GITHUB_STEP_SUMMARY"
           tail -1 parity.log >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Phase 2b — the GSC schema must be able to build itself
+        # NOT advisory, and deliberately not part of Phase 2's `|| true` list.
+        # Phase 2 is a learning lane: its failures are its output. This is the
+        # opposite — a table that does not get created is the defect itself,
+        # so a failure here must fail the job. GSC_TABLES_REQUIRE=1 (set above)
+        # turns a missing DSN into an error rather than a skip, which matters
+        # because the bug this guards printed a success line while creating
+        # nothing, and a skipped test does the same thing.
+        env:
+          NEON_CI_DSN: ${{ steps.neon.outputs.dsn }}
+        run: |
+          set -o pipefail
+          python3 -m pytest tests/test_gsc_tables_created_on_postgres.py \
+            -v --tb=short -rs
+          echo "### Phase 2b — GSC schema builds itself: PASS" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Destroy the branch
         if: always() && steps.neon.outputs.branch_id != ''
         env:
