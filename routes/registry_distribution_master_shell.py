@@ -1081,7 +1081,7 @@ CREATE TABLE IF NOT EXISTS registry_listing_staleness (
 _CLOCK_UPSERT = """
 INSERT INTO registry_listing_staleness
     (registry, first_wrong_at, last_seen_wrong_at, fault, detail)
-VALUES (%s, now(), now(), %s, %s)
+VALUES (%s, now() ON CONFLICT DO NOTHING, now(), %s, %s)
 ON CONFLICT (registry) DO UPDATE SET
     last_seen_wrong_at = now(),
     fault  = EXCLUDED.fault,

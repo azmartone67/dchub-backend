@@ -423,11 +423,13 @@ def latest_for_iso(iso):
     return list(by.values())
 
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/iso_bpa.py:101 — review and remove one
 @iso_ieso_bp.route("/extract", methods=["POST", "GET"])
 def trigger():
     s = run_extraction()
     return jsonify(s), (200 if s.get("status") == "ok" else 500)
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_br_ons.py:264 — review and remove one
 
 @iso_ieso_bp.route("/snapshot", methods=["GET"])
 def snapshot():
@@ -452,11 +454,13 @@ def snapshot():
                                       "no complete hour — showing the reference "
                                       "model, NOT telemetry")
     return jsonify(payload), 200
+# AUTO-REPAIR: duplicate route '/latest' also in routes/iso_bpa.py:107 — review and remove one
 
 
 @iso_ieso_bp.route("/latest", methods=["GET"])
 def latest():
     return jsonify(iso=ISO_CODE, method="baseline_model_v1",
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
                    metrics=latest_for_iso(ISO_CODE)), 200
 
 
