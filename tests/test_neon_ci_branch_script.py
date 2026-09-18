@@ -437,3 +437,153 @@ def test_a_second_412_surfaces_rather_than_looping(monkeypatch):
     with pytest.raises(SystemExit):
         nb._create_branch("k", "p", {"branch": {}, "endpoints": [{"type": "read_write"}]})
     assert len(calls) == 2, "exactly one retry, then surface"
+
+
+# ── root-slot admission control ──────────────────────────────────────────────
+#
+# Added 2026-09-18 after `ROOT_BRANCHES_LIMIT_EXCEEDED` took the lane down with
+# FOUR live ci- roots plus production against a 5-root cap. Nothing had leaked:
+# `destroy` ran in every run, the sweeper ran and correctly swept 0. What was
+# missing was a bound on how many jobs held a branch at the same time.
+
+
+class _Roots:
+    """Serves a branch list that can CHANGE between polls, as the real one does."""
+
+    def __init__(self, *snapshots):
+        self.snapshots = list(snapshots)
+        self.calls = 0
+
+    def __call__(self, method, path, key, body=None):
+        if method == "GET" and path.endswith("/branches"):
+            i = min(self.calls, len(self.snapshots) - 1)
+            self.calls += 1
+            return {"branches": self.snapshots[i]}
+        raise AssertionError(f"unexpected {method} {path}")
+
+
+def _root(name, parent=None, hours=0.1):
+    b = {"id": "br-" + name, "name": name, "created_at": _ago(hours)}
+    if parent:
+        b["parent_id"] = parent
+    return b
+
+
+def _no_sleeping(monkeypatch):
+    """Let the loop run at full speed but keep its deadline arithmetic real."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(nb.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(nb.time, "monotonic", lambda: clock["t"])
+    return clock
+
+
+def test_a_free_slot_is_taken_without_waiting(monkeypatch):
+    _no_sleeping(monkeypatch)
+    api = _Roots([_root("ci-1-1-parity"), _root("production")])
+    monkeypatch.setattr(nb, "_req", api)
+    nb._await_root_slot("k", "p", "ci-", ceiling=3, wait_minutes=8)
+    assert api.calls == 1
+
+
+def test_it_waits_for_a_slot_and_then_proceeds(monkeypatch):
+    """The whole point: a full cap must queue, not fail."""
+    _no_sleeping(monkeypatch)
+    full = [_root(f"ci-{i}-1-parity") for i in range(3)]
+    api = _Roots(full, full, full[:2])
+    monkeypatch.setattr(nb, "_req", api)
+    nb._await_root_slot("k", "p", "ci-", ceiling=3, wait_minutes=8)
+    assert api.calls == 3
+
+
+def test_it_gives_up_with_the_holders_named(monkeypatch):
+    """A timeout must say WHICH branches hold the cap, not just that it is full."""
+    _no_sleeping(monkeypatch)
+    api = _Roots([_root("ci-777-1-parity"), _root("ci-778-1-fullsuite"),
+                  _root("ci-779-1-parity")])
+    monkeypatch.setattr(nb, "_req", api)
+    with pytest.raises(SystemExit) as exc:
+        nb._await_root_slot("k", "p", "ci-", ceiling=3, wait_minutes=1)
+    msg = str(exc.value)
+    assert "ci-777-1-parity" in msg and "ci-779-1-parity" in msg
+    assert "NEON_CI_MAX_ROOTS" in msg
+
+
+def test_a_child_branch_does_not_consume_a_root_slot(monkeypatch):
+    """Only ROOTS are capped. Counting children would queue behind nothing."""
+    _no_sleeping(monkeypatch)
+    api = _Roots([_root("ci-1-1-parity"),
+                  _root("ci-2-1-parity", parent="br-production"),
+                  _root("ci-3-1-parity", parent="br-production")])
+    monkeypatch.setattr(nb, "_req", api)
+    nb._await_root_slot("k", "p", "ci-", ceiling=2, wait_minutes=1)
+    assert api.calls == 1
+
+
+def test_production_does_not_consume_a_ci_slot(monkeypatch):
+    """The ceiling counts what this lane owns; prod's root is the headroom."""
+    _no_sleeping(monkeypatch)
+    api = _Roots([_root("production"), _root("staging"), _root("ci-1-1-parity")])
+    monkeypatch.setattr(nb, "_req", api)
+    nb._await_root_slot("k", "p", "ci-", ceiling=2, wait_minutes=1)
+    assert api.calls == 1
+
+
+def test_a_zero_ceiling_disables_the_wait_without_an_api_call(monkeypatch):
+    api = _Roots([])
+    monkeypatch.setattr(nb, "_req", api)
+    nb._await_root_slot("k", "p", "ci-", ceiling=0, wait_minutes=1)
+    assert api.calls == 0
+
+
+# ── expires_at is READ BACK, never assumed ───────────────────────────────────
+
+
+def _create(monkeypatch, capsys, branch):
+    monkeypatch.setattr(nb, "_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(nb, "_await_root_slot", lambda *a, **k: None)
+    monkeypatch.setattr(nb, "_default_branch_id", lambda *a, **k: "br-parent")
+    monkeypatch.setattr(nb, "_create_branch", lambda *a, **k: {"branch": branch})
+    monkeypatch.setattr(nb, "_connection_uri", lambda *a, **k: "postgres://x/y")
+    monkeypatch.setattr(nb, "_emit", lambda **k: None)
+    nb.cmd_create(type("A", (), {
+        "api_key": "k", "project_id": "p", "parent_id": "", "name": "ci-1-1-parity",
+        "database": "neondb", "role": "neondb_owner", "ttl_hours": 3,
+        "prefix": "ci-", "max_roots": 3, "wait_minutes": 8})())
+    return capsys.readouterr().err
+
+
+def test_an_echoed_expires_at_is_reported_as_confirmed(monkeypatch, capsys):
+    err = _create(monkeypatch, capsys,
+                  {"id": "br-x", "expires_at": "2026-09-18T10:00:00Z"})
+    assert "expires_at=2026-09-18T10:00:00Z" in err
+    assert "::warning::" not in err
+
+
+def test_a_dropped_expires_at_is_a_loud_warning_not_a_silent_pass(monkeypatch, capsys):
+    """Sending the field is not evidence it was stored. Read the response."""
+    err = _create(monkeypatch, capsys, {"id": "br-x"})
+    assert "::warning::" in err
+    assert "backstop is NOT armed" in err
+
+
+def test_the_cap_422_is_explained_as_capacity_not_as_a_bad_request(monkeypatch):
+    def boom(method, path, key, body=None):
+        raise SystemExit('neon api POST /projects/p/branches -> 422: '
+                         '{"code":"ROOT_BRANCHES_LIMIT_EXCEEDED"}')
+    monkeypatch.setattr(nb, "_req", boom)
+    with pytest.raises(SystemExit) as exc:
+        nb._create_branch("k", "p", {"branch": {}})
+    assert "ROOT-branch cap" in str(exc.value)
+    assert "NEON_CI_MAX_ROOTS" in str(exc.value)
+
+
+def test_the_sweeper_prints_the_population_it_examined(monkeypatch, capsys):
+    """`swept 0` alone cannot tell "nothing leaked" from "the prefix matched
+    nothing". The inventory is what makes a zero readable."""
+    _sweep(monkeypatch, [
+        {"id": "br-p", "name": "production", "created_at": _ago(900)},
+        {"id": "br-y", "name": "ci-1-1-parity", "created_at": _ago(0.2)},
+    ])
+    err = capsys.readouterr().err
+    assert "2 branches, 2 root, 1 matching 'ci-'" in err
+    assert "ci-1-1-parity" in err and "expires_at=NOT SET" in err

@@ -20,6 +20,22 @@ name: neon-ephemeral-db
 #     2. `expires_at` set at creation        — survives a killed runner
 #     3. the scheduled `sweep` job below     — catches whatever still leaks
 #
+# ★ THE CAP IS 5 HERE, AND PRODUCTION HOLDS ONE OF THEM. Measured 2026-09-18
+#   after `ROOT_BRANCHES_LIMIT_EXCEEDED` took this lane down: at each of the
+#   three failures EXACTLY FOUR ci- roots were alive (run 35318312942, and
+#   35316225436 twelve minutes earlier), while every successful create had
+#   three or fewer. Four ci- roots + production = 5 = the Launch cap. An
+#   earlier revision of this comment said "a cap of 25"; that was the Scale
+#   number, and it is what made four concurrent PRs look survivable.
+#
+# ★ SO THE FAILURE WAS NOT A LEAK, and none of the three defences above was
+#   broken: `destroy` ran in every run including the cancelled ones, and the
+#   sweeper ran on schedule and correctly swept 0. The missing thing was a
+#   FOURTH property — nothing bounded how many jobs held a branch AT ONCE.
+#   GitHub concurrency cannot express "at most N runs", only one per group, so
+#   the bound lives in the script: `create` waits for a free root slot and says
+#   which branches are holding them. See `_await_root_slot`.
+#
 # ★ PUBLIC REPO. Branches carry SCHEMA ONLY — never prod rows. Fork PRs get no
 #   secrets from GitHub, so the jobs below skip on forks rather than failing;
 #   `pull_request_target` would hand fork-authored code a live branch and is
@@ -61,7 +77,9 @@ jobs:
   # PR against a cap of 25.
   ephemeral-db:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 25 + the 8 minutes `create` may spend waiting for a root slot. Without
+    # the headroom, the queue this added would surface as a timeout instead.
+    timeout-minutes: 35
     # Two gates, both at JOB level so a non-run shows as "skipped" in the UI
     # rather than as a green job that quietly did nothing:
     #   * vars.NEON_CI_ENABLED — the on switch. Repository VARIABLES are usable
@@ -74,13 +92,23 @@ jobs:
     #   * fork PRs get no secrets from GitHub, so they are excluded explicitly.
     # With the switch on and a secret missing or rotated away, the job goes RED.
     # That is the intended behaviour — it is a real misconfiguration.
+    #   * NOT on `schedule`. `github.event_name != 'pull_request'` is true for
+    #     a schedule event too, so every six-hourly sweeper tick ALSO cut a
+    #     parity branch — competing for the four root slots with the PRs this
+    #     lane exists to measure. A cron tick is not a code change and there is
+    #     nothing for this job to say about one.
     if: >-
       vars.NEON_CI_ENABLED == '1' &&
+      github.event_name != 'schedule' &&
       (github.event_name != 'pull_request' ||
        github.event.pull_request.head.repo.full_name == github.repository)
     env:
       NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
       NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      # How many ci- ROOT branches this lane may hold at once. Default 3 leaves
+      # production's root plus one spare inside the 5-root cap. A variable, not
+      # a literal, so a plan change is a settings edit and not a code change.
+      NEON_CI_MAX_ROOTS: ${{ vars.NEON_CI_MAX_ROOTS || '3' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -270,10 +298,21 @@ jobs:
   full-suite-measurement:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    if: vars.NEON_CI_ENABLED == '1' && (github.event_name == 'schedule' || inputs.run_full_suite)
+    # ★ `github.event.schedule`, not `github.event_name`. Two crons are declared
+    #   above and the event NAME cannot tell them apart, so the 6-hourly
+    #   SWEEPER tick was also starting this 40-minute branch-holding suite —
+    #   four times a day, each time taking a root slot from the lane the
+    #   sweeper had just finished cleaning up after.
+    if: >-
+      vars.NEON_CI_ENABLED == '1' &&
+      (github.event.schedule == '41 6 * * *' || inputs.run_full_suite)
     env:
       NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
       NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      # How many ci- ROOT branches this lane may hold at once. Default 3 leaves
+      # production's root plus one spare inside the 5-root cap. A variable, not
+      # a literal, so a plan change is a settings edit and not a code change.
+      NEON_CI_MAX_ROOTS: ${{ vars.NEON_CI_MAX_ROOTS || '3' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -347,5 +386,8 @@ jobs:
         # neon_ci_branch.py imports requests at module scope, so the sweep job
         # needs it too — it is the only job here that runs no tests.
         run: python3 -m pip install requests
-      - name: Sweep ci-* branches older than 6h
-        run: python3 scripts/neon_ci_branch.py sweep --prefix ci- --ttl-hours 6
+      - name: Sweep ci-* branches older than 2h
+        # 2h, not 6h. The longest job here is bounded at 40 minutes, so a ci-
+        # branch older than two hours cannot belong to a run still in flight.
+        # Six hours let a leak live for six hours inside a four-slot budget.
+        run: python3 scripts/neon_ci_branch.py sweep --prefix ci- --ttl-hours 2
