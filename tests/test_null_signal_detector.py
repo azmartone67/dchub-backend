@@ -307,3 +307,68 @@ def test_registry_entries_are_well_formed():
         assert sig["table"] in sig["sql"], (
             f"{sig['name']}: sql does not name its own table, so the "
             f"to_regclass guard checks a different relation than it queries")
+
+
+# ── 2026-09-18: the signal that emitted a true finding under a wrong cause ──
+
+def test_registry_does_not_count_proposal_status_rejected():
+    """★ REGRESSION PIN. The first live run of check 2 reported
+    l5_proposal_rejections "0 of 194 — never once produced" off
+    brain_proposed_code_fixes.status='rejected'. True, and a misleading cause:
+
+      · Layer 5's automatic rejections (SQLite-stack guard, compile guard)
+        `return` BEFORE the INSERT — a rejected proposal never becomes a row
+        that could carry status='rejected';
+      · that column's only writer is the admin-only, manually-invoked
+        POST /api/v1/brain/proposed-code/neutralize "r67 one-off cleanup".
+
+    So the count measured "did an admin hand-neutralize anything", not "does
+    the brain reject bad proposals" — and the finding's `why` pointed the
+    reader at a confidence threshold that has nothing to do with it.
+
+    A detector that emits a true finding under a wrong cause sends the next
+    reader to the wrong file. That is worse than emitting nothing, and it is
+    the exact failure class this module exists to hunt."""
+    for sig in d._BOUNDED_SIGNALS:
+        sql = " ".join(sig["sql"].split())
+        assert not ("brain_proposed_code_fixes" in sql
+                    and "status = 'rejected'" in sql), (
+            f"{sig['name']} counts brain_proposed_code_fixes.status='rejected'"
+            " — rejections never reach that column; watch "
+            "brain_issue_persistence.last_outcome instead")
+
+
+def test_permafail_signal_watches_the_column_that_records_rejections():
+    """The replacement must read brain_issue_persistence.last_outcome, which is
+    what brain_v2_store.last_outcomes_map reads to skip permafail issues."""
+    sig = next((x for x in d._BOUNDED_SIGNALS
+                if x["name"] == "l5_permafail_rejections"), None)
+    assert sig is not None, "the repointed signal is gone"
+    assert sig["table"] == "brain_issue_persistence"
+    sql = " ".join(sig["sql"].split())
+    assert "last_outcome" in sql
+    # the three outcomes brain_v2_layer5._PERMAFAIL actually emits
+    for outcome in ("refused", "rejected_false_syntax_claim",
+                    "rejected_sqlite_hallucination"):
+        assert outcome in sql, f"{outcome} missing from the permafail set"
+
+
+def test_permafail_set_matches_layer5(tmp_path):
+    """★ WRITER/READER PIN. If Layer 5 adds or renames a permafail outcome and
+    this registry is not updated, the signal silently stops seeing it — the
+    disagreement has no runtime error, which is the whole shape check 2 hunts."""
+    import os
+    import re
+    src = open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(d.__file__))), "routes", "brain_v2_layer5.py"),
+        encoding="utf-8").read()
+    m = re.search(r"_PERMAFAIL\s*=\s*\{(.*?)\}", src, re.S)
+    assert m, "could not find _PERMAFAIL in brain_v2_layer5"
+    layer5 = set(re.findall(r"[\"']([a-z_]+)[\"']", m.group(1)))
+    sig = next(x for x in d._BOUNDED_SIGNALS
+               if x["name"] == "l5_permafail_rejections")
+    sql = " ".join(sig["sql"].split())
+    missing = {o for o in layer5 if o not in sql}
+    assert not missing, (
+        f"brain_v2_layer5._PERMAFAIL emits {sorted(missing)} but the "
+        f"l5_permafail_rejections signal does not count them")
