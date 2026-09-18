@@ -262,6 +262,34 @@ def test_dcpi_template_jsonld_and_onramp_gated_and_paid():
         _assert_onramp_links_canonical_connect(html, r"Query this market live via MCP: ")
 
 
+def test_dcpi_emits_no_robots_blocked_internal_link():
+    """★ robots.txt Disallows `/*?` for EVERY crawler group, so an internal
+    href carrying a query string is a link we forbid crawlers to follow — and
+    the DCPI template spent 333 pages aiming its ONLY money-page link at one
+    (`/pricing?ref=dcpi&tool=<slug>`, filed by Google under "Blocked by
+    robots.txt"; be#4725 moved the attribution to the fragment).
+
+    This is the general property, not that one URL: any `?` in an internal href
+    on these pages is the same defect. The fragment form passes because a
+    fragment is not a query string.
+
+    ★ The floor is the anti-vacuity guard: `_render_dcpi` returning a stub, or
+      a selector that stops matching, would otherwise make "no blocked links"
+      trivially true. Measured 2026-09-18: 18 internal hrefs gated, 13 ungated.
+    """
+    for gated in (True, False):
+        html = _render_dcpi(gated)
+        internal = re.findall(r'href="(/[^"]*)"', html)
+        assert len(internal) >= 10, (
+            f"vacuous: only {len(internal)} internal hrefs rendered "
+            f"(gated={gated}) — the template or the selector broke, so this "
+            "test would pass without checking anything")
+        blocked = sorted({h for h in internal if "?" in h})
+        assert not blocked, (
+            f"internal links robots.txt forbids crawlers to follow "
+            f"(gated={gated}): {blocked}")
+
+
 # ── 5. /connect measurement wiring ───────────────────────────────────────
 class _FakeDB:
     def __init__(self):

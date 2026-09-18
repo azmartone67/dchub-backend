@@ -8104,7 +8104,14 @@ h1 {
   <div class="cta-pro">
     <h2>Drill into {{ s.market_name }} at the county level.</h2>
     <p>Free alerts tell you {{ s.market_name }} moved. Pro tells you <em>where</em> — the score at the county level so you can pinpoint which sub-markets have the headroom, plus PDF export for your buyers.</p>
-    <a href="/pricing?ref=dcpi&tool={{ s.market_slug }}">Get Pro · $199/mo →</a>
+    <!-- ★ Fragment, NOT a query string. robots.txt Disallows /*? for every
+         crawler group, so the old ?ref= form aimed our only money-page link on
+         333 pages at a URL we forbid crawlers to fetch; Google filed it under
+         "Blocked by robots.txt". A bare /pricing would have been the WRONG fix:
+         ref/tool ARE read, into the Stripe client_reference_id. A fragment is
+         never sent to the server and never a separate crawl target. Needs
+         fe#1506 live first. Full rationale and evidence: be#4725. -->
+    <a href="/pricing#ref=dcpi&tool={{ s.market_slug }}">Get Pro · $199/mo →</a>
   </div>
 </div>
 
