@@ -158,15 +158,32 @@ def test_it_prefers_the_uri_the_api_returned(monkeypatch):
 
 def test_it_rebuilds_the_uri_when_the_api_omits_one(monkeypatch):
     """dchub's prod branch carries multiple roles/databases, so the API returns
-    no connection_uris and THIS is the live path, not the branch above."""
-    monkeypatch.setattr(nb, "_req", lambda *a, **k: {"password": "pw"})
+    no connection_uris and THIS is the live path, not the branch above.
+
+    The rebuild now DISCOVERS the database and its owner rather than assuming
+    neondb/neondb_owner, so the stub answers both calls.
+    """
+    def _req(method, path, key, body=None):
+        if path.endswith("/databases"):
+            return {"databases": [{"name": "dchub", "owner_name": "dchub_admin"}]}
+        if path.endswith("/reveal_password"):
+            assert "/roles/dchub_admin/" in path, (
+                "the password must be revealed for the DISCOVERED owner")
+            return {"password": "pw"}
+        raise AssertionError(f"unexpected call: {path}")
+
+    monkeypatch.setattr(nb, "_req", _req)
     out = {"connection_uris": [], "endpoints": [{"host": "ep-x.aws.neon.tech"}]}
     got = nb._connection_uri(out, "k", "p", "br", "neondb", "neondb_owner")
-    assert got == "postgresql://neondb_owner:pw@ep-x.aws.neon.tech/neondb?sslmode=require"
+    assert got == "postgresql://dchub_admin:pw@ep-x.aws.neon.tech/dchub?sslmode=require"
 
 
 def test_it_refuses_rather_than_returning_a_half_built_uri(monkeypatch):
-    monkeypatch.setattr(nb, "_req", lambda *a, **k: {})      # no password
+    def _req(method, path, key, body=None):
+        if path.endswith("/databases"):
+            return {"databases": [{"name": "db", "owner_name": "role"}]}
+        return {}                                            # no password
+    monkeypatch.setattr(nb, "_req", _req)
     out = {"connection_uris": [], "endpoints": [{"host": "h"}]}
     with pytest.raises(SystemExit):
         nb._connection_uri(out, "k", "p", "br", "db", "role")
@@ -174,8 +191,13 @@ def test_it_refuses_rather_than_returning_a_half_built_uri(monkeypatch):
 
 # ── _preflight: turning a bare 404 into something actionable ─────────────────
 
-def _projects(*ids):
-    return lambda *a, **k: {"projects": [{"id": i, "name": i} for i in ids]}
+def _project_lookup(known_id):
+    """Model GET /projects/<id> — what _preflight actually calls now."""
+    def _req(method, path, key, body=None):
+        if path == f"/projects/{known_id}":
+            return {"project": {"id": known_id}}
+        raise SystemExit(f"neon api GET {path} -> 404: not found")
+    return _req
 
 
 def test_a_project_id_with_a_trailing_newline_is_named_as_malformed(monkeypatch):
@@ -185,14 +207,14 @@ def test_a_project_id_with_a_trailing_newline_is_named_as_malformed(monkeypatch)
     character lands in the URL PATH, and Neon answers "this route does not
     exist" — which reads like the API moved rather than like a bad id.
     """
-    monkeypatch.setattr(nb, "_req", _projects("winter-frost-12345678"))
+    monkeypatch.setattr(nb, "_req", _project_lookup("winter-frost-12345678"))
     with pytest.raises(SystemExit) as e:
         nb._preflight("k", "winter-frost-12345678\n")
     assert "malformed" in str(e.value)
 
 
 def test_a_console_url_pasted_instead_of_an_id_is_named_as_malformed(monkeypatch):
-    monkeypatch.setattr(nb, "_req", _projects("winter-frost-12345678"))
+    monkeypatch.setattr(nb, "_req", _project_lookup("winter-frost-12345678"))
     with pytest.raises(SystemExit) as e:
         nb._preflight("k", "https://console.neon.tech/app/projects/winter-frost-12345678")
     assert "malformed" in str(e.value)
@@ -200,24 +222,23 @@ def test_a_console_url_pasted_instead_of_an_id_is_named_as_malformed(monkeypatch
 
 def test_a_wellformed_id_the_key_cannot_see_is_reported_separately(monkeypatch):
     """Distinct from malformed: the shape is fine, the key is the problem."""
-    monkeypatch.setattr(nb, "_req", _projects("other-project-87654321"))
+    monkeypatch.setattr(nb, "_req", _project_lookup("other-project-87654321"))
     with pytest.raises(SystemExit) as e:
         nb._preflight("k", "winter-frost-12345678")
     msg = str(e.value)
     assert "malformed" not in msg
-    assert "not among the 1 project" in msg
+    assert "cannot reach it" in msg
 
 
 def test_a_matching_id_passes(monkeypatch):
-    monkeypatch.setattr(nb, "_req", _projects("a-b-1", "winter-frost-12345678"))
+    monkeypatch.setattr(nb, "_req", _project_lookup("winter-frost-12345678"))
     nb._preflight("k", "winter-frost-12345678")        # must not raise
 
 
 def test_preflight_leaks_no_identifier_into_a_public_log(monkeypatch, capsys):
     """CI logs on this repo are PUBLIC. The failure message may describe shape
     and counts; it may not enumerate project ids or echo the configured one."""
-    monkeypatch.setattr(nb, "_req", _projects("secret-project-11112222",
-                                              "other-project-33334444"))
+    monkeypatch.setattr(nb, "_req", _project_lookup("secret-project-11112222"))
     with pytest.raises(SystemExit) as e:
         nb._preflight("k", "configured-id-99998888")
     blob = str(e.value) + capsys.readouterr().out
@@ -253,7 +274,7 @@ def test_a_connection_string_pasted_as_the_project_id_is_named_as_such(monkeypat
     useless — it does not tell you WHICH wrong thing you pasted. This case is
     checked before the generic one so the message names it.
     """
-    monkeypatch.setattr(nb, "_req", _projects("winter-frost-12345678"))
+    monkeypatch.setattr(nb, "_req", _project_lookup("winter-frost-12345678"))
     with pytest.raises(SystemExit) as e:
         nb._preflight(
             "k",
@@ -272,9 +293,79 @@ def test_a_branch_id_pasted_as_the_project_id_is_named_as_such(monkeypatch):
     so only the 'br-' prefix distinguishes it. Printing it is fine: a branch id
     is an identifier, not a credential.
     """
-    monkeypatch.setattr(nb, "_req", _projects("winter-resonance-12345678"))
+    monkeypatch.setattr(nb, "_req", _project_lookup("winter-resonance-12345678"))
     with pytest.raises(SystemExit) as e:
         nb._preflight("k", "br-winter-resonance-afqm5ih8")
     msg = str(e.value)
     assert "BRANCH id" in msg
     assert "not among" not in msg, "must not fall through to the generic case"
+
+
+def test_preflight_survives_an_organisation_scoped_key(monkeypatch):
+    """The regression that broke the third live run.
+
+    The first _preflight listed /projects and checked membership. An
+    ORG-scoped key cannot answer that at all — Neon returns
+    `400 org_id is required` — so the diagnostic failed in front of the
+    configuration it existed to diagnose. A direct GET of the project works for
+    personal and org keys alike, and it is the narrower question anyway.
+    """
+    def _req(method, path, key, body=None):
+        if path == "/projects":
+            raise SystemExit("neon api GET /projects -> 400: org_id is required")
+        if path == "/projects/polished-scene-74402045":
+            return {"project": {"id": "polished-scene-74402045"}}
+        raise AssertionError(f"unexpected call: {path}")
+
+    monkeypatch.setattr(nb, "_req", _req)
+    nb._preflight("k", "polished-scene-74402045")      # must not raise
+
+
+def test_a_403_is_reported_as_authorisation_not_as_a_wrong_id(monkeypatch):
+    def _req(method, path, key, body=None):
+        raise SystemExit(f"neon api GET {path} -> 403: forbidden")
+    monkeypatch.setattr(nb, "_req", _req)
+    with pytest.raises(SystemExit) as e:
+        nb._preflight("k", "polished-scene-74402045")
+    assert "not authorised" in str(e.value)
+
+
+# ── _resolve_db_and_role: stop guessing neondb / neondb_owner ────────────────
+
+def _branch_dbs(*pairs):
+    def _req(method, path, key, body=None):
+        if path.endswith("/databases"):
+            return {"databases": [{"name": n, "owner_name": o} for n, o in pairs]}
+        raise AssertionError(f"unexpected call: {path}")
+    return _req
+
+
+def test_it_pairs_the_database_with_ITS_owner(monkeypatch):
+    """Two independent lookups would let a role that does not own the database
+    through, and that fails at connect time looking like a bad password."""
+    monkeypatch.setattr(nb, "_req", _branch_dbs(("dchub", "dchub_admin"),
+                                                ("other", "someone_else")))
+    assert nb._resolve_db_and_role("k", "p", "br", "neondb", "neondb_owner") == (
+        "dchub", "dchub_admin")
+
+
+def test_an_explicitly_named_database_that_is_absent_is_an_error(monkeypatch):
+    """Silently substituting another database would run the suite against the
+    wrong one and report green."""
+    monkeypatch.setattr(nb, "_req", _branch_dbs(("dchub", "dchub_admin")))
+    with pytest.raises(SystemExit) as e:
+        nb._resolve_db_and_role("k", "p", "br", "typo_db", "")
+    assert "not on this branch" in str(e.value)
+    assert "dchub" in str(e.value), "must list what IS available"
+
+
+def test_an_explicit_role_overrides_the_owner(monkeypatch):
+    monkeypatch.setattr(nb, "_req", _branch_dbs(("dchub", "dchub_admin")))
+    assert nb._resolve_db_and_role("k", "p", "br", "dchub", "readonly_role") == (
+        "dchub", "readonly_role")
+
+
+def test_a_branch_with_no_databases_is_an_error_not_an_empty_dsn(monkeypatch):
+    monkeypatch.setattr(nb, "_req", lambda *a, **k: {"databases": []})
+    with pytest.raises(SystemExit):
+        nb._resolve_db_and_role("k", "p", "br", "", "")

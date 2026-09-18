@@ -110,20 +110,44 @@ def _preflight(key: str, project: str) -> None:
             "  printf %s 'winter-frost-12345678' | gh secret set NEON_PROJECT_ID "
             "--repo azmartone67/dchub-backend")
 
-    projects = _req("GET", "/projects", key).get("projects", [])
-    if not any(p.get("id") == project for p in projects):
-        raise SystemExit(
-            f"NEON_PROJECT_ID is not among the {len(projects)} project(s) this "
-            "API key can see. Either the id is wrong or the key belongs to a "
-            "different account/organization. Run `python3 "
-            "scripts/neon_ci_branch.py doctor` LOCALLY (not in CI) to list them."
-            + ("\n  The key sees 0 projects — if it is an organization-scoped "
-               "key it may not list personal projects." if not projects else ""))
+    # ★ Ask about THIS project, not about every project.
+    #
+    #   The first version listed /projects and checked for membership. That is
+    #   a strictly broader question, it needs more privilege to answer, and an
+    #   ORGANISATION-scoped key cannot answer it at all — Neon rejects the
+    #   listing with `400 org_id is required`. So the diagnostic became the
+    #   thing that failed, in front of the configuration it was meant to
+    #   diagnose. A direct GET works for personal and org keys alike.
+    try:
+        _req("GET", f"/projects/{project}", key)
+    except SystemExit as exc:
+        detail = str(exc)
+        if "-> 404" in detail:
+            raise SystemExit(
+                "NEON_PROJECT_ID is well-formed but this API key cannot reach "
+                "it — wrong id, or a key belonging to a different account or "
+                "organisation. Run `python3 scripts/neon_ci_branch.py doctor` "
+                "LOCALLY to see what the key can reach.") from exc
+        if "-> 403" in detail:
+            raise SystemExit(
+                "this API key is not authorised for that project — it is "
+                "probably scoped to a different organisation.") from exc
+        raise
 
 
 def cmd_doctor(a: argparse.Namespace) -> None:
     """Local-only: print the project ids this key can reach. Never run in CI."""
-    projects = _req("GET", "/projects", a.api_key).get("projects", [])
+    path = f"/projects?org_id={a.org_id}" if a.org_id else "/projects"
+    try:
+        projects = _req("GET", path, a.api_key).get("projects", [])
+    except SystemExit as exc:
+        if "org_id is required" in str(exc):
+            raise SystemExit(
+                "this is an ORGANISATION-scoped API key, so listing needs the "
+                "org id: re-run with --org-id <id>. Find it on the Neon "
+                "organisation settings page. (CI does not need it — the branch "
+                "calls address the project directly.)") from exc
+        raise
     print(f"{len(projects)} project(s) visible to this key:")
     for p in projects:
         mark = "  <-- NEON_PROJECT_ID" if p.get("id") == a.project_id else ""
@@ -200,12 +224,55 @@ def _connection_uri(out: dict, key: str, project: str, branch_id: str,
         raise SystemExit("branch created without an endpoint — nothing to connect to")
     host = eps[0]["host"]
 
+    database, role = _resolve_db_and_role(key, project, branch_id, database, role)
+
     pw = _req("GET",
               f"/projects/{project}/branches/{branch_id}/roles/{role}/reveal_password",
               key).get("password")
     if not pw:
         raise SystemExit(f"could not reveal a password for role {role!r}")
     return f"postgresql://{role}:{pw}@{host}/{database}?sslmode=require"
+
+
+def _resolve_db_and_role(key: str, project: str, branch_id: str,
+                         db_hint: str, role_hint: str) -> tuple[str, str]:
+    """Ask the branch what its database and owning role are actually called.
+
+    `neondb` / `neondb_owner` are Neon's defaults for a project created through
+    the console, and dchub's are NOT guaranteed to be those — this project
+    predates that convention and was migrated between two clouds. A guess here
+    fails as an opaque auth error at connect time, several steps downstream of
+    the wrong assumption.
+
+    The pairing that matters is database -> ITS OWNER, not two independent
+    lookups: connecting as a role that does not own the database is a
+    permissions failure that looks exactly like a wrong password.
+
+    Names are identifiers, not credentials, so they are safe to name in an
+    error. The PASSWORD is fetched separately and never printed.
+    """
+    dbs = _req("GET", f"/projects/{project}/branches/{branch_id}/databases",
+               key).get("databases", [])
+    if not dbs:
+        raise SystemExit(f"branch {branch_id} reports no databases")
+
+    chosen = next((d for d in dbs if d.get("name") == db_hint), None)
+    if chosen is None:
+        if db_hint not in ("", "neondb"):
+            # An explicitly requested database that does not exist is an error,
+            # not something to silently substitute.
+            raise SystemExit(
+                f"database {db_hint!r} is not on this branch. Available: "
+                + ", ".join(sorted(d.get("name", "?") for d in dbs)))
+        chosen = dbs[0]
+
+    database = chosen["name"]
+    owner = chosen.get("owner_name") or ""
+    # An explicit --role wins; otherwise take the database's own owner.
+    role = role_hint if role_hint not in ("", "neondb_owner") else owner
+    if not role:
+        raise SystemExit(f"database {database!r} reports no owner_name")
+    return database, role
 
 
 def _emit(*, branch_id: str, dsn: str) -> None:
@@ -308,7 +375,9 @@ def main() -> None:
     d.add_argument("--branch-id", required=True)
     d.set_defaults(fn=cmd_destroy)
 
-    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    doc = sub.add_parser("doctor")
+    doc.add_argument("--org-id", default=os.environ.get("NEON_ORG_ID", ""))
+    doc.set_defaults(fn=cmd_doctor)
 
     w = sub.add_parser("sweep")
     w.add_argument("--prefix", default="ci-")
@@ -318,6 +387,7 @@ def main() -> None:
     a = p.parse_args()
     # `gh secret set` keeps whatever was pasted, trailing newline included, and
     # a stray character lands in the URL PATH where it reads as a routing bug.
+    a.org_id = (getattr(a, "org_id", "") or "").strip()
     a.api_key = (a.api_key or "").strip()
     a.project_id = (a.project_id or "").strip()
     if not a.api_key or not a.project_id:
