@@ -68,7 +68,7 @@ DEFAULT_INCENTIVES = [
     {"abbr":"NY","name":"New York","fips":"36","has_incentive":True,"rating":3,"duration":"Varies","min_investment":"Varies","sales_tax":True,"summary":"Sales tax exemption for equipment used by Internet data centers.","details":"Administered by Dept. of Tax & Finance.","source":"NY Tax & Finance"},
     {"abbr":"NC","name":"North Carolina","fips":"37","has_incentive":True,"rating":4,"duration":"Varies","min_investment":"$75M","jobs_required":"Wage & ins. req.","sales_tax":True,"electricity_tax":True,"summary":"Sales/use tax exemption for electricity and equipment. $75M+ within 5 years.","details":"Electricity exemption is major.","source":"EDPNC"},
     {"abbr":"ND","name":"North Dakota","fips":"38","has_incentive":True,"rating":3,"duration":"Varies","min_investment":"Varies","sales_tax":True,"summary":"Sales/use tax exemption for IT equipment in 15K+ sq ft facilities.","details":"Must be built after Dec 31, 2020.","source":"ND Tax Dept."},
-    {"abbr":"OH","name":"Ohio","fips":"39","has_incentive":True,"rating":4,"duration":"Varies","min_investment":"$100M","jobs_required":"$1.5M payroll","sales_tax":True,"property_tax":True,"summary":"Sales tax abatement for $100M+ / $1.5M+ payroll. No personal property tax.","details":"No personal property tax is huge ongoing benefit.","source":"Ohio DSA"},
+    {"abbr":"OH","name":"Ohio","fips":"39","has_incentive":True,"rating":3,"status":"paused_new_applicants","status_as_of":"2026-05-27","status_note":"Gov. DeWine directed the Ohio Tax Credit Authority to pause consideration of all NEW data center sales/use tax exemption requests while the General Assembly's Joint Data Center Committee holds hearings. Already-executed agreements are unaffected and continue to run. No stated end date.","status_source":"Office of the Governor of Ohio, directive to the Ohio Tax Credit Authority, 2026-05-27","status_source_url":"https://signalohio.org/ohio-approves-last-data-center-exemption-before-moratorium/","duration":"Varies","min_investment":"$100M","jobs_required":"$1.5M payroll","sales_tax":True,"property_tax":True,"summary":"PAUSED to new applicants since 2026-05-27. The ORC 122.175 sales/use tax exemption ($100M+ capex / $1.5M+ payroll) is closed to new requests; already-executed agreements continue. Ohio's absence of personal property tax is unaffected and remains a structural benefit.","details":"Pause followed the Ohio LSC scoring FY2025 forgone revenue at $1.57B against a $135.8M forecast. HB 957 (136th GA) would end the program permanently and sits in House Ways & Means. Local tools (enterprise zones, CRAs, TIF) are unaffected by the pause. Rating lowered 4 to 3: a NEW project cannot obtain the exemption today.","source":"Ohio Dept. of Development / Ohio Revised Code 122.175","source_url":"https://codes.ohio.gov/ohio-revised-code/section-122.175"},
     {"abbr":"OK","name":"Oklahoma","fips":"40","has_incentive":True,"rating":3,"duration":"Varies","min_investment":"N/A","sales_tax":True,"summary":"Sales tax exemption for computer services with majority out-of-state revenue.","details":"Benefits national/global operators.","source":"Oklahoma Tax Commission"},
     {"abbr":"OR","name":"Oregon","fips":"41","has_incentive":True,"rating":4,"duration":"Varies","min_investment":"Varies","property_tax":True,"income_tax":True,"summary":"No sales tax. Enterprise Zone abatements, Strategic Investment Program, Oregon Investment Advantage.","details":"Stackable programs, especially rural.","source":"Business Oregon"},
     {"abbr":"PA","name":"Pennsylvania","fips":"42","has_incentive":True,"rating":4,"duration":"Varies","min_investment":"Varies","sales_tax":True,"property_tax":True,"income_tax":True,"summary":"DC Equipment Program + Keystone Opportunity Zones (KOZ) — near-complete tax elimination.","details":"KOZ is particularly powerful.","source":"PA Dept. of Revenue"},
@@ -163,9 +163,15 @@ def setup_tax_incentive_routes(app, db=None):
         # Rich DETAIL fields (summary, details, source, min_investment,
         # jobs_required, duration) are gated to IDENTIFIED+ — the map
         # still colors every state, anon clicks reveal the upgrade CTA.
+        # status/status_as_of/status_note are STRUCTURAL on purpose: a
+        # program that is suspended or repealed must not read as available
+        # to an anonymous caller. Withholding a pause behind the paywall
+        # publishes a wrong answer, not a thinner one. status_source /
+        # status_source_url stay gated alongside source / source_url.
         _STRUCTURAL_FIELDS = {
             'abbr', 'name', 'fips', 'has_incentive', 'rating',
             'sales_tax', 'property_tax', 'income_tax', 'electricity_tax',
+            'status', 'status_as_of', 'status_note',
         }
         _gated = False
         _total = len(results)
