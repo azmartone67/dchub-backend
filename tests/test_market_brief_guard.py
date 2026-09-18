@@ -149,7 +149,25 @@ _PROVIDED = ("Response", "read_deep_dive", "_conn", "_ensure_schema",
              # dependencies. canonical_slug and PUBLISHED_ONLY are seeded in
              # `ns` from the REAL modules — a stub of either would let the
              # page read a retired twin's frozen row with this file green.
-             "canonical_slug", "PUBLISHED_ONLY", "_SCORE_DRIFT_EPSILON")
+             "canonical_slug", "PUBLISHED_ONLY", "_SCORE_DRIFT_EPSILON",
+             # r-mw-coverage (2026-09-17): read_live_stats now also reads the
+             # MW-coverage denominator on the connection it already opens, and
+             # _render_deep_dive_body renders it. All three come from the REAL
+             # module below — stubbing mw_coverage_note in particular would let
+             # the tile publish a bare SUM(mw) with this file green, which is
+             # the exact defect the change removes.
+             "measured_market_facts", "overlay_mw_coverage",
+             "mw_coverage_note")
+
+
+def _real(attr):
+    """The REAL module attribute, imported lazily.
+
+    Same rule as market_entity / canonical_slug above: a stub here would let
+    the extracted page code publish something this file never checks.
+    """
+    import routes.market_deep_dive as _M
+    return getattr(_M, attr)
 
 
 @functools.lru_cache(maxsize=1)
@@ -243,6 +261,9 @@ def _ns(**overrides):
           "market_entity": market_entity,
           "MARKETS_CANONICAL_REDIRECT": _canonical_redirect(),
           "CURATED_MARKET_SLUGS": _curated_slugs(),
+          "measured_market_facts": _real("measured_market_facts"),
+          "overlay_mw_coverage": _real("overlay_mw_coverage"),
+          "mw_coverage_note": _real("mw_coverage_note"),
           "_ask_claude_to_write": lambda facts: (None, "unexpected_llm_call")}
     ns.update(overrides)
     code = compile(ast.Module(body=body, type_ignores=[]), str(DEEPDIVE), "exec")

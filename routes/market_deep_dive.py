@@ -153,6 +153,28 @@ def _collision_slugs() -> set:
     return out
 
 
+# r-mw-coverage (2026-09-17): the three aggregates every facts reader needs.
+#
+# ★ SUM(mw) IS A SUM OVER AN UNKNOWN SUBSET. The union COALESCEs a NULL
+# power_mw to 0, so a market whose rows mostly do not record MW still produces
+# a confident-looking total, and COUNT(mw) cannot tell the two apart — the
+# filter below is the only thing that can. Measured live 2026-09-17 off the
+# published /markets/<slug> stat tiles:
+#
+#     austin     91 facilities     107 MW    1.18 MW/facility
+#     columbus  120 facilities   2,179 MW   18.2  MW/facility
+#     dallas    386 facilities   7,067 MW   18.3  MW/facility
+#     reno       64 facilities   1,166 MW   18.2  MW/facility
+#     phoenix   280 facilities   4,735 MW   16.9  MW/facility
+#     ashburn   317 facilities   8,662 MW   27.3  MW/facility
+#
+# Austin is ~15x off its peers because almost none of its rows carry MW — a
+# coverage hole, not a unit or join error. Publishing 107 as "Total MW" states
+# a market total the data cannot support, so every reader of this union now
+# gets the denominator alongside the sum and can say so.
+_FAC_COUNTS_SELECT = ("SELECT COUNT(*), COALESCE(SUM(mw),0), "
+                      "COUNT(*) FILTER (WHERE mw > 0) FROM fac")
+
 _FAC_UNION_SQL = """
         WITH fac_all AS (
           SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')) AS k,
@@ -212,8 +234,7 @@ def measured_market_facts(cur, name: str, *, slug: str = "",
         "state":   _state,
     }
     try:
-        cur.execute(_FAC_UNION_SQL +
-                    "SELECT COUNT(*), COALESCE(SUM(mw),0) FROM fac", _args)
+        cur.execute(_FAC_UNION_SQL + _FAC_COUNTS_SELECT, _args)
         row = cur.fetchone()
     except Exception:
         return None
@@ -223,6 +244,18 @@ def measured_market_facts(cur, name: str, *, slug: str = "",
     _mw = float(row[1] or 0)
     if _mw > 0:
         out["total_mw"] = _mw
+        # r-mw-coverage: how many of those facilities actually reported MW.
+        # Travels WITH total_mw and only with it — a denominator beside no
+        # numerator would be noise, and the omit-a-zero rule above still holds.
+        #
+        # OMITTED, not zeroed, when the row does not carry the column. A real
+        # COUNT(*) FILTER never returns NULL (it returns 0), so None here means
+        # "this row predates the column", i.e. coverage is UNKNOWN — and an
+        # unknown coverage published as "0 of 40 report MW" would be a
+        # fabricated measurement, the same class of defect as the bare sum.
+        _rep = row[2] if len(row) > 2 else None
+        if _rep is not None:
+            out["mw_reporting_count"] = int(_rep)
     return out
 
 
@@ -429,11 +462,13 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
         "state":   _state,
     }
     try:
-        cur.execute(_fac_union + "SELECT COUNT(*), COALESCE(SUM(mw),0) FROM fac",
-                    _fac_args)
+        cur.execute(_fac_union + _FAC_COUNTS_SELECT, _fac_args)
         f = cur.fetchone()
         out["facility_count"] = int(f[0] or 0)
         out["total_mw"]       = float(f[1] or 0)
+        # Same rule as measured_market_facts: absent means unknown, not zero.
+        if len(f) > 2 and f[2] is not None:
+            out["mw_reporting_count"] = int(f[2])
     except Exception:
         out["facility_count"] = 0
         out["total_mw"]       = 0
@@ -2008,20 +2043,79 @@ def live_score_note(slug, stored, live, gen_at):
             f"describes the market as it stood when it was written.")
 
 
-def read_live_stats(slug, stats):
+def mw_coverage_note(reporting, total) -> str:
+    """'9 of 91 report MW', or '' when the coverage is unknown.
+
+    '' whenever either half is missing, so a painter that cannot measure
+    coverage renders exactly what it renders today rather than a fabricated
+    "0 of 0". Escape-free by construction: the output is two integers.
+
+    One helper for BOTH per-market painters. /markets/<slug> has three: the
+    cached brief, the guard-neutral page (which deliberately carries no
+    measured facts, so there is nothing here to state) and market_short_html's
+    SEO shell. The brief and the shell both published a bare SUM(mw); a second
+    copy of this string would drift between them.
+    """
+    try:
+        _rep, _tot = int(reporting), int(total)
+    except (TypeError, ValueError):
+        return ""
+    if _tot <= 0:
+        return ""
+    return f"{_rep:,} of {_tot:,} report MW"
+
+
+def overlay_mw_coverage(stats, facts):
+    """`stats` with the MW-coverage denominator attached. Pure.
+
+    Deliberately does NOT replace `total_mw` or `facility_count`. Those stay
+    from the snapshot the narrative was written against (see the note above
+    the live-score block) — this only adds the denominator that makes the
+    stored total readable. A reader learning that 9 of 91 facilities reported
+    MW can interpret 107; without it, 107 reads as the market's capacity.
+    """
+    stats = dict(stats or {})
+    if not facts:
+        return stats
+    _rep, _tot = facts.get("mw_reporting_count"), facts.get("facility_count")
+    # Both halves or neither: a numerator with no denominator is the defect
+    # this closes, in miniature.
+    if _rep is None or not _tot:
+        return stats
+    stats["mw_reporting_count"] = int(_rep)
+    stats["mw_coverage_facility_count"] = int(_tot)
+    return stats
+
+
+def read_live_stats(slug, stats, name=None):
     """(stats-with-live-score, stored_score, live) — opens its own connection.
 
     Wraps the two pure functions above with the one impure step, so both the
     HTML page and the .json twin get the same overlay from one call and cannot
     drift into publishing different scores for one market.
+
+    r-mw-coverage (2026-09-17): when `name` is given, the SAME connection also
+    reads the MW-coverage denominator. One extra aggregate on a connection that
+    is already open, and it reuses measured_market_facts rather than a second
+    query shape, so the twin and the page cannot count MW two ways.
     """
     live = None
+    facts = None
     try:
         c = _conn()
         if c is not None:
             try:
                 with c.cursor() as cur:
                     live = live_dcpi_reading(cur, slug)
+                    if name:
+                        try:
+                            # state="" fails OPEN, exactly as this function's
+                            # default does: it widens the union for the two
+                            # collision slugs only, and widens NUMERATOR and
+                            # DENOMINATOR together, so the ratio stays honest.
+                            facts = measured_market_facts(cur, name, slug=slug)
+                        except Exception:
+                            facts = None
             finally:
                 try: c.close()
                 except Exception: pass
@@ -2029,6 +2123,7 @@ def read_live_stats(slug, stats):
         logger.warning("live DCPI overlay unavailable for %s: %s", slug, e)
         live = None
     merged, stored = overlay_live_score(stats, live)
+    merged = overlay_mw_coverage(merged, facts)
     return merged, stored, live
 
 
@@ -2105,7 +2200,16 @@ def _render_deep_dive_body(slug):
     # written against. Everything downstream — tiles, meta description, both
     # ld+json blocks — reads `stats`, so overlaying here is the single point
     # that keeps them agreeing with each other AND with /dcpi.
-    stats, _stored_score, _live = read_live_stats(slug, r.get("key_stats") or {})
+    stats, _stored_score, _live = read_live_stats(
+        slug, r.get("key_stats") or {}, name=name)
+    # r-mw-coverage (2026-09-17): SUM(mw) over rows whose power_mw is mostly
+    # NULL, published as "Total MW". Austin served 107 MW across 91 facilities
+    # (1.18 MW/facility) against ~17-18 for its peers — the sum was real, the
+    # label was not. Empty when coverage is unreadable, so the tile is byte
+    # identical for any page this cannot measure.
+    _mw_cov = mw_coverage_note(stats.get("mw_reporting_count"),
+                               stats.get("mw_coverage_facility_count"))
+    _mw_cov_html = ("<small>" + _mw_cov + "</small>") if _mw_cov else ""
     _score_note = live_score_note(slug, _stored_score, _live, gen_at)
     # Two vintages in one sentence, so the sentence says which is which. A
     # bare "Updated <brief date>" beside a live score dates the wrong figure.
@@ -2154,6 +2258,7 @@ h1{{font-weight:700;letter-spacing:-.02em;margin:0 0 .25rem;font-size:2.1rem;col
 .stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.75rem;margin:1rem 0 2.25rem}}
 .drift{{color:var(--mut);font-size:.9rem;background:var(--surf);border:1px solid var(--b);border-left:3px solid var(--ind);border-radius:8px;padding:.85rem 1.05rem;margin:1.25rem 0}}
 .stat{{background:var(--surf);border:1px solid var(--b);border-radius:12px;padding:.9rem 1.1rem;font-size:.68rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}}
+.stat small{{display:block;margin-top:.3rem;font-size:.6rem;text-transform:none;letter-spacing:.02em;opacity:.75}}
 .stat b{{display:block;font-size:1.5rem;color:var(--tx);margin-top:.35rem;letter-spacing:0;text-transform:none}}
 p{{margin:1.1rem 0;font-size:1.06rem}}
 a{{color:var(--ind)}}
@@ -2167,7 +2272,7 @@ a{{color:var(--ind)}}
 <div class="stats">
  <div class="stat">DCPI Score<b>{stats.get('dcpi_score','?')}/100</b></div>
  <div class="stat">Facilities<b>{stats.get('facility_count',0):,}</b></div>
- <div class="stat">Total MW<b>{stats.get('total_mw',0):,.0f}</b></div>
+ <div class="stat">Total MW<b>{stats.get('total_mw',0):,.0f}</b>{_mw_cov_html}</div>
  <div class="stat">Verdict<b>{stats.get('verdict','?')}</b></div>
 </div>
 {('<p class="drift">' + _score_note + '</p>') if _score_note else ''}
@@ -2598,6 +2703,9 @@ def market_short_html(slug):
                         md['num_facilities'] = _mf['facility_count']
                         if _mf.get('total_mw'):
                             md['inventory_mw'] = round(_mf['total_mw'])
+                            # travels with the sum, never without it
+                            md['mw_reporting_count'] = _mf.get(
+                                'mw_reporting_count')
             except Exception:
                 pass
 
@@ -2631,7 +2739,18 @@ def market_short_html(slug):
         ('Asking Rate',   md.get('avg_asking_rate'),      '$', '/kW/mo'),
         ('YoY Price',     md.get('yoy_price_change'),     '', '%'),
     ]
-    _tiles = [f'<div class="stat">{lab}<b>{pre}{val}{suf}</b></div>'
+    # r-mw-coverage (2026-09-17): the shell's Inventory tile is the SAME
+    # sparse SUM(mw) the brief's Total MW tile publishes — measured_market_facts
+    # feeds both — so it carries the same denominator. Only Inventory: the other
+    # tiles are single stored values, not sums over a partly-reporting fleet.
+    _inv_cov = mw_coverage_note(md.get('mw_reporting_count'),
+                                md.get('num_facilities'))
+
+    def _cov_for(lab):
+        return ("<small>" + _inv_cov + "</small>") if (lab == 'Inventory'
+                                                       and _inv_cov) else ""
+
+    _tiles = [f'<div class="stat">{lab}<b>{pre}{val}{suf}</b>{_cov_for(lab)}</div>'
               for lab, val, pre, suf in _metric_defs if _has(val)]
     _missing = [lab for lab, val, pre, suf in _metric_defs if not _has(val)]
     stats_html = "\n".join(_tiles) or '<div class="stat">Facilities<b>—</b></div>'
@@ -2738,6 +2857,7 @@ h2{{font-size:1.15rem;font-weight:600;color:var(--tx);margin:2rem 0 .5rem}}
 .sub{{color:var(--dim);margin:0 0 1.75rem;font-size:.82rem;font-family:'JetBrains Mono',monospace}}
 .stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.75rem;margin:1rem 0 2rem}}
 .stat{{background:var(--surf);border:1px solid var(--b);border-radius:12px;padding:.9rem 1.1rem;font-size:.68rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}}
+.stat small{{display:block;margin-top:.3rem;font-size:.6rem;text-transform:none;letter-spacing:.02em;opacity:.75}}
 .stat b{{display:block;font-size:1.5rem;color:var(--tx);margin-top:.35rem;letter-spacing:0;text-transform:none}}
 a{{color:var(--ind)}}
 .foot{{color:var(--dim);font-size:.82rem;margin-top:2.5rem;padding-top:1.25rem;border-top:1px solid var(--b);font-family:'JetBrains Mono',monospace}}
