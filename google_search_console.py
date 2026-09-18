@@ -43,34 +43,52 @@ _cached_token = None
 _token_expiry = None
 
 def init_gsc_tables():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS gsc_index_requests (
-        id SERIAL PRIMARY KEY,
-        url TEXT NOT NULL,
-        status TEXT DEFAULT 'pending',
-        requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        indexed_at TIMESTAMP,
-        error TEXT
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS gsc_crawl_errors (
-        id SERIAL PRIMARY KEY,
-        url TEXT NOT NULL,
-        error_type TEXT,
-        first_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        resolved BOOLEAN DEFAULT FALSE
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS gsc_sitemap_submissions (
-        id SERIAL PRIMARY KEY,
-        sitemap_url TEXT NOT NULL,
-        submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        status TEXT DEFAULT 'pending',
-        urls_submitted INTEGER DEFAULT 0,
-        urls_indexed INTEGER DEFAULT 0
-    )''')
-    conn.commit()
-    conn.close()
+    """DDL through the ONE blessed path — see _ensure_proven_table below.
+
+    ★ These three CREATEs ran on a POOLED cursor until 2026-09-18, which means
+    they never ran at all: PGCursorWrapper.execute() returns early for any
+    statement in db_utils._DDL_PREFIXES whenever SKIP_DDL is set, and it
+    defaults to '1' (db_utils.py:13) and is absent from Railway's config. The
+    2026-09-18 05:21:14Z boot log carried DDL-DROPPED for
+    gsc_sitemap_submissions twice (one line per gunicorn worker) and the table
+    was never created, so submit_sitemap()'s INSERT (line ~282) raised
+    undefined-relation AFTER the sitemap had already been PUT to Google — the
+    caller got a 500 for a submission that had actually succeeded, and no row
+    recorded it. gsc_crawl_errors and gsc_index_requests independently read
+    0 rows all-time on 2026-08-31 (routes/gsc_performance.py header), which is
+    what these two missing tables look like from the outside.
+
+    ddl_cursor() opens its own direct autocommit psycopg2 connection with no
+    wrapper, so the DDL really executes. It raises rather than no-ops when
+    there is no DATABASE_URL; that is deliberate, and register_gsc_routes()
+    already propagated a get_db() failure the same way before this change.
+    """
+    from db_utils import ddl_cursor
+    with ddl_cursor() as cur:
+        cur.execute('''CREATE TABLE IF NOT EXISTS gsc_index_requests (
+            id SERIAL PRIMARY KEY,
+            url TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            indexed_at TIMESTAMP,
+            error TEXT
+        )''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS gsc_crawl_errors (
+            id SERIAL PRIMARY KEY,
+            url TEXT NOT NULL,
+            error_type TEXT,
+            first_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            resolved BOOLEAN DEFAULT FALSE
+        )''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS gsc_sitemap_submissions (
+            id SERIAL PRIMARY KEY,
+            sitemap_url TEXT NOT NULL,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'pending',
+            urls_submitted INTEGER DEFAULT 0,
+            urls_indexed INTEGER DEFAULT 0
+        )''')
     print("✅ Google Search Console tables initialized")
 
 def get_access_token():

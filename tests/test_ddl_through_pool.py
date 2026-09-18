@@ -34,12 +34,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Frozen 2026-08-04 at 57, down from the 60 the scan first found — one fixed
 # with the guard, two more once the live audit named which tables were really
-# absent. See
+# absent. 2026-09-18: 56, google_search_console.init_gsc_tables fixed. See
 # scripts/ddl_through_pool_allowlist.txt — that list is a freeze, not an
 # amnesty, so this is a CEILING: a new entry fails here even when the scanner
 # itself is satisfied. There is no legitimate reason to add one, and every
 # removal should ratchet this number down with it.
-FROZEN_FUNCTIONS = 57
+FROZEN_FUNCTIONS = 56
 
 
 # Memo only. The scan walks ~1,270 files and four tests below need it; without
@@ -311,6 +311,48 @@ def test_the_guard_recognises_the_blessed_path():
     assert _offences(src2) == []
 
 
+def test_a_mixed_function_is_judged_per_cursor_not_per_function():
+    """★ THE WAIVER THAT GREW EVERY TIME SOMEONE FIXED SOMETHING. The verdict
+    used to read `if not s.ddl or direct or not pooled: continue`, and
+    `direct` was function-WIDE: one ddl_cursor() anywhere in a function waived
+    every CREATE in it, in either order. So half-fixing a function bought the
+    other half permanent immunity — and half-fixing is exactly what happens
+    when someone migrates the CREATE that broke and leaves its neighbours.
+
+    Found 2026-09-18 by mutating google_search_console.init_gsc_tables: with
+    all three CREATEs re-pooled the guard fired, with ONE re-pooled it stayed
+    silent. A guard that only catches the whole-hog version of its own bug is
+    most of the way to not being a guard.
+    """
+    mixed = ("from db_utils import get_db, ddl_cursor\n"
+             "def f():\n"
+             "    with ddl_cursor() as cur:\n"
+             "        cur.execute('CREATE TABLE IF NOT EXISTS ok (id INT)')\n"
+             "    bad = get_db().cursor()\n"
+             "    bad.execute('CREATE TABLE IF NOT EXISTS oops (id INT)')\n")
+    offs = _offences(mixed)
+    assert [o["table"] for o in offs] == ["oops"], (
+        f"expected exactly the pooled CREATE reported, got {offs}")
+
+    # ...and the same function with the DDL in the other order, because the
+    # original waiver was order-independent and a fix that is not would be a
+    # coin flip.
+    flipped = ("from db_utils import get_db, ddl_cursor\n"
+               "def f():\n"
+               "    bad = get_db().cursor()\n"
+               "    bad.execute('CREATE TABLE IF NOT EXISTS oops (id INT)')\n"
+               "    with ddl_cursor() as cur:\n"
+               "        cur.execute('CREATE TABLE IF NOT EXISTS ok (id INT)')\n")
+    assert [o["table"] for o in _offences(flipped)] == ["oops"]
+
+    # The ddl_cursor half must still be silent on its own — a "fix" that
+    # reports the blessed path too would just be the guard switched off.
+    assert _offences("from db_utils import ddl_cursor\n"
+                     "def f():\n"
+                     "    with ddl_cursor() as cur:\n"
+                     "        cur.execute('CREATE TABLE IF NOT EXISTS ok (id INT)')\n") == []
+
+
 # ── the guard cannot drift from the wrapper ───────────────────────────
 
 def test_the_prefix_list_is_imported_from_db_utils_not_copied():
@@ -372,6 +414,50 @@ def test_daily_anomalies_is_created_on_a_direct_cursor():
     handler = handler[:handler.index("@observability_bp", 10)] \
         if "@observability_bp" in handler[10:] else handler
     assert "CREATE TABLE" not in handler.upper()
+
+
+def test_gsc_tables_are_created_on_a_direct_cursor():
+    """★ All THREE of init_gsc_tables' CREATEs sat on a db_utils.get_db()
+    cursor, so none of the tables was ever made. The 2026-09-18 05:21:14Z boot
+    log carried DDL-DROPPED for gsc_sitemap_submissions; the damage was on
+    POST /api/gsc/sitemap/submit, which PUTs the sitemap to Google and only
+    THEN inserts the record — so the submission really happened, the INSERT
+    raised undefined-relation, and the caller got a 500 for work that had
+    succeeded, with nothing written down. gsc_crawl_errors and
+    gsc_index_requests independently read 0 rows all-time on 2026-08-31
+    (routes/gsc_performance.py header) — consistent with the same cause.
+
+    Asserted through the REAL scanner rather than a substring: a partial
+    regression — one of the three re-pooled — still fails here, which a
+    `"ddl_cursor" in fn` check would not catch.
+    """
+    src = _src("google_search_console.py")
+    offences = [o for o in _guard().scan_source(src, "google_search_console.py")
+                if o["function"] == "init_gsc_tables"]
+    assert offences == [], (
+        "init_gsc_tables is back on a pooled cursor — these CREATEs will not "
+        f"run: {[o['sql'][:60] for o in offences]}")
+
+    # ...and the DDL is still THERE. An empty function would also score zero
+    # offences, which is the other way this test could pass for free.
+    fn = src[src.index("def init_gsc_tables"):src.index("def get_access_token")]
+    body = fn[fn.index("from db_utils import ddl_cursor"):]
+    for table in ("gsc_index_requests", "gsc_crawl_errors",
+                  "gsc_sitemap_submissions"):
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in body, table
+    assert "with ddl_cursor() as cur:" in body
+
+
+def test_gsc_init_cannot_be_re_frozen_into_the_allowlist():
+    """★ The allowlist is keyed `path::function` and nothing compares the
+    statement COUNT, so re-adding this one line would re-freeze all three
+    CREATEs at once and turn the scanner green on a live regression. The
+    freeze is meant to shrink; this pins that this entry never comes back."""
+    listed = _src("scripts", "ddl_through_pool_allowlist.txt")
+    entries = [ln.split("#", 1)[0].strip() for ln in listed.splitlines()]
+    assert "google_search_console.py::init_gsc_tables" not in entries, (
+        "init_gsc_tables was re-added to the allowlist. That is the move the "
+        "list's own header forbids — fix the DDL, do not re-freeze it.")
 
 
 def test_the_dead_modules_stay_dead_and_say_why():
