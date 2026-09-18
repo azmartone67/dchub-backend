@@ -807,29 +807,130 @@ def proven_status():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _gsc_reported_url_count(token, site_encoded, sitemap_encoded):
+    """URLs Google currently reports for this sitemap, or None if it did not say.
+
+    The submit PUT answers with an EMPTY body -- it carries no count at all --
+    so the only way to fill urls_submitted is a follow-up GET of the sitemap
+    resource. What comes back is Google's figure from its last DOWNLOAD of the
+    file, which right after a submit is the PREVIOUS crawl, not the bytes just
+    pushed. That is the honest reading of the column ("URLs Google says this
+    sitemap holds"), but it is NOT proof this run's file held that many.
+
+    Returns None -- stored as NULL -- when Google reports no figure, so 0 keeps
+    meaning a measured zero. The two 2026 rows already store 0 for "never
+    filled"; overloading 0 again would make the column unreadable.
+    """
+    try:
+        r = requests.get(
+            f'https://www.googleapis.com/webmasters/v3/sites/{site_encoded}/sitemaps/{sitemap_encoded}',
+            headers={'Authorization': f'Bearer {token}'}, timeout=20
+        )
+        if r.status_code != 200:
+            return None
+        contents = (r.json() or {}).get('contents') or []
+    except Exception:
+        return None
+    total = None
+    for entry in contents:
+        # GSC returns these as STRINGS ('27642'), not ints.
+        try:
+            total = (total or 0) + int(entry.get('submitted') or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _record_sitemap_submission(sitemap_url, status, urls_submitted):
+    """INSERT one row into gsc_sitemap_submissions. Returns (recorded, error).
+
+    DML only -- a normal pooled cursor is correct here. Do NOT add DDL to this
+    path: db_utils' wrapper swallows CREATE/ALTER when SKIP_DDL is set (it
+    defaults to '1' on Railway), and scripts/check_ddl_through_pool.py judges
+    per cursor. The table is built in init_gsc_tables().
+
+    Never raises. The cron's job is the Google submit; a database hiccup must
+    not turn an accepted submission into a 500. But a swallowed failure here
+    would recreate the very silence this function exists to end, so the outcome
+    is RETURNED and surfaced in the caller's payload rather than only logged.
+    """
+    conn = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute(
+            '''INSERT INTO gsc_sitemap_submissions (sitemap_url, status, urls_submitted)
+               VALUES (%s, %s, %s)''',
+            (sitemap_url, status, urls_submitted)
+        )
+        conn.commit()
+        return True, None
+    except Exception as e:
+        try:
+            if conn is not None:
+                conn.rollback()
+        except Exception:
+            pass
+        return False, str(e)
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+
 def auto_submit_sitemap():
+    """Submit the sitemap to GSC and RECORD that it happened.
+
+    ★2026-09-18: this path wrote nothing for three months. It has run daily
+    since June via /api/v1/admin/gsc/submit-sitemap, yet
+    gsc_sitemap_submissions held exactly 2 rows -- both from the manual
+    /api/gsc/sitemap/submit route, the only path that INSERTed. GSC itself
+    reported last_submitted five minutes before that check, so submissions were
+    landing and going unrecorded, and a resubmission after a sitemap cleanup had
+    no server-side history to point at.
+
+    ★ status vocabulary: this path writes 'auto_submitted'/'auto_failed' and the
+    manual route writes 'submitted'/'failed', so the row says WHICH path ran.
+    A reader asking "did we submit?" must therefore match the set, not equality:
+        WHERE status IN ('submitted', 'auto_submitted')
+    A bare `status = 'submitted'` sees only the manual rows.
+    """
     token = get_access_token()
     if not token:
+        # No token means no PUT was attempted -- there is nothing to record.
         return {'success': False, 'error': 'Not configured'}
-    
+
     sitemap_url = f'{SITE_URL}/sitemap.xml'
-    
+
     try:
         site_encoded = GSC_SITE_URL.replace(':', '%3A').replace('/', '%2F')
         sitemap_encoded = sitemap_url.replace(':', '%3A').replace('/', '%2F')
-        
+
         response = requests.put(
             f'https://www.googleapis.com/webmasters/v3/sites/{site_encoded}/sitemaps/{sitemap_encoded}',
             headers={'Authorization': f'Bearer {token}'}
         )
-        
-        return {
-            'success': response.status_code in [200, 204],
+
+        ok = response.status_code in [200, 204]
+        urls_submitted = _gsc_reported_url_count(
+            token, site_encoded, sitemap_encoded) if ok else None
+        recorded, record_error = _record_sitemap_submission(
+            sitemap_url, 'auto_submitted' if ok else 'auto_failed', urls_submitted)
+
+        out = {
+            'success': ok,
             'sitemap_url': sitemap_url,
-            'status_code': response.status_code
+            'status_code': response.status_code,
+            'recorded': recorded,
+            'urls_submitted': urls_submitted,
         }
+        if record_error:
+            out['record_error'] = record_error
+        return out
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        return {'success': False, 'error': str(e), 'recorded': False}
 
 def register_gsc_routes(app):
     init_gsc_tables()
