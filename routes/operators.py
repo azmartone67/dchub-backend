@@ -200,7 +200,14 @@ def _operator_summary(cur, name: str) -> dict | None:
                  WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
                    AND COALESCE(is_duplicate, 0) = 0
                    AND COALESCE(market, city) IS NOT NULL
-                 GROUP BY COALESCE(market, city)
+                 -- ★ Group by the expression the SELECT projects. This grouped
+                 --   by COALESCE(market, city) (2-arg) while the SELECT above
+                 --   projects COALESCE(market, city, '') (3-arg). Postgres
+                 --   matches GROUP BY to SELECT syntactically, so it raised
+                 --   GroupingError and the except below published
+                 --   top_markets: [] for every operator -- which also meant
+                 --   the fold_market_rows() call had nothing to fold.
+                 GROUP BY COALESCE(market, city, '')
                  ORDER BY n DESC
             """, (name,))
             # FOLD BEFORE YOU LIMIT — deliberately no LIMIT above.
@@ -213,7 +220,10 @@ def _operator_summary(cur, name: str) -> dict | None:
                 [(r[0], r[1]) for r in cur.fetchall() if r[0]])[:10]
             out["top_markets"] = [{"market": m, "facilities": int(n)}
                                    for m, n in _folded]
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "operators top_markets query failed for provider=%r: %s", name, e)
             out["top_markets"] = []
         # Recent deals (buyer OR seller)
         try:

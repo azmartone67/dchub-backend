@@ -443,11 +443,30 @@ def _section_market_concentration(cur, provider: str) -> list[dict]:
                AND COALESCE(is_duplicate, 0) = 0
                AND COALESCE(market, city) IS NOT NULL
                AND COALESCE(market, city) <> ''
-             GROUP BY COALESCE(market, city)
+             -- ★ GROUP BY THE SAME EXPRESSION THE SELECT PROJECTS. This read
+             --   `GROUP BY COALESCE(market, city)` (2-arg) while the SELECT
+             --   projects `COALESCE(market, city, '')` (3-arg). Postgres
+             --   matches GROUP BY to SELECT expressions syntactically, not
+             --   semantically, so the 2-arg form does not cover the 3-arg one
+             --   and the planner raised:
+             --     column "discovered_facilities.market" must appear in the
+             --     GROUP BY clause or be used in an aggregate function
+             --   The `except` below returned [], so the market-concentration
+             --   section rendered EMPTY on every operator brief, for every
+             --   operator, for an unknown period. Same lesson as r48.1 in
+             --   quarterly_report.py. Keep the two COALESCE arities identical.
+             GROUP BY COALESCE(market, city, '')
              ORDER BY mw DESC NULLS LAST, n DESC
         """, (provider,))
         rows = cur.fetchall()
-    except Exception:
+    except Exception as e:
+        # Log, do not just swallow: a silent [] here is indistinguishable from
+        # an operator that genuinely has no markets (CyreneOne returns 0 rows
+        # legitimately), which is exactly how the GroupingError above stayed
+        # invisible. Same reasoning as the hero-query warning above.
+        logging.getLogger(__name__).warning(
+            "operator_brief market_concentration query failed for provider=%r: %s",
+            provider, e)
         return []
     # FOLD BEFORE YOU LIMIT — the SQL above deliberately carries no LIMIT.
     # `discovered_facilities.market` is free text, so one metro arrives
@@ -470,7 +489,12 @@ def _section_market_concentration(cur, provider: str) -> list[dict]:
                AND COALESCE(is_duplicate, 0) = 0
         """, (provider,))
         total = float((cur.fetchone() or (0,))[0] or 0)
-    except Exception:
+    except Exception as e:
+        # A swallowed failure here nulls share_pct on every row instead of
+        # emptying the section — quieter, same class of invisible breakage.
+        logging.getLogger(__name__).warning(
+            "operator_brief market_concentration total failed for provider=%r: %s",
+            provider, e)
         total = 0.0
     out = []
     for r in rows:
