@@ -1668,6 +1668,123 @@ def deep_dive_html(slug):
     return redirect(f"/markets/{slug}", code=301)
 
 
+# ── market-page offer CTA (r-market-cta 2026-09-17, owner-approved) ──────
+# ONE builder for every market-page CTA, because /markets/<slug> has THREE
+# painters and all three had drifted into copies of the same boilerplate:
+#
+#   _render_deep_dive_body       the cached narrative — what essentially all
+#                                253 published market pages actually serve
+#   _render_neutral_market_page  the stored brief failed _brief_guard_reason,
+#                                so this page carries NO counts, by design
+#   market_short_html            the shell, when no stored brief exists
+#
+# All three quoted the Developer monthly rate and nothing else: not the Pro
+# plan, not the one-time pack, no key link. So the approved offer reached no
+# market page at all. (The literal is not repeated here on purpose — a
+# comment that quotes a price is a hit for every repo-wide price scan.)
+# Three painters is also why the offer lives in one function and not in three
+# templates: a change made in one and not the others is how these drifted in
+# the first place — they do not even agree on the ?ref= value, which is why a
+# grep for one of them finds only two of the three.
+#
+# PRICES ARE DERIVED, NEVER TYPED. Pro reads tier_registry — the same map
+# checkout_integrity_master_shell asks Stripe about and TIER_PRICE_LABEL is
+# bound to — and the pack reads routes/mcp_conversion_plays, the module that
+# CHARGES it. Typing "$99" here would make this the sixth unbound price
+# surface; tests/test_tier_price_label_canonical.py records what that costs.
+# TIER_PRICE_USD_MONTH still carries a 'starter': 9 key, retired by
+# r-price-collapse on 2026-09-05. This reads 'pro' BY NAME and never min()s
+# or iterates the map, so the retired tier cannot leak back into live copy.
+#
+# VARIATION IS REAL, NOT DECORATIVE. The approval was explicitly conditioned
+# on not stamping identical boilerplate across the market tree. The lead line
+# is built from the facts THAT PAGE already measured and displays, so the
+# published pages differ by their own numbers; a painter that has no counts
+# gets the name-only form rather than a fabricated one. Nothing here invents
+# a fact to pad the copy.
+
+
+def _offer_num(v):
+    """A positive number from a market-template value, or None.
+
+    These templates carry em-dashes ("—") and pre-formatted strings
+    ("1,240") in the same slots that elsewhere hold ints, so a bare
+    isinstance check both admits the dash and rejects the real number.
+    None means "this page does not know it" and the caller DROPS the fact —
+    printing a 0 would be a fabricated measurement.
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        n = float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    if n != n or n in (float("inf"), float("-inf")) or n <= 0:
+        return None
+    return n
+
+
+def _market_offer_html(slug, name, *, ref, facility_count=None,
+                       total_mw=None, dcpi=None):
+    """The soft Pro/pack CTA for one market page. See the note above."""
+    # Imported in-function on purpose: these renderers are AST-extracted
+    # and run in a synthetic namespace by the market guard suites, where a
+    # module-scope name is a free name they would have to be taught.
+    # (Aliased because `html` is a local variable in those renderers.)
+    import html as _htmlesc
+    from tier_registry import TIER_PRICE_USD_MONTH as _TIER_USD
+    from routes.mcp_conversion_plays import (
+        PACK10_PRICE_CENTS as _PACK_CENTS, PACK10_CREDITS as _PACK_CREDITS)
+
+    _pro = float(_TIER_USD["pro"])
+    _pro_s = ("$%d" % _pro) if _pro.is_integer() else ("$%.2f" % _pro)
+    _pack = _PACK_CENTS / 100.0
+    _pack_s = ("$%d" % _pack) if _pack.is_integer() else ("$%.2f" % _pack)
+
+    _name = _htmlesc.escape(str(name or "").strip()) or "This market"
+    _tool = _htmlesc.escape(str(slug or ""))
+    _ref = _htmlesc.escape(str(ref or "market"))
+
+    facts = []
+    _fc = _offer_num(facility_count)
+    if _fc:
+        facts.append("%s tracked %s" % (
+            format(int(_fc), ","),
+            "facility" if int(_fc) == 1 else "facilities"))
+    _mw = _offer_num(total_mw)
+    if _mw:
+        facts.append("%s MW" % format(int(round(_mw)), ","))
+    _dc = _offer_num(dcpi)
+    if _dc:
+        facts.append("DCPI %d/100" % int(round(_dc)))
+
+    if facts:
+        lead = ("%s: %s &mdash; live, cited, and queryable by API or MCP."
+                % (_name, " &middot; ".join(facts)))
+    else:
+        lead = ("%s market data is live in DC Hub &mdash; cited and "
+                "queryable by API or MCP." % _name)
+
+    return (
+        '<div class="dc-market-offer" style="max-width:1080px;margin:26px auto;'
+        'padding:18px 22px;background:linear-gradient(135deg,'
+        'rgba(99,102,241,0.14),rgba(168,85,247,0.07));'
+        'border:1px solid rgba(99,102,241,0.3);border-radius:14px;'
+        'text-align:center;font-size:15px;line-height:1.6;color:#c7d2fe">'
+        '<p style="margin:0 0 .55rem">' + lead + '</p>'
+        '<p style="margin:0 0 .7rem;color:#a5b4fc"><strong>Pro '
+        + _pro_s + '/mo</strong> &middot; or <strong>' + _pack_s
+        + ' once</strong> for ' + format(int(_PACK_CREDITS), ",")
+        + ' calls, no subscription.</p>'
+        '<p style="margin:0"><a href="https://dchub.cloud/pricing?ref='
+        + _ref + '&amp;tool=' + _tool + '" style="color:#a5b4fc;'
+        'font-weight:600;text-decoration:none">See plans &rarr;</a>'
+        '<span style="color:#6b7280"> &middot; </span>'
+        '<a href="https://dchub.cloud/connect?ref=' + _ref
+        + '&amp;tool=' + _tool + '" style="color:#a5b4fc;font-weight:600;'
+        'text-decoration:none">Get an API key &rarr;</a></p></div>')
+
+
 def _render_neutral_market_page(slug: str, name: str):
     """Neutral 200 served when the stored brief fails _brief_guard_reason.
 
@@ -1704,7 +1821,7 @@ joins.</p>
 <a href="/facilities">facilities</a> ·
 <a href="/markets/directory">all markets</a> ·
 <a href="/market-intelligence">market intelligence</a></p>
-<div style="margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing?ref=market-deep-dive&tool={slug}" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
+{_market_offer_html(slug, name, ref='market-brief-guard')}
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
     return Response(body, mimetype="text/html",
@@ -2048,7 +2165,7 @@ a{{color:var(--ind)}}
 {('<p class="drift">' + _score_note + '</p>') if _score_note else ''}
 {paragraphs}
 {sponsor_html}
-<div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing?ref=market-deep-dive&tool={slug}" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
+{_market_offer_html(slug, name, ref='market-deep-dive', facility_count=stats.get('facility_count'), total_mw=stats.get('total_mw'), dcpi=stats.get('dcpi_score'))}
 <p class="foot">JSON: <a href="/api/v1/markets/{slug}/deep-dive" rel="nofollow">/api/v1/markets/{slug}/deep-dive</a> · DCPI: <a href="/dcpi">/dcpi</a> · Operators: <a href="/operators">/operators</a> · Updated nightly</p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
@@ -2632,7 +2749,7 @@ ul{{padding-left:1.25rem}} li{{margin:.3rem 0}}
 {providers_html}
 {highlights_html}
 {fac_links_html}
-<div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing?ref=market&tool={slug_norm}" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
+{_market_offer_html(slug_norm, name, ref='market', facility_count=md.get('num_facilities'), total_mw=md.get('inventory_mw'))}
 <p class="foot">JSON: <a href="/api/v1/markets/{name.replace(' ', '%20')}" rel="nofollow">/api/v1/markets/{name}</a> ·
 All markets: <a href="/markets">/markets</a></p>
 <script src="/js/dchub-nav.js" defer></script>

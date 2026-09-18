@@ -3491,7 +3491,11 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/linkedin_quad_daily.py': {'isos_non_canonical'},
     'routes/lost_conversion_outreach.py': {'tool_count_literal'},
     'routes/market_brief.py': {'deals_stale_floor'},
-    'routes/market_deep_dive.py': {'facilities_stale_floor'},
+    # r-market-cta (2026-09-17): dropped. market_deep_dive.py's three CTA
+    # painters each hard-coded a stale facilities floor; they now emit
+    # through _market_offer_html, which quotes no facility total at all —
+    # the per-market copy uses that page's own measured count. Debt paid,
+    # so the entry goes, per this file's own reconciliation rule.
     'routes/marketing_engine.py': {'deals_stale_floor', 'facilities_stale_floor'},
     'routes/mcp_funnel_upgrade.py': {'isos_non_canonical'},
     'routes/mcp_presence_crawler.py': {'tool_count_literal'},
@@ -3756,9 +3760,16 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # the foot of this file). This is drainage by DELETION, not by fixing a
     # literal: the served Space still derives its published numbers from
     # /api/v1/canon/phrases, and is now verified from the outside instead.
-    assert len(outside) >= 75, (
+    # ★2026-09-17: 75 -> 74. routes/market_deep_dive.py drained its
+    # facilities_stale_floor. Its THREE market-page CTA painters each
+    # hard-coded the same stale facility total; they now emit through one
+    # builder whose copy quotes no repo-wide total at all — each page uses
+    # the count it already measured and displays. Drainage by REMOVAL of
+    # the claim, not by resolving it through canon. Lowered in the SAME
+    # commit that drains it, exactly as this assertion's message asks.
+    assert len(outside) >= 74, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 89 did when last measured. If debt was genuinely drained, lower this "
+        "— 75 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 

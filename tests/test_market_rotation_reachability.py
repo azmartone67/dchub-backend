@@ -86,6 +86,13 @@ WANT = {
     "_brief_guard_reason", "_guard_placeholder_text", "generate_for_market",
     # the render path a seeded placeholder must not shadow
     "_render_neutral_market_page", "_market_dataset_ld",
+    # r-market-cta (2026-09-17): every market painter now emits its
+    # CTA through one builder. EXTRACTED, not stubbed — both are pure
+    # (the price lookups are in-function imports of the real
+    # producers), so these tests exercise the copy and the prices the
+    # page actually serves. A stub here would let a wrong price or a
+    # missing offer ship while this file stayed green.
+    "_market_offer_html", "_offer_num",
     "_render_deep_dive_body",
 }
 

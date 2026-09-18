@@ -120,6 +120,10 @@ _MCP_TOOLS = {
 # its own handoff (/facilities/<slug> has one in its footer) is left alone.
 _BODY_MARKER = "dc-agent-handoff"
 
+from tier_registry import TIER_PRICE_USD_MONTH as _TIER_USD
+from routes.mcp_conversion_plays import (
+    PACK10_PRICE_CENTS as _PACK_CENTS, PACK10_CREDITS as _PACK_CREDITS)
+
 
 def _alternate_link_for(path):
     for pat, kind, tmpl in _SEO_PATTERNS:
@@ -156,6 +160,39 @@ def _tool_names(kind):
     return (primary,) + tuple(rest)
 
 
+# ── agent-visible offer, MARKET TREE ONLY (r-market-cta 2026-09-17) ──────
+# The handoff line is the text a crawler quotes, so an offer that is not in
+# it does not travel — that is the whole handoff thesis. Owner-approved for
+# the market tree only: facility pages (22,100+) are explicitly out of
+# scope. _MCP_TOOLS is keyed by kind, so keying the offer the same way is
+# what KEEPS them out: a kind absent from this map gets exactly the handoff
+# line it serves today, byte for byte. Adding a kind here is a deliberate
+# act, not a side effect of touching this function.
+#
+# Prices derived from the producers — tier_registry prices the plan,
+# routes/mcp_conversion_plays CHARGES the pack — never typed here. The
+# imports are module-scope on purpose: a wrong key must fail at boot, where
+# CI and the deploy see it, not silently drop the offer from every page.
+_OFFER_KINDS = ("market",)
+
+
+def _offer_clause(kind):
+    """The offer sentence for a page kind; '' for a kind without one."""
+    if kind not in _OFFER_KINDS:
+        return ""
+    _pro = float(_TIER_USD["pro"])
+    _pro_s = ("$%d" % _pro) if _pro.is_integer() else ("$%.2f" % _pro)
+    _pack = _PACK_CENTS / 100.0
+    _pack_s = ("$%d" % _pack) if _pack.is_integer() else ("$%.2f" % _pack)
+    return (" Full coverage for agents: Pro %s/mo, or %s once for %s calls "
+            "with no subscription &mdash; "
+            "<a href=\"https://dchub.cloud/pricing?ref=agent-handoff\">"
+            "https://dchub.cloud/pricing</a>. Free key: "
+            "<a href=\"https://dchub.cloud/connect?ref=agent-handoff\">"
+            "https://dchub.cloud/connect</a>."
+            % (_pro_s, _pack_s, format(int(_PACK_CREDITS), ",")))
+
+
 def _agent_handoff_html(kind, slug):
     """A body-level line naming the exact call that reproduces this page.
 
@@ -173,7 +210,8 @@ def _agent_handoff_html(kind, slug):
         f'font-style:italic">'
         f'AI agents: this page live via the DC Hub MCP server at '
         f'<a href="https://dchub.cloud/mcp">https://dchub.cloud/mcp</a> — '
-        f'<code>{call}</code>. Also for this page: {also}.</p>'
+        f'<code>{call}</code>. Also for this page: {also}.'
+        f'{_offer_clause(kind)}</p>'
     )
 
 
