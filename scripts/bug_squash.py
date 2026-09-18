@@ -268,6 +268,29 @@ class HardcodedHeroNumberPattern(BugPattern):
 # ──────────────────────────────────────────────────────────────────────
 # PATTERN 2 — JS field-fallback missing (the r.operator/r.company class)
 # ──────────────────────────────────────────────────────────────────────
+# ★ 2026-09-18 — the rule that tells a VALUE read from a PREDICATE read.
+# Module-level and named because two callers need the SAME answer: this
+# detector (so it stops filing what it cannot advise on) and the frontend fix
+# lane (which refuses to apply a patch the rule rejects). Two copies of this
+# regex would drift, and the drift would be silent in both directions.
+_PREDICATE_CONTEXT_RE = re.compile(
+    r"(^|[^\w])(if|while|return)\s*\(|[!=]==|!=|\s[<>]=?\s|\?\s|&&"
+    r"|return\s+false")
+
+
+def is_predicate_read(line: str) -> bool:
+    r"""True when the line uses the field to DECIDE something rather than to
+    produce a value.
+
+    ★ The relational alternative is SPACED (`\s[<>]=?\s`) on purpose. A bare
+    `[<>]=?` matches the `<` in `</span>`, and roughly half of these findings
+    live in .html — an unanchored angle bracket classifies markup as
+    arithmetic and throws away real findings. Real JS comparisons are spaced;
+    HTML tags are not.
+    """
+    return bool(_PREDICATE_CONTEXT_RE.search(line or ""))
+
+
 class JsFieldFallbackMissingPattern(BugPattern):
     """`item.X` (or `r.X`, `row.X`) read WITHOUT a `|| item.Y` fallback
     when X and Y are known synonyms in the API surface.
@@ -310,6 +333,24 @@ class JsFieldFallbackMissingPattern(BugPattern):
                 # Common false-positive: assignment like `item.operator = ...`
                 rest = line[idx_in_line + len(m.group(0)):].lstrip()
                 if rest.startswith("="):
+                    continue
+                # ★★★ 2026-09-18 — DO NOT FILE A PREDICATE READ.
+                # This pattern's suggested_fix is "add `|| item.company`", and
+                # that advice is only correct where the read produces a VALUE.
+                # Where it decides a filter or a guard, the same edit changes
+                # what the filter matches and what the guard admits — three of
+                # the four live examples sat inside `if (...)` deciding a
+                # `return false`:
+                #     if (operator && item.operator !== operator) return false;
+                #     if (item.operator && item.operator !== 'Unknown') {
+                #     if (item.operator || item.location) {
+                # Filing those meant 4 of 8 rows in an "important"-severity
+                # queue carried advice that would introduce a bug if followed.
+                # A finding whose suggested fix is wrong is worse than no
+                # finding: it spends a reader's trust and then misspends their
+                # edit. Precision belongs HERE, at the point of claim — not in
+                # every downstream consumer that has to un-believe it.
+                if is_predicate_read(line):
                     continue
                 out.append(Finding(
                     pattern_id=self.id,
