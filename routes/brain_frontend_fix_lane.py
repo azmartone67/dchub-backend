@@ -112,10 +112,26 @@ def _dsn():
 
 
 def _admin_ok() -> bool:
+    """★ 2026-09-18 — this MUST read the same env var as the sibling squasher
+    gate, and the first version did not.
+
+    It read BRAIN_ADMIN_KEY first, falling back to DCHUB_ADMIN_KEY.
+    brain_bug_squash._admin_ok reads DCHUB_ADMIN_KEY (then DCHUB_INTERNAL_KEY)
+    and nothing else. Both names exist on the service with DIFFERENT values, so
+    the operative key opened /bug-squash/actionable (200) and was refused here
+    (401) — the lane shipped gated SHUT, and "admin-gated" read as correct in
+    review because the gate was present. Presence is not the property; agreeing
+    with the key the operator actually holds is.
+
+    Only four modules repo-wide read BRAIN_ADMIN_KEY; DCHUB_ADMIN_KEY is the
+    convention. The header fallback matches the sibling. The sibling's
+    `?admin_key=` QUERY-PARAM fallback is deliberately NOT copied: this lane
+    opens pull requests, and a credential in a URL lands in access logs."""
     import hmac
-    want = (os.environ.get("BRAIN_ADMIN_KEY")
-            or os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
-    got = (request.headers.get("X-Admin-Key") or "").strip()
+    want = (os.environ.get("DCHUB_ADMIN_KEY")
+            or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+    got = (request.headers.get("X-Admin-Key")
+           or request.headers.get("X-Internal-Key") or "").strip()
     return bool(want) and hmac.compare_digest(want, got)
 
 
