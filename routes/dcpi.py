@@ -8842,6 +8842,28 @@ def public_market_page(slug):
                     return redirect(f"/dcpi/{cand}", code=301)
                 break
     if not s:
+        # r-punct (2026-09-17): last-resort punctuation-insensitive match.
+        # build_public_url() CANNOT emit an apostrophe — slugify() folds every
+        # non-alphanumeric run to "-" — so the builder emits /dcpi/coeur-d-alene
+        # while the published, indexed, canonical page is /dcpi/coeur-d'alene
+        # (that literal apostrophe is the market_power_scores key and the only
+        # form in sitemap-dcpi.xml; measured 2026-09-17, 1 of 336 dcpi locs).
+        # Fold BOTH sides the way slugify does and 301 to the stored slug, so
+        # every builder-emitted link resolves without moving the canonical URL.
+        # Runs only on the would-be-404 path, so the hot path pays nothing.
+        # market_slug <> %s cannot self-redirect: an exact match already
+        # returned above, so the row this finds always has a different slug.
+        _alt = None
+        with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""SELECT market_slug FROM market_power_scores
+                           WHERE btrim(regexp_replace(lower(market_slug),
+                                       '[^a-z0-9]+', '-', 'g'), '-') = %s
+                             AND market_slug <> %s
+                           ORDER BY computed_at DESC LIMIT 1""", (slug, slug))
+            _alt = cur.fetchone()
+        if _alt and _alt.get("market_slug"):
+            from flask import redirect
+            return redirect(f"/dcpi/{_alt['market_slug']}", code=301)
         # phase 284: even 404 should ship the CSP so it doesn't trip the watch
         r = Response(f"<h1>Market not found: {slug}</h1>", status=404, mimetype="text/html")
         r.headers["Content-Security-Policy"] = _DCPI_CSP
