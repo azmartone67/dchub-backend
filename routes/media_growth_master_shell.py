@@ -460,6 +460,14 @@ def _gaps(m: dict) -> dict:
 
 # ── STAGE 2 — MANAGE ─────────────────────────────────────────────────────────
 
+# Component weights for tier2_score. goal_progress (distance to target) was
+# added 2026-09-18; the four momentum weights were scaled down proportionally to
+# make room for it rather than re-tuned, so a tick with every goal already met
+# still scores exactly 100.
+_WEIGHTS = {"cadence": 0.25, "reach": 0.20, "citation_momentum": 0.20,
+            "follower_momentum": 0.15, "goal_progress": 0.20}
+
+
 def tier2_score(m: dict) -> dict:
     """Score growth health and find the WEAKEST lever. Health blends: cadence
     (are we shipping), reach trend (LinkedIn engagement present), citation trend,
@@ -475,13 +483,39 @@ def tier2_score(m: dict) -> dict:
     foll_mom = 1.0 if (li_mom is not None and li_mom > 0) else (0.3 if li_mom is not None else 0.5)
     blind = (m.get("li_followers") is None and m.get("x_followers") is None)
 
+    # ★2026-09-18 — DISTANCE-TO-TARGET now counts toward health. Every component
+    # above scores on MOTION: cv_mom is a full 1.0 for a citation trend that is
+    # merely not falling, foll_mom a full 1.0 for +1 follower in a week. So the
+    # 09-18 tick published growth_score 100.0 while _gaps() — computed on the same
+    # tick and then discarded — read X followers 4/250 (1.6%) and AI citations
+    # 4/25 (16%) of target. A score that reads perfect while the goals it exists
+    # to chase sit at 1.6% is measuring motion, not progress.
+    # Goals whose current value is unreadable contribute nothing rather than a
+    # zero, and the weights renormalise — a telemetry blackout must not look like
+    # failure to grow (that is what audience_blind reports).
+    pcts = [g["pct_to_target"] for g in gaps.values()
+            if g.get("pct_to_target") is not None]
+    goal_progress = round(sum(pcts) / len(pcts) / 100.0, 3) if pcts else None
+
     comps = {"cadence": cadence, "reach": reach_ok, "citation_momentum": cv_mom,
              "follower_momentum": foll_mom}
-    health = round(0.30 * cadence + 0.25 * reach_ok + 0.25 * cv_mom + 0.20 * foll_mom, 3)
-    weakest = min(comps, key=comps.get)
+    if goal_progress is not None:
+        comps["goal_progress"] = goal_progress
+    wsum = sum(_WEIGHTS[k] for k in comps)
+    health = round(sum(_WEIGHTS[k] * v for k, v in comps.items()) / wsum, 3) if wsum else 0.0
+
+    # ★2026-09-18 — a lever is WEAK only if it is actually below full marks.
+    # min() over an all-equal dict returns the FIRST key by insertion order, so on
+    # every perfect-score tick this named "cadence" and the manager recommended
+    # raise_cadence with the rationale "Only N posts in 7d — below the 2/day
+    # floor" — a statement that is false precisely when cadence scored 1.0. The
+    # board shows raise_cadence on 20 consecutive snapshots. No weak lever is a
+    # legitimate verdict; inventing one to fill the slot is not.
+    weak = [(k, v) for k, v in comps.items() if v < 1.0]
+    weakest = min(weak, key=lambda kv: kv[1])[0] if weak else None
     return {"growth_score": round(100.0 * health, 1), "health": health,
             "components": comps, "weakest_lever": weakest, "audience_blind": blind,
-            "gaps": gaps}
+            "goal_progress": goal_progress, "gaps": gaps}
 
 
 def tier3_act(m: dict, sc: dict) -> dict:
@@ -500,6 +534,26 @@ def tier3_act(m: dict, sc: dict) -> dict:
             "No follower data captured yet (LinkedIn networkSizes / X /2/users/me "
             "returned no count) — follower goals are unpursuable until the read works. "
             "Check LinkedIn r_organization_admin scope + X OAuth1 creds.")
+    elif lever is None:
+        # Nothing scored below full marks. Recording the hold IS the honest
+        # action — see the tie note in tier2_score.
+        lever, action, rationale = "none", "hold", (
+            "No weak lever this tick: every component is at full marks and every "
+            "readable goal is at or past target. Holding rather than inventing an "
+            "action to fill the slot.")
+    elif lever == "goal_progress":
+        worst = sorted(
+            ((g.get("label") or k, g.get("pct_to_target"), g.get("current"), g.get("target"))
+             for k, g in (sc.get("gaps") or {}).items()
+             if g.get("pct_to_target") is not None),
+            key=lambda t: t[1])[:2]
+        gap_txt = "; ".join(f"{lbl} {cur}/{tgt} ({pct}% of target)"
+                            for lbl, pct, cur, tgt in worst) or "goals unreadable"
+        action, rationale = "close_widest_goal_gap", (
+            f"Momentum is fine but DISTANCE is not — {gap_txt}. Cadence is already "
+            "at the 2/day floor, so more of the same posts will not close this: "
+            "commission for the specific gap (cite-magnet formats for citations, "
+            "follow-worthy series for followers).")
     elif lever == "cadence":
         action, rationale = "raise_cadence", (
             f"Only {m.get('posts_7d') or 0} posts in 7d — below the 2/day floor. "

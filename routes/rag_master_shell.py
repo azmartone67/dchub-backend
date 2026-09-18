@@ -377,33 +377,66 @@ def _num(v):
             return None
 
 
-_EVAL_BUDGET_S = 9.0   # wall-clock cap: if Cohere is slow (embed timeout is 30s
-                       # per query), stop after the budget so the tick stays under
-                       # the CF/cron deadline. Skipped queries are NOT counted as
-                       # broken (skipped != zero-results).
+_EVAL_BUDGET_S = 9.0   # wall-clock cap for the WHOLE eval set: if the embed
+                       # provider is slow (socket timeout is 30s per query), stop
+                       # after the budget so the tick stays under the CF/cron
+                       # deadline. Skipped queries are NOT counted as broken
+                       # (skipped != zero-results).
+                       # ★The provider is mistral-embed, not Cohere — the default
+                       # moved on 2026-07-06 (brain_rag._embed_provider) and this
+                       # comment still named Cohere three months later.
+                       # ★The set now runs CONCURRENTLY (see _eval_all), so the
+                       # budget bounds the SLOWEST query rather than their sum.
 
 
-def _eval_one(retrieve_context, spec, remaining):
-    """Run one eval query with a HARD per-query wall-clock cap. retrieve_context
-    makes up to two sequential Cohere HTTP calls (embed + rerank), each with a
-    30s socket timeout — so a between-query budget alone can't stop a single hung
-    call from blocking ~60s. Run it on a daemon thread and join() for at most the
-    remaining budget; a timeout → (None, timed_out=True), and the orphaned thread
-    dies with the process. Returns (rows_or_None, timed_out)."""
+def _eval_all(retrieve_context, specs, budget):
+    """Run the WHOLE eval set concurrently against one shared wall-clock deadline.
+
+    Each query makes up to two sequential provider HTTP calls (embed + rerank),
+    each with a 30s socket timeout, so every query still runs on its own daemon
+    thread and a hung call can never block the tick — the orphan dies with the
+    process.
+
+    ★2026-09-18 — why this is concurrent now. Sequentially, six queries at the
+    ~1.5-3.0s each measured live at the origin do not fit in _EVAL_BUDGET_S: 12 of
+    the 20 snapshots on the board were truncated, and truncation always ate the
+    same TAIL queries because the loop broke at the first overrun. Two things
+    followed. The published `eval_mean_cosine` silently changed denominator day to
+    day (09-18 was a 2-query mean plotted against 09-17's 6-query mean), and
+    `eval_regressed` — which compares only two consecutive FULL runs — could
+    almost never fire: the single largest one-day drop in the window (0.7681 →
+    0.6842, past the 0.05 trip) was scored False because that run was truncated.
+
+    Concurrency is safe here: brain_rag._db() opens a FRESH psycopg2 connection
+    per call with no shared cursor, and the embed call is stateless HTTP. Six
+    single-text embeds once a day is not a rate-limit risk — the 2026-07-06
+    Cohere 429 was a TRIAL KEY's 1,000/month quota, not concurrency, and the live
+    provider has been mistral-embed ever since.
+
+    Returns a list POSITIONALLY ALIGNED with `specs`: (rows_or_None, timed_out).
+    Alignment is what keeps `eval_per_query` in a stable order across ticks, and
+    it means a fast query still counts when an earlier one overran — the join
+    below uses the shared deadline, not a per-query slice of it."""
     import threading
-    box = {}
-
-    def _run():
-        try:
-            box["rows"] = retrieve_context(spec["q"], k=8, corpus=spec.get("corpus"))
-        except Exception:
-            box["rows"] = []
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(max(0.1, remaining))
-    if t.is_alive():
-        return None, True
-    return (box.get("rows") or []), False
+    boxes = [{} for _ in specs]
+    threads = []
+    for spec, box in zip(specs, boxes):
+        def _run(s=spec, b=box):
+            try:
+                b["rows"] = retrieve_context(s["q"], k=8, corpus=s.get("corpus"))
+            except Exception:
+                b["rows"] = []
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        threads.append(t)
+    deadline = time.time() + budget
+    out = []
+    for t, box in zip(threads, boxes):
+        t.join(max(0.0, deadline - time.time()))
+        # Past the deadline join() returns at once; is_alive() still reports the
+        # truth, so a query that already finished is counted, not discarded.
+        out.append((None, True) if t.is_alive() else ((box.get("rows") or []), False))
+    return out
 
 
 def _measure_eval(prev: dict | None) -> dict:
@@ -413,26 +446,24 @@ def _measure_eval(prev: dict | None) -> dict:
     and drift vs the prior snapshot's mean. Each query is HARD-bounded so a
     slow/hung Cohere degrades gracefully (skipped, not counted as broken)."""
     out = {"eval_mean_cosine": None, "eval_below_floor": 0, "eval_zero_results": 0,
-           "eval_skipped": 0, "eval_full": False, "eval_per_query": [], "eval_regressed": False,
-           "eval_anchor_miss": 0}
+           "eval_skipped": 0, "eval_measured": 0, "eval_full": False,
+           "eval_per_query": [], "eval_regressed": False, "eval_anchor_miss": 0}
     try:
         from routes.brain_rag import retrieve_context
     except Exception:
         out["eval_zero_results"] = len(_EVAL_QUERIES)
         return out
     cosines = []
-    ev_start = time.time()
-    for i, spec in enumerate(_EVAL_QUERIES):
-        remaining = _EVAL_BUDGET_S - (time.time() - ev_start)
-        if remaining <= 0.3:
-            out["eval_skipped"] = len(_EVAL_QUERIES) - i
-            break
-        rows, timed_out = _eval_one(retrieve_context, spec, remaining)
+    for spec, (rows, timed_out) in zip(_EVAL_QUERIES,
+                                       _eval_all(retrieve_context, _EVAL_QUERIES,
+                                                 _EVAL_BUDGET_S)):
         if timed_out:
-            # this query ate the remaining budget — mark it + the rest skipped
-            # (a slow Cohere is not a "broken index"), and stop.
-            out["eval_skipped"] = len(_EVAL_QUERIES) - i
-            break
+            # This query did not finish inside the shared budget. A slow provider
+            # is not a "broken index", so it is SKIPPED, never counted as a zero
+            # or a below-floor. Skips are now counted one at a time: the old
+            # sequential loop attributed the whole remaining TAIL to one overrun.
+            out["eval_skipped"] += 1
+            continue
         rows = rows or []
         n = len(rows)
         top1 = float(rows[0].get("cosine", rows[0].get("score", 0.0)) or 0.0) if rows else 0.0
@@ -459,6 +490,10 @@ def _measure_eval(prev: dict | None) -> dict:
                                       "anchor_hit": anchor_hit})
     if cosines:
         out["eval_mean_cosine"] = round(sum(cosines) / len(cosines), 4)
+    # The DENOMINATOR every downstream reader needs: eval_mean_cosine and
+    # eval_below_floor are both over THIS many queries, not over len(_EVAL_QUERIES).
+    # Persisted so a snapshot can be read honestly months later.
+    out["eval_measured"] = len(out["eval_per_query"])
     out["eval_full"] = (out["eval_skipped"] == 0 and len(cosines) == len(_EVAL_QUERIES))
     # Regression vs the prior snapshot — ONLY when BOTH runs are FULL. A
     # budget-truncated run means over a front-subset of the eval set (whose
@@ -498,13 +533,26 @@ def tier2_score_levers(m: dict) -> dict:
     mean_cos = m.get("eval_mean_cosine")
     zero = m.get("eval_zero_results") or 0
     below = m.get("eval_below_floor") or 0
-    nq = len(_EVAL_QUERIES)
+    # ★2026-09-18 — the denominator is what this tick MEASURED, not the size of
+    # the eval set. `below` only ever counts queries that actually ran, so
+    # dividing by len(_EVAL_QUERIES) credited every budget-SKIPPED query as a
+    # PASS. Live proof, the 09-18 06:00Z tick: 4 of 6 queries skipped, and BOTH
+    # that ran were below floor — 0 of 2 measured passed — yet the lever
+    # published (6-2)/6 = 0.667 → retrieval 0.833, byte-identical to the prior
+    # tick's genuine 4-of-6 pass. The lever could not tell "everything I measured
+    # failed" from "two thirds passed", which is why it read 0.833 on 17 of the
+    # 20 snapshots on the board.
+    # Older snapshots predate eval_measured — fall back to the per-query rows
+    # they do carry, and only then to the eval-set size.
+    measured = m.get("eval_measured")
+    if not measured:
+        measured = len(m.get("eval_per_query") or [])
     hnsw = m.get("hnsw_present")
-    if mean_cos is None or zero > 0 or hnsw is False:
+    if mean_cos is None or zero > 0 or hnsw is False or not measured:
         retrieval = 0.2  # broken/degraded — surfaces immediately
     else:
         base = max(0.0, min(1.0, (mean_cos - 0.35) / 0.30))
-        hit_rate = (nq - below) / nq if nq else 1.0
+        hit_rate = (measured - below) / measured
         retrieval = round(base * (0.5 + 0.5 * hit_rate), 3)
         if m.get("eval_regressed"):
             retrieval = round(retrieval * 0.6, 3)

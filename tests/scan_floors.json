@@ -190,6 +190,9 @@
     "test_locked_gate_manifest_post_only.py": {
       "glob": 670
     },
+    "test_loop_scoring_honesty_0918.py": {
+      "pglob": 670
+    },
     "test_no_import_time_heartbeat.py": {
       "pglob": 2160
     },
