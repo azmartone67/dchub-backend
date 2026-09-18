@@ -4183,6 +4183,17 @@ try:
     except Exception as _bse:
         import logging
         logging.getLogger(__name__).warning('brain_bug_squash wiring failed: %s', _bse)
+    # The other half of the squasher: its rows are 100% dchub-frontend and the
+    # code-fix proposer patches dchub-backend only, so the queue had no exit.
+    # This lane opens PRs against the FRONTEND repo — admin-gated, dry-run by
+    # default, and it patches only value reads (see the module docstring for
+    # why the predicate reads and the 44 'polish' hero-stat rows are excluded).
+    try:
+        from routes.brain_frontend_fix_lane import brain_frontend_fix_lane_bp
+        app.register_blueprint(brain_frontend_fix_lane_bp)
+    except Exception as _ffe:
+        import logging
+        logging.getLogger(__name__).warning('brain_frontend_fix_lane wiring failed: %s', _ffe)
     # Phase FF+7-meta (2026-05-19): Brain L16 — Self-Critique. Verifies
     # predictions, builds calibration data so the brain learns its own
     # accuracy. Closes the prediction-outcome loop. Read by L14 prompt.
