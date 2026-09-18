@@ -197,6 +197,9 @@ class _Request:
         self.args = args or {}
 
 
+import routes.market_deep_dive as _md  # r-mw-coverage: real helpers
+
+
 def _ns(**overrides):
     src, tree, body = _module()
     c = _consts()
@@ -213,6 +216,12 @@ def _ns(**overrides):
         "_conn": lambda: None,
         "_ensure_schema": lambda conn: None,
         "_record_cron_run": lambda targets, generated: None,
+        # r-mw-coverage (2026-09-17): the two MW-coverage helpers, from the
+        # REAL module — same rule as market_entity above. Stubbing
+        # mw_coverage_note would let the shell publish a bare SUM(mw) with
+        # this file green.
+        "overlay_mw_coverage": _md.overlay_mw_coverage,
+        "mw_coverage_note": _md.mw_coverage_note,
         "read_deep_dive": lambda slug: None,
         "_ask_claude_to_write": lambda facts: (None, "unexpected_llm_call"),
         # bogota/santiago/etc are not city-name collisions; the real helper
@@ -237,7 +246,11 @@ def _ns(**overrides):
     for k in ("CURATED_MARKET_SLUGS", "MARKETS_CANONICAL_REDIRECT",
               "MARKETS_DEEP_DIVE_PAGE_CANON", "POCKET_LIST_CEILING",
               "US_CITY_MARKET_SQL", "US_CITY_MARKET_SQL_NODATE",
-              "_FAC_UNION_SQL", "_SLUG_TO_MARKET_NAME"):
+              # r-mw-coverage (2026-09-17): the aggregate list both facts
+              # readers share. It carries the COUNT(*) FILTER that recovers
+              # the MW denominator; read from the module so this harness and
+              # the query under test cannot drift.
+              "_FAC_UNION_SQL", "_FAC_COUNTS_SELECT", "_SLUG_TO_MARKET_NAME"):
         assert k in c, f"module constant {k} did not resolve"
         ns[k] = c[k]
 
