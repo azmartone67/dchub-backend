@@ -172,3 +172,55 @@ def test_push_true_is_the_only_thing_that_grants_write(monkeypatch):
         def json(self): return {"permissions": {"pull": True, "push": True}}
     monkeypatch.setattr(lane, "_gh", lambda *a, **k: R())
     assert lane._write_capability()["can_write"] is True
+
+
+# ── the gate must agree with the key the operator actually holds ────────────
+def _call_gate(gate, env, header, monkeypatch):
+    """Run an _admin_ok() with a controlled env + header, via a real request
+    context so request.headers behaves as it does in production."""
+    import main  # noqa: F401  (imported for its app factory side effects)
+    for k in ("DCHUB_ADMIN_KEY", "DCHUB_INTERNAL_KEY", "BRAIN_ADMIN_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    from flask import Flask
+    app = Flask(__name__)
+    with app.test_request_context("/", headers={"X-Admin-Key": header}):
+        return gate()
+
+
+def test_this_lane_and_the_squasher_accept_the_same_admin_key(monkeypatch):
+    """★ The regression this pins. The lane's first gate read BRAIN_ADMIN_KEY
+    first and the sibling squasher gate reads DCHUB_ADMIN_KEY. Both names exist
+    on the service with DIFFERENT values, so the operative key opened
+    /bug-squash/actionable (200) and was refused here (401): the endpoint
+    shipped gated SHUT while "admin-gated" read as correct in review.
+
+    A gate being PRESENT is not the property. Agreeing with the key the
+    operator holds is."""
+    from routes.brain_bug_squash import _admin_ok as squasher_gate
+
+    env = {"DCHUB_ADMIN_KEY": "the-operative-key",
+           "BRAIN_ADMIN_KEY": "a-different-stale-key"}
+    assert _call_gate(squasher_gate, env, "the-operative-key", monkeypatch) is True
+    assert _call_gate(lane._admin_ok, env, "the-operative-key", monkeypatch) is True, (
+        "the lane refuses the key its sibling accepts")
+
+
+def test_the_gate_is_closed_when_no_key_is_configured(monkeypatch):
+    assert _call_gate(lane._admin_ok, {}, "anything", monkeypatch) is False
+
+
+def test_a_wrong_key_is_refused(monkeypatch):
+    assert _call_gate(lane._admin_ok, {"DCHUB_ADMIN_KEY": "right"},
+                      "wrong", monkeypatch) is False
+
+
+def test_the_credential_is_never_accepted_from_the_query_string(monkeypatch):
+    """The sibling accepts ?admin_key=. This lane opens pull requests, and a
+    credential in a URL lands in access logs."""
+    from flask import Flask
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "the-operative-key")
+    app = Flask(__name__)
+    with app.test_request_context("/?admin_key=the-operative-key"):
+        assert lane._admin_ok() is False
