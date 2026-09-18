@@ -7043,16 +7043,27 @@ def stripe_webhook_mcp():
                     # Idempotency key: the checkout session id (cs_…). Payment-mode
                     # rows have no subscription id, and stripe_subscription_id is the
                     # only UNIQUE column, so we store cs_ there to dedupe Stripe's
-                    # webhook re-delivery. No reader filters on this column's shape.
+                    # webhook re-delivery.
+                    # ★ r-paid-signal-lane3 (2026-09-17): this used to add "No
+                    # reader filters on this column's shape." That is no longer
+                    # true and was the bug. paid_signal_attribution_30d's
+                    # relayed_click lane resolves a session via
+                    # p.stripe_session_id, a column mcp_conversions did not
+                    # have, so the lane was dead for every row; and the
+                    # schema_repair backfill now DOES filter this column on
+                    # left(...) = 'cs_'. The cs_ id is written to the
+                    # properly-named column below — keep both in sync.
                     cur.execute("""INSERT INTO mcp_conversions
                                      (user_email, caller_id, stripe_customer_id, stripe_subscription_id,
+                                      stripe_session_id,
                                       plan_to, mrr_cents, source, attribution_signal_id,
                                       web_source, web_tool)
-                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                    ON CONFLICT (stripe_subscription_id) DO NOTHING
                                    RETURNING id""",
                                 (cust_email, (cust_email or '').strip().lower() or None,
-                                 cust_id, sess.get("id"), plan_to, mrr,
+                                 cust_id, sess.get("id"), sess.get("id"),
+                                 plan_to, mrr,
                                  _src, attr_id, web_src, web_tool))
                     _row = cur.fetchone()
                     conn.commit()
@@ -7074,19 +7085,31 @@ def stripe_webhook_mcp():
             _sub = sess.get("subscription")
             if web_src and sess.get("mode") == "subscription" and _sub and cust_email:
                 with _pool.connection() as conn, conn.cursor() as cur:
+                    # ★ r-paid-signal-lane3 (2026-09-17): stripe_subscription_id
+                    # here IS a real sub_..., so the schema_repair cs_ backfill
+                    # can never reach these rows. sess IS in scope (this is
+                    # checkout.session.completed), so write the checkout session
+                    # explicitly — that is what lets the relayed_click bridge
+                    # lane attribute SUBSCRIPTION sales, not only packs.
+                    # Forward-only: existing subscription rows have no session.
                     cur.execute("""INSERT INTO mcp_conversions
                                      (user_email, caller_id, stripe_customer_id, stripe_subscription_id,
+                                      stripe_session_id,
                                       plan_to, source, web_source, web_tool)
-                                   VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s)
+                                   VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s, %s)
                                    ON CONFLICT (stripe_subscription_id) DO UPDATE SET
                                      caller_id  = COALESCE(mcp_conversions.caller_id, EXCLUDED.caller_id),
+                                     stripe_session_id = COALESCE(
+                                       mcp_conversions.stripe_session_id,
+                                       EXCLUDED.stripe_session_id),
                                      web_source = EXCLUDED.web_source,
                                      web_tool   = EXCLUDED.web_tool,
                                      source = CASE WHEN mcp_conversions.attribution_signal_id IS NULL
                                                    THEN EXCLUDED.source ELSE mcp_conversions.source END
                                    RETURNING id""",
                                 (cust_email, (cust_email or '').strip().lower() or None,
-                                 cust_id, _sub, "web:" + web_src, web_src, web_tool))
+                                 cust_id, _sub, sess.get("id"),
+                                 "web:" + web_src, web_src, web_tool))
                     _wr = cur.fetchone()
                     conn.commit()
                     webattr = {"web_source": web_src, "web_tool": web_tool,

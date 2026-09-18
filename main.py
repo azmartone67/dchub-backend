@@ -16077,13 +16077,23 @@ def stripe_webhook():
                             _pg_execute(
                                 """INSERT INTO mcp_conversions
                                      (user_email, caller_id, stripe_customer_id,
-                                      stripe_subscription_id, plan_to, mrr_cents, source)
-                                   VALUES (NULL, NULL, %s, %s, 'pack_1000', 0,
+                                      stripe_subscription_id, stripe_session_id,
+                                      plan_to, mrr_cents, source)
+                                   VALUES (NULL, NULL, %s, %s, %s, 'pack_1000', 0,
                                            'stripe_webhook_pack5_keybound')
                                    ON CONFLICT (stripe_subscription_id)
                                    DO UPDATE SET plan_to='pack_1000',
-                                                 source='stripe_webhook_pack5_keybound'""",
-                                (data.get('customer'), data.get('id')))
+                                                 source='stripe_webhook_pack5_keybound',
+                                                 stripe_session_id=
+                                                   EXCLUDED.stripe_session_id""",
+                                # ★ r-paid-signal-lane3: stripe_subscription_id
+                                # carries the CHECKOUT SESSION here (a one-time
+                                # payment has no subscription, and it is the ON
+                                # CONFLICT key). The same id also goes into the
+                                # properly-named column so the relayed_click
+                                # bridge lane can join mcp_checkout_payments.
+                                (data.get('customer'), data.get('id'),
+                                 data.get('id')))
                         except Exception as _pkce:
                             print(f"⚠️ pk- conversion-record error (non-fatal): {_pkce}")
                         # r-keybound-attr (2026-07-18, #1660): the row above
@@ -16285,15 +16295,23 @@ def stripe_webhook():
                             _pg_execute(
                                 """INSERT INTO mcp_conversions
                                      (user_email, caller_id, stripe_customer_id,
-                                      stripe_subscription_id, plan_to, mrr_cents,
-                                      source)
-                                   VALUES (%s, %s, %s, %s, 'pack_1000', 0,
+                                      stripe_subscription_id, stripe_session_id,
+                                      plan_to, mrr_cents, source)
+                                   VALUES (%s, %s, %s, %s, %s, 'pack_1000', 0,
                                            'stripe_webhook_pack5')
                                    ON CONFLICT (stripe_subscription_id)
                                    DO UPDATE SET plan_to = 'pack_1000',
-                                                 source  = 'stripe_webhook_pack5'""",
+                                                 source  = 'stripe_webhook_pack5',
+                                                 stripe_session_id =
+                                                   EXCLUDED.stripe_session_id""",
+                                # ★ r-paid-signal-lane3: same as the keybound
+                                # branch above — the cs_... checkout session is
+                                # what lands in stripe_subscription_id, so it
+                                # also goes into stripe_session_id for the
+                                # relayed_click bridge lane.
                                 (_p5_email or None, (_p5_email or '').strip().lower() or None,
-                                 data.get('customer'), data.get('id')))
+                                 data.get('customer'), data.get('id'),
+                                 data.get('id')))
                             print(f"💳 Pack5 conversion recorded (cs={str(data.get('id'))[:18]}…)")
                         except Exception as _p5ce:
                             print(f"⚠️ pack5 conversion-record error (non-fatal): {_p5ce}")
