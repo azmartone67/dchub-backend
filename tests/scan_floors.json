@@ -157,6 +157,9 @@
     "test_grid_ba_surface_guard.py": {
       "glob": 660
     },
+    "test_group_by_matches_selected_expression.py": {
+      "pglob": 670
+    },
     "test_gsc_performance.py": {
       "pglob": 140
     },
