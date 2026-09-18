@@ -181,8 +181,16 @@ def test_the_hugging_face_space_is_published_as_a_door_not_a_source():
 
 
 def test_ai_hub_list_carries_the_same_harness_block():
-    """/ai-agents 301s to /ai-hub; the recipe has to be on the page the
-    redirect lands on, not only on the one it leaves."""
+    """/ai-hub's own connect list — and ONLY /ai-hub's.
+
+    ★ main.py 301s /ai-agents here, and that route NEVER RUNS: /ai-agents is a
+    Cloudflare Pages asset (dchub-frontend/ai-agents.html) that shadows it.
+    Measured this session, cache-busted: live /ai-agents is 39,528 b titled
+    "AI Agent Grounding Pack"; this file is a different page at 37,036 b. So
+    editing ai-hub.html does NOT reach /ai-agents — that recipe ships in
+    dchub-frontend#1507. Same trap as the surface-truth serving map: the route
+    a repo declares is not evidence of the bytes a URL serves.
+    """
     html = (_ROOT / "static" / "ai-hub.html").read_text(encoding="utf-8")
     assert "dsh-mcp-client" in html
     assert "streamable-http" in html
