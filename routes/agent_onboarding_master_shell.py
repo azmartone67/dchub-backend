@@ -267,16 +267,37 @@ PLATFORMS: list[dict] = [
         # /integrations/copilot-studio (custom MCP, GA) recipe pages live.
         "key": "deepseek_qwen_zai", "name": "DeepSeek / Qwen / Z.ai (GLM)",
         "reach_weight": 0.5,
-        "paths": ["mcp"], "reach_token": "deepseek",
+        # ★ 2026-09-18 (r-connect-deepseek): reclassified mcp -> mcp+crawl.
+        #   DeepSeek's CONSUMER surface has no MCP UI, so the sticky-MCP path
+        #   this entry assumed cannot exist there however good the recipe is;
+        #   what DeepSeek can do is read the public pages and cite them, which
+        #   is the crawl path other entries already model. The MCP path stays
+        #   because the harness, Cursor-on-DeepSeek and a bridged API all hold
+        #   a key — it is just not the consumer door.
+        "paths": ["mcp", "crawl"], "reach_token": "deepseek",
         "reach_aliases": ["qwen", "dashscope", "zai", "glm"],
-        "bots": [],
+        # ★ NAMED, NOT OBSERVED. DeepSeekBot is this repo's own vocabulary
+        #   (mcp_auto_register.py BOT registry), but /api/v1/ai/reach?days=30
+        #   read 2026-09-18 contains no deepseek token of any kind. So this
+        #   list says what to WATCH for, and the zero is the current reading —
+        #   not a channel we have measured working.
+        "bots": ["DeepSeekBot"],
         "required_auth": "bearer", "required_transport": "streamable",
         "directory": "ModelScope (listed via @DCHUBCLOUD/dchub)", "directory_listed": True,
-        "connect_path": "self_serve", "recipe_published": False,
-        "next_action": ("Eval lanes PRE-WIRED (model_relations: deepseek/qwen/"
-                        "zai, fail-soft). Owner: add DEEPSEEK_API_KEY (a few $), "
-                        "DASHSCOPE_API_KEY (free tier), or ZAI_API_KEY on "
-                        "Railway → that lane starts evaluating weekly."),
+        "connect_path": "self_serve", "recipe_published": True,
+        "next_action": ("Recipe LIVE 2026-09-18: /connect#deepseek + the "
+                        "/connect/deepseek-harness card (DeepSeek Harness YAML "
+                        "for @deepseek-ai/dsh-mcp-client, streamable-http, "
+                        "X-API-Key) and the same block in the /ai-hub list that "
+                        "/ai-agents redirects to. Aliases /connect/deepseek and "
+                        "/connect/harness resolve to that card. ★ Work this as a "
+                        "CRAWL host (cite → connect), not a sticky-MCP host: "
+                        "consumer DeepSeek cannot hold a key, so the measurable "
+                        "move is citation of the public pages, and the recipe is "
+                        "what a cited reader lands on. Owner still optional: add "
+                        "DEEPSEEK_API_KEY (a few $), DASHSCOPE_API_KEY (free "
+                        "tier), or ZAI_API_KEY on Railway → the pre-wired "
+                        "model_relations eval lane starts evaluating weekly."),
         "owner_gated": True, "effort": "keys only",
     },
     {

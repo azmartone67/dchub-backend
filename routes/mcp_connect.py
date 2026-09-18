@@ -87,6 +87,55 @@ _CLIENTS = {
             "Find me 50MW+ powered shell sites available in PJM with substation co-location.",
         ],
     },
+    # ── r-connect-deepseek (2026-09-18) ──────────────────────────────────
+    # ★ "Harness" here is DeepSeek's OWN agent harness (deepseek-ai/
+    #   deepseek-harness), NOT harness.io the CI vendor. Its MCP client ships
+    #   as the plugin `@deepseek-ai/dsh-mcp-client`; the config shape below was
+    #   read off packages/mcp/mcp-client/README.md on master, not off a
+    #   third-party write-up — two of those publish `!js` where the README
+    #   says `!!js`, and a literal key needs neither tag.
+    # ★ The caveat IS the card, not a disclaimer bolted onto it. DeepSeek's
+    #   CONSUMER chat has no MCP UI at all, so a card headed plain "DeepSeek"
+    #   would assert a capability the product does not have — the MiniMax
+    #   mistake recorded in the alias block below, inverted. Harness, Cursor
+    #   and the tool-calling API behind a bridge are where a DeepSeek user can
+    #   actually hold a key, so those are what this page hands over.
+    "deepseek-harness": {
+        "name":           "DeepSeek Harness",
+        "tagline":        "DeepSeek's own agent harness — one YAML entry, streamable HTTP, your key held per server",
+        # Harness reads a profile YAML; there is no single fixed path the way
+        # an IDE has one, so this names the file by role rather than inventing
+        # a location that would be wrong on most installs.
+        "install_path":   "your harness profile YAML (the plugins list)",
+        "install_path_win": "your harness profile YAML (the plugins list)",
+        "snippet_lang":   "yaml",
+        "snippet":        """- id: mcp-dchub
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: dchub
+    transport: streamable-http
+    url: https://dchub.cloud/mcp
+    headers:
+      X-API-Key: "{{TRIAL_KEY}}"
+""",
+        "caveat": (
+            "DeepSeek&rsquo;s consumer chat (chat.deepseek.com) has "
+            "<strong>no MCP UI</strong> &mdash; there is nowhere to paste this, and no "
+            "card here will change that. Three places a DeepSeek user can hold a DC Hub "
+            "key today: <strong>this harness</strong> (below), "
+            "<a href=\"/connect/cursor\">Cursor</a> pointed at a DeepSeek model, or the "
+            "<strong>DeepSeek tool-calling API</strong> with DC Hub behind an MCP bridge "
+            "&mdash; the API speaks OpenAI-style function calling, not MCP, so something "
+            "has to translate. Same endpoint, same key, in all three."
+        ),
+        "deep_link":      "",
+        "deep_link_label": "",
+        "examples": [
+            "Which US grid region has the most interconnection headroom right now?",
+            "Rank the top 10 data center markets by DCPI and say what each one is short of.",
+            "Find 100MW+ sites in ERCOT with substation co-location and fiber within a mile.",
+        ],
+    },
     "cline": {
         "name":           "Cline",
         "tagline":        "VSCode autonomous agent — bind DC Hub MCP in your settings",
@@ -830,7 +879,7 @@ _PAGE_TEMPLATE_RAW = ("""<!DOCTYPE html>
     Paste into <code>{INSTALL_PATH}</code> (macOS/Linux) &middot;
     <code>{INSTALL_PATH_WIN}</code> (Windows){DEEP_LINK_HTML}
   </div>
-  <div class="snippet-wrap">
+{CAVEAT_HTML}  <div class="snippet-wrap">
     <button class="copy-btn" id="copy-snippet" onclick="copySnippet()">Copy</button>
     <pre id="snippet-body">{SNIPPET_RENDERED}</pre>
   </div>
@@ -1267,6 +1316,16 @@ def _render_page(client_key: str, view_id: int | None) -> str:
     examples_html = "\n".join(
         f'    <div class="example">{e}</div>' for e in c["examples"]
     )
+    # ★ Optional per-client caveat, rendered ABOVE the snippet on purpose: a
+    #   client whose consumer surface cannot use this config at all must say so
+    #   before the reader copies something that will not work where they are.
+    #   Absent key -> empty string, so every existing card renders byte-identically.
+    caveat_html = ""
+    if c.get("caveat"):
+        caveat_html = (
+            '  <p class="install-meta" style="margin:10px 0 0;line-height:1.55">'
+            + c["caveat"] + "</p>\n"
+        )
     deep_link_html = ""
     if c.get("deep_link"):
         deep_link_html = (
@@ -1303,6 +1362,7 @@ def _render_page(client_key: str, view_id: int | None) -> str:
         SNIPPET_RENDERED=snippet_rendered,
         EXAMPLES_HTML=examples_html,
         DEEP_LINK_HTML=deep_link_html,
+        CAVEAT_HTML=caveat_html,
         RETURN_NUDGE_HTML=_return_nudge_html(c),
         TRIAL_TERMS_STEP1_HTML=trial_step1_html,
         TRIAL_TERMS_STEP4_HTML=trial_step4_html,
@@ -1394,6 +1454,11 @@ def connect_zed():
     return _serve("zed")
 
 
+@mcp_connect_bp.route("/connect/deepseek-harness", methods=["GET"])
+def connect_deepseek_harness():
+    return _serve("deepseek-harness")
+
+
 # ── Deep links onto content we ALREADY publish ──────────────────────────────
 # MEASURED 2026-09-09, at the edge and on this origin: /connect/{claude,
 # perplexity, copilot, grok, windsurf} were 404 while nine siblings answered
@@ -1434,6 +1499,15 @@ _CONNECT_ALIASES = {
     #   product instead of a tool. This kills the 404 and hands over the
     #   endpoint without claiming MiniMax can use it.
     "minimax":    "/connect#start",
+    # ★ r-connect-deepseek (2026-09-18) — these two ARE aliases onto one card
+    #   for the same reason the block above is aliases: /connect#deepseek and
+    #   the card would otherwise carry two copies of one YAML snippet, and the
+    #   next time the harness renames a field only one of them gets fixed.
+    #   "harness" resolves here and NOT to harness.io — if that vendor ever
+    #   warrants a card, it needs its own slug, because these are unrelated
+    #   products that share a word.
+    "deepseek":   "/connect/deepseek-harness",
+    "harness":    "/connect/deepseek-harness",
 }
 
 
