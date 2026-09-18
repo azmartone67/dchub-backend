@@ -433,15 +433,31 @@ _BOUNDED_SIGNALS = [
                 "equally uninformative"),
     },
     {
+        # ★ DENOMINATOR CORRECTED 2026-09-18. This counted verified rows against
+        # ALL rows and reported "192 of 8531" — 2.2%, which reads as a coverage
+        # emergency and is meaningless. The verifier only ever CONSIDERS
+        # outcome='executed_ok' (see the ix_autopilot_unverified partial index
+        # and autopilot_verify()); rate_limited / cooldown_active / escalated /
+        # dry_run / execution_failed rows keep outcome_verified NULL forever BY
+        # DESIGN. The heartbeat's own 24h split is 4 actioned vs 74 rate_limited,
+        # so the old denominator was ~98% bookkeeping. brain_autopilot's own
+        # stats query already uses executed_ok as the denominator; this now
+        # matches it, and the two can finally be compared.
         "name": "autopilot_action_verification",
         "table": "brain_autopilot_actions",
         "boundary": "low",
-        "sql": """SELECT COUNT(*) FILTER (WHERE outcome_verified IS NOT NULL),
-                         COUNT(*)
+        # Coverage SHOULD be near total: the verifier cron runs every 5 minutes
+        # and picks up every executed_ok row older than 5 minutes. Half of them
+        # going unverified is a real failure, so the floor is deliberately
+        # generous — it exists to catch a broken verifier, not to nag.
+        "min_ratio": 0.50,
+        "sql": """SELECT COUNT(*) FILTER (WHERE outcome_verified IS NOT NULL
+                                            AND outcome = 'executed_ok'),
+                         COUNT(*) FILTER (WHERE outcome = 'executed_ok')
                     FROM brain_autopilot_actions
                    WHERE started_at > NOW() - INTERVAL '30 days'""",
-        "why": ("actions that are never verified either way cannot feed "
-                "class_success_weight, so work selection stops learning"),
+        "why": ("executed actions that are never verified either way cannot "
+                "feed class_success_weight, so work selection stops learning"),
     },
     {
         "name": "autopilot_outcome_failures",
@@ -484,7 +500,7 @@ _BOUNDED_SIGNALS = [
 
 
 def evaluate_bounded_signal(hits, total, boundary,
-                            min_sample=None) -> dict:
+                            min_sample=None, min_ratio=None) -> dict:
     """PURE. Is this bounded signal PINNED at a boundary it should be able to
     leave? Returns {pinned, reason, hits, total, sample_ok}.
 
@@ -496,15 +512,34 @@ def evaluate_bounded_signal(hits, total, boundary,
       · only the declared boundary is flagged. `fix_outcome_failures` pinned
         LOW is a broken verifier; pinned HIGH is a bad month, not a null
         signal, and is not this check's business.
+
+    ★ THE RATIO FLOOR (2026-09-18). A zero floor cannot see a signal that
+    technically produces both values while carrying almost no information —
+    autopilot verification at 192 of 8531 is not pinned, and "both values
+    occur" is a true and useless thing to say about it. So a signal MAY
+    declare `min_ratio`, and falling under it reports `starved`.
+
+    It is OPT-IN, and that is deliberate. Only a COVERAGE signal — one where
+    a high ratio is the point, like "what fraction of executed actions get
+    verified" — has a meaningful floor. An OCCURRENCE signal like
+    l5_permafail_rejections (66 of 337) is perfectly healthy at 20%: there is
+    no reason guards should refuse a fixed share of proposals, and a global
+    floor would flag it forever. A registry entry that declares no min_ratio
+    can never be starved, and `_self_test_bounded` pins exactly that.
+
+    `pinned` takes precedence: 0-of-N is already the stronger statement, and
+    reporting it twice would inflate the finding count.
     """
     min_sample = _PINNED_MIN_SAMPLE if min_sample is None else min_sample
     hits, total = int(hits or 0), int(total or 0)
     out = {"hits": hits, "total": total, "boundary": boundary,
-           "min_sample": min_sample, "pinned": False,
+           "min_sample": min_sample, "pinned": False, "starved": False,
+           "min_ratio": min_ratio, "ratio": None,
            "sample_ok": total >= min_sample}
     if total <= 0:
         out["reason"] = "no rows in window — UNMEASURED, not clean"
         return out
+    out["ratio"] = round(hits / total, 4)
     if not out["sample_ok"]:
         out["reason"] = (f"only {total} rows (< {min_sample}) — a boundary "
                          f"here is a small sample, not a dead signal")
@@ -517,6 +552,14 @@ def evaluate_bounded_signal(hits, total, boundary,
         out["pinned"] = True
         out["reason"] = (f"{hits} of {total} — this value is produced EVERY "
                          f"time, so the other branch never runs")
+    elif min_ratio is not None and out["ratio"] < min_ratio:
+        # Both values occur, so it is not pinned — but the signal is thin
+        # enough that "both values occur" is a true and useless thing to say.
+        out["starved"] = True
+        out["reason"] = (
+            f"{hits} of {total} = {out['ratio']:.1%} — both values occur, but "
+            f"coverage is under the declared floor of {min_ratio:.0%}, so this "
+            f"signal carries almost no information")
     else:
         out["reason"] = f"{hits} of {total} — both values occur"
     return out
@@ -541,7 +584,8 @@ def scan_bounded_signals(cur, registry=None) -> dict:
                 continue
             cur.execute(sig["sql"])
             row = cur.fetchone() or (0, 0)
-            ev = evaluate_bounded_signal(row[0], row[1], sig["boundary"])
+            ev = evaluate_bounded_signal(row[0], row[1], sig["boundary"],
+                                         min_ratio=sig.get("min_ratio"))
             measured.append({"name": sig["name"], "table": sig["table"],
                              "why": sig["why"], **ev})
         except Exception as e:
@@ -557,10 +601,19 @@ def scan_bounded_signals(cur, registry=None) -> dict:
 _CANARY_PINNED = (0, 500, "low")      # must be flagged
 _CANARY_HEALTHY = (250, 500, "low")   # must NOT be flagged
 _CANARY_SMALL = (0, 3, "low")         # must NOT be flagged (small sample)
+# Ratio floor (2026-09-18). Same numbers both times; only the declared floor
+# differs, so these two legs isolate the OPT-IN property exactly.
+_CANARY_STARVED = (10, 500, "low", 0.50)    # 2% under a 50% floor -> starved
+_CANARY_UNFLOORED = (10, 500, "low", None)  # identical, no floor -> NOT starved
 
 
 def _self_test_bounded(scan: dict) -> dict:
-    """Four legs. All must pass or the findings are withheld."""
+    """Six legs. All must pass or the findings are withheld.
+
+    Every leg reads the evaluator result with .get(): a malformed result must
+    FAIL A LEG (findings withheld), never raise — this runs inside the
+    endpoint, so a KeyError would 500 the whole check and a crashed detector
+    tells you even less than a muted one."""
     legs = {}
     n_measured = len(scan.get("measured") or [])
     legs["measured_floor"] = {
@@ -571,21 +624,39 @@ def _self_test_bounded(scan: dict) -> dict:
     }
     neg = evaluate_bounded_signal(*_CANARY_PINNED)
     legs["planted_defect"] = {
-        "input": _CANARY_PINNED, "flagged": neg["pinned"],
-        "passed": neg["pinned"] is True,
+        "input": _CANARY_PINNED, "flagged": neg.get("pinned"),
+        "passed": neg.get("pinned") is True,
         "why": "a comparison that always passes would miss every real pin",
     }
     pos = evaluate_bounded_signal(*_CANARY_HEALTHY)
     legs["healthy_canary"] = {
-        "input": _CANARY_HEALTHY, "flagged": pos["pinned"],
-        "passed": pos["pinned"] is False,
+        "input": _CANARY_HEALTHY, "flagged": pos.get("pinned"),
+        "passed": pos.get("pinned") is False,
         "why": "a check that flags everything buries the real findings",
     }
     small = evaluate_bounded_signal(*_CANARY_SMALL)
     legs["small_sample_canary"] = {
-        "input": _CANARY_SMALL, "flagged": small["pinned"],
-        "passed": small["pinned"] is False,
+        "input": _CANARY_SMALL, "flagged": small.get("pinned"),
+        "passed": small.get("pinned") is False,
         "why": "crying wolf on 3 rows gets the whole check muted",
+    }
+    h, t, b, r = _CANARY_STARVED
+    starved = evaluate_bounded_signal(h, t, b, min_ratio=r)
+    legs["starved_canary"] = {
+        "input": _CANARY_STARVED, "flagged": starved.get("starved"),
+        "passed": (starved.get("starved") is True
+                   and starved.get("pinned") is False),
+        "why": ("a coverage signal under its declared floor must be reported; "
+                "a zero floor alone cannot see 192-of-8531"),
+    }
+    h, t, b, r = _CANARY_UNFLOORED
+    unfloored = evaluate_bounded_signal(h, t, b, min_ratio=r)
+    legs["unfloored_canary"] = {
+        "input": _CANARY_UNFLOORED, "flagged": unfloored.get("starved"),
+        "passed": unfloored.get("starved") is False,
+        "why": ("IDENTICAL numbers with no declared floor must NEVER be "
+                "starved — the floor is opt-in, and an occurrence signal like "
+                "l5_permafail_rejections at 20% is healthy, not thin"),
     }
     return {"passed": all(l["passed"] for l in legs.values()), "legs": legs}
 
@@ -629,9 +700,17 @@ def cant_fail_signals():
             "are not reported")
         return jsonify(body), 200
     pinned = [m for m in scan["measured"] if m["pinned"]]
+    starved = [m for m in scan["measured"]
+               if m.get("starved") and not m["pinned"]]
     body["pinned"] = pinned
     body["pinned_count"] = len(pinned)
-    body["healthy"] = [m for m in scan["measured"] if not m["pinned"]]
+    # Reported separately from `pinned`: a starved signal is not dead, it is
+    # thin, and the remedy is different (fix the producer's coverage, not its
+    # writer). Kept OUT of `healthy` so nothing reads it as clean.
+    body["starved"] = starved
+    body["starved_count"] = len(starved)
+    body["healthy"] = [m for m in scan["measured"]
+                       if not m["pinned"] and not m.get("starved")]
     return jsonify(body), 200
 
 
