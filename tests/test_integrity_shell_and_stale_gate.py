@@ -57,6 +57,7 @@ def _app(monkeypatch, age_seconds):
     app = flask.Flask(__name__)
     gate.init_app(app)
 
+# AUTO-REPAIR: duplicate route '/api/v1/admin/flywheel/master-tick' also in routes/flywheel_master_shell.py:911 — review and remove one
     @app.route("/api/v1/admin/flywheel/master-tick")
     def _tick():
         return flask.jsonify(ok=True, agents=75)
@@ -64,6 +65,7 @@ def _app(monkeypatch, age_seconds):
     @app.route("/api/v1/facilities/search")
     def _content():
         return flask.jsonify(ok=True, results=[1, 2, 3])
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
 
     @app.route("/health")
     def _health():

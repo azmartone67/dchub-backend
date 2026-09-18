@@ -702,7 +702,7 @@ def _persist(m: dict, levers: dict, score: float, action: dict) -> bool:
                   (rag_score, coverage_pct, deep_dives_present, deep_dives_target,
                    eval_mean_cosine, rag_agents_7d, rag_context_packs_7d,
                    weakest_lever, action_taken, lever_scores, findings_filed, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 score, m.get("coverage_pct"),
                 m.get("deep_dives_present"), m.get("deep_dives_target"),
