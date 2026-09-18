@@ -3510,7 +3510,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/open_data_csv.py': {'isos_non_canonical'},
     'routes/openapi_dynamic.py': {'markets_232', 'tool_count_literal'},
     'routes/operator_brief.py': {'deals_stale_floor'},
-    'routes/operators.py': {'facilities_stale_floor'},
     'routes/partner_landing.py': {'tool_count_literal'},
     'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
     'routes/press_outreach.py': {'deals_stale_floor'},
@@ -3767,7 +3766,17 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # the count it already measured and displays. Drainage by REMOVAL of
     # the claim, not by resolving it through canon. Lowered in the SAME
     # commit that drains it, exactly as this assertion's message asks.
-    assert len(outside) >= 74, (
+    # ★2026-09-17 (b): 74 -> 73. routes/operators.py drained its
+    # facilities_stale_floor too — both operator surfaces carried the same
+    # hardcoded "all 19,000+ facilities ... DC Hub from $49/mo" block. Here
+    # the count RESOLVES through canon_text and the prices through
+    # tier_registry / mcp_conversion_plays, rather than being removed: an
+    # operator page has no measured facility total of its own to substitute,
+    # which is why this drainage takes the other route from #4694's.
+    # TWO SEPARATE DRAINAGES, two decrements, both in the commit that drains
+    # them. This entry was written expecting exactly this collision and the
+    # ratchet caught it on rebase, as designed.
+    assert len(outside) >= 73, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 75 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."

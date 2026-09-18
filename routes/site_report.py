@@ -1150,6 +1150,37 @@ def _compute_site_verdict(power, water, air, market):
 # ════════════════════════════════════════════════════════════════════════════
 #  Survey assembly
 # ════════════════════════════════════════════════════════════════════════════
+
+# ── r-stale-floor (2026-09-17) ──────────────────────────────────────────────
+def _canon_stat_tiles():
+    """The cover-page stat tiles, every figure resolved from the canon.
+
+    ★ A TILE WE CANNOT RESOLVE IS DROPPED, never rendered blank or with a
+    literal. canon_text is fail-open by construction — an unreadable canon
+    yields the empty string — so a tile whose value comes back empty would
+    publish "  facilities tracked" on a client deliverable. Fewer tiles is a
+    visible, harmless degradation; a wrong or blank number on a sourced report
+    is not.
+    """
+    try:
+        from ai_surface_canon import canon_text
+    except Exception:  # noqa: BLE001
+        return []
+    want = (("{canon_facilities}", "facilities tracked"),
+            ("{canon_markets}", "markets"),
+            ("{canon_countries}", "countries"),
+            ("{canon_deals}", "M&A deals"))
+    out = []
+    for placeholder, label in want:
+        try:
+            v = (canon_text(placeholder) or "").strip()
+        except Exception:  # noqa: BLE001
+            v = ""
+        if v and placeholder not in v:      # unresolved placeholders never ship
+            out.append({"v": v, "l": label})
+    return out
+
+
 def _build_survey_data(lat, lon, latency_target, capacity_mw):
     state = _reverse_geocode_state(lat, lon) or _state_for(lat, lon)
     # Run the section gatherers concurrently — water (USDM) and power (HIFLD
@@ -1354,12 +1385,20 @@ _ABOUT = {
               "decision-ready intelligence layer — purpose-built for site selection, diligence, and "
               "capital allocation in the AI-infrastructure era. Every figure in this report is "
               "sourced, attributed, and refreshable."),
-    "stats": [
-        {"v": "19,000+", "l": "facilities tracked"},
-        {"v": "233", "l": "markets"},
-        {"v": "170+", "l": "countries"},
-        {"v": "4,000+", "l": "M&A deals"},
-    ],
+    # ★ r-stale-floor (2026-09-17): these four were LITERALS in a report whose
+    # own intro says "Every figure in this report is sourced, attributed, and
+    # refreshable". Measured against canon the day this shipped:
+    #     19,000+ facilities   canon 21,900+   understated
+    #     233 markets          canon 300+      understated
+    #     170+ countries       canon 170+      correct
+    #     4,000+ M&A deals     canon 2,200+    ~2x OVER-CLAIM
+    # The deals figure is not a drift — it is the exact over-claim
+    # ai_surface_canon retired on 2026-07-17, recorded there in its own words:
+    # "was '4,000+', itself an over-claim — it floored ROWS, and the AUTO id
+    # embeds the ingest date so one deal accrues a row per day (4,275 rows ->
+    # ~1,420 distinct)". It has been in this client-facing report ever since.
+    # Resolved through canon_text now, so the report cannot drift again.
+    "stats": _canon_stat_tiles(),
     "capabilities": [
         ["DCPI™ — Data Center Power Index",
          "BUILD / CAUTION / AVOID verdicts on grid headroom and time-to-power across every U.S. market."],
