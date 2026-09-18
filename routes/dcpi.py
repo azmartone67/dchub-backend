@@ -2310,6 +2310,10 @@ from util.dcpi_method import (                       # noqa: E402
     DCPI_METHOD_VERSION,
     CONSTRAINT_INPUT_DEFAULTS as _C_DEF,
     CONSTRAINT_CEILINGS as _C_CEIL,
+    # r-queue-wait-knee: the queue_wait term is the one sub-score this module
+    # does NOT inline. It is two-segment, and a piecewise formula retyped here
+    # is the exact hand-copy bug the import block above exists to prevent.
+    queue_wait_constraint_subscore as _c_queue_wait_subscore,
     CONSTRAINT_WEIGHTS as _C_W,
     CONSTRAINT_EMERGENCY_POINTS_PER_EVENT as _C_EMERG_PTS,
     CONSTRAINT_LOCAL_COMPETITION_BONUS as _C_LOCAL_BONUS,
@@ -2400,8 +2404,11 @@ def compute_constraint_score(metrics: dict) -> float:
     emergencies  = int(metrics.get("emergency_count_30d") or _C_DEF["emergency_count_30d"])
     demand_yoy   = float(metrics.get("demand_growth_yoy_pct") or _C_DEF["demand_growth_yoy_pct"])
 
-    # Wait > 36 months is critical
-    s_wait = _clip((queue_wait_m / _C_CEIL["queue_wait_months"]) * 100, 0, 100)
+    # Two-segment, NOT a ratio to the queue-wait ceiling: that ceiling is the
+    # saturation point (96.0), not the critical threshold (36.0). At a single
+    # 36.0 ceiling this term scored exactly 100 for 108 of 332 markets.
+    # util.dcpi_method owns the transform; see CONSTRAINT_QUEUE_WAIT_CRITICAL_*.
+    s_wait = _c_queue_wait_subscore(queue_wait_m)
     # Reserve < 13% is critical (NERC standard)
     s_reserve = _clip((1 - (reserve_pct / _C_CEIL["reserve_margin_pct"])) * 100, 0, 100)
     # NOTE: emergency_count_30d is NEVER assigned anywhere in this module, so

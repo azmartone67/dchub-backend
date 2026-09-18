@@ -237,15 +237,20 @@ def test_constants_reproduce_real_published_rows():
     from util import dcpi_method as dm
     # constraint: queue_wait 16.0mo, reserve 30% (>25 ceiling -> 0), no
     # emergencies (never populated), demand growth 4.0%, no local DC rows.
+    # 22.8 under method <= 2.3.0, when queue_wait was clip(qw/36*100). Under
+    # 2.4.0 the same captured inputs derive 20.1, hand-checked from the two
+    # segment constants: s_wait = 16.0/36.0*85.0 = 37.7778 (below the knee),
+    # s_reserve = clip((1 - 30.0/25.0)*100) = 0, s_demand = 4.0/12.0*100 =
+    # 33.3333, so 0.40*37.7778 + 0.15*33.3333 = 20.1111 -> 20.1.
     assert dm.constraint_from_published_fields(
         queue_wait_months=16.0, reserve_margin_pct=30.0,
         emergency_count_30d=0, demand_growth_yoy_pct=4.0,
-        local_dc_count=0) == 22.8
+        local_dc_count=0) == 20.1
     # composite from the published excess/constraint/ttp/verdict triple.
-    assert dm.composite_from_published_fields(85.7, 22.8, 9.6, "BUILD") == 83.0
+    assert dm.composite_from_published_fields(85.7, 20.1, 9.6, "BUILD") == 83.8
     # The verdict multiplier is not cosmetic: an unrecognised verdict must not
     # silently earn the BUILD discount-free rate by accident of dict ordering.
-    assert dm.composite_from_published_fields(85.7, 22.8, 9.6, "AVOID") < 83.0
+    assert dm.composite_from_published_fields(85.7, 20.1, 9.6, "AVOID") < 83.8
 
 
 def test_method_block_is_json_serialisable_and_complete():
@@ -500,9 +505,24 @@ def test_forecast_implied_verdict_uses_the_real_verdict_function():
 # fields and bind the RESULT to the CLAIM, in both directions, so neither a
 # false "reproducible" nor a gratuitous "not reproducible" can be published.
 
-# Real payloads captured 2026-08-08 from /api/v1/dcpi/scores/<slug> on the
-# Railway origin. Deliberately spans the residual range (upper-michigan 1.22,
-# johor 21.00 = the theoretical max), both verdicts, and the four markets whose
+# INPUTS captured 2026-08-08 from /api/v1/dcpi/scores/<slug> on the Railway
+# origin. The OUTPUT columns (constraint_score, composite_score) were restated
+# for method 2.4.0 (r-queue-wait-knee) and are NOT raw captures until
+# production rescores — recapture them once it has, and this comment goes away.
+#
+# They were restated by DERIVATION, not by pasting what the new code returns:
+# the two unpublished terms (demand growth, local DC count) are untouched by
+# 2.4.0, so each market's residual is an invariant. new = old - 0.40 * (old_sw
+# - new_sw), with old_sw = clip(qw/36*100) and new_sw the two-segment
+# transform. The residual assertions below re-derive that invariant
+# independently and would fail if the restatement were wrong — which is why
+# they are the guard and not a formality. Worked: ashburn 60.2 - 0.40 *
+# (100.00 - 86.22) = 54.7; chicago 56.0 - 0.40 * (100.00 - 85.00) = 50.0;
+# london and rotterdam do not move at all because both sit above the new
+# 96.0-month saturation point and scored 100 before and after.
+#
+# Deliberately spans the residual range (upper-michigan 1.22, johor 21.00 =
+# the theoretical max), both verdicts, and the four markets whose
 # queue_wait_months exceeds the old "true ceiling" of 89.1.
 #
 # Every field here is one the endpoint ACTUALLY emits. The absence of
@@ -512,16 +532,16 @@ def _fixture_rows():
     return [
         {"market_slug": "johor",
          "queue_wait_months": 18.0, "reserve_margin_pct": 26.0, "emergency_count_30d": 0,
-         "constraint_score": 41.0, "excess_power_score": 43.8, "time_to_power_months": 10.8,
-         "verdict": "AVOID", "composite_score": 31.3},
+         "constraint_score": 38.0, "excess_power_score": 43.8, "time_to_power_months": 10.8,
+         "verdict": "AVOID", "composite_score": 31.8},
         {"market_slug": "upper-michigan",
          "queue_wait_months": 16.0, "reserve_margin_pct": 24.2, "emergency_count_30d": 0,
-         "constraint_score": 19.8, "excess_power_score": 73.2, "time_to_power_months": 9.6,
-         "verdict": "BUILD", "composite_score": 76.4},
+         "constraint_score": 17.1, "excess_power_score": 73.2, "time_to_power_months": 9.6,
+         "verdict": "BUILD", "composite_score": 77.2},
         {"market_slug": "tokyo",
          "queue_wait_months": 48.0, "reserve_margin_pct": 12.0, "emergency_count_30d": 0,
-         "constraint_score": 66.5, "excess_power_score": 19.8, "time_to_power_months": 48.0,
-         "verdict": "AVOID", "composite_score": 14.4},
+         "constraint_score": 61.7, "excess_power_score": 19.8, "time_to_power_months": 48.0,
+         "verdict": "AVOID", "composite_score": 15.2},
         {"market_slug": "london",
          "queue_wait_months": 144.0, "reserve_margin_pct": 7.0, "emergency_count_30d": 0,
          "constraint_score": 77.8, "excess_power_score": 16.9, "time_to_power_months": 201.6,
@@ -532,24 +552,24 @@ def _fixture_rows():
          "verdict": "AVOID", "composite_score": 14.0},
         {"market_slug": "dallas",
          "queue_wait_months": 84.5, "reserve_margin_pct": 19.5, "emergency_count_30d": 0,
-         "constraint_score": 60.8, "excess_power_score": 65.8, "time_to_power_months": 67.6,
-         "verdict": "CAUTION", "composite_score": 43.6},
+         "constraint_score": 59.6, "excess_power_score": 65.8, "time_to_power_months": 67.6,
+         "verdict": "CAUTION", "composite_score": 43.9},
         {"market_slug": "ashburn",
          "queue_wait_months": 40.9, "reserve_margin_pct": 20.5, "emergency_count_30d": 0,
-         "constraint_score": 60.2, "excess_power_score": 45.5, "time_to_power_months": 24.5,
-         "verdict": "AVOID", "composite_score": 27.1},
+         "constraint_score": 54.7, "excess_power_score": 45.5, "time_to_power_months": 24.5,
+         "verdict": "AVOID", "composite_score": 28.1},
         {"market_slug": "chicago",
          "queue_wait_months": 36.0, "reserve_margin_pct": 20.0, "emergency_count_30d": 0,
-         "constraint_score": 56.0, "excess_power_score": 44.2, "time_to_power_months": 21.6,
-         "verdict": "AVOID", "composite_score": 27.7},
+         "constraint_score": 50.0, "excess_power_score": 44.2, "time_to_power_months": 21.6,
+         "verdict": "AVOID", "composite_score": 28.8},
         {"market_slug": "singapore",
          "queue_wait_months": 36.0, "reserve_margin_pct": 12.0, "emergency_count_30d": 0,
-         "constraint_score": 65.2, "excess_power_score": 13.5, "time_to_power_months": 36.0,
-         "verdict": "AVOID", "composite_score": 13.5},
+         "constraint_score": 59.2, "excess_power_score": 13.5, "time_to_power_months": 36.0,
+         "verdict": "AVOID", "composite_score": 14.6},
         {"market_slug": "midland-tx",
          "queue_wait_months": 16.0, "reserve_margin_pct": 28.0, "emergency_count_30d": 0,
-         "constraint_score": 22.8, "excess_power_score": 85.7, "time_to_power_months": 9.6,
-         "verdict": "BUILD", "composite_score": 83.0},
+         "constraint_score": 20.1, "excess_power_score": 85.7, "time_to_power_months": 9.6,
+         "verdict": "BUILD", "composite_score": 83.8},
     ]
 
 
@@ -897,3 +917,117 @@ def test_methodology_endpoint_measures_counts_and_never_fabricates_them():
     assert "except Exception" in fn, "_live_counts can raise into the route"
     assert "counts.get(\"available\")" in src, \
         "unmeasured counts are passed to method_block as if measured"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# r-queue-wait-knee (2026-09-17). The queue_wait term is the only non-linear
+# normalisation in the constraint score, and it exists because ONE number was
+# doing two jobs. These guard the split staying split.
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_queue_wait_ceiling_is_not_the_critical_threshold():
+    """The defect this replaced: CONSTRAINT_CEILINGS["queue_wait_months"] was
+    36.0 AND carried the comment '>36 months = critical', so the saturation
+    point and the critical threshold were forced equal. Re-merging them is the
+    regression — it would re-pin the most-constrained third of the index."""
+    from util import dcpi_method as dm
+    ceiling = dm.CONSTRAINT_CEILINGS["queue_wait_months"]
+    critical = dm.CONSTRAINT_QUEUE_WAIT_CRITICAL_MONTHS
+    assert ceiling > critical, (
+        f"saturation ({ceiling}) has collapsed back onto the critical "
+        f"threshold ({critical}); the term is a single ratio again")
+    # The critical threshold must score high but NOT saturate — that is the
+    # entire behavioural difference from the old transform.
+    at_critical = dm.queue_wait_constraint_subscore(critical)
+    assert at_critical == dm.CONSTRAINT_QUEUE_WAIT_CRITICAL_SCORE
+    assert at_critical < 100.0, (
+        "a market at the critical threshold scores 100 again, so every market "
+        "above it is tied on the largest single constraint weight")
+    # Headroom must be enough to separate real markets, not a token gap.
+    assert 100.0 - at_critical >= 10.0, \
+        "less than 10 points above the knee cannot order a 36-144 month tail"
+
+
+def test_queue_wait_subscore_is_continuous_monotonic_and_saturates():
+    """Shape guards. A two-segment transform that is discontinuous at the knee
+    or non-monotonic anywhere would reorder markets against their own waits."""
+    from util import dcpi_method as dm
+    f = dm.queue_wait_constraint_subscore
+    knee = dm.CONSTRAINT_QUEUE_WAIT_CRITICAL_MONTHS
+    ceiling = dm.CONSTRAINT_CEILINGS["queue_wait_months"]
+    assert f(0) == 0.0
+    assert f(ceiling) == 100.0
+    assert f(ceiling * 3) == 100.0, "does not saturate above the ceiling"
+    # Continuity: approaching the knee from below must meet the knee value.
+    assert abs(f(knee - 0.001) - f(knee)) < 0.01, "discontinuous at the knee"
+    # Monotonic non-decreasing across the whole real domain, at finer
+    # granularity than the knee width so a wrong-direction segment is caught.
+    xs = [i * 0.25 for i in range(0, int(ceiling * 4 * 4) + 1)]
+    for a, b in zip(xs, xs[1:]):
+        assert f(a) <= f(b) + 1e-9, f"non-monotonic between {a} and {b}"
+    # The two segments must have DIFFERENT slopes — equal slopes would mean a
+    # plain linear ratio wearing a knee's clothes.
+    below = (f(knee) - f(knee - 10)) / 10.0
+    above = (f(knee + 10) - f(knee)) / 10.0
+    assert below > above > 0, (
+        f"segment slopes {below}/{above} — above the knee must be shallower "
+        "than below it, and both must rise")
+
+
+def test_queue_wait_knee_is_published_and_matches_the_constants():
+    """A consumer reproducing constraint_score reads /methodology. If the knee
+    is not published there, they will assume the ratio shape every other term
+    has and derive a wrong score for a third of the index."""
+    from util import dcpi_method as dm
+    knee = dm.method_block()["constraint_score"]["queue_wait_knee"]
+    assert knee["critical_months"] == dm.CONSTRAINT_QUEUE_WAIT_CRITICAL_MONTHS
+    assert knee["critical_score"] == dm.CONSTRAINT_QUEUE_WAIT_CRITICAL_SCORE
+    assert knee["saturation_months"] == \
+        dm.CONSTRAINT_CEILINGS["queue_wait_months"]
+    # The published per-month rates must be DERIVED, not retyped: recompute.
+    assert knee["above_knee_points_per_month"] == round(
+        (100.0 - knee["critical_score"])
+        / (knee["saturation_months"] - knee["critical_months"]), 4)
+    # The prose must stop claiming every term is a linear ratio.
+    norm = dm.method_block()["normalisation"]
+    assert "two-segment" in norm and "queue_wait_months" in norm, \
+        f"normalisation prose does not disclose the non-linear term: {norm}"
+
+
+def test_scorer_does_not_reinline_the_queue_wait_transform():
+    """The house rule this module exists for. routes/dcpi.py inlines the other
+    sub-scores deliberately, but a retyped PIECEWISE formula is the hand-copy
+    bug — two implementations that can drift with nothing connecting them."""
+    import pathlib
+    src = pathlib.Path("routes/dcpi.py").read_text()
+    body = src.split("def compute_constraint_score", 1)[1].split("\ndef ", 1)[0]
+    # Strip comments and docstring prose first. A comment SAYING "not a ratio
+    # to _C_CEIL[...]" contains the exact token this guard forbids, so reading
+    # raw source makes the guard fire on its own explanation — and, worse, a
+    # comment could satisfy the positive assertion below without any code.
+    code = "\n".join(ln.split("#", 1)[0] for ln in body.splitlines())
+    assert "queue_wait_constraint_subscore" in code.split("#", 1)[0] or \
+        "_c_queue_wait_subscore" in code, \
+        "scorer no longer calls the shared transform in CODE"
+    assert "_C_CEIL[\"queue_wait_months\"]" not in code, (
+        "compute_constraint_score divides by the queue_wait ceiling again — "
+        "that ceiling is the SATURATION point, not the knee, so a ratio to it "
+        "silently scores every market below 96 months too low")
+
+
+def test_queue_wait_knee_moves_a_market_the_old_ceiling_could_not_see():
+    """The motivating case, pinned. PR #4709 halved dallas 83.4 -> ~37.9
+    months; both were above the old 36.0 ceiling, so both scored 100 and
+    published constraint did not move at all."""
+    from util import dcpi_method as dm
+    f = dm.queue_wait_constraint_subscore
+    before, after = f(83.4), f(37.9)
+    assert before > after, "a 45-month improvement must lower the sub-score"
+    moved = dm.CONSTRAINT_WEIGHTS["queue_wait"] * (before - after)
+    assert moved >= 3.0, (
+        f"halving time-to-power moves constraint by only {moved:.2f} points — "
+        "the index still cannot see the improvement that motivated 2.4.0")
+    # And the old transform genuinely could not: prove the claim rather than
+    # asserting it, so this test fails if the history is misremembered.
+    old = lambda q: max(0.0, min(100.0, (q / 36.0) * 100))
+    assert old(83.4) == old(37.9) == 100.0
