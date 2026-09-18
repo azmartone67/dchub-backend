@@ -244,3 +244,21 @@ def test_main_strips_a_pasted_newline_before_it_reaches_the_url(monkeypatch):
 
     assert seen["project"] == "winter-frost-12345678"
     assert seen["key"] == "key-with-space"
+
+
+def test_a_connection_string_pasted_as_the_project_id_is_named_as_such(monkeypatch):
+    """The mistake that actually happened on the first live run.
+
+    "152 chars containing 7 whitespace/path characters" is accurate and nearly
+    useless — it does not tell you WHICH wrong thing you pasted. This case is
+    checked before the generic one so the message names it.
+    """
+    monkeypatch.setattr(nb, "_req", _projects("winter-frost-12345678"))
+    with pytest.raises(SystemExit) as e:
+        nb._preflight(
+            "k",
+            "postgresql://neondb_owner:pw@ep-x.aws.neon.tech/neondb?sslmode=require")  # secretscan:allow — synthetic
+    msg = str(e.value)
+    assert "CONNECTION STRING" in msg
+    assert "LIVE DATABASE CREDENTIAL" in msg, "must flag that the value is a credential"
+    assert "neondb_owner" not in msg and "pw@" not in msg, "echoed the credential"

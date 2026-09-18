@@ -74,6 +74,20 @@ def _preflight(key: str, project: str) -> None:
       where it is correct. Run `neon_ci_branch.py doctor` locally to see the
       actual ids.
     """
+    # Named first because it is the mistake people actually make: the Neon
+    # console shows a connection string far more prominently than the project
+    # id, and "152 chars, 7 path characters" does not tell you which of the two
+    # you grabbed. Reports the SHAPE only — the value itself is never printed.
+    if project.lower().startswith(("postgres://", "postgresql://")):
+        raise SystemExit(
+            "NEON_PROJECT_ID is a CONNECTION STRING, not a project id — the "
+            "Neon console shows that far more prominently. The project id is "
+            "the bare slug under Project settings -> General (e.g. "
+            "'winter-frost-12345678').\n"
+            "  ! That value is a LIVE DATABASE CREDENTIAL. It is stored as a "
+            "secret so it is not exposed, but overwrite it now that it is in "
+            "the wrong place, and check nothing else received the same paste.")
+
     bad = [c for c in project if c.isspace() or c in "/?#:@"]
     if bad:
         raise SystemExit(
