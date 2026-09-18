@@ -562,8 +562,26 @@ def purge_market_pages():
     # _purge_everything in here.
     from routes.market_deep_dive import sitemapped_market_slugs
 
+    # Built through the registry, not an f-string: tests/
+    # test_url_registry_chokepoint.py::test_no_raw_public_url_fstrings_in_emitters
+    # is the chokepoint for every public dchub.cloud URL, and it caught this.
+    from routes.url_registry import build_public_url
+
     slugs = sitemapped_market_slugs()
-    urls = [f"https://dchub.cloud/markets/{s}" for s in slugs]
+
+    urls, mangled = [], []
+    for _s in slugs:
+        _u = build_public_url("markets", _s)
+        # ★ build_public_url slugifies AND collapses ADJACENT IDENTICAL path
+        # parts ("partnership-partnership-" -> "partnership-"). A market named
+        # e.g. "Walla Walla" would come back as /markets/walla, so the purge
+        # would evict a page that is not the one that is stale and leave the
+        # real one serving — silently. None of the 253 live slugs collapse
+        # (measured 2026-09-17); this is the fence for the day one does.
+        if not _u.endswith("/" + _s):
+            mangled.append(_s)
+            continue
+        urls.append(_u)
 
     # A derived list that comes back EMPTY must not report success: all([])
     # is True, so `all(r["ok"] for r in [])` would have called purging
@@ -571,17 +589,23 @@ def purge_market_pages():
     if not urls:
         return jsonify({
             "ok": False,
-            "error": "sitemapped_market_slugs() derived no slugs; refusing to "
-                     "report a purge of nothing",
+            "error": "sitemapped_market_slugs() derived no purgeable slugs; "
+                     "refusing to report a purge of nothing",
             "batches": 0,
             "url_count": 0,
+            "slug_count": len(slugs),
+            "mangled_slugs": mangled,
             "results": [],
         }), 200
 
     results = _purge_in_batches(urls)
     return jsonify({
-        "ok": all(r.get("ok") for r in results),
+        # A slug the registry could not address is an UNPURGED page, so the
+        # purge is incomplete and must not read as clean.
+        "ok": all(r.get("ok") for r in results) and not mangled,
         "batches": len(results),
         "url_count": len(urls),
+        "slug_count": len(slugs),
+        "mangled_slugs": mangled,
         "results": results,
     }), 200

@@ -135,6 +135,38 @@ def test_ashburn_the_page_measured_stale_is_covered():
     )
 
 
+def test_a_slug_the_registry_collapses_is_refused_not_guessed():
+    """★ build_public_url collapses ADJACENT IDENTICAL path parts, so a real
+    doubled place name is silently rewritten:
+        walla-walla -> /markets/walla   baden-baden -> /markets/baden
+    Purging /markets/walla evicts a page that is NOT the stale one and leaves
+    the real one serving. Refuse the slug and say so, rather than purge a URL
+    that does not identify it."""
+    from routes.url_registry import build_public_url
+    # Anchor the premise in the real builder, so this test dies honestly if
+    # the collapse is ever removed instead of pinning stale behaviour.
+    assert build_public_url("markets", "walla-walla").endswith("/walla"), (
+        "premise changed: build_public_url no longer collapses walla-walla"
+    )
+
+    r, rec = _drive(["walla-walla", "ashburn"])
+    body = r.get_json()
+    assert "walla-walla" in body["mangled_slugs"], (
+        f"a collapsed slug was not reported: {body['mangled_slugs']}"
+    )
+    assert "https://dchub.cloud/markets/walla" not in rec.flat, (
+        "purged the COLLAPSED url, which is a different page"
+    )
+    assert "https://dchub.cloud/markets/ashburn" in rec.flat, (
+        "a good slug alongside a collapsed one must still be purged"
+    )
+    assert body["ok"] is False, (
+        "an unaddressable page is an UNPURGED page; the purge is incomplete "
+        "and must not read as clean"
+    )
+    assert body["slug_count"] == 2 and body["url_count"] == 1
+
+
 def test_empty_derivation_does_not_report_a_clean_purge():
     """all([]) is True. Without an explicit guard, deriving zero slugs reports
     ok:true having purged nothing — a green light for a broken derivation."""
