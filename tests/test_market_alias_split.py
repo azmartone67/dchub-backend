@@ -36,7 +36,24 @@ why the refusals below are pinned. A leading-whole-token containment rule
 folds Frankfurt correctly but, measured over the same published values,
 also folds a state into a city and two countries into each other.
 """
+import re
+
 import pytest
+
+
+def _flatten_sql(sql: str) -> str:
+    """Flatten a SQL literal for matching, with `-- ...` comments removed.
+
+    Matching the RAW text makes a comment that QUOTES the statement
+    indistinguishable from the statement itself. routes/operator_brief.py
+    documents the 2-arg `GROUP BY COALESCE(market, city)` it used to carry
+    (it raised GroupingError, so the section published nothing); an
+    unstripped match dispatched on that PROSE while the real statement had
+    already moved to the 3-arg form — the fake cursor answered a query the
+    route no longer sends, and the test passed for the wrong reason.
+    """
+    bare = "\n".join(re.sub(r"--.*$", "", line) for line in sql.splitlines())
+    return " ".join(bare.split())
 
 from util.market_aliases import (
     FACILITY_MARKET_ALIASES,
@@ -189,10 +206,10 @@ class _SectionCur:
         self.limited_in_sql = None
 
     def execute(self, sql, params=None):
-        flat = " ".join(sql.split())
+        flat = _flatten_sql(sql)
         if "FROM market_power_scores" in flat:
             self._pending = ("many", [(s,) for s in self.published])
-        elif "GROUP BY COALESCE(market, city)" in flat:
+        elif "GROUP BY COALESCE(market, city" in flat:
             # The route must NOT limit in SQL — that is the defect.
             self.limited_in_sql = "LIMIT" in flat.upper()
             self._pending = ("many", list(self.market_rows))
@@ -339,8 +356,8 @@ class _OpsCur:
         self.limited_in_sql = None
 
     def execute(self, sql, params=None):
-        flat = " ".join(sql.split())
-        if "GROUP BY COALESCE(market, city)" in flat:
+        flat = _flatten_sql(sql)
+        if "GROUP BY COALESCE(market, city" in flat:
             self.limited_in_sql = "LIMIT" in flat.upper()
             self._pending = ("many", list(self.market_rows))
         elif "COUNT(*) AS facility_count" in flat:
