@@ -58,11 +58,46 @@ _KIND_PATH = {
 }
 
 
+# The ONLY slug rewrite this builder performs. Keep it anchored and narrow.
+#
+# Origin (d0d73821e, 2026-06-02, "fix(linkedin): ... dedupe slug prefix"):
+# partnership_press_template namespaced an already-namespaced slug root and
+# emitted /news/partnership-partnership-<rest>, which 404'd. That commit's
+# fix was literal and prefix-anchored:
+#     if slug.startswith("partnership-partnership-"):
+#         slug = slug.replace("partnership-partnership-", "partnership-", 1)
+# 0adf39da0 moved it into this chokepoint and generalised it to "collapse any
+# ADJACENT IDENTICAL hyphen-separated parts", while the comment still named
+# only the prefix case. That generalisation rewrites legitimate slugs anywhere
+# in the string. Measured against the live builder and the published sitemaps
+# on 2026-09-17:
+#   - /press-release/2026-06-06-chatgpt-cites-... (published, 200) was rebuilt
+#     as .../2026-06-chatgpt-cites-... -> 404. Same for
+#     rural-spp-67-dcpi-build-headroom-2026-07-07 -> ...-2026-07 -> 404. Any
+#     dated slug whose month equals its day collapses (12 such dates a year).
+#   - 3,452 of 19,147 published facility slugs contain an adjacent repeat
+#     (equinix-equinix-..., 2degrees-2degrees-...); the builder emitted a
+#     non-canonical URL for every one of them.
+#   - "walla-walla" -> "walla" and "baden-baden" -> "baden". Walla Walla (WA)
+#     and Baden-Baden are real places, so markets was latent, not safe.
+# So: strip a doubled namespace only at the START of the slug, and only when
+# the doubled token is a namespace this kind actually uses. Everything else is
+# real slug content and must survive byte-for-byte.
+def _strip_doubled_namespace(kind, slug):
+    for ns in (_KIND_PATH[kind], kind, "partnership"):
+        if ns and slug.startswith(f"{ns}-{ns}-"):
+            return slug[len(ns) + 1:]
+    return slug
+
+
 def build_public_url(kind, slug, subpath=None, query=None):
     """Single source of truth for every public dchub.cloud URL.
 
-    Strips duplicate prefixes (e.g. partnership-partnership-) and rejects
-    invalid kinds. Returns the absolute URL string.
+    Strips a doubled namespace PREFIX (e.g. partnership-partnership-) and
+    rejects invalid kinds. Returns the absolute URL string. Slug content is
+    otherwise preserved verbatim: "walla-walla" and a slug whose date reads
+    2026-07-07 are legitimate and are NOT collapsed. See
+    _strip_doubled_namespace.
 
     subpath: optional fixed path appended after the slug, NOT slugified
         (e.g. "brief", "brief.pdf", "deep-dive", "brief/embed"). Leading/
@@ -73,14 +108,7 @@ def build_public_url(kind, slug, subpath=None, query=None):
     if kind not in _VALID_KINDS:
         raise ValueError(f"unknown url kind: {kind}")
     slug = slugify(slug)
-    # Dedupe `partnership-partnership-` etc.
-    parts = slug.split("-")
-    cleaned = []
-    for p in parts:
-        if cleaned and cleaned[-1] == p:
-            continue
-        cleaned.append(p)
-    slug = "-".join(cleaned)
+    slug = _strip_doubled_namespace(kind, slug)
     url = f"{_BASE}/{_KIND_PATH[kind]}/{slug}"
     if subpath:
         sp = str(subpath).strip("/")
