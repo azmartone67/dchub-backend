@@ -22,12 +22,15 @@ Endpoints (new v2):
 """
 
 from flask import Blueprint, jsonify, request, Response
-from datetime import datetime
+import logging
+import sys
 import json
 import csv
 import io
 from internal_auth import require_internal_or_admin
 from utc_clock import utc_iso_z, utc_now
+
+logger = logging.getLogger(__name__)
 
 tax_incentives_bp = Blueprint('tax_incentives', __name__)
 
@@ -87,12 +90,21 @@ DEFAULT_INCENTIVES = [
 ]
 
 
+# Base values by abbr, for recording what an override was written against.
+_DEFAULTS_BY_ABBR = {s['abbr']: s for s in DEFAULT_INCENTIVES}
+
+
 def setup_tax_incentive_routes(app, db=None):
     """
     Register tax incentive API routes on the Flask app.
     
-    If db (SQLite connection or similar) is provided, data is stored/read from DB.
-    Otherwise, serves from in-memory DEFAULT_INCENTIVES.
+    DEFAULT_INCENTIVES is the source of truth. If `db` is provided, admin
+    overrides stored there are layered on top of it at boot; without a db the
+    module's own values are served and admin PUTs live only in this process.
+    See "WHICH STORE IS AUTHORITATIVE" above _init_db.
+
+    NOTE (2026-09-18): main.py:10103 calls this as setup_tax_incentive_routes(app)
+    with NO db, so no override store is attached in production today.
     
     Endpoints:
         GET  /api/v1/tax-incentives          - Get all state incentives
@@ -101,20 +113,33 @@ def setup_tax_incentive_routes(app, db=None):
         PUT  /api/v1/tax-incentives/:abbr    - Update a state (admin)
     """
     
-    # In-memory store (loaded from DB or defaults)
-    incentives_data = {s['abbr']: s for s in DEFAULT_INCENTIVES}
-    
-    # If DB provided, try to load from it; seed if empty
+    # ── Store layering ────────────────────────────────────────
+    # DEFAULT_INCENTIVES is the source of truth; the DB holds admin overrides
+    # only. See "WHICH STORE IS AUTHORITATIVE" above _init_db.
+    #
+    # dict(s) copies deliberately: the previous `{s['abbr']: s for s in ...}`
+    # aliased the module-level dicts, so a PUT mutated DEFAULT_INCENTIVES in
+    # place for the life of the process.
+    incentives_data = {s['abbr']: dict(s) for s in DEFAULT_INCENTIVES}
+
     if db:
         try:
             _init_db(db)
-            stored = _load_from_db(db)
-            if stored:
-                incentives_data = {s['abbr']: s for s in stored}
-            else:
-                _seed_db(db, DEFAULT_INCENTIVES)
-        except Exception as e:
-            print(f"[tax-incentives] DB init warning: {e}, using defaults")
+            overrides = _load_overrides(db)
+            incentives_data, notes = _layer_overrides(DEFAULT_INCENTIVES, overrides)
+            for note in notes:
+                logger.warning("[tax-incentives] %s", note)
+            logger.info(
+                "[tax-incentives] %d states; %d carry an admin override",
+                len(incentives_data), len(overrides),
+            )
+        except Exception:
+            # logger.exception, not print(e): the defect this replaces was a
+            # NameError reduced to a one-line message nobody read.
+            logger.exception(
+                "[tax-incentives] override load failed — serving DEFAULT_INCENTIVES unmodified"
+            )
+            incentives_data = {s['abbr']: dict(s) for s in DEFAULT_INCENTIVES}
     
     @app.route('/api/v1/tax-incentives', methods=['GET', 'OPTIONS'])
     def get_all_incentives():
@@ -266,16 +291,18 @@ def setup_tax_incentive_routes(app, db=None):
         if not updates:
             return jsonify({'status': 'error', 'message': 'No data provided'}), 400
         
-        # Merge updates
+        # Merge updates in memory, and persist ONLY the changed fields as an
+        # admin override — never a full snapshot. A snapshot would pin every
+        # other field of this state to today's module and block later
+        # statutory corrections from reaching it.
         incentives_data[abbr].update(updates)
         incentives_data[abbr]['last_modified'] = utc_iso_z()
-        
-        # Persist to DB if available
+
         if db:
             try:
-                _update_db(db, abbr, incentives_data[abbr])
-            except Exception as e:
-                print(f"[tax-incentives] DB update warning: {e}")
+                _save_override(db, abbr, updates, _DEFAULTS_BY_ABBR.get(abbr, {}))
+            except Exception:
+                logger.exception("[tax-incentives] override write failed for %s", abbr)
         
         return jsonify({'status': 'success', 'data': incentives_data[abbr]})
     
@@ -556,48 +583,198 @@ def _check_pro_access(api_key):
     return api_key in pro_keys
 
 
-# ─── DB HELPERS (SQLite) ──────────────────────────────────────
+# ─── DB HELPERS ───────────────────────────────────────────────
+#
+# ★ WHICH STORE IS AUTHORITATIVE (decided 2026-09-18)
+#
+# DEFAULT_INCENTIVES — the list at the top of this module — is the source of
+# truth. It is versioned in git, reviewed on a PR, and is where a statutory
+# change gets recorded (Ohio ORC 122.175 in azmartone67/dchub-backend#4753 is
+# the worked example).
+#
+# The database holds ADMIN OVERRIDES ONLY. For each state an admin has edited
+# through PUT /api/v1/tax-incentives/<abbr> it stores THE FIELDS THAT EDIT
+# CHANGED — never a full snapshot of the state. Boot layers those fields on
+# top of DEFAULT_INCENTIVES (_layer_overrides).
+#
+# ★ Why not the other way round. The previous shape seeded the whole table
+# from DEFAULT_INCENTIVES and then read the table back as truth. It never ran
+# — _load_from_db referenced an undefined `cursor`, raised NameError on every
+# call, and a bare `except:` returned [] — so the module always fell through
+# to its own defaults and nothing looked wrong. Simply repairing the loader
+# would have made the DB win using rows seeded from an OLDER module, and every
+# statutory correction shipped since that seed would have reverted on the next
+# boot, silently, behind a green deploy. Layering makes the direction explicit:
+# a field nobody has overridden always tracks the module, and an override is a
+# deliberate exception that _layer_overrides() REPORTS once the module value
+# beneath it moves, instead of quietly masking it.
+#
+# The legacy `tax_incentives` table (full snapshots, written by the removed
+# _seed_db/_update_db) is no longer read or written here. It is left in place
+# rather than dropped, and its rows must never be layered: they are seed
+# copies of an old module, not admin edits, and the two are indistinguishable
+# once written.
+
+_OVERRIDES_TABLE = 'tax_incentive_overrides'
+
+
+def _placeholder(db):
+    """The DB-API placeholder for this driver: '%s' for psycopg2, '?' for sqlite3.
+
+    Read from the driver's declared paramstyle instead of hardcoded, so the real
+    sqlite3 connection in tests/test_tax_incentive_overrides.py executes the same
+    statements production executes against Postgres — a fake cursor that ignored
+    the SQL would not have caught the NameError this module shipped for its whole
+    life. Unknown driver falls back to '%s', the production case.
+    """
+    module = sys.modules.get(type(db).__module__.split('.')[0])
+    return '?' if getattr(module, 'paramstyle', '') == 'qmark' else '%s'
+
+
+def _db_error_types(db):
+    """This driver's error base, as a tuple, for a NARROW `except`.
+
+    Resolved from sys.modules rather than a module-scope `import psycopg2`: this
+    file is imported by the pure-function suite in 0.12s with no driver present,
+    and tests/_stub_sentinel.py pins driver identity across the session.
+
+    Returns () when no driver error base is available — deliberately. An empty
+    tuple catches NOTHING, so the error reaches the caller's boundary handler and
+    is logged with a full traceback. That is strictly better than the bare
+    `except:` this replaces, which is the reason the defect below was invisible.
+    """
+    module = sys.modules.get(type(db).__module__.split('.')[0])
+    base = getattr(module, 'Error', None)
+    if isinstance(base, type) and issubclass(base, Exception):
+        return (base,)
+    return ()
+
 
 def _init_db(db):
-    """Create tax_incentives table if it doesn't exist"""
-    cursor = db.cursor() if hasattr(db, 'cursor') else db.execute
-    try:
-        cursor.execute('''CREATE TABLE IF NOT EXISTS tax_incentives (
-            abbr TEXT PRIMARY KEY,
-            data TEXT NOT NULL,
-            last_modified TEXT DEFAULT CURRENT_TIMESTAMP
-        )''')
-        db.commit()
-    except:
-        pass
+    """Create the overrides table if it doesn't exist.
 
-def _load_from_db(db):
-    """Load all incentives from DB"""
-    try:
-        rows = cursor.execute('SELECT abbr, data FROM tax_incentives').fetchall()
-        return [json.loads(row[1]) for row in rows] if rows else []
-    except:
-        return []
-
-def _seed_db(db, defaults):
-    """Seed DB with default data"""
-    try:
-        for state in defaults:
-            c = db.cursor()
-            c.execute(
-                'INSERT INTO tax_incentives  (abbr, data) VALUES (%s, %s) ON CONFLICT (abbr) DO UPDATE SET data = EXCLUDED.data',
-                (state['abbr'], json.dumps(state))
-            )
-        db.commit()
-        print(f"[tax-incentives] Seeded {len(defaults)} states into DB")
-    except Exception as e:
-        print(f"[tax-incentives] Seed error: {e}")
-
-def _update_db(db, abbr, data):
-    """Update a single state in DB"""
-    c = db.cursor()
-    c.execute(
-        'INSERT INTO tax_incentives  (abbr, data, last_modified) VALUES (%s, %s, %s) ON CONFLICT (abbr) DO UPDATE SET data = EXCLUDED.data, last_modified = EXCLUDED.last_modified',
-        (abbr, json.dumps(data), datetime.utcnow().isoformat())
+    No try/except: a DDL failure here means overrides cannot be stored, and the
+    caller must hear about it. The old version wrapped this in `except: pass`.
+    """
+    cursor = db.cursor()
+    cursor.execute(
+        'CREATE TABLE IF NOT EXISTS ' + _OVERRIDES_TABLE + ' ('
+        ' abbr TEXT PRIMARY KEY,'
+        ' payload TEXT NOT NULL,'
+        ' updated_at TEXT'
+        ')'
     )
     db.commit()
+
+
+def _load_overrides(db):
+    """Admin overrides keyed by state abbr: {abbr: {fields, base, updated_at}}.
+
+    ★ This function used to read a bare `cursor` that was never defined in its
+    scope. Every call raised NameError; a bare `except:` turned that into [], and
+    the caller read [] as "nothing stored" and reseeded. The narrow except below
+    is the whole point of the repair: a NameError, AttributeError or TypeError in
+    here is a BUG in this file and now propagates to a handler that logs a
+    traceback. Only genuine driver errors are absorbed, and even those get a line.
+    """
+    cursor = db.cursor()
+    try:
+        cursor.execute('SELECT abbr, payload FROM ' + _OVERRIDES_TABLE)
+        rows = cursor.fetchall() or []
+    except _db_error_types(db) as e:
+        logger.warning(
+            "[tax-incentives] could not read %s (%s: %s) — serving DEFAULT_INCENTIVES unmodified",
+            _OVERRIDES_TABLE, type(e).__name__, e,
+        )
+        return {}
+
+    overrides = {}
+    for abbr, payload in rows:
+        try:
+            entry = json.loads(payload)
+        except (TypeError, ValueError) as e:
+            logger.warning("[tax-incentives] override row %s is not valid JSON (%s) — ignored", abbr, e)
+            continue
+        if isinstance(entry, dict):
+            overrides[abbr] = entry
+        else:
+            logger.warning(
+                "[tax-incentives] override row %s holds %s, not an object — ignored",
+                abbr, type(entry).__name__,
+            )
+    return overrides
+
+
+def _layer_overrides(defaults, overrides):
+    """Layer admin overrides onto DEFAULT_INCENTIVES. Returns (data_by_abbr, notes).
+
+    Pure — no DB, no Flask — so the layering rule can be tested directly.
+
+    `notes` names each override that has drifted: one whose stored `base` value
+    for a field no longer equals the module's current value, meaning an admin
+    edit is now masking a newer statutory correction. That is the one real risk
+    of letting overrides exist at all, so it is reported rather than left silent.
+    """
+    data = {s['abbr']: dict(s) for s in defaults}
+    notes = []
+    for abbr in sorted(overrides):
+        entry = overrides[abbr] or {}
+        if abbr not in data:
+            notes.append("%s: override for a state DEFAULT_INCENTIVES no longer ships — ignored" % abbr)
+            continue
+        fields = entry.get('fields') or {}
+        base = entry.get('base') or {}
+        for key, was in base.items():
+            now = data[abbr].get(key)
+            if now != was:
+                notes.append(
+                    "%s.%s: admin override is masking a newer module value (%r -> %r)" % (abbr, key, was, now)
+                )
+        data[abbr].update(fields)
+        if entry.get('updated_at'):
+            data[abbr]['last_modified'] = entry['updated_at']
+    return data, notes
+
+
+def _save_override(db, abbr, fields, base_now):
+    """Record `fields` as the admin override for `abbr`.
+
+    Merged onto any existing override so successive edits accumulate, and stored
+    with the module value of each overridden key at write time so
+    _layer_overrides() can later report drift.
+
+    The read below has no `except`: if it fails we must NOT write, or an override
+    that already carried three fields would be silently replaced by one.
+    """
+    ph = _placeholder(db)
+    cursor = db.cursor()
+    cursor.execute('SELECT payload FROM ' + _OVERRIDES_TABLE + ' WHERE abbr = ' + ph, (abbr,))
+    row = cursor.fetchone()
+
+    existing = {}
+    if row and row[0]:
+        try:
+            parsed = json.loads(row[0])
+            if isinstance(parsed, dict):
+                existing = parsed
+        except (TypeError, ValueError):
+            logger.warning("[tax-incentives] override row %s was unparseable — replacing it", abbr)
+
+    merged_fields = dict(existing.get('fields') or {})
+    merged_fields.update(fields)
+    merged_base = dict(existing.get('base') or {})
+    for key in fields:
+        merged_base[key] = base_now.get(key)
+
+    now = utc_iso_z()
+    payload = json.dumps({'fields': merged_fields, 'base': merged_base, 'updated_at': now})
+    cursor.execute(
+        'INSERT INTO ' + _OVERRIDES_TABLE + ' (abbr, payload, updated_at)'
+        ' VALUES (' + ph + ', ' + ph + ', ' + ph + ')'
+        ' ON CONFLICT (abbr) DO UPDATE SET'
+        ' payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at',
+        (abbr, payload, now),
+    )
+    db.commit()
+    return {'fields': merged_fields, 'base': merged_base, 'updated_at': now}
+
