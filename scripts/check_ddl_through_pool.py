@@ -359,6 +359,61 @@ class _FnScan(ast.NodeVisitor):
         self.ddl = []
         self.executor_ddl = []
         self.calls = set()
+        # ★ WHY PER-NAME AND NOT JUST PER-FUNCTION. `self.direct` waives the
+        # whole function, so a MIXED function — one ddl_cursor() block plus a
+        # CREATE still on get_db() — scored zero offences in either order.
+        # That is not hypothetical: it is how a partial regression of
+        # google_search_console.init_gsc_tables stayed invisible in the
+        # 2026-09-18 mutation run, and the waiver gets WIDER every time
+        # someone fixes part of a function, because fixing part is what sets
+        # `direct`. These two sets record where each cursor actually came
+        # from, so a DDL whose receiver is provably pooled is reported even
+        # when a raw connection is also in play.
+        self.pooled_cursors = set()
+        self.raw_cursors = set()
+
+    def bind_cursors(self, node):
+        """Name -> pooled/raw, over one function body. Run before the visit.
+
+        Two passes, because `conn = get_db()` then `cur = conn.cursor()` needs
+        the first binding to resolve the second.
+        """
+        for _ in range(2):
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.withitem):
+                    self._bind(sub.optional_vars, sub.context_expr)
+                elif isinstance(sub, ast.Assign) and len(sub.targets) == 1:
+                    self._bind(sub.targets[0], sub.value)
+
+    def _bind(self, target, value):
+        if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
+            return
+        kind = self._origin(value)
+        if kind == "pooled":
+            self.pooled_cursors.add(target.id)
+            self.raw_cursors.discard(target.id)
+        elif kind == "raw":
+            self.raw_cursors.add(target.id)
+            self.pooled_cursors.discard(target.id)
+
+    def _origin(self, call):
+        """'pooled' | 'raw' | '' for what a call yields, following .cursor()."""
+        kind = _resolve(call, self.binds)
+        if kind:
+            return kind
+        if _is_direct_connect(call) or _is_cur_unwrap(call):
+            return "raw"
+        f = call.func
+        # conn.cursor() / get_db().cursor() — inherit from what it hangs off.
+        if isinstance(f, ast.Attribute) and f.attr in ("cursor", "__enter__"):
+            if isinstance(f.value, ast.Name):
+                if f.value.id in self.pooled_cursors:
+                    return "pooled"
+                if f.value.id in self.raw_cursors:
+                    return "raw"
+            elif isinstance(f.value, ast.Call):
+                return self._origin(f.value)
+        return ""
 
     def visit_FunctionDef(self, node):
         return
@@ -381,8 +436,11 @@ class _FnScan(ast.NodeVisitor):
                 for snip, tbl, col in _ddl_statements(arg):
                     self.executor_ddl.append((node.lineno, snip, tbl, col))
         if name in ("execute", "executescript", "executemany") and node.args:
+            recv = (node.func.value.id
+                    if isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name) else "")
             for snip, tbl, col in _ddl_statements(node.args[0]):
-                self.ddl.append((node.lineno, snip, tbl, col))
+                self.ddl.append((node.lineno, snip, tbl, col, recv))
         self.generic_visit(node)
 
 
@@ -415,6 +473,7 @@ def scan_source(src: str, path: str = "<src>"):
         binds = dict(mbinds)
         binds.update(_collect_binds(node))   # function-local imports win
         s = _FnScan(binds)
+        s.bind_cursors(node)
         for child in ast.iter_child_nodes(node):
             s.visit(child)
         scans[qual] = s
@@ -437,7 +496,20 @@ def scan_source(src: str, path: str = "<src>"):
                 "why": "DDL handed to a db_utils safe_* helper, which always "
                        "runs on the wrapped cursor",
             })
-        if not s.ddl or direct or not pooled:
+        # ★ A receiver that is PROVABLY pooled is reported whatever else the
+        # function does. Without this, one ddl_cursor() block anywhere in the
+        # function waived every CREATE in it — so fixing half a function
+        # bought the other half permanent immunity.
+        named = [d for d in s.ddl if d[4] in s.pooled_cursors]
+        for lineno, snip, tbl, col, recv in named:
+            offences.append({
+                "path": path, "line": lineno, "function": qual, "sql": snip,
+                "table": tbl, "column": col,
+                "why": f"DDL on `{recv}`, a cursor from a db_utils pooled "
+                       f"connection",
+            })
+        rest = [d for d in s.ddl if d[4] not in s.pooled_cursors]
+        if not rest or direct or not pooled:
             # direct  → a raw connection is in play; the DDL rides it.
             # !pooled → no connection source visible; the cursor was handed in
             #           and is unresolvable from here. Guessing produces the
@@ -446,7 +518,7 @@ def scan_source(src: str, path: str = "<src>"):
         via = (", ".join("db_utils." + n for n in sorted(s.pooled))
                if s.pooled else "a local helper that returns a db_utils "
                                 "connection")
-        for lineno, snip, tbl, col in s.ddl:
+        for lineno, snip, tbl, col, recv in rest:
             offences.append({
                 "path": path, "line": lineno, "function": qual, "sql": snip,
                 "table": tbl, "column": col,

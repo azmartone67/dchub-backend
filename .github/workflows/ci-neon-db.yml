@@ -128,12 +128,13 @@ jobs:
                    DCHUB_PG_TEST_DSN; do
             echo "$v=$DSN" >> "$GITHUB_ENV"
           done
-          # Every *_REQUIRE flag these lanes support. Only 3 of the 19 have
-          # one; the other 16 skip silently if their DSN never arrives, which
-          # is the green-no-op shape. Setting the 3 that exist is the most this
-          # can do without touching the tests themselves.
+          # Every *_REQUIRE flag these lanes support. 4 of the 20 have one;
+          # the rest skip silently if their DSN never arrives, which is the
+          # green-no-op shape. GSC_TABLES_REQUIRE was added with
+          # tests/test_gsc_tables_created_on_postgres.py — a lane that proves
+          # a table gets created must not be able to prove it by skipping.
           for r in FIBER_PARITY_REQUIRE SERVED_SLUG_PARITY_REQUIRE \
-                   ONE_URL_REPAIR_REQUIRE; do
+                   ONE_URL_REPAIR_REQUIRE GSC_TABLES_REQUIRE; do
             echo "$r=1" >> "$GITHUB_ENV"
           done
 
@@ -233,6 +234,22 @@ jobs:
             -v --tb=short -rs 2>&1 | tee parity.log || true
           echo "### Phase 2 — 19 lanes on a Neon branch" >> "$GITHUB_STEP_SUMMARY"
           tail -1 parity.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Phase 2b — the GSC schema must be able to build itself
+        # NOT advisory, and deliberately not part of Phase 2's `|| true` list.
+        # Phase 2 is a learning lane: its failures are its output. This is the
+        # opposite — a table that does not get created is the defect itself,
+        # so a failure here must fail the job. GSC_TABLES_REQUIRE=1 (set above)
+        # turns a missing DSN into an error rather than a skip, which matters
+        # because the bug this guards printed a success line while creating
+        # nothing, and a skipped test does the same thing.
+        env:
+          NEON_CI_DSN: ${{ steps.neon.outputs.dsn }}
+        run: |
+          set -o pipefail
+          python3 -m pytest tests/test_gsc_tables_created_on_postgres.py \
+            -v --tb=short -rs
+          echo "### Phase 2b — GSC schema builds itself: PASS" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Destroy the branch
         if: always() && steps.neon.outputs.branch_id != ''

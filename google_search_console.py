@@ -43,34 +43,59 @@ _cached_token = None
 _token_expiry = None
 
 def init_gsc_tables():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS gsc_index_requests (
-        id SERIAL PRIMARY KEY,
-        url TEXT NOT NULL,
-        status TEXT DEFAULT 'pending',
-        requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        indexed_at TIMESTAMP,
-        error TEXT
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS gsc_crawl_errors (
-        id SERIAL PRIMARY KEY,
-        url TEXT NOT NULL,
-        error_type TEXT,
-        first_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        resolved BOOLEAN DEFAULT FALSE
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS gsc_sitemap_submissions (
-        id SERIAL PRIMARY KEY,
-        sitemap_url TEXT NOT NULL,
-        submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        status TEXT DEFAULT 'pending',
-        urls_submitted INTEGER DEFAULT 0,
-        urls_indexed INTEGER DEFAULT 0
-    )''')
-    conn.commit()
-    conn.close()
+    """DDL through the ONE blessed path — see _ensure_proven_table below.
+
+    ★ These three CREATEs ran on a POOLED cursor until 2026-09-18, which means
+    they never ran at all: PGCursorWrapper.execute() returns early for any
+    statement in db_utils._DDL_PREFIXES whenever SKIP_DDL is set, and it
+    defaults to '1' (db_utils.py:13) and is absent from Railway's config. The
+    2026-09-18 05:21:14Z boot log carried DDL-DROPPED for
+    gsc_sitemap_submissions once per gunicorn worker.
+
+    ★★ AND YET THE TABLES ARE THERE, WHICH IS THE PART WORTH READING. Checked
+    against production 2026-09-18: all three exist, with exactly this shape,
+    and gsc_sitemap_submissions holds 2 rows (2026-06-15, 2026-07-02) — so
+    POST /api/gsc/sitemap/submit has worked. Their pg_class OIDs are low and
+    consecutive (29657/29668/29678, against 1704545 for seo_proven_pages),
+    i.e. they were created together, early, by a deploy that predates the
+    wrapper's DDL skip. Nothing is broken in production right now.
+
+    What was broken is that this module cannot BUILD what it reads. The
+    function is decorative: it prints its success line and creates nothing, so
+    the schema survives only as long as the database it was first created in.
+    A fresh database — a CI Neon branch (see
+    tests/test_gsc_tables_created_on_postgres.py, which runs against exactly
+    that), a restore, a new environment — gets no tables, and then
+    submit_sitemap() PUTs the sitemap to Google FIRST and only afterwards
+    INSERTs, so the submission would really happen and the caller would still
+    get a 500 with nothing recorded. This makes the function do what it says.
+    """
+    from db_utils import ddl_cursor
+    with ddl_cursor() as cur:
+        cur.execute('''CREATE TABLE IF NOT EXISTS gsc_index_requests (
+            id SERIAL PRIMARY KEY,
+            url TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            indexed_at TIMESTAMP,
+            error TEXT
+        )''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS gsc_crawl_errors (
+            id SERIAL PRIMARY KEY,
+            url TEXT NOT NULL,
+            error_type TEXT,
+            first_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            resolved BOOLEAN DEFAULT FALSE
+        )''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS gsc_sitemap_submissions (
+            id SERIAL PRIMARY KEY,
+            sitemap_url TEXT NOT NULL,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'pending',
+            urls_submitted INTEGER DEFAULT 0,
+            urls_indexed INTEGER DEFAULT 0
+        )''')
     print("✅ Google Search Console tables initialized")
 
 def get_access_token():
