@@ -204,3 +204,88 @@ def test_the_summary_states_the_drop_count():
     }
     md = kr.markdown_summary(out)
     assert "9100" in md and "19016" in md and "35" in md
+
+
+# ── effect, not intent ───────────────────────────────────────────────────
+#
+# ★★★ THE GAP THIS CLOSES. This script measured what the rule WOULD drop and
+#     stayed green for two days while the rule was dead code in production —
+#     a NameError inside its own fail-open (be#4722). Both numbers were already
+#     in one JSON and nothing subtracted them:
+#
+#         2026-09-17 10:45Z   families.ai 19,171   drop_candidates 5,795
+#         2026-09-18 05:22Z   production: "keep rule NOT applied"
+#
+#     "DROP candidates: 5,795" is what a healthy run printed BEFORE #4641
+#     merged — the pending win. The number's MEANING changed when the rule
+#     shipped; the instrument did not, so the alarm still read as the to-do
+#     list. See [[feedback_measured_one_pattern_shipped_another]].
+
+def _out(effect):
+    """The smallest `out` markdown_summary will render, carrying a real effect
+    block. Deliberately NOT a copy of measure()'s literal: this asserts the
+    summary reads the verdict FIELD, so the words and the workflow's exit
+    status cannot drift apart."""
+    return {
+        "published_facility_urls": 19172,
+        "families": {"gated": 6942, "ai": effect["served_ai_family"],
+                     "other_shards": 0, "ai_only": 12229,
+                     "gated_outside_ai": 1},
+        "impressions": {"as_of": "2026-09-17", "in_window_slugs": 25458,
+                        "rows_in_table": 26339},
+        "thin": {"contentless_published": 0, "contentless_slugs_total": 1559},
+        "duplicates": {"groups": 0, "surplus_urls": 0, "unresolved_slugs": 0,
+                       "detail_error": None},
+        "rule": {"keep_by_impression": 12691,
+                 "drop_candidates_capacity_thin_zero_impression":
+                     effect["drop_candidates_still_served"],
+                 "keep_total_after_drop": 13377},
+        "effect": effect,
+    }
+
+
+def test_a_served_artefact_full_of_drop_candidates_means_the_rule_is_not_running():
+    """The live 2026-09-18 shape: 19,145 served, 5,795 of them droppable."""
+    ai = {f"a{i}" for i in range(19145)}
+    drop = {f"a{i}" for i in range(5795)}
+    e = kr.effect_block(ai, drop)
+    assert e["rule_appears_applied"] is False
+    assert e["drop_candidates_still_served"] == 5795
+    assert e["expected_ai_family_after_rule"] == 19145 - 5795
+    assert "THE RULE IS NOT RUNNING" in kr.markdown_summary(_out(e))
+
+
+def test_an_applied_rule_leaves_no_drop_candidates_in_the_artefact():
+    """Production emits gated ∪ proven, so once it runs the served artefact
+    structurally cannot contain a capacity-thin zero-impression URL."""
+    ai = {f"a{i}" for i in range(13377)}
+    e = kr.effect_block(ai, set())
+    assert e["rule_appears_applied"] is True
+    assert e["expected_ai_family_after_rule"] == 13377
+    assert "rule IS applied" in kr.markdown_summary(_out(e))
+
+
+def test_predicate_skew_below_the_ceiling_is_not_an_outage():
+    """This script's `proven` read and main.py's are derived separately, and a
+    rebuild is up to 4h stale. A small residual must not page anyone."""
+    ai = {f"a{i}" for i in range(13377)}
+    drop = {f"a{i}" for i in range(kr.EFFECT_MAX_STILL_SERVED)}
+    assert kr.effect_block(ai, drop)["rule_appears_applied"] is True
+    # ★ the extra member must be IN the served family — a drop candidate that
+    #   is not served proves nothing about whether the rule ran.
+    drop.add(f"a{kr.EFFECT_MAX_STILL_SERVED}")
+    assert kr.effect_block(ai, drop)["rule_appears_applied"] is False
+
+
+def test_the_ceiling_sits_between_skew_and_the_known_defect():
+    """A ceiling at or above the defect signature could never have caught it;
+    one at zero would fire on ordinary churn. Pin both sides."""
+    assert kr.EFFECT_MAX_STILL_SERVED < 5795, "blind to the 2026-09-16 defect"
+    assert kr.EFFECT_MAX_STILL_SERVED > 0, "would fire on any predicate skew"
+
+
+def test_a_drop_candidate_outside_the_ai_family_is_not_counted_as_served():
+    """Only what is ACTUALLY in the served shards can prove the rule is off."""
+    e = kr.effect_block({"a0", "a1"}, {"not-served-at-all"})
+    assert e["drop_candidates_still_served"] == 0
+    assert e["rule_appears_applied"] is True
