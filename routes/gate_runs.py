@@ -202,7 +202,7 @@ def record_gate_beat(gate, verdict="pass", refusals=None, checked=None,
                    (gate, repo, last_run, last_verdict, last_refusal, refusals_total,
                     last_checked_n, consecutive_vacuous, selftest, selftest_at,
                     cadence_hours, note, updated_at)
-               VALUES (%s, %s, COALESCE(%s::timestamptz, NOW()), %s,
+               VALUES (%s, %s, COALESCE(%s::timestamptz, NOW() ON CONFLICT DO NOTHING), %s,
                        CASE WHEN %s > 0 THEN NOW() END, %s, %s,
                        CASE WHEN %s = 0 THEN 1 ELSE 0 END, %s,
                        CASE WHEN %s IS NOT NULL THEN NOW() END, %s, %s, NOW())
