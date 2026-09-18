@@ -76,7 +76,7 @@ def db(monkeypatch):
             for slug, status, market, state, country, mw, detail in _LISTINGS:
                 cur.execute(
                     "INSERT INTO exclusive_listings (slug, title, status, market, state, country, "
-                    "capacity_mw, detail) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+                    "capacity_mw, detail) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb) ON CONFLICT DO NOTHING",
                     (slug, slug, status, market, state, country, mw,
                      json.dumps(detail) if detail is not None else None))
         conn.commit()
@@ -218,7 +218,7 @@ def fit_db(db):
                 cur.execute(
                     "INSERT INTO exclusive_listings (slug, title, status, market, state, "
                     "country, capacity_mw, detail) VALUES (%s, %s, 'pocket', 'Austin', 'TX', "
-                    "'US', %s, %s::jsonb)", (slug, slug, mw, json.dumps(detail)))
+                    "'US', %s, %s::jsonb) ON CONFLICT DO NOTHING", (slug, slug, mw, json.dumps(detail)))
         conn.commit()
     finally:
         conn.close()
