@@ -322,6 +322,61 @@ QUEUE_WAIT_PROXY = {
         "Texas is ~462 GW, so every Texas market shares one identical value: "
         "a saturated live input is functionally a constant."
     ),
+    # r-queue-saturation-honesty (2026-09-17): what the scorer DOES about that.
+    #
+    # ★ A PINNED PROXY DOES NOT JUST LOSE RESOLUTION — IT INVERTS THE ISO
+    # ORDERING. Measured live 2026-09-17 against the calibrated iso_defaults
+    # anchors, which encode the real regime ordering (ERCOT 30mo is the
+    # fastest large-load interconnect in the US; PJM 48mo the slowest):
+    #
+    #     ERCOT  anchor 30mo -> proxy 66.0mo (pinned)   2.20x WORSE
+    #     PJM    anchor 48mo -> proxy 31.1mo             0.65x BETTER
+    #
+    # i.e. the live path swapped the two. It reads ERCOT's ~475 GW queue as
+    # congestion, but that queue is a GENERATION queue that is large precisely
+    # because ERCOT's connect-and-manage regime makes entry cheap — the
+    # opposite of a long wait. Dallas published time_to_power 66.7 months
+    # against Ashburn's 56.7.
+    #
+    # So above the saturation point the proxy is not written at all: the field
+    # is left None and the per-ISO anchor fills it (see the
+    # `if metrics[k] is None` merge in routes/dcpi.py). queue_capacity_mw is
+    # still recorded — it IS a real measurement — and the adapter still counts
+    # as live for signal-tier purposes, but queue_wait_months drops out of
+    # `_live_fields`, because publishing a pinned constant as a live per-market
+    # reading is a provenance claim the number cannot support.
+    "above_saturation": "fall back to iso_defaults[iso]; do not publish as live",
+}
+
+#: Inputs whose weight is real but whose value is a STRUCTURAL ZERO for
+#: almost every market — the scorer applies the weight, no producer ever
+#: fills the field. Published so a consumer can subtract them rather than
+#: reading a depressed score as a measurement.
+#:
+#: `emergency_count_30d` carried an in-code note since it was found; the
+#: excess-side twin did not, which is the whole reason this table exists in
+#: one place instead of as two comments that drift.
+STRUCTURAL_ZERO_INPUTS = {
+    "emergency_count_30d": {
+        "component": "constraint_score",
+        "weight": 0.20,
+        "filled_for": "no market",
+        "note": ("never assigned anywhere in routes/dcpi.py, so 20% of every "
+                 "constraint score is a constant zero at every signal tier."),
+    },
+    "stranded_capacity_mw": {
+        "component": "excess_power_score",
+        "weight": 0.15,
+        "filled_for": "8 curated markets",
+        "note": ("populated only by the hand-curated slug_overrides set (see "
+                 "routes/dcpi_excess_master_shell.py). For the other ~325 "
+                 "published markets it is NULL -> 0, so 15% of their excess "
+                 "score is a constant zero, and the 8 curated markets are the "
+                 "only ones that can earn those points. Measured 2026-09-17: "
+                 "median published excess was 36.95 against a CAUTION floor "
+                 "of 50.0, and 46 of 70 sampled markets fell below that floor "
+                 "on excess while only 5 breached the constraint ceiling."),
+    },
 }
 
 SATURATION_CEILINGS = {
@@ -517,7 +572,15 @@ SIGNAL_TIER = {
                    "NOT that every score input is measured"),
     "affects_scores": False,
     "always_modeled_inputs": [i["name"] for i in INPUTS if not i["live_capable"]],
+    # Literally never filled for ANY market. `stranded_capacity_mw` is NOT in
+    # this list because it is filled for 8 curated markets — calling it "never
+    # populated" would be its own inaccuracy. It belongs to the weaker but
+    # still-disclosable class below.
     "never_populated_inputs": ["emergency_count_30d"],
+    # r-queue-saturation-honesty (2026-09-17): weights the scorer applies to a
+    # field essentially nothing fills. Keys of STRUCTURAL_ZERO_INPUTS, which
+    # carries the per-input weight, coverage and measurement.
+    "structural_zero_inputs": sorted(STRUCTURAL_ZERO_INPUTS),
     "adapter_null_semantics": ("the queue and generator adapters cannot "
                                "distinguish an empty result from a failed "
                                "query, so silent_adapters is NOT an error count"),

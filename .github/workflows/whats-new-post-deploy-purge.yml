@@ -57,6 +57,7 @@ on:
       - 'scripts/purge_whats_new_after_deploy.py'
       - 'scripts/workflow_trigger_modules.py'
       - 'tier_registry.py'
+      - 'util/dcpi_method.py'
       - 'util/dcpi_score_row.py'
       - 'util/deals.py'
       - 'util/deployability_rank.py'
