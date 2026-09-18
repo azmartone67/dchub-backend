@@ -19,6 +19,8 @@ an unverified scanner's output is worse than no output.
 
 Stdlib + pytest; no DB, no network.
 """
+import os
+import re
 import textwrap
 
 import pytest
@@ -492,3 +494,238 @@ def test_only_coverage_signals_declare_a_floor():
     for x in d._BOUNDED_SIGNALS:
         if "min_ratio" in x:
             assert 0.0 < x["min_ratio"] < 1.0
+#  THE `why` CONSUMER TEST (2026-09-18)
+#
+#  A finding's `why` is the first thing the next reader acts on, and
+#  nothing type-checks prose. autopilot_action_verification shipped
+#  claiming it gates class_success_weight; it does not, and the claim was
+#  one grep from being disproved. It took THREE passes to land on the
+#  right consumer — class_success_weight, then effect_ratio, then finally
+#  the runaway quarantine.
+#
+#  You cannot test English. So each entry DECLARES its consumers as data,
+#  the declaration is verified against the source, and the prose is
+#  required to name a declared symbol — which is what stops the two
+#  drifting apart.
+# ══════════════════════════════════════════════════════════════════════
+
+import ast as _ast
+
+
+def _verify_claim(root, rel_file, symbol, column, role="consumer"):
+    """Does `column` appear inside a real def/class scope that carries
+    `symbol`? Returns (ok, detail).
+
+    Module scope is NEVER accepted. A symbol that appears only at module
+    level (a docstring, a DDL list) would make the scope the whole file and
+    the check vacuous — the exact shape this module exists to hunt."""
+    path = os.path.join(root, rel_file)
+    if not os.path.exists(path):
+        return False, f"{rel_file} does not exist"
+    src = open(path, encoding="utf-8").read()
+    lines = src.splitlines()
+    try:
+        tree = _ast.parse(src)
+    except SyntaxError as e:
+        return False, f"{rel_file} does not parse: {e}"
+    defs = [n for n in _ast.walk(tree)
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef,
+                              _ast.ClassDef))]
+    exact = [n for n in defs if n.name == symbol]
+    cands = exact or [
+        n for n in defs
+        if any(symbol in l
+               for l in lines[n.lineno - 1:getattr(n, "end_lineno", n.lineno)])]
+    if not cands:
+        return False, f"no def/class scope in {rel_file} contains '{symbol}'"
+    for n in cands:
+        lo, hi = n.lineno, getattr(n, "end_lineno", n.lineno)
+        body = lines[lo - 1:hi]
+        if not any(column in l for l in body):
+            continue
+        # The ROLE must be load-bearing, or it is decoration. A `consumer`
+        # scope has to actually READ (a SELECT); a `producer` has to WRITE.
+        # Without this, mislabelling _persist() — which only ever INSERTs
+        # action_taken — as a consumer would pass silently.
+        up = "\n".join(body).upper()
+        if role == "consumer" and "SELECT" not in up:
+            return False, (f"{rel_file}::{n.name}() writes '{column}' but never "
+                           f"SELECTs it — declared role 'consumer' is wrong")
+        if role == "producer" and not ("INSERT" in up or "UPDATE" in up):
+            return False, (f"{rel_file}::{n.name}() does not INSERT/UPDATE "
+                           f"'{column}' — declared role 'producer' is wrong")
+        return True, f"{rel_file}::{n.name}():{lo}-{hi}"
+    return False, (f"{len(cands)} scope(s) in {rel_file} carry '{symbol}' but "
+                   f"none reads '{column}'")
+
+
+def _repo_root():
+    return os.path.dirname(os.path.dirname(os.path.abspath(d.__file__)))
+
+
+def test_every_signal_declares_its_consumers():
+    for sig in d._BOUNDED_SIGNALS:
+        cons = sig.get("consumers")
+        assert cons, (
+            f"{sig['name']} declares no consumers — an undeclared `why` is "
+            f"prose nothing can check, which is how "
+            f"autopilot_action_verification shipped naming the wrong one")
+        for c in cons:
+            assert set(c) >= {"file", "symbol", "reads", "role"}, (
+                f"{sig['name']}: malformed consumer {c}")
+            assert c["role"] in ("consumer", "producer"), (
+                f"{sig['name']}: role must be consumer|producer, got "
+                f"{c['role']!r} — a producer must not be dressed up as a "
+                f"consumer")
+
+
+def test_every_declared_consumer_actually_reads_the_column():
+    """★ THE POINT. Each declaration is checked against the source."""
+    root = _repo_root()
+    failures = []
+    for sig in d._BOUNDED_SIGNALS:
+        for c in sig.get("consumers", []):
+            ok, detail = _verify_claim(root, c["file"], c["symbol"],
+                                       c["reads"], c["role"])
+            if not ok:
+                failures.append(f"{sig['name']} -> {detail}")
+    assert not failures, (
+        "declared consumers that the source does not support:\n  "
+        + "\n  ".join(failures))
+
+
+def test_why_names_a_declared_consumer():
+    """Binds the PROSE to the DATA. Without this the declaration could say one
+    thing and the sentence a reader acts on say another — which is exactly the
+    bug: the `why` claimed class_success_weight while nothing backed it."""
+    for sig in d._BOUNDED_SIGNALS:
+        syms = [c["symbol"] for c in sig.get("consumers", [])]
+        assert any(s in sig["why"] for s in syms), (
+            f"{sig['name']}: why names none of its declared consumers {syms} "
+            f"— prose and declaration have drifted")
+
+
+def test_the_verifier_rejects_the_claim_that_shipped():
+    """★ MUST-FAIL CONTROL, pinned to the real defect. The original entry
+    claimed class_success_weight consumed outcome_verified. It does not —
+    _read_class_rate reads brain_fix_outcomes / autopilot_outcomes /
+    brain_action_class_runs, and outcome_verified appears NOWHERE in
+    brain_work_selector.py. If this ever passes, the verifier has gone
+    vacuous and every other assertion above is worthless."""
+    root = _repo_root()
+    ok, detail = _verify_claim(root, "routes/brain_work_selector.py",
+                               "class_success_weight", "outcome_verified")
+    assert ok is False, (
+        f"the verifier accepted a claim known to be false: {detail}")
+
+
+def test_the_verifier_accepts_a_claim_known_to_be_true():
+    """The other half of the control: a verifier that rejects everything would
+    also pass the test above."""
+    root = _repo_root()
+    ok, detail = _verify_claim(root, "routes/brain_autopilot.py",
+                               "autopilot_verify", "outcome_verified")
+    assert ok is True, f"the verifier rejected a true claim: {detail}"
+
+
+def test_module_scope_alone_is_never_enough():
+    """A symbol that appears only at module level must not satisfy a claim —
+    the scope would be the whole file and the check would be vacuous."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "routes"))
+        open(os.path.join(t, "routes", "m.py"), "w").write(
+            "# my_symbol mentioned only in a comment\n"
+            "SQL = 'SELECT the_column FROM x'\n"
+            "def unrelated():\n    return 1\n")
+        ok, _ = _verify_claim(t, "routes/m.py", "my_symbol", "the_column")
+        assert ok is False
+
+
+def _repo_function_names(root):
+    """Every function/class name defined under routes/. Cached per run."""
+    if getattr(_repo_function_names, "_cache", None) is not None:
+        return _repo_function_names._cache
+    names = set()
+    rdir = os.path.join(root, "routes")
+    for fn in os.listdir(rdir):
+        if not fn.endswith(".py"):
+            continue
+        try:
+            tree = _ast.parse(open(os.path.join(rdir, fn),
+                                   encoding="utf-8").read())
+        except Exception:
+            continue
+        for n in _ast.walk(tree):
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef,
+                              _ast.ClassDef)) and len(n.name) > 6:
+                names.add(n.name)
+    _repo_function_names._cache = names
+    return names
+
+
+def test_why_never_names_an_undeclared_repo_function():
+    """★ THE REAL CHECK, and the one the first mutation run proved was missing.
+    Requiring the why to name *a* declared symbol still allowed it to ALSO name
+    a false one — exactly the original bug, where the sentence said
+    class_success_weight and nothing backed it.
+
+    So: any name in a `why` that is a REAL function defined under routes/ must
+    be declared as a consumer of that signal. You may not name code you have
+    not verified consumes this column."""
+    root = _repo_root()
+    repo_names = _repo_function_names(root)
+    for sig in d._BOUNDED_SIGNALS:
+        mine = {c["symbol"] for c in sig.get("consumers", [])}
+        why = sig["why"]
+        # A name counts as a CODE REFERENCE only when it is unambiguous:
+        # written as `name()`, or carrying >= 2 underscores. Plain English
+        # collides constantly otherwise — "suppresses" contains the real
+        # function `suppress`, and `proposals` / `verdicts` are both ordinary
+        # words and real defs. A snake_case name with two underscores is not
+        # something prose produces by accident.
+        named = set()
+        for n in repo_names:
+            called = re.search(r"\b" + re.escape(n) + r"\(\)", why)
+            snake = n.count("_") >= 2 and re.search(
+                r"\b" + re.escape(n) + r"\b", why)
+            if called or snake:
+                named.add(n)
+        undeclared = named - mine
+        assert not undeclared, (
+            f"{sig['name']}: why names real repo function(s) "
+            f"{sorted(undeclared)} that are NOT declared consumers of this "
+            f"signal — declare them (and let the verifier check them) or stop "
+            f"claiming them")
+
+
+def test_why_does_not_name_a_symbol_it_has_not_declared():
+    """★ Closes the hole the first mutation run found. Requiring the why to
+    name *a* declared symbol still let it ALSO name a false one — which is
+    precisely the original bug, where the sentence said class_success_weight
+    and nothing backed it. Any symbol known to this registry that appears in a
+    why must be declared BY THAT ENTRY."""
+    known = {c["symbol"]
+             for sig in d._BOUNDED_SIGNALS
+             for c in sig.get("consumers", [])}
+    for sig in d._BOUNDED_SIGNALS:
+        mine = {c["symbol"] for c in sig.get("consumers", [])}
+        for sym in known - mine:
+            assert sym not in sig["why"], (
+                f"{sig['name']}: why names '{sym}', which is a consumer of a "
+                f"DIFFERENT signal and is not declared here — declare it or "
+                f"stop claiming it")
+
+
+def test_verifier_is_not_vacuous():
+    """★ If _verify_claim ever returns True unconditionally, every consumer
+    assertion above becomes decoration. Pin it on a claim that cannot hold:
+    a column that appears nowhere in the named file."""
+    root = _repo_root()
+    ok, _ = _verify_claim(root, "routes/brain_work_selector.py",
+                          "_read_class_rate", "outcome_verified", "consumer")
+    assert ok is False
+    ok, _ = _verify_claim(root, "routes/rag_master_shell.py",
+                          "_persist", "action_taken", "consumer")
+    assert ok is False, ("_persist only INSERTs action_taken; accepting it as "
+                         "a 'consumer' means the role is not checked")
