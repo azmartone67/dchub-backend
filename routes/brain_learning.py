@@ -182,6 +182,67 @@ def _require_admin(fn):
 # ─────────────────────────────────────────────────────────────────────
 # Helpers (exported for opt-in integration by brain_v2_layer4/5)
 # ─────────────────────────────────────────────────────────────────────
+# Fix-success trend (2026-09-18). A month under this many GRADED outcomes
+# cannot carry a direction; a swing inside the flat band is noise, not
+# learning.
+_TREND_MIN_GRADED = int(os.environ.get("BRAIN_TREND_MIN_GRADED") or 20)
+_TREND_FLAT_BAND = float(os.environ.get("BRAIN_TREND_FLAT_BAND") or 3.0)
+
+
+def compute_fix_success_trend(by_month, this_month=None,
+                             min_graded=None, flat_band=None):
+    """Month-over-month direction for the brain's fix-success rate.
+
+    PURE — takes the rows, returns the verdict, touches no database, so the
+    two rules that keep it honest are testable:
+
+      · THE CURRENT MONTH IS PARTIAL. Comparing a half-elapsed month against a
+        complete one reads as a swing that is really just elapsed time. It is
+        reported in the series but never compared.
+      · A MONTH UNDER `min_graded` CANNOT CARRY A DIRECTION. Two graded
+        outcomes can move a rate 50 points; saying "declining" off that is
+        noise dressed as a finding. We say there is no direction instead.
+
+    A move inside `flat_band` percentage points is "flat", not a trend.
+    Returns direction None whenever fewer than two months qualify — never a
+    default of "flat", which would read as a measured verdict.
+    """
+    this_month = this_month or datetime.now(timezone.utc).strftime("%Y-%m")
+    min_graded = _TREND_MIN_GRADED if min_graded is None else min_graded
+    flat_band = _TREND_FLAT_BAND if flat_band is None else flat_band
+    trend = {
+        "min_graded_per_month": min_graded,
+        "flat_band_pp": flat_band,
+        "partial_month": this_month,
+        "partial_month_excluded_from_comparison": True,
+        "direction": None, "delta_pp": None,
+        "latest_complete_month": None, "prior_complete_month": None,
+    }
+    complete = [m for m in (by_month or [])
+                if m.get("month") != this_month
+                and (m.get("graded") or 0) >= min_graded
+                and m.get("success_rate_pct") is not None]
+    complete.sort(key=lambda m: m["month"], reverse=True)
+    if len(complete) < 2:
+        trend["note"] = (
+            f"fewer than 2 complete months with >= {min_graded} graded "
+            f"outcomes — no direction claimed ({len(complete)} qualifying)")
+        return trend
+    latest, prior = complete[0], complete[1]
+    delta = round(latest["success_rate_pct"] - prior["success_rate_pct"], 1)
+    trend.update(
+        latest_complete_month=latest["month"],
+        latest_pct=latest["success_rate_pct"],
+        latest_graded=latest["graded"],
+        prior_complete_month=prior["month"],
+        prior_pct=prior["success_rate_pct"],
+        prior_graded=prior["graded"],
+        delta_pp=delta,
+        direction=("improving" if delta > flat_band
+                   else "declining" if delta < -flat_band else "flat"))
+    return trend
+
+
 def issue_hash(issue_label, find_text=""):
     """Stable hash for an issue identity. Same label+find on Layer 4 and
     Layer 5 produces the same hash → cross-layer integration."""
@@ -468,6 +529,58 @@ def brain_effectiveness():
                     sources.append(src(
                         f"Outcome verification ({total} checks)",
                         "brain_fix_outcomes", now_iso()))
+
+            # ── FIX SUCCESS, MONTH OVER MONTH ────────────────────────
+            # This endpoint's stated purpose is "look at fix_success_rate
+            # trending up" — but until 2026-09-18 it computed only a single
+            # current value, so the one question it exists to answer ("is the
+            # brain learning?") had no series behind it and every reading was
+            # a point with nothing to compare it to.
+            #
+            # still_broken IS NULL means INDETERMINATE (unreadable file, no
+            # search_text, main unfetchable). It is excluded from BOTH sides
+            # of the rate, exactly as outcome_verification_30d does — counting
+            # it either way would manufacture a verdict the verifier refused
+            # to give.
+            rows = _safe(cur, """
+                SELECT TO_CHAR(checked_at, 'YYYY-MM') AS month,
+                       COUNT(*) AS checks,
+                       COUNT(*) FILTER (WHERE still_broken = FALSE) AS worked,
+                       COUNT(*) FILTER (WHERE still_broken = TRUE) AS failed
+                  FROM brain_fix_outcomes
+                 WHERE checked_at IS NOT NULL
+                 GROUP BY month ORDER BY month DESC LIMIT 12""",
+                key="fix_success_by_month")
+            by_month = []
+            for r in (rows or []):
+                worked, failed = int(r[2] or 0), int(r[3] or 0)
+                graded = worked + failed
+                by_month.append({
+                    "month": r[0],
+                    "checks": int(r[1] or 0),
+                    "graded": graded,
+                    "fix_succeeded": worked,
+                    "fix_failed": failed,
+                    # null, not 0 — a month with nothing gradeable has no rate
+                    "success_rate_pct": (round(100 * worked / graded, 1)
+                                         if graded else None),
+                })
+            payload["fix_success_by_month"] = (
+                None if "fix_success_by_month" in errors else by_month)
+            if by_month:
+                sources.append(src(
+                    f"Fix-success trend ({len(by_month)} months)",
+                    "brain_fix_outcomes", now_iso()))
+
+            # The verdict. Two rules keep it honest:
+            #   · the CURRENT month is PARTIAL — comparing a half-finished
+            #     month against a complete one reads as a swing that is really
+            #     just elapsed time, so it is reported but never compared.
+            #   · a month under _TREND_MIN_GRADED is too small to carry a
+            #     direction; we say so instead of dividing by it.
+            payload["fix_success_trend"] = (
+                None if "fix_success_by_month" in errors
+                else compute_fix_success_trend(by_month))
 
             # Human rejection rate
             rows = _safe(cur, """
