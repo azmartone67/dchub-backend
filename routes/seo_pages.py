@@ -774,6 +774,26 @@ def _markets_dir_redirect():
     return _r
 
 
+# ── market CTA prices, derived (r-market-cta 2026-09-17) ─────────────────
+# This module's /markets/<slug> handler is the LOSING twin — the bytes on
+# dchub.cloud/markets/<slug> come from routes/market_deep_dive.py — but its
+# CTA was still selling the Starter monthly rate, the tier RETIRED by
+# r-price-collapse on 2026-09-05 (the literal is not repeated here: a
+# comment quoting a price is a hit for every repo-wide price scan). A
+# retired price in a registered handler is one route-order
+# change away from being served, and it is a hit for every price scan either
+# way. Derived from the producers, so the next repricing carries it.
+def _cta_prices():
+    from tier_registry import TIER_PRICE_USD_MONTH as _T
+    from routes.mcp_conversion_plays import (
+        PACK10_PRICE_CENTS as _C, PACK10_CREDITS as _K)
+    _pro = float(_T["pro"])
+    _pack = _C / 100.0
+    return (("$%d" % _pro) if _pro.is_integer() else ("$%.2f" % _pro),
+            ("$%d" % _pack) if _pack.is_integer() else ("$%.2f" % _pack),
+            format(int(_K), ","))
+
+
 @seo_pages_bp.get("/markets/<slug>", strict_slashes=False)
 def market_page(slug: str):
     slug = slug.strip().lower()
@@ -907,8 +927,8 @@ def _render_market(slug, city, state, facilities, stats) -> str:
 <section id="cta">
   <h2>Get the {_h(city)} market report</h2>
   <p>The full report includes lease comparables, pipeline projects, grid capacity analysis, and competitive landscape.</p>
-  <p>DC Hub is the live infrastructure data layer for AI agents — and for the people who build data centers: live power, grid, fiber, gas, tenants &amp; site scores on {_h(city)}, cited and machine-readable. Plans from $9/mo · full market &amp; grid intelligence from $49/mo.</p>
-  <a href="/pricing?ref=market&tool={_esc_attr(slug)}" class="cta">See plans — from $49/mo</a>
+  <p>DC Hub is the live infrastructure data layer for AI agents — and for the people who build data centers: live power, grid, fiber, gas, tenants &amp; site scores on {_h(city)}, cited and machine-readable. Pro {_cta_prices()[0]}/mo, or {_cta_prices()[1]} once for {_cta_prices()[2]} calls with no subscription.</p>
+  <a href="/pricing?ref=market&tool={_esc_attr(slug)}" class="cta">See plans — Pro {_cta_prices()[0]}/mo</a>
   <a href="/signup?from=market-{_esc_attr(slug)}" class="cta secondary">Or: free MCP API access</a>
 </section>"""
 

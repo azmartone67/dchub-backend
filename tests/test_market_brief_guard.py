@@ -46,6 +46,13 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEEPDIVE = REPO_ROOT / "routes" / "market_deep_dive.py"
 
 WANT = {"_brief_guard_reason", "_render_neutral_market_page",
+        # r-market-cta (2026-09-17): every market painter now emits its
+        # CTA through one builder. EXTRACTED, not stubbed — both are pure
+        # (the price lookups are in-function imports of the real
+        # producers), so these tests exercise the copy and the prices the
+        # page actually serves. A stub here would let a wrong price or a
+        # missing offer ship while this file stayed green.
+        "_market_offer_html", "_offer_num",
         "_render_deep_dive_body", "generate_for_market",
         "_market_name_candidates",
         # r-crawl-citable (2026-09-03): _render_deep_dive_body now emits the
