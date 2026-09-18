@@ -572,12 +572,18 @@ def purge_market_pages():
     urls, mangled = [], []
     for _s in slugs:
         _u = build_public_url("markets", _s)
-        # ★ build_public_url slugifies AND collapses ADJACENT IDENTICAL path
-        # parts ("partnership-partnership-" -> "partnership-"). A market named
-        # e.g. "Walla Walla" would come back as /markets/walla, so the purge
-        # would evict a page that is not the one that is stale and leave the
-        # real one serving — silently. None of the 253 live slugs collapse
-        # (measured 2026-09-17); this is the fence for the day one does.
+        # ★ Refuse any slug the registry does not round-trip: purging a URL
+        # that does not identify the page evicts something else and leaves the
+        # stale page serving — silently. The check is deliberately written
+        # against the builder's OUTPUT, not against a list of known rewrites,
+        # so it survives changes to the builder.
+        #   Until #4720 the builder collapsed ADJACENT IDENTICAL parts anywhere
+        #   in the slug, so "Walla Walla" came back as /markets/walla and this
+        #   fence refused it. That collapse is gone: walla-walla and
+        #   baden-baden now round-trip and purge normally.
+        # Two rewrites remain, and this fence still covers both: a doubled kind
+        # namespace ("markets-markets-x" -> "markets-x") and slugify's 70-char
+        # cap. No live market slug hits either (measured 2026-09-18).
         if not _u.endswith("/" + _s):
             mangled.append(_s)
             continue

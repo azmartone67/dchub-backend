@@ -135,36 +135,70 @@ def test_ashburn_the_page_measured_stale_is_covered():
     )
 
 
-def test_a_slug_the_registry_collapses_is_refused_not_guessed():
-    """★ build_public_url collapses ADJACENT IDENTICAL path parts, so a real
-    doubled place name is silently rewritten:
-        walla-walla -> /markets/walla   baden-baden -> /markets/baden
-    Purging /markets/walla evicts a page that is NOT the stale one and leaves
-    the real one serving. Refuse the slug and say so, rather than purge a URL
-    that does not identify it."""
+def test_a_slug_the_registry_does_not_round_trip_is_refused_not_guessed():
+    """The fence's job: a slug whose built URL does not identify the page is an
+    UNPURGED page, not a purged one. Driven with a slug the builder genuinely
+    still rewrites — slugify's 70-char cap — rather than a hardcoded example,
+    and the premise is anchored in the real builder."""
     from routes.url_registry import build_public_url
-    # Anchor the premise in the real builder, so this test dies honestly if
-    # the collapse is ever removed instead of pinning stale behaviour.
-    assert build_public_url("markets", "walla-walla").endswith("/walla"), (
-        "premise changed: build_public_url no longer collapses walla-walla"
+    long_slug = "walla-walla-" + ("x" * 70)          # > slugify(max_len=70)
+    assert not build_public_url("markets", long_slug).endswith("/" + long_slug), (
+        "premise changed: the builder now round-trips an over-length slug, so "
+        "this test is no longer driving the fence — pick a rewrite that remains"
     )
 
-    r, rec = _drive(["walla-walla", "ashburn"])
+    r, rec = _drive([long_slug, "ashburn"])
     body = r.get_json()
-    assert "walla-walla" in body["mangled_slugs"], (
-        f"a collapsed slug was not reported: {body['mangled_slugs']}"
+    assert long_slug in body["mangled_slugs"], (
+        f"a rewritten slug was not reported: {body['mangled_slugs']}"
     )
-    assert "https://dchub.cloud/markets/walla" not in rec.flat, (
-        "purged the COLLAPSED url, which is a different page"
+    assert not any("/markets/walla-walla-x" in u for u in rec.flat), (
+        "purged the REWRITTEN url, which is a different page"
     )
     assert "https://dchub.cloud/markets/ashburn" in rec.flat, (
-        "a good slug alongside a collapsed one must still be purged"
+        "a good slug alongside a rewritten one must still be purged"
     )
     assert body["ok"] is False, (
         "an unaddressable page is an UNPURGED page; the purge is incomplete "
         "and must not read as clean"
     )
     assert body["slug_count"] == 2 and body["url_count"] == 1
+
+
+def test_a_doubled_kind_namespace_is_still_refused():
+    """The one collapse the builder kept after #4720 — a doubled kind
+    namespace — must still be caught by the fence."""
+    from routes.url_registry import build_public_url
+    assert build_public_url("markets", "markets-markets-phoenix") == \
+        "https://dchub.cloud/markets/markets-phoenix", "premise changed"
+
+    r, rec = _drive(["markets-markets-phoenix", "ashburn"])
+    body = r.get_json()
+    assert "markets-markets-phoenix" in body["mangled_slugs"]
+    assert "https://dchub.cloud/markets/markets-phoenix" not in rec.flat
+    assert body["ok"] is False
+
+
+def test_a_real_doubled_place_name_is_purged_not_refused():
+    """★ Companion to #4720, and the direction this file used to have backwards.
+    Walla Walla (WA) and Baden-Baden are real places. The builder collapsed
+    them to /markets/walla and /markets/baden, so this fence refused to purge
+    them — correct while the bug existed, wrong once it was fixed. A market
+    page named for either must now purge like any other, or the fence becomes
+    the new way those pages go stale."""
+    from routes.url_registry import build_public_url
+    assert build_public_url("markets", "walla-walla") == \
+        "https://dchub.cloud/markets/walla-walla"
+
+    r, rec = _drive(["walla-walla", "baden-baden"])
+    body = r.get_json()
+    assert body["mangled_slugs"] == [], (
+        f"a legitimate doubled place name was refused: {body['mangled_slugs']}"
+    )
+    assert "https://dchub.cloud/markets/walla-walla" in rec.flat
+    assert "https://dchub.cloud/markets/baden-baden" in rec.flat
+    assert body["ok"] is True, "nothing was unaddressable; the purge is clean"
+    assert body["slug_count"] == 2 and body["url_count"] == 2
 
 
 def test_empty_derivation_does_not_report_a_clean_purge():
