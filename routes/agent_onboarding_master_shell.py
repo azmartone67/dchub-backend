@@ -276,11 +276,17 @@ PLATFORMS: list[dict] = [
         #   a key — it is just not the consumer door.
         "paths": ["mcp", "crawl"], "reach_token": "deepseek",
         "reach_aliases": ["qwen", "dashscope", "zai", "glm"],
-        # ★ NAMED, NOT OBSERVED. DeepSeekBot is this repo's own vocabulary
-        #   (mcp_auto_register.py BOT registry), but /api/v1/ai/reach?days=30
-        #   read 2026-09-18 contains no deepseek token of any kind. So this
-        #   list says what to WATCH for, and the zero is the current reading —
-        #   not a channel we have measured working.
+        # ★ OBSERVED ONCE, QUIET NOW — and the difference is the whole point.
+        #   robots.txt's own census comment records deepseek at 3,107 requests
+        #   ALL-TIME (more than You.com had when that case was fixed by hand),
+        #   and DeepSeek is named in the allowed UA group there, so the crawl
+        #   door is open and has been walked through. But
+        #   /api/v1/ai/reach?days=30, read 2026-09-18, contains no deepseek
+        #   token of any kind. A platform that crawled 3,107 times and then
+        #   stopped is a DIFFERENT problem from one that never arrived, and
+        #   only the first is worth a recipe. Verified the same day that
+        #   /connect, /ai-agents and /dcpi/<market> all answer 200 to a
+        #   DeepSeekBot UA — so nothing on our side is refusing it.
         "bots": ["DeepSeekBot"],
         "required_auth": "bearer", "required_transport": "streamable",
         "directory": "ModelScope (listed via @DCHUBCLOUD/dchub)", "directory_listed": True,
