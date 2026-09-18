@@ -44,6 +44,7 @@ from utils.cache import BoundedCache
 from routes._swallowed_writes import note_swallowed_write
 
 from util.market_aliases import DCPI_METRO_ALIASES, canonical_slug
+from util.facility_count_basis import mw_coverage_note
 from util.dcpi_score_row import PUBLISHED_ONLY
 # Derived per call, never frozen at import: #4334 retired three templates
 # that froze canon at import time and retyped their prices.
@@ -691,15 +692,24 @@ def _section_kpis(cur, hero: dict) -> dict:
             SELECT COUNT(*),
                    COALESCE(SUM(power_mw), 0),
                    COALESCE(SUM(CASE WHEN status ILIKE %s OR status ILIKE %s
-                                     THEN power_mw ELSE 0 END), 0)
+                                     THEN power_mw ELSE 0 END), 0),
+                   -- Denominator for the two sums above. power_mw is NULL on
+                   -- ~19 of every 20 rows of this table (measured
+                   -- 2026-09-18) and SUM
+                   -- COALESCEs it to 0, so a market where 4 of 91 facilities
+                   -- report capacity still publishes a confident MW total.
+                   COUNT(*) FILTER (WHERE power_mw > 0)
               FROM discovered_facilities
              WHERE ({_match_sql})
                AND COALESCE(is_duplicate, 0) = 0
         """.format(_match_sql=_match_sql), ['%construction%', '%planned%'] + _match_params)
-        f = cur.fetchone() or (None, None, None)
+        f = cur.fetchone() or (None, None, None, None)
         out["facility_count"] = _as_int(f[0])
         out["operational_mw"] = _as_float(f[1])
         out["pipeline_mw"]    = _as_float(f[2])
+        # Travels WITH the sums and only with them: a numerator published
+        # without its denominator is the defect this closes.
+        out["mw_reporting_count"] = _as_int(f[3])
     except Exception:
         pass
     # Top operator by facility count in this market
@@ -822,7 +832,11 @@ def _section_operators(cur, hero: dict) -> list[dict]:
         cur.execute("""
             SELECT provider,
                    COUNT(*) AS n,
-                   COALESCE(SUM(power_mw), 0) AS mw
+                   COALESCE(SUM(power_mw), 0) AS mw,
+                   -- Per-operator denominator: this table ranks operators BY
+                   -- mw, so an operator whose sites publish capacity outranks
+                   -- a larger one whose sites do not. The column says which.
+                   COUNT(*) FILTER (WHERE power_mw > 0) AS mw_n
               FROM discovered_facilities
              WHERE ({msql})
                AND provider IS NOT NULL AND provider <> ''
@@ -835,9 +849,23 @@ def _section_operators(cur, hero: dict) -> list[dict]:
             "operator":       r[0],
             "facility_count": _as_int(r[1]),
             "total_mw":       _as_float(r[2]),
+            "mw_reporting_count": _as_int(r[3]),
         } for r in cur.fetchall()]
     except Exception:
         return []
+
+
+def _mw_cov_small(kpis: dict) -> str:
+    """'<small>4 of 91 report MW</small>', or '' when coverage is unknown.
+
+    ONE copy for this module's THREE KPI painters (full brief, embed and the
+    SEO shell). They render the same Operational/Pipeline MW sums; a second
+    copy of this suffix would drift between them, which is how /markets/<slug>
+    ended up with three painters and one fixed tile in #4710.
+    """
+    note = mw_coverage_note(kpis.get("mw_reporting_count"),
+                            kpis.get("facility_count"))
+    return f"<small>{note}</small>" if note else ""
 
 
 def _section_ma(cur, hero: dict) -> list[dict]:
@@ -1297,7 +1325,8 @@ def _render_html(brief: dict) -> str:
 
     # ── KPI tiles ────────────────────────────────────────────────────
     kpi_tiles = []
-    kpi_tiles.append(("Operational", _fmt_mw(kpis.get("operational_mw"))))
+    kpi_tiles.append(("Operational", _fmt_mw(kpis.get("operational_mw"))
+                      + (_mw_cov_small(kpis) if kpis.get("operational_mw") is not None else "")))
     kpi_tiles.append(("Pipeline",    _fmt_mw(kpis.get("pipeline_mw"))))
     kpi_tiles.append(("Facilities",  _fmt_int(kpis.get("facility_count"))))
     kpi_tiles.append(("Queue Wait",  _fmt_months(kpis.get("queue_months"))))
@@ -1402,7 +1431,8 @@ def _render_html(brief: dict) -> str:
             ops_rows = "\n".join(
                 _row([o.get("operator") or NT_PILL,
                       _fmt_int(o.get("facility_count")),
-                      _fmt_mw(o.get("total_mw"))])
+                      _fmt_mw(o.get("total_mw"))
+                      + _mw_cov_small(o)])
                 for o in ops)
             ops_html = (
                 '<table><thead><tr><th>Operator</th>'
@@ -1639,6 +1669,7 @@ h3.sub{{font-size:.95rem;font-weight:600;color:var(--mut);margin:1.5rem 0 .5rem;
 .kpi:hover{{transform:translateY(-2px);border-color:var(--b2)}}
 .kpi-l{{font-size:.66rem;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;font-family:'JetBrains Mono',monospace}}
 .kpi-v{{font-size:1.45rem;color:var(--tx);font-weight:700;letter-spacing:-.01em}}
+.kpi-v small{{display:block;margin-top:.25rem;font-size:.66rem;font-weight:400;letter-spacing:normal;color:var(--dim)}}
 .grid3{{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:.6rem;margin:.5rem 0 1.5rem}}
 .cell{{background:var(--surf);border:1px solid var(--b);border-radius:11px;padding:.8rem 1rem;display:flex;justify-content:space-between;align-items:center;gap:.75rem;font-size:.88rem;transition:border-color .14s ease}}
 .cell:hover{{border-color:var(--b2)}}
@@ -1835,7 +1866,8 @@ def _render_embed_html(brief: dict, *, watermark_off: bool) -> str:
     # KPI tiles - same as the full brief but capped at 4 for the iframe
     # width budget (most embedders use ~640-960px wide).
     kpi_pairs = [
-        ("Operational", _fmt_mw(kpis.get("operational_mw"))),
+        ("Operational", _fmt_mw(kpis.get("operational_mw"))
+                        + (_mw_cov_small(kpis) if kpis.get("operational_mw") is not None else "")),
         ("Pipeline",    _fmt_mw(kpis.get("pipeline_mw"))),
         ("Facilities",  _fmt_int(kpis.get("facility_count"))),
         ("Queue Wait",  _fmt_months(kpis.get("queue_months"))),
@@ -1903,6 +1935,7 @@ h2{{font-size:.95rem;font-weight:600;color:var(--tx);margin:1rem 0 .5rem;letter-
 .kpi{{background:var(--surf);border:1px solid var(--b);border-radius:8px;padding:.55rem .7rem;display:flex;flex-direction:column;gap:.2rem}}
 .kpi-l{{font-size:.6rem;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-family:'JetBrains Mono',monospace}}
 .kpi-v{{font-size:1rem;color:var(--tx);font-weight:600}}
+.kpi-v small{{display:block;margin-top:.25rem;font-size:.66rem;font-weight:400;letter-spacing:normal;color:var(--dim)}}
 .outlook{{font-size:.85rem;color:#d4d4d8;background:var(--surf);border:1px solid var(--b);border-radius:8px;padding:.7rem .85rem;margin:.5rem 0 1rem}}
 .outlook a{{color:var(--ind);text-decoration:none}}
 .deep-cta{{display:block;text-align:center;background:rgba(99,102,241,.12);border:1px dashed #6366f1;border-radius:8px;padding:.55rem .85rem;color:#a5b4fc;text-decoration:none;font-size:.78rem;font-family:'JetBrains Mono',monospace;margin:.5rem 0 1rem}}
@@ -2261,7 +2294,8 @@ def _render_pdf_html(brief: dict) -> str:
 
     # ── KPI tiles (limit to top 4 so the at-a-glance fits a single row) ──
     kpi_pairs = [
-        ("Operational", _fmt_mw(kpis.get("operational_mw"))),
+        ("Operational", _fmt_mw(kpis.get("operational_mw"))
+                        + (_mw_cov_small(kpis) if kpis.get("operational_mw") is not None else "")),
         ("Pipeline",    _fmt_mw(kpis.get("pipeline_mw"))),
         ("Facilities",  _fmt_int(kpis.get("facility_count"))),
         ("Queue Wait",  _fmt_months(kpis.get("queue_months"))),
@@ -2301,7 +2335,8 @@ def _render_pdf_html(brief: dict) -> str:
     ops_rows = "\n".join(
         _row([o.get("operator") or "—",
               _fmt_int(o.get("facility_count")),
-              _fmt_mw(o.get("total_mw"))])
+              _fmt_mw(o.get("total_mw"))
+              + _mw_cov_small(o)])
         for o in ops[:5]) or _row(["No operator data yet", "—", "—"])
     ops_html = (
         '<table><thead><tr><th>Operator</th>'
@@ -3461,6 +3496,10 @@ _BULK_CSV_COLUMNS = (
     "state", "operational_mw", "pipeline_mw", "facility_count",
     "vacancy_pct", "lease_rate", "top_operator",
     "outlook_word_count", "live_as_of", "computed_at",
+    # APPENDED, never inserted — the order above is a published contract.
+    # The denominator behind operational_mw/pipeline_mw: without it a BI
+    # import reads a market's sparse SUM as its capacity.
+    "mw_reporting_count",
 )
 
 
@@ -3702,6 +3741,7 @@ def _bulk_csv_row_for_brief(brief: dict) -> list:
         outlook.get("word_count") if outlook.get("word_count") is not None else 0,
         live.get("iso") or "",
         hero.get("computed_at") or "",
+        kpis.get("mw_reporting_count") if kpis.get("mw_reporting_count") is not None else "",
     ]
 
 

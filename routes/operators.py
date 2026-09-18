@@ -51,6 +51,21 @@ import os
 import re
 import time
 import datetime
+
+from util.facility_count_basis import mw_coverage_note
+
+
+def mw_cov_cell(row: dict) -> str:
+    """'<small>3 of 180 report MW</small>' for one operator row, or ''.
+
+    Used by BOTH MW-bearing tables on this module (the /operators index and
+    the similar-operators strip). A row is ranked and shown by its MW sum, so
+    a portfolio whose sites publish no capacity must not read as one with
+    none.
+    """
+    note = mw_coverage_note(row.get("mw_reporting_count"),
+                            row.get("facility_count"))
+    return f"<small>{note}</small>" if note and row.get("total_mw") else ""
 from flask import Blueprint, Response, jsonify, request, abort
 
 
@@ -145,6 +160,15 @@ def _operator_summary(cur, name: str) -> dict | None:
         cur.execute("""
             SELECT COUNT(*) AS facility_count,
                    COALESCE(SUM(power_mw), 0) AS total_mw,
+                   -- The denominator behind total_mw. power_mw is NULL on
+                   -- ~19 of every 20 discovered_facilities rows (measured
+                   -- 2026-09-18) and SUM COALESCEs it away, so a portfolio
+                   -- where 3 of 180 sites report capacity still yields a
+                   -- confident total. NOTE: no per-cent sign may appear in
+                   -- this string, comments included -- psycopg2 scans the
+                   -- whole query for placeholders and an undoubled one
+                   -- raises IndexError at execute().
+                   COUNT(*) FILTER (WHERE power_mw > 0) AS mw_reporting_count,
                    COUNT(*) FILTER (WHERE LOWER(COALESCE(status,'')) IN
                        ('operational','operating','live','active','running','in-service')) AS operating_count,
                    COUNT(*) FILTER (WHERE LOWER(COALESCE(status,'')) IN
@@ -162,10 +186,11 @@ def _operator_summary(cur, name: str) -> dict | None:
             "slug":            _slugify(name),
             "facility_count":  int(r[0] or 0),
             "total_mw":        float(r[1] or 0),
-            "operating_count": int(r[2] or 0),
-            "pipeline_count":  int(r[3] or 0),
-            "countries":       int(r[4] or 0),
-            "states_us":       int(r[5] or 0),
+            "mw_reporting_count": int(r[2] or 0),
+            "operating_count": int(r[3] or 0),
+            "pipeline_count":  int(r[4] or 0),
+            "countries":       int(r[5] or 0),
+            "states_us":       int(r[6] or 0),
         }
         # Top markets
         try:
@@ -218,7 +243,11 @@ def _operator_summary(cur, name: str) -> dict | None:
                 lo, hi = max(1, int(target_count * 0.7)), int(target_count * 1.3)
                 cur.execute("""
                     SELECT provider, COUNT(*) AS n,
-                           COALESCE(SUM(power_mw), 0) AS mw
+                           COALESCE(SUM(power_mw), 0) AS mw,
+                           -- Denominator: these peers are shown WITH their MW,
+                           -- so a peer whose sites publish none must not read
+                           -- as a peer with no capacity.
+                           COUNT(*) FILTER (WHERE power_mw > 0) AS mw_n
                       FROM discovered_facilities
                      WHERE LOWER(COALESCE(provider, '')) != LOWER(%s)
                        AND provider IS NOT NULL AND provider != ''
@@ -239,6 +268,7 @@ def _operator_summary(cur, name: str) -> dict | None:
                         "slug":           _slugify(sr[0]),
                         "facility_count": int(sr[1]),
                         "total_mw":       float(sr[2] or 0),
+                        "mw_reporting_count": int(sr[3] or 0),
                     })
                     if len(similars) >= 5:
                         break
@@ -255,7 +285,9 @@ def _operator_summary(cur, name: str) -> dict | None:
 def _top_operators(cur, limit: int = 50) -> list[dict]:
     try:
         cur.execute("""
-            SELECT provider, COUNT(*) AS n, COALESCE(SUM(power_mw), 0) AS mw
+            SELECT provider, COUNT(*) AS n, COALESCE(SUM(power_mw), 0) AS mw,
+                   -- Denominator for the Total MW column of /operators.
+                   COUNT(*) FILTER (WHERE power_mw > 0) AS mw_n
               FROM discovered_facilities
              WHERE provider IS NOT NULL AND provider != ''
                AND COALESCE(is_duplicate, 0) = 0
@@ -263,7 +295,8 @@ def _top_operators(cur, limit: int = 50) -> list[dict]:
              ORDER BY n DESC LIMIT %s
         """, (limit,))
         return [{"name": r[0], "slug": _slugify(r[0]),
-                  "facility_count": int(r[1]), "total_mw": float(r[2] or 0)}
+                  "facility_count": int(r[1]), "total_mw": float(r[2] or 0),
+                  "mw_reporting_count": int(r[3] or 0)}
                  for r in cur.fetchall()]
     except Exception as e:  # noqa: BLE001
         # ★ LOG IT. This swallow is why the zero went unnoticed for months: a
@@ -429,7 +462,8 @@ def operators_index():
         f'<tr><td>{i+1}</td>'
         f'<td><a href="/operators/{o["slug"]}">{o["name"]}</a></td>'
         f'<td>{o["facility_count"]:,}</td>'
-        f'<td>{o["total_mw"]:,.0f}</td></tr>'
+        f'<td>{o["total_mw"]:,.0f}'
+        f'{mw_cov_cell(o)}</td></tr>'
         for i, o in enumerate(ops)
     )
     html = f"""<!doctype html><html lang=en>
@@ -532,6 +566,15 @@ def operator_page(slug):
     _mw_meta   = f" totaling {_tmw:,.0f} MW" if _tmw else ""
     _mw_jsonld = f", {_tmw:,.0f} MW total" if _tmw else ""
     _mw_card   = f"{_tmw:,.0f}" if _tmw else "&mdash;"
+    # The denominator under the Total MW card. Without it a portfolio summing
+    # 240 MW reads as the operator's capacity when it is the capacity of the
+    # 3 sites that published one. Empty string when either half is unknown,
+    # so a painter that cannot measure coverage says nothing (#4710 shape).
+    _mw_cov = mw_coverage_note(summary.get('mw_reporting_count'),
+                               summary.get('facility_count'))
+    # <small>, matching the /markets/<slug> tile — no new CSS class, so the
+    # note cannot render as an unstyled invisible div.
+    _mw_cov_html = (f'<small>{_mw_cov}</small>' if _mw_cov and _tmw else '')
 
     html = f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
@@ -565,6 +608,7 @@ h1{{margin:0 0 .25rem;font-size:2rem}}
 .card{{display:block;background:var(--dch-surface);padding:1rem 1.2rem;border-radius:8px;border:1px solid var(--dch-border);text-decoration:none;color:inherit}}
 .card-label{{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dch-text-mute);font-weight:600}}
 .card-metric{{font-size:1.8rem;font-weight:800;color:var(--dch-text);line-height:1;margin-top:.3rem}}
+.card small{{display:block;margin-top:.35rem;font-size:.7rem;color:var(--dch-text-mute)}}
 h2{{font-size:1rem;color:var(--dch-text-mute);text-transform:uppercase;letter-spacing:.08em;margin:1.5rem 0 .5rem}}
 table{{width:100%;border-collapse:collapse;font-size:.92rem;background:var(--dch-surface);border-radius:8px;overflow:hidden;border:1px solid var(--dch-border)}}
 th{{text-align:left;padding:.55rem .75rem;background:var(--dch-surface-2);font-size:.75rem;
@@ -579,7 +623,7 @@ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color
 <p class="sub">Live operator portfolio · tracked by DC Hub from public sources</p>
 <div class="grid">
  <div class="card"><div class="card-label">Facilities</div><div class="card-metric">{summary['facility_count']:,}</div></div>
- <div class="card"><div class="card-label">Total MW</div><div class="card-metric">{_mw_card}</div></div>
+ <div class="card"><div class="card-label">Total MW</div><div class="card-metric">{_mw_card}</div>{_mw_cov_html}</div>
  <div class="card"><div class="card-label">Operating</div><div class="card-metric">{summary['operating_count']:,}</div></div>
  <div class="card"><div class="card-label">Pipeline</div><div class="card-metric">{summary['pipeline_count']:,}</div></div>
  <div class="card"><div class="card-label">Countries</div><div class="card-metric">{summary['countries']}</div></div>
@@ -597,7 +641,8 @@ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color
     f'<a class="card" href="/operators/{so["slug"]}" style="text-decoration:none;cursor:pointer">'
     f'<div class="card-label">{so["facility_count"]:,} facilities</div>'
     f'<div style="font-size:1.1rem;font-weight:700;color:#a855f7;margin:.25rem 0">{so["name"]}</div>'
-    f'<div style="font-size:.85rem;color:var(--dch-text-mute)">{so["total_mw"]:,.0f} MW</div>'
+    f'<div style="font-size:.85rem;color:var(--dch-text-mute)">{so["total_mw"]:,.0f} MW'
+    f'{mw_cov_cell(so)}</div>'
     f'</a>'
     for so in (summary.get("similar_operators") or [])[:5]
 ) or '<div class="card" style="grid-column:1/-1;text-align:center;color:#9ca3af">No comparable operators in the size band yet.</div>'}

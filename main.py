@@ -49523,11 +49523,15 @@ def _admin_dedup_drain():
                 hint="POST ?max=N to drain a batch (default 500, cap 2000). Re-run until backlog=0.",
             )
 
+        # The one predicate for "is this row's power_mw real" — shared with
+        # every other reader so a copier cannot trust what the writer refuses.
+        from util.facility_count_basis import source_publishes_capacity
+
         # Pull one batch of the backlog. Stable order (id) so successive runs
         # make forward progress.
         cur.execute(
             f"SELECT id, name, provider, city, state, country, latitude, longitude, "
-            f"power_mw, status, address FROM discovered_facilities "
+            f"power_mw, status, address, source FROM discovered_facilities "
             f"WHERE {SEL_WHERE} ORDER BY id ASC LIMIT %s", (max_records,))
         rows = cur.fetchall()
 
@@ -49537,13 +49541,34 @@ def _admin_dedup_drain():
 
         inserted = 0; linked = 0; skipped = 0
         for (df_id, name, provider, city, state, country, lat, lng,
-             power, status, address) in rows:
+             power, status, address, src) in rows:
             cur.execute("SAVEPOINT drain_row")
             try:
                 # Case B: already present -> link + mark merged (no insert).
                 cur.execute(EXISTS_SQL, (name, city, city, country))
                 hit = cur.fetchone()
                 if hit:
+                    # ★ 2026-09-18: Case B used to DROP `power`. Case A carries
+                    # it onto the new row; Case B linked the discovered row to
+                    # an existing facility, marked it merged, and threw the
+                    # capacity away. Measured: 535 facilities rows sat at
+                    # power_mw IS NULL while the twin they were merged with
+                    # published one. That is a mapping losing a value in
+                    # transit, not a source that lacks it.
+                    #
+                    # Fills ONLY a NULL, and only from a source that actually
+                    # publishes capacity: 534 of those 535 were OpenStreetMap
+                    # rows whose MW is fabricated (see
+                    # util.facility_count_basis.NON_CAPACITY_SOURCES), so a
+                    # copier without this guard would have pushed 11,746 MW of
+                    # invented capacity onto the published totals. Never
+                    # overwrites an existing reading — a drain is not an
+                    # arbiter between two sources that both reported.
+                    if power and power > 0 and source_publishes_capacity(src):
+                        cur.execute(
+                            "UPDATE facilities SET power_mw = %s "
+                            " WHERE id = %s AND power_mw IS NULL",
+                            (power, str(hit[0])))
                     cur.execute(
                         "UPDATE discovered_facilities SET merged_at = NOW(), "
                         "merged_facility_id = %s WHERE id = %s", (str(hit[0]), df_id))

@@ -16,7 +16,11 @@ denominator is invisible — COUNT(mw) cannot recover it, only a FILTER can.
 None of this feeds the DCPI score (no scorer input reads total_mw); it is a
 published number that states more than it knows.
 """
+import os
 import re
+import subprocess
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import routes.market_deep_dive as M
 
 
@@ -91,8 +95,24 @@ def test_both_per_market_painters_render_the_denominator():
     assert "_cov_for(lab)" in shell.group(0), (
         "the shell's tile no longer renders the coverage note:\n"
         + shell.group(0))
-    assert src.count("mw_coverage_note(") >= 3, (
-        "expected one definition and a call in each of the two painters")
+    # 2026-09-18: the helper MOVED to util/facility_count_basis.py, because
+    # four more painters outside this module publish the same denominator.
+    # The old proxy counted "one def + two calls" in this file; with the def
+    # gone that count is 2, so it is replaced by the two things it was
+    # standing in for — and they are stricter than the count was.
+    assert src.count("mw_coverage_note(") == 2, (
+        "expected exactly the two painter CALLS here; the definition lives in "
+        "util/facility_count_basis.py")
+    assert "def mw_coverage_note(" not in src, (
+        "a second definition re-appeared in this module — the drift this "
+        "helper was centralised to prevent")
+    # ':!tests' — this file quotes the literal in its own assertion above,
+    # so an unscoped grep matches itself and the guard can never pass.
+    _defs = subprocess.run(
+        ["git", "grep", "-l", "def mw_coverage_note(", "--", ".", ":!tests"],
+        cwd=_REPO, capture_output=True, text=True).stdout.split()
+    assert _defs == ["util/facility_count_basis.py"], (
+        f"expected exactly ONE definition repo-wide, found: {_defs}")
 
 
 def test_the_small_element_is_styled_in_every_template_that_uses_it():

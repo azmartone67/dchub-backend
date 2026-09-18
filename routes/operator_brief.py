@@ -43,6 +43,7 @@ import re
 from flask import Blueprint, Response, jsonify, request
 
 from utils.cache import BoundedCache
+from util.facility_count_basis import mw_coverage_note
 # Derived per call, never frozen at import (see #4334).
 from tier_registry import price_display
 from routes._paid_seat_heal import paid_seat_heal_html
@@ -262,7 +263,13 @@ def _section_hero(cur, provider: str) -> dict | None:
                    COALESCE(SUM(CASE WHEN status ILIKE %s OR status ILIKE %s OR status ILIKE %s
                        THEN power_mw ELSE 0 END), 0) AS pipeline_mw,
                    COUNT(DISTINCT COALESCE(market, city)) AS market_count,
-                   COUNT(DISTINCT country) AS country_count
+                   COUNT(DISTINCT country) AS country_count,
+                   -- Denominator for the three MW sums above. power_mw is
+                   -- NULL on ~19 of every 20 discovered_facilities rows
+                   -- (measured 2026-09-18); SUM COALESCEs it to 0, so a 180-site
+                   -- portfolio where 3 sites publish capacity still renders
+                   -- a confident "Total MW".
+                   COUNT(*) FILTER (WHERE power_mw > 0) AS mw_reporting_count
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
                AND COALESCE(is_duplicate, 0) = 0
@@ -314,6 +321,8 @@ def _section_hero(cur, provider: str) -> dict | None:
         "pipeline_mw":       _as_float(r[3]),
         "market_count":      _as_int(r[4]),
         "country_count":     _as_int(r[5]),
+        # Travels WITH the sums above and only with them.
+        "mw_reporting_count": _as_int(r[6]),
         "_last_seen_dt":     _last_dt,   # internal — drives live-as-of
     }
 
@@ -368,7 +377,9 @@ def _section_market_concentration(cur, provider: str) -> list[dict]:
         cur.execute("""
             SELECT COALESCE(market, city, '') AS m,
                    COUNT(*) AS n,
-                   COALESCE(SUM(power_mw), 0) AS mw
+                   COALESCE(SUM(power_mw), 0) AS mw,
+                   -- Denominator for the per-market MW shown in this table.
+                   COUNT(*) FILTER (WHERE power_mw > 0) AS mw_n
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
                AND COALESCE(is_duplicate, 0) = 0
@@ -385,7 +396,11 @@ def _section_market_concentration(cur, provider: str) -> list[dict]:
     # surface "share of operator footprint" per-market.
     try:
         cur.execute("""
-            SELECT COALESCE(SUM(power_mw), 0)
+            SELECT COALESCE(SUM(power_mw), 0),
+                   -- Denominator: the share-of-footprint percentages below
+                   -- are ratios of two sparse sums, so the same rows are
+                   -- missing from numerator and denominator alike.
+                   COUNT(*) FILTER (WHERE power_mw > 0) AS mw_n
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
                AND COALESCE(is_duplicate, 0) = 0
@@ -403,6 +418,7 @@ def _section_market_concentration(cur, provider: str) -> list[dict]:
             "facility_count": _as_int(r[1]),
             "total_mw":       _as_float(mw),
             "share_pct":      share,
+            "mw_reporting_count": _as_int(r[3]),
         })
     return out
 
@@ -616,6 +632,10 @@ def _section_competitive(cur, hero: dict) -> dict:
               SELECT provider,
                      COUNT(*) AS n,
                      COALESCE(SUM(power_mw), 0) AS mw,
+                     -- Denominator: mw_rank below orders operators BY this
+                     -- sparse sum, so a rank reflects which of an operator's
+                     -- sites published capacity as much as how much it has.
+                     COUNT(*) FILTER (WHERE power_mw > 0) AS mw_n,
                      COUNT(DISTINCT COALESCE(market, city)) AS markets
                 FROM discovered_facilities
                WHERE provider IS NOT NULL AND provider <> ''
@@ -623,7 +643,7 @@ def _section_competitive(cur, hero: dict) -> dict:
                GROUP BY provider
               HAVING COUNT(*) >= 3
             )
-            SELECT provider, n, mw, markets,
+            SELECT provider, n, mw, mw_n, markets,
                    RANK() OVER (ORDER BY mw DESC NULLS LAST) AS mw_rank,
                    RANK() OVER (ORDER BY markets DESC NULLS LAST) AS markets_rank,
                    RANK() OVER (ORDER BY n DESC NULLS LAST) AS n_rank,
@@ -633,10 +653,13 @@ def _section_competitive(cur, hero: dict) -> dict:
         """, (name,))
         r = cur.fetchone()
         if r:
-            out["mw_rank"]           = _as_int(r[4])
-            out["market_count_rank"] = _as_int(r[5])
-            out["facility_rank"]     = _as_int(r[6])
-            out["mw_rank_of"]        = _as_int(r[7])
+            out["mw_rank"]           = _as_int(r[5])
+            out["market_count_rank"] = _as_int(r[6])
+            out["facility_rank"]     = _as_int(r[7])
+            out["mw_rank_of"]        = _as_int(r[8])
+            # The rank's own basis: how many of this operator's rows carried
+            # a reading at all.
+            out["mw_reporting_count"] = _as_int(r[3])
     except Exception:
         pass
     # 5 nearest peers by total MW (above + below — gives the broker
@@ -645,7 +668,9 @@ def _section_competitive(cur, hero: dict) -> dict:
     try:
         # peers above
         cur.execute("""
-            SELECT provider, COUNT(*) AS n, COALESCE(SUM(power_mw), 0) AS mw
+            SELECT provider, COUNT(*) AS n, COALESCE(SUM(power_mw), 0) AS mw,
+                   -- Denominator for the peer MW shown beside this operator.
+                   COUNT(*) FILTER (WHERE power_mw > 0) AS mw_n
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) <> LOWER(%s)
                AND provider IS NOT NULL AND provider <> ''
@@ -655,11 +680,15 @@ def _section_competitive(cur, hero: dict) -> dict:
              ORDER BY COALESCE(SUM(power_mw), 0) ASC LIMIT 2
         """, (name, own_mw))
         peers_above = [{"name": r[0], "facility_count": _as_int(r[1]),
-                         "total_mw": _as_float(r[2]), "position": "above"}
+                         "total_mw": _as_float(r[2]),
+                         "mw_reporting_count": _as_int(r[3]),
+                         "position": "above"}
                        for r in cur.fetchall()]
         # peers below
         cur.execute("""
-            SELECT provider, COUNT(*) AS n, COALESCE(SUM(power_mw), 0) AS mw
+            SELECT provider, COUNT(*) AS n, COALESCE(SUM(power_mw), 0) AS mw,
+                   -- Denominator for the peer MW shown beside this operator.
+                   COUNT(*) FILTER (WHERE power_mw > 0) AS mw_n
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) <> LOWER(%s)
                AND provider IS NOT NULL AND provider <> ''
@@ -669,7 +698,9 @@ def _section_competitive(cur, hero: dict) -> dict:
              ORDER BY COALESCE(SUM(power_mw), 0) DESC LIMIT 3
         """, (name, own_mw))
         peers_below = [{"name": r[0], "facility_count": _as_int(r[1]),
-                         "total_mw": _as_float(r[2]), "position": "below"}
+                         "total_mw": _as_float(r[2]),
+                         "mw_reporting_count": _as_int(r[3]),
+                         "position": "below"}
                        for r in cur.fetchall()]
         out["peers"] = peers_above + peers_below
     except Exception:
@@ -912,6 +943,9 @@ def _render_html(brief: dict) -> str:
     name = hero.get("name") or slug.replace("-", " ").title()
     fac_count = hero.get("facility_count") or 0
     total_mw  = hero.get("total_mw") or 0
+    # The denominator under the hero's Total MW tile.
+    _mwcov = mw_coverage_note(hero.get("mw_reporting_count"),
+                              hero.get("facility_count"))
     op_mw     = hero.get("operational_mw") or 0
     pipe_mw   = hero.get("pipeline_mw") or 0
     mkt_count = hero.get("market_count") or 0
@@ -951,7 +985,9 @@ def _render_html(brief: dict) -> str:
 
     # ── KPI hero tiles ──────────────────────────────────────────────
     kpi_pairs = [
-        ("Total MW",     _fmt_mw(total_mw)),
+        ("Total MW",     _fmt_mw(total_mw)
+                         + (f"<small>{_mwcov}</small>"
+                            if _mwcov and total_mw else "")),
         ("Operational",  _fmt_mw(op_mw)),
         ("Pipeline",     _fmt_mw(pipe_mw)),
         ("Facilities",   _fmt_int(fac_count)),
@@ -1205,6 +1241,7 @@ h3.sub{{font-size:.9rem;font-weight:600;color:var(--mut);margin:1.5rem 0 .5rem;l
 .kpi{{background:var(--surf);border:1px solid var(--b);border-radius:12px;padding:.95rem 1.1rem;display:flex;flex-direction:column;gap:.35rem}}
 .kpi-l{{font-size:.68rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}}
 .kpi-v{{font-size:1.35rem;color:var(--tx);font-weight:600;letter-spacing:-.01em}}
+.kpi-v small{{display:block;margin-top:.25rem;font-size:.66rem;font-weight:400;letter-spacing:normal;color:var(--dim)}}
 .grid3{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.6rem;margin:.5rem 0 1.5rem}}
 .cell{{background:var(--surf);border:1px solid var(--b);border-radius:10px;padding:.75rem .95rem;display:flex;justify-content:space-between;align-items:center;font-size:.88rem}}
 .cell b{{color:var(--dim);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;font-weight:500;font-family:'JetBrains Mono',monospace}}

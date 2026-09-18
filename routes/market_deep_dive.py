@@ -33,6 +33,11 @@ from util.market_aliases import DCPI_METRO_ALIASES, canonical_slug
 from util.dcpi_score_row import PUBLISHED_ONLY
 from util.market_entity import SITE as ENTITY_SITE, market_entity
 from util.slug_suffix import normalize_periods
+# mw_coverage_note is re-exported for this module's existing callers, but
+# the STRING lives in util/facility_count_basis.py: four more painters
+# outside this module publish the same denominator (2026-09-18), and a
+# second copy would drift from the first.
+from util.facility_count_basis import mw_coverage_note  # noqa: F401
 from utils.anthropic_helper import anthropic_messages_url
 from routes.brain_llm_spend import instrumented_post as _llm_post
 
@@ -2041,28 +2046,6 @@ def live_score_note(slug, stored, live, gen_at):
             f"through the day and reads {float(live['dcpi_score']):.1f} now — "
             f"the figure above is the live one, and the narrative below "
             f"describes the market as it stood when it was written.")
-
-
-def mw_coverage_note(reporting, total) -> str:
-    """'9 of 91 report MW', or '' when the coverage is unknown.
-
-    '' whenever either half is missing, so a painter that cannot measure
-    coverage renders exactly what it renders today rather than a fabricated
-    "0 of 0". Escape-free by construction: the output is two integers.
-
-    One helper for BOTH per-market painters. /markets/<slug> has three: the
-    cached brief, the guard-neutral page (which deliberately carries no
-    measured facts, so there is nothing here to state) and market_short_html's
-    SEO shell. The brief and the shell both published a bare SUM(mw); a second
-    copy of this string would drift between them.
-    """
-    try:
-        _rep, _tot = int(reporting), int(total)
-    except (TypeError, ValueError):
-        return ""
-    if _tot <= 0:
-        return ""
-    return f"{_rep:,} of {_tot:,} report MW"
 
 
 def overlay_mw_coverage(stats, facts):
