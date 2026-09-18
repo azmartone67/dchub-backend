@@ -370,6 +370,64 @@ def _section_footprint(cur, provider: str) -> list[dict]:
             return []
 
 
+def _fold_markets(rows):
+    """Collapse spelling/alias variants of one metro. See
+    util.market_aliases.fold_market_rows — kept in one place so this table
+    and the /operators chip list cannot drift apart."""
+    from util.market_aliases import fold_market_rows
+    # sort_idx=2 -> rank by MW, not by the mw_n denominator beside it.
+    return [(r[0], int(r[1]), float(r[2]), int(r[3]))
+            for r in fold_market_rows(rows, sort_idx=2)]
+
+
+def _published_market_slug(cur, raw) -> str:
+    """Canonical slug for `raw`, or '' when no market page publishes it.
+
+    When the published set could not be READ (None, not empty), the slug is
+    emitted unvalidated — exactly the pre-existing behaviour. Treating an
+    unreadable set as an empty one would strip every link in the table on a
+    transient DB error, turning a read failure into a silent content
+    regression across every operator brief at once.
+    """
+    from util.market_aliases import canonical_market_slug, market_group_key
+    published = _published_market_slugs(cur)
+    if published is None:
+        return market_group_key(raw) or ""
+    return canonical_market_slug(raw, published)
+
+
+def _published_market_slugs(cur):
+    """Slugs with a published market_power_scores row, cached per process.
+
+    Returns None when the set could not be read — callers must distinguish
+    that from an empty set. Read from the table that DECIDES whether
+    /markets/<slug>/brief has anything to render, rather than from a list
+    maintained beside it: a hand-kept copy is what let 2,002 of 2,267
+    linked slugs (88.3%, measured 2026-09-18) point at pages with no row
+    behind them.
+    """
+    global _PUBLISHED_SLUGS
+    if _PUBLISHED_SLUGS is not None:
+        return _PUBLISHED_SLUGS
+    try:
+        cur.execute("SELECT market_slug FROM market_power_scores "
+                    "WHERE published AND market_slug IS NOT NULL")
+        got = frozenset(r[0] for r in cur.fetchall() if r[0])
+    except Exception:
+        return None
+    if not got:
+        # A readable-but-empty table is a broken publish, not a signal that
+        # no market has a page. Caching it would strip every link until the
+        # process restarts.
+        return None
+    _PUBLISHED_SLUGS = got
+    return _PUBLISHED_SLUGS
+
+
+#: Populated on first use by _published_market_slugs.
+_PUBLISHED_SLUGS = None
+
+
 def _section_market_concentration(cur, provider: str) -> list[dict]:
     """Section 3: Top 5 markets by MW share (PRO+). Each row links to
     /markets/<slug>/brief — concrete cross-discovery between briefs."""
@@ -387,11 +445,17 @@ def _section_market_concentration(cur, provider: str) -> list[dict]:
                AND COALESCE(market, city) <> ''
              GROUP BY COALESCE(market, city)
              ORDER BY mw DESC NULLS LAST, n DESC
-             LIMIT 5
         """, (provider,))
         rows = cur.fetchall()
     except Exception:
         return []
+    # FOLD BEFORE YOU LIMIT — the SQL above deliberately carries no LIMIT.
+    # `discovered_facilities.market` is free text, so one metro arrives
+    # under several spellings ('Frankfurt', 'Frankfurt Am Main',
+    # 'Frankfurt am Main'), and a `LIMIT 5` applied first would take the
+    # top five SPELLINGS: folding them afterwards yields four rows, and a
+    # metro whose halves rank 6th and 7th never enters the table at all.
+    rows = _fold_markets(rows)[:5]
     # Compute total MW across this operator's footprint so we can
     # surface "share of operator footprint" per-market.
     try:
@@ -414,7 +478,11 @@ def _section_market_concentration(cur, provider: str) -> list[dict]:
         share = round(100.0 * mw / total, 1) if total else None
         out.append({
             "market":         r[0],
-            "market_slug":    _norm_slug(r[0]),
+            # '' when the metro has no published market_power_scores row.
+            # /markets/<slug>/brief answers 200 for ANY slug, so an
+            # unresolved slug would render a shell with the slug echoed
+            # into its <h1>; the renderer drops the link instead.
+            "market_slug":    _published_market_slug(cur, r[0]),
             "facility_count": _as_int(r[1]),
             "total_mw":       _as_float(mw),
             "share_pct":      share,
@@ -1031,8 +1099,10 @@ def _render_html(brief: dict) -> str:
         # Market concentration with /markets/<slug>/brief deep-links
         mc_rows = "\n".join(
             _row([
-                f'<a href="/markets/{m.get("market_slug")}/brief" '
-                f'style="color:#a5b4fc">{m.get("market") or "—"}</a>',
+                (f'<a href="/markets/{m["market_slug"]}/brief" '
+                 f'style="color:#a5b4fc">{m.get("market") or "—"}</a>'
+                 if m.get("market_slug")
+                 else (m.get("market") or "—")),
                 _fmt_int(m.get("facility_count")),
                 _fmt_mw(m.get("total_mw")),
                 (f"{m['share_pct']:.1f}%" if m.get("share_pct") is not None else "—"),

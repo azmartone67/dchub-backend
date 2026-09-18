@@ -296,3 +296,181 @@ def report_coverage_lines(resolved, unresolved):
             + " — no market by that name is tracked by DC Hub. "
               "See https://dchub.cloud/api/v1/markets for every market ID.")
     return lines
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# FACILITY MARKET CANONICALISATION — r-market-alias-split (2026-09-18)
+# ═══════════════════════════════════════════════════════════════════════
+# `discovered_facilities.market` is free text from ingestion, not a slug
+# vocabulary. 2,316 distinct values reach an operator brief's top-5 table,
+# and the same metro arrives under several spellings, so a
+# `GROUP BY COALESCE(market, city)` renders one metro as two rows.
+# Measured live against production 2026-09-18, with the route's own
+# predicate (`is_duplicate = 0`):
+#
+#   Equinix          'Frankfurt'          20 facilities  240.0 MW
+#   Equinix          'Frankfurt Am Main'   4 facilities   36.0 MW
+#   Digital Realty   'Frankfurt'          17 facilities   80.0 MW
+#   Digital Realty   'Frankfurt Am Main'  12 facilities  132.0 MW
+#   Digital Realty   'Frankfurt am Main'   1 facility      0.0 MW
+#
+# Digital Realty's Frankfurt position is 30 facilities / 212 MW published
+# as THREE rows, two of which differ only in the case of "am". Each row's
+# `share_pct` is computed against the operator's whole footprint, so every
+# one of them understates the metro, and each mints a different
+# `market_slug` — two links to two different market pages for one metro.
+#
+# ★ NO DERIVED RULE IS SAFE HERE, which is why this map is hand-curated.
+# A leading-whole-token containment rule (the shape
+# `feedback_equality_match_misses_the_metro_alias` prescribes for slug
+# MATCHING) folds `Frankfurt` into `Frankfurt Am Main` correctly, but the
+# same rule, measured over the published values on 2026-09-18, also folds:
+#
+#   'Colorado'  + 'Colorado Springs'   — a state and a city inside it
+#   'Mexico'    + 'Mexico City'        — a country and its capital
+#   'Porto'(PT) + 'Porto Alegre'(BR)   — different countries
+#   'Santiago'(DO) + 'Santiago De Chile'(CL) + 'Santiago de Cali'(CO)
+#   'Texas' + 'Texas Regional'         — 'Texas Regional' is a state
+#                                        rollup, not a metro at all
+#
+# Gating the rule on country does not save it: Colorado/Colorado Springs
+# and Mexico/Mexico City are both same-country. So containment is used
+# only to FIND candidates for review; nothing folds without an entry here.
+#
+#: Normalised market key → canonical DCPI market slug. Every target was
+#: confirmed `published = true` in market_power_scores on 2026-09-18 — an
+#: alias pointing at an unpublished slug would move a market's facilities
+#: onto a page that renders empty, which is worse than the split.
+FACILITY_MARKET_ALIASES: dict[str, str] = {
+    # Frankfurt — the reported split. 'am Main' is the city's full legal
+    # name (Frankfurt am Main); DE ingestion emits both forms.
+    'frankfurt am main':        'frankfurt',
+    # Washington DC — four spellings, and bare 'washington' is already a
+    # retired twin above (-> 'dc'). 'Area' is an ingestion suffix.
+    'washington dc':            'dc',
+    'washington dc area':       'dc',
+    'washington d c area':      'dc',
+    # Metro names that carry a second city or a suburb.
+    'minneapolis st paul':      'minneapolis',
+    'raleigh durham':           'raleigh',
+    'sydney olympic park':      'sydney',      # suburb of Sydney
+    'piscataway township':      'piscataway',
+    # Administrative subdivisions of one metro (Jakarta's five kota).
+    'jakarta selatan':          'jakarta',
+    'jakarta utara':            'jakarta',
+    'jakarta timur':            'jakarta',
+    'jakarta pusat':            'jakarta',
+    'jakarta barat':            'jakarta',
+    # Ward-level Japanese addresses that landed in the market column.
+    'osaka shi kita ku':        'osaka',
+    # Country/region suffixes on a city that is already its own market.
+    'hong kong sar':            'hong kong',
+    'quincy wa':                'quincy',
+    'birmingham al':            'birmingham',
+}
+
+
+def market_group_key(raw: str | None) -> str:
+    """Grouping key for a raw `discovered_facilities.market` value.
+
+    Folds the two things that are spellings rather than distinctions —
+    case/separator/accent (via `normalize_market_key`, which is what makes
+    'São Paulo' and 'Sao Paulo' one market) and a curated metro alias —
+    then applies DCPI_METRO_ALIASES so the key matches the slug the rest of
+    DC Hub resolves through.
+
+    ★ FOLD BEFORE YOU LIMIT. Callers must apply this to the FULL market
+    list and take their top N afterwards. Folding the rows that survived a
+    `LIMIT 5` turns two of the five into one and returns four markets — and
+    a metro whose two halves each rank 6th and 7th never rises to the top 5
+    at all, which is the defect this exists to fix.
+
+    Returns '' for a blank input so a caller can drop it.
+    """
+    key = normalize_market_key(raw)
+    if not key:
+        return ''
+    key = FACILITY_MARKET_ALIASES.get(key, key)
+    slug = key.replace(' ', '-')
+    return DCPI_METRO_ALIASES.get(slug, slug)
+
+
+def canonical_market_slug(raw: str | None, published_slugs) -> str:
+    """Published market slug for `raw`, or '' when none is published.
+
+    `published_slugs` is the set of `market_power_scores.market_slug` values
+    with `published = true` — the markets that actually have a page. The
+    empty return is the point: `/markets/<slug>/brief` answers **HTTP 200
+    for any slug at all**, rendering a shell whose only market-specific text
+    is the slug echoed into the <h1>. Measured live 2026-09-18:
+
+        /markets/frankfurt/brief          <title>Frankfurt Market Brief · DC Hub</title>
+        /markets/frankfurt-am-main/brief  <title>Market Brief · DC Hub</title>
+        /markets/las-cruces/brief         <title>Market Brief · DC Hub</title>
+        /markets/pennsylvania/brief       <title>Market Brief · DC Hub</title>
+
+    so a link cannot be validated by its status code, and a caller that
+    emits `/markets/<any slug>/brief` cannot tell a market page from a dead
+    one. Of the 2,267 distinct slugs the operator briefs linked to on
+    2026-09-18, 2,002 (88.3%) had no published row — 35,696 MW of linked
+    capacity pointing at empty shells. Resolving against the published set
+    is what makes the link honest; the caller suppresses the link on ''.
+    """
+    key = market_group_key(raw)
+    if not key:
+        return ''
+    return key if key in (published_slugs or ()) else ''
+
+
+def fold_market_rows(rows, sort_idx: int = 1):
+    """Collapse spelling/alias variants of one metro into a single row.
+
+    `rows` are `(market_label, *numeric)` — every position after the label
+    is summed, so the same function serves a `(m, n)` chip list and a
+    `(m, n, mw, mw_n)` concentration table without a second copy drifting
+    from this one. (A hand-copied shared map is what produced the six
+    divergent state→ISO maps this module's header describes.)
+
+    ★ FOLD BEFORE YOU LIMIT. Apply this to the FULL market list and take
+    the top N afterwards. Folding the rows that survived a `LIMIT 5` takes
+    the top five SPELLINGS: two of them collapse into one and four markets
+    come back, and a metro whose halves rank 6th and 7th never enters the
+    table at all — which is the defect this exists to fix.
+
+    The label kept is the spelling carrying the most rows (the one a reader
+    is most likely to recognise), with the alphabetically-first spelling
+    breaking ties so input order cannot decide the rendered name.
+
+    `sort_idx` NAMES the ranking column and is deliberately not inferred.
+    An earlier draft ranked by the last numeric column, which for the
+    concentration table's `(m, n, mw, mw_n)` shape is `mw_n` — the sparse-MW
+    DENOMINATOR added by #4714, not the MW itself. That silently reordered
+    the table by how many rows reported capacity rather than by capacity:
+    a 10 MW market with 9 reporting rows outranked a 500 MW market with 1.
+    Callers pass 2 for MW, 1 (the default) for a facility count.
+    """
+    merged: dict = {}
+    for r in rows or ():
+        label = r[0]
+        key = market_group_key(label) or (label or "")
+        nums = []
+        for v in r[1:]:
+            try:
+                nums.append(float(v or 0))
+            except (TypeError, ValueError):
+                nums.append(0.0)
+        slot = merged.get(key)
+        if slot is None:
+            merged[key] = [nums, {(label or ""): nums[0] if nums else 0.0}]
+            continue
+        slot[0] = [a + b for a, b in zip(slot[0], nums)]
+        spell = slot[1]
+        spell[label or ""] = spell.get(label or "", 0.0) + (nums[0] if nums else 0.0)
+    out = []
+    for key, (nums, spellings) in merged.items():
+        label = min(spellings.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+        out.append((label, *nums))
+    if not 1 <= sort_idx < max((len(r) for r in out), default=2):
+        raise ValueError(f"sort_idx {sort_idx} is not a numeric column")
+    out.sort(key=lambda r: (-(r[sort_idx] or 0), -(r[1] or 0), r[0]))
+    return out
