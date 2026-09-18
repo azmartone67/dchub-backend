@@ -12,14 +12,18 @@ invoke it inside a POST handler, so nothing executes this SQL until a real
 enterprise lead arrives. Without this file, a live customer submission would
 be the first thing ever to run it.
 
-OPT-IN. Set DCHUB_PG_TEST_DSN to a throwaway database and it runs; otherwise
-it skips. It DROPs and recreates enterprise_inquiries, so never point it at
-anything you care about — it refuses a DSN that looks like production.
+OPT-IN. Set DCHUB_PG_TEST_DSN to a disposable database and it runs; otherwise
+it skips. It DROPs and recreates enterprise_inquiries, so the database must
+carry the CI sentinel table — an unstamped target is REFUSED, production
+included. In CI the stamp is applied by scripts/neon_ci_branch.py; locally you
+stamp the throwaway yourself:
 
     initdb -D /tmp/pgt -U postgres --auth=trust
     LC_ALL=C pg_ctl -D /tmp/pgt -o "-p 55432 -k /tmp/pgsock" -l /tmp/pgt/log start
-    DCHUB_PG_TEST_DSN="host=127.0.0.1 port=55432 user=postgres dbname=postgres" \
-      python3 -m pytest tests/test_enterprise_inquiries_heal_on_postgres.py -v
+    export DCHUB_PG_TEST_DSN="host=127.0.0.1 port=55432 user=postgres dbname=postgres"
+    psql "$DCHUB_PG_TEST_DSN" -c \
+      "CREATE TABLE _ci_ephemeral_branch (branch_id text, stamped_at timestamptz DEFAULT now())"
+    python3 -m pytest tests/test_enterprise_inquiries_heal_on_postgres.py -v
 
 Recorded result 2026-09-05 (PostgreSQL 18.6), both directions:
 
@@ -32,14 +36,14 @@ import os
 
 import pytest
 
+from util.ephemeral_db_guard import assert_ephemeral
+
 DSN = os.environ.get("DCHUB_PG_TEST_DSN", "")
-if DSN and any(x in DSN.lower() for x in ("neon", "azure", "amazonaws",
-                                          "railway", "prod")):
-    raise RuntimeError(
-        "DCHUB_PG_TEST_DSN looks like a real database; this file DROPs tables")
+if DSN:
+    assert_ephemeral(DSN)          # see util/ephemeral_db_guard
 
 pytestmark = pytest.mark.skipif(
-    not DSN, reason="set DCHUB_PG_TEST_DSN to a throwaway Postgres to run")
+    not DSN, reason="set DCHUB_PG_TEST_DSN to a stamped ephemeral Neon branch")
 
 psycopg2 = pytest.importorskip("psycopg2")
 
