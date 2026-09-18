@@ -459,3 +459,227 @@ def test_mark_merge_outcome_only_fills_a_null(rec):
     assert "merge_outcome IS NULL" in captured["sql"]
     assert captured["params"][0] == "merged_healthy"
     assert captured["params"][2] == 901
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  2026-09-18 — THE REJECTION HALF OF THE REVIEW SIGNAL
+#
+#  Before this change brain_review_decisions had one writer and it
+#  hardcoded 'approve', so check_rejection_skip() (live at
+#  brain_v2_layer4.py:925) could only ever return False. These tests pin
+#  the two things that make the fix real rather than merely present:
+#  the pass is REACHABLE, and its hash AGREES with the reader's.
+# ══════════════════════════════════════════════════════════════════════
+
+class _ProposalCursor(_FakeCursor):
+    """Fake cursor whose proposal lookup returns a real (issue_key,
+    search_text) pair — the row Layer 5 wrote from the pair Layer 4 hashes."""
+
+    def __init__(self, issue_key="funnel_step_collapse",
+                 search_text="if resp.status_code == 200:"):
+        super().__init__()
+        self._row = (issue_key, search_text)
+
+    def fetchone(self):
+        return self._row
+
+
+def _closed_pr(number=9001, branch="brain-spec/funnel_step_collapse-77-abc",
+               closed=None):
+    return {"number": number, "branch": branch,
+            "title": "brain-spec: Brain finding: funnel_step_collapse @ x",
+            "html_url": f"https://github.com/o/r/pull/{number}",
+            "merged_at": None,
+            "closed_at": closed or dt.datetime(2026, 9, 17,
+                                               tzinfo=dt.timezone.utc),
+            "created_at": dt.datetime(2026, 9, 16, tzinfo=dt.timezone.utc),
+            "author": "azmartone67"}
+
+
+def test_rejection_key_reads_both_halves_off_the_proposal_row(rec):
+    """rejection_key must return the finding label AND the search text."""
+    label, find, src = rec.rejection_key(_ProposalCursor(), 7, "title-label")
+    assert label == "funnel_step_collapse"
+    assert find == "if resp.status_code == 200:"
+    assert src == "proposal_issue_key"
+
+
+def test_rejection_hash_equals_what_layer4_looks_up(rec):
+    """★ THE DECISIVE TEST. The whole change is worthless unless the hash the
+    reconciler WRITES is the hash Layer 4 READS.
+
+    Layer 4 calls check_rejection_skip(issue["issue"], find), which hashes
+    issue_hash(label, find_text). We assert the writer's key is byte-identical
+    to that, using the REAL issue_hash — not a re-implementation of it."""
+    from routes.brain_learning import issue_hash
+
+    label, find, _ = rec.rejection_key(_ProposalCursor(), 7, "ignored")
+    written = issue_hash(label, find)
+    # Exactly the call brain_v2_layer4.py:925 makes for this finding.
+    looked_up = issue_hash("funnel_step_collapse", "if resp.status_code == 200:")
+    assert written == looked_up
+
+    # ── MUST-FAIL CONTROL ────────────────────────────────────────────────
+    # The pre-fix keying (label only, find_text defaulted to "") is what made
+    # the gate inert. If this assertion ever fails, the test above has gone
+    # vacuous — it would be passing for a key that cannot match.
+    label_only = issue_hash(label)
+    assert label_only != looked_up, (
+        "label-only hash collided with the (label, find) hash — the control "
+        "no longer distinguishes the broken keying from the fixed one")
+
+
+def test_layer4_still_keys_on_label_and_find(rec):
+    """Pin the READER. This fix is only correct while Layer 4 keeps passing
+    `find` into check_rejection_skip; if someone drops that argument the
+    writer above silently stops matching again. Source-level pin because the
+    disagreement is exactly what has no runtime error."""
+    import re
+    src = open(os.path.join(ROOT, "routes", "brain_v2_layer4.py"),
+               encoding="utf-8").read()
+    assert re.search(r"check_rejection_skip\(\s*issue\.get\(['\"]issue['\"]\)\s*,\s*find\s*\)",
+                     src), ("brain_v2_layer4 no longer calls "
+                            "check_rejection_skip(issue['issue'], find) — the "
+                            "reconciler's rejection key must be updated to match")
+
+
+def test_unkeyable_rejection_is_never_written(rec):
+    """A rejection nothing can look up is noise, not signal."""
+    assert rec.record_review_rejection(1, "", "find", _closed_pr(), "x") is False
+
+
+def test_closed_unmerged_pass_runs_with_zero_merged_prs(rec, monkeypatch):
+    """★ REACHABILITY. run_reconciliation used to `return` on an empty merged
+    list, which would have starved this pass in exactly the window that holds
+    only rejections — a lane reporting ok:true while scanning nothing."""
+    seen = {"rejections": 0}
+    monkeypatch.setattr(rec, "list_merged_brain_prs",
+                        lambda d: {"ok": True, "prs": []})
+    monkeypatch.setattr(rec, "list_closed_unmerged_brain_prs",
+                        lambda d: {"ok": True, "prs": [_closed_pr()]})
+    monkeypatch.setattr(rec, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(rec, "_ensure_schema", lambda cur: None)
+    monkeypatch.setattr(rec, "_upsert_ledger", lambda *a, **k: None)
+    monkeypatch.setattr(rec, "record_review_rejection",
+                        lambda *a, **k: seen.__setitem__(
+                            "rejections", seen["rejections"] + 1) or True)
+    rep = rec.run_reconciliation(dry=False)
+    assert rep["ok"] is True
+    assert rep["merged_brain_prs_in_window"] == 0
+    assert seen["rejections"] == 1, "rejection pass did not run"
+    assert rep["rejected"][0]["pr"] == 9001
+
+
+def test_closed_unmerged_pass_credits_nothing(rec, monkeypatch):
+    """A closed PR is a rejection, never fix credit: no merge mark, no merge
+    outcome, no fix outcome."""
+    monkeypatch.setattr(rec, "list_merged_brain_prs",
+                        lambda d: {"ok": True, "prs": []})
+    monkeypatch.setattr(rec, "list_closed_unmerged_brain_prs",
+                        lambda d: {"ok": True, "prs": [_closed_pr()]})
+    monkeypatch.setattr(rec, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(rec, "_ensure_schema", lambda cur: None)
+    monkeypatch.setattr(rec, "_upsert_ledger", lambda *a, **k: None)
+    monkeypatch.setattr(rec, "record_review_rejection", lambda *a, **k: True)
+    monkeypatch.setattr(rec, "mark_proposal_merged", _Boom())
+    monkeypatch.setattr(rec, "mark_merge_outcome", _Boom())
+    monkeypatch.setattr(rec, "record_outcome", _Boom())
+    monkeypatch.setattr(rec, "record_review_decision", _Boom())
+    rep = rec.run_reconciliation(dry=False)
+    assert rep["ok"] is True and len(rep["rejected"]) == 1
+
+
+def test_closed_unmerged_dry_run_never_writes(rec, monkeypatch):
+    monkeypatch.setattr(rec, "list_merged_brain_prs",
+                        lambda d: {"ok": True, "prs": []})
+    monkeypatch.setattr(rec, "list_closed_unmerged_brain_prs",
+                        lambda d: {"ok": True, "prs": [_closed_pr()]})
+    monkeypatch.setattr(rec, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(rec, "record_review_rejection", _Boom())
+    monkeypatch.setattr(rec, "_upsert_ledger", _Boom())
+    rep = rec.run_reconciliation(dry=True)
+    assert rep["ok"] is True and len(rep["rejected"]) == 1
+
+
+def test_closed_unmerged_github_error_does_not_read_as_no_rejections(
+        rec, monkeypatch):
+    """FAIL CLOSED — a GitHub error must surface, not vanish into ok:true with
+    an empty rejection list."""
+    monkeypatch.setattr(rec, "list_merged_brain_prs",
+                        lambda d: {"ok": True, "prs": []})
+    monkeypatch.setattr(rec, "list_closed_unmerged_brain_prs",
+                        lambda d: {"ok": False, "error": "403:rate", "prs": []})
+    monkeypatch.setattr(rec, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(rec, "_ensure_schema", lambda cur: None)
+    rep = rec.run_reconciliation(dry=False)
+    assert rep["rejections_error"] == "403:rate"
+    assert "closed_unmerged_brain_prs_in_window" not in rep
+    assert rep.get("rejected") is None
+
+
+class _FakeResp:
+    status_code = 200
+
+    def __init__(self, payload):
+        self._p = payload
+
+    def json(self):
+        return self._p
+
+
+def _install_fake_requests(monkeypatch, payload):
+    """Inject a fake `requests` so the lister's own filtering is exercised.
+    Every run-loop test above monkeypatches the lister OUT, so without this
+    the merged/unmerged filter is never executed by any test at all."""
+    mod = types.ModuleType("requests")
+    calls = []
+
+    def get(url, **kw):
+        calls.append(url)
+        return _FakeResp(payload if len(calls) == 1 else [])
+
+    mod.get = get
+    monkeypatch.setitem(sys.modules, "requests", mod)
+    return calls
+
+
+def _gh(number, ref, merged_at, closed_at="2026-09-17T00:00:00Z"):
+    return {"number": number, "head": {"ref": ref},
+            "title": f"pr {number}", "html_url": f"https://x/pull/{number}",
+            "merged_at": merged_at, "closed_at": closed_at,
+            "updated_at": closed_at, "created_at": "2026-09-16T00:00:00Z",
+            "user": {"login": "azmartone67"}}
+
+
+def test_closed_unmerged_lister_excludes_merged_prs(rec, monkeypatch):
+    """★ A MERGED PR MUST NEVER ENTER THE REJECTION LIST. Recording a merged
+    PR as a rejection would not merely lose signal — it would invert it, and
+    two rejections on one (label, find) suppress future proposals."""
+    monkeypatch.setattr(rec, "_token", lambda: "tok")
+    monkeypatch.setattr(rec, "_now",
+                        lambda: dt.datetime(2026, 9, 18, tzinfo=dt.timezone.utc))
+    _install_fake_requests(monkeypatch, [
+        _gh(1, "brain-spec/a-1-aa", "2026-09-17T00:00:00Z"),   # MERGED  → out
+        _gh(2, "brain-spec/b-2-bb", None),                      # closed  → in
+        _gh(3, "brain/autofix-c-3-cc", None),                   # closed  → in
+        _gh(4, "feature/not-brain", None),                      # foreign → out
+        _gh(5, "brain/autofix-revert-d-5-dd", None),            # revert  → out
+    ])
+    out = rec.list_closed_unmerged_brain_prs(30)
+    assert out["ok"] is True
+    assert sorted(p["number"] for p in out["prs"]) == [2, 3]
+    assert all(p["merged_at"] is None for p in out["prs"])
+
+
+def test_closed_unmerged_lister_fails_closed_on_http_error(rec, monkeypatch):
+    monkeypatch.setattr(rec, "_token", lambda: "tok")
+    mod = types.ModuleType("requests")
+
+    class _Bad:
+        status_code = 503
+        text = "upstream"
+
+    mod.get = lambda url, **kw: _Bad()
+    monkeypatch.setitem(sys.modules, "requests", mod)
+    out = rec.list_closed_unmerged_brain_prs(30)
+    assert out["ok"] is False and out["prs"] == []
