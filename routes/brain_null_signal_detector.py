@@ -378,15 +378,37 @@ _BOUNDED_SIGNALS = [
                 "information about whether the brain is right"),
     },
     {
-        "name": "l5_proposal_rejections",
-        "table": "brain_proposed_code_fixes",
+        # ★ REPOINTED 2026-09-18, the day this check first ran live. The
+        # original entry read brain_proposed_code_fixes.status='rejected' and
+        # reported "0 of 194 — never once produced". TRUE, and a misleading
+        # diagnosis: Layer 5's automatic rejections (the SQLite-stack guard and
+        # the compile guard) `return` BEFORE the INSERT, so a rejected proposal
+        # never becomes a row to mark. status='rejected' on that table has one
+        # writer — the admin-only, manually-invoked
+        # POST /api/v1/brain/proposed-code/neutralize "r67 one-off cleanup" —
+        # so counting it measures "did an admin hand-neutralize anything",
+        # not "does the brain reject bad proposals".
+        #
+        # The rejections are real and they land in brain_issue_persistence
+        # .last_outcome, which is what brain_v2_store.last_outcomes_map reads
+        # to skip permafail issues. That is the column this signal must watch.
+        #
+        # A detector that emits a true finding under a wrong cause sends the
+        # next reader to the wrong file, which is worse than emitting nothing.
+        "name": "l5_permafail_rejections",
+        "table": "brain_issue_persistence",
         "boundary": "low",
-        "sql": """SELECT COUNT(*) FILTER (WHERE status = 'rejected'),
-                         COUNT(*)
-                    FROM brain_proposed_code_fixes
-                   WHERE proposed_at > NOW() - INTERVAL '30 days'""",
-        "why": ("if no proposal is ever rejected, the classifier's confidence "
-                "threshold is not being applied to anything"),
+        "sql": """SELECT COUNT(*) FILTER (
+                             WHERE last_outcome IN ('refused',
+                                                    'rejected_false_syntax_claim',
+                                                    'rejected_sqlite_hallucination')),
+                         COUNT(*) FILTER (WHERE last_outcome IS NOT NULL)
+                    FROM brain_issue_persistence
+                   WHERE last_seen_at > NOW() - INTERVAL '30 days'""",
+        "why": ("Layer 5's deterministic guards (SQLite-stack, compile) refuse "
+                "bad proposals before they are ever inserted; if NO finding "
+                "carries a permafail outcome then those guards are not "
+                "rejecting anything and every hallucination is reaching a PR"),
     },
     {
         "name": "fix_outcome_failures",
