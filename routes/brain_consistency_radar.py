@@ -12859,6 +12859,97 @@ def check_brain_public_pages_are_fast_qa_watched() -> list[dict]:
         return []                          # UNMEASURED — never a clean pass
 
 
+# Dead brain-spec branches tolerated before the radar calls it a leak. A
+# couple in flight is the janitor's next tick; a pile is the leak itself.
+_DEAD_SPEC_BRANCH_MAX = 25
+
+
+def check_closed_brain_prs_leave_branches() -> list[dict]:
+    """2026-09-17 — the draft janitor closed brain PRs and left every branch
+    behind. Spec branch names are a pure function of the item
+    (`brain-spec/{kind}-{item_id}-{slug}`), so each leftover was a PERMANENT
+    GitHub 422 "Reference already exists" on the next re-file of that same
+    item. And a closed-unmerged spec PR is an explicit NON-dedup
+    (`merged_spec_pr_with_fingerprint`: "closed-unmerged is a REJECTION, never
+    a dedup hit"), so the brain re-filed on every cycle and failed every time.
+    `_create_branch` returned a bare bool, so the board showed only
+    "create_branch failed" — which reads like a dead token, and cost the
+    investigation its first hour.
+
+    prop #100049 was the reported case: filed as PR #1647 on 07-17, closed
+    unmerged, branch left behind, unfileable ever after. Measured that day:
+    **205 `brain-spec/*` branches against 1 open PR — 92 of them leftovers of
+    a closed-unmerged PR**, i.e. 92 items that could not re-file at all.
+
+    routes/brain_pr_opener fixed both halves (the janitor deletes the branch
+    it closes; the filer survives a name collision). This watches the
+    PRECONDITION, so neither half can rot silently: a `brain-spec/*` branch
+    that no OPEN PR points at is finished work — its PR merged or closed
+    either way — and the subset whose PR closed unmerged is the 422 class.
+    Counting from the branch side keeps this to two API calls instead of one
+    per branch.
+    """
+    findings: list[dict] = []
+    import os as _os
+    token = _os.environ.get("GITHUB_TOKEN", "").strip()
+    if not token:
+        return findings                      # need the API; fail closed
+    repo = _os.environ.get("GITHUB_REPO", "azmartone67/dchub-backend").strip()
+    try:
+        import urllib.request as _ur, json as _json
+
+        def _api(path):
+            req = _ur.Request(
+                f"https://api.github.com{path}",
+                headers={"Accept": "application/vnd.github+json",
+                         "X-GitHub-Api-Version": "2022-11-28",
+                         "User-Agent": "dchub-brain-radar/1.0",
+                         "Authorization": f"Bearer {token}"})
+            with _ur.urlopen(req, timeout=8) as resp:
+                return _json.loads(resp.read().decode("utf-8"))
+
+        live: set = set()
+        for page in range(1, 5):             # 205 refs on 2026-09-17
+            batch = _api(f"/repos/{repo}/git/matching-refs/heads/brain-spec"
+                         f"?per_page=100&page={page}")
+            if not isinstance(batch, list) or not batch:
+                break
+            live.update((r.get("ref") or "").replace("refs/heads/", "")
+                        for r in batch if isinstance(r, dict))
+        live.discard("")
+        if not live:
+            return findings                  # nothing to leak
+        open_prs = _api(f"/repos/{repo}/pulls?state=open&per_page=100")
+        if not isinstance(open_prs, list):
+            return findings                  # unreadable — never guess a leak
+        in_use = {((p.get("head") or {}).get("ref") or "")
+                  for p in open_prs if isinstance(p, dict)}
+        dead = sorted(live - in_use)
+        if len(dead) >= _DEAD_SPEC_BRANCH_MAX:
+            findings.append({
+                "issue": "closed_brain_prs_leave_branches",
+                "severity": "warn",
+                "url": f"https://github.com/{repo}/branches/all?query=brain-spec",
+                "count": len(dead),
+                "detail": (
+                    f"{len(dead)} of {len(live)} brain-spec/* branches are "
+                    f"pointed at by no OPEN PR — finished work the janitor "
+                    f"never deleted. Spec branch names are a pure function of "
+                    f"the item, so each leftover whose PR closed UNMERGED is a "
+                    f"permanent 422 'Reference already exists' on that item's "
+                    f"next re-file (prop #100049 / PR #1647, 2026-09-17: 92 of "
+                    f"205 were in exactly that state). Oldest few: "
+                    f"{', '.join(dead[:3])}. Fix: confirm "
+                    f"brain_pr_opener._delete_pr_branch still runs on close, "
+                    f"then sweep the existing leftovers."),
+                "dead_branches": len(dead),
+                "total_spec_branches": len(live),
+            })
+    except Exception:
+        pass
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues.
@@ -12887,6 +12978,12 @@ def scan_all() -> list[dict]:
                # whose version only shows on /mcp. Live 4.9.70 vs a repo file
                # read as 4.9.68 is what prompted this.
                check_zone_worker_version_drift,
+               # 2026-09-17: the draft janitor closed brain PRs without
+               # deleting their branches, and spec branch names are a pure
+               # function of the item — so every leftover was a permanent 422
+               # on that item's next re-file. 92 of 205 branches were in that
+               # state, and the board only ever said "create_branch failed".
+               check_closed_brain_prs_leave_branches,
                # 2026-09-04: the innovation dashboard served a
                # script block truncated by a closing tag quoted
                # inside a comment — 200 OK, blank page, no JS.
