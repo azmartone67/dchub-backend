@@ -343,6 +343,62 @@ def api_operator_detail(slug):
 
 # ── HTML pages ──────────────────────────────────────────────────
 
+
+# ── r-stale-floor (2026-09-17): the operator pages' commercial block ────────
+#
+# Both operator surfaces carried "Get all 19,000+ facilities ... DC Hub from
+# $49/mo" as a LITERAL. Measured the day this shipped: canon says 21,900+, and
+# $49 is the Developer plan, not the ladder the gate and /pricing sell. Same
+# defect the market pages carried, same fix: every count from the canon, every
+# price from the module that owns it, nothing typed.
+#
+# Scope note: /operators and /operators/<slug> are OPERATOR surfaces, not
+# facility pages — the facility pages stay deliberately out of scope, because
+# identical boilerplate across 21,900+ of them is what thin_content_master_shell
+# exists to catch.
+def _operator_offer_html(lead: str) -> str:
+    """`lead` is the page's own opening clause, so the two surfaces differ."""
+    try:
+        from ai_surface_canon import canon_text
+        facilities = (canon_text("{canon_facilities}") or "").strip()
+    except Exception:  # noqa: BLE001
+        facilities = ""
+    # A count we cannot resolve is DROPPED, never guessed and never left as a
+    # stale literal — that literal is the whole defect being fixed here.
+    scope = (f"all {facilities} tracked facilities"
+             if facilities and "{" not in facilities
+             else "the full facility, power and site-selection layer")
+
+    rungs = []
+    try:
+        from routes.mcp_conversion_plays import PACK10_CREDITS, PACK10_PRICE_CENTS
+        if PACK10_PRICE_CENTS and PACK10_CREDITS:
+            rungs.append(f"<strong>${int(PACK10_PRICE_CENTS)//100} one-time"
+                         f" = {int(PACK10_CREDITS):,} API calls</strong>")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import tier_registry as _tr
+        pro = _tr.price("pro")
+        if pro:
+            rungs.append(f"<strong>Pro ${int(pro)}/mo</strong>")
+    except Exception:  # noqa: BLE001
+        pass
+    offer = (" &mdash; " + " or ".join(rungs)) if rungs else ""
+
+    return (
+        '<div style="max-width:1080px;margin:26px auto;padding:18px 22px;'
+        'background:linear-gradient(135deg,rgba(99,102,241,0.14),'
+        'rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);'
+        'border-radius:14px;font-size:15px;line-height:1.6;color:#c7d2fe">'
+        f'{lead} {scope}, plus power scores, grid headroom and the '
+        f'site-selection tools{offer}. '
+        '<a href="/pricing?ref=operators" style="color:#a5b4fc;font-weight:600">'
+        'dchub.cloud/pricing</a> &middot; building an agent? '
+        '<a href="/connect?ref=operators" style="color:#a5b4fc;font-weight:600">'
+        'dchub.cloud/connect</a>.</div>')
+
+
 @operators_bp.route("/operators", methods=["GET"], strict_slashes=False)
 def operators_index():
     """Public index page — top 50 operators by facility count."""
@@ -413,7 +469,7 @@ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color
  <thead><tr><th>#</th><th>Operator</th><th>Facilities</th><th>Total MW</th></tr></thead>
  <tbody>{rows or '<tr><td colspan=4 style="text-align:center;color:#9ca3af;padding:2rem">No operators tracked yet.</td></tr>'}</tbody>
 </table>
-<div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">Tracking data-center operators? Get all 19,000+ facilities + power scores &amp; site-selection tools &mdash; <strong>DC Hub from $49/mo &rarr;</strong></a></div>
+{_operator_offer_html('Tracking data-center operators? DC Hub gives you')}
 <p class="foot">Live: <a href="/api/v1/operators">/api/v1/operators</a> · Brand: <a href="/vs">vs static competitors</a> · Ops: <a href="/transparency">transparency console</a></p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
@@ -546,7 +602,7 @@ a{{color:#818cf8;text-decoration:none}} a:hover{{text-decoration:underline;color
     for so in (summary.get("similar_operators") or [])[:5]
 ) or '<div class="card" style="grid-column:1/-1;text-align:center;color:#9ca3af">No comparable operators in the size band yet.</div>'}
 </div>
-<div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">Tracking {summary['name']}&#39;s portfolio? Get all 19,000+ facilities + power scores &amp; site-selection tools &mdash; <strong>DC Hub from $49/mo &rarr;</strong></a></div>
+{_operator_offer_html(f"Tracking {summary['name']}&#39;s portfolio? DC Hub gives you")}
 <p class="foot">Live JSON: <a href="/api/v1/operators/{slug}">/api/v1/operators/{slug}</a> · Indexed by AI agents via MCP — call <code>search_facilities(operator="{summary['name']}")</code></p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
