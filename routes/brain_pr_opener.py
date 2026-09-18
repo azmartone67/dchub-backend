@@ -272,7 +272,12 @@ def expire_stale_draft_prs(days: int = 5,
             pass
         cr = _gh("PATCH", f"/repos/{_GITHUB_REPO}/pulls/{number}",
                  {"state": "closed"})
-        return cr.status_code == 200
+        if cr.status_code != 200:
+            return False
+        # Leave no branch behind: a leftover deterministic spec branch is a
+        # permanent 422 on the next re-file of that item. See _delete_pr_branch.
+        _delete_pr_branch(number)
+        return True
 
     try:
         r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls?state=open&per_page=100")
@@ -362,10 +367,121 @@ def _get_file(path: str, ref: str = "main") -> tuple[str | None, str | None]:
         return None, None
 
 
-def _create_branch(branch_name: str, from_sha: str) -> bool:
+def _create_branch_ex(branch_name: str, from_sha: str) -> tuple[bool, int, str]:
+    """Create a ref and KEEP the reason. `_create_branch` collapses every
+    failure into a bare False, so the one message that mattered — GitHub's
+    422 "Reference already exists" — never reached the operator. The board
+    showed "create_branch failed", which reads like a dead token.
+    Returns (ok, status_code, github_message)."""
     r = _gh("POST", f"/repos/{_GITHUB_REPO}/git/refs",
             {"ref": f"refs/heads/{branch_name}", "sha": from_sha})
-    return r.status_code in (200, 201)
+    if r.status_code in (200, 201):
+        return True, r.status_code, ""
+    try:
+        msg = ((r.json() or {}).get("message") or "")[:120]
+    except Exception:  # noqa: BLE001
+        msg = ""
+    return False, r.status_code, msg
+
+
+def _create_branch(branch_name: str, from_sha: str) -> bool:
+    """Bool form kept verbatim for the five callers that branch on `if not
+    _create_branch(...)` (brain_backlog_admin, brain_feature_proposer,
+    brain_strategic_planner, brain_codegen_expose, _open_fix_pr). Returning a
+    dict here would be TRUTHY and silently turn each of their failure checks
+    into a no-op."""
+    return _create_branch_ex(branch_name, from_sha)[0]
+
+
+def _branch_name_taken(status: int, msg: str) -> bool:
+    """GitHub's 422 for a ref that already exists, told apart from every other
+    422 (bad sha, malformed ref) — those must still fail loudly."""
+    return status == 422 and "already exists" in (msg or "").lower()
+
+
+def _create_branch_unique(preferred: str, from_sha: str,
+                          attempts: int = 4) -> tuple[str | None, str | None]:
+    """Create `preferred`, or a suffixed sibling when that name is taken.
+
+    Spec branch names are deterministic (kind + item_id + slug) and NOTHING in
+    this repo deletes a branch when a PR closes. A condition whose spec PR was
+    closed unmerged is an explicit NON-dedup — `merged_spec_pr_with_fingerprint`
+    skips it with "closed-unmerged is a REJECTION, never a dedup hit" — so the
+    brain is MEANT to re-file it. It could not: the leftover branch 422'd every
+    re-file under the same name, permanently, for that item alone.
+
+    Measured 2026-09-17 on azmartone67/dchub-backend: 92 of the 205 live
+    `brain-spec/*` branches were leftovers of a closed-unmerged PR — 92 items
+    that could never be re-filed. prop #100049 was the reported case (branch
+    from PR #1647, closed 2026-07-17).
+
+    Suffixing rather than REUSING the taken branch is deliberate: #100049's
+    leftover sat 2734 commits behind main and already carried the doc at the
+    same path, so a reuse would only move the failure to the commit step.
+
+    Returns (branch_name, None) on success, (None, reason) on failure.
+    """
+    base = preferred or "brain-spec/proposal"
+    last = "create ref failed"
+    for i in range(max(1, attempts)):
+        if i == 0:
+            name = base[:90]
+        else:
+            sfx = f"-r{i + 1}" if i < attempts - 1 else "-" + os.urandom(3).hex()
+            name = base[:90 - len(sfx)] + sfx
+        ok, status, msg = _create_branch_ex(name, from_sha)
+        if ok:
+            if i:
+                logger.info("[spec-filer] branch %r was taken (leftover of a "
+                            "closed PR); filed on %r instead", base[:90], name)
+            return name, None
+        if not _branch_name_taken(status, msg):
+            return None, f"HTTP {status}: {msg or 'create ref failed'}"
+        last = f"branch name taken ({name})"
+    return None, f"no free branch name after {attempts} attempts — {last}"
+
+
+# Branch namespaces the draft janitor is allowed to delete. Anything else —
+# a human's branch, a fork's, main — is left alone.
+_BRAIN_BRANCH_PREFIXES = ("brain-spec/", "brain/", "brain-l")
+
+
+def _delete_pr_branch(number: int) -> bool:
+    """Delete a just-closed brain PR's head branch. Best-effort, never raises.
+
+    This is the leak that produced the 92 landmines above: the janitor closed
+    stale drafts and left every branch behind, so each close planted a
+    permanent 422 on the next re-file of that same item. Deleting on close
+    stops it at the source. The commits stay reachable via refs/pull/<n>/head,
+    so the closed PR still renders its diff.
+
+    Refuses anything that is not an UNMERGED brain branch on THIS repo.
+    """
+    try:
+        r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls/{number}")
+        if r.status_code != 200:
+            return False
+        pr = r.json() or {}
+        if pr.get("merged_at"):
+            return False                      # merged — leave the history alone
+        head = pr.get("head") or {}
+        ref = (head.get("ref") or "").strip()
+        if ((head.get("repo") or {}).get("full_name") or "") != _GITHUB_REPO:
+            return False                      # a fork's branch, not ours
+        if not ref or ref in ("main", "master"):
+            return False
+        if not ref.startswith(_BRAIN_BRANCH_PREFIXES):
+            return False                      # a human's branch
+        d = _gh("DELETE", f"/repos/{_GITHUB_REPO}/git/refs/heads/{ref}")
+        if d.status_code not in (200, 204):
+            logger.info("[draft-janitor] branch delete for #%s (%s) HTTP %s",
+                        number, ref, d.status_code)
+            return False
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.info("[draft-janitor] branch delete for #%s failed: %s",
+                    number, str(e)[:120])
+        return False
 
 
 def _commit_file(path: str, content: str, message: str,
@@ -755,8 +871,10 @@ def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
                         "filing would land a doc invisible to dedup and turn "
                         "required unit-tests red on main; retry after the "
                         "fingerprint helper recovers"}
-    if not _create_branch(branch, base):
-        return {"ok": False, "acted": False, "error": "create_branch failed"}
+    branch, _berr = _create_branch_unique(branch, base)
+    if not branch:
+        return {"ok": False, "acted": False,
+                "error": f"create_branch failed: {_berr}"}
     if not _commit_file(path, content, f"brain-spec: {(heading or directive)[:60]}",
                         branch, None):
         return {"ok": False, "acted": False, "error": "commit_file failed"}
