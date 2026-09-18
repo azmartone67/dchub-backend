@@ -201,10 +201,18 @@ def _operator_summary(cur, name: str) -> dict | None:
                    AND COALESCE(is_duplicate, 0) = 0
                    AND COALESCE(market, city) IS NOT NULL
                  GROUP BY COALESCE(market, city)
-                 ORDER BY n DESC LIMIT 10
+                 ORDER BY n DESC
             """, (name,))
-            out["top_markets"] = [{"market": r[0], "facilities": int(r[1])}
-                                   for r in cur.fetchall() if r[0]]
+            # FOLD BEFORE YOU LIMIT — deliberately no LIMIT above.
+            # `market` is free text, so one metro arrives under several
+            # spellings ('Frankfurt', 'Frankfurt Am Main', 'Frankfurt am
+            # Main' were all live on 2026-09-18) and rendered as several
+            # chips. Limiting first would take the top ten SPELLINGS.
+            from util.market_aliases import fold_market_rows
+            _folded = fold_market_rows(
+                [(r[0], r[1]) for r in cur.fetchall() if r[0]])[:10]
+            out["top_markets"] = [{"market": m, "facilities": int(n)}
+                                   for m, n in _folded]
         except Exception:
             out["top_markets"] = []
         # Recent deals (buyer OR seller)
