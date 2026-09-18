@@ -44,6 +44,13 @@ WHITELIST_TABLES = {
     # (admin audit trail), autopilot_recidivism_escalations (escalate-once
     # ledger; its ON CONFLICT upsert is also fragment-split).
     'relay_opens', 'entitlement_repairs', 'autopilot_recidivism_escalations',
+    # 2026-09-18: gsc_sitemap_submissions is the same append-only class -- one
+    # row per sitemap submission event, serial PK, no natural key. Two
+    # submissions of the same URL on different days are two distinct facts, so
+    # there is nothing to conflict ON. DO NOTHING would be pure decoration
+    # today and actively wrong the day anyone adds a unique key: it would
+    # silently drop the resubmission history the row exists to record.
+    'gsc_sitemap_submissions',
     # media_story_queue is the operator review queue (serial PK, no natural
     # key): each detection run writes a distinct draft row, queued OR rejected
     # -with-reason, and re-queue suppression is the lane's own cooldown query
