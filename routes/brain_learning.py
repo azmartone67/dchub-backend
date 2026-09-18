@@ -488,18 +488,31 @@ def brain_effectiveness():
                     "brain_proposed_fixes", now_iso()))
 
             # Code proposals by month
+            # ★2026-09-18 — `reviewed` was COUNT(*) FILTER (WHERE status =
+            # 'reviewed') and NOTHING in this repo has ever written that status.
+            # The writers set the reviewed_at TIMESTAMP while moving status to
+            # 'pr_opened' / 'dup_skipped' / 'resolved', so the count was 0 for
+            # all five months and 622 proposals and could never be anything
+            # else — a pinned zero published on the endpoint whose stated
+            # purpose is "use this to answer 'is brain learning?'". Same shape
+            # as the l5_proposal_rejections repoint in #4749 the same day: ask
+            # what the WRITER emits before believing a zero.
+            # 'pr_opened' is a status the draft-PR writer really does set, so
+            # this column moves. NOTE it is a CURRENT-state count, not a
+            # cumulative funnel — a proposal that went on to merge is counted
+            # under `merged` only.
             rows = _safe(cur, """
                 SELECT TO_CHAR(proposed_at, 'YYYY-MM') AS month,
                        COUNT(*) AS total,
                        COUNT(*) FILTER (WHERE status = 'merged') AS merged,
-                       COUNT(*) FILTER (WHERE status = 'reviewed') AS reviewed
+                       COUNT(*) FILTER (WHERE status = 'pr_opened') AS pr_open_now
                   FROM brain_proposed_code_fixes
                  WHERE proposed_at IS NOT NULL
                  GROUP BY month ORDER BY month DESC LIMIT 6""")
             code_by_month = [{
                 "month": r[0], "total": int(r[1] or 0),
                 "merged": int(r[2] or 0),
-                "reviewed": int(r[3] or 0),
+                "pr_open_now": int(r[3] or 0),
             } for r in rows]
             payload["code_proposals_by_month"] = code_by_month
             if code_by_month:

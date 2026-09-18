@@ -454,6 +454,32 @@ _BOUNDED_SIGNALS = [
         "why": ("class_success_weight down-weights on failures; with none "
                 "recorded every class stays neutral forever"),
     },
+    {
+        # ★ADDED 2026-09-18 after a hand audit found what this check exists to
+        # find automatically. Every one of the 20 snapshots on the RAG board
+        # carried action_taken='none' with reason "SHADOW (set RAG_MASTER_ARM=1
+        # to act)" — the shell had measured and scored daily for weeks and had
+        # never once filed a finding or fired a nudge, and NOTHING said so on
+        # any surface a human reads. A shell left in shadow is indistinguishable
+        # from a healthy one until you diff its persisted verdicts.
+        #
+        # action_taken, not findings_filed: a tick whose weakest lever is
+        # freshness or coverage legitimately files nothing and nudges instead,
+        # so findings_filed=0 has an innocent reading. "Never took ANY action of
+        # ANY kind" does not.
+        "name": "rag_shell_actions_taken",
+        "table": "rag_snapshots",
+        "boundary": "low",
+        "sql": """SELECT COUNT(*) FILTER (WHERE action_taken IS NOT NULL
+                                            AND action_taken <> 'none'),
+                         COUNT(*)
+                    FROM rag_snapshots
+                   WHERE computed_at > NOW() - INTERVAL '90 days'""",
+        "why": ("a master shell that has never taken an action in any tick is "
+                "either perfectly healthy forever or it is running in SHADOW — "
+                "read the action reason on the latest snapshot before believing "
+                "the first one"),
+    },
 ]
 
 
