@@ -87,6 +87,12 @@ WANT = {
     # the render path a seeded placeholder must not shadow
     "_render_neutral_market_page", "_market_dataset_ld",
     "_render_deep_dive_body",
+    # r-market-offer (2026-09-17): the commercial block all three renderers
+    # emit. EXTRACTED, not stubbed, for the same reason read_live_stats is:
+    # it is pure (its two price reads are lazy imports inside try/except), and
+    # a stub would let the neutral page grow a score claim — the exact thing
+    # that page exists to withhold — while this file stayed green.
+    "_market_offer_html",
 }
 
 _BUILTINS = set(dir(builtins))
@@ -230,7 +236,9 @@ def _ns(**overrides):
     for k in ("CURATED_MARKET_SLUGS", "MARKETS_CANONICAL_REDIRECT",
               "MARKETS_DEEP_DIVE_PAGE_CANON", "POCKET_LIST_CEILING",
               "US_CITY_MARKET_SQL", "US_CITY_MARKET_SQL_NODATE",
-              "_FAC_UNION_SQL", "_SLUG_TO_MARKET_NAME"):
+              "_FAC_UNION_SQL", "_SLUG_TO_MARKET_NAME",
+              # r-market-offer: the verdict->lead map the offer block reads.
+              "_MARKET_OFFER_LEAD"):
         assert k in c, f"module constant {k} did not resolve"
         ns[k] = c[k]
 

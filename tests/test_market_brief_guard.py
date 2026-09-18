@@ -66,7 +66,13 @@ WANT = {"_brief_guard_reason", "_render_neutral_market_page",
         # placeholder for a market with 40 tracked facilities stops asserting
         # it has none. EXTRACTED, not stubbed: a stub would let the real
         # sentence drift straight past the assertions below.
-        "_guard_placeholder_text"}
+        "_guard_placeholder_text",
+        # r-market-offer (2026-09-17): the commercial block all three renderers
+        # emit. EXTRACTED, not stubbed, for the same reason as the overlay
+        # above — it is pure, and a stub would let the NEUTRAL page grow a
+        # score claim, which is precisely the fact that page exists to
+        # withhold, while this file stayed green.
+        "_market_offer_html"}
 
 _BUILTINS = set(dir(builtins))
 
@@ -142,7 +148,9 @@ _PROVIDED = ("Response", "read_deep_dive", "_conn", "_ensure_schema",
              # dependencies. canonical_slug and PUBLISHED_ONLY are seeded in
              # `ns` from the REAL modules — a stub of either would let the
              # page read a retired twin's frozen row with this file green.
-             "canonical_slug", "PUBLISHED_ONLY", "_SCORE_DRIFT_EPSILON")
+             "canonical_slug", "PUBLISHED_ONLY", "_SCORE_DRIFT_EPSILON",
+             # r-market-offer: the verdict->lead map the offer block reads.
+             "_MARKET_OFFER_LEAD")
 
 
 @functools.lru_cache(maxsize=1)
@@ -226,6 +234,7 @@ def _ns(**overrides):
           "canonical_slug": canonical_slug,
           "PUBLISHED_ONLY": PUBLISHED_ONLY,
           "_SCORE_DRIFT_EPSILON": _consts_of("_SCORE_DRIFT_EPSILON"),
+          "_MARKET_OFFER_LEAD": _consts_of("_MARKET_OFFER_LEAD"),
           "logger": logging.getLogger("test_market_brief_guard"),
           "json": json,
           "read_deep_dive": lambda slug: None,

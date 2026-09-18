@@ -3491,7 +3491,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/linkedin_quad_daily.py': {'isos_non_canonical'},
     'routes/lost_conversion_outreach.py': {'tool_count_literal'},
     'routes/market_brief.py': {'deals_stale_floor'},
-    'routes/market_deep_dive.py': {'facilities_stale_floor'},
     'routes/marketing_engine.py': {'deals_stale_floor', 'facilities_stale_floor'},
     'routes/mcp_funnel_upgrade.py': {'isos_non_canonical'},
     'routes/mcp_presence_crawler.py': {'tool_count_literal'},
@@ -3756,7 +3755,14 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # the foot of this file). This is drainage by DELETION, not by fixing a
     # literal: the served Space still derives its published numbers from
     # /api/v1/canon/phrases, and is now verified from the outside instead.
-    assert len(outside) >= 75, (
+    # ★2026-09-17: 75 -> 74. routes/market_deep_dive.py drained its
+    # facilities_stale_floor — all three of its market renderers carried a
+    # hardcoded "All 19,000+ facilities ... from $49/mo" block, and the whole
+    # block is gone, replaced by _market_offer_html which reads its prices from
+    # tier_registry / mcp_conversion_plays and carries no count at all.
+    # Lowered in the SAME commit that drains it, exactly as this assertion's
+    # message asks — NOT to accommodate a narrowed walk.
+    assert len(outside) >= 74, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."

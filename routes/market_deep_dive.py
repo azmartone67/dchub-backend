@@ -1704,7 +1704,7 @@ joins.</p>
 <a href="/facilities">facilities</a> ·
 <a href="/markets/directory">all markets</a> ·
 <a href="/market-intelligence">market intelligence</a></p>
-<div style="margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing?ref=market-deep-dive&tool={slug}" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
+{_market_offer_html(slug, name, None)}
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
     return Response(body, mimetype="text/html",
@@ -1930,6 +1930,107 @@ def _market_dataset_ld(slug: str, name: str, stats: dict, gen_at) -> str:
         return "{}"
 
 
+
+# ── r-market-offer (2026-09-17): the offer, on the surface that is CITED ─────
+#
+# WHY HERE AND NOWHERE ELSE. Measured 2026-09-17: the citation channel carries
+# 13,278 organic-content crawler hits in 7d (/api/v1/ai/crawler-split labels it
+# `crawler_and_citation`) against ~462 MCP tool calls, and it had no offer in
+# it. The human never loads this page — they read the answer inside the
+# assistant — so an offer only travels if it is IN THE TEXT THAT GETS QUOTED.
+#
+# ★ MARKET PAGES ONLY (~300), NOT the 22,100+ facility pages. Identical
+# boilerplate at that scale is exactly what thin_content_master_shell and the
+# sitemap keep-rule exist to catch, and de-indexing would cost us the channel
+# this is meant to monetise. The owner's call, and the right one.
+#
+# ★ THIS REPLACES A BLOCK THAT WAS ALREADY WRONG, so the boilerplate COUNT on
+# the page does not change. The old one read "All 19,000+ facilities ... from
+# $49/mo": a stale floor (canon says 22,100+) and a price that is not the
+# ladder, served on every market page. Both were literals.
+#
+# ★ VARIATION IS DATA-DRIVEN, NOT SPUN. The lead clause is chosen by THIS
+# market's own verdict, and the sentence carries its own score, facility count
+# and name. Two markets never produce the same paragraph unless they genuinely
+# share a verdict AND a score AND a facility count. No synonym rotation, no
+# templated filler — if the data is absent the clause is DROPPED rather than
+# padded.
+_MARKET_OFFER_LEAD = {
+    "BUILD": ("scores {score}/100 — BUILD. What the score does not show you is "
+              "how much of that headroom is actually contracted"),
+    "CAUTION": ("scores {score}/100 — CAUTION. The score is the summary; the "
+                "constraint behind it is the part that decides a site"),
+    "AVOID": ("scores {score}/100 — AVOID. The number says no; which of power, "
+              "queue or water says it is the part worth knowing"),
+}
+
+
+def _market_offer_html(slug, name, stats):
+    """The market page's one commercial block, varied by that market's data.
+
+    Returns '' when the market has no verdict AND no score — a page with no
+    measured facts must not carry a sentence implying it has them.
+    """
+    stats = stats or {}
+    verdict = str(stats.get("verdict") or "").strip().upper()
+    score = stats.get("dcpi_score")
+    facilities = stats.get("facility_count") or 0
+    lead = ""
+    if verdict in _MARKET_OFFER_LEAD and score not in (None, "", "?"):
+        try:
+            lead = (f"<strong>{name}</strong> "
+                    + _MARKET_OFFER_LEAD[verdict].format(score=score) + ". ")
+        except Exception:  # noqa: BLE001
+            lead = ""
+    if not lead:
+        # No verdict/score: say nothing about this market, only what is gated.
+        lead = f"<strong>{name}</strong>. "
+
+    # What a free caller does NOT get, named concretely. These are the exact
+    # fields mcp#456 gates, so the sentence and the product agree.
+    depth = ("MW headroom, months-to-power, the interconnection queue IDs ahead "
+             "of you, named fiber carriers and per-site scores")
+    if facilities:
+        depth += f" across its {facilities:,} tracked facilities"
+
+    # ★ PRICES READ, NEVER TYPED — the block being replaced said "$49/mo"
+    # because it was a literal, and it was wrong for months.
+    rungs = []
+    try:
+        from routes.mcp_conversion_plays import PACK10_CREDITS, PACK10_PRICE_CENTS
+        if PACK10_PRICE_CENTS and PACK10_CREDITS:
+            rungs.append(f"<strong>${int(PACK10_PRICE_CENTS)//100} one-time"
+                         f" = {int(PACK10_CREDITS):,} API calls</strong>")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import tier_registry as _tr
+        pro = _tr.price("pro")
+        if pro:
+            rungs.append(f"<strong>Pro ${int(pro)}/mo</strong>")
+    except Exception:  # noqa: BLE001
+        pass
+    if not rungs:
+        # Every price unreadable: a count-free, price-free sentence is fine;
+        # a guessed price on a money surface is not.
+        offer = "Full depth is a paid DC Hub plan"
+    else:
+        offer = "Unlock it with " + " or ".join(rungs)
+
+    return (
+        '<div style="max-width:1080px;margin:26px auto;padding:18px 22px;'
+        'background:linear-gradient(135deg,rgba(99,102,241,0.14),'
+        'rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);'
+        'border-radius:14px;font-size:15px;line-height:1.6;color:#c7d2fe">'
+        f'{lead}The free tier gives you the verdict and the band; {depth} '
+        f'are Pro. {offer} &mdash; '
+        f'<a href="/pricing?ref=market-deep-dive&amp;tool={slug}" '
+        'style="color:#a5b4fc;font-weight:600">dchub.cloud/pricing</a>. '
+        'Building an agent? <a href="/connect?ref=market-deep-dive" '
+        'style="color:#a5b4fc;font-weight:600">dchub.cloud/connect</a>.'
+        '</div>')
+
+
 def _render_deep_dive_body(slug):
     """Render the cached deep-dive narrative as the /markets/<slug> page body.
     Returns a Flask Response (self-canonical to /markets/<slug>), or None when
@@ -2048,7 +2149,7 @@ a{{color:var(--ind)}}
 {('<p class="drift">' + _score_note + '</p>') if _score_note else ''}
 {paragraphs}
 {sponsor_html}
-<div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing?ref=market-deep-dive&tool={slug}" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
+{_market_offer_html(slug, name, stats)}
 <p class="foot">JSON: <a href="/api/v1/markets/{slug}/deep-dive" rel="nofollow">/api/v1/markets/{slug}/deep-dive</a> · DCPI: <a href="/dcpi">/dcpi</a> · Operators: <a href="/operators">/operators</a> · Updated nightly</p>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
@@ -2632,7 +2733,7 @@ ul{{padding-left:1.25rem}} li{{margin:.3rem 0}}
 {providers_html}
 {highlights_html}
 {fac_links_html}
-<div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing?ref=market&tool={slug_norm}" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
+{_market_offer_html(slug_norm, name, None)}
 <p class="foot">JSON: <a href="/api/v1/markets/{name.replace(' ', '%20')}" rel="nofollow">/api/v1/markets/{name}</a> ·
 All markets: <a href="/markets">/markets</a></p>
 <script src="/js/dchub-nav.js" defer></script>
