@@ -648,7 +648,8 @@ def rejection_key(cur, pid, fallback_label):
     return label, (search_text or ""), src
 
 
-def record_review_rejection(pid, label, find_text, pr, key_source) -> bool:
+def record_review_rejection(pid, label, find_text, pr, key_source,
+                            decision="reject") -> bool:
     """The operator closing a brain PR without merging IS a human rejection —
     record it through the canonical brain_learning table so
     check_rejection_skip() and human_reviews_30d can both see it.
@@ -656,6 +657,20 @@ def record_review_rejection(pid, label, find_text, pr, key_source) -> bool:
     Mirror image of record_review_decision(). Keyed via rejection_key() so
     the hash matches what Layer 4 looks up; see that function for why a
     label-only hash would have made this write inert.
+
+    ★ `decision` is 'reject' for a CODE (autofix) PR and 'defer' for a
+    doc-only spec PR. The merged pass already refuses to grade a spec PR as a
+    fix outcome — "grading a standing detector against a document fabricates
+    a fix verdict in BOTH directions" — and the same reasoning applies on the
+    way out: closing a DOCUMENT says nothing about whether the underlying
+    CODE fix is still wanted. Since check_rejection_skip() counts only
+    'reject', a doc closure recorded as 'defer' still shows the reviewer
+    disagreeing in human_reviews_30d without suppressing a code proposal that
+    nobody actually turned down.
+
+    This matters concretely: brain_spec PRs are opened one per finding
+    OCCURRENCE, so two duplicate docs for one finding are routine — and
+    check_rejection_skip's reject_threshold is 2.
     """
     if not label:
         return False  # unkeyable — a rejection nothing can look up is noise
@@ -677,13 +692,13 @@ def record_review_rejection(pid, label, find_text, pr, key_source) -> bool:
                 # terminal state is never re-processed, so this row is
                 # written exactly once per closed PR.
                 ("code", pid, issue_hash(label, find_text),
-                 (label or "")[:200], "reject",
+                 (label or "")[:200], decision,
                  # The list API exposes the AUTHOR, not who closed the PR —
                  # stay neutral, exactly as the approve path does.
                  "github-close",
                  (f"PR #{pr['number']} (author {pr['author'] or '?'}) CLOSED "
                   f"WITHOUT MERGING on GitHub — {pr['html_url']} "
-                  f"[key={key_source}]")[:500]))
+                  f"[key={key_source}] [decision={decision}]")[:500]))
         return True
     except Exception as e:
         logger.warning("[merge-reconciler] rejection write failed: %s", e)
@@ -916,9 +931,16 @@ def run_reconciliation(dry: bool = False) -> dict:
                                  proposal_id=pid, issue_label=label,
                                  key_source=key_source,
                                  find_text_present=bool(find_text))
+                    # A doc-only spec PR never executed code, so its closure
+                    # is a 'defer', not a code rejection. See
+                    # record_review_rejection for why this is not cosmetic.
+                    decision = ("defer"
+                                if pr["branch"].startswith(_SPEC_PREFIX)
+                                else "reject")
+                    entry["decision"] = decision
                     if not dry:
                         entry["rejection_recorded"] = record_review_rejection(
-                            pid, label, find_text, pr, key_source)
+                            pid, label, find_text, pr, key_source, decision)
                         _upsert_ledger(
                             cur, pr, pid, method, label, _REJECT_STATE, None,
                             f"closed unmerged {pr['closed_at'].isoformat()} "
