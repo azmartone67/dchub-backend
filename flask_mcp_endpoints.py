@@ -5936,10 +5936,23 @@ def mcp_funnel():
                          SELECT c.id AS conv_id,
                                 c.created_at AS conv_at,
                                 c.attribution_signal_id AS sig_id,
-                                -- r-paid-signal-bridge: the two columns the
-                                -- relayed-click lane resolves a session from.
-                                c.session_id AS session_id,
-                                c.stripe_session_id AS stripe_session_id,
+                                -- ★ r-paid-signal-vanished (2026-09-17): READ
+                                -- THESE TOLERANTLY. The previous revision said
+                                -- `c.session_id` / `c.stripe_session_id`
+                                -- directly and mcp_conversions has no
+                                -- session_id column, so this statement threw,
+                                -- the block's own try/except swallowed it, and
+                                -- paid_signal_attribution_30d DISAPPEARED from
+                                -- the payload entirely — measured live, key
+                                -- ABSENT, not empty. `to_jsonb(c) ->> 'x'`
+                                -- serialises the row that actually exists and
+                                -- yields NULL for a key it does not have, so a
+                                -- missing column costs this ONE LANE its
+                                -- session and never the whole metric.
+                                NULLIF(to_jsonb(c) ->> 'session_id', '')
+                                  AS session_id,
+                                NULLIF(to_jsonb(c) ->> 'stripe_session_id', '')
+                                  AS stripe_session_id,
                                 NULLIF(LOWER(TRIM(c.caller_id)), '') AS caller_id
                          FROM mcp_conversions c
                          WHERE c.created_at >= NOW() - INTERVAL '30 days'
@@ -5983,6 +5996,7 @@ def mcp_funnel():
                        SELECT bridge, COUNT(*) FROM labeled GROUP BY bridge"""
                 )
                 _bridge = {r[0]: int(r[1] or 0) for r in (cur.fetchall() or [])}
+                out.pop("paid_signal_attribution_30d_error", None)
                 _sig = _bridge.get("signal_id", 0)
                 _cal = _bridge.get("caller_bridge", 0)
                 _rel = _bridge.get("relayed_click", 0)

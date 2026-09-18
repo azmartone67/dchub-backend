@@ -98,8 +98,14 @@ def test_the_cte_carries_the_columns_the_lane_reads():
     its own exceptions — it would read as 'no bridge' forever."""
     i = FUNNEL.index("WITH paid AS (")
     cte = FUNNEL[i:FUNNEL.index("labeled AS (", i)]
-    assert "c.session_id AS session_id" in cte
-    assert "c.stripe_session_id AS stripe_session_id" in cte
+    # ★ 2026-09-17: this assertion USED to pin `c.session_id AS session_id` —
+    # the direct reference — and that spelling is what took the whole metric
+    # down in production, because mcp_conversions has no such column. The
+    # guard was pinning the bug. The INTENT is unchanged (the CTE must supply
+    # both names the predicate reads); the spelling must be the tolerant one.
+    assert "AS session_id" in cte
+    assert "AS stripe_session_id" in cte
+    assert "to_jsonb(c) ->>" in cte, "the columns are read directly again"
 
 
 # ── time has a direction ────────────────────────────────────────────────
@@ -163,3 +169,41 @@ def test_the_builder_lives_in_the_one_definition_module():
               and n.name == "paid_signal_relayed_bridge_predicate")
     body = ast.get_source_segment(DEFN, fn) or ""
     assert "paid_signal_relayed_session_sql(" in body
+
+
+# ── r-paid-signal-vanished (2026-09-17): the live regression this caused ────
+def test_the_conversion_columns_are_read_tolerantly():
+    """★★ MEASURED IN PRODUCTION, from the payload's own error key:
+
+        paid_signal_attribution_30d_error =
+          "column c.session_id does not exist
+           LINE 7:   c.session_id AS session_id,"
+
+    mcp_conversions has NO session_id column. The direct reference threw, the
+    block's try/except swallowed it, and paid_signal_attribution_30d vanished
+    from the payload ENTIRELY — key ABSENT, not empty, taking the two working
+    lanes with it.
+
+    I had 'verified' that column from two code references. One was a DOCSTRING
+    ("paid_conversions_30d (joined to mcp_conversions.session_id)") — prose,
+    not code. Reading a contract instead of the producer is the whole defect.
+
+    `to_jsonb(c) ->> 'x'` serialises the row that actually exists and yields
+    NULL for a key it lacks, so a missing column costs this ONE LANE its
+    session and never the whole metric.
+    """
+    i = FUNNEL.index("WITH paid AS (")
+    cte = FUNNEL[i:FUNNEL.index("labeled AS (", i)]
+    assert "to_jsonb(c) ->> 'session_id'" in cte
+    assert "to_jsonb(c) ->> 'stripe_session_id'" in cte
+    assert "c.session_id AS session_id" not in cte, (
+        "the direct reference is back — it does not exist on this table")
+    assert "c.stripe_session_id AS" not in cte
+
+
+def test_a_swallowed_failure_is_published_not_silent():
+    """The error key is what made this diagnosable in one request. An absent
+    metric with no error beside it is indistinguishable from 'no data'."""
+    assert 'out["paid_signal_attribution_30d_error"] = str(e)[:120]' in FUNNEL
+    assert 'out.pop("paid_signal_attribution_30d_error", None)' in FUNNEL, (
+        "a recovered block would keep serving a stale error key")
