@@ -380,11 +380,13 @@ def compute_dcpi_score():
     }
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:831 — review and remove one
 @iso_aeso_intl_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     summary = run_extraction()
     return jsonify(summary), 200 if not summary.get("errors") else 207
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_br_ons.py:264 — review and remove one
 
 @iso_aeso_intl_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -398,6 +400,7 @@ def http_snapshot():
         "installed_capacity_mw": INSTALLED_CAPACITY_MW,
         "renewable_pct": RENEWABLE_PCT,
     }, 200)
+# AUTO-REPAIR: duplicate route '/latest' also in routes/iso_bpa.py:107 — review and remove one
 
 
 @iso_aeso_intl_bp.route("/latest", methods=["GET"])
@@ -423,6 +426,7 @@ def http_latest():
 
 @iso_aeso_intl_bp.route("/dcpi-score", methods=["GET"])
 def http_dcpi_score():
+# AUTO-REPAIR: duplicate route '/health' also in diag_app.py:44 — review and remove one
     return jsonify(compute_dcpi_score()), 200
 
 

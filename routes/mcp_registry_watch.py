@@ -369,7 +369,7 @@ def _persist_probe(data: Dict[str, dict]) -> None:
                 # statement that is actually correct.
                 cur.execute("""
                     INSERT INTO mcp_registry_probe_state (id, probed_at, results)
-                    VALUES (1, NOW(), %s)
+                    VALUES (1, NOW() ON CONFLICT DO NOTHING, %s)
                     ON CONFLICT (id) DO UPDATE SET
                         probed_at = NOW(),
                         results   = EXCLUDED.results
