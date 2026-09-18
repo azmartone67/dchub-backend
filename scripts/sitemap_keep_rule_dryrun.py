@@ -86,6 +86,62 @@ PROVEN_MAX_AGE_DAYS = 3
 #   (an empty proven read, a half-fetched sitemap), not discovered a collapse.
 MAX_DROP_SHARE = 0.60
 
+# ★★★ THE CHECK THIS SCRIPT DID NOT HAVE, and the reason a dead rule went two
+#   days unnoticed with two instruments pointed straight at it.
+#
+#   This job measured INTENT — what the rule WOULD drop — and nothing measured
+#   EFFECT. It read the served shards and computed the drop set from them, so
+#   both numbers were already in one JSON, side by side, and never subtracted:
+#
+#       2026-09-17 10:45Z   families.ai 19,171   drop_candidates 5,795
+#       2026-09-18 05:22Z   production: "keep rule NOT applied" (NameError)
+#
+#   "DROP candidates: 5,795" is exactly what a healthy run printed BEFORE
+#   #4641 merged — it was the pending win. The number's MEANING changed the
+#   moment the rule shipped and the instrument did not, so the alarm kept
+#   reading as the to-do list. The production side was no louder: its failure
+#   path is a fail-open WARNING, which is indistinguishable from "today's input
+#   was unavailable", a designed and acceptable state.
+#
+#   THE INVARIANT, once the rule is live: production emits gated ∪ proven, so a
+#   URL that is capacity-thin AND has no impression cannot BE in the served
+#   artefact. drop_candidates is therefore structurally ~0, and a large one
+#   means the rule is not running — whatever the logs say and whatever this
+#   script's own arithmetic would like to drop.
+#
+#   THE CEILING. The defect signature was 5,795 (30% of 19,172 published).
+#   Healthy is ~0; the residual this tolerates is predicate skew between this
+#   script's `proven` read and main.py's (both "membership at MAX(last_seen),
+#   impressions >= 1", derived separately) plus up to one 4-hourly rebuild of
+#   row churn. 1,000 is ~6x any skew observed and ~6x below the defect, so it
+#   cannot be tripped by drift and cannot miss a rule that stopped running.
+#   Raise it only with a measurement, never to quiet a red run.
+EFFECT_MAX_STILL_SERVED = 1000
+
+
+def effect_block(ai_family, drop_candidates, ceiling=EFFECT_MAX_STILL_SERVED):
+    """Did production APPLY the rule? Pure, so it can be tested without a DSN.
+
+    Takes the two SETS the measurement already has — the served AI family and
+    the drop set computed from it — and returns the block `measure()` embeds,
+    `markdown_summary()` renders and the workflow gates on. One owner for the
+    predicate; see EFFECT_MAX_STILL_SERVED for the invariant and the ceiling.
+    """
+    ai_family = set(ai_family)
+    still = ai_family & set(drop_candidates)
+    return {
+        "served_ai_family": len(ai_family),
+        "expected_ai_family_after_rule": len(ai_family - still),
+        "drop_candidates_still_served": len(still),
+        "max_tolerated": ceiling,
+        "rule_appears_applied": len(still) <= ceiling,
+        "note": "production emits gated ∪ proven, so a capacity-thin "
+                "zero-impression URL cannot be in the served artefact once "
+                "the rule runs. A large count here means it is NOT running — "
+                "check the rebuild log for 'keep rule published N of M' "
+                "versus 'keep rule NOT applied'.",
+    }
+
 
 def _proven_current(cur):
     """(slugs touched by the newest refresh, as_of date, total rows).
@@ -333,6 +389,11 @@ def measure(dsn, index_url, grace_days=PROVEN_MAX_AGE_DAYS):
             "bar": "capacity gate (AI-only) AND no impression in the window, "
                    "per the owner decision of 2026-09-15",
         },
+        # ★ EFFECT, not intent — see EFFECT_MAX_STILL_SERVED. The verdict has
+        #   ONE owner (effect_block): the step summary renders this same field
+        #   and the workflow gates on it, so a summary that says "applied"
+        #   cannot sit next to a job that passed on a different predicate.
+        "effect": effect_block(fams["ai"], drop_candidates),
     }
 
 
@@ -341,6 +402,11 @@ def markdown_summary(out):
     artefact rather than re-running the measurement — one owner for the wording,
     and a summary that cannot disagree with the file it was built from."""
     r, f, i, d = out["rule"], out["families"], out["impressions"], out["duplicates"]
+    # ★ .get, not []: the workflow renders this from an UPLOADED artefact, and a
+    #   90-day-retained one predates the effect block. A missing key is an old
+    #   file, not a broken sitemap — asserted by
+    #   test_the_summary_states_the_drop_count, which is older than this field.
+    e = out.get("effect")
     L = ["### Step 2 keep-or-drop dry-run",
          f"* published facility URLs: **{out['published_facility_urls']}** "
          f"(gated {f['gated']}, AI {f['ai']}, AI-only {f['ai_only']})",
@@ -355,6 +421,21 @@ def markdown_summary(out):
          f"(of {out['thin']['contentless_slugs_total']} contentless slugs)",
          f"* residual duplicate groups: {d['groups']} "
          f"({d['surplus_urls']} surplus URLs, {d['unresolved_slugs']} unresolved)"]
+    # ★ Rendered from the same field the workflow gates on, so the words and the
+    #   exit status cannot disagree.
+    if e is not None:
+        L.append(
+            f"* ✅ **rule IS applied** in the served artefact — "
+            f"{e['drop_candidates_still_served']} drop candidates still served "
+            f"(≤ {e['max_tolerated']})"
+            if e["rule_appears_applied"] else
+            f"* 🔴 **THE RULE IS NOT RUNNING.** The served AI family is "
+            f"{e['served_ai_family']} and still contains "
+            f"{e['drop_candidates_still_served']} capacity-thin URLs with no "
+            f"impression (ceiling {e['max_tolerated']}); applying it would "
+            f"leave {e['expected_ai_family_after_rule']}. Production emits "
+            f"gated ∪ proven, so these cannot be there if the rule ran — read "
+            f"the rebuild log for `keep rule NOT applied`")
     if d["detail_error"]:
         L.append(f"* ⚠ group detail failed: `{d['detail_error']}`")
     return "\n".join(L)

@@ -349,4 +349,26 @@ jobs:
 
           summary.write(kr.markdown_summary(data) + "\n")
           print(kr.markdown_summary(data))
+
+          # ★★★ GATE ON EFFECT, NOT ON INTENT. This job measured what the rule
+          # WOULD drop and passed green for two days while the rule was dead
+          # code in production (a NameError inside its own fail-open, be#4722).
+          # Both numbers were already in this JSON and nothing compared them.
+          #
+          # The verdict is the SCRIPT's — `effect.rule_appears_applied`, the
+          # same field markdown_summary renders above — so the summary text and
+          # the exit status are one predicate, not two that can drift apart.
+          #
+          # Absent on a pre-be#4726 artefact, and absence must not fail the
+          # job; a missing key is an old script, not a broken sitemap.
+          effect = data.get("effect")
+          if effect is not None and not effect.get("rule_appears_applied", True):
+              print("::error title=Sitemap keep rule is not being applied::"
+                    f"the served AI family is {effect['served_ai_family']} and "
+                    f"still contains {effect['drop_candidates_still_served']} "
+                    "capacity-thin URLs with no impression (ceiling "
+                    f"{effect['max_tolerated']}). Applying the rule would leave "
+                    f"{effect['expected_ai_family_after_rule']}. Check the "
+                    "rebuild log for 'keep rule NOT applied'.")
+              sys.exit(1)
           PY
