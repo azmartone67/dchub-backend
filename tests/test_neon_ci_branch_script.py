@@ -113,7 +113,7 @@ def test_the_mask_is_printed_before_the_dsn_is_ever_written(tmp_path, monkeypatc
 
     out = tmp_path / "gh_out"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
-    dsn = "postgresql://u:sup3rsecret@ep-x.aws.neon.tech/neondb"
+    dsn = "postgresql://u:sup3rsecret@ep-x.aws.neon.tech/neondb"  # secretscan:allow — synthetic
 
     events = []
     real_open = builtins.open
@@ -142,7 +142,7 @@ def test_the_mask_is_printed_before_the_dsn_is_ever_written(tmp_path, monkeypatc
 def test_the_dsn_is_not_printed_bare_when_github_output_is_set(tmp_path, capsys,
                                                                monkeypatch):
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
-    dsn = "postgresql://u:p@ep-x.aws.neon.tech/neondb"
+    dsn = "postgresql://u:p@ep-x.aws.neon.tech/neondb"  # secretscan:allow — synthetic
     nb._emit(branch_id="br-1", dsn=dsn)
     lines = [l for l in capsys.readouterr().out.splitlines()
              if not l.startswith("::add-mask::")]

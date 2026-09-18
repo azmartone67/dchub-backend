@@ -67,7 +67,8 @@ def test_a_production_shaped_dsn_is_refused_on_its_contents_not_its_name(fast_co
     not about how somebody spelled its hostname.
     """
     with pytest.raises(NotAnEphemeralDatabase):
-        assert_ephemeral("postgresql://u:p@10.0.0.4:1/dchub?connect_timeout=2")
+        assert_ephemeral(
+            "postgresql://u:p@10.0.0.4:1/dchub?connect_timeout=2")  # secretscan:allow — synthetic
 
 
 # ---------------------------------------------------------------------------

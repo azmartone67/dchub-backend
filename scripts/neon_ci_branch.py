@@ -31,12 +31,11 @@ dchub-backend is a PUBLIC repo: a data branch would put real `users`, `deals`,
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from datetime import datetime, timedelta, timezone
+
+import requests
 
 API = "https://console.neon.tech/api/v2"
 
@@ -47,21 +46,19 @@ SENTINEL_TABLE = "_ci_ephemeral_branch"
 
 
 def _req(method: str, path: str, key: str, body: dict | None = None) -> dict:
-    data = json.dumps(body).encode() if body is not None else None
-    r = urllib.request.Request(
-        f"{API}{path}", data=data, method=method,
+    """`requests`, not urllib — scripts/regression_lint.py bans
+    urllib.request.urlopen repo-wide (rule: urllib-request-on-railway)."""
+    r = requests.request(
+        method, f"{API}{path}", json=body, timeout=120,
         headers={"Authorization": f"Bearer {key}",
                  "Content-Type": "application/json",
                  "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(r, timeout=120) as resp:
-            raw = resp.read().decode() or "{}"
-            return json.loads(raw)
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode()[:600]
+    if r.status_code >= 400:
         # NEVER echo the request body — it is not secret today, but this error
         # path is the one most likely to be pasted into a public issue.
-        raise SystemExit(f"neon api {method} {path} -> {e.code}: {detail}")
+        raise SystemExit(f"neon api {method} {path} -> {r.status_code}: {r.text[:600]}")
+    # DELETE answers with an empty body; .json() would raise on it.
+    return r.json() if r.text.strip() else {}
 
 
 def _default_branch_id(key: str, project: str) -> str:
