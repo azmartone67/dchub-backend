@@ -6,7 +6,10 @@ whether the statement then reached Postgres, and every previous version of this
 bug looked correct in exactly that way: a `CREATE TABLE IF NOT EXISTS` with a
 boot log line saying "tables initialized", against a database that had no such
 table. `init_gsc_tables()` printed that line on every boot from the day it was
-written and created nothing.
+written and created nothing. Production carries the tables anyway — an older
+deploy made them before the wrapper started skipping DDL, checked 2026-09-18 —
+which is precisely why nobody noticed for months, and why the only place this
+can be caught is a database that starts empty.
 
 So this asks the database, on its own connection, after the function has run.
 A green boot log is not proof; `to_regclass` is.
@@ -133,10 +136,13 @@ def test_init_gsc_tables_really_creates_all_three(clean_slate):
 
 
 @needs_branch
-def test_the_insert_that_was_500ing_now_works(clean_slate):
-    """POST /api/gsc/sitemap/submit PUTs the sitemap to Google FIRST and only
-    then runs this INSERT, so before the fix the submission succeeded and the
-    caller still got a 500 with nothing recorded."""
+def test_the_submit_route_insert_works_against_a_fresh_database(clean_slate):
+    """The shape matters, not just the name. POST /api/gsc/sitemap/submit PUTs
+    the sitemap to Google FIRST and only then runs this INSERT — so on a
+    database where the table is missing the submission really happens and the
+    caller still gets a 500 with nothing recorded. Production is not in that
+    state (its tables predate the DDL skip), but a fresh database is, and this
+    lane runs on one."""
     import google_search_console
     google_search_console.init_gsc_tables()
 

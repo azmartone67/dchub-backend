@@ -418,14 +418,16 @@ def test_daily_anomalies_is_created_on_a_direct_cursor():
 
 def test_gsc_tables_are_created_on_a_direct_cursor():
     """★ All THREE of init_gsc_tables' CREATEs sat on a db_utils.get_db()
-    cursor, so none of the tables was ever made. The 2026-09-18 05:21:14Z boot
-    log carried DDL-DROPPED for gsc_sitemap_submissions; the damage was on
-    POST /api/gsc/sitemap/submit, which PUTs the sitemap to Google and only
-    THEN inserts the record — so the submission really happened, the INSERT
-    raised undefined-relation, and the caller got a 500 for work that had
-    succeeded, with nothing written down. gsc_crawl_errors and
-    gsc_index_requests independently read 0 rows all-time on 2026-08-31
-    (routes/gsc_performance.py header) — consistent with the same cause.
+    cursor, so none of them ever ran — the 2026-09-18 05:21:14Z boot log
+    carried DDL-DROPPED for gsc_sitemap_submissions once per worker.
+
+    The production tables exist anyway (checked 2026-09-18: all three present,
+    consecutive low OIDs, 2 rows in gsc_sitemap_submissions from 2026-06-15
+    and 2026-07-02), created by a deploy predating the wrapper's DDL skip —
+    the case the allowlist header calls out. So this is not a live outage; it
+    is a module that cannot rebuild its own schema, which matters the moment
+    the database is a fresh one. tests/test_gsc_tables_created_on_postgres.py
+    is that case, against a real Postgres.
 
     Asserted through the REAL scanner rather than a substring: a partial
     regression — one of the three re-pooled — still fails here, which a

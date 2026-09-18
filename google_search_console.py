@@ -50,18 +50,25 @@ def init_gsc_tables():
     statement in db_utils._DDL_PREFIXES whenever SKIP_DDL is set, and it
     defaults to '1' (db_utils.py:13) and is absent from Railway's config. The
     2026-09-18 05:21:14Z boot log carried DDL-DROPPED for
-    gsc_sitemap_submissions twice (one line per gunicorn worker) and the table
-    was never created, so submit_sitemap()'s INSERT (line ~282) raised
-    undefined-relation AFTER the sitemap had already been PUT to Google — the
-    caller got a 500 for a submission that had actually succeeded, and no row
-    recorded it. gsc_crawl_errors and gsc_index_requests independently read
-    0 rows all-time on 2026-08-31 (routes/gsc_performance.py header), which is
-    what these two missing tables look like from the outside.
+    gsc_sitemap_submissions once per gunicorn worker.
 
-    ddl_cursor() opens its own direct autocommit psycopg2 connection with no
-    wrapper, so the DDL really executes. It raises rather than no-ops when
-    there is no DATABASE_URL; that is deliberate, and register_gsc_routes()
-    already propagated a get_db() failure the same way before this change.
+    ★★ AND YET THE TABLES ARE THERE, WHICH IS THE PART WORTH READING. Checked
+    against production 2026-09-18: all three exist, with exactly this shape,
+    and gsc_sitemap_submissions holds 2 rows (2026-06-15, 2026-07-02) — so
+    POST /api/gsc/sitemap/submit has worked. Their pg_class OIDs are low and
+    consecutive (29657/29668/29678, against 1704545 for seo_proven_pages),
+    i.e. they were created together, early, by a deploy that predates the
+    wrapper's DDL skip. Nothing is broken in production right now.
+
+    What was broken is that this module cannot BUILD what it reads. The
+    function is decorative: it prints its success line and creates nothing, so
+    the schema survives only as long as the database it was first created in.
+    A fresh database — a CI Neon branch (see
+    tests/test_gsc_tables_created_on_postgres.py, which runs against exactly
+    that), a restore, a new environment — gets no tables, and then
+    submit_sitemap() PUTs the sitemap to Google FIRST and only afterwards
+    INSERTs, so the submission would really happen and the caller would still
+    get a 500 with nothing recorded. This makes the function do what it says.
     """
     from db_utils import ddl_cursor
     with ddl_cursor() as cur:
