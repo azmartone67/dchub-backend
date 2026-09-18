@@ -166,9 +166,31 @@ def test_copy_varies_by_market_not_stamped_boilerplate():
     b = _blocks()
     a, c = b["deep-dive (real facts)"], b["deep-dive (other market)"]
     assert a != c, "two markets rendered identical CTA bytes"
-    for fact in ("47 tracked facilities", "1,240 MW", "DCPI 62/100"):
+    for fact in ("47 tracked facilities", "1,240 MW"):
         assert fact in a, f"measured fact missing from the copy: {fact}"
     assert "131 tracked facilities" in c
+
+
+def test_offer_copy_never_quotes_the_dcpi_score():
+    """The score is passed in and deliberately not printed. Two reasons,
+    both measured live on 2026-09-17:
+
+    1. The page already shows it in a stat tile to one decimal. The copy
+       rounded it, so Columbus served a "16.5/100" tile beside a "DCPI 16"
+       line — one fact, two numbers, one page.
+    2. It is a composite VERDICT, not a count, and it currently reads broken:
+       Ashburn, the largest market on earth, scores 17.2/100 "AVOID". A sales
+       line must not carry a score that argues against the sale.
+
+    The argument stays in the signature on purpose — a caller passing it is
+    not a bug, printing it is. This fails if someone re-adds it to the copy.
+    """
+    for dcpi in (62, 17.2, 16.5, 99, 1):
+        out = _market_offer_html("m", "M", ref="market",
+                                 facility_count=12, dcpi=dcpi)
+        assert "DCPI" not in out, f"DCPI {dcpi} leaked into the offer copy"
+        assert not re.search(r"\b[0-9]+(?:\.[0-9])?\s*/\s*100", out), (
+            f"a score in N/100 form reached the copy for dcpi={dcpi}")
 
 
 def test_unknown_counts_are_dropped_not_printed_as_zero():
