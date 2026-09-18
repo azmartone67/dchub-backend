@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -169,9 +170,74 @@ def _default_branch_id(key: str, project: str) -> str:
     raise SystemExit("no default branch found — cannot resolve the parent to cut from")
 
 
+def _ci_roots(key: str, project: str, prefix: str) -> list[dict]:
+    """Every ROOT branch this workflow owns, newest last.
+
+    A root is a branch with no parent. `init_source: schema-only` makes one,
+    and roots — not branches — are what the per-project cap counts, so this is
+    the population that decides whether the next create can succeed.
+    """
+    branches = _req("GET", f"/projects/{project}/branches", key).get("branches", [])
+    roots = [b for b in branches if not b.get("parent_id")]
+    return [b for b in roots if b.get("name", "").startswith(prefix)]
+
+
+def _describe(branches: list[dict]) -> str:
+    now = datetime.now(timezone.utc)
+    out = []
+    for b in branches:
+        try:
+            age = (now - datetime.fromisoformat(
+                b.get("created_at", "").replace("Z", "+00:00"))).total_seconds() / 60
+            age_s = f"{age:.0f}m"
+        except ValueError:
+            age_s = "age?"
+        out.append(f"{b.get('name')} ({age_s}, "
+                   f"expires_at={b.get('expires_at') or 'NOT SET'})")
+    return "; ".join(out) or "none"
+
+
+def _await_root_slot(key: str, project: str, prefix: str,
+                     ceiling: int, wait_minutes: int) -> None:
+    """Block until this workflow owns fewer than `ceiling` root branches.
+
+    ★ MEASURED 2026-09-18, not assumed: every `ROOT_BRANCHES_LIMIT_EXCEEDED`
+    failure so far happened with exactly FOUR live ci- roots plus production —
+    five roots, the Launch-plan cap. Nothing had leaked; `destroy` ran in every
+    run including the cancelled ones. The lane was simply asking for a sixth
+    root because nothing told concurrent jobs about each other.
+
+    GitHub concurrency cannot express "at most N runs" — only one per group —
+    so the limit is enforced HERE, where the true count is a GET away rather
+    than a guess in YAML. Waiting is the right failure mode for an advisory
+    lane: the alternative is a red job whose cause is another PR.
+    """
+    if ceiling <= 0:
+        return
+    deadline = time.monotonic() + wait_minutes * 60
+    while True:
+        held = _ci_roots(key, project, prefix)
+        if len(held) < ceiling:
+            if held:
+                print(f"{len(held)}/{ceiling} ci- root branches in use, taking a "
+                      f"free slot: {_describe(held)}", file=sys.stderr)
+            return
+        if time.monotonic() >= deadline:
+            raise SystemExit(
+                f"no root-branch slot after {wait_minutes}m: {len(held)} ci- roots "
+                f"hold the cap — {_describe(held)}. Either concurrent CI is above "
+                f"what the plan allows (raise NEON_CI_MAX_ROOTS only if the plan "
+                f"has room), or one of these is a leak the sweeper has not reached "
+                f"yet.")
+        print(f"::notice::{len(held)}/{ceiling} ci- root branches in use, waiting "
+              f"for one to free: {_describe(held)}", file=sys.stderr)
+        time.sleep(20)
+
+
 def cmd_create(a: argparse.Namespace) -> None:
     key, project = a.api_key, a.project_id
     _preflight(key, project)
+    _await_root_slot(key, project, a.prefix, a.max_roots, a.wait_minutes)
     parent = a.parent_id or _default_branch_id(key, project)
 
     # expires_at is the SELF-HEALING backstop for the root-branch cap. `destroy`
@@ -205,6 +271,19 @@ def cmd_create(a: argparse.Namespace) -> None:
     out = _create_branch(key, project, body)
     branch_id = out["branch"]["id"]
 
+    # ★ The response is the only evidence that the third cleanup layer exists.
+    #   Sending `expires_at` and then printing "expires per ttl" asserts the
+    #   heal rather than observing it: a plan that ignores the field, or a
+    #   future API that renames it, leaves every branch immortal and the log
+    #   still says it expires. Read it back from what Neon actually stored.
+    echoed = out["branch"].get("expires_at")
+    if echoed:
+        print(f"expires_at={echoed} (confirmed by the API)", file=sys.stderr)
+    else:
+        print("::warning::Neon did not return an expires_at for this branch. "
+              "The timed backstop is NOT armed — if this runner dies, only the "
+              "scheduled sweeper will reclaim the branch.", file=sys.stderr)
+
     dsn = _connection_uri(out, key, project, branch_id, a.database, a.role)
     _emit(branch_id=branch_id, dsn=dsn)
 
@@ -225,6 +304,19 @@ def _create_branch(key: str, project: str, body: dict) -> dict:
     try:
         return _req("POST", f"/projects/{project}/branches", key, body)
     except SystemExit as exc:
+        if "ROOT_BRANCHES_LIMIT_EXCEEDED" in str(exc):
+            # Lost the race between the admission check and this POST, or the
+            # ceiling is above what the plan actually allows. A bare 422 sends
+            # the reader to the wrong layer — it reads like a broken request
+            # when it is a capacity queue — so say which it is.
+            raise SystemExit(
+                f"{exc}\n"
+                "The project is at its ROOT-branch cap (3 Free / 5 Launch / "
+                "25 Scale, production included). This is capacity, not a bad "
+                "request: either NEON_CI_MAX_ROOTS is set above what the plan "
+                "allows, or a branch was taken between the check and this "
+                "create. `neon_ci_branch.py sweep --ttl-hours 2` lists what is "
+                "holding them.") from None
         if "-> 412" not in str(exc):
             raise
         print(f"::warning::Neon refused the CI endpoint tuning on this plan "
@@ -320,7 +412,7 @@ def _emit(*, branch_id: str, dsn: str) -> None:
             fh.write(f"dsn={dsn}\n")
     else:
         print(dsn)
-    print(f"branch {branch_id} created (schema-only, expires per ttl)", file=sys.stderr)
+    print(f"branch {branch_id} created (schema-only)", file=sys.stderr)
 
 
 def cmd_stamp(a: argparse.Namespace) -> None:
@@ -361,6 +453,12 @@ def cmd_sweep(a: argparse.Namespace) -> None:
     branches = _req("GET", f"/projects/{a.project_id}/branches",
                     a.api_key).get("branches", [])
     cutoff = datetime.now(timezone.utc) - timedelta(hours=a.ttl_hours)
+    # "swept 0" alone cannot distinguish "nothing had leaked" from "the prefix
+    # matched nothing because the naming changed". Print the population first.
+    roots = [b for b in branches if not b.get("parent_id")]
+    print(f"{len(branches)} branches, {len(roots)} root, "
+          f"{len([b for b in roots if b.get('name','').startswith(a.prefix)])} "
+          f"matching {a.prefix!r}: {_describe(roots)}", file=sys.stderr)
     killed = 0
     for b in branches:
         name = b.get("name", "")
@@ -395,6 +493,17 @@ def main() -> None:
     c.add_argument("--database", default=os.environ.get("NEON_CI_DATABASE", "neondb"))
     c.add_argument("--role", default=os.environ.get("NEON_CI_ROLE", "neondb_owner"))
     c.add_argument("--ttl-hours", type=int, default=3)
+    c.add_argument("--prefix", default="ci-",
+                   help="name prefix identifying branches this lane owns")
+    # Default 3, not 25. The project is on a 5-root cap and production holds
+    # one of them; 3 leaves a slot for the daily full-suite job and one spare
+    # for a human. Raise it via NEON_CI_MAX_ROOTS only on a plan with room.
+    c.add_argument("--max-roots", type=int,
+                   default=int(os.environ.get("NEON_CI_MAX_ROOTS") or 3),
+                   help="max concurrent ci- root branches; 0 disables the wait")
+    c.add_argument("--wait-minutes", type=int,
+                   default=int(os.environ.get("NEON_CI_WAIT_MINUTES") or 8),
+                   help="how long to wait for a slot before failing")
     c.set_defaults(fn=cmd_create)
 
     s = sub.add_parser("stamp")
