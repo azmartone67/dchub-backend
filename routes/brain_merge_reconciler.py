@@ -666,7 +666,16 @@ def record_review_rejection(pid, label, find_text, pr, key_source) -> bool:
                 INSERT INTO brain_review_decisions
                     (proposal_kind, proposal_id, issue_hash, issue_label,
                      decision, reviewer, reviewer_note)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING""",
+                # The house idiom, and the same clause the approve path
+                # carries — but be exact about what it does HERE:
+                # brain_review_decisions has only a BIGSERIAL PK and two
+                # NON-unique indexes, so there is nothing to conflict on and
+                # this clause is inert until a unique index exists. The real
+                # idempotency is the reconciler ledger — a PR already in a
+                # terminal state is never re-processed, so this row is
+                # written exactly once per closed PR.
                 ("code", pid, issue_hash(label, find_text),
                  (label or "")[:200], "reject",
                  # The list API exposes the AUTHOR, not who closed the PR —
