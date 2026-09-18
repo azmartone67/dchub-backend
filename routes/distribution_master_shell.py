@@ -326,7 +326,7 @@ def _persist(m: dict, sc: dict, action: dict) -> bool:
                 INSERT INTO distribution_snapshots
                   (distribution_score, geo_coverage, geo_gaps, registry_present,
                    registry_total, weakest, action_taken, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 sc.get("distribution_score"), sc.get("geo_coverage"), len(m.get("geo_gaps") or []),
                 reg.get("count"), reg.get("total"), sc.get("weakest"),
