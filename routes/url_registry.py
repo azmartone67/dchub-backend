@@ -39,10 +39,34 @@ _VALID_KINDS = {"news", "press_release", "dcpi", "partners", "reports", "markets
 
 
 # slug + URL builder (the ONLY one) -------------------------------------
+# A facility slug ends in the 8-hex id the resolver actually keys off. Verified
+# live 2026-09-17: a shortened name + the intact id 301s to the canonical page,
+# the SAME shortened name with a bogus id 404s — the id is the key, the name is
+# cosmetic. A blind s[:max_len] cut that id off, so 662 of the 19,147 published
+# facility slugs were emitted as dead /facility/... links.
+_ID_TAIL = re.compile(r"-[0-9a-f]{8}$")
+
+
 def slugify(s, max_len=70):
     # str() first: callers pass ints (facility ids), None, etc. — never crash.
     s = str(s if s is not None else "").lower()
     s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    if len(s) <= max_len:
+        return s or "update"
+    m = _ID_TAIL.search(s)
+    if m:
+        # Spend the budget on the NAME and re-append the id. budget > 0 keeps
+        # the result <= max_len; a max_len too small to hold an id falls
+        # through to the plain cut rather than emitting an over-length slug.
+        tail = m.group(0)
+        budget = max_len - len(tail)
+        if budget > 0:
+            head = s[:m.start()][:budget].rstrip("-")
+            if head:
+                return head + tail
+    # No id tail: byte-for-byte the old behaviour. Measured 2026-09-17 against
+    # all 7 published sitemaps (27,697 locs) — facility slugs are the ONLY ones
+    # that exceed max_len, so no other kind's URL moves.
     return s[:max_len] or "update"
 
 

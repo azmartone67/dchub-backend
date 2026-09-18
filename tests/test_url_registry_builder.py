@@ -13,11 +13,12 @@ import ast
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UR = os.path.join(ROOT, "routes", "url_registry.py")
 
+# The AST harness only execs names it is told about, so a new module-level
+# free name is a NameError at CALL time, not an import error — and _ID_TAIL is
+# read only inside slugify's long-slug branch, so omitting it still passes
+# every short-slug case here. Both of these were added after that bit.
 _WANT = {"slugify", "build_public_url", "_KIND_PATH", "_BASE", "_VALID_KINDS",
-         # build_public_url calls this; the AST harness only execs names it
-         # is told about, so a new free name here is a NameError at call
-         # time, not an import error.
-         "_strip_doubled_namespace"}
+         "_strip_doubled_namespace", "_ID_TAIL"}
 
 
 def _load_builder():
