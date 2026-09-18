@@ -31,7 +31,12 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: '17 */6 * * *'      # sweeper
+    # ★ NOT '17 */6 * * *'. That collides with agent-pay-signal-watch.yml AND
+    #   is one of the seven expressions staggered on 2026-09-02 — picking it
+    #   re-introduced a collision the repo had already fixed once
+    #   (tests/test_ops_cron_stagger_0902.py). Free slot, chosen off the live
+    #   set rather than guessed.
+    - cron: '22 */6 * * *'      # sweeper
     - cron: '41 6 * * *'        # daily full-suite measurement (phase 3)
   workflow_dispatch:
     inputs:
