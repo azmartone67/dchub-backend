@@ -2331,7 +2331,19 @@ from util.dcpi_method import (                       # noqa: E402
     COMPOSITE_VERDICT_MULTIPLIERS as _CO_MULT,
     COMPOSITE_DEFAULT_MULTIPLIER as _CO_MULT_DEFAULT,
     SIGNAL_TIER as _METHOD_SIGNAL_TIER,
+    QUEUE_WAIT_PROXY as _QW_PROXY,
+    STRUCTURAL_ZERO_INPUTS as _STRUCT_ZERO,
 )
+
+# r-queue-saturation-honesty (2026-09-17): these four were hand-copied float
+# literals inside the live-queue adapter while util.dcpi_method published them
+# as QUEUE_WAIT_PROXY — the exact "scorer hardcodes the canon" split this
+# import block exists to kill. Read from the canon so the published formula and
+# the applied formula cannot disagree.
+_QW_BASE   = float(_QW_PROXY["base_months"])
+_QW_PER_GW = float(_QW_PROXY["months_per_gw"])
+_QW_LO, _QW_HI = (float(x) for x in _QW_PROXY["clip_months"])
+_QW_SAT_GW = float(_QW_PROXY["saturates_at_gw"])
 
 # r-provenance-writer (2026-08-08): the one definition of "write a scored
 # market row". Shared with routes/dcpi_freshness_watchdog.py — see that
@@ -2914,12 +2926,32 @@ def gather_metrics_for_market(market: tuple) -> dict:
         # spread (~3–465 GW) lands across the band without one mega-queue
         # (ERCOT/TX) swamping the scale (it saturates at the 66mo cap, which
         # is correct — TX is the most-contended queue in the country).
-        metrics["queue_wait_months"] = round(
-            _clip(12.0 + active_gw * 0.6, 12.0, 66.0), 1)
         metrics["queue_capacity_mw"] = round(q["active_mw"], 1)
-        _live_fields.add("queue_wait_months")
         _live_fields.add("queue_capacity_mw")
         _adapters["interconnect_queue"] = True
+        metrics["_queue_depth_active_gw"] = round(active_gw, 1)
+        # ★ ABOVE THE SATURATION POINT THE PROXY STOPS BEING A MEASUREMENT.
+        # clip(12 + GW*0.6, 12, 66) pins at 66 for any state past
+        # saturates_at_gw, so every Texas market (~475 GW) shared one identical
+        # value — and that pinned value INVERTED the ISO ordering against the
+        # calibrated anchors below (ERCOT anchor 30mo -> 66mo pinned, 2.2x
+        # worse; PJM anchor 48mo -> 31.1mo, better). ERCOT's queue is large
+        # because its connect-and-manage regime makes entry cheap, which is the
+        # opposite of a long wait; reading depth as congestion there is a sign
+        # error, not a resolution loss. See util.dcpi_method.QUEUE_WAIT_PROXY.
+        #
+        # So: leave the field None and let iso_defaults[iso] fill it (the
+        # `if metrics[k] is None` merge below). queue_capacity_mw is still a
+        # real measurement and is still published; the ADAPTER still counts as
+        # live for signal-tier purposes. Only the WAIT drops out of
+        # _live_fields, because a pinned constant cannot carry a per-market
+        # live provenance claim.
+        if active_gw >= _QW_SAT_GW:
+            metrics["_queue_wait_proxy_saturated"] = True
+        else:
+            metrics["queue_wait_months"] = round(
+                _clip(_QW_BASE + active_gw * _QW_PER_GW, _QW_LO, _QW_HI), 1)
+            _live_fields.add("queue_wait_months")
 
     # Near-term (<=12mo) generation additions from the REAL generation-SUPPLY
     # source: planned_generators (EIA-860M), aggregated per state and cached.
@@ -3818,6 +3850,25 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # reproducible from this row alone. When a market has NO local footprint
     # rows we say so explicitly — identical-to-ISO-baseline is then a
     # documented fact, not a silent clone.
+    # r-queue-saturation-honesty (2026-09-17): say WHY this market's wait is
+    # modeled rather than live. Without it the reader sees queue_wait_months
+    # move from the live list to the modeled list with no stated cause, which
+    # reads as an adapter outage instead of a deliberate refusal to publish a
+    # pinned constant as a measurement.
+    if metrics.get("_queue_wait_proxy_saturated"):
+        data_basis["queue_wait_proxy"] = {
+            "saturated": True,
+            "active_queue_gw": metrics.get("_queue_depth_active_gw"),
+            "saturates_at_gw": _QW_SAT_GW,
+            "formula": _QW_PROXY["formula"],
+            "basis": "iso_anchor",
+            "why": ("queue DEPTH past the saturation point pins at the "
+                    f"{_QW_HI:g}-month clip ceiling, so it is one constant for "
+                    "every market in the state and cannot carry a per-market "
+                    "reading. queue_capacity_mw is still measured and live; "
+                    "only the derived WAIT falls back to iso_defaults[iso]."),
+        }
+
     if metrics.get("_saturation_adjusted"):
         data_basis["local_saturation"] = {
             "index": metrics.get("_saturation_index"),
@@ -3953,12 +4004,25 @@ def gather_metrics_for_market(market: tuple) -> dict:
         # describe a formula this file does not implement.
         "always_modeled_inputs": list(_METHOD_SIGNAL_TIER["always_modeled_inputs"]),
         "never_populated_inputs": list(_METHOD_SIGNAL_TIER["never_populated_inputs"]),
+        # r-queue-saturation-honesty (2026-09-17): the weights this scorer
+        # applies to fields essentially nothing fills, so a consumer can
+        # subtract them instead of reading a depressed score as a measurement.
+        # emergency_count_30d had this disclosure in prose below since it was
+        # found; stranded_capacity_mw (15% of excess_power_score, filled only
+        # for 8 curated markets) had none at all until now.
+        "structural_zero_inputs": {
+            _k: dict(_v) for _k, _v in _STRUCT_ZERO.items()
+        },
         "scope_note": ("'full' means every adapter that CAN be live was live — "
                        "NOT that every score input is measured. The fields in "
                        "always_modeled_inputs have no live source; "
                        "emergency_count_30d is never assigned and the scorer "
                        "reads it as 0, i.e. 20% of constraint_score is a "
-                       "permanent zero for every market at every tier."),
+                       "permanent zero for every market at every tier; "
+                       "stranded_capacity_mw is filled only for 8 curated "
+                       "markets, so a further 15% of excess_power_score is a "
+                       "constant zero for the other ~325. See "
+                       "structural_zero_inputs for both, with weights."),
         "adapter_null_semantics": ("an adapter reads absent when it returned no "
                                    "data; the queue and generator adapters "
                                    "cannot distinguish an empty result from a "

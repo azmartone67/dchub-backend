@@ -66,6 +66,13 @@ def _run_tier(adapters, iso_default_matched, iso="PJM"):
         # never_populated lists with the published input registry.
         "_override_replaced_live": [],
         "_METHOD_SIGNAL_TIER": _dm.SIGNAL_TIER,
+        # r-queue-saturation-honesty (2026-09-17): a third free variable. The
+        # shipped block now publishes the weights the scorer applies to inputs
+        # essentially nothing fills — emergency_count_30d (20% of constraint)
+        # and stranded_capacity_mw (15% of excess, filled for 8 curated markets
+        # only). This harness tripped with NameError when it appeared, which is
+        # the tripwire above doing its job.
+        "_STRUCT_ZERO": _dm.STRUCTURAL_ZERO_INPUTS,
     }
     exec(compile(_tier_block_src(), "<tier_block>", "exec"), ns, ns)
     return ns["data_basis"]["signal_tier"], ns["data_basis"]["signal_detail"]
