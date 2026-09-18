@@ -683,3 +683,153 @@ def test_closed_unmerged_lister_fails_closed_on_http_error(rec, monkeypatch):
     monkeypatch.setitem(sys.modules, "requests", mod)
     out = rec.list_closed_unmerged_brain_prs(30)
     assert out["ok"] is False and out["prs"] == []
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  2026-09-18 (follow-up) — a DOC closure is not a CODE rejection
+#
+#  The merged pass already refuses to grade a doc-only spec PR as a fix
+#  outcome. The same reasoning applies on the way out: closing a document
+#  says nothing about whether the underlying code fix is still wanted, and
+#  check_rejection_skip's reject_threshold is 2 while brain-spec PRs are
+#  opened one per finding OCCURRENCE — so two duplicate docs for one
+#  finding would suppress a code proposal nobody turned down.
+# ══════════════════════════════════════════════════════════════════════
+
+def _autofix_closed_pr(number=9100):
+    return {"number": number,
+            "branch": "brain/autofix-internal_link-100772-a1b2",
+            "title": "[brain-autofix] Brain finding: internal_link_unreachable",
+            "html_url": f"https://github.com/o/r/pull/{number}",
+            "merged_at": None,
+            "closed_at": dt.datetime(2026, 9, 17, tzinfo=dt.timezone.utc),
+            "created_at": dt.datetime(2026, 9, 16, tzinfo=dt.timezone.utc),
+            "author": "azmartone67"}
+
+
+def _capture_decisions(rec, monkeypatch, prs):
+    seen = []
+    monkeypatch.setattr(rec, "list_merged_brain_prs",
+                        lambda d: {"ok": True, "prs": []})
+    monkeypatch.setattr(rec, "list_closed_unmerged_brain_prs",
+                        lambda d: {"ok": True, "prs": prs})
+    monkeypatch.setattr(rec, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(rec, "_ensure_schema", lambda cur: None)
+    monkeypatch.setattr(rec, "_upsert_ledger", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rec, "record_review_rejection",
+        lambda pid, label, find, pr, ks, decision="reject":
+            seen.append((pr["number"], decision)) or True)
+    rec.run_reconciliation(dry=False)
+    return seen
+
+
+def test_spec_pr_closure_defers_it_does_not_reject(rec, monkeypatch):
+    """★ A doc-only closure must NOT feed check_rejection_skip, which counts
+    only 'reject'."""
+    seen = _capture_decisions(rec, monkeypatch, [_closed_pr(number=9001)])
+    assert seen == [(9001, "defer")]
+
+
+def test_autofix_pr_closure_is_a_real_rejection(rec, monkeypatch):
+    """★ The mirror. A CODE PR closed unmerged is the rejection the gate
+    exists for — if this ever becomes 'defer', nothing can ever reject."""
+    seen = _capture_decisions(rec, monkeypatch, [_autofix_closed_pr(9100)])
+    assert seen == [(9100, "reject")]
+
+
+def test_both_kinds_in_one_run_get_different_decisions(rec, monkeypatch):
+    seen = _capture_decisions(
+        rec, monkeypatch, [_closed_pr(number=9001), _autofix_closed_pr(9100)])
+    assert dict(seen) == {9001: "defer", 9100: "reject"}
+
+
+def test_decision_reaches_the_report_entry(rec, monkeypatch):
+    """The dry preview must say which decision a live run would write —
+    otherwise the only way to find out is to let it write."""
+    monkeypatch.setattr(rec, "list_merged_brain_prs",
+                        lambda d: {"ok": True, "prs": []})
+    monkeypatch.setattr(rec, "list_closed_unmerged_brain_prs",
+                        lambda d: {"ok": True,
+                                   "prs": [_closed_pr(number=9001),
+                                           _autofix_closed_pr(9100)]})
+    monkeypatch.setattr(rec, "_conn", lambda: _FakeConn())
+    rep = rec.run_reconciliation(dry=True)
+    got = {e["pr"]: e["decision"] for e in rep["rejected"]}
+    assert got == {9001: "defer", 9100: "reject"}
+
+
+def test_writer_honours_the_decision_argument(rec, monkeypatch):
+    """★ Every test above mocks record_review_rejection OUT, so nothing yet
+    proves the writer USES the decision it is handed. If it ignored the
+    argument and always wrote 'reject', all of them would still pass and a
+    doc closure would silently suppress code proposals anyway."""
+    import routes.brain_learning as bl
+
+    captured = {}
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _C:
+        def cursor(self):
+            return _Cur()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(bl, "_conn", lambda: _C())
+
+    assert rec.record_review_rejection(
+        7, "some_finding", "find text", _closed_pr(), "src",
+        decision="defer") is True
+    # position 4 in the VALUES tuple is `decision`
+    assert captured["params"][4] == "defer"
+    assert "[decision=defer]" in captured["params"][6]
+
+    assert rec.record_review_rejection(
+        7, "some_finding", "find text", _autofix_closed_pr(), "src",
+        decision="reject") is True
+    assert captured["params"][4] == "reject"
+
+
+def test_writer_defaults_to_reject_when_not_told(rec, monkeypatch):
+    """The default must stay 'reject' — a writer that silently defaults to
+    'defer' would make the gate inert again."""
+    import routes.brain_learning as bl
+    captured = {}
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            captured["params"] = params
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _C:
+        def cursor(self):
+            return _Cur()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(bl, "_conn", lambda: _C())
+    rec.record_review_rejection(7, "l", "f", _autofix_closed_pr(), "src")
+    assert captured["params"][4] == "reject"
