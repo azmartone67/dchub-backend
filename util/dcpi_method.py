@@ -110,11 +110,22 @@ from __future__ import annotations
 #         world moving. This is the verdict-side twin of 2.2.1's provenance
 #         fix — same bug class (a hand-copy nothing connected to the source),
 #         same remedy (one definition, imported).
-DCPI_METHOD_VERSION = "2.3.0"
+# 2.4.0 = 2026-09-17 (r-queue-wait-knee) a normalisation ceiling MOVED, so by
+#         the rule above this is a MINOR, not a patch. CONSTRAINT_CEILINGS
+#         ["queue_wait_months"] went 36.0 -> 96.0 and the term became
+#         two-segment, because one number was doing two jobs: the CRITICAL
+#         threshold and the SATURATION point. They coincide for every other
+#         constraint input; for queue_wait_months the tail runs 4x past the
+#         threshold, so 108 of 332 markets scored exactly 100 and the
+#         most-constrained third of the index was tied on its largest weight.
+#         The critical threshold is unchanged at 36.0 — this bump does not
+#         re-litigate that judgement, it stops it from also having to be the
+#         saturation point. See CONSTRAINT_QUEUE_WAIT_CRITICAL_MONTHS.
+DCPI_METHOD_VERSION = "2.4.0"
 
 # The date the SCORING (not the labelling) last changed. Consumers comparing
 # two history points from before/after this date are comparing two methods.
-SCORING_UNCHANGED_SINCE = "2026-08-08"
+SCORING_UNCHANGED_SINCE = "2026-09-17"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -132,14 +143,69 @@ CONSTRAINT_INPUT_DEFAULTS = {
     "demand_growth_yoy_pct": 3,
 }
 
-# Every normalisation is the same shape: linear ratio-to-ceiling, then clip to
-# [0, 100]. The ceiling is "the value that scores 100".
+# Every normalisation is a ratio to a stated ceiling, then a clip to [0, 100].
+# The ceiling is "the value that scores 100". ONE term — queue_wait_months —
+# is two-segment rather than a single ratio; see CONSTRAINT_QUEUE_WAIT_* below
+# for the measurement that forced that, and queue_wait_constraint_subscore()
+# for the only implementation of it.
 CONSTRAINT_CEILINGS = {
-    "queue_wait_months": 36.0,      # >36 months = critical
+    "queue_wait_months": 96.0,      # saturation, NOT the critical threshold
     "reserve_margin_pct": 25.0,     # inverted: <13% = critical (NERC)
     "demand_growth_yoy_pct": 12.0,
     "local_dc_count": 40.0,
 }
+
+# r-queue-wait-knee (2026-09-17). The queue_wait ceiling was 36.0 and carried
+# the comment ">36 months = critical". That conflated two different numbers
+# into one, and the single-ratio shape forced them to be equal:
+#
+#   (a) the wait at which a market is CRITICAL          — a siting judgement
+#   (b) the wait at which the sub-score SATURATES       — a population fact
+#
+# For every other constraint input (a) and (b) coincide, so one ceiling is
+# honest. For queue_wait_months they do not, because the field's upper tail
+# runs 4x past the critical threshold. Measured over all 332 scored markets
+# (fetched per-slug from /api/v1/dcpi/scores, 2026-09-17):
+#
+#   108 of 332 markets (32.5%) sat at or above 36.0 months and therefore
+#   scored EXACTLY 100.0 on this term. Their true waits spanned 36.0 to 144.0
+#   months — 108 months and a 4.0x ratio — collapsed onto one value, so all
+#   5,778 pairs among them were tied on the largest single weight in the
+#   score. That cohort is not a tail: it is the most-constrained third of the
+#   index, which is the third the index exists to rank. london 144.0,
+#   amsterdam 120.0, manchester 96.0, frankfurt 84.0, dallas 83.4 and
+#   houston 79.9 were indistinguishable on 40% of constraint.
+#
+# It compounded with the emergencies term, which is a structural zero for all
+# 332 markets (measured, and separately published in KNOWN_LIMITATIONS): for
+# a clipped market 0.40 was frozen at 40.0 AND 0.20 was frozen at 0.0, so 60%
+# of the weighted base was a constant and only reserve margin and demand
+# growth separated them. Constraint sd inside the clipped cohort was 6.22
+# against 12.68 across the whole index — half the resolving power, exactly
+# where precision matters most.
+#
+# The observable failure this fixes: PR #4709 stopped publishing a saturated
+# queue-depth proxy as a live wait, which halved Dallas from 83.4 to ~37.9
+# months. Both values were above 36.0, so both scored 100.0 and the published
+# constraint did not move at all (60.5 -> 60.5) even though the market's
+# time-to-power halved. A methodology that cannot see a 45-month improvement
+# is not measuring the thing it names.
+#
+# So (a) and (b) are now two constants and the transform is two-segment:
+#
+#   qw <= CRITICAL : linear 0 -> CRITICAL_SCORE          (0.0 .. 85.0)
+#   qw >  CRITICAL : linear CRITICAL_SCORE -> 100 at the ceiling
+#
+# CRITICAL stays 36.0 — this change does not re-litigate that judgement, it
+# stops it from also having to be the saturation point. The ceiling 96.0 is
+# MEASURED, not chosen: it is the 99th percentile of queue_wait_months over
+# the live index on 2026-09-17, so 5 markets clip instead of 108. Above the
+# knee the term resolves at 0.25 points/month, which is what restores the
+# ordering. Re-measure both if the population shifts; neither is a constant
+# of nature, and the percentile that produced 96.0 is stated so it can be
+# re-derived rather than inherited.
+CONSTRAINT_QUEUE_WAIT_CRITICAL_MONTHS = 36.0
+CONSTRAINT_QUEUE_WAIT_CRITICAL_SCORE = 85.0
 # emergency_count_30d is not a ratio — each event is worth this many points.
 CONSTRAINT_EMERGENCY_POINTS_PER_EVENT = 20
 
@@ -706,6 +772,51 @@ REVISION_POLICY = {
 }
 
 REVISIONS = (
+    {"date": "2026-09-17", "version": "2.4.0", "ref": "r-queue-wait-knee",
+     "scores_changed": True, "restated_back_series": True,
+     "what": ("the queue_wait_months normalisation ceiling moved 36.0 -> 96.0 "
+              "and the term became two-segment. 36.0 was published as the "
+              "ceiling AND commented '>36 months = critical', which forced "
+              "the critical threshold and the saturation point to be the same "
+              "number. Measured over all 332 scored markets on 2026-09-17, "
+              "108 (32.5%) sat at or above 36.0 and scored EXACTLY 100.0 on "
+              "this term while their true waits spanned 36.0-144.0 months, so "
+              "all 5,778 pairs among the most-constrained third of the index "
+              "were tied on its largest single weight (0.40). Combined with "
+              "the emergencies term, which is a structural zero for all 332, "
+              "60% of the weighted base was constant for that cohort. The "
+              "critical threshold stays 36.0 and now scores 85.0; the ceiling "
+              "96.0 is the measured 99th percentile of the live population, "
+              "so 4 markets clip instead of 108"),
+     "observed_moves": ("every constraint score falls or holds — none rises — "
+                        "because the old transform pinned the top of the "
+                        "scale at its maximum. Mean -3.9, max -6.0 at exactly "
+                        "36.0 months: atlanta 65.8 -> 59.8, chicago 68.0 -> "
+                        "62.0, leesburg 70.1 -> 64.1, singapore 65.2 -> 59.2. "
+                        "The deep tail barely moves (london 144.0mo 77.8 -> "
+                        "77.8, dallas 83.4mo 60.5 -> 59.2) — the point is not "
+                        "that they move but that they stop being tied. "
+                        "TWO verdicts change, both CAUTION -> BUILD and both "
+                        "within ~2 points of the band edge beforehand: "
+                        "el-paso (67.8mo, 51.8 -> 49.0) and the-woodlands "
+                        "(64.8mo, 52.3 -> 49.2). That direction is inherent: "
+                        "de-compressing a scale that saturated can only lower "
+                        "scores, and VERDICT_BANDS was calibrated while this "
+                        "term pinned. Re-tuning the bands against the "
+                        "de-compressed scale is deliberately NOT in this "
+                        "revision, so every moved score has one cause. "
+                        "66 markets move more than 10 constraint rank "
+                        "positions, 2 move more than 25, max 29. "
+                        "time_to_power_months does NOT read this ceiling and "
+                        "is byte-identical"),
+     "why_it_matters": ("PR #4709 halved dallas from 83.4 to ~37.9 months by "
+                        "dropping a saturated queue-depth proxy. Both values "
+                        "were above 36.0, so both scored 100.0 and published "
+                        "constraint did not move at all (60.5 -> 60.5). Under "
+                        "the knee that same improvement moves constraint by "
+                        "4.5 points. An index that cannot see a 45-month "
+                        "improvement in time-to-power is not measuring the "
+                        "thing it names")},
     {"date": "2026-07-17", "version": "1.8", "ref": "r-declone-2",
      "scores_changed": True, "restated_back_series": True,
      "what": ("per-market de-cloning of the ISO-inherited inputs, so markets "
@@ -1084,12 +1195,41 @@ KNOWN_LIMITATIONS = tuple(known_limitations())
 
 # ─────────────────────────────────────────────────────────────────────────
 # Pure helpers — used by the endpoint and by the reproducibility test.
-# NOT used by the scorer (which keeps its own inlined arithmetic for speed);
-# tests/test_dcpi_methodology.py asserts the two agree.
+# MOSTLY not used by the scorer, which keeps its own inlined arithmetic for
+# speed; tests/test_dcpi_methodology.py asserts the two agree.
+#
+# queue_wait_constraint_subscore is the ONE exception and is imported by the
+# scorer. Every other sub-score is a single ratio — three hand-copies of
+# `x / ceiling * 100` cannot drift apart in a way a reader would miss. The
+# queue_wait transform is two-segment, and a piecewise formula copied three
+# times is precisely the hand-copy bug this module exists to kill (see the
+# module docstring). One definition, imported by all three callers.
 # ─────────────────────────────────────────────────────────────────────────
 
 def _clip(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, x))
+
+
+def queue_wait_constraint_subscore(queue_wait_months: float) -> float:
+    """The queue_wait term of constraint_score, 0..100. THE definition.
+
+    Two-segment, because the critical threshold and the saturation point are
+    different numbers for this input — see CONSTRAINT_QUEUE_WAIT_CRITICAL_*
+    for the measurement. Below the knee a month is worth
+    CRITICAL_SCORE/CRITICAL months; above it, (100-CRITICAL_SCORE)/(ceiling-
+    CRITICAL). Continuous at the knee and monotonic non-decreasing over the
+    whole domain, so it can never reorder two markets against their waits.
+
+    Imported by routes/dcpi.py::compute_constraint_score and by both
+    reproducers below, so there is exactly one implementation to audit.
+    """
+    qw = float(queue_wait_months)
+    knee_m = CONSTRAINT_QUEUE_WAIT_CRITICAL_MONTHS
+    knee_s = CONSTRAINT_QUEUE_WAIT_CRITICAL_SCORE
+    ceil_m = CONSTRAINT_CEILINGS["queue_wait_months"]
+    if qw <= knee_m:
+        return _clip((qw / knee_m) * knee_s)
+    return _clip(knee_s + ((qw - knee_m) / (ceil_m - knee_m)) * (100.0 - knee_s))
 
 
 def constraint_from_published_fields(queue_wait_months=None,
@@ -1118,7 +1258,7 @@ def constraint_from_published_fields(queue_wait_months=None,
     em = int(emergency_count_30d if emergency_count_30d is not None else d["emergency_count_30d"])
     dg = float(demand_growth_yoy_pct if demand_growth_yoy_pct is not None else d["demand_growth_yoy_pct"])
 
-    s_wait = _clip((qw / c["queue_wait_months"]) * 100)
+    s_wait = queue_wait_constraint_subscore(qw)
     s_reserve = _clip((1 - (rm / c["reserve_margin_pct"])) * 100)
     s_emerg = _clip(em * CONSTRAINT_EMERGENCY_POINTS_PER_EVENT)
     s_demand = _clip((dg / c["demand_growth_yoy_pct"]) * 100)
@@ -1150,7 +1290,7 @@ def constraint_derivable_from_published_fields(queue_wait_months=None,
     qw = float(queue_wait_months if queue_wait_months is not None else d["queue_wait_months"])
     rm = float(reserve_margin_pct if reserve_margin_pct is not None else d["reserve_margin_pct"])
     em = int(emergency_count_30d if emergency_count_30d is not None else d["emergency_count_30d"])
-    s_wait = _clip((qw / c["queue_wait_months"]) * 100)
+    s_wait = queue_wait_constraint_subscore(qw)
     s_reserve = _clip((1 - (rm / c["reserve_margin_pct"])) * 100)
     s_emerg = _clip(em * CONSTRAINT_EMERGENCY_POINTS_PER_EVENT)
     return round(w["queue_wait"] * s_wait + w["reserve_margin"] * s_reserve
@@ -1243,13 +1383,43 @@ def method_block(live_counts=None) -> dict:
         "method_version": DCPI_METHOD_VERSION,
         "scoring_unchanged_since": SCORING_UNCHANGED_SINCE,
         "scale": "both component scores are 0..100",
-        "normalisation": ("every term is a linear ratio to a stated ceiling, "
-                          "clipped to [0,100], except the log-scaled local "
-                          "saturation index"),
+        "normalisation": ("every term is a ratio to a stated ceiling, clipped "
+                          "to [0,100], with two exceptions: the log-scaled "
+                          "local saturation index, and queue_wait_months, "
+                          "which is two-segment because its critical "
+                          "threshold and its saturation point are different "
+                          "numbers — see constraint_score.queue_wait_knee"),
         "constraint_score": {
             "direction": "high = MORE constrained = avoid",
             "weights": dict(CONSTRAINT_WEIGHTS),
             "ceilings": dict(CONSTRAINT_CEILINGS),
+            # queue_wait_months is the one non-linear term. Published as its
+            # own object so a consumer reproducing the score reads the knee
+            # instead of assuming the ratio shape every other term has — and
+            # so ceilings["queue_wait_months"] is not misread as the critical
+            # threshold, which is what it used to be.
+            "queue_wait_knee": {
+                "shape": "two-segment linear, continuous, monotonic",
+                "critical_months": CONSTRAINT_QUEUE_WAIT_CRITICAL_MONTHS,
+                "critical_score": CONSTRAINT_QUEUE_WAIT_CRITICAL_SCORE,
+                "saturation_months": CONSTRAINT_CEILINGS["queue_wait_months"],
+                "below_knee_points_per_month": round(
+                    CONSTRAINT_QUEUE_WAIT_CRITICAL_SCORE
+                    / CONSTRAINT_QUEUE_WAIT_CRITICAL_MONTHS, 4),
+                "above_knee_points_per_month": round(
+                    (100.0 - CONSTRAINT_QUEUE_WAIT_CRITICAL_SCORE)
+                    / (CONSTRAINT_CEILINGS["queue_wait_months"]
+                       - CONSTRAINT_QUEUE_WAIT_CRITICAL_MONTHS), 4),
+                "saturation_basis": (
+                    "the 99th percentile of queue_wait_months measured over "
+                    "the 332 scored markets on 2026-09-17, not a chosen "
+                    "round number. Re-measure if the population shifts"),
+                "why": (
+                    "at a single 36-month ceiling, 108 of 332 markets (32.5%) "
+                    "scored exactly 100 on this term while their true waits "
+                    "spanned 36.0-144.0 months, so the most-constrained third "
+                    "of the index was tied on its largest weight"),
+            },
             "emergency_points_per_event": CONSTRAINT_EMERGENCY_POINTS_PER_EVENT,
             "scoring_time_defaults": dict(CONSTRAINT_INPUT_DEFAULTS),
             "local_competition_bonus_weight": CONSTRAINT_LOCAL_COMPETITION_BONUS,
