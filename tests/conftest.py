@@ -343,3 +343,44 @@ def _watched_libraries_keep_their_identity(request):
     if changes:
         pytest.fail(_stub_sentinel.describe_identity_changes(
             changes, request.node.nodeid), pytrace=False)
+
+
+# ── and the same question for every OTHER name (2026-09-18) ──────────────
+# The fence above watches three libraries. A full-suite identity census found
+# the same defect on names OUTSIDE it, where nothing was looking: 32 of 139
+# tests across eight files left a sys.modules entry deleted or replaced —
+# `redis_cache` (the repo ships a real one, and a two-attribute stub stood in
+# for it from the first test in test_slow_tool_cache.py onward), `stripe`,
+# `agent_request_writer`, `routes._slow_tool_cache`. Nothing was red for any
+# of it; the code under test simply talked to whatever the last file to touch
+# the name wanted it to say.
+#
+# Measured on the full suite at 32acca918 with those files fixed: 1 of 22,598
+# tests trips this, and that one is an artifact of where you look, not a leak
+# — see the second ★. Cost, measured in the same run: 143us to snapshot and
+# 128us to compare, 6.1s across the whole suite, 0.4% of its wall clock, over
+# a sys.modules of 2,815-3,157 entries.
+#
+# ★ Names PRESENT when the test starts, which is all a snapshot can offer, so
+# this does NOT subsume the static scan. A name the test ADDS and leaves
+# behind has no baseline to compare against (test_capacity_heatmap_gate.py's
+# `routes` parent was exactly that), and a name installed at COLLECTION is
+# already in `before` for every test, so it reads as untouched
+# (test_market_brief_guard.py's `routes.surface_brain` was that, for as long
+# as it existed). tests/test_no_import_time_module_stubs.py's static scan
+# covers both, which is why it reads setdefault() and update() as well as
+# assignment. Neither guard replaces the other.
+#
+# ★ A fixture, not a pytest_runtest_protocol hook. The hook form reports the
+# LAST item of every run as having deleted `main`: session-scoped fixtures are
+# finalised inside that item's teardown, so the hook watches
+# _house_rule_main_is_never_imported undo itself and blames the test. A
+# function-scoped finaliser runs before that and sees nothing.
+@pytest.fixture(autouse=True)
+def _no_module_is_left_swapped_or_deleted(request):
+    before = dict(sys.modules)
+    yield
+    changes = _stub_sentinel.identity_changes(before, dict(sys.modules))
+    if changes:
+        pytest.fail(_stub_sentinel.describe_identity_changes(
+            changes, request.node.nodeid), pytrace=False)

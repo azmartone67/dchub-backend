@@ -142,6 +142,18 @@ def test_the_fixture_reaches_this_test(request):
     assert "_watched_libraries_keep_their_identity" in request.fixturenames
 
 
+def test_the_wider_fixture_reaches_this_test_too(request):
+    """Both fences are autouse in the root conftest, and both must be wired.
+
+    They are complementary, not redundant: the narrow one baselines its three
+    names as `absent` when nothing has imported them, so it can still say
+    "stub left behind" for a name that was not there at the start. A snapshot
+    of sys.modules has no entry for a name that is not in it, so the wide one
+    is blind to that and catches the other 2,800-odd names instead.
+    """
+    assert "_no_module_is_left_swapped_or_deleted" in request.fixturenames
+
+
 _CHILD_CONFTEST = (
     "from tests.conftest import _watched_libraries_keep_their_identity"
     "  # noqa: F401\n"
@@ -191,4 +203,63 @@ def test_the_real_fixture_fails_the_teardown_of_the_test_that_deleted_requests(t
     assert "ERROR at teardown of test_b_del_is_not" in out, out
     assert "sys.modules['requests'] DELETED" in out, out
     assert "test_a_setitem_is_put_back" not in out, out
+    assert "test_c_an_untouched_test_after_it" not in out, out
+
+
+# ── the same end-to-end control, for the fence over every other name ───
+_WIDE_CHILD_CONFTEST = (
+    "from tests.conftest import _no_module_is_left_swapped_or_deleted"
+    "  # noqa: F401\n"
+)
+
+# `colorsys` on purpose: a real module, present in sys.modules because this
+# file imports it, outside _stub_sentinel.WATCHED, and needed by nothing that
+# runs during teardown or reporting — so a failure here can only come from the
+# wide fence, and deleting it cannot take pytest down with it.
+_WIDE_CHILD_TESTS = '''
+import sys
+
+import colorsys  # noqa: F401
+
+
+def test_a_setitem_is_put_back(monkeypatch):
+    monkeypatch.setitem(sys.modules, "colorsys", object())
+
+
+def test_b_del_is_not():
+    sys.modules["colorsys"] = object()
+    del sys.modules["colorsys"]
+
+
+def test_c_an_untouched_test_after_it():
+    pass
+'''
+
+
+def test_the_wide_fixture_fails_the_teardown_of_a_test_that_dropped_any_module(tmp_path):
+    """END-TO-END CONTROL for the widened fence, in a child pytest.
+
+    Same shape as the control above, one name over: `colorsys` is not one of
+    the three watched libraries, so before this fence existed the child ran
+    three green tests and left the module gone. A child process for the same
+    reason as above — reproducing the leak here would do the damage to every
+    file that runs after this one.
+    """
+    (tmp_path / "conftest.py").write_text(_WIDE_CHILD_CONFTEST, encoding="utf-8")
+    (tmp_path / "test_child.py").write_text(_WIDE_CHILD_TESTS, encoding="utf-8")
+    env = dict(os.environ, PYTHONPATH=ROOT)
+    for var in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
+        env.pop(var, None)
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q",
+         "test_child.py"],
+        cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=180)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1, out
+    assert "3 passed, 1 error" in out, out
+    assert "ERROR at teardown of test_b_del_is_not" in out, out
+    assert "sys.modules['colorsys'] DELETED" in out, out
+    # monkeypatch.setitem is put back, so the fence must not charge test_a...
+    assert "test_a_setitem_is_put_back" not in out, out
+    # ...nor the neighbour that merely ran after the leak.
     assert "test_c_an_untouched_test_after_it" not in out, out
