@@ -45,6 +45,13 @@ API = "https://console.neon.tech/api/v2"
 # it) can never be the target of a write-heavy test.
 SENTINEL_TABLE = "_ci_ephemeral_branch"
 
+# ★ ONE source for the CI compute ceiling: the create body asks for it and
+#   `_verify_compute_ceiling` asserts what Neon actually built. Measured
+#   2026-09-19 06:2xZ — THREE of four live `ci-*-parity` computes were running
+#   `0.25-8` CU while this script had asked for `0.25-0.25`. Asking is not
+#   getting, and nothing in the job log said otherwise.
+CI_MAX_CU = 0.25
+
 
 def _req(method: str, path: str, key: str, body: dict | None = None) -> dict:
     """`requests`, not urllib — scripts/regression_lint.py bans
@@ -302,8 +309,8 @@ def cmd_create(a: argparse.Namespace) -> None:
             "type": "read_write",
             # CI does not need burst headroom; it needs to not cost anything.
             # Pinning min==max removes the autoscaler's ramp entirely.
-            "autoscaling_limit_min_cu": 0.25,
-            "autoscaling_limit_max_cu": 0.25,
+            "autoscaling_limit_min_cu": CI_MAX_CU,
+            "autoscaling_limit_max_cu": CI_MAX_CU,
             # NO suspend_timeout_seconds. 60s drew
             #   412: suspend interval is too short for your plan
             # and the setting was nearly pointless here anyway: `destroy` runs
@@ -340,8 +347,72 @@ def cmd_create(a: argparse.Namespace) -> None:
               "The timed backstop is NOT armed — if this runner dies, only the "
               "scheduled sweeper will reclaim the branch.", file=sys.stderr)
 
+    _verify_compute_ceiling(key, project, out)
+
     dsn = _connection_uri(out, key, project, branch_id, a.database, a.role)
     _emit(branch_id=branch_id, dsn=dsn)
+
+
+def _verify_compute_ceiling(key: str, project: str, out: dict) -> None:
+    """Assert the CU ceiling Neon BUILT, not the one this script asked for.
+
+    Exactly the `expires_at` argument one screen up, applied to the setting
+    that governs COST. Measured 2026-09-19: three of four live `ci-*-parity`
+    computes were `0.25-8` CU against a request of `0.25-0.25` — 32x the
+    intended ceiling — and the job log never showed it, because the log
+    reports the branch's SCHEMA and never its compute. The 412 fallback below
+    is documented to drop the tuning, but it did NOT fire on those runs (their
+    logs carry no such warning), so the cause is unidentified and this check
+    deliberately does not depend on knowing it: it compares the request with
+    the response and repairs the difference either way.
+    """
+    rw = next((e for e in (out.get("endpoints") or [])
+               if e.get("type") == "read_write"), None)
+    if rw is None:
+        print("::warning::Neon returned no read_write endpoint for this "
+              f"branch, so the {CI_MAX_CU} CU ceiling is UNVERIFIED — this "
+              "compute may autoscale to the project default.", file=sys.stderr)
+        return
+    # Absent field and oversized value are DIFFERENT outcomes: one is "cannot
+    # tell", the other is "told, and wrong". Collapsing them would let a quiet
+    # API change read as a pass.
+    got = rw.get("autoscaling_limit_max_cu")
+    if got is None:
+        print("::warning::Neon reported this endpoint without "
+              f"autoscaling_limit_max_cu, so the {CI_MAX_CU} CU ceiling is "
+              "UNVERIFIED for this branch.", file=sys.stderr)
+        return
+    if got <= CI_MAX_CU:
+        print(f"autoscaling_limit_max_cu={got} (confirmed by the API)",
+              file=sys.stderr)
+        return
+    print(f"::warning::This CI compute autoscales to {got} CU, not the "
+          f"{CI_MAX_CU} requested — up to {got / CI_MAX_CU:.0f}x the intended "
+          "cost ceiling. Pinning it now.", file=sys.stderr)
+    ep_id = rw.get("id")
+    if not ep_id:
+        print("::warning::Cannot pin it: Neon reported the endpoint with no "
+              "id.", file=sys.stderr)
+        return
+    try:
+        patched = _req("PATCH", f"/projects/{project}/endpoints/{ep_id}", key,
+                       {"endpoint": {"autoscaling_limit_min_cu": CI_MAX_CU,
+                                     "autoscaling_limit_max_cu": CI_MAX_CU}})
+    except SystemExit as exc:
+        # Cost, not correctness: the parity lane's job is the schema check, and
+        # `destroy` still removes this endpoint at job end. Do not fail the run.
+        print(f"::warning::Could not pin the CI compute to {CI_MAX_CU} CU "
+              f"({exc}). The branch is still created and still destroyed at "
+              "job end, but it runs at the project default until then.",
+              file=sys.stderr)
+        return
+    now = (patched.get("endpoint") or {}).get("autoscaling_limit_max_cu")
+    if now is not None and now <= CI_MAX_CU:
+        print(f"autoscaling_limit_max_cu={now} (pinned after the fact)",
+              file=sys.stderr)
+    else:
+        print("::warning::The pin did not take — Neon still reports "
+              f"autoscaling_limit_max_cu={now}.", file=sys.stderr)
 
 
 def _create_branch(key: str, project: str, body: dict) -> dict:
@@ -552,7 +623,13 @@ def main() -> None:
     c.add_argument("--parent-id", default=os.environ.get("NEON_PARENT_BRANCH_ID", ""))
     c.add_argument("--database", default=os.environ.get("NEON_CI_DATABASE", "neondb"))
     c.add_argument("--role", default=os.environ.get("NEON_CI_ROLE", "neondb_owner"))
-    c.add_argument("--ttl-hours", type=int, default=3)
+    # 1, not 3: the longest `ci-neon-db` job is `timeout-minutes: 40`, so an
+    # hour clears the job with ~20 minutes of margin while cutting the window a
+    # killed runner can park a root from three hours to one. Against a ceiling
+    # of four roots that window IS the starvation. The workflow passes this
+    # explicitly, so BOTH have to say 1 — changing only the default is a no-op
+    # in CI.
+    c.add_argument("--ttl-hours", type=int, default=1)
     c.add_argument("--prefix", default="ci-",
                    help="name prefix identifying branches this lane owns")
     # Default 4, not 25. The project is on a 5-root Launch cap and production

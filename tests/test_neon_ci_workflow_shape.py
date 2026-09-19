@@ -220,3 +220,67 @@ def test_workflow_fallback_matches_the_script_default(wf):
     script = _script_fallback()
     assert set(ceilings.values()) == {script}, (
         f"workflow fallbacks {ceilings} vs {_SCRIPT.name} default {script}")
+
+
+# ── the TTL has to outlive the job, and only one number may govern it ────────
+
+_SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts/neon_ci_branch.py"
+
+
+def _create_ttls(wf):
+    """The --ttl-hours each creating job actually passes."""
+    out = {}
+    for name, job in _creating_jobs(wf).items():
+        create = next(s for s in job["steps"]
+                      if "neon_ci_branch.py create" in str(s.get("run", "")))
+        m = re.search(r"--ttl-hours\s+(\d+)", str(create["run"]))
+        assert m, f"{name} passes no --ttl-hours value"
+        out[name] = int(m.group(1))
+    return out
+
+
+def _script_ttl_defaults():
+    """`--ttl-hours` argparse defaults, keyed by the parser they are added to.
+
+    Read from the AST, not the text: the file's comments quote these numbers.
+    """
+    found = {}
+    for node in ast.walk(ast.parse(_SCRIPT.read_text())):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument"
+                and node.args
+                and getattr(node.args[0], "value", None) == "--ttl-hours"):
+            for kw in node.keywords:
+                if kw.arg == "default":
+                    found[getattr(node.func.value, "id", "?")] = kw.value.value
+    return found
+
+
+def test_the_branch_ttl_outlives_the_job_that_holds_it(wf):
+    """`expires_at` is enforced NEON-side: it deletes the branch whether or not
+    a job is still using it. A TTL at or below the job budget is a database
+    vanishing mid-run — the opposite failure from the leak the TTL exists for,
+    and the one a well-meant reduction introduces.
+    """
+    for name, hours in _create_ttls(wf).items():
+        budget = wf["jobs"][name]["timeout-minutes"]
+        assert hours * 60 > budget, f"{name}: ttl {hours}h <= job budget {budget}m"
+
+
+def test_the_creating_jobs_agree_on_one_ttl(wf):
+    ttls = set(_create_ttls(wf).values())
+    assert len(ttls) == 1, f"creating jobs disagree on the TTL: {ttls}"
+
+
+def test_the_workflow_ttl_matches_the_script_default(wf):
+    """Two places name this number and the workflow's wins, because it is
+    passed explicitly. Editing only the argparse default is a no-op in CI, so
+    they are pinned together rather than left to drift apart silently.
+    """
+    defaults = _script_ttl_defaults()
+    assert defaults, "no --ttl-hours default found in the script: guard is blind"
+    assert "c" in defaults, f"create parser not found; got {sorted(defaults)}"
+    assert set(_create_ttls(wf).values()) == {defaults["c"]}, (
+        f"workflow passes {sorted(set(_create_ttls(wf).values()))}, "
+        f"script default is {defaults['c']}")

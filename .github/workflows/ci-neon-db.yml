@@ -133,7 +133,7 @@ jobs:
         run: |
           python3 scripts/neon_ci_branch.py create \
             --name "ci-${{ github.run_id }}-${{ github.run_attempt }}-parity" \
-            --ttl-hours 3
+            --ttl-hours 1
 
       - name: Stamp it as disposable
         if: steps.neon.outputs.slot != 'none'
@@ -346,7 +346,7 @@ jobs:
         run: |
           python3 scripts/neon_ci_branch.py create \
             --name "ci-${{ github.run_id }}-${{ github.run_attempt }}-fullsuite" \
-            --ttl-hours 3
+            --ttl-hours 1
       - name: Stamp it
         if: steps.neon.outputs.slot != 'none'
         env:
