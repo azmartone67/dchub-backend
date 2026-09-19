@@ -63,7 +63,9 @@ live table. Nothing here is transcribed: the shell asks the database.
 from __future__ import annotations
 
 import datetime as _dt
+import json as _json
 import os
+import urllib.request as _urlreq
 
 from flask import Blueprint, Response, jsonify
 
@@ -566,10 +568,152 @@ def _population() -> dict:
     }
 
 
+
+# ── CURATED REFERENCE LAYERS ────────────────────────────────────────────────
+# NOT ingested. Hand-curated reference rows that go stale when a legislature
+# moves, not when a loader stops. Two properties break the _LAYERS model:
+#
+# 1. ★ THE TABLE'S WRITE TIMESTAMP IS A LIE HERE. tax_incentives is re-seeded
+#    from DEFAULT_INCENTIVES on every boot (INSERT .. ON CONFLICT DO UPDATE),
+#    so last_modified reads "written seconds ago" on all 50 rows, forever. A
+#    normal recency lane would rank this the FRESHEST layer on the board while
+#    it served a repealed program. That is RELOAD-IS-NOT-GROWTH in its worst
+#    form — not a flattering delta, a PERMANENT FALSE GREEN. Freshness here
+#    comes from `last_verified` in the row CONTENT, never from a write stamp.
+#
+# 2. ★ THE VERDICT IS THE OLDEST ROW, NEVER THE NEWEST. Every _LAYERS lane
+#    asks "is anything still arriving?" and newest-write answers it. A curated
+#    layer asks "what is the WORST row?" — one row verified today must not
+#    vouch for 49 nobody has looked at since. Same property as
+#    routes/freshness_public.summarize_stream_ages; see
+#    tests/test_freshness_worst_is_worst.py.
+#
+# `last_verified` ABSENT means NEVER VERIFIED — infinitely stale, not a row to
+# skip. Skipping unverified rows makes the lane pass loudest exactly when the
+# data is least checked.
+#
+# Read the SERVED endpoint, not the module literal and not the table: what a
+# consumer receives is the only thing worth judging, and it stays correct if
+# the store behind it ever changes.
+_INTERNAL_API_ORIGIN = os.environ.get(
+    "DCHUB_INTERNAL_API_ORIGIN", "https://api.dchub.cloud")
+
+_CURATED = (
+    dict(key="tax_incentives", label="state tax incentive programs",
+         endpoint="/api/v1/tax-incentives", id_field="abbr",
+         cadence_days=180,
+         cadence=("curated legislative reference — state sessions move these a "
+                  "few times a year; 180d is one session plus grace"),
+         source="state statutes, governors' offices, legislative trackers"),
+)
+
+
+def _fetch_served(spec: dict):
+    """(rows, error). Never raises — an unreachable endpoint is UNOBSERVED."""
+    url = _INTERNAL_API_ORIGIN + spec["endpoint"]
+    try:
+        req = _urlreq.Request(url, headers={
+            "User-Agent": "DCHub-IngestionFreshness/1.0",
+            "X-DC-Internal-Warmup": "1"})
+        with _urlreq.urlopen(req, timeout=10) as r:
+            payload = _json.loads(r.read())
+    except Exception as e:  # noqa: BLE001
+        return None, f"{type(e).__name__}: {str(e)[:90]}"
+    rows = payload.get("data")
+    if not isinstance(rows, list):
+        return None, "response carried no data[] list"
+    return rows, None
+
+
+def _curated_checks(spec: dict, rows, err, today=None) -> list[dict]:
+    """Pure. Four checks; only 2 and 3 can convict.
+
+    1. rows            GAUGE — rows served now. None (never 0) on failure.
+    2. all_verified    THE VERDICT — rows with NO last_verified have never
+                       been checked against a source. critical=True.
+    3. oldest_verified THE VERDICT — the OLDEST last_verified against this
+                       layer's cadence. Never the newest. critical=True.
+    4. flagged         GAUGE — rows carrying a status (paused / repealed /
+                       narrowed). Never convicts; context for the reader.
+    """
+    k, lbl = spec["key"], spec["label"]
+    if rows is None:
+        # Unreadable is NOT stale. One indeterminate critical check renders
+        # the whole lane '?' rather than a confident PASS.
+        return [_check(f"{k}_read", f"{lbl} readable", None,
+                       f"served endpoint unreadable ({err}) — verification "
+                       f"age UNKNOWN for this layer (not stale, not passing)",
+                       critical=True)]
+
+    today = today or _dt.date.today()
+    total = len(rows)
+    checks = [_check(f"{k}_rows", f"{lbl} served", True,
+                     f"{_fmt(total)} rows served by {spec['endpoint']}")]
+
+    unverified, ages = [], []
+    for r in rows:
+        raw = (r or {}).get("last_verified")
+        ident = (r or {}).get(spec["id_field"]) or "?"
+        if not raw:
+            unverified.append(ident)
+            continue
+        try:
+            age = (today - _dt.date.fromisoformat(str(raw)[:10])).days
+        except ValueError:
+            # A malformed stamp is not a verification. It is worse than
+            # absent, because it LOOKS like one — count it as unverified.
+            unverified.append(ident)
+            continue
+        ages.append((age, ident))
+
+    nver = len(unverified)
+    sample = ", ".join(sorted(unverified)[:8]) + ("…" if nver > 8 else "")
+    checks.append(_check(
+        f"{k}_all_verified", "every row verified against a source at least once",
+        nver == 0,
+        (f"all {_fmt(total)} rows carry last_verified"
+         if nver == 0 else
+         f"{nver} of {_fmt(total)} rows have NEVER been verified "
+         f"({sample}) — absent last_verified is infinitely stale, not skipped"),
+        critical=True))
+
+    cad = spec["cadence_days"]
+    if not ages:
+        checks.append(_check(
+            f"{k}_oldest", "oldest verification within cadence", None,
+            f"no row carries a usable last_verified — oldest age UNKNOWN "
+            f"(cadence {cad}d: {spec['cadence']})", critical=True))
+    else:
+        worst_age, worst_id = max(ages)          # OLDEST, never min()
+        best_age, best_id = min(ages)
+        checks.append(_check(
+            f"{k}_oldest", "oldest verification within cadence",
+            worst_age <= cad,
+            f"worst row {worst_id} verified {worst_age}d ago vs {cad}d cadence "
+            f"({spec['cadence']}); freshest is {best_id} at {best_age}d — the "
+            f"verdict is the worst row, never the freshest",
+            critical=True))
+
+    flagged = [(r or {}).get(spec["id_field"]) for r in rows if (r or {}).get("status")]
+    checks.append(_check(
+        f"{k}_flagged", "programs flagged paused / repealed / narrowed", True,
+        (", ".join(sorted(x for x in flagged if x)) or "none")
+        + f" ({len(flagged)} of {_fmt(total)})"))
+    return checks
+
+
+def _lane_curated(spec: dict) -> list[dict]:
+    rows, err = _fetch_served(spec)
+    return _curated_checks(spec, rows, err)
+
 def _tick() -> dict:
     lanes = []
     for spec in _LAYERS:
         checks = _safe_lane(_lane_for_layer, spec)
+        lanes.append({"id": spec["key"], "name": spec["label"],
+                      "checks": checks, "verdict": _lane_verdict(checks)})
+    for spec in _CURATED:
+        checks = _safe_lane(_lane_curated, spec)
         lanes.append({"id": spec["key"], "name": spec["label"],
                       "checks": checks, "verdict": _lane_verdict(checks)})
     checks = _safe_lane(_lane_canon_coverage)
@@ -581,7 +725,11 @@ def _tick() -> dict:
                  "abandoned one — only recency and delta can. A RELOAD IS NOT "
                  "GROWTH: layers marked MODE=SNAPSHOT rewrite their whole "
                  "table, so their delta is a refresh stamp. UNREADABLE IS NOT "
-                 "STALE: pass=None means unmeasured, never a failure."),
+                 "STALE: pass=None means unmeasured, never a failure. "
+                 "CURATED layers are judged on last_verified in the row "
+                 "CONTENT and convict on the OLDEST row \u2014 their "
+                 "table's write stamp is rewritten every boot and would "
+                 "read permanently fresh."),
         "population": _population(),
         "lanes": lanes,
         "lanes_total": len(lanes),
