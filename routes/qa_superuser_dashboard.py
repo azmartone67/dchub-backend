@@ -55,7 +55,13 @@ logger = logging.getLogger(__name__)
 qa_superuser_dashboard_bp = Blueprint("qa_superuser_dashboard", __name__)
 
 C_REPO = "azmartone67/dchub-backend"
-ISSUE_URL = f"https://github.com/{C_REPO}/issues/2186"
+# ★ The ROLLING board issue — the one deduped issue this harness keeps current,
+#   and the authoritative board. One source for the link the operator clicks and
+#   for the escalation fallback below, so they can never point at different
+#   issues. (board.py finds it dynamically by marker; here it is a constant,
+#   exactly as the footer link always has been.)
+BOARD_ISSUE_NUMBER = 2186
+ISSUE_URL = f"https://github.com/{C_REPO}/issues/{BOARD_ISSUE_NUMBER}"
 WORKFLOW_URL = f"https://github.com/{C_REPO}/actions/workflows/qa-superuser.yml"
 HISTORY_LIMIT = 40
 
@@ -820,14 +826,24 @@ def _escalate_parked(latest: dict) -> dict:
         return {"escalated": [], "error": f"propose module unavailable: "
                                           f"{type(e).__name__}: {str(e)[:120]}"}
 
-    done, no_issue, failed = [], [], []
+    done, failed = [], []
     for f, why in parked_candidates(latest.get("findings") or [], P.park_verdict):
         key, issue_no = f.get("key"), f.get("issue_number")
-        if not issue_no:
-            # Nothing to comment on. Say so rather than stamping it escalated,
-            # or it would be silently dropped the moment an issue does exist.
-            no_issue.append(key)
-            continue
+        # ★★★ A FINDING WITHOUT ITS OWN ISSUE STILL HAS TO REACH SOMEONE.
+        #   `issue_number` is only ever set for findings a human already clicked
+        #   "Open an issue" on (board.py fills it from open issues carrying the
+        #   key marker). Measured live 2026-09-19: the one parked finding on the
+        #   board had issue_number=None. So the first version of this lane could
+        #   only page about findings someone was ALREADY watching — it reported
+        #   the rest as "no issue to comment on" and moved on, which is the
+        #   detect-without-actuate leak this whole change exists to close,
+        #   committed by the fix for it.
+        #
+        #   The rolling board issue always exists and is the authoritative
+        #   board, so it is the channel of last resort. Never a dead end.
+        to_issue, via_board = issue_no, False
+        if not to_issue:
+            to_issue, via_board = BOARD_ISSUE_NUMBER, True
         inv = f.get("investigation") or {}
         body = (
             "### ⏸ The automated loop has stopped on this finding\n\n"
@@ -848,17 +864,24 @@ def _escalate_parked(latest: dict) -> dict:
               "check itself is wrong and should be changed; or the condition "
               "is acceptable and the check should be retired.\n\n"
               "_Posted once. This comment will not repeat._")
-        if _post_issue_comment(int(issue_no), body):
+        if via_board:
+            body = (body.replace(
+                "### ⏸ The automated loop has stopped on this finding",
+                "### ⏸ The automated loop has stopped on a finding")
+                + f"\n\n_Posted here because `{key}` has no issue of its own. "
+                  "Open one from the board if you want the discussion "
+                  "separate._")
+        if _post_issue_comment(int(to_issue), body):
             if _mark_parked_escalated(key):
-                done.append(key)
+                done.append({"key": key, "issue": int(to_issue),
+                             "via_board_issue": via_board})
             else:
                 # Posted but not stamped — report it, because the next run will
                 # post again and a duplicate is the visible symptom.
                 failed.append({"key": key, "why": "commented but stamp failed"})
         else:
             failed.append({"key": key, "why": "issue comment failed"})
-    return {"escalated": done, "no_issue_to_comment_on": no_issue,
-            "failed": failed}
+    return {"escalated": done, "failed": failed}
 
 
 def auto_investigate_candidates(findings: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -1179,10 +1202,19 @@ def qa_superuser_auto_investigate():
 
     if dry_run:
         # Name who WOULD be escalated without writing a comment or a stamp.
+        # ★★★ THE PREVIEW MUST NAME THE SAME CHANNEL THE RUN WILL USE. The
+        #   first version listed bare keys, so it said "would escalate X" about
+        #   a finding the real pass then reported as un-escalatable. A dry run
+        #   that is more optimistic than the wet run is worse than none: it is
+        #   the only thing an operator reads before arming something.
         try:
             from tools.qa_superuser import propose as _P
-            would_park = [f.get("key") for f, _w in parked_candidates(
-                latest.get("findings") or [], _P.park_verdict)]
+            would_park = [
+                {"key": f.get("key"),
+                 "issue": int(f.get("issue_number") or BOARD_ISSUE_NUMBER),
+                 "via_board_issue": not f.get("issue_number")}
+                for f, _w in parked_candidates(
+                    latest.get("findings") or [], _P.park_verdict)]
         except Exception:  # noqa: BLE001
             would_park = None
         return jsonify({
