@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from enum import IntEnum
 
 from flask import request, jsonify, g
+from tier_registry import price_display as _canon_price_display
 
 # ★A module-level logger, because the gate's except handlers used to be
 # bare `pass`. A swallowed NameError inside a logging call is the same silence
@@ -334,10 +335,10 @@ def _build_cta(current: Tier, required: Tier, teaser: str) -> str:
                 f"upgrade to {TIER_NAME[required]} ($49/mo) for the full "
                 "data set: dchub.cloud/pricing")
     if current == Tier.IDENTIFIED and required == Tier.DEVELOPER:
-        return (f"Upgrade to Developer ($49/mo) to unlock {teaser} + "
+        return (f"Upgrade to Developer ({_canon_price_display('developer')}) to unlock {teaser} + "
                 "2000 calls/day + 100 results/call. dchub.cloud/pricing")
     if current == Tier.DEVELOPER and required == Tier.PRO:
-        return (f"Upgrade to Pro ($199/mo) to unlock {teaser} + "
+        return (f"Upgrade to Pro ({_canon_price_display('pro')}) to unlock {teaser} + "
                 "10k calls/day + 500 results/call. dchub.cloud/pricing")
     return (f"This endpoint requires {TIER_NAME[required]} tier. "
             "See dchub.cloud/pricing for upgrade options.")

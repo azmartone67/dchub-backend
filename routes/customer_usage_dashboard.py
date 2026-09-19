@@ -56,6 +56,7 @@ from html import escape as _esc
 from typing import Any, Optional
 
 from flask import Blueprint, Response, jsonify, request
+from tier_registry import price_display as _canon_price_display
 
 logger = logging.getLogger(__name__)
 
@@ -562,7 +563,7 @@ _DASHBOARD_HTML = """<!doctype html>
           You've used <strong id="upgrade-cap-pct">—</strong>% of your daily quota.
           Upgrade to Pro to get <strong>2,000 calls/day</strong> + every tool unlocked.
         </div>
-        <a href="/pricing" class="cta">Upgrade to Pro — $199/mo</a>
+        <a href="/pricing" class="cta">Upgrade to Pro — __PRO_PRICE__</a>
       </div>
 
       <div style="text-align:center;margin-top:24px;">
@@ -668,6 +669,11 @@ function escapeHtml(s){ var d=document.createElement('div'); d.textContent = s||
 </script>
 </body>
 </html>"""
+
+# Prices are substituted from canon at import (r-redeem-canon, 2026-09-18).
+# Typed into the template they drift silently: this surface quoted a Pro
+# price retired at r-price-collapse (2026-09-05) until it was swept.
+_DASHBOARD_HTML = _DASHBOARD_HTML.replace("__PRO_PRICE__", _canon_price_display("pro"))
 
 
 @customer_usage_dashboard_bp.route("/dashboard/usage", methods=["GET"])

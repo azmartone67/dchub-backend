@@ -10,6 +10,7 @@ Fix history:
 
 import math
 import logging
+from tier_registry import price_display as _canon_price_display
 from flask import Blueprint, jsonify, request
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ def _nlr_teaser(full, headline_keys, feature_name):
             "message": (
                 f"{feature_name} preview. Sign up free (email only) at "
                 f"https://dchub.cloud/api/v1/keys/claim for the full "
-                f"breakdown, or unlock everything with Pro ($199/mo) — "
+                f"breakdown, or unlock everything with Pro ({_canon_price_display('pro')}) — "
                 f"https://dchub.cloud/pricing."),
             "claim_free_key": "https://dchub.cloud/api/v1/keys/claim",
             "pricing":        "https://dchub.cloud/pricing",

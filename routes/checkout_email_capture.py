@@ -27,6 +27,7 @@ import datetime
 from contextlib import contextmanager
 from urllib.parse import quote
 from flask import Blueprint, request, redirect, jsonify
+from tier_registry import price_display as _canon_price_display
 
 try:
     import psycopg2 as _pg
@@ -103,7 +104,8 @@ def _price_label(tier):
             return lbl
     except Exception:
         pass
-    return {"starter":"$9/mo","developer":"$49/mo","pro":"$299/mo","enterprise":"Custom"}.get(tier, "—")
+    return {"starter": _canon_price_display("starter"), "developer": _canon_price_display("developer"),
+            "pro": _canon_price_display("pro"), "enterprise": "Custom"}.get(tier, "—")
 
 
 def mark_converted(email, stripe_session_id="", conn_factory=None):

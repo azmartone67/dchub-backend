@@ -23,6 +23,7 @@ import datetime as _dt
 from flask import Blueprint, jsonify, Response
 from ai_surface_canon import canon_text
 from utc_clock import utc_now
+from tier_registry import price_display as _canon_price_display
 
 logger = logging.getLogger(__name__)
 competitive_vs_bp = Blueprint("competitive_vs", __name__)
@@ -172,9 +173,13 @@ _DCHUB_FACTS = {
     # the 08-22 sweep that retired the legacy $199 LINK across 10 carriers all
     # agree. The call counts are correct and stay — tier_registry._PRO carries
     # mcp_daily=2000, starter 200, developer 500, free 10. Not swept to canon:
-    # canon_nums() has no price placeholder (prices live in _stripe_links), so
-    # this stays a literal and is fenced by the counts-drift ratchet instead.
-    "api_access":         "Free 10 calls/day; Starter $9/mo (200/day); Developer $49/mo (500/day); Pro $299/mo (2,000/day)",
+    # r-redeem-canon (2026-09-18): this WAS a literal, "fenced by the counts-
+    # drift ratchet" — a ratchet that counts facilities and never looked at a
+    # price. It sat at "Pro $299/mo" for 13 days after r-price-collapse made
+    # Pro $99. Prices now come from tier_registry; the link still comes from
+    # _stripe_links.
+    "api_access":         f"Free 10 calls/day; Starter {_canon_price_display('starter')} (200/day); "
+                          f"Developer {_canon_price_display('developer')} (500/day); Pro {_canon_price_display('pro')} (2,000/day)",
     "facility_coverage":  canon_text("{canon_facilities} distinct facilities, 300+ markets, 178 countries"),
     "pricing_model":      "Self-serve $9 → $699/mo, no sales gate",
     "citation_license":   "CC-BY-4.0 — free to cite with attribution",

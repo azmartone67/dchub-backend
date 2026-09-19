@@ -41,6 +41,7 @@ import psycopg2 as _pg
 import psycopg2.extras
 from flask import Blueprint, request, jsonify, Response
 from utc_clock import utc_now
+from tier_registry import price_display as _canon_price_display
 
 mcp_tier2_bp = Blueprint("mcp_tier2_reports", __name__,
                           url_prefix="/api/v1/mcp/tools")
@@ -228,7 +229,7 @@ ArcGIS), and on-the-ground verification. Market stats reflect facilities tagged 
   <li>Tax incentive analysis (state + local)</li>
   <li>Competitive lease comparables ($/kW/mo)</li>
 </ul>
-<p>Upgrade to DC Hub Pro: <a href="https://dchub.cloud/pricing/upgrade?tool=create_site_report">$199/mo</a></p>
+<p>Upgrade to DC Hub Pro: <a href="https://dchub.cloud/pricing/upgrade?tool=create_site_report">{_canon_price_display("pro")}</a></p>
 
 <div class="footer">
   <p><strong>Report ID:</strong> {report_id} · Generated {today} by DC Hub Intelligence</p>

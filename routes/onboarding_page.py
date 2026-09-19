@@ -17,6 +17,7 @@ import os, html as _html
 from flask import Blueprint, request, jsonify, Response
 import psycopg
 from routes._swallowed_writes import note_swallowed_write
+import tier_registry as _tr
 
 onboarding_bp = Blueprint("onboarding_page", __name__)
 NEON_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
@@ -80,7 +81,7 @@ and paste the block it shows, with the key above as the <code>X-API-Key</code> h
 <button class="btn" id="tb" onclick="testCall()">Run test call →</button>
 <div id="tr"></div></div>
 
-<div class="footer">Need help? <a href="mailto:api@dchub.cloud">api@dchub.cloud</a> · <a href="https://dchub.cloud/integrations/mcp">Docs</a> · <a href="https://dchub.cloud/pricing">Upgrade: Starter $9 / Developer $49 / Pro $199</a></div>
+<div class="footer">Need help? <a href="mailto:api@dchub.cloud">api@dchub.cloud</a> · <a href="https://dchub.cloud/integrations/mcp">Docs</a> · <a href="https://dchub.cloud/pricing">Upgrade: Starter __STARTER_PRICE__ / Developer __DEV_PRICE__ / Pro __PRO_PRICE__</a></div>
 
 <script>
 const KEY="__API_KEY__";
@@ -102,6 +103,14 @@ async function testCall(){
   }catch(e){o.className="err";o.textContent="✗ "+e.message;b.disabled=false;b.textContent="Retry →"}
 }
 </script></body></html>"""
+
+# The onboarding ladder typed "Pro $199" — retired at r-price-collapse
+# (2026-09-05) and still on this page on 2026-09-18. Substituted from
+# canon at import.
+HTML = (HTML
+        .replace("__STARTER_PRICE__", _tr.price_display("starter", ""))
+        .replace("__DEV_PRICE__", _tr.price_display("developer", ""))
+        .replace("__PRO_PRICE__", _tr.price_display("pro", "")))
 
 @onboarding_bp.route("/onboard/<code>", methods=["GET"])
 def onboarding_page(code):

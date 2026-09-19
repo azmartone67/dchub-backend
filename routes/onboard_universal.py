@@ -18,6 +18,7 @@ JSON for agents; every response also carries the free-key path + citation guidan
 Point ANY prospect at https://dchub.cloud/api/v1/onboard and they self-onboard.
 """
 from flask import Blueprint, request, jsonify
+import tier_registry as _tr
 
 onboard_universal_bp = Blueprint("onboard_universal", __name__)
 
@@ -62,7 +63,9 @@ def _common() -> dict:
         "free_key": {
             "anonymous": "10 calls/day with no key on read endpoints",
             "claim_instant": f"POST {BASE}/api/v1/keys/claim  (instant key, no card)",
-            "signup": f"{BASE}/signup  (free 10/day · $9 Starter 200/day · $49 Developer 500/day · $25K+/yr Enterprise data licensing)",
+            "signup": (f"{BASE}/signup  (free 10/day · {_tr.price_display('starter', '')} Starter 200/day · "
+                       f"{_tr.price_display('developer', '')} Developer 500/day · "
+                       f"from ${_tr.ENTERPRISE_FROM_USD_YEAR:,}/yr Enterprise data licensing)"),
         },
         "key_endpoints": {
             "market_rankings": f"{BASE}/api/v1/dcpi/leaderboard",

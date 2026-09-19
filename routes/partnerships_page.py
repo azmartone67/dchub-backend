@@ -18,6 +18,7 @@ intake.
 """
 
 from flask import Blueprint, Response
+from tier_registry import price_display as _canon_price_display
 
 partnerships_bp = Blueprint("partnerships", __name__)
 
@@ -110,7 +111,7 @@ Brokers, analysts, research vendors, trade press, and AI platforms — all run o
 <div class="partner">
 <h3>Operators · Investors · Brokers</h3>
 <div class="who">Hyperscalers · Colo operators · PE firms · Site-selection brokers</div>
-<div class="we">Use our <b>API to enrich your CRMs</b>, your due-diligence workflows, your site-selection pipelines. $9/mo dev plan for daily-use teams; $199/mo PRO for broker shops that need multi-site comparators.</div>
+<div class="we">Use our <b>API to enrich your CRMs</b>, your due-diligence workflows, your site-selection pipelines. __DEV_PRICE__ dev plan for daily-use teams; __PRO_PRICE__ PRO for broker shops that need multi-site comparators.</div>
 </div>
 
 </div>
@@ -122,7 +123,7 @@ Brokers, analysts, research vendors, trade press, and AI platforms — all run o
 <li><b>CC-BY-4.0 by default.</b> Every public surface is citation-clean — no license review needed. Just attribution.</li>
 <li><b>White-label friendly.</b> Embed our data in your client portals. Brand it however you like. The data is the data.</li>
 <li><b>API-first, MCP-native.</b> Our /.well-known/mcp.json is the universal manifest; our REST API is OpenAPI-spec'd. Self-serve from day one.</li>
-<li><b>Reasonable pricing.</b> $0 free tier (teaser). $49/mo developer (500/day, full data). $199/mo PRO (multi-site comparator). Enterprise = SLA + 10K/day + custom. No $25K seats.</li>
+<li><b>Reasonable pricing.</b> $0 free tier (teaser). __DEV_PRICE__ developer (500/day, full data). __PRO_PRICE__ PRO (multi-site comparator). Enterprise = SLA + 10K/day + custom. No $25K seats.</li>
 <li><b>Open about everything.</b> Live audit dashboard, live citation telemetry, methodology pages — total transparency.</li>
 </ol>
 </div>
@@ -142,6 +143,12 @@ The live data layer beneath the data-center research industry.<br>
 </div>
 <script src="/js/dchub-nav.js" defer></script>
 </body></html>"""
+
+# Prices are substituted from canon at import (r-redeem-canon, 2026-09-18).
+# Typed into the template they drift silently: this surface quoted a Pro
+# price retired at r-price-collapse (2026-09-05) until it was swept.
+_HTML = _HTML.replace("__PRO_PRICE__", _canon_price_display("pro"))
+_HTML = _HTML.replace("__DEV_PRICE__", _canon_price_display("developer"))
 
 
 @partnerships_bp.route("/partnerships", methods=["GET"], strict_slashes=False)

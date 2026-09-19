@@ -12,6 +12,8 @@ handlers for paths the second audit dashboard flagged as 404.
 
 from flask import Blueprint, redirect, Response, jsonify
 from ai_surface_canon import canon_text
+from tier_registry import (price_display as _canon_price_display,
+                           calls_per_day as _canon_calls_per_day)
 
 quick_redirects_bp = Blueprint("quick_redirects", __name__)
 
@@ -69,8 +71,8 @@ integrate via MCP (Model Context Protocol) or direct REST.
 - Endpoint: `https://dchub.cloud/mcp` (streamable-http)
 - Manifest: `https://dchub.cloud/.well-known/mcp.json`
 - 48 tools across 4 tiers (FREE / IDENTIFIED / DEVELOPER / PRO)
-- Pricing: free tier (1 row teaser), $9/mo (500 calls/day, full data),
-  $199/mo (10k calls/day + multi-site comparator)
+- Pricing: free tier (1 row teaser), __STARTER_PRICE__ (__STARTER_CALLS__ calls/day,
+  full data), __PRO_PRICE__ (__PRO_CALLS__ calls/day + multi-site comparator)
 
 ## REST API
 
@@ -117,6 +119,14 @@ DC Hub is the live, MCP-native alternative to static research (DCHawk,
 dcByte, DC Knowledge). No quarterly PDFs, no $25K contracts, no NDAs —
 just live JSON updated every 60 seconds.
 """)
+
+# Prices are substituted from canon at import (r-redeem-canon, 2026-09-18).
+# Typed into the template they drift silently: this surface quoted a Pro
+# price retired at r-price-collapse (2026-09-05) until it was swept.
+_AGENTS_MD = _AGENTS_MD.replace("__PRO_PRICE__", _canon_price_display("pro"))
+_AGENTS_MD = _AGENTS_MD.replace("__STARTER_PRICE__", _canon_price_display("starter"))
+_AGENTS_MD = _AGENTS_MD.replace("__PRO_CALLS__", format(_canon_calls_per_day("pro"), ","))
+_AGENTS_MD = _AGENTS_MD.replace("__STARTER_CALLS__", format(_canon_calls_per_day("starter"), ","))
 
 
 # Phase ZZZZZ-round6 (2026-05-23): /AGENTS.md is handled canonically

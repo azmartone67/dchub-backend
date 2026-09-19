@@ -28,6 +28,7 @@ from flask import Blueprint, jsonify, request
 from util.deals import DEALS_OK
 
 import os as _os
+from tier_registry import price_display as _canon_price_display
 
 try:
     import psycopg2 as _pg
@@ -127,8 +128,9 @@ def _build_release(track):
         f"DC Hub does not compete with brokers, publications, facility databases, or "
         f"analyst firms. We're the neutral live data layer beneath them. We publish six "
         f"open invitations at https://dchub.cloud/partners — each starts with a single, "
-        f"specific opening ask, no decks, no NDAs, no exclusivity. Standard $9/mo "
-        f"developer tier, $199/mo PRO, custom enterprise. CC-BY-4.0 by default.\n\n"
+        f"specific opening ask, no decks, no NDAs, no exclusivity. Standard "
+        f"{_canon_price_display('developer')} developer tier, {_canon_price_display('pro')} PRO, custom enterprise. "
+        f"CC-BY-4.0 by default.\n\n"
         f"### Try the data without signing up\n\n"
         f"- {track['url']} — this invitation's full text\n"
         f"- https://dchub.cloud/reports/monthly — live monthly report\n"

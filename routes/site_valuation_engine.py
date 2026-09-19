@@ -67,6 +67,7 @@ import sys
 from typing import Any, Optional, Tuple
 
 from flask import Blueprint, Response, jsonify, request
+from tier_registry import price_display as _canon_price_display
 
 site_valuation_engine_bp = Blueprint("site_valuation_engine", __name__)
 
@@ -3124,7 +3125,7 @@ _PRO_HERO_BANNER = """
     <a href="/pricing" style="background:#fff;color:#0369A1;font-weight:700;
        padding:14px 28px;border-radius:8px;text-decoration:none;font-size:15px;
        box-shadow:0 4px 12px rgba(0,0,0,0.2);">
-      Unlock with PRO — $199/mo &nbsp;→
+      Unlock with PRO — __PRO_PRICE__ &nbsp;→
     </a>
     <a href="/pricing#enterprise" style="color:#fff;font-weight:600;
        padding:14px 4px;text-decoration:underline;font-size:14px;">
@@ -3136,6 +3137,11 @@ _PRO_HERO_BANNER = """
   </div>
 </div>
 """
+
+# Prices are substituted from canon at import (r-redeem-canon, 2026-09-18).
+# Typed into the template they drift silently: this surface quoted a Pro
+# price retired at r-price-collapse (2026-09-05) until it was swept.
+_PRO_HERO_BANNER = _PRO_HERO_BANNER.replace("__PRO_PRICE__", _canon_price_display("pro"))
 
 # Minimal PRO+ confirmation banner (so paid users see something too)
 _PRO_OK_BANNER = """

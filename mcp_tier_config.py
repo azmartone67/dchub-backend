@@ -52,6 +52,7 @@ import time
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from tier_registry import price_display as _canon_price_display
 
 logger = logging.getLogger('dchub-mcp-tier')
 
@@ -73,7 +74,7 @@ TIERS = {
     'pro': {
         'daily_limit': 10000,
         'label': 'Pro',
-        'price': '$199/mo',
+        'price': _canon_price_display('pro'),
     },
     'enterprise': {
         'daily_limit': 100000,

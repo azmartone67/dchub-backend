@@ -20,8 +20,9 @@ Aggregates data from existing DC Hub tables:
 
 Tier gating:
   - Free: region summary + 2 corridor headlines + redacted scores + upgrade CTA
-  - Developer ($49/mo): all corridors + aggregate scores + energy rates + infra counts
-  - Pro ($199/mo): full sub-scores + facility names + coordinates + CSV export
+  - Developer: all corridors + aggregate scores + energy rates + infra counts
+  - Pro: full sub-scores + facility names + coordinates + CSV export
+  (Prices are NOT restated here — tier_registry.price_display() is the one source.)
 
 Fixes (Mar 23):
   - autocommit=True prevents transaction poisoning across corridor queries
@@ -38,6 +39,7 @@ from flask import Blueprint, request, jsonify
 from util.transmission_tables import (
     GEOCODED_SNAPSHOT_TABLE as _TX_SNAPSHOT_TABLE,
 )
+from tier_registry import price_display as _canon_price_display
 
 try:
     from main import _apply_grid_queue_override
@@ -1083,7 +1085,8 @@ def get_grid_region(region_id):
             }
         elif tier == 'developer':
             response['_upgrade'] = {
-                'message': 'Developer plan active. Upgrade to Pro ($199/mo) for facility names, exact coordinates, and CSV export.',
+                'message': f"Developer plan active. Upgrade to Pro ({_canon_price_display('pro')}) for "
+                           f"facility names, exact coordinates, and CSV export.",
                 'url': 'https://dchub.cloud/pricing#pro',
             }
 

@@ -25,6 +25,7 @@ import os
 import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, request
+from tier_registry import price_display as _canon_price_display
 
 logger = logging.getLogger(__name__)
 brain_layer13_bp = Blueprint("brain_layer13", __name__)
@@ -230,7 +231,7 @@ it:
   * Direct CSV/JSON exports of any tool's result set
   * Slack/Discord webhook integration for new-facility alerts
 
-Pricing's $49/mo (Developer) or $199/mo (Pro). If you'd like a free
+Pricing's {_canon_price_display('developer')} (Developer) or {_canon_price_display('pro')} (Pro). If you'd like a free
 2-week Pro upgrade to see the difference, reply with "yes" and I'll
 flip the key.
 

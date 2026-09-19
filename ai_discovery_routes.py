@@ -14,6 +14,7 @@ import json
 import re
 import time
 from utc_clock import utc_now
+import tier_registry as _tier_registry
 
 # ★2026-08-16 canon sweep. Every headline count on these surfaces used to be a
 # hand-typed literal, and they rot in lockstep with nothing: this file was still
@@ -823,9 +824,9 @@ def register_discovery_routes(app):
             "pricing": {
                 "free":       {"calls_per_day": 10, "results_per_call": 5, "price_usd": 0,
                                 "claim_url": f"{BASE_URL}/api/v1/redeem/3fdb85b6-4a40-420d-8bb0-a9ae5f4ac760"},
-                "starter":    {"calls_per_day": 200, "results_per_call": 50, "price_usd_per_month": 9},
-                "developer":  {"calls_per_day": 500, "results_per_call": 50, "price_usd_per_month": 49},
-                "pro":        {"calls_per_day": 2000, "results_per_call": 500, "price_usd_per_month": 199},
+                "starter":    {"calls_per_day": 200, "results_per_call": 50, "price_usd_per_month": _tier_registry.price("starter")},
+                "developer":  {"calls_per_day": 500, "results_per_call": 50, "price_usd_per_month": _tier_registry.price("developer")},
+                "pro":        {"calls_per_day": 2000, "results_per_call": 500, "price_usd_per_month": _tier_registry.price("pro")},
                 "enterprise": {"calls_per_day": 100000, "results_per_call": 5000, "price_usd_per_month": "custom"},
             },
 

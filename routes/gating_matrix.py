@@ -23,6 +23,7 @@ Tier vocabulary (kept consistent with map_tier_gating + pockets):
   enterprise  Custom — same as pro
 """
 from flask import Blueprint, jsonify, request, Response, render_template_string
+from tier_registry import price_display as _canon_price_display
 
 gating_matrix_bp = Blueprint("gating_matrix", __name__)
 
@@ -145,8 +146,8 @@ def _matrix_json():
         "tier_descriptions": {
             "anonymous":   "No signup. Gets teasers + range hints + paywall CTAs.",
             "identified":  "Email-only signup. No card needed. Unlocks state-specific data + 10× more rows.",
-            "developer":   "$49/mo paid. Full feature access at developer rate limits.",
-            "pro_plus":    "$199/mo (Pro) or custom (Enterprise/Founding). Unlimited + export + admin.",
+            "developer":   f"{_canon_price_display('developer')} paid. Full feature access at developer rate limits.",
+            "pro_plus":    f"{_canon_price_display('pro')} (Pro) or custom (Enterprise/Founding). Unlimited + export + admin.",
         },
         "surfaces": [
             {
@@ -260,7 +261,7 @@ footer a{color:var(--indigo);text-decoration:none}
   <div class="tier anon"><div class="name">Anonymous</div><div class="price">Free</div><div class="desc">No signup. Teasers + range hints + paywall CTAs.</div></div>
   <div class="tier identified"><div class="name">Identified</div><div class="price">Free <small style="font-size:.7rem;color:var(--tx3);font-weight:400">· email only</small></div><div class="desc">No card. State-specific data + 10× more rows than anon.</div></div>
   <div class="tier developer"><div class="name">Developer</div><div class="price">$49<small style="font-size:.7rem;color:var(--tx3);font-weight:400">/mo</small></div><div class="desc">Full feature access at developer rate limits.</div></div>
-  <div class="tier pro"><div class="name">Pro / Enterprise</div><div class="price">$199+<small style="font-size:.7rem;color:var(--tx3);font-weight:400">/mo</small></div><div class="desc">Unlimited + export + admin triggers.</div></div>
+  <div class="tier pro"><div class="name">Pro / Enterprise</div><div class="price">__PRO_PRICE_PLUS__<small style="font-size:.7rem;color:var(--tx3);font-weight:400">/mo</small></div><div class="desc">Unlimited + export + admin triggers.</div></div>
 </div>
 
 <h2>Surface-by-surface tier breakdown</h2>
@@ -296,6 +297,12 @@ footer a{color:var(--indigo);text-decoration:none}
 
 <footer>Edit <code>routes/gating_matrix.py</code> to update the policy. JSON: <a href="/api/v1/gating/matrix">/api/v1/gating/matrix</a> · <a href="/pricing">Pricing</a> · <a href="/pockets">Pockets</a></footer>
 </div></body></html>'''
+
+# The tier card typed "$199+" — a Pro price retired at r-price-collapse
+# (2026-09-05). Substituted from canon at import so the next reprice
+# reaches this card too.
+_MATRIX_HTML = _MATRIX_HTML.replace(
+    "__PRO_PRICE_PLUS__", _canon_price_display("pro", "") + "+")
 
 
 @gating_matrix_bp.route("/gating-matrix", methods=["GET"])

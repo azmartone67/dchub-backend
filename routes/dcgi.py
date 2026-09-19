@@ -62,6 +62,7 @@ from util.gas_index import (
     WITHDRAWAL_HTTP_STATUS,
 )
 from util.gas_pipelines import NG_ONLY, is_natural_gas
+from tier_registry import price_display as _canon_price_display
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -1783,7 +1784,8 @@ def dcgi_html():
         "<h2>Unlock every state&rsquo;s gas scores. Map the operators. Export reports.</h2>"
         "<p>The state list + GAS-ADVANTAGED / ADEQUATE / GAS-CONSTRAINED verdicts are free. "
         "Pro unlocks the numeric DCGI scores (gas-access, gas-cost, composite) plus pipeline "
-        "&amp; operator counts for all scored states, and the raw per-pipeline rows. $199/mo.</p>"
+        "&amp; operator counts for all scored states, and the raw per-pipeline rows. "
+        + _canon_price_display("pro") + ".</p>"
         "<a class=\"btn\" href=\"/pricing\">Upgrade to Pro &rarr;</a>"
         "</div></div>"
         "<script>"

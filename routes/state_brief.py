@@ -43,6 +43,7 @@ from flask import Blueprint, Response, jsonify, request
 
 from utils.cache import BoundedCache
 from routes._paid_seat_heal import paid_seat_heal_html
+from tier_registry import price_display as _canon_price_display
 
 state_brief_bp = Blueprint("state_brief", __name__)
 
@@ -835,10 +836,10 @@ def _build_brief(state: str, tier: str) -> dict:
                 out["paywall"] = {
                     "required_tier": "PRO",
                     "checkout_url":  "/pricing?utm_source=state_brief",
-                    "blurb": ("ISO Breakdown, Transmission Build-Out, State "
-                              "Policy / Tax Incentives, Top Operators, and "
-                              "M&A activity are unlocked for PRO subscribers "
-                              "— $499/mo, all states."),
+                    "blurb": (f"ISO Breakdown, Transmission Build-Out, State "
+                              f"Policy / Tax Incentives, Top Operators, and "
+                              f"M&A activity are unlocked for PRO subscribers "
+                              f"— {_canon_price_display('pro')}, all states."),
                 }
         out["ok"] = True
     finally:
@@ -961,7 +962,7 @@ def _render_html(brief: dict) -> str:
         '<div class="blur-body">ISO Breakdown · Transmission Build-Out · '
         'Tax Incentives · Top Operators · M&amp;A — all states, live updates, '
         'share-ready.</div>'
-        '<a class="cta" href="/pricing?utm_source=state_brief">Unlock with PRO — $499/mo</a>'
+        f'<a class="cta" href="/pricing?utm_source=state_brief">Unlock with PRO — {_canon_price_display("pro")}</a>'
         '</div>'
         '<div class="blur-fake">'
         '<div class="fake-row"></div><div class="fake-row"></div>'

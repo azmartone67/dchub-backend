@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Seed initial A/B variants for /dcpi. Idempotent. Phase 127A: proper UA."""
 import os, json, urllib.request
+from tier_registry import price_display as _canon_price_display
 
 API = os.environ.get("DCHUB_API_BASE", "https://dchub.cloud")
 
@@ -12,7 +13,7 @@ VARIANTS = [
      "content": {"hero_h1": "Where data center power actually exists.",
                  "hero_lede": "The contrarian metric the incumbents will not publish."}},
     {"surface": "/dcpi/cta", "label": "cta-upgrade", "weight": 100,
-     "content": {"cta_text": "Upgrade to Pro - $199/mo"}},
+     "content": {"cta_text": f"Upgrade to Pro - {_canon_price_display('pro')}"}},
     {"surface": "/dcpi/cta", "label": "cta-county", "weight": 100,
      "content": {"cta_text": "Unlock county-level scoring"}},
 ]
