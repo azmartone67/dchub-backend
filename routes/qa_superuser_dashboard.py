@@ -797,6 +797,200 @@ def auto_investigate_candidates(findings: list[dict]) -> tuple[list[dict], list[
     return todo, skipped
 
 
+# ── auto-propose ───────────────────────────────────────────────
+#
+# ONE candidate per run by default. This lane spends a reasoning-tier model call
+# and a unit of the daily PR budget per candidate, and unlike the investigate
+# lane its output is a branch and a pull request. Six runs a day × 1 is the most
+# it can produce, before the PR-opener's own `can_open_pr()` budget.
+AUTO_PROPOSE_DEFAULT_LIMIT = 1
+AUTO_PROPOSE_MAX_LIMIT = 3
+
+
+def auto_propose_candidates(findings: list[dict], gate) -> tuple[list, list]:
+    """Split findings into (to propose, skipped-with-reason). Pure.
+
+    `gate` is `tools.qa_superuser.propose.gate_investigation` — INJECTED rather
+    than imported, so this is testable without the tools tree AND so there is
+    exactly ONE definition of "fit to generate code from", shared with the
+    dashboard button and the propose endpoint's own check. A second copy of that
+    rule would drift, and the drift would be a lane proposing from evidence the
+    server would refuse.
+
+    Eligibility is `is_actionable_finding` — the SAME predicate the investigate
+    lane and the brain intake use. On top of it:
+      * the investigation must pass the gate (exists, current, survived
+        refutation, has a recommendation);
+      * the finding must have NO proposal yet.
+    """
+    todo, skipped = [], []
+    for f in findings or []:
+        key = f.get("key")
+        if not is_actionable_finding(f):
+            continue  # not a candidate at all — silent, not "skipped"
+
+        # ★ Same trap as the investigate lane: `investigation_unreadable` is a
+        #   SEPARATE KEY and `investigation` is absent entirely when the DB
+        #   could not be read. Without this, a DB blip reads as "no proposal
+        #   yet" on every finding and the lane opens a PR per red on recovery.
+        if f.get("investigation_unreadable"):
+            skipped.append({"key": key,
+                            "why": "investigation state unreadable — cannot "
+                                   "tell what was already proposed, so not "
+                                   "dispatching"})
+            continue
+
+        # ★★★ ONE AUTONOMOUS ATTEMPT PER FINDING, EVER. Deliberately blunt.
+        #   A refusal ("'find' appears 3× — ambiguous") is a property of the
+        #   file, not of the moment; re-running the same model against the same
+        #   shape buys the same answer and another unit of budget. If the
+        #   evidence genuinely moves, a human can still click the button — the
+        #   lane degrades to today's behaviour, never to silence with no
+        #   recourse.
+        #   ★ A finer rule — "already proposed against THIS evidence" — becomes
+        #     possible once `proposal_evidence_sha` lands (be#4775). Not built
+        #     on it here so this ships un-stacked.
+        if f.get("proposal"):
+            pp = f.get("proposal") or {}
+            skipped.append({
+                "key": key,
+                "why": f"a proposal already exists for this finding "
+                       f"(state={pp.get('state')!r}) — this lane makes one "
+                       f"attempt per finding; re-proposing is a human decision"})
+            continue
+
+        ok, why = gate(f.get("investigation"))
+        if not ok:
+            skipped.append({"key": key, "why": why})
+            continue
+        todo.append(f)
+    return todo, skipped
+
+
+@qa_superuser_dashboard_bp.route(
+    "/api/v1/admin/qa-superuser/auto-propose", methods=["POST"])
+def qa_superuser_auto_propose():
+    """Write a patch for every red whose CAUSE is already established.
+
+    ★ WHAT THIS CHANGES. `auto-investigate` stops at the analysis by design and
+      says so. That left the loop with no actuator: a finding could be red for
+      days, analysed every 12h, and never routed anywhere, because `propose` was
+      a button on a page nobody had open. This is that actuator.
+
+    ★★★ IT OPENS A **DRAFT**, AND THAT IS THE SAFETY CONTROL.
+      `.github/workflows/auto-enable-automerge.yml` arms GitHub native
+      auto-merge on every NON-DRAFT PR at open, and skips drafts precisely so a
+      propose-only lane stays propose-only. A non-draft PR from this lane would
+      merge to main on green and deploy, with nobody having read the diff — and
+      the board's own footer promises the opposite. Draft keeps that promise
+      true. `brain_automerge` does not reach these either: it filters head
+      branches starting `brain/autofix-`, and the opener names ours
+      `brain/fix-…`.
+
+    ★ IT NEVER MERGES AND NEVER DEPLOYS. It opens a draft for a human.
+
+    Refuses, loudly and with a reason, on every condition the investigate lane
+    refuses on — kill switch, unreadable board, stale board, unfired canary —
+    because a proposal is strictly more expensive than an analysis and must not
+    have a weaker gate than the thing it depends on.
+    """
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    if (os.environ.get("QA_AUTO_PROPOSE") or "").strip() in ("0", "off",
+                                                             "false"):
+        return jsonify({"ok": False, "refused": "kill switch",
+                        "reason": "QA_AUTO_PROPOSE is off"}), 200
+
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run"))
+    try:
+        limit = int(body.get("limit") or AUTO_PROPOSE_DEFAULT_LIMIT)
+    except (TypeError, ValueError):
+        limit = AUTO_PROPOSE_DEFAULT_LIMIT
+    limit = max(1, min(limit, AUTO_PROPOSE_MAX_LIMIT))
+
+    # ★ REFUSE RATHER THAN PROPOSE UNGATED. If the gate cannot be loaded there
+    #   is no way to tell a sound investigation from a refuted one, and the
+    #   failure-safe direction for a lane that opens PRs is to do nothing.
+    try:
+        from tools.qa_superuser import propose as P
+    except Exception as e:  # noqa: BLE001
+        logger.error("[qa-superuser] tools/ not importable under gunicorn: %s", e)
+        return jsonify({"ok": False, "refused": "propose lane unavailable",
+                        "reason": f"tools.qa_superuser.propose import failed: "
+                                  f"{type(e).__name__}: {str(e)[:160]}"}), 503
+
+    data = _load(limit=1)
+    latest = data.get("latest") or {}
+    if data.get("error") or not latest:
+        return jsonify({"ok": False, "refused": "board unreadable",
+                        "reason": data.get("error")
+                        or "no run has been recorded yet"}), 503
+
+    age = _age_hours(latest.get("generated_at"))
+    if age is not None and age > AUTO_INVESTIGATE_MAX_BOARD_AGE_H:
+        return jsonify({"ok": False, "refused": "board is stale",
+                        "reason": f"the latest run is {age:.1f}h old (limit "
+                                  f"{AUTO_INVESTIGATE_MAX_BOARD_AGE_H}h) — a "
+                                  "patch written for it would fix a platform "
+                                  "that has since moved",
+                        "stale_hours": age}), 200
+
+    if not latest.get("canary_fired"):
+        return jsonify({"ok": False, "refused": "must-fail control did not fire",
+                        "reason": "the harness could not be shown capable of "
+                                  "reporting a failure on this run; a diff "
+                                  "written from an untrusted run is worse than "
+                                  "no diff"}), 200
+
+    _attach_investigations(latest)
+    todo, skipped = auto_propose_candidates(latest.get("findings") or [],
+                                            P.gate_investigation)
+    deferred = todo[limit:]
+    todo = todo[:limit]
+
+    if dry_run:
+        return jsonify({
+            "ok": True, "dry_run": True,
+            "would_dispatch": [f.get("key") for f in todo],
+            "deferred_to_next_run": [f.get("key") for f in deferred],
+            "skipped": skipped})
+
+    dispatched = []
+    for f in todo:
+        key = f.get("key")
+        _mark_proposal(key, "running", "writing a patch and validating it")
+        meta = {"key": key, "title": f.get("title"),
+                "surface": f.get("surface"), "seat": f.get("seat"),
+                "evidence": f.get("evidence"),
+                "red_when": f.get("red_when"),
+                "issue_number": f.get("issue_number"),
+                "investigation": f.get("investigation"),
+                # ★ The flag the opener turns into draft=True. Set HERE, at the
+                #   only place that dispatches without a human, rather than
+                #   defaulting it on in _run_proposal — a human who clicked the
+                #   button has already made the decision draft exists to defer.
+                "auto": True}
+        try:
+            import threading
+            threading.Thread(target=_run_proposal, args=(meta,),
+                             daemon=True).start()
+            dispatched.append(key)
+        except Exception as e:  # noqa: BLE001
+            _mark_proposal(key, "error", f"could not dispatch: {e}")
+
+    return jsonify({
+        "ok": True,
+        "dispatched": dispatched,
+        "deferred_to_next_run": [f.get("key") for f in deferred],
+        "skipped": skipped,
+        "note": "DISPATCHED, not finished. Each writes a patch, validates it "
+                "against the real file and opens a DRAFT pull request. This "
+                "lane never marks a PR ready, never merges and never deploys.",
+    })
+
+
 @qa_superuser_dashboard_bp.route(
     "/api/v1/admin/qa-superuser/auto-investigate", methods=["POST"])
 def qa_superuser_auto_investigate():
@@ -997,7 +1191,13 @@ def _run_proposal(meta: dict) -> None:
                   "url": f"{meta.get('surface')}::{key}",
                   "detail": (meta.get("evidence") or "")[:1500],
                   "file": path, "find": fix.get("find"),
-                  "replace": fix.get("replace", "")},
+                  "replace": fix.get("replace", ""),
+                  # ★★★ A PR opened WITHOUT a human gets auto-merge armed on it
+                  #   the moment it opens (auto-enable-automerge.yml fires on
+                  #   every non-draft PR) and would land on main and deploy on
+                  #   green. Draft is what keeps "every success is a PR for you
+                  #   to review" true for this lane.
+                  "draft": bool(meta.get("auto"))},
             timeout=90)
         try:
             out = r.json() if r.content else {}
@@ -1015,6 +1215,27 @@ def _run_proposal(meta: dict) -> None:
             return
 
         pr_url = out.get("pr_url")
+
+        # ★★★ VERIFY THE DRAFT, DO NOT ASSUME IT. `out["draft"]` is echoed from
+        #   GitHub's own response. If we asked for a draft and did not get one,
+        #   auto-merge is ALREADY armed on that PR and the safety property this
+        #   lane depends on is gone. Say so on the card in the loudest terms
+        #   available rather than recording a clean "opened" — a silently
+        #   non-draft autonomous PR is the one outcome nobody would go looking
+        #   for. An older backend that ignores the field lands here too, which
+        #   is the point: the check reads the RESULT, not the request.
+        if meta.get("auto") and not out.get("draft"):
+            _mark_proposal(
+                key, "error",
+                f"OPENED BUT NOT A DRAFT — {pr_url}. This lane requested a "
+                f"draft; GitHub reports draft={out.get('draft')!r}. "
+                f"auto-enable-automerge arms native auto-merge on non-draft "
+                f"PRs, so this may merge and deploy without review. Convert it "
+                f"to a draft or close it.", pr_url, out.get("pr_number"))
+            logger.error("[qa-superuser] auto proposal opened NON-DRAFT: %s",
+                         pr_url)
+            return
+
         _mark_proposal(key, "opened", f"validated: {why}", pr_url,
                        out.get("pr_number"))
         if meta.get("issue_number") and pr_url:
@@ -1796,7 +2017,10 @@ function render(d){
     Probe traffic self-identifies as <code>dchub-qa-superuser</code> — exclude it
     from reach and usage metrics by <b>User-Agent</b>, never by platform tag (the
     MCP server overwrites the platform field).<br>
-    The board never merges, deploys or executes. It reports.
+    The board never merges, deploys or executes. When a red's cause is
+    already established it will open a <b>draft</b> pull request for you to
+    review — draft specifically, because this repo arms auto-merge on every
+    non-draft PR the moment it opens.
   </div>`;
 }
 
