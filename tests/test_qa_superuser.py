@@ -2476,3 +2476,284 @@ class TestTheRunWiresTheLane:
         i = src.index("prop_ok, prop_note = request_auto_proposal")
         window = src[max(0, i - 300):i]
         assert "if auto_ok" not in window, window[-200:]
+
+
+# ── the parked dead end ───────────────────────────────────────────────────
+#
+# A refuted investigation is CURRENT, so the investigate lane skips it forever
+# and the propose gate refuses it forever. Both are right; together they are a
+# dead end nothing reported. Measured 2026-09-18: a CRITICAL sat in it 3.5 days.
+class TestParkVerdict:
+    def _f(self, inv):
+        return {"key": "k", "verdict": "RED", "severity": "critical",
+                "investigation": inv}
+
+    def test_a_refuted_current_analysis_is_parked(self):
+        from tools.qa_superuser.propose import park_verdict
+        parked, why = park_verdict(self._f(
+            {"state": "current", "survived": False, "recommendation": "r"}))
+        assert parked and "refutation" in why
+
+    def test_a_stale_refuted_analysis_is_NOT_parked(self):
+        # Re-investigation will clear it. Escalating work that is already in
+        # flight is how an escalation channel gets muted.
+        from tools.qa_superuser.propose import park_verdict
+        assert park_verdict(self._f(
+            {"state": "stale", "survived": False,
+             "recommendation": "r"}))[0] is False
+
+    def test_an_empty_recommendation_is_parked(self):
+        from tools.qa_superuser.propose import park_verdict
+        assert park_verdict(self._f(
+            {"state": "current", "survived": True, "recommendation": "  "}))[0]
+
+    def test_never_investigated_is_not_parked(self):
+        from tools.qa_superuser.propose import park_verdict
+        assert park_verdict(self._f(None))[0] is False
+
+    def test_a_sound_investigation_is_not_parked(self):
+        from tools.qa_superuser.propose import park_verdict
+        assert park_verdict(self._f(
+            {"state": "current", "survived": True, "recommendation": "r"}))[0] is False
+
+    def test_the_gate_keeps_its_two_tuple_contract(self):
+        # Every existing caller unpacks (ok, why).
+        from tools.qa_superuser.propose import gate_investigation
+        out = gate_investigation({"state": "current", "survived": True,
+                                  "recommendation": "r"})
+        assert len(out) == 2 and out[0] is True
+
+    def test_the_codes_are_distinct_per_clause(self):
+        from tools.qa_superuser.propose import gate_investigation_detail as g
+        assert g(None)[1] == "no_investigation"
+        assert g({"state": "stale", "survived": True,
+                  "recommendation": "r"})[1] == "stale"
+        assert g({"state": "current", "survived": False,
+                  "recommendation": "r"})[1] == "refuted"
+        assert g({"state": "current", "survived": True,
+                  "recommendation": ""})[1] == "no_recommendation"
+        assert g({"state": "current", "survived": True,
+                  "recommendation": "r"})[1] == "ok"
+
+    def test_stale_is_tested_before_refuted(self):
+        # Load-bearing order: if survived were checked first, a stale+refuted
+        # finding would escalate as stuck when re-analysis would have cleared it.
+        from tools.qa_superuser.propose import gate_investigation_detail as g
+        assert g({"state": "stale", "survived": False,
+                  "recommendation": "r"})[1] == "stale"
+
+
+class TestParkedCandidates:
+    def _f(self, **kw):
+        f = {"key": "k", "verdict": "RED", "severity": "critical",
+             "investigation": {"state": "current", "survived": False,
+                               "recommendation": "r"}}
+        f.update(kw)
+        return f
+
+    def _park(self):
+        from tools.qa_superuser.propose import park_verdict
+        return park_verdict
+
+    def test_a_parked_red_is_returned(self):
+        from routes.qa_superuser_dashboard import parked_candidates
+        assert [f["key"] for f, _w in
+                parked_candidates([self._f()], self._park())] == ["k"]
+
+    def test_a_gauge_is_never_escalated(self):
+        from routes.qa_superuser_dashboard import parked_candidates
+        assert parked_candidates(
+            [self._f(verdict="GAUGE", severity="info")], self._park()) == []
+
+    def test_an_already_escalated_finding_is_not_repaged(self):
+        from routes.qa_superuser_dashboard import parked_candidates
+        assert parked_candidates(
+            [self._f(parked_escalated_at="2026-09-01T00:00:00Z")],
+            self._park()) == []
+
+    def test_unreadable_is_not_treated_as_un_escalated(self):
+        # On a DB blip every finding looks un-escalated; re-paging all of them
+        # at once is the one sure way to get this channel ignored.
+        from routes.qa_superuser_dashboard import parked_candidates
+        f = self._f()
+        f["investigation_unreadable"] = "database unreachable"
+        assert parked_candidates([f], self._park()) == []
+
+
+class TestEscalateParked:
+    def _latest(self, **kw):
+        f = {"key": "k", "title": "t", "verdict": "RED", "severity": "critical",
+             "evidence": "e", "issue_number": 42,
+             "investigation": {"state": "current", "survived": False,
+                               "recommendation": "the lead", "confidence": 0.27}}
+        f.update(kw)
+        return {"findings": [f]}
+
+    def test_it_comments_once_and_stamps(self, monkeypatch):
+        import routes.qa_superuser_dashboard as mod
+        posted, stamped = [], []
+        monkeypatch.setattr(mod, "_post_issue_comment",
+                            lambda n, b: posted.append((n, b)) or True)
+        monkeypatch.setattr(mod, "_mark_parked_escalated",
+                            lambda k: stamped.append(k) or True)
+        out = mod._escalate_parked(self._latest())
+        assert out["escalated"] == ["k"]
+        assert posted[0][0] == 42
+        assert stamped == ["k"]
+
+    def test_the_comment_asks_for_a_decision_and_carries_the_evidence(
+            self, monkeypatch):
+        import routes.qa_superuser_dashboard as mod
+        posted = []
+        monkeypatch.setattr(mod, "_post_issue_comment",
+                            lambda n, b: posted.append(b) or True)
+        monkeypatch.setattr(mod, "_mark_parked_escalated", lambda k: True)
+        mod._escalate_parked(self._latest())
+        body = posted[0]
+        assert "needs a human decision" in body
+        assert "the lead" in body, "the refuted analysis must be shown"
+        assert "will not repeat" in body
+
+    def test_a_finding_with_no_issue_is_reported_not_silently_stamped(
+            self, monkeypatch):
+        # Stamping it would drop it forever the moment an issue does exist.
+        import routes.qa_superuser_dashboard as mod
+        stamped = []
+        monkeypatch.setattr(mod, "_post_issue_comment", lambda n, b: True)
+        monkeypatch.setattr(mod, "_mark_parked_escalated",
+                            lambda k: stamped.append(k) or True)
+        out = mod._escalate_parked(self._latest(issue_number=None))
+        assert out["no_issue_to_comment_on"] == ["k"]
+        assert stamped == [], "never stamp what was never delivered"
+
+    def test_a_failed_comment_is_not_stamped(self, monkeypatch):
+        import routes.qa_superuser_dashboard as mod
+        stamped = []
+        monkeypatch.setattr(mod, "_post_issue_comment", lambda n, b: False)
+        monkeypatch.setattr(mod, "_mark_parked_escalated",
+                            lambda k: stamped.append(k) or True)
+        out = mod._escalate_parked(self._latest())
+        assert out["escalated"] == [] and stamped == []
+        assert out["failed"][0]["key"] == "k"
+
+    def test_a_posted_but_unstamped_comment_is_reported(self, monkeypatch):
+        # The next run WILL post again; a duplicate is the visible symptom, so
+        # the run log has to name it rather than reporting a clean success.
+        import routes.qa_superuser_dashboard as mod
+        monkeypatch.setattr(mod, "_post_issue_comment", lambda n, b: True)
+        monkeypatch.setattr(mod, "_mark_parked_escalated", lambda k: False)
+        out = mod._escalate_parked(self._latest())
+        assert out["escalated"] == []
+        assert "stamp failed" in out["failed"][0]["why"]
+
+    def test_a_sound_finding_is_never_escalated(self, monkeypatch):
+        import routes.qa_superuser_dashboard as mod
+        posted = []
+        monkeypatch.setattr(mod, "_post_issue_comment",
+                            lambda n, b: posted.append(b) or True)
+        monkeypatch.setattr(mod, "_mark_parked_escalated", lambda k: True)
+        out = mod._escalate_parked(self._latest(
+            investigation={"state": "current", "survived": True,
+                           "recommendation": "r"}))
+        assert out["escalated"] == [] and posted == []
+
+
+class TestParkedReachesTheInvestigateLaneAndThePage:
+    def _client(self, monkeypatch, findings):
+        import datetime, flask
+        from routes import qa_superuser_dashboard as mod
+        monkeypatch.setenv("DCHUB_ADMIN_KEY", "secret")
+        monkeypatch.delenv("QA_AUTO_INVESTIGATE", raising=False)
+        latest = {"generated_at": datetime.datetime.now(
+                      datetime.timezone.utc).isoformat(),
+                  "canary_fired": True, "findings": findings, "counts": {}}
+        monkeypatch.setattr(mod, "_load",
+                            lambda limit=1: {"latest": latest, "error": None,
+                                             "history": []})
+        monkeypatch.setattr(mod, "_attach_investigations", lambda l: None)
+        app = flask.Flask(__name__)
+        app.register_blueprint(mod.qa_superuser_dashboard_bp)
+        return app.test_client(), mod
+
+    def _parked(self):
+        return [{"key": "k", "title": "t", "verdict": "RED",
+                 "severity": "critical", "evidence": "e", "issue_number": 42,
+                 "investigation": {"state": "current", "survived": False,
+                                   "recommendation": "r"}}]
+
+    def test_the_lane_escalates_and_reports_it(self, monkeypatch):
+        client, mod = self._client(monkeypatch, self._parked())
+        monkeypatch.setattr(mod, "_run_investigation", lambda f: (True, "s"))
+        monkeypatch.setattr(mod, "_post_issue_comment", lambda n, b: True)
+        monkeypatch.setattr(mod, "_mark_parked_escalated", lambda k: True)
+        body = client.post("/api/v1/admin/qa-superuser/auto-investigate",
+                           headers={"X-Admin-Key": "secret"}, json={}).get_json()
+        assert body["parked_escalated"]["escalated"] == ["k"]
+
+    def test_dry_run_names_who_would_be_escalated_and_writes_nothing(
+            self, monkeypatch):
+        client, mod = self._client(monkeypatch, self._parked())
+        posted = []
+        monkeypatch.setattr(mod, "_post_issue_comment",
+                            lambda n, b: posted.append(b) or True)
+        monkeypatch.setattr(mod, "_mark_parked_escalated", lambda k: True)
+        body = client.post("/api/v1/admin/qa-superuser/auto-investigate",
+                           headers={"X-Admin-Key": "secret"},
+                           json={"dry_run": True}).get_json()
+        assert body["would_escalate_parked"] == ["k"]
+        assert posted == [], "dry run must not comment"
+
+    def test_the_card_says_the_loop_has_stopped(self, monkeypatch, tmp_path):
+        """Run the real card script — a substring check on the page source is
+        satisfied by the template even when the branch never renders."""
+        import json, os, re, shutil, subprocess
+        import flask, pytest
+        node = shutil.which("node")
+        if node is None:
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                pytest.fail("node is not on PATH in CI; a skip would report "
+                            "the parked banner as working without rendering it")
+            pytest.skip("node is not on PATH")
+        from routes import qa_superuser_dashboard as mod
+        monkeypatch.setenv("DCHUB_ADMIN_KEY", "secret")
+        app = flask.Flask(__name__)
+        app.register_blueprint(mod.qa_superuser_dashboard_bp)
+        page = app.test_client().get(
+            "/api/v1/qa-superuser/dashboard?admin_key=secret").data.decode()
+        src = tmp_path / "card.js"
+        src.write_text(re.search(r"<script>(.*?)</script>", page, re.S).group(1),
+                       encoding="utf-8")
+
+        def render(finding):
+            h = tmp_path / "run.js"
+            h.write_text(
+                "const fs=require('fs'),vm=require('vm');\n"
+                "const ctx={console,URLSearchParams,setTimeout,"
+                "fetch:()=>new Promise(()=>{}),setInterval:()=>0,"
+                "location:{search:'?admin_key=x'},"
+                "document:{getElementById:()=>null,querySelectorAll:()=>[],"
+                "addEventListener:()=>{}}};ctx.window=ctx;vm.createContext(ctx);"
+                "try{vm.runInContext(fs.readFileSync(%r,'utf8'),ctx);}catch(e){}"
+                "process.stdout.write(ctx.card(%s,'red'));"
+                % (str(src), json.dumps(finding)), encoding="utf-8")
+            r = subprocess.run([node, str(h)], capture_output=True, text=True,
+                               timeout=60)
+            assert r.returncode == 0, r.stderr[-400:]
+            return r.stdout
+
+        base = {"key": "k", "title": "t", "surface": "mcp", "seat": "paid",
+                "verdict": "RED", "severity": "critical", "evidence": "e",
+                "basis": "b", "red_when": "r", "remedy": "m"}
+        html = render({**base, "parked": {"why": "the refutation knocked it down",
+                                          "escalated_at": None}})
+        assert "automated loop has stopped" in html, html[-500:]
+        assert "needs your decision" in html
+        assert "next probe run" in html, "must say the issue post is still due"
+
+        html2 = render({**base, "parked": {
+            "why": "w", "escalated_at": "2026-09-18T00:00:00+00:00"}})
+        assert "Posted to the issue" in html2
+
+        # A finding that is NOT parked must carry no banner at all.
+        html3 = render(base)
+        assert "automated loop has stopped" not in html3, html3[-400:]

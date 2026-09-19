@@ -189,7 +189,11 @@ def _ensure_investigations(cur) -> None:
     #   otherwise the code ships green and every write fails on a missing column.
     for col, ddl in (("proposal_state", "TEXT"), ("proposal_detail", "TEXT"),
                      ("pr_url", "TEXT"), ("pr_number", "INTEGER"),
-                     ("proposal_at", "TIMESTAMPTZ")):
+                     ("proposal_at", "TIMESTAMPTZ"),
+                     # When we told a human this finding is stuck. Stamped once
+                     # so the escalation never repeats — a channel that re-pages
+                     # every 4h gets muted, and then it is not a channel.
+                     ("parked_escalated_at", "TIMESTAMPTZ")):
         cur.execute("ALTER TABLE qa_superuser_investigations "
                     f"ADD COLUMN IF NOT EXISTS {col} {ddl}")
 
@@ -748,6 +752,115 @@ def is_actionable_finding(f: dict) -> bool:
     )
 
 
+def _mark_parked_escalated(key: str) -> bool:
+    """Stamp that we have handed this finding to a human. Never raises."""
+    c = _conn()
+    if c is None:
+        return False
+    try:
+        with c.cursor() as cur:
+            _ensure_investigations(cur)
+            cur.execute("UPDATE qa_superuser_investigations "
+                        "SET parked_escalated_at=NOW() WHERE finding_key=%s",
+                        (key,))
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[qa-superuser] parked stamp failed for %s: %s", key, e)
+        return False
+    finally:
+        try:
+            c.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def parked_candidates(findings: list[dict], park) -> list[dict]:
+    """Actionable findings that are STUCK and have not been escalated yet.
+
+    Pure; `park` is `tools.qa_superuser.propose.park_verdict`, injected for the
+    same reason the propose gate is — one definition, no drift.
+    """
+    out = []
+    for f in findings or []:
+        if not is_actionable_finding(f):
+            continue
+        # ★ Unreadable is not "not escalated". On a DB blip every finding would
+        #   look un-escalated and the lane would re-page the human for all of
+        #   them at once — the one way to guarantee this channel gets ignored.
+        if f.get("investigation_unreadable"):
+            continue
+        if f.get("parked_escalated_at"):
+            continue
+        parked, why = park(f)
+        if parked:
+            out.append((f, why))
+    return out
+
+
+def _escalate_parked(latest: dict) -> dict:
+    """Tell a human, ONCE, about every red the loop has stopped trying on.
+
+    ★★★ WHY THIS EXISTS. A refuted investigation is CURRENT, so the investigate
+    lane skips it forever ("already has a current investigation") and the
+    propose gate refuses it forever (a refuted recommendation must not become a
+    diff). Both are correct. Together they are a dead end that nothing reports:
+    the finding stays RED, gets re-skipped every 4h, and the loop's silence is
+    indistinguishable from the loop working.
+
+    ★ It writes to the GITHUB ISSUE, not just this page. The issue is the
+      authoritative board — it survives a dchub outage, which is exactly the
+      condition under which a stuck critical matters most.
+
+    Best-effort in every direction: a failure here must never take down the
+    investigate lane it rides on.
+    """
+    try:
+        from tools.qa_superuser import propose as P
+    except Exception as e:  # noqa: BLE001
+        return {"escalated": [], "error": f"propose module unavailable: "
+                                          f"{type(e).__name__}: {str(e)[:120]}"}
+
+    done, no_issue, failed = [], [], []
+    for f, why in parked_candidates(latest.get("findings") or [], P.park_verdict):
+        key, issue_no = f.get("key"), f.get("issue_number")
+        if not issue_no:
+            # Nothing to comment on. Say so rather than stamping it escalated,
+            # or it would be silently dropped the moment an issue does exist.
+            no_issue.append(key)
+            continue
+        inv = f.get("investigation") or {}
+        body = (
+            "### ⏸ The automated loop has stopped on this finding\n\n"
+            f"**{f.get('title') or key}**\n\n"
+            f"{why}.\n\n"
+            "So this will not move on its own: it is not eligible for "
+            "re-analysis (its investigation is current) and it is not eligible "
+            "for a proposed fix (the gate refuses it, correctly — a "
+            "recommendation the brain's own refutation knocked down must not "
+            "become a diff).\n\n"
+            f"**What was observed**\n\n> {(f.get('evidence') or '')[:600]}\n\n"
+            + (f"**The analysis that did not hold**"
+               f"{' (confidence ' + format(inv['confidence'], '.2f') + ')' if inv.get('confidence') is not None else ''}"
+               f"\n\n> {(inv.get('recommendation') or '')[:600]}\n\n"
+               if inv.get("recommendation") else "")
+            + "**This needs a human decision.** The usual answers are: the "
+              "finding is real and needs a fix the loop cannot write; the "
+              "check itself is wrong and should be changed; or the condition "
+              "is acceptable and the check should be retired.\n\n"
+              "_Posted once. This comment will not repeat._")
+        if _post_issue_comment(int(issue_no), body):
+            if _mark_parked_escalated(key):
+                done.append(key)
+            else:
+                # Posted but not stamped — report it, because the next run will
+                # post again and a duplicate is the visible symptom.
+                failed.append({"key": key, "why": "commented but stamp failed"})
+        else:
+            failed.append({"key": key, "why": "issue comment failed"})
+    return {"escalated": done, "no_issue_to_comment_on": no_issue,
+            "failed": failed}
+
+
 def auto_investigate_candidates(findings: list[dict]) -> tuple[list[dict], list[dict]]:
     """Split findings into (to investigate, skipped-with-reason).
 
@@ -1065,10 +1178,18 @@ def qa_superuser_auto_investigate():
     todo = todo[:limit]
 
     if dry_run:
+        # Name who WOULD be escalated without writing a comment or a stamp.
+        try:
+            from tools.qa_superuser import propose as _P
+            would_park = [f.get("key") for f, _w in parked_candidates(
+                latest.get("findings") or [], _P.park_verdict)]
+        except Exception:  # noqa: BLE001
+            would_park = None
         return jsonify({
             "ok": True, "dry_run": True,
             "would_dispatch": [f.get("key") for f in todo],
             "deferred_to_next_run": [f.get("key") for f in deferred],
+            "would_escalate_parked": would_park,
             "skipped": skipped})
 
     def _bg():
@@ -1088,14 +1209,24 @@ def qa_superuser_auto_investigate():
     except Exception as e:  # noqa: BLE001
         return jsonify({"ok": False, "error": str(e)[:200]}), 500
 
+    # ★ AFTER the dispatch, and deliberately not gated on it. These findings are
+    #   the ones this lane has ALREADY decided not to analyse; whether today's
+    #   dispatch succeeded has no bearing on whether a human should be told the
+    #   loop is stuck on them.
+    parked = _escalate_parked(latest)
+
     return jsonify({
         "ok": True,
         "dispatched": [f.get("key") for f in todo],
         "deferred_to_next_run": [f.get("key") for f in deferred],
         "skipped": skipped,
+        "parked_escalated": parked,
         "note": "DISPATCHED, not finished — each runs ~48s, sequentially. "
                 "Results are stored per finding and commented on their issues. "
-                "This lane never proposes, opens a PR, merges or deploys.",
+                "This lane never proposes, opens a PR, merges or deploys. It "
+                "DOES comment once on any red it has permanently stopped "
+                "trying on, so a dead end reaches a human instead of being "
+                "re-skipped in silence.",
     })
 
 
@@ -1487,7 +1618,8 @@ def _attach_investigations(latest: dict) -> None:
             cur.execute("SELECT finding_key, evidence_sha, recommendation, "
                         "confidence, survived, issue_number, commented, "
                         "created_at, proposal_state, proposal_detail, pr_url, "
-                        "pr_number, proposal_at FROM qa_superuser_investigations")
+                        "pr_number, proposal_at, parked_escalated_at "
+                        "FROM qa_superuser_investigations")
             for row in cur.fetchall() or []:
                 rows[row[0]] = row[1:]
     except Exception as e:  # noqa: BLE001
@@ -1509,7 +1641,8 @@ def _attach_investigations(latest: dict) -> None:
         if not rec:
             continue
         (sha, rec_text, conf, survived, issue_no, commented, at,
-         p_state, p_detail, pr_url, pr_number, p_at) = rec
+         p_state, p_detail, pr_url, pr_number, p_at, parked_at) = rec
+        f["parked_escalated_at"] = parked_at.isoformat() if parked_at else None
         f["investigation"] = {
             "state": "current"
             if sha == evidence_sha(f.get("evidence") or "") else "stale",
@@ -1520,6 +1653,19 @@ def _attach_investigations(latest: dict) -> None:
             "commented": bool(commented),
             "at": at.isoformat() if at else None,
         }
+        # ★ The card must be able to SAY "the loop has stopped on this". Same
+        #   predicate the escalation uses — one definition, so the page and the
+        #   GitHub comment can never disagree about what is stuck. Soft import:
+        #   a missing tools tree costs the banner, never the board.
+        try:
+            from tools.qa_superuser.propose import park_verdict as _pv
+            _parked, _why = _pv(f)
+            if _parked:
+                f["parked"] = {"why": _why,
+                               "escalated_at": f.get("parked_escalated_at")}
+        except Exception:  # noqa: BLE001
+            pass
+
         if p_state:
             f["proposal"] = {
                 "state": p_state,
@@ -1725,6 +1871,23 @@ function card(f, cls){
   // IS the channel. A refusal is shown with its reason: "'find' appears 3x —
   // ambiguous" is the useful output, and a lane that declines more often than it
   // succeeds must say why or it just looks broken.
+  // ★★★ THE DEAD END, SAID OUT LOUD. Red, analysed, and ineligible for both
+  //   re-analysis and a proposed fix. Before this the card showed a refuted
+  //   analysis and simply no buttons, which reads as "nothing to do here"
+  //   rather than "this is waiting on you" — and a CRITICAL sat in it for 3.5
+  //   days. The gate is not loosened; the dead end is reported.
+  const pk = f.parked;
+  const parked = !pk ? '' : `<div class="acked stale">
+      <b>⏸ The automated loop has stopped on this finding.</b>
+      ${esc(pk.why)}. It will not be re-analysed and no fix can be proposed
+      from it — <b>this needs your decision</b>: fix it by hand, change the
+      check, or retire the check.
+      ${pk.escalated_at
+        ? `<div class="row">Posted to the issue ${ago(pk.escalated_at)}.</div>`
+        : `<div class="row">Not yet posted to the issue — the next probe run
+             does that.</div>`}
+    </div>`;
+
   const pp = f.proposal;
   const prop = !pp ? '' : `<div class="acked ${pp.state==='refused'?'stale':''}">
       ${pp.state === 'opened'
@@ -1789,7 +1952,7 @@ function card(f, cls){
     <div class="row"><b>Measured from:</b> ${esc(f.basis)}</div>
     ${f.verdict==='RED' ? `<div class="row"><b>Red when:</b> ${esc(f.red_when)}</div>`:''}
     ${f.remedy ? `<div class="row"><b>Why it matters:</b> ${esc(f.remedy)}</div>`:''}
-    ${ack}${inv}${prop}${acts}
+    ${ack}${inv}${parked}${prop}${acts}
   </div>`;
 }
 
