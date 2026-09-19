@@ -257,8 +257,7 @@ _WHY = {
 def describe_identity_changes(changes: list[dict], test: str) -> str:
     """The teardown failure. Names the test, the module, and the fix."""
     lines = [
-        f"{test} changed what sys.modules holds for a real library and did "
-        f"not put it back:",
+        f"{test} changed what sys.modules holds and did not put it back:",
         "",
     ]
     for c in changes:

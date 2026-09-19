@@ -335,12 +335,22 @@ def test_gsc_require_gsc_auth_decorator_gates_the_caller():
 
 # ── team_accounts: validate the Stripe subscription before minting ────
 
-def _load_team_validator(fake_stripe):
+def _load_team_validator(fake_stripe, monkeypatch):
+    """Extract the validator and park a fake `stripe` for as long as it runs.
+
+    `_validate_team_subscription` does `import stripe` INSIDE the function, so
+    the stand-in has to survive past this call and into `val(...)` — which is
+    why it goes through monkeypatch.setitem (undone at teardown) rather than a
+    try/finally here. A plain `sys.modules["stripe"] = fake_stripe` left the
+    fake standing for the rest of the process: every later `import stripe` in
+    the suite got a 20-line test double whose Subscription.retrieve returns
+    whichever canned dict the last test in this file happened to want.
+    """
     seg = _extract("routes/team_accounts.py", "_sub_get") + "\n\n" + \
         _extract("routes/team_accounts.py", "_validate_team_subscription")
     ns = {"os": os, "logger": __import__("logging").getLogger("t"),
           "_TEAM_STRIPE_PRICE_ID": "price_team", "Optional": __import__("typing").Optional}
-    sys.modules["stripe"] = fake_stripe
+    monkeypatch.setitem(sys.modules, "stripe", fake_stripe)
     exec(compile(seg, "<team>", "exec"), ns)
     return ns["_validate_team_subscription"]
 
@@ -362,50 +372,50 @@ class _Stripe:
         self.Subscription = _Sub
 
 
-def test_team_create_rejects_absent_subscription():
-    val = _load_team_validator(_Stripe(ret=None))
+def test_team_create_rejects_absent_subscription(monkeypatch):
+    val = _load_team_validator(_Stripe(ret=None), monkeypatch)
     with _env(STRIPE_SECRET_KEY="sk_test"):
         ok, err, code = val(None, "a@b.com")
         assert ok is False and err == "missing_subscription" and code == 400
 
 
-def test_team_create_rejects_inactive_or_price_mismatch():
+def test_team_create_rejects_inactive_or_price_mismatch(monkeypatch):
     with _env(STRIPE_SECRET_KEY="sk_test"):
         # canceled subscription
         val = _load_team_validator(_Stripe(ret={"status": "canceled",
-            "items": {"data": [{"price": {"id": "price_team"}}]}}))
+            "items": {"data": [{"price": {"id": "price_team"}}]}}), monkeypatch)
         ok, err, code = val("sub_1", "a@b.com")
         assert ok is False and err == "subscription_not_active" and code == 402
         # active but wrong price
         val = _load_team_validator(_Stripe(ret={"status": "active",
-            "items": {"data": [{"price": {"id": "price_OTHER"}}]}}))
+            "items": {"data": [{"price": {"id": "price_OTHER"}}]}}), monkeypatch)
         ok, err, code = val("sub_1", "a@b.com")
         assert ok is False and err == "price_mismatch" and code == 402
 
 
-def test_team_create_rejects_on_stripe_lookup_error_failclosed():
-    val = _load_team_validator(_Stripe(raise_=True))
+def test_team_create_rejects_on_stripe_lookup_error_failclosed(monkeypatch):
+    val = _load_team_validator(_Stripe(raise_=True), monkeypatch)
     with _env(STRIPE_SECRET_KEY="sk_test"):
         ok, err, code = val("sub_1", "a@b.com")
         assert ok is False and err == "subscription_lookup_failed" and code == 402
 
 
-def test_team_create_rejects_when_stripe_not_configured():
-    val = _load_team_validator(_Stripe(ret={"status": "active"}))
+def test_team_create_rejects_when_stripe_not_configured(monkeypatch):
+    val = _load_team_validator(_Stripe(ret={"status": "active"}), monkeypatch)
     with _env(STRIPE_SECRET_KEY=None):
         ok, err, code = val("sub_1", "a@b.com")
         assert ok is False and err == "stripe_not_configured" and code == 503
 
 
-def test_team_create_accepts_active_matching_subscription():
+def test_team_create_accepts_active_matching_subscription(monkeypatch):
     val = _load_team_validator(_Stripe(ret={"status": "active",
-        "items": {"data": [{"price": {"id": "price_team"}}]}}))
+        "items": {"data": [{"price": {"id": "price_team"}}]}}), monkeypatch)
     with _env(STRIPE_SECRET_KEY="sk_test"):
         ok, err, code = val("sub_1", "a@b.com")
         assert ok is True and code == 200
         # trialing is also acceptable
     val = _load_team_validator(_Stripe(ret={"status": "trialing",
-        "items": {"data": [{"price": {"id": "price_team"}}]}}))
+        "items": {"data": [{"price": {"id": "price_team"}}]}}), monkeypatch)
     with _env(STRIPE_SECRET_KEY="sk_test"):
         ok, _e, code = val("sub_1", "a@b.com")
         assert ok is True and code == 200

@@ -54,6 +54,12 @@ class _FakeRedis:
 
 
 def _install(fake):
+    """Park the fake under `redis_cache`.
+
+    Writes straight into sys.modules rather than taking a monkeypatch, because
+    the tests call it from inside a request context and several call it twice.
+    `_redis_cache_module_comes_back` below is what puts the real module back.
+    """
     mod = types.ModuleType("redis_cache")
     mod.cache_get = fake.cache_get
     mod.cache_set = fake.cache_set
@@ -61,10 +67,64 @@ def _install(fake):
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _redis_cache_module_comes_back():
+    """Undo `_install`: the repo ships a REAL redis_cache.py, and it must win.
+
+    The first test in this file to call `_install` replaced
+    sys.modules["redis_cache"] with a stub carrying only cache_get/cache_set,
+    and nothing put it back — so for the rest of the process every
+    `import redis_cache` anywhere in the suite bound the fake. Nothing goes
+    red when that happens; the code under test simply talks to a stub that
+    always says what this file wanted it to say.
+
+    Restores by RE-ASSIGNING the saved object (a `del` would leave the name
+    absent, and the next import would build a second module object from the
+    same file — the split this suite already pays for once). `del` only for a
+    name that genuinely was not there before.
+    """
+    present = "redis_cache" in sys.modules
+    saved = sys.modules.get("redis_cache")
+    try:
+        yield
+    finally:
+        if present:
+            sys.modules["redis_cache"] = saved
+        else:
+            sys.modules.pop("redis_cache", None)
+
+
 @pytest.fixture
-def stc(monkeypatch):
-    """Import the module under test fresh, with the kill switch off."""
+def stc(monkeypatch, request):
+    """Import the module under test fresh, with the kill switch off.
+
+    The fresh import is deliberate — the module keeps state in globals — but
+    it leaves a SECOND module object compiled from the same file under
+    `routes._slow_tool_cache`, and everything that bound the first keeps it.
+    Put the original back, both in sys.modules and as the attribute the import
+    machinery sets on the `routes` package.
+    """
+    import routes
+
     monkeypatch.delenv("DCHUB_SLOW_TOOL_CACHE", raising=False)
+
+    had_mod = "routes._slow_tool_cache" in sys.modules
+    saved_mod = sys.modules.get("routes._slow_tool_cache")
+    had_attr = hasattr(routes, "_slow_tool_cache")
+    saved_attr = getattr(routes, "_slow_tool_cache", None)
+
+    def _restore():
+        if had_mod:
+            sys.modules["routes._slow_tool_cache"] = saved_mod
+        else:
+            sys.modules.pop("routes._slow_tool_cache", None)
+        if had_attr:
+            setattr(routes, "_slow_tool_cache", saved_attr)
+        elif hasattr(routes, "_slow_tool_cache"):
+            delattr(routes, "_slow_tool_cache")
+
+    request.addfinalizer(_restore)
+
     sys.modules.pop("routes._slow_tool_cache", None)
     from routes import _slow_tool_cache as m
     return m
@@ -274,7 +334,10 @@ def test_redis_write_failure_does_not_break_the_response(stc, app):
 
 def test_missing_redis_module_falls_through(stc, app, monkeypatch):
     """REDIS_URL unset / redis_cache absent must degrade to slow, not to 500."""
-    sys.modules.pop("redis_cache", None)
+    # No pop first: monkeypatch.setitem saves whatever is registered NOW and
+    # restores exactly that. Popping ahead of it made monkeypatch record
+    # "absent" and undo to absent, which is how the real redis_cache.py stopped
+    # coming back.
     monkeypatch.setitem(sys.modules, "redis_cache", None)
 
     @stc.cache_tool_response(ttl=60, prefix="t", arg_names=("lat",))

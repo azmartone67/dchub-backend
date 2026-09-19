@@ -54,16 +54,44 @@ import pathlib
 import sys
 import types
 
+import pytest
+
 from util.market_entity import market_entity
 
-# _render_deep_dive_body does `from routes.surface_brain import auto_log`
-# inside a try; seed a stub so the extracted code can never import the real
-# route module (which would drag main.py into the test process).
-_sb = types.ModuleType("routes.surface_brain")
-_sb.auto_log = lambda *a, **k: None
-sys.modules.setdefault("routes.surface_brain", _sb)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def _surface_brain_is_stubbed_for_the_duration_of_each_test():
+    """`_render_deep_dive_body` does `from routes.surface_brain import auto_log`
+    inside a try. Park a stub carrying just that, so the extracted code can
+    never import the real route module (which would drag main.py into the test
+    process). Python resolves a dotted module from sys.modules directly, so the
+    `routes` parent is untouched.
+
+    A FIXTURE, not the module-scope `sys.modules.setdefault(...)` this used to
+    be. That seeding ran during COLLECTION, where there is no monkeypatch and
+    no finalizer to undo it, so whichever of this file and
+    tests/test_market_rotation_reachability.py was collected first left a
+    two-attribute stub standing under `routes.surface_brain` for the rest of
+    the process. tests/test_conn_provenance_names_the_endpoint.py loads
+    routes/surface_brain.py by PATH precisely to get around that.
+
+    Restored by monkeypatch on teardown, and installed unconditionally — the
+    old `setdefault` was a no-op whenever an earlier file had already imported
+    the real module, so what these tests exercised depended on collection
+    order.
+    """
+    mp = pytest.MonkeyPatch()
+    sb = types.ModuleType("routes.surface_brain")
+    sb.auto_log = lambda *a, **k: None
+    mp.setitem(sys.modules, "routes.surface_brain", sb)
+    try:
+        yield sb
+    finally:
+        mp.undo()
+
 DEEPDIVE = REPO_ROOT / "routes" / "market_deep_dive.py"
 
 WANT = {

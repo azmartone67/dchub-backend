@@ -102,16 +102,21 @@ _NEVER_EXEMPTABLE = frozenset(_stub_sentinel.WATCHED)
 # ═════════════════════════════════════════════════════════════════════
 # The analyzer
 # ═════════════════════════════════════════════════════════════════════
+def _is_sys_modules(node: ast.AST) -> bool:
+    """True for the expression ``sys.modules`` itself."""
+    return (isinstance(node, ast.Attribute)
+            and node.attr == "modules"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "sys")
+
+
 def _is_sys_modules_subscript(node: ast.AST) -> bool:
-    return (isinstance(node, ast.Subscript)
-            and isinstance(node.value, ast.Attribute)
-            and node.value.attr == "modules"
-            and isinstance(node.value.value, ast.Name)
-            and node.value.value.id == "sys")
+    return isinstance(node, ast.Subscript) and _is_sys_modules(node.value)
 
 
-def _keys_of(node: ast.Subscript, loop_vars: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
-    """Every module name this subscript can stand for.
+def _key_names(node: ast.AST | None,
+               loop_vars: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
+    """Every module name a subscript slice or a call argument can stand for.
 
     ``sys.modules[_name] = ...`` inside ``for _name in ("flask", "psycopg2",
     "requests")`` is the exact shape of the incident, and reporting it as the
@@ -121,14 +126,18 @@ def _keys_of(node: ast.Subscript, loop_vars: dict[str, tuple[str, ...]]) -> tupl
     replaced. Loop variables bound to a literal sequence of strings are
     therefore resolved to the names themselves, one finding each.
     """
-    sl = node.slice
-    if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
-        return (sl.value,)
-    if isinstance(sl, ast.Name) and sl.id in loop_vars:
-        return loop_vars[sl.id]
-    if isinstance(sl, ast.Name):
-        return (f"<{sl.id}>",)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return (node.value,)
+    if isinstance(node, ast.Name) and node.id in loop_vars:
+        return loop_vars[node.id]
+    if isinstance(node, ast.Name):
+        return (f"<{node.id}>",)
     return ("<computed>",)
+
+
+def _keys_of(node: ast.Subscript,
+             loop_vars: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
+    return _key_names(node.slice, loop_vars)
 
 
 def _literal_str_seq(node: ast.AST) -> tuple[str, ...] | None:
@@ -192,8 +201,84 @@ def _value_is_synthetic(value: ast.AST, real_bindings: set[str]) -> bool:
     return True
 
 
+_MUTATORS = ("setdefault", "update")
+
+
+def _mutating_call_findings(call: ast.Call, filename: str,
+                            real_bindings: set[str],
+                            loop_vars: dict[str, tuple[str, ...]]) -> list[dict]:
+    """Findings for a module-scope ``sys.modules.setdefault/update`` call.
+
+    Assignment is not the only way to leave a fake behind, and it is not the
+    way that survived this guard. ``sys.modules.setdefault("x", stub)`` writes
+    the same entry and READS politer — it only fills a name nobody has taken —
+    which is precisely what makes it worse than the assignment: whether the
+    stub wins now depends on COLLECTION ORDER, so the same suite exercises the
+    real module or a two-attribute stand-in depending on which file pytest
+    reached first, and neither outcome is red.
+
+    Measured 2026-09-13: tests/test_market_brief_guard.py and
+    tests/test_market_rotation_reachability.py each seeded
+    ``sys.modules.setdefault("routes.surface_brain", _sb)`` at module scope,
+    and tests/test_conn_provenance_names_the_endpoint.py had to load
+    routes/surface_brain.py BY PATH to work around the stub they left. The
+    scan walked only ``ast.Assign`` targets, so all three sat under a green
+    guard for as long as they existed.
+
+    ``update`` is included because it is the same write with a different
+    spelling, and an unresolvable argument is reported rather than skipped —
+    the conservative direction this module already takes in
+    :func:`_value_is_synthetic`.
+    """
+    fn = call.func
+    if not (isinstance(fn, ast.Attribute) and fn.attr in _MUTATORS
+            and _is_sys_modules(fn.value)):
+        return []
+
+    src = ast.unparse(call)
+
+    def finding(module: str) -> dict:
+        return {"file": filename, "line": call.lineno,
+                "module": module, "source": src}
+
+    if fn.attr == "setdefault":
+        if not call.args:
+            return []                    # setdefault() — a TypeError, not a stub
+        # `setdefault(name)` with no default inserts None, which is still a
+        # module-scope write that nothing undoes.
+        value = call.args[1] if len(call.args) > 1 else None
+        if value is not None and not _value_is_synthetic(value, real_bindings):
+            return []
+        return [finding(m) for m in _key_names(call.args[0], loop_vars)]
+
+    # ── update ──
+    out: list[dict] = []
+    arg = call.args[0] if call.args else None
+    if arg is None and call.keywords and all(k.arg for k in call.keywords):
+        # sys.modules.update(flask=stub)
+        for kw in call.keywords:
+            if _value_is_synthetic(kw.value, real_bindings):
+                out.append(finding(kw.arg))
+        return out
+    if isinstance(arg, ast.Dict):
+        for key, value in zip(arg.keys, arg.values):
+            if key is None:              # {**other} — opaque, report it
+                out.append(finding("<computed>"))
+            elif _value_is_synthetic(value, real_bindings):
+                out.extend(finding(m) for m in _key_names(key, loop_vars))
+        return out
+    # A mapping this scan cannot read. Report rather than wave through.
+    return [finding("<computed>")]
+
+
 def scan_source(source: str, filename: str) -> list[dict]:
     """Module-scope writes of a fabricated object into ``sys.modules``.
+
+    Three spellings of the same write: ``sys.modules[name] = stub``,
+    ``sys.modules.setdefault(name, stub)`` and ``sys.modules.update({...})``.
+    The first was all this scan read until 2026-09-13, and the other two are
+    how three files kept a stub in the tree underneath a green guard — see
+    :func:`_mutating_call_findings`.
 
     Module scope only, on purpose. That is where the defect lives and where it
     is undecidable to fix: collection has no monkeypatch and no fixture
@@ -230,6 +315,9 @@ def scan_source(source: str, filename: str) -> list[dict]:
                                 "module": module,
                                 "source": ast.unparse(child),
                             })
+            if not in_function and isinstance(child, ast.Call):
+                found.extend(_mutating_call_findings(
+                    child, filename, real_bindings, scoped))
             walk(child, nested, scoped)
 
     walk(tree, False, {})
@@ -266,7 +354,8 @@ def test_no_test_module_stubs_a_module_at_import_time():
                  if (f["file"], f["module"]) not in _ALLOWED]
     assert not offenders, (
         "A test module writes a fabricated object into sys.modules at IMPORT "
-        "time. Collection has no monkeypatch and no fixture finalizer, so "
+        "time — by assignment, setdefault() or update(). Collection has no "
+        "monkeypatch and no fixture finalizer, so "
         "nothing puts the real module back — every file imported afterwards in "
         "the same process gets the fake, and in a subset run those files do not "
         "fail, they fail to COLLECT.\n\n"
@@ -339,6 +428,36 @@ sys.modules["_cwg"] = cwg
 _spec.loader.exec_module(cwg)
 '''
 
+# The setdefault/update spellings, added 2026-09-13 with the scanner that
+# reads them. _LEAKY_SETDEFAULT is the verbatim shape that sat in
+# test_market_brief_guard.py and test_market_rotation_reachability.py.
+_LEAKY_SETDEFAULT = '''
+import sys, types
+_sb = types.ModuleType("routes.surface_brain")
+_sb.auto_log = lambda *a, **k: None
+sys.modules.setdefault("routes.surface_brain", _sb)
+'''
+
+_LEAKY_SETDEFAULT_NO_DEFAULT = '''
+import sys
+sys.modules.setdefault("redis_cache")
+'''
+
+_LEAKY_UPDATE = '''
+import sys, types
+sys.modules.update({"redis_cache": types.ModuleType("redis_cache")})
+'''
+
+_LEAKY_UPDATE_KWARGS = '''
+import sys, types
+sys.modules.update(stripe=types.SimpleNamespace(Subscription=None))
+'''
+
+_LEAKY_UPDATE_OPAQUE = '''
+import sys
+sys.modules.update(_MY_STUBS)
+'''
+
 _CLEAN_IN_FIXTURE = '''
 import sys, types, pytest
 
@@ -357,10 +476,44 @@ def _helper():
 '''
 
 
+_CLEAN_SETDEFAULT_IN_A_FUNCTION = '''
+import sys, types
+
+def _run():
+    added = "routes" not in sys.modules
+    sys.modules.setdefault("routes", types.ModuleType("routes"))
+    try:
+        yield
+    finally:
+        if added:
+            sys.modules.pop("routes", None)
+'''
+
+_CLEAN_SETDEFAULT_OF_A_REAL_MODULE = '''
+import importlib, sys
+_real = importlib.import_module("flask")
+sys.modules.setdefault("flask", _real)
+'''
+
+_CLEAN_OTHER_DICT_SETDEFAULT = '''
+_CACHE = {}
+_CACHE.setdefault("flask", object())
+'''
+
+
 @pytest.mark.parametrize("source,expect", [
     (_LEAKY, "flask"),
     (_LEAKY_SIMPLE_NS, "boto3"),
-], ids=["the_original_loop_over_a_literal_tuple", "a_plain_simplenamespace"])
+    (_LEAKY_SETDEFAULT, "routes.surface_brain"),
+    (_LEAKY_SETDEFAULT_NO_DEFAULT, "redis_cache"),
+    (_LEAKY_UPDATE, "redis_cache"),
+    (_LEAKY_UPDATE_KWARGS, "stripe"),
+    (_LEAKY_UPDATE_OPAQUE, "<computed>"),
+], ids=["the_original_loop_over_a_literal_tuple", "a_plain_simplenamespace",
+        "setdefault_the_shape_that_evaded_this_scan",
+        "setdefault_with_no_default_inserts_None",
+        "update_with_a_dict_literal", "update_with_keyword_arguments",
+        "update_with_an_unreadable_mapping"])
 def test_the_static_scan_flags_a_module_scope_stub(source, expect):
     """MUTATION CONTROL. Reintroduce the exact leak; the scan must see it."""
     found = scan_source(source, "test_mutant.py")
@@ -373,8 +526,14 @@ def test_the_static_scan_flags_a_module_scope_stub(source, expect):
         f"flagged {[f['module'] for f in found]}, expected {expect!r}"
 
 
-@pytest.mark.parametrize("source", [_CLEAN_IMPORTLIB, _CLEAN_IN_FIXTURE],
-                         ids=["importlib_module_from_spec", "monkeypatch_and_try_finally"])
+@pytest.mark.parametrize("source", [
+    _CLEAN_IMPORTLIB, _CLEAN_IN_FIXTURE,
+    _CLEAN_SETDEFAULT_IN_A_FUNCTION, _CLEAN_SETDEFAULT_OF_A_REAL_MODULE,
+    _CLEAN_OTHER_DICT_SETDEFAULT,
+], ids=["importlib_module_from_spec", "monkeypatch_and_try_finally",
+        "setdefault_inside_a_function_with_a_finally",
+        "setdefault_of_a_genuinely_imported_module",
+        "setdefault_on_a_dict_that_is_not_sys_modules"])
 def test_the_static_scan_does_not_flag_the_safe_idioms(source):
     """The other half of the control: it must not fire on everything.
 

@@ -106,6 +106,9 @@ def _run(paid, handler_src=None):
     saved = sys.modules.get("routes.dcpi")
     stub = types.ModuleType("routes.dcpi")
     stub._dcpi_is_paid = lambda *a, **k: paid
+    # `routes` may be absent in a single-file run; seed a parent only if there
+    # is none, and remember whether this call is the one that added it.
+    added_routes_parent = "routes" not in sys.modules
     sys.modules.setdefault("routes", types.ModuleType("routes"))
     sys.modules["routes.dcpi"] = stub
     try:
@@ -125,6 +128,12 @@ def _run(paid, handler_src=None):
             sys.modules["routes.dcpi"] = saved
         else:
             sys.modules.pop("routes.dcpi", None)
+        if added_routes_parent:
+            # Drop ONLY a name this call put there. Left behind, the empty
+            # `routes` module stands in for the real package for the rest of
+            # the process — inert in a full run, where routes is already
+            # imported, and a silent shadow in a single-file one.
+            sys.modules.pop("routes", None)
 
     status = result[1] if isinstance(result, tuple) else 200
     return captured.get("payload"), status
@@ -350,6 +359,9 @@ def _run_land_power(paid):
     saved = sys.modules.get("routes.dcpi")
     stub = types.ModuleType("routes.dcpi")
     stub._dcpi_is_paid = lambda *a, **k: paid
+    # `routes` may be absent in a single-file run; seed a parent only if there
+    # is none, and remember whether this call is the one that added it.
+    added_routes_parent = "routes" not in sys.modules
     sys.modules.setdefault("routes", types.ModuleType("routes"))
     sys.modules["routes.dcpi"] = stub
     try:
@@ -376,6 +388,12 @@ def _run_land_power(paid):
             sys.modules["routes.dcpi"] = saved
         else:
             sys.modules.pop("routes.dcpi", None)
+        if added_routes_parent:
+            # Drop ONLY a name this call put there. Left behind, the empty
+            # `routes` module stands in for the real package for the rest of
+            # the process — inert in a full run, where routes is already
+            # imported, and a silent shadow in a single-file one.
+            sys.modules.pop("routes", None)
     return captured["payload"]
 
 
@@ -435,6 +453,9 @@ def test_land_power_gate_is_not_vacuous():
     saved = sys.modules.get("routes.dcpi")
     stub = types.ModuleType("routes.dcpi")
     stub._dcpi_is_paid = lambda *a, **k: False
+    # `routes` may be absent in a single-file run; seed a parent only if there
+    # is none, and remember whether this call is the one that added it.
+    added_routes_parent = "routes" not in sys.modules
     sys.modules.setdefault("routes", types.ModuleType("routes"))
     sys.modules["routes.dcpi"] = stub
     try:
@@ -459,6 +480,12 @@ def test_land_power_gate_is_not_vacuous():
             sys.modules["routes.dcpi"] = saved
         else:
             sys.modules.pop("routes.dcpi", None)
+        if added_routes_parent:
+            # Drop ONLY a name this call put there. Left behind, the empty
+            # `routes` module stands in for the real package for the rest of
+            # the process — inert in a full run, where routes is already
+            # imported, and a silent shadow in a single-file one.
+            sys.modules.pop("routes", None)
 
     assert _paid_values() & _numbers_in(ns_leak["capacity_heatmap"]), \
         "MUTATION SURVIVED: the land-power leak assertion cannot fail"
