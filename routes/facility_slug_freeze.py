@@ -25,8 +25,10 @@ THE FIX (two durable pieces):
      a DETERMINISTIC single-hop 301 instead of a fuzzy guess.
 
 Runs behind the existing fail-closed X-Admin-Key / DCHUB_ADMIN_KEY gate. All DDL
-is idempotent; all backfills are set-once (WHERE canonical_slug IS NULL / ON
-CONFLICT DO NOTHING) so re-running is always safe.
+is idempotent; the canonical_slug backfills are set-once (WHERE canonical_slug
+IS NULL). The ALIAS emitters are idempotent rather than set-once: each may
+correct an alias IT wrote for THAT facility (_ALIAS_REPOINT) and may touch no
+other, so re-running converges instead of freezing a stale 301 target.
 """
 import os
 import re
@@ -237,6 +239,30 @@ def build_id_scheme_slug(provider, name, fac_id):
     h = hashlib.md5(str(fac_id).encode("utf-8")).hexdigest()[:8]
     return f"{provider_slug}-{name_slug}-{h}" if provider_slug else f"{name_slug}-{h}"
 
+# ★★ ONE definition, three emitters (provider-dedupe, id-scheme, stored-slug).
+# A re-mint moves a facility from slug S to S'. An alias old_X -> S written by
+# an earlier freeze run then 301s a legacy, indexed URL to a page that now
+# belongs to a DIFFERENT facility, and ON CONFLICT DO NOTHING made that
+# permanent: the run recomputed the right target every time and threw it away.
+# Repointing is scoped so it can only ever correct an alias THIS emitter wrote
+# for THIS facility:
+#   source = EXCLUDED.source   an emitter never rewrites another emitter's
+#                              alias, so explicit gsc / manual loads still win
+#                              (load_aliases' DO UPDATE keeps that precedence)
+#   facility_id matched        never repoint an alias owned by another facility
+#   canonical_slug IS DISTINCT a no-op stays a no-op, so RETURNING counts only
+#                              the rows that actually moved
+_ALIAS_REPOINT = """
+                ON CONFLICT (old_slug) DO UPDATE
+                   SET canonical_slug = EXCLUDED.canonical_slug
+                 WHERE facility_slug_aliases.source = EXCLUDED.source
+                   AND facility_slug_aliases.facility_id
+                       IS NOT DISTINCT FROM EXCLUDED.facility_id
+                   AND facility_slug_aliases.canonical_slug
+                       IS DISTINCT FROM EXCLUDED.canonical_slug
+                RETURNING 1
+"""
+
 
 def build_disambiguated_slug(provider, name, fac_id, city=None,
                             state=None, country=None):
@@ -400,8 +426,9 @@ def backfill_canonical_slugs(conn, table, batch=5000, max_batches=50):
                 execute_values(cur, """
                     INSERT INTO facility_slug_aliases
                       (old_slug, canonical_slug, facility_id, source)
-                    VALUES %s ON CONFLICT (old_slug) DO NOTHING
-                """, _legacy, template="(%s, %s, %s, %s)")
+                    VALUES %s
+                """ + _ALIAS_REPOINT, _legacy, template="(%s, %s, %s, %s)",
+                    fetch=True)
             except Exception:
                 conn.rollback()   # an alias failure must never block the freeze
         # id cast to text on both sides so the same statement works for the
@@ -458,12 +485,15 @@ def backfill_id_scheme_aliases(conn, table, batch=2000, max_batches=50):
             if old and old != canonical:
                 pairs.append((old, canonical, str(fid), 'id-scheme'))
         if pairs:
-            execute_values(cur, """
+            # ★ RETURNING + fetch, not len(pairs): execute_values PAGES the
+            # argslist, and a conflicting row that the scoped repoint declines
+            # writes nothing. Counting what was ATTEMPTED reported success for
+            # rows the statement skipped — the shape of the #4830 counter bug.
+            got = execute_values(cur, """
                 INSERT INTO facility_slug_aliases (old_slug, canonical_slug, facility_id, source)
                 VALUES %s
-                ON CONFLICT (old_slug) DO NOTHING
-            """, pairs, template="(%s, %s, %s, %s)")
-            inserted += len(pairs)   # attempted (ON CONFLICT skips dupes silently)
+            """ + _ALIAS_REPOINT, pairs, template="(%s, %s, %s, %s)", fetch=True)
+            inserted += len(got or [])
         conn.commit()
         offset += len(rows)
         if len(rows) < batch:
@@ -517,8 +547,13 @@ def backfill_stored_slug_aliases(conn, table, batch=2000, max_batches=50):
       · A 301 is only ever emitted when the requested slug resolves to NOTHING
         (render_facility_profile calls resolve_alias only under `if not fac`),
         so aliasing a slug that still serves 200 cannot hijack a live URL.
-      · ON CONFLICT DO NOTHING — an existing alias, whatever its source, wins.
-        This adds rescue paths; it never repoints one.
+      · ON CONFLICT repoints ONLY an alias this same emitter wrote for this
+        same facility (_ALIAS_REPOINT). An alias from any other source — gsc,
+        manual, another emitter — still wins, so this adds rescue paths and
+        corrects its own stale ones; it never repoints somebody else's.
+        It USED to be DO NOTHING, which also refused to correct its own: a
+        re-mint moved the facility and left the alias 301ing a legacy URL to
+        a page that had since become a different facility.
       · The targets are real: a 40-pair live probe found **40/40 canonical
         targets returning 200** while 33/40 of the old slugs returned 404. A
         backfill that pointed 301s at 404s would be worse than the 404s, so
@@ -544,12 +579,11 @@ def backfill_stored_slug_aliases(conn, table, batch=2000, max_batches=50):
             break
         pairs = [(s, c, str(fid), 'stored-slug') for fid, s, c in rows if s and c]
         if pairs:
-            execute_values(cur, """
+            got = execute_values(cur, """
                 INSERT INTO facility_slug_aliases (old_slug, canonical_slug, facility_id, source)
                 VALUES %s
-                ON CONFLICT (old_slug) DO NOTHING
-            """, pairs, template="(%s, %s, %s, %s)")
-            inserted += len(pairs)   # attempted; ON CONFLICT skips silently
+            """ + _ALIAS_REPOINT, pairs, template="(%s, %s, %s, %s)", fetch=True)
+            inserted += len(got or [])   # rows that actually landed or moved
         conn.commit()
         offset += len(rows)
         if len(rows) < batch:
@@ -1171,6 +1205,9 @@ def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
     for _ in range(max_batches):
         cur.execute(_ranked_cte(cur, table) + f"""
             SELECT r.id, r.provider, r.name, r.city, r.state, r.country,
+                   -- the slug this row was MEASURED on, carried into the
+                   -- write below as a compare-and-swap
+                   r.canonical_slug AS cur_slug,
                    {_BUCKET_CASE} AS bucket,
                    -- the keeper this row actually points at, and the slug it
                    -- is served at. points_elsewhere rows ADOPT this rather
@@ -1190,14 +1227,24 @@ def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
         last_id = str(rows[-1][0])
         # TWO write sets, and they need OPPOSITE guards.
         mint, adopt = [], []
-        for fid, prov, nm, city, st, ctry, bucket, keeper_slug in rows:
+        # ★ THE UNIQUENESS GUARD CANNOT SEE THIS PAGE. `guard` is a correlated
+        # NOT EXISTS over the table being written, so it reads the snapshot the
+        # statement started on and is blind to rows the SAME statement writes.
+        # Two rows whose md5(provider|name|id) prefixes collide would both pass
+        # it and both land — and the freeze index is NOT unique, so nothing
+        # downstream would raise. Claiming each slug once per page closes the
+        # only window the guard leaves open; a row dropped here is not lost,
+        # the next run re-selects it (the id cursor just steps past it today).
+        _claimed = set()
+        for fid, prov, nm, city, st, ctry, cur_slug, bucket, keeper_slug in rows:
             if bucket == 'points_elsewhere':
                 if keeper_slug:
-                    adopt.append((fid, keeper_slug))
+                    adopt.append((fid, keeper_slug, cur_slug))
             else:
                 ns = build_disambiguated_slug(prov, nm, fid, city, st, ctry)
-                if ns:
-                    mint.append((fid, ns))
+                if ns and ns not in _claimed:
+                    _claimed.add(ns)
+                    mint.append((fid, ns, cur_slug))
         if dry_run or not (mint or adopt):
             break
         # ★ RETURNING + fetch, NOT cur.rowcount. execute_values PAGES the
@@ -1209,15 +1256,24 @@ def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
         # the RETURNING rows across every page.
         wrote = 0
         if mint:
+            # ★ COMPARE-AND-SWAP on v.old_slug. Nothing in SQL said these
+            # rows were the rn > 1 rows: the carve-out from set-once lived
+            # entirely in the Python SELECT above, so any re-rank between the
+            # SELECT and the UPDATE — a concurrent freeze run, or a second
+            # owner election like repair_one_url_many_rows.py's — would have
+            # let this statement strip the slug off the row the page SERVES.
+            # Matching the slug the row was measured on makes that write a
+            # no-op instead of a moved live URL.
             got = execute_values(cur, f"""
                 UPDATE {table} AS t SET canonical_slug = v.slug
-                FROM (VALUES %s) AS v(id, slug)
+                FROM (VALUES %s) AS v(id, slug, old_slug)
                 WHERE t.id::text = v.id::text
                   AND v.slug <> ''
+                  AND t.canonical_slug = v.old_slug
                   AND t.canonical_slug IS DISTINCT FROM v.slug
                   AND {guard}
                 RETURNING 1
-            """, mint, template="(%s, %s)", fetch=True)
+            """, mint, template="(%s, %s, %s)", fetch=True)
             wrote += len(got or [])
         if adopt:
             # ★★ THE OPPOSITE GUARD, on purpose. The mint path refuses a slug
@@ -1226,14 +1282,15 @@ def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
             # reject every adopt and write nothing while reporting success.
             got = execute_values(cur, f"""
                 UPDATE {table} AS t SET canonical_slug = v.slug
-                FROM (VALUES %s) AS v(id, slug)
+                FROM (VALUES %s) AS v(id, slug, old_slug)
                 WHERE t.id::text = v.id::text
                   AND v.slug <> ''
+                  AND t.canonical_slug = v.old_slug
                   AND t.canonical_slug IS DISTINCT FROM v.slug
                   AND EXISTS (SELECT 1 FROM {table} k2
                                WHERE k2.canonical_slug = v.slug)
                 RETURNING 1
-            """, adopt, template="(%s, %s)", fetch=True)
+            """, adopt, template="(%s, %s, %s)", fetch=True)
             wrote += len(got or [])
         conn.commit()
         rewritten += wrote
