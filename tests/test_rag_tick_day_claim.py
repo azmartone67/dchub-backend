@@ -209,3 +209,30 @@ def test_claim_fails_closed_when_the_table_cannot_be_created(monkeypatch):
     monkeypatch.setattr(rms, "_conn",
                         lambda: pytest.fail("must not reach the DB after DDL failure"))
     assert rms._claim_utc_day() == (False, "claim_unavailable")
+
+
+# ── whose env is being reported ──────────────────────────────────────
+def test_web_reports_that_it_is_not_the_actor(monkeypatch):
+    """master-tick is proxied to the worker (main.py _WORKER_PROXY_POST_PATHS),
+    so on a web box mode/levers_off describe a process that never runs
+    tier3_act. The surface must say so — a fence set on the wrong service reads
+    exactly like a fence that works."""
+    monkeypatch.setenv("DCHUB_ROLE", "web")
+    sc = rms._arm_scope()
+    assert sc["role"] == "web"
+    assert sc["is_actor"] is False, "web must not claim to be the actor"
+    assert "worker" in sc["note"], "the note must point at where the truth is"
+
+
+def test_worker_reports_that_it_is_the_actor(monkeypatch):
+    monkeypatch.setenv("DCHUB_ROLE", "worker")
+    sc = rms._arm_scope()
+    assert sc["is_actor"] is True
+
+
+def test_unset_role_is_treated_as_the_actor(monkeypatch):
+    """DCHUB_ROLE unset means an all-in-one box (local, failover/Render) that
+    DOES run its own tick. Defaulting to 'not the actor' would silence the
+    fence report on exactly the deployment where it is the only truth."""
+    monkeypatch.delenv("DCHUB_ROLE", raising=False)
+    assert rms._arm_scope()["is_actor"] is True

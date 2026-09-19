@@ -788,10 +788,38 @@ def _claim_utc_day(force: bool = False) -> tuple[bool, str]:
 
 
 def _levers_off() -> list:
-    """Which levers are fenced right now. tier3_act() consults _lever_off() per
-    lever, but nothing SURFACED that, so an operator reading mode="armed" could
-    not see that a branch was switched off underneath it."""
+    """Which levers are fenced IN THIS PROCESS. tier3_act() consults _lever_off()
+    per lever, but nothing SURFACED that, so an operator reading mode="armed"
+    could not see that a branch was switched off underneath it."""
     return [n for n in ("freshness", "coverage", "retrieval", "gap") if _lever_off(n)]
+
+
+def _arm_scope() -> dict:
+    """WHOSE env the mode/levers_off above actually describe.
+
+    ★ /master-state is a GET and is served by whichever process answers it. The
+    TICK is not: '/api/v1/admin/rag/master-tick' is in main.py's
+    _WORKER_PROXY_POST_PATHS, so on a DCHUB_ROLE=web box the POST is relayed to
+    DCHUB_WORKER_INTERNAL_URL and tier3_act() runs — and reads RAG_MASTER_ARM and
+    RAG_LEVER_*_OFF — in the WORKER's environment.
+
+    So on web, `mode` has always described a process that does not act. It read
+    "armed" on 2026-09-19 from the web service while the worker was the one
+    arming; the answer happened to agree, and the evidence did not support it.
+    A fence set on the wrong service reads identically to a fence that works.
+
+    This does not fix that — web cannot read the worker's env — it LABELS it, so
+    a reader knows whether they are looking at the actor.
+    """
+    role = (os.environ.get("DCHUB_ROLE", "all").strip().lower() or "all")
+    return {
+        "role": role,
+        "is_actor": role != "web",
+        "note": ("this process does NOT run the tick — it relays master-tick to "
+                 "the worker, whose env governs the action; read mode/levers_off "
+                 "there" if role == "web" else
+                 "this process runs the tick, so mode/levers_off govern it"),
+    }
 
 
 def _prev_snapshot() -> dict | None:
@@ -896,7 +924,8 @@ def master_tick():
     if not _won:
         return jsonify(ok=True, skipped=_why,
                        mode=("armed" if _act_enabled() else "shadow"),
-                       levers_off=_levers_off()), 200
+                       levers_off=_levers_off(),
+                       arm_scope=_arm_scope()), 200
 
     measure = tier1_measure(prev)
     levers = tier2_score_levers(measure)
@@ -927,6 +956,7 @@ def master_tick():
         persisted=persisted,
         mode=("armed" if _act_enabled() else "shadow"),
         levers_off=_levers_off(),
+        arm_scope=_arm_scope(),
         generated_at=datetime.now(timezone.utc).isoformat(),
     ), 200
 
@@ -949,6 +979,7 @@ def master_state():
             history=rows,
             mode=("armed" if _act_enabled() else "shadow"),
         levers_off=_levers_off(),
+        arm_scope=_arm_scope(),
         ), 200
     except Exception as e:
         return jsonify(error=f"{type(e).__name__}: {str(e)[:160]}"), 500
