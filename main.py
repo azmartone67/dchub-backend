@@ -7200,11 +7200,18 @@ def api_v1_map():
         # unfrozen rows — a slug that MOVED the moment the freeze ran. The
         # builder's None keeps the '' guard for un-sluggable short names, and
         # the hash8 tail is unchanged, so every emitted slug still resolves.
-        # (This query doesn't select canonical_slug — the column is probed
-        # elsewhere because live DDL can lag — so no stored-first here.)
+        #
+        # ★ r-mapslug (2026-09-18, be#4793): STORED-FIRST. The builder has
+        # NOT equalled the frozen slug since the 07-28 dedupe, so composing
+        # here emitted a 301 on every link (measured 109/150 = 73%). The why,
+        # and the DDL probe, live in stored_slugs_by_id().
         from routes.facility_slug_freeze import build_canonical_slug
+        from routes.facility_slug_freeze import stored_slugs_by_id
+        _canon_by_id = stored_slugs_by_id(c, conn, [f.get('id') for f in facilities])
         for f in facilities:
-            f['slug'] = build_canonical_slug(f.get('provider'), f.get('name')) or ''
+            f['slug'] = (_canon_by_id.get(f.get('id'))
+                         or build_canonical_slug(f.get('provider'), f.get('name'))
+                         or '')
 
         c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
         total = c.fetchone()[0]

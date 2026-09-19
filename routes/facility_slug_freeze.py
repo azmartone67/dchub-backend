@@ -101,6 +101,43 @@ def _stable_hash8(provider, name):
     return hashlib.md5(f"{provider or ''}|{name or ''}".encode("utf-8")).hexdigest()[:8]
 
 
+def stored_slugs_by_id(cur, conn, ids):
+    """{id: canonical_slug} for whichever of `ids` the freeze has reached.
+
+    ★ STORED-FIRST, for every emitter. build_canonical_slug() has NOT equalled
+    the frozen slug since 2026-07-28: the freeze (07-03) stored the DOUBLED
+    body and _dedupe_provider_prefix (07-28) changed what the builder returns,
+    so a row frozen before 07-28 rebuilds to a DIFFERENT body. An emitter that
+    composes instead of reading emits a URL that 301s — measured 109 of 150
+    sampled slugs (73%) on /api/v1/map, hash8 tail identical, body moved
+    (be#4793). Re-freezing to match the builder is NOT the fix: it would move
+    every already-indexed facility URL.
+
+    Returns {} when the column does not exist yet — live DDL can lag the code,
+    and callers must fall back to the builder rather than 500.
+    """
+    ids = [i for i in (ids or []) if i is not None]
+    if not ids:
+        return {}
+    try:
+        cur.execute("SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name='discovered_facilities' "
+                    "AND column_name='canonical_slug'")
+        if cur.fetchone() is None:
+            return {}
+        cur.execute("SELECT id, canonical_slug FROM discovered_facilities "
+                    "WHERE id = ANY(%s) AND canonical_slug IS NOT NULL "
+                    "AND canonical_slug <> ''", (ids,))
+        return {r[0]: r[1] for r in cur.fetchall()}
+    except Exception:
+        try:
+            if conn is not None:
+                conn.rollback()
+        except Exception:
+            pass
+        return {}
+
+
 def _dedupe_provider_prefix(provider_slug, name_slug):
     """Drop the provider prefix when the NAME already starts with it.
 

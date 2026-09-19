@@ -63,12 +63,31 @@ def test_old_fstring_compose_forms_are_gone():
 
 
 def test_stored_canonical_slug_preferred_where_selected():
-    """The three SELECT*-backed sites (authed list, free list, /search) read
-    the frozen canonical_slug first; the map site cannot (explicit column
-    list against DDL-probed columns) and documents it."""
-    stored_first = sum(".get('canonical_slug')" in r for r in _regions())
-    assert stored_first == 3, \
-        f"expected 3 stored-first sites, found {stored_first}"
+    """ALL FOUR sites read the frozen canonical_slug before composing.
+
+    ★ 2026-09-18 (be#4793): this asserted THREE and documented the map site as
+    one that "cannot" — explicit column list against DDL-probed columns. That
+    exemption WAS the bug. build_canonical_slug stopped equalling the frozen
+    slug on 2026-07-28, when _dedupe_provider_prefix changed the body the
+    freeze had stored on 07-03, so every row frozen before 07-28 rebuilt to a
+    different body and the map emitted a 301 on every link — measured 109 of
+    150 sampled (73%); the hash8 tail was identical, only the body moved.
+    The map site now fetches canonical_slug by id in its own probed query.
+    """
+    regions = _regions()
+    idiom = sum(".get('canonical_slug')" in r for r in regions)
+    assert idiom == 3, \
+        f"expected 3 sites on the .get('canonical_slug') idiom, found {idiom}"
+
+    maps = [r for r in regions if "stored_slugs_by_id(" in r]
+    assert len(maps) == 1, \
+        f"expected exactly 1 map site reading the frozen slug, found {len(maps)}"
+    assert "_canon_by_id.get(" in maps[0], \
+        "map site reads canonical_slug but does not PREFER it over the builder"
+
+    freeze_src = (ROOT / "routes" / "facility_slug_freeze.py").read_text()
+    assert "information_schema.columns" in freeze_src, \
+        "stored_slugs_by_id must probe for the column; live DDL can lag the code"
 
 
 # ── the builder contract the emitters now rely on ──────────────────────────
