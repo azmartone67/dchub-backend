@@ -1,5 +1,5 @@
 {
-  "why": "Known debt for the unit-tests step's no-network rule (.github/workflows/pre-merge.yml): each test file, or module, and the hosts it reached with the network refused, measured 2026-09-14. scripts/no_network_verdict.py fails the step on any (file, host) not listed here. Do not add an entry to make a new test pass: stub the fetch. Remove an entry when its file is fixed; retire one that merely went quiet only after every run compared (at least three) was quiet.",
+  "why": "Known debt for the unit-tests step's no-network rule (.github/workflows/pre-merge.yml): each test file, or module, and the hosts it reached with the network refused, measured 2026-09-14. scripts/no_network_verdict.py fails the step on any (file, host) not listed here. Do not add an entry to make a new test pass: stub the fetch. Remove an entry when its file is fixed; retire one that merely went quiet only after every run compared (at least three) was quiet. Retired 2026-09-19: the three images.unsplash.com entries (test_card_brand_tokens, test_grid_inventory_card, test_og_card_fonts). routes/og_cards._library_bg is stubbed by tests/_og_photo_stub.py, so the fetch is gone by construction rather than merely quiet; three runs confirmed it. With the entries gone the gate is armed again for those files — a re-introduced fetch now fails the step instead of passing as registered debt.",
   "known": {
     "ai_surface_canon.py": [
       "dchub.cloud"
@@ -43,9 +43,6 @@
     "tests/test_canonical_counts_drift.py": [
       "dchub.cloud"
     ],
-    "tests/test_card_brand_tokens.py": [
-      "images.unsplash.com"
-    ],
     "tests/test_front_door_execute_plan.py": [
       "dchub.cloud"
     ],
@@ -53,18 +50,12 @@
       "dchub-backend-production.up.railway.app",
       "dchub.cloud"
     ],
-    "tests/test_grid_inventory_card.py": [
-      "images.unsplash.com"
-    ],
     "tests/test_lane_triage.py": [
       "api.dchub.cloud",
       "dchub.cloud"
     ],
     "tests/test_llms_txt_names_real_tools.py": [
       "dchub.cloud"
-    ],
-    "tests/test_og_card_fonts.py": [
-      "images.unsplash.com"
     ],
     "tests/test_published_truth_shell_54.py": [
       "dchub.cloud"

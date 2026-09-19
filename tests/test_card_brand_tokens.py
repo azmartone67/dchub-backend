@@ -22,6 +22,15 @@ import os
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _no_unsplash_under_the_suite(monkeypatch):
+    """Every card render here pulled a curated photo from images.unsplash.com.
+    tests/_og_photo_stub.py hands the renderer a deterministic canvas instead —
+    see that module for why the fetch was dead weight."""
+    from tests._og_photo_stub import stub_library_photo
+    stub_library_photo(monkeypatch)
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_DIR = os.path.join(REPO, "routes", "fonts")
 
