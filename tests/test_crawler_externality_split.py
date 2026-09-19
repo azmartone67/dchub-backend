@@ -195,18 +195,43 @@ def test_bucket_prefixes_are_disjoint():
     pin the property that actually holds. The day someone adds an overlapping
     prefix — a bare '/reports' to the metadata set, say — this fails, and
     precedence becomes a decision made on purpose.
+
+    ★ 2026-09-19 — THE FIRST DELIBERATE OVERLAP, decided here as instructed.
+    `/ai-agents` (a content page, and one of the money surfaces) is a prefix of
+    `/ai-agents.json` (a discovery manifest). Both are live 200s, so neither
+    prefix can be dropped, and no pure-prefix spelling separates them. Order is
+    therefore load-bearing from this date — which it demonstrably was NOT
+    before — so the pair is allow-listed below and the precedence it now relies
+    on is asserted, in BOTH the Python and the SQL form, by
+    test_the_ai_agents_prefix_does_not_capture_the_manifest. Any OTHER overlap
+    still fails here.
     """
     from crawler_externality import _BUCKET_RULES
 
+    deliberate = {
+        frozenset({("instructed_metadata", "/ai-agents.json"),
+                   ("organic_content", "/ai-agents")}),
+    }
     rules = [(b, list(p)) for b, p in _BUCKET_RULES]
+    seen = set()
     for i, (b1, p1) in enumerate(rules):
         for b2, p2 in rules[i + 1:]:
             for a in p1:
                 for c in p2:
-                    assert not (a.startswith(c) or c.startswith(a)), (
+                    if not (a.startswith(c) or c.startswith(a)):
+                        continue
+                    pair = frozenset({(b1, a), (b2, c)})
+                    if pair in deliberate:
+                        seen.add(pair)
+                        continue
+                    raise AssertionError(
                         f"{b1}:{a!r} overlaps {b2}:{c!r} — a path can now "
                         "match two buckets, so rule ORDER silently decides "
                         "which. Decide it deliberately and update this test.")
+    assert seen == deliberate, (
+        "an allow-listed overlap no longer exists: the carve-out outlived the "
+        f"prefixes it was written for ({deliberate - seen}). Remove it, or the "
+        "next genuine overlap on those names passes unnoticed.")
 
 
 def test_metadata_and_content_reports_do_not_collide():
@@ -682,3 +707,48 @@ def test_worker_source_is_labelled_as_a_declared_copy():
     assert "DECLARED COPY" in note or "declared copy" in note.lower(), (
         "a pin against a non-deployed file must say so, or it reads as a "
         "guarantee about the live edge")
+
+
+def test_money_surfaces_are_classified_as_content():
+    """2026-09-19 — /connect, /pricing and /ai-agents joined organic_content.
+
+    Baselining assistant citation on 2026-09-18 could not answer "do assistants
+    fetch the money surfaces" in EITHER direction: the paths were in neither
+    this tuple nor ai_tracking.AI_ENDPOINT_PATTERNS, so no collector could see
+    them and their zero was the absence of an instrument. That is failure mode
+    3 in this file's header, and it is the reason these prefixes exist.
+    """
+    from crawler_externality import classify_path
+    for path in ("/connect", "/connect/cursor", "/connect-mcp",
+                 "/pricing", "/pricing/checkout", "/ai-agents"):
+        assert classify_path(path) == "organic_content", (
+            f"{path} is not content — the money surface stays unmeasurable, "
+            "and its zero keeps reading as a measurement")
+
+
+def test_the_ai_agents_prefix_does_not_capture_the_manifest():
+    """`/ai-agents` startsWith-matches `/ai-agents.json`, which is a discovery
+    manifest, is instructed_metadata, and is ALREADY recorded by the Flask hook.
+
+    Here ordering protects it: instructed_metadata is evaluated before
+    organic_content in both classify_path() and the rendered CASE. The SQL half
+    is asserted too — a Python verdict that the SQL form contradicts is exactly
+    the regex-twin defect this file's header opens with.
+
+    The edge beacon has no ordering (one flat list, startsWith), which is why
+    dchub-frontend/_worker.js carries ORGANIC_CONTENT_EXCLUDE instead.
+    """
+    from crawler_externality import _BUCKET_RULES, classify_path, path_bucket_case
+    order = [b for b, _ in _BUCKET_RULES]
+    assert order.index("instructed_metadata") < order.index("organic_content"), (
+        "bucket order flipped. Since 2026-09-19 order is load-bearing: it is "
+        "the only thing keeping /ai-agents.json out of the content bucket")
+    assert classify_path("/ai-agents.json") == "instructed_metadata", (
+        "a discovery manifest is being counted as a content page — the exact "
+        "inflation the /sitemap comment in _BUCKET_RULES exists to prevent")
+    case = path_bucket_case()
+    manifest, page = case.find("'/ai-agents.json%'"), case.find("'/ai-agents%'")
+    assert manifest != -1 and page != -1, "prefix literals missing from the CASE"
+    assert manifest < page, (
+        "the CASE tests the bare /ai-agents prefix before the manifest, so SQL "
+        "buckets /ai-agents.json as content while Python calls it metadata")
