@@ -13,6 +13,7 @@ spending root slots on cron ticks, and nothing bounded concurrent holders.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 
@@ -164,3 +165,58 @@ def test_destroy_still_runs_even_though_nothing_was_created(wf):
                  if "neon_ci_branch.py destroy" in str(s.get("run", "")))
         cond = str(d.get("if", ""))
         assert "always()" in cond and "branch_id != ''" in cond, name
+# ── the ceiling has to be ONE number ─────────────────────────────────────────
+
+
+_SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts/neon_ci_branch.py"
+
+
+def _workflow_fallbacks(wf):
+    """Each creating job's ceiling for when the repo variable is unset.
+
+    Read off the PARSED env value and matched against the `vars.` expression,
+    so a comment mentioning the variable cannot stand in for the expression.
+    """
+    out = {}
+    for name, job in _creating_jobs(wf).items():
+        expr = str((job.get("env") or {}).get("NEON_CI_MAX_ROOTS") or "")
+        m = re.search(r"vars\.NEON_CI_MAX_ROOTS\s*\|\|\s*'(\d+)'", expr)
+        assert m, f"{name}: no `vars.NEON_CI_MAX_ROOTS || '<n>'` in {expr!r}"
+        out[name] = int(m.group(1))
+    return out
+
+
+def _script_fallback():
+    """`--max-roots`' own default, read from the AST.
+
+    Not by import (the module body would run) and not by text match (the help
+    string carries the same words). This is the argument's real default.
+    """
+    found = []
+    for node in ast.walk(ast.parse(_SCRIPT.read_text())):
+        if not isinstance(node, ast.BoolOp) or not isinstance(node.op, ast.Or):
+            continue
+        head, *tail = node.values
+        if "NEON_CI_MAX_ROOTS" not in ast.dump(head):
+            continue
+        if len(tail) == 1 and isinstance(tail[0], ast.Constant):
+            found.append(tail[0].value)
+    assert found, f"no `NEON_CI_MAX_ROOTS or <n>` default in {_SCRIPT.name}"
+    assert len(set(found)) == 1, f"{_SCRIPT.name} disagrees with itself: {found}"
+    return int(found[0])
+
+
+def test_workflow_fallback_matches_the_script_default(wf):
+    """#4809 raised the script default and left the workflow behind.
+
+    The workflow always exports NEON_CI_MAX_ROOTS, so the script's own default
+    is unreachable in CI and the two can drift for weeks without a symptom —
+    until the repo variable is deleted and the lane silently changes capacity.
+    """
+    ceilings = _workflow_fallbacks(wf)
+    # Floor: both creating jobs, measured 2026-09-19. Without it a broken
+    # `_creating_jobs` would make this pass by finding nothing to check.
+    assert len(ceilings) >= 2, f"expected >=2 creating jobs, got {ceilings}"
+    script = _script_fallback()
+    assert set(ceilings.values()) == {script}, (
+        f"workflow fallbacks {ceilings} vs {_SCRIPT.name} default {script}")
