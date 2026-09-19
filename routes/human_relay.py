@@ -330,6 +330,23 @@ def relay_page(token):
     if request.method == "POST":
         return _relay_identify(token, info)
     _log_open(info, token, valid=info is not None)
+    # ── r-go-click-identify (2026-09-18) ──────────────────────────────────
+    # The same join as the /go/c click, one hop earlier. A KEYED token carries
+    # pk-<sha256(the caller's api key)> beside its session, and that key often
+    # already has an address bound to it — so this human is identified the
+    # moment they open the page, without being asked to type anything the
+    # form below would ask for anyway. The form still renders: it is the only
+    # path for a keyless caller, and capture() never overwrites an address
+    # that is already there, so the two cannot fight.
+    _kref = (info or {}).get("kref") or ""
+    _ksid = (info or {}).get("sid") or ""
+    if _kref and _ksid:
+        try:
+            from routes.relay_identify import capture_from_key_ref
+            capture_from_key_ref(_kref, _ksid,
+                                 tool=(info or {}).get("tool") or "")
+        except Exception:  # noqa: BLE001
+            logger.debug("relay-open identify swallowed", exc_info=True)
     tool = (info or {}).get("tool") or ""
     upgrade, keyed = _upgrade_target(info)
     # Empty string when the token carries no session: with nothing to
