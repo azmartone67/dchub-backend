@@ -2597,7 +2597,8 @@ class TestEscalateParked:
         monkeypatch.setattr(mod, "_mark_parked_escalated",
                             lambda k: stamped.append(k) or True)
         out = mod._escalate_parked(self._latest())
-        assert out["escalated"] == ["k"]
+        assert out["escalated"] == [
+            {"key": "k", "issue": 42, "via_board_issue": False}]
         assert posted[0][0] == 42
         assert stamped == ["k"]
 
@@ -2614,17 +2615,47 @@ class TestEscalateParked:
         assert "the lead" in body, "the refuted analysis must be shown"
         assert "will not repeat" in body
 
-    def test_a_finding_with_no_issue_is_reported_not_silently_stamped(
+    def test_a_finding_with_no_issue_goes_to_the_rolling_board_issue(
             self, monkeypatch):
-        # Stamping it would drop it forever the moment an issue does exist.
+        """★★★ `issue_number` is set ONLY for findings someone already clicked
+        "Open an issue" on. Measured live 2026-09-19: the single parked finding
+        on the board had none. Reporting those as "no issue to comment on" made
+        this lane able to page only about findings already being watched — the
+        detect-without-actuate leak it exists to close, committed by the fix.
+        """
         import routes.qa_superuser_dashboard as mod
-        stamped = []
-        monkeypatch.setattr(mod, "_post_issue_comment", lambda n, b: True)
+        posted, stamped = [], []
+        monkeypatch.setattr(mod, "_post_issue_comment",
+                            lambda n, b: posted.append((n, b)) or True)
         monkeypatch.setattr(mod, "_mark_parked_escalated",
                             lambda k: stamped.append(k) or True)
         out = mod._escalate_parked(self._latest(issue_number=None))
-        assert out["no_issue_to_comment_on"] == ["k"]
-        assert stamped == [], "never stamp what was never delivered"
+        assert posted and posted[0][0] == mod.BOARD_ISSUE_NUMBER
+        assert out["escalated"] == [
+            {"key": "k", "issue": mod.BOARD_ISSUE_NUMBER,
+             "via_board_issue": True}]
+        assert stamped == ["k"]
+        body = posted[0][1]
+        assert "stopped on a finding" in body, "headline must not say 'this'"
+        assert "has no issue of its own" in body
+        assert "`k`" in body, "on a shared issue it MUST name the finding"
+
+    def test_the_board_fallback_and_the_footer_link_are_one_constant(self):
+        # Two numbers would mean the escalation lands on an issue the operator
+        # is not looking at, with nothing to show the mismatch.
+        import routes.qa_superuser_dashboard as mod
+        assert str(mod.BOARD_ISSUE_NUMBER) in mod.ISSUE_URL
+        assert mod.ISSUE_URL.endswith("/" + str(mod.BOARD_ISSUE_NUMBER))
+
+    def test_a_per_finding_issue_still_wins_over_the_board(self, monkeypatch):
+        import routes.qa_superuser_dashboard as mod
+        posted = []
+        monkeypatch.setattr(mod, "_post_issue_comment",
+                            lambda n, b: posted.append((n, b)) or True)
+        monkeypatch.setattr(mod, "_mark_parked_escalated", lambda k: True)
+        mod._escalate_parked(self._latest())
+        assert posted[0][0] == 42 != mod.BOARD_ISSUE_NUMBER
+        assert "has no issue of its own" not in posted[0][1]
 
     def test_a_failed_comment_is_not_stamped(self, monkeypatch):
         import routes.qa_superuser_dashboard as mod
@@ -2688,7 +2719,8 @@ class TestParkedReachesTheInvestigateLaneAndThePage:
         monkeypatch.setattr(mod, "_mark_parked_escalated", lambda k: True)
         body = client.post("/api/v1/admin/qa-superuser/auto-investigate",
                            headers={"X-Admin-Key": "secret"}, json={}).get_json()
-        assert body["parked_escalated"]["escalated"] == ["k"]
+        assert body["parked_escalated"]["escalated"] == [
+            {"key": "k", "issue": 42, "via_board_issue": False}]
 
     def test_dry_run_names_who_would_be_escalated_and_writes_nothing(
             self, monkeypatch):
@@ -2700,8 +2732,32 @@ class TestParkedReachesTheInvestigateLaneAndThePage:
         body = client.post("/api/v1/admin/qa-superuser/auto-investigate",
                            headers={"X-Admin-Key": "secret"},
                            json={"dry_run": True}).get_json()
-        assert body["would_escalate_parked"] == ["k"]
+        assert body["would_escalate_parked"] == [
+            {"key": "k", "issue": 42, "via_board_issue": False}]
         assert posted == [], "dry run must not comment"
+
+    def test_the_dry_run_names_the_same_channel_the_wet_run_uses(
+            self, monkeypatch):
+        """★ A preview more optimistic than the run is worse than no preview —
+        it is the only thing read before arming something. Measured live: the
+        dry run said "would escalate X" about a finding the real pass then
+        reported as un-escalatable."""
+        findings = [dict(self._parked()[0], issue_number=None)]
+        client, mod = self._client(monkeypatch, findings)
+        monkeypatch.setattr(mod, "_run_investigation", lambda f: (True, "s"))
+        posted = []
+        monkeypatch.setattr(mod, "_post_issue_comment",
+                            lambda n, b: posted.append(n) or True)
+        monkeypatch.setattr(mod, "_mark_parked_escalated", lambda k: True)
+        dry = client.post("/api/v1/admin/qa-superuser/auto-investigate",
+                          headers={"X-Admin-Key": "secret"},
+                          json={"dry_run": True}).get_json()
+        wet = client.post("/api/v1/admin/qa-superuser/auto-investigate",
+                          headers={"X-Admin-Key": "secret"},
+                          json={}).get_json()
+        assert dry["would_escalate_parked"] == wet["parked_escalated"]["escalated"]
+        assert dry["would_escalate_parked"][0]["via_board_issue"] is True
+        assert posted == [mod.BOARD_ISSUE_NUMBER]
 
     def test_the_card_says_the_loop_has_stopped(self, monkeypatch, tmp_path):
         """Run the real card script — a substring check on the page source is
