@@ -23977,11 +23977,28 @@ def facility_by_slug(slug):
         except Exception as _e_fd:
             return jsonify({'success': False, 'error': 'delta handler unavailable',
                             'detail': str(_e_fd)[:200]}), 503
-    # r-1348 (2026-06-30): bare numeric-id fallback. This <path:slug> rule
-    # (registered first) SHADOWS get_facility_by_id, so /api/v1/facilities/<id>
-    # like 11342 dispatched here and hit "Invalid slug". Resolve numeric ids by
+    # r-1348 (2026-06-30): bare numeric-id fallback. Resolve numeric ids by
     # df.id so the list endpoint's `id` field round-trips. Additive: numeric
     # slugs previously always 404'd, so no existing 200 changes.
+    #
+    # ★ THE "REGISTERED FIRST, SO IT SHADOWS get_facility_by_id" CLAIM THAT
+    #   USED TO STAND HERE IS FALSE. Werkzeug does not dispatch by registration
+    #   order — Map sorts rules by complexity, and a <path:...> converter sorts
+    #   AFTER a plain one. Reproduce with the two real rules:
+    #
+    #     Map([Rule('/api/v1/facilities/<path:slug>',  endpoint='by_slug'),
+    #          Rule('/api/v1/facilities/<facility_id>', endpoint='by_id')])
+    #
+    #     /api/v1/facilities/11342   -> by_id     (NOT this handler)
+    #     /api/v1/facilities/11342/  -> by_slug   (this handler, slug="11342/")
+    #
+    #   The TRAILING SLASH is what selects the handler, not the order. Confirmed
+    #   live against the origin: the bare form answers with get_facility_by_id's
+    #   tier-split payload (an _upgrade block), which this handler never emits.
+    #
+    #   So r-1348's numeric branch is unreachable for the BARE form and only
+    #   ever fires for the slashed one. It is kept because the slashed form is
+    #   real traffic, not because it backstops the bare form — it does not.
     #
     # ★★★ 2026-09-03 — AND IT ONLY WORKED IF YOU SKIPPED THE EDGE. Measured
     #   the same second, same id, same UA:
@@ -23990,20 +24007,46 @@ def facility_by_slug(slug):
     #     origin  /api/v1/facilities/11342/  -> 404 {"error":"Invalid slug"}
     #     EDGE    /api/v1/facilities/11342   -> 404 {"error":"Invalid slug"}
     #
-    #   The edge-served response is byte-identical to the origin's TRAILING-
-    #   SLASH response, so a slash is arriving in front of the origin: `slug`
-    #   is "11342/", .isdigit() is False, and the request falls past this
-    #   branch into the hash-slug parser below, which rejects it.
+    #   That made r-1348 dead on the only path the public actually uses — and
+    #   /api/v1/agent/tools-manifest publishes exactly this URL as
+    #   get_facility's REST equivalent, so every agent following the parity map
+    #   got a 404. cf-cache-status was BYPASS, so this was never a caching
+    #   artifact; the origin really was being asked the wrong question.
     #
-    #   That made r-1348 dead on the only path the public actually uses, for
-    #   two months — and /api/v1/agent/tools-manifest publishes exactly this
-    #   URL as get_facility's REST equivalent, so every agent following the
-    #   parity map got a 404. cf-cache-status was BYPASS, so this was never a
-    #   caching artifact; the origin really was being asked the wrong question.
+    # ★★★ 2026-09-19 — THE CONCLUSION DRAWN FROM THAT TABLE WAS WRONG, and it
+    #   cost another two weeks. The reading was "the edge-served body is
+    #   byte-identical to the origin's TRAILING-SLASH body, so a slash is
+    #   arriving in front of the origin." The bodies do match. The cause does
+    #   not: the edge was rewriting the bare form to
+    #   /api/v1/facilities/by-slug/<x>, a route this backend has NEVER served
+    #   (the real one is /api/v1/facilities/slug/<path:slug>). That path
+    #   arrives here as the literal slug "by-slug/11342", which also misses
+    #   .isdigit() and also fails the name-hash8 split — so it also answers
+    #   {"error":"Invalid slug"}. ONE ERROR STRING, TWO CAUSES. Matching bodies
+    #   identified the branch, and were then read as identifying the input.
+    #
+    #   Proof, cache-busted, same minute:
+    #
+    #     origin  /api/v1/facilities/8484            -> 200 (tier-gated)
+    #     origin  /api/v1/facilities/by-slug/8484    -> 404 {"error":"Invalid slug"}
+    #
+    #   Fixed in dchub-frontend by deleting that rewrite, not here.
+    #
+    #   The rstrip below is therefore NOT what fixed the bare form; it is why
+    #   the SLASHED form answers 200. Keep it — the slashed form is real
+    #   traffic — but do not read it as covering the canonical spelling.
     #
     #   Normalised HERE rather than at the edge on purpose: a <path:slug> route
     #   should not care about a trailing slash whoever sends it, and a backend
     #   fix cannot be undone by a worker deploy in another repo.
+    #
+    # ★ STILL OPEN, ON PURPOSE: this handler applies NO tier gating, so the
+    #   slashed spelling returns latitude/longitude to an anonymous caller
+    #   while the bare spelling (get_facility_by_id) nulls them and returns an
+    #   _upgrade prompt. Measured anonymous 2026-09-19 through the edge:
+    #   /api/v1/facilities/8484/ -> lat 39.022182, lon -77.45761;
+    #   /api/v1/facilities/8484  -> lat None, lon None. Which tier is correct
+    #   is a product decision, so it is recorded here rather than guessed at.
     slug = slug.rstrip("/")
     if slug.isdigit():
         _conn_id = None
