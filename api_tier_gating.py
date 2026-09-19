@@ -1447,6 +1447,9 @@ def register_stripe_v2_routes(app):
     print("  ✅ Stripe v2 routes registered (with Enterprise tier)")
 
 
+from plan_write_floor import keep_higher_plan
+
+
 def _map_stripe_plan_to_tier(plan_key):
     """Map Stripe plan metadata to database tier name."""
     mapping = {
@@ -1473,6 +1476,29 @@ def _handle_checkout_v2(session):
     c = conn.cursor()
 
     if email:
+        # ★ no-downgrade floor. This is the SECOND live checkout writer:
+        # #4724 floored main.py's handle_checkout_completed after a $10.88
+        # pack purchase demoted admin001 pro->starter, but left THIS one
+        # unconditional. _map_stripe_plan_to_tier returns 'pro' for any
+        # unrecognised plan key, so a missing/renamed metadata.plan demotes an
+        # enterprise account here with no bad amount band needed.
+        # Subscription downgrades do NOT arrive on this path - they come as
+        # customer.subscription.updated/.deleted, which stay unfloored.
+        c.execute("SELECT plan FROM users WHERE LOWER(email) = LOWER(%s)",
+                  (email,))
+        _row = c.fetchone()
+        if _row is not None:
+            # get_db() may hand back tuple OR dict rows (see
+            # _auto_provision_api_key's r43-H note) - read both shapes.
+            _held = _row['plan'] if isinstance(_row, dict) else _row[0]
+            _kept = keep_higher_plan(_held, tier)
+            if _kept != tier:
+                print(f"🛡️ no-downgrade floor (v2): checkout resolved "
+                      f"'{tier}' for {email} but account holds '{_held}' — "
+                      f"keeping '{_kept}'. A pack/credit purchase is not a "
+                      f"plan change.")
+                tier = _kept
+
         c.execute("""
             UPDATE users SET plan = %s, stripe_customer_id = %s, subscription_status = 'active'
             WHERE email = %s
