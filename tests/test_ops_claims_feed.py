@@ -436,8 +436,17 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     })
     conn = _Conn(cur)
     monkeypatch.setattr(cf, "open_conn", lambda *a, **k: conn)
+    # ★ RELATIVE to now, never a pinned date. changes_feed._parse_since()
+    # clamps anything older than `now - 30 days` to that floor, and the floor
+    # carries the CURRENT time-of-day. A hard-coded "2026-08-20T00:00:00Z" sat
+    # inside the window when this was written and silently aged out of it on
+    # 2026-09-19T00:00:00Z, at which point the param under test stopped being
+    # the value asked for and became `now - 30d` — failing on every run, on
+    # every PR, forever. Two days back is inside the window at any wall clock.
+    since = dt.datetime.now(_UTC).replace(microsecond=0) - dt.timedelta(days=2)
     with _app(cf.changes_feed_bp).test_client() as c:
-        rv = c.get("/api/v1/changes/since?since=2026-08-20T00:00:00Z")
+        rv = c.get("/api/v1/changes/since?since="
+                   + since.isoformat().replace("+00:00", "Z"))
     assert rv.status_code == 200
     body = rv.get_json()
     claims = body["claims"]
@@ -448,7 +457,9 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     assert body["drill_deeper"]["claims_full"] == "/api/v1/ops/claims"
     sql, params = _sql(cur, "brain_predictions_log")[0]
     assert "outcome_at >= %s" in sql and "IN ('confirmed', 'retracted')" in sql
-    assert params[0] == "CLAIM" and params[1] == dt.datetime(2026, 8, 20, tzinfo=_UTC)
+    assert params[0] == "CLAIM" and params[1] == since, (
+        "the since= the caller asked for did not reach SQL unmodified"
+    )
     # The block is additive: the lanes and their counts are untouched.
     assert "counts" in body and "diff" in body
 
