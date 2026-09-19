@@ -3328,3 +3328,179 @@ class TestTheWriterActuallyStoresTheProvenance:
         import re as _re
         assert _re.search(r"COALESCE\(\s*%s\s*,\s*proposal_evidence_sha\s*\)",
                           seen["q"]), seen["q"]
+
+
+# ── the quota meter: a declared absence is an answer ──────────────────────
+#
+# Live 2026-09-19 the board filed RED "Quota meter does NOT move while it still
+# has room to" on ai_capacity_index. Both calls were gated previews
+# (auto_trial_bind_required), so no full answer was consumed and the counter
+# correctly never moved. The finding named a counter bug that does not exist.
+_DISCLAIM = ("NOT YET APPLICABLE at an anonymous seat. The per-tool full-answer "
+             "budget is a FREE-TIER benefit and is only charged once a durable "
+             "key is bound")
+
+
+def _env(**sc):
+    return {"structuredContent": sc}
+
+
+class TestRemainingRespectsADeclaredAbsence:
+    def test_a_disclaimed_budget_reads_as_no_meter(self):
+        from tools.qa_superuser.probe_mcp import _remaining
+        f, v = _remaining(_env(
+            remaining_full_today=2,
+            quota={"full_answers_remaining_today": None,
+                   "full_answers_unavailable_reason": _DISCLAIM}))
+        assert (f, v) == (None, None), (
+            "the server disclaimed the budget in this very response; reading "
+            "the mint block's number past that is how the false RED was filed")
+
+    def test_without_a_disclaimer_the_top_level_still_counts(self):
+        # ★ THE CONTROL. Returning (None, None) unconditionally would satisfy
+        #   the test above and silently blind the whole check.
+        from tools.qa_superuser.probe_mcp import _remaining
+        assert _remaining(_env(remaining_full_today=2, quota={})) == (
+            "remaining_full_today", 2)
+
+    def test_a_numeric_quota_field_still_wins(self):
+        from tools.qa_superuser.probe_mcp import _remaining
+        f, v = _remaining(_env(
+            remaining_full_today=9,
+            quota={"full_answers_remaining_today": 3,
+                   "full_answers_unavailable_reason": _DISCLAIM}))
+        assert (f, v) == ("quota.full_answers_remaining_today", 3), (
+            "a real number is the contract and must outrank the disclaimer")
+
+
+class TestQuotaCheckOnGatedAndContradictoryEnvelopes:
+    def _run(self, monkeypatch, env_a, env_b):
+        import tools.qa_superuser.probe_mcp as pm
+
+        class _S:
+            def open(self):
+                return self
+
+            def call(self, tool, args):
+                return env_a if args == self._first else env_b
+        _S._first = None
+
+        seq = [env_a, env_b]
+
+        class _Sess:
+            def open(self):
+                return self
+
+            def call(self, tool, args):
+                return seq.pop(0)
+
+        monkeypatch.setattr(pm, "MCPSession", lambda *a, **k: _Sess())
+        out = []
+        pm._check_quota_moves(out)
+        return {f.key.split("::")[-1] if "::" in f.key else f.key: f for f in out}, out
+
+    def _gated(self, remaining):
+        return _env(preview_is_partial=True, auto_trial_bind_required=True,
+                    remaining_full_today=remaining,
+                    quota={"full_answers_remaining_today": None,
+                           "full_answers_unavailable_reason": _DISCLAIM})
+
+    def _served(self, remaining):
+        return _env(results=[1, 2, 3],
+                    quota={"full_answers_remaining_today": remaining})
+
+    def test_a_gated_pair_never_files_a_movement_red(self, monkeypatch):
+        _m, out = self._run(monkeypatch, self._gated(2), self._gated(2))
+        mv = [f for f in out if "meter" in (f.title or "").lower()]
+        assert mv, out
+        assert not [f for f in mv if f.verdict == RED], [
+            (f.title, f.verdict) for f in mv]
+
+    def test_the_no_meter_row_quotes_the_servers_own_reason(self, monkeypatch):
+        # "No meter" has two causes and the old text asserted the rarer one.
+        # A declared absence must be quoted, not guessed at.
+        _m, out = self._run(monkeypatch, self._gated(2), self._gated(2))
+        nm = [f for f in out if "No numeric quota meter" in (f.title or "")]
+        assert nm, [f.title for f in out]
+        assert "DECLARED none applies" in nm[0].evidence
+        assert "ALWAYS_PARTIAL_PREVIEW" not in nm[0].evidence
+
+    def test_a_silent_quota_block_keeps_the_old_explanation(self, monkeypatch):
+        quiet = _env(preview_is_partial=True, quota={})
+        _m, out = self._run(monkeypatch, quiet, quiet)
+        nm = [f for f in out if "No numeric quota meter" in (f.title or "")]
+        assert nm and "ALWAYS_PARTIAL_PREVIEW" in nm[0].evidence
+
+    def test_the_contradiction_is_reported_as_itself(self, monkeypatch):
+        _m, out = self._run(monkeypatch, self._gated(2), self._gated(2))
+        c = [f for f in out if "disclaims" in (f.title or "")]
+        assert c, [f.title for f in out]
+        assert c[0].verdict == RED and c[0].severity == MAJOR
+        assert "remaining_full_today=2" in c[0].evidence
+
+    def test_no_contradiction_when_the_quota_block_is_silent(self, monkeypatch):
+        quiet = _env(preview_is_partial=True, remaining_full_today=2, quota={})
+        _m, out = self._run(monkeypatch, quiet, quiet)
+        assert not [f for f in out if "disclaims" in (f.title or "")]
+
+    def test_a_gated_pair_that_DOES_publish_a_meter_is_unobserved(self, monkeypatch):
+        """★ The case the gated guard actually protects, and it survived a
+        mutation until this test existed.
+
+        A caller can be gated for a reason OTHER than an exhausted budget — a
+        Pro-only tool, a bind requirement — while the quota block still carries
+        a real number. Nothing was consumed, so the meter cannot move, and
+        convicting it would repeat the 2026-09-19 false RED one shape over.
+        """
+        g = _env(preview_is_partial=True,
+                 quota={"full_answers_remaining_today": 2})
+        _m, out = self._run(monkeypatch, g, g)
+        mv = [f for f in out if "meter" in (f.title or "").lower()]
+        assert mv, out
+        assert not [f for f in mv if f.verdict == RED], [
+            (f.title, f.verdict) for f in mv]
+        assert any(f.verdict == BLIND and "not served" in f.title
+                   for f in mv), [(f.title, f.verdict) for f in mv]
+
+    def test_a_gated_first_call_does_not_excuse_a_served_second(self, monkeypatch):
+        """★ BOTH calls must be gated, not just the first.
+
+        Call 2 being SERVED means it consumed a full answer, so a static meter
+        across the pair is a genuine defect. A guard that read only call 1 would
+        excuse it — and every test above uses an identical pair, so that
+        weakening survived mutation until this asymmetric case existed.
+        """
+        _m, out = self._run(monkeypatch,
+                            _env(preview_is_partial=True,
+                                 quota={"full_answers_remaining_today": 2}),
+                            self._served(2))
+        red = [f for f in out if f.verdict == RED]
+        assert red, [(f.title, f.verdict) for f in out]
+        assert "does NOT move" in red[0].title
+
+    def test_a_served_first_call_with_a_gated_second_is_not_red(self, monkeypatch):
+        """★ The mirror case, and the first draft got it WRONG.
+
+        Call 2 consumed nothing, so a static meter across the pair is correct.
+        A guard requiring BOTH calls gated let this fall through to RED — the
+        same false positive, one shape over. Only call 2's state can decide it.
+        """
+        _m, out = self._run(monkeypatch, self._served(2),
+                            _env(preview_is_partial=True,
+                                 quota={"full_answers_remaining_today": 2}))
+        assert not [f for f in out if f.verdict == RED], [
+            (f.title, f.verdict) for f in out]
+
+    def test_a_served_pair_that_does_not_move_is_STILL_red(self, monkeypatch):
+        # ★★ THE LANE MUST STILL BE ABLE TO FAIL. A fix that turned every run
+        #    BLIND would close the false positive by blinding the check, which
+        #    is the defect this harness exists to catch.
+        _m, out = self._run(monkeypatch, self._served(2), self._served(2))
+        red = [f for f in out if f.verdict == RED]
+        assert red, [(f.title, f.verdict) for f in out]
+        assert "does NOT move" in red[0].title
+
+    def test_a_served_pair_that_moves_passes(self, monkeypatch):
+        _m, out = self._run(monkeypatch, self._served(2), self._served(1))
+        assert any(f.verdict == PASS for f in out), [
+            (f.title, f.verdict) for f in out]
