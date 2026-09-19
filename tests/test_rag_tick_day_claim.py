@@ -39,9 +39,22 @@ from routes import rag_master_shell as rms
 
 @pytest.fixture
 def app():
-    a = flask.Flask(__name__)
-    a.add_url_rule("/t", "t", rms.master_tick, methods=["GET", "POST"])
-    return a
+    # Deliberately bare: this fixture registers NO url rule. Doing so would make
+    # this module declare a Flask route, and the route-table coherence gate reads
+    # every declared route in the repo and fails the build for one with no
+    # Cloudflare entry — it did, for this file. A test must not invent production
+    # surface in order to call a view; drive it through a request context.
+    # (The offending call and path are named in the commit message, not here: a
+    # text-scanning gate can match a comment that quotes what it forbids.)
+    return flask.Flask(__name__)
+
+
+def _tick(app, query=""):
+    """Call the real master_tick() in a request context, no route needed."""
+    with app.test_request_context("/" + query, method="POST"):
+        rv = rms.master_tick()
+    body, status = rv if isinstance(rv, tuple) else (rv, 200)
+    return body.get_json(), status
 
 
 @pytest.fixture
@@ -76,8 +89,8 @@ def _claim(monkeypatch, calls, won, why):
 # ── the ordering, which IS the defect ────────────────────────────────
 def test_claim_is_taken_before_any_action(app, wired, monkeypatch):
     _claim(monkeypatch, wired, True, "claimed")
-    with app.test_client() as c:
-        assert c.post("/t").status_code == 200
+    _, status = _tick(app)
+    assert status == 200
     assert "claim" in wired and "ACT" in wired
     assert wired.index("claim") < wired.index("ACT"), (
         f"claim must precede the action, got {wired}")
@@ -85,8 +98,7 @@ def test_claim_is_taken_before_any_action(app, wired, monkeypatch):
 
 def test_lost_claim_takes_no_action(app, wired, monkeypatch):
     _claim(monkeypatch, wired, False, "already_ran_today")
-    with app.test_client() as c:
-        body = c.post("/t").get_json()
+    body, _ = _tick(app)
     assert body["skipped"] == "already_ran_today"
     assert "ACT" not in wired, "a tick that lost the day still acted"
     assert "persist" not in wired
@@ -95,8 +107,7 @@ def test_lost_claim_takes_no_action(app, wired, monkeypatch):
 def test_claim_outage_fails_closed(app, wired, monkeypatch):
     """An unreachable DB must NOT fall through to an unguarded action."""
     _claim(monkeypatch, wired, False, "claim_unavailable")
-    with app.test_client() as c:
-        body = c.post("/t").get_json()
+    body, _ = _tick(app)
     assert body["skipped"] == "claim_unavailable", (
         "an outage must be reported differently from a healthy dedupe")
     assert "ACT" not in wired
@@ -117,9 +128,8 @@ def test_two_ticks_in_the_same_second_act_once(app, wired, monkeypatch):
         return True, "claimed"
 
     monkeypatch.setattr(rms, "_claim_utc_day", fake)
-    with app.test_client() as c:
-        assert c.post("/t").status_code == 200
-        assert c.post("/t").get_json()["skipped"] == "already_ran_today"
+    assert _tick(app)[1] == 200
+    assert _tick(app)[0]["skipped"] == "already_ran_today"
     assert wired.count("ACT") == 1, f"expected exactly one action, got {wired}"
 
 
@@ -132,8 +142,7 @@ def test_force_overrides_the_claim(app, wired, monkeypatch):
         return True, "claimed"
 
     monkeypatch.setattr(rms, "_claim_utc_day", fake)
-    with app.test_client() as c:
-        c.post("/t?force=1")
+    _tick(app, "?force=1")
     assert seen["force"] is True, "?force=1 must reach the claim, or manual runs are dead"
 
 
