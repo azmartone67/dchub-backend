@@ -233,8 +233,14 @@ class _Conn:
     def rollback(self): pass
 
 
-ROWS = [(101, "Amazon Web Services", "Amazon Web Services", "Dublin", None, "IE"),
-        (202, "Amazon Web Services", "Amazon Web Services", "Boise", "ID", "US")]
+ROWS = [(101, "Amazon Web Services", "Amazon Web Services", "Dublin", None,
+         "IE", "marked_no_pointer", None),
+        (202, "Amazon Web Services", "Amazon Web Services", "Boise", "ID",
+         "US", "unmarked", None)]
+
+# a points_elsewhere row: it must ADOPT keeper_slug, never mint a new one.
+ADOPT_ROWS = [(303, "Equinix", "Equinix SV3", "San Jose", "CA", "US",
+               "points_elsewhere", "equinix-sv3-keeper-abcd1234")]
 
 
 def _updates(cur):
@@ -299,7 +305,9 @@ def test_blocked_rows_are_stepped_OVER_not_re_read_forever():
             if "UPDATE" in last:
                 return []                     # the guard rejected every write
             assert "ranked" in last
-            after = (self._args or ('',))[0]
+            # the id cursor is the LAST bound arg: the bucket list is
+            # bound ahead of it.
+            after = (self._args or ('',))[-1]
             out = [r for r in self.all_rows if str(r[0]) > str(after)]
             self.selected.append([r[0] for r in out])
             return out
@@ -350,7 +358,8 @@ class _PagingCur(_Cur):
 
 
 N = 250                                       # 3 pages: 100 + 100 + 50
-BIG = [(i, "Amazon Web Services", "Amazon Web Services", "Dublin", None, "IE")
+BIG = [(i, "Amazon Web Services", "Amazon Web Services", "Dublin", None,
+        "IE", "marked_no_pointer", None)
        for i in range(1, N + 1)]
 
 
@@ -498,6 +507,134 @@ def test_dry_run_fails_safe_on_null_and_zero():
     for safe in (None, 0, [], {}, 1, "true", "yes", object()):
         assert _dry_run_flag({'dry_run': safe}) is True, safe
     assert _dry_run_flag({}) is True
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-09-19 buckets: WHY a row shares, decides WHAT it gets.
+# Measured live after be#4818: of 7,653 non-owner rows,
+#   points_at_owner 5,525 · marked_no_pointer 1,468 · points_elsewhere 660
+#   (all 660 keepers already have a slug) · unmarked 0
+# ─────────────────────────────────────────────────────────────────────────
+from routes.facility_slug_freeze import (          # noqa: E402
+    _BUCKET_CASE, _REWRITE_BUCKETS, slug_collision_groups,
+)
+
+
+def test_points_at_owner_is_never_rewritten():
+    """5,525 rows are twins of the row the page serves. Sharing its URL is
+    correct; minting them pages would undo what be#4808 collapses for."""
+    assert 'points_at_owner' not in _REWRITE_BUCKETS
+
+
+def test_every_other_bucket_is_rewritten():
+    for b in ('points_elsewhere', 'marked_no_pointer', 'unmarked'):
+        assert b in _REWRITE_BUCKETS, f"{b} left colliding"
+
+
+def test_the_buckets_have_exactly_one_definition():
+    """The breakdown publishes a population; the rewrite acts on one. Two
+    CASE expressions would let them diverge — be#4818 reported success on a
+    defect it never touched, which is that shape."""
+    n = FREEZE_SRC.count("WHEN _dupof IS NOT NULL AND _dupof::text = owner_id::text")
+    assert n == 1, f"the bucket CASE is written {n} times; it must be one"
+    for fn in ("slug_collision_breakdown", "slug_collision_groups",
+               "disambiguate_slug_collisions"):
+        seg = FREEZE_SRC[FREEZE_SRC.index("def " + fn):]
+        seg = seg[:seg.index("\ndef ") if "\ndef " in seg else len(seg)]
+        assert "_BUCKET_CASE" in seg, f"{fn} does not read the shared buckets"
+
+
+def test_the_owner_comes_from_the_same_window_that_ranks_rn():
+    cte = _ranked_cte(_Cur(), "discovered_facilities")
+    assert "FIRST_VALUE(id) OVER" in cte and "owner_id" in cte
+    # both windows must carry the same ORDER BY, or owner_id names a row rn=1
+    # does not protect
+    assert cte.count("ORDER BY " + SLUG_OWNER_ORDER_TMPL.format(
+        isdup="is_duplicate", power="power_mw")) == 2
+
+
+def _run(rows, **kw):
+    cur = _Cur(rows)
+    disambiguate_slug_collisions(_Conn(cur), "discovered_facilities",
+                                 dry_run=False, **kw)
+    return cur
+
+
+def test_a_points_elsewhere_row_adopts_its_keepers_slug():
+    """THE point of this bucket: the marker belongs on the keeper's page.
+    Minting a fresh slug would publish a page for a suppressed row."""
+    cur = _run(ADOPT_ROWS)
+    sql = "\n".join(_updates(cur))
+    assert "equinix-sv3-keeper-abcd1234" in sql, \
+        "the row did not adopt its keeper's slug"
+    assert "pointsan-jose" not in sql and "equinix-sv3-san-jose" not in sql, \
+        "a fresh slug was minted for a row that already had a destination"
+
+
+def test_the_adopt_path_does_not_carry_the_not_taken_guard():
+    """Adopting REQUIRES the slug to be taken — by the keeper. Reusing the
+    mint guard here would reject every adopt and write nothing."""
+    cur = _run(ADOPT_ROWS)
+    adopt_sql = [q for q in _updates(cur) if "equinix-sv3-keeper" in q][0]
+    assert "NOT EXISTS" not in adopt_sql, \
+        "the adopt path refuses the very slug it is trying to adopt"
+    assert "EXISTS (SELECT 1" in adopt_sql, \
+        "adopt must require the target slug to already exist"
+
+
+def test_the_mint_path_still_refuses_a_taken_slug():
+    cur = _run(ROWS)
+    mint_sql = [q for q in _updates(cur) if "NOT EXISTS" in q]
+    assert mint_sql, "the mint path lost its not-taken guard"
+
+
+def test_a_points_elsewhere_row_with_no_keeper_slug_is_left_alone():
+    """keeper_has_no_slug was 0 live, but a NULL here must not write ''."""
+    rows = [(303, "Equinix", "Equinix SV3", "San Jose", "CA", "US",
+             "points_elsewhere", None)]
+    cur = _run(rows)
+    assert not _updates(cur), "wrote a row whose keeper has no slug"
+
+
+def test_remaining_counts_the_buckets_the_loop_selects():
+    src = FREEZE_SRC[FREEZE_SRC.index("def disambiguate_slug_collisions"):]
+    src = src.split("return rewritten")[0]
+    # ★ strip comments first. The comment above that return EXPLAINS why
+    # independent_non_owner_rows is wrong here, so a raw substring test
+    # matched its own rationale and failed on correct code.
+    code = "\n".join(l for l in src.splitlines()
+                     if not l.strip().startswith("#"))
+    assert "_REWRITE_BUCKETS" in code, \
+        "remaining must be summed over the buckets the loop acts on"
+    assert "independent_non_owner_rows" not in code, \
+        "remaining still reads the old single-bucket number"
+
+
+def test_the_group_report_returns_bucket_counts_per_slug():
+    class _G(_Cur):
+        def fetchall(self):
+            if "GROUP BY canonical_slug" in (self._last or ""):
+                return [("amazon-web-services-amazon-web-services-7e958426",
+                         62, 61, 0, 0, 0)]
+            return super().fetchall()
+    got = slug_collision_groups(_Conn(_G()), "discovered_facilities", limit=5)
+    assert got == [{'slug': "amazon-web-services-amazon-web-services-7e958426",
+                    'rows': 62, 'points_at_owner': 61, 'points_elsewhere': 0,
+                    'marked_no_pointer': 0, 'unmarked': 0}]
+
+
+def test_the_group_report_never_reads_coordinates():
+    """Span is _twin_redirect_target's question. These counts are keyed by
+    slug so the distance is measured outside this module."""
+    seg = FREEZE_SRC[FREEZE_SRC.index("def slug_collision_groups"):
+                     FREEZE_SRC.index("def disambiguate_slug_collisions")]
+    code = "\n".join(l for l in seg.splitlines()
+                     if not l.strip().startswith("#"))
+    for banned in ("latitude", "longitude", "ST_Distance", "haversine",
+                   "_SAME_SITE_METRES", "_same_physical_site"):
+        assert banned not in code, f"the group report re-derives span ({banned})"
+
+
 
 
 if __name__ == "__main__":
