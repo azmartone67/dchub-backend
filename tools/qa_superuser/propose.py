@@ -217,21 +217,87 @@ def validate_fix(fix: dict, file_content: str | None) -> tuple[bool, str]:
                   f"({len(find)}->{len(str(replace))} chars)")
 
 
+def gate_investigation_detail(inv: dict | None) -> tuple[bool, str, str]:
+    """`gate_investigation` plus a machine-readable REASON CODE.
+
+    ★★★ THE CODE EXISTS SO NOTHING HAS TO MATCH THE PROSE. The park detector
+    below needs to tell "the loop will clear this by itself" from "the loop is
+    finished with this and a human must decide" — a distinction that lives in
+    WHICH clause refused, not in its wording. Keying that on a substring of the
+    English would break silently the first time someone improved the sentence,
+    and it would break in the safe-looking direction: nothing escalates.
+    """
+    if not inv:
+        return False, "no_investigation", (
+            "no investigation yet — run 'Ask the brain' first, so a "
+            "proposal is grounded in a cause rather than a symptom")
+    # ★ ORDER IS LOad-BEARING and must stay this way: stale is tested BEFORE
+    #   survived, so a stale-and-refuted investigation reports `stale` — which
+    #   is correct, because re-investigation will clear it and it must NOT be
+    #   escalated as stuck.
+    if inv.get("state") == "stale":
+        return False, "stale", (
+            "the investigation explains OLDER evidence than the "
+            "finding now shows — re-investigate before proposing")
+    if inv.get("survived") is False:
+        return False, "refuted", (
+            "the brain's own refutation pass knocked this "
+            "recommendation down — it is a lead, not a basis for a "
+            "code change")
+    if not (inv.get("recommendation") or "").strip():
+        return False, "no_recommendation", (
+            "the investigation produced no recommendation")
+    return True, "ok", "investigation is current and survived refutation"
+
+
 def gate_investigation(inv: dict | None) -> tuple[bool, str]:
     """Decide whether an investigation is fit to generate code from."""
-    if not inv:
-        return False, ("no investigation yet — run 'Ask the brain' first, so a "
-                       "proposal is grounded in a cause rather than a symptom")
-    if inv.get("state") == "stale":
-        return False, ("the investigation explains OLDER evidence than the "
-                       "finding now shows — re-investigate before proposing")
-    if inv.get("survived") is False:
-        return False, ("the brain's own refutation pass knocked this "
-                       "recommendation down — it is a lead, not a basis for a "
-                       "code change")
-    if not (inv.get("recommendation") or "").strip():
-        return False, "the investigation produced no recommendation"
-    return True, "investigation is current and survived refutation"
+    ok, _code, why = gate_investigation_detail(inv)
+    return ok, why
+
+
+# ── parked ──────────────────────────────────────────────────────
+#
+# ★★★ THE STATE NOBODY NAMED: red, analysed, and unable to move on its own.
+#
+# A refuted investigation is CURRENT, so the investigate lane skips it ("already
+# has a current investigation") and will not re-analyse until the evidence moves.
+# The propose gate refuses it, correctly, because a recommendation its own
+# refutation knocked down must never become a diff. Both decisions are right and
+# together they are a dead end: the finding stays RED, is re-skipped every 4h,
+# and nothing tells anyone the loop has stopped trying.
+#
+# Measured 2026-09-18: a CRITICAL sat red for 3.5 days in exactly this state.
+#
+# ★ THE FIX IS NOT TO LOOSEN THE GATE. Proposing from a refuted analysis is the
+#   thing the gate exists to prevent. The fix is to admit the dead end and hand
+#   it to a human — an autonomous loop that cannot act is supposed to say so.
+#
+# ★★ ONLY THE TERMINAL CODES PARK. `no_investigation` and `stale` both have a
+#   lane that will pick them up on the next run; escalating those would page a
+#   human about work already in flight, which is how an escalation channel gets
+#   muted and stops working for the cases that need it.
+PARKED_CODES = {
+    "refuted": ("the brain's refutation pass knocked its own analysis down, and "
+                "that analysis is CURRENT — so nothing will re-analyse it and "
+                "nothing may propose from it"),
+    "no_recommendation": ("the investigation produced no recommendation, and it "
+                          "is CURRENT — so nothing will re-analyse it and there "
+                          "is nothing to propose from"),
+}
+
+
+def park_verdict(finding: dict | None) -> tuple[bool, str]:
+    """Is this finding STUCK — red, analysed, and with no next step of its own?
+
+    Pure. Returns (parked, why). `why` is empty when not parked.
+    """
+    if not finding:
+        return False, ""
+    ok, code, _why = gate_investigation_detail(finding.get("investigation"))
+    if ok or code not in PARKED_CODES:
+        return False, ""
+    return True, PARKED_CODES[code]
 
 
 def pr_title_for(finding: dict) -> str:
