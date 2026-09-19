@@ -78,6 +78,18 @@ from html import escape as _esc
 
 from flask import Blueprint, Response, jsonify, request
 
+def _open_status_sql() -> str:
+    """Canon-built 'still open work' predicate. Fail-soft to the canon's own
+    literal if the reader module is unavailable, so an import problem degrades
+    to the CORRECT set rather than to a silently different one."""
+    try:
+        from routes.brain_findings_reader import open_status_sql
+        return open_status_sql()
+    except Exception:  # pragma: no cover - import guard
+        return ("COALESCE(status,'open') NOT IN "
+                "('resolved', 'wont_fix', 'dismissed')")
+
+
 logger = logging.getLogger(__name__)
 
 loop_control_master_shell_bp = Blueprint("loop_control_master_shell", __name__)
@@ -423,7 +435,7 @@ def _lane_triage_wired(c) -> list[dict]:
     if c is not None and _has_table(c, "brain_findings"):
         r = _row(c, """
             SELECT count(*) FROM brain_findings
-             WHERE COALESCE(status, 'open') NOT IN ('resolved', 'wont_fix', 'dismissed')
+             WHERE """ + _open_status_sql() + """
         """)
         open_rows = int(r[0]) if r and r[0] is not None else None
 

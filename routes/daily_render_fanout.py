@@ -29,6 +29,17 @@ import logging
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 
+def _closed_sql_values() -> str:
+    try:
+        from routes.brain_findings_reader import CLOSED_STATUSES
+        return ", ".join("'%s'" % v for v in CLOSED_STATUSES)
+    except Exception:  # pragma: no cover - import guard
+        return "'resolved', 'wont_fix', 'dismissed'"
+
+
+_CLOSED_SQL_VALUES = _closed_sql_values()
+
+
 logger = logging.getLogger(__name__)
 daily_render_fanout_bp = Blueprint("daily_render_fanout", __name__)
 
@@ -281,7 +292,7 @@ def _file_canary_finding(scan):
                 cur.execute(
                     "UPDATE brain_findings SET status='resolved' "
                     "WHERE issue=%s AND COALESCE(status,'open') "
-                    "NOT IN ('resolved','wont_fix','dismissed')", (issue,))
+                    "NOT IN (" + _CLOSED_SQL_VALUES + ")", (issue,))
                 result["resolved"] = cur.rowcount or 0
         conn.commit()
     except Exception as e:

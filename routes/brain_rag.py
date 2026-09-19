@@ -43,6 +43,18 @@ from routes.url_registry import build_public_url
 from util.deals import deals_ok
 from util.capacity_pipeline import cp_ok as _cp_ok
 
+def _open_status_sql(col: str = "status") -> str:
+    """Canon-built 'still open work' predicate — see brain_findings_reader.
+    Fail-soft to the canon's own literal so an import problem degrades to the
+    CORRECT set rather than to a silently different one."""
+    try:
+        from routes.brain_findings_reader import open_status_sql
+        return open_status_sql(col)
+    except Exception:  # pragma: no cover - import guard
+        return ("COALESCE(%s,'open') NOT IN "
+                "('resolved', 'wont_fix', 'dismissed')" % col)
+
+
 brain_rag_bp = Blueprint("brain_rag", __name__)
 logger = logging.getLogger(__name__)
 
@@ -2569,9 +2581,9 @@ def duplicate_findings():
                   ON b.source_table='brain_findings' AND b.id > a.id
                  AND (1 - (a.embedding <=> b.embedding)) >= %s
                 JOIN brain_findings fa ON fa.id::text = a.source_id
-                 AND coalesce(fa.status,'open') NOT IN ('resolved','wont_fix')
+                 AND """ + _open_status_sql("fa.status") + """
                 JOIN brain_findings fb ON fb.id::text = b.source_id
-                 AND coalesce(fb.status,'open') NOT IN ('resolved','wont_fix')
+                 AND """ + _open_status_sql("fb.status") + """
                 ORDER BY 3 DESC LIMIT %s
             """, (thr, limit))
             for a, b, sim, ta, tb in cur.fetchall():

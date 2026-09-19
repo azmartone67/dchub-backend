@@ -45,9 +45,44 @@ logger = logging.getLogger(__name__)
 _WANTED = ("issue", "url", "detail", "detector", "status",
            "seen_count", "count", "count_kind", "last_seen")
 
-# A row in any of these statuses is not open work. Mirrors the writer's
-# explicit-resolve transition set.
-_CLOSED_STATUSES = ("resolved", "wont_fix", "dismissed")
+# ★★★ THE CANON. A row in any of these statuses is not open work.
+#
+# This tuple was already correct and already here — it was just PRIVATE, so
+# three other modules wrote their own copy of it and one copy drifted:
+#
+#   brain_autonomy_loop.py        ('resolved','wont_fix','dismissed')   agrees
+#   loop_control_master_shell.py  ('resolved','wont_fix','dismissed')   agrees
+#   graph_master_shell.py         ('resolved','closed','dismissed')     ★ drifted
+#
+# graph_master_shell gained 'closed' and lost 'wont_fix', so the same row would
+# have been closed work to two shells and open work to the third.
+#
+# ★ Measured 2026-09-18: the divergence is INERT, not active. The ONLY status
+# ever written to brain_findings is 'resolved' (three writers: bug_squash
+# resolve, findings_resolve, stale sweep). NOTHING writes 'wont_fix',
+# 'dismissed' or 'closed' — so every variant currently agrees by accident,
+# because they only disagree about values that no code path produces.
+#
+# That is exactly why this is worth fixing now rather than when it bites. The
+# stale sweep nearly wrote 'dismissed' — the truer word for a withdrawn
+# finding — which would have closed the row for two shells and left it open for
+# the third, silently, with no error anywhere. A vocabulary that agrees only
+# because half of it is unreachable is one honest commit away from a
+# split-brain. Import this; never re-type it.
+CLOSED_STATUSES = ("resolved", "wont_fix", "dismissed")
+_CLOSED_STATUSES = CLOSED_STATUSES  # in-module alias, kept for existing callers
+
+
+def open_status_sql(col: str = "status") -> str:
+    """SQL predicate for 'this row is still open work', built from the canon.
+
+    Returns a literal fragment rather than a (sql, params) pair on purpose: the
+    three call sites compose their queries differently and two of them build
+    strings with no param channel to thread. The interpolated values are
+    module-level code constants, never user input.
+    """
+    vals = ", ".join("'%s'" % v for v in CLOSED_STATUSES)
+    return "COALESCE(%s,'open') NOT IN (%s)" % (col, vals)
 
 # The one count_kind that means "this integer is a tally of sightings".
 # Imported rather than redefined when the writer is importable.
