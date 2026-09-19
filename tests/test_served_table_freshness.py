@@ -612,9 +612,29 @@ class TestFeedHealthFields:
             "`healthy` on a row count is a claim no caller can check")
         assert out["freshness_source"] == "none"
         assert out["last_updated"] is None
-        assert "newest_record" not in out, (
-            "publishing a null newest_record would put the field on the wire "
-            "with nothing in it, which reads as measured-and-empty")
+        assert out["newest_record"] is None
+
+    def test_the_key_set_is_identical_measured_or_not(self):
+        """★★ A CONDITIONAL KEY TAKES THE ENDPOINT OUT OF CONTRACT COVERAGE.
+
+        The first draft omitted `newest_record` when unmeasured, reasoning that
+        a null reads as measured-and-empty. scripts/api_response_contract.py
+        then failed the change as UNMEASURED — it reads response keys
+        statically, and one conditional key makes the whole level dynamic:
+        "A response that became dynamic is not 'fine' — it is invisible to this
+        guard." Trading a guard going dark for a tidier envelope is the wrong
+        way round, and the null is unambiguous anyway because
+        `freshness_source: 'none'` sits beside it.
+        """
+        from routes.served_table_freshness import feed_health_fields
+        import datetime as _d
+        measured = feed_health_fields(
+            "updated_at", _d.datetime(2026, 9, 19, tzinfo=_d.timezone.utc), 5)
+        for other in (feed_health_fields(None, None, 5),
+                      feed_health_fields(None, None, 0),
+                      feed_health_fields("updated_at", None, 5)):
+            assert sorted(other) == sorted(measured), (sorted(other),
+                                                       sorted(measured))
 
     def test_an_empty_table_is_stale_however_it_is_dated(self):
         from routes.served_table_freshness import feed_health_fields

@@ -238,6 +238,16 @@ def feed_health_fields(col, newest, count):
         Not `stale` either — unmeasured is not broken.
       • no rows → `stale`, regardless. An empty served table is a real alarm
         whether or not we can date it.
+
+    ★★ THE KEY SET IS FIXED, INCLUDING THE NULLS, AND THAT IS NOT COSMETIC.
+      `newest_record` was omitted when unmeasured, on the reasoning that a null
+      reads as measured-and-empty. The response-key contract guard then failed
+      the change as UNMEASURED: a conditional key makes the whole level dynamic
+      and the endpoint drops out of coverage entirely. Trading a guard going
+      dark for a slightly tidier envelope is the wrong way round — and the null
+      is not ambiguous anyway, because `freshness_source: "none"` sits beside
+      it saying exactly why. `markets` already publishes `last_updated: None`
+      the same way.
     """
     if col and newest is not None:
         iso = newest.isoformat() if hasattr(newest, "isoformat") else str(newest)
@@ -245,6 +255,7 @@ def feed_health_fields(col, newest, count):
                 "newest_record": iso,
                 "health": "healthy" if count > 0 else "stale"}
     return {"freshness_source": "none", "last_updated": None,
+            "newest_record": None,
             "health": "unknown" if count > 0 else "stale"}
 
 

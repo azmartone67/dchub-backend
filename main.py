@@ -30275,38 +30275,69 @@ def data_freshness():
         #   comparison ("newest content 4h old vs a declared '5 minutes'
         #   refresh"). The backend's job is to put a checkable timestamp on the
         #   wire. Downgrading to `unknown` is only for when there is none.
-        def _evidenced(table, count, **extra):
+        # ★★ THE DICT LITERALS BELOW ARE DELIBERATE, NOT VERBOSITY. Building
+        #   these feeds by merging a helper's return made every one of them
+        #   DYNAMIC to scripts/api_response_contract.py, which reads keys
+        #   statically from the handler: "A response that became dynamic is not
+        #   'fine' — it is invisible to this guard." The first draft of this
+        #   change failed that check as UNMEASURED, which is not a pass. So the
+        #   helper returns FIELDS and each feed still spells its own keys.
+        def _freshness_of(table, count):
             from routes.served_table_freshness import (
                 table_freshness, feed_health_fields)
             # ★ rollback= is load-bearing: a failed probe aborts this SHARED
             #   transaction and every later feed cascades to 0/stale (#1683).
             col, newest = table_freshness(c, table, rollback=conn.rollback)
-            out = dict(extra)
-            out['record_count'] = count
-            out.update(feed_health_fields(col, newest, count))
-            return out
+            return feed_health_fields(col, newest, count)
 
         transactions_count = safe_query(f"SELECT COUNT(*) FROM deals WHERE buyer IS NOT NULL AND buyer != '' AND seller IS NOT NULL AND seller != '' AND {_DEALS_OK}", 0)
-        feeds['transactions'] = _evidenced(
-            'deals', transactions_count,
-            scheduler='autopilot',
-            refresh_interval='5 minutes (via autopilot)',
-            refresh_endpoint='POST /api/transactions/refresh')
+        _fr_tx = _freshness_of('deals', transactions_count)
+        feeds['transactions'] = {
+            'record_count': transactions_count,
+            'scheduler': 'autopilot',
+            'refresh_interval': '5 minutes (via autopilot)',
+            'refresh_endpoint': 'POST /api/transactions/refresh',
+            'freshness_source': _fr_tx['freshness_source'],
+            'last_updated': _fr_tx['last_updated'],
+            'newest_record': _fr_tx['newest_record'],
+            'health': _fr_tx['health']
+        }
 
         fiber_count = safe_query("SELECT COUNT(*) FROM fiber_routes", 0)
-        feeds['fiber_routes'] = _evidenced(
-            'fiber_routes', fiber_count,
-            scheduler='infrastructure_sync', refresh_interval='6 hours')
+        _fr_fib = _freshness_of('fiber_routes', fiber_count)
+        feeds['fiber_routes'] = {
+            'record_count': fiber_count,
+            'scheduler': 'infrastructure_sync',
+            'refresh_interval': '6 hours',
+            'freshness_source': _fr_fib['freshness_source'],
+            'last_updated': _fr_fib['last_updated'],
+            'newest_record': _fr_fib['newest_record'],
+            'health': _fr_fib['health']
+        }
 
         substations_count = safe_query("SELECT COUNT(*) FROM substations", 0)
-        feeds['substations'] = _evidenced(
-            'substations', substations_count,
-            scheduler='infrastructure_sync', refresh_interval='6 hours')
+        _fr_sub = _freshness_of('substations', substations_count)
+        feeds['substations'] = {
+            'record_count': substations_count,
+            'scheduler': 'infrastructure_sync',
+            'refresh_interval': '6 hours',
+            'freshness_source': _fr_sub['freshness_source'],
+            'last_updated': _fr_sub['last_updated'],
+            'newest_record': _fr_sub['newest_record'],
+            'health': _fr_sub['health']
+        }
 
         permits_count = safe_query("SELECT COUNT(*) FROM construction_permits", 0)
-        feeds['construction_permits'] = _evidenced(
-            'construction_permits', permits_count,
-            scheduler='infrastructure_sync', refresh_interval='6 hours')
+        _fr_cp = _freshness_of('construction_permits', permits_count)
+        feeds['construction_permits'] = {
+            'record_count': permits_count,
+            'scheduler': 'infrastructure_sync',
+            'refresh_interval': '6 hours',
+            'freshness_source': _fr_cp['freshness_source'],
+            'last_updated': _fr_cp['last_updated'],
+            'newest_record': _fr_cp['newest_record'],
+            'health': _fr_cp['health']
+        }
 
         healthy_count = sum(1 for f in feeds.values() if f.get('health') == 'healthy')
         stale_count = sum(1 for f in feeds.values() if f.get('health') == 'stale')
