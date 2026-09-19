@@ -105,10 +105,16 @@ jobs:
     env:
       NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
       NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
-      # How many ci- ROOT branches this lane may hold at once. Default 3 leaves
-      # production's root plus one spare inside the 5-root cap. A variable, not
+      # How many ci- ROOT branches this lane may hold at once. A variable, not
       # a literal, so a plan change is a settings edit and not a code change.
-      NEON_CI_MAX_ROOTS: ${{ vars.NEON_CI_MAX_ROOTS || '3' }}
+      # This literal applies ONLY if the variable is deleted, so it has to
+      # track `--max-roots`' own fallback in scripts/neon_ci_branch.py: one env
+      # name with two different defaults is a capacity change nobody can see.
+      # test_neon_ci_workflow_shape.py pins the two together.
+      # Note what this ceiling costs: it saturates the Launch cap exactly
+      # (ci- roots + production = 5), so no spare root absorbs the gap between
+      # the slot check and the create. That race reports UNMEASURED, not red.
+      NEON_CI_MAX_ROOTS: ${{ vars.NEON_CI_MAX_ROOTS || '4' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -317,10 +323,16 @@ jobs:
     env:
       NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
       NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
-      # How many ci- ROOT branches this lane may hold at once. Default 3 leaves
-      # production's root plus one spare inside the 5-root cap. A variable, not
+      # How many ci- ROOT branches this lane may hold at once. A variable, not
       # a literal, so a plan change is a settings edit and not a code change.
-      NEON_CI_MAX_ROOTS: ${{ vars.NEON_CI_MAX_ROOTS || '3' }}
+      # This literal applies ONLY if the variable is deleted, so it has to
+      # track `--max-roots`' own fallback in scripts/neon_ci_branch.py: one env
+      # name with two different defaults is a capacity change nobody can see.
+      # test_neon_ci_workflow_shape.py pins the two together.
+      # Note what this ceiling costs: it saturates the Launch cap exactly
+      # (ci- roots + production = 5), so no spare root absorbs the gap between
+      # the slot check and the create. That race reports UNMEASURED, not red.
+      NEON_CI_MAX_ROOTS: ${{ vars.NEON_CI_MAX_ROOTS || '4' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
