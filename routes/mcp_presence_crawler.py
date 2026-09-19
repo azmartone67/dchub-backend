@@ -2608,13 +2608,28 @@ def _build_canonical_description(registry_name: str) -> str:
     cap = _DESCRIPTION_CHAR_CAPS.get(registry_name,
                                      _DESCRIPTION_CHAR_CAPS["_default"])
 
+    # ★2026-09-19: the POSITIONING clause. A registry listing is read inside a
+    # DIRECTORY, next to other directories — which is exactly the category a
+    # reader will file DC Hub under unless the first clause says otherwise.
+    # "the data layer for data-center infrastructure" did not say otherwise.
+    #
+    # ★ It is paid for out of the tail, not out of the cap. `full` + the
+    #   Capacity Source blurb sits at 496 of the 500 that smithery, pulsemcp
+    #   and every unknown registry use, so a longer opening alone would have
+    #   demoted all three from `full` to `lean` — dropping the tier sentence
+    #   to buy a positioning one. Measured before writing it: opening alone
+    #   = 510 (DEMOTES), opening + the trimmed tail = 497. The tail could be
+    #   trimmed precisely BECAUSE the opening now says "live", which is the
+    #   only thing "Real-time data" was carrying.
+    #   test_registry_copy_fits_the_tightest_cap pins this; it is a silent
+    #   demotion otherwise, which is how the rung ladder fails.
     lean = (
-        f"DC Hub is the data layer for data-center infrastructure: "
+        f"A live MCP infrastructure layer for AI agents, not a static "
+        f"directory: "
         f"{tools} live MCP tools covering {facs_p} discovered facilities, "
         f"{mkts_p} DCPI markets, {deals_p}, ISO-grid headroom, "
         f"interconnection-queue snapshots, fiber intel, energy prices, "
-        f"tax incentives, water risk, and renewable mix. Real-time data, "
-        f"versioned, cited."
+        f"tax incentives, water risk, and renewable mix. Versioned and cited."
     )
     # ★ `lean` exists so the Capacity Source line has somewhere to fall that is
     #   not a 245-character cliff. full+blurb is 496 against the 500 cap that
