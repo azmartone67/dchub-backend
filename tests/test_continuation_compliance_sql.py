@@ -36,6 +36,7 @@ from continuation_compliance import (
 )
 
 psycopg2 = pytest.importorskip("psycopg2")
+from tests._prod_shaped_db import reset_tables  # noqa: E402
 
 DSN = os.environ.get("CONTINUATION_SQL_DSN", "").strip()
 pytestmark = pytest.mark.skipif(
@@ -65,17 +66,15 @@ def shipped_sql():
 
 
 DDL = """
-DROP TABLE IF EXISTS mcp_upgrade_signals;
-DROP TABLE IF EXISTS mcp_calls_identity;
 -- In production mcp_calls_identity is a VIEW over the call log; only the four
 -- columns this query reads are modelled here, with their production types.
-CREATE TABLE mcp_upgrade_signals (
+CREATE TABLE IF NOT EXISTS mcp_upgrade_signals (
     session_id    TEXT,
     message_shown TEXT,
     mcp_client    TEXT,
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE TABLE mcp_calls_identity (
+CREATE TABLE IF NOT EXISTS mcp_calls_identity (
     session_id       TEXT,
     tool_name        TEXT,
     is_real_external BOOLEAN,
@@ -126,6 +125,9 @@ def summary():
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
+            # Prod-shaped branches already have these, and one of them is a
+            # VIEW there -- see tests/_prod_shaped_db.py.
+            reset_tables(cur, "mcp_upgrade_signals", "mcp_calls_identity")
             cur.execute(DDL)
             _fixture(cur)
             # Executed exactly as the route executes it — same string, same

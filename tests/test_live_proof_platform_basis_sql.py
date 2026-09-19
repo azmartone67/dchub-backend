@@ -38,16 +38,16 @@ import pytest
 from tests._live_proof_sql import platforms_query
 
 psycopg2 = pytest.importorskip("psycopg2")
+from tests._prod_shaped_db import reset_tables  # noqa: E402
 
 DSN = os.environ.get("LIVE_PROOF_SQL_DSN", "").strip()
 pytestmark = pytest.mark.skipif(
     not DSN, reason="LIVE_PROOF_SQL_DSN not set — no Postgres to run against")
 
 DDL = """
-DROP TABLE IF EXISTS mcp_calls_identity;
 -- In production this is a VIEW over the call log; only the five columns the
 -- query reads are modelled here, with their production types.
-CREATE TABLE mcp_calls_identity (
+CREATE TABLE IF NOT EXISTS mcp_calls_identity (
     platform         TEXT,
     session_id       TEXT,
     is_public_ip     BOOLEAN,
@@ -94,6 +94,9 @@ def counts():
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
+            # In production `mcp_calls_identity` is a VIEW, so this skips
+            # there rather than erroring -- see tests/_prod_shaped_db.py.
+            reset_tables(cur, "mcp_calls_identity")
             cur.execute(DDL)
             cur.executemany(
                 "INSERT INTO mcp_calls_identity "
