@@ -78,6 +78,31 @@ ENVELOPE_KEYS = {
     # filed a false CRITICAL. `seat_comparison_verdict` below now carries the
     # structural rule so field #4 is a gauge on arrival, not an incident.
     "continuation",
+    # ★★★ Added 2026-09-19 — THE WHOLE AUTO-TRIAL MINT BLOCK, not one more
+    # name. Occurrence #4 arrived within an hour of #3 closing: the board filed
+    # `auto_trial_bind_required` ("this trial key is refused until your human's
+    # email is bound") as an anon-only DATA field. The gating-aware verdict
+    # caught it as a gauge instead of a CRITICAL — which is the point — but the
+    # envelope RATIO was still counting it, and the ratio exists to expose
+    # exactly this.
+    #
+    # So this was derived rather than guessed. `server.mjs` builds the mint
+    # response as one object (`const sc = {…}`, lines 6758-6810 at the time of
+    # writing) and it contains NO data spread whatsoever — every one of its 28
+    # top-level keys sells, meters or narrates. 19 of them were still classified
+    # as data here. They are all below.
+    #
+    # ★ The names are safe to classify globally: every one is commerce or
+    #   session scaffolding (trial state, purchase URLs, identify/persist
+    #   hints). None could name infrastructure data on another tool, which is
+    #   the only way a denylist entry can hide a real signal.
+    "auto_bound_session", "auto_trial_bind_required", "auto_trial_daily_calls",
+    "auto_trial_days_remaining", "auto_trial_expires_at", "auto_trial_tier",
+    "daily_calls_when_email_bound", "digest_optin", "identify_endpoint",
+    "identify_hint", "identify_payload", "owner_purchase_model",
+    "owner_purchase_url", "persist_hint", "trial_unlocks_this_tool",
+    "unlocked_tools_hint", "upgrade_instructions", "upgrade_model",
+    "upgrade_url",
 }
 
 

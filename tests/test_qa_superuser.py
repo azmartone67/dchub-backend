@@ -2813,3 +2813,74 @@ class TestParkedReachesTheInvestigateLaneAndThePage:
         # A finding that is NOT parked must carry no banner at all.
         html3 = render(base)
         assert "automated loop has stopped" not in html3, html3[-400:]
+
+
+# ── the auto-trial mint block is 100% envelope ────────────────────────────
+#
+# Occurrence #4 of the paid-vs-anon false positive arrived within an hour of #3
+# closing, on `auto_trial_bind_required`. The gating-aware verdict caught it as
+# a gauge rather than a CRITICAL — but the envelope RATIO was still counting it
+# as data, and that ratio exists to expose exactly this.
+#
+# server.mjs builds the mint response as one object with NO data spread: every
+# top-level key sells, meters or narrates. So the whole block is classified,
+# rather than waiting for each key to file its own finding first.
+# ★ The MEASURED top-level members of `const sc` in server.mjs, extracted by
+#   depth+indent rather than typed out. The hand-written first draft wrongly
+#   included `api_key`, which is NESTED inside identify_payload — classifying
+#   it would have widened the denylist on a name never observed at top level,
+#   which is the failure the floor test below exists to prevent.
+MINT_BLOCK_KEYS = [
+    "auto_bound_session", "auto_trial_bind_required",
+    "auto_trial_daily_calls", "auto_trial_days_remaining",
+    "auto_trial_expires_at", "auto_trial_key", "auto_trial_tier",
+    "daily_calls_when_email_bound", "digest_optin", "first_call_nudge",
+    "for_your_human", "identify_endpoint", "identify_hint",
+    "identify_payload", "owner_purchase_model", "owner_purchase_url",
+    "persist_command", "persist_hint", "pricing", "remaining_full_today",
+    "retry_instructions", "retry_with_header", "trial_unlocks_this_tool",
+    "unlocked_tools", "unlocked_tools_hint", "upgrade_instructions",
+    "upgrade_model", "upgrade_url",
+]
+
+
+class TestTheMintBlockIsAllEnvelope:
+    @pytest.mark.parametrize("key", MINT_BLOCK_KEYS)
+    def test_every_mint_key_is_envelope(self, key):
+        from tools.qa_superuser.probe_mcp import _is_envelope
+        assert _is_envelope(key), (
+            f"{key} is a top-level key of the auto-trial mint response, which "
+            "carries no tool data at all — counting it as data both flatters "
+            "the envelope ratio and files a paid-vs-anon finding the moment a "
+            "paying seat is correctly not offered it")
+
+    def test_a_whole_mint_response_yields_zero_data_fields(self):
+        # The end-to-end claim, not 30 separate ones: this response shape is
+        # pure envelope, so the data-field count must be 0. A single missed key
+        # makes this 1 and re-arms the false positive.
+        from tools.qa_superuser.probe_mcp import _data_keys
+        env = {"structuredContent": {k: "x" for k in MINT_BLOCK_KEYS}}
+        assert _data_keys(env) == []
+
+    def test_real_data_fields_are_still_data(self):
+        """★ THE GUARD ON THE GUARD. Every fix in this class widens a denylist,
+        and a denylist that grows without a floor eventually swallows the
+        answer — at which point the envelope ratio reads 100% envelope forever
+        and the paid-vs-anon check can never fail. These are names the tools
+        actually answer with.
+        """
+        from tools.qa_superuser.probe_mcp import _is_envelope
+        for key in ("citation", "identity", "provenance", "facilities",
+                    "market", "results", "score", "capacity_mw", "iso",
+                    "constraint_coverage"):
+            assert not _is_envelope(key), (
+                f"{key} is an ANSWER, not scaffolding — classifying it as "
+                "envelope would make the ratio unfalsifiable")
+
+    def test_the_gauge_can_still_report_a_healthy_ratio(self):
+        # A mixed response must not read as all-envelope.
+        from tools.qa_superuser.probe_mcp import _data_keys, _envelope_keys
+        env = {"structuredContent": {"citation": 1, "facilities": 2,
+                                     "upgrade_url": "x", "auto_trial_key": "k"}}
+        assert sorted(_data_keys(env)) == ["citation", "facilities"]
+        assert sorted(_envelope_keys(env)) == ["auto_trial_key", "upgrade_url"]
