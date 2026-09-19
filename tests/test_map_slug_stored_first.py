@@ -101,14 +101,78 @@ def test_unsluggable_row_still_yields_empty_string_not_none():
     assert facs[0]["slug"] == ""
 
 
+def test_map_delegates_to_the_stored_slug_helper():
+    fn_src = ast.get_source_segment(_SRC, _map_fn()) or ""
+    assert "stored_slugs_by_id(" in fn_src, (
+        "api_v1_map must read the frozen slug via stored_slugs_by_id()")
+
+
 def test_the_column_is_probed_before_it_is_selected():
     """Live DDL lags the code; a bare SELECT canonical_slug would 500 the map."""
-    fn_src = ast.get_source_segment(_SRC, _map_fn()) or ""
-    assert "information_schema.columns" in fn_src and "canonical_slug" in fn_src, (
-        "api_v1_map must probe for canonical_slug before selecting it")
-    probe_at = fn_src.index("information_schema.columns")
-    select_at = fn_src.index("SELECT id, canonical_slug")
-    assert probe_at < select_at, "probe must precede the canonical_slug SELECT"
+    src = open(os.path.join(ROOT, "routes", "facility_slug_freeze.py"),
+               encoding="utf-8", errors="replace").read()
+    body = src[src.index("def stored_slugs_by_id"):][:3000]
+    assert "information_schema.columns" in body, "helper must probe for the column"
+    assert body.index("information_schema.columns") < body.index("SELECT id, canonical_slug"), \
+        "probe must precede the canonical_slug SELECT"
+
+
+# ── the helper itself, against a cursor that READS THE SQL IT IS GIVEN ──────
+
+class _Cur:
+    """Fake cursor that branches on the actual SQL, not on call order."""
+    def __init__(self, has_col=True, rows=(), boom=False):
+        self.has_col, self.rows, self.boom = has_col, rows, boom
+        self._last = None; self.seen = []
+    def execute(self, sql, args=None):
+        if self.boom:
+            raise RuntimeError("relation does not exist")
+        self.seen.append(sql); self._last = sql
+        if "information_schema.columns" in sql:
+            assert "canonical_slug" in sql, "probe must name the column it checks"
+        elif "SELECT id, canonical_slug" in sql:
+            assert args and isinstance(args[0], list), "ids must be bound as a list"
+            self._ids = args[0]
+    def fetchone(self):
+        assert "information_schema.columns" in (self._last or "")
+        return (1,) if self.has_col else None
+    def fetchall(self):
+        assert "SELECT id, canonical_slug" in (self._last or "")
+        return [r for r in self.rows if r[0] in self._ids]
+
+
+class _Conn:
+    def __init__(self): self.rolled = False
+    def rollback(self): self.rolled = True
+
+
+def _helper():
+    import importlib
+    return importlib.import_module("routes.facility_slug_freeze").stored_slugs_by_id
+
+
+def test_helper_returns_the_frozen_slug_for_frozen_rows():
+    got = _helper()(_Cur(rows=[(7, FROZEN), (8, "other-slug")]), _Conn(), [7])
+    assert got == {7: FROZEN}
+
+
+def test_helper_returns_empty_when_the_column_does_not_exist_yet():
+    """Live DDL can lag; callers must fall back to the builder, not 500."""
+    assert _helper()(_Cur(has_col=False, rows=[(7, FROZEN)]), _Conn(), [7]) == {}
+
+
+def test_helper_swallows_db_errors_and_rolls_back():
+    conn = _Conn()
+    assert _helper()(_Cur(boom=True), conn, [7]) == {}
+    assert conn.rolled, "a failed probe must roll back or the txn stays poisoned"
+
+
+def test_helper_does_not_query_at_all_for_an_empty_id_list():
+    cur = _Cur()
+    assert _helper()(cur, _Conn(), []) == {}
+    assert cur.seen == [], "no ids means no SQL"
+    assert _helper()(cur, _Conn(), [None, None]) == {}
+    assert cur.seen == [], "all-None ids means no SQL"
 
 
 if __name__ == "__main__":

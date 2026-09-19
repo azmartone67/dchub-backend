@@ -7201,43 +7201,13 @@ def api_v1_map():
         # builder's None keeps the '' guard for un-sluggable short names, and
         # the hash8 tail is unchanged, so every emitted slug still resolves.
         #
-        # ★★★ r-mapslug (2026-09-18): STORED-FIRST. The builder alone has NOT
-        # been the canonical slug since 2026-07-28. The freeze ran 07-03 and
-        # stored the DOUBLED pre-dedupe form; _dedupe_provider_prefix landed
-        # 07-28 and changed what the builder returns. So for every row frozen
-        # before 07-28 the builder yields a DIFFERENT slug than the stored
-        # canonical — this endpoint emitted the deduped form while
-        # /facilities/<slug> serves the doubled one, i.e. a 301 on every link.
-        # Measured live 2026-09-18 against /api/v1/map: 109 of 150 sampled
-        # emitted slugs (73%) returned 301, e.g.
-        #   switch-las-vegas-4-68d0ff15 -> switch-switch-las-vegas-4-68d0ff15
-        # The hash8 tail is IDENTICAL in every case — only the body moved,
-        # which is why this reads like slug churn and is not. ~1,870
-        # redirecting facility URLs per map payload, burning crawl budget.
-        # ★ Re-freezing to match the builder is NOT the fix: that would move
-        # every already-indexed facility URL. The STORED value wins; the
-        # builder stays as the fallback for rows the freeze has not reached.
-        # Column probed and degraded to {} (→ builder) exactly as the sitemap
-        # builder does, because live DDL can lag the code.
+        # ★ r-mapslug (2026-09-18, be#4793): STORED-FIRST. The builder has
+        # NOT equalled the frozen slug since the 07-28 dedupe, so composing
+        # here emitted a 301 on every link (measured 109/150 = 73%). The why,
+        # and the DDL probe, live in stored_slugs_by_id().
         from routes.facility_slug_freeze import build_canonical_slug
-        _canon_by_id = {}
-        try:
-            c.execute("SELECT 1 FROM information_schema.columns "
-                      "WHERE table_name='discovered_facilities' "
-                      "AND column_name='canonical_slug'")
-            if c.fetchone() is not None:
-                _ids = [f.get('id') for f in facilities if f.get('id') is not None]
-                if _ids:
-                    c.execute("SELECT id, canonical_slug FROM discovered_facilities "
-                              "WHERE id = ANY(%s) AND canonical_slug IS NOT NULL "
-                              "AND canonical_slug <> ''", (_ids,))
-                    _canon_by_id = {r[0]: r[1] for r in c.fetchall()}
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            _canon_by_id = {}
+        from routes.facility_slug_freeze import stored_slugs_by_id
+        _canon_by_id = stored_slugs_by_id(c, conn, [f.get('id') for f in facilities])
         for f in facilities:
             f['slug'] = (_canon_by_id.get(f.get('id'))
                          or build_canonical_slug(f.get('provider'), f.get('name'))
