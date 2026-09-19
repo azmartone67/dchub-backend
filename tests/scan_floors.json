@@ -76,6 +76,9 @@
     "test_client_config_transport_matches_canon.py": {
       "pglob": 670
     },
+    "test_closed_status_vocabulary.py": {
+      "pglob": 680
+    },
     "test_continuation_compliance.py": {
       "pglob": 6
     },

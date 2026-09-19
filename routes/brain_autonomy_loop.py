@@ -56,6 +56,18 @@ import time
 from datetime import datetime, timezone
 from routes._swallowed_writes import note_swallowed_write
 
+def _open_status_sql() -> str:
+    """Canon-built 'still open work' predicate. Fail-soft to the canon's own
+    literal if the reader module is unavailable, so an import problem degrades
+    to the CORRECT set rather than to a silently different one."""
+    try:
+        from routes.brain_findings_reader import open_status_sql
+        return open_status_sql()
+    except Exception:  # pragma: no cover - import guard
+        return ("COALESCE(status,'open') NOT IN "
+                "('resolved', 'wont_fix', 'dismissed')")
+
+
 
 # ── Tunables (env-driven; conservative defaults) ─────────────────────
 def _env_int(name: str, default: int) -> int:
@@ -538,7 +550,7 @@ def _filed_finding_keys() -> set:
             cur.execute(
                 "SELECT issue FROM brain_findings "
                 "WHERE issue LIKE 'runtime_error:%%' "
-                "  AND COALESCE(status,'open') NOT IN ('resolved','wont_fix','dismissed')")
+                "  AND " + _open_status_sql())
             for (issue,) in cur.fetchall():
                 keys.add(issue or "")
         return keys

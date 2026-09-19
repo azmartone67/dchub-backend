@@ -490,9 +490,13 @@ def _lane_causal_edges(cur) -> list:
             critical=True))
 
     # Scale: how much unstructured backlog this is being asked to organise.
-    open_f = _one(cur, """SELECT COUNT(*) FROM brain_findings
-                           WHERE COALESCE(status,'open') NOT IN
-                                 ('resolved','closed','dismissed')""")
+    # ★2026-09-18: this hand-written closed set had drifted — it carried
+    # 'closed' (which nothing writes) and was MISSING 'wont_fix', so the same
+    # row counted as open work here and as closed work in brain_autonomy_loop
+    # and loop_control_master_shell. Built from the canon now.
+    from routes.brain_findings_reader import open_status_sql
+    open_f = _one(cur, "SELECT COUNT(*) FROM brain_findings WHERE "
+                       + open_status_sql())
     edges_n = None
     if tbl is not None and int(tbl or 0) > 0:
         edges_n = _one(cur, "SELECT COUNT(*) FROM brain_finding_edges")
