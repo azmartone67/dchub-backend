@@ -349,4 +349,26 @@ def checkout_click(token):
         target = target + sep + "client_reference_id=" + ref
 
     _log_click(plan, ref, sid, True)
+    # ── r-go-click-identify (2026-09-18) ──────────────────────────────────
+    # `go_click` has been in relay_identify.SOURCES since that module shipped
+    # and nothing ever called it. A keyed caller's ref is pk-/k-<sha256(its
+    # api key)>, and that key often already carries an address bound by
+    # bind_email / claim_free_key — an identity `identified` structurally
+    # cannot see, because it lives on mcp_dev_keys with no session link. The
+    # token's HMAC already proved we minted this link for THIS session and
+    # THIS key, so the join is a fact about one caller.
+    #
+    # This is the ONLY path on which a click identifies with no typing and no
+    # payment. Measured 30d to 2026-09-18: 26 keyed clicks, 10 with a session,
+    # 7 on keys with an address, 2 sessions it would newly stamp.
+    #
+    # AFTER the click is logged and BEFORE nothing: the redirect below is the
+    # human's, and a capture must never stand between them and checkout.
+    # capture() never raises; this try is for the import itself.
+    if sid:
+        try:
+            from routes.relay_identify import capture_from_key_ref
+            capture_from_key_ref(ref, sid, tool="")
+        except Exception as _ie:  # noqa: BLE001
+            logger.debug("go-click identify swallowed: %s", str(_ie)[:120])
     return redirect(target, code=302)

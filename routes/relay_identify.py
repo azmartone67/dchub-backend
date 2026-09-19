@@ -303,6 +303,83 @@ def capture_from_checkout(session) -> dict:
                    stripe_session_id=str(s.get("id") or ""))
 
 
+# ── the third capture source: a key we ALREADY have an address for ───────
+# `SOURCES` has named 'go_click' since this module shipped and nothing called
+# it. Measured 30d to 2026-09-18: 26 keyed checkout clicks (pk-/k-), 10 of them
+# carrying a session, 7 on keys that already had an email bound from
+# bind_email / claim_free_key — an identity the rung could never see, because
+# it lives on mcp_dev_keys with no session link. The funnel's own source says
+# so: "most identity capture happens on the key tables … with NO session link,
+# so 'identified' structurally undercounts."
+#
+# This is the only path on which a CLICK identifies with no typing and no
+# payment. It would newly stamp 2 sessions over that 30d window — small, and
+# stated rather than implied.
+#
+# ★ A MEASUREMENT, NEVER AN ENTITLEMENT. An address on mcp_dev_keys is
+# self-declared: bind_email takes whatever the caller types. That is exactly
+# what the `identified` STAGE means — "this session told us who it is" — and
+# it is NOT proof the address belongs to them. The paid-tier grants
+# deliberately require metadata->>'email_verified_for' ON TOP (2026-09-11
+# security fix, tests/test_paid_tier_verification_sql.py). Do not reuse this
+# lookup to decide access.
+_KEY_REF_RE = re.compile(r"^(?:pk|k)-([0-9a-f]{64})$")
+
+
+def key_hash_from_ref(ref) -> str:
+    """The sha256 hex inside a `pk-`/`k-` client_reference_id, else ''.
+
+    `a-` (an ephemeral anon OFFER occurrence, not a person) and a bare session
+    id carry no key and return '' rather than being coerced into one.
+    """
+    m = _KEY_REF_RE.match(str(ref or "").strip().lower())
+    return m.group(1) if m else ""
+
+
+def email_for_key_ref(ref) -> str:
+    """The address already bound to the durable key this ref names, or ''.
+
+    mcp_dev_keys stores the RAW key with no hash column, so the match
+    recomputes it in SQL — the same expression main.py's k- subscription grant
+    uses. Read-only; never raises.
+    """
+    kh = key_hash_from_ref(ref)
+    if not kh or not (_pg and _dsn()):
+        return ""
+    try:
+        c = _pg.connect(_dsn(), connect_timeout=8)
+        try:
+            c.autocommit = True
+            with c.cursor() as cur:
+                cur.execute(
+                    "SELECT email FROM mcp_dev_keys"
+                    " WHERE encode(sha256(api_key::bytea), 'hex') = %s"
+                    "   AND email IS NOT NULL AND email <> ''"
+                    " ORDER BY created_at DESC LIMIT 1", (kh,))
+                row = cur.fetchone()
+        finally:
+            c.close()
+        return normalize_email((row or [None])[0])
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def capture_from_key_ref(ref: str, sid: str, *, tool: str = "") -> dict:
+    """Bind a keyed unlock's OWN key email to the session that clicked it.
+
+    Called from the /go/c click and the /upgrade/h open, both of which verified
+    an HMAC we minted over this exact (session, key) pair before getting here —
+    so the join is a fact about one caller, not a guess across two tables.
+    Never raises; a ref with no key, or a key with no address, is a no-op.
+    """
+    if not sid:
+        return {"ok": False, "skipped": "no_session"}
+    email = email_for_key_ref(ref)
+    if not email:
+        return {"ok": False, "skipped": "key_has_no_email"}
+    return capture(sid, email, "go_click", tool=tool)
+
+
 # ── read side ────────────────────────────────────────────────────────────
 # Published beside the rung so a capture the stage cannot count is visible.
 # One string literal with an uppercase FROM on purpose: scripts/
