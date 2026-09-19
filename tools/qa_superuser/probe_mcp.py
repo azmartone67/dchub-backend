@@ -615,11 +615,42 @@ def _remaining(env: dict):
               "remaining_today", "remaining"):
         if isinstance(q.get(f), (int, float)):
             return f"quota.{f}", q[f]
+
+    # ★★★ A DECLARED ABSENCE IS AN ANSWER, NOT A MISS. When the quota block
+    #   carries `full_answers_unavailable_reason`, the server has STATED that no
+    #   full-answer budget applies to this seat — live text: "NOT YET APPLICABLE
+    #   at an anonymous seat. The per-tool full-answer budget is a FREE-TIER
+    #   benefit and is only charged once a durable key is bound". Falling through
+    #   to the top-level mint field after that reads a number the server has just
+    #   disclaimed, and it is what filed the 2026-09-19 RED "Quota meter does NOT
+    #   move while it still has room to": the meter read 2 and could never move,
+    #   because no budget was in play at all.
+    #
+    #   Same class as the defect this function's docstring already describes —
+    #   an absence "proven" by reading the wrong field — pointed the other way.
+    if q.get("full_answers_unavailable_reason"):
+        return None, None
+
     # Top-level fallbacks: real, but first-call-only on the anon auto-trial path.
     for f in ("remaining_full_today", "remaining_today", "remaining"):
         if isinstance(sc.get(f), (int, float)):
             return f, sc[f]
     return None, None
+
+
+def _budget_disclaimed(env: dict) -> str:
+    """The server's own statement that no full-answer budget applies here."""
+    sc = env.get("structuredContent") or {}
+    q = sc.get("quota") if isinstance(sc.get("quota"), dict) else {}
+    r = q.get("full_answers_unavailable_reason")
+    return str(r)[:200] if r else ""
+
+
+def _top_level_budget(env: dict):
+    """The mint block's own remaining count, read WITHOUT the quota precedence."""
+    sc = env.get("structuredContent") or {}
+    v = sc.get("remaining_full_today")
+    return v if isinstance(v, (int, float)) else None
 
 
 def _metered_tool_for_run() -> tuple[str, dict, dict]:
@@ -672,6 +703,47 @@ def _check_quota_moves(findings: list[Finding]) -> None:
 
     fa, va = _remaining(a)
     fb, vb = _remaining(b)
+
+    # ★★★ THE DEFECT THE MOVEMENT CHECK WAS MISREADING, REPORTED AS ITSELF.
+    #   Filing "the meter does not move" against a seat that has no budget sends
+    #   the reader to a counter that is working. What IS wrong is an envelope
+    #   that promises a budget in one field and disclaims it in another:
+    #       remaining_full_today:            2        (top level, mint block)
+    #       full_answers_remaining_today:    null
+    #       full_answers_unavailable_reason: "NOT YET APPLICABLE at an
+    #                                         anonymous seat …"
+    #   Measured live 2026-09-19 on ai_capacity_index. An agent reading the
+    #   top-level number retries for a full answer and gets another preview,
+    #   indefinitely. Fixed server-side in mcp#461; this is the guard that
+    #   catches it coming back.
+    #
+    # ★ Keyed separately so it reports as its own row — folding it into the
+    #   movement finding would put a true defect under a false title, which is
+    #   exactly what this change exists to stop.
+    for env, which in ((a, "call 1"), (b, "call 2")):
+        why = _budget_disclaimed(env)
+        top = _top_level_budget(env)
+        if why and top is not None and top > 0:
+            findings.append(Finding(
+                key=stable_key("mcp", SEAT_ANON, "quota-contradiction", tool),
+                surface="mcp", seat=SEAT_ANON,
+                title="The envelope promises a full-answer budget it also "
+                      "disclaims",
+                verdict=RED, severity=MAJOR, value=top,
+                evidence=f"{tool} {which}: top-level remaining_full_today="
+                         f"{top} while quota.full_answers_remaining_today is "
+                         f"null with full_answers_unavailable_reason={why!r}",
+                basis="one anonymous tools/call; both fields read from the SAME "
+                      "structuredContent, so this is not a comparison across "
+                      "calls or seats and cannot be a timing artefact",
+                red_when="a caller is shown a non-zero remaining-budget field in "
+                         "a response whose own quota block says no budget "
+                         "applies to this seat",
+                remedy="Publish one number or none. An agent that believes the "
+                       "non-zero field retries for a full answer and gets a "
+                       "preview every time, with no way to learn why."))
+            break
+
     basis = (f"anon MCP, two tools/call to {tool} with DIFFERENT arguments "
              f"({args_a} then {args_b}) so an unchanged value cannot be a cached "
              f"response; read from structuredContent.remaining_full_today / "
@@ -693,9 +765,20 @@ def _check_quota_moves(findings: list[Finding]) -> None:
             key=key, surface="mcp", seat=SEAT_ANON,
             title=f"No numeric quota meter exposed on {tool} anonymously",
             verdict=GAUGE, severity=INFO,
-            evidence=f"neither call to {tool} exposed a numeric remaining field "
-                     f"(envelope keys seen: {sorted(_envelope_keys(a))[:10]}); "
-                     f"expected only if {tool} has left ALWAYS_PARTIAL_PREVIEW",
+            # ★ SAY WHICH ABSENCE THIS IS. "No meter" has two very different
+            #   causes and the old text asserted the rarer one. When the quota
+            #   block carries `full_answers_unavailable_reason` the server has
+            #   DECLARED that no budget applies to this seat — quoting that is
+            #   an answer; guessing at ALWAYS_PARTIAL_PREVIEW membership is not.
+            evidence=((f"neither call to {tool} exposed a numeric remaining "
+                       f"field because the server DECLARED none applies: "
+                       f"quota.full_answers_unavailable_reason="
+                       f"{_budget_disclaimed(a)!r}. Not a defect — the budget is "
+                       f"a free-tier benefit charged once a durable key is bound")
+                      if _budget_disclaimed(a) else
+                      f"neither call to {tool} exposed a numeric remaining field "
+                      f"(envelope keys seen: {sorted(_envelope_keys(a))[:10]}); "
+                      f"expected only if {tool} has left ALWAYS_PARTIAL_PREVIEW"),
             basis=basis,
             red_when="n/a — gauge; publishing no meter at all is a design choice"))
         _check_envelope_drift(a, b, findings)
@@ -759,6 +842,51 @@ def _check_quota_moves(findings: list[Finding]) -> None:
                  f"was no decrement left to observe. The cap is keyed on "
                  f"(ip, tool, day) — the next 4h block rotates to a tool with "
                  f"budget and the movement check runs for real there"),
+            basis=basis))
+        _check_envelope_drift(a, b, findings)
+        return
+
+    # ★★★ A GATED PAIR CONSUMES NOTHING, SO MOVEMENT IS UNOBSERVABLE.
+    #   The check ended in a bare `moved = vb < va`, which asserts that a second
+    #   CONSUMING call must decrement the meter — while never establishing that
+    #   either call consumed anything. Measured live 2026-09-19: both calls came
+    #   back `preview_is_partial: true` with `auto_trial_bind_required: true`,
+    #   so no full answer was served and the counter correctly never moved. The
+    #   board carried a RED major for it.
+    #
+    #   Same shape as the paid-vs-anon false critical closed in be#4768: a check
+    #   that does not control for the GATING STATE of the response it measures.
+    #   `is_gated_shape` is already imported here for exactly that reason.
+    #
+    # ★ BLIND, not PASS and not GAUGE. Nothing about movement was observed, and
+    #   rule 1 is that an unobserved surface is never a failure — but it is also
+    #   never a green. BLIND is counted and rendered as `unobserved`, so this
+    #   stays visible on the board instead of parking a reassuring number where
+    #   a measurement should be.
+    #
+    # ★★ THIS DOES NOT MAKE THE LANE INERT. The contradiction check above runs
+    #   on the same two responses and CAN go red, and a served call 2 still
+    #   reaches the movement verdict below.
+    #
+    # ★★★ THE PREDICATE IS CALL 2 ALONE, AND THE FIRST DRAFT HAD IT WRONG.
+    #   It required BOTH calls gated, which is over-strict in one direction and
+    #   under-strict in the other:
+    #     • call 1 SERVED, call 2 GATED — call 2 consumed nothing, so a static
+    #       meter is CORRECT. "Both gated" let that fall through to RED: the
+    #       very false positive this change exists to remove, one shape over.
+    #     • call 1 GATED, call 2 SERVED — call 2 DID consume, so a static meter
+    #       is a real defect and must still be caught.
+    #   The reading that matters is whether the SECOND call spent anything, so
+    #   that is what is tested. Found by mutation: reading only call 2 survived
+    #   every test until the asymmetric cases were written.
+    if is_gated_shape(b.get("structuredContent") or {}):
+        findings.append(blind(
+            key=key, surface="mcp", seat=SEAT_ANON,
+            title="Quota meter movement unobserved — the second call was not served",
+            why=(f"call 2 to {tool} came back gated ({fa}={va} then {fb}={vb}), "
+                 f"so it consumed no full answer and the meter had nothing to "
+                 f"count down. A preview does not spend budget; reporting this "
+                 f"as a static meter would convict a counter that is working"),
             basis=basis))
         _check_envelope_drift(a, b, findings)
         return
