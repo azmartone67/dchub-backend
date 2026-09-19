@@ -64,6 +64,19 @@ MUST_BLOCK = [
     "/admin",             # bare ops shell ("Disallow: /admin/" alone misses it)
     "/admin-qa",          # internal bug inventory (sibling of /admin, not a child)
     "/admin-outreach",    # outreach templates/strategy
+    # 2026-09-18 — the Brain ops surfaces had NO robots rule at all, so Googlebot
+    # kept crawling them and logging 403s. GSC "Blocked due to access forbidden
+    # (403)" listed 5 URLs; 3 were these, still 403 when re-tested live, the most
+    # recent crawled 09-08. The 403 is CORRECT — these are internal and must stay
+    # protected. The defect was that nothing told crawlers to skip them, which is
+    # exactly what "Disallow: /admin" already does for the other ops shells.
+    "/brain",
+    "/brain/innovation",
+    # ★ AND THE API PATH SEPARATELY. "Disallow: /brain" does NOT match
+    #   /api/v1/brain/... — there is no leading match — the same trap this file
+    #   already records for "/admin" vs "/api/admin". The two groups that carry
+    #   "Allow: /api/" need an explicit longer Disallow to win on most-octets.
+    "/api/v1/brain/innovation/dashboard",
 ]
 
 

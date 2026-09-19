@@ -1736,6 +1736,7 @@ Disallow: /admin/
 # /admin-outreach are siblings, not children. The "/admin" prefix covers all
 # three so they stay out of crawl entirely.
 Disallow: /admin
+Disallow: /brain
 Disallow: /cdn-cgi/
 # /sites/<slug> serves ONE identical "Site Capacity Report" shell for every
 # slug (each variant canonicals back to /sites/), so the variants are an
@@ -1948,9 +1949,11 @@ Allow: /listings*min_kw=500*region=europe$
 # RFC 9309 most-octets-wins keeps them shut both ways.
 Disallow: /api/admin/
 Disallow: /api/v1/admin/
+Disallow: /api/v1/brain/
 Disallow: /api/auth/
 Disallow: /api/stripe/
 Disallow: /admin
+Disallow: /brain
 Disallow: /sites/
 Allow: /sites/$
 Disallow: /cdn-cgi/
@@ -2096,9 +2099,11 @@ Allow: /listings*min_kw=500*region=europe$
 #   without them. Found by tests/test_robots_permits_what_llms_advertises.py.
 Disallow: /api/admin/
 Disallow: /api/v1/admin/
+Disallow: /api/v1/brain/
 Disallow: /api/auth/
 Disallow: /api/stripe/
 Disallow: /admin
+Disallow: /brain
 Disallow: /sites/
 Allow: /sites/$
 Disallow: /cdn-cgi/
@@ -2132,6 +2137,7 @@ Disallow: /*?
 Allow: /sitemap.xml
 Disallow: /api/
 Disallow: /admin
+Disallow: /brain
 Disallow: /sites/
 Allow: /sites/$
 Disallow: /cdn-cgi/
