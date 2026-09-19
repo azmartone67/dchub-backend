@@ -483,6 +483,41 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     assert "counts" in body and "diff" in body
 
 
+def test_changes_since_is_clamped_to_the_thirty_day_ceiling(monkeypatch):
+    """The clamp's ONLY coverage was the pinned date that broke every PR.
+
+    #4777/#4778 un-pinned `since` above, correctly — but the pinned date had
+    been the one thing reaching _parse_since's `dt < floor` branch, and it was
+    only reaching it by accident, from the day the calendar drifted past it.
+    Un-pinning removed that coverage with nothing to replace it. Measured on
+    2d1859d82: deleting the clamp entirely (`if False:`) leaves this file
+    46/46 green. The documented "Hard ceiling of 30 days back" is a promise
+    about how far back an anonymous caller can read the ledger, and nothing
+    was holding it.
+
+    Deliberately NOT clock-pinned: it reads the wall clock either side of the
+    call and asserts the answer fell between them. A single now() computed in
+    the test is what this file has already paid for twice — it has to agree
+    with a now() taken inside the handler, and those are different instants.
+    """
+    cf = _cf()
+    cur = _DispatchCur({"brain_predictions_log": []})
+    monkeypatch.setattr(cf, "open_conn", lambda *a, **k: _Conn(cur))
+    ancient = dt.datetime.now(_UTC).replace(microsecond=0) - dt.timedelta(days=400)
+    before = dt.datetime.now(_UTC) - dt.timedelta(days=30)
+    with _app(cf.changes_feed_bp).test_client() as c:
+        rv = c.get("/api/v1/changes/since?since="
+                   + ancient.isoformat().replace("+00:00", "Z"))
+    after = dt.datetime.now(_UTC) - dt.timedelta(days=30)
+    assert rv.status_code == 200
+    _sql_txt, params = _sql(cur, "brain_predictions_log")[0]
+    assert params[1] > ancient, (
+        "a 400-day-old `since` reached the query unchanged — the 30-day "
+        "ceiling is gone, and an anonymous caller can read the whole ledger")
+    assert before <= params[1] <= after, (
+        "`since` was changed, but not to the now-30d floor the clamp promises")
+
+
 def test_changes_since_is_fail_soft_when_the_ledger_cannot_be_read(monkeypatch):
     cf = _cf()
     cur = _DispatchCur(raise_on="brain_predictions_log")
