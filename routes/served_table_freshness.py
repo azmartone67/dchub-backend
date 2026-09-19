@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 import os
 import time
 
@@ -227,7 +228,46 @@ def catalog(cur, names):
     return out
 
 
-def feed_health_fields(col, newest, count):
+# ── the feed's own declared cadence ──────────────────────────────────
+#
+# ★★ 2x THE DECLARED INTERVAL, because that is the rule this repo already uses
+# — "overdue at 2x cadence", the dead-man ledger's threshold, and the one
+# tools/qa_superuser/probe_data applies when it cross-examines these same feeds.
+# Nothing is invented: the threshold is the feed's OWN promise, so a verdict
+# here is the feed contradicting itself rather than us imposing a number.
+#
+# ★ The parser is deliberately a SECOND implementation rather than an import:
+# the probe runs on a GH Actions runner from the repo checkout and must not
+# depend on the deployed backend, and the backend must not import tools/. They
+# are held together by test_interval_parsers_agree, which runs both over one
+# table of cases including every interval string the live feeds publish.
+STALE_AT_MULTIPLE_OF_CADENCE = 2.0
+
+_INTERVAL_RE = re.compile(r"(\d+)\s*(minute|hour|day|week)", re.I)
+_WORD_INTERVALS = {"hourly": 1, "daily": 24, "weekly": 168, "monthly": 720}
+_UNIT_HOURS = {"minute": 1 / 60, "hour": 1, "day": 24, "week": 168}
+
+
+def parse_interval_hours(text):
+    """A feed's own `refresh_interval` prose as hours, or None.
+
+    None means the feed states no checkable cadence ("on-demand",
+    "real-time (DB counts)"). That is not a default to paper over — with no
+    promise there is nothing to be late against, so the caller must report
+    `unknown` rather than `healthy`.
+    """
+    if not isinstance(text, str):
+        return None
+    m = _INTERVAL_RE.search(text)
+    if m:
+        return int(m.group(1)) * _UNIT_HOURS[m.group(2).lower()]
+    for word, hours in _WORD_INTERVALS.items():
+        if word in text.lower():
+            return float(hours)
+    return None
+
+
+def feed_health_fields(col, newest, count, interval=None, now=None):
     """The freshness fields + health verdict for one feed. Pure.
 
     ★★★ THE RULE, IN ONE PLACE: `healthy` requires EVIDENCE a caller can check.
@@ -253,10 +293,38 @@ def feed_health_fields(col, newest, count):
         iso = newest.isoformat() if hasattr(newest, "isoformat") else str(newest)
         return {"freshness_source": col, "last_updated": iso,
                 "newest_record": iso,
-                "health": "healthy" if count > 0 else "stale"}
+                "health": _timed_health(newest, count, interval, now)}
     return {"freshness_source": "none", "last_updated": None,
             "newest_record": None,
             "health": "unknown" if count > 0 else "stale"}
+
+
+def _timed_health(newest, count, interval, now):
+    """`healthy` only while the feed is inside its OWN promised cadence.
+
+    ★★★ PUBLISHING THE TIMESTAMP WAS NOT ENOUGH. After the previous change this
+    endpoint served `transactions: health 'healthy', last_updated 2026-07-27`
+    against a declared `5 minutes (via autopilot)` refresh — 54 days late, still
+    called healthy, with the contradicting evidence sitting in the same object.
+    Only the off-box probe called it stale. An endpoint holding BOTH numbers and
+    declining to compare them is the same "claim nobody checked" one level up.
+    """
+    if count <= 0:
+        return "stale"
+    hours = parse_interval_hours(interval)
+    if hours is None or hours <= 0:
+        # No stated cadence, so nothing to be late against. Evidence without a
+        # promise cannot be called healthy.
+        return "unknown"
+    utc = datetime.timezone.utc
+    ts = newest
+    if getattr(ts, "tzinfo", None) is None:
+        ts = ts.replace(tzinfo=utc)
+    ref = now or datetime.datetime.now(utc)
+    if getattr(ref, "tzinfo", None) is None:
+        ref = ref.replace(tzinfo=utc)
+    age_h = (ref - ts).total_seconds() / 3600.0
+    return "stale" if age_h > hours * STALE_AT_MULTIPLE_OF_CADENCE else "healthy"
 
 
 def table_freshness(cur, table, rollback=None):

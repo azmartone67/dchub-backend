@@ -379,7 +379,10 @@ def test_the_module_imports_no_database_driver_at_module_scope():
             top |= {a.name.split(".")[0] for a in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module:
             top.add(node.module.split(".")[0])
-    assert top <= {"__future__", "datetime", "json", "os", "time"}, top
+    # `re` joined 2026-09-19 with parse_interval_hours — stdlib, no driver, and
+    # the allowlist is what keeps this guard meaningful rather than a rubber
+    # stamp: widen it deliberately, per import, or it stops saying anything.
+    assert top <= {"__future__", "datetime", "json", "os", "re", "time"}, top
 
 
 # ── 5. the route beats the ledger honestly ─────────────────────────────────
@@ -597,9 +600,12 @@ def _dt(*a):
 
 
 class TestFeedHealthFields:
+    NOW = None  # set in the body; every case pins its own clock
+
     def test_a_measured_timestamp_is_published_and_healthy(self):
         from routes.served_table_freshness import feed_health_fields
-        out = feed_health_fields("updated_at", _dt(2026, 9, 19, 7, 0), 1200)
+        out = feed_health_fields("updated_at", _dt(2026, 9, 19, 7, 0), 1200,
+                                 "6 hours", _dt(2026, 9, 19, 10, 0))
         assert out["health"] == "healthy"
         assert out["freshness_source"] == "updated_at"
         assert out["last_updated"] == out["newest_record"]
@@ -718,3 +724,91 @@ class TestTableFreshness:
         assert cur.aborted is True
         # …and the next feed is now unmeasurable, which is the regression.
         assert table_freshness(cur, "fiber_routes") == (None, None)
+
+
+# ── the endpoint judges the timestamp it publishes ────────────────────────
+#
+# Publishing the timestamp was not enough. /api/health/data-freshness served
+#   transactions: health 'healthy', last_updated 2026-07-27
+# against a declared "5 minutes (via autopilot)" refresh — 54 days late, with
+# the contradicting evidence sitting in the same object. Only the off-box probe
+# called it stale. An endpoint holding BOTH numbers and declining to compare
+# them is the same unchecked claim, one level up.
+#
+# ★ Every case pins `now`. A test that reads the wall clock against a fixed
+#   timestamp passes for a while and then fails forever — this repo lost a full
+#   CI cycle to exactly that on 2026-09-19.
+_NOW = None
+
+
+class TestFeedHealthJudgesTheClock:
+    NOW = _dt(2026, 9, 19, 10, 0)
+
+    def _h(self, ts, interval, count=100):
+        from routes.served_table_freshness import feed_health_fields
+        return feed_health_fields("updated_at", ts, count, interval, self.NOW)["health"]
+
+    def test_the_transactions_case_that_hid_for_54_days(self):
+        # The live values, verbatim.
+        assert self._h(_dt(2026, 7, 27, 3, 47), "5 minutes (via autopilot)",
+                       611) == "stale"
+
+    def test_inside_the_declared_cadence_is_healthy(self):
+        assert self._h(_dt(2026, 9, 19, 6, 31), "6 hours") == "healthy"
+
+    def test_the_threshold_is_twice_the_cadence(self):
+        # The rule this repo already uses ("overdue at 2x cadence"), so the
+        # backend and the probe reach the same verdict on the same feed.
+        assert self._h(_dt(2026, 9, 19, 0, 30), "6 hours") == "healthy"   # 9.5h
+        assert self._h(_dt(2026, 9, 18, 21, 30), "6 hours") == "stale"    # 12.5h
+
+    def test_no_declared_cadence_is_unknown_not_healthy(self):
+        # Evidence without a promise cannot be late, so it cannot be healthy.
+        for interval in ("on-demand", "real-time (DB counts)", "", None):
+            assert self._h(_dt(2026, 9, 19, 9, 59), interval) == "unknown", interval
+
+    def test_an_empty_table_is_stale_however_fresh_the_stamp(self):
+        assert self._h(_dt(2026, 9, 19, 9, 59), "6 hours", 0) == "stale"
+
+    def test_a_naive_timestamp_is_read_as_utc_not_crashed(self):
+        import datetime as _d
+        from routes.served_table_freshness import feed_health_fields
+        out = feed_health_fields("updated_at", _d.datetime(2026, 9, 19, 6, 31),
+                                 100, "6 hours", self.NOW)
+        assert out["health"] == "healthy"
+
+
+class TestIntervalParserParity:
+    """★★★ TWO IMPLEMENTATIONS, HELD TOGETHER BY A TEST.
+
+    The probe runs on a GH Actions runner from the repo checkout and must not
+    depend on the deployed backend; the backend must not import tools/. So the
+    interval parser exists twice on purpose. A silent divergence would make the
+    endpoint and the board disagree about the same feed, with neither obviously
+    wrong — so they are compared over one table of cases, including every
+    interval string the live feeds actually publish.
+    """
+
+    CASES = [
+        # the live ones, verbatim
+        "6 hours", "5 minutes (via autopilot)", "on-demand",
+        "real-time (DB counts)", "5 minutes",
+        # shape coverage
+        "1 hour", "30 minutes", "2 days", "1 week", "hourly", "daily",
+        "weekly", "monthly", "", "   ", "every so often", "0 hours",
+        "12 HOURS", "about 3 days maybe", None, 6,
+    ]
+
+    def test_interval_parsers_agree(self):
+        from routes.served_table_freshness import parse_interval_hours as backend
+        from tools.qa_superuser.probe_data import parse_interval_hours as probe
+        mismatched = [(c, backend(c), probe(c)) for c in self.CASES
+                      if backend(c) != probe(c)]
+        assert not mismatched, mismatched
+
+    def test_the_case_table_is_not_vacuous(self):
+        # A table where every case parsed to None would agree trivially.
+        from routes.served_table_freshness import parse_interval_hours as backend
+        parsed = [c for c in self.CASES if backend(c) is not None]
+        assert len(parsed) >= 8, parsed
+        assert any(backend(c) is None for c in self.CASES), "no None cases"
