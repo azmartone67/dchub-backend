@@ -130,6 +130,7 @@ jobs:
             --ttl-hours 3
 
       - name: Stamp it as disposable
+        if: steps.neon.outputs.slot != 'none'
         env:
           NEON_CI_DSN: ${{ steps.neon.outputs.dsn }}
           NEON_CI_BRANCH: ${{ steps.neon.outputs.branch_id }}
@@ -138,6 +139,7 @@ jobs:
             --dsn "$NEON_CI_DSN" --branch-id "$NEON_CI_BRANCH"
 
       - name: Point every lane at the branch
+        if: steps.neon.outputs.slot != 'none'
         # 18 env names, one database. They exist because the container could
         # not be prod-shaped and each lane had to bootstrap itself; this is the
         # step that becomes unnecessary once the names are collapsed.
@@ -167,6 +169,7 @@ jobs:
           done
 
       - name: What did the branch actually come with?
+        if: steps.neon.outputs.slot != 'none'
         # `public.fiber_routes is missing` on the first green run, while 229
         # other tests passed against the same branch. That is not a connection
         # problem, so it is worth knowing exactly what schema-only copied
@@ -205,11 +208,13 @@ jobs:
           PY
 
       - name: Guard mutation — prove the sentinel can refuse
+        if: steps.neon.outputs.slot != 'none'
         # Runs FIRST and un-stamps/restores the branch. If the guard cannot
         # refuse, every "safe to DROP tables" claim below is decoration.
         run: python3 -m pytest tests/test_ephemeral_db_guard.py -v --tb=short
 
       - name: Phase 1 — the two opt-in files that have never run in CI
+        if: steps.neon.outputs.slot != 'none'
         run: |
           python3 -m pytest \
             tests/test_enterprise_contact_request_level.py \
@@ -217,6 +222,7 @@ jobs:
             -v --tb=short -rs
 
       - name: Prove phase 1 did not silently skip
+        if: steps.neon.outputs.slot != 'none'
         # The same anti-skip belt db-parity uses. A DSN that fails to reach the
         # tests turns this job green while proving nothing — the exact shape
         # this repo keeps rediscovering.
@@ -233,6 +239,7 @@ jobs:
           fi
 
       - name: Phase 2 — the 19 db-parity lanes against a prod-shaped branch
+        if: steps.neon.outputs.slot != 'none'
         # ADVISORY: `|| true` on purpose. These lanes have only ever seen an
         # empty postgres:16; the whole point of this run is to LEARN which of
         # them depend on that emptiness. Failures are the output, not an
@@ -264,6 +271,7 @@ jobs:
           tail -1 parity.log >> "$GITHUB_STEP_SUMMARY"
 
       - name: Phase 2b — the GSC schema must be able to build itself
+        if: steps.neon.outputs.slot != 'none'
         # NOT advisory, and deliberately not part of Phase 2's `|| true` list.
         # Phase 2 is a learning lane: its failures are its output. This is the
         # opposite — a table that does not get created is the defect itself,
@@ -328,6 +336,7 @@ jobs:
             --name "ci-${{ github.run_id }}-${{ github.run_attempt }}-fullsuite" \
             --ttl-hours 3
       - name: Stamp it
+        if: steps.neon.outputs.slot != 'none'
         env:
           NEON_CI_DSN: ${{ steps.neon.outputs.dsn }}
           NEON_CI_BRANCH: ${{ steps.neon.outputs.branch_id }}
@@ -335,6 +344,7 @@ jobs:
           python3 scripts/neon_ci_branch.py stamp \
             --dsn "$NEON_CI_DSN" --branch-id "$NEON_CI_BRANCH"
       - name: Baseline — the suite with NO database, same commit
+        if: steps.neon.outputs.slot != 'none'
         # ★ The comparison is worthless without this side. A with-DB pass/fail
         #   count means nothing on its own: this repo's suite already has
         #   pre-existing failures, so the only honest signal is the DIFF in
@@ -345,6 +355,7 @@ jobs:
           grep -E "^FAILED" base.log | awk '{print $2}' | sort > base.failures || true
           wc -l < base.failures
       - name: Measured — the same suite with DATABASE_URL on the branch
+        if: steps.neon.outputs.slot != 'none'
         env:
           DATABASE_URL: ${{ steps.neon.outputs.dsn }}
         run: |

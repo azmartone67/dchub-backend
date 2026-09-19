@@ -105,3 +105,62 @@ def test_the_creating_jobs_leave_room_for_the_wait_they_may_do(wf):
     any work. A job budget that ignores the queue turns a wait into a timeout."""
     for name, job in _creating_jobs(wf).items():
         assert job["timeout-minutes"] >= 30, name
+
+
+# ── the UNMEASURED gate ──────────────────────────────────────────────────────
+
+
+def _db_steps(job):
+    """Steps between `create` and `destroy` — the ones that need a database.
+
+    Bounded by position, not by name, so a step ADDED here later is caught by
+    the gate test below instead of quietly running without a database.
+    """
+    steps = job.get("steps", [])
+    start = next(i for i, s in enumerate(steps)
+                 if "neon_ci_branch.py create" in str(s.get("run", "")))
+    end = next(i for i, s in enumerate(steps)
+               if "neon_ci_branch.py destroy" in str(s.get("run", "")))
+    return steps[start + 1:end]
+
+
+def test_every_database_step_is_gated_on_the_slot(wf):
+    """★ The load-bearing half of exiting 0 when no root slot is free.
+
+    `create` now reports starvation as UNMEASURED and hands back no DSN. Any
+    step between create and destroy that is NOT gated would then run against an
+    empty `NEON_CI_DSN` — which fails confusingly at best, and at worst runs a
+    lane that quietly finds nothing and reports success.
+    """
+    for name, job in _creating_jobs(wf).items():
+        steps = _db_steps(job)
+        assert steps, name
+        for s in steps:
+            assert "slot != 'none'" in str(s.get("if", "")), (
+                f"{name}: step {s.get('name')!r} runs without a database when "
+                f"the lane is starved — gate it on steps.neon.outputs.slot")
+
+
+def test_the_gate_reads_the_step_that_actually_creates_the_branch(wf):
+    """A gate pointing at the wrong step id is always-true, so the whole thing
+    is decoration. The id in the gate must be the id on the create step."""
+    for name, job in _creating_jobs(wf).items():
+        create = next(s for s in job["steps"]
+                      if "neon_ci_branch.py create" in str(s.get("run", "")))
+        sid = create.get("id")
+        assert sid, f"{name}: the create step has no id for the gate to read"
+        for s in _db_steps(job):
+            assert f"steps.{sid}.outputs.slot" in str(s["if"]), (
+                f"{name}: {s.get('name')!r} gates on a different step than the "
+                f"one that creates the branch")
+
+
+def test_destroy_still_runs_even_though_nothing_was_created(wf):
+    """Starvation means no branch_id, so destroy must self-skip on the value
+    rather than on the slot — otherwise a real branch leaks whenever a later
+    change flips the gate."""
+    for name, job in _creating_jobs(wf).items():
+        d = next(s for s in job["steps"]
+                 if "neon_ci_branch.py destroy" in str(s.get("run", "")))
+        cond = str(d.get("if", ""))
+        assert "always()" in cond and "branch_id != ''" in cond, name

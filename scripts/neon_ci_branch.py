@@ -198,8 +198,15 @@ def _describe(branches: list[dict]) -> str:
 
 
 def _await_root_slot(key: str, project: str, prefix: str,
-                     ceiling: int, wait_minutes: int) -> None:
+                     ceiling: int, wait_minutes: int) -> bool:
     """Block until this workflow owns fewer than `ceiling` root branches.
+
+    Returns True if a slot was obtained, False if the wait ran out. It does NOT
+    raise: running out of slots is a statement about how many OTHER pull
+    requests are in flight, never about the diff under test, and a red check
+    that means "someone else was busy" trains people to ignore a red check.
+    The caller turns False into an explicit UNMEASURED result — which is not
+    the same as a pass, and must never be rendered as one.
 
     ★ MEASURED 2026-09-18, not assumed: every `ROOT_BRANCHES_LIMIT_EXCEEDED`
     failure so far happened with exactly FOUR live ci- roots plus production —
@@ -213,7 +220,7 @@ def _await_root_slot(key: str, project: str, prefix: str,
     lane: the alternative is a red job whose cause is another PR.
     """
     if ceiling <= 0:
-        return
+        return True
     deadline = time.monotonic() + wait_minutes * 60
     while True:
         held = _ci_roots(key, project, prefix)
@@ -221,23 +228,60 @@ def _await_root_slot(key: str, project: str, prefix: str,
             if held:
                 print(f"{len(held)}/{ceiling} ci- root branches in use, taking a "
                       f"free slot: {_describe(held)}", file=sys.stderr)
-            return
+            return True
         if time.monotonic() >= deadline:
-            raise SystemExit(
+            print(
                 f"no root-branch slot after {wait_minutes}m: {len(held)} ci- roots "
                 f"hold the cap — {_describe(held)}. Either concurrent CI is above "
                 f"what the plan allows (raise NEON_CI_MAX_ROOTS only if the plan "
                 f"has room), or one of these is a leak the sweeper has not reached "
-                f"yet.")
+                f"yet.", file=sys.stderr)
+            return False
         print(f"::notice::{len(held)}/{ceiling} ci- root branches in use, waiting "
               f"for one to free: {_describe(held)}", file=sys.stderr)
         time.sleep(20)
 
 
+def _emit_unmeasured(reason: str) -> None:
+    """Report that this lane did NOT run, as loudly as a green check allows.
+
+    ★ UNMEASURED IS NOT A PASS. The job exits 0 so that one PR's queue depth
+    stops rendering as another PR's red database check — but every surface a
+    human or a script reads must say the lane did not run:
+      * `slot=none` on the step, which gates every step that needs a database;
+      * a ::warning:: annotation, which shows on the PR itself;
+      * a job-summary block, which is what someone opening the run sees first.
+
+    The failure this replaces was the honest one in the wrong place: a red
+    `ephemeral-db` that meant "another PR held the last root". The failure this
+    must never become is the dishonest one — a green check that is read as "the
+    database lane passed". If you add a consumer of this job's result, read
+    `slot`, not the conclusion. See the gating in ci-neon-db.yml.
+    """
+    gh_out = os.environ.get("GITHUB_OUTPUT")
+    if gh_out:
+        with open(gh_out, "a") as fh:
+            fh.write("slot=none\n")
+    print(f"::warning title=ephemeral-db UNMEASURED::{reason}", file=sys.stderr)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a") as fh:
+            fh.write(
+                "## ⚠️ ephemeral-db: UNMEASURED — this lane did NOT run\n\n"
+                "No Neon root-branch slot was free, so no database was created "
+                "and **no SQL lane ran**. This is not a pass: nothing about the "
+                "diff was verified against a prod-shaped database.\n\n"
+                f"```\n{reason}\n```\n")
+    print("UNMEASURED: no database was created; no lane ran", file=sys.stderr)
+
+
 def cmd_create(a: argparse.Namespace) -> None:
     key, project = a.api_key, a.project_id
     _preflight(key, project)
-    _await_root_slot(key, project, a.prefix, a.max_roots, a.wait_minutes)
+    if not _await_root_slot(key, project, a.prefix, a.max_roots, a.wait_minutes):
+        _emit_unmeasured(
+            f"no ci- root slot within {a.wait_minutes}m (ceiling {a.max_roots})")
+        return
     parent = a.parent_id or _default_branch_id(key, project)
 
     # expires_at is the SELF-HEALING backstop for the root-branch cap. `destroy`
@@ -268,7 +312,19 @@ def cmd_create(a: argparse.Namespace) -> None:
             # that actually governs cost, and it stays.
         }],
     }
-    out = _create_branch(key, project, body)
+    try:
+        out = _create_branch(key, project, body)
+    except SystemExit as exc:
+        # ★ The SAME outcome as losing the wait, because it is the same event:
+        # the cap is full. The admission check above is advisory — another job
+        # can take the last root between that GET and this POST — and with the
+        # ceiling raised to 4 there is no spare root absorbing that race any
+        # more. Letting this stay fatal would have turned a soft queue into a
+        # hard red exactly when the ceiling went up.
+        if "ROOT_BRANCHES_LIMIT_EXCEEDED" in str(exc) or "ROOT-branch cap" in str(exc):
+            _emit_unmeasured(f"lost the race for the last root branch: {exc}")
+            return
+        raise
     branch_id = out["branch"]["id"]
 
     # ★ The response is the only evidence that the third cleanup layer exists.
@@ -410,6 +466,10 @@ def _emit(*, branch_id: str, dsn: str) -> None:
         with open(gh_out, "a") as fh:
             fh.write(f"branch_id={branch_id}\n")
             fh.write(f"dsn={dsn}\n")
+            # The positive half of the UNMEASURED contract: every gated step
+            # keys off `slot`, so it must be set on BOTH paths or the lane
+            # silently skips itself on the happy one.
+            fh.write("slot=taken\n")
     else:
         print(dsn)
     print(f"branch {branch_id} created (schema-only)", file=sys.stderr)
@@ -495,11 +555,25 @@ def main() -> None:
     c.add_argument("--ttl-hours", type=int, default=3)
     c.add_argument("--prefix", default="ci-",
                    help="name prefix identifying branches this lane owns")
-    # Default 3, not 25. The project is on a 5-root cap and production holds
-    # one of them; 3 leaves a slot for the daily full-suite job and one spare
-    # for a human. Raise it via NEON_CI_MAX_ROOTS only on a plan with room.
+    # Default 4, not 25. The project is on a 5-root Launch cap and production
+    # holds one of them, so 4 is the whole remaining supply — `ci-` covers BOTH
+    # lanes (…-parity and …-fullsuite), so this one number bounds them together.
+    #
+    # ★ Raised from 3 on 2026-09-19. The measured problem was not leakage: the
+    # holders were live runs aged 3/7/9m with 3h expiries, and `destroy` ran in
+    # every run. It was that supply (3) was below demand — six PRs were open and
+    # five ci-neon-db runs overlapped between 05:05 and 05:35Z — while the wait
+    # window (8m) was SHORTER than the hold time (15–23m measured over six runs).
+    # A fourth job therefore could not ever succeed: it gave up at 8m on holders
+    # that would not release for another 10–15.
+    #
+    # 4 spends the last spare root, so there is no longer a free root absorbing
+    # the race between the admission check and the create. That is deliberate and
+    # paid for: ROOT_BRANCHES_LIMIT_EXCEEDED on create is now handled as
+    # UNMEASURED rather than as a failure (see cmd_create). Going above 4 needs a
+    # bigger plan, not a bigger number — 25 roots is Scale.
     c.add_argument("--max-roots", type=int,
-                   default=int(os.environ.get("NEON_CI_MAX_ROOTS") or 3),
+                   default=int(os.environ.get("NEON_CI_MAX_ROOTS") or 4),
                    help="max concurrent ci- root branches; 0 disables the wait")
     c.add_argument("--wait-minutes", type=int,
                    default=int(os.environ.get("NEON_CI_WAIT_MINUTES") or 8),
