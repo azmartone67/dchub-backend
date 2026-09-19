@@ -530,11 +530,19 @@ def _run_ingest(rows_per_day, days=None, row_limit=None):
 def test_the_default_daily_run_writes_every_day_of_its_window():
     """The whole point of a trailing window: every day in it gets re-read."""
     out, db, _ = _run_ingest(rows_per_day=MEASURED_PEAK_PAGE_ROWS_PER_DAY)
-    from datetime import datetime, timedelta
-    end = datetime.utcnow().date()
-    window_days = _shipped_env_default_int("DEFAULT_WINDOW_DAYS")
-    expected = {(end - timedelta(days=i)).isoformat()
-                for i in range(window_days + 1)}
+    # ★ Take the window from what the run REPORTED, never from the wall clock.
+    # Recomputing `utcnow().date()` here races the module across UTC midnight —
+    # one side lands on the next day and the guard flakes — and it would assert
+    # against a window the run never claimed. This also checks the stronger
+    # property: every day it SAYS it covered was actually written.
+    from datetime import date, timedelta
+    start = date.fromisoformat(out["window"]["start"])
+    end = date.fromisoformat(out["window"]["end"])
+    expected, day = set(), start
+    while day <= end:
+        expected.add(day.isoformat())
+        day += timedelta(days=1)
+    assert len(expected) == _shipped_env_default_int("DEFAULT_WINDOW_DAYS") + 1
     missing = expected - db.days_written()
     assert not missing, (
         f"{len(missing)} of {len(expected)} days in the trailing window were "
