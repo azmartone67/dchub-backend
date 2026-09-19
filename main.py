@@ -10127,8 +10127,12 @@ except Exception as e:
 
 try:
     if setup_tax_incentive_routes:
-        setup_tax_incentive_routes(app)
-        logger.info("✅ Tax Incentives routes registered")
+        # Pass the FACTORY, not a connection. get_db() checks one out of the Neon
+        # pool and it is only returned by .close(); holding one in a route closure
+        # would leak a pooled connection per worker for the life of the process.
+        # tax_incentives_routes._connection() acquires and releases per operation.
+        setup_tax_incentive_routes(app, get_db)
+        logger.info("✅ Tax Incentives routes registered (override store attached)")
 except Exception as e:
     logger.error(f"⚠️ Tax Incentives routes failed: {e}")
 

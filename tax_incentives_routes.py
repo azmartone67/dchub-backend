@@ -22,8 +22,11 @@ Endpoints (new v2):
 """
 
 from flask import Blueprint, jsonify, request, Response
+import contextlib
 import logging
+import os
 import sys
+import time
 import json
 import csv
 import io
@@ -121,26 +124,75 @@ def setup_tax_incentive_routes(app, db=None):
     # aliased the module-level dicts, so a PUT mutated DEFAULT_INCENTIVES in
     # place for the life of the process.
     incentives_data = {s['abbr']: dict(s) for s in DEFAULT_INCENTIVES}
+    next_refresh_at = [0.0]   # 0.0 == stale; the first matching request loads
+    schema_ready = [False]
+    announced = [False]
+
+    def _apply_overrides():
+        """Re-read overrides and layer them INTO the existing dict object.
+
+        ★ Mutated in place, never rebound. Every route closure below — and
+        _setup_v2_routes, which takes it as an argument — captured this dict at
+        registration time, so rebinding the name here would leave all of them
+        pointing at the boot-time snapshot for the life of the worker.
+        """
+        overrides = _load_overrides(db)
+        fresh, notes = _layer_overrides(DEFAULT_INCENTIVES, overrides)
+        incentives_data.clear()
+        incentives_data.update(fresh)
+        for note in notes:
+            logger.warning("[tax-incentives] %s", note)
+        if not announced[0]:
+            announced[0] = True
+            logger.info(
+                "[tax-incentives] override store live — %d states, %d overridden, ttl %ss",
+                len(fresh), len(overrides), _OVERRIDE_TTL_SECONDS,
+            )
+        return fresh
+
+    def _refresh_overrides(force=False):
+        """TTL-bounded, LAZY, and never raises.
+
+        ★ Deliberately not called at boot. db is main.get_db, and
+        get_pg_connection() waits up to _POOL_ACQUIRE_TIMEOUT (10s) per attempt
+        across 3 attempts — so a saturated or unreachable pool would stall every
+        worker's STARTUP for ~30s before falling back to defaults this module
+        already holds in memory. The first request that needs the store pays for
+        it instead, and the DDL runs once per process.
+
+        It never raises because it runs from before_request: a database blip
+        must not turn a public endpoint into a 500 when a perfectly good
+        last-known-good layer is already in memory. The deadline is set BEFORE
+        the attempt, so a database that is down is retried on the TTL rather
+        than on every single request.
+        """
+        if not db:
+            return
+        if not force and time.monotonic() < next_refresh_at[0]:
+            return
+        next_refresh_at[0] = time.monotonic() + _OVERRIDE_TTL_SECONDS
+        try:
+            if not schema_ready[0]:
+                _init_db(db)
+                schema_ready[0] = True
+            _apply_overrides()
+        except Exception:
+            logger.exception(
+                "[tax-incentives] override refresh failed — serving the last good layer"
+            )
 
     if db:
-        try:
-            _init_db(db)
-            overrides = _load_overrides(db)
-            incentives_data, notes = _layer_overrides(DEFAULT_INCENTIVES, overrides)
-            for note in notes:
-                logger.warning("[tax-incentives] %s", note)
-            logger.info(
-                "[tax-incentives] %d states; %d carry an admin override",
-                len(incentives_data), len(overrides),
-            )
-        except Exception:
-            # logger.exception, not print(e): the defect this replaces was a
-            # NameError reduced to a one-line message nobody read.
-            logger.exception(
-                "[tax-incentives] override load failed — serving DEFAULT_INCENTIVES unmodified"
-            )
-            incentives_data = {s['abbr']: dict(s) for s in DEFAULT_INCENTIVES}
-    
+        @app.before_request
+        def _tax_incentives_ttl_refresh():
+            # This hook runs for EVERY request the app serves, so for the ~700
+            # routes that are not ours it must cost one string compare and stop.
+            if request.path.startswith('/api/v1/tax-incentives'):
+                _refresh_overrides()
+
+        logger.info(
+            "[tax-incentives] override store armed (lazy, ttl %ss)", _OVERRIDE_TTL_SECONDS
+        )
+
     @app.route('/api/v1/tax-incentives', methods=['GET', 'OPTIONS'])
     def get_all_incentives():
         if request.method == 'OPTIONS':
@@ -304,6 +356,10 @@ def setup_tax_incentive_routes(app, db=None):
         if db:
             try:
                 _save_override(db, abbr, updates, _DEFAULTS_BY_ABBR.get(abbr, {}))
+                # Expire this worker's layer. The in-memory merge above already
+                # made THIS worker correct; dropping the deadline makes its next
+                # read pull the other workers' edits too.
+                next_refresh_at[0] = 0.0
             except Exception:
                 logger.exception("[tax-incentives] override write failed for %s", abbr)
         
@@ -620,6 +676,49 @@ def _check_pro_access(api_key):
 
 _OVERRIDES_TABLE = 'tax_incentive_overrides'
 
+# How long a worker serves its cached override layer before re-reading. An admin
+# PUT lands on ONE gunicorn worker; without a re-read the others keep serving the
+# pre-edit layer until they restart. 60s bounds that window without putting a
+# query on a public, edge-cached read path.
+_OVERRIDE_TTL_SECONDS = max(1, int(os.environ.get('TAX_INCENTIVE_OVERRIDE_TTL') or 60))
+
+
+# The slots this codebase's pool wrappers keep their real connection in:
+# main._PoolConnWrapper uses _raw, main._ReadPoolConn uses _conn. Both proxy
+# everything else through __getattr__, so the wrapper is indistinguishable from
+# a connection until you ask for the driver behind it.
+_WRAPPER_SLOTS = ('_raw', '_conn')
+
+
+def _driver_module(db):
+    """The DB-API module behind `db`, unwrapping this codebase's pool wrappers.
+
+    ★ Not cosmetic. `_placeholder()` decides between '%s' and '?' from the
+    driver's declared paramstyle, and main.get_pg_connection() hands back a
+    `_PoolConnWrapper` DEFINED IN main — so `type(db).__module__` names "main",
+    which declares no paramstyle. Guessing psycopg2 at that point happens to be
+    right in production and is still a guess: the first wrapped sqlite3
+    connection a test handed in got Postgres SQL and failed on `SET`. Unwrap and
+    ask the real driver instead.
+
+    Falls back to psycopg2 when the chain runs out and it is loaded — every
+    wrapper in this codebase wraps it — and to None when it is not, which
+    `_placeholder` reads as the production default.
+    """
+    obj = db
+    for _ in range(4):  # bounded: a wrapper chain this deep is a bug, not a shape
+        module = sys.modules.get(type(obj).__module__.split('.')[0])
+        if module is not None and hasattr(module, 'paramstyle'):
+            return module
+        for slot in _WRAPPER_SLOTS:
+            inner = getattr(obj, slot, None)
+            if inner is not None and inner is not obj:
+                obj = inner
+                break
+        else:
+            break
+    return sys.modules.get('psycopg2')
+
 
 def _placeholder(db):
     """The DB-API placeholder for this driver: '%s' for psycopg2, '?' for sqlite3.
@@ -630,8 +729,7 @@ def _placeholder(db):
     the SQL would not have caught the NameError this module shipped for its whole
     life. Unknown driver falls back to '%s', the production case.
     """
-    module = sys.modules.get(type(db).__module__.split('.')[0])
-    return '?' if getattr(module, 'paramstyle', '') == 'qmark' else '%s'
+    return '?' if getattr(_driver_module(db), 'paramstyle', '') == 'qmark' else '%s'
 
 
 def _db_error_types(db):
@@ -646,11 +744,46 @@ def _db_error_types(db):
     is logged with a full traceback. That is strictly better than the bare
     `except:` this replaces, which is the reason the defect below was invisible.
     """
-    module = sys.modules.get(type(db).__module__.split('.')[0])
-    base = getattr(module, 'Error', None)
+    base = getattr(_driver_module(db), 'Error', None)
     if isinstance(base, type) and issubclass(base, Exception):
         return (base,)
     return ()
+
+
+@contextlib.contextmanager
+def _connection(db):
+    """Yield a usable connection, and return it to the pool if we took it.
+
+    ★ `db` may be a CONNECTION or a CALLABLE returning one, and the difference
+    decides who closes it.
+
+    Production passes main.get_db — a factory. main.get_pg_connection() checks a
+    connection OUT of the Neon pool and it is only returned by .close(); the pool
+    is capped at DB_POOL_MAX (50) and warns at 75%. A module that took one at
+    boot and kept it in a route closure would therefore hold a pooled connection
+    for the life of the worker, per worker, permanently — which is why this takes
+    a factory and not a connection.
+
+    The tests pass a live sqlite3 connection they own and reuse across asserts;
+    closing that would destroy an in-memory database between calls. So: close
+    only what we acquired.
+    """
+    # ★ Discriminate on `.cursor`, NOT on callable(). sqlite3.Connection defines
+    # __call__ (it compiles a statement), so callable() is True for a live
+    # connection and the factory branch invoked it as `db()` — TypeError on
+    # every call, caught immediately by the real-connection tests. A DB-API
+    # connection has .cursor; main.get_db, a plain function, does not.
+    if not hasattr(db, 'cursor'):
+        conn = db()
+        try:
+            yield conn
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                logger.exception("[tax-incentives] returning the connection to the pool failed")
+    else:
+        yield db
 
 
 def _init_db(db):
@@ -659,15 +792,24 @@ def _init_db(db):
     No try/except: a DDL failure here means overrides cannot be stored, and the
     caller must hear about it. The old version wrapped this in `except: pass`.
     """
-    cursor = db.cursor()
-    cursor.execute(
-        'CREATE TABLE IF NOT EXISTS ' + _OVERRIDES_TABLE + ' ('
-        ' abbr TEXT PRIMARY KEY,'
-        ' payload TEXT NOT NULL,'
-        ' updated_at TEXT'
-        ')'
-    )
-    db.commit()
+    with _connection(db) as conn:
+        cursor = conn.cursor()
+        if _placeholder(conn) == '%s':
+            # Bound the wait rather than blocking a worker's boot behind someone
+            # else's lock. SET LOCAL needs a transaction to scope to — psycopg2
+            # opens one implicitly — and a session-level SET is dropped by the
+            # pooler, so LOCAL is the only form that survives. `CREATE TABLE IF
+            # NOT EXISTS` on an existing table is a no-op that takes no lock on
+            # it, unlike `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
+            cursor.execute("SET LOCAL lock_timeout = '5s'")
+        cursor.execute(
+            'CREATE TABLE IF NOT EXISTS ' + _OVERRIDES_TABLE + ' ('
+            ' abbr TEXT PRIMARY KEY,'
+            ' payload TEXT NOT NULL,'
+            ' updated_at TEXT'
+            ')'
+        )
+        conn.commit()
 
 
 def _load_overrides(db):
@@ -680,16 +822,23 @@ def _load_overrides(db):
     here is a BUG in this file and now propagates to a handler that logs a
     traceback. Only genuine driver errors are absorbed, and even those get a line.
     """
-    cursor = db.cursor()
-    try:
-        cursor.execute('SELECT abbr, payload FROM ' + _OVERRIDES_TABLE)
-        rows = cursor.fetchall() or []
-    except _db_error_types(db) as e:
-        logger.warning(
-            "[tax-incentives] could not read %s (%s: %s) — serving DEFAULT_INCENTIVES unmodified",
-            _OVERRIDES_TABLE, type(e).__name__, e,
-        )
-        return {}
+    with _connection(db) as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT abbr, payload FROM ' + _OVERRIDES_TABLE)
+            rows = cursor.fetchall() or []
+        except _db_error_types(conn) as e:
+            # ★ Log, then RE-RAISE. Returning {} here would give one value two
+            # meanings — "nobody has overridden anything" and "the read failed"
+            # — and the TTL refresh below would read the second as the first and
+            # wipe every live override out of the served data on a DB blip. Each
+            # caller decides instead: boot falls back to the module, refresh
+            # keeps the last good copy.
+            logger.warning(
+                "[tax-incentives] could not read %s (%s: %s)",
+                _OVERRIDES_TABLE, type(e).__name__, e,
+            )
+            raise
 
     overrides = {}
     for abbr, payload in rows:
@@ -749,35 +898,36 @@ def _save_override(db, abbr, fields, base_now):
     The read below has no `except`: if it fails we must NOT write, or an override
     that already carried three fields would be silently replaced by one.
     """
-    ph = _placeholder(db)
-    cursor = db.cursor()
-    cursor.execute('SELECT payload FROM ' + _OVERRIDES_TABLE + ' WHERE abbr = ' + ph, (abbr,))
-    row = cursor.fetchone()
+    with _connection(db) as conn:
+        ph = _placeholder(conn)
+        cursor = conn.cursor()
+        cursor.execute('SELECT payload FROM ' + _OVERRIDES_TABLE + ' WHERE abbr = ' + ph, (abbr,))
+        row = cursor.fetchone()
 
-    existing = {}
-    if row and row[0]:
-        try:
-            parsed = json.loads(row[0])
-            if isinstance(parsed, dict):
-                existing = parsed
-        except (TypeError, ValueError):
-            logger.warning("[tax-incentives] override row %s was unparseable — replacing it", abbr)
+        existing = {}
+        if row and row[0]:
+            try:
+                parsed = json.loads(row[0])
+                if isinstance(parsed, dict):
+                    existing = parsed
+            except (TypeError, ValueError):
+                logger.warning("[tax-incentives] override row %s was unparseable — replacing it", abbr)
 
-    merged_fields = dict(existing.get('fields') or {})
-    merged_fields.update(fields)
-    merged_base = dict(existing.get('base') or {})
-    for key in fields:
-        merged_base[key] = base_now.get(key)
+        merged_fields = dict(existing.get('fields') or {})
+        merged_fields.update(fields)
+        merged_base = dict(existing.get('base') or {})
+        for key in fields:
+            merged_base[key] = base_now.get(key)
 
-    now = utc_iso_z()
-    payload = json.dumps({'fields': merged_fields, 'base': merged_base, 'updated_at': now})
-    cursor.execute(
-        'INSERT INTO ' + _OVERRIDES_TABLE + ' (abbr, payload, updated_at)'
-        ' VALUES (' + ph + ', ' + ph + ', ' + ph + ')'
-        ' ON CONFLICT (abbr) DO UPDATE SET'
-        ' payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at',
-        (abbr, payload, now),
-    )
-    db.commit()
-    return {'fields': merged_fields, 'base': merged_base, 'updated_at': now}
+        now = utc_iso_z()
+        payload = json.dumps({'fields': merged_fields, 'base': merged_base, 'updated_at': now})
+        cursor.execute(
+            'INSERT INTO ' + _OVERRIDES_TABLE + ' (abbr, payload, updated_at)'
+            ' VALUES (' + ph + ', ' + ph + ', ' + ph + ')'
+            ' ON CONFLICT (abbr) DO UPDATE SET'
+            ' payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at',
+            (abbr, payload, now),
+        )
+        conn.commit()
+        return {'fields': merged_fields, 'base': merged_base, 'updated_at': now}
 
