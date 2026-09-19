@@ -761,15 +761,24 @@ def _claim_utc_day(force: bool = False) -> tuple[bool, str]:
         return False, "claim_unavailable"
     try:
         with c.cursor() as cur:
+            # The day is computed here and PASSED, not spelled as a SQL literal.
+            # regression_lint's insert-no-on-conflict rule matches
+            # INSERT INTO <tbl> up to the first quote, so an inline date literal
+            # puts ON CONFLICT outside the match and the rule reports an
+            # idempotent INSERT as a non-idempotent one. The module already
+            # trusts the app clock (the 20h gate above uses it), so this loses
+            # nothing. Whitelisting the table instead is explicitly the wrong
+            # move — the rule's own comment says so.
+            today = datetime.now(timezone.utc).date()
             if force:
-                cur.execute("DELETE FROM rag_tick_claims "
-                            "WHERE utc_day = (NOW() AT TIME ZONE 'UTC')::date")
+                cur.execute("DELETE FROM rag_tick_claims WHERE utc_day = %s",
+                            (today,))
             cur.execute("""
                 INSERT INTO rag_tick_claims (utc_day)
-                VALUES ((NOW() AT TIME ZONE 'UTC')::date)
+                VALUES (%s)
                 ON CONFLICT (utc_day) DO NOTHING
                 RETURNING utc_day
-            """)
+            """, (today,))
             return (True, "claimed") if cur.fetchone() else (False, "already_ran_today")
     except Exception:
         return False, "claim_unavailable"
