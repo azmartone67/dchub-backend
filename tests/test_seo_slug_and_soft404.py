@@ -187,8 +187,21 @@ def test_backfill_mints_an_alias_for_the_pre_dedupe_slug():
     seg = src.split("def backfill_canonical_slugs", 1)[1].split("\ndef ", 1)[0]
     assert "INSERT INTO facility_slug_aliases" in seg
     assert "provider-dedupe" in seg
-    assert "ON CONFLICT (old_slug) DO NOTHING" in seg, (
-        "alias insert must be idempotent -- the backfill is re-runnable")
+    # ★ the ON CONFLICT clause moved into the shared _ALIAS_REPOINT constant,
+    # so asserting over `seg` alone would pass vacuously from here on. Inline
+    # it and assert the property the old literal stood for.
+    assert "_ALIAS_REPOINT" in seg, "the emitter no longer shares the one clause"
+    clause = " ".join(src.split("_ALIAS_REPOINT = ", 1)[1]
+                         .split('"""')[1].split())
+    assert "ON CONFLICT (old_slug) DO UPDATE" in clause, (
+        "alias insert must stay idempotent -- the backfill is re-runnable")
+    # idempotent AND scoped: re-running converges on the current target instead
+    # of freezing whatever the first run wrote, and reaches no other alias.
+    assert "facility_slug_aliases.source = EXCLUDED.source" in clause, (
+        "without a source match this repoints gsc / manual loads")
+    assert ("facility_slug_aliases.facility_id IS NOT DISTINCT FROM "
+            "EXCLUDED.facility_id") in clause, (
+        "without a facility match this repoints another facility's alias")
 
 
 # ── soft 404 -> real 404 ───────────────────────────────────────────────

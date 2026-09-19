@@ -2787,6 +2787,14 @@ def served_slugs(slugs, max_hops: int = 3, conn=None) -> dict:
                     walks[start] = (nxt, seen)
         # a walk still open here is longer than max_hops: it keeps the original
     except Exception:
+        # ★ r-slugblockers (2026-09-19): this arm maps EVERY slug to itself, so
+        # every internal link and sitemap row silently stops resolving — and a
+        # run that lands here is indistinguishable from a run with nothing to
+        # do. _batch_page_rows' function-level `from routes.facility_slug_freeze
+        # import SLUG_OWNER_ORDER_SQL` sits outside the per-arm try/except above
+        # and lands here too. Fail open, as documented; never quietly.
+        logger.exception(
+            "served_slugs fell back to identity for %d slug(s)", len(out))
         return {s: s for s in out}
     finally:
         if not _lent:

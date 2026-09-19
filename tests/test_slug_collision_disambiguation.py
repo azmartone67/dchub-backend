@@ -191,13 +191,19 @@ class _Cur:
         # execute_values reads cur.connection.encoding before it builds the SQL
         self.connection = type("C", (), {"encoding": "UTF8"})()
 
+    # ★ Discriminate on the SET clause, never on the bare word "UPDATE". Every
+    # write here says `SET canonical_slug = v.slug` and no SELECT does, whereas
+    # a SELECT that merely mentions an UPDATE in a -- comment matched the old
+    # test and was answered with RETURNING rows on the write branch.
+    WRITE = "SET canonical_slug"
+
     def execute(self, sql, args=None):
         # execute_values hands back BYTES once it has spliced the VALUES in.
         sql = sql.decode() if isinstance(sql, bytes) else sql
         self.seen.append(sql)
         self._last = sql
         self._args = args
-        if "UPDATE" in sql:
+        if _Cur.WRITE in sql:
             self.rowcount = 1
 
     def mogrify(self, template, args):
@@ -217,8 +223,8 @@ class _Cur:
         return (0,)
 
     def fetchall(self):
-        # execute_values(fetch=True) reads the UPDATE's RETURNING rows here.
-        if "UPDATE" in (self._last or ""):
+        # execute_values(fetch=True) reads the write's RETURNING rows here.
+        if _Cur.WRITE in (self._last or ""):
             return [(1,)] * (self.rowcount or 0)
         assert "ranked" in (self._last or ""), \
             "rows must come from the ranked CTE"
@@ -233,18 +239,23 @@ class _Conn:
     def rollback(self): pass
 
 
+# The slug both rows are MEASURED on — the real 61-row collision. It is the
+# 7th column because the SELECT carries it into the UPDATE as a
+# compare-and-swap; see test_the_update_compares_and_swaps_on_the_measured_slug.
+SHARED = "amazon-web-services-amazon-web-services-7e958426"
 ROWS = [(101, "Amazon Web Services", "Amazon Web Services", "Dublin", None,
-         "IE", "marked_no_pointer", None),
+         "IE", SHARED, "marked_no_pointer", None),
         (202, "Amazon Web Services", "Amazon Web Services", "Boise", "ID",
-         "US", "unmarked", None)]
+         "US", SHARED, "unmarked", None)]
 
 # a points_elsewhere row: it must ADOPT keeper_slug, never mint a new one.
 ADOPT_ROWS = [(303, "Equinix", "Equinix SV3", "San Jose", "CA", "US",
+               "equinix-equinix-sv3-7a236d13",
                "points_elsewhere", "equinix-sv3-keeper-abcd1234")]
 
 
 def _updates(cur):
-    return [s for s in cur.seen if "UPDATE" in s]
+    return [s for s in cur.seen if _Cur.WRITE in s]
 
 
 def test_dry_run_is_the_default_and_writes_nothing():
@@ -359,7 +370,7 @@ class _PagingCur(_Cur):
 
 N = 250                                       # 3 pages: 100 + 100 + 50
 BIG = [(i, "Amazon Web Services", "Amazon Web Services", "Dublin", None,
-        "IE", "marked_no_pointer", None)
+        "IE", SHARED, "marked_no_pointer", None)
        for i in range(1, N + 1)]
 
 
@@ -591,7 +602,7 @@ def test_the_mint_path_still_refuses_a_taken_slug():
 def test_a_points_elsewhere_row_with_no_keeper_slug_is_left_alone():
     """keeper_has_no_slug was 0 live, but a NULL here must not write ''."""
     rows = [(303, "Equinix", "Equinix SV3", "San Jose", "CA", "US",
-             "points_elsewhere", None)]
+             "equinix-equinix-sv3-7a236d13", "points_elsewhere", None)]
     cur = _run(rows)
     assert not _updates(cur), "wrote a row whose keeper has no slug"
 
@@ -635,6 +646,63 @@ def test_the_group_report_never_reads_coordinates():
         assert banned not in code, f"the group report re-derives span ({banned})"
 
 
+
+
+# ── the write may only land on the row it MEASURED, once ────────────────────
+# Both of these take no fixture on purpose: the __main__ runner at the bottom
+# of this file calls every test_* with no arguments.
+
+def test_the_write_compares_and_swaps_on_the_measured_slug():
+    """Nothing in SQL said these were the rn > 1 rows.
+
+    The carve-out from set-once lived entirely in the Python SELECT: the
+    statement itself would happily have set canonical_slug on ANY row whose id
+    matched. A re-rank between the SELECT and the write — a concurrent freeze
+    run, or repair_one_url_many_rows.py's separate owner election — would then
+    strip the slug off the row the page actually SERVES, moving an indexed URL.
+    Carrying the measured slug into the write makes that case a no-op.
+
+    The value assertion is the load-bearing one: the measured slug has no
+    reason to appear in an UPDATE at all unless it is being compared against.
+    """
+    cur = _run(ROWS)
+    writes = _updates(cur)
+    assert writes, "no write was issued at all"
+    sql = "\n".join(writes)
+    assert "v(id, slug, old_slug)" in sql, "the write lost the third column"
+    # the predicate AND the value: dropping either alone re-opens the hole,
+    # and a fake cursor cannot execute the comparison to show it.
+    assert "t.canonical_slug = v.old_slug" in sql, (
+        "the measured slug is carried but never compared — the write can "
+        "still land on a row that was re-ranked out from under the SELECT")
+    assert repr(SHARED) in sql, (
+        "the slug each row was measured on never reached the write, so the "
+        "statement cannot tell the measured row from a re-ranked one")
+
+
+def test_two_rows_that_mint_the_same_slug_do_not_both_land():
+    """`guard` is a correlated NOT EXISTS over the table being written.
+
+    It reads the snapshot its statement began on, so it cannot see rows that
+    same statement is writing: two rows whose md5(provider|name|id) prefixes
+    collided would both pass it, and the freeze index is NOT unique, so nothing
+    downstream would raise. The collision is rare, not impossible, and the
+    guard reads as total protection.
+
+    Forced here by making the builder collide outright — the only way to reach
+    a window the guard is structurally blind to.
+    """
+    import routes.facility_slug_freeze as _fsf
+    real = _fsf.build_disambiguated_slug
+    _fsf.build_disambiguated_slug = lambda *a, **k: "collided-slug-deadbeef"
+    try:
+        cur = _run(ROWS)          # two mint-bucket rows, one minted slug
+    finally:
+        _fsf.build_disambiguated_slug = real
+    sql = "\n".join(_updates(cur))
+    assert sql.count(repr("collided-slug-deadbeef")) == 1, (
+        "both rows were written the same canonical_slug in one statement — "
+        "the NOT EXISTS guard cannot see its own statement's writes")
 
 
 if __name__ == "__main__":
