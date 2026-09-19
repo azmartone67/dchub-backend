@@ -1,5 +1,5 @@
 """
-brain_rag.py — general context-assembly RAG (pgvector + Cohere embeddings).
+brain_rag.py — general context-assembly RAG (pgvector + Mistral embeddings).
 
 Started as brain-corpus recall for the L6 planner; now a CORPUS-REGISTRY RAG:
 "roll RAG out to a new corpus" = add a row to CORPORA (no new code), same as the
@@ -10,10 +10,19 @@ Store:  brain_corpus_embeddings(source_table, source_id, kind, text,
         embedding vector(1024), chunk_ix, meta)  — pgvector on Neon, one table
         for all corpora. Chunked corpora (market_narratives) store one row per
         ~150-300-token chunk, source_id='<slug>#<n>', provenance in meta.
-Embed:  Cohere embed-english-v3.0 (1024-d, asymmetric search_document/search_query;
-        OpenAI key is out of quota). Batched ≤96/call. Chunked market_narratives
-        additionally get an Anthropic contextual-retrieval blurb (haiku + prompt
-        caching) prepended before embed — BRAIN_RAG_CONTEXTUAL=0 to disable.
+Embed:  mistral-embed (1024-d, SYMMETRIC) — the default since r-rag-mistral
+        (2026-07-06). Cohere embed-english-v3.0 was original and is still
+        selectable with RAG_EMBED_PROVIDER=cohere, but the live COHERE_API_KEY
+        is a TRIAL key (1,000/mo) that exhausted → 429 → the whole RAG froze.
+        ★ The two are NOT interchangeable in place: both are 1024-d so the
+        schema is unchanged, but cross-provider vectors are not comparable, so
+        switching means RE-EMBEDDING the corpus, and every cosine gate in this
+        file is tuned per-provider (mistral compresses the range upward — see
+        the provider-aware gates below). `EMBED_MODEL` is the COHERE model
+        name; `_live_embed_model()` is the one actually in use.
+        Batched ≤96/call. Chunked market_narratives additionally get an
+        Anthropic contextual-retrieval blurb (haiku + prompt caching)
+        prepended before embed — BRAIN_RAG_CONTEXTUAL=0 to disable.
 Recall: cosine (<=>), optionally scoped to one corpus.
 
 Endpoints (admin, X-Admin-Key):
@@ -60,7 +69,10 @@ logger = logging.getLogger(__name__)
 
 EMBED_MODEL = "embed-english-v3.0"
 EMBED_DIM = 1024
-_COHERE_BATCH = 96  # Cohere v1/embed hard limit
+# Batch size for EVERY provider, not just Cohere — the name predates
+# r-rag-mistral. 96 is Cohere's v1/embed hard limit and is a safe floor under
+# mistral-embed's own (token-based) ceiling, so it is kept as the common bound.
+_COHERE_BATCH = 96
 
 # ── rerank (r-rag-rerank 2026-07-04) ─────────────────────────────────
 # Two-stage retrieval: over-fetch k*OVERFETCH candidates from the pgvector
