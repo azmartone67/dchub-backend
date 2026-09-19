@@ -436,8 +436,26 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     })
     conn = _Conn(cur)
     monkeypatch.setattr(cf, "open_conn", lambda *a, **k: conn)
+    # ★2026-09-19 — `since` is RELATIVE to now, not the pinned 2026-08-20 this
+    # used to send. changes_feed._parse_since clamps anything older than 30 days
+    # to `now - 30d` and reports mode "clamped-30d", so the pinned date silently
+    # stopped being the value under test the moment wall-clock crossed that
+    # boundary: on 2026-09-19T01:36Z it was 30.068 days old, the clamp fired,
+    # and the handler correctly passed 2026-08-20T01:36:53Z instead of
+    # 2026-08-20T00:00:00Z. The production code was right; the test had expired.
+    # It fails EVERY run from that minute on, and drifts further each day, so it
+    # blocks every PR in the repo until the date is un-pinned.
+    # Two days back is comfortably inside the window and asserts the same thing:
+    # that the parsed timestamp reaches the query unchanged.
+    since_dt = (dt.datetime.now(_UTC).replace(microsecond=0)
+                - dt.timedelta(days=2))
+    assert since_dt > dt.datetime.now(_UTC) - dt.timedelta(days=30), (
+        "the `since` used here must stay inside _parse_since's 30-day clamp, "
+        "or the handler returns the clamp floor and this stops testing "
+        "pass-through")
     with _app(cf.changes_feed_bp).test_client() as c:
-        rv = c.get("/api/v1/changes/since?since=2026-08-20T00:00:00Z")
+        rv = c.get("/api/v1/changes/since?since="
+                   + since_dt.isoformat().replace("+00:00", "Z"))
     assert rv.status_code == 200
     body = rv.get_json()
     claims = body["claims"]
@@ -448,7 +466,7 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     assert body["drill_deeper"]["claims_full"] == "/api/v1/ops/claims"
     sql, params = _sql(cur, "brain_predictions_log")[0]
     assert "outcome_at >= %s" in sql and "IN ('confirmed', 'retracted')" in sql
-    assert params[0] == "CLAIM" and params[1] == dt.datetime(2026, 8, 20, tzinfo=_UTC)
+    assert params[0] == "CLAIM" and params[1] == since_dt
     # The block is additive: the lanes and their counts are untouched.
     assert "counts" in body and "diff" in body
 
