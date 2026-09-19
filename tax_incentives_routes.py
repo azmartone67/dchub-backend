@@ -135,10 +135,36 @@ def setup_tax_incentive_routes(app, db=None):
         _setup_v2_routes, which takes it as an argument — captured this dict at
         registration time, so rebinding the name here would leave all of them
         pointing at the boot-time snapshot for the life of the worker.
+
+        ★ update() ONLY — no clear() first. Production is `gunicorn --workers 1
+        --threads 32` (start_web.sh), so up to 31 other threads may be inside
+        `list(incentives_data.values())` in get_all_incentives() while this
+        runs. clear() and update() are two statements, and a thread scheduled
+        between them reads an EMPTY dict — HTTP 200 carrying zero states, which
+        no caller can tell from "there are no incentives". Measured: with a
+        writer looping clear()+update() and 8 reader threads, 184,453 of
+        214,569 reads saw an empty dict.
+
+        clear() was also never needed. _layer_overrides() builds its result from
+        DEFAULT_INCENTIVES and `continue`s on any abbr not already present, so
+        its key set is ALWAYS exactly DEFAULT_INCENTIVES' — an override can
+        change a state's fields but can never add or remove a state. There is no
+        stale key for clear() to remove. The assertion below is what keeps that
+        true if _layer_overrides ever changes.
         """
         overrides = _load_overrides(db)
         fresh, notes = _layer_overrides(DEFAULT_INCENTIVES, overrides)
-        incentives_data.clear()
+        dropped = set(incentives_data) - set(fresh)
+        if dropped:
+            # Not reachable via _layer_overrides today. If it ever becomes
+            # reachable, say so rather than silently serving a stale state:
+            # removing the keys here would reopen the very window above.
+            logger.error(
+                "[tax-incentives] %d state(s) vanished from the layered result (%s) — "
+                "serving the previous values for them; _layer_overrides no longer "
+                "preserves the DEFAULT_INCENTIVES key set",
+                len(dropped), ','.join(sorted(dropped)),
+            )
         incentives_data.update(fresh)
         for note in notes:
             logger.warning("[tax-incentives] %s", note)
@@ -676,10 +702,30 @@ def _check_pro_access(api_key):
 
 _OVERRIDES_TABLE = 'tax_incentive_overrides'
 
-# How long a worker serves its cached override layer before re-reading. An admin
-# PUT lands on ONE gunicorn worker; without a re-read the others keep serving the
-# pre-edit layer until they restart. 60s bounds that window without putting a
-# query on a public, edge-cached read path.
+# How long a process serves its cached override layer before re-reading.
+#
+# ★ NOT about sibling gunicorn workers. This app runs `--workers 1 --threads 32`
+# (start_web.sh), one process per container, and threads share `incentives_data`
+# — so the PUT handler's in-memory merge is already visible to every thread in
+# the process that served it, instantly. What the TTL actually bounds is the
+# OTHER containers: Railway replicas and the Render failover box each run their
+# own process with their own copy, and they learn about an edit only by
+# re-reading. 60s bounds that.
+#
+# It is also what makes an edit survive `--max-requests 500` worker recycling
+# and a redeploy, which is the whole reason the table exists.
+#
+# The read path is NOT edge-cached, so this query is not competing with a CDN:
+# /api/v1/tax-incentives is in the worker's TIER_GATED_PREFIXES lane
+# (dchub-frontend _worker.js), which proxies straight to Railway with edgeTtl 0
+# and no KV read or write. Measured 2026-09-18 on the canonical URL with NO
+# cache-buster, twice: `cf-cache-status: DYNAMIC`, `x-dc-hub-source:
+# tier-gated-passthrough`. So an admin edit is visible on the next request, not
+# after a CDN TTL, and no Cloudflare bypass rule is needed for it. Note
+# _worker.js ALSO lists this prefix as `tier: 'cold'` (edgeTtl 900) in its
+# per-prefix table — that entry is dead for this path, because the tier-gated
+# branch returns ahead of it. Do not "fix" the cold entry and assume the edge
+# changed; re-measure cf-cache-status on the bare URL instead.
 _OVERRIDE_TTL_SECONDS = max(1, int(os.environ.get('TAX_INCENTIVE_OVERRIDE_TTL') or 60))
 
 
@@ -830,10 +876,11 @@ def _load_overrides(db):
         except _db_error_types(conn) as e:
             # ★ Log, then RE-RAISE. Returning {} here would give one value two
             # meanings — "nobody has overridden anything" and "the read failed"
-            # — and the TTL refresh below would read the second as the first and
-            # wipe every live override out of the served data on a DB blip. Each
-            # caller decides instead: boot falls back to the module, refresh
-            # keeps the last good copy.
+            # — and the TTL refresh would read the second as the first and wipe
+            # every live override out of the served data on a DB blip.
+            # _refresh_overrides() is the only caller: it catches, logs, and
+            # keeps the last good layer. (There is no boot caller — this module
+            # loads the store lazily, on the first matching request.)
             logger.warning(
                 "[tax-incentives] could not read %s (%s: %s)",
                 _OVERRIDES_TABLE, type(e).__name__, e,

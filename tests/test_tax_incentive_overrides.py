@@ -646,3 +646,73 @@ def test_a_request_to_another_route_does_not_touch_the_store(factory):
         assert client.get('/api/v1/something-else').status_code == 200
 
     assert factory.opened == before, 'an unrelated route hit the override store'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The refresh must never expose a partially-rebuilt layer.
+#
+# Production is `gunicorn --workers 1 --threads 32` (start_web.sh), so the
+# refresh in before_request runs while up to 31 other threads are inside
+# `list(incentives_data.values())`. The first cut of this refresh did
+# `incentives_data.clear()` then `.update(fresh)` — two statements with a
+# thread-switch point between them, and a reader scheduled there gets an empty
+# dict, i.e. HTTP 200 carrying zero states.
+#
+# ★ Do not re-attempt this as a threaded test through the test client — it was
+# tried and DELETED for being vacuous. With the clear() restored, 16 threads
+# × 300 requests = 4,800 concurrent reads produced 0 short reads, because a
+# request spends orders of magnitude more time in routing and JSON
+# serialisation than the two-statement window is wide. The same clear()+update()
+# pair driven directly, with no HTTP in the way, showed 184,453 empty reads out
+# of 214,569 — so the window is real, just unreachable through this path at any
+# runtime a test suite can afford. The structural test below is what guards it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_a_refresh_never_drops_a_state_from_the_served_data(factory, monkeypatch, caplog):
+    """The served dict is only ever added to, never emptied first.
+
+    Driven through the one hole a future change could open: a _layer_overrides
+    that stops returning the full DEFAULT_INCENTIVES key set. A refresh that
+    clears before it writes loses the missing state outright; one that only
+    updates keeps serving the last known values and says so.
+
+    ★ This is the deterministic stand-in for the thread race, which has no
+    patchable point between clear() and update() to hook. It fails on the
+    clear()+update() version for the same reason the race does: that version
+    treats "absent from the new layer" as "remove from what we serve".
+    """
+    import logging
+
+    from flask import Flask
+
+    monkeypatch.setattr(tir, '_OVERRIDE_TTL_SECONDS', 0)
+    app = Flask('worker-partial')
+    tir.setup_tax_incentive_routes(app, factory)
+
+    with app.test_client() as client:
+        assert client.get('/api/v1/tax-incentives').status_code == 200
+
+        real = tir._layer_overrides
+        victim = tir.DEFAULT_INCENTIVES[0]['abbr']
+
+        def one_state_short(defaults, overrides):
+            data, notes = real(defaults, overrides)
+            data.pop(victim, None)
+            return data, notes
+
+        monkeypatch.setattr(tir, '_layer_overrides', one_state_short)
+        with caplog.at_level(logging.ERROR, logger='tax_incentives_routes'):
+            r = client.get('/api/v1/tax-incentives')
+
+    assert r.status_code == 200
+    served = {s['abbr'] for s in r.get_json()['data']}
+    assert victim in served, (
+        '%s vanished from the served data — the refresh removed a state instead '
+        'of only adding to what was already there' % victim
+    )
+    assert served >= {s['abbr'] for s in tir.DEFAULT_INCENTIVES}
+
+    complaints = [rec for rec in caplog.records
+                  if rec.levelno >= logging.ERROR and victim in rec.getMessage()]
+    assert complaints, 'a state disappeared from the layer and nothing was logged'
