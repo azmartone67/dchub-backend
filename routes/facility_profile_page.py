@@ -63,6 +63,7 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
         if not conn: return None
         try:
             from routes.facility_slug import hash_sql
+            from routes.facility_slug_freeze import SLUG_OWNER_ORDER_SQL
             c = conn.cursor()
             # r-ner-noindex (2026-08-09): warm the published-NER slug set on
             # the connection we already hold, BEFORE the row lookup. Placing
@@ -180,8 +181,12 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                         # no pointer while the live one pointed at the keeper.
                         # ★ An ORDER, not a WHERE: 47 slugs are served ONLY by
                         # suppressed rows, and filtering would 404 them.
-                        " ORDER BY COALESCE(is_duplicate, 0) ASC,"
-                        "          COALESCE(power_mw, 0) DESC, id ASC LIMIT 1",
+                        # ★ r-slugcollide (2026-09-19): ONE copy of this
+                        # ordering. disambiguate_slug_collisions() keeps the
+                        # shared slug on whichever row this picks and re-mints
+                        # the rest, so a drifted second copy would hand the URL
+                        # to a different facility.
+                        " ORDER BY " + SLUG_OWNER_ORDER_SQL + " LIMIT 1",
                         (slug,))
                     row = c.fetchone()
                     if row:
@@ -2585,6 +2590,7 @@ def _batch_page_rows(conn, cur, slugs, has_canon):
             rows[row.pop(_BATCH_KEY)] = row
         return rows
 
+    from routes.facility_slug_freeze import SLUG_OWNER_ORDER_SQL
     found = {}
     # 1-2. the frozen slug exactly, suppressed rows last. The page names
     # canonical_slug in this WHERE whatever its probe said, so a table without
@@ -2603,8 +2609,11 @@ def _batch_page_rows(conn, cur, slugs, has_canon):
                 "is_duplicate, duplicate_of_id, " + cs[tbl] + ", "
                 "'" + tbl + "' AS _src_table "
                 "FROM " + tbl + " WHERE canonical_slug = ANY(%s) "
-                "ORDER BY canonical_slug, COALESCE(is_duplicate, 0) ASC, "
-                "COALESCE(power_mw, 0) DESC, id ASC", want))
+                # ★ r-slugcollide (2026-09-19): the SAME ordering the single-row
+                # lookup uses. This is the batch twin served_slugs() walks on,
+                # so if the two disagree about which row owns a shared slug the
+                # map and the page resolve the same URL to different facilities.
+                "ORDER BY canonical_slug, " + SLUG_OWNER_ORDER_SQL, want))
         except Exception:
             _rollback_quietly(conn)
     # 3. hash8 on discovered_facilities. The page has no try/except around this

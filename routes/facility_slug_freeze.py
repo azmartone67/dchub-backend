@@ -43,6 +43,18 @@ slug_freeze_bp = Blueprint("slug_freeze", __name__)
 # Tables that carry facility rows served under /facilities/<slug>.
 _FACILITY_TABLES = ("discovered_facilities", "facilities")
 
+# ★ r-slugcollide (2026-09-19) — WHICH row a shared frozen slug serves.
+# One frozen canonical_slug is routinely worn by MANY rows (the builder is a
+# pure function of provider+name and the freeze index is non-unique), and
+# _fetch_facility_by_slug picks the single row the page renders with exactly
+# this ORDER BY. The disambiguator below must keep the slug on THAT row and
+# re-mint the others, so the ordering has to be the SAME STRING in both
+# places — a second copy that drifts would hand the URL to a different
+# facility, which is the churn the whole freeze exists to prevent.
+# routes/facility_profile_page.py imports this; do not inline it there again.
+SLUG_OWNER_ORDER_SQL = (
+    "COALESCE(is_duplicate, 0) ASC, COALESCE(power_mw, 0) DESC, id ASC")
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # Canonical slug — BYTE-IDENTICAL to main.py _build_sitemap_sections + the
@@ -209,6 +221,49 @@ def build_id_scheme_slug(provider, name, fac_id):
     provider_slug = _slugify(provider) or ''
     h = hashlib.md5(str(fac_id).encode("utf-8")).hexdigest()[:8]
     return f"{provider_slug}-{name_slug}-{h}" if provider_slug else f"{name_slug}-{h}"
+
+
+def build_disambiguated_slug(provider, name, fac_id, city=None,
+                            state=None, country=None):
+    """A slug UNIQUE TO ONE ROW, for a row that lost its shared frozen slug.
+
+    ★ THE BUG (measured live 2026-09-19, /api/v1/map, 5,000 rows):
+      4,287 unique slugs for 5,000 rows; 466 slugs worn by more than one row;
+      34 collision groups more than 2km across, spanning 260 rows (5.2 percent).
+      Worst: amazon-web-services-amazon-web-services-7e958426 on 61 rows named
+      exactly "Amazon Web Services", 17,218 km apart (IE, ID, US, CL, AE, AU).
+      Every marker in a group linked to the ONE row the resolver picks.
+
+    ★ THIS IS NOT THE MAP'S FALLBACK COMPOSER. discovered_facilities was
+      30,621 frozen / 11 pending when this was written, so the colliding rows
+      all read their slug from STORED canonical_slug. The collision was WRITTEN
+      by backfill_canonical_slugs: build_canonical_slug is a pure function of
+      (provider, name) and the freeze index is non-unique, so every row sharing
+      provider+name got byte-identical output. Re-minting here is what fixes it.
+
+    Keeps the trailing -‹8 hex› shape, because _fetch_facility_by_slug rejects
+    any slug whose last dash-separated part is not exactly 8 characters before
+    it ever reaches the database.
+
+    The hash keys on provider|name|id, so it differs per ROW where the frozen
+    one could not; the body carries the most specific location the row has, so
+    the URL still reads like a place rather than a serial number.
+    """
+    base = build_canonical_slug(provider, name)
+    if not base or fac_id is None or str(fac_id) == '':
+        return None
+    body = base.rsplit('-', 1)[0]          # drop the provider|name hash8 tail
+    if not body:
+        return None
+    loc = _slugify(city) or _slugify(state) or _slugify(country) or ''
+    # TOKEN-BOUNDARY, the _dedupe_provider_prefix rule: "san-jose" must not be
+    # appended to "equinix-san-jose", but "jose" is a different token and may.
+    if loc and body != loc and not body.endswith('-' + loc) \
+            and not body.startswith(loc + '-'):
+        body = body + '-' + loc
+    h = hashlib.md5(
+        f"{provider or ''}|{name or ''}|{fac_id}".encode("utf-8")).hexdigest()[:8]
+    return f"{body}-{h}"
 
 
 def frozen_slug_for_row(row):
@@ -589,10 +644,17 @@ def slug_freeze_status():
                     gap, stale = stored_slug_alias_gap(conn, t)
                 except Exception:
                     gap = stale = None   # UNMEASURED, never a reassuring 0
+            # ★ The collision shape rides beside the completion metric for the
+            # same reason the alias gap does: "frozen: 30,621 / pending: 11"
+            # reads finished while 466 of those frozen slugs were worn by more
+            # than one facility. A completion number that cannot express the
+            # collision is how this stayed invisible.
             out['tables'][t] = {'has_canonical_slug_col': has_col,
                                 'frozen': frozen, 'pending': pending,
                                 'stored_slug_stale': stale,
-                                'stored_slug_no_alias_gap': gap}
+                                'stored_slug_no_alias_gap': gap,
+                                'collisions': (slug_collision_stats(conn, t)
+                                               if has_col else None)}
         try:
             cur.execute("SELECT COUNT(*), COUNT(DISTINCT source) FROM facility_slug_aliases")
             n, nsrc = cur.fetchone()
@@ -753,6 +815,192 @@ def slug_alias_load():
         ensure_freeze_schema(conn)
         loaded = load_aliases(conn, aliases, source=source)
         return jsonify(ok=True, loaded=loaded, source=source)
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# r-slugcollide (2026-09-19) — one frozen slug, many facilities
+# ─────────────────────────────────────────────────────────────────────────
+def _dup_cols(cur, table):
+    """(is_duplicate, duplicate_of_id, power_mw) as SQL expressions.
+
+    `facilities` carries none of the duplicate columns — _fetch_facility_by_slug
+    selects them there as literal NULLs — so naming one unprobed would raise and
+    take out the whole admin route. Same probe-per-table pattern as
+    ensure_freeze_schema and stored_slugs_by_id.
+    """
+    return tuple(col if _column_exists(cur, table, col) else "NULL"
+                 for col in ("is_duplicate", "duplicate_of_id", "power_mw"))
+
+
+def _ranked_cte(cur, table):
+    """Rows sharing a canonical_slug, ranked by WHO THE PAGE SERVES (rn=1).
+
+    ★ The ranking runs over EVERY row on the slug, unfiltered. Filtering
+      suppressed rows out of the window instead would promote a different row
+      to rn=1 while the resolver still served the suppressed one — two rows
+      would then keep the slug and the collision would survive the fix.
+      (47 slugs are served ONLY by suppressed rows; see the ORDER note in
+      _fetch_facility_by_slug.)
+    """
+    isdup, dupof, power = _dup_cols(cur, table)
+    return f"""
+        WITH ranked AS (
+            SELECT id, provider, name, city, state, country, canonical_slug,
+                   {isdup} AS _isdup, {dupof} AS _dupof,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY canonical_slug
+                       ORDER BY COALESCE({isdup}, 0) ASC,
+                                COALESCE({power}, 0) DESC, id ASC) AS rn
+              FROM {table}
+             WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''
+        )
+    """
+
+
+# A non-owner row is re-minted only when NOTHING already marks it as a twin of
+# the row that keeps the slug. is_duplicate / duplicate_of_id are the row's OWN
+# stored verdict — read, never recomputed. Re-deriving the four-condition
+# same-physical-site predicate here would put a second composer beside
+# _twin_redirect_target, which is the bug be#4793 fixed; a genuine duplicate
+# must KEEP sharing its keeper's URL, which is what be#4808 collapses for.
+_INDEPENDENT = "rn > 1 AND COALESCE(_isdup, 0) = 0 AND _dupof IS NULL"
+
+
+def slug_collision_stats(conn, table):
+    """{slugs, rows, independent_rows} for slugs worn by more than one row.
+
+    Returns None (never a reassuring 0) if the shape cannot be measured.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute(_ranked_cte(cur, table) + f"""
+            SELECT COUNT(DISTINCT canonical_slug) FILTER (WHERE rn > 1),
+                   COUNT(*) FILTER (WHERE rn > 1),
+                   COUNT(*) FILTER (WHERE {_INDEPENDENT})
+              FROM ranked
+        """)
+        slugs, rows, indep = cur.fetchone()
+        return {'shared_slugs': int(slugs or 0),
+                'non_owner_rows': int(rows or 0),
+                'independent_non_owner_rows': int(indep or 0)}
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning(f"slug collision stats for {table}: {e}")
+        return None
+
+
+def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
+                                 dry_run=True):
+    """Give every INDEPENDENT row on a shared frozen slug a slug of its own.
+
+    ★★ THE FREEZE CARVE-OUT, and it is narrow. The row that rn=1 picks — the
+    one /facilities/‹slug› actually renders — is NEVER touched, so no URL that
+    ever served a given facility moves. The rows this rewrites are rows whose
+    stored canonical_slug points at SOMEBODY ELSE'S page: there is no URL to
+    preserve for them, because they never had one. That is why this is not a
+    violation of set-once, and why it mints NO alias: the old slug keeps
+    serving its owner, so aliasing it would 301 the owner's live page away.
+
+    Rows marked is_duplicate / duplicate_of_id are left sharing on purpose —
+    collapsing a twin onto its keeper is correct behaviour, not the bug.
+
+    Returns (rewritten, remaining). dry_run=True (the default) measures and
+    writes nothing.
+    """
+    cur = conn.cursor()
+    others = [t for t in _FACILITY_TABLES if t != table]
+    taken = ["NOT EXISTS (SELECT 1 FROM facility_slug_aliases a "
+             "WHERE a.old_slug = v.slug)",
+             f"NOT EXISTS (SELECT 1 FROM {table} x WHERE x.canonical_slug = v.slug)"]
+    for _o in others:
+        try:
+            cur.execute("SELECT to_regclass(%s)", (_o,))
+            if cur.fetchone()[0] and _column_exists(cur, _o, "canonical_slug"):
+                # A new slug that shadows the OTHER table's canonical would
+                # steal that facility's page: discovered_facilities is probed
+                # first in _fetch_facility_by_slug and wins on a tie.
+                taken.append(f"NOT EXISTS (SELECT 1 FROM {_o} y "
+                             f"WHERE y.canonical_slug = v.slug)")
+        except Exception:
+            conn.rollback()
+    guard = "\n              AND ".join(taken)
+
+    rewritten = 0
+    for _ in range(max_batches):
+        cur.execute(_ranked_cte(cur, table) + f"""
+            SELECT id, provider, name, city, state, country
+              FROM ranked
+             WHERE {_INDEPENDENT}
+             ORDER BY id
+             LIMIT {int(batch)}
+        """)
+        rows = cur.fetchall()
+        if not rows:
+            break
+        values = [(fid, build_disambiguated_slug(prov, nm, fid, city, st, ctry)
+                   or '')
+                  for fid, prov, nm, city, st, ctry in rows]
+        values = [(i, s) for i, s in values if s]
+        if dry_run or not values:
+            break
+        execute_values(cur, f"""
+            UPDATE {table} AS t SET canonical_slug = v.slug
+            FROM (VALUES %s) AS v(id, slug)
+            WHERE t.id::text = v.id::text
+              AND v.slug <> ''
+              AND t.canonical_slug IS DISTINCT FROM v.slug
+              AND {guard}
+        """, values, template="(%s, %s)")
+        wrote = cur.rowcount or 0
+        conn.commit()
+        rewritten += wrote
+        # ★ No-progress break. A row whose new slug is already taken stays
+        # selected by the same query forever; without this the loop would burn
+        # every remaining batch re-reading it and report work it never did.
+        if wrote == 0 or len(rows) < batch:
+            break
+
+    stats = slug_collision_stats(conn, table) or {}
+    return rewritten, stats.get('independent_non_owner_rows')
+
+
+@slug_freeze_bp.route('/api/v1/admin/slug/disambiguate', methods=['POST'])
+def slug_disambiguate_run():
+    """Re-mint the shared frozen slugs. DRY RUN unless dry_run is false.
+
+    POST {"table": "discovered_facilities", "dry_run": false}
+    """
+    ok, err = _admin_guard()
+    if not ok:
+        return err
+    body = request.get_json(silent=True) or {}
+    table = body.get('table') or 'discovered_facilities'
+    if table not in _FACILITY_TABLES:
+        return jsonify(error='bad_table', allowed=list(_FACILITY_TABLES)), 400
+    dry_run = body.get('dry_run', True)
+    if isinstance(dry_run, str):
+        dry_run = dry_run.strip().lower() not in ('false', '0', 'no')
+    conn = None
+    try:
+        conn = _get_conn()
+        before = slug_collision_stats(conn, table)
+        rewritten, remaining = disambiguate_slug_collisions(
+            conn, table, dry_run=bool(dry_run),
+            batch=int(body.get('batch') or 2000),
+            max_batches=int(body.get('max_batches') or 50))
+        return jsonify(ok=True, table=table, dry_run=bool(dry_run),
+                       before=before, rewritten=rewritten,
+                       remaining_independent=remaining,
+                       after=slug_collision_stats(conn, table))
     except Exception as e:
         return jsonify(error=str(e)), 500
     finally:

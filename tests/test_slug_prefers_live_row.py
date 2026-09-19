@@ -40,7 +40,16 @@ def _exact_slug_query():
     # only the first line and would have passed on a half-written ORDER BY.
     m = re.search(r'FROM \{_tbl\} WHERE canonical_slug = %s"(.*?LIMIT 1")', SRC, re.S)
     assert m, "the frozen-slug exact lookup is gone — this guard is inert"
-    sql = " ".join(re.findall(r'"([^"]*)"', m.group(1)))
+    seg = m.group(1)
+    # ★ r-slugcollide (2026-09-19): the ordering now lives in
+    # routes.facility_slug_freeze.SLUG_OWNER_ORDER_SQL, shared with the batch
+    # lookup and the collision re-mint so the three cannot disagree about which
+    # row owns a slug. RESOLVE it here: without this the findall below returns
+    # ' ORDER BY ' + ' LIMIT 1' and every assertion in this file passes against
+    # an ordering that is no longer written down anywhere it can see.
+    from routes.facility_slug_freeze import SLUG_OWNER_ORDER_SQL
+    seg = seg.replace("SLUG_OWNER_ORDER_SQL", '"' + SLUG_OWNER_ORDER_SQL + '"')
+    sql = " ".join(re.findall(r'"([^"]*)"', seg))
     return " ".join(sql.split())
 
 
