@@ -186,7 +186,21 @@ _BUCKET_RULES = (
         "/press-release/",
         "/operators/",
         "/hyperscalers/",
-        "/data-centers/",
+        # ★ 2026-09-19 — "/data-centers/" RETIRED rather than routed. The
+        #   family does not exist: /data-centers/ is a live 404 with 0 URLs
+        #   in sitemap-static.xml, and the prefix sat in the edge beacon
+        #   unrouted and therefore inert. Routing it (dchub-frontend#1518)
+        #   would have spent the last free _routes.json rule to instrument
+        #   nothing, so #1519 removed it from both lists instead.
+        #
+        #   SAFE TO REMOVE, MEASURED NOT ASSUMED: unlike "/ai/discovery"
+        #   above — kept on purpose because dropping it would reclassify
+        #   historical crawls — this prefix matched NOTHING. Measured over
+        #   the whole ai_requests table: 0 rows under /data-centers/, and 0
+        #   under the looser /data-centers. So no published number moves.
+        #
+        #   /data-centers and /data-center (no trailing slash) are
+        #   _redirects 301s to /database and were never in this tuple.
         "/answers/",
         "/states/",
         "/for/",
