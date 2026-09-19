@@ -201,10 +201,19 @@ def test_an_unreadable_mention_section_says_unavailable_not_zero():
     assert "db down" in seg
 
 
-def test_delivery_always_states_all_three_undercounts():
+def test_delivery_always_states_all_three_undercounts(monkeypatch):
     """★ These are the reasons the invoice is smaller than reality. Dropping
     any of them turns an honest under-count into an unexplained one."""
     import routes.sponsor_report as m
+
+    # monthly_report() reaches Cloudflare's GraphQL API through
+    # sponsor_crawl.engine_crawls(). Only the delivery limits are asserted
+    # below, but on any machine that HAS CLOUDFLARE_API_TOKEN the call went
+    # out for real, with the live bearer token, on every run — and CI could
+    # never show it, because CI has no token and returns early. The empty
+    # token is the same no-fetch path test_missing_token_is_not_zero_crawls
+    # pins, so the crawl section still renders the way it does in CI.
+    monkeypatch.setattr(sc, "_token", lambda: "")
 
     class _C:
         def __enter__(self): return self
