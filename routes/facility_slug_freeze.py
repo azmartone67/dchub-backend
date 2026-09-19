@@ -885,7 +885,14 @@ def _ranked_cte(cur, table):
                    {isdup} AS _isdup, {dupof} AS _dupof,
                    ROW_NUMBER() OVER (
                        PARTITION BY canonical_slug
-                       ORDER BY {order}) AS rn
+                       ORDER BY {order}) AS rn,
+                   -- ★ the OWNER, from the SAME window that ranks rn. A
+                   -- separately-ordered owner could name a different row than
+                   -- the one rn=1 protects, and the rewrite would strip the
+                   -- slug off the row the page actually serves.
+                   FIRST_VALUE(id) OVER (
+                       PARTITION BY canonical_slug
+                       ORDER BY {order}) AS owner_id
               FROM {table}
              WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''
         )
@@ -899,6 +906,29 @@ def _ranked_cte(cur, table):
 # _twin_redirect_target, which is the bug be#4793 fixed; a genuine duplicate
 # must KEEP sharing its keeper's URL, which is what be#4808 collapses for.
 _INDEPENDENT = "rn > 1 AND COALESCE(_isdup, 0) = 0 AND _dupof IS NULL"
+
+# ★★ ONE definition of the buckets, read by the breakdown, the per-slug
+# report AND the rewrite. Two copies would let the endpoint publish a
+# population the rewrite does not act on — the shape of the bug that let
+# be#4818 report success while 7,653 rows kept colliding.
+#   points_at_owner    twin of THE ROW THAT KEEPS THE SLUG -> keep sharing
+#   points_elsewhere   twin of a DIFFERENT keeper -> adopt THAT keeper's slug
+#   marked_no_pointer  flagged, but nothing says twin-of-what -> own slug
+#   unmarked           independent facility -> own slug
+_BUCKET_CASE = """
+        CASE
+          WHEN _dupof IS NOT NULL AND _dupof::text = owner_id::text
+               THEN 'points_at_owner'
+          WHEN _dupof IS NOT NULL THEN 'points_elsewhere'
+          WHEN COALESCE(_isdup, 0) <> 0 THEN 'marked_no_pointer'
+          ELSE 'unmarked'
+        END"""
+
+# Buckets whose rows must STOP wearing the owner's slug. points_at_owner is
+# deliberately absent: those rows are twins of the row the page serves, so
+# sharing its URL is correct. Whether that pointer can be trusted at distance
+# is what slug_collision_groups() exists to answer.
+_REWRITE_BUCKETS = ('points_elsewhere', 'marked_no_pointer', 'unmarked')
 
 
 def slug_collision_stats(conn, table):
@@ -959,28 +989,17 @@ def slug_collision_breakdown(conn, table):
         cur = conn.cursor()
         isdup, dupof, power = _dup_cols(cur, table)
         order = SLUG_OWNER_ORDER_TMPL.format(isdup=isdup, power=power)
-        cur.execute(f"""
-            WITH ranked AS (
-                SELECT id, canonical_slug, {isdup} AS _isdup, {dupof} AS _dupof,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY canonical_slug
-                           ORDER BY {order}) AS rn,
-                       FIRST_VALUE(id) OVER (
-                           PARTITION BY canonical_slug
-                           ORDER BY {order}) AS owner_id
-                  FROM {table}
-                 WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''
-            )
+        cur.execute(_ranked_cte(cur, table) + f"""
             SELECT
               COUNT(*) FILTER (WHERE rn > 1),
-              COUNT(*) FILTER (WHERE rn > 1 AND _dupof IS NOT NULL
-                                 AND _dupof::text = owner_id::text),
-              COUNT(*) FILTER (WHERE rn > 1 AND _dupof IS NOT NULL
-                                 AND _dupof::text <> owner_id::text),
-              COUNT(*) FILTER (WHERE rn > 1 AND _dupof IS NULL
-                                 AND COALESCE(_isdup, 0) <> 0),
-              COUNT(*) FILTER (WHERE rn > 1 AND _dupof IS NULL
-                                 AND COALESCE(_isdup, 0) = 0),
+              COUNT(*) FILTER (WHERE rn > 1
+                                 AND {_BUCKET_CASE} = 'points_at_owner'),
+              COUNT(*) FILTER (WHERE rn > 1
+                                 AND {_BUCKET_CASE} = 'points_elsewhere'),
+              COUNT(*) FILTER (WHERE rn > 1
+                                 AND {_BUCKET_CASE} = 'marked_no_pointer'),
+              COUNT(*) FILTER (WHERE rn > 1
+                                 AND {_BUCKET_CASE} = 'unmarked'),
               COUNT(DISTINCT canonical_slug) FILTER (WHERE rn > 1)
               FROM ranked
         """)
@@ -1014,18 +1033,7 @@ def keeper_slug_reachability(conn, table):
         order = SLUG_OWNER_ORDER_TMPL.format(isdup=isdup, power=power)
         if dupof == "NULL":
             return None                     # no pointer column on this table
-        cur.execute(f"""
-            WITH ranked AS (
-                SELECT id, canonical_slug, {dupof} AS _dupof,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY canonical_slug
-                           ORDER BY {order}) AS rn,
-                       FIRST_VALUE(id) OVER (
-                           PARTITION BY canonical_slug
-                           ORDER BY {order}) AS owner_id
-                  FROM {table}
-                 WHERE canonical_slug IS NOT NULL AND canonical_slug <> ''
-            )
+        cur.execute(_ranked_cte(cur, table) + f"""
             SELECT COUNT(*),
                    COUNT(*) FILTER (WHERE k.canonical_slug IS NOT NULL
                                       AND k.canonical_slug <> '')
@@ -1063,6 +1071,53 @@ def _dry_run_flag(body):
     if isinstance(raw, str):
         return raw.strip().lower() not in ('false', '0', 'no', 'off')
     return True
+
+
+def slug_collision_groups(conn, table, limit=25):
+    """Per-slug bucket composition for the worst collision groups.
+
+    ★ NO COORDINATES, deliberately. Whether a group is really one building is
+    _twin_redirect_target's question and it has exactly one owner; measuring
+    distance here would put a second judge beside it. These counts are keyed
+    by slug so they can be joined against the /api/v1/map payload and the span
+    computed OUTSIDE this module, which is how the 2026-09-19 collisions were
+    measured in the first place.
+
+    This exists to answer ONE question: does points_at_owner contain groups
+    that are plainly not one site? If it does, duplicate_of_id is not
+    trustworthy at distance and that bucket needs a different rule.
+    """
+    try:
+        cur = conn.cursor()
+        isdup, dupof, power = _dup_cols(cur, table)
+        cur.execute(_ranked_cte(cur, table) + f"""
+            SELECT canonical_slug,
+                   COUNT(*),
+                   COUNT(*) FILTER (WHERE rn > 1
+                                      AND {_BUCKET_CASE} = 'points_at_owner'),
+                   COUNT(*) FILTER (WHERE rn > 1
+                                      AND {_BUCKET_CASE} = 'points_elsewhere'),
+                   COUNT(*) FILTER (WHERE rn > 1
+                                      AND {_BUCKET_CASE} = 'marked_no_pointer'),
+                   COUNT(*) FILTER (WHERE rn > 1
+                                      AND {_BUCKET_CASE} = 'unmarked')
+              FROM ranked
+             GROUP BY canonical_slug
+            HAVING COUNT(*) > 1
+             ORDER BY COUNT(*) DESC, canonical_slug
+             LIMIT {int(limit)}
+        """)
+        return [{'slug': r[0], 'rows': int(r[1]),
+                 'points_at_owner': int(r[2]), 'points_elsewhere': int(r[3]),
+                 'marked_no_pointer': int(r[4]), 'unmarked': int(r[5])}
+                for r in cur.fetchall()]
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning(f"slug collision groups for {table}: {e}")
+        return None
 
 
 def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
@@ -1115,22 +1170,35 @@ def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
     last_id = ''
     for _ in range(max_batches):
         cur.execute(_ranked_cte(cur, table) + f"""
-            SELECT id, provider, name, city, state, country
-              FROM ranked
-             WHERE {_INDEPENDENT}
-               AND id::text > %s
-             ORDER BY id::text
+            SELECT r.id, r.provider, r.name, r.city, r.state, r.country,
+                   {_BUCKET_CASE} AS bucket,
+                   -- the keeper this row actually points at, and the slug it
+                   -- is served at. points_elsewhere rows ADOPT this rather
+                   -- than minting a page for a row we chose to suppress.
+                   k.canonical_slug AS keeper_slug
+              FROM ranked r
+              LEFT JOIN {table} k ON k.id::text = r._dupof::text
+             WHERE r.rn > 1
+               AND {_BUCKET_CASE} = ANY(%s)
+               AND r.id::text > %s
+             ORDER BY r.id::text
              LIMIT {int(batch)}
-        """, (last_id,))
+        """, (list(_REWRITE_BUCKETS), last_id))
         rows = cur.fetchall()
         if not rows:
             break
         last_id = str(rows[-1][0])
-        values = [(fid, build_disambiguated_slug(prov, nm, fid, city, st, ctry)
-                   or '')
-                  for fid, prov, nm, city, st, ctry in rows]
-        values = [(i, s) for i, s in values if s]
-        if dry_run or not values:
+        # TWO write sets, and they need OPPOSITE guards.
+        mint, adopt = [], []
+        for fid, prov, nm, city, st, ctry, bucket, keeper_slug in rows:
+            if bucket == 'points_elsewhere':
+                if keeper_slug:
+                    adopt.append((fid, keeper_slug))
+            else:
+                ns = build_disambiguated_slug(prov, nm, fid, city, st, ctry)
+                if ns:
+                    mint.append((fid, ns))
+        if dry_run or not (mint or adopt):
             break
         # ★ RETURNING + fetch, NOT cur.rowcount. execute_values PAGES the
         # argslist internally (page_size 100 by default) and issues one
@@ -1139,23 +1207,76 @@ def disambiguate_slug_collisions(conn, table, batch=2000, max_batches=50,
         # reported rewritten=22 — 722 = 7 x 100 + 22. The real work was only
         # visible in the before/after collision counts. fetch=True collects
         # the RETURNING rows across every page.
-        got = execute_values(cur, f"""
-            UPDATE {table} AS t SET canonical_slug = v.slug
-            FROM (VALUES %s) AS v(id, slug)
-            WHERE t.id::text = v.id::text
-              AND v.slug <> ''
-              AND t.canonical_slug IS DISTINCT FROM v.slug
-              AND {guard}
-            RETURNING 1
-        """, values, template="(%s, %s)", fetch=True)
-        wrote = len(got or [])
+        wrote = 0
+        if mint:
+            got = execute_values(cur, f"""
+                UPDATE {table} AS t SET canonical_slug = v.slug
+                FROM (VALUES %s) AS v(id, slug)
+                WHERE t.id::text = v.id::text
+                  AND v.slug <> ''
+                  AND t.canonical_slug IS DISTINCT FROM v.slug
+                  AND {guard}
+                RETURNING 1
+            """, mint, template="(%s, %s)", fetch=True)
+            wrote += len(got or [])
+        if adopt:
+            # ★★ THE OPPOSITE GUARD, on purpose. The mint path refuses a slug
+            # anything already wears; adopting REQUIRES that — the row is being
+            # pointed at its keeper's existing page. Reusing `guard` here would
+            # reject every adopt and write nothing while reporting success.
+            got = execute_values(cur, f"""
+                UPDATE {table} AS t SET canonical_slug = v.slug
+                FROM (VALUES %s) AS v(id, slug)
+                WHERE t.id::text = v.id::text
+                  AND v.slug <> ''
+                  AND t.canonical_slug IS DISTINCT FROM v.slug
+                  AND EXISTS (SELECT 1 FROM {table} k2
+                               WHERE k2.canonical_slug = v.slug)
+                RETURNING 1
+            """, adopt, template="(%s, %s)", fetch=True)
+            wrote += len(got or [])
         conn.commit()
         rewritten += wrote
         if len(rows) < batch:
             break
 
-    stats = slug_collision_stats(conn, table) or {}
-    return rewritten, stats.get('independent_non_owner_rows')
+    # ★ remaining counts the SAME population the loop selects. Reporting
+    # independent_non_owner_rows here would read 0 while thousands of
+    # points_elsewhere / marked_no_pointer rows were still waiting — the shape
+    # of the bug that let be#4818 report success on a defect it never touched.
+    bd = slug_collision_breakdown(conn, table)
+    remaining = (sum(bd[b] for b in _REWRITE_BUCKETS) if bd else None)
+    return rewritten, remaining
+
+
+@slug_freeze_bp.route('/api/v1/admin/slug/groups', methods=['GET'])
+def slug_collision_groups_view():
+    """The worst collision groups, by slug, with their bucket composition.
+
+    Read-only. Join against /api/v1/map to measure each group's geographic
+    span outside this module — see slug_collision_groups().
+    """
+    ok, err = _admin_guard()
+    if not ok:
+        return err
+    table = request.args.get('table') or 'discovered_facilities'
+    if table not in _FACILITY_TABLES:
+        return jsonify(error='bad_table', allowed=list(_FACILITY_TABLES)), 400
+    try:
+        limit = max(1, min(200, int(request.args.get('limit') or 25)))
+    except ValueError:
+        limit = 25
+    conn = None
+    try:
+        conn = _get_conn()
+        return jsonify(ok=True, table=table, limit=limit,
+                       groups=slug_collision_groups(conn, table, limit=limit))
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 
 @slug_freeze_bp.route('/api/v1/admin/slug/disambiguate', methods=['POST'])
