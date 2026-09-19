@@ -314,6 +314,18 @@ PROBE_TABLE = [
         "why": "tier-varying hub — gates 7 of 9 ISO cards for free callers",
     },
     {
+        "path": "/api/v1/tax-incentives",
+        "expect": "bypass",
+        "rule": "worker TIER_GATED_PREFIXES (not a zone rule)",
+        "why": (
+            "admin overrides are served from here; a HIT means an edit stays "
+            "invisible for the 900s cold-tier TTL. The bypass is the worker's "
+            "tier-gated lane, NOT rule 2 — which does match /api/v1/ with "
+            "override_origin — so a zone-only audit would call this covered "
+            "when it is not. Measured DYNAMIC twice, 2026-09-18."
+        ),
+    },
+    {
         "path": "/api/v1/stats",
         "expect": "cached",
         "rule": "ef1b5109",
