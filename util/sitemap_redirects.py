@@ -58,7 +58,10 @@ failure re-run. So this asks the page's OWN resolver.
   slug is rewritten, no page moves, and every one of these URLs keeps serving
   its 301 for anyone holding it.
 """
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 #: Refuse a result that wants to drop more than max(this, 2%) of the list. The
 #: measured rate is ~19 of ~19,000 (0.1%); 2% is 20x that and still nowhere
@@ -83,6 +86,29 @@ def redirecting_slug_set(conn, slugs) -> set:
     large result. The caller's contract is "empty means emit everything", i.e.
     exactly the artefact built before this guard existed — a resolver that has
     gone wrong must never be able to shrink the sitemap.
+
+    ★ r-slugblockers (2026-09-19), finding 14. EVERY one of those exits used to
+    be SILENT, and all four return the same value the happy path returns when
+    nothing redirects. "0 slugs redirect" and "I gave up and published the
+    redirecting ones" were the same observable event — so the one number that
+    decides whether the sitemap quietly degrades, len(out) against the ceiling,
+    existed only inside this function for the length of one call.
+
+    That is not theoretical. The refusal is reached by the collision work
+    ARMING case-B 301s: disambiguate_slug_collisions collapses a shared slug,
+    the keeper's slug_rows falls to 1, _twin_redirect_target stops refusing,
+    and twins that used to render 200 start redirecting. Nothing in that chain
+    is aware of this ceiling.
+
+    MEASURED LIVE 2026-09-19, sampling the published artefact rather than
+    trusting the guard: 400 of the 6,987 slugs in sitemap-facilities-1 and 400
+    of the 5,000 /api/v1/map slugs, redirects NOT followed — 800/800 HTTP 200,
+    zero redirecting (<0.75%, rule of three). So the guard has NOT tripped in
+    production and this is a latent risk, not an incident. What that sweep
+    could NOT measure is the headroom: how many slugs it dropped, i.e. how
+    close len(out) is to the ceiling, is invisible from outside the process.
+    Hence the log lines rather than a threshold change — the number has to
+    exist somewhere before anyone can argue about what it should be.
     """
     want = []
     seen = set()
@@ -91,16 +117,46 @@ def redirecting_slug_set(conn, slugs) -> set:
         if s and s not in seen:
             seen.add(s)
             want.append(s)
-    if not want or _disabled():
+    if not want:
+        return set()
+    if _disabled():
+        logger.warning(
+            "sitemap redirect guard DISABLED by "
+            "SITEMAP_REDIRECT_RESOLVE_DISABLE — every redirecting URL among "
+            "%d slugs will be published", len(want))
         return set()
     try:
         from routes.facility_profile_page import served_slugs
         served = served_slugs(want, conn=conn)
     except Exception:
+        logger.exception(
+            "sitemap redirect guard: the resolver raised over %d slugs — "
+            "publishing every one of them, redirecting or not", len(want))
         return set()
     if not isinstance(served, dict):
+        logger.error(
+            "sitemap redirect guard: the resolver returned %s, not a dict, "
+            "over %d slugs — publishing every one of them",
+            type(served).__name__, len(want))
         return set()
     out = {s for s in want if str(served.get(s) or s) != s}
-    if len(out) > max(_REFUSE_FLOOR, len(want) // _REFUSE_FRACTION):
+    ceiling = max(_REFUSE_FLOOR, len(want) // _REFUSE_FRACTION)
+    pct = 100.0 * len(out) / len(want)
+    if len(out) > ceiling:
+        # ★ Loud, and it names both numbers. The safe reading of a big result
+        # is "the resolver broke"; the OTHER reading is "the collision work
+        # armed this many real 301s", and only the first is a reason to
+        # publish them. Nobody could tell which without this line.
+        logger.error(
+            "sitemap redirect guard REFUSED: %d of %d slugs (%.2f%%) resolve "
+            "somewhere else, over the ceiling of %d — publishing ALL of them, "
+            "so %d URLs that 301 are back in the sitemap. Either the resolver "
+            "is wrong, or collision collapse armed that many twin redirects; "
+            "check which before changing _REFUSE_FRACTION.",
+            len(out), len(want), pct, ceiling, len(out))
         return set()
+    # The headroom, on every build — the number the live sweep could not see.
+    logger.info(
+        "sitemap redirect guard: dropping %d of %d slugs (%.2f%%), ceiling %d",
+        len(out), len(want), pct, ceiling)
     return out

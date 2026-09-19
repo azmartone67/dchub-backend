@@ -243,13 +243,99 @@ def test_an_implausible_redirect_set_is_refused(monkeypatch):
     assert sr.redirecting_slug_set(_LentConn(), slugs) == {"s-00000001"}
 
 
-def test_the_kill_switch_turns_the_resolver_off(monkeypatch):
+def test_a_refusal_says_so_and_names_both_numbers(caplog):
+    """★ finding 14. The refusal returns the SAME value the happy path returns
+    when nothing redirects, so "0 slugs redirect" and "I gave up and published
+    the redirecting ones" were indistinguishable — and there was no log line.
+
+    Two readings of a big result: the resolver broke, or collision collapse
+    armed that many real twin 301s. Only the first is a reason to publish them,
+    and nobody could tell which. Both counts must reach the log.
+    """
+    import logging
+    import routes.facility_profile_page as fpp
+    import util.sitemap_redirects as sr
+    _mp = pytest.MonkeyPatch()
+    _mp.setattr(fpp, "served_slugs", lambda s, **_k: {x: "elsewhere" for x in s})
+    try:
+        slugs = ["s-%08d" % i for i in range(2000)]
+        with caplog.at_level(logging.INFO, logger=sr.logger.name):
+            out = sr.redirecting_slug_set(_LentConn(), slugs)
+            loud = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    finally:
+        _mp.undo()
+    assert out == set(), "the refusal itself regressed"
+    assert loud, "the sitemap silently republished every redirecting URL"
+    msg = loud[0].getMessage()
+    assert "2000" in msg and "40" in msg, (
+        "the refusal must name the result AND the ceiling it broke, or the "
+        "reader cannot tell a broken resolver from armed redirects: " + msg)
+
+
+def test_the_headroom_is_logged_on_an_ordinary_build(caplog):
+    """The number the live sweep could NOT see. 2026-09-19: 800/800 sampled
+    published URLs were 200, which proves the guard has not tripped and says
+    nothing at all about how close it is to tripping."""
+    import logging
+    import routes.facility_profile_page as fpp
+    import util.sitemap_redirects as sr
+    _mp = pytest.MonkeyPatch()
+    _mp.setattr(fpp, "served_slugs",
+                lambda s, **_k: {x: ("elsewhere" if x == "s-00000001" else x)
+                                 for x in s})
+    try:
+        slugs = ["s-%08d" % i for i in range(2000)]
+        with caplog.at_level(logging.INFO, logger=sr.logger.name):
+            out = sr.redirecting_slug_set(_LentConn(), slugs)
+            lines = [r.getMessage() for r in caplog.records]
+    finally:
+        _mp.undo()
+    assert out == {"s-00000001"}
+    assert any("1" in m and "2000" in m and "40" in m for m in lines), (
+        "an ordinary build must publish how many it dropped and the ceiling, "
+        "or the headroom stays invisible: " + repr(lines))
+
+
+@pytest.mark.parametrize("broken,why", [
+    (lambda s, **_k: (_ for _ in ()).throw(RuntimeError("statement timeout")),
+     "raised"),
+    (lambda s, **_k: ["not", "a", "dict"], "returned the wrong type"),
+], ids=["raises", "wrong-type"])
+def test_a_broken_resolver_does_not_fail_open_in_silence(caplog, broken, why):
+    """The other two set() exits. Both publish every redirecting URL, and both
+    used to do it without a line — indistinguishable from a clean build where
+    nothing redirected, which is the same defect as the refusal branch."""
+    import logging
+    import routes.facility_profile_page as fpp
+    import util.sitemap_redirects as sr
+    _mp = pytest.MonkeyPatch()
+    _mp.setattr(fpp, "served_slugs", broken)
+    try:
+        with caplog.at_level(logging.INFO, logger=sr.logger.name):
+            out = sr.redirecting_slug_set(_LentConn(), ["a-11111111"])
+            loud = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    finally:
+        _mp.undo()
+    assert out == set(), "it must still fail OPEN"
+    assert loud, f"the resolver {why} and the build said nothing"
+
+
+def test_the_kill_switch_turns_the_resolver_off(monkeypatch, caplog):
+    import logging
     import routes.facility_profile_page as fpp
     import util.sitemap_redirects as sr
     monkeypatch.setattr(fpp, "served_slugs",
                         lambda s, **_k: {x: "elsewhere" for x in s})
     monkeypatch.setenv("SITEMAP_REDIRECT_RESOLVE_DISABLE", "1")
-    assert sr.redirecting_slug_set(_LentConn(), ["a-11111111"]) == set()
+    with caplog.at_level(logging.INFO, logger=sr.logger.name):
+        assert sr.redirecting_slug_set(_LentConn(), ["a-11111111"]) == set()
+        loud = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    # ★ The kill switch publishes every redirecting URL. An env var somebody
+    # set months ago must not be able to do that in silence — this is the one
+    # branch whose cause is entirely outside the code.
+    assert loud, "the resolver was switched off and said nothing"
+    assert "SITEMAP_REDIRECT_RESOLVE_DISABLE" in loud[0].getMessage(), (
+        "the line must name the variable, or nobody can turn it back on")
 
 
 # ── 3. the resolver is actually wired into the builder ───────────────────

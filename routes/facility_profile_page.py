@@ -2417,6 +2417,31 @@ def _twin_redirect_target(fac, slug, keeper_row=None):
     if keeper.get("duplicate_of_id"):
         return None                      # a keeper never points onward
     if int(keeper.get("slug_rows") or 0) != 1:
+        # ★ r-slugblockers (2026-09-19), finding 5 — READ THIS BEFORE RELAXING IT.
+        # This one line decides 200-vs-301 for a twin, and it is keyed on a
+        # number another job is actively driving toward 1:
+        # disambiguate_slug_collisions re-mints the other rows off a shared
+        # slug, so every collapsed collision ARMS the case-B redirect for the
+        # twins pointing at that keeper. Nothing in that job knows it is
+        # changing live redirect behaviour here, and main.py pipes every map
+        # slug through served_slugs(), so it also changes which facility a map
+        # marker opens.
+        #
+        # MEASURED LIVE 2026-09-19, redirects NOT followed: 400 of 5,000
+        # /api/v1/map slugs and 400 of the 6,987 in sitemap-facilities-1 — all
+        # 800 returned HTTP 200, zero redirecting (<0.75%, rule of three). The
+        # arming has NOT happened at scale. Latent, not an incident.
+        #
+        # It is also OVER-strict, deliberately left that way: slug_rows counts
+        # every row on the slug including SUPPRESSED ones, while the lookup
+        # orders those last (SLUG_OWNER_ORDER_SQL) and would still serve this
+        # keeper. The honest predicate is "is K the row that ordering returns
+        # for kslug", not "is K alone on it" — but that predicate ARMS MORE
+        # redirects, and the blast radius needs a DB-side count of keepers with
+        # suppressed siblings before anyone moves indexed URLs on it.
+        #
+        # The aggregate signal is util/sitemap_redirects.redirecting_slug_set:
+        # its ceiling log line is where a surge in arming becomes visible.
         return None                      # shared frozen slug — see above
     if not _same_physical_site(fac, keeper):
         return None                      # different building: hint, not hop
