@@ -436,8 +436,18 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     })
     conn = _Conn(cur)
     monkeypatch.setattr(cf, "open_conn", lambda *a, **k: conn)
+    # ★★★ RELATIVE TO NOW, NOT A PINNED DATE. `_parse_since` clamps anything
+    #   older than 30 days to `now - 30d`. A hardcoded 2026-08-20 therefore
+    #   asserted the UNCLAMPED value for exactly as long as that date stayed
+    #   inside the window — and then failed forever. It went red on
+    #   2026-09-19T01:50Z, thirty days and one hour after the pinned instant,
+    #   with nothing in the repo having changed. The production clamp is
+    #   correct; the test had a fuse on it.
+    since_dt = (dt.datetime.now(_UTC) - dt.timedelta(days=5)).replace(
+        microsecond=0)
     with _app(cf.changes_feed_bp).test_client() as c:
-        rv = c.get("/api/v1/changes/since?since=2026-08-20T00:00:00Z")
+        rv = c.get("/api/v1/changes/since?since="
+                   + since_dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
     assert rv.status_code == 200
     body = rv.get_json()
     claims = body["claims"]
@@ -448,9 +458,35 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     assert body["drill_deeper"]["claims_full"] == "/api/v1/ops/claims"
     sql, params = _sql(cur, "brain_predictions_log")[0]
     assert "outcome_at >= %s" in sql and "IN ('confirmed', 'retracted')" in sql
-    assert params[0] == "CLAIM" and params[1] == dt.datetime(2026, 8, 20, tzinfo=_UTC)
+    assert params[0] == "CLAIM" and params[1] == since_dt
     # The block is additive: the lanes and their counts are untouched.
     assert "counts" in body and "diff" in body
+
+
+def test_changes_since_clamps_a_window_older_than_thirty_days(monkeypatch):
+    """The behaviour the broken assertion was accidentally depending on.
+
+    Nothing named the clamp, so when a pinned date drifted past the floor the
+    only signal was an equality failure in a test about retractions — which
+    reads as "the retraction feed broke". Assert the clamp where it lives, and
+    do it relative to now so this one cannot rot the same way.
+    """
+    cf = _cf()
+    cur = _DispatchCur({"brain_predictions_log": []})
+    monkeypatch.setattr(cf, "open_conn", lambda *a, **k: _Conn(cur))
+    asked = dt.datetime.now(_UTC) - dt.timedelta(days=400)
+    before = dt.datetime.now(_UTC)
+    with _app(cf.changes_feed_bp).test_client() as c:
+        rv = c.get("/api/v1/changes/since?since="
+                   + asked.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    after = dt.datetime.now(_UTC)
+    assert rv.status_code == 200
+    _sqlq, params = _sql(cur, "brain_predictions_log")[0]
+    used = params[1]
+    assert used > asked, "a 400-day window must not reach the query unclamped"
+    # Bracketed by the call, so it asserts the 30-day floor without pinning a
+    # clock of its own.
+    assert before - dt.timedelta(days=30) <= used <= after - dt.timedelta(days=30)
 
 
 def test_changes_since_is_fail_soft_when_the_ledger_cannot_be_read(monkeypatch):
