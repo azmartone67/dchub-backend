@@ -27,7 +27,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from routes.facility_slug_freeze import (          # noqa: E402
-    SLUG_OWNER_ORDER_SQL, build_canonical_slug, build_disambiguated_slug,
+    SLUG_OWNER_ORDER_SQL, SLUG_OWNER_ORDER_TMPL, _dup_cols, _dry_run_flag,
+    _REMINTABLE_TABLES, build_canonical_slug, build_disambiguated_slug,
     disambiguate_slug_collisions, _INDEPENDENT, _ranked_cte,
 )
 
@@ -122,9 +123,31 @@ def test_the_profile_resolver_does_not_inline_a_second_copy():
         "exists so both sides cannot drift")
 
 
-def test_the_ranking_uses_that_exact_ordering():
-    assert SLUG_OWNER_ORDER_SQL in _ranked_cte(_Cur(), "discovered_facilities") \
-        or "COALESCE(is_duplicate, 0) ASC" in SLUG_OWNER_ORDER_SQL
+def test_the_ranking_formats_the_shared_template():
+    """★ The previous form of this guard was VACUOUS: disjunct 1 was already
+    False (every CTE line-wraps its copy, so the one-line constant was never a
+    substring) and disjunct 2 compared the constant to its own prefix. Mutating
+    the ranking to `ORDER BY id DESC` — which hands rn=1 to the OPPOSITE row
+    from the one the page serves — left it green, while FIVE hand-written
+    copies accumulated underneath it."""
+    cte = _ranked_cte(_Cur(), "discovered_facilities")
+    expected = SLUG_OWNER_ORDER_TMPL.format(isdup="is_duplicate",
+                                            power="power_mw")
+    assert expected in cte, (
+        "the ranking does not use the shared ordering; rn=1 can name a "
+        f"different row than _fetch_facility_by_slug serves.\nwant: {expected}")
+    assert expected == SLUG_OWNER_ORDER_SQL, \
+        "the page constant and the ranking template have drifted apart"
+
+
+def test_the_freeze_module_never_retypes_the_ordering():
+    code = "\n".join(l for l in FREEZE_SRC.splitlines()
+                     if not l.strip().startswith("#"))
+    n = code.count("COALESCE({isdup}, 0) ASC")
+    assert n == 1, (f"the ordering is written out {n} times; define it once "
+                    "and format it")
+    assert "COALESCE(is_duplicate, 0) ASC" not in code, \
+        "a hand-typed copy of the owner ordering is back in this module"
 
 
 # ── the window must see every row on the slug ──────────────────────────────
@@ -173,6 +196,7 @@ class _Cur:
         sql = sql.decode() if isinstance(sql, bytes) else sql
         self.seen.append(sql)
         self._last = sql
+        self._args = args
         if "UPDATE" in sql:
             self.rowcount = 1
 
@@ -184,7 +208,10 @@ class _Cur:
         if "to_regclass" in last:
             return ("discovered_facilities",)
         if "information_schema.columns" in last:
-            return (1,)                      # every column exists
+            probed = (getattr(self, "_args", None) or (None, None))[-1]
+            if probed in getattr(self, "missing_cols", ()):
+                return None                  # this table lacks that column
+            return (1,)                      # every other column exists
         if "COUNT(DISTINCT canonical_slug)" in last:
             return (466, 713, 260)
         return (0,)
@@ -249,37 +276,44 @@ def test_the_update_never_touches_the_row_that_keeps_the_slug():
         "the write set is not restricted to non-owner rows"
 
 
-def test_no_progress_breaks_the_loop_instead_of_burning_every_batch():
-    """A row whose new slug is already taken stays selected forever."""
-    cur = _Cur(ROWS)
-    cur.rowcount = 0
+def test_blocked_rows_are_stepped_OVER_not_re_read_forever():
+    """A row whose new slug is already taken stays selected forever.
 
-    class _Stuck(_Cur):
-        def execute(self, sql, args=None):
-            sql = sql.decode() if isinstance(sql, bytes) else sql
-            self.seen.append(sql); self._last = sql
-            self.rowcount = 0                 # the guard rejects every write
+    ★ r-slugblockers (2026-09-19): this used to assert the `wrote == 0` break.
+    That break was the DEFECT — it ended the run on the first fully blocked
+    batch and left every later fixable row untouched. #4830 fixed the COUNT
+    feeding it; the break still read that count as progress. The contract is
+    now the id cursor: blocked rows are walked PAST.
+
+    ★ The old fake returned the same rows on EVERY read regardless of what it
+    was asked — a query the real SQL cannot issue. This one honours the cursor.
+    """
+    class _Cursoring(_Cur):
+        def __init__(self, rows):
+            super().__init__(rows)
+            self.all_rows = list(rows)
+            self.selected = []
+
         def fetchall(self):
-            if "UPDATE" in (self._last or ""):
+            last = self._last or ""
+            if "UPDATE" in last:
                 return []                     # the guard rejected every write
-            return list(ROWS)                 # never drains
+            assert "ranked" in last
+            after = (self._args or ('',))[0]
+            out = [r for r in self.all_rows if str(r[0]) > str(after)]
+            self.selected.append([r[0] for r in out])
+            return out
 
-    stuck = _Stuck(ROWS)
-    # batch == len(ROWS) on purpose: a short read would break the loop via
-    # `len(rows) < batch` and this would pass without the wrote==0 test
-    # existing at all. A full batch that writes nothing is the only shape
-    # that isolates it.
-    disambiguate_slug_collisions(_Conn(stuck), "discovered_facilities",
+    cur = _Cursoring(ROWS)
+    disambiguate_slug_collisions(_Conn(cur), "discovered_facilities",
                                  dry_run=False, batch=len(ROWS), max_batches=50)
-    assert len(_updates(stuck)) == 1, (
-        f"looped {len(_updates(stuck))} times writing nothing")
+    seen = [i for b in cur.selected for i in b]
+    assert len(seen) == len(set(seen)), f"re-read the same ids: {cur.selected}"
+    assert cur.selected[0] == [101, 202], cur.selected
+    assert len(_updates(cur)) <= 2, \
+        f"looped {len(_updates(cur))} times over {len(ROWS)} rows"
 
 
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# 2026-09-19, AFTER the first live run. Two defects it exposed.
-# ─────────────────────────────────────────────────────────────────────────
 from routes.facility_slug_freeze import (          # noqa: E402
     slug_collision_breakdown, keeper_slug_reachability,
 )
@@ -401,6 +435,69 @@ def test_the_new_readers_do_not_rederive_the_same_site_predicate():
     for banned in ("_same_physical_site", "_SAME_SITE_METRES", "haversine",
                    "ST_Distance", "latitude", "longitude"):
         assert banned not in code, f"re-derives the twin predicate ({banned})"
+
+
+# ── r-slugblockers (2026-09-19): blocking findings from the #4818 review ───
+
+def test_a_table_without_duplicate_columns_gets_TYPED_nulls():
+    """★ A bare NULL in a CTE output column is typed `text` by Postgres, so the
+    outer COALESCE(_isdup, 0) in _INDEPENDENT raised "COALESCE types text and
+    integer cannot be matched" (reproduced on PG 18.6). That killed BOTH stats
+    and the re-mint for `facilities` at the safe dry-run default, and the
+    swallowed error left collisions: null on the status route permanently."""
+    cur = _Cur()
+    cur.missing_cols = ("is_duplicate", "duplicate_of_id")
+    isdup, dupof, power = _dup_cols(cur, "facilities")
+    assert isdup == "NULL::int", f"untyped substitute for is_duplicate: {isdup}"
+    assert dupof == "NULL::text", f"untyped substitute: {dupof}"
+    assert power == "power_mw"
+    assert "NULL::int AS _isdup" in _ranked_cte(cur, "facilities"), \
+        "the CTE still emits an untyped NULL; COALESCE(_isdup, 0) will raise"
+
+
+def test_facilities_is_refused_for_a_real_remint():
+    """★ `facilities` rows resolve ONLY via hash8(provider|name), while
+    build_disambiguated_slug tails on md5(provider|name|id) — so a re-minted
+    slug there is a hard 404 fed into the sitemap, with no alias and so no
+    recovery hop. Casting the NULL above without this turns a 500 into that."""
+    assert "facilities" not in _REMINTABLE_TABLES
+    assert "discovered_facilities" in _REMINTABLE_TABLES
+    cur = _Cur(ROWS)
+    try:
+        disambiguate_slug_collisions(_Conn(cur), "facilities", dry_run=False)
+    except ValueError as e:
+        assert "measure-only" in str(e)
+    else:
+        raise AssertionError("a real re-mint of facilities was allowed")
+    assert not _updates(cur), "it wrote before refusing"
+
+
+def test_measuring_facilities_is_still_allowed():
+    """The refusal is on the WRITE only — the status route still needs the
+    number that sizes the problem."""
+    cur = _Cur(ROWS)
+    disambiguate_slug_collisions(_Conn(cur), "facilities", dry_run=True)
+    assert not _updates(cur)
+
+
+def test_the_batch_select_carries_an_id_cursor():
+    cur = _Cur(ROWS)
+    disambiguate_slug_collisions(_Conn(cur), "discovered_facilities",
+                                 dry_run=True)
+    sel = [x for x in cur.seen if "ranked" in x and "SELECT id" in x][0]
+    assert "id::text > %s" in sel, \
+        "no id cursor; a blocked row stalls the loop and ends the run early"
+
+
+def test_dry_run_fails_safe_on_null_and_zero():
+    """★ {"dry_run": null} — what a client that serialises unset fields emits —
+    reached a bare bool(None) and armed a full rewrite of set-once slugs. So
+    did 0 and []. Note the asymmetry this removes: "off" was already safe."""
+    for armed in (False, "false", "0", "no", "off", "FALSE"):
+        assert _dry_run_flag({'dry_run': armed}) is False, armed
+    for safe in (None, 0, [], {}, 1, "true", "yes", object()):
+        assert _dry_run_flag({'dry_run': safe}) is True, safe
+    assert _dry_run_flag({}) is True
 
 
 if __name__ == "__main__":
