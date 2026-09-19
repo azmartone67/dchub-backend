@@ -427,6 +427,25 @@ def test_a_failed_ledger_read_is_null_not_zero(monkeypatch):
     assert body["count"] is None and "ledger unavailable" in body["basis"]
 
 
+# ★ THE `since` HERE IS RELATIVE TO NOW, AND THAT IS LOAD-BEARING.
+# changes_feed.parse_since clamps any ISO `since` older than 30 days to
+# now-30d and reports mode 'clamped-30d'. This test used to send the LITERAL
+# 2026-08-20T00:00:00Z and assert the bound parameter came back unchanged —
+# true when it was written, and false from 2026-09-19 01:55Z, the instant
+# now-30d crossed that date. The shipped clamp is correct and documented
+# ("Hard ceiling of 30 days back"); the fixed date was the bug, and it took
+# main's required `unit-tests` red with it.
+#
+# A date offset from now can never drift into the clamp. The clamped branch
+# gets its own test below, so removing the clamp is still caught — the point
+# is to choose the branch deliberately instead of by the calendar.
+def _iso_days_ago(n):
+    """(datetime, the exact ISO-Z string for it) — microseconds dropped so the
+    string round-trips to the same instant the assertion compares against."""
+    d = dt.datetime.now(_UTC).replace(microsecond=0) - dt.timedelta(days=n)
+    return d, d.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def test_anon_changes_since_carries_the_retraction(monkeypatch):
     cf = _cf()
     judged = _WS + dt.timedelta(days=2)
@@ -436,8 +455,9 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     })
     conn = _Conn(cur)
     monkeypatch.setattr(cf, "open_conn", lambda *a, **k: conn)
+    since_dt, since_raw = _iso_days_ago(10)      # well inside the 30d ceiling
     with _app(cf.changes_feed_bp).test_client() as c:
-        rv = c.get("/api/v1/changes/since?since=2026-08-20T00:00:00Z")
+        rv = c.get("/api/v1/changes/since?since=" + since_raw)
     assert rv.status_code == 200
     body = rv.get_json()
     claims = body["claims"]
@@ -448,9 +468,31 @@ def test_anon_changes_since_carries_the_retraction(monkeypatch):
     assert body["drill_deeper"]["claims_full"] == "/api/v1/ops/claims"
     sql, params = _sql(cur, "brain_predictions_log")[0]
     assert "outcome_at >= %s" in sql and "IN ('confirmed', 'retracted')" in sql
-    assert params[0] == "CLAIM" and params[1] == dt.datetime(2026, 8, 20, tzinfo=_UTC)
+    assert params[0] == "CLAIM" and params[1] == since_dt
     # The block is additive: the lanes and their counts are untouched.
     assert "counts" in body and "diff" in body
+
+
+def test_changes_since_is_clamped_to_the_thirty_day_ceiling(monkeypatch):
+    """The branch the drifting date used to reach by accident, reached on purpose.
+
+    Without this, making the ceiling relative above would silently delete the
+    only coverage the clamp had.
+    """
+    cf = _cf()
+    cur = _DispatchCur({"brain_predictions_log": []})
+    monkeypatch.setattr(cf, "open_conn", lambda *a, **k: _Conn(cur))
+    _old_dt, old_raw = _iso_days_ago(400)
+    before = dt.datetime.now(_UTC) - dt.timedelta(days=30)
+    with _app(cf.changes_feed_bp).test_client() as c:
+        rv = c.get("/api/v1/changes/since?since=" + old_raw)
+    after = dt.datetime.now(_UTC) - dt.timedelta(days=30)
+    assert rv.status_code == 200
+    _sql_txt, params = _sql(cur, "brain_predictions_log")[0]
+    # Bounded by the clock either side of the call rather than compared to a
+    # single now() the test computes — the flakiness this file just paid for.
+    assert before <= params[1] <= after, "since was not clamped to now-30d"
+    assert params[1] > _old_dt, "the 400-day-old since was passed straight through"
 
 
 def test_changes_since_is_fail_soft_when_the_ledger_cannot_be_read(monkeypatch):
