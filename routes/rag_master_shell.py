@@ -277,6 +277,7 @@ def tier1_measure(prev: dict | None) -> dict:
         "eval_per_query": [], "eval_regressed": False,
         "hnsw_present": None,
         "rag_agents_7d": None, "rag_context_packs_7d": None, "semantic_search_7d": None,
+        "real_agents_7d": None, "tools_in_use_7d": None,
     }
 
     # 1. Flat-corpus embedding coverage + narrative backlog (via the status endpoint
@@ -331,18 +332,43 @@ def tier1_measure(prev: dict | None) -> dict:
 
                 # 4. REACH — distinct external agents + packs served (7d) over the
                 #    canonical dedup table. semantic_search counted SEPARATELY.
+                #
+                # ★2026-09-19 — the last two aggregates are the DENOMINATOR, and
+                # they are in THIS query on purpose.
+                #
+                # rag_agents_7d counts agents that called one of two tools. The
+                # board published `reach 0.00` beside it, and a reader of
+                # /admin/rag/master-state had no way to tell "nobody uses DC Hub"
+                # from "everybody uses DC Hub, nobody uses the RAG doors". The
+                # second is the truth: measured 2026-09-19, /api/v1/ai/reach read
+                # real_agents_7d 70 and real_calls_7d 534 over 45 distinct tools,
+                # from the SAME table under the SAME is_public_ip +
+                # is_real_external predicate — while both RAG doors sat at zero.
+                # A north-star that reads 0 next to another surface's 70 gets
+                # dismissed as broken telemetry, and this one is not broken.
+                #
+                # Computed HERE rather than read from /ai/reach so the two
+                # numbers share one FROM, one WHERE and one snapshot instant:
+                # rag_agents_7d <= real_agents_7d then holds BY CONSTRUCTION and
+                # the pair can never drift into disagreeing about the same week.
                 rr = _fetchone(cur, """
                     SELECT
                       COUNT(*) FILTER (WHERE tool_name IN ('get_market_context','get_iso_context')),
                       COUNT(DISTINCT agent_id) FILTER (WHERE tool_name IN ('get_market_context','get_iso_context')),
-                      COUNT(*) FILTER (WHERE tool_name = 'semantic_search')
+                      COUNT(*) FILTER (WHERE tool_name = 'semantic_search'),
+                      COUNT(DISTINCT agent_id),
+                      COUNT(DISTINCT tool_name)
                       FROM mcp_calls_identity
                      WHERE created_at >= NOW() - INTERVAL '7 days'
                        AND is_public_ip IS TRUE AND is_real_external IS TRUE
-                """, default=(0, 0, 0))
+                """, default=(0, 0, 0, None, None))
                 m["rag_context_packs_7d"] = int(rr[0] or 0)
                 m["rag_agents_7d"] = int(rr[1] or 0)
                 m["semantic_search_7d"] = int(rr[2] or 0)
+                # None, not 0, when unreadable: "no agents at all" and "could not
+                # measure agents" must not render as the same sentence.
+                m["real_agents_7d"] = None if rr[3] is None else int(rr[3])
+                m["tools_in_use_7d"] = None if rr[4] is None else int(rr[4])
         except Exception:
             pass
         finally:
@@ -631,14 +657,38 @@ def tier3_act(m: dict, levers: dict) -> dict:
 
 def _reach_flag(m: dict) -> str | None:
     """When REACH is the softest signal, surface a cross-team flag (never a fire)
-    — adoption of newly-shipped tools is a GEO/distribution problem."""
+    — adoption of newly-shipped tools is a GEO/distribution problem.
+
+    ★2026-09-19 — the flag now carries its DENOMINATOR. "0 external agents" read
+    as a platform with no users; the measured truth is a platform with 70 agents
+    none of which walked through a RAG door. Those are opposite problems with
+    opposite remedies, and the old sentence could not tell them apart."""
     a = m.get("rag_agents_7d")
-    if a is not None and a < _REACH_TARGET:
-        return (f"RAG reach {a} external agents / {m.get('rag_context_packs_7d')} packs (7d) "
-                f"vs target {_REACH_TARGET} — get_market_context/get_iso_context are newly "
-                "shipped; drive adoption via GEO surfaces (dchub:// resources, /markets pages) "
-                "and the MCP tool descriptions, not a shell action.")
-    return None
+    if a is None or a >= _REACH_TARGET:
+        return None
+    total = m.get("real_agents_7d")
+    tools = m.get("tools_in_use_7d")
+    if total is None:
+        # Unreadable denominator: say so rather than implying zero. The whole
+        # point of this change is not to publish a number that reads as a fact
+        # about adoption when it is a fact about measurement.
+        scope = (f"{a} external agents (the total agent count was not readable "
+                 f"this tick, so this is not 'nobody is calling DC Hub')")
+        # ★ And do NOT assert "the platform has the traffic" here — with no
+        # denominator that sentence is exactly the unsupported claim this change
+        # exists to remove. Only the measured branch has earned it.
+        verdict = ""
+    else:
+        doors = len(_REACH_TOOLS)
+        of_tools = f" of the {tools} distinct tools called" if tools else ""
+        scope = (f"{a} of {total} real external agents used a RAG door "
+                 f"({'/'.join(_REACH_TOOLS)} — {doors}{of_tools})")
+        verdict = (" The platform has the traffic; the RAG doors do not."
+                   if total > a else "")
+    return (f"RAG reach: {scope}, {m.get('rag_context_packs_7d')} packs (7d) "
+            f"vs target {_REACH_TARGET}.{verdict} Drive adoption via GEO "
+            "surfaces (dchub:// resources, /markets pages) and the MCP tool "
+            "descriptions — never a shell action.")
 
 
 def _file_gap_findings(m: dict) -> int:
