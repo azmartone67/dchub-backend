@@ -38,16 +38,37 @@ import pytest
 from tests._live_proof_sql import platforms_query
 
 psycopg2 = pytest.importorskip("psycopg2")
-from tests._prod_shaped_db import reset_tables  # noqa: E402
 
 DSN = os.environ.get("LIVE_PROOF_SQL_DSN", "").strip()
 pytestmark = pytest.mark.skipif(
     not DSN, reason="LIVE_PROOF_SQL_DSN not set — no Postgres to run against")
 
 DDL = """
--- In production this is a VIEW over the call log; only the five columns the
--- query reads are modelled here, with their production types.
-CREATE TABLE IF NOT EXISTS mcp_calls_identity (
+-- ── the production NAME, in this test's OWN schema ──────────────────────────
+-- In production `mcp_calls_identity` is a VIEW over mcp_tool_calls, rendered by
+-- scripts/render_identity_views.py from mcp_calls_deloop constants. THAT view is
+-- canonical. This file does not model it: the columns below are a deliberate
+-- stand-in that lets a test set is_public_ip / is_real_external DIRECTLY, so
+-- what is under test is THE QUERY'S FILTERING and not the view's IP
+-- derivations. Coupling this to real_calls_predicate() would quietly turn these
+-- into tests of an IP regex.
+--
+-- The stand-in gets a schema of its own because creating it in `public` COLLIDES
+-- with the real view on a prod-shaped branch: `WrongObjectType:
+-- "mcp_calls_identity" is not a table`, 8 setups on 2026-09-19. `search_path`
+-- puts ours first and every consumer names the table unqualified, so the
+-- shipped query resolves here. Production's view is never dropped, never
+-- altered, and never shadowed outside this session.
+--
+-- The CASCADE below drops only what is INSIDE this test's own schema -- that is
+-- the whole difference from `DROP ... CASCADE` in `public`, which would delete
+-- production's views out of a branch all 19 lanes share.
+DROP SCHEMA IF EXISTS ci_live_proof CASCADE;
+CREATE SCHEMA ci_live_proof;
+SET search_path TO ci_live_proof, public;
+
+-- Only the five columns the query reads, at their production types.
+CREATE TABLE mcp_calls_identity (
     platform         TEXT,
     session_id       TEXT,
     is_public_ip     BOOLEAN,
@@ -94,10 +115,11 @@ def counts():
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            # In production `mcp_calls_identity` is a VIEW, so this skips
-            # there rather than erroring -- see tests/_prod_shaped_db.py.
-            reset_tables(cur, "mcp_calls_identity")
             cur.execute(DDL)
+            # If this ever answers `public`, the stand-in is squatting on
+            # production's view again and the next prod-shaped run errors.
+            cur.execute("SELECT current_schema()")
+            assert cur.fetchone()[0] == "ci_live_proof"
             cur.executemany(
                 "INSERT INTO mcp_calls_identity "
                 "(platform, session_id, is_public_ip, is_real_external, created_at)"

@@ -36,7 +36,6 @@ from continuation_compliance import (
 )
 
 psycopg2 = pytest.importorskip("psycopg2")
-from tests._prod_shaped_db import reset_tables  # noqa: E402
 
 DSN = os.environ.get("CONTINUATION_SQL_DSN", "").strip()
 pytestmark = pytest.mark.skipif(
@@ -66,15 +65,38 @@ def shipped_sql():
 
 
 DDL = """
+-- ── the production NAME, in this test's OWN schema ──────────────────────────
+-- In production `mcp_calls_identity` is a VIEW over mcp_tool_calls, rendered by
+-- scripts/render_identity_views.py from mcp_calls_deloop constants. THAT view is
+-- canonical. This file does not model it: the columns below are a deliberate
+-- stand-in that lets a test set is_public_ip / is_real_external DIRECTLY, so
+-- what is under test is THE QUERY'S FILTERING and not the view's IP
+-- derivations. Coupling this to real_calls_predicate() would quietly turn these
+-- into tests of an IP regex.
+--
+-- The stand-in gets a schema of its own because creating it in `public` COLLIDES
+-- with the real view on a prod-shaped branch: `WrongObjectType:
+-- "mcp_calls_identity" is not a table`, 8 setups on 2026-09-19. `search_path`
+-- puts ours first and every consumer names the table unqualified, so the
+-- shipped query resolves here. Production's view is never dropped, never
+-- altered, and never shadowed outside this session.
+--
+-- The CASCADE below drops only what is INSIDE this test's own schema -- that is
+-- the whole difference from `DROP ... CASCADE` in `public`, which would delete
+-- production's views out of a branch all 19 lanes share.
+DROP SCHEMA IF EXISTS ci_continuation CASCADE;
+CREATE SCHEMA ci_continuation;
+SET search_path TO ci_continuation, public;
+
 -- In production mcp_calls_identity is a VIEW over the call log; only the four
 -- columns this query reads are modelled here, with their production types.
-CREATE TABLE IF NOT EXISTS mcp_upgrade_signals (
+CREATE TABLE mcp_upgrade_signals (
     session_id    TEXT,
     message_shown TEXT,
     mcp_client    TEXT,
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE TABLE IF NOT EXISTS mcp_calls_identity (
+CREATE TABLE mcp_calls_identity (
     session_id       TEXT,
     tool_name        TEXT,
     is_real_external BOOLEAN,
@@ -125,10 +147,11 @@ def summary():
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            # Prod-shaped branches already have these, and one of them is a
-            # VIEW there -- see tests/_prod_shaped_db.py.
-            reset_tables(cur, "mcp_upgrade_signals", "mcp_calls_identity")
             cur.execute(DDL)
+            # If this ever answers `public`, the stand-ins are squatting on
+            # production's own objects again.
+            cur.execute("SELECT current_schema()")
+            assert cur.fetchone()[0] == "ci_continuation"
             _fixture(cur)
             # Executed exactly as the route executes it — same string, same
             # params, same order — so %% escaping and binding are proven too.
