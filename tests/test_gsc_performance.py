@@ -391,3 +391,82 @@ def test_the_refresh_can_be_switched_off_explicitly_only():
     ingest = _exec_ingest(lambda token, **kw: pytest.fail("must not refresh when refresh_proven=False"))
     out = ingest("tok", refresh_proven=False)
     assert out["success"] is True and out["proven_pages"] is None
+
+
+# ── the trailing window must actually be re-fetchable ────────────────────
+#
+# ★★★ 2026-09-19. The budget for the query/page grains is `row_limit * days`,
+#     and GSC returns ["date","page"] rows ordered so the budget fills from the
+#     WINDOW START FORWARD. This property needs 3,000-3,700 page rows for a
+#     SINGLE day, so the daily cron's 5 x 500 = 2,500 could not cover even the
+#     oldest day of its own window: every run refilled the start and the newest
+#     days were never written. The entire stated purpose of the trailing window
+#     — picking up GSC's ~72 h revisions — therefore never worked, for two
+#     months, while every run reported success.
+#
+#     `rows_capped` could not see it: that field only fires when _wanted exceeds
+#     _SEED_ROW_CEILING (100,000), and 2,500 never does.
+
+def _load_module():
+    """Import the real module with its DB + HTTP touchpoints stubbed."""
+    import sys
+    import types
+    if "db_utils" not in sys.modules:                      # pragma: no cover
+        stub = types.ModuleType("db_utils")
+        stub.get_db = lambda *a, **k: None
+        stub.ddl_cursor = lambda *a, **k: None
+        sys.modules["db_utils"] = stub
+    import importlib
+    return importlib.import_module("routes.gsc_performance")
+
+
+def test_a_grain_that_fills_its_budget_is_reported_as_incomplete(monkeypatch):
+    """A grain returning exactly its limit did not run out of DATA, it ran out
+    of ROWS — _query_gsc pages until a SHORT page arrives. So a full result
+    means the window was truncated and its NEWEST days are incomplete, which is
+    the one thing the old code never said."""
+    mod = _load_module()
+
+    def fake_query(token, s, e, dims, limit):
+        # site grain asks for _GSC_MAX_ROW_LIMIT and gets a short page (fine);
+        # query/page grains come back exactly full (budget exhausted).
+        n = 3 if dims == ["date"] else limit
+        return [{"keys": ([f"2026-09-0{(i % 9) + 1}"] + (["x"] if len(dims) > 1 else [])),
+                 "clicks": 0, "impressions": 1, "ctr": 0.0, "position": 1.0}
+                for i in range(n)], None
+
+    monkeypatch.setattr(mod, "_query_gsc", fake_query)
+    monkeypatch.setattr(mod, "_ensure_table", lambda: None)
+    monkeypatch.setattr(mod, "_write_chunked", lambda *a, **k: 0, raising=False)
+    monkeypatch.setattr(mod, "get_db", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(mod, "refresh_proven_pages", lambda *a, **k: None,
+                        raising=False)
+
+    out = mod.ingest_daily_performance("tok", days=5, row_limit=500)
+
+    assert out.get("budget_exhausted"), (
+        "a grain that returned exactly its row budget must be reported as "
+        "incomplete — this is the field whose absence hid two months of "
+        "starved ingest")
+    for grain in ("query", "page"):
+        assert grain in out["budget_exhausted"], f"{grain} grain not reported"
+        # ★ The limit handed to a grain is the WHOLE-WINDOW budget
+        #   (row_limit * days), not the per-day figure — which is precisely why
+        #   500/day read as "plenty" while 5 x 500 = 2,500 could not cover one
+        #   day. Pin the arithmetic, not the tunable.
+        assert out["budget_exhausted"][grain]["limit"] == 500 * 5
+    assert "site" not in out["budget_exhausted"], \
+        "the site grain got a short page and must NOT be flagged"
+
+
+def test_the_default_row_limit_covers_a_real_day(monkeypatch):
+    """The per-day budget must exceed this property's measured worst day
+    (3,700 page rows on 2026-09-19). At 500 the daily 5-day window asked for
+    2,500 — less than ONE day — which is what starved it."""
+    mod = _load_module()
+    assert mod.DEFAULT_ROW_LIMIT >= 3700, (
+        f"DEFAULT_ROW_LIMIT={mod.DEFAULT_ROW_LIMIT} is below the measured "
+        "worst single day (3,700 page rows); the trailing window cannot reach "
+        "its newest days")
+    # and the 5-day window must still be payable through pagination
+    assert mod.DEFAULT_ROW_LIMIT * mod.DEFAULT_WINDOW_DAYS <= mod._SEED_ROW_CEILING

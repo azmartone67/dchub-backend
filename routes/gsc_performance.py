@@ -80,9 +80,24 @@ gsc_perf_bp = Blueprint("gsc_performance", __name__)
 DEFAULT_WINDOW_DAYS = int(os.environ.get("GSC_PERF_WINDOW_DAYS", "5"))
 
 # Per-day cap for the query and page grains. The site grain is always 1 row/day.
-# 500 keeps a year of daily ingest well inside a few hundred thousand rows while
-# still covering the long tail that matters for content decisions.
-DEFAULT_ROW_LIMIT = int(os.environ.get("GSC_PERF_ROW_LIMIT", "500"))
+#
+# ★★★ 2026-09-19 — 500 STARVED THE TRAILING WINDOW, and the starvation was
+#   invisible. The budget below is `row_limit * days`, and GSC returns
+#   ["date","page"] rows ordered so the budget fills from the WINDOW START
+#   FORWARD. This property's page grain needs 3,000-3,700 rows for a SINGLE
+#   day, so the daily cron's 5 x 500 = 2,500 could not cover even the oldest
+#   day: every run refilled the start of its window and the newest days were
+#   never written. The whole reason this module re-fetches a trailing window —
+#   GSC finalising a day over ~72 h — therefore never worked.
+#   Measured: days=62 asked for 50,000 page rows, filled 07-19..08-01, stopped.
+#   The observed "~2,400 rows/day" plateau on 08-26..09-14 was this cap, not
+#   the real page count.
+#
+#   5000 covers a measured worst day (3,700) with headroom, so a 5-day window
+#   asks for 25,000 — still inside Google's 25,000-per-call ceiling once paged,
+#   and two orders of magnitude under _SEED_ROW_CEILING. Raise it if the real
+#   per-day page count grows; the new budget_exhausted report below says when.
+DEFAULT_ROW_LIMIT = int(os.environ.get("GSC_PERF_ROW_LIMIT", "5000"))
 
 _API = "https://www.googleapis.com/webmasters/v3/sites/{site}/searchAnalytics/query"
 
@@ -252,13 +267,27 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
         ("page",  ["date", "page"],  _per_grain),
     )
 
-    written, errors, scanned = {}, {}, {}
+    written, errors, scanned, exhausted = {}, {}, {}, {}
     for label, dims, limit in grains:
         rows, err = _query_gsc(token, s, e, dims, limit)
         if err:
             errors[label] = err
             continue
         scanned[label] = len(rows)
+        # ★ A grain that came back holding exactly its budget did not run out of
+        #   DATA, it ran out of ROWS — _query_gsc pages until a SHORT page
+        #   arrives, so a full result means the window was truncated and the
+        #   newest days in it are incomplete. `rows_capped` below cannot see
+        #   this: it only fires when _wanted exceeds _SEED_ROW_CEILING, which at
+        #   the daily 5 x 500 it never did. That is why two months of starved
+        #   ingest read as clean runs.
+        if limit and len(rows) >= limit:
+            exhausted[label] = {"limit": limit, "scanned": len(rows)}
+            logger.warning(
+                "gsc performance: %s grain exhausted its row budget (%d of %d) "
+                "over %s..%s — the window filled from the start and its newest "
+                "days are INCOMPLETE. Raise GSC_PERF_ROW_LIMIT.",
+                label, len(rows), limit, s, e)
 
         payload = []
         for r in rows:
@@ -336,6 +365,11 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
                          "note": "query/page grains were capped; the long tail "
                                  "beyond this is not stored"}
                         if _wanted > _SEED_ROW_CEILING else None),
+        # ★ Distinct from rows_capped: that one reports the SEED ceiling, this
+        #   one reports the per-run budget running out, which is what actually
+        #   starved the daily cron. A grain listed here has incomplete NEWEST
+        #   days, not merely a trimmed long tail.
+        "budget_exhausted": exhausted or None,
         "errors": errors or None,
     }
 
