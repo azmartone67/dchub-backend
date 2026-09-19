@@ -35,7 +35,17 @@ sys.path.insert(0, ROOT)
 
 from routes.mcp_tool_catalog import _merged_tools  # noqa: E402
 
-CATALOG = {name for name, _cat, _tier, _summary, _ex in _merged_tools()}
+def _catalog():
+    """The tool names the catalog serves.
+
+    A function, not a module-scope constant. _merged_tools() merges the curated
+    list with a live tools/list against dchub.cloud, so as a constant it fetched
+    production during COLLECTION — before any test ran, on every `pytest tests/`
+    including `--collect-only`. That is also the module-scope work CLAUDE.md
+    rules out under tests/. Called per test instead; the module's own 10-minute
+    cache means the merge still happens once.
+    """
+    return {name for name, _cat, _tier, _summary, _ex in _merged_tools()}
 
 # The names the warning block teaches as WRONG. Kept here so deleting the block
 # from llms.txt fails a test rather than passing one.
@@ -63,13 +73,15 @@ BULLET = re.compile(r"^- ([a-z][a-z0-9_]{4,}) -> ", re.M)
 def test_catalog_and_bullets_are_non_empty():
     """Floor. Without this, an import that yields nothing or a regex that stops
     matching makes every assertion below range over an empty set and pass."""
-    assert len(CATALOG) > 50, f"tool catalog collapsed to {len(CATALOG)}"
+    catalog = _catalog()
+    assert len(catalog) > 50, f"tool catalog collapsed to {len(catalog)}"
     names = BULLET.findall(_llms_body())
     assert len(names) > 10, f"flagship bullet regex matched {len(names)}"
 
 
 def test_every_tool_named_in_llms_txt_exists():
-    unknown = sorted({n for n in BULLET.findall(_llms_body()) if n not in CATALOG})
+    catalog = _catalog()
+    unknown = sorted({n for n in BULLET.findall(_llms_body()) if n not in catalog})
     assert not unknown, (
         f"llms.txt teaches tool name(s) that do not exist: {unknown}. "
         "An agent that copies one gets tool-not-found and concludes DC Hub is broken."
@@ -79,12 +91,13 @@ def test_every_tool_named_in_llms_txt_exists():
 def test_the_warning_block_is_still_true():
     """The block names three non-tools. If a real tool is ever renamed to one of
     them the warning becomes false — catch that here, not in a partner's manifest."""
+    catalog = _catalog()
     for wrong, right in NOT_TOOLS.items():
-        assert wrong not in CATALOG, (
+        assert wrong not in catalog, (
             f"llms.txt tells agents `{wrong}` is not a tool, but it now is. "
             "Update the warning block."
         )
-        assert right in CATALOG, (
+        assert right in catalog, (
             f"llms.txt points agents at `{right}` as the real name, and it is gone."
         )
 

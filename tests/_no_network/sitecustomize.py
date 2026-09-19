@@ -1,9 +1,14 @@
-"""No network in the unit-tests step, for every test file: refuse, and log.
+"""No network under the test suite, for every test file: refuse, and log.
 
-.github/workflows/pre-merge.yml puts this directory on PYTHONPATH for its
-"Run pure-function tests" step only. Python imports sitecustomize at startup,
-so this runs in pytest and in every interpreter its tests start, before any
-conftest, test module or import-time call. From then on:
+Two entry points, one implementation. .github/workflows/pre-merge.yml puts this
+directory on PYTHONPATH for its "Run pure-function tests" step: Python imports
+sitecustomize at startup, so there this runs in pytest and in every interpreter
+its tests start, before any conftest, test module or import-time call — the
+earliest point available, and the only one that covers a fetch at a test
+module's own import. tests/conftest.py loads this same file by path when that
+PYTHONPATH did not, which is what covers a plain local `python3 -m pytest
+tests/`, and exports both env vars so the children of a local run are covered
+too. install() is idempotent, so the two never double up. From then on:
 
 - socket.getaddrinfo refuses any host that is not loopback (socket.gaierror).
   requests, urllib, http.client and httpx all resolve names through it.
@@ -126,7 +131,36 @@ def connect_ex(self, address):
     return _real_connect_ex(self, address)
 
 
-socket.getaddrinfo = getaddrinfo
-socket.socket.connect = connect
-socket.socket.connect_ex = connect_ex
-_write({"ev": "loaded", "pytest": any(os.path.basename(a) in ("pytest", "py.test") for a in getattr(sys, "orig_argv", ()))})
+_INSTALLED = "_dchub_no_network"
+
+
+def installed():
+    """True when this hook, or another copy of this file, already owns the
+    socket entry points. Read off socket itself, not off a module global: CI
+    loads this file as `sitecustomize` at interpreter startup and
+    tests/conftest.py loads the same file by path, so the two copies share no
+    state but do share `socket`."""
+    return getattr(socket.getaddrinfo, _INSTALLED, False) is True
+
+
+def install():
+    """Refuse off-loopback DNS and connects. Returns whether it installed.
+
+    Idempotent, and that is load-bearing in both directions. A second install
+    would capture the first copy's wrappers as its `_real_*` and log a second
+    "loaded" line for one process, which is the count scripts/no_network_verdict.py
+    reads to decide the hook was watching at all. Bailing also leaves the first
+    copy's `_real_*` — the genuine socket functions — as the only way out.
+    """
+    if installed():
+        return False
+    for wrapper in (getaddrinfo, connect, connect_ex):
+        setattr(wrapper, _INSTALLED, True)
+    socket.getaddrinfo = getaddrinfo
+    socket.socket.connect = connect
+    socket.socket.connect_ex = connect_ex
+    _write({"ev": "loaded", "pytest": any(os.path.basename(a) in ("pytest", "py.test") for a in getattr(sys, "orig_argv", ()))})
+    return True
+
+
+install()

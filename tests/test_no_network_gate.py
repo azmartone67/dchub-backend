@@ -161,3 +161,104 @@ def test_the_unit_tests_step_loads_the_hook_and_runs_the_verdict_on_its_log():
         run,
     )
     assert re.search(r'\n\s*python3 scripts/no_network_verdict\.py "\$log" \|\| status=1\n\s*exit \$status\n', run)
+
+
+# ── The rule applies to a local run too, not only to the CI step ─────────────
+#
+# Everything above tests the hook as the workflow loads it: in a subprocess,
+# with PYTHONPATH set by hand. These test the second entry point — that
+# tests/conftest.py installed the same hook in the process running THIS test,
+# and exported it to the children a test starts. Without them the local half
+# is only a comment: the suite would pass just as well with the conftest block
+# deleted, because the CI step sets PYTHONPATH itself.
+OPT_OUT = os.environ.get("DCHUB_NO_NETWORK") == "0"
+no_opt_out = pytest.mark.skipif(OPT_OUT, reason="DCHUB_NO_NETWORK=0 turned the hook off for this run")
+
+
+@no_opt_out
+def test_the_hook_is_installed_in_the_process_running_this_test(tmp_path):
+    """Either entry point satisfies this: PYTHONPATH in CI, conftest locally.
+
+    The probe is logged to a file of our own, not to the run's log. Sending it
+    there instead would put an unregistered host under this file's name in
+    every run, and scripts/no_network_verdict.py would fail the unit-tests step
+    on a probe that by RFC 6761 can never resolve. Redirecting reaches the
+    INSTALLED copy through the wrapper's own globals, because which copy that
+    is differs by entry point — `sitecustomize` in CI, `dchub_no_network` from
+    tests/conftest.py — and the copy read the path at its import.
+    """
+    import socket
+
+    assert getattr(socket.getaddrinfo, "_dchub_no_network", False) is True, (
+        "no-network hook is not installed in this pytest process; tests/conftest.py "
+        "installs it when the unit-tests step's PYTHONPATH has not"
+    )
+    hook = socket.getaddrinfo.__globals__
+    log = tmp_path / "in_process.jsonl"
+    outer = hook["_LOG"]
+    hook["_LOG"] = str(log)
+    try:
+        with pytest.raises(socket.gaierror) as e:
+            socket.getaddrinfo("gate-inprocess-probe.invalid", 443)
+        assert socket.getaddrinfo("localhost", 80), "loopback must still resolve"
+    finally:
+        hook["_LOG"] = outer
+    assert REFUSED in str(e.value)
+    assert [(x["ev"], x["host"], x["file"]) for x in _entries(log)] == [
+        ("dns", "gate-inprocess-probe.invalid", HERE)
+    ], "the refusal was not logged in this process, or not against this file"
+
+
+@no_opt_out
+def test_a_child_process_inherits_the_refusal():
+    """The env, not the import, is what crosses a process boundary.
+
+    tests/test_app_contract_gate.py boots main.py in a subprocess and the
+    register lists it reaching two hosts. An in-process hook sees none of them,
+    so if this stops holding, that traffic comes back with nothing to report it.
+    Deliberately does NOT set PYTHONPATH the way _hooked() does — inheriting
+    os.environ unchanged is the whole assertion.
+    """
+    probe = (
+        "import socket, sys;"
+        "sys.exit(0 if getattr(socket.getaddrinfo, '_dchub_no_network', False) is True else 1)"
+    )
+    r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, (
+        "a child of the test process does not load the no-network hook; "
+        f"PYTHONPATH={os.environ.get('PYTHONPATH')!r} stderr={r.stderr!r}"
+    )
+
+
+@no_opt_out
+def test_installing_the_hook_again_changes_nothing(tmp_path):
+    """install() is idempotent, and that keeps the verdict honest.
+
+    Both entry points can fire in one process. A second install would capture
+    the first copy's wrappers as its own `_real_*` — making the genuine socket
+    functions unreachable — and would log a second "loaded" line for one
+    process, which is the count the verdict reads to decide anything was
+    watching at all.
+    """
+    import socket
+
+    spec = importlib.util.spec_from_file_location("gate_hook_copy", HOOK_DIR / "sitecustomize.py")
+    copy = importlib.util.module_from_spec(spec)
+    before = socket.getaddrinfo, socket.socket.connect, socket.socket.connect_ex
+    log = tmp_path / "second.jsonl"
+    # Point the copy at a log of our own so a stray "loaded" line is visible here
+    # rather than buried in the run's. Restored, not popped: the rest of the
+    # session logs refusals to whatever was already set.
+    outer = os.environ.get("DCHUB_NO_NETWORK_LOG")
+    os.environ["DCHUB_NO_NETWORK_LOG"] = str(log)   # the copy reads this at import
+    try:
+        spec.loader.exec_module(copy)               # imports, and calls install()
+        assert copy.installed() is True
+        assert copy.install() is False, "install() claimed to install over an installed hook"
+    finally:
+        if outer is None:
+            os.environ.pop("DCHUB_NO_NETWORK_LOG", None)
+        else:
+            os.environ["DCHUB_NO_NETWORK_LOG"] = outer
+    assert (socket.getaddrinfo, socket.socket.connect, socket.socket.connect_ex) == before
+    assert not log.exists(), f"a second copy logged itself as a separate process: {_entries(log)}"
