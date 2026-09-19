@@ -224,3 +224,105 @@ def test_the_credential_is_never_accepted_from_the_query_string(monkeypatch):
     app = Flask(__name__)
     with app.test_request_context("/?admin_key=the-operative-key"):
         assert lane._admin_ok() is False
+
+
+# ── the lane may only ship files it can also cache-bust ─────────────────────
+def _plan_with(monkeypatch, findings, files):
+    """Run the real _plan() over a controlled finding set.
+
+    `files` maps path -> source text; any path NOT in it must never be
+    fetched, and _gh raises if it is."""
+    import base64
+
+    fetched = []
+
+    class R:
+        def __init__(self, text):
+            self.status_code = 200
+            self._text = text
+
+        def json(self):
+            return {"sha": "deadbeef",
+                    "content": base64.b64encode(
+                        self._text.encode("utf-8")).decode("ascii")}
+
+    def fake_gh(method, path, body=None):
+        fetched.append((method, path))
+        for p, text in files.items():
+            if f"/contents/{p}?" in path:
+                return R(text)
+        raise AssertionError(f"lane fetched a file it cannot ship: {path}")
+
+    monkeypatch.setattr(lane, "_open_findings", lambda: (findings, None))
+    monkeypatch.setattr(lane, "_gh", fake_gh)
+    built, err = lane._plan()
+    assert err is None, err
+    return built, fetched
+
+
+_HTML_SRC = "            item.operator || 'Unknown',"
+_JS_SRC = "      OPERATOR: item.operator || item.name,"
+
+
+def _row(path, line=1):
+    return {"issue": lane._AUTOFIXABLE_ISSUE, "path": path, "line": line,
+            "detail": "", "url": f"dchub-frontend/{path}:{line}"}
+
+
+def test_an_immutable_asset_row_is_refused_and_does_not_strand_the_html_edit(
+        monkeypatch):
+    """★ dchub-frontend#1509, 2026-09-19. The lane rewrote one line of
+    js/dchub-infrastructure.js and left the ?v= token in land-power-map.html
+    on the pre-edit hash, so check-immutable-asset-versions.mjs blocked the
+    PR — for four hours, and it took the capacity-pipeline.html edits with it,
+    because the lane opens ONE PR for every planned file.
+
+    Both halves are the property: the asset row is refused WITH a reason, and
+    the served-document edit still ships."""
+    built, _ = _plan_with(
+        monkeypatch,
+        [_row("capacity-pipeline.html"), _row("js/dchub-infrastructure.js")],
+        {"capacity-pipeline.html": _HTML_SRC})
+
+    assert [p["path"] for p in built["plan"]] == ["capacity-pipeline.html"], (
+        "the served-document edit must still ship")
+    assert len(built["plan"][0]["edits"]) == 1
+
+    refused = [s for s in built["skipped"]
+               if s["disposition"] == "cache_busted_asset"]
+    assert len(refused) == 1, built["skipped"]
+    assert refused[0]["url"].endswith("js/dchub-infrastructure.js:1")
+    assert "check-immutable-asset-versions.mjs" in refused[0]["reason"]
+
+
+def test_the_lane_never_fetches_a_file_it_cannot_ship(monkeypatch):
+    """The refusal is a PATH decision, so it must land before the contents
+    call. fake_gh raises on any other path, so reaching the fetch fails here
+    rather than burning a GitHub call per run."""
+    built, fetched = _plan_with(
+        monkeypatch, [_row("js/dchub-infrastructure.js")], {})
+    assert built["plan"] == []
+    assert fetched == [], fetched
+
+
+def test_the_same_line_is_still_APPLY_in_isolation(monkeypatch):
+    """The two questions stay separate: _classify answers 'is this edit safe
+    on its own' (it is -- it is one of the live four), _plan answers 'can this
+    lane ship it' (it cannot). If this ever stops being APPLY, the refusal
+    above is passing for the wrong reason."""
+    new, disp, why = lane._classify(_row("js/dchub-infrastructure.js"),
+                                    [_JS_SRC])
+    assert disp == APPLY, (disp, why)
+    assert "item.operator || item.company || item.name" in new
+
+
+def test_a_css_or_static_row_is_refused_too(monkeypatch):
+    built, _ = _plan_with(monkeypatch, [_row("static/app.css")], {})
+    assert built["plan"] == []
+    assert [s["disposition"] for s in built["skipped"]] == ["cache_busted_asset"]
+
+
+def test_html_is_matched_case_insensitively(monkeypatch):
+    built, _ = _plan_with(monkeypatch, [_row("Capacity-Pipeline.HTML")],
+                          {"Capacity-Pipeline.HTML": _HTML_SRC})
+    assert [p["path"] for p in built["plan"]] == ["Capacity-Pipeline.HTML"]

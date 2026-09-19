@@ -86,6 +86,45 @@ _REPO_LABEL = "dchub-frontend"
 _AUTOFIXABLE_ISSUE = "bug_squash:js_field_fallback_missing"
 _MAX_FILES_PER_PR = 10
 
+# ── the only files this lane may ship ────────────────────────────────
+# dchub-frontend serves /js/* and /static/* as
+# `Cache-Control: public, max-age=31536000, immutable`, so every reference to
+# one of those files carries a ?v=<md5 of its content> token, and the guard
+# scripts/check-immutable-asset-versions.mjs FAILS any PR that changes such a
+# file without re-stamping that token in each HTML that references it.
+#
+# This lane commits blobs through the GitHub contents API. It has no checkout,
+# so it can neither find the referencing pages nor re-stamp them. Measured on
+# dchub-frontend#1509 (2026-09-19): the lane rewrote one line of
+# js/dchub-infrastructure.js, the token in land-power-map.html stayed at the
+# pre-edit hash, and the PR sat BLOCKED for four hours until a human bumped it
+# by hand — and it took the three capacity-pipeline.html edits down with it,
+# because the lane opens ONE PR covering every planned file.
+#
+# So: only files that ARE the served document. This is deliberately
+# conservative — some /js/* files are overridden back to always-revalidate in
+# _headers and would in fact be safe to edit — but sorting those out means
+# reimplementing another repo's header semantics here, and being wrong in that
+# direction produces an unmergeable PR again. Over-refusing produces a skipped
+# row carrying its reason, which is visible and cheap to widen later.
+_SERVED_DOCUMENT_SUFFIXES = (".html",)
+
+
+def _is_served_document(path: str) -> bool:
+    return path.lower().endswith(_SERVED_DOCUMENT_SUFFIXES)
+
+
+def _cache_busted_reason(path: str) -> str:
+    return (
+        f"`{path}` is not a served document. dchub-frontend ships it under an "
+        "`immutable, max-age=31536000` rule, so references to it carry a "
+        "?v=<content hash> token. This lane commits through the contents API "
+        "with no checkout, so it cannot find or re-stamp those references and "
+        "scripts/check-immutable-asset-versions.mjs fails the PR — which also "
+        "strands the served-document edits, since the lane opens one PR for "
+        "every planned file. Patch this row by hand, or teach the lane to "
+        "stamp tokens; do not widen the rule without doing one of those.")
+
 # The pair the detector actually ships (scripts/bug_squash.py::_PAIRS).
 _PRIMARY, _FALLBACK = "operator", "company"
 
@@ -272,6 +311,15 @@ def _plan():
                 _, disp, why = _classify(g, [])
                 skipped.append({**{k: g[k] for k in ("issue", "url")},
                                 "disposition": disp, "reason": why})
+            continue
+        # ★ Path-level refusal. _classify answers "is this edit safe on its
+        # own"; this answers "can this lane actually ship it".
+        if not _is_served_document(path):
+            why = _cache_busted_reason(path)
+            for g in group:
+                skipped.append({"issue": g["issue"], "url": g["url"],
+                                "disposition": "cache_busted_asset",
+                                "reason": why})
             continue
         r = _gh("GET", f"/repos/{_TARGET_REPO}/contents/{path}?ref=main")
         if r.status_code != 200:
